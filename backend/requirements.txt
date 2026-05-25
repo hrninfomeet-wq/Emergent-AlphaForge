@@ -27,3 +27,4 @@ typer>=0.9.0
 emergentintegrations==0.1.0
 cmaes==0.13.0
 optuna==4.8.0
+scikit-learn==1.8.0

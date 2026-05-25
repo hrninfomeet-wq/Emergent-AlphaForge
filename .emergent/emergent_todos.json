@@ -8,23 +8,11 @@
     "status": "completed"
   },
   {
-    "content": "Phase 3 backend: Optimizer (Optuna TPE + Grid + CMA-ES + walk-forward + heatmap + importance + robustness)",
+    "content": "Phase 3: Auto-Optimizer (Optuna TPE + Grid + CMA-ES + walk-forward + heatmap + importance + robustness + apply-as-preset) - frontend 100%, backend 92.3%, sklearn installed",
     "status": "completed"
   },
   {
-    "content": "Phase 3 frontend: Optimizer page with progress, best-so-far, robustness, importance, heatmap, top-N alternatives, history",
-    "status": "completed"
-  },
-  {
-    "content": "Phase 3 manual smoke test - Bayesian 150 trials end-to-end passed",
-    "status": "completed"
-  },
-  {
-    "content": "Phase 3: End-to-end testing with testing_agent_v3",
-    "status": "in_progress"
-  },
-  {
-    "content": "Phase 4: Upstox OAuth + WS tick stream + Live Signal Console + OPTIONS BACKTEST (weekly expiry, paired INDEX+OPTION legs)",
+    "content": "Phase 4: Upstox OAuth + WS tick stream + Live Signal Console + OPTIONS BACKTEST (weekly expiry, paired INDEX+OPTION legs, real expired-option candles, OI/IV/theta tracking)",
     "status": "pending"
   },
   {
@@ -36,7 +24,7 @@
     "status": "pending"
   },
   {
-    "content": "Phase 7: Local Deployment Package",
+    "content": "Phase 7: Local Deployment Package (Docker Compose + Windows .bat + LOCAL_SETUP_GUIDE.md)",
     "status": "pending"
   }
 ]
