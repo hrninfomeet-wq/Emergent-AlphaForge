@@ -33,6 +33,7 @@ from app.warehouse import (
     load_candles_df,
 )
 from app.optimizer import create_job as optimizer_create_job
+from app import upstox_client
 
 logging.basicConfig(
     level=logging.INFO,
@@ -500,6 +501,168 @@ async def apply_opt_as_preset(job_id: str, name: str = Query(...)):
         upsert=True,
     )
     return {"ok": True, "preset_name": name}
+
+
+# ---------------------------------------------------------------------------
+# Upstox V3 (Phase 4a) \u2014 OAuth + historical candle ingestion
+# ---------------------------------------------------------------------------
+
+import secrets
+import uuid as _uuid
+from fastapi.responses import RedirectResponse
+
+# In-memory OAuth state store (per-process). For multi-instance prod, switch to Redis.
+_OAUTH_STATES: Dict[str, float] = {}
+
+
+@api.get("/upstox/status")
+async def upstox_status():
+    return await upstox_client.get_connection_status()
+
+
+@api.get("/upstox/auth/start")
+async def upstox_auth_start():
+    if not upstox_client.is_configured():
+        raise HTTPException(500, "Upstox credentials not configured. Set UPSTOX_CLIENT_ID / UPSTOX_CLIENT_SECRET / UPSTOX_REDIRECT_URI in backend/.env")
+    state = secrets.token_urlsafe(24)
+    _OAUTH_STATES[state] = datetime.now(timezone.utc).timestamp()
+    # Prune old states (>15 min)
+    now = datetime.now(timezone.utc).timestamp()
+    for s, t in list(_OAUTH_STATES.items()):
+        if now - t > 900:
+            _OAUTH_STATES.pop(s, None)
+    url = upstox_client.build_login_url(state)
+    return {"login_url": url, "state": state}
+
+
+@api.get("/upstox/auth/callback")
+async def upstox_auth_callback(code: Optional[str] = None, state: Optional[str] = None, error: Optional[str] = None):
+    """Browser is redirected here by Upstox after login. Exchange code for token, then redirect to frontend."""
+    frontend_url = os.environ.get("FRONTEND_POST_AUTH_URL", "/warehouse")
+    if error:
+        return RedirectResponse(f"{frontend_url}?upstox_error={error}")
+    if not code or not state:
+        return RedirectResponse(f"{frontend_url}?upstox_error=missing_code_or_state")
+    if state not in _OAUTH_STATES:
+        return RedirectResponse(f"{frontend_url}?upstox_error=invalid_state")
+    _OAUTH_STATES.pop(state, None)
+    try:
+        payload = await upstox_client.exchange_code_for_token(code)
+        await upstox_client.save_token(upstox_client.DEFAULT_USER_ID, payload)
+        return RedirectResponse(f"{frontend_url}?upstox_connected=1")
+    except Exception as e:
+        log.exception("upstox token exchange failed")
+        return RedirectResponse(f"{frontend_url}?upstox_error={str(e)[:200]}")
+
+
+@api.post("/upstox/disconnect")
+async def upstox_disconnect():
+    deleted = await upstox_client.disconnect()
+    return {"disconnected": deleted}
+
+
+class UpstoxIngestReq(BaseModel):
+    instrument: str  # NIFTY / BANKNIFTY / SENSEX
+    from_date: str   # YYYY-MM-DD (IST)
+    to_date: str     # YYYY-MM-DD (IST)
+    chunk_days: int = 7
+
+
+@api.post("/upstox/warehouse/ingest")
+async def upstox_warehouse_ingest(req: UpstoxIngestReq):
+    """Fetch 1m candles from Upstox V3 and persist into the SAME warehouse used by yfinance ingest."""
+    if req.instrument.upper() not in upstox_client.INSTRUMENT_KEYS:
+        raise HTTPException(400, f"Unsupported instrument: {req.instrument}")
+
+    db = get_db()
+    run_id = str(_uuid.uuid4())
+    started_at = datetime.now(timezone.utc).isoformat()
+    await db.warehouse_runs.insert_one({
+        "id": run_id,
+        "instrument": req.instrument.upper(),
+        "source": "upstox",
+        "started_at": started_at,
+        "status": "running",
+        "from_date": req.from_date,
+        "to_date": req.to_date,
+    })
+    try:
+        df = await upstox_client.fetch_historical_1m_chunked(
+            req.instrument.upper(), req.from_date, req.to_date, max_days_per_call=req.chunk_days,
+        )
+    except Exception as e:
+        log.exception("upstox ingest failed")
+        await db.warehouse_runs.update_one(
+            {"id": run_id},
+            {"$set": {"status": "failed", "finished_at": datetime.now(timezone.utc).isoformat(), "error": str(e)[:500]}},
+        )
+        return {"run_id": run_id, "status": "failed", "error": str(e)[:500]}
+
+    if df.empty:
+        await db.warehouse_runs.update_one(
+            {"id": run_id},
+            {"$set": {"status": "empty", "finished_at": datetime.now(timezone.utc).isoformat(), "candles_added": 0}},
+        )
+        return {"run_id": run_id, "status": "empty", "candles_added": 0}
+
+    # Upsert into candles_1m + integrity hashes (same logic as warehouse.ingest_yfinance)
+    import hashlib
+    coll = db.candles_1m
+    inserted = updated = 0
+    for d in df.to_dict(orient="records"):
+        result = await coll.update_one(
+            {"instrument": d["instrument"], "ts": int(d["ts"])},
+            {"$set": {
+                "instrument": d["instrument"], "ts": int(d["ts"]),
+                "datetime": str(d["datetime"]),
+                "open": float(d["open"]), "high": float(d["high"]),
+                "low": float(d["low"]), "close": float(d["close"]),
+                "volume": float(d.get("volume", 0) or 0),
+            }},
+            upsert=True,
+        )
+        if result.upserted_id is not None:
+            inserted += 1
+        elif result.modified_count > 0:
+            updated += 1
+
+    df["date_str"] = pd.to_datetime(df["ts"], unit="ms", utc=True).dt.tz_convert("Asia/Kolkata").dt.strftime("%Y-%m-%d")
+    for date_str, grp in df.groupby("date_str"):
+        payload = grp[["ts", "open", "high", "low", "close", "volume"]].to_json(orient="values").encode("utf-8")
+        h = hashlib.sha256(payload).hexdigest()[:16]
+        await db.integrity_hashes.update_one(
+            {"instrument": req.instrument.upper(), "date": date_str},
+            {"$set": {
+                "instrument": req.instrument.upper(),
+                "date": date_str,
+                "hash": h,
+                "candle_count": int(len(grp)),
+                "computed_at": datetime.now(timezone.utc).isoformat(),
+            }},
+            upsert=True,
+        )
+
+    await db.warehouse_runs.update_one(
+        {"id": run_id},
+        {"$set": {
+            "status": "ok",
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "candles_added": inserted,
+            "candles_updated": updated,
+            "total_fetched": len(df),
+        }},
+    )
+    return {"run_id": run_id, "status": "ok", "candles_added": inserted, "candles_updated": updated, "total_fetched": len(df)}
+
+
+@api.get("/upstox/expiries/{instrument}")
+async def upstox_expiries(instrument: str):
+    \"\"\"Phase 4c prep: list expiry dates for an underlying (Upstox Plus required).\"\"\"
+    try:
+        items = await upstox_client.fetch_expiries(instrument)
+        return {"items": items}
+    except Exception as e:
+        raise HTTPException(400, str(e)[:300])
 
 
 # ---------------------------------------------------------------------------
