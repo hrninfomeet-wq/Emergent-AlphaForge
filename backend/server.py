@@ -1,89 +1,420 @@
-from fastapi import FastAPI, APIRouter
-from dotenv import load_dotenv
-from starlette.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
-import os
+"""AlphaForge Trading Lab — FastAPI server.
+
+All routes prefixed with /api. CORS enabled. MongoDB via Motor.
+"""
+from __future__ import annotations
+
 import logging
-from pathlib import Path
-from pydantic import BaseModel, Field, ConfigDict
-from typing import List
+import os
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
+from dotenv import load_dotenv
+from fastapi import APIRouter, FastAPI, HTTPException, Query
+from pydantic import BaseModel, Field
+from starlette.middleware.cors import CORSMiddleware
 
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
+load_dotenv(ROOT_DIR / ".env")
 
-# MongoDB connection
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+from app.db import ensure_indexes, get_db, serialize_doc
+from app.indicators import precompute_all_indicators
+from app.regime import classify_regime_series
+from app.strategies.base import get_registry
+from app.backtest import run_backtest, stat_significance
+from app.walkforward import walk_forward
+from app.warehouse import (
+    candle_sample,
+    get_coverage,
+    ingest_yfinance,
+    list_runs,
+    load_candles_df,
+)
 
-# Create the main app without a prefix
-app = FastAPI()
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s",
+)
+log = logging.getLogger("alphaforge")
 
-# Create a router with the /api prefix
-api_router = APIRouter(prefix="/api")
+app = FastAPI(title="AlphaForge Trading Lab API")
+api = APIRouter(prefix="/api")
+
+# ---------------------------------------------------------------------------
+# Startup: discover plugins + ensure indexes + seed pretrade profiles
+# ---------------------------------------------------------------------------
+
+DEFAULT_PROFILES = {
+    "Conservative": {
+        "min_confidence_score": 70,
+        "max_vix": 28,
+        "min_vix": 10,
+        "allowed_regimes": ["TREND", "TREND_EXPANDING"],
+        "news_block_before_min": 45,
+        "news_block_after_min": 30,
+        "max_spread_pct": 3.0,
+        "cooldown_sec": 180,
+        "max_trades_per_day": 3,
+        "daily_loss_cutoff_pct": -1.5,
+        "trade_window_start": "09:30",
+        "trade_window_end": "14:30",
+        "bar_close_confirmation": "5m",
+        "min_confluence_reasons": 4,
+    },
+    "Balanced": {
+        "min_confidence_score": 60,
+        "max_vix": 35,
+        "min_vix": 9,
+        "allowed_regimes": ["TREND", "TREND_EXPANDING", "MIXED"],
+        "news_block_before_min": 30,
+        "news_block_after_min": 15,
+        "max_spread_pct": 5.0,
+        "cooldown_sec": 60,
+        "max_trades_per_day": 6,
+        "daily_loss_cutoff_pct": -2.0,
+        "trade_window_start": "09:25",
+        "trade_window_end": "14:50",
+        "bar_close_confirmation": "1m",
+        "min_confluence_reasons": 3,
+    },
+    "Aggressive": {
+        "min_confidence_score": 50,
+        "max_vix": 50,
+        "min_vix": 7,
+        "allowed_regimes": ["TREND", "TREND_EXPANDING", "MIXED", "CHOP", "VOLATILE_CHOP"],
+        "news_block_before_min": 15,
+        "news_block_after_min": 5,
+        "max_spread_pct": 8.0,
+        "cooldown_sec": 30,
+        "max_trades_per_day": 12,
+        "daily_loss_cutoff_pct": -3.0,
+        "trade_window_start": "09:20",
+        "trade_window_end": "15:10",
+        "bar_close_confirmation": "off",
+        "min_confluence_reasons": 2,
+    },
+}
 
 
-# Define Models
-class StatusCheck(BaseModel):
-    model_config = ConfigDict(extra="ignore")  # Ignore MongoDB's _id field
-    
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    client_name: str
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+@app.on_event("startup")
+async def startup() -> None:
+    await ensure_indexes()
+    registry = get_registry()
+    registry.auto_discover()
+    log.info(f"Discovered {len(registry.list_all())} strategy plugins")
+    # Seed default profiles
+    db = get_db()
+    for name, settings in DEFAULT_PROFILES.items():
+        await db.pretrade_profiles.update_one(
+            {"name": name},
+            {"$set": {"name": name, "settings": settings, "is_default": True}},
+            upsert=True,
+        )
+    log.info("Pre-trade profiles seeded")
 
-class StatusCheckCreate(BaseModel):
-    client_name: str
 
-# Add your routes to the router instead of directly to app
-@api_router.get("/")
+@app.on_event("shutdown")
+async def shutdown() -> None:
+    from app.db import get_client
+    get_client().close()
+
+
+# ---------------------------------------------------------------------------
+# Health
+# ---------------------------------------------------------------------------
+
+@api.get("/")
 async def root():
-    return {"message": "Hello World"}
+    return {"app": "AlphaForge Trading Lab", "status": "ok", "version": "1.0.0"}
 
-@api_router.post("/status", response_model=StatusCheck)
-async def create_status_check(input: StatusCheckCreate):
-    status_dict = input.model_dump()
-    status_obj = StatusCheck(**status_dict)
-    
-    # Convert to dict and serialize datetime to ISO string for MongoDB
-    doc = status_obj.model_dump()
-    doc['timestamp'] = doc['timestamp'].isoformat()
-    
-    _ = await db.status_checks.insert_one(doc)
-    return status_obj
 
-@api_router.get("/status", response_model=List[StatusCheck])
-async def get_status_checks():
-    # Exclude MongoDB's _id field from the query results
-    status_checks = await db.status_checks.find({}, {"_id": 0}).to_list(1000)
-    
-    # Convert ISO string timestamps back to datetime objects
-    for check in status_checks:
-        if isinstance(check['timestamp'], str):
-            check['timestamp'] = datetime.fromisoformat(check['timestamp'])
-    
-    return status_checks
+@api.get("/health")
+async def health():
+    db = get_db()
+    try:
+        await db.command("ping")
+        return {"db": "ok"}
+    except Exception as e:
+        raise HTTPException(503, str(e))
 
-# Include the router in the main app
-app.include_router(api_router)
+
+# ---------------------------------------------------------------------------
+# Strategies
+# ---------------------------------------------------------------------------
+
+@api.get("/strategies")
+async def list_strategies():
+    return {"items": get_registry().list_all()}
+
+
+@api.get("/strategies/{strategy_id}")
+async def get_strategy(strategy_id: str):
+    s = get_registry().get(strategy_id)
+    if not s:
+        raise HTTPException(404, f"Strategy {strategy_id} not found")
+    return s.meta()
+
+
+# ---------------------------------------------------------------------------
+# Data Warehouse
+# ---------------------------------------------------------------------------
+
+class IngestReq(BaseModel):
+    instrument: str
+    days: int = 7
+
+
+@api.post("/warehouse/ingest")
+async def warehouse_ingest(req: IngestReq):
+    if req.instrument.upper() not in ("NIFTY", "BANKNIFTY", "SENSEX"):
+        raise HTTPException(400, f"Unsupported instrument: {req.instrument}")
+    if not (1 <= req.days <= 30):
+        raise HTTPException(400, "days must be between 1 and 30 for yfinance 1m")
+    result = await ingest_yfinance(req.instrument.upper(), days=req.days)
+    return result
+
+
+@api.get("/warehouse/coverage")
+async def warehouse_coverage():
+    cov = await get_coverage()
+    return {"instruments": cov}
+
+
+@api.get("/warehouse/runs")
+async def warehouse_runs(limit: int = Query(50, le=200)):
+    runs = await list_runs(limit=limit)
+    return {"items": runs}
+
+
+@api.get("/warehouse/candles/{instrument}")
+async def warehouse_candles(instrument: str, limit: int = Query(500, le=5000)):
+    rows = await candle_sample(instrument.upper(), limit=limit)
+    return {"items": rows, "count": len(rows)}
+
+
+# ---------------------------------------------------------------------------
+# Pre-trade profiles
+# ---------------------------------------------------------------------------
+
+@api.get("/profiles")
+async def list_profiles():
+    db = get_db()
+    cur = db.pretrade_profiles.find({}, {"_id": 0}).sort("name", 1)
+    rows = await cur.to_list(length=100)
+    return {"items": rows}
+
+
+class ProfileSave(BaseModel):
+    name: str
+    settings: Dict[str, Any]
+
+
+@api.put("/profiles/{name}")
+async def save_profile(name: str, body: ProfileSave):
+    db = get_db()
+    await db.pretrade_profiles.update_one(
+        {"name": name},
+        {"$set": {"name": name, "settings": body.settings, "is_default": False}},
+        upsert=True,
+    )
+    doc = await db.pretrade_profiles.find_one({"name": name}, {"_id": 0})
+    return doc
+
+
+# ---------------------------------------------------------------------------
+# Backtest
+# ---------------------------------------------------------------------------
+
+class BacktestReq(BaseModel):
+    instrument: str = "NIFTY"
+    mode: str = "SCALP"
+    strategy_id: str
+    timeframe: str = "1m"
+    params: Dict[str, Any] = Field(default_factory=dict)
+    start_ts: Optional[int] = None
+    end_ts: Optional[int] = None
+    costs_enabled: bool = True
+    walkforward: bool = True
+    train_pct: float = 0.6
+    n_folds: int = 3
+    pretrade_filters: Dict[str, Any] = Field(default_factory=dict)
+    name: str = "Untitled Run"
+
+
+@api.post("/backtest/run")
+async def backtest_run(req: BacktestReq):
+    registry = get_registry()
+    strategy = registry.get(req.strategy_id)
+    if not strategy:
+        raise HTTPException(404, f"Strategy {req.strategy_id} not found")
+
+    df = await load_candles_df(req.instrument.upper(), req.start_ts, req.end_ts)
+    if df.empty or len(df) < 50:
+        raise HTTPException(
+            400,
+            f"Insufficient candles for {req.instrument}. Ingest data first via /api/warehouse/ingest"
+        )
+
+    # Merge default + user params (strict allow-list)
+    params = strategy.merged_params(req.params)
+
+    # Compute indicators + regime
+    df_enriched = precompute_all_indicators(df, params)
+    df_enriched["regime"] = classify_regime_series(df_enriched)
+
+    # Backtest
+    res = run_backtest(
+        df_enriched,
+        strategy,
+        params,
+        instrument=req.instrument.upper(),
+        costs_enabled=req.costs_enabled,
+        pretrade_filters=req.pretrade_filters,
+    )
+    metrics = res["metrics"]
+
+    wf = None
+    if req.walkforward and len(df_enriched) >= 200:
+        wf = walk_forward(
+            df_enriched,
+            strategy,
+            params,
+            instrument=req.instrument.upper(),
+            costs_enabled=req.costs_enabled,
+            pretrade_filters=req.pretrade_filters,
+            train_pct=req.train_pct,
+            n_folds=req.n_folds,
+        )
+
+    sig = stat_significance(metrics["trade_count"], metrics["win_rate"], metrics.get("profit_factor"))
+    regime_dist = df_enriched["regime"].value_counts().to_dict()
+    regime_dist = {str(k): int(v) for k, v in regime_dist.items()}
+
+    result_doc = {
+        "id": str(uuid.uuid4()),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "name": req.name,
+        "config": req.model_dump(),
+        "params_applied": params,
+        "metrics": metrics,
+        "trades": res["trades"],
+        "equity_curve": res["equity_curve"],
+        "walkforward": wf,
+        "significance": sig,
+        "candle_count": int(len(df_enriched)),
+        "regime_distribution": regime_dist,
+        "signal_funnel": res["signal_funnel"],
+        "instrument": req.instrument.upper(),
+        "strategy_id": req.strategy_id,
+    }
+    db = get_db()
+    await db.backtest_runs.insert_one(result_doc)
+    return serialize_doc(result_doc)
+
+
+@api.get("/backtest/runs")
+async def list_backtest_runs(limit: int = Query(50, le=200)):
+    db = get_db()
+    cur = db.backtest_runs.find({}, {"_id": 0, "trades": 0, "equity_curve": 0, "walkforward": 0}).sort("created_at", -1).limit(limit)
+    rows = await cur.to_list(length=limit)
+    return {"items": rows}
+
+
+@api.get("/backtest/runs/{run_id}")
+async def get_backtest_run(run_id: str):
+    db = get_db()
+    doc = await db.backtest_runs.find_one({"id": run_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Run not found")
+    return serialize_doc(doc)
+
+
+@api.delete("/backtest/runs/{run_id}")
+async def delete_backtest_run(run_id: str):
+    db = get_db()
+    res = await db.backtest_runs.delete_one({"id": run_id})
+    return {"deleted": res.deleted_count}
+
+
+# ---------------------------------------------------------------------------
+# Presets (named backtest configs)
+# ---------------------------------------------------------------------------
+
+class PresetSaveBody(BaseModel):
+    name: str
+    config: Dict[str, Any]
+
+
+@api.get("/presets")
+async def list_presets():
+    db = get_db()
+    cur = db.presets.find({}, {"_id": 0}).sort("name", 1)
+    rows = await cur.to_list(length=200)
+    return {"items": rows}
+
+
+@api.put("/presets/{name}")
+async def save_preset(name: str, body: PresetSaveBody):
+    db = get_db()
+    await db.presets.update_one(
+        {"name": name},
+        {"$set": {
+            "name": name,
+            "config": body.config,
+            "saved_at": datetime.now(timezone.utc).isoformat(),
+        }},
+        upsert=True,
+    )
+    doc = await db.presets.find_one({"name": name}, {"_id": 0})
+    return doc
+
+
+@api.delete("/presets/{name}")
+async def delete_preset(name: str):
+    db = get_db()
+    res = await db.presets.delete_one({"name": name})
+    return {"deleted": res.deleted_count}
+
+
+# ---------------------------------------------------------------------------
+# Dashboard summary
+# ---------------------------------------------------------------------------
+
+@api.get("/dashboard/summary")
+async def dashboard_summary():
+    db = get_db()
+    cov = await get_coverage()
+    instrument_count = len(cov)
+    candle_total = sum(c["candle_count"] for c in cov.values())
+    bt_count = await db.backtest_runs.count_documents({})
+    strategies = get_registry().list_all()
+    # Latest backtest summary
+    latest = await db.backtest_runs.find_one({}, {"_id": 0, "trades": 0, "equity_curve": 0, "walkforward": 0}, sort=[("created_at", -1)])
+    return {
+        "warehouse": {
+            "instruments_tracked": instrument_count,
+            "total_candles": candle_total,
+            "by_instrument": {k: v["candle_count"] for k, v in cov.items()},
+        },
+        "strategies_loaded": len([s for s in strategies if s.get("is_loaded", True)]),
+        "strategies_failed": len([s for s in strategies if not s.get("is_loaded", True)]),
+        "backtest_runs": bt_count,
+        "latest_backtest": serialize_doc(latest) if latest else None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Mount + CORS
+# ---------------------------------------------------------------------------
+
+app.include_router(api)
 
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-@app.on_event("shutdown")
-async def shutdown_db_client():
-    client.close()

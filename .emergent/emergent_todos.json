@@ -1,50 +1,46 @@
 [
   {
-    "content": "Phase 1: Install Python deps",
+    "content": "Phase 1: POC validated",
     "status": "completed"
   },
   {
-    "content": "Phase 1: Write test_core.py with full POC pipeline",
+    "content": "Phase 2: Design guidelines from design_agent",
     "status": "completed"
   },
   {
-    "content": "Phase 1: Run test_core.py end-to-end - PASSED with realistic results",
+    "content": "Phase 2: Install deps (lightweight-charts, framer-motion)",
     "status": "completed"
   },
   {
-    "content": "Phase 1: User Story validation - PASSED all 7 criteria",
+    "content": "Phase 2: Build FastAPI backend - models, db, indicators, regime, costs, warehouse, backtest, walkforward, server",
     "status": "completed"
   },
   {
-    "content": "Phase 2: Get design guidelines from design_agent (2026 fintech, dark theme, multi-pane charts)",
-    "status": "in_progress"
+    "content": "Phase 2: Implement 6 built-in strategies as plugins",
+    "status": "completed"
   },
   {
-    "content": "Phase 2: Install design libs (lightweight-charts, recharts already installed)",
-    "status": "pending"
+    "content": "Phase 2: Build React frontend - Dashboard, Backtest Lab, Strategy Library, Data Warehouse, Pre-trade Checklist, Signal Journal, Paper Trading, Optimizer & Live placeholders",
+    "status": "completed"
   },
   {
-    "content": "Phase 2: Build FastAPI backend - data models, strategies module, backtest engine, regime detector, indicators, warehouse v2, API routes",
-    "status": "pending"
+    "content": "Phase 2: Fix Lightweight Charts locale + add candle fetch",
+    "status": "completed"
   },
   {
-    "content": "Phase 2: Implement 6 built-in strategies as plugins (VWAP Pullback, ORB, Confluence Scalper, SMC Sweep+FVG, Fib Pullback, VWAP Mean Reversion)",
-    "status": "pending"
+    "content": "Phase 2: Manual smoke-test - Dashboard, BacktestLab full run, Checklist, Warehouse, Strategy Library",
+    "status": "completed"
   },
   {
-    "content": "Phase 2: Build React frontend - Dashboard, Backtest Lab (TradingView Lightweight Charts), Strategy Picker, Data Warehouse Manager, Pre-trade Checklist, Signal Journal",
-    "status": "pending"
+    "content": "Phase 2: All user stories covered in V1 build",
+    "status": "completed"
   },
   {
     "content": "Phase 2: End-to-end testing with testing_agent_v3",
-    "status": "pending"
+    "status": "in_progress"
   },
   {
     "content": "Phase 3: Implement Auto-Optimizer (Optuna + Grid + CMA-ES) with walk-forward + heatmaps + robustness",
-    "status": "pending"
-  },
-  {
-    "content": "Phase 3: End-to-end testing with testing_agent_v3",
     "status": "pending"
   },
   {
@@ -52,23 +48,11 @@
     "status": "pending"
   },
   {
-    "content": "Phase 4: End-to-end testing with testing_agent_v3",
-    "status": "pending"
-  },
-  {
     "content": "Phase 5: Probabilistic exit engine (Kaplan-Meier) + meta-model + position sizing + event filter + VIX overlay + What-If + Telegram",
     "status": "pending"
   },
   {
-    "content": "Phase 5: End-to-end testing with testing_agent_v3",
-    "status": "pending"
-  },
-  {
     "content": "Phase 6: Swing Extension - daily/weekly TF + overnight risk",
-    "status": "pending"
-  },
-  {
-    "content": "Phase 6: End-to-end testing with testing_agent_v3",
     "status": "pending"
   },
   {
