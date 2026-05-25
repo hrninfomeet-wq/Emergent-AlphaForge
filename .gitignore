@@ -58,3 +58,9 @@ logs/
 *.gz
 *.zip
 alphaforge_backup_*
+.env.*
+*.env
+credentials.json
+*.pem
+*.key
+.credentials
