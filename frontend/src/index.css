@@ -84,6 +84,10 @@ code, .font-mono {
     .text-danger { color: var(--color-danger); }
     .text-warning { color: var(--color-warning); }
     .text-info { color: var(--color-info); }
+    .bg-info { background-color: var(--color-info); }
+    .bg-success { background-color: var(--color-success); }
+    .bg-danger { background-color: var(--color-danger); }
+    .bg-warning { background-color: var(--color-warning); }
     .bg-bg-0 { background: var(--bg-0); }
     .bg-bg-1 { background: var(--bg-1); }
     .bg-bg-2 { background: var(--bg-2); }
@@ -92,4 +96,5 @@ code, .font-mono {
     .border-line-strong { border-color: var(--border-2); }
     .text-dim { color: var(--text-2); }
     .text-dimmer { color: var(--text-3); }
+    .hover\:bg-info\/90:hover { background-color: rgba(90, 169, 255, 0.9); }
 }

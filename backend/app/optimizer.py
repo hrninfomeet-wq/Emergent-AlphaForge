@@ -239,6 +239,66 @@ def _heatmap(df_enriched, strategy, instrument, costs, pretrade, best_params, im
     }
 
 
+async def _is_cancelled(job_id: str) -> bool:
+    db = get_db()
+    doc = await db.optimization_jobs.find_one({"id": job_id}, {"cancelled": 1})
+    return bool(doc and doc.get("cancelled"))
+
+
+async def _save_best_as_backtest(job_id: str, payload: Dict[str, Any], strategy, df_enriched: pd.DataFrame, best_params: Dict[str, Any], instrument: str, costs_enabled: bool, pretrade: Dict[str, Any]) -> Optional[str]:
+    """Run a final full backtest with best params and persist as a backtest_run.
+    Returns the new backtest_run_id (or None on failure)."""
+    try:
+        from app.walkforward import walk_forward
+        from app.backtest import stat_significance
+        merged = strategy.merged_params(best_params)
+        res = run_backtest(df_enriched, strategy, merged, instrument=instrument, costs_enabled=costs_enabled, pretrade_filters=pretrade)
+        metrics = res["metrics"]
+        wf = None
+        if len(df_enriched) >= 200:
+            wf = walk_forward(df_enriched, strategy, merged, instrument=instrument, costs_enabled=costs_enabled, pretrade_filters=pretrade)
+        sig = stat_significance(metrics["trade_count"], metrics["win_rate"], metrics.get("profit_factor"))
+        regime_dist = df_enriched["regime"].value_counts().to_dict()
+        regime_dist = {str(k): int(v) for k, v in regime_dist.items()}
+        run_name = f"Optimized · {payload.get('name', 'run')}"
+        doc = {
+            "id": str(uuid.uuid4()),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "name": run_name,
+            "config": {
+                "instrument": instrument,
+                "mode": payload.get("mode", "SCALP"),
+                "strategy_id": strategy.id,
+                "timeframe": "1m",
+                "params": best_params,
+                "costs_enabled": costs_enabled,
+                "walkforward": True,
+                "start_ts": payload.get("start_ts"),
+                "end_ts": payload.get("end_ts"),
+                "pretrade_filters": pretrade,
+                "source": "auto-from-optimizer",
+                "optimization_job_id": job_id,
+            },
+            "params_applied": merged,
+            "metrics": metrics,
+            "trades": res["trades"],
+            "equity_curve": res["equity_curve"],
+            "walkforward": wf,
+            "significance": sig,
+            "candle_count": int(len(df_enriched)),
+            "regime_distribution": regime_dist,
+            "signal_funnel": res["signal_funnel"],
+            "instrument": instrument,
+            "strategy_id": strategy.id,
+        }
+        db = get_db()
+        await db.backtest_runs.insert_one(doc)
+        return doc["id"]
+    except Exception as e:
+        log.warning(f"save_best_as_backtest failed: {e}")
+        return None
+
+
 async def run_optimization(job_id: str, payload: Dict[str, Any]) -> None:
     """Main async optimizer worker. Runs in a background task."""
     try:
@@ -289,6 +349,9 @@ async def run_optimization(job_id: str, payload: Dict[str, Any]) -> None:
         if method == "grid":
             combos = _grid_combinations(space, n_trials)
             for params in combos:
+                if await _is_cancelled(job_id):
+                    log.info(f"Job {job_id} cancelled by user at trial {completed}/{len(combos)}")
+                    break
                 metrics, merged = _evaluate(df_enriched, strategy, params, instrument, costs, pretrade)
                 val = _objective_value(metrics, objective)
                 trial_history.append({"params": params, "metrics": metrics, "objective_value": round(val, 4)})
@@ -309,6 +372,9 @@ async def run_optimization(job_id: str, payload: Dict[str, Any]) -> None:
                 return val
 
             for i in range(n_trials):
+                if await _is_cancelled(job_id):
+                    log.info(f"Job {job_id} cancelled by user at trial {completed}/{n_trials}")
+                    break
                 study.optimize(objective_fn, n_trials=1, catch=(Exception,))
                 completed += 1
                 if study.best_value > best_so_far["value"]:
@@ -371,20 +437,33 @@ async def run_optimization(job_id: str, payload: Dict[str, Any]) -> None:
         except Exception as e:
             log.warning(f"robustness failed: {e}")
 
+        # Persist final best as a full backtest_run with trades + equity + walkforward
+        best_backtest_run_id = None
+        if best_so_far["params"]:
+            best_backtest_run_id = await _save_best_as_backtest(
+                job_id, payload, strategy, df_enriched, best_so_far["params"],
+                instrument, costs, pretrade,
+            )
+
+        # Determine final status — cancelled if user cancelled before completion
+        cancelled_flag = await _is_cancelled(job_id)
+        final_status = "cancelled" if cancelled_flag and completed < n_trials else "done"
+
         finished = {
-            "status": "done",
+            "status": final_status,
             "finished_at": datetime.now(timezone.utc).isoformat(),
             "n_trials_completed": completed,
             "best_params": best_so_far["params"],
-            "best_value": round(best_so_far["value"], 4),
+            "best_value": round(best_so_far["value"], 4) if best_so_far["value"] > -1e8 else None,
             "best_metrics": best_so_far["metrics"],
+            "best_backtest_run_id": best_backtest_run_id,
             "top_n_alternatives": [{"params": t["params"], "metrics": t["metrics"], "objective_value": t["objective_value"]} for t in top_n],
             "parameter_importance": importance,
             "heatmap": heatmap,
             "robustness": robustness,
         }
         await _update_job(job_id, finished)
-        log.info(f"Optimization {job_id} done: best={best_so_far['value']:.4f}")
+        log.info(f"Optimization {job_id} {final_status}: best={best_so_far['value']:.4f} run_id={best_backtest_run_id}")
     except Exception as e:
         log.exception(f"optimization {job_id} crashed")
         await _update_job(job_id, {"status": "failed", "error": str(e), "finished_at": datetime.now(timezone.utc).isoformat()})

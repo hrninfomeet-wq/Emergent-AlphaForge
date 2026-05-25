@@ -1,18 +1,34 @@
 [
   {
-    "content": "Phase 1+2 complete",
+    "content": "Phase 1+2+3 complete",
     "status": "completed"
   },
   {
-    "content": "Quick fix: Signal Journal click-to-load + filter + bulk delete",
+    "content": "User feedback 1: Progress bar fills in blue during run (bg-info utility added)",
     "status": "completed"
   },
   {
-    "content": "Phase 3: Auto-Optimizer (Optuna TPE + Grid + CMA-ES + walk-forward + heatmap + importance + robustness + apply-as-preset) - frontend 100%, backend 92.3%, sklearn installed",
+    "content": "User feedback 2a: Optimizer saves best as full backtest_run (with trades+equity+walkforward); 'View Best in Lab' button links to it",
     "status": "completed"
   },
   {
-    "content": "Phase 4: Upstox OAuth + WS tick stream + Live Signal Console + OPTIONS BACKTEST (weekly expiry, paired INDEX+OPTION legs, real expired-option candles, OI/IV/theta tracking)",
+    "content": "User feedback 2b: 3 export buttons (Config JSON, Result JSON, Alts CSV) on Optimizer",
+    "status": "completed"
+  },
+  {
+    "content": "User feedback 2c: 'Saved Presets' panel on Optimizer page + 'Load Preset' dropdown in Backtest Lab",
+    "status": "completed"
+  },
+  {
+    "content": "User feedback 3: Stop button on running optimization + cancellation persists best so far",
+    "status": "completed"
+  },
+  {
+    "content": "Phase 3.5 (feedback fixes): End-to-end testing with testing_agent_v3",
+    "status": "in_progress"
+  },
+  {
+    "content": "Phase 4: Upstox OAuth + WS tick stream + Live Signal Console + OPTIONS BACKTEST (weekly expiry, paired INDEX+OPTION legs)",
     "status": "pending"
   },
   {
@@ -24,7 +40,7 @@
     "status": "pending"
   },
   {
-    "content": "Phase 7: Local Deployment Package (Docker Compose + Windows .bat + LOCAL_SETUP_GUIDE.md)",
+    "content": "Phase 7: Local Deployment Package",
     "status": "pending"
   }
 ]

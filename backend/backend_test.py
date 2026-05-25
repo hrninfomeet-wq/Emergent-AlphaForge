@@ -1,7 +1,7 @@
 """
-AlphaForge Trading Lab — Phase 3 Optimizer Backend Tests
-=========================================================
-Comprehensive API testing for the Auto-Optimizer endpoints.
+AlphaForge Trading Lab — Phase 3.5 Optimizer Backend Tests
+===========================================================
+Comprehensive API testing for the Auto-Optimizer endpoints + Phase 3.5 fixes.
 
 Tests cover:
 - POST /api/optimize/start with all methods (bayesian, grid, genetic)
@@ -13,6 +13,9 @@ Tests cover:
 - POST /api/optimize/apply-as-preset/{job_id}?name=X
 - param_overrides (narrow search bounds)
 - Date window filtering (start_ts/end_ts)
+- **Phase 3.5**: POST /api/optimize/jobs/{id}/cancel (running, non-existent, already-done)
+- **Phase 3.5**: best_backtest_run_id auto-creation + verification
+- **Phase 3.5**: GET /api/backtest/runs/{best_backtest_run_id} full data
 
 Run: cd /app/backend && python backend_test.py
 """
@@ -366,13 +369,150 @@ class OptimizerTester:
         self.log(f"  ✓ Verified job deleted (404)")
     
     # -------------------------------------------------------------------------
+    # Phase 3.5 Tests
+    # -------------------------------------------------------------------------
+    
+    def test_best_backtest_run_id(self):
+        """Phase 3.5: Verify best_backtest_run_id is created and accessible"""
+        # Start a small optimization
+        payload = {
+            "instrument": "NIFTY",
+            "strategy_id": "confluence_scalper",
+            "method": "bayesian",
+            "objective": "risk_adjusted",
+            "n_trials": 15,
+            "name": "Test Best Backtest Run"
+        }
+        r = requests.post(f"{BASE_URL}/optimize/start", json=payload)
+        assert r.status_code == 200
+        job_id = r.json()["job_id"]
+        self.job_ids.append(job_id)
+        self.log(f"  Started job {job_id[:8]}")
+        
+        # Poll until done
+        job = self.poll_job(job_id, timeout=60)
+        assert job["status"] == "done", f"Job failed: {job.get('error')}"
+        
+        # Verify best_backtest_run_id exists
+        assert "best_backtest_run_id" in job, "Missing best_backtest_run_id"
+        run_id = job["best_backtest_run_id"]
+        assert run_id is not None, "best_backtest_run_id is None"
+        self.log(f"  ✓ best_backtest_run_id: {run_id[:8]}")
+        
+        # Verify the backtest run exists in /api/backtest/runs
+        r = requests.get(f"{BASE_URL}/backtest/runs")
+        assert r.status_code == 200
+        runs = r.json()["items"]
+        run = next((r for r in runs if r["id"] == run_id), None)
+        assert run is not None, f"Backtest run {run_id} not found in /api/backtest/runs"
+        assert run["name"].startswith("Optimized · "), f"Run name should start with 'Optimized · ', got {run['name']}"
+        assert run["config"].get("optimization_job_id") == job_id, "optimization_job_id mismatch"
+        self.log(f"  ✓ Found backtest run: {run['name']}")
+        
+        # Verify full backtest data via GET /api/backtest/runs/{run_id}
+        r = requests.get(f"{BASE_URL}/backtest/runs/{run_id}")
+        assert r.status_code == 200, f"Failed to get backtest run {run_id}: {r.status_code}"
+        full_run = r.json()
+        assert "trades" in full_run, "Missing trades in backtest run"
+        assert "equity_curve" in full_run, "Missing equity_curve"
+        assert "walkforward" in full_run, "Missing walkforward"
+        assert "significance" in full_run, "Missing significance"
+        self.log(f"  ✓ Full backtest data: {len(full_run['trades'])} trades, {len(full_run['equity_curve'])} equity points")
+    
+    def test_cancel_running_job(self):
+        """Phase 3.5: POST /api/optimize/jobs/{id}/cancel on running job sets status=cancelled"""
+        # Start a longer job
+        payload = {
+            "instrument": "NIFTY",
+            "strategy_id": "confluence_scalper",
+            "method": "bayesian",
+            "objective": "sharpe",
+            "n_trials": 50,  # Longer to ensure we can cancel mid-run
+            "name": "Test Cancel Running"
+        }
+        r = requests.post(f"{BASE_URL}/optimize/start", json=payload)
+        assert r.status_code == 200
+        job_id = r.json()["job_id"]
+        self.job_ids.append(job_id)
+        self.log(f"  Started job {job_id[:8]} with 50 trials")
+        
+        # Wait for it to start running
+        time.sleep(5)
+        
+        # Cancel it
+        r = requests.post(f"{BASE_URL}/optimize/jobs/{job_id}/cancel")
+        assert r.status_code == 200, f"Cancel failed: {r.status_code} {r.text}"
+        data = r.json()
+        assert data.get("ok") == True, f"Expected ok=True, got {data}"
+        self.log(f"  ✓ Cancel request sent")
+        
+        # Poll until status becomes cancelled or done
+        start = time.time()
+        while time.time() - start < 30:
+            r = requests.get(f"{BASE_URL}/optimize/jobs/{job_id}")
+            job = r.json()
+            status = job.get("status")
+            self.log(f"  Job status: {status}, trials: {job.get('n_trials_completed', 0)}/50")
+            if status in ("cancelled", "done"):
+                break
+            time.sleep(2)
+        
+        # Verify final status
+        r = requests.get(f"{BASE_URL}/optimize/jobs/{job_id}")
+        job = r.json()
+        # Status should be cancelled if we stopped it before completion
+        if job["n_trials_completed"] < 50:
+            assert job["status"] == "cancelled", f"Expected status=cancelled, got {job['status']}"
+            self.log(f"  ✓ Job cancelled at {job['n_trials_completed']}/50 trials")
+        else:
+            self.log(f"  Job completed before cancel took effect (status={job['status']})")
+        
+        # Verify best_so_far is preserved
+        assert "best_so_far" in job or "best_params" in job, "best_so_far/best_params missing after cancel"
+        # Verify best_backtest_run_id is present even after cancel
+        assert "best_backtest_run_id" in job, "best_backtest_run_id missing after cancel"
+        self.log(f"  ✓ best_so_far preserved, best_backtest_run_id: {job.get('best_backtest_run_id', 'N/A')[:8]}")
+    
+    def test_cancel_nonexistent_job(self):
+        """Phase 3.5: POST /api/optimize/jobs/{id}/cancel on non-existent job returns 404"""
+        fake_id = "00000000-0000-0000-0000-000000000000"
+        r = requests.post(f"{BASE_URL}/optimize/jobs/{fake_id}/cancel")
+        assert r.status_code == 404, f"Expected 404, got {r.status_code}"
+        self.log(f"  ✓ Correctly returned 404 for non-existent job")
+    
+    def test_cancel_already_done_job(self):
+        """Phase 3.5: POST /api/optimize/jobs/{id}/cancel on done job returns {already_finished: true}"""
+        # Use a completed job from earlier tests
+        if not self.job_ids:
+            raise AssertionError("No job_id available")
+        # Find a done job
+        done_job_id = None
+        for jid in self.job_ids:
+            r = requests.get(f"{BASE_URL}/optimize/jobs/{jid}")
+            if r.status_code == 200:
+                job = r.json()
+                if job.get("status") in ("done", "failed"):
+                    done_job_id = jid
+                    break
+        
+        if not done_job_id:
+            self.log(f"  Skipping (no done job available)")
+            return
+        
+        r = requests.post(f"{BASE_URL}/optimize/jobs/{done_job_id}/cancel")
+        assert r.status_code == 200, f"Expected 200, got {r.status_code}"
+        data = r.json()
+        assert data.get("already_finished") == True, f"Expected already_finished=True, got {data}"
+        self.log(f"  ✓ Correctly returned already_finished=True for done job")
+    
+    # -------------------------------------------------------------------------
     # Runner
     # -------------------------------------------------------------------------
     
     def run_all(self):
         """Run all tests in sequence"""
         self.log("=" * 70)
-        self.log("AlphaForge Phase 3 Optimizer Backend Tests")
+        self.log("AlphaForge Phase 3.5 Optimizer Backend Tests")
         self.log("=" * 70)
         
         # Basic flow
@@ -397,6 +537,12 @@ class OptimizerTester:
         self.test("Date window filtering", self.test_date_window)
         self.test("Apply best params as preset", self.test_apply_as_preset)
         self.test("Delete optimization job", self.test_delete_job)
+        
+        # Phase 3.5 specific tests
+        self.test("Phase 3.5: best_backtest_run_id creation + verification", self.test_best_backtest_run_id)
+        self.test("Phase 3.5: Cancel running job", self.test_cancel_running_job)
+        self.test("Phase 3.5: Cancel non-existent job returns 404", self.test_cancel_nonexistent_job)
+        self.test("Phase 3.5: Cancel already-done job returns already_finished", self.test_cancel_already_done_job)
         
         # Summary
         self.log("=" * 70)

@@ -49,6 +49,8 @@ export const api = {
     apiClient.get(`/optimize/jobs/${id}`).then((r) => r.data),
   deleteOptJob: (id) =>
     apiClient.delete(`/optimize/jobs/${id}`).then((r) => r.data),
+  cancelOptJob: (id) =>
+    apiClient.post(`/optimize/jobs/${id}/cancel`).then((r) => r.data),
   applyOptAsPreset: (jobId, name) =>
     apiClient.post(`/optimize/apply-as-preset/${jobId}?name=${encodeURIComponent(name)}`).then((r) => r.data),
 

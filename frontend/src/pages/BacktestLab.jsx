@@ -48,6 +48,7 @@ export default function BacktestLab() {
   const [strategies, setStrategies] = useState([]);
   const [profiles, setProfiles] = useState([]);
   const [pastRuns, setPastRuns] = useState([]);
+  const [presets, setPresets] = useState([]);
   const [config, setConfig] = useState({
     instrument: "NIFTY",
     mode: "SCALP",
@@ -69,6 +70,7 @@ export default function BacktestLab() {
   const [showFiltersOpen, setShowFiltersOpen] = useState(false);
 
   const refreshRuns = () => api.listBacktestRuns(50).then((d) => setPastRuns(d.items || []));
+  const refreshPresets = () => api.listPresets().then((d) => setPresets(d.items || []));
 
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -76,18 +78,42 @@ export default function BacktestLab() {
     api.listStrategies().then((d) => setStrategies(d.items || []));
     api.listProfiles().then((d) => setProfiles(d.items || []));
     refreshRuns();
+    refreshPresets();
   }, []);
 
-  // Deep-link: ?run=<id> auto-loads that run
+  // Deep-link: ?run=<id> auto-loads that run, ?preset=<name> applies preset
   useEffect(() => {
     const runId = searchParams.get("run");
+    const presetName = searchParams.get("preset");
     if (runId) {
       loadPastRun(runId);
-      // Strip the query param so user can navigate away cleanly
+      setSearchParams({}, { replace: true });
+    } else if (presetName) {
+      applyPreset(presetName);
       setSearchParams({}, { replace: true });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchParams.get("run")]);
+  }, [searchParams.get("run"), searchParams.get("preset")]);
+
+  const applyPreset = async (name) => {
+    try {
+      const list = presets.length ? presets : (await api.listPresets()).items;
+      const p = list.find((x) => x.name === name);
+      if (!p) { toast.error(`Preset "${name}" not found`); return; }
+      const cfg = p.config || {};
+      setConfig((c) => ({
+        ...c,
+        instrument: cfg.instrument || c.instrument,
+        mode: cfg.mode || c.mode,
+        strategy_id: cfg.strategy_id || c.strategy_id,
+        params: cfg.params || c.params,
+        name: name,
+      }));
+      toast.success(`Preset "${name}" applied. Click Run Backtest to test it.`);
+    } catch (e) {
+      toast.error("Failed to apply preset");
+    }
+  };
 
   const selectedStrategy = useMemo(
     () => strategies.find((s) => s.id === config.strategy_id),
@@ -182,6 +208,24 @@ export default function BacktestLab() {
                     {pastRuns.slice(0, 30).map((r) => (
                       <SelectItem key={r.id} value={r.id}>
                         {r.name} · {r.instrument} · {r.strategy_id?.slice(0, 16)} · WR {fmtPct(r.metrics?.win_rate)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+            {presets.length > 0 && (
+              <div>
+                <Label className="text-xs text-dim">Load preset (optimized params)</Label>
+                <Select value="" onValueChange={applyPreset}>
+                  <SelectTrigger className="bg-bg-2 border-line h-8 mt-1" data-testid="backtest-load-preset-select">
+                    <SelectValue placeholder="Pick a saved preset…" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {presets.map((p) => (
+                      <SelectItem key={p.name} value={p.name}>
+                        {p.name}
+                        {p.config?.source_optimization_job ? " · from optimizer" : ""}
                       </SelectItem>
                     ))}
                   </SelectContent>

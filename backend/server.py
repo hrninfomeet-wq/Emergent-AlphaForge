@@ -464,6 +464,18 @@ async def delete_opt_job(job_id: str):
     return {"deleted": res.deleted_count}
 
 
+@api.post("/optimize/jobs/{job_id}/cancel")
+async def cancel_opt_job(job_id: str):
+    db = get_db()
+    doc = await db.optimization_jobs.find_one({"id": job_id}, {"_id": 0, "status": 1})
+    if not doc:
+        raise HTTPException(404, "Job not found")
+    if doc.get("status") in ("done", "failed", "cancelled"):
+        return {"already_finished": True, "status": doc.get("status")}
+    await db.optimization_jobs.update_one({"id": job_id}, {"$set": {"cancelled": True}})
+    return {"ok": True}
+
+
 @api.post("/optimize/apply-as-preset/{job_id}")
 async def apply_opt_as_preset(job_id: str, name: str = Query(...)):
     """Save the best params from an optimization as a Preset for reuse in Backtest Lab."""

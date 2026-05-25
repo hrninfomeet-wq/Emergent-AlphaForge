@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { fmtInt, fmtNum, fmtPct, isoToFull } from "@/lib/fmt";
+import { exportOptConfig, exportOptJob, exportOptAlternatives } from "@/lib/optExports";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
@@ -12,7 +14,8 @@ import { NumberSliderInput } from "@/components/NumberSliderInput";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
   Gauge, Play, RefreshCw, Sparkles, Trash2, ChevronDown, ChevronRight,
-  Save, Activity, Trophy,
+  Save, Activity, Trophy, StopCircle, Download, FileJson, FileText, FolderOpen,
+  ExternalLink,
 } from "lucide-react";
 
 const INSTRUMENTS = ["NIFTY", "BANKNIFTY", "SENSEX"];
@@ -32,7 +35,9 @@ const OBJECTIVES = [
 ];
 
 export default function Optimizer() {
+  const navigate = useNavigate();
   const [strategies, setStrategies] = useState([]);
+  const [presets, setPresets] = useState([]);
   const [config, setConfig] = useState({
     instrument: "NIFTY",
     mode: "SCALP",
@@ -56,9 +61,11 @@ export default function Optimizer() {
   useEffect(() => {
     api.listStrategies().then((d) => setStrategies(d.items || []));
     api.listOptJobs(30).then((d) => setJobs(d.items || []));
+    api.listPresets().then((d) => setPresets(d.items || []));
   }, []);
 
   const refreshJobs = () => api.listOptJobs(30).then((d) => setJobs(d.items || []));
+  const refreshPresets = () => api.listPresets().then((d) => setPresets(d.items || []));
 
   const selectedStrategy = strategies.find((s) => s.id === config.strategy_id);
   const numericParams = useMemo(() => {
@@ -140,10 +147,30 @@ export default function Optimizer() {
     if (!name) return;
     try {
       await api.applyOptAsPreset(jobId, name);
-      toast.success(`Saved as preset "${name}"`);
+      await refreshPresets();
+      toast.success(`Saved as preset "${name}" → now available in Backtest Lab`);
     } catch (e) {
       toast.error("Save failed: " + (e.response?.data?.detail || e.message));
     }
+  };
+
+  const stopJob = async () => {
+    if (!currentJobId) return;
+    if (!confirm("Stop the current optimization? The best result so far will still be saved.")) return;
+    try {
+      await api.cancelOptJob(currentJobId);
+      toast.info("Cancellation requested — finishing the current trial…");
+    } catch (e) {
+      toast.error("Cancel failed: " + (e.response?.data?.detail || e.message));
+    }
+  };
+
+  const openBestInLab = (runId) => {
+    if (!runId) {
+      toast.error("Best backtest run not available yet");
+      return;
+    }
+    navigate(`/backtest?run=${runId}`);
   };
 
   const removeJob = async (id) => {
@@ -275,11 +302,20 @@ export default function Optimizer() {
           <Sparkles className="w-4 h-4 mr-2" />
           {currentJob?.status === "running" || currentJob?.status === "queued" || currentJob?.status === "analyzing" ? "Optimizing…" : "Auto-Optimize"}
         </Button>
+
+        <PresetsPanel presets={presets} onLoadInLab={(name) => navigate(`/backtest?preset=${encodeURIComponent(name)}`)} onRefresh={refreshPresets} />
       </aside>
 
       {/* RIGHT: Progress + Results + History */}
       <section className="min-w-0 space-y-3">
-        {currentJob ? <CurrentJobView job={currentJob} onApply={applyAsPreset} /> : <EmptyOptimizer />}
+        {currentJob ? (
+          <CurrentJobView
+            job={currentJob}
+            onApply={applyAsPreset}
+            onStop={stopJob}
+            onOpenBest={openBestInLab}
+          />
+        ) : <EmptyOptimizer />}
         <JobHistory jobs={jobs} onLoad={(id) => { setCurrentJobId(id); }} onDelete={removeJob} onRefresh={refreshJobs} />
       </section>
     </div>
@@ -321,11 +357,12 @@ function EmptyOptimizer() {
   );
 }
 
-function CurrentJobView({ job, onApply }) {
+function CurrentJobView({ job, onApply, onStop, onOpenBest }) {
   const pct = job.n_trials_total ? Math.round((job.n_trials_completed / job.n_trials_total) * 100) : 0;
   const bsf = job.best_so_far || {};
   const status = job.status;
   const finished = status === "done";
+  const cancelled = status === "cancelled";
   const failed = status === "failed";
   const inProgress = status === "running" || status === "queued" || status === "analyzing";
 
@@ -337,21 +374,53 @@ function CurrentJobView({ job, onApply }) {
           <StatusBadge status={status} />
           <div className="text-sm font-medium">{job.config?.name || "Optimization"}</div>
           <div className="text-xs text-dim font-mono">{job.strategy_id} · {job.instrument} · {job.method} · obj={job.objective}</div>
-          {finished && (
-            <Button size="sm" onClick={() => onApply(job.id)} className="ml-auto h-7 text-xs bg-info text-bg-0 hover:bg-info/90" data-testid="opt-apply-preset-button">
-              <Save className="w-3 h-3 mr-1" /> Save best as Preset
-            </Button>
-          )}
+          <div className="ml-auto flex items-center gap-1">
+            {inProgress && (
+              <Button size="sm" variant="destructive" onClick={onStop} className="h-7 text-xs" data-testid="opt-stop-button" title="Stop the optimization (best result so far will still be saved)">
+                <StopCircle className="w-3.5 h-3.5 mr-1" /> Stop
+              </Button>
+            )}
+            {(finished || cancelled) && (
+              <>
+                {job.best_backtest_run_id && (
+                  <Button size="sm" variant="secondary" onClick={() => onOpenBest(job.best_backtest_run_id)} className="h-7 text-xs" data-testid="opt-view-best-button" title="View the full backtest of best params (trades, equity, walk-forward, exports)">
+                    <ExternalLink className="w-3.5 h-3.5 mr-1" /> View Best in Lab
+                  </Button>
+                )}
+                <Button size="sm" variant="secondary" onClick={() => exportOptConfig(job)} className="h-7 text-xs" title="Export optimizer config as JSON">
+                  <FileJson className="w-3.5 h-3.5 mr-1" /> Config
+                </Button>
+                <Button size="sm" variant="secondary" onClick={() => exportOptJob(job)} className="h-7 text-xs" title="Export full optimizer job as JSON (importance, heatmap, top-N, robustness)">
+                  <Download className="w-3.5 h-3.5 mr-1" /> Result
+                </Button>
+                {job.top_n_alternatives && (
+                  <Button size="sm" variant="secondary" onClick={() => exportOptAlternatives(job)} className="h-7 text-xs" title="Export top-N alternative parameter sets as CSV">
+                    <FileText className="w-3.5 h-3.5 mr-1" /> Alts.csv
+                  </Button>
+                )}
+                <Button size="sm" onClick={() => onApply(job.id)} className="h-7 text-xs bg-info text-bg-0 hover:bg-info/90" data-testid="opt-apply-preset-button">
+                  <Save className="w-3.5 h-3.5 mr-1" /> Save as Preset
+                </Button>
+              </>
+            )}
+          </div>
         </div>
         <div className="text-[11px] font-mono text-dim mb-1 flex items-center justify-between">
           <span>{job.n_trials_completed || 0} / {job.n_trials_total || 0} trials</span>
           <span>{pct}%</span>
         </div>
         <div className="h-2 bg-bg-2 rounded-sm overflow-hidden border border-line">
-          <div className={`h-full ${failed ? "bg-rose-600" : finished ? "bg-emerald-600" : "bg-info animate-pulse"}`} style={{ width: `${pct}%` }} />
+          <div
+            className={`h-full transition-[width] duration-300 ${failed ? "bg-rose-600" : cancelled ? "bg-amber-500" : finished ? "bg-emerald-600" : "bg-info"}`}
+            style={{ width: `${pct}%` }}
+            data-testid="opt-progress-fill"
+          />
         </div>
         {failed && job.error && (
           <div className="text-xs text-rose-300 mt-2 font-mono">{job.error}</div>
+        )}
+        {cancelled && (
+          <div className="text-xs text-amber-300 mt-2">Optimization was cancelled. Best result so far has been preserved.</div>
         )}
       </div>
 
@@ -384,7 +453,7 @@ function CurrentJobView({ job, onApply }) {
         </div>
       )}
 
-      {finished && (
+      {(finished || cancelled) && (
         <>
           {/* Robustness + Importance + Top alternatives */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
@@ -399,12 +468,53 @@ function CurrentJobView({ job, onApply }) {
   );
 }
 
+function PresetsPanel({ presets, onLoadInLab, onRefresh }) {
+  return (
+    <div className="rounded-lg border border-line bg-bg-1" data-testid="opt-presets-panel">
+      <div className="px-3 py-2 border-b border-line flex items-center">
+        <FolderOpen className="w-3.5 h-3.5 mr-1.5 text-info" />
+        <div className="text-[11px] font-semibold uppercase tracking-wider text-dim">Saved Presets</div>
+        <div className="text-[10px] text-dimmer ml-2">{presets.length}</div>
+        <Button variant="ghost" size="sm" onClick={onRefresh} className="ml-auto h-6 w-6 p-0">
+          <RefreshCw className="w-3 h-3" />
+        </Button>
+      </div>
+      <div className="p-2 max-h-56 overflow-y-auto">
+        {presets.length === 0 ? (
+          <div className="text-[11px] text-dimmer px-1 py-2">
+            No presets yet. Click <b>Save as Preset</b> after an optimization to store the best params here.
+          </div>
+        ) : (
+          <div className="space-y-1">
+            {presets.map((p) => (
+              <button
+                key={p.name}
+                onClick={() => onLoadInLab(p.name)}
+                className="w-full text-left rounded-md bg-bg-2 hover:bg-bg-3 border border-line p-2 transition-colors"
+                data-testid={`preset-load-${p.name.replace(/[^a-z0-9]/gi, "_")}`}
+                title="Open this preset's params in Backtest Lab"
+              >
+                <div className="text-xs font-medium truncate">{p.name}</div>
+                <div className="text-[10px] font-mono text-dimmer truncate">
+                  {p.config?.strategy_id || "?"} · {p.config?.instrument || "?"}
+                  {p.config?.source_optimization_job ? " · from optimizer" : ""}
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function StatusBadge({ status }) {
   const map = {
     queued: { c: "bg-slate-800 text-slate-200 border-slate-700", label: "QUEUED" },
     running: { c: "bg-info/20 text-info border-info/50 animate-pulse", label: "RUNNING" },
     analyzing: { c: "bg-amber-950 text-amber-200 border-amber-900 animate-pulse", label: "ANALYZING" },
     done: { c: "bg-emerald-950 text-emerald-200 border-emerald-900", label: "DONE" },
+    cancelled: { c: "bg-amber-950 text-amber-200 border-amber-900", label: "CANCELLED" },
     failed: { c: "bg-rose-950 text-rose-200 border-rose-900", label: "FAILED" },
   };
   const m = map[status] || map.queued;
