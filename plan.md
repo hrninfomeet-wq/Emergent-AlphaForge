@@ -1,157 +1,234 @@
-# AlphaForge Trading Lab — plan.md
+# AlphaForge Trading Lab — Updated plan.md
 
-## Objectives
-- Rebuild the existing Node/SQLite research dashboard into a local-first **React + FastAPI + MongoDB** trading lab.
-- Prove the **core workflow** first: ingest candles → store locally → run vectorized backtest → walk-forward OOS → metrics + equity/drawdown series.
-- Provide a modular **strategy plugin system** (drop-in Python) usable for backtest/optimize/live.
-- Add disciplined live options BUY recommendations (Upstox WS) with full **audit trail** and configurable pre-trade checklist.
+## Objectives (Updated)
+- Build a local-first and cloud-ready **React + FastAPI + MongoDB** trading lab for Indian indices (**NIFTY 50, BANKNIFTY, SENSEX**).
+- Prove the full quant workflow end-to-end:
+  - ingest candles → store locally → indicators → strategy plugins → backtest → walk-forward IS/OOS → robust metrics + equity/drawdown
+- Provide a modular **Python strategy plugin system** usable for **backtest / optimize / live**.
+- Provide a **one-click Auto-Optimizer** (Bayesian + Grid + Genetic) that automatically tunes parameters and measures robustness.
+- Provide disciplined live options BUY recommendations (Upstox WS) with full **audit trail**, **configurable pre-trade checklist**, and **paper trading**.
+- Ensure the entire stack can be run locally on a PC via **Docker Compose**, with complete handover documentation for a new AI agent.
 
 ---
 
 ## Phase 1 — Core POC (Isolation: data → backtest → walk-forward)
-**Why:** hardest/failure-prone (data correctness + backtest accounting + OOS) must be solid before UI/build-out.
+**Status:** ✅ COMPLETE
 
-### User stories
-1. As a user, I can fetch **NIFTY 1m** data (last ~30 days) from yfinance and persist it locally.
-2. As a user, I can run a **single strategy plugin** on stored candles and get trades + summary.
-3. As a user, I automatically get **walk-forward IS vs OOS** results and divergence warnings.
-4. As a user, I get realistic P&L with **slippage + costs** applied.
-5. As a user, I can rerun the backtest offline without re-fetching data.
+### What was delivered
+- Single-file E2E proof: `backend/test_core.py`
+- yfinance ingestion → MongoDB persistence → vectorized indicators → Confluence Scalper port → backtest with realistic costs → walk-forward IS/OOS → equity curve + significance
 
-### Implementation steps
-- Web research (quick): best practices for vectorized backtesting, walk-forward splits, and slippage modeling.
-- Backend (FastAPI):
-  - Minimal models: Candle, Trade, BacktestConfig, BacktestResult.
-  - Mongo time-series collections: `candles_1m` (yfinance source).
-  - Data ingest endpoint: `/api/poc/ingest` (symbol, range, interval=1m).
-  - Strategy plugin loader (single folder) + schema validation.
-  - Vectorized backtest runner (1 strategy): generate entries/exits, compute equity + drawdown.
-  - Walk-forward: rolling 80/20 (configurable) returning stitched OOS equity.
-  - Costs model: spread/slippage proxy + brokerage bundle.
-- Frontend (minimal React page):
-  - Buttons: Ingest → Run Backtest.
-  - Display: key metrics, IS vs OOS table, equity/drawdown series JSON preview.
-- Tests: unit tests for ingest normalization, backtest determinism, walk-forward split.
-- Gate: do not proceed until POC produces stable results end-to-end.
-
-### Success criteria
-- Ingest persists and reuses candles (no refetch needed for rerun).
-- Backtest returns: trade list, win rate, PF, max DD, expectancy, equity curve.
-- Walk-forward returns IS/OOS metrics and stitched OOS equity.
-- Costs/slippage visibly change results (toggle on/off).
+### Success criteria (met)
+- Ingest persists and reuses candles.
+- Backtest returns trades + key metrics + equity curve.
+- Walk-forward returns IS/OOS + stitched OOS equity.
+- Costs visibly change outcomes.
 
 ---
 
 ## Phase 2 — V1 App Development (Backtest Lab + Warehouse v2 + Plugins + Regime)
+**Status:** ✅ COMPLETE
 
-### User stories
-1. As a user, I can choose **instrument + mode (Scalp/Intraday/Swing) + strategy plugin(s)** and run a backtest.
-2. As a user, I can **enable/disable strategies** per run and save the run as a named preset.
-3. As a user, I can view multi-pane charts: **price + entries/exits + equity + drawdown** synced by time.
-4. As a user, I can open Data Warehouse and see a **coverage heatmap** and fill missing ranges.
-5. As a user, I can see a **statistical significance badge** and OOS warnings on every run.
+### What was delivered
+- Backend:
+  - Warehouse v2: `candles_1m`, `warehouse_runs`, `integrity_hashes`, coverage map.
+  - Regime detection: ADX + Choppiness + ATR expansion.
+  - Backtest engine: SPOT-mode, realistic cost proxy (NIFTY/SENSEX 1.5 pts, BANKNIFTY 4 pts).
+  - Walk-forward validation + divergence warning.
+  - Statistical significance badge (Wilson 95% CI).
+  - 6 built-in strategies + custom plugin auto-discovery.
+- Frontend:
+  - Bloomberg-style dark dashboard.
+  - Backtest Lab with multi-pane TradingView Lightweight Charts.
+  - Data Warehouse page with coverage heatmap + ingest controls.
+  - Strategy Library.
+  - Pre-trade checklist page.
+  - Signal Journal page.
 
-### Implementation steps
-- Data Warehouse v2:
-  - Collections: `candles_1m`, `candles_htf` (resampled), `options_1m` (placeholder until Upstox), `contracts`, `warehouse_runs`, `integrity_hashes`.
-  - Integrity: per-day hash + gap detection + dedup report.
-  - Incremental sync + token-bucket limiter (even for yfinance/future Upstox).
-- Strategy system:
-  - Plugin registry + UI strategy picker (multi-select).
-  - Built-in strategies (initial set): VWAP Pullback, ORB, Confluence Scalper, SMC Sweep+FVG, Fib Pullback, VWAP Mean Reversion.
-  - Custom plugin: drop-in folder (Phase 2) + optional UI upload stub (feature-flag).
-- Regime detector (ADX + CHOP + ATR expansion) used for labeling and later gating.
-- Backtest Lab UI:
-  - Run config panel, results summary, trade table, export run.
-  - Charts via Lightweight Charts + Recharts (heatmaps later).
-- Run `testing_agent_v3` end-to-end.
+### Success criteria (met)
+- Multiple strategies available and reproducible outputs saved.
+- Warehouse heatmap visible.
+- Charts responsive.
+- Testing agent passed core flows.
 
-### Success criteria
-- Multiple strategies selectable per run, reproducible outputs saved.
-- Warehouse heatmap shows gaps; “fill range” ingests only missing data.
-- Charts render and stay responsive on large ranges.
-- Testing agent passes core flows.
+---
+
+## Phase 2.5 — UX/Workflow Polish (Backtest Lab)
+**Status:** ✅ COMPLETE
+
+### What was delivered
+- Combined **slider + manual numeric input** for parameter tuning (`NumberSliderInput`).
+- Backtest date window selection (IST dates → start_ts/end_ts).
+- Load past runs in Backtest Lab.
+- Export buttons: Config JSON, Result JSON, Trades CSV.
 
 ---
 
 ## Phase 3 — Optimizer (Grid + Bayesian + Genetic + Walk-forward)
+**Status:** ✅ COMPLETE
 
-### User stories
-1. As a user, I can auto-optimize **one instrument + one mode + one strategy** with a trial budget.
-2. As a user, I can choose optimization method: **Grid / Optuna Bayesian / CMA-ES Genetic**.
-3. As a user, I see **live best-so-far params** and OOS score while optimizing.
-4. As a user, I can view **parameter importance + robustness score**.
-5. As a user, I can save best params as a preset and re-run backtest instantly.
+### What was delivered
+- Backend:
+  - Optimization job runner in `app/optimizer.py`.
+  - Methods: **Bayesian (Optuna TPE)**, **Grid**, **Genetic (CMA-ES)**.
+  - Objectives: risk_adjusted (default), sharpe, profit_factor, total_pnl_pts, win_rate, neg_max_dd.
+  - Artifacts: parameter importance, robustness score, 2D heatmap, top-N alternatives.
+  - Apply best as preset: `/api/optimize/apply-as-preset/{job_id}`.
+- Frontend:
+  - Full Optimizer page: progress polling, best-so-far, robustness, importance, heatmap, alternatives, job history.
 
-### Implementation steps
-- Optimization jobs stored in Mongo: config, trials, best result, artifacts.
-- Objective functions: risk-adjusted return (default), PF, DD, Sharpe.
-- Walk-forward as default evaluation; prune bad trials.
-- Heatmaps (2D slice) + top-N leaderboard.
-- Run `testing_agent_v3`.
-
-### Success criteria
-- Optimizer completes N trials without crashing; stores artifacts.
-- Best preset reproducibly improves OOS metric vs baseline.
+### Success criteria (met)
+- Optimizer completes N trials; stores artifacts; best params reproducibly improve metrics.
 
 ---
 
-## Phase 4 — Upstox Live + Paper + Audit Trail + Configurable Checklist
+## Phase 3.5 — User Feedback Fixes (Optimizer + Presets + Stop)
+**Status:** ✅ COMPLETE
+
+### What was delivered
+- **Progress bar fill fixed** (added `.bg-info` utility).
+- **Stop/Cancel optimization**:
+  - Backend endpoint: `POST /api/optimize/jobs/{job_id}/cancel`.
+  - Worker checks cancel flag every ~5 trials; best so far preserved.
+  - UI stop button visible while running.
+- **Optimizer now saves best run as full backtest**:
+  - `best_backtest_run_id` created automatically with trades + equity + walk-forward.
+  - UI button: **View Best in Lab**.
+- **Optimizer exports**:
+  - Config JSON, Result JSON, Alternatives CSV.
+- **Preset usability end-to-end**:
+  - Preset created from optimizer visible in Optimizer sidebar.
+  - Backtest Lab has **Load preset (optimized params)** dropdown.
+  - Deep-link supported: `/backtest?preset=<name>`.
+- **Signal Journal upgraded**:
+  - filter + bulk delete + click-to-load run via `/backtest?run=<id>`.
+
+---
+
+## Phase 7 — Local Deployment Package (Windows-first)
+**Status:** ✅ COMPLETE (delivered early)
+
+### What was delivered
+- `docker-compose.yml` (mongo + backend + frontend).
+- `backend/Dockerfile` (Python 3.11 + uvicorn).
+- `frontend/Dockerfile` (node build → nginx serve) + `frontend/nginx.conf`.
+- `start.sh` (Mac/Linux) + `start.bat` (Windows).
+- `backend/.env.example` + `frontend/.env.example`.
+- Root `.gitignore`.
+
+---
+
+## Documentation Suite (New)
+**Status:** ✅ COMPLETE
+
+Delivered full handover-quality docs:
+- `README.md`
+- `docs/ARCHITECTURE.md`
+- `docs/HANDOFF.md`
+- `docs/DEVELOPMENT_JOURNEY.md`
+- `docs/STRATEGY_PLUGINS.md`
+- `docs/API_REFERENCE.md`
+- `docs/LOCAL_SETUP.md`
+- `CHANGELOG.md`
+
+---
+
+## Phase 4 — Upstox Live + Paper + Audit Trail + Options Backtest (BIGGEST)
+**Status:** ⏳ NOT STARTED (Next major milestone; likely needs dedicated session)
 
 ### User stories
 1. As a user, I can complete Upstox OAuth and start WS tick streaming.
-2. As a user, I see live signals with strike suggestions and full context.
-3. As a user, I can configure the **pre-trade checklist** (presets + per-filter thresholds) and see blocked reasons.
+2. As a user, I see live options BUY signals (CE/PE) with suggested strike and full context.
+3. As a user, I can configure the pre-trade checklist (profiles + thresholds) and see why signals were blocked.
 4. As a user, I can one-click **Deploy to Paper** and track live P&L.
 5. As a user, every signal is logged with a full snapshot for later audit.
+6. As a user, I can backtest **weekly expiry options** (paired INDEX+OPTION legs) using real option candles.
 
-### Implementation steps
-- Upstox OAuth + token storage (local env) + WS reconnect/backoff.
-- Dynamic universe: underlying + ATM±5 options; persist ticks.
-- Signal lifecycle state machine persisted: Watching→…→Audited.
-- Pre-trade checklist engine:
-  - Fully configurable thresholds + toggles; Conservative/Balanced/Aggressive presets.
-  - Anti-overfilter safeguard: warn when trade frequency collapses.
-- Paper journal + replay hooks.
-- Run `testing_agent_v3`.
+### Implementation steps (revised)
+- **Upstox OAuth**
+  - Add endpoints:
+    - `/api/upstox/auth/start` (redirect)
+    - `/api/upstox/auth/callback` (exchange code → token)
+  - Store token in Mongo (`upstox_tokens`) with refresh handling.
+- **Upstox WS (tick stream)**
+  - Subscribe to underlying + dynamic ATM±5 options universe.
+  - Auto-reconnect with exponential backoff.
+  - Persist ticks to Mongo time-series collection (new: `ticks`).
+- **Options universe + contracts**
+  - Daily/weekly expiries selection and strike selection.
+  - Store instruments/contract metadata (new: `contracts`).
+- **Signal lifecycle state machine (persistent)**
+  - WATCHING → FORMING → CONFIRMED → TRIGGERED → ACTIVE → EXITED → AUDITED.
+  - Store every signal snapshot (new: `signals`).
+- **Paper trading engine**
+  - One-click Take/Skip/Deploy to Paper.
+  - Persist paper trades + mark outcomes.
+- **OPTIONS BACKTEST (port semantics from reference Node repo)**
+  - Use real expired-option candles via Upstox V3 expired-instruments API.
+  - Paired INDEX + OPTION legs.
+  - Two risk modes:
+    - `spot_points` (INDEX_ONLY exit)
+    - `option_premium_pct` (OPTION_ONLY exit)
+  - Store options candles in Mongo (new: `options_1m`).
+- **Frontend**
+  - Replace Live Signals placeholder with real-time UI (SSE or WS from backend).
+  - Replace Paper Trading placeholder with journal + replay.
+- **Testing**
+  - Run `testing_agent_v3` end-to-end.
+
+### Reference (must read before implementing)
+User’s legacy repo: https://github.com/hrninfomeet-wq/project-deepseek-version
+- `server/research/pluginHistoricalBacktest.js`
+- `server/paper/paperBroker.js`
+- `server/live/liveSession.js`
+- `server/upstox/oauth.js`, `server/upstox/websocket.js`
 
 ### Success criteria
-- Stable WS streaming + no REST hammering.
-- Signals, blocks, and paper trades all auditable and queryable.
+- Stable WS streaming (no REST hammering).
+- Live signals auditable + replayable.
+- Options backtest matches the paired-leg semantics from legacy repo.
 
 ---
 
 ## Phase 5 — Profitability Boosters (Probability Engine + Meta-model)
+**Status:** ⏳ NOT STARTED
 
 ### User stories
-1. As a user, each signal shows **time-bound probabilities** for targets/stops.
-2. As a user, target/stop suggestions adapt to **VIX + DTE + regime**.
-3. As a user, I can see “what-if” P&L if I took all/filtered signals.
-4. As a user, the system adapts signal quality scoring by strategy+regime.
-5. As a user, I can receive optional Telegram alerts for confirmed signals.
+1. Each signal shows **time-bound probabilities** for targets/stops.
+2. Targets/stops adapt to **VIX + DTE + regime**.
+3. “What-if” P&L reports for taking all vs filtered signals.
+4. Adaptive quality scoring by strategy+regime.
+5. Optional Telegram alerts.
 
-### Implementation steps
-- Probability engine:
-  - Placeholder synthetic in earlier phases; now real Kaplan–Meier from logged outcomes.
+### Implementation steps (revised)
+- **Probability engine (Kaplan–Meier survival analysis)**
+  - Requires ≥6 months of signal history.
   - Similarity filters: instrument, regime, VIX bucket, DTE, time-of-day, setup signature.
-- Meta-model: choose strategy per regime; prevent redundant ensembles.
-- Position sizing: Kelly fraction + daily loss limit integration.
+- **Meta-model**
+  - Learn which strategies to enable per regime (logistic regression / LightGBM).
+- **Position sizing**
+  - Kelly fraction + equity-curve learning + daily loss cutoff.
+- **Event calendar filter**
+  - RBI/FOMC/CPI auto-block window.
+- **India VIX overlay**
+  - Adjust target/stop multiples by VIX percentile.
 - Run `testing_agent_v3`.
 
 ### Success criteria
-- Probabilities computed from sufficient historical samples with transparency.
-- Signals show EV/robustness; what-if reports match stored outcomes.
+- Probabilities computed from sufficient historical samples (transparent warnings when sample is insufficient).
+- Signal EV/robustness visible.
 
 ---
 
-## Phase 6 — Swing Extension
+## Phase 6 — Swing/Positional Extension
+**Status:** ⏳ NOT STARTED
 
 ### User stories
-1. As a user, I can backtest swing strategies on **1H/1D** with gap handling.
-2. As a user, positions can span days with multi-day lifecycle tracking.
-3. As a user, swing-specific strategies are selectable and optimizable.
-4. As a user, the warehouse stores daily candles with integrity.
-5. As a user, swing results include regime segmentation.
+1. Backtest swing strategies on **1H/1D** with gap handling.
+2. Positions span days with multi-day lifecycle.
+3. Swing-specific strategies selectable and optimizable.
+4. Warehouse stores daily candles with integrity.
+5. Swing results include regime segmentation.
 
 ### Implementation steps
 - Add higher TF ingestion/resampling + swing risk/exit models.
@@ -159,31 +236,32 @@
 - Run `testing_agent_v3`.
 
 ### Success criteria
-- Swing runs are reproducible; gaps handled; audit trail intact.
+- Swing runs reproducible; gaps handled; audit trail intact.
 
 ---
 
-## Phase 7 — Local Deployment Package (Windows-first)
+## GitHub Delivery (Outstanding)
+**Status:** ⏳ PENDING
 
-### User stories
-1. As a user, I can run `docker-compose up` and open the app locally.
-2. As a user, I can configure env keys via `.env` templates.
-3. As a user, I can backup/restore the warehouse via export/import.
-4. As a user, I can update the app without losing data.
-5. As a user, troubleshooting steps resolve common OAuth/WS/data issues.
+### Goal
+Save all current project files to the user’s GitHub account.
 
 ### Implementation steps
-- Docker Compose: frontend, backend, mongo; volumes for persistence.
-- Scripts: `start.bat`, `start.sh`; docs: `LOCAL_SETUP_GUIDE.md`.
-- Release checklist + final `testing_agent_v3`.
+- Use `support_agent` (preferred) to:
+  1. Identify target GitHub repo name and ownership.
+  2. Initialize git in `/app`.
+  3. Commit with message `AlphaForge v0.7.0 (Phases 1-3.5 + Phase 7 + docs)`.
+  4. Push to user repo.
 
 ### Success criteria
-- Fresh Windows machine can run locally in <15 minutes.
-- Data persists across restarts; OAuth redirect URIs documented.
+- Repo contains:
+  - backend + frontend + docs + docker-compose + scripts
+  - tags or releases (optional)
+  - README visible and correct
 
 ---
 
 ## Next Actions (Immediate)
-1. Implement Phase 1 POC backend + minimal frontend.
-2. Run POC with real NIFTY data; fix until stable.
-3. Only then proceed to Phase 2.
+1. ✅ (Done) Complete handover-grade documentation + local deployment package.
+2. ⏳ Push the project to the user’s GitHub.
+3. ⏳ Start Phase 4 (Upstox OAuth + WS + Options backtest) in a dedicated session to manage token budget and integration complexity.
