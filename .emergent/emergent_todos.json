@@ -4,43 +4,11 @@
     "status": "completed"
   },
   {
-    "content": "Phase 2: Design guidelines from design_agent",
+    "content": "Phase 2: V1 Lab - all features built + tested 97.5% pass",
     "status": "completed"
   },
   {
-    "content": "Phase 2: Install deps (lightweight-charts, framer-motion)",
-    "status": "completed"
-  },
-  {
-    "content": "Phase 2: Build FastAPI backend - models, db, indicators, regime, costs, warehouse, backtest, walkforward, server",
-    "status": "completed"
-  },
-  {
-    "content": "Phase 2: Implement 6 built-in strategies as plugins",
-    "status": "completed"
-  },
-  {
-    "content": "Phase 2: Build React frontend - Dashboard, Backtest Lab, Strategy Library, Data Warehouse, Pre-trade Checklist, Signal Journal, Paper Trading, Optimizer & Live placeholders",
-    "status": "completed"
-  },
-  {
-    "content": "Phase 2: Fix Lightweight Charts locale + add candle fetch",
-    "status": "completed"
-  },
-  {
-    "content": "Phase 2: Manual smoke-test - Dashboard, BacktestLab full run, Checklist, Warehouse, Strategy Library",
-    "status": "completed"
-  },
-  {
-    "content": "Phase 2: All user stories covered in V1 build",
-    "status": "completed"
-  },
-  {
-    "content": "Phase 2: End-to-end testing with testing_agent_v3",
-    "status": "in_progress"
-  },
-  {
-    "content": "Phase 3: Implement Auto-Optimizer (Optuna + Grid + CMA-ES) with walk-forward + heatmaps + robustness",
+    "content": "Phase 3: Auto-Optimizer (Optuna + Grid + CMA-ES + walk-forward + heatmaps + robustness)",
     "status": "pending"
   },
   {
@@ -48,7 +16,7 @@
     "status": "pending"
   },
   {
-    "content": "Phase 5: Probabilistic exit engine (Kaplan-Meier) + meta-model + position sizing + event filter + VIX overlay + What-If + Telegram",
+    "content": "Phase 5: Probabilistic exit engine + meta-model + position sizing + event filter + VIX overlay + What-If + Telegram",
     "status": "pending"
   },
   {
