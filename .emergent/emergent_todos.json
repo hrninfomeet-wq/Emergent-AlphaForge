@@ -8,11 +8,15 @@
     "status": "completed"
   },
   {
+    "content": "Phase 2.5 (User feedback): Number input next to sliders, Export Config/Result/CSV, Save & Load runs, Backtest date window picker",
+    "status": "completed"
+  },
+  {
     "content": "Phase 3: Auto-Optimizer (Optuna + Grid + CMA-ES + walk-forward + heatmaps + robustness)",
     "status": "pending"
   },
   {
-    "content": "Phase 4: Upstox OAuth + WS tick stream + Live Signal Console + paper trading + audit trail",
+    "content": "Phase 4: Upstox OAuth + WS tick stream + Live Signal Console + paper trading + audit trail + OPTIONS BACKTEST (weekly expiry, paired INDEX+OPTION legs, real expired-option candles, option chain/OI/theta tracking)",
     "status": "pending"
   },
   {

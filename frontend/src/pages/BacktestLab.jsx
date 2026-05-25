@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { fmtInt, fmtNum, fmtPct, fmtPnL, colorPnL, tsToTime } from "@/lib/fmt";
+import { exportBacktestConfig, exportBacktestResult, exportTradesCsv } from "@/lib/exports";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
@@ -14,14 +15,38 @@ import { MetricCard } from "@/components/MetricCard";
 import { RegimeBadge } from "@/components/RegimeBadge";
 import { SignificanceBadge } from "@/components/SignificanceBadge";
 import { MultiPaneChart } from "@/components/charts/MultiPaneChart";
-import { Play, Save, Filter, ChevronDown, ChevronRight } from "lucide-react";
+import { NumberSliderInput } from "@/components/NumberSliderInput";
+import { Play, Save, Filter, ChevronDown, ChevronRight, Download, FileJson, FileText, FolderOpen } from "lucide-react";
 
 const INSTRUMENTS = ["NIFTY", "BANKNIFTY", "SENSEX"];
 const MODES = ["SCALP", "INTRADAY"];
 
+// Convert "YYYY-MM-DD" (interpreted as IST 09:15) to ms epoch UTC. Returns null if empty.
+const dateToMs = (s, endOfDay = false) => {
+  if (!s) return null;
+  // IST = UTC+5:30 → IST midnight = previous day 18:30 UTC
+  const [y, m, d] = s.split("-").map(Number);
+  if (!y || !m || !d) return null;
+  // Date.UTC returns ms UTC for given UTC y/m/d
+  const istHour = endOfDay ? 15 : 9;
+  const istMin = endOfDay ? 30 : 15;
+  // ms = Date.UTC(y, m-1, d, istHour-5, istMin-30) but easier: use offset
+  const baseUtc = Date.UTC(y, m - 1, d, istHour, istMin, 0);
+  // IST is +5:30, so UTC = IST - 5:30 = baseUtc - 5h30m
+  return baseUtc - (5 * 60 + 30) * 60 * 1000;
+};
+
+const msToDate = (ms) => {
+  if (!ms) return "";
+  // Convert UTC ms to IST date string YYYY-MM-DD
+  const d = new Date(Number(ms) + (5 * 60 + 30) * 60 * 1000);
+  return d.toISOString().slice(0, 10);
+};
+
 export default function BacktestLab() {
   const [strategies, setStrategies] = useState([]);
   const [profiles, setProfiles] = useState([]);
+  const [pastRuns, setPastRuns] = useState([]);
   const [config, setConfig] = useState({
     instrument: "NIFTY",
     mode: "SCALP",
@@ -34,15 +59,20 @@ export default function BacktestLab() {
     n_folds: 3,
     pretrade_profile: "Balanced",
     name: "Untitled Run",
+    start_date: "",  // YYYY-MM-DD (IST)
+    end_date: "",
   });
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState(null);
   const [paramsOpen, setParamsOpen] = useState(true);
   const [showFiltersOpen, setShowFiltersOpen] = useState(false);
 
+  const refreshRuns = () => api.listBacktestRuns(50).then((d) => setPastRuns(d.items || []));
+
   useEffect(() => {
     api.listStrategies().then((d) => setStrategies(d.items || []));
     api.listProfiles().then((d) => setProfiles(d.items || []));
+    refreshRuns();
   }, []);
 
   const selectedStrategy = useMemo(
@@ -79,9 +109,12 @@ export default function BacktestLab() {
         n_folds: config.n_folds,
         pretrade_filters: selectedProfile?.settings || {},
         name: config.name,
+        start_ts: dateToMs(config.start_date, false),
+        end_ts: dateToMs(config.end_date, true),
       };
       const res = await api.runBacktest(payload);
       setResult(res);
+      await refreshRuns();
       toast.success(`Backtest complete: ${res.metrics.trade_count} trades`);
     } catch (e) {
       const msg = e.response?.data?.detail || e.message;
@@ -91,19 +124,64 @@ export default function BacktestLab() {
     }
   };
 
+  const loadPastRun = async (runId) => {
+    if (!runId) return;
+    try {
+      const r = await api.getBacktestRun(runId);
+      setResult(r);
+      // Restore configuration from the saved run
+      setConfig((c) => ({
+        ...c,
+        instrument: r.instrument || c.instrument,
+        mode: r.config?.mode || c.mode,
+        strategy_id: r.strategy_id || r.config?.strategy_id || c.strategy_id,
+        timeframe: r.config?.timeframe || c.timeframe,
+        params: r.params_applied || r.config?.params || c.params,
+        costs_enabled: r.config?.costs_enabled ?? c.costs_enabled,
+        walkforward: r.config?.walkforward ?? c.walkforward,
+        train_pct: r.config?.train_pct ?? c.train_pct,
+        n_folds: r.config?.n_folds ?? c.n_folds,
+        name: r.name || c.name,
+        start_date: msToDate(r.config?.start_ts),
+        end_date: msToDate(r.config?.end_ts),
+      }));
+      toast.success(`Loaded: ${r.name}`);
+    } catch (e) {
+      toast.error("Failed to load run");
+    }
+  };
+
   return (
     <div className="grid grid-cols-1 lg:grid-cols-[320px_minmax(0,1fr)] gap-3" data-testid="backtest-lab-page">
       {/* LEFT: Setup Panel */}
       <aside className="space-y-3">
         <Panel title="Setup" testid="backtest-setup-panel">
           <div className="space-y-3">
+            {pastRuns.length > 0 && (
+              <div>
+                <Label className="text-xs text-dim">Load past run</Label>
+                <Select value="" onValueChange={loadPastRun}>
+                  <SelectTrigger className="bg-bg-2 border-line h-8 mt-1" data-testid="backtest-load-run-select">
+                    <SelectValue placeholder="Pick a saved run to restore config…" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {pastRuns.slice(0, 30).map((r) => (
+                      <SelectItem key={r.id} value={r.id}>
+                        {r.name} · {r.instrument} · {r.strategy_id?.slice(0, 16)} · WR {fmtPct(r.metrics?.win_rate)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
             <div>
-              <Label className="text-xs text-dim">Run name</Label>
+              <Label className="text-xs text-dim">Run name (saved to journal)</Label>
               <Input
                 value={config.name}
                 onChange={(e) => setConfig({ ...config, name: e.target.value })}
                 className="bg-bg-2 border-line h-8 mt-1"
                 data-testid="backtest-name-input"
+                placeholder="e.g. NIFTY scalp v2"
               />
             </div>
             <Row label="Instrument">
@@ -164,6 +242,28 @@ export default function BacktestLab() {
                 data-testid="backtest-walkforward-switch"
               />
               <span className="text-xs text-dim">Walk-forward (IS vs OOS)</span>
+            </div>
+            <div className="pt-2 border-t border-line">
+              <Label className="text-xs text-dim">Date window (IST, optional)</Label>
+              <div className="grid grid-cols-2 gap-2 mt-1">
+                <Input
+                  type="date"
+                  value={config.start_date}
+                  onChange={(e) => setConfig({ ...config, start_date: e.target.value })}
+                  className="bg-bg-2 border-line h-8 text-xs"
+                  data-testid="backtest-start-date"
+                />
+                <Input
+                  type="date"
+                  value={config.end_date}
+                  onChange={(e) => setConfig({ ...config, end_date: e.target.value })}
+                  className="bg-bg-2 border-line h-8 text-xs"
+                  data-testid="backtest-end-date"
+                />
+              </div>
+              <div className="text-[10px] text-dimmer mt-1">
+                Leave empty to use all available candles. Phase 4 (Upstox) will support years of history.
+              </div>
             </div>
           </div>
         </Panel>
@@ -248,22 +348,19 @@ function ParamRow({ name, def, value, onChange }) {
   if (t === "int" || t === "float") {
     const min = def.min ?? 0;
     const max = def.max ?? 100;
+    const decimals = t === "int" ? 0 : 2;
+    const step = t === "int" ? 1 : (max - min) / 200;
     return (
-      <div>
-        <div className="flex items-center justify-between">
-          <Label className="text-xs text-dim">{name}</Label>
-          <span className="text-xs font-mono text-foreground" data-testid={`param-${name}-value`}>{Number(value ?? def.default).toFixed(t === "int" ? 0 : 2)}</span>
-        </div>
-        <Slider
-          value={[Number(value ?? def.default)]}
-          min={min}
-          max={max}
-          step={t === "int" ? 1 : (max - min) / 200}
-          onValueChange={(arr) => onChange(arr[0])}
-          className="mt-1"
-          data-testid={`param-${name}-slider`}
-        />
-      </div>
+      <NumberSliderInput
+        label={name}
+        value={Number(value ?? def.default)}
+        min={min}
+        max={max}
+        step={step}
+        decimals={decimals}
+        onChange={onChange}
+        testid={`param-${name}`}
+      />
     );
   }
   return (
@@ -347,17 +444,50 @@ function ResultsView({ result }) {
 
   return (
     <div className="space-y-3" data-testid="backtest-results">
-      {/* Header with badges */}
+      {/* Header with badges + export */}
       <div className="flex items-center gap-2 flex-wrap">
         <SignificanceBadge significance={result.significance} />
         <div className="text-xs text-dim">
           <span className="font-mono">{result.instrument}</span> · <span className="font-mono">{result.strategy_id}</span> · {fmtInt(result.candle_count)} candles
+          {result.name && <span className="ml-2 text-foreground font-medium">· {result.name}</span>}
         </div>
         {result.walkforward?.is_vs_oos?.divergence_warning && (
           <span className="text-xs px-2 py-1 rounded bg-amber-950 text-amber-200 border border-amber-900" data-testid="divergence-warning">
             ⚠ IS vs OOS divergence &gt;15%
           </span>
         )}
+        <div className="ml-auto flex items-center gap-1">
+          <Button
+            size="sm"
+            variant="secondary"
+            className="h-7 text-xs"
+            onClick={() => exportBacktestConfig(result)}
+            data-testid="export-config-button"
+            title="Export strategy + params + filters as JSON (for re-import or sharing)"
+          >
+            <FileJson className="w-3 h-3 mr-1" /> Config
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            className="h-7 text-xs"
+            onClick={() => exportBacktestResult(result)}
+            data-testid="export-result-button"
+            title="Export full backtest result (metrics + trades + equity + walk-forward) as JSON"
+          >
+            <Download className="w-3 h-3 mr-1" /> Result
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            className="h-7 text-xs"
+            onClick={() => exportTradesCsv(result)}
+            data-testid="export-trades-csv-button"
+            title="Export trades table as CSV (Excel-friendly)"
+          >
+            <FileText className="w-3 h-3 mr-1" /> Trades.csv
+          </Button>
+        </div>
       </div>
 
       {/* KPI grid */}

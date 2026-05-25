@@ -2,12 +2,12 @@ import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
-import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
+import { NumberSliderInput } from "@/components/NumberSliderInput";
 import { Save, RotateCcw, Info } from "lucide-react";
 
 const PROFILES = ["Conservative", "Balanced", "Aggressive"];
@@ -114,30 +114,33 @@ export default function PreTradeChecklist() {
 function FieldCard({ field, value, onChange }) {
   return (
     <div className="rounded-lg border border-line bg-bg-1 p-3" data-testid={`field-${field.key}`}>
-      <div className="flex items-center justify-between mb-2">
-        <Label className="text-xs text-dim">{field.label}</Label>
-        <span className="text-sm font-mono text-foreground">
-          {field.type === "time" ? value : `${Number(value ?? 0).toFixed(field.step < 1 ? 1 : 0)}${field.suffix || ""}`}
-        </span>
-      </div>
       {field.type === "slider" && (
-        <Slider
-          value={[Number(value ?? field.min)]}
+        <NumberSliderInput
+          label={field.label}
+          value={Number(value ?? field.min)}
           min={field.min}
           max={field.max}
           step={field.step}
-          onValueChange={(arr) => onChange(arr[0])}
-          data-testid={`slider-${field.key}`}
+          decimals={field.step < 1 ? 1 : 0}
+          suffix={field.suffix || ""}
+          onChange={onChange}
+          testid={`field-${field.key}`}
         />
       )}
       {field.type === "time" && (
-        <Input
-          type="time"
-          value={value || "09:25"}
-          onChange={(e) => onChange(e.target.value)}
-          className="bg-bg-2 border-line h-8"
-          data-testid={`input-${field.key}`}
-        />
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <Label className="text-xs text-dim">{field.label}</Label>
+            <span className="text-sm font-mono text-foreground">{value}</span>
+          </div>
+          <Input
+            type="time"
+            value={value || "09:25"}
+            onChange={(e) => onChange(e.target.value)}
+            className="bg-bg-2 border-line h-8"
+            data-testid={`input-${field.key}`}
+          />
+        </div>
       )}
     </div>
   );
