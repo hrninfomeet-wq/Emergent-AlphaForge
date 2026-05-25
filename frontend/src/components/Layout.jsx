@@ -18,7 +18,7 @@ const NAV_GROUPS = [
       { to: "/backtest", label: "Backtest Lab", icon: FlaskConical, testid: "nav-backtest" },
       { to: "/strategies", label: "Strategy Library", icon: Library, testid: "nav-strategies" },
       { to: "/warehouse", label: "Data Warehouse", icon: Database, testid: "nav-warehouse" },
-      { to: "/optimizer", label: "Optimizer", icon: Gauge, testid: "nav-optimizer", badge: "P3" },
+      { to: "/optimizer", label: "Optimizer", icon: Gauge, testid: "nav-optimizer" },
     ],
   },
   {

@@ -40,6 +40,18 @@ export const api = {
   deleteBacktestRun: (id) =>
     apiClient.delete(`/backtest/runs/${id}`).then((r) => r.data),
 
+  // Optimizer
+  startOptimization: (payload) =>
+    apiClient.post("/optimize/start", payload).then((r) => r.data),
+  listOptJobs: (limit = 50) =>
+    apiClient.get(`/optimize/jobs?limit=${limit}`).then((r) => r.data),
+  getOptJob: (id) =>
+    apiClient.get(`/optimize/jobs/${id}`).then((r) => r.data),
+  deleteOptJob: (id) =>
+    apiClient.delete(`/optimize/jobs/${id}`).then((r) => r.data),
+  applyOptAsPreset: (jobId, name) =>
+    apiClient.post(`/optimize/apply-as-preset/${jobId}?name=${encodeURIComponent(name)}`).then((r) => r.data),
+
   // Presets
   listPresets: () => apiClient.get("/presets").then((r) => r.data),
   savePreset: (name, config) =>

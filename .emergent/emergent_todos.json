@@ -1,22 +1,30 @@
 [
   {
-    "content": "Phase 1: POC validated",
+    "content": "Phase 1+2 complete",
     "status": "completed"
   },
   {
-    "content": "Phase 2: V1 Lab - all features built + tested 97.5% pass",
+    "content": "Quick fix: Signal Journal click-to-load + filter + bulk delete",
     "status": "completed"
   },
   {
-    "content": "Phase 2.5 (User feedback): Number input next to sliders, Export Config/Result/CSV, Save & Load runs, Backtest date window picker",
+    "content": "Phase 3 backend: Optimizer (Optuna TPE + Grid + CMA-ES + walk-forward + heatmap + importance + robustness)",
     "status": "completed"
   },
   {
-    "content": "Phase 3: Auto-Optimizer (Optuna + Grid + CMA-ES + walk-forward + heatmaps + robustness)",
-    "status": "pending"
+    "content": "Phase 3 frontend: Optimizer page with progress, best-so-far, robustness, importance, heatmap, top-N alternatives, history",
+    "status": "completed"
   },
   {
-    "content": "Phase 4: Upstox OAuth + WS tick stream + Live Signal Console + paper trading + audit trail + OPTIONS BACKTEST (weekly expiry, paired INDEX+OPTION legs, real expired-option candles, option chain/OI/theta tracking)",
+    "content": "Phase 3 manual smoke test - Bayesian 150 trials end-to-end passed",
+    "status": "completed"
+  },
+  {
+    "content": "Phase 3: End-to-end testing with testing_agent_v3",
+    "status": "in_progress"
+  },
+  {
+    "content": "Phase 4: Upstox OAuth + WS tick stream + Live Signal Console + OPTIONS BACKTEST (weekly expiry, paired INDEX+OPTION legs)",
     "status": "pending"
   },
   {
@@ -24,11 +32,11 @@
     "status": "pending"
   },
   {
-    "content": "Phase 6: Swing Extension - daily/weekly TF + overnight risk",
+    "content": "Phase 6: Swing Extension",
     "status": "pending"
   },
   {
-    "content": "Phase 7: Local Deployment Package - Docker Compose + scripts + LOCAL_SETUP_GUIDE.md",
+    "content": "Phase 7: Local Deployment Package",
     "status": "pending"
   }
 ]

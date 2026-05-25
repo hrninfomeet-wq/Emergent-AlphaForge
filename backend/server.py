@@ -32,6 +32,7 @@ from app.warehouse import (
     list_runs,
     load_candles_df,
 )
+from app.optimizer import create_job as optimizer_create_job
 
 logging.basicConfig(
     level=logging.INFO,
@@ -403,6 +404,90 @@ async def dashboard_summary():
         "backtest_runs": bt_count,
         "latest_backtest": serialize_doc(latest) if latest else None,
     }
+
+
+# ---------------------------------------------------------------------------
+# Auto-Optimizer (Phase 3)
+# ---------------------------------------------------------------------------
+
+class OptimizerStartReq(BaseModel):
+    instrument: str = "NIFTY"
+    mode: str = "SCALP"
+    strategy_id: str
+    method: str = "bayesian"  # bayesian | grid | genetic
+    objective: str = "risk_adjusted"  # sharpe | profit_factor | total_pnl_pts | win_rate | neg_max_dd | risk_adjusted
+    n_trials: int = 200
+    costs_enabled: bool = True
+    pretrade_filters: Dict[str, Any] = Field(default_factory=dict)
+    param_overrides: Dict[str, Any] = Field(default_factory=dict)
+    start_ts: Optional[int] = None
+    end_ts: Optional[int] = None
+    name: str = "Optimization run"
+
+
+@api.post("/optimize/start")
+async def optimize_start(req: OptimizerStartReq):
+    if req.method not in ("bayesian", "grid", "genetic"):
+        raise HTTPException(400, f"Unknown method {req.method}")
+    if not get_registry().get(req.strategy_id):
+        raise HTTPException(404, f"Strategy {req.strategy_id} not found")
+    if not (10 <= req.n_trials <= 5000):
+        raise HTTPException(400, "n_trials must be 10–5000")
+    job_id = await optimizer_create_job(req.model_dump())
+    return {"job_id": job_id, "status": "queued"}
+
+
+@api.get("/optimize/jobs")
+async def list_opt_jobs(limit: int = Query(50, le=200)):
+    db = get_db()
+    cur = db.optimization_jobs.find(
+        {},
+        {"_id": 0, "param_space": 0, "top_n_alternatives": 0, "heatmap": 0, "robustness": 0},
+    ).sort("created_at", -1).limit(limit)
+    rows = await cur.to_list(length=limit)
+    return {"items": rows}
+
+
+@api.get("/optimize/jobs/{job_id}")
+async def get_opt_job(job_id: str):
+    db = get_db()
+    doc = await db.optimization_jobs.find_one({"id": job_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Job not found")
+    return serialize_doc(doc)
+
+
+@api.delete("/optimize/jobs/{job_id}")
+async def delete_opt_job(job_id: str):
+    db = get_db()
+    res = await db.optimization_jobs.delete_one({"id": job_id})
+    return {"deleted": res.deleted_count}
+
+
+@api.post("/optimize/apply-as-preset/{job_id}")
+async def apply_opt_as_preset(job_id: str, name: str = Query(...)):
+    """Save the best params from an optimization as a Preset for reuse in Backtest Lab."""
+    db = get_db()
+    job = await db.optimization_jobs.find_one({"id": job_id}, {"_id": 0})
+    if not job:
+        raise HTTPException(404, "Job not found")
+    if job.get("status") != "done":
+        raise HTTPException(400, "Job not finished")
+    config = {
+        "instrument": job["instrument"],
+        "mode": job.get("config", {}).get("mode", "SCALP"),
+        "strategy_id": job["strategy_id"],
+        "params": job.get("best_params", {}),
+        "source_optimization_job": job_id,
+        "optimization_method": job["method"],
+        "objective": job["objective"],
+    }
+    await db.presets.update_one(
+        {"name": name},
+        {"$set": {"name": name, "config": config, "saved_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True,
+    )
+    return {"ok": True, "preset_name": name}
 
 
 # ---------------------------------------------------------------------------

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { fmtInt, fmtNum, fmtPct, fmtPnL, colorPnL, tsToTime } from "@/lib/fmt";
@@ -69,11 +70,24 @@ export default function BacktestLab() {
 
   const refreshRuns = () => api.listBacktestRuns(50).then((d) => setPastRuns(d.items || []));
 
+  const [searchParams, setSearchParams] = useSearchParams();
+
   useEffect(() => {
     api.listStrategies().then((d) => setStrategies(d.items || []));
     api.listProfiles().then((d) => setProfiles(d.items || []));
     refreshRuns();
   }, []);
+
+  // Deep-link: ?run=<id> auto-loads that run
+  useEffect(() => {
+    const runId = searchParams.get("run");
+    if (runId) {
+      loadPastRun(runId);
+      // Strip the query param so user can navigate away cleanly
+      setSearchParams({}, { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams.get("run")]);
 
   const selectedStrategy = useMemo(
     () => strategies.find((s) => s.id === config.strategy_id),

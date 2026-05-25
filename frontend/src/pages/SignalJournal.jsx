@@ -1,19 +1,24 @@
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { api } from "@/lib/api";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { fmtInt, fmtNum, fmtPct, fmtPnL, colorPnL, isoToFull } from "@/lib/fmt";
 import { SignificanceBadge } from "@/components/SignificanceBadge";
-import { Trash2, RefreshCw, BookOpen } from "lucide-react";
+import { Trash2, RefreshCw, BookOpen, Play, Search, X } from "lucide-react";
 
 export default function SignalJournal() {
+  const navigate = useNavigate();
   const [runs, setRuns] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [filter, setFilter] = useState("");
+  const [selected, setSelected] = useState(new Set());
 
   const refresh = async () => {
     try {
-      const d = await api.listBacktestRuns(100);
+      const d = await api.listBacktestRuns(200);
       setRuns(d.items || []);
     } finally {
       setLoading(false);
@@ -22,33 +27,98 @@ export default function SignalJournal() {
 
   useEffect(() => { refresh(); }, []);
 
-  const remove = async (id) => {
+  const remove = async (id, e) => {
+    if (e) e.stopPropagation();
+    if (!confirm("Delete this backtest run permanently?")) return;
     try {
       await api.deleteBacktestRun(id);
       toast.success("Run deleted");
+      setSelected((s) => { const n = new Set(s); n.delete(id); return n; });
       refresh();
     } catch (e) {
       toast.error("Delete failed");
     }
   };
 
+  const bulkDelete = async () => {
+    if (selected.size === 0) return;
+    if (!confirm(`Delete ${selected.size} selected backtest run(s)?`)) return;
+    try {
+      await Promise.all([...selected].map((id) => api.deleteBacktestRun(id)));
+      toast.success(`Deleted ${selected.size} runs`);
+      setSelected(new Set());
+      refresh();
+    } catch (e) {
+      toast.error("Bulk delete failed");
+    }
+  };
+
+  const toggleSelected = (id, e) => {
+    e.stopPropagation();
+    setSelected((s) => {
+      const n = new Set(s);
+      if (n.has(id)) n.delete(id); else n.add(id);
+      return n;
+    });
+  };
+
+  const loadInLab = (id) => {
+    navigate(`/backtest?run=${id}`);
+  };
+
+  const visible = runs.filter((r) => {
+    if (!filter) return true;
+    const q = filter.toLowerCase();
+    return (
+      (r.name || "").toLowerCase().includes(q) ||
+      (r.strategy_id || "").toLowerCase().includes(q) ||
+      (r.instrument || "").toLowerCase().includes(q) ||
+      (r.config?.mode || "").toLowerCase().includes(q)
+    );
+  });
+
   if (loading) return <Skeleton className="h-96 bg-bg-1" />;
 
   return (
     <div className="space-y-3" data-testid="signal-journal-page">
       <div className="rounded-lg border border-line bg-bg-1">
-        <div className="px-3 py-2 border-b border-line flex items-center">
-          <BookOpen className="w-4 h-4 mr-2 text-info" />
+        <div className="px-3 py-2 border-b border-line flex items-center gap-2 flex-wrap">
+          <BookOpen className="w-4 h-4 text-info" />
           <div className="text-xs font-semibold uppercase tracking-wider text-dim">Backtest Run Journal</div>
-          <div className="ml-auto text-[11px] text-dimmer mr-2">{runs.length} runs</div>
+          <div className="text-[11px] text-dimmer ml-1">{visible.length} of {runs.length} runs</div>
+
+          <div className="relative ml-auto">
+            <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-dimmer pointer-events-none" />
+            <Input
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              placeholder="Filter by name, strategy, instrument, mode…"
+              className="bg-bg-2 border-line h-7 text-xs pl-7 w-72"
+              data-testid="journal-filter-input"
+            />
+            {filter && (
+              <button onClick={() => setFilter("")} className="absolute right-1.5 top-1/2 -translate-y-1/2 text-dimmer hover:text-foreground">
+                <X className="w-3 h-3" />
+              </button>
+            )}
+          </div>
+
+          {selected.size > 0 && (
+            <Button onClick={bulkDelete} size="sm" variant="destructive" className="h-7 text-xs" data-testid="journal-bulk-delete">
+              <Trash2 className="w-3 h-3 mr-1" /> Delete {selected.size}
+            </Button>
+          )}
+
           <Button variant="ghost" size="sm" onClick={refresh} className="h-7 text-xs" data-testid="journal-refresh-button">
             <RefreshCw className="w-3 h-3 mr-1" /> Refresh
           </Button>
         </div>
+
         <div className="overflow-x-auto">
           <table className="w-full text-xs" data-testid="signal-journal-table">
-            <thead className="sticky top-0 bg-bg-2">
+            <thead className="sticky top-0 bg-bg-2 z-10">
               <tr className="text-dim border-b border-line">
+                <th className="p-2 w-8"></th>
                 <th className="text-left p-2">Created</th>
                 <th className="text-left p-2">Name</th>
                 <th className="text-left p-2">Instr.</th>
@@ -60,15 +130,31 @@ export default function SignalJournal() {
                 <th className="text-right p-2">Net Pts</th>
                 <th className="text-right p-2">MaxDD</th>
                 <th className="text-left p-2">Significance</th>
-                <th className="p-2"></th>
+                <th className="p-2 w-24"></th>
               </tr>
             </thead>
             <tbody>
-              {runs.length === 0 && (
-                <tr><td colSpan="12" className="p-6 text-center text-dimmer">No backtest runs yet. Run one from the Backtest Lab.</td></tr>
+              {visible.length === 0 && (
+                <tr><td colSpan="13" className="p-6 text-center text-dimmer">
+                  {runs.length === 0 ? "No backtest runs yet. Run one from the Backtest Lab." : "No runs match filter."}
+                </td></tr>
               )}
-              {runs.map((r) => (
-                <tr key={r.id} className="border-b border-line hover:bg-bg-2" data-testid="signal-journal-row">
+              {visible.map((r) => (
+                <tr
+                  key={r.id}
+                  className={`border-b border-line hover:bg-bg-2 cursor-pointer ${selected.has(r.id) ? "bg-bg-2" : ""}`}
+                  onClick={() => loadInLab(r.id)}
+                  data-testid="signal-journal-row"
+                >
+                  <td className="p-2" onClick={(e) => e.stopPropagation()}>
+                    <input
+                      type="checkbox"
+                      checked={selected.has(r.id)}
+                      onChange={(e) => toggleSelected(r.id, e)}
+                      className="w-3.5 h-3.5 accent-info cursor-pointer"
+                      data-testid={`journal-select-${r.id.slice(0, 8)}`}
+                    />
+                  </td>
                   <td className="p-2 font-mono text-dim">{isoToFull(r.created_at)}</td>
                   <td className="p-2 font-medium">{r.name}</td>
                   <td className="p-2 font-mono">{r.instrument}</td>
@@ -80,15 +166,35 @@ export default function SignalJournal() {
                   <td className={`p-2 font-mono text-right ${colorPnL(r.metrics?.total_pnl_pts)}`}>{fmtPnL(r.metrics?.total_pnl_pts)}</td>
                   <td className="p-2 font-mono text-right text-danger">{fmtPnL(r.metrics?.max_dd_pts)}</td>
                   <td className="p-2"><SignificanceBadge significance={r.significance} /></td>
-                  <td className="p-2">
-                    <Button size="sm" variant="ghost" className="h-6 w-6 p-0" onClick={() => remove(r.id)} data-testid="journal-delete-button">
-                      <Trash2 className="w-3 h-3 text-rose-400" />
-                    </Button>
+                  <td className="p-2" onClick={(e) => e.stopPropagation()}>
+                    <div className="flex gap-1 justify-end">
+                      <Button
+                        size="sm" variant="ghost"
+                        onClick={() => loadInLab(r.id)}
+                        className="h-6 w-6 p-0 hover:bg-bg-3"
+                        title="Load in Backtest Lab"
+                        data-testid={`journal-load-${r.id.slice(0, 8)}`}
+                      >
+                        <Play className="w-3 h-3 text-info" />
+                      </Button>
+                      <Button
+                        size="sm" variant="ghost"
+                        onClick={(e) => remove(r.id, e)}
+                        className="h-6 w-6 p-0 hover:bg-bg-3"
+                        title="Delete run"
+                        data-testid={`journal-delete-${r.id.slice(0, 8)}`}
+                      >
+                        <Trash2 className="w-3 h-3 text-rose-400" />
+                      </Button>
+                    </div>
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
+        </div>
+        <div className="px-3 py-1.5 border-t border-line text-[10px] text-dimmer">
+          Tip: Click any row to load that run's config + result into the Backtest Lab.
         </div>
       </div>
     </div>
