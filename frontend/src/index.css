@@ -9,8 +9,8 @@ body {
     font-family: 'IBM Plex Sans', Inter, system-ui, -apple-system, 'Segoe UI', sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    background-color: #0B0F14;
-    color: #E6EAF2;
+    background-color: var(--bg-0);
+    color: var(--text-1);
 }
 
 code, .font-mono {
@@ -19,7 +19,9 @@ code, .font-mono {
 }
 
 @layer base {
-    :root {
+    :root,
+    [data-theme="dark"] {
+        color-scheme: dark;
         --background: 217 30% 6%;
         --foreground: 215 23% 93%;
         --card: 215 27% 9%;
@@ -63,6 +65,50 @@ code, .font-mono {
         --color-focus: #7C8CFF;
         --color-amber: #F2C14E;
     }
+
+    [data-theme="light"] {
+        color-scheme: light;
+        --background: 210 30% 98%;
+        --foreground: 220 26% 10%;
+        --card: 0 0% 100%;
+        --card-foreground: 220 26% 10%;
+        --popover: 0 0% 100%;
+        --popover-foreground: 220 26% 10%;
+        --primary: 214 90% 48%;
+        --primary-foreground: 0 0% 100%;
+        --secondary: 215 24% 92%;
+        --secondary-foreground: 220 24% 16%;
+        --muted: 215 24% 92%;
+        --muted-foreground: 217 12% 36%;
+        --accent: 214 28% 90%;
+        --accent-foreground: 220 24% 16%;
+        --destructive: 0 72% 50%;
+        --destructive-foreground: 0 0% 100%;
+        --border: 214 24% 82%;
+        --input: 214 24% 78%;
+        --ring: 214 90% 48%;
+        --chart-1: 211 80% 45%;
+        --chart-2: 223 68% 52%;
+        --chart-3: 151 55% 34%;
+        --chart-4: 36 84% 45%;
+        --chart-5: 0 68% 50%;
+
+        --bg-0: #F4F7FB;
+        --bg-1: #FFFFFF;
+        --bg-2: #EEF3F8;
+        --bg-3: #E2EAF3;
+        --border-1: #C8D3E1;
+        --border-2: #AAB9CB;
+        --text-1: #142033;
+        --text-2: #3C4B61;
+        --text-3: #637187;
+        --color-success: #087A45;
+        --color-danger: #C62828;
+        --color-warning: #A86A00;
+        --color-info: #0B66C3;
+        --color-focus: #3F56D7;
+        --color-amber: #9A6500;
+    }
 }
 
 @layer base {
@@ -72,6 +118,26 @@ code, .font-mono {
     body {
         @apply text-foreground;
         background: var(--bg-0);
+    }
+    input,
+    select,
+    textarea {
+        color: var(--text-1);
+        background-color: var(--bg-1);
+        caret-color: var(--text-1);
+    }
+    input::placeholder,
+    textarea::placeholder {
+        color: var(--text-3);
+        opacity: 1;
+    }
+    option {
+        color: var(--text-1);
+        background-color: var(--bg-1);
+    }
+    button,
+    [role="button"] {
+        color: inherit;
     }
     ::-webkit-scrollbar { width: 10px; height: 10px; }
     ::-webkit-scrollbar-track { background: var(--bg-1); }

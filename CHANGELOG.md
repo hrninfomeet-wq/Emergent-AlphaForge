@@ -2,6 +2,15 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.7.1] — Local Bootstrap Repair + Status Reconciliation
+- Fixed backend syntax issue blocking local startup.
+- Added missing backend/frontend env examples and frontend `yarn.lock`.
+- Removed unavailable Emergent-only backend dependency and added runtime imports required locally.
+- Verified Docker Desktop + Compose stack on Windows (`mongo`, `backend`, `frontend` healthy).
+- Removed obsolete Compose `version` key.
+- Updated dashboard/sidebar phase status to reflect Phase 4a scaffold and verified local deployment.
+- Rewrote handoff/setup notes for local PC development instead of hosted Emergent-only operation.
+
 ## [0.7.0] — Phase 7: Local Deployment Package
 - Added `docker-compose.yml` with mongo/backend/frontend services + persistent volume
 - Added `backend/Dockerfile`, `frontend/Dockerfile` (multi-stage build → nginx)

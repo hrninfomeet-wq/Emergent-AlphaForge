@@ -2,6 +2,8 @@
 
 Drop a single Python file into `backend/app/strategies/plugins/`. It will be auto-discovered on backend restart and appear in the **Strategy Library** + **Backtest Lab** + **Optimizer** automatically.
 
+Important: a plugin becoming available does not make it deployable for forward testing. Future Strategy Deployments will be created only from saved presets or saved backtest results so the exact parameters, source run, and audit context are preserved. See [Strategy Deployments](STRATEGY_DEPLOYMENTS.md).
+
 ## Template
 
 ```python

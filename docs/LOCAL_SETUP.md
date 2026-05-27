@@ -23,7 +23,7 @@ cp backend/.env.example backend/.env       # Linux/Mac
 cp frontend/.env.example frontend/.env
 
 # 3. Launch
-docker compose up -d
+docker compose up -d --build
 
 # 4. Wait ~30 seconds for services to start, then open
 # Frontend:  http://localhost:3000
@@ -141,17 +141,25 @@ yarn start
 - Docker: edit `docker-compose.yml` and remap left side, e.g. `"3001:3000"` then open `http://localhost:3001`.
 - Native: stop whichever app is using those ports.
 
-## Phase 4 (Upstox) Setup — When Implemented
+## Phase 4a (Upstox) Setup — Scaffolded, Not Fully Verified
 
-You'll need to register an Upstox API app and add to `backend/.env`:
+The backend already contains OAuth and historical candle ingest scaffolding. To validate it locally, register an Upstox API app and add these values to `backend/.env`:
 
 ```
+FERNET_KEY=generate_a_stable_fernet_key_first
 UPSTOX_CLIENT_ID=your_client_id
 UPSTOX_CLIENT_SECRET=your_secret
 UPSTOX_REDIRECT_URI=http://localhost:8001/api/upstox/auth/callback
+FRONTEND_POST_AUTH_URL=http://localhost:3000/warehouse
 ```
 
-Then restart backend. The UI will show an "Connect Upstox" button.
+Generate `FERNET_KEY` with:
+
+```bash
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+Then restart backend with `docker compose restart backend`. The remaining Phase 4 work is WebSocket streaming, live signal state, paper trading, and paired option backtesting.
 
 ## Backup / Restore Your Data
 

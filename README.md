@@ -1,74 +1,72 @@
 # AlphaForge Trading Lab
 
-**A professional trading research platform for Indian markets (NIFTY 50, BANKNIFTY, SENSEX) — backtesting, parameter optimization, and live signal generation for option buying.**
+AlphaForge is a local-first trading research terminal for Indian index markets: NIFTY, BANKNIFTY, and SENSEX. It stores market data locally, validates coverage, runs strategy backtests, supports parameter optimization, and is being extended toward option-premium backtesting, live signals, and paper trading through Upstox.
 
-> Built on React + FastAPI + MongoDB. Designed for serious retail traders who demand statistical honesty (walk-forward, confidence intervals, robustness scoring) and want a true prop-desk-grade tool.
+This is a research and execution-prep tool, not a guaranteed-profit system.
 
----
+## Current Status
 
-## Status
+Updated: 2026-05-27
 
-| Phase | Title | Status |
-|---|---|---|
-| 1 | Core POC | ✅ Complete |
-| 2 | V1 Lab (6 strategies + warehouse + multi-pane charts) | ✅ Complete |
-| 3 | Auto-Optimizer (Optuna TPE + Grid + CMA-ES + heatmap + robustness) | ✅ Complete |
-| 3.5 | User-feedback fixes (progress bar, presets, stop button, exports, view-best-in-lab) | ✅ Complete |
-| 4 | Upstox OAuth + WS tick stream + Live Signals + Options backtest | ⏳ Not started |
-| 5 | Probabilistic exit engine + meta-model + position sizing + Telegram | ⏳ Not started |
-| 6 | Swing/positional extension | ⏳ Not started |
-| 7 | Local Docker Compose deploy package | ✅ Complete (this commit) |
+| Area | Status |
+|---|---|
+| Local Docker app | Working on Windows with MongoDB, FastAPI, and React/nginx |
+| Data Warehouse | Index 1-minute candles, integrity audit, clear-data tools |
+| Upstox OAuth | Working locally when credentials are configured |
+| Upstox index history | Working with automatic chunk guidance |
+| Option contracts | Current contract sync/store implemented |
+| Option candles | Historical option candle fetch/store implemented |
+| Option Data Planner | Preview-first option warehouse workflow implemented |
+| Option Data Audit | Contract/date-level option candle coverage implemented |
+| Backtest Lab | Spot backtesting plus paired option-candle execution |
+| Optimizer | Optuna/Grid/CMA-ES workflow implemented |
+| Theme | System, Black, and White modes implemented |
+| Market Header | Fresh WebSocket ticks with REST/API fallback |
+| Signal lifecycle | Offline auditable lifecycle foundation implemented |
+| Paper trading | Manual paper journal with mark/close and stop/target auto-close foundation |
+| Strategy Deployments | Management foundation implemented; evaluator not complete |
+| Live WebSocket signals | Tick stream foundation implemented; automated signal evaluator pending |
 
----
-
-## What Works Today
-
-1. **Data Warehouse** — yfinance ingestion for NIFTY/BANKNIFTY/SENSEX 1-minute candles, cache-first MongoDB persistence, per-day SHA-256 integrity hashes, visual coverage heatmap.
-2. **6 Pluggable Strategies** — Confluence Scalper, VWAP Pullback, ORB, SMC Liquidity Sweep + FVG, Fibonacci Pullback, VWAP Mean Reversion. Drop-in custom Python plugins auto-discovered.
-3. **Backtest Engine** — vectorized SPOT-mode backtest with realistic Indian intraday cost model (slippage + brokerage + STT + GST proxy), walk-forward IS vs OOS validation, statistical significance badge (Wilson 95% CI), signal funnel telemetry.
-4. **Auto-Optimizer** — Optuna Bayesian (TPE), Grid, Genetic (CMA-ES) with walk-forward, parameter importance, 2D heatmap, robustness score (perturbation ±10/20%), top-N alternatives. One-click "Save best as Preset" + "View Best in Lab" + Stop button.
-5. **Pre-Trade Checklist** — 3 configurable profiles (Conservative / Balanced / Aggressive) with 10+ filter sliders, anti-over-filter safeguard, regime gate, bar-close confirmation.
-6. **Signal Journal** — click-to-load past runs, filter, bulk-delete, full audit trail of every backtest.
-7. **Multi-pane synchronized charts** (TradingView Lightweight Charts) — price candles + equity curve + drawdown on shared time axis.
-8. **Exports** — Config JSON, Result JSON, Trades CSV (Backtest Lab), Alts CSV (Optimizer).
-
----
-
-## Quick Start (Local Docker)
-
-See [`docs/LOCAL_SETUP.md`](docs/LOCAL_SETUP.md) for full instructions.
+## Quick Start
 
 ```bash
-git clone <your-repo-url>
-cd alphaforge-trading-lab
-docker-compose up -d
-# open http://localhost:3000
+docker compose up -d --build
 ```
 
-## Architecture
+Open:
 
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+- Frontend: `http://localhost:3000`
+- Backend health: `http://localhost:8001/api/health`
 
-## How to Add a Custom Strategy
+Configuration:
 
-See [`docs/STRATEGY_PLUGINS.md`](docs/STRATEGY_PLUGINS.md).
+- Copy `backend/.env.example` to `backend/.env`.
+- Put real broker secrets only in `backend/.env`.
+- Do not commit `.env`, access tokens, or broker account data.
 
-## API Reference
+## Key Documents
 
-See [`docs/API_REFERENCE.md`](docs/API_REFERENCE.md).
+- [Project Overview](docs/PROJECT_OVERVIEW.md) - current capability, status, next steps, tips, recommendations, and lessons learned.
+- [Architecture](docs/ARCHITECTURE.md) - backend/frontend/database module map and data flow.
+- [Handoff](docs/HANDOFF.md) - concise notes for the next AI agent or developer.
+- [User Manual](docs/USER_MANUAL.md) - how to use the app features.
+- [Local Setup](docs/LOCAL_SETUP.md) - local Docker and environment setup.
+- [Strategy Plugins](docs/STRATEGY_PLUGINS.md) - adding custom strategies.
+- [Strategy Deployments](docs/STRATEGY_DEPLOYMENTS.md) - forward-testing and live-recommendation design plus current management foundation.
 
-## For the Next AI Agent / Developer
+## Verification
 
-See [`docs/HANDOFF.md`](docs/HANDOFF.md) — **read this before changing anything**.
+Recommended checks before claiming a change is ready:
 
-## Development Journey
+```bash
+python -m pytest tests -q
+cd frontend
+npm run build
+cd ..
+docker compose up -d --build
+docker compose ps
+```
 
-See [`docs/DEVELOPMENT_JOURNEY.md`](docs/DEVELOPMENT_JOURNEY.md) — phases, decisions, and lessons learned.
+## Safety Note
 
----
-
-## License & Disclaimer
-
-This is a research tool. **Live signals are recommendations, not orders.** Trading options involves substantial risk. Backtest performance does NOT guarantee live performance — typical retail traders see 30-40% degradation due to slippage, latency, and discipline. The probabilistic engine (Phase 5) requires ≥6 months of warehouse history for statistical reliability.
-
-**Top 1% option buyers** combine: ① a good system (this app), ② strict discipline (this app enforces it), ③ psychology (your job), ④ capital management, ⑤ patience.
+Options trading is high risk. Backtests can degrade in live trading because of slippage, liquidity, missed candles, overfitting, and trader behavior. Treat every signal as a hypothesis until tested on clean data, forward testing, and paper trading.

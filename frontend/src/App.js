@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import "@/App.css";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Toaster } from "sonner";
+import { ThemeProvider, useTheme } from "@/lib/theme";
 import Layout from "@/components/Layout";
 import Dashboard from "@/pages/Dashboard";
 import BacktestLab from "@/pages/BacktestLab";
@@ -14,8 +15,17 @@ import Optimizer from "@/pages/Optimizer";
 import LiveSignals from "@/pages/LiveSignals";
 
 function App() {
+  return (
+    <ThemeProvider>
+      <AppShell />
+    </ThemeProvider>
+  );
+}
+
+function AppShell() {
+  const { effectiveTheme } = useTheme();
+
   useEffect(() => {
-    document.documentElement.classList.add("dark");
     document.title = "AlphaForge — Trading Lab";
   }, []);
 
@@ -37,7 +47,7 @@ function App() {
           </Routes>
         </Layout>
       </BrowserRouter>
-      <Toaster theme="dark" position="top-right" richColors closeButton />
+      <Toaster theme={effectiveTheme === "light" ? "light" : "dark"} position="top-right" richColors closeButton />
     </div>
   );
 }

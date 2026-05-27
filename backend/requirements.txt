@@ -19,12 +19,14 @@ flake8>=7.0.0
 mypy>=1.8.0
 python-jose>=3.3.0
 requests>=2.31.0
+httpx>=0.27.0
+websockets>=15.0.0
 pandas>=2.2.0
 numpy>=1.26.0
+yfinance>=0.2.66
 python-multipart>=0.0.9
 jq>=1.6.0
 typer>=0.9.0
-emergentintegrations==0.1.0
 cmaes==0.13.0
 optuna==4.8.0
 scikit-learn==1.8.0

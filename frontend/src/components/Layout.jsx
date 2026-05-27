@@ -2,8 +2,10 @@ import { Link, NavLink, useLocation } from "react-router-dom";
 import {
   Home, LineChart, Database, ListChecks, BookOpen,
   Briefcase, Gauge, Activity, FlaskConical, Library,
-  Zap,
+  Zap, Monitor, Moon, Sun,
 } from "lucide-react";
+import { useTheme } from "@/lib/theme";
+import MarketHeader from "@/components/MarketHeader";
 
 const NAV_GROUPS = [
   {
@@ -85,14 +87,15 @@ export default function Layout({ children }) {
         <div className="px-3 py-3 border-t border-line text-[11px] text-dimmer">
           <div className="flex items-center gap-1.5">
             <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
-            <span>backend live</span>
+            <span>local API live</span>
           </div>
-          <div className="mt-1 font-mono">phase 2 · V1 build</div>
+          <div className="mt-1 font-mono">P4a prep · Docker verified</div>
         </div>
       </aside>
 
       <main className="flex-1 min-w-0 flex flex-col">
         <TopBar location={loc} />
+        <MarketHeader />
         <div className="flex-1 min-w-0 overflow-y-auto p-4" data-testid="page-content">
           {children}
         </div>
@@ -103,10 +106,29 @@ export default function Layout({ children }) {
 
 function TopBar({ location }) {
   const title = pageTitle(location.pathname);
+  const { theme, setTheme } = useTheme();
+  const themeIcon = theme === "white" ? Sun : theme === "black" ? Moon : Monitor;
+  const ThemeIcon = themeIcon;
+
   return (
     <header className="h-14 border-b border-line bg-bg-1 flex items-center px-4 gap-3" data-testid="app-topbar">
       <h1 className="text-base font-semibold" data-testid="page-title">{title}</h1>
       <div className="ml-auto flex items-center gap-3 text-[11px] font-mono text-dimmer">
+        <label className="flex items-center gap-1.5">
+          <ThemeIcon className="w-3.5 h-3.5 text-info" />
+          <span className="sr-only">Theme</span>
+          <select
+            value={theme}
+            onChange={(e) => setTheme(e.target.value)}
+            className="h-8 rounded-md border border-line bg-bg-2 px-2 text-xs text-foreground outline-none focus:ring-1 focus:ring-ring"
+            data-testid="theme-select"
+            aria-label="Theme"
+          >
+            <option value="system">System</option>
+            <option value="black">Black</option>
+            <option value="white">White</option>
+          </select>
+        </label>
         <span data-testid="market-status-label">NSE · NIFTY 50 / BANKNIFTY / SENSEX</span>
       </div>
     </header>

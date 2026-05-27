@@ -11,6 +11,37 @@
 
 ---
 
+## Context, Credit, And Agent Usage Policy
+
+This project should be developed in small verified slices so long chats and unnecessary model usage do not waste credits.
+
+### When to compact or fork the chat
+- Compact/export/fork at natural checkpoints: after a feature is verified, after docs are updated, before starting a major new subsystem, or when the chat becomes too long for quick reasoning.
+- Do not fork in the middle of broker auth, database mutation, live-stream debugging, or a half-finished code edit.
+- The new chat should treat the repository and docs as the source of truth, not the old conversation history.
+- Start a new chat by reading, in order:
+  1. `docs/HANDOFF.md`
+  2. `plan.md`
+  3. `docs/PROJECT_OVERVIEW.md`
+  4. `docs/ARCHITECTURE.md`
+  5. The relevant code/tests for the next planned task
+
+### Credit-efficient execution rules
+- Always inspect what is already implemented before changing code.
+- Use local project docs, tests, and code first; browse only for current broker/API behavior, changed exchange rules, or other time-sensitive facts.
+- Use low/minimal reasoning for status checks, file search, docs edits, formatting, and repeated verification.
+- Use medium reasoning for normal backend/frontend implementation where the expected behavior is already clear.
+- Use high reasoning only for trading-critical design: broker WebSocket behavior, data integrity, option expiry resolution, order lifecycle, risk controls, strategy correctness, and architecture decisions.
+- Prefer targeted tests during development, then run the full backend test suite, frontend build, API smoke test, and browser check at the end of each feature slice.
+
+### Subagent / specialist usage
+- Use subagents only for independent workstreams: code review, frontend visual QA, backend API review, docs audit, or isolated strategy research.
+- Do not use subagents for credential handling, tightly coupled edits in the same files, database clearing, live broker account actions, or destructive operations.
+- Each subagent result must be reviewed before code changes are accepted into the main workspace.
+- Keep handoff notes short and current so a new model can resume from files instead of reading a long chat.
+
+---
+
 ## Phase 1 — Core POC (Isolation: data → backtest → walk-forward)
 **Status:** ✅ COMPLETE
 
@@ -106,7 +137,7 @@
 ---
 
 ## Phase 7 — Local Deployment Package (Windows-first)
-**Status:** ✅ COMPLETE (delivered early)
+**Status:** ✅ COMPLETE (delivered early; locally verified on Windows Docker Desktop)
 
 ### What was delivered
 - `docker-compose.yml` (mongo + backend + frontend).
@@ -115,6 +146,8 @@
 - `start.sh` (Mac/Linux) + `start.bat` (Windows).
 - `backend/.env.example` + `frontend/.env.example`.
 - Root `.gitignore`.
+- `frontend/yarn.lock` for reproducible frontend Docker builds.
+- Local bootstrap tests for syntax, env templates, dependency contract, and Docker Compose schema.
 
 ---
 
@@ -134,7 +167,7 @@ Delivered full handover-quality docs:
 ---
 
 ## Phase 4 — Upstox Live + Paper + Audit Trail + Options Backtest (BIGGEST)
-**Status:** ⏳ NOT STARTED (Next major milestone; likely needs dedicated session)
+**Status:** ⚠️ PARTIAL PHASE 4 SCAFFOLD (OAuth, REST historical ingest, read-only WebSocket tick stream foundation, option data workflows, offline signal lifecycle, paper-trading foundation, and Strategy Deployment management present; deployment evaluator not complete)
 
 ### User stories
 1. As a user, I can complete Upstox OAuth and start WS tick streaming.
@@ -143,26 +176,49 @@ Delivered full handover-quality docs:
 4. As a user, I can one-click **Deploy to Paper** and track live P&L.
 5. As a user, every signal is logged with a full snapshot for later audit.
 6. As a user, I can backtest **weekly expiry options** (paired INDEX+OPTION legs) using real option candles.
+7. As a user, I can create a forward-test Strategy Deployment only from a saved preset or saved backtest result.
 
 ### Implementation steps (revised)
 - **Upstox OAuth**
-  - Add endpoints:
+  - ✅ Endpoints exist:
     - `/api/upstox/auth/start` (redirect)
-    - `/api/upstox/auth/callback` (exchange code → token)
-  - Store token in Mongo (`upstox_tokens`) with refresh handling.
+    - `/api/upstox/auth/callback` (exchange code → encrypted token storage)
+  - ⚠️ Needs real-credential validation and refresh/reconnect hardening.
+- **Upstox REST historical ingest**
+  - ✅ 1m index candle ingest scaffold exists and writes to the same warehouse.
+  - ⚠️ Needs credential validation, rate-limit testing, and data-quality checks.
 - **Upstox WS (tick stream)**
-  - Subscribe to underlying + dynamic ATM±5 options universe.
-  - Auto-reconnect with exponential backoff.
-  - Persist ticks to Mongo time-series collection (new: `ticks`).
+  - ✅ Initial read-only V3 market-data stream implemented.
+  - ✅ Start/stop/status/latest-ticks APIs exist.
+  - ✅ Uses Upstox V3 authorized WebSocket URL, binary JSON subscription message, protobuf tick decoding, reconnect/backoff, and sanitized `ticks` persistence.
+  - ✅ Market Header prefers fresh ticks and falls back to REST/API sources when ticks are stale or unavailable.
+  - ⏳ Needs multi-session live hardening and latency/reconnect observation.
+  - ⏳ Dynamic ATM±5 options universe subscription is still pending.
 - **Options universe + contracts**
   - Daily/weekly expiries selection and strike selection.
   - Store instruments/contract metadata (new: `contracts`).
+  - Option Data Planner is the selected-moneyness trust gate. Default planning is ATM only; OTM/ITM selections are explicit.
+  - Raw Option Universe Audit is a broad warehouse diagnostic and may show missing contracts that were never selected by the planner.
 - **Signal lifecycle state machine (persistent)**
-  - WATCHING → FORMING → CONFIRMED → TRIGGERED → ACTIVE → EXITED → AUDITED.
-  - Store every signal snapshot (new: `signals`).
+  - ✅ Offline foundation exists: WATCHING → FORMING → CONFIRMED → TRIGGERED → ACTIVE → EXITED → AUDITED.
+  - ✅ Stores signal transition history in `signals`.
+  - ⏳ Needs Strategy Deployment evaluator to create signals from strategy output rather than manual research input.
 - **Paper trading engine**
-  - One-click Take/Skip/Deploy to Paper.
-  - Persist paper trades + mark outcomes.
+  - ✅ Manual deploy-to-paper foundation exists.
+  - ✅ Persist paper trades, mark outcomes, close trades, and auto-close on stored stop/target.
+  - ⏳ Needs live tick/stored replay marks, trailing exits, and daily risk controls.
+- **Strategy Deployments**
+  - ✅ Design documented in `docs/STRATEGY_DEPLOYMENTS.md`.
+  - ✅ Backend model/routes persist deployments in `strategy_deployments`.
+  - ✅ Live Signals panel creates deployments from saved presets or saved backtest results.
+  - ✅ Pause/resume/archive status controls exist.
+  - First confirmation mode: completed `1m_close`.
+  - Per-tick evaluation is a later manual switch after the strategy is trusted.
+  - Every signal requires manual approval before paper deployment or recommendation action.
+  - Default option moneyness: ATM; configurable: ATM, OTM1, ITM1.
+  - Blocked signals must be recorded and identifiable.
+  - Prefer fewer cleaner signals over every weak setup.
+  - ⏳ Needs evaluator to produce clean/blocked signals from completed 1-minute candles.
 - **OPTIONS BACKTEST (port semantics from reference Node repo)**
   - Use real expired-option candles via Upstox V3 expired-instruments API.
   - Paired INDEX + OPTION legs.
@@ -171,8 +227,11 @@ Delivered full handover-quality docs:
     - `option_premium_pct` (OPTION_ONLY exit)
   - Store options candles in Mongo (new: `options_1m`).
 - **Frontend**
-  - Replace Live Signals placeholder with real-time UI (SSE or WS from backend).
-  - Replace Paper Trading placeholder with journal + replay.
+  - ✅ Live Signals placeholder replaced with offline lifecycle console.
+  - ✅ Paper Trading placeholder replaced with paper journal and risk badges.
+  - ✅ Strategy Deployment management UI added to Live Signals.
+  - ⏳ Wire Live Signals to deployment evaluator and, later, WebSocket ticks.
+  - ⏳ Add paper replay UI.
 - **Testing**
   - Run `testing_agent_v3` end-to-end.
 
@@ -186,6 +245,8 @@ User’s legacy repo: https://github.com/hrninfomeet-wq/project-deepseek-version
 ### Success criteria
 - Stable WS streaming (no REST hammering).
 - Live signals auditable + replayable.
+- Strategy Deployments are auditable back to saved preset/backtest result and frozen params.
+- First forward testing runs on completed 1-minute candles and requires manual approval.
 - Options backtest matches the paired-leg semantics from legacy repo.
 
 ---
@@ -241,17 +302,15 @@ User’s legacy repo: https://github.com/hrninfomeet-wq/project-deepseek-version
 ---
 
 ## GitHub Delivery (Outstanding)
-**Status:** ⏳ PENDING
+**Status:** ⏳ LOCAL CHANGES PENDING PUSH
 
 ### Goal
-Save all current project files to the user’s GitHub account.
+Push the local repair/bootstrap changes back to the user’s GitHub repo when the user is ready.
 
 ### Implementation steps
-- Use `support_agent` (preferred) to:
-  1. Identify target GitHub repo name and ownership.
-  2. Initialize git in `/app`.
-  3. Commit with message `AlphaForge v0.7.0 (Phases 1-3.5 + Phase 7 + docs)`.
-  4. Push to user repo.
+1. Review `git diff`.
+2. Commit with a message such as `Repair local bootstrap and update handoff status`.
+3. Push to `hrninfomeet-wq/Emergent-AlphaForge`.
 
 ### Success criteria
 - Repo contains:
@@ -262,6 +321,8 @@ Save all current project files to the user’s GitHub account.
 ---
 
 ## Next Actions (Immediate)
-1. ✅ (Done) Complete handover-grade documentation + local deployment package.
-2. ⏳ Push the project to the user’s GitHub.
-3. ⏳ Start Phase 4 (Upstox OAuth + WS + Options backtest) in a dedicated session to manage token budget and integration complexity.
+1. ✅ Local Docker stack verified on this PC.
+2. ✅ Handoff/status docs reconciled with current code reality.
+3. ⏳ Validate Upstox OAuth locally with real credentials.
+4. ⏳ Harden Phase 4b WebSocket tick stream and build live signal evaluator.
+5. ⏳ Push local bootstrap/status repair changes to GitHub when approved.

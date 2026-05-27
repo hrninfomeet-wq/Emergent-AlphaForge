@@ -135,7 +135,10 @@ def precompute_all_indicators(df: pd.DataFrame, params: dict | None = None) -> p
     # Session VWAP per day (anchored)
     df["dt"] = pd.to_datetime(df["ts"], unit="ms", utc=True).dt.tz_convert("Asia/Kolkata")
     df["session_date"] = df["dt"].dt.strftime("%Y-%m-%d")
-    df["vwap"] = df.groupby("session_date", group_keys=False).apply(lambda g: session_vwap(g))
+    vwap = pd.Series(index=df.index, dtype="float64")
+    for _, group in df.groupby("session_date", sort=False):
+        vwap.loc[group.index] = session_vwap(group)
+    df["vwap"] = vwap
     df["ist_time"] = df["dt"].dt.strftime("%H:%M")
     df["atr_avg"] = df["atr"].rolling(100, min_periods=20).mean()
     df["fvg"] = detect_fvg(df)

@@ -64,3 +64,18 @@ credentials.json
 *.pem
 *.key
 .credentials
+
+# Keep safe local setup templates in version control.
+!backend/.env.example
+!frontend/.env.example
+
+# --- ltm-power ---
+ltm/store/*.jsonl
+ltm/runtime/*
+ltm/reports/*
+ltm/snapshots/*
+# --- /ltm-power ---
+
+# Local-only memory and credential scratch (never commit)
+memory/
+*credentials*

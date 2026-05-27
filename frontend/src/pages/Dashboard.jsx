@@ -57,8 +57,8 @@ export default function Dashboard() {
         />
         <MetricCard
           label="Build Phase"
-          value="V1"
-          sub="phase 2 · Lab + Warehouse"
+          value="P4a"
+          sub="local stack + Upstox scaffold"
           accent="text-info"
           testid="kpi-phase"
         />
@@ -164,12 +164,13 @@ function QuickAction({ to, icon: Icon, title, desc, cta, testid }) {
 function BuildProgress() {
   const phases = [
     { name: "Phase 1 — Core POC", status: "done", desc: "Vectorized backtest + walk-forward + costs validated" },
-    { name: "Phase 2 — V1 Lab", status: "current", desc: "6 strategies + warehouse v2 + multi-pane charts" },
-    { name: "Phase 3 — Auto-Optimizer", status: "pending", desc: "Optuna + Grid + CMA-ES + heatmaps" },
-    { name: "Phase 4 — Upstox Live", status: "pending", desc: "WS tick stream + live signal console + audit" },
+    { name: "Phase 2 — V1 Lab", status: "done", desc: "6 strategies + warehouse v2 + multi-pane charts" },
+    { name: "Phase 3 — Auto-Optimizer", status: "done", desc: "Optuna + Grid + CMA-ES + heatmaps" },
+    { name: "Phase 3.5 — Workflow Fixes", status: "done", desc: "Presets + stop button + exports + journal deep links" },
+    { name: "Phase 4 — Upstox Live", status: "current", desc: "OAuth + historical ingest scaffold; WS/live/options remain" },
     { name: "Phase 5 — Profitability Engine", status: "pending", desc: "Kaplan-Meier + meta-model + What-If + Telegram" },
     { name: "Phase 6 — Swing Extension", status: "pending", desc: "Daily/weekly TF + overnight risk" },
-    { name: "Phase 7 — Local Deploy", status: "pending", desc: "Docker Compose + Windows .bat + setup guide" },
+    { name: "Phase 7 — Local Deploy", status: "done", desc: "Docker Compose + Windows .bat + setup guide" },
   ];
   return (
     <div className="rounded-lg border border-line bg-bg-1" data-testid="build-progress-card">

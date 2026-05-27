@@ -17,10 +17,11 @@ import { RegimeBadge } from "@/components/RegimeBadge";
 import { SignificanceBadge } from "@/components/SignificanceBadge";
 import { MultiPaneChart } from "@/components/charts/MultiPaneChart";
 import { NumberSliderInput } from "@/components/NumberSliderInput";
-import { Play, Save, Filter, ChevronDown, ChevronRight, Download, FileJson, FileText, FolderOpen } from "lucide-react";
+import { Play, Save, Filter, ChevronDown, ChevronRight, Download, FileJson, FileText, FolderOpen, ShieldCheck } from "lucide-react";
 
 const INSTRUMENTS = ["NIFTY", "BANKNIFTY", "SENSEX"];
 const MODES = ["SCALP", "INTRADAY"];
+const OPTION_MONEYNESS = ["atm", "otm1", "otm2", "otm3", "itm1", "itm2"];
 
 // Convert "YYYY-MM-DD" (interpreted as IST 09:15) to ms epoch UTC. Returns null if empty.
 const dateToMs = (s, endOfDay = false) => {
@@ -63,6 +64,11 @@ export default function BacktestLab() {
     name: "Untitled Run",
     start_date: "",  // YYYY-MM-DD (IST)
     end_date: "",
+    option_backtest_enabled: false,
+    option_expiry_date: "",
+    option_moneyness: "otm1",
+    option_lots: 1,
+    option_auto_fetch: true,
   });
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState(null);
@@ -151,6 +157,16 @@ export default function BacktestLab() {
         name: config.name,
         start_ts: dateToMs(config.start_date, false),
         end_ts: dateToMs(config.end_date, true),
+        option_backtest: {
+          enabled: !!config.option_backtest_enabled,
+          expiry_date: config.option_expiry_date || null,
+          moneyness: config.option_moneyness,
+          lots: Math.max(1, Number(config.option_lots || 1)),
+          entry_max_age_sec: 120,
+          exit_max_age_sec: 180,
+          auto_fetch: !!config.option_auto_fetch,
+          max_auto_fetch_contracts: 12,
+        },
       };
       const res = await api.runBacktest(payload);
       setResult(res);
@@ -184,6 +200,11 @@ export default function BacktestLab() {
         name: r.name || c.name,
         start_date: msToDate(r.config?.start_ts),
         end_date: msToDate(r.config?.end_ts),
+        option_backtest_enabled: !!r.config?.option_backtest?.enabled,
+        option_expiry_date: r.config?.option_backtest?.expiry_date || "",
+        option_moneyness: r.config?.option_backtest?.moneyness || c.option_moneyness,
+        option_lots: r.config?.option_backtest?.lots || c.option_lots,
+        option_auto_fetch: r.config?.option_backtest?.auto_fetch ?? c.option_auto_fetch,
       }));
       toast.success(`Loaded: ${r.name}`);
     } catch (e) {
@@ -321,6 +342,64 @@ export default function BacktestLab() {
               </div>
               <div className="text-[10px] text-dimmer mt-1">
                 Leave empty to use all available candles. Phase 4 (Upstox) will support years of history.
+              </div>
+            </div>
+          </div>
+        </Panel>
+
+        <Panel title="Option Execution" testid="option-backtest-panel">
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <Switch
+                checked={config.option_backtest_enabled}
+                onCheckedChange={(v) => setConfig({ ...config, option_backtest_enabled: v })}
+                data-testid="option-backtest-switch"
+              />
+              <span className="text-xs text-dim">Pair signals with option candles</span>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <Row label="Expiry">
+                <Input
+                  type="date"
+                  value={config.option_expiry_date}
+                  onChange={(e) => setConfig({ ...config, option_expiry_date: e.target.value })}
+                  className="bg-bg-2 border-line h-8 text-xs"
+                  data-testid="option-expiry-input"
+                />
+              </Row>
+              <Row label="Moneyness">
+                <Select
+                  value={config.option_moneyness}
+                  onValueChange={(v) => setConfig({ ...config, option_moneyness: v })}
+                >
+                  <SelectTrigger className="bg-bg-2 border-line h-8" data-testid="option-moneyness-select">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {OPTION_MONEYNESS.map((m) => <SelectItem key={m} value={m}>{m.toUpperCase()}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </Row>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <Row label="Lots">
+                <Input
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={config.option_lots}
+                  onChange={(e) => setConfig({ ...config, option_lots: e.target.value })}
+                  className="bg-bg-2 border-line h-8 text-xs"
+                  data-testid="option-lots-input"
+                />
+              </Row>
+              <div className="flex items-end gap-2 pb-1">
+                <Switch
+                  checked={config.option_auto_fetch}
+                  onCheckedChange={(v) => setConfig({ ...config, option_auto_fetch: v })}
+                  data-testid="option-auto-fetch-switch"
+                />
+                <span className="text-xs text-dim">Auto-fetch</span>
               </div>
             </div>
           </div>
@@ -558,6 +637,9 @@ function ResultsView({ result }) {
         <MetricCard label="Sharpe" value={fmtNum(m.sharpe, 2)} testid="result-sharpe" />
       </div>
 
+      <DataAuditCard audit={result.data_audit} />
+      <OptionBacktestCard optionBacktest={result.option_backtest} />
+
       {/* Chart */}
       <MultiPaneChart candles={candles} equity={equity} drawdown={drawdown} height={520} />
 
@@ -570,6 +652,145 @@ function ResultsView({ result }) {
       {/* Trades table */}
       <TradesTable trades={result.trades || []} />
     </div>
+  );
+}
+
+function DataAuditCard({ audit }) {
+  if (!audit) return null;
+  const before = audit.before || {};
+  const after = audit.after || {};
+  const fill = audit.fill || {};
+  const complete = after.complete;
+  const badgeClass = complete
+    ? "bg-emerald-950 text-emerald-200 border-emerald-900"
+    : "bg-amber-950 text-amber-200 border-amber-900";
+  const fillText = fill.attempted
+    ? `${fill.status || "unknown"} · ${fmtInt(fill.fetched || 0)} fetched`
+    : `${fill.status || "skipped"} · ${fill.reason || "coverage_complete"}`;
+
+  return (
+    <Panel
+      title="Data Audit"
+      testid="data-audit-card"
+      right={<ShieldCheck className={`w-4 h-4 ${complete ? "text-success" : "text-amber-300"}`} />}
+    >
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-2">
+        <div className="rounded-md border border-line bg-bg-2 p-2">
+          <div className="text-[10px] uppercase tracking-wider text-dimmer">Status</div>
+          <div className={`mt-1 inline-flex text-[10px] px-1.5 py-0.5 rounded border font-mono ${badgeClass}`}>
+            {complete ? "trusted" : "needs review"}
+          </div>
+        </div>
+        <AuditMetric label="Before" value={`${before.complete_days || 0}/${before.expected_days || 0}`} />
+        <AuditMetric label="After" value={`${after.complete_days || 0}/${after.expected_days || 0}`} />
+        <AuditMetric label="Missing" value={fmtInt(after.missing_days || 0)} />
+        <AuditMetric label="Fill" value={fillText} />
+      </div>
+    </Panel>
+  );
+}
+
+function AuditMetric({ label, value }) {
+  return (
+    <div className="rounded-md border border-line bg-bg-2 p-2 min-w-0">
+      <div className="text-[10px] uppercase tracking-wider text-dimmer">{label}</div>
+      <div className="text-xs font-mono mt-0.5 truncate" title={String(value)}>{value}</div>
+    </div>
+  );
+}
+
+function OptionBacktestCard({ optionBacktest }) {
+  if (!optionBacktest?.enabled) return null;
+  const metrics = optionBacktest.metrics || {};
+  const coverage = optionBacktest.coverage || {};
+  const data = optionBacktest.data || {};
+  const autoFetch = data.auto_fetch || {};
+  const trades = optionBacktest.trades || [];
+  const paired = Number(metrics.paired_trade_count || 0);
+  const totalSpot = Number(coverage.spot_trade_count || 0);
+  const trusted = totalSpot > 0 && paired === totalSpot && !coverage.missing_contract && !coverage.missing_entry_candle && !coverage.missing_exit_candle;
+  const badgeClass = trusted
+    ? "bg-emerald-950 text-emerald-200 border-emerald-900"
+    : "bg-amber-950 text-amber-200 border-amber-900";
+
+  return (
+    <Panel
+      title="Option Execution"
+      testid="option-backtest-card"
+      right={<ShieldCheck className={`w-4 h-4 ${trusted ? "text-success" : "text-amber-300"}`} />}
+    >
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-2 mb-3">
+        <AuditMetric label="Option P&L" value={fmtPnL(metrics.total_option_pnl_value)} />
+        <AuditMetric label="Paired" value={`${fmtInt(paired)}/${fmtInt(totalSpot)}`} />
+        <AuditMetric label="Win Rate" value={fmtPct(metrics.win_rate)} />
+        <AuditMetric label="Candles" value={fmtInt(data.candles_loaded || 0)} />
+        <div className="rounded-md border border-line bg-bg-2 p-2">
+          <div className="text-[10px] uppercase tracking-wider text-dimmer">Trust</div>
+          <div className={`mt-1 inline-flex text-[10px] px-1.5 py-0.5 rounded border font-mono ${badgeClass}`}>
+            {trusted ? "paired" : "review"}
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-2">
+        <div className="rounded-md border border-line bg-bg-2 p-2" data-testid="option-pairing-coverage">
+          <div className="text-[10px] uppercase tracking-wider text-dimmer mb-1">Pairing Coverage</div>
+          <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
+            <PairMetric label="Missing contract" value={coverage.missing_contract || 0} />
+            <PairMetric label="Missing entry" value={coverage.missing_entry_candle || 0} />
+            <PairMetric label="Missing exit" value={coverage.missing_exit_candle || 0} />
+            <PairMetric label="Keys needed" value={data.instrument_keys_needed || 0} />
+          </div>
+        </div>
+        <div className="rounded-md border border-line bg-bg-2 p-2" data-testid="option-auto-fetch-status">
+          <div className="text-[10px] uppercase tracking-wider text-dimmer mb-1">Auto-Fetch</div>
+          <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
+            <PairMetric label="Status" value={autoFetch.status || "skipped"} />
+            <PairMetric label="Keys" value={autoFetch.keys_fetched || 0} />
+            <PairMetric label="Added" value={autoFetch.candles_added || 0} />
+            <PairMetric label="Failed" value={(autoFetch.failed || []).length} />
+          </div>
+        </div>
+      </div>
+
+      {trades.length > 0 && (
+        <div className="overflow-x-auto mt-3 max-h-[220px]">
+          <table className="w-full text-xs">
+            <thead className="sticky top-0 bg-bg-2 z-10">
+              <tr className="text-dim">
+                <th className="text-left p-2">#</th>
+                <th className="text-left p-2">Option</th>
+                <th className="text-right p-2">Entry</th>
+                <th className="text-right p-2">Exit</th>
+                <th className="text-right p-2">P&L</th>
+                <th className="text-left p-2">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {trades.slice(0, 25).map((t, idx) => (
+                <tr key={`${t.index_trade_id}-${idx}`} className="border-b border-line">
+                  <td className="p-2 font-mono">{idx + 1}</td>
+                  <td className="p-2 font-mono">{t.trading_symbol || t.instrument_key || "-"}</td>
+                  <td className="p-2 text-right font-mono">{fmtNum(t.entry_option_price)}</td>
+                  <td className="p-2 text-right font-mono">{fmtNum(t.exit_option_price)}</td>
+                  <td className={`p-2 text-right font-mono ${colorPnL(t.option_pnl_value)}`}>{fmtPnL(t.option_pnl_value)}</td>
+                  <td className="p-2 text-[10px] text-dim">{t.status}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+function PairMetric({ label, value }) {
+  return (
+    <>
+      <span className="text-dim truncate">{label}</span>
+      <span className="text-right font-mono truncate" title={String(value)}>{typeof value === "number" ? fmtInt(value) : value}</span>
+    </>
   );
 }
 
