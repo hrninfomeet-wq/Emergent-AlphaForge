@@ -484,6 +484,8 @@ class UpstoxMarketStreamManager:
         self._task: Optional[asyncio.Task] = None
         self._stop_event: Optional[asyncio.Event] = None
         self._latest_ticks: Dict[str, Dict[str, Any]] = {}
+        # Per-subscriber asyncio.Queue for fan-out pub/sub (used by SSE/WebSocket consumers).
+        self._tick_subscribers: "set[asyncio.Queue]" = set()
         self._session: Dict[str, Any] = {
             "running": False,
             "session_id": None,
@@ -535,6 +537,40 @@ class UpstoxMarketStreamManager:
 
     def latest_tick_map(self) -> Dict[str, Dict[str, Any]]:
         return {key: dict(value) for key, value in self._latest_ticks.items()}
+
+    # --- pub/sub for SSE/WebSocket consumers ---------------------------------
+
+    def subscribe(self, *, max_queue: int = 256) -> "asyncio.Queue":
+        """Register a tick subscriber. Returns an asyncio.Queue receiving normalized ticks.
+
+        The queue has a bounded size; if the consumer is too slow, oldest ticks are dropped
+        so the producer never blocks. Always pair with unsubscribe() in a try/finally.
+        """
+        queue: "asyncio.Queue" = asyncio.Queue(maxsize=max_queue)
+        self._tick_subscribers.add(queue)
+        return queue
+
+    def unsubscribe(self, queue: "asyncio.Queue") -> None:
+        self._tick_subscribers.discard(queue)
+
+    def _broadcast(self, ticks: List[Dict[str, Any]]) -> None:
+        if not self._tick_subscribers or not ticks:
+            return
+        for queue in list(self._tick_subscribers):
+            for tick in ticks:
+                try:
+                    queue.put_nowait(tick)
+                except asyncio.QueueFull:
+                    # Drop oldest, keep newest. Slow consumer should not stall the producer.
+                    try:
+                        queue.get_nowait()
+                        queue.put_nowait(tick)
+                    except Exception:
+                        pass
+                except Exception:
+                    # A failed consumer should never crash the broadcaster.
+                    self._tick_subscribers.discard(queue)
+                    break
 
     async def start(
         self,
@@ -620,6 +656,7 @@ class UpstoxMarketStreamManager:
                         self._session["tick_count"] = int(self._session.get("tick_count") or 0) + len(ticks)
                         self._session["last_tick_at"] = _now_iso()
                         self._session["updated_at"] = self._session["last_tick_at"]
+                        self._broadcast(ticks)
                         if self._session.get("persist"):
                             await persist_ticks(self._db_factory(), ticks, str(self._session["session_id"]))
             except asyncio.CancelledError:

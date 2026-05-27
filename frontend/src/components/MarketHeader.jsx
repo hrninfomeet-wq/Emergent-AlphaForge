@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { ChevronDown, Play, RefreshCw, Square, Wifi, WifiOff } from "lucide-react";
-import { api } from "@/lib/api";
+import { api, API } from "@/lib/api";
 
 const PRIMARY_FALLBACK = [
   "NIFTY 50",
@@ -55,16 +55,23 @@ export default function MarketHeader() {
 
   useEffect(() => {
     let cancelled = false;
+    let eventSource = null;
+    let pollInterval = null;
 
-    async function load() {
+    async function loadStreamStatus() {
       try {
-        const [data, stream] = await Promise.all([
-          api.marketHeader(),
-          api.upstoxStreamStatus().catch(() => null),
-        ]);
+        const stream = await api.upstoxStreamStatus();
+        if (!cancelled) setStreamStatus(stream);
+      } catch (err) {
+        if (!cancelled) setStreamStatus(null);
+      }
+    }
+
+    async function loadSnapshotOnce() {
+      try {
+        const data = await api.marketHeader();
         if (!cancelled) {
           setSnapshot(data || { items: [] });
-          setStreamStatus(stream);
           setError("");
         }
       } catch (err) {
@@ -76,11 +83,59 @@ export default function MarketHeader() {
       }
     }
 
-    load();
-    const id = window.setInterval(load, 30000);
+    function startPollingFallback() {
+      if (pollInterval) return;
+      pollInterval = window.setInterval(loadSnapshotOnce, 1000);
+    }
+
+    function stopPollingFallback() {
+      if (pollInterval) {
+        window.clearInterval(pollInterval);
+        pollInterval = null;
+      }
+    }
+
+    function startSSE() {
+      if (typeof EventSource === "undefined") {
+        startPollingFallback();
+        return;
+      }
+      try {
+        eventSource = new EventSource(`${API}/market/header/stream`);
+        eventSource.addEventListener("snapshot", (evt) => {
+          if (cancelled) return;
+          try {
+            const data = JSON.parse(evt.data);
+            setSnapshot(data || { items: [] });
+            setError("");
+            setLoading(false);
+            stopPollingFallback();
+          } catch (parseErr) {
+            // Ignore malformed events; SSE will keep flowing.
+          }
+        });
+        eventSource.onerror = () => {
+          // Browser auto-reconnects EventSource. While disconnected, fall back to polling.
+          if (cancelled) return;
+          startPollingFallback();
+        };
+      } catch (err) {
+        startPollingFallback();
+      }
+    }
+
+    // Kick off in parallel.
+    loadSnapshotOnce();
+    loadStreamStatus();
+    startSSE();
+    // Refresh stream status every 5s — it changes infrequently and is small.
+    const statusTimer = window.setInterval(loadStreamStatus, 5000);
+
     return () => {
       cancelled = true;
-      window.clearInterval(id);
+      if (eventSource) eventSource.close();
+      stopPollingFallback();
+      window.clearInterval(statusTimer);
     };
   }, []);
 

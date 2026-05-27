@@ -4,6 +4,8 @@ All routes prefixed with /api. CORS enabled. MongoDB via Motor.
 """
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import os
 import uuid
@@ -12,7 +14,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
-from fastapi import APIRouter, BackgroundTasks, FastAPI, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, FastAPI, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 import pandas as pd
 from pydantic import BaseModel, Field
 from starlette.middleware.cors import CORSMiddleware
@@ -137,6 +140,23 @@ async def startup() -> None:
             upsert=True,
         )
     log.info("Pre-trade profiles seeded")
+    # Best-effort: auto-start Upstox WS stream if token is connected and not expired.
+    # Header tiles configured with source=upstox will then serve live ticks instead of REST.
+    try:
+        token_status = await upstox_client.get_connection_status()
+        if token_status.get("connected") and not token_status.get("expired"):
+            keys = _default_stream_instrument_keys()
+            if keys:
+                await upstox_stream_manager.start(
+                    instrument_keys=keys,
+                    mode=DEFAULT_STREAM_MODE,
+                    persist=True,
+                )
+                log.info(f"Upstox WS stream auto-started with {len(keys)} instruments")
+        else:
+            log.info("Upstox not connected at startup; skipping WS auto-start")
+    except Exception as exc:
+        log.warning(f"Upstox WS auto-start skipped: {exc}")
 
 
 @app.on_event("shutdown")
@@ -709,6 +729,73 @@ async def dashboard_summary():
 async def market_header_snapshot():
     """Read the persistent terminal header quote snapshot."""
     return await build_market_header_snapshot(latest_ticks=upstox_stream_manager.latest_tick_map())
+
+
+@api.get("/market/header/stream")
+async def market_header_sse(request: Request):
+    """Server-Sent Events feed of market header snapshots.
+
+    Pushes a snapshot:
+      - Immediately on connect
+      - Whenever any subscribed Upstox WS tick arrives (debounced to ~10/s max per client)
+      - As a heartbeat every 15s if no tick fires (so proxies do not close the connection)
+    Falls back to client-side polling if SSE is unsupported or the WS stream is offline.
+    """
+
+    async def event_source():
+        queue = upstox_stream_manager.subscribe(max_queue=128)
+        try:
+            # Initial snapshot so the UI paints immediately.
+            snapshot = await build_market_header_snapshot(
+                latest_ticks=upstox_stream_manager.latest_tick_map()
+            )
+            yield f"event: snapshot\ndata: {json.dumps(snapshot, default=str)}\n\n"
+
+            # Debounce: at most one snapshot per `min_interval_s` to avoid hammering the client
+            # when 10+ instruments tick simultaneously.
+            min_interval_s = 0.1
+            last_emit = asyncio.get_event_loop().time()
+
+            while True:
+                if await request.is_disconnected():
+                    break
+                # Wait for a tick or heartbeat timeout (15s).
+                try:
+                    await asyncio.wait_for(queue.get(), timeout=15.0)
+                    # Drain any other ticks queued during the same instant.
+                    drained = 0
+                    while drained < 32:
+                        try:
+                            queue.get_nowait()
+                            drained += 1
+                        except asyncio.QueueEmpty:
+                            break
+                except asyncio.TimeoutError:
+                    # Heartbeat keeps proxies/load-balancers from closing the connection.
+                    yield ": heartbeat\n\n"
+                    continue
+
+                now = asyncio.get_event_loop().time()
+                wait = (last_emit + min_interval_s) - now
+                if wait > 0:
+                    await asyncio.sleep(wait)
+                snapshot = await build_market_header_snapshot(
+                    latest_ticks=upstox_stream_manager.latest_tick_map()
+                )
+                yield f"event: snapshot\ndata: {json.dumps(snapshot, default=str)}\n\n"
+                last_emit = asyncio.get_event_loop().time()
+        finally:
+            upstox_stream_manager.unsubscribe(queue)
+
+    return StreamingResponse(
+        event_source(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # disable nginx buffering for instant push
+            "Connection": "keep-alive",
+        },
+    )
 
 
 # ---------------------------------------------------------------------------

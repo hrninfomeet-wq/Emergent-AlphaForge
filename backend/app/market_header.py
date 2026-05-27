@@ -112,13 +112,31 @@ async def fetch_upstox_item(item: MarketItem) -> Dict[str, Any]:
     instrument_key = item.get("instrument_key")
     if not instrument_key:
         raise RuntimeError("missing Upstox instrument key")
+    return await _cached_fetch_upstox(str(instrument_key), str(item.get("key") or ""))
 
-    from app import upstox_client
 
-    return await upstox_client.fetch_market_quote_by_key(
-        str(instrument_key),
-        instrument=str(item.get("key") or ""),
-    )
+# ── Upstox REST cache — used only when WS tick is missing or stale ──
+
+_UPSTOX_CACHE: Dict[str, Dict[str, Any]] = {}
+_UPSTOX_CACHE_TTL_S = 2.0
+_UPSTOX_LOCKS: Dict[str, asyncio.Lock] = {}
+
+
+async def _cached_fetch_upstox(instrument_key: str, instrument: str) -> Dict[str, Any]:
+    cache_key = instrument_key
+    now = datetime.now(timezone.utc).timestamp()
+    cached = _UPSTOX_CACHE.get(cache_key)
+    if cached and (now - cached.get("_cached_at", 0)) < _UPSTOX_CACHE_TTL_S:
+        return {k: v for k, v in cached.items() if not k.startswith("_")}
+    lock = _UPSTOX_LOCKS.setdefault(cache_key, asyncio.Lock())
+    async with lock:
+        cached = _UPSTOX_CACHE.get(cache_key)
+        if cached and (datetime.now(timezone.utc).timestamp() - cached.get("_cached_at", 0)) < _UPSTOX_CACHE_TTL_S:
+            return {k: v for k, v in cached.items() if not k.startswith("_")}
+        from app import upstox_client
+        result = await upstox_client.fetch_market_quote_by_key(instrument_key, instrument=instrument)
+        _UPSTOX_CACHE[cache_key] = {**result, "_cached_at": datetime.now(timezone.utc).timestamp()}
+        return result
 
 
 def _fetch_yfinance_sync(symbol: str) -> Dict[str, Any]:
@@ -159,7 +177,30 @@ async def fetch_fallback_item(item: MarketItem) -> Dict[str, Any]:
     symbol = item.get("fallback_symbol")
     if not symbol:
         raise RuntimeError("no fallback symbol configured")
-    return await asyncio.to_thread(_fetch_yfinance_sync, str(symbol))
+    return await _cached_fetch_fallback(str(symbol))
+
+
+# ── fallback (Yahoo) cache — yfinance is rate-limited; cache 10s and single-flight ──
+
+_FALLBACK_CACHE: Dict[str, Dict[str, Any]] = {}
+_FALLBACK_CACHE_TTL_S = 10.0
+_FALLBACK_LOCKS: Dict[str, asyncio.Lock] = {}
+
+
+async def _cached_fetch_fallback(symbol: str) -> Dict[str, Any]:
+    now = datetime.now(timezone.utc).timestamp()
+    cached = _FALLBACK_CACHE.get(symbol)
+    if cached and (now - cached.get("_cached_at", 0)) < _FALLBACK_CACHE_TTL_S:
+        return {k: v for k, v in cached.items() if not k.startswith("_")}
+    lock = _FALLBACK_LOCKS.setdefault(symbol, asyncio.Lock())
+    async with lock:
+        # Recheck under lock — first waiter populated cache while we waited.
+        cached = _FALLBACK_CACHE.get(symbol)
+        if cached and (datetime.now(timezone.utc).timestamp() - cached.get("_cached_at", 0)) < _FALLBACK_CACHE_TTL_S:
+            return {k: v for k, v in cached.items() if not k.startswith("_")}
+        result = await asyncio.to_thread(_fetch_yfinance_sync, symbol)
+        _FALLBACK_CACHE[symbol] = {**result, "_cached_at": datetime.now(timezone.utc).timestamp()}
+        return result
 
 
 def _error_quote(item: MarketItem, message: str) -> Dict[str, Any]:
