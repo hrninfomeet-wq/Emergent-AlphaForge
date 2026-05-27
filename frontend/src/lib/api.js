@@ -94,6 +94,12 @@ export const api = {
     apiClient.post("/signals", payload).then((r) => r.data),
   transitionSignal: (id, payload) =>
     apiClient.post(`/signals/${id}/transition`, payload).then((r) => r.data),
+  approveSignal: (id, payload = {}) =>
+    apiClient.post(`/signals/${id}/approve`, payload).then((r) => r.data),
+  skipSignal: (id, payload = {}) =>
+    apiClient.post(`/signals/${id}/skip`, payload).then((r) => r.data),
+  markBlockedSignal: (id, payload = {}) =>
+    apiClient.post(`/signals/${id}/mark-blocked`, payload).then((r) => r.data),
   deploySignalToPaper: (id, payload) =>
     apiClient.post(`/signals/${id}/paper`, payload).then((r) => r.data),
   listPaperTrades: (params = {}) =>
@@ -112,6 +118,12 @@ export const api = {
     apiClient.post(`/deployments/${id}/resume`).then((r) => r.data),
   archiveDeployment: (id) =>
     apiClient.post(`/deployments/${id}/archive`).then((r) => r.data),
+  evaluateDeployment: (id) =>
+    apiClient.post(`/deployments/${id}/evaluate-on-close`).then((r) => r.data),
+  evaluateActiveDeployments: () =>
+    apiClient.post("/deployments/evaluate-active").then((r) => r.data),
+  listDeploymentSignals: (id, params = {}) =>
+    apiClient.get(`/deployments/${id}/signals`, { params }).then((r) => r.data),
 
   // Optimizer
   startOptimization: (payload) =>

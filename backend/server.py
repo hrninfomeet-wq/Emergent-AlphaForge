@@ -999,6 +999,100 @@ async def transition_signal_route(signal_id: str, req: SignalTransitionReq):
     return serialize_doc(updated)
 
 
+@api.post("/signals/{signal_id}/approve")
+async def approve_signal_route(signal_id: str, req: SignalApprovalReq):
+    """Approve a deployment-generated signal. Transitions CONFIRMED -> TRIGGERED -> ACTIVE
+    and stamps the approval audit fields. Does not create a paper trade in this slice -
+    that wiring is the next slice. Use POST /signals/{id}/paper to deploy after approval.
+    """
+    db = get_db()
+    doc = await db.signals.find_one({"id": signal_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Signal not found")
+    state = str(doc.get("state") or "").upper()
+    if state != "CONFIRMED":
+        raise HTTPException(400, f"Approve requires state=CONFIRMED, got {state}")
+    snapshot = {
+        "approval": {
+            "approved_at": datetime.now(timezone.utc).isoformat(),
+            "approved_by": req.approved_by,
+            "note": req.note,
+        }
+    }
+    try:
+        updated = transition_signal(doc, "TRIGGERED", reason="manual_approval", snapshot=snapshot)
+        updated = transition_signal(updated, "ACTIVE", reason="manual_approval_active", snapshot=snapshot)
+    except SignalStateError as e:
+        raise HTTPException(400, str(e))
+    updated["approval"] = snapshot["approval"]
+    await db.signals.replace_one({"id": signal_id}, updated, upsert=False)
+    return serialize_doc(updated)
+
+
+@api.post("/signals/{signal_id}/skip")
+async def skip_signal_route(signal_id: str, req: SignalApprovalReq):
+    """Skip a deployment-generated signal. Transitions CONFIRMED -> SKIPPED -> AUDITED."""
+    db = get_db()
+    doc = await db.signals.find_one({"id": signal_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Signal not found")
+    state = str(doc.get("state") or "").upper()
+    if state not in ("CONFIRMED", "TRIGGERED", "WATCHING", "FORMING"):
+        raise HTTPException(400, f"Skip not allowed from state {state}")
+    snapshot = {
+        "skip": {
+            "skipped_at": datetime.now(timezone.utc).isoformat(),
+            "skipped_by": req.approved_by,
+            "note": req.note,
+        }
+    }
+    # CONFIRMED can go to TRIGGERED first, then TRIGGERED -> SKIPPED is allowed
+    try:
+        updated = dict(doc)
+        if str(updated.get("state") or "").upper() == "CONFIRMED":
+            updated = transition_signal(updated, "TRIGGERED", reason="manual_skip_pre", snapshot=snapshot)
+        if str(updated.get("state") or "").upper() in ("TRIGGERED", "WATCHING", "FORMING"):
+            updated = transition_signal(updated, "SKIPPED", reason="manual_skip", snapshot=snapshot)
+        updated = transition_signal(updated, "AUDITED", reason="manual_skip_audit", snapshot=snapshot)
+    except SignalStateError as e:
+        raise HTTPException(400, str(e))
+    updated["skip"] = snapshot["skip"]
+    await db.signals.replace_one({"id": signal_id}, updated, upsert=False)
+    return serialize_doc(updated)
+
+
+@api.post("/signals/{signal_id}/mark-blocked")
+async def mark_blocked_signal_route(signal_id: str, req: SignalApprovalReq):
+    """Manually mark a signal as blocked. Adds the user-provided note as a blocker
+    and transitions to AUDITED. Useful when reviewing journaled signals after the fact.
+    """
+    db = get_db()
+    doc = await db.signals.find_one({"id": signal_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Signal not found")
+    state = str(doc.get("state") or "").upper()
+    if state == "AUDITED":
+        raise HTTPException(400, "Signal already AUDITED")
+    snapshot = {
+        "manual_block": {
+            "blocked_at": datetime.now(timezone.utc).isoformat(),
+            "blocked_by": req.approved_by,
+            "note": req.note,
+        }
+    }
+    blockers = list(doc.get("blockers") or [])
+    blockers.append(f"manual_block: {req.note or 'no note'}")
+    try:
+        updated = transition_signal(doc, "AUDITED", reason="manual_block", snapshot=snapshot)
+    except SignalStateError as e:
+        raise HTTPException(400, str(e))
+    updated["blocked"] = True
+    updated["blockers"] = blockers
+    updated["manual_block"] = snapshot["manual_block"]
+    await db.signals.replace_one({"id": signal_id}, updated, upsert=False)
+    return serialize_doc(updated)
+
+
 def _advance_signal_for_paper(signal: Dict[str, Any]) -> Dict[str, Any]:
     state = str(signal.get("state") or "WATCHING").upper()
     if state in ("AUDITED", "EXITED", "SKIPPED"):
@@ -1366,6 +1460,12 @@ class SignalCreateReq(BaseModel):
 class SignalTransitionReq(BaseModel):
     to_state: str
     reason: str = ""
+    snapshot: Optional[Dict[str, Any]] = None
+
+
+class SignalApprovalReq(BaseModel):
+    note: Optional[str] = None
+    approved_by: Optional[str] = None  # reserved for multi-user later
     snapshot: Dict[str, Any] = Field(default_factory=dict)
 
 

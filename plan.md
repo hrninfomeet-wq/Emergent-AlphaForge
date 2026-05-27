@@ -9,6 +9,47 @@ These were explicitly deferred by the user; do not start them without confirmati
 - **Per-tick deployment evaluation** — only after `1m_close` mode is trusted, and only as a manual user switch.
 - **Paper / recommendation modes for the deployment evaluator** — first slice ships strict `shadow` (journal only) mode.
 - **Strategy Deployment evaluator → broker order execution** — never automatic; recommendation mode shows context, user clicks Take/Skip.
+- **Online hosting / always-on uptime** — out of scope for now. Forward-test sessions will be intermittent because the local PC isn't always running. Forward metrics must be annotated with session completeness.
+
+## Phase 4b — current work (2026-05-27)
+
+User-confirmed slices in priority order. Each ships small, gets verified, then we move on.
+
+1. **DONE:** 1m_close deployment evaluator (shadow mode, scheduler, time/option/score blockers, audit trail)
+2. **DONE:** Approval UI — Pending Approval panel with Approve / Skip / Mark Blocked buttons; Evaluate-now button on each ACTIVE deployment; auto-refresh every 15s
+3. **NEXT:** Auto-square-off at 15:00 IST for paper trades (signals continue journaling after; only paper trade exits are forced)
+4. Paper trade wiring on signal approval — when Approve fires, optionally auto-create paper trade with the contract from the signal
+5. Pre-flight data realism panel — before allowing a deployment to be created, show: spot coverage for the next 5 trading days estimate, option contracts present for relevant expiries, planner-coverage estimate, expiry-rule rotation notes (NIFTY weekly day rotated Aug 2024 / Sep 2024 / Apr 2025; BANKNIFTY weekly discontinued Nov 2024)
+6. Slippage model with configurable defaults — ATM 0.5pt, OTM1 1pt, OTM2+ 2pt, expiry-day 2x multiplier; user override per backtest
+7. Strategy source SHA hash — auto-pause deployment with reason `strategy_source_drift` if the strategy file's hash changes after deployment creation
+8. Acknowledgment checkbox on deployment creation when source backtest has worrying signs (walk-forward divergence > 30%, low trade count, etc.) — does NOT block, just forces conscious choice
+9. Forward metrics aggregation per deployment — win-rate, avg P&L, profit factor — annotated with session completeness; surfaced in Strategy Library only when ≥10 complete sessions
+10. Per-deployment kill switches — auto-pause on `max_consecutive_losses`, `daily_loss_cutoff_pct`, `max_open_paper_trades`. User-configurable per deployment.
+
+## Data hygiene baseline (pre-requisite for serious backtesting)
+
+User-confirmed scope: store all three index spot + ATM option data for **2024-01-01 to 2026-05-26**.
+
+- Spot 1-minute candles: NIFTY, BANKNIFTY, SENSEX
+- Option contract metadata: every expiry in the range, including expired (use `/api/upstox/expired-options/contracts/{instrument}/sync`)
+- Option 1-minute candles: ATM CE/PE, sample=1
+- Audit trust gate: Planned coverage = 100%, Need fetch = 0, Missing meta = 0 before any backtest can use that window
+- Annotate known structural breaks in the data realism panel:
+  - NIFTY weekly expiry day rotated: Thu (until 2024-08) → Wed (2024-09 to 2025-03) → Tue (2025-04+)
+  - BANKNIFTY weekly options discontinued 2024-11; only monthly after that
+  - SENSEX weekly on BSE, Friday expiry, lower liquidity than NIFTY
+
+## Audit trail invariants (every signal must carry)
+
+- `bar_ts` — the candle minute the strategy evaluated against
+- `decision_ts` — wall-clock when the evaluator decided
+- `strategy_id`, `strategy_version`, `strategy_hash` (over id+version+params)
+- `pretrade_profile_name` + full `pretrade_settings_snapshot` resolved at signal time
+- `regime` at the time of evaluation
+- `option_contract` chosen with strike + side + instrument_key
+- `tracked_for_pnl` flag — false when `option_no_data` or `concurrency_lower_score` or `manual_block`
+- All blockers as a list of human-readable strings
+
 
 ## Objectives (Updated)
 - Build a local-first and cloud-ready **React + FastAPI + MongoDB** trading lab for Indian indices (**NIFTY 50, BANKNIFTY, SENSEX**).

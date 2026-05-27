@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import { Activity, Briefcase, RefreshCw, Zap } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Activity, Briefcase, Check, RefreshCw, ShieldAlert, SkipForward, Sparkles, X, Zap } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -74,6 +74,12 @@ export default function LiveSignals() {
     refresh();
   }, [refresh]);
 
+  // Auto-refresh signals every 15s so deployment-generated signals appear without manual reload.
+  useEffect(() => {
+    const id = window.setInterval(refresh, 15000);
+    return () => window.clearInterval(id);
+  }, [refresh]);
+
   useEffect(() => {
     refreshDeployments();
   }, [refreshDeployments]);
@@ -122,6 +128,67 @@ export default function LiveSignals() {
       await refreshDeployments();
     } catch (e) {
       toast.error(`Deployment update failed: ${e.response?.data?.detail || e.message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const evaluateNow = async (deployment) => {
+    setBusy(true);
+    try {
+      const res = await api.evaluateDeployment(deployment.id);
+      if (res.outcome === "clean") {
+        toast.success(`Clean ${res.direction} signal journaled — pending approval`);
+      } else if (res.outcome === "blocked") {
+        toast.warning(`Signal blocked: ${(res.blockers || [])[0] || "see audit"}`);
+      } else if (res.outcome === "no_setup") {
+        toast.message("No setup on the latest closed bar");
+      } else {
+        toast.message(`Evaluator: ${res.outcome} (${res.reason || "ok"})`);
+      }
+      await refresh();
+      await refreshDeployments();
+    } catch (e) {
+      toast.error(`Evaluate failed: ${e.response?.data?.detail || e.message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const approveSignal = async (signal, note = "") => {
+    setBusy(true);
+    try {
+      await api.approveSignal(signal.id, { note });
+      toast.success("Signal approved");
+      await refresh();
+    } catch (e) {
+      toast.error(`Approve failed: ${e.response?.data?.detail || e.message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const skipSignal = async (signal, note = "") => {
+    setBusy(true);
+    try {
+      await api.skipSignal(signal.id, { note });
+      toast.success("Signal skipped");
+      await refresh();
+    } catch (e) {
+      toast.error(`Skip failed: ${e.response?.data?.detail || e.message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const markBlocked = async (signal, note = "") => {
+    setBusy(true);
+    try {
+      await api.markBlockedSignal(signal.id, { note: note || "manual review" });
+      toast.success("Marked as blocked");
+      await refresh();
+    } catch (e) {
+      toast.error(`Mark blocked failed: ${e.response?.data?.detail || e.message}`);
     } finally {
       setBusy(false);
     }
@@ -194,9 +261,18 @@ export default function LiveSignals() {
         setFormValue={setDeployment}
         onCreate={createDeployment}
         onStatus={setDeploymentStatus}
+        onEvaluate={evaluateNow}
         busy={busy}
       />
 
+      <PendingApprovalPanel
+        signals={signals}
+        busy={busy}
+        onApprove={approveSignal}
+        onSkip={skipSignal}
+        onMarkBlocked={markBlocked}
+        onRefresh={refresh}
+      />
       <section className="rounded-lg border border-line bg-bg-1" data-testid="live-signal-console">
         <div className="px-3 py-2 border-b border-line flex items-center gap-2">
           <Activity className="w-4 h-4 text-info" />
@@ -296,7 +372,7 @@ export default function LiveSignals() {
   );
 }
 
-function StrategyDeploymentsPanel({ deployments, presets, backtestRuns, form, setFormValue, onCreate, onStatus, busy }) {
+function StrategyDeploymentsPanel({ deployments, presets, backtestRuns, form, setFormValue, onCreate, onStatus, onEvaluate, busy }) {
   const sourceOptions = form.source_type === "preset"
     ? presets.map((preset) => ({ id: preset.name, label: preset.name })).filter((item) => item.id)
     : backtestRuns
@@ -402,6 +478,12 @@ function StrategyDeploymentsPanel({ deployments, presets, backtestRuns, form, se
                     </div>
                   </div>
                   <div className="ml-auto flex flex-wrap justify-end gap-1.5">
+                    {deployment.status === "ACTIVE" && (
+                      <Button size="sm" variant="secondary" disabled={busy} onClick={() => onEvaluate(deployment)} className="h-7 text-xs border border-line" data-testid="evaluate-now-button" title="Run the 1m close evaluator against this deployment now">
+                        <Sparkles className="w-3 h-3 mr-1" />
+                        Evaluate now
+                      </Button>
+                    )}
                     {deployment.status === "ACTIVE" ? (
                       <Button size="sm" variant="secondary" disabled={busy} onClick={() => onStatus(deployment, "pause")} className="h-7 text-xs border border-line">Pause</Button>
                     ) : deployment.status === "PAUSED" ? (
@@ -425,6 +507,157 @@ function StrategyDeploymentsPanel({ deployments, presets, backtestRuns, form, se
     </section>
   );
 }
+
+function PendingApprovalPanel({ signals, busy, onApprove, onSkip, onMarkBlocked, onRefresh }) {
+  const pending = useMemo(
+    () => (signals || []).filter((s) => s.state === "CONFIRMED" && s.deployment_id),
+    [signals],
+  );
+  const recentlyClosed = useMemo(
+    () => (signals || [])
+      .filter((s) => s.deployment_id && (s.state === "AUDITED" || s.state === "ACTIVE"))
+      .slice(0, 5),
+    [signals],
+  );
+
+  return (
+    <section className="rounded-lg border border-line bg-bg-1" data-testid="pending-approval-panel">
+      <div className="px-3 py-2 border-b border-line flex items-center gap-2">
+        <ShieldAlert className="w-4 h-4 text-warning" />
+        <div className="text-xs font-semibold uppercase tracking-wider text-dim">Pending Approval</div>
+        <div className="ml-auto flex items-center gap-2">
+          <span className="text-[10px] font-mono text-dimmer">{pending.length} awaiting · auto-refreshes 15s</span>
+          <Button size="sm" variant="ghost" onClick={onRefresh} className="h-7 text-xs">
+            <RefreshCw className="w-3 h-3 mr-1" />
+            Refresh
+          </Button>
+        </div>
+      </div>
+      <div className="p-3 space-y-2">
+        {pending.length === 0 ? (
+          <div className="rounded-md border border-line bg-bg-2 p-4 text-sm text-dim">
+            No deployment-generated signals awaiting approval. Active deployments will journal clean signals here once a 1-minute close fires a setup.
+          </div>
+        ) : (
+          pending.map((signal) => (
+            <PendingSignalCard
+              key={signal.id}
+              signal={signal}
+              busy={busy}
+              onApprove={onApprove}
+              onSkip={onSkip}
+              onMarkBlocked={onMarkBlocked}
+            />
+          ))
+        )}
+        {recentlyClosed.length > 0 && (
+          <details className="mt-2 rounded-md border border-line bg-bg-2 p-2">
+            <summary className="cursor-pointer text-[11px] uppercase tracking-wider text-dimmer">Recently decided ({recentlyClosed.length})</summary>
+            <div className="mt-2 space-y-1.5">
+              {recentlyClosed.map((s) => (
+                <div key={s.id} className="text-[11px] font-mono text-dim flex flex-wrap items-center gap-2">
+                  <span className={s.blocked ? "text-red-400" : "text-emerald-400"}>{s.state}</span>
+                  <span>{s.instrument}</span>
+                  <span>{s.direction}</span>
+                  <span>score {fmtNum(s.confidence)}</span>
+                  <span className="text-dimmer">{isoToFull(s.updated_at)}</span>
+                  {s.blocked && (
+                    <span className="text-dimmer truncate max-w-[260px]">{(s.blockers || [])[0] || ""}</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          </details>
+        )}
+      </div>
+    </section>
+  );
+}
+
+
+function PendingSignalCard({ signal, busy, onApprove, onSkip, onMarkBlocked }) {
+  const [note, setNote] = useState("");
+  const ctx = signal.context || {};
+  const candle = ctx.candle || {};
+  const contract = signal.option_contract || {};
+  return (
+    <article className="rounded-md border border-warning/40 bg-bg-2 p-3" data-testid="pending-signal-card">
+      <div className="flex flex-wrap items-start gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-semibold text-base">{signal.instrument}</span>
+            <span className={`text-xs font-mono px-1.5 py-0.5 rounded border ${signal.direction === "CE" ? "border-emerald-500/40 text-emerald-400" : "border-red-500/40 text-red-400"}`}>{signal.direction}</span>
+            <span className="text-[10px] px-1.5 py-0.5 rounded border border-line bg-bg-3 font-mono">{signal.state}</span>
+            <span className="text-[10px] text-dimmer font-mono">score {fmtNum(signal.confidence)}</span>
+            {candle.ist_time && <span className="text-[10px] text-dimmer font-mono">bar {candle.ist_time} IST</span>}
+          </div>
+          <div className="mt-1 text-xs text-dim">
+            <span className="font-mono">{signal.strategy_id}</span>
+            {ctx.strategy_version && <span className="text-dimmer font-mono"> v{ctx.strategy_version}</span>}
+            {ctx.strategy_hash && <span className="text-dimmer font-mono"> · {ctx.strategy_hash.slice(0, 8)}</span>}
+          </div>
+          <div className="mt-1 text-xs text-dim">
+            entry {fmtNum(signal.entry_price)} · regime {ctx.regime || "?"} · profile {ctx.pretrade_profile_name || "?"}
+          </div>
+          {contract.trading_symbol && (
+            <div className="mt-1 text-[11px] text-dimmer font-mono">
+              contract {contract.trading_symbol} · strike {fmtNum(contract.strike)} · {contract.side}
+            </div>
+          )}
+          {signal.reasons?.length > 0 && (
+            <div className="mt-1 text-[11px] text-dimmer">
+              reasons: {signal.reasons.join(", ")}
+            </div>
+          )}
+          <div className="mt-2 flex items-center gap-2">
+            <Input
+              placeholder="optional note for audit"
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              className="h-8 text-xs bg-bg-1 border-line"
+              data-testid="approval-note"
+            />
+          </div>
+        </div>
+        <div className="flex flex-col gap-1.5 min-w-[140px]">
+          <Button
+            size="sm"
+            disabled={busy}
+            onClick={() => onApprove(signal, note)}
+            className="h-8 text-xs bg-emerald-600/80 hover:bg-emerald-600 text-white border border-emerald-500/60"
+            data-testid="approve-button"
+          >
+            <Check className="w-3 h-3 mr-1" />
+            Approve
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={busy}
+            onClick={() => onSkip(signal, note)}
+            className="h-8 text-xs border border-line"
+            data-testid="skip-button"
+          >
+            <SkipForward className="w-3 h-3 mr-1" />
+            Skip
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={busy}
+            onClick={() => onMarkBlocked(signal, note)}
+            className="h-8 text-xs border border-line text-red-400 hover:text-red-300"
+            data-testid="mark-blocked-button"
+          >
+            <X className="w-3 h-3 mr-1" />
+            Mark blocked
+          </Button>
+        </div>
+      </div>
+    </article>
+  );
+}
+
 
 function SignalCard({ signal, busy, onTransition, onDeploy }) {
   const nextState = {
