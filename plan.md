@@ -1,5 +1,15 @@
 # AlphaForge Trading Lab — Updated plan.md
 
+## Deferred / Optional (revisit later)
+
+These were explicitly deferred by the user; do not start them without confirmation.
+
+- **Event-day blocking (RBI, FOMC, CPI, etc.)** — auto-pause deployments on calendar events. Requires a hand-curated event collection editable from the UI.
+- **WebSocket reconnect storm investigation** — 3-hour live session on 2026-05-27 hit `reconnect_count = 15` with "All connection attempts failed" recovering. Needs root-cause work after evaluator ships.
+- **Per-tick deployment evaluation** — only after `1m_close` mode is trusted, and only as a manual user switch.
+- **Paper / recommendation modes for the deployment evaluator** — first slice ships strict `shadow` (journal only) mode.
+- **Strategy Deployment evaluator → broker order execution** — never automatic; recommendation mode shows context, user clicks Take/Skip.
+
 ## Objectives (Updated)
 - Build a local-first and cloud-ready **React + FastAPI + MongoDB** trading lab for Indian indices (**NIFTY 50, BANKNIFTY, SENSEX**).
 - Prove the full quant workflow end-to-end:

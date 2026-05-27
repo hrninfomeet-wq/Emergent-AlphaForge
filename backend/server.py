@@ -9,7 +9,7 @@ import json
 import logging
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -43,6 +43,10 @@ from app.signal_lifecycle import SignalStateError, create_signal_doc, transition
 from app.strategy_deployments import build_deployment_doc
 from app.upstox_index_ingest import run_upstox_index_ingest_job
 from app.upstox_stream import DEFAULT_STREAM_MODE, UpstoxMarketStreamManager
+from app.deployment_evaluator import (
+    evaluate_active_deployments,
+    evaluate_deployment_on_close,
+)
 from app.walkforward import walk_forward
 from app.warehouse import (
     audit_integrity,
@@ -125,6 +129,49 @@ DEFAULT_PROFILES = {
 }
 
 
+async def _deployment_evaluator_loop() -> None:
+    """Wake up ~10s after each minute boundary and evaluate ACTIVE deployments.
+
+    Sleeps quietly outside Indian market hours (NSE 09:15 - 15:30 IST, weekdays only).
+    Uses the existing 1-minute candle warehouse, so the loop is independent of the
+    WebSocket connection state - if the stream is down, it simply finds no fresh bar.
+    """
+    from datetime import time as _time
+    log.info("Deployment evaluator loop initialized")
+    db = get_db()
+    while True:
+        try:
+            # Sleep until 10 seconds past the next minute boundary
+            now = datetime.now(timezone.utc)
+            next_minute = (now + timedelta(minutes=1)).replace(second=0, microsecond=0)
+            wake_at = next_minute + timedelta(seconds=10)
+            sleep_s = max(1.0, (wake_at - datetime.now(timezone.utc)).total_seconds())
+            await asyncio.sleep(sleep_s)
+
+            # Skip evaluation outside NSE market hours (Mon-Fri, 09:15-15:30 IST)
+            ist_now = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+            if ist_now.weekday() >= 5:
+                continue
+            t = ist_now.time()
+            if t < _time(9, 15) or t >= _time(15, 30):
+                continue
+
+            results = await evaluate_active_deployments(db)
+            interesting = [r for r in results if r.get("outcome") in ("clean", "blocked")]
+            if interesting:
+                log.info(
+                    "deployment_evaluator: %d evaluated, %d journaled (%s)",
+                    len(results), len(interesting),
+                    ", ".join(f"{r['outcome']}/{str(r.get('deployment_id') or '')[:8]}" for r in interesting[:5]),
+                )
+        except asyncio.CancelledError:
+            log.info("Deployment evaluator loop cancelled")
+            return
+        except Exception as exc:
+            log.exception("Deployment evaluator loop error: %s", exc)
+            await asyncio.sleep(15.0)
+
+
 @app.on_event("startup")
 async def startup() -> None:
     await ensure_indexes()
@@ -157,6 +204,10 @@ async def startup() -> None:
             log.info("Upstox not connected at startup; skipping WS auto-start")
     except Exception as exc:
         log.warning(f"Upstox WS auto-start skipped: {exc}")
+
+    # Background scheduler: evaluate ACTIVE deployments ~10s after each 1-minute bar closes.
+    asyncio.create_task(_deployment_evaluator_loop(), name="deployment-evaluator")
+    log.info("Deployment evaluator scheduler started")
 
 
 @app.on_event("shutdown")
@@ -892,6 +943,30 @@ async def archive_deployment(deployment_id: str):
 async def list_deployment_signals(deployment_id: str, limit: int = Query(100, le=500)):
     rows = await get_db().signals.find({"deployment_id": deployment_id}, {"_id": 0}).sort("updated_at", -1).limit(limit).to_list(length=limit)
     return {"items": serialize_doc(rows), "count": len(rows)}
+
+
+@api.post("/deployments/{deployment_id}/evaluate-on-close")
+async def evaluate_deployment_now(deployment_id: str):
+    """Run the 1-minute close evaluator against this deployment once.
+
+    Shadow-mode only in this slice: a clean signal is journaled as CONFIRMED awaiting manual
+    approval; blocked signals are journaled as AUDITED with a blockers list. No paper trade
+    is created.
+    """
+    db = get_db()
+    deployment = await db.strategy_deployments.find_one({"id": deployment_id}, {"_id": 0})
+    if not deployment:
+        raise HTTPException(404, "Deployment not found")
+    result = await evaluate_deployment_on_close(db, deployment)
+    return serialize_doc(result)
+
+
+@api.post("/deployments/evaluate-active")
+async def evaluate_active_deployments_route():
+    """Run the evaluator across every ACTIVE deployment. Used by the scheduler and on-demand."""
+    db = get_db()
+    results = await evaluate_active_deployments(db)
+    return serialize_doc({"items": results, "count": len(results)})
 
 
 @api.post("/signals")
