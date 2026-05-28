@@ -1057,7 +1057,9 @@ async def approve_signal_route(signal_id: str, req: SignalApprovalReq):
         raise HTTPException(400, f"Approve requires state=CONFIRMED, got {state}")
 
     # Resolve the parent deployment (if any) so we know the mode and risk defaults.
-    deployment_id = str(doc.get("deployment_id") or "")
+    # Evaluator-generated signals carry deployment_id at top level; manually-created
+    # signals may carry it inside context. Check both for robustness.
+    deployment_id = str(doc.get("deployment_id") or (doc.get("context") or {}).get("deployment_id") or "")
     deployment: Optional[Dict[str, Any]] = None
     if deployment_id:
         deployment = await db.strategy_deployments.find_one({"id": deployment_id}, {"_id": 0})
