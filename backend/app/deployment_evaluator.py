@@ -151,6 +151,38 @@ async def _resolve_option_contract(
     return contract, None
 
 
+async def next_expiry_for(db: Any, instrument: str, *, today_iso: Optional[str] = None) -> Optional[str]:
+    """Return the next expiry_date >= today for this instrument from option_contracts.
+
+    Uses metadata only; does not assume any weekday rule. Returns YYYY-MM-DD or None.
+    """
+    today = today_iso or (datetime.now(timezone.utc) + IST_OFFSET).strftime("%Y-%m-%d")
+    expiries = await db.option_contracts.distinct(
+        "expiry_date",
+        {"underlying": instrument.upper(), "expiry_date": {"$gte": today}},
+    )
+    if not expiries:
+        return None
+    return min(expiries)
+
+
+def _is_blocked_by_expiry_day_cutoff(ist_dt: datetime, next_expiry_iso: Optional[str], cutoff: time = time(15, 0)) -> Optional[str]:
+    """Return blocker reason if today is the expiry day for this instrument and IST time >= cutoff.
+
+    Implements the user rule: no trades after 15:00 IST on the expiry day for the
+    deployment's instrument. Uses stored option_contracts.expiry_date as the source of truth,
+    not a hard-coded weekday rule.
+    """
+    if not next_expiry_iso:
+        return None
+    today_iso = ist_dt.strftime("%Y-%m-%d")
+    if today_iso != next_expiry_iso:
+        return None
+    if ist_dt.time() >= cutoff:
+        return f"expiry_day_cutoff (IST {ist_dt.strftime('%H:%M')} >= {cutoff.strftime('%H:%M')} on expiry {next_expiry_iso})"
+    return None
+
+
 async def _has_recent_option_data(db: Any, instrument_key: str, *, max_age_minutes: int = 5) -> bool:
     """Check whether the chosen option contract has at least one candle in the last N minutes.
 
@@ -234,6 +266,11 @@ async def evaluate_deployment_on_close(
     # Pre-flight: time-of-day window guard. Still record the bar as evaluated to advance pointer.
     window_blocker = _is_blocked_by_window(candle_ts)
 
+    # Pre-flight: expiry-day cutoff (15:00 IST on the day the deployment's instrument expires).
+    next_expiry_iso = await next_expiry_for(db, instrument)
+    bar_ist_dt = datetime.fromtimestamp(candle_ts / 1000, tz=timezone.utc) + IST_OFFSET
+    expiry_blocker = _is_blocked_by_expiry_day_cutoff(bar_ist_dt, next_expiry_iso)
+
     # Strategy evaluate
     try:
         sig = strategy.evaluate(last_bar, prev_bar, merged_params, {"history_df": df_enriched, "i": last_idx})
@@ -284,6 +321,8 @@ async def evaluate_deployment_on_close(
     all_blockers: List[str] = []
     if window_blocker:
         all_blockers.append(window_blocker)
+    if expiry_blocker:
+        all_blockers.append(expiry_blocker)
     all_blockers.extend(pretrade_blockers)
     all_blockers.extend(strategy_blockers)
     if contract_blocker:
@@ -315,6 +354,10 @@ async def evaluate_deployment_on_close(
         },
         "score": int(getattr(sig, "score", 0) or 0),
         "tracked_for_pnl": bool(contract and not no_recent_option_data and not all_blockers),
+        # Trustworthy timing audit per user spec (2026-05-27).
+        "bar_ts": candle_ts,                                         # the candle minute the strategy evaluated
+        "decision_ts": datetime.now(timezone.utc).isoformat(),       # wall-clock when the evaluator decided
+        "next_expiry_iso": next_expiry_iso,                          # source of truth for expiry-day cutoff
     }
     if no_recent_option_data:
         audit_context["option_no_data"] = True

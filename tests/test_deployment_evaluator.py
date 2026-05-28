@@ -112,6 +112,15 @@ class FakeCollection:
     async def insert_one(self, doc: Dict[str, Any]):
         self.rows.append(dict(doc))
 
+    async def distinct(self, key: str, query: Optional[Dict[str, Any]] = None):
+        rows = [r for r in self.rows if _matches(r, query or {})]
+        seen = []
+        for r in rows:
+            v = r.get(key)
+            if v is not None and v not in seen:
+                seen.append(v)
+        return seen
+
     async def update_one(self, query: Dict[str, Any], update: Dict[str, Any], upsert: bool = False):
         for r in self.rows:
             if _matches(r, query):
@@ -129,7 +138,13 @@ class FakeCollection:
 def _matches(row: Dict[str, Any], query: Dict[str, Any]) -> bool:
     for k, v in query.items():
         if isinstance(v, dict) and "$gte" in v:
-            if row.get(k, 0) < v["$gte"]:
+            row_val = row.get(k)
+            if row_val is None:
+                return False
+            try:
+                if row_val < v["$gte"]:
+                    return False
+            except TypeError:
                 return False
         elif row.get(k) != v:
             return False
@@ -237,6 +252,7 @@ def make_contracts(*, atm_strike: int = 23950) -> List[Dict[str, Any]]:
                 "strike": float(strike),
                 "side": side,
                 "expiry": "2026-06-04",
+                "expiry_date": "2026-06-04",
                 "instrument_key": f"NSE_FO|TEST|{strike}{side}",
                 "trading_symbol": f"NIFTY26JUN{strike}{side}",
             })
@@ -453,3 +469,40 @@ async def test_otm1_strike_step_aware():
     chosen = sig["option_contract"]
     assert chosen["side"] == "CE"
     assert int(chosen["strike"]) == atm_strike + 50  # one step above ATM
+
+
+# ---------- expiry-day cutoff -------------------------------------------------
+
+from app.deployment_evaluator import _is_blocked_by_expiry_day_cutoff  # noqa: E402
+
+
+def test_expiry_cutoff_no_expiry_returns_none():
+    """If we cannot resolve a next expiry, never block on expiry-day rule."""
+    ist_dt = datetime(2026, 5, 27, 15, 30, tzinfo=IST_OFFSET_TZ if False else timezone(IST_OFFSET))
+    assert _is_blocked_by_expiry_day_cutoff(ist_dt, None) is None
+
+
+def test_expiry_cutoff_today_not_expiry_returns_none():
+    """Today is not the next expiry date -> no block, even past 15:00."""
+    ist_dt = datetime(2026, 5, 27, 15, 30, tzinfo=timezone(IST_OFFSET))
+    assert _is_blocked_by_expiry_day_cutoff(ist_dt, "2026-06-02") is None
+
+
+def test_expiry_cutoff_today_is_expiry_before_cutoff_returns_none():
+    """Today IS the expiry day, but it's only 14:55 -> not yet blocked."""
+    ist_dt = datetime(2026, 5, 27, 14, 55, tzinfo=timezone(IST_OFFSET))
+    assert _is_blocked_by_expiry_day_cutoff(ist_dt, "2026-05-27") is None
+
+
+def test_expiry_cutoff_today_is_expiry_at_cutoff_returns_block():
+    """Today IS the expiry day and clock has hit 15:00 -> blocked."""
+    ist_dt = datetime(2026, 5, 27, 15, 0, tzinfo=timezone(IST_OFFSET))
+    reason = _is_blocked_by_expiry_day_cutoff(ist_dt, "2026-05-27")
+    assert reason and "expiry_day_cutoff" in reason and "2026-05-27" in reason
+
+
+def test_expiry_cutoff_today_is_expiry_after_cutoff_returns_block():
+    """Today IS expiry, 15:25 IST -> blocked."""
+    ist_dt = datetime(2026, 5, 27, 15, 25, tzinfo=timezone(IST_OFFSET))
+    reason = _is_blocked_by_expiry_day_cutoff(ist_dt, "2026-05-27")
+    assert reason and "expiry_day_cutoff" in reason

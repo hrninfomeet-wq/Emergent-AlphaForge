@@ -17,14 +17,15 @@ User-confirmed slices in priority order. Each ships small, gets verified, then w
 
 1. **DONE:** 1m_close deployment evaluator (shadow mode, scheduler, time/option/score blockers, audit trail)
 2. **DONE:** Approval UI — Pending Approval panel with Approve / Skip / Mark Blocked buttons; Evaluate-now button on each ACTIVE deployment; auto-refresh every 15s
-3. **NEXT:** Auto-square-off at 15:00 IST for paper trades (signals continue journaling after; only paper trade exits are forced)
-4. Paper trade wiring on signal approval — when Approve fires, optionally auto-create paper trade with the contract from the signal
-5. Pre-flight data realism panel — before allowing a deployment to be created, show: spot coverage for the next 5 trading days estimate, option contracts present for relevant expiries, planner-coverage estimate, expiry-rule rotation notes (NIFTY weekly day rotated Aug 2024 / Sep 2024 / Apr 2025; BANKNIFTY weekly discontinued Nov 2024)
-6. Slippage model with configurable defaults — ATM 0.5pt, OTM1 1pt, OTM2+ 2pt, expiry-day 2x multiplier; user override per backtest
+3. **DONE:** Auto-square-off at 15:00 IST every market day (default ON, override per deployment with `risk.allow_overnight=true`); expiry-day cutoff at 15:00 IST blocks new signals on the deployment instrument's expiry day; `dte_filter` config (default 0-6) on deployments; `bar_ts` and `decision_ts` audit fields on every signal; `next_expiry_iso` recorded in audit context for traceability
+4. **NEXT:** Paper trade wiring on signal approval — when Approve fires AND deployment.mode=="paper", auto-create a paper trade with the chosen contract, lot size from contract metadata (Upstox-sourced), `lots=1` configurable per deployment
+5. Pre-flight data realism panel — before allowing a deployment to be created, show: spot coverage for the next 5 trading days estimate, option contracts present for relevant expiries, planner-coverage estimate, expiry-rule rotation notes, BANKNIFTY weekly discontinuation warning. Informational, does not block.
+6. Slippage model with configurable defaults — ATM 0.5pt, OTM1 1pt, OTM2+ 2pt, expiry-day-30min 2x multiplier; user override per backtest. Plus a post-hoc volatility detector (5min realized / 30day average; >2.5x triggers wide-spread flag) since reliable event calendar is not feasible.
 7. Strategy source SHA hash — auto-pause deployment with reason `strategy_source_drift` if the strategy file's hash changes after deployment creation
 8. Acknowledgment checkbox on deployment creation when source backtest has worrying signs (walk-forward divergence > 30%, low trade count, etc.) — does NOT block, just forces conscious choice
-9. Forward metrics aggregation per deployment — win-rate, avg P&L, profit factor — annotated with session completeness; surfaced in Strategy Library only when ≥10 complete sessions
+9. Forward metrics aggregation per deployment — win-rate, avg P&L, profit factor — annotated with session completeness (≥70% of 10:00-15:00 IST = "complete"); surfaced in Strategy Library only when ≥10 complete sessions
 10. Per-deployment kill switches — auto-pause on `max_consecutive_losses`, `daily_loss_cutoff_pct`, `max_open_paper_trades`. User-configurable per deployment.
+11. Idempotency hardening — unique compound index `(deployment_id, candle_ts)` on `signals` collection; evaluator catches duplicate-key as "already journaled"
 
 ## Data hygiene baseline (pre-requisite for serious backtesting)
 

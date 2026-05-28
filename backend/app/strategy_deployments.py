@@ -69,6 +69,8 @@ def build_deployment_doc(
     option_moneyness: Optional[Iterable[str]] = None,
     pretrade_profile: str = "Balanced",
     risk: Optional[Dict[str, Any]] = None,
+    dte_filter: Optional[Iterable[int]] = None,
+    allow_overnight: bool = False,
     now: Optional[str] = None,
 ) -> Dict[str, Any]:
     source_type = str(source_type or "").lower()
@@ -95,6 +97,17 @@ def build_deployment_doc(
     source_config = _source_config(source_doc)
     metrics = source_doc.get("metrics") if isinstance(source_doc.get("metrics"), dict) else {}
 
+    # DTE filter: which days-to-expiry are eligible for the chosen contract.
+    # User default 2026-05-27: 0-6 (full weekly window + a couple of days into next week).
+    dte_values: list = []
+    for v in (dte_filter if dte_filter is not None else [0, 1, 2, 3, 4, 5, 6]):
+        try:
+            iv = int(v)
+            if iv >= 0 and iv not in dte_values:
+                dte_values.append(iv)
+        except (TypeError, ValueError):
+            continue
+
     return {
         "id": str(uuid.uuid4()),
         "name": str(name or f"{strategy_id} deployment"),
@@ -117,11 +130,12 @@ def build_deployment_doc(
             "moneyness": _clean_moneyness(option_moneyness),
             "expiry_policy": "next_available",
             "manual_approval_required": True,
+            "dte_filter": dte_values,
         },
         "pretrade_profile": str(pretrade_profile or "Balanced"),
         "mode": mode,
         "manual_approval_required": True,
-        "risk": risk or {},
+        "risk": {**(risk or {}), "allow_overnight": bool(allow_overnight)},
         "status": "ACTIVE",
         "created_at": timestamp,
         "updated_at": timestamp,

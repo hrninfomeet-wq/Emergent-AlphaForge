@@ -47,6 +47,11 @@ from app.deployment_evaluator import (
     evaluate_active_deployments,
     evaluate_deployment_on_close,
 )
+from app.paper_squareoff import (
+    DEFAULT_SQUARE_OFF_IST,
+    is_square_off_due,
+    square_off_open_paper_trades,
+)
 from app.walkforward import walk_forward
 from app.warehouse import (
     audit_integrity,
@@ -135,10 +140,13 @@ async def _deployment_evaluator_loop() -> None:
     Sleeps quietly outside Indian market hours (NSE 09:15 - 15:30 IST, weekdays only).
     Uses the existing 1-minute candle warehouse, so the loop is independent of the
     WebSocket connection state - if the stream is down, it simply finds no fresh bar.
+
+    Also runs a once-per-day paper-trade auto-square-off at 15:00 IST.
     """
     from datetime import time as _time
     log.info("Deployment evaluator loop initialized")
     db = get_db()
+    last_squareoff_ist_date: Optional[str] = None
     while True:
         try:
             # Sleep until 10 seconds past the next minute boundary
@@ -150,6 +158,7 @@ async def _deployment_evaluator_loop() -> None:
 
             # Skip evaluation outside NSE market hours (Mon-Fri, 09:15-15:30 IST)
             ist_now = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+            today_ist = ist_now.strftime("%Y-%m-%d")
             if ist_now.weekday() >= 5:
                 continue
             t = ist_now.time()
@@ -164,6 +173,18 @@ async def _deployment_evaluator_loop() -> None:
                     len(results), len(interesting),
                     ", ".join(f"{r['outcome']}/{str(r.get('deployment_id') or '')[:8]}" for r in interesting[:5]),
                 )
+
+            # Once per IST date, force-close any open paper trades when we cross the cutoff.
+            if last_squareoff_ist_date != today_ist and is_square_off_due(ist_now):
+                summaries = await square_off_open_paper_trades(
+                    db,
+                    latest_tick_lookup=upstox_stream_manager.latest_tick_map().get,
+                    reason="auto_square_off_15_00_IST",
+                    now_ist=ist_now,
+                )
+                if summaries:
+                    log.info("paper square-off at 15:00 IST closed %d open trades", len(summaries))
+                last_squareoff_ist_date = today_ist
         except asyncio.CancelledError:
             log.info("Deployment evaluator loop cancelled")
             return
@@ -898,6 +919,8 @@ async def create_deployment(req: DeploymentCreateReq):
             option_moneyness=req.option_moneyness,
             pretrade_profile=req.pretrade_profile,
             risk=req.risk,
+            dte_filter=req.dte_filter,
+            allow_overnight=req.allow_overnight,
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
@@ -967,6 +990,22 @@ async def evaluate_active_deployments_route():
     db = get_db()
     results = await evaluate_active_deployments(db)
     return serialize_doc({"items": results, "count": len(results)})
+
+
+@api.post("/paper/square-off")
+async def manual_paper_square_off():
+    """Force-close all OPEN paper trades immediately. Idempotent (closed trades are skipped).
+
+    Used for manual end-of-day cleanup or testing. The scheduled auto-square-off runs at
+    15:00 IST during the market session loop.
+    """
+    db = get_db()
+    summaries = await square_off_open_paper_trades(
+        db,
+        latest_tick_lookup=upstox_stream_manager.latest_tick_map().get,
+        reason="manual_square_off",
+    )
+    return serialize_doc({"items": summaries, "count": len(summaries)})
 
 
 @api.post("/signals")
@@ -1495,6 +1534,8 @@ class DeploymentCreateReq(BaseModel):
     option_moneyness: List[str] = Field(default_factory=lambda: ["atm"])
     pretrade_profile: str = "Balanced"
     risk: Dict[str, Any] = Field(default_factory=dict)
+    dte_filter: List[int] = Field(default_factory=lambda: [0, 1, 2, 3, 4, 5, 6])
+    allow_overnight: bool = False
 
 
 def _ist_market_bounds_ms(from_date: str, to_date: str) -> tuple[int, int]:
