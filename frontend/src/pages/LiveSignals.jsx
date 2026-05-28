@@ -25,6 +25,9 @@ export default function LiveSignals() {
     confirmation_mode: "1m_close",
     option_moneyness: "atm",
     pretrade_profile: "Balanced",
+    dte_filter: "0,1,2,3,4,5,6",
+    default_lots: 1,
+    allow_overnight: false,
   });
   const [form, setForm] = useState({
     instrument: "NIFTY",
@@ -103,13 +106,20 @@ export default function LiveSignals() {
     }
     setBusy(true);
     try {
-      await api.createDeployment({
+      const payload = {
         ...deploymentForm,
         option_moneyness: String(deploymentForm.option_moneyness || "atm")
           .split(",")
           .map((item) => item.trim().toLowerCase())
           .filter(Boolean),
-      });
+        dte_filter: String(deploymentForm.dte_filter || "0,1,2,3,4,5,6")
+          .split(",")
+          .map((item) => parseInt(item.trim(), 10))
+          .filter((n) => Number.isFinite(n) && n >= 0),
+        default_lots: Math.max(1, parseInt(deploymentForm.default_lots, 10) || 1),
+        allow_overnight: Boolean(deploymentForm.allow_overnight),
+      };
+      await api.createDeployment(payload);
       toast.success("Strategy deployment created");
       await refreshDeployments();
     } catch (e) {
@@ -158,8 +168,14 @@ export default function LiveSignals() {
   const approveSignal = async (signal, note = "") => {
     setBusy(true);
     try {
-      await api.approveSignal(signal.id, { note });
-      toast.success("Signal approved");
+      const res = await api.approveSignal(signal.id, { note });
+      if (res?.trade) {
+        toast.success(`Approved + paper trade opened: ${res.trade.trading_symbol || res.trade.id}`);
+      } else if (res?.signal?.paper_trade_error) {
+        toast.warning(`Signal approved but paper trade failed: ${res.signal.paper_trade_error}`);
+      } else {
+        toast.success("Signal approved");
+      }
       await refresh();
     } catch (e) {
       toast.error(`Approve failed: ${e.response?.data?.detail || e.message}`);
@@ -447,6 +463,37 @@ function StrategyDeploymentsPanel({ deployments, presets, backtestRuns, form, se
                 <option value="atm,itm1">ATM + ITM1</option>
               </select>
             </label>
+            <label className="text-[11px] text-dim">
+              DTE filter
+              <Input
+                value={form.dte_filter}
+                onChange={(e) => setFormValue("dte_filter", e.target.value)}
+                className="mt-1 bg-bg-1 border-line"
+                placeholder="0,1,2,3,4,5,6"
+                title="Days-to-expiry list (comma separated). Default 0-6."
+              />
+            </label>
+            <label className="text-[11px] text-dim">
+              Default lots
+              <Input
+                type="number"
+                min="1"
+                value={form.default_lots}
+                onChange={(e) => setFormValue("default_lots", e.target.value)}
+                className="mt-1 bg-bg-1 border-line"
+                title="Number of lots when paper trade is auto-created on approval. Lot size comes from option_contracts (Upstox)."
+              />
+            </label>
+            <label className="text-[11px] text-dim col-span-2 flex items-center gap-2 pt-1">
+              <input
+                type="checkbox"
+                checked={Boolean(form.allow_overnight)}
+                onChange={(e) => setFormValue("allow_overnight", e.target.checked)}
+                className="h-4 w-4 rounded border-line"
+                data-testid="allow-overnight-checkbox"
+              />
+              <span>Allow overnight (skip 15:00 IST auto-square-off for this deployment)</span>
+            </label>
           </div>
           <Button
             onClick={onCreate}
@@ -580,6 +627,8 @@ function PendingSignalCard({ signal, busy, onApprove, onSkip, onMarkBlocked }) {
   const ctx = signal.context || {};
   const candle = ctx.candle || {};
   const contract = signal.option_contract || {};
+  const deploymentMode = String(ctx.deployment_mode || "shadow").toLowerCase();
+  const willCreateTrade = deploymentMode === "paper";
   return (
     <article className="rounded-md border border-warning/40 bg-bg-2 p-3" data-testid="pending-signal-card">
       <div className="flex flex-wrap items-start gap-3">
@@ -588,6 +637,9 @@ function PendingSignalCard({ signal, busy, onApprove, onSkip, onMarkBlocked }) {
             <span className="font-semibold text-base">{signal.instrument}</span>
             <span className={`text-xs font-mono px-1.5 py-0.5 rounded border ${signal.direction === "CE" ? "border-emerald-500/40 text-emerald-400" : "border-red-500/40 text-red-400"}`}>{signal.direction}</span>
             <span className="text-[10px] px-1.5 py-0.5 rounded border border-line bg-bg-3 font-mono">{signal.state}</span>
+            <span className={`text-[10px] px-1.5 py-0.5 rounded border font-mono ${willCreateTrade ? "border-emerald-500/40 text-emerald-400" : "border-line text-dimmer"}`}>
+              {deploymentMode}
+            </span>
             <span className="text-[10px] text-dimmer font-mono">score {fmtNum(signal.confidence)}</span>
             {candle.ist_time && <span className="text-[10px] text-dimmer font-mono">bar {candle.ist_time} IST</span>}
           </div>
@@ -601,12 +653,17 @@ function PendingSignalCard({ signal, busy, onApprove, onSkip, onMarkBlocked }) {
           </div>
           {contract.trading_symbol && (
             <div className="mt-1 text-[11px] text-dimmer font-mono">
-              contract {contract.trading_symbol} · strike {fmtNum(contract.strike)} · {contract.side}
+              contract {contract.trading_symbol} · strike {fmtNum(contract.strike)} · {contract.side} · lot {contract.lot_size || "?"}
             </div>
           )}
           {signal.reasons?.length > 0 && (
             <div className="mt-1 text-[11px] text-dimmer">
               reasons: {signal.reasons.join(", ")}
+            </div>
+          )}
+          {willCreateTrade && (
+            <div className="mt-1 text-[11px] text-emerald-400/80">
+              Approve will auto-create a paper trade.
             </div>
           )}
           <div className="mt-2 flex items-center gap-2">
@@ -628,7 +685,7 @@ function PendingSignalCard({ signal, busy, onApprove, onSkip, onMarkBlocked }) {
             data-testid="approve-button"
           >
             <Check className="w-3 h-3 mr-1" />
-            Approve
+            {willCreateTrade ? "Approve + Paper" : "Approve"}
           </Button>
           <Button
             size="sm"

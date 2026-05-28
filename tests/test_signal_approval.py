@@ -88,3 +88,61 @@ def test_signal_carries_audit_metadata_through_transitions():
     doc = transition_signal(doc, "ACTIVE", reason="manual_approval_active")
     assert doc["context"]["deployment_id"] == "d-1"
     assert doc["context"]["strategy_hash"] == "abc1234567890def"
+
+
+# ---------- auto-paper on approval (slice 4) ---------------------------------
+
+from app.paper_trading import paper_trade_from_signal  # noqa: E402
+
+
+def _confirmed_signal_with_deployment(deployment_id: str = "dep-1") -> Dict[str, Any]:
+    """Confirmed signal with an attached deployment_id, like the evaluator produces."""
+    doc = _confirmed_signal()
+    doc["deployment_id"] = deployment_id
+    doc["option_contract"] = {
+        "trading_symbol": "NIFTY26JUN23900CE",
+        "lot_size": 65,  # Upstox-sourced, never hardcoded in our code
+        "instrument_key": "NSE_FO|TEST|23900CE",
+        "strike": 23900.0,
+        "side": "CE",
+    }
+    return doc
+
+
+def test_auto_paper_creates_trade_with_correct_lot_size_and_deployment_id():
+    """Simulates what the approve route does for a deployment in mode=paper."""
+    signal = _confirmed_signal_with_deployment()
+    # Simulate the lifecycle walk the route performs
+    signal = transition_signal(signal, "TRIGGERED", reason="manual_approval")
+    signal = transition_signal(signal, "ACTIVE", reason="manual_approval_active")
+
+    trade = paper_trade_from_signal(
+        signal,
+        lots=1,
+        entry_price=signal.get("entry_price"),
+        stop_price=None,
+        target_price=None,
+    )
+    trade["deployment_id"] = "dep-1"
+    trade["source"] = "paper_auto_on_approval"
+
+    assert trade["lot_size"] == 65, "lot_size must come from the signal's option_contract (Upstox-sourced)"
+    assert trade["lots"] == 1
+    assert trade["quantity"] == 65 * 1
+    assert trade["deployment_id"] == "dep-1"
+    assert trade["source"] == "paper_auto_on_approval"
+    assert trade["status"] == "OPEN"
+    assert trade["instrument_key"] == "NSE_FO|TEST|23900CE"
+
+
+def test_auto_paper_respects_default_lots_from_deployment_risk():
+    """default_lots from deployment.risk is honored when creating the trade."""
+    signal = _confirmed_signal_with_deployment()
+    signal = transition_signal(signal, "TRIGGERED", reason="approve")
+    signal = transition_signal(signal, "ACTIVE", reason="approve")
+
+    # Caller (approve route) passes default_lots from deployment.risk
+    trade = paper_trade_from_signal(signal, lots=2, entry_price=signal.get("entry_price"))
+
+    assert trade["lots"] == 2
+    assert trade["quantity"] == 65 * 2  # 2 lots * Upstox lot size

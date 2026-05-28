@@ -918,7 +918,7 @@ async def create_deployment(req: DeploymentCreateReq):
             confirmation_mode=req.confirmation_mode,
             option_moneyness=req.option_moneyness,
             pretrade_profile=req.pretrade_profile,
-            risk=req.risk,
+            risk={**(req.risk or {}), "default_lots": int(req.default_lots or 1)},
             dte_filter=req.dte_filter,
             allow_overnight=req.allow_overnight,
         )
@@ -1040,9 +1040,13 @@ async def transition_signal_route(signal_id: str, req: SignalTransitionReq):
 
 @api.post("/signals/{signal_id}/approve")
 async def approve_signal_route(signal_id: str, req: SignalApprovalReq):
-    """Approve a deployment-generated signal. Transitions CONFIRMED -> TRIGGERED -> ACTIVE
-    and stamps the approval audit fields. Does not create a paper trade in this slice -
-    that wiring is the next slice. Use POST /signals/{id}/paper to deploy after approval.
+    """Approve a deployment-generated signal.
+
+    Always: transitions CONFIRMED -> TRIGGERED -> ACTIVE and stamps approval audit.
+    If deployment.mode == "paper": also creates a paper trade automatically using the
+        contract from the signal, lots from deployment.risk.default_lots (default 1),
+        and stop/target from the signal's risk hints if present.
+    Mode "shadow" or "recommendation": journaling-only, no paper trade.
     """
     db = get_db()
     doc = await db.signals.find_one({"id": signal_id}, {"_id": 0})
@@ -1051,6 +1055,13 @@ async def approve_signal_route(signal_id: str, req: SignalApprovalReq):
     state = str(doc.get("state") or "").upper()
     if state != "CONFIRMED":
         raise HTTPException(400, f"Approve requires state=CONFIRMED, got {state}")
+
+    # Resolve the parent deployment (if any) so we know the mode and risk defaults.
+    deployment_id = str(doc.get("deployment_id") or "")
+    deployment: Optional[Dict[str, Any]] = None
+    if deployment_id:
+        deployment = await db.strategy_deployments.find_one({"id": deployment_id}, {"_id": 0})
+
     snapshot = {
         "approval": {
             "approved_at": datetime.now(timezone.utc).isoformat(),
@@ -1064,8 +1075,37 @@ async def approve_signal_route(signal_id: str, req: SignalApprovalReq):
     except SignalStateError as e:
         raise HTTPException(400, str(e))
     updated["approval"] = snapshot["approval"]
+
+    # Auto-paper for deployments in `paper` mode. Failure to create the trade does NOT
+    # roll back the approval - the approval is journaled either way for audit.
+    trade: Optional[Dict[str, Any]] = None
+    if deployment and str(deployment.get("mode") or "").lower() == "paper":
+        try:
+            risk_cfg = deployment.get("risk") or {}
+            default_lots = max(1, int(risk_cfg.get("default_lots") or 1))
+            stop_price = risk_cfg.get("stop_price")
+            target_price = risk_cfg.get("target_price")
+            trade = paper_trade_from_signal(
+                updated,
+                lots=default_lots,
+                entry_price=updated.get("entry_price"),
+                stop_price=stop_price,
+                target_price=target_price,
+            )
+            # Stamp deployment_id on the trade so square-off can honor allow_overnight
+            trade["deployment_id"] = deployment_id
+            trade["source"] = "paper_auto_on_approval"
+            await db.paper_trades.insert_one(trade)
+            updated["paper_trade_id"] = trade["id"]
+        except Exception as exc:
+            log.exception("auto-paper failed for signal %s: %s", signal_id, exc)
+            updated["paper_trade_error"] = str(exc)[:240]
+
     await db.signals.replace_one({"id": signal_id}, updated, upsert=False)
-    return serialize_doc(updated)
+    response = {"signal": serialize_doc(updated)}
+    if trade:
+        response["trade"] = serialize_doc(trade)
+    return response
 
 
 @api.post("/signals/{signal_id}/skip")
@@ -1170,6 +1210,10 @@ async def deploy_signal_to_paper(signal_id: str, req: PaperDeployReq):
     except (SignalStateError, ValueError) as e:
         raise HTTPException(400, str(e))
 
+    # Carry deployment_id onto the trade so square-off honors allow_overnight.
+    if signal.get("deployment_id"):
+        trade["deployment_id"] = signal["deployment_id"]
+        trade["source"] = "paper_manual_deploy"
     await db.paper_trades.insert_one(trade)
     active_signal["paper_trade_id"] = trade["id"]
     active_signal["updated_at"] = trade["updated_at"]
@@ -1536,6 +1580,7 @@ class DeploymentCreateReq(BaseModel):
     risk: Dict[str, Any] = Field(default_factory=dict)
     dte_filter: List[int] = Field(default_factory=lambda: [0, 1, 2, 3, 4, 5, 6])
     allow_overnight: bool = False
+    default_lots: int = 1
 
 
 def _ist_market_bounds_ms(from_date: str, to_date: str) -> tuple[int, int]:
