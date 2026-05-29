@@ -41,8 +41,9 @@ from app.options_universe import select_contract_for_signal
 from app.paper_trading import close_trade, mark_trade_to_market, paper_trade_from_signal
 from app.signal_lifecycle import SignalStateError, create_signal_doc, transition_signal
 from app.strategy_deployments import build_deployment_doc
-from app.upstox_index_ingest import run_upstox_index_ingest_job
+from app.upstox_index_ingest import persist_index_candles_bulk, run_upstox_index_ingest_job
 from app.upstox_stream import DEFAULT_STREAM_MODE, UpstoxMarketStreamManager
+from app.live_candle_roller import LiveCandleRoller
 from app.deployment_evaluator import (
     evaluate_active_deployments,
     evaluate_deployment_on_close,
@@ -88,6 +89,11 @@ log = logging.getLogger("alphaforge")
 app = FastAPI(title="AlphaForge Trading Lab API")
 api = APIRouter(prefix="/api")
 upstox_stream_manager = UpstoxMarketStreamManager()
+live_candle_roller = LiveCandleRoller(
+    stream_manager=upstox_stream_manager,
+    db_factory=get_db,
+    persister=persist_index_candles_bulk,
+)
 
 # ---------------------------------------------------------------------------
 # Startup: discover plugins + ensure indexes + seed pretrade profiles
@@ -232,6 +238,9 @@ async def startup() -> None:
                     persist=True,
                 )
                 log.info(f"Upstox WS stream auto-started with {len(keys)} instruments")
+                # Also start the live tick -> 1m bar roller so candles_1m gets today's bars.
+                # This is what makes the deployment evaluator able to fire on intraday data.
+                await live_candle_roller.start()
         else:
             log.info("Upstox not connected at startup; skipping WS auto-start")
     except Exception as exc:
@@ -244,6 +253,10 @@ async def startup() -> None:
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
+    try:
+        await live_candle_roller.stop()
+    except Exception as exc:
+        log.warning("live_candle_roller.stop() failed: %s", exc)
     from app.db import get_client
     get_client().close()
 
@@ -1033,6 +1046,26 @@ async def manual_paper_square_off():
         reason="manual_square_off",
     )
     return serialize_doc({"items": summaries, "count": len(summaries)})
+
+
+@api.get("/live-candles/status")
+async def live_candle_roller_status():
+    """Return the live tick-to-OHLC roller status: tick counts, active buckets, last error."""
+    return serialize_doc(live_candle_roller.status())
+
+
+@api.post("/live-candles/start")
+async def live_candle_roller_start():
+    """Manually start the live tick-to-OHLC roller. No-op if already running."""
+    await live_candle_roller.start()
+    return serialize_doc(live_candle_roller.status())
+
+
+@api.post("/live-candles/stop")
+async def live_candle_roller_stop():
+    """Stop the roller and flush any in-progress buckets."""
+    await live_candle_roller.stop()
+    return serialize_doc(live_candle_roller.status())
 
 
 @api.post("/signals")
