@@ -41,6 +41,7 @@ from app.options_universe import select_contract_for_signal
 from app.paper_trading import close_trade, mark_trade_to_market, paper_trade_from_signal
 from app.signal_lifecycle import SignalStateError, create_signal_doc, transition_signal
 from app.strategy_deployments import build_deployment_doc
+from app.strategy_source_hash import detect_drift, hash_strategy_source
 from app.upstox_index_ingest import persist_index_candles_bulk, run_upstox_index_ingest_job
 from app.upstox_stream import DEFAULT_STREAM_MODE, UpstoxMarketStreamManager
 from app.live_candle_roller import LiveCandleRoller
@@ -991,6 +992,11 @@ async def _load_deployment_source(db: Any, source_type: str, source_id: str) -> 
 async def create_deployment(req: DeploymentCreateReq):
     db = get_db()
     source = await _load_deployment_source(db, req.source_type, req.source_id)
+    # Pin the strategy source-file SHA at creation time so the evaluator can
+    # later detect drift if the user edits the .py file without re-deploying.
+    strategy_id = str(source.get("strategy_id") or (source.get("config") or {}).get("strategy_id") or "")
+    strategy_obj = get_registry().get(strategy_id) if strategy_id else None
+    pinned_source_sha = hash_strategy_source(strategy_obj) if strategy_obj else None
     try:
         doc = build_deployment_doc(
             source_type=req.source_type,
@@ -1003,6 +1009,7 @@ async def create_deployment(req: DeploymentCreateReq):
             risk={**(req.risk or {}), "default_lots": int(req.default_lots or 1)},
             dte_filter=req.dte_filter,
             allow_overnight=req.allow_overnight,
+            strategy_source_sha=pinned_source_sha,
         )
     except ValueError as e:
         raise HTTPException(400, str(e))

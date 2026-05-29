@@ -71,6 +71,7 @@ def build_deployment_doc(
     risk: Optional[Dict[str, Any]] = None,
     dte_filter: Optional[Iterable[int]] = None,
     allow_overnight: bool = False,
+    strategy_source_sha: Optional[str] = None,
     now: Optional[str] = None,
 ) -> Dict[str, Any]:
     source_type = str(source_type or "").lower()
@@ -122,6 +123,7 @@ def build_deployment_doc(
         "strategy_id": strategy_id,
         "strategy_version": str(source_doc.get("strategy_version") or source_config.get("strategy_version") or ""),
         "strategy_hash": str(source_doc.get("strategy_hash") or source_config.get("strategy_hash") or ""),
+        "strategy_source_sha": str(strategy_source_sha or ""),
         "params": _params(source_type, source_doc),
         "instrument": instrument,
         "timeframe": "1m",

@@ -543,3 +543,96 @@ async def test_evaluator_handles_duplicate_key_as_skipped():
 
     # restore
     db.signals.insert_one = original  # type: ignore
+
+
+# ---------- strategy source drift (slice 8) ----------------------------------
+
+
+@pytest.mark.asyncio
+async def test_evaluator_auto_pauses_on_strategy_source_drift(monkeypatch):
+    """When the deployment's pinned source SHA does not match the current file
+    SHA, the evaluator auto-pauses the deployment and journals the drift event.
+    """
+    from app import strategy_source_hash as ssh
+
+    db = FakeDB()
+    candles = make_candles(n=80)
+    deployment = make_deployment()
+    deployment["strategy_source_sha"] = "PINNED_SHA_OLD"
+    seed_db(db, candles=candles, deployment=deployment,
+            contracts=make_contracts(), profiles=[make_profile(min_score=50)])
+
+    # Force the current source hash to differ from the pinned one
+    monkeypatch.setattr(ssh, "hash_strategy_source", lambda obj: "CURRENT_SHA_NEW")
+
+    StubStrategy.set_next(Signal(direction="CE", score=80, reasons=["should not fire"]))
+
+    res = await evaluate_deployment_on_close(db, db.strategy_deployments.rows[0])
+
+    assert res["outcome"] == "skipped"
+    assert "strategy_source_drift" in res["reason"]
+    assert res["drift_pinned_sha"] == "PINNED_SHA_OLD"
+    assert res["drift_current_sha"] == "CURRENT_SHA_NEW"
+    # Deployment must be auto-paused
+    updated = db.strategy_deployments.rows[0]
+    assert updated["status"] == "PAUSED"
+    assert updated["drift_reason"] == "strategy_source_drift"
+    # No signal should have been journaled
+    assert len(db.signals.rows) == 0
+
+
+@pytest.mark.asyncio
+async def test_evaluator_does_not_pause_when_source_sha_matches(monkeypatch):
+    """When pinned and current SHAs match, evaluation proceeds normally."""
+    from app import strategy_source_hash as ssh
+
+    db = FakeDB()
+    candles = make_candles(n=80)
+    deployment = make_deployment()
+    deployment["strategy_source_sha"] = "MATCHING_SHA"
+    seed_db(db, candles=candles, deployment=deployment,
+            contracts=make_contracts(), profiles=[make_profile(min_score=50)])
+    last_close = float(candles["close"].iloc[-1])
+    atm_strike = round(last_close / 50) * 50
+    db.options_1m.rows.append({
+        "instrument_key": f"NSE_FO|TEST|{atm_strike}CE",
+        "ts": now_ms(),
+    })
+    monkeypatch.setattr(ssh, "hash_strategy_source", lambda obj: "MATCHING_SHA")
+
+    StubStrategy.set_next(Signal(direction="CE", score=80, reasons=["should fire"]))
+
+    res = await evaluate_deployment_on_close(db, db.strategy_deployments.rows[0])
+
+    assert res["outcome"] == "clean"
+    assert "drift" not in (res.get("reason") or "")
+    assert db.strategy_deployments.rows[0]["status"] == "ACTIVE"
+
+
+@pytest.mark.asyncio
+async def test_evaluator_no_pinned_sha_means_no_drift_check(monkeypatch):
+    """Deployments created before slice 8 have no pinned SHA. They keep working."""
+    from app import strategy_source_hash as ssh
+
+    db = FakeDB()
+    candles = make_candles(n=80)
+    deployment = make_deployment()
+    # NOT setting strategy_source_sha - simulates a pre-slice-8 deployment
+    seed_db(db, candles=candles, deployment=deployment,
+            contracts=make_contracts(), profiles=[make_profile(min_score=50)])
+    last_close = float(candles["close"].iloc[-1])
+    atm_strike = round(last_close / 50) * 50
+    db.options_1m.rows.append({
+        "instrument_key": f"NSE_FO|TEST|{atm_strike}CE",
+        "ts": now_ms(),
+    })
+    # Even if hash_strategy_source would return something different, the absence
+    # of a pinned SHA on the deployment means we never compare and never pause.
+    monkeypatch.setattr(ssh, "hash_strategy_source", lambda obj: "DOESNT_MATTER")
+
+    StubStrategy.set_next(Signal(direction="CE", score=80, reasons=["should fire"]))
+
+    res = await evaluate_deployment_on_close(db, db.strategy_deployments.rows[0])
+
+    assert res["outcome"] == "clean"
+    assert db.strategy_deployments.rows[0]["status"] == "ACTIVE"

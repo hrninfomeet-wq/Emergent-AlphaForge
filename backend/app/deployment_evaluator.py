@@ -251,6 +251,40 @@ async def evaluate_deployment_on_close(
     if strategy is None:
         return {"deployment_id": deployment_id, "outcome": "error", "reason": f"strategy_not_loaded: {strategy_id}"}
 
+    # Drift check: if a strategy_source_sha was pinned at deployment creation time
+    # and the current file no longer matches, auto-pause this deployment and journal
+    # the drift event. Conservative: missing/None on either side = no drift.
+    # Drift check: if a strategy_source_sha was pinned at deployment creation time
+    # and the current file no longer matches, auto-pause this deployment and journal
+    # the drift event. Conservative: missing/None on either side = no drift.
+    pinned_sha = str(deployment.get("strategy_source_sha") or "")
+    if pinned_sha:
+        from app.strategy_source_hash import detect_drift, hash_strategy_source
+        current_sha = hash_strategy_source(strategy)
+        if detect_drift(pinned=pinned_sha, current=current_sha):
+            await db.strategy_deployments.update_one(
+                {"id": deployment_id},
+                {"$set": {
+                    "status": "PAUSED",
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                    "drift_detected_at": datetime.now(timezone.utc).isoformat(),
+                    "drift_pinned_sha": pinned_sha,
+                    "drift_current_sha": current_sha,
+                    "drift_reason": "strategy_source_drift",
+                }},
+            )
+            log.warning(
+                "strategy_source_drift on deployment %s: pinned=%s current=%s -> auto-paused",
+                deployment_id, pinned_sha, current_sha,
+            )
+            return {
+                "deployment_id": deployment_id,
+                "outcome": "skipped",
+                "reason": f"strategy_source_drift (pinned={pinned_sha}, current={current_sha}); deployment auto-paused",
+                "drift_pinned_sha": pinned_sha,
+                "drift_current_sha": current_sha,
+            }
+
     df = await _load_recent_candles(db, instrument, lookback=200)
     if df.empty or len(df) < MIN_BARS_FOR_EVALUATION:
         return {
@@ -354,6 +388,7 @@ async def evaluate_deployment_on_close(
         "source_id": deployment.get("source_id"),
         "strategy_version": getattr(strategy, "version", "") or "",
         "strategy_hash": strategy_hash,
+        "strategy_source_sha": pinned_sha if pinned_sha else None,
         "params": merged_params,
         "pretrade_profile_name": profile_name,
         "pretrade_settings_snapshot": pretrade_settings,
