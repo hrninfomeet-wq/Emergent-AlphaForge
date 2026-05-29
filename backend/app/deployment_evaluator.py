@@ -415,7 +415,27 @@ async def evaluate_deployment_on_close(
         )
         outcome = "clean"
 
-    await db.signals.insert_one(signal_doc)
+    try:
+        await db.signals.insert_one(signal_doc)
+    except Exception as exc:
+        # The unique partial index on (deployment_id, candle_ts) raises a duplicate-key
+        # error if a signal for this bar already exists. Treat as idempotent skip rather
+        # than crashing - the bar was already journaled (likely from a crash recovery
+        # or an out-of-order scheduler tick).
+        msg = str(exc).lower()
+        if "duplicate" in msg or "e11000" in msg:
+            log.info(
+                "signals.insert_one duplicate for deployment=%s bar=%s; treating as already_journaled",
+                deployment_id, candle_ts,
+            )
+            await _mark_deployment_evaluated(db, deployment_id, candle_ts)
+            return {
+                "deployment_id": deployment_id,
+                "outcome": "skipped",
+                "reason": "already_journaled (duplicate key on insert)",
+                "candle_ts": candle_ts,
+            }
+        raise
     await _mark_deployment_evaluated(db, deployment_id, candle_ts)
 
     return {

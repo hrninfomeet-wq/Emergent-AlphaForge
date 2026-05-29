@@ -43,6 +43,15 @@ async def ensure_indexes() -> None:
     await db.integrity_hashes.create_index([("instrument", 1), ("date", 1)], unique=True)
     await db.backtest_runs.create_index([("created_at", -1)])
     await db.signals.create_index([("created_at", -1)])
+    # Idempotency guard for the deployment evaluator: ensure no two signals exist
+    # for the same (deployment_id, candle_ts) pair. Partial index so manual research
+    # signals (which have no deployment_id) are unaffected.
+    await db.signals.create_index(
+        [("deployment_id", 1), ("candle_ts", 1)],
+        unique=True,
+        name="signals_deployment_bar_unique",
+        partialFilterExpression={"deployment_id": {"$exists": True, "$type": "string"}},
+    )
     await db.strategy_deployments.create_index([("created_at", -1)])
     await db.strategy_deployments.create_index([("status", 1), ("updated_at", -1)])
     await db.strategy_deployments.create_index([("source_type", 1), ("source_id", 1)])

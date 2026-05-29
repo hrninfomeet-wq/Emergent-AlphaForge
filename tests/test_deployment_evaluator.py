@@ -506,3 +506,40 @@ def test_expiry_cutoff_today_is_expiry_after_cutoff_returns_block():
     ist_dt = datetime(2026, 5, 27, 15, 25, tzinfo=timezone(IST_OFFSET))
     reason = _is_blocked_by_expiry_day_cutoff(ist_dt, "2026-05-27")
     assert reason and "expiry_day_cutoff" in reason
+
+
+# ---------- idempotency: duplicate-key handling (slice 11) -------------------
+
+
+@pytest.mark.asyncio
+async def test_evaluator_handles_duplicate_key_as_skipped():
+    """If signals.insert_one raises a duplicate-key error (live unique index on
+    (deployment_id, candle_ts) catching a race), the evaluator must treat it as
+    'already_journaled' instead of crashing.
+    """
+    db = FakeDB()
+    candles = make_candles(n=80)
+    seed_db(db, candles=candles, deployment=make_deployment(),
+            contracts=make_contracts(), profiles=[make_profile(min_score=50)])
+    last_ts = int(candles["ts"].iloc[-1])
+    db.options_1m.rows.append({
+        "instrument_key": f"NSE_FO|TEST|{round(float(candles['close'].iloc[-1]) / 50) * 50}CE",
+        "ts": now_ms(),
+    })
+    StubStrategy.set_next(Signal(direction="CE", score=80, reasons=["ok"]))
+
+    # Monkey-patch the signals collection's insert_one to raise duplicate-key
+    original = db.signals.insert_one
+    async def raise_dup(doc):
+        raise RuntimeError("E11000 duplicate key error: dup on signals_deployment_bar_unique")
+    db.signals.insert_one = raise_dup  # type: ignore
+
+    res = await evaluate_deployment_on_close(db, db.strategy_deployments.rows[0])
+
+    assert res["outcome"] == "skipped"
+    assert "already_journaled" in res["reason"]
+    # last_evaluated_ts must still advance so we don't keep retrying
+    assert db.strategy_deployments.rows[0]["last_evaluated_ts"] == last_ts
+
+    # restore
+    db.signals.insert_one = original  # type: ignore

@@ -28,8 +28,8 @@ User-confirmed slices in priority order. Each ships small, gets verified, then w
 8. Strategy source SHA hash — auto-pause deployment with reason `strategy_source_drift` if the strategy file's hash changes after deployment creation
 9. Acknowledgment checkbox on deployment creation when source backtest has worrying signs (walk-forward divergence > 30%, low trade count, etc.) — does NOT block, just forces conscious choice
 10. Forward metrics aggregation per deployment — win-rate, avg P&L, profit factor — annotated with session completeness (≥70% of 10:00-15:00 IST = "complete"); surfaced in Strategy Library only when ≥10 complete sessions
-11. Per-deployment kill switches — auto-pause on `max_consecutive_losses`, `daily_loss_cutoff_pct`, `max_open_paper_trades`. User-configurable per deployment.
-12. Idempotency hardening — unique compound index `(deployment_id, candle_ts)` on `signals` collection; evaluator catches duplicate-key as "already journaled"
+11. **DONE:** Idempotency hardening — added unique partial index `signals(deployment_id, candle_ts)` (partial: only enforced when deployment_id is a string, so manual research signals are unaffected). Evaluator catches Mongo duplicate-key errors and treats them as `already_journaled`, advances `last_evaluated_ts` to prevent retry loops. Index created live on the running DB and added to `ensure_indexes()` so future boots reapply it. 1 unit test (155 total passing).
+12. Per-deployment kill switches — auto-pause on `max_consecutive_losses`, `daily_loss_cutoff_pct`, `max_open_paper_trades`. User-configurable per deployment.
 
 ## Data hygiene baseline (pre-requisite for serious backtesting)
 
