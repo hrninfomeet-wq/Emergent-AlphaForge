@@ -48,6 +48,16 @@ from app.deployment_evaluator import (
     evaluate_deployment_on_close,
 )
 from app.deployment_preflight import compute_data_realism
+from app.data_hygiene import (
+    DEFAULT_INSTRUMENTS as HYGIENE_DEFAULT_INSTRUMENTS,
+    DEFAULT_LEGS as HYGIENE_DEFAULT_LEGS,
+    DEFAULT_MONEYNESS as HYGIENE_DEFAULT_MONEYNESS,
+    DEFAULT_SAMPLE_INTERVAL_MIN as HYGIENE_DEFAULT_SAMPLE,
+    DEFAULT_START_DATE as HYGIENE_DEFAULT_START,
+    compute_hygiene_plan,
+    execute_hygiene_plan,
+    hygiene_status,
+)
 from app.paper_squareoff import (
     DEFAULT_SQUARE_OFF_IST,
     is_square_off_due,
@@ -2094,6 +2104,196 @@ async def get_upstox_option_warehouse_fetch_job(run_id: str):
     if not doc:
         raise HTTPException(404, "Option fetch job not found")
     return serialize_doc(doc)
+
+
+# ---------------------------------------------------------------------------
+# Data Hygiene workflow (slice 6)
+# ---------------------------------------------------------------------------
+
+
+class DataHygieneScopeReq(BaseModel):
+    start_date: str = HYGIENE_DEFAULT_START
+    end_date: Optional[str] = None
+    instruments: Optional[List[str]] = None
+    moneyness: Optional[List[str]] = None
+    legs: Optional[List[str]] = None
+    sample_interval_minutes: int = HYGIENE_DEFAULT_SAMPLE
+
+
+class DataHygieneExecuteReq(BaseModel):
+    plan: Dict[str, Any]
+    chunk_days_spot: int = 30
+    max_contracts_per_action: int = 2000
+
+
+@api.post("/data-hygiene/plan")
+async def data_hygiene_plan_route(req: DataHygieneScopeReq):
+    """Compute the hygiene plan against the current warehouse. Pure read - never fetches."""
+    plan = await compute_hygiene_plan(
+        get_db(),
+        start_date=req.start_date,
+        end_date=req.end_date,
+        instruments=req.instruments,
+        moneyness=req.moneyness,
+        legs=req.legs,
+        sample_interval_minutes=req.sample_interval_minutes,
+    )
+    return serialize_doc(plan)
+
+
+async def _hygiene_submit_spot(instrument: str, from_date: str, to_date: str, chunk_days: int) -> str:
+    """Submit a spot ingest as a background task and return the run_id."""
+    db = get_db()
+    if instrument.upper() not in upstox_client.INSTRUMENT_KEYS:
+        raise ValueError(f"Unsupported instrument: {instrument}")
+    guidance = chunk_guidance_for_index(from_date, to_date, chunk_days)
+    eff_chunk_days = int(guidance["chunk_days"])
+    run_id = str(_uuid.uuid4())
+    timestamp = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "id": run_id, "instrument": instrument.upper(),
+        "source": "data_hygiene", "kind": "spot",
+        "started_at": timestamp, "updated_at": timestamp, "status": "queued",
+        "from_date": from_date, "to_date": to_date,
+        "days": guidance["calendar_days"], "chunk_days": eff_chunk_days,
+        "chunk_mode": guidance["mode"],
+        "total_chunks": guidance["estimated_api_calls"],
+        "completed_chunks": 0, "progress_pct": 0,
+        "total_fetched": 0, "candles_added": 0, "candles_updated": 0,
+        "matched_existing": 0, "failed_chunks": [],
+    }
+    await db.warehouse_runs.insert_one(doc)
+    asyncio.create_task(run_upstox_index_ingest_job(run_id, instrument.upper(), from_date, to_date, eff_chunk_days))
+    return run_id
+
+
+async def _hygiene_submit_contracts(instrument: str, from_date: str, to_date: str) -> str:
+    """Submit an expired-contract backfill as a background task and return a run_id.
+
+    The backfill helper creates its own warehouse_runs row. We pre-stamp it with
+    source='data_hygiene' for filterability by writing a placeholder linked-by-instrument,
+    then let the helper insert its real row separately. Both rows show up in
+    warehouse_runs and the user can correlate by instrument + start time.
+    """
+    from app.expired_contract_backfill import backfill_expired_option_contracts
+    inst = instrument.upper()
+    if inst not in upstox_client.INSTRUMENT_KEYS:
+        raise ValueError(f"Unsupported instrument: {instrument}")
+    db = get_db()
+
+    run_id = str(_uuid.uuid4())
+    timestamp = datetime.now(timezone.utc).isoformat()
+    await db.warehouse_runs.insert_one({
+        "id": run_id, "instrument": inst,
+        "source": "data_hygiene", "kind": "contracts",
+        "started_at": timestamp, "updated_at": timestamp, "status": "queued",
+        "from_date": from_date, "to_date": to_date,
+        "progress_pct": 0,
+        "note": "Tracker row. The helper will create its own detailed row at the same time.",
+    })
+
+    async def _run():
+        try:
+            result = await backfill_expired_option_contracts(
+                db, inst,
+                from_date=from_date, to_date=to_date,
+                max_expiries=200,             # large window-friendly cap
+                confirm_large_fetch=True,     # data hygiene scope is opt-in already
+            )
+            await db.warehouse_runs.update_one(
+                {"id": run_id},
+                {"$set": {
+                    "status": str(result.get("status") or "ok"),
+                    "progress_pct": 100,
+                    "fetched_contracts": int(result.get("fetched_contracts") or 0),
+                    "upserted": int(result.get("upserted") or 0),
+                    "skipped": int(result.get("skipped") or 0),
+                    "linked_helper_run_id": result.get("run_id"),
+                    "finished_at": datetime.now(timezone.utc).isoformat(),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }},
+            )
+        except Exception as exc:
+            log.exception("data_hygiene contracts backfill failed for %s", inst)
+            await db.warehouse_runs.update_one(
+                {"id": run_id},
+                {"$set": {
+                    "status": "failed",
+                    "error": str(exc)[:300],
+                    "finished_at": datetime.now(timezone.utc).isoformat(),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }},
+            )
+
+    asyncio.create_task(_run())
+    return run_id
+
+
+async def _hygiene_submit_option_candles(action: Dict[str, Any]) -> str:
+    """Compute the option warehouse plan for the action and submit the fetch job."""
+    inst = str(action["instrument"]).upper()
+    if inst not in upstox_client.INSTRUMENT_KEYS:
+        raise ValueError(f"Unsupported instrument: {inst}")
+    # Build a synthetic OptionWarehousePlanReq so we can reuse the existing planner path
+    req = OptionWarehousePlanReq(
+        underlying=inst,
+        from_date=action["from_date"],
+        to_date=action["to_date"],
+        expiry_policy="next_available",
+        moneyness=list(action.get("moneyness") or HYGIENE_DEFAULT_MONEYNESS),
+        legs=list(action.get("legs") or HYGIENE_DEFAULT_LEGS),
+        sample_interval_minutes=int(action.get("sample_interval_minutes") or HYGIENE_DEFAULT_SAMPLE),
+        max_contracts=2000,
+        fetch_missing_only=True,
+    )
+    preview = await _build_option_warehouse_preview(req)
+    items = preview.get("items", [])
+    to_fetch = [i for i in items if i.get("needs_fetch")]
+    chunk_days = int(preview.get("chunk_guidance", {}).get("chunk_days") or 5)
+    db = get_db()
+    run_id = str(_uuid.uuid4())
+    timestamp = datetime.now(timezone.utc).isoformat()
+    await db.warehouse_runs.insert_one({
+        "id": run_id, "instrument": inst,
+        "source": "data_hygiene", "kind": "option_candles",
+        "started_at": timestamp, "updated_at": timestamp, "status": "queued",
+        "from_date": req.from_date, "to_date": req.to_date,
+        "moneyness": req.moneyness, "legs": req.legs,
+        "to_fetch_count": len(to_fetch),
+        "chunk_days": chunk_days,
+        "progress_pct": 0,
+    })
+    asyncio.create_task(run_option_warehouse_fetch_job(
+        run_id, preview,
+        fetch_missing_only=True,
+        chunk_days=chunk_days,
+    ))
+    return run_id
+
+
+@api.post("/data-hygiene/execute")
+async def data_hygiene_execute_route(req: DataHygieneExecuteReq):
+    """Submit the suggested fetches in dependency order: spot -> contracts -> option_candles.
+
+    Re-running the same plan is safe: each diff is recomputed on submit.
+    """
+    if not req.plan:
+        raise HTTPException(400, "plan body required (use /data-hygiene/plan first)")
+    result = await execute_hygiene_plan(
+        get_db(),
+        req.plan,
+        submit_spot=_hygiene_submit_spot,
+        submit_contracts=_hygiene_submit_contracts,
+        submit_option_candles=_hygiene_submit_option_candles,
+        chunk_days_spot=int(req.chunk_days_spot or 30),
+    )
+    return serialize_doc(result)
+
+
+@api.get("/data-hygiene/status")
+async def data_hygiene_status_route(plan_id: Optional[str] = Query(None)):
+    """Return the most recent data-hygiene run docs and their progress."""
+    return serialize_doc(await hygiene_status(get_db(), plan_id=plan_id))
 
 
 def _overlay_option_contract_metadata(local_contract: Optional[Dict[str, Any]], req: UpstoxOptionCandleIngestReq) -> Dict[str, Any]:
