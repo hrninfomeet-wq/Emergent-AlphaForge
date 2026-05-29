@@ -26,6 +26,12 @@ import uuid
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
+from app.nse_calendar import (
+    expected_trading_days as _calendar_expected_trading_days,
+    holidays_in_range,
+    trading_days_in_range,
+)
+
 log = logging.getLogger(__name__)
 
 DEFAULT_START_DATE = "2024-11-27"
@@ -41,14 +47,8 @@ def _today_ist_iso() -> str:
 
 
 def _expected_weekday_count(start_iso: str, end_iso: str) -> int:
-    cur = date.fromisoformat(start_iso)
-    end = date.fromisoformat(end_iso)
-    n = 0
-    while cur <= end:
-        if cur.weekday() < 5:
-            n += 1
-        cur += timedelta(days=1)
-    return n
+    """Count trading days (weekdays minus published NSE holidays) inclusive."""
+    return _calendar_expected_trading_days(start_iso, end_iso)
 
 
 async def _spot_coverage(db: Any, instrument: str, start_iso: str, end_iso: str) -> Dict[str, Any]:
