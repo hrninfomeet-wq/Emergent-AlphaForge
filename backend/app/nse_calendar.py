@@ -64,7 +64,7 @@ _HOLIDAYS_2025: Set[str] = {
 }
 
 _HOLIDAYS_2026: Set[str] = {
-    "2026-01-15",  # Pongal / Makar Sankranti (state)
+    "2026-01-15",  # Maharashtra municipal corporation/BMC civic elections (sudden, declared)
     "2026-01-26",  # Republic Day
     "2026-03-03",  # Holi
     "2026-03-26",  # Eid-ul-Fitr
@@ -77,6 +77,15 @@ _HOLIDAYS_2026: Set[str] = {
     "2026-10-02",  # Mahatma Gandhi Jayanti
     "2026-11-08",  # Diwali Laxmi Pujan (Sunday) - special session
     "2026-12-25",  # Christmas
+}
+
+# Exchange-driven expiry-day shifts: when the original expiry day fell on a holiday,
+# the exchange moved that week's expiry to the prior trading day. Stored here for
+# traceability; the planner already reads expiry_date from option_contracts so it
+# does not need to consult this set.
+SHIFTED_EXPIRY_DAYS: Set[str] = {
+    # 2026-01-15 (Thu) holiday -> SENSEX weekly moved to 2026-01-14 (Wed)
+    "2026-01-14",
 }
 
 # Budget Day Saturdays - NSE conducts a special Saturday trading session for the Union Budget.
