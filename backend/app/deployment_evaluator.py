@@ -128,15 +128,30 @@ async def _resolve_option_contract(
     Returns (contract_dict, blocker_reason). Either contract is set or blocker is set.
     Blockers:
       - "option_contract_metadata_missing": no contracts in option_contracts for instrument
+      - "option_contract_no_active_expiry": all stored contracts are past their expiry
       - "option_contract_not_found":        no exact strike/side match for the requested moneyness
     """
     if instrument.upper() not in UNDERLYING_META:
         return None, f"option_unsupported_underlying ({instrument})"
+
+    today_iso = (datetime.now(timezone.utc) + IST_OFFSET).strftime("%Y-%m-%d")
+
+    # Query for ACTIVE contracts only (expiry_date >= today). This prevents the bug we
+    # observed on 2026-05-28 where the picker resolved a live signal to a Nov-2024
+    # expired contract because the warehouse mixes current + expired contracts.
     contracts = await db.option_contracts.find(
-        {"underlying": instrument.upper()},
+        {"underlying": instrument.upper(), "expiry_date": {"$gte": today_iso}},
         {"_id": 0},
     ).to_list(length=None)
+
     if not contracts:
+        # Distinguish "no metadata at all" vs "only expired metadata" so the audit is clear
+        any_contract = await db.option_contracts.find_one(
+            {"underlying": instrument.upper()},
+            {"_id": 0, "expiry_date": 1},
+        )
+        if any_contract:
+            return None, "option_contract_no_active_expiry (all stored contracts are past expiry; sync current contracts)"
         return None, "option_contract_metadata_missing"
 
     contract = select_contract_for_signal(

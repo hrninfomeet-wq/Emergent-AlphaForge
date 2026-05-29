@@ -29,6 +29,8 @@ export default function LiveSignals() {
     default_lots: 1,
     allow_overnight: false,
   });
+  const [preflight, setPreflight] = useState(null);
+  const [preflightBusy, setPreflightBusy] = useState(false);
   const [form, setForm] = useState({
     instrument: "NIFTY",
     direction: "LONG",
@@ -86,6 +88,54 @@ export default function LiveSignals() {
   useEffect(() => {
     refreshDeployments();
   }, [refreshDeployments]);
+
+  // Derive the instrument that the chosen preset/backtest source targets, then
+  // call the deployment preflight to surface data-realism warnings.
+  const formInstrument = useMemo(() => {
+    if (!deploymentForm.source_id) return null;
+    if (deploymentForm.source_type === "preset") {
+      const preset = presets.find((p) => p.name === deploymentForm.source_id);
+      return (preset?.config?.instrument || preset?.instrument || "").toUpperCase() || null;
+    }
+    const run = backtestRuns.find((r) => r.id === deploymentForm.source_id);
+    return (run?.instrument || run?.config?.instrument || "").toUpperCase() || null;
+  }, [deploymentForm.source_id, deploymentForm.source_type, presets, backtestRuns]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!formInstrument) {
+      setPreflight(null);
+      return () => {};
+    }
+    setPreflightBusy(true);
+    api.deploymentPreflight(formInstrument)
+      .then((res) => {
+        if (!cancelled) {
+          setPreflight(res);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setPreflight({
+            status: "degraded",
+            instrument: formInstrument,
+            checks: [{
+              id: "preflight_error",
+              status: "degraded",
+              label: "Pre-flight call failed",
+              detail: err?.response?.data?.detail || err?.message || "request failed",
+            }],
+            structural_breaks: [],
+          });
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setPreflightBusy(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [formInstrument]);
 
   const set = (key, value) => setForm((prev) => ({ ...prev, [key]: value }));
   const setDeployment = (key, value) => {
@@ -278,6 +328,9 @@ export default function LiveSignals() {
         onCreate={createDeployment}
         onStatus={setDeploymentStatus}
         onEvaluate={evaluateNow}
+        preflight={preflight}
+        preflightBusy={preflightBusy}
+        formInstrument={formInstrument}
         busy={busy}
       />
 
@@ -388,7 +441,7 @@ export default function LiveSignals() {
   );
 }
 
-function StrategyDeploymentsPanel({ deployments, presets, backtestRuns, form, setFormValue, onCreate, onStatus, onEvaluate, busy }) {
+function StrategyDeploymentsPanel({ deployments, presets, backtestRuns, form, setFormValue, onCreate, onStatus, onEvaluate, preflight, preflightBusy, formInstrument, busy }) {
   const sourceOptions = form.source_type === "preset"
     ? presets.map((preset) => ({ id: preset.name, label: preset.name })).filter((item) => item.id)
     : backtestRuns
@@ -495,6 +548,11 @@ function StrategyDeploymentsPanel({ deployments, presets, backtestRuns, form, se
               <span>Allow overnight (skip 15:00 IST auto-square-off for this deployment)</span>
             </label>
           </div>
+          <PreflightBadge
+            instrument={formInstrument}
+            preflight={preflight}
+            preflightBusy={preflightBusy}
+          />
           <Button
             onClick={onCreate}
             disabled={busy || !form.source_id}
@@ -712,6 +770,63 @@ function PendingSignalCard({ signal, busy, onApprove, onSkip, onMarkBlocked }) {
         </div>
       </div>
     </article>
+  );
+}
+
+
+function PreflightBadge({ instrument, preflight, preflightBusy }) {
+  if (!instrument) {
+    return (
+      <div className="mt-3 rounded-md border border-line bg-bg-1 p-2 text-[11px] text-dimmer" data-testid="preflight-empty">
+        Choose a saved preset or backtest result to see the data realism check.
+      </div>
+    );
+  }
+  if (preflightBusy && !preflight) {
+    return (
+      <div className="mt-3 rounded-md border border-line bg-bg-1 p-2 text-[11px] text-dim flex items-center gap-2" data-testid="preflight-loading">
+        <RefreshCw className="w-3 h-3 animate-spin" />
+        <span>Checking data quality for {instrument}...</span>
+      </div>
+    );
+  }
+  if (!preflight) return null;
+  const status = String(preflight.status || "verified").toLowerCase();
+  const statusConfig = {
+    verified: { color: "border-emerald-500/40 text-emerald-400", label: "Verified" },
+    warning: { color: "border-amber-500/40 text-amber-400", label: "Warning" },
+    degraded: { color: "border-red-500/40 text-red-400", label: "Degraded" },
+  };
+  const cfg = statusConfig[status] || statusConfig.warning;
+  const checks = preflight.checks || [];
+  const breaks = preflight.structural_breaks || [];
+  const items = [...checks, ...breaks];
+  return (
+    <details className={`mt-3 rounded-md border ${cfg.color} bg-bg-1 p-2`} data-testid="preflight-badge">
+      <summary className="cursor-pointer flex items-center gap-2 text-xs">
+        <span className={`px-1.5 py-0.5 rounded font-mono uppercase border ${cfg.color}`}>{cfg.label}</span>
+        <span className="text-dim">Data realism for {instrument}</span>
+        <span className="ml-auto text-dimmer">{items.length} check{items.length === 1 ? "" : "s"}</span>
+      </summary>
+      <div className="mt-2 space-y-1.5">
+        {items.map((c) => {
+          const itemStatus = String(c.status || "verified").toLowerCase();
+          const itemCfg = statusConfig[itemStatus] || statusConfig.warning;
+          return (
+            <div key={c.id} className={`rounded-md border ${itemCfg.color} bg-bg-2 p-2 text-[11px]`}>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className={`px-1.5 py-0.5 rounded font-mono uppercase border ${itemCfg.color} text-[9px]`}>{itemStatus}</span>
+                <span className="font-semibold text-foreground">{c.label}</span>
+              </div>
+              <div className="mt-1 text-dim">{c.detail}</div>
+            </div>
+          );
+        })}
+      </div>
+      <div className="mt-2 text-[10px] text-dimmer">
+        Informational only. Deployment creation is never blocked.
+      </div>
+    </details>
   );
 }
 

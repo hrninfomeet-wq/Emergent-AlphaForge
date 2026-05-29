@@ -124,6 +124,8 @@ export const api = {
     apiClient.post("/deployments/evaluate-active").then((r) => r.data),
   listDeploymentSignals: (id, params = {}) =>
     apiClient.get(`/deployments/${id}/signals`, { params }).then((r) => r.data),
+  deploymentPreflight: (instrument, params = {}) =>
+    apiClient.get("/deployments/preflight", { params: { instrument, ...params } }).then((r) => r.data),
 
   // Optimizer
   startOptimization: (payload) =>

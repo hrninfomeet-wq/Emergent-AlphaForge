@@ -47,6 +47,7 @@ from app.deployment_evaluator import (
     evaluate_active_deployments,
     evaluate_deployment_on_close,
 )
+from app.deployment_preflight import compute_data_realism
 from app.paper_squareoff import (
     DEFAULT_SQUARE_OFF_IST,
     is_square_off_due,
@@ -926,6 +927,22 @@ async def create_deployment(req: DeploymentCreateReq):
         raise HTTPException(400, str(e))
     await db.strategy_deployments.insert_one(doc)
     return serialize_doc(doc)
+
+
+@api.get("/deployments/preflight")
+async def deployment_preflight_route(
+    instrument: str = Query(..., description="Instrument key e.g. NIFTY, BANKNIFTY, SENSEX"),
+    lookback_days: int = Query(30, ge=1, le=365),
+    lookahead_expiries: int = Query(4, ge=1, le=20),
+):
+    """Data-realism pre-flight report for a deployment. Informational only - never blocks creation."""
+    report = await compute_data_realism(
+        get_db(),
+        instrument,
+        lookback_days=lookback_days,
+        lookahead_expiries=lookahead_expiries,
+    )
+    return serialize_doc(report)
 
 
 @api.get("/deployments/{deployment_id}")
