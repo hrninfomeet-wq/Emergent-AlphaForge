@@ -42,6 +42,7 @@ from app.paper_trading import close_trade, mark_trade_to_market, paper_trade_fro
 from app.signal_lifecycle import SignalStateError, create_signal_doc, transition_signal
 from app.strategy_deployments import build_deployment_doc
 from app.strategy_source_hash import detect_drift, hash_strategy_source
+from app.deployment_quality import evaluate_source_quality
 from app.upstox_index_ingest import persist_index_candles_bulk, run_upstox_index_ingest_job
 from app.upstox_stream import DEFAULT_STREAM_MODE, UpstoxMarketStreamManager
 from app.live_candle_roller import LiveCandleRoller
@@ -992,6 +993,23 @@ async def _load_deployment_source(db: Any, source_type: str, source_id: str) -> 
 async def create_deployment(req: DeploymentCreateReq):
     db = get_db()
     source = await _load_deployment_source(db, req.source_type, req.source_id)
+    # Quality gate (slice 9): warn but never silently allow problematic backtests.
+    # If any warning is present, the user must acknowledge by setting
+    # acknowledged_warnings=true in the create request.
+    quality = evaluate_source_quality(source)
+    if quality["acknowledgment_required"] and not req.acknowledged_warnings:
+        warning_summary = "; ".join(w["label"] for w in quality["warnings"])
+        raise HTTPException(
+            400,
+            detail={
+                "code": "acknowledgment_required",
+                "message": (
+                    f"Deployment source has {len(quality['warnings'])} quality warning(s): "
+                    f"{warning_summary}. Re-submit with acknowledged_warnings=true to proceed."
+                ),
+                "quality": quality,
+            },
+        )
     # Pin the strategy source-file SHA at creation time so the evaluator can
     # later detect drift if the user edits the .py file without re-deploying.
     strategy_id = str(source.get("strategy_id") or (source.get("config") or {}).get("strategy_id") or "")
@@ -1013,6 +1031,9 @@ async def create_deployment(req: DeploymentCreateReq):
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
+    # Record the quality snapshot + acknowledgment on the deployment for full audit
+    doc["quality_at_creation"] = quality
+    doc["acknowledged_warnings"] = bool(req.acknowledged_warnings) if quality["acknowledgment_required"] else None
     await db.strategy_deployments.insert_one(doc)
     return serialize_doc(doc)
 
@@ -1031,6 +1052,21 @@ async def deployment_preflight_route(
         lookahead_expiries=lookahead_expiries,
     )
     return serialize_doc(report)
+
+
+@api.get("/deployments/quality")
+async def deployment_quality_route(
+    source_type: str = Query(..., description="preset or backtest_run"),
+    source_id: str = Query(..., description="preset name or backtest run id"),
+):
+    """Quality / acknowledgment check for a deployment source.
+
+    Returns warnings (overfit, low trade count, weak Sharpe, missing walkforward,
+    large drawdown). Never blocks creation by itself - the user must pass
+    `acknowledged_warnings=true` on the create request when warnings are present.
+    """
+    source = await _load_deployment_source(get_db(), source_type, source_id)
+    return serialize_doc(evaluate_source_quality(source))
 
 
 @api.get("/deployments/{deployment_id}")
@@ -1708,6 +1744,7 @@ class DeploymentCreateReq(BaseModel):
     dte_filter: List[int] = Field(default_factory=lambda: [0, 1, 2, 3, 4, 5, 6])
     allow_overnight: bool = False
     default_lots: int = 1
+    acknowledged_warnings: bool = False
 
 
 def _ist_market_bounds_ms(from_date: str, to_date: str) -> tuple[int, int]:

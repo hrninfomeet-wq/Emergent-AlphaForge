@@ -28,9 +28,12 @@ export default function LiveSignals() {
     dte_filter: "0,1,2,3,4,5,6",
     default_lots: 1,
     allow_overnight: false,
+    acknowledged_warnings: false,
   });
   const [preflight, setPreflight] = useState(null);
   const [preflightBusy, setPreflightBusy] = useState(false);
+  const [quality, setQuality] = useState(null);
+  const [qualityBusy, setQualityBusy] = useState(false);
   const [form, setForm] = useState({
     instrument: "NIFTY",
     direction: "LONG",
@@ -137,6 +140,42 @@ export default function LiveSignals() {
     };
   }, [formInstrument]);
 
+  // Fetch deployment quality whenever source changes. Resets acknowledgment
+  // checkbox to false so the user must consciously re-tick it for each source.
+  useEffect(() => {
+    let cancelled = false;
+    if (!deploymentForm.source_id) {
+      setQuality(null);
+      return () => {};
+    }
+    setQualityBusy(true);
+    setDeploymentForm((prev) => ({ ...prev, acknowledged_warnings: false }));
+    api.deploymentQuality(deploymentForm.source_type, deploymentForm.source_id)
+      .then((res) => {
+        if (!cancelled) setQuality(res);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setQuality({
+            acknowledgment_required: true,
+            warnings: [{
+              id: "quality_check_failed",
+              severity: "warning",
+              label: "Quality check failed",
+              detail: err?.response?.data?.detail || err?.message || "request failed",
+            }],
+            metrics_snapshot: {},
+          });
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setQualityBusy(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [deploymentForm.source_type, deploymentForm.source_id]);
+
   const set = (key, value) => setForm((prev) => ({ ...prev, [key]: value }));
   const setDeployment = (key, value) => {
     setDeploymentForm((prev) => {
@@ -168,6 +207,7 @@ export default function LiveSignals() {
           .filter((n) => Number.isFinite(n) && n >= 0),
         default_lots: Math.max(1, parseInt(deploymentForm.default_lots, 10) || 1),
         allow_overnight: Boolean(deploymentForm.allow_overnight),
+        acknowledged_warnings: Boolean(deploymentForm.acknowledged_warnings),
       };
       await api.createDeployment(payload);
       toast.success("Strategy deployment created");
@@ -331,6 +371,8 @@ export default function LiveSignals() {
         preflight={preflight}
         preflightBusy={preflightBusy}
         formInstrument={formInstrument}
+        quality={quality}
+        qualityBusy={qualityBusy}
         busy={busy}
       />
 
@@ -441,7 +483,7 @@ export default function LiveSignals() {
   );
 }
 
-function StrategyDeploymentsPanel({ deployments, presets, backtestRuns, form, setFormValue, onCreate, onStatus, onEvaluate, preflight, preflightBusy, formInstrument, busy }) {
+function StrategyDeploymentsPanel({ deployments, presets, backtestRuns, form, setFormValue, onCreate, onStatus, onEvaluate, preflight, preflightBusy, formInstrument, quality, qualityBusy, busy }) {
   const sourceOptions = form.source_type === "preset"
     ? presets.map((preset) => ({ id: preset.name, label: preset.name })).filter((item) => item.id)
     : backtestRuns
@@ -553,9 +595,16 @@ function StrategyDeploymentsPanel({ deployments, presets, backtestRuns, form, se
             preflight={preflight}
             preflightBusy={preflightBusy}
           />
+          <QualityBadge
+            quality={quality}
+            qualityBusy={qualityBusy}
+            sourceId={form.source_id}
+            acknowledged={Boolean(form.acknowledged_warnings)}
+            onAcknowledge={(checked) => setFormValue("acknowledged_warnings", checked)}
+          />
           <Button
             onClick={onCreate}
-            disabled={busy || !form.source_id}
+            disabled={busy || !form.source_id || (quality?.acknowledgment_required && !form.acknowledged_warnings)}
             className="mt-3 h-9 text-xs bg-bg-3 border border-line hover:bg-bg-2"
             data-testid="create-deployment-button"
           >
@@ -826,6 +875,63 @@ function PreflightBadge({ instrument, preflight, preflightBusy }) {
       <div className="mt-2 text-[10px] text-dimmer">
         Informational only. Deployment creation is never blocked.
       </div>
+    </details>
+  );
+}
+
+
+function QualityBadge({ quality, qualityBusy, sourceId, acknowledged, onAcknowledge }) {
+  if (!sourceId) return null;
+  if (qualityBusy && !quality) {
+    return (
+      <div className="mt-3 rounded-md border border-line bg-bg-1 p-2 text-[11px] text-dim flex items-center gap-2" data-testid="quality-loading">
+        <RefreshCw className="w-3 h-3 animate-spin" />
+        <span>Checking source quality...</span>
+      </div>
+    );
+  }
+  if (!quality) return null;
+  const ackRequired = Boolean(quality.acknowledgment_required);
+  const warnings = quality.warnings || [];
+  if (!ackRequired) {
+    return (
+      <div className="mt-3 rounded-md border border-emerald-500/40 bg-emerald-500/5 p-2 text-[11px] text-emerald-400" data-testid="quality-clean">
+        <span className="px-1.5 py-0.5 rounded font-mono uppercase border border-emerald-500/40 mr-2 text-[9px]">CLEAN</span>
+        Source backtest passes all quality checks. No acknowledgment needed.
+      </div>
+    );
+  }
+  return (
+    <details className="mt-3 rounded-md border border-amber-500/40 bg-amber-500/5 p-2" data-testid="quality-warnings" open>
+      <summary className="cursor-pointer flex items-center gap-2 text-xs">
+        <span className="px-1.5 py-0.5 rounded font-mono uppercase border border-amber-500/40 text-amber-400">WARN</span>
+        <span className="text-foreground font-semibold">{warnings.length} quality warning{warnings.length === 1 ? "" : "s"}</span>
+        <span className="ml-auto text-dimmer text-[10px]">acknowledgment required</span>
+      </summary>
+      <div className="mt-2 space-y-1.5">
+        {warnings.map((w) => (
+          <div key={w.id} className="rounded-md border border-amber-500/30 bg-bg-2 p-2 text-[11px]">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="px-1.5 py-0.5 rounded font-mono uppercase border border-amber-500/40 text-amber-400 text-[9px]">{w.severity}</span>
+              <span className="font-semibold text-foreground">{w.label}</span>
+            </div>
+            <div className="mt-1 text-dim">{w.detail}</div>
+          </div>
+        ))}
+      </div>
+      <label className="mt-3 flex items-start gap-2 text-[11px] text-foreground cursor-pointer">
+        <input
+          type="checkbox"
+          checked={Boolean(acknowledged)}
+          onChange={(e) => onAcknowledge(e.target.checked)}
+          className="mt-0.5 h-4 w-4 rounded border-line"
+          data-testid="acknowledge-warnings-checkbox"
+        />
+        <span>
+          I acknowledge these warnings and want to deploy anyway. The source-quality
+          snapshot will be saved on the deployment for audit.
+        </span>
+      </label>
     </details>
   );
 }

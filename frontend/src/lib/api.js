@@ -126,6 +126,8 @@ export const api = {
     apiClient.get(`/deployments/${id}/signals`, { params }).then((r) => r.data),
   deploymentPreflight: (instrument, params = {}) =>
     apiClient.get("/deployments/preflight", { params: { instrument, ...params } }).then((r) => r.data),
+  deploymentQuality: (sourceType, sourceId) =>
+    apiClient.get("/deployments/quality", { params: { source_type: sourceType, source_id: sourceId } }).then((r) => r.data),
 
   // Optimizer
   startOptimization: (payload) =>
