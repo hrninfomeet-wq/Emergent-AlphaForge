@@ -1,5 +1,11 @@
 # AlphaForge Trading Lab — Updated plan.md
 
+## Current state for handoff (2026-05-29)
+
+Phase 4b is **10 of 12 slices done**. Latest commit on main: `ae4428f`. 223 backend tests pass. Local Docker stack is healthy. Live tick → 1m roller is running, evaluator scheduler is running, WS auto-start works. **Next slice is Slice 10 — Forward metrics aggregation per deployment**. Slice 12 (kill switches) is the only other remaining slice in this phase. After that, Phase 5 (probability engine) is deferred until ≥6 months of forward signal history exists.
+
+Read `docs/HANDOFF.md` and `docs/PROJECT_OVERVIEW.md` first if you are picking this up fresh.
+
 ## Deferred / Optional (revisit later)
 
 These were explicitly deferred by the user; do not start them without confirmation.

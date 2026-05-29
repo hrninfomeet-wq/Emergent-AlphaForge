@@ -1,8 +1,8 @@
 # User Manual
 
-Updated: 2026-05-27
+Updated: 2026-05-29
 
-This guide explains how to use AlphaForge as a local research app.
+This guide explains how to use AlphaForge as a local research and forward-testing app.
 
 ## Start The App
 
@@ -12,357 +12,222 @@ docker compose up -d --build
 
 Open `http://localhost:3000`.
 
+One-click launchers:
+
+- Windows: double-click `start.bat`.
+- Mac/Linux: `./start.sh`.
+
 ## Theme
 
 Use the top-right Theme dropdown:
 
-- `System` - follows your operating system.
-- `Black` - dark terminal mode.
-- `White` - light mode for better readability.
+- `System` — follows your OS.
+- `Black` — dark terminal mode.
+- `White` — light mode for better readability.
 
-If text is hard to read, switch to White first.
+## Market Header
 
-## Dashboard
+The market header appears at the top of every page with primary instruments first (NIFTY 50, SENSEX, BANKNIFTY, GOLD FUT, BTCUSD, USDINR, GIFT NIFTY, MIDCPNIFTY) and a collapsible Global Markets section.
 
-The market header appears at the top of every page. It shows primary instruments first:
+The header prefers fresh Upstox WebSocket ticks when the local stream is running; otherwise it falls back to REST quotes. A failed tile shows an error state without breaking the rest of the header.
 
-- NIFTY 50, SENSEX, BANKNIFTY, GOLD FUT, BTCUSD, USDINR, GIFT NIFTY, MIDCPNIFTY.
+To start the WS stream:
 
-Click Global Markets to expand major global references such as Nasdaq Fut, Dow Fut, S&P Fut, Nikkei 225, Hang Seng, DAX, and Crudeoil.
+1. Connect Upstox from Data Warehouse.
+2. Click `Stream` in the market header. Status changes to `live ticks`.
+3. Click `Stop` to close the stream.
 
-Notes:
-
-- The header can use the read-only Upstox WebSocket tick stream during live sessions. If the stream is stopped, stale, or unavailable, it falls back to API quote polling and fallback sources.
-- Treat it as market context. Do not use it as proof that live signal execution is production-ready.
-
-WebSocket stream:
-
-1. Connect Upstox from Data Warehouse first.
-2. In the market header, click `Stream`.
-3. The status changes to `live ticks` when the local stream is running or fresh ticks are feeding the header.
-4. Click `Stop` to close the local stream.
-5. If the stream is unavailable or stale, the header continues with API fallback data.
-
-The WebSocket stream is read-only market data. It does not place orders and it does not make strategy signals production-ready by itself.
-
-Use Dashboard to see:
-
-- Current build status.
-- Latest backtest summary.
-- Shortcuts to major workflows.
+The WebSocket stream is read-only market data. It does not place orders.
 
 ## Data Warehouse
 
-Use this page before serious backtesting.
+The Data Warehouse page is your data discipline hub. Use it before any serious research.
 
-### Upstox Broker Data
+### Upstox connection
 
-Purpose: fetch index candles for NIFTY, BANKNIFTY, or SENSEX.
+Confirm Upstox is connected at the top of the page. The Quote button validates a live REST quote during market hours.
 
-Steps:
+### Index ingest (1-minute candles)
 
-1. Confirm Upstox shows connected.
-2. Click Quote during market hours to confirm live REST market data is flowing.
-3. Select instrument.
-4. Select From and To date.
-5. Leave Chunk as Auto unless troubleshooting.
-6. Click Ingest.
-7. For large imports, keep the page open and watch the progress panel.
-8. Run Data Trust Audit for the same date range after the import completes.
+For long ranges (12–18 months), use the background job path:
 
-Quote:
+1. Select instrument.
+2. Set From and To dates.
+3. Leave Chunk as Auto. The chunker uses 7-day chunks for spot to avoid the Upstox `400 Invalid date range` on Feb→Mar boundaries.
+4. Click Ingest.
+5. Watch progress in the run panel. It reports `total_chunks`, `completed_chunks`, `progress_pct`, `total_fetched`, `candles_added`, `candles_updated`, `matched_existing`, `failed_chunks`.
 
-- Shows a live market snapshot from Upstox.
-- Does not place orders.
-- Useful when same-day historical candles are not yet available from the historical endpoint.
+For small ranges, the synchronous endpoint is fine.
 
-Chunk tips:
+### Data Hygiene workflow (recommended)
 
-- Auto is recommended.
-- Manual `1-3` is safer after broker failures.
-- Manual `14-30` is faster but heavier.
-- Large imports now run as background jobs. A 12-18 month index import should be started once, allowed to finish, and then audited instead of repeatedly clicking Ingest.
+The Data Hygiene workflow handles bulk data refresh against the project's default scope (2024-11-27 → today, NIFTY+BANKNIFTY+SENSEX, ATM CE+PE only, sample=1m). It is the easiest way to bring the warehouse up to date.
+
+1. `POST /api/data-hygiene/plan` (or the UI button) computes the diff vs current warehouse state.
+2. Review the prioritized actions per instrument: spot ingest, contract sync, option candle fetch.
+3. `POST /api/data-hygiene/execute` submits the actions in dependency order (spot → contracts → option_candles).
+4. `GET /api/data-hygiene/status` shows recent hygiene runs.
+
+Re-running is safe; partial failures resume cleanly.
 
 ### Option Data Planner
 
-Purpose: preview and fetch option premium candles needed for strategy testing.
+For targeted option fetches outside of Data Hygiene:
 
-Steps:
+1. Confirm spot candles already exist for the period.
+2. Confirm expired option contract metadata is synced for the period.
+3. Choose underlying, From / To, expiry mode (`Next available`), Sample (`1` for high-accuracy, `15` for fast estimates), moneyness (`ATM` default), CE/PE legs.
+4. Set Max contracts (default 500).
+5. Click Preview.
+6. Inspect Planned coverage, Need fetch, Missing meta, planned contracts, estimated API calls.
+7. Click Fetch Missing.
+8. Watch the background job progress.
+9. Click Preview again to confirm the month is ready when Planned coverage = 100%, Need fetch = 0, Missing meta = 0.
 
-1. Fetch index candles first for the same date window.
-2. Backfill or sync option contract metadata for the same historical window.
-3. Select instrument and date range.
-4. Choose Expiry mode.
-5. Choose Sample.
-6. Select moneyness and CE/PE legs.
-7. Click Preview.
-8. Review Planned coverage, Need fetch, Missing meta, planned contracts, and estimated API calls.
-9. Click Fetch Missing only when the preview size is acceptable.
-10. Keep the page open and watch the background progress panel.
-11. Click Preview again after the fetch job completes. The selected data is ready when Planned coverage is 100%, Need fetch is 0, and Missing meta is 0.
-12. Check Option Coverage Heatmap to visually confirm new stored option dates appeared.
+Recommended for long ranges: fetch month by month with Sample = 1, ATM only, CE + PE, Missing only enabled, Max contracts = 500.
 
-Expiry:
+### Coverage and audits
 
-- `Next available` uses stored contract expiries on or after each sampled spot date. This is the normal backtest mode.
-- `Fixed date` forces one expiry for the entire date range. Use it only for expiry-specific research. It requires a fixed expiry date.
+- **Option Coverage Heatmap** shows stored option candles by date and contract count. Diagnostic only.
+- **Raw Option Universe Audit** shows broad coverage by contract metadata. It can show many missing contracts even when the planner-selected ATM window is covered. Trust the planner Preview, not raw audit alone.
+- **Data Trust Audit** for index candles by date and integrity hash.
 
-Sample:
-
-- `15` means choose option strikes every 15 minutes from spot price. Good for fast planning.
-- `1` means choose strikes every minute. Best for final strategy preparation, but it may select more contracts.
-
-Moneyness:
-
-- `ATM` - nearest strike to spot.
-- `OTM1/OTM2/OTM3` - out-of-the-money strikes.
-- `ITM1/ITM2` - in-the-money strikes.
-- The default planner selection is `ATM` only. Add `OTM1` or `ITM1` only when the strategy really needs those contracts.
-
-Max contracts:
-
-- A safety guard. If the preview needs more contracts than this value, Fetch is blocked until you narrow the request or raise the limit.
-
-Large option downloads:
-
-- Option fetches run in background and fetch only the selected dates for each planned contract.
-- For high-accuracy research, use `Sample = 1`. The planner is optimized for minute-level selection, but broker downloads can still be large, so watch the API-call estimate and max-contract guard.
-- Start with `ATM` and both `CE`/`PE`, audit coverage, then expand to `OTM1`/`ITM1` and wider strikes only if your strategy needs them.
-- Do not trust a long option backtest until the Option Data Planner shows the selected moneyness window is covered.
-- For long periods, download in small date windows. A practical first pass is one calendar month at a time with `ATM`, `CE` and `PE`, `Sample = 1`, `Expiry = Next available`, `Missing only` enabled, and `Max contracts = 500`.
-- If the background job succeeds but Planned coverage is below 100%, click Preview and inspect which rows still need fetch. Zero failed tasks plus missing rows usually means the broker returned empty candles for those contract/date pairs.
-
-Recommended month-by-month option download:
-
-1. Confirm Upstox is connected.
-2. Confirm index spot candles already exist for the same period. The planner cannot select correct ATM strikes without spot data.
-3. Confirm expired option contract metadata has been synced or backfilled for the same period.
-4. Open Option Data Planner.
-5. Select the underlying, for example `NIFTY`.
-6. Set one calendar month only, for example `2025-01-01` to `2025-01-31`.
-7. Set Expiry to `Next available`.
-8. Set Sample to `1` for final research data.
-9. Select `ATM`.
-10. Select both `CE` and `PE`.
-11. Keep `Missing only` enabled.
-12. Keep `Max contracts` at `500` unless the preview says the selected month needs more.
-13. Leave Chunk as Auto. If the broker fails or times out, retry the same preview with Chunk `1`, `2`, or `3`.
-14. Click Preview.
-15. Check `Missing meta`. It must be `0`. If it is greater than `0`, backfill expired contracts before fetching candles.
-16. Check `Need fetch`, `Planned coverage`, and estimated API calls.
-17. Click Fetch Missing.
-18. Keep the app open and wait for the background job to finish.
-19. Click Preview again for the same month.
-20. The month is ready when `Planned coverage` is `100%`, `Need fetch` is `0`, and `Missing meta` is `0`.
-21. Check Option Coverage Heatmap to visually confirm new stored option dates appeared.
-22. Move to the next month and repeat.
-
-Example sequence for a long NIFTY ATM download:
-
-1. `2024-11-27` to `2024-12-31`
-2. `2025-01-01` to `2025-01-31`
-3. `2025-02-01` to `2025-02-28`
-4. Continue one month at a time until the target end date.
-
-Current practical finding:
-
-- A small NIFTY `ATM` `CE`/`PE` batch for `2024-11-27` to `2024-12-31` completed successfully with 85,500 option candles fetched.
-- After a successful fetch, a month can still show less than 100% Planned coverage if Upstox returns empty data for specific expired contract/date pairs. This is now visible through Preview instead of being hidden.
-- Do not use Raw Option Universe Audit alone to judge an ATM download. It audits broad stored contract metadata, including contracts you did not request. Use Planned coverage for the selected strategy universe and Option Coverage Heatmap for stored-data visibility.
-
-### Option Coverage Heatmap
-
-Purpose: visually show how much option candle data is already stored in `options_1m`.
-
-Read it like the index heatmap, but with one important distinction:
-
-- It shows stored option candles by date and how many contracts have candles that day.
-- Green means the stored contracts for that date have near-full 1-minute candles.
-- It does not know which moneyness your strategy needs. Use Option Data Planner Planned coverage for that.
-
-### Expired Option Contracts
-
-Purpose: store old option-contract metadata before planning historical option candle downloads.
-
-Steps:
-
-1. Confirm Upstox shows connected and the account has expired-instruments access.
-2. Select instrument and expiry date range.
-3. Keep Max expiries conservative for the first run.
-4. Click Backfill.
-5. If the request is blocked by the max-expiry guard, narrow the date range or explicitly allow the larger request.
-
-This is metadata only. It does not fetch option candles. Use Option Data Planner after the old contracts are stored.
-
-### Data Trust Audit
-
-Purpose: check whether stored index candles are complete.
-
-Steps:
-
-1. Select instrument and date range.
-2. Click Audit.
-3. Review complete, missing, incomplete, and hash mismatch days.
-
-Developer Clear:
-
-- Deletes stored warehouse data for the selected instrument or all instruments.
-- Use carefully. It is useful during testing and data cleanup.
-
-### Raw Option Universe Audit
-
-Purpose: inspect broad option warehouse gaps by contract metadata, expiry, side, and date.
-
-Important:
-
-- This is not the same as the planner-selected moneyness check.
-- A raw audit can show `0/500 contracts complete` after an ATM-only download because it is auditing many contracts that were never requested.
-- To confirm whether default moneyness has been downloaded, use Option Data Planner and check Planned coverage.
-
-Steps:
-
-1. Sync or backfill option contracts first.
-2. Fetch option candles with Option Data Planner.
-3. Select underlying and date range.
-4. Optionally filter by expiry or CE/PE side.
-5. Click Audit.
-6. Review complete, missing, incomplete, candle coverage, and contract rows.
-
-How to know selected option data is saved:
-
-- In Option Data Planner, use the same instrument, date range, expiry policy, moneyness, legs, and sample interval as your intended backtest.
-- Click Preview.
-- Ready means Planned coverage is 100%, Need fetch is 0, Missing meta is 0, and the stored/expected selected candle count matches.
-- If Need fetch is greater than 0, click Fetch Missing and wait for the background job to finish. Then Preview again.
-- If Missing meta is greater than 0, backfill or sync option contracts for the missing expiry window before fetching candles.
-
-Known expired-option requirement:
-
-- Expired option contracts use Upstox's expired historical candle endpoint.
-- If a job reports `UDAPI1021` invalid instrument key format for keys like `NSE_FO|42939|28-11-2024`, the app is using the wrong normal historical endpoint.
-
-Option Clear:
-
-- Deletes stored option candles for the selected underlying.
-- It keeps index candles and option contract metadata.
-- Use it only for cleanup or re-fetch testing.
+Holiday handling: the audit recognizes NSE holidays, Budget Saturday sessions (2025-02-01, 2026-02-01), and the Diwali Muhurat session (limited evening session, 60 candles).
 
 ## Backtest Lab
 
-Purpose: test a strategy over stored index data.
-
-Steps:
-
-1. Select instrument, strategy, mode, and date window.
-2. Choose a pre-trade profile.
+1. Select instrument, strategy, mode, date window.
+2. Choose pre-trade profile.
 3. Enable costs for realistic results.
 4. Keep walk-forward enabled for robustness checks.
-5. Click Run Backtest.
+5. (Optional) Enable Pair signals with option candles to test option premium execution.
+6. Click Run Backtest.
 
-Option execution:
-
-- Enable Pair signals with option candles to test whether index signals would have produced option premium trades.
-- Choose moneyness and lots.
-- Leave Auto-fetch on for small missing option gaps.
-- For larger windows, prepare data in Option Data Planner first.
+For paired option backtests, slippage is automatically applied (ATM 0.5pt, OTM1/ITM1 1pt, OTM2+ 2pt, expiry-day 30-min 2x). Override per backtest via the slippage config field.
 
 Read results carefully:
 
-- Strong-looking P&L with low trade count is not reliable.
-- Check walk-forward divergence.
-- Check option pairing coverage.
-- Missing option candles reduce trust.
+- Strong P&L with low trade count is not reliable. Wilson CI and the significance badge highlight this.
+- Walk-forward divergence flag means OOS underperformed IS by more than 30%.
+- Option pairing coverage shows how many index trades had matching option candles.
 
 ## Optimizer
 
-Purpose: search for better strategy parameters.
+1. Pick strategy and date window.
+2. Choose method: Bayesian (TPE), Grid, or Genetic (CMA-ES).
+3. Choose objective: `risk_adjusted` (default), `sharpe`, `profit_factor`, `total_pnl_pts`, `win_rate`, `neg_max_dd`.
+4. Set n_trials.
+5. Run.
+6. Review robustness, parameter importance, heatmap, top-N alternatives.
+7. Click Apply as Preset to save the best params.
+8. Click View Best in Lab to see the full backtest with trades and walk-forward.
 
-Suggested use:
+The Stop button cancels gracefully. The worker checks the cancel flag every 5 trials and preserves best-so-far.
 
-1. Start with a clean data window.
-2. Use a reasonable trial count first.
-3. Prefer risk-adjusted objective.
-4. Review robustness and alternatives, not only best P&L.
-5. Save a good result as a preset.
-6. Re-test the preset in Backtest Lab.
+## Pre-Trade Checklist
+
+Three profiles ship: Conservative, Balanced, Aggressive. Each has 10+ filters. The signal-pass counter at the bottom of the panel updates as you tune. The anti-over-filter safeguard warns when filters are too strict.
 
 ## Strategy Library
 
-Use this page to inspect available built-in strategies and parameter schemas.
+Browse built-in strategies and parameter schemas. For drop-in custom plugins, see `docs/STRATEGY_PLUGINS.md`.
 
-For custom strategies, see `docs/STRATEGY_PLUGINS.md`.
+## Volatility Audit
 
-## Signal Journal
+`POST /api/volatility/audit` runs the post-hoc volatility detector on a date window. It annotates spot 1m bars with realized 5-min vol vs 30-day rolling baseline and flags `volatility_spike` when ratio ≥ 2.5x. Use this to identify high-volatility periods after the fact instead of relying on a calendar of scheduled events.
 
-Use this page to review and reload saved backtest runs.
+## Live Signals (Strategy Deployments)
 
-## Live Signals And Paper Trading
+This is the forward-testing surface. Workflow:
 
-These pages now have offline foundations, but they are not production-ready live trading systems yet.
+### 1. Create a deployment
 
-Forward testing is organized through Strategy Deployments. A deployment is created from a saved preset or saved backtest result so the strategy id, params, source result, and future journal can be audited together.
+1. From Live Signals, click Create Deployment.
+2. Choose source: a saved Preset or a saved Backtest Run.
+3. The PreflightBadge collapses above the Create button. Expand it to review:
+   - Spot coverage (last 30 trading days).
+   - Upcoming option expiries.
+   - Active vs expired contracts.
+   - Upstox token state.
+4. The QualityBadge surfaces walk-forward and metrics warnings:
+   - Missing walk-forward validation.
+   - Walk-forward IS/OOS divergence (OOS < IS × 0.7 or explicit divergence flag).
+   - Low trade count (< 30).
+   - Weak Sharpe (< 0.5).
+   - Large drawdown ratio (|max_dd|/total_pnl > 0.15).
+5. If warnings exist, tick the acknowledgment checkbox. Otherwise the Create button is disabled.
+6. Choose mode (`shadow`, `paper`, `recommendation`), DTE filter (default `[0..6]`), default lots (default 1), and `allow_overnight` (default false).
+7. Save. The deployment is `ACTIVE`.
 
-First deployment behavior:
+### 2. Wait for signals
 
-- Runs on completed 1-minute candles.
-- Per-tick mode is a later manual switch after the strategy proves trustworthy.
-- Default option selection is ATM.
-- ATM, OTM1, and ITM1 are configurable.
-- Every signal requires manual approval before paper deployment or trade recommendation action.
-- Blocked signals are recorded and identifiable.
-- The system prefers fewer cleaner signals over every weak setup.
+The 1m_close evaluator scheduler wakes 10 seconds after each minute boundary during NSE market hours. It:
 
-Live Signals:
+- Pulls the latest closed 1-minute candle.
+- Runs the strategy.
+- Applies pre-trade filters.
+- Picks the ATM/OTM1/ITM1 contract from `option_contracts` with `expiry_date >= today` and `dte_filter` honored.
+- Applies time-of-day blocks (09:15–09:25 and 14:50–15:30 IST) and expiry-day cutoff (15:00 IST).
+- Journals the signal: `CONFIRMED` if clean, `AUDITED` with `blockers[]` if rejected.
 
-- Create and manage Strategy Deployments from saved presets or saved backtest results.
-- Pause, resume, or archive a deployment.
-- Create manual research signals without broker orders.
-- Move signals through the audited lifecycle.
-- Deploy a signal to Paper Trading.
+Each ACTIVE deployment also has an Evaluate-now button.
 
-Paper Trading:
+### 3. Approve, skip, or mark blocked
 
-- Shows paper trades created from signals.
-- Stores optional stop and target levels when deploying from Live Signals.
-- Lets you mark open trades to a manual last price.
-- Auto-closes a paper trade when a mark hits the stored stop or target.
-- Lets you close paper trades and store realized P&L.
+The Pending Approval panel auto-refreshes every 15 seconds and shows only CONFIRMED deployment-generated signals.
 
-Still pending:
+For each:
 
-- Multi-session hardening of the Upstox WebSocket tick stream.
-- Automated deployment evaluation from 1-minute closes, then optional per-tick mode later.
-- Deployment-generated clean/blocked signal journaling.
-- Live tick mark-to-market, trailing stops, replay, and daily risk controls.
+- **Approve** transitions the signal `CONFIRMED → TRIGGERED → ACTIVE`. When `deployment.mode == "paper"`, a paper trade is auto-created with `lot_size` from the option contract and `lots` from `risk.default_lots`. The button label changes to "Approve + Paper" in that case. A trade-creation failure does not roll back the approval — it journals a `paper_trade_error`.
+- **Skip** transitions `CONFIRMED → SKIPPED → AUDITED`.
+- **Mark Blocked** moves any non-AUDITED signal to AUDITED with the supplied note as a blocker.
+
+### 4. Watch trades and square-off
+
+Paper trades created from approvals appear in Paper Trading. They carry `deployment_id` so the auto square-off knows which to skip when `allow_overnight=true`.
+
+The auto square-off background loop runs at 15:00 IST every market day. It:
+
+- Closes all OPEN paper trades whose deployment does not have `allow_overnight=true`.
+- Uses WS tick → last_price → entry_price as the exit price priority.
+- Is idempotent (a re-run is a no-op).
+- Can be triggered manually with `POST /api/paper/square-off`.
+
+## Paper Trading
+
+The Paper Trading page shows paper trades with risk badges (stop / target). You can manually mark to a last price (with optional `auto_close_on_risk`) and close trades manually.
 
 ## Practical Workflow
 
-Recommended sequence for a new study:
+For a fresh study:
 
-1. Set Theme to White or Black as preferred.
-2. Connect Upstox.
-3. Fetch index candles in Data Warehouse.
-4. Run Data Trust Audit.
-5. Use Option Data Planner and fetch required option candles.
-6. Run Backtest Lab with option pairing.
-7. Optimize only after data coverage is trusted.
-8. Save presets and compare out-of-sample results.
+1. Start the stack with Docker Compose.
+2. Run Data Hygiene plan + execute to bring the warehouse current.
+3. Backtest a strategy in Backtest Lab.
+4. Optimize if results are promising. Apply best as a Preset.
+5. Re-test the preset.
+6. Create a Strategy Deployment from the Preset. Acknowledge any quality warnings.
+7. Let the evaluator run during market hours.
+8. Approve / skip signals from the Pending Approval panel.
+9. Watch paper trades. Auto square-off closes them at 15:00 IST.
+10. Review forward signals and trades per deployment.
 
 ## Common Issues
 
 | Issue | What to do |
 |---|---|
-| Upstox fetch fails | Check connection status and reconnect OAuth if expired |
-| Text is hard to read | Switch Theme to White |
-| Option preview has many API calls | Reduce date range, increase Sample, select fewer moneyness/legs |
-| Fixed expiry cannot preview | Enter the fixed expiry date |
-| Backtest says insufficient candles | Ingest index data for that window first |
-| Option pairing has missing candles | Use Option Data Planner and Fetch Missing |
+| Upstox fetch fails | Re-do OAuth at `/api/upstox/auth/start`. Tokens expire. |
+| Same-day historical returns empty | Expected. The live tick → 1m roller closes the gap during market hours. |
+| Text hard to read | Switch Theme to White. |
+| Option preview has many API calls | Reduce date range, use Sample=1, select fewer moneyness/legs, fetch month by month. |
+| Backtest says insufficient candles | Run Data Hygiene plan + execute for the date window. |
+| Live signal resolves to expired contract | Should not happen post-Slice 5. The blocker `option_contract_no_active_expiry` should fire. Check `option_contracts.expiry_date` for the instrument. |
+| Deployment auto-paused with `strategy_source_drift` | The plugin .py file changed since the deployment was created. Create a new deployment to pin the new SHA. |
+| `acknowledgment_required` 400 on deployment create | Quality warnings exist; tick the ack checkbox and retry. |
 
 ## Trading Safety
 
-- Do not trust a strategy from one backtest.
-- Use walk-forward and forward testing.
-- Confirm data completeness before judging results.
-- Treat live signals as research until paper trading proves behavior.
-- Options can lose money quickly; use strict risk limits.
+- Do not trust a strategy from one backtest. Use walk-forward, forward testing, and paper trading.
+- The system warns about walk-forward divergence; do not silence the ack checkbox blindly.
+- The manual approval gate is intentional. Do not build around it.
+- Options can lose money quickly. Use strict per-trade risk and the daily loss controls (Slice 12 will add per-deployment kill switches).

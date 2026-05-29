@@ -1,161 +1,200 @@
 # Project Overview
 
-Updated: 2026-05-27
+Updated: 2026-05-29
 
 ## What AlphaForge Is
 
-AlphaForge is a local trading research app for Indian index-option work. It helps a user fetch and store index/option data, audit data quality, run backtests, optimize parameters, and prepare for live signal and paper-trading development.
+AlphaForge is a local-first research and forward-testing terminal for Indian index options on NIFTY 50, BANKNIFTY, and SENSEX. It stores market data on disk, audits coverage, runs backtests, optimizes strategy parameters, and runs strategies forward against live 1-minute closes with a manual approval gate before any paper trade or recommendation is acted on.
 
-## Present Status
+It is not a guaranteed-profit system. It is the disciplined research and execution-prep stack a serious systematic options trader would build for themselves.
 
-Implemented:
+## Project Objective
 
-- Local Docker stack for MongoDB, FastAPI, and React/nginx.
-- Theme selector: System, Black, White.
-- Index Data Warehouse with yfinance fallback and Upstox historical ingest.
-- Automatic broker chunk guidance for index and option data.
-- Background Upstox index ingest jobs for large date ranges with progress tracking.
-- Data Trust Audit for index candle completeness and hashes.
-- Developer clear-data option for stored warehouse data.
-- Upstox OAuth, token storage, connection status, and disconnect.
-- Upstox live market quote snapshot for index validation.
-- Upstox V3 read-only WebSocket tick stream with start/stop/status APIs, protobuf decoding, sanitized tick persistence, reconnect/backoff, and market-header tick preference.
-- Persistent market header showing NIFTY 50, SENSEX, BANKNIFTY, GOLD FUT, BTCUSD, USDINR, GIFT NIFTY, MIDCPNIFTY, and collapsible global markets.
-- Option contract sync and local contract metadata store.
-- Expired option-contract metadata backfill backend route and Data Warehouse operator UI.
-- Option candle fetch/store with OI preservation.
-- Option Data Planner with preview, ATM-only default moneyness, configurable ITM/OTM selections, CE/PE selection, expiry mode, sample interval, fetch guard, compact planned coverage, background fetch jobs, and selected-date contract windowing.
-- Option Coverage Heatmap showing stored option candles by date and contract count.
-- Raw Option Universe Audit showing broad contract-level option candle coverage for warehouse diagnostics.
-- Backtest Lab for spot/index strategy testing.
-- Paired option execution that maps index signals to option candles.
-- Offline Live Signals console for auditable signal lifecycle transitions.
-- Paper Trading journal with deploy-from-signal, stop/target risk, mark-to-market, close, and P&L.
-- Strategy Deployment management foundation from saved presets/backtest results.
-- Optimizer with Bayesian/Grid/CMA-ES workflows.
-- Presets, journal, strategy library, and pre-trade checklist.
+End-to-end quant workflow:
 
-Partially complete:
+1. Ingest clean index and option data into a local warehouse with integrity audits.
+2. Build and tune strategies in a research lab with realistic costs and walk-forward validation.
+3. Auto-optimize parameters with multiple search methods and robustness scoring.
+4. Forward-test the optimized strategy on live 1-minute closes with full audit trail.
+5. Approve, paper-trade, or skip every signal with a manual gate.
+6. Review forward profitability per deployment before trusting a strategy with capital.
 
-- Historical option workflow. It works when needed contract metadata and candles exist locally. An expired-contract backfill path exists, but it still needs real-credential/Upstox Plus validation.
-- Paper trading and live signal pages now have offline foundations but are not production-ready live systems.
+## Status Snapshot (2026-05-29)
 
-Not complete:
+| Area | Status |
+|---|---|
+| Local Docker stack | Working on Windows: MongoDB, FastAPI, React/nginx |
+| Index data warehouse | NIFTY/BANKNIFTY/SENSEX 1m candles, ~138.8K each, 100% coverage 2024-11-27 → today |
+| Option warehouse | NIFTY 1.44M / BANKNIFTY 1.69M / SENSEX 2.21M ATM CE/PE candles |
+| NSE holiday calendar | 2024–2026 with Budget Saturdays + shifted-expiry exceptions |
+| Live tick → 1m OHLC roller | Running, closes Upstox same-day historical gap |
+| Strategy plugin system | Built-in + drop-in `.py` plugins |
+| Backtest + walk-forward | Complete; statistical significance and regime detector wired |
+| Optimizer | Bayesian, Grid, CMA-ES; robustness, importance, heatmap |
+| Slippage + volatility | Slice 7 done; expiry-tail slippage + post-hoc detector |
+| Strategy Deployments | 1m_close evaluator running, scheduler ON, drift detection ON |
+| Pending Approval UI | Approve / Skip / Mark Blocked + auto-paper-trade on approval |
+| Auto square-off | 15:00 IST every market day, override per deployment |
+| Pre-flight + quality gates | Surfaced at deployment creation, ack required for warnings |
+| Forward metrics aggregation | **Slice 10 — next** |
+| Per-deployment kill switches | Slice 12 — pending |
+| Phase 5 probability engine | Deferred until ≥6 months forward signal history |
+| Phase 6 swing extension | Not started |
 
-- Multi-session live hardening of the Upstox WebSocket tick stream.
-- Strategy Deployment evaluator/runner.
-- Automated live signal evaluation from WebSocket ticks.
-- Paper trade trailing stops, daily risk controls, live tick marks, and replay engine.
-- Production option slippage/liquidity model.
+223 backend tests pass. The local stack is healthy. Latest GitHub commit on `main`: `ae4428f`.
 
-## Architecture Summary
+## Capabilities Summary
 
-- Frontend: React, Tailwind, shadcn/ui components, Lightweight Charts.
-- Backend: FastAPI, pandas, NumPy, Motor.
-- Database: MongoDB.
-- Broker: Upstox REST historical/quote APIs and read-only V3 WebSocket market-data stream.
-- Deployment: Docker Compose on local PC.
+### Data warehouse
 
-More detail: [Architecture](ARCHITECTURE.md).
+- Index 1-minute candles for NIFTY, BANKNIFTY, SENSEX in `candles_1m`, audited per day in `integrity_hashes`.
+- Option 1-minute candles in `options_1m` with OI preserved.
+- Option contract metadata in `option_contracts` with strike, side, expiry date, lot size from Upstox.
+- Background ingest jobs for large 12–18 month index ranges with progress polling.
+- Background option fetch jobs that fetch only the selected contract dates rather than the full date range per contract.
+- Option Data Planner with preview, ATM-only default, configurable OTM/ITM, expiry mode, sample interval, and max-contract guard.
+- Option Coverage Heatmap and Raw Option Universe Audit for diagnostics.
+- Data Hygiene workflow that diff's the desired warehouse against current state and submits dependency-ordered fetches.
+- NSE holiday calendar with Budget Saturday and shifted-expiry support.
+
+### Research
+
+- 6 built-in strategies plus drop-in `.py` plugins.
+- Backtest with realistic Indian intraday costs.
+- Walk-forward IS/OOS with divergence flag.
+- Statistical significance (Wilson 95% CI).
+- Regime detector (ADX + Choppiness + ATR expansion).
+- Pre-trade checklist with 3 profiles and live signal-pass counter.
+- Optimizer (Bayesian / Grid / CMA-ES) with robustness scoring, parameter importance, top-N alternatives.
+- Slippage model (ATM 0.5pt, OTM1/ITM1 1pt, OTM2+/ITM2+ 2pt, expiry-day 30-min 2x) wired into paired option backtests.
+- Post-hoc volatility detector (5-min realized vs 30-day rolling baseline, spike threshold 2.5x).
+
+### Forward testing
+
+- Strategy Deployments persisted in `strategy_deployments`, created only from saved presets or saved backtest runs.
+- Strategy source SHA pinned at creation; auto-pause on drift.
+- Pre-flight check (spot coverage, upcoming expiries, active vs expired contracts, Upstox token state).
+- Deployment quality warnings (missing walk-forward, divergence, low trade count, weak Sharpe, large drawdown) with required user acknowledgment.
+- 1m_close evaluator runs every minute boundary +10s during NSE market hours.
+- Time-of-day blocks (09:15–09:25 and 14:50–15:30 IST) and expiry-day cutoff at 15:00 IST.
+- DTE filter (default `[0..6]`) and `option_no_data` blockers.
+- Concurrency rule: keep highest-score per `(instrument, candle_ts)`.
+- Audit trail invariants: `bar_ts`, `decision_ts`, `strategy_id`, `strategy_version`, `strategy_hash`, `pretrade_settings_snapshot`, `regime`, `option_contract`, `tracked_for_pnl`, `blockers[]`.
+
+### Approval and paper trading
+
+- Pending Approval panel shows CONFIRMED deployment-generated signals with Approve / Skip / Mark Blocked.
+- Approve auto-creates a paper trade when `deployment.mode == "paper"`, with lot size from `option_contracts.lot_size` and `lots` from `deployment.risk.default_lots` (default 1).
+- Auto square-off at 15:00 IST every market day. `risk.allow_overnight=true` opts out per deployment.
+- Failure to create the trade does not roll back the approval. The signal carries a `paper_trade_error`.
+
+### Live data
+
+- Upstox V3 read-only WebSocket market-data stream auto-starts on backend boot.
+- Live tick → 1m OHLC roller subscribes to the broadcast and persists rolled bars into `candles_1m` so the evaluator fires on intraday bars.
+- Market header prefers fresh ticks and falls back to REST quotes when ticks are stale or absent.
+
+## Architecture
+
+The system is a React + FastAPI + MongoDB stack running locally via Docker Compose. The backend exposes REST under `/api`, talks to Upstox over REST and a V3 WebSocket, and persists everything to MongoDB. The frontend is a single-page app with theme tokens and shadcn/ui components. See `docs/ARCHITECTURE.md` for the full module map, data flow diagram, and collection list.
 
 ## Key Workflows
 
-1. Index data:
-   - Fetch index candles from Upstox.
-   - Use the background ingest path for large 12-18 month ranges.
-   - Validate live broker data with the Data Warehouse Quote button.
-   - Watch the persistent market header for broad market context. It prefers fresh Upstox WebSocket ticks while the local stream is running, then uses Upstox-first REST quotes and fallback quote sources.
-   - Store in `candles_1m`.
-   - Audit completeness with `integrity_hashes`.
+### 1. Refresh the warehouse
 
-2. Option data:
-   - Sync/store option contracts.
-   - Use Option Data Planner to decide which option contracts are needed.
-   - Treat the planner's Planned coverage panel as the trust check for selected moneyness/legs/date windows.
-   - Fetch missing option candles into `options_1m` through background selected-date jobs.
-   - Use Option Coverage Heatmap to visually inspect stored option candle dates.
-   - Use Raw Option Universe Audit to find missing/incomplete contracts across a broader metadata slice.
+1. Open Data Warehouse.
+2. Confirm Upstox is connected.
+3. Run Data Hygiene plan: `POST /api/data-hygiene/plan` (or the UI button when wired).
+4. Execute the plan: `POST /api/data-hygiene/execute`. The flow is spot → contracts → option_candles in dependency order.
+5. Re-run plan to confirm gaps closed.
+6. Inspect Option Coverage Heatmap and the Trust Audit page.
 
-3. Backtest:
-   - Load local index candles.
-   - Compute indicators/regime.
-   - Run strategy.
-   - Optionally pair each index trade with option premium candles.
+### 2. Build and tune a strategy
 
-4. Optimize:
-   - Run parameter search.
-   - Save best run as a preset.
-   - Re-test in Backtest Lab.
+1. Pick a strategy in Backtest Lab. Add params, costs, walk-forward.
+2. Save the result. Open Optimizer with the same strategy + window.
+3. Run Bayesian search with risk-adjusted objective. Review robustness and alternatives.
+4. Apply best params as a Preset.
 
-5. Forward test:
-   - Create Strategy Deployments only from saved presets or saved backtest results.
-   - Manage deployment status from Live Signals.
-   - Start with `1m_close` confirmation.
-   - Require manual approval for every paper trade or trade recommendation.
-   - Journal clean and blocked signals separately.
-   - Review profitability by deployment before trusting a strategy.
+### 3. Deploy for forward testing
 
-## Next Planned Steps
+1. From Live Signals, click Create Deployment.
+2. Choose source: a saved Preset or a saved Backtest Run.
+3. The Pre-flight badge highlights data realism warnings.
+4. The Quality badge surfaces walk-forward, trade-count, Sharpe, and drawdown warnings.
+5. Tick the acknowledgment checkbox if any warnings are present (HTTP 400 otherwise).
+6. Choose mode (`shadow`, `paper`, `recommendation`), DTE filter, default lots, and `allow_overnight` if desired.
+7. Save. The deployment is `ACTIVE`. The scheduler picks it up on the next minute boundary +10s during market hours.
 
-1. Expired option-contract backfill validation.
-   - Backend route: `POST /api/upstox/expired-options/contracts/{instrument}/sync`.
-   - Required for old dates where expiry rules changed.
-   - Store contracts by underlying, expiry, strike, side, instrument key.
-   - Data Warehouse operator workflow exists.
-   - Validate with real Upstox Plus access.
+### 4. Approve or skip signals
 
-2. Option data audit improvements.
-   - Planner-selected coverage and raw universe audit now have separate UI wording.
-   - Contract-level audit and option-data clear controls exist.
-   - Add per-contract day drill-down and missing-contract handoff back into Option Data Planner.
+1. The Pending Approval panel auto-refreshes every 15 seconds.
+2. For each CONFIRMED signal, click Approve, Skip, or Mark Blocked.
+3. Approve transitions CONFIRMED → TRIGGERED → ACTIVE and (in paper mode) auto-creates a paper trade.
+4. Skip transitions CONFIRMED → SKIPPED → AUDITED.
+5. Mark Blocked moves any non-AUDITED signal to AUDITED with the supplied note as a blocker.
 
-3. Live WebSocket tick stream hardening.
-   - Initial read-only stream manager is implemented.
-   - Validate over several live sessions for reconnects, stale-tick fallback, latency, and subscription failures.
-   - Keep REST polling as the off-hours/stale-tick fallback.
+### 5. Review forward performance
 
-4. Live signal lifecycle.
-   - Strategy Deployment model/routes and Live Signals management panel exist.
-   - Next, implement the `1m_close` evaluator from `docs/STRATEGY_DEPLOYMENTS.md`.
-   - First mode: `1m_close` shadow/forward testing.
-   - Later mode: manual per-tick switch after trust is established.
-   - Avoid signals without auditable source preset/backtest result, params, reasons, blockers, and option policy.
+1. Inspect signals per deployment via `GET /api/deployments/{id}/signals`.
+2. Inspect paper trades via `GET /api/paper/trades`.
+3. Slice 10 will roll these into per-deployment win-rate, avg P&L, profit factor, and session completeness. Until that lands, the data is in the audit trail but not yet aggregated.
 
-5. Paper trading.
-   - Create/mark/close and stop/target auto-close foundation exists.
-   - Add simulated fills, trailing exits, replay, and daily risk controls.
+## What Is Not Done
 
-## Technical Tips
+- **Slice 10 — Forward metrics aggregation per deployment.** Win-rate, avg P&L, profit factor, annotated with session completeness ≥70% of 10:00–15:00 IST, surfaced in Strategy Library when ≥10 complete sessions exist.
+- **Slice 12 — Per-deployment kill switches.** `max_consecutive_losses`, `daily_loss_cutoff_pct`, `max_open_paper_trades`.
+- Phase 5 — probability engine (Kaplan–Meier survival), meta-model, Kelly sizing, Telegram alerts. Deferred until ≥6 months forward history exists.
+- Phase 6 — swing/positional extension on 1H/1D timeframes. Not started.
+- Online hosting / always-on uptime. Local PC is the runtime. Forward sessions are intermittent — `session_completeness` is the right concept.
+- No automatic broker order placement. The manual approval gate is intentional and must remain.
 
-- Keep secrets in `backend/.env`; never in docs or commits.
-- Rebuild Docker after backend/frontend source changes.
-- Use `Sample = 15` in Option Data Planner for fast estimates; use `1` before serious testing. Sample 1 is optimized with expiry/side/strike lookup, but final high-accuracy option fetches can still involve many broker calls.
-- Leave Chunk blank for Auto unless troubleshooting broker failures.
-- Check Upstox status before fetch errors.
-- Do not assume Tuesday/Thursday/monthly expiry rules. Read contract metadata.
-- A raw universe audit can show many missing contracts when only ATM or a narrow moneyness set has been fetched. To know whether selected data is ready, check Planned coverage, Need fetch, Missing meta, and stored/expected selected candles in Option Data Planner.
-- Expired option candles require the Upstox expired historical endpoint; the normal V3 historical endpoint rejects expired keys with `UDAPI1021`.
-- Add `data-testid` for new interactive UI controls.
-- Use CSS variables for visual changes; avoid hard-coded text/background colors.
+## Recommendations And Tips Discovered During Development
 
-## Recommendations
+These are the practical lessons. Treat them as project conventions.
 
-- Prioritize data trust before strategy improvements.
-- Build option audit before claiming historical option backtests are dependable.
-- Use smaller live/paper slices before implementing a full terminal.
-- Keep strategy changes separate from infrastructure changes.
-- Prefer conservative defaults and preview screens for broker/data operations.
+### Project-wide
 
-## Development Learnings
+- Trust data first. A polished UI is meaningless without clean candles, correct expiries, and realistic costs.
+- Build small verified slices. Each slice gets backend tests, a UI surface, a live verification, and a commit before the next slice starts.
+- Use stored option contract metadata for expiry resolution. Never hardcode weekday rules.
+- Lot size always comes from `option_contracts.lot_size` (Upstox-supplied). It changes; do not pin it.
+- Walk-forward acceptance: warn but never block. The user makes a conscious choice via the ack checkbox.
+- Manual approval gate before any paper trade or recommendation. No auto-execution.
+- The post-hoc volatility detector replaces an event calendar that we cannot reliably maintain.
 
-- A fancy UI is not enough. Trading utility depends on clean data, realistic execution, and repeatable verification.
-- Broker data work needs guardrails. Preview and chunk estimates prevent large accidental downloads.
-- Expiry handling is a data problem, not a weekday formula.
-- Option backtests need both contract metadata and premium candles; missing either invalidates results.
-- Light/dark readability should be solved with design tokens, not ad hoc per-panel fixes.
-- Documentation must describe current truth, not the original plan.
+### Data ingestion
 
-## Verification Commands
+- Upstox returns `400 Invalid date range` on 30-day chunks crossing Feb→Mar. Use `chunk_days=7` for spot ingest.
+- Upstox historical endpoint returns empty for the same trading day. The live tick → 1m roller is what closes that gap.
+- Expired option candles use `/v2/expired-instruments/historical-candle/{expired_key}/1minute/{to}/{from}`. Sending expired keys to the normal V3 endpoint returns `UDAPI1021`.
+- `GLOBAL_INDICATOR|USDINR` is rejected by REST quote endpoint but works on the WebSocket. Keep market header per-tile error tolerant.
+- Run option fetches month-by-month with `Sample = 1`, ATM only, both CE and PE, `Missing only` enabled, `Max contracts = 500`. Expand to OTM1/ITM1 only when the strategy needs them.
+
+### Calendar handling
+
+- NIFTY weekly expiry day rotated: Thu (until 2024-08) → Wed (2024-09 to 2025-03) → Tue (2025-04+).
+- BANKNIFTY weekly options were discontinued in November 2024. Only monthly expiries are available since.
+- SENSEX weekly Friday expiry can shift to Wednesday when Thursday is a holiday — example: 2026-01-15 BMC/Maharashtra civic elections shifted SENSEX expiry to 2026-01-14. The `SHIFTED_EXPIRY_DAYS` set in `nse_calendar.py` tracks these.
+- 2025-02-01 and 2026-02-01 are Budget Saturday trading sessions.
+- 2025-10-21 captured 60 candles from the limited Diwali Muhurat session. The audit recognizes this.
+- 4 days have off-by-1 candle counts due to single-minute Upstox glitches. They are treated as complete.
+
+### Forward testing
+
+- The contract picker filters `expiry_date >= today`. Without it, live signals can resolve to long-expired contracts. The 2026-05-28 bug was caused by missing this filter; the blocker name is `option_contract_no_active_expiry`.
+- Strategy source SHA is pinned on every new deployment. Pre-slice-8 deployments without a pinned SHA continue to operate (legacy compat).
+- The unique partial index `signals_deployment_bar_unique` over `(deployment_id, candle_ts)` prevents duplicate journaling without affecting manual research signals.
+- Time-of-day blocks (09:15–09:25 and 14:50–15:30 IST) and expiry-day cutoff (15:00 IST) are non-negotiable defaults.
+- WS subscribed instruments are captured at connect time. A subscription change in code does not propagate to a running stream — restart it.
+
+### UI
+
+- The dark theme is the default; the white theme exists for readability. Theme tokens are CSS variables, not per-panel hex codes.
+- All interactive controls carry `data-testid` attributes (kebab-case, role-based, not appearance-based).
+- The market header prefers fresh ticks and falls back gracefully when a single tile fails.
+
+## Verification
 
 ```bash
 python -m pytest tests -q
@@ -165,3 +204,18 @@ cd ..
 docker compose up -d --build
 docker compose ps
 ```
+
+Health checks:
+
+- `GET /api/health` → `{db: "ok"}`
+- `GET /api/upstox/status` → connected
+- `GET /api/live-candles/status` → running during market hours
+
+## Where To Go Next
+
+If you are a new agent picking this up:
+
+1. Read `docs/HANDOFF.md`.
+2. Read `plan.md` for the slice roadmap.
+3. Read `docs/ARCHITECTURE.md` for the module map.
+4. The next implementation work is **Slice 10 — Forward metrics aggregation per deployment**.
