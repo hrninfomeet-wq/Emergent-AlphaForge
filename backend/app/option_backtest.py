@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 
 from app.options_universe import select_contract_for_signal
+from app.slippage import SlippageConfig, apply_slippage, estimate_slippage_per_side
 
 
 def _empty_metrics() -> Dict[str, Any]:
@@ -108,11 +109,18 @@ def simulate_paired_option_trades(
     exit_max_age_sec: int = 180,
     expiry_by_trade: Optional[Dict[int, str]] = None,
     fixed_expiry_date: Optional[str] = None,
+    slippage_config: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Map each spot signal trade to a long CE/PE option premium trade."""
+    """Map each spot signal trade to a long CE/PE option premium trade.
+
+    Slippage: applies per-side option-point slippage at entry (BUY) and exit (SELL)
+    via app.slippage.estimate_slippage_per_side. Pass slippage_config={...} to override
+    defaults; pass {"atm_pts": 0} etc. to disable a bucket.
+    """
     contract_list = list(contracts or [])
     spot_trade_list = list(spot_trades or [])
     candles = option_candles.copy() if option_candles is not None else pd.DataFrame()
+    slippage_cfg = SlippageConfig.from_dict(slippage_config)
     if not candles.empty:
         candles["ts"] = candles["ts"].astype(int)
         candles = candles.sort_values(["instrument_key", "ts"]).reset_index(drop=True)
@@ -170,8 +178,24 @@ def simulate_paired_option_trades(
             paired_trades.append({**base, **_contract_fields(selected), "status": "MISSING_EXIT_CANDLE"})
             continue
 
-        entry_price = float(entry["close"])
-        exit_price = float(exit_candle["close"])
+        raw_entry_price = float(entry["close"])
+        raw_exit_price = float(exit_candle["close"])
+        # Apply slippage at fill time. Buying entry pays MORE than mid; selling exit
+        # receives LESS than mid. Both legs use per-side option-point estimates.
+        entry_slip = estimate_slippage_per_side(
+            moneyness=moneyness,
+            ts_ms=int(entry["ts"]),
+            expiry_iso=str(selected.get("expiry_date") or "") or None,
+            cfg=slippage_cfg,
+        )
+        exit_slip = estimate_slippage_per_side(
+            moneyness=moneyness,
+            ts_ms=int(exit_candle["ts"]),
+            expiry_iso=str(selected.get("expiry_date") or "") or None,
+            cfg=slippage_cfg,
+        )
+        entry_price = apply_slippage(fill_price=raw_entry_price, side="BUY", pts=entry_slip["pts"])
+        exit_price = apply_slippage(fill_price=raw_exit_price, side="SELL", pts=exit_slip["pts"])
         pnl_pts = round(exit_price - entry_price, 3)
         lot_size = int(selected.get("lot_size") or 1)
         pnl_value = round(pnl_pts * lot_size * lot_count, 2)
@@ -184,8 +208,14 @@ def simulate_paired_option_trades(
             "atm_at_entry": selected.get("atm"),
             "option_entry_ts": int(entry["ts"]),
             "option_exit_ts": int(exit_candle["ts"]),
+            "raw_entry_option_price": round(raw_entry_price, 3),
+            "raw_exit_option_price": round(raw_exit_price, 3),
             "entry_option_price": round(entry_price, 3),
             "exit_option_price": round(exit_price, 3),
+            "entry_slippage_pts": entry_slip["pts"],
+            "exit_slippage_pts": exit_slip["pts"],
+            "slippage_bucket": entry_slip["bucket"],
+            "expiry_tail_applied": bool(entry_slip.get("tail_multiplier_applied") or exit_slip.get("tail_multiplier_applied")),
             "lot_size": lot_size,
             "lots": lot_count,
             "quantity": lot_size * lot_count,
@@ -198,6 +228,7 @@ def simulate_paired_option_trades(
         "enabled": True,
         "underlying": underlying.upper(),
         "moneyness": moneyness,
+        "slippage_config": slippage_cfg.to_dict(),
         "coverage": coverage,
         "metrics": _compute_metrics(paired_trades),
         "equity_curve": build_option_equity_curve(paired_trades),

@@ -49,6 +49,7 @@ from app.deployment_evaluator import (
     evaluate_deployment_on_close,
 )
 from app.deployment_preflight import compute_data_realism
+from app.volatility import VolatilityConfig, annotate_volatility, summarize_spikes
 from app.data_hygiene import (
     DEFAULT_INSTRUMENTS as HYGIENE_DEFAULT_INSTRUMENTS,
     DEFAULT_LEGS as HYGIENE_DEFAULT_LEGS,
@@ -398,6 +399,7 @@ class OptionBacktestReq(BaseModel):
     exit_max_age_sec: int = 180
     auto_fetch: bool = True
     max_auto_fetch_contracts: int = 12
+    slippage_config: Optional[Dict[str, Any]] = None
 
 
 class BacktestReq(BaseModel):
@@ -630,6 +632,7 @@ async def _run_paired_option_backtest(req: BacktestReq, spot_trades: List[Dict[s
         exit_max_age_sec=config.exit_max_age_sec,
         expiry_by_trade=expiry_by_trade,
         fixed_expiry_date=fixed_expiry_date,
+        slippage_config=config.slippage_config,
     )
     result["request"] = config.model_dump()
     resolved_expiries = sorted(set(expiry_by_trade.values()))
@@ -825,6 +828,61 @@ async def dashboard_summary():
 async def market_header_snapshot():
     """Read the persistent terminal header quote snapshot."""
     return await build_market_header_snapshot(latest_ticks=upstox_stream_manager.latest_tick_map())
+
+
+class VolatilityAuditReq(BaseModel):
+    instrument: str = "NIFTY"
+    from_date: str
+    to_date: str
+    spike_threshold: float = 2.5
+    realized_window: int = 5
+    baseline_lookback_bars: int = 11250
+
+
+@api.post("/volatility/audit")
+async def volatility_audit(req: VolatilityAuditReq):
+    """Annotate spot 1m bars in the window with realized vs 30-day baseline ratios.
+
+    Returns a summary plus a sample of spike minutes. Useful for filtering
+    backtest trades that fired during chaotic conditions, or for reviewing
+    whether a strategy's edge depends disproportionately on high-vol bars.
+    """
+    if req.instrument.upper() not in upstox_client.INSTRUMENT_KEYS:
+        raise HTTPException(400, f"Unsupported instrument: {req.instrument}")
+    start_ts, end_ts = _ist_market_bounds_ms(req.from_date, req.to_date)
+    df = await load_candles_df(req.instrument.upper(), start_ts=start_ts, end_ts=end_ts)
+    if df.empty:
+        return serialize_doc({
+            "instrument": req.instrument.upper(),
+            "from_date": req.from_date,
+            "to_date": req.to_date,
+            "summary": {"total_bars": 0, "spike_bars": 0, "spike_pct": 0.0, "max_ratio": None},
+            "spikes": [],
+            "config": VolatilityConfig().to_dict(),
+        })
+    cfg = VolatilityConfig.from_dict({
+        "spike_threshold": req.spike_threshold,
+        "realized_window": req.realized_window,
+        "baseline_lookback_bars": req.baseline_lookback_bars,
+    })
+    enriched = annotate_volatility(df, cfg)
+    summary = summarize_spikes(enriched)
+    # Surface up to 20 spike rows so the UI has a tangible list, not just a count
+    spike_rows = (
+        enriched[enriched["volatility_spike"]]
+        .sort_values("vol_ratio", ascending=False)
+        .head(20)
+        [["ts", "datetime", "close", "realized_vol_5m", "vol_baseline_30d", "vol_ratio"]]
+        .to_dict(orient="records")
+    )
+    return serialize_doc({
+        "instrument": req.instrument.upper(),
+        "from_date": req.from_date,
+        "to_date": req.to_date,
+        "summary": summary,
+        "spikes": spike_rows,
+        "config": cfg.to_dict(),
+    })
 
 
 @api.get("/market/header/stream")

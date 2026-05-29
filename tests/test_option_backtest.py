@@ -44,14 +44,58 @@ def test_simulate_paired_option_trades_selects_contract_and_uses_option_premium_
     trade = result["trades"][0]
     assert trade["status"] == "PAIRED"
     assert trade["instrument_key"] == "ce-otm1"
+    # With default OTM1 slippage = 1.0 pt: BUY pays 100.0+1.0=101.0, SELL receives 118.0-1.0=117.0
+    # Resulting pnl = 117.0 - 101.0 = 16.0 pts * 65 lot_size = 1040.0
+    assert trade["raw_entry_option_price"] == 100.0
+    assert trade["raw_exit_option_price"] == 118.0
+    assert trade["entry_option_price"] == 101.0
+    assert trade["exit_option_price"] == 117.0
+    assert trade["entry_slippage_pts"] == 1.0
+    assert trade["exit_slippage_pts"] == 1.0
+    assert trade["slippage_bucket"] == "otm1"
+    assert trade["expiry_tail_applied"] is False
+    assert trade["option_pnl_pts"] == 16.0
+    assert trade["option_pnl_value"] == 1040.0
+    # MFE/MAE are computed off slippage-adjusted entry: 119.0 - 101.0 = 18.0 high; 101.0 - 97.0 = 4.0 low
+    assert trade["option_mfe_pts"] == 18.0
+    assert trade["option_mae_pts"] == 4.0
+    assert result["metrics"]["paired_trade_count"] == 1
+    assert result["metrics"]["total_option_pnl_value"] == 1040.0
+
+
+def test_simulate_paired_option_trades_disables_slippage_when_pts_zero():
+    """Setting slippage_config to zero pts disables it - useful for math-pure backtests."""
+    spot_trades = [
+        {
+            "direction": "CE",
+            "entry_ts": 100_000,
+            "exit_ts": 220_000,
+            "entry_price": 26012.0,
+            "exit_price": 26045.0,
+        }
+    ]
+    contracts = [
+        {"instrument_key": "ce-otm1", "side": "CE", "strike": 26050.0, "lot_size": 65, "trading_symbol": "NIFTY 26050 CE"},
+        {"instrument_key": "pe-otm1", "side": "PE", "strike": 25950.0, "lot_size": 65, "trading_symbol": "NIFTY 25950 PE"},
+    ]
+    option_rows = pd.DataFrame([
+        {"instrument_key": "ce-otm1", "ts": 90_000, "close": 100.0, "high": 102.0, "low": 99.0},
+        {"instrument_key": "ce-otm1", "ts": 220_000, "close": 118.0, "high": 119.0, "low": 110.0},
+    ])
+    result = option_backtest.simulate_paired_option_trades(
+        spot_trades=spot_trades,
+        contracts=contracts,
+        option_candles=option_rows,
+        underlying="NIFTY",
+        moneyness="otm1",
+        lots=1,
+        slippage_config={"atm_pts": 0, "otm1_pts": 0, "itm1_pts": 0, "otm2_plus_pts": 0, "itm2_plus_pts": 0},
+    )
+    trade = result["trades"][0]
     assert trade["entry_option_price"] == 100.0
     assert trade["exit_option_price"] == 118.0
     assert trade["option_pnl_pts"] == 18.0
     assert trade["option_pnl_value"] == 1170.0
-    assert trade["option_mfe_pts"] == 19.0
-    assert trade["option_mae_pts"] == 3.0
-    assert result["metrics"]["paired_trade_count"] == 1
-    assert result["metrics"]["total_option_pnl_value"] == 1170.0
 
 
 def test_simulate_paired_option_trades_reports_missing_contracts():
