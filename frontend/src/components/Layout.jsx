@@ -2,9 +2,10 @@ import { Link, NavLink, useLocation } from "react-router-dom";
 import {
   Home, LineChart, Database, ListChecks, BookOpen,
   Briefcase, Gauge, Activity, FlaskConical, Library,
-  Zap, Monitor, Moon, Sun,
+  Zap, Monitor, Moon, Sun, Loader2,
 } from "lucide-react";
 import { useTheme } from "@/lib/theme";
+import { useJobs } from "@/lib/jobs";
 import MarketHeader from "@/components/MarketHeader";
 
 const NAV_GROUPS = [
@@ -113,6 +114,7 @@ function TopBar({ location }) {
   return (
     <header className="h-14 border-b border-line bg-bg-1 flex items-center px-4 gap-3" data-testid="app-topbar">
       <h1 className="text-base font-semibold" data-testid="page-title">{title}</h1>
+      <ActiveJobsIndicator />
       <div className="ml-auto flex items-center gap-3 text-[11px] font-mono text-dimmer">
         <label className="flex items-center gap-1.5">
           <ThemeIcon className="w-3.5 h-3.5 text-info" />
@@ -132,6 +134,35 @@ function TopBar({ location }) {
         <span data-testid="market-status-label">NSE · NIFTY 50 / BANKNIFTY / SENSEX</span>
       </div>
     </header>
+  );
+}
+
+function ActiveJobsIndicator() {
+  const { jobs, isJobActive } = useJobs();
+  const active = [];
+  if (isJobActive("upstox_ingest")) {
+    active.push({ label: "Index ingest", pct: jobs.upstox_ingest?.progress_pct });
+  }
+  if (isJobActive("option_fetch")) {
+    active.push({ label: "Option fetch", pct: jobs.option_fetch?.progress_pct });
+  }
+  if (active.length === 0) return null;
+
+  return (
+    <div
+      className="flex items-center gap-2 px-2 py-1 rounded-md border border-line bg-bg-2 text-[11px] font-mono text-dim"
+      data-testid="active-jobs-indicator"
+      title="Background warehouse jobs are running"
+    >
+      <Loader2 className="w-3.5 h-3.5 text-info animate-spin" />
+      {active.map((j, i) => (
+        <span key={j.label}>
+          {i > 0 && <span className="text-dimmer mr-2">·</span>}
+          {j.label}
+          {Number.isFinite(j.pct) ? ` ${Math.round(j.pct)}%` : ""}
+        </span>
+      ))}
+    </div>
   );
 }
 

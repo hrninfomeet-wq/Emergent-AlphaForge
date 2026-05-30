@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -7,6 +7,7 @@ import { Database, Download, RefreshCw, CheckCircle2, AlertCircle, Link2, Unplug
 import { fmtInt, fmtNum, fmtSigned, isoToFull, tsToFull } from "@/lib/fmt";
 import { Skeleton } from "@/components/ui/skeleton";
 import HolidayCalendarDialog from "@/components/HolidayCalendarDialog";
+import { useJobs } from "@/lib/jobs";
 
 const INSTRUMENTS = ["NIFTY", "BANKNIFTY", "SENSEX"];
 const MONEYNESS_OPTIONS = ["atm", "itm1", "itm2", "otm1", "otm2", "otm3"];
@@ -34,14 +35,13 @@ function quoteTimeDisplay(quote) {
 }
 
 export default function DataWarehouse() {
+  const { jobs, startJob, onJobComplete, isJobActive } = useJobs();
   const [coverage, setCoverage] = useState(null);
   const [optionCoverage, setOptionCoverage] = useState(null);
   const [optionCoverageLoading, setOptionCoverageLoading] = useState(true);
   const [runs, setRuns] = useState([]);
   const [upstoxStatus, setUpstoxStatus] = useState(null);
   const [upstoxBusy, setUpstoxBusy] = useState(false);
-  const [upstoxIngesting, setUpstoxIngesting] = useState(false);
-  const [upstoxIngestJob, setUpstoxIngestJob] = useState(null);
   const [quoteLoading, setQuoteLoading] = useState(false);
   const [marketQuote, setMarketQuote] = useState(null);
   const [upstoxForm, setUpstoxForm] = useState({
@@ -65,9 +65,7 @@ export default function DataWarehouse() {
   });
   const [optionPlanResult, setOptionPlanResult] = useState(null);
   const [optionFetchResult, setOptionFetchResult] = useState(null);
-  const [optionFetchJob, setOptionFetchJob] = useState(null);
   const [optionPlanning, setOptionPlanning] = useState(false);
-  const [optionFetching, setOptionFetching] = useState(false);
   const [optionAuditForm, setOptionAuditForm] = useState({
     underlying: "NIFTY",
     from_date: dateInput(30),
@@ -98,6 +96,18 @@ export default function DataWarehouse() {
   const [clearInstrument, setClearInstrument] = useState("ALL");
   const [clearing, setClearing] = useState(false);
   const [loading, setLoading] = useState(true);
+
+  // Background jobs are tracked globally so progress survives navigation.
+  const upstoxIngestJob = jobs.upstox_ingest || null;
+  const optionFetchJob = jobs.option_fetch || null;
+  const upstoxIngesting = isJobActive("upstox_ingest");
+  const optionFetching = isJobActive("option_fetch");
+  // Mirror the plan into a ref so the (mount-once) job-completion listener can
+  // read the latest value without re-subscribing on every plan change.
+  const optionPlanResultRef = useRef(null);
+  useEffect(() => {
+    optionPlanResultRef.current = optionPlanResult;
+  }, [optionPlanResult]);
 
   const refreshOptionCoverage = async () => {
     setOptionCoverageLoading(true);
@@ -146,6 +156,29 @@ export default function DataWarehouse() {
     refresh();
   }, []);
 
+  // When a background job finishes, refresh the views it affected. These run
+  // even if the user navigated away and came back, because the job tracker is
+  // global and replays the completion to whoever is currently mounted.
+  useEffect(() => {
+    const offIngest = onJobComplete("upstox_ingest", () => {
+      refresh();
+    });
+    const offFetch = onJobComplete("option_fetch", (job) => {
+      setOptionFetchResult(job);
+      refresh();
+      // Re-run the planner preview so Planned coverage reflects the new candles,
+      // but only if the user still has a plan loaded for the same instrument.
+      if (optionPlanResultRef.current) {
+        handleOptionPreview(false);
+      }
+    });
+    return () => {
+      offIngest();
+      offFetch();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const handleUpstoxConnect = async () => {
     setUpstoxBusy(true);
     try {
@@ -174,40 +207,17 @@ export default function DataWarehouse() {
     }
   };
 
-  const pollUpstoxIngestJob = async (runId) => {
-    for (let attempt = 0; attempt < 720; attempt += 1) {
-      const job = await api.getUpstoxIngestJob(runId);
-      setUpstoxIngestJob(job);
-      if (!["queued", "running"].includes(job.status)) {
-        const chunk = job.chunk_days ? ` · chunk ${job.chunk_days}d` : "";
-        if (job.status === "ok" || job.status === "empty") {
-          toast.success(`Upstox ${job.instrument}: +${job.candles_added || 0} / ~${job.candles_updated || 0} updated${chunk}`);
-        } else {
-          toast.error(`Upstox ingest ${job.status}: ${(job.failed_chunks || [])[0]?.error || "check run details"}`);
-        }
-        await refresh();
-        return job;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 2500));
-    }
-    throw new Error("Ingest job polling timed out. The backend run may still be active; check Recent Ingest Runs.");
-  };
-
   const handleUpstoxIngest = async () => {
-    setUpstoxIngesting(true);
     try {
       const res = await api.startUpstoxIngestJob({
         ...upstoxForm,
         chunk_days: upstoxForm.chunk_days === "" ? null : Number(upstoxForm.chunk_days),
       });
-      setUpstoxIngestJob(res);
+      startJob("upstox_ingest", res);
       toast.success(`Upstox ${upstoxForm.instrument} ingest started in background`);
-      await pollUpstoxIngestJob(res.id);
     } catch (e) {
       const msg = e.response?.data?.detail || e.message;
       toast.error(`Upstox ingest failed: ${msg}`);
-    } finally {
-      setUpstoxIngesting(false);
     }
   };
 
@@ -237,7 +247,6 @@ export default function DataWarehouse() {
     setOptionPlanning(true);
     if (clearFetch) {
       setOptionFetchResult(null);
-      setOptionFetchJob(null);
     }
     try {
       const res = await api.previewOptionWarehouse(optionWarehousePayload());
@@ -252,35 +261,15 @@ export default function DataWarehouse() {
     }
   };
 
-  const pollOptionFetchJob = async (runId) => {
-    for (let attempt = 0; attempt < 1440; attempt += 1) {
-      const job = await api.getOptionWarehouseFetchJob(runId);
-      setOptionFetchJob(job);
-      if (!["queued", "running"].includes(job.status)) {
-        setOptionFetchResult(job);
-        toast.success(`Option fetch ${job.status}: +${fmtInt(job.candles_added || 0)} / ~${fmtInt(job.candles_updated || 0)} updated`);
-        await handleOptionPreview(false);
-        await refresh();
-        return job;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 2500));
-    }
-    throw new Error("Option fetch polling timed out. The backend job may still be active; check Recent Ingest Runs.");
-  };
-
   const handleOptionFetch = async () => {
-    setOptionFetching(true);
     try {
       const res = await api.startOptionWarehouseFetchJob(optionWarehousePayload());
-      setOptionFetchJob(res);
       setOptionFetchResult(null);
+      startJob("option_fetch", res);
       toast.success(`Option fetch started in background: ${fmtInt(res.fetch_contracts || 0)} contracts`);
-      await pollOptionFetchJob(res.id);
     } catch (e) {
       const msg = e.response?.data?.detail || e.message;
       toast.error(`Option fetch failed: ${msg}`);
-    } finally {
-      setOptionFetching(false);
     }
   };
 

@@ -3,6 +3,7 @@ import "@/App.css";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Toaster } from "sonner";
 import { ThemeProvider, useTheme } from "@/lib/theme";
+import { JobsProvider } from "@/lib/jobs";
 import Layout from "@/components/Layout";
 import Dashboard from "@/pages/Dashboard";
 import BacktestLab from "@/pages/BacktestLab";
@@ -17,7 +18,9 @@ import LiveSignals from "@/pages/LiveSignals";
 function App() {
   return (
     <ThemeProvider>
-      <AppShell />
+      <JobsProvider>
+        <AppShell />
+      </JobsProvider>
     </ThemeProvider>
   );
 }

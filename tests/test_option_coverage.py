@@ -83,3 +83,22 @@ def test_emergent_badge_and_telemetry_removed():
     assert "emergent-main.js" not in index_html
     assert "posthog" not in index_html.lower()
     assert "AlphaForge" in index_html
+
+
+def test_background_jobs_tracked_globally_above_router():
+    """Long-running warehouse jobs must be tracked in a provider mounted above
+    the router so progress survives navigation."""
+    app = (ROOT / "frontend" / "src" / "App.js").read_text(encoding="utf-8")
+    jobs = (ROOT / "frontend" / "src" / "lib" / "jobs.jsx").read_text(encoding="utf-8")
+    warehouse = (ROOT / "frontend" / "src" / "pages" / "DataWarehouse.jsx").read_text(encoding="utf-8")
+
+    # Provider wraps the app shell (which contains the router).
+    assert "JobsProvider" in app
+    # Jobs are persisted so a reload resumes polling.
+    assert "localStorage" in jobs
+    assert "upstox_ingest" in jobs and "option_fetch" in jobs
+    # The page no longer owns the polling loop; it delegates to the provider.
+    assert "useJobs" in warehouse
+    assert "startJob" in warehouse
+    assert "pollOptionFetchJob" not in warehouse
+    assert "pollUpstoxIngestJob" not in warehouse
