@@ -9,6 +9,7 @@ import pandas as pd
 
 from app.db import get_db
 from app.yfinance_source import fetch_1m
+from app.nse_calendar import trading_days_in_range
 
 log = logging.getLogger(__name__)
 
@@ -31,18 +32,6 @@ def _ist_day_bounds_ms(date_str: str) -> tuple[int, int]:
     start = pd.Timestamp(date_str, tz="Asia/Kolkata")
     end = start + pd.Timedelta(days=1) - pd.Timedelta(milliseconds=1)
     return int(start.tz_convert("UTC").value // 10**6), int(end.tz_convert("UTC").value // 10**6)
-
-
-def _iter_weekday_dates(start_date: date, end_date: date) -> List[str]:
-    if start_date > end_date:
-        return []
-    days: List[str] = []
-    cur = start_date
-    while cur <= end_date:
-        if cur.weekday() < 5:
-            days.append(cur.isoformat())
-        cur += timedelta(days=1)
-    return days
 
 
 def summarize_audit_days(
@@ -94,7 +83,7 @@ def summarize_audit_days(
         "stored_candles": sum(int(d["stored_candles"]) for d in days),
         "expected_candles": len(expected_dates) * expected_per_day,
         "expected_per_day": expected_per_day,
-        "calendar_assumption": "weekday_sessions",
+        "calendar_assumption": "nse_trading_calendar",
     }
     summary["complete"] = (
         summary["expected_days"] > 0
@@ -291,7 +280,11 @@ async def audit_integrity(
     observed_dates.update(stored_hashes.keys())
 
     if start_date and end_date:
-        expected_dates = _iter_weekday_dates(date.fromisoformat(start_date), date.fromisoformat(end_date))
+        # Holiday-aware expected trading days: skip NSE/BSE holidays and weekends,
+        # include gazetted special Saturday sessions. The previous weekday-only
+        # generator counted every holiday as a "missing" day and under-reported
+        # true coverage.
+        expected_dates = trading_days_in_range(start_date, end_date)
     else:
         expected_dates = sorted(observed_dates)
 

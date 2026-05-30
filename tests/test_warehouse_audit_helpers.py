@@ -1,6 +1,5 @@
 import sys
 import types
-from datetime import date
 from pathlib import Path
 
 
@@ -23,10 +22,15 @@ sys.modules.setdefault("yfinance", types.ModuleType("yfinance"))
 from app import warehouse  # noqa: E402
 
 
-def test_iter_weekday_dates_skips_weekends():
-    days = warehouse._iter_weekday_dates(date(2026, 5, 22), date(2026, 5, 26))
+def test_audit_expected_dates_are_holiday_aware():
+    """The audit must use the NSE trading calendar, not a weekday-only count.
 
-    assert days == ["2026-05-22", "2026-05-25", "2026-05-26"]
+    2026-05-28 is Eid-ul-Adha (a holiday); a Mon-Fri window spanning it should
+    therefore exclude that day from expected trading days.
+    """
+    days = warehouse.trading_days_in_range("2026-05-25", "2026-05-29")
+    # Mon 25, Tue 26, Wed 27 are trading days; Thu 28 is Eid (holiday); Fri 29 is a trading day.
+    assert days == ["2026-05-25", "2026-05-26", "2026-05-27", "2026-05-29"]
 
 
 def test_ist_day_bounds_cover_exact_calendar_day_in_utc_ms():
