@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Sequence
 
@@ -203,3 +204,13 @@ async def run_option_warehouse_fetch_job(
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }},
     )
+
+    # Coverage changed: refresh the precomputed cache so the Data Warehouse
+    # heatmap reflects the newly stored candles without a slow live aggregation.
+    if totals.get("candles_added") or totals.get("candles_updated"):
+        try:
+            from app.option_coverage_cache import refresh_option_coverage_cache
+
+            await refresh_option_coverage_cache(db, underlying=None)
+        except Exception:
+            logging.getLogger(__name__).warning("option coverage cache refresh after fetch failed", exc_info=True)

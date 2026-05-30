@@ -34,6 +34,7 @@ from app.option_data_audit import audit_option_data, clear_option_data
 from app.option_data_planner import DEFAULT_LEGS, build_option_warehouse_plan
 from app.option_plan_response import compact_option_plan_for_response
 from app.option_coverage import get_option_coverage
+from app.option_coverage_cache import get_option_coverage_cached, refresh_option_coverage_cache
 from app.option_warehouse_jobs import option_fetch_tasks_from_plan, run_option_warehouse_fetch_job
 from app.expired_contract_backfill import backfill_expired_option_contracts
 from app.market_header import DEFAULT_ITEMS, build_market_header_snapshot
@@ -228,6 +229,20 @@ async def startup() -> None:
             upsert=True,
         )
     log.info("Pre-trade profiles seeded")
+
+    # Warm the option-coverage cache in the background so the first Data Warehouse
+    # page load is fast. The persisted cache from the previous run is still valid
+    # at boot (the backend is the only writer to options_1m and refreshes the
+    # cache on every write), so this only pays the slow aggregation when the
+    # cache is genuinely empty (first ever boot / after a clear).
+    async def _warm_option_coverage_cache() -> None:
+        try:
+            await get_option_coverage_cached(get_db(), underlying=None)
+            log.info("Option coverage cache warmed")
+        except Exception as exc:
+            log.warning(f"Option coverage cache warm-up failed: {exc}")
+
+    asyncio.create_task(_warm_option_coverage_cache(), name="option-coverage-cache-warm")
     # Best-effort: auto-start Upstox WS stream if token is connected and not expired.
     # Header tiles configured with source=upstox will then serve live ticks instead of REST.
     try:
@@ -2552,12 +2567,23 @@ async def local_option_candles(
 
 
 @api.get("/options/coverage")
-async def local_option_coverage(underlying: Optional[str] = Query(None)):
-    """Summarize stored option candles by date for heatmap visibility."""
+async def local_option_coverage(
+    underlying: Optional[str] = Query(None),
+    refresh: bool = Query(False),
+):
+    """Summarize stored option candles by date for heatmap visibility.
+
+    Served from the precomputed `option_coverage_cache` so the Data Warehouse
+    page loads fast even with 5M+ option candles. Pass `refresh=1` to force a
+    recompute (e.g. after a manual data change).
+    """
     if underlying and underlying.upper() not in upstox_client.INSTRUMENT_KEYS:
         raise HTTPException(400, f"Unsupported instrument: {underlying}")
-    instruments = await get_option_coverage(get_db(), underlying=underlying)
-    return {"instruments": serialize_doc(instruments), "source": "local_option_coverage"}
+    instruments = await get_option_coverage_cached(get_db(), underlying=underlying, force_refresh=refresh)
+    return {
+        "instruments": serialize_doc(instruments),
+        "source": "option_coverage_cache" if not refresh else "option_coverage_cache_refreshed",
+    }
 
 
 @api.get("/options/audit/{instrument}")
@@ -2598,6 +2624,11 @@ async def local_option_data_clear(instrument: str, confirm: str = Query("")):
     if confirm != "CLEAR":
         raise HTTPException(400, "Clear requires confirm=CLEAR")
     result = await clear_option_data(get_db(), underlying=instrument)
+    # Coverage changed: refresh the cache so the heatmap reflects the cleared state.
+    try:
+        await refresh_option_coverage_cache(get_db(), underlying=None if instrument == "ALL" else instrument)
+    except Exception as exc:
+        log.warning(f"Option coverage cache refresh after clear failed: {exc}")
     return {"ok": True, "instrument": instrument, **result}
 
 

@@ -35,6 +35,7 @@ function quoteTimeDisplay(quote) {
 export default function DataWarehouse() {
   const [coverage, setCoverage] = useState(null);
   const [optionCoverage, setOptionCoverage] = useState(null);
+  const [optionCoverageLoading, setOptionCoverageLoading] = useState(true);
   const [runs, setRuns] = useState([]);
   const [ingesting, setIngesting] = useState({});
   const [upstoxStatus, setUpstoxStatus] = useState(null);
@@ -98,11 +99,30 @@ export default function DataWarehouse() {
   const [clearing, setClearing] = useState(false);
   const [loading, setLoading] = useState(true);
 
-  const refresh = async () => {
+  const refreshOptionCoverage = async () => {
+    setOptionCoverageLoading(true);
     try {
-      const [cov, optionCov, r, upstox] = await Promise.all([api.coverage(), api.optionCoverage(), api.warehouseRuns(20), api.upstoxStatus()]);
-      setCoverage(cov.instruments || {});
+      const optionCov = await api.optionCoverage();
       setOptionCoverage(optionCov.instruments || {});
+    } catch (e) {
+      // Non-fatal: the rest of the page is still usable without the heatmap.
+      setOptionCoverage({});
+    } finally {
+      setOptionCoverageLoading(false);
+    }
+  };
+
+  const refresh = async () => {
+    // Fast calls gate the page render. The option-coverage heatmap is loaded
+    // independently because its aggregation is heavier; it must not block the
+    // rest of the page from showing.
+    try {
+      const [cov, r, upstox] = await Promise.all([
+        api.coverage(),
+        api.warehouseRuns(20),
+        api.upstoxStatus(),
+      ]);
+      setCoverage(cov.instruments || {});
       setRuns(r.items || []);
       setUpstoxStatus(upstox);
     } catch (e) {
@@ -110,6 +130,8 @@ export default function DataWarehouse() {
     } finally {
       setLoading(false);
     }
+    // Kick off the heavier option-coverage load without awaiting it.
+    refreshOptionCoverage();
   };
 
   useEffect(() => {
@@ -520,7 +542,7 @@ export default function DataWarehouse() {
 
       {/* Per-day coverage heatmap */}
       <CoverageHeatmap coverage={coverage} />
-      <OptionCoverageHeatmap coverage={optionCoverage} />
+      <OptionCoverageHeatmap coverage={optionCoverage} loading={optionCoverageLoading} />
 
       {/* Recent ingest runs */}
       <div className="rounded-lg border border-line bg-bg-1">
@@ -1678,7 +1700,14 @@ function CoverageHeatmap({ coverage }) {
   );
 }
 
-function OptionCoverageHeatmap({ coverage }) {
+function OptionCoverageHeatmap({ coverage, loading = false }) {
+  if (loading && (!coverage || Object.keys(coverage).length === 0)) {
+    return (
+      <div className="rounded-lg border border-line bg-bg-1 p-6 flex items-center justify-center gap-2 text-dimmer text-sm" data-testid="option-coverage-heatmap-loading">
+        <RefreshCw className="w-4 h-4 animate-spin" /> Loading option coverage…
+      </div>
+    );
+  }
   if (!coverage || Object.keys(coverage).length === 0) {
     return (
       <div className="rounded-lg border border-line bg-bg-1 p-6 text-center text-dimmer text-sm" data-testid="option-coverage-heatmap-empty">

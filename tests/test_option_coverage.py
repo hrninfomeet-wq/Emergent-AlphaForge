@@ -46,3 +46,10 @@ def test_backend_and_frontend_expose_option_coverage_heatmap():
     assert '@api.get("/options/coverage")' in server
     assert "optionCoverage" in api
     assert "option-coverage-heatmap" in warehouse
+
+
+def test_option_coverage_endpoint_is_cache_backed():
+    """The coverage endpoint must read the precomputed cache, not the slow
+    full-collection aggregation, on the page-load path."""
+    server = (ROOT / "backend" / "server.py").read_text(encoding="utf-8")
+    assert "get_option_coverage_cached" in server
