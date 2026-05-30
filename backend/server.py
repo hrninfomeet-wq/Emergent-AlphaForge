@@ -35,6 +35,7 @@ from app.option_data_planner import DEFAULT_LEGS, build_option_warehouse_plan
 from app.option_plan_response import compact_option_plan_for_response
 from app.option_coverage import get_option_coverage
 from app.option_coverage_cache import get_option_coverage_cached, refresh_option_coverage_cache
+from app.nse_calendar import available_calendar_years, calendar_for_year
 from app.option_warehouse_jobs import option_fetch_tasks_from_plan, run_option_warehouse_fetch_job
 from app.expired_contract_backfill import backfill_expired_option_contracts
 from app.market_header import DEFAULT_ITEMS, build_market_header_snapshot
@@ -2583,6 +2584,26 @@ async def local_option_coverage(
     return {
         "instruments": serialize_doc(instruments),
         "source": "option_coverage_cache" if not refresh else "option_coverage_cache_refreshed",
+    }
+
+
+@api.get("/calendar/holidays")
+async def market_calendar_holidays(year: Optional[int] = Query(None)):
+    """Return the NSE/BSE market-holiday calendar for a year (UI modal).
+
+    Without a year, returns the list of available curated years plus the current
+    year's calendar. With ?year=YYYY, returns that year's holidays + special
+    sessions with human-readable labels.
+    """
+    years = available_calendar_years()
+    if year is None:
+        from datetime import date as _date
+        year = _date.today().year
+        if year not in years and years:
+            year = years[-1]
+    return {
+        "available_years": years,
+        "calendar": calendar_for_year(year),
     }
 
 

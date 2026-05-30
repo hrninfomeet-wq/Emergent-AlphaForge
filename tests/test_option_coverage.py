@@ -53,3 +53,33 @@ def test_option_coverage_endpoint_is_cache_backed():
     full-collection aggregation, on the page-load path."""
     server = (ROOT / "backend" / "server.py").read_text(encoding="utf-8")
     assert "get_option_coverage_cached" in server
+
+
+def test_holiday_calendar_wired_end_to_end():
+    """Holiday calendar endpoint + UI modal must be present and connected."""
+    server = (ROOT / "backend" / "server.py").read_text(encoding="utf-8")
+    api = (ROOT / "frontend" / "src" / "lib" / "api.js").read_text(encoding="utf-8")
+    warehouse = (ROOT / "frontend" / "src" / "pages" / "DataWarehouse.jsx").read_text(encoding="utf-8")
+    dialog = (ROOT / "frontend" / "src" / "components" / "HolidayCalendarDialog.jsx").read_text(encoding="utf-8")
+
+    assert '@api.get("/calendar/holidays")' in server
+    assert "marketHolidays" in api
+    assert "HolidayCalendarDialog" in warehouse
+    assert "holiday-calendar-dialog" in dialog
+
+
+def test_obsolete_yfinance_ingest_panel_removed():
+    """The yfinance 7d/14d ingest panel was obsolete and must be gone."""
+    warehouse = (ROOT / "frontend" / "src" / "pages" / "DataWarehouse.jsx").read_text(encoding="utf-8")
+    assert "yfinance" not in warehouse
+    assert "Ingest 7d" not in warehouse
+
+
+def test_emergent_badge_and_telemetry_removed():
+    """The Made-with-Emergent badge, its loader script, and PostHog telemetry
+    must be removed from the app shell."""
+    index_html = (ROOT / "frontend" / "public" / "index.html").read_text(encoding="utf-8")
+    assert "emergent-badge" not in index_html
+    assert "emergent-main.js" not in index_html
+    assert "posthog" not in index_html.lower()
+    assert "AlphaForge" in index_html

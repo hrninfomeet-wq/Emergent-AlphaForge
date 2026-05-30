@@ -71,6 +71,10 @@ export const api = {
     apiClient.get("/options/coverage", {
       params: underlying ? { underlying } : {},
     }).then((r) => r.data),
+  marketHolidays: (year) =>
+    apiClient.get("/calendar/holidays", {
+      params: year ? { year } : {},
+    }).then((r) => r.data),
 
   // Profiles
   listProfiles: () => apiClient.get("/profiles").then((r) => r.data),

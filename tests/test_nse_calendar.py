@@ -12,6 +12,8 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 
 from app.nse_calendar import (  # noqa: E402
+    available_calendar_years,
+    calendar_for_year,
     expected_trading_days,
     holidays_in_range,
     is_market_holiday,
@@ -78,3 +80,37 @@ def test_holidays_in_range_returns_sorted_subset():
 def test_trading_days_in_range_excludes_holidays_and_weekends():
     days = trading_days_in_range("2025-04-14", "2025-04-18")
     assert days == ["2025-04-15", "2025-04-16", "2025-04-17"]
+
+
+def test_available_calendar_years_covers_curated_range():
+    years = available_calendar_years()
+    assert years == [2024, 2025, 2026]
+
+
+def test_calendar_for_year_returns_labeled_holidays():
+    cal = calendar_for_year(2026)
+    assert cal["year"] == 2026
+    assert cal["holiday_count"] == len(cal["holidays"])
+    # Every holiday carries a date, a human label, and a weekday name.
+    republic = next(h for h in cal["holidays"] if h["date"] == "2026-01-26")
+    assert republic["label"] == "Republic Day"
+    assert republic["weekday"] == "Monday"
+    # Holidays are sorted ascending.
+    dates = [h["date"] for h in cal["holidays"]]
+    assert dates == sorted(dates)
+
+
+def test_calendar_for_year_surfaces_special_saturday_sessions():
+    cal = calendar_for_year(2026)
+    session_dates = [s["date"] for s in cal["special_sessions"]]
+    assert "2026-02-01" in session_dates
+    budget = next(s for s in cal["special_sessions"] if s["date"] == "2026-02-01")
+    assert "Budget" in budget["label"]
+    assert budget["weekday"] == "Sunday"
+
+
+def test_calendar_for_year_empty_for_uncurated_year():
+    cal = calendar_for_year(2099)
+    assert cal["holidays"] == []
+    assert cal["special_sessions"] == []
+    assert cal["holiday_count"] == 0

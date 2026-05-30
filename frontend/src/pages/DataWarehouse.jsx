@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Database, Download, RefreshCw, CheckCircle2, AlertCircle, Link2, Unplug, ShieldCheck, Trash2 } from "lucide-react";
 import { fmtInt, fmtNum, fmtSigned, isoToFull, tsToFull } from "@/lib/fmt";
 import { Skeleton } from "@/components/ui/skeleton";
+import HolidayCalendarDialog from "@/components/HolidayCalendarDialog";
 
 const INSTRUMENTS = ["NIFTY", "BANKNIFTY", "SENSEX"];
 const MONEYNESS_OPTIONS = ["atm", "itm1", "itm2", "otm1", "otm2", "otm3"];
@@ -37,7 +38,6 @@ export default function DataWarehouse() {
   const [optionCoverage, setOptionCoverage] = useState(null);
   const [optionCoverageLoading, setOptionCoverageLoading] = useState(true);
   const [runs, setRuns] = useState([]);
-  const [ingesting, setIngesting] = useState({});
   const [upstoxStatus, setUpstoxStatus] = useState(null);
   const [upstoxBusy, setUpstoxBusy] = useState(false);
   const [upstoxIngesting, setUpstoxIngesting] = useState(false);
@@ -145,24 +145,6 @@ export default function DataWarehouse() {
     }
     refresh();
   }, []);
-
-  const handleIngest = async (instrument, days = 7) => {
-    setIngesting((s) => ({ ...s, [instrument]: true }));
-    try {
-      const res = await api.ingest(instrument, days);
-      if (res.status === "ok" || res.status === "empty") {
-        toast.success(`Ingested ${instrument}: +${res.candles_added} / ~${res.candles_updated} updated`);
-      } else {
-        toast.error(`Ingest failed: ${res.error || res.status}`);
-      }
-      await refresh();
-    } catch (e) {
-      const msg = e.response?.data?.detail || e.message;
-      toast.error(`Ingest failed: ${msg}`);
-    } finally {
-      setIngesting((s) => ({ ...s, [instrument]: false }));
-    }
-  };
 
   const handleUpstoxConnect = async () => {
     setUpstoxBusy(true);
@@ -416,6 +398,15 @@ export default function DataWarehouse() {
 
   return (
     <div className="space-y-3" data-testid="data-warehouse-page">
+      <div className="flex items-center gap-2">
+        <div className="text-[11px] text-dimmer">
+          Data warehouse: index spot + ATM option candles, audited against the NSE/BSE trading calendar.
+        </div>
+        <div className="ml-auto">
+          <HolidayCalendarDialog />
+        </div>
+      </div>
+
       <UpstoxPanel
         status={upstoxStatus}
         busy={upstoxBusy}
@@ -475,11 +466,11 @@ export default function DataWarehouse() {
         onClear={handleClearWarehouse}
       />
 
-      {/* Ingest controls */}
+      {/* Index data coverage (status only; ingest is handled via Upstox above) */}
       <div className="rounded-lg border border-line bg-bg-1">
         <div className="px-3 py-2 border-b border-line flex items-center">
           <Database className="w-4 h-4 mr-2 text-info" />
-          <div className="text-xs font-semibold uppercase tracking-wider text-dim">Ingest Data</div>
+          <div className="text-xs font-semibold uppercase tracking-wider text-dim">Index Data Coverage</div>
           <Button variant="ghost" size="sm" onClick={refresh} className="ml-auto h-7 text-xs" data-testid="warehouse-refresh-button">
             <RefreshCw className="w-3 h-3 mr-1" /> Refresh
           </Button>
@@ -507,36 +498,11 @@ export default function DataWarehouse() {
                     <div className="mt-1">{c.days?.length || 0} trading days</div>
                   </div>
                 ) : (
-                  <div className="text-[11px] text-dimmer">No candles. Click ingest to fetch last 7 days from yfinance.</div>
+                  <div className="text-[11px] text-dimmer">No candles stored. Use Upstox Broker Data above to ingest.</div>
                 )}
-                <div className="flex gap-2 mt-3">
-                  <Button
-                    size="sm"
-                    onClick={() => handleIngest(inst, 7)}
-                    disabled={ingesting[inst]}
-                    className="h-7 text-xs bg-bg-3 border border-line hover:bg-bg-2 flex-1"
-                    data-testid={`warehouse-ingest-${inst.toLowerCase()}-7d`}
-                  >
-                    <Download className="w-3 h-3 mr-1" />
-                    {ingesting[inst] ? "Fetching…" : "Ingest 7d"}
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    onClick={() => handleIngest(inst, 14)}
-                    disabled={ingesting[inst]}
-                    className="h-7 text-xs"
-                    data-testid={`warehouse-ingest-${inst.toLowerCase()}-14d`}
-                  >
-                    14d
-                  </Button>
-                </div>
               </div>
             );
           })}
-        </div>
-        <div className="px-3 py-2 border-t border-line text-[11px] text-dimmer">
-          Note: yfinance limits 1-minute data to the last ~30 days. Use Upstox (Phase 4) for longer history.
         </div>
       </div>
 

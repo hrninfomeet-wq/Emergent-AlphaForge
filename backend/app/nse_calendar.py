@@ -97,6 +97,103 @@ SPECIAL_SATURDAY_SESSIONS: Set[str] = {
 
 ALL_HOLIDAYS: Set[str] = _HOLIDAYS_2024 | _HOLIDAYS_2025 | _HOLIDAYS_2026
 
+# Human-readable labels for each holiday, keyed by ISO date. Used by the UI
+# holiday-calendar modal. Kept alongside the holiday sets so they stay in sync.
+HOLIDAY_LABELS: dict = {
+    "2024-01-22": "Ram Mandir consecration",
+    "2024-01-26": "Republic Day",
+    "2024-03-08": "Mahashivratri",
+    "2024-03-25": "Holi",
+    "2024-03-29": "Good Friday",
+    "2024-04-11": "Eid-ul-Fitr (Ramzan Id)",
+    "2024-04-17": "Ram Navami",
+    "2024-05-01": "Maharashtra Day",
+    "2024-05-20": "Mumbai general elections",
+    "2024-06-17": "Bakri Id",
+    "2024-07-17": "Muharram",
+    "2024-08-15": "Independence Day",
+    "2024-10-02": "Mahatma Gandhi Jayanti",
+    "2024-11-01": "Diwali Laxmi Pujan",
+    "2024-11-15": "Gurunanak Jayanti",
+    "2024-12-25": "Christmas",
+    "2025-02-26": "Mahashivratri",
+    "2025-03-14": "Holi",
+    "2025-03-31": "Eid-ul-Fitr",
+    "2025-04-10": "Mahavir Jayanti",
+    "2025-04-14": "Dr. Ambedkar Jayanti",
+    "2025-04-18": "Good Friday",
+    "2025-05-01": "Maharashtra Day",
+    "2025-08-15": "Independence Day",
+    "2025-08-27": "Ganesh Chaturthi",
+    "2025-10-02": "Mahatma Gandhi Jayanti / Dussehra",
+    "2025-10-22": "Diwali Laxmi Pujan",
+    "2025-11-05": "Gurunanak Jayanti",
+    "2025-12-25": "Christmas",
+    "2026-01-15": "Maharashtra civic elections",
+    "2026-01-26": "Republic Day",
+    "2026-03-03": "Holi",
+    "2026-03-26": "Eid-ul-Fitr",
+    "2026-03-31": "Mahavir Jayanti / Annual close",
+    "2026-04-03": "Good Friday",
+    "2026-04-14": "Dr. Ambedkar Jayanti",
+    "2026-05-01": "Maharashtra Day",
+    "2026-05-28": "Eid-ul-Adha (Bakri Id)",
+    "2026-08-15": "Independence Day",
+    "2026-10-02": "Mahatma Gandhi Jayanti",
+    "2026-11-08": "Diwali Laxmi Pujan",
+    "2026-12-25": "Christmas",
+}
+
+# Human-readable labels for the special Saturday trading sessions.
+SPECIAL_SATURDAY_LABELS: dict = {
+    "2025-02-01": "Union Budget 2025-26 (special session)",
+    "2026-02-01": "Union Budget 2026-27 (special session)",
+}
+
+
+def calendar_for_year(year: int) -> dict:
+    """Return the market-calendar exceptions for a given year for the UI modal.
+
+    Output:
+      {
+        "year": 2026,
+        "verified_through": 2026,
+        "holidays": [{"date": "2026-01-26", "label": "Republic Day", "weekday": "Monday"}, ...],
+        "special_sessions": [{"date": "2026-02-01", "label": "...", "weekday": "Sunday"}, ...],
+        "holiday_count": N,
+      }
+    """
+    prefix = f"{int(year):04d}-"
+    holidays = []
+    for iso in sorted(h for h in ALL_HOLIDAYS if h.startswith(prefix)):
+        d = date.fromisoformat(iso)
+        holidays.append({
+            "date": iso,
+            "label": HOLIDAY_LABELS.get(iso, "Market holiday"),
+            "weekday": d.strftime("%A"),
+        })
+    sessions = []
+    for iso in sorted(s for s in SPECIAL_SATURDAY_SESSIONS if s.startswith(prefix)):
+        d = date.fromisoformat(iso)
+        sessions.append({
+            "date": iso,
+            "label": SPECIAL_SATURDAY_LABELS.get(iso, "Special trading session"),
+            "weekday": d.strftime("%A"),
+        })
+    return {
+        "year": int(year),
+        "verified_through": YEAR_LAST_VERIFIED,
+        "holidays": holidays,
+        "special_sessions": sessions,
+        "holiday_count": len(holidays),
+    }
+
+
+def available_calendar_years() -> List[int]:
+    """Years for which we have a curated holiday list, ascending."""
+    years = {int(h[:4]) for h in ALL_HOLIDAYS}
+    return sorted(years)
+
 
 def is_market_holiday(iso_date: str) -> bool:
     return iso_date in ALL_HOLIDAYS
