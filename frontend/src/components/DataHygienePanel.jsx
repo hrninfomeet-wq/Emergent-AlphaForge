@@ -3,7 +3,7 @@ import { api } from "@/lib/api";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { useJobs } from "@/lib/jobs";
-import { fmtInt } from "@/lib/fmt";
+import { fmtInt, isoToFull } from "@/lib/fmt";
 import { ShieldCheck, RefreshCw, Play, CheckCircle2, AlertTriangle, AlertCircle } from "lucide-react";
 
 const STATUS_STYLES = {
@@ -48,6 +48,30 @@ export default function DataHygienePanel({ upstoxConnected }) {
   const [plan, setPlan] = useState(null);
   const [planning, setPlanning] = useState(false);
   const [executing, setExecuting] = useState(false);
+  const [autoUpdate, setAutoUpdate] = useState(null);
+
+  const loadAutoUpdate = async () => {
+    try {
+      const res = await api.autoUpdateStatus();
+      setAutoUpdate(res);
+    } catch {
+      setAutoUpdate(null);
+    }
+  };
+
+  useEffect(() => {
+    loadAutoUpdate();
+  }, []);
+
+  const toggleAutoUpdate = async () => {
+    try {
+      const res = await api.autoUpdateToggle(!(autoUpdate?.enabled));
+      setAutoUpdate(res);
+      toast.success(`Auto-update ${res.enabled ? "enabled" : "disabled"}`);
+    } catch (e) {
+      toast.error("Failed to toggle auto-update");
+    }
+  };
 
   const runPlan = async () => {
     setPlanning(true);
@@ -101,6 +125,7 @@ export default function DataHygienePanel({ upstoxConnected }) {
   useEffect(() => {
     const off = onJobComplete("data_hygiene", () => {
       runPlan();
+      loadAutoUpdate();
     });
     return off;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -153,6 +178,30 @@ export default function DataHygienePanel({ upstoxConnected }) {
         <div className="text-[11px] text-dim">
           Diffs the warehouse against the desired scope (2024-11-27 → today · NIFTY + BANKNIFTY + SENSEX · ATM CE/PE) and
           fills gaps in dependency order: spot → contracts → option candles. Re-running is safe; only missing data is fetched.
+        </div>
+
+        {/* Auto-update status + toggle */}
+        <div className="rounded-md border border-line bg-bg-2 p-2.5 flex items-center gap-2 flex-wrap" data-testid="auto-update-row">
+          <span className={`w-2 h-2 rounded-full ${autoUpdate?.enabled ? "bg-emerald-500" : "bg-dimmer"}`} />
+          <span className="text-[11px] text-dim">
+            Auto-update {autoUpdate?.enabled ? "on" : "off"}
+            <span className="text-dimmer"> · runs on connect, on startup, and daily 18:00 IST</span>
+          </span>
+          {autoUpdate?.last_finished_at && (
+            <span className="text-[10px] text-dimmer font-mono">
+              last: {autoUpdate.last_status || "—"}
+              {autoUpdate.last_submitted_count ? ` (${autoUpdate.last_submitted_count} jobs)` : ""} · {isoToFull(autoUpdate.last_finished_at)}
+            </span>
+          )}
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={toggleAutoUpdate}
+            className="ml-auto h-6 text-[11px]"
+            data-testid="auto-update-toggle"
+          >
+            {autoUpdate?.enabled ? "Disable" : "Enable"}
+          </Button>
         </div>
 
         {/* Active hygiene batch progress */}

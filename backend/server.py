@@ -64,6 +64,11 @@ from app.data_hygiene import (
     execute_hygiene_plan,
     hygiene_status,
 )
+from app.warehouse_autoupdate import (
+    STATE as AUTOUPDATE_STATE,
+    daily_autoupdate_loop,
+    run_autoupdate_once,
+)
 from app.paper_squareoff import (
     DEFAULT_SQUARE_OFF_IST,
     is_square_off_due,
@@ -215,6 +220,50 @@ async def _deployment_evaluator_loop() -> None:
             await asyncio.sleep(15.0)
 
 
+# ---------------------------------------------------------------------------
+# Warehouse auto-update wiring (Slice 5)
+# ---------------------------------------------------------------------------
+
+async def _autoupdate_connection_status() -> Dict[str, Any]:
+    """Connection probe for the auto-update guard."""
+    return await upstox_client.get_connection_status()
+
+
+async def _autoupdate_compute_plan() -> Dict[str, Any]:
+    """Compute a hygiene plan over the default scope (2024-11-27 -> today)."""
+    return await compute_hygiene_plan(
+        get_db(),
+        start_date=HYGIENE_DEFAULT_START,
+        end_date=None,
+        instruments=list(HYGIENE_DEFAULT_INSTRUMENTS),
+        moneyness=list(HYGIENE_DEFAULT_MONEYNESS),
+        legs=list(HYGIENE_DEFAULT_LEGS),
+        sample_interval_minutes=HYGIENE_DEFAULT_SAMPLE,
+    )
+
+
+async def _autoupdate_execute_plan(plan: Dict[str, Any]) -> Dict[str, Any]:
+    """Execute a hygiene plan using the existing dependency-ordered submitters."""
+    return await execute_hygiene_plan(
+        get_db(),
+        plan,
+        submit_spot=_hygiene_submit_spot,
+        submit_contracts=_hygiene_submit_contracts,
+        submit_option_candles=_hygiene_submit_option_candles,
+        chunk_days_spot=30,
+    )
+
+
+async def _trigger_autoupdate(reason: str) -> Dict[str, Any]:
+    """Run one auto-update catch-up with the standard injected callables."""
+    return await run_autoupdate_once(
+        reason=reason,
+        connection_status_fn=_autoupdate_connection_status,
+        compute_plan_fn=_autoupdate_compute_plan,
+        execute_plan_fn=_autoupdate_execute_plan,
+    )
+
+
 @app.on_event("startup")
 async def startup() -> None:
     await ensure_indexes()
@@ -268,6 +317,26 @@ async def startup() -> None:
     # Background scheduler: evaluate ACTIVE deployments ~10s after each 1-minute bar closes.
     asyncio.create_task(_deployment_evaluator_loop(), name="deployment-evaluator")
     log.info("Deployment evaluator scheduler started")
+
+    # Warehouse auto-update: catch up missing data to yesterday's close.
+    # Runs once at startup (best-effort, only if Upstox is connected) and then
+    # daily at ~18:00 IST. Today's intraday bars come from the live roller.
+    async def _startup_autoupdate() -> None:
+        try:
+            await _trigger_autoupdate("startup")
+        except Exception as exc:
+            log.warning(f"Startup warehouse auto-update skipped: {exc}")
+
+    asyncio.create_task(_startup_autoupdate(), name="warehouse-autoupdate-startup")
+    asyncio.create_task(
+        daily_autoupdate_loop(
+            connection_status_fn=_autoupdate_connection_status,
+            compute_plan_fn=_autoupdate_compute_plan,
+            execute_plan_fn=_autoupdate_execute_plan,
+        ),
+        name="warehouse-autoupdate-daily",
+    )
+    log.info("Warehouse auto-update scheduler started")
 
 
 @app.on_event("shutdown")
@@ -1581,6 +1650,9 @@ async def upstox_auth_callback(code: Optional[str] = None, state: Optional[str] 
     try:
         payload = await upstox_client.exchange_code_for_token(code)
         await upstox_client.save_token(upstox_client.DEFAULT_USER_ID, payload)
+        # Fresh token: kick off a warehouse catch-up in the background so the
+        # redirect is not delayed. Best-effort; failures are captured in state.
+        asyncio.create_task(_trigger_autoupdate("oauth_connect"), name="warehouse-autoupdate-oauth")
         return RedirectResponse(f"{frontend_url}?upstox_connected=1")
     except Exception as e:
         log.exception("upstox token exchange failed")
@@ -2445,6 +2517,30 @@ async def data_hygiene_execute_route(req: DataHygieneExecuteReq):
 async def data_hygiene_status_route(plan_id: Optional[str] = Query(None)):
     """Return the most recent data-hygiene run docs and their progress."""
     return serialize_doc(await hygiene_status(get_db(), plan_id=plan_id))
+
+
+class AutoUpdateToggleReq(BaseModel):
+    enabled: bool
+
+
+@api.get("/warehouse/auto-update/status")
+async def warehouse_autoupdate_status():
+    """Return the warehouse auto-update worker status (last run, schedule, etc.)."""
+    return AUTOUPDATE_STATE.snapshot()
+
+
+@api.post("/warehouse/auto-update/toggle")
+async def warehouse_autoupdate_toggle(req: AutoUpdateToggleReq):
+    """Enable or disable automatic warehouse catch-up (startup / OAuth / daily)."""
+    AUTOUPDATE_STATE.enabled = bool(req.enabled)
+    return AUTOUPDATE_STATE.snapshot()
+
+
+@api.post("/warehouse/auto-update/run")
+async def warehouse_autoupdate_run_now():
+    """Trigger a warehouse auto-update catch-up immediately (manual)."""
+    summary = await _trigger_autoupdate("manual")
+    return {"summary": summary, "state": AUTOUPDATE_STATE.snapshot()}
 
 
 def _overlay_option_contract_metadata(local_contract: Optional[Dict[str, Any]], req: UpstoxOptionCandleIngestReq) -> Dict[str, Any]:

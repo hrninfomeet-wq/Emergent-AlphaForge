@@ -122,3 +122,22 @@ def test_data_hygiene_wired_into_warehouse_ui():
     assert "DataHygienePanel" in warehouse
     # Execute jobs are tracked via the global job batch tracker.
     assert "startHygieneBatch" in jobs
+
+
+def test_warehouse_auto_update_wired_end_to_end():
+    """Auto-update must be triggered on startup, on OAuth connect, and daily,
+    with status/toggle routes and a UI surface."""
+    server = (ROOT / "backend" / "server.py").read_text(encoding="utf-8")
+    api = (ROOT / "frontend" / "src" / "lib" / "api.js").read_text(encoding="utf-8")
+    panel = (ROOT / "frontend" / "src" / "components" / "DataHygienePanel.jsx").read_text(encoding="utf-8")
+
+    # Triggers: startup task, daily loop, and OAuth-connect.
+    assert "warehouse-autoupdate-startup" in server
+    assert "daily_autoupdate_loop" in server
+    assert '_trigger_autoupdate("oauth_connect")' in server
+    # Routes for status / toggle / manual run.
+    assert '@api.get("/warehouse/auto-update/status")' in server
+    assert '@api.post("/warehouse/auto-update/toggle")' in server
+    # UI surface.
+    assert "autoUpdateStatus" in api
+    assert "auto-update-toggle" in panel

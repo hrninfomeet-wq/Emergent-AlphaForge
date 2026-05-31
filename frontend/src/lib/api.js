@@ -85,6 +85,12 @@ export const api = {
     apiClient.get("/data-hygiene/status", {
       params: planId ? { plan_id: planId } : {},
     }).then((r) => r.data),
+  autoUpdateStatus: () =>
+    apiClient.get("/warehouse/auto-update/status").then((r) => r.data),
+  autoUpdateToggle: (enabled) =>
+    apiClient.post("/warehouse/auto-update/toggle", { enabled }).then((r) => r.data),
+  autoUpdateRunNow: () =>
+    apiClient.post("/warehouse/auto-update/run").then((r) => r.data),
 
   // Profiles
   listProfiles: () => apiClient.get("/profiles").then((r) => r.data),
