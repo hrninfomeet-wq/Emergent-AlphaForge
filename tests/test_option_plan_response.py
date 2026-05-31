@@ -57,10 +57,9 @@ def test_backend_and_frontend_default_option_planning_to_atm_only():
     assert 'moneyness: ["atm"]' in warehouse
 
 
-def test_frontend_explains_planned_coverage_and_raw_option_audit_scope():
+def test_frontend_explains_planned_coverage_scope():
     warehouse = (ROOT / "frontend" / "src" / "pages" / "DataWarehouse.jsx").read_text(encoding="utf-8")
 
     assert "option-warehouse-planned-coverage" in warehouse
     assert "Planned coverage" in warehouse
-    assert "Raw universe audit" in warehouse
     assert "planner-selected" in warehouse

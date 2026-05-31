@@ -184,7 +184,8 @@ def test_oauth_token_expiry_countdown_present():
 
 
 def test_warehouse_candlestick_chart_wired_end_to_end():
-    """The per-index candlestick chart + resample endpoint must be wired."""
+    """The per-index candlestick chart + resample endpoint must be wired, with
+    1m timeframe, an OHLC crosshair legend, and a date/time locator."""
     server = (ROOT / "backend" / "server.py").read_text(encoding="utf-8")
     api = (ROOT / "frontend" / "src" / "lib" / "api.js").read_text(encoding="utf-8")
     chart = (ROOT / "frontend" / "src" / "components" / "WarehouseChart.jsx").read_text(encoding="utf-8")
@@ -195,3 +196,11 @@ def test_warehouse_candlestick_chart_wired_end_to_end():
     assert "warehouseOhlc" in api
     assert "warehouse-chart-panel" in chart
     assert "WarehouseChart" in warehouse
+    # 1m timeframe present.
+    assert '"1m"' in chart
+    # OHLC legend that follows the crosshair.
+    assert "chart-ohlc-legend" in chart
+    assert "subscribeCrosshairMove" in chart
+    # Date/time locator with marker.
+    assert "chart-locate-button" in chart
+    assert "createSeriesMarkers" in chart

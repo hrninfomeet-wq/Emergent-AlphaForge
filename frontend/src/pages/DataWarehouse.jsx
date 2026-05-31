@@ -69,16 +69,6 @@ export default function DataWarehouse() {
   const [optionPlanResult, setOptionPlanResult] = useState(null);
   const [optionFetchResult, setOptionFetchResult] = useState(null);
   const [optionPlanning, setOptionPlanning] = useState(false);
-  const [optionAuditForm, setOptionAuditForm] = useState({
-    underlying: "NIFTY",
-    from_date: dateInput(30),
-    to_date: dateInput(0),
-    expiry: "",
-    side: "",
-    limit_contracts: 500,
-  });
-  const [optionAuditResult, setOptionAuditResult] = useState(null);
-  const [optionAuditLoading, setOptionAuditLoading] = useState(false);
   const [optionClearing, setOptionClearing] = useState(false);
   const [expiredBackfillForm, setExpiredBackfillForm] = useState({
     instrument: "NIFTY",
@@ -276,36 +266,14 @@ export default function DataWarehouse() {
     }
   };
 
-  const handleOptionAudit = async () => {
-    setOptionAuditLoading(true);
-    try {
-      const res = await api.auditOptionData(optionAuditForm.underlying, {
-        start_ts: dateToMs(optionAuditForm.from_date, false),
-        end_ts: dateToMs(optionAuditForm.to_date, true),
-        ...(optionAuditForm.expiry ? { expiry: optionAuditForm.expiry } : {}),
-        ...(optionAuditForm.side ? { side: optionAuditForm.side } : {}),
-        limit_contracts: Number(optionAuditForm.limit_contracts || 500),
-      });
-      setOptionAuditResult(res);
-      const s = res.summary || {};
-      toast.success(`Option audit: ${fmtInt(s.complete_contracts || 0)}/${fmtInt(s.contracts_checked || 0)} contracts complete`);
-    } catch (e) {
-      const msg = e.response?.data?.detail || e.message;
-      toast.error(`Option audit failed: ${msg}`);
-    } finally {
-      setOptionAuditLoading(false);
-    }
-  };
-
   const handleClearOptionData = async () => {
-    const target = optionAuditForm.underlying || "ALL";
+    const target = auditForm.instrument || "ALL";
     const ok = window.confirm(`Clear stored option candles for ${target}? Contract metadata and index candles will be kept.`);
     if (!ok) return;
     setOptionClearing(true);
     try {
       const res = await api.clearOptionData(target);
       toast.success(`Cleared ${fmtInt(res.option_candles_deleted || 0)} option candles`);
-      setOptionAuditResult(null);
       await refresh();
     } catch (e) {
       const msg = e.response?.data?.detail || e.message;
@@ -507,16 +475,8 @@ export default function DataWarehouse() {
         setClearInstrument={setClearInstrument}
         clearing={clearing}
         onClear={handleClearWarehouse}
-      />
-
-      <OptionAuditPanel
-        form={optionAuditForm}
-        setForm={setOptionAuditForm}
-        result={optionAuditResult}
-        loading={optionAuditLoading}
-        clearing={optionClearing}
-        onAudit={handleOptionAudit}
-        onClear={handleClearOptionData}
+        optionClearing={optionClearing}
+        onClearOptions={handleClearOptionData}
       />
 
       {/* ============ Diagnostics ============ */}
@@ -1097,7 +1057,7 @@ function OptionWarehousePanel({
             </div>
           </div>
           <div className="mt-2 rounded-md border border-line bg-bg-1 p-2 text-[11px] text-dim" data-testid="option-warehouse-background-help">
-            Preview is the trust check for planner-selected moneyness. Fetch runs in background and only requests missing selected dates; the raw option audit below is a broader warehouse diagnostic.
+            Preview is the trust check for planner-selected moneyness. Fetch runs in background and only requests missing selected dates; the Option Coverage Heatmap below shows what is stored.
           </div>
         </div>
 
@@ -1340,180 +1300,6 @@ function OptionWarehousePanel({
   );
 }
 
-function OptionAuditPanel({ form, setForm, result, loading, clearing, onAudit, onClear }) {
-  const set = (key, value) => setForm((prev) => ({ ...prev, [key]: value }));
-  const summary = result?.summary;
-  const items = result?.items || [];
-  const statusClass = (status) => {
-    if (status === "ok") return "bg-emerald-950 text-emerald-200 border-emerald-900";
-    if (status === "missing") return "bg-rose-950 text-rose-200 border-rose-900";
-    if (status === "incomplete") return "bg-amber-950 text-amber-200 border-amber-900";
-    return "bg-bg-3 text-dim border-line";
-  };
-
-  return (
-    <div className="rounded-lg border border-line bg-bg-1" data-testid="option-audit-panel">
-      <div className="px-3 py-2 border-b border-line flex items-center gap-2">
-        <ShieldCheck className="w-4 h-4 text-info" />
-        <div className="text-xs font-semibold uppercase tracking-wider text-dim">Raw Option Universe Audit</div>
-        {summary && (
-          <span className={`ml-auto text-[10px] px-1.5 py-0.5 rounded border font-mono ${summary.complete ? "bg-emerald-950 text-emerald-200 border-emerald-900" : "bg-amber-950 text-amber-200 border-amber-900"}`}>
-            {summary.complete ? "trusted" : "needs review"}
-          </span>
-        )}
-      </div>
-      <div className="p-3 space-y-3">
-        <div className="rounded-md border border-line bg-bg-2 p-2 text-[11px] text-dim" data-testid="option-audit-scope-note">
-          Raw universe audit checks the stored contract metadata slice selected by expiry, side, and max contracts. It does not prove planner-selected ATM/OTM/ITM coverage; use Option Data Planner Planned coverage for that.
-        </div>
-        <div className="grid grid-cols-2 xl:grid-cols-[1fr_1fr_1fr_0.8fr_0.7fr_0.8fr_auto_auto] gap-2 items-end rounded-md border border-line bg-bg-2 p-3">
-          <label className="text-[11px] text-dim">
-            Underlying
-            <select
-              value={form.underlying}
-              onChange={(e) => set("underlying", e.target.value)}
-              className="mt-1 h-9 w-full rounded-md border border-input bg-bg-1 px-3 py-1 text-sm text-foreground"
-              data-testid="option-audit-underlying"
-            >
-              {INSTRUMENTS.map((inst) => <option key={inst} value={inst}>{inst}</option>)}
-            </select>
-          </label>
-          <label className="text-[11px] text-dim">
-            From
-            <Input
-              type="date"
-              value={form.from_date}
-              onChange={(e) => set("from_date", e.target.value)}
-              className="mt-1 bg-bg-1 border-line"
-              data-testid="option-audit-from-date"
-            />
-          </label>
-          <label className="text-[11px] text-dim">
-            To
-            <Input
-              type="date"
-              value={form.to_date}
-              onChange={(e) => set("to_date", e.target.value)}
-              className="mt-1 bg-bg-1 border-line"
-              data-testid="option-audit-to-date"
-            />
-          </label>
-          <label className="text-[11px] text-dim">
-            Expiry
-            <Input
-              type="date"
-              value={form.expiry}
-              onChange={(e) => set("expiry", e.target.value)}
-              className="mt-1 bg-bg-1 border-line"
-              data-testid="option-audit-expiry"
-            />
-          </label>
-          <label className="text-[11px] text-dim">
-            Side
-            <select
-              value={form.side}
-              onChange={(e) => set("side", e.target.value)}
-              className="mt-1 h-9 w-full rounded-md border border-input bg-bg-1 px-3 py-1 text-sm text-foreground"
-              data-testid="option-audit-side"
-            >
-              <option value="">All</option>
-              <option value="CE">CE</option>
-              <option value="PE">PE</option>
-            </select>
-          </label>
-          <label className="text-[11px] text-dim">
-            Max contracts
-            <Input
-              type="number"
-              min="1"
-              max="5000"
-              value={form.limit_contracts}
-              onChange={(e) => set("limit_contracts", e.target.value)}
-              className="mt-1 bg-bg-1 border-line"
-              data-testid="option-audit-limit"
-            />
-          </label>
-          <Button
-            size="sm"
-            onClick={onAudit}
-            disabled={loading}
-            className="h-9 text-xs bg-bg-3 border border-line hover:bg-bg-2"
-            data-testid="option-audit-button"
-          >
-            <ShieldCheck className="w-3 h-3 mr-1" />
-            {loading ? "Auditing..." : "Audit"}
-          </Button>
-          <Button
-            size="sm"
-            variant="secondary"
-            onClick={onClear}
-            disabled={clearing}
-            className="h-9 text-xs border border-rose-900 bg-rose-950/60 text-rose-100 hover:bg-rose-950"
-            data-testid="option-clear-button"
-          >
-            <Trash2 className="w-3 h-3 mr-1" />
-            {clearing ? "Clearing..." : "Clear"}
-          </Button>
-        </div>
-
-        {summary && (
-          <div className="grid grid-cols-2 lg:grid-cols-6 gap-2" data-testid="option-audit-summary">
-            <AuditStat label="Complete" value={`${fmtInt(summary.complete_contracts)}/${fmtInt(summary.contracts_checked)}`} />
-            <AuditStat label="Coverage" value={`${summary.coverage_pct || 0}%`} />
-            <AuditStat label="Missing" value={fmtInt(summary.contracts_with_missing_days)} />
-            <AuditStat label="Incomplete" value={fmtInt(summary.contracts_with_incomplete_days)} />
-            <AuditStat label="Candles" value={`${fmtInt(summary.stored_candles)}/${fmtInt(summary.expected_candles)}`} />
-            <AuditStat label="Days" value={fmtInt(summary.expected_days)} />
-          </div>
-        )}
-
-        {items.length > 0 && (
-          <div className="overflow-x-auto rounded-md border border-line" data-testid="option-audit-table">
-            <table className="w-full text-xs">
-              <thead className="bg-bg-2 text-dim">
-                <tr>
-                  <th className="p-2 text-left">Contract</th>
-                  <th className="p-2 text-left">Expiry</th>
-                  <th className="p-2 text-right">Strike</th>
-                  <th className="p-2 text-left">Side</th>
-                  <th className="p-2 text-right">Coverage</th>
-                  <th className="p-2 text-right">Missing</th>
-                  <th className="p-2 text-right">Incomplete</th>
-                  <th className="p-2 text-left">Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {items.slice(0, 80).map((item) => (
-                  <tr key={item.instrument_key} className="border-b border-line">
-                    <td className="p-2 font-mono">{item.trading_symbol || item.instrument_key}</td>
-                    <td className="p-2 font-mono text-dim">{item.expiry_date}</td>
-                    <td className="p-2 font-mono text-right">{item.strike}</td>
-                    <td className="p-2 font-mono">{item.side}</td>
-                    <td className="p-2 font-mono text-right">{item.coverage_pct || 0}%</td>
-                    <td className="p-2 font-mono text-right">{fmtInt(item.missing_days || 0)}</td>
-                    <td className="p-2 font-mono text-right">{fmtInt(item.incomplete_days || 0)}</td>
-                    <td className="p-2">
-                      <span className={`text-[10px] px-1.5 py-0.5 rounded border font-mono ${statusClass(item.status)}`}>
-                        {item.status}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-
-        {summary && items.length === 0 && (
-          <div className="rounded-md border border-line bg-bg-2 p-3 text-xs text-dim">
-            No option contracts found for this filter. Sync current or expired contracts before auditing option candle coverage.
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
 function DataTrustPanel({
   auditForm,
   setAuditForm,
@@ -1524,6 +1310,8 @@ function DataTrustPanel({
   setClearInstrument,
   clearing,
   onClear,
+  optionClearing,
+  onClearOptions,
 }) {
   const set = (key, value) => setAuditForm((prev) => ({ ...prev, [key]: value }));
   const summary = auditResult?.summary;
@@ -1617,7 +1405,21 @@ function DataTrustPanel({
                 data-testid="warehouse-clear-button"
               >
                 <Trash2 className="w-3 h-3 mr-1" />
-                {clearing ? "Clearing..." : "Clear"}
+                {clearing ? "Clearing..." : "Clear index"}
+              </Button>
+            </div>
+            <div className="mt-2 flex items-center justify-between gap-2">
+              <span className="text-[10px] text-dimmer">Clear stored option candles for {auditForm.instrument} (keeps contract metadata + index candles).</span>
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={onClearOptions}
+                disabled={optionClearing}
+                className="h-8 text-xs border border-rose-900 bg-rose-950/60 text-rose-100 hover:bg-rose-950 shrink-0"
+                data-testid="option-clear-button"
+              >
+                <Trash2 className="w-3 h-3 mr-1" />
+                {optionClearing ? "Clearing..." : "Clear options"}
               </Button>
             </div>
           </div>

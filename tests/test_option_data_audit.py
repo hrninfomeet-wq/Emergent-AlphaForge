@@ -63,17 +63,23 @@ def test_backend_exposes_option_audit_routes():
     assert "clear_option_data" in server
 
 
-def test_frontend_exposes_option_audit_panel():
+def test_frontend_option_clear_retained_audit_panel_removed():
+    """The redundant Raw Option Universe Audit panel was removed; its unique
+    'clear option candles' maintenance action was relocated into the Data Trust
+    Audit panel and must still be present."""
     api = (ROOT / "frontend" / "src" / "lib" / "api.js").read_text(encoding="utf-8")
     page = (ROOT / "frontend" / "src" / "pages" / "DataWarehouse.jsx").read_text(encoding="utf-8")
 
-    assert "auditOptionData" in api
+    # API helpers remain (route still exists for programmatic use).
     assert "clearOptionData" in api
-    for needle in (
+    # The clear-options control is retained in the Data Trust Audit panel.
+    assert "option-clear-button" in page
+    # The redundant raw audit panel and its widgets are gone.
+    for removed in (
         "option-audit-panel",
         "option-audit-button",
         "option-audit-summary",
         "option-audit-table",
-        "option-clear-button",
+        "Raw Option Universe Audit",
     ):
-        assert needle in page
+        assert removed not in page
