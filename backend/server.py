@@ -36,6 +36,7 @@ from app.option_plan_response import compact_option_plan_for_response
 from app.option_coverage import get_option_coverage
 from app.option_coverage_cache import get_option_coverage_cached, refresh_option_coverage_cache
 from app.nse_calendar import available_calendar_years, calendar_for_year
+from app.warehouse_lookup import lookup_market_snapshot
 from app.option_warehouse_jobs import option_fetch_tasks_from_plan, run_option_warehouse_fetch_job
 from app.expired_contract_backfill import backfill_expired_option_contracts
 from app.market_header import DEFAULT_ITEMS, build_market_header_snapshot
@@ -420,6 +421,29 @@ async def warehouse_runs(limit: int = Query(50, le=200)):
 async def warehouse_candles(instrument: str, limit: int = Query(500, le=5000)):
     rows = await candle_sample(instrument.upper(), limit=limit)
     return {"items": rows, "count": len(rows)}
+
+
+@api.get("/warehouse/lookup")
+async def warehouse_point_lookup(
+    instrument: str = Query(...),
+    date: str = Query(...),
+    time: str = Query("09:15"),
+):
+    """Point-in-time warehouse lookup: spot + ATM CE/PE at a date/time (IST).
+
+    Reads only local warehouse data (candles_1m, options_1m, option_contracts)
+    so the result can be cross-checked against a broker terminal. ATM is the
+    nearest strike to the stored spot close; expiry is the nearest stored expiry
+    on/after the date.
+    """
+    inst = instrument.upper()
+    if inst not in upstox_client.INSTRUMENT_KEYS:
+        raise HTTPException(400, f"Unsupported instrument: {instrument}")
+    try:
+        snapshot = await lookup_market_snapshot(get_db(), underlying=inst, date_str=date, time_str=time)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(400, f"Invalid date/time: {str(exc)[:200]}")
+    return serialize_doc(snapshot)
 
 
 @api.get("/warehouse/audit/{instrument}")

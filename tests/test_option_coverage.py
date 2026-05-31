@@ -141,3 +141,17 @@ def test_warehouse_auto_update_wired_end_to_end():
     # UI surface.
     assert "autoUpdateStatus" in api
     assert "auto-update-toggle" in panel
+
+
+def test_warehouse_point_lookup_wired_end_to_end():
+    """The spot + ATM CE/PE point-in-time lookup must be wired end to end."""
+    server = (ROOT / "backend" / "server.py").read_text(encoding="utf-8")
+    api = (ROOT / "frontend" / "src" / "lib" / "api.js").read_text(encoding="utf-8")
+    lookup = (ROOT / "frontend" / "src" / "components" / "WarehouseLookup.jsx").read_text(encoding="utf-8")
+    warehouse = (ROOT / "frontend" / "src" / "pages" / "DataWarehouse.jsx").read_text(encoding="utf-8")
+
+    assert '@api.get("/warehouse/lookup")' in server
+    assert "lookup_market_snapshot" in server
+    assert "warehouseLookup" in api
+    assert "warehouse-lookup-panel" in lookup
+    assert "WarehouseLookup" in warehouse

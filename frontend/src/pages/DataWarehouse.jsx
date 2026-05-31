@@ -8,6 +8,7 @@ import { fmtInt, fmtNum, fmtSigned, isoToFull, tsToFull } from "@/lib/fmt";
 import { Skeleton } from "@/components/ui/skeleton";
 import HolidayCalendarDialog from "@/components/HolidayCalendarDialog";
 import DataHygienePanel from "@/components/DataHygienePanel";
+import WarehouseLookup from "@/components/WarehouseLookup";
 import { useJobs } from "@/lib/jobs";
 
 const INSTRUMENTS = ["NIFTY", "BANKNIFTY", "SENSEX"];
@@ -490,6 +491,8 @@ export default function DataWarehouse() {
 
       {/* ============ Verify & audit ============ */}
       <SectionHeader title="Verify & Audit" subtitle="Confirm completeness and integrity of stored data" />
+
+      <WarehouseLookup />
 
       <DataTrustPanel
         auditForm={auditForm}

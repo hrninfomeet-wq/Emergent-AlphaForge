@@ -25,6 +25,10 @@ export const api = {
     apiClient.get(`/warehouse/runs?limit=${limit}`).then((r) => r.data),
   candles: (instrument, limit = 500) =>
     apiClient.get(`/warehouse/candles/${instrument}?limit=${limit}`).then((r) => r.data),
+  warehouseLookup: (instrument, date, time) =>
+    apiClient.get("/warehouse/lookup", {
+      params: { instrument, date, ...(time ? { time } : {}) },
+    }).then((r) => r.data),
   auditWarehouse: (instrument, startTs, endTs) =>
     apiClient.get(`/warehouse/audit/${instrument}`, {
       params: {
