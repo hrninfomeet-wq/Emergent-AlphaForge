@@ -57,10 +57,10 @@ docker compose logs -f mongo
 
 ### One-Command Launchers
 
-- Windows: double-click `start.bat`
+- Windows: double-click `start-app.bat` (recommended) or `start.bat` (compatibility wrapper)
 - Mac/Linux: `./start.sh`
 
-Both scripts copy env templates if missing, then `docker compose up -d`, then open the browser.
+The Windows launcher checks Docker Desktop, validates env files without printing secrets, starts the stack sequentially, waits for health, and then opens the browser. See `docs/STARTUP_MANUAL.md`.
 
 ### Upgrade
 

@@ -71,6 +71,7 @@ docker compose ps
 - [API Reference](docs/API_REFERENCE.md) — every backend route.
 - [User Manual](docs/USER_MANUAL.md) — how to use the app.
 - [Local Setup](docs/LOCAL_SETUP.md) — Docker and native installation.
+- [Startup Manual](docs/STARTUP_MANUAL.md) — one-click launcher, manual startup, and troubleshooting.
 - [Strategy Plugins](docs/STRATEGY_PLUGINS.md) — adding custom strategies.
 - [Strategy Deployments](docs/STRATEGY_DEPLOYMENTS.md) — forward-testing model.
 - [Plan](plan.md) — slice roadmap with done/next markers.
@@ -95,7 +96,8 @@ docker compose ps
 ├── memory/                   Local notes (gitignored secrets)
 ├── .kiro/                    Kiro IDE steering files and hooks
 ├── docker-compose.yml
-├── start.bat / start.sh      One-click launchers
+├── start-app.bat             Detailed Windows startup assistant
+├── start.bat / start.sh      Compatibility Windows launcher / Mac-Linux launcher
 ├── plan.md                   Slice roadmap
 └── README.md
 ```

@@ -22,11 +22,37 @@ def test_local_setup_contract_files_exist():
         ROOT / "backend" / ".env.example",
         ROOT / "frontend" / ".env.example",
         ROOT / "frontend" / "yarn.lock",
+        ROOT / "start-app.bat",
+        ROOT / "docs" / "STARTUP_MANUAL.md",
     ]
 
     missing = [str(path.relative_to(ROOT)) for path in required if not path.exists()]
 
     assert missing == []
+
+
+def test_windows_startup_assistant_documents_safe_startup_flow():
+    launcher = (ROOT / "start-app.bat").read_text(encoding="utf-8")
+    manual = (ROOT / "docs" / "STARTUP_MANUAL.md").read_text(encoding="utf-8")
+
+    for phrase in (
+        "docker compose up -d --build",
+        "docker info",
+        "backend\\.env",
+        "http://localhost:8001/api/health",
+        "mongo_data",
+        "--check-only",
+    ):
+        assert phrase in launcher
+
+    for phrase in (
+        "Manual Docker Startup",
+        "Do not delete the Docker volume",
+        "Do not print `backend\\.env`",
+        "docker compose down -v",
+        "Invoke-RestMethod http://localhost:8001/api/health",
+    ):
+        assert phrase in manual
 
 
 def test_requirements_include_imported_runtime_dependencies():

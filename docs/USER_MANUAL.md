@@ -14,8 +14,10 @@ Open `http://localhost:3000`.
 
 One-click launchers:
 
-- Windows: double-click `start.bat`.
+- Windows: double-click `start-app.bat` (recommended) or `start.bat`.
 - Mac/Linux: `./start.sh`.
+
+For detailed startup, troubleshooting, and manual Docker steps, see `docs/STARTUP_MANUAL.md`.
 
 ## Theme
 
