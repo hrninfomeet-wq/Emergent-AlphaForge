@@ -29,6 +29,8 @@ export const api = {
     apiClient.get("/warehouse/lookup", {
       params: { instrument, date, ...(time ? { time } : {}) },
     }).then((r) => r.data),
+  warehouseOhlc: (instrument, params = {}) =>
+    apiClient.get(`/warehouse/ohlc/${instrument}`, { params }).then((r) => r.data),
   auditWarehouse: (instrument, startTs, endTs) =>
     apiClient.get(`/warehouse/audit/${instrument}`, {
       params: {

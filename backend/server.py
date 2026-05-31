@@ -37,6 +37,7 @@ from app.option_coverage import get_option_coverage
 from app.option_coverage_cache import get_option_coverage_cached, refresh_option_coverage_cache
 from app.nse_calendar import available_calendar_years, calendar_for_year
 from app.warehouse_lookup import lookup_market_snapshot
+from app.warehouse_ohlc import TIMEFRAME_RULES, build_ohlc_response
 from app.option_warehouse_jobs import option_fetch_tasks_from_plan, run_option_warehouse_fetch_job
 from app.expired_contract_backfill import backfill_expired_option_contracts
 from app.market_header import DEFAULT_ITEMS, build_market_header_snapshot
@@ -444,6 +445,32 @@ async def warehouse_point_lookup(
     except (ValueError, TypeError) as exc:
         raise HTTPException(400, f"Invalid date/time: {str(exc)[:200]}")
     return serialize_doc(snapshot)
+
+
+@api.get("/warehouse/ohlc/{instrument}")
+async def warehouse_ohlc(
+    instrument: str,
+    timeframe: str = Query("1d"),
+    start_ts: Optional[int] = Query(None),
+    end_ts: Optional[int] = Query(None),
+    include_gaps: bool = Query(True),
+):
+    """Resampled OHLC bars (1m/5m/15m/1h/1d) from stored 1m candles, with a gap
+    report of trading days that have fewer than 375 stored minutes."""
+    inst = instrument.upper()
+    if inst not in upstox_client.INSTRUMENT_KEYS:
+        raise HTTPException(400, f"Unsupported instrument: {instrument}")
+    if timeframe not in TIMEFRAME_RULES:
+        raise HTTPException(400, f"Unsupported timeframe: {timeframe}. Use one of {list(TIMEFRAME_RULES)}")
+    resp = await build_ohlc_response(
+        load_candles_df,
+        instrument=inst,
+        start_ts=start_ts,
+        end_ts=end_ts,
+        timeframe=timeframe,
+        include_gaps=include_gaps,
+    )
+    return serialize_doc(resp)
 
 
 @api.get("/warehouse/audit/{instrument}")

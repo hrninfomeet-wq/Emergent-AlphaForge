@@ -181,3 +181,17 @@ def test_oauth_token_expiry_countdown_present():
     assert "topbar-token-indicator" in layout
     assert "TokenExpiryIndicator" in layout
     assert "upstox-token-expiry-badge" in warehouse
+
+
+def test_warehouse_candlestick_chart_wired_end_to_end():
+    """The per-index candlestick chart + resample endpoint must be wired."""
+    server = (ROOT / "backend" / "server.py").read_text(encoding="utf-8")
+    api = (ROOT / "frontend" / "src" / "lib" / "api.js").read_text(encoding="utf-8")
+    chart = (ROOT / "frontend" / "src" / "components" / "WarehouseChart.jsx").read_text(encoding="utf-8")
+    warehouse = (ROOT / "frontend" / "src" / "pages" / "DataWarehouse.jsx").read_text(encoding="utf-8")
+
+    assert '@api.get("/warehouse/ohlc/{instrument}")' in server
+    assert "build_ohlc_response" in server
+    assert "warehouseOhlc" in api
+    assert "warehouse-chart-panel" in chart
+    assert "WarehouseChart" in warehouse

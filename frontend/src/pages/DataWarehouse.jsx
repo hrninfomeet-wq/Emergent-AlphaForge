@@ -9,6 +9,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import HolidayCalendarDialog from "@/components/HolidayCalendarDialog";
 import DataHygienePanel from "@/components/DataHygienePanel";
 import WarehouseLookup from "@/components/WarehouseLookup";
+import WarehouseChart from "@/components/WarehouseChart";
 import { useJobs } from "@/lib/jobs";
 
 const INSTRUMENTS = ["NIFTY", "BANKNIFTY", "SENSEX"];
@@ -461,6 +462,8 @@ export default function DataWarehouse() {
       </div>
 
       <CoverageHeatmap coverage={coverage} />
+
+      <WarehouseChart />
 
       {/* ============ Option data ============ */}
       <SectionHeader title="Option Data" subtitle="ATM CE/PE candles, contract metadata, and coverage" />
