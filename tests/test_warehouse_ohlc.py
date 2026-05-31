@@ -38,6 +38,18 @@ def _one_minute_df(date_str: str, n: int, start_hh: int = 9, start_mm: int = 15)
     return pd.DataFrame(rows)
 
 
+def _candle_row(date_str: str, hh: int, mm: int, price: int = 100):
+    return {
+        "instrument": "NIFTY",
+        "ts": _ts(date_str, hh, mm),
+        "open": price,
+        "high": price + 2,
+        "low": price - 2,
+        "close": price + 1,
+        "volume": 10,
+    }
+
+
 # ---- resample_ohlc ----------------------------------------------------------
 
 
@@ -85,6 +97,22 @@ def test_resample_bars_are_sorted_ascending():
     assert times == sorted(times)
 
 
+def test_resample_filters_non_trading_dates_and_off_session_rows():
+    df = pd.DataFrame([
+        _candle_row("2026-05-27", 9, 15, 100),   # valid trading session
+        _candle_row("2026-05-28", 9, 15, 200),   # Eid holiday in nse_calendar
+        _candle_row("2026-05-30", 9, 15, 300),   # Saturday, not a special session
+        _candle_row("2026-05-31", 21, 15, 400),  # Sunday/off-session junk
+        _candle_row("2026-05-27", 16, 0, 500),   # valid date, outside regular market hours
+    ])
+
+    bars = resample_ohlc(df, "1m")
+
+    assert len(bars) == 1
+    assert bars[0]["ts"] == _ts("2026-05-27", 9, 15)
+    assert bars[0]["open"] == 100
+
+
 # ---- find_intraday_gaps -----------------------------------------------------
 
 
@@ -104,6 +132,17 @@ def test_partial_session_reports_missing_minutes():
     assert g["missing_count"] == 5
     # The missing minutes are the last 5 of the session (15:25..15:29).
     assert "15:25" in g["missing_sample"]
+
+
+def test_gap_detection_ignores_non_trading_dates_and_off_session_rows():
+    df = pd.DataFrame([
+        _candle_row("2026-05-28", 9, 15, 200),   # Eid holiday in nse_calendar
+        _candle_row("2026-05-30", 9, 15, 300),   # Saturday, not a special session
+        _candle_row("2026-05-31", 21, 15, 400),  # Sunday/off-session junk
+        _candle_row("2026-05-27", 16, 0, 500),   # valid date, outside regular market hours
+    ])
+
+    assert find_intraday_gaps(df) == []
 
 
 def test_empty_df_has_no_gaps():

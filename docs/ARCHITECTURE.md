@@ -88,10 +88,10 @@ flowchart TD
 | `backend/app/data_hygiene.py` | Warehouse diff vs desired scope; submits dependency-ordered fetches. Index-friendly aggregations (no `$lookup`) so the plan runs in ~6s, not 120s+ |
 | `backend/app/warehouse_autoupdate.py` | Automatic catch-up: guarded plan→execute on startup, OAuth-connect, and a daily 18:00 IST timer; pure decision helpers + `AutoUpdateState` |
 | `backend/app/warehouse_lookup.py` | Point-in-time lookup: spot + derived ATM + nearest expiry + ATM CE/PE candles for a given IST date/time (local reads only) |
-| `backend/app/warehouse_ohlc.py` | Server-side OHLC resampling (1m→5m/15m/1h/1d on IST buckets) + intraday gap detection (days < 375 stored minutes) |
+| `backend/app/warehouse_ohlc.py` | Server-side OHLC resampling (1m→5m/15m/1h/1d on IST buckets) + intraday gap detection (days < 375 regular-session minutes); filters rows through the NSE/BSE calendar and 09:15-15:30 IST session window |
 | `backend/app/option_coverage_cache.py` | Precomputed per-underlying option-coverage cache (`option_coverage_cache` collection) with single-flight lock; fixes the 8s page-load aggregation |
 | `backend/app/nse_calendar.py` | NSE 2024–2026 holidays + Budget Saturdays + shifted-expiry days; labeled `calendar_for_year()` for the holiday-calendar modal |
-| `backend/app/live_candle_roller.py` | Subscribes to WS broadcast, aggregates per-minute OHLC, persists into `candles_1m` |
+| `backend/app/live_candle_roller.py` | Subscribes to WS broadcast, aggregates per-minute OHLC, persists into `candles_1m`; drops non-trading-day and off-session ticks before they can create warehouse candles |
 | `backend/app/market_header.py` | Normalized market header quote aggregation (WS-first, REST fallback) |
 | **Research engine** | |
 | `backend/app/indicators.py` | Vectorized indicators |

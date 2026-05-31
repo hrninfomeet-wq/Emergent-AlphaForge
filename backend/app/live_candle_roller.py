@@ -32,10 +32,13 @@ from typing import Any, Dict, Optional
 import pandas as pd
 
 from app.instruments import INSTRUMENT_KEYS
+from app.nse_calendar import is_trading_day
 
 log = logging.getLogger(__name__)
 
 IST_OFFSET = timedelta(hours=5, minutes=30)
+SESSION_START_MINUTE = 9 * 60 + 15
+SESSION_END_MINUTE_EXCLUSIVE = 15 * 60 + 30
 
 # Reverse map: WS instrument_key -> internal underlying name
 _WS_KEY_TO_INSTRUMENT: Dict[str, str] = {v: k for k, v in INSTRUMENT_KEYS.items()}
@@ -62,6 +65,18 @@ def _ist_time_str(ts_ms: int) -> str:
     dt_utc = datetime.fromtimestamp(int(ts_ms) / 1000, tz=timezone.utc)
     ist = dt_utc + IST_OFFSET
     return ist.strftime("%H:%M")
+
+
+def _is_regular_index_session_ts(ts_ms: int) -> bool:
+    """True when a tick belongs to a regular index market minute."""
+    dt_utc = datetime.fromtimestamp(int(ts_ms) / 1000, tz=timezone.utc)
+    ist = dt_utc + IST_OFFSET
+    iso = ist.strftime("%Y-%m-%d")
+    minute = ist.hour * 60 + ist.minute
+    return (
+        is_trading_day(iso)
+        and SESSION_START_MINUTE <= minute < SESSION_END_MINUTE_EXCLUSIVE
+    )
 
 
 class LiveCandleRoller:
@@ -210,6 +225,10 @@ class LiveCandleRoller:
             # Minute rolled over - flush the previous bucket, start a new one
             await self._flush_bucket(instrument, existing, reason="rollover")
             existing = None
+
+        if not _is_regular_index_session_ts(ts_ms):
+            self._stats["ticks_dropped"] = int(self._stats.get("ticks_dropped") or 0) + 1
+            return
 
         if existing is None:
             self._buckets[instrument] = {

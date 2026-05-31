@@ -15,6 +15,8 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
+from app.nse_calendar import is_trading_day
+
 # Supported chart timeframes -> pandas resample rule (on IST-localized index).
 TIMEFRAME_RULES: Dict[str, str] = {
     "1m": "1min",
@@ -25,6 +27,27 @@ TIMEFRAME_RULES: Dict[str, str] = {
 }
 
 EXPECTED_1M_PER_SESSION = 375  # NSE 09:15-15:30 inclusive
+SESSION_START_MINUTE = 9 * 60 + 15
+SESSION_END_MINUTE_EXCLUSIVE = 15 * 60 + 30
+
+
+def _regular_session_rows(df: pd.DataFrame) -> pd.DataFrame:
+    """Return only regular-market rows on calendar-approved trading sessions.
+
+    Stored data can contain occasional weekend/off-session rows from live or
+    retry paths. The chart is a trust surface, so it should render only the
+    same regular 09:15-15:30 IST sessions that the Data Trust Audit expects.
+    """
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    work = df.copy()
+    work["dt"] = pd.to_datetime(work["ts"], unit="ms", utc=True).dt.tz_convert("Asia/Kolkata")
+    work["date"] = work["dt"].dt.strftime("%Y-%m-%d")
+    minute = work["dt"].dt.hour * 60 + work["dt"].dt.minute
+    session_mask = (minute >= SESSION_START_MINUTE) & (minute < SESSION_END_MINUTE_EXCLUSIVE)
+    trading_mask = work["date"].map(is_trading_day)
+    return work.loc[session_mask & trading_mask].copy()
 
 
 def resample_ohlc(df: pd.DataFrame, timeframe: str) -> List[Dict[str, Any]]:
@@ -40,8 +63,9 @@ def resample_ohlc(df: pd.DataFrame, timeframe: str) -> List[Dict[str, Any]]:
     if df is None or df.empty:
         return []
 
-    work = df.copy()
-    work["dt"] = pd.to_datetime(work["ts"], unit="ms", utc=True).dt.tz_convert("Asia/Kolkata")
+    work = _regular_session_rows(df)
+    if work.empty:
+        return []
     work = work.set_index("dt").sort_index()
 
     if timeframe == "1m":
@@ -86,9 +110,9 @@ def find_intraday_gaps(df: pd.DataFrame, max_report: int = 50) -> List[Dict[str,
     if df is None or df.empty:
         return []
 
-    work = df.copy()
-    work["dt"] = pd.to_datetime(work["ts"], unit="ms", utc=True).dt.tz_convert("Asia/Kolkata")
-    work["date"] = work["dt"].dt.strftime("%Y-%m-%d")
+    work = _regular_session_rows(df)
+    if work.empty:
+        return []
 
     gaps: List[Dict[str, Any]] = []
     for date_str, grp in work.groupby("date"):

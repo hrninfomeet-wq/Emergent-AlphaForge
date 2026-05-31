@@ -73,6 +73,11 @@ def tick(instrument_key: str, last_price: float, ts_ms: int) -> Dict[str, Any]:
     }
 
 
+def ist_ts(date_str: str, hh: int, mm: int) -> int:
+    t = pd.Timestamp(f"{date_str} {hh:02d}:{mm:02d}", tz="Asia/Kolkata")
+    return int(t.tz_convert("UTC").value // 10**6)
+
+
 # ---- pure helpers ----------------------------------------------------------
 
 
@@ -141,7 +146,7 @@ async def test_minute_rollover_flushes_previous_bucket_and_starts_new_one():
     roller = LiveCandleRoller(stream_manager=stream, db_factory=fake_db, persister=persister)
     await roller.start()
     try:
-        m1 = 1779875940000  # exact minute boundary
+        m1 = ist_ts("2026-05-27", 10, 0)  # exact minute boundary
         m2 = m1 + 60_000
         # First minute: 2 ticks
         await stream.push(tick("NSE_INDEX|Nifty 50", 23900.0, m1 + 5_000))
@@ -185,6 +190,53 @@ async def test_unknown_instrument_keys_are_dropped():
         assert s["ticks_dropped"] == 2
         assert s["active_buckets"] == 0
         assert persister.calls == []
+    finally:
+        await roller.stop()
+
+
+@pytest.mark.asyncio
+async def test_non_session_ticks_are_dropped_before_bucket_creation():
+    """The roller must not create warehouse candles outside regular index sessions."""
+    stream = FakeStream()
+    persister = FakePersister()
+    roller = LiveCandleRoller(stream_manager=stream, db_factory=fake_db, persister=persister)
+    await roller.start()
+    try:
+        await stream.push(tick("NSE_INDEX|Nifty 50", 23900.0, ist_ts("2026-05-28", 9, 15)))   # holiday
+        await stream.push(tick("NSE_INDEX|Nifty 50", 23901.0, ist_ts("2026-05-30", 9, 15)))   # Saturday
+        await stream.push(tick("NSE_INDEX|Nifty 50", 23902.0, ist_ts("2026-05-31", 21, 15)))  # Sunday
+        await stream.push(tick("NSE_INDEX|Nifty 50", 23903.0, ist_ts("2026-05-27", 15, 30)))  # close boundary
+        await stream.push(tick("NSE_INDEX|Nifty 50", 23904.0, ist_ts("2026-05-27", 16, 0)))   # after close
+        await asyncio.sleep(0.05)
+
+        s = roller.status()
+        assert s["ticks_seen"] == 5
+        assert s["ticks_used"] == 0
+        assert s["ticks_dropped"] == 5
+        assert s["active_buckets"] == 0
+        assert persister.calls == []
+    finally:
+        await roller.stop()
+
+
+@pytest.mark.asyncio
+async def test_close_boundary_tick_flushes_last_valid_bucket_without_starting_new_bar():
+    stream = FakeStream()
+    persister = FakePersister()
+    roller = LiveCandleRoller(stream_manager=stream, db_factory=fake_db, persister=persister)
+    await roller.start()
+    try:
+        await stream.push(tick("NSE_INDEX|Nifty 50", 23900.0, ist_ts("2026-05-27", 15, 29)))
+        await stream.push(tick("NSE_INDEX|Nifty 50", 23905.0, ist_ts("2026-05-27", 15, 30)))
+        await asyncio.sleep(0.05)
+
+        s = roller.status()
+        assert s["ticks_seen"] == 2
+        assert s["ticks_used"] == 1
+        assert s["ticks_dropped"] == 1
+        assert s["active_buckets"] == 0
+        assert len(persister.calls) == 1
+        assert int(persister.calls[0]["row"]["ts"]) == ist_ts("2026-05-27", 15, 29)
     finally:
         await roller.stop()
 
@@ -241,7 +293,7 @@ async def test_stop_then_start_resumes_clean_state():
     # Restart and feed more ticks for a different minute
     await roller.start()
     try:
-        ts2 = 1779875985000 + 120_000  # 2 minutes later
+        ts2 = ist_ts("2026-05-27", 10, 0)
         await stream.push(tick("NSE_INDEX|Nifty 50", 24000.0, ts2))
         await asyncio.sleep(0.05)
         s = roller.status()

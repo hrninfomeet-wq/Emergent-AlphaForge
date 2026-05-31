@@ -28,7 +28,7 @@ A full pass to make the warehouse trustworthy and fast. All slices committed and
 - **Data Hygiene UI:** the plan/execute/status workflow is surfaced as the hero panel; page regrouped into Connection / Data Hygiene / Index Data / Option Data / Verify & Audit / Diagnostics. The hygiene plan was optimized from a 120s+ timeout to ~6s by dropping a `$lookup` join. (`8f9c695`)
 - **Auto-update:** warehouse catches up to yesterday's close on startup, on OAuth-connect, and daily at 18:00 IST; status + toggle in the UI. (`70e5b4a`)
 - **Point lookup:** spot + ATM CE/PE for any date/time, read from the warehouse only, to cross-check against a broker terminal. (`d8bb4b5`)
-- **Candlestick chart:** per-index chart (1m/5m/15m/1h/1d) with an OHLC crosshair legend, a date/time locator (validates + snaps to bucket + marks the bar), and a gap banner. (`7b16457`, `882092d`)
+- **Candlestick chart:** per-index chart (1m/5m/15m/1h/1d) with an OHLC crosshair legend, a date/time locator (validates + snaps to bucket + marks the bar), and a gap banner. The backend now filters chart candles/gaps to calendar-approved 09:15-15:30 IST regular sessions so weekend/holiday/off-session rows do not create false candles or gap warnings. (`7b16457`, `882092d`)
 - **UI follow-ups:** Backtest Run Journal moved into Backtest Lab; Signal Journal repurposed as the deployment signal audit trail; OAuth token-expiry countdown in the top bar. (`2fcb9d0`)
 - **Cleanup:** removed the redundant Raw Option Universe Audit panel (kept the clear-options action in Data Trust Audit; the `/options/audit` route stays for programmatic use). (`882092d`)
 
@@ -51,7 +51,7 @@ Data:
 - ATM CE/PE option candles in `options_1m` (NIFTY ~1.46M / BANKNIFTY ~1.69M / SENSEX ~2.21M; OI populated).
 - Option contract metadata in `option_contracts` (strike, side, expiry_date, instrument_key, lot_size).
 - NSE holiday calendar with budget-Saturday and shifted-expiry exceptions in `backend/app/nse_calendar.py`; surfaced as a holiday-calendar modal.
-- Live tick → 1m OHLC roller closes the same-day historical gap (`backend/app/live_candle_roller.py`).
+- Live tick → 1m OHLC roller closes the same-day historical gap (`backend/app/live_candle_roller.py`) and now drops non-trading-day/off-session ticks before they can create warehouse candles.
 - Data Hygiene workflow (UI + backend) audits the warehouse against a default scope (2024-11-27 → today, ATM only) and submits dependency-ordered fetches; ~6s plan.
 - Automatic warehouse catch-up (`backend/app/warehouse_autoupdate.py`) on startup, OAuth-connect, and daily 18:00 IST.
 - Option coverage served from a precomputed cache (`option_coverage_cache`) for fast page loads.
@@ -178,10 +178,10 @@ Backend modules of note:
 - `backend/app/data_hygiene.py` — warehouse fill plan + execute (index-friendly aggregations, ~6s).
 - `backend/app/warehouse_autoupdate.py` — automatic catch-up (startup / OAuth / daily 18:00 IST).
 - `backend/app/warehouse_lookup.py` — point-in-time spot + ATM CE/PE lookup.
-- `backend/app/warehouse_ohlc.py` — OHLC resampling + intraday gap detection.
+- `backend/app/warehouse_ohlc.py` — OHLC resampling + intraday gap detection, filtered to calendar-approved regular sessions.
 - `backend/app/option_coverage_cache.py` — precomputed option-coverage cache (fast page loads).
 - `backend/app/nse_calendar.py` — holiday list, Budget Saturdays, shifted expiry days, labeled year calendar.
-- `backend/app/live_candle_roller.py` — tick → 1m OHLC for same-day intraday.
+- `backend/app/live_candle_roller.py` — tick → 1m OHLC for same-day intraday; guards against non-trading-day/off-session warehouse writes.
 - `backend/app/paper_squareoff.py` — 15:00 IST auto square-off loop.
 - `backend/app/slippage.py` + `volatility.py` — execution realism.
 - `backend/app/strategy_source_hash.py` — drift detection.
