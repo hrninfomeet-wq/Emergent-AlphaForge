@@ -155,3 +155,29 @@ def test_warehouse_point_lookup_wired_end_to_end():
     assert "warehouseLookup" in api
     assert "warehouse-lookup-panel" in lookup
     assert "WarehouseLookup" in warehouse
+
+
+def test_backtest_run_journal_moved_to_backtest_lab():
+    """The Backtest Run Journal must live in the Backtest Lab; the Signal
+    Journal page must no longer be the backtest-run table."""
+    lab = (ROOT / "frontend" / "src" / "pages" / "BacktestLab.jsx").read_text(encoding="utf-8")
+    journal_component = (ROOT / "frontend" / "src" / "components" / "BacktestRunJournal.jsx").read_text(encoding="utf-8")
+    signal_journal = (ROOT / "frontend" / "src" / "pages" / "SignalJournal.jsx").read_text(encoding="utf-8")
+
+    assert "BacktestRunJournal" in lab
+    assert "backtest-run-journal" in journal_component
+    # Signal Journal is now the deployment signal audit trail, not backtest runs.
+    assert "Deployment Signal Journal" in signal_journal
+    assert "listSignals" in signal_journal
+    assert "listBacktestRuns" not in signal_journal
+
+
+def test_oauth_token_expiry_countdown_present():
+    """A token-expiry countdown must be surfaced in the global top bar and the
+    Upstox panel."""
+    layout = (ROOT / "frontend" / "src" / "components" / "Layout.jsx").read_text(encoding="utf-8")
+    warehouse = (ROOT / "frontend" / "src" / "pages" / "DataWarehouse.jsx").read_text(encoding="utf-8")
+
+    assert "topbar-token-indicator" in layout
+    assert "TokenExpiryIndicator" in layout
+    assert "upstox-token-expiry-badge" in warehouse

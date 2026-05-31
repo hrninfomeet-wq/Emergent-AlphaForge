@@ -1,79 +1,70 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "@/lib/api";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
-import { fmtInt, fmtNum, fmtPct, fmtPnL, colorPnL, isoToFull } from "@/lib/fmt";
-import { SignificanceBadge } from "@/components/SignificanceBadge";
-import { Trash2, RefreshCw, BookOpen, Play, Search, X } from "lucide-react";
+import { fmtNum, isoToFull } from "@/lib/fmt";
+import { RefreshCw, BookOpen, Search, X, Activity } from "lucide-react";
 
+const STATES = ["WATCHING", "FORMING", "CONFIRMED", "TRIGGERED", "ACTIVE", "EXITED", "SKIPPED", "AUDITED"];
+
+const STATE_STYLE = {
+  CONFIRMED: "border-amber-500/40 text-amber-300",
+  TRIGGERED: "border-info/40 text-info",
+  ACTIVE: "border-emerald-500/40 text-emerald-300",
+  EXITED: "border-emerald-500/40 text-emerald-300",
+  AUDITED: "border-line text-dim",
+  SKIPPED: "border-line text-dimmer",
+};
+
+/**
+ * Signal Journal — the audit trail of deployment-generated signals.
+ *
+ * (The backtest run history moved to the Backtest Lab, where runs are produced.)
+ * This page surfaces the forward-testing signal lifecycle: every CONFIRMED /
+ * approved / skipped / blocked signal a deployment produced, with its full
+ * audit context (strategy hash, regime, option contract, blockers, tracked).
+ */
 export default function SignalJournal() {
   const navigate = useNavigate();
-  const [runs, setRuns] = useState([]);
+  const [signals, setSignals] = useState([]);
+  const [deployments, setDeployments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("");
-  const [selected, setSelected] = useState(new Set());
+  const [stateFilter, setStateFilter] = useState("");
 
   const refresh = async () => {
     try {
-      const d = await api.listBacktestRuns(200);
-      setRuns(d.items || []);
+      const [sig, dep] = await Promise.all([
+        api.listSignals({ ...(stateFilter ? { state: stateFilter } : {}), limit: 200 }),
+        api.listDeployments({ limit: 200 }).catch(() => ({ items: [] })),
+      ]);
+      // Only deployment-generated signals belong in this audit trail.
+      setSignals((sig.items || []).filter((s) => s.deployment_id));
+      setDeployments(dep.items || []);
     } finally {
       setLoading(false);
     }
   };
 
-  useEffect(() => { refresh(); }, []);
+  useEffect(() => { refresh(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [stateFilter]);
 
-  const remove = async (id, e) => {
-    if (e) e.stopPropagation();
-    if (!confirm("Delete this backtest run permanently?")) return;
-    try {
-      await api.deleteBacktestRun(id);
-      toast.success("Run deleted");
-      setSelected((s) => { const n = new Set(s); n.delete(id); return n; });
-      refresh();
-    } catch (e) {
-      toast.error("Delete failed");
-    }
-  };
+  const deploymentName = useMemo(() => {
+    const map = {};
+    for (const d of deployments) map[d.id] = d.name || d.id?.slice(0, 8);
+    return map;
+  }, [deployments]);
 
-  const bulkDelete = async () => {
-    if (selected.size === 0) return;
-    if (!confirm(`Delete ${selected.size} selected backtest run(s)?`)) return;
-    try {
-      await Promise.all([...selected].map((id) => api.deleteBacktestRun(id)));
-      toast.success(`Deleted ${selected.size} runs`);
-      setSelected(new Set());
-      refresh();
-    } catch (e) {
-      toast.error("Bulk delete failed");
-    }
-  };
-
-  const toggleSelected = (id, e) => {
-    e.stopPropagation();
-    setSelected((s) => {
-      const n = new Set(s);
-      if (n.has(id)) n.delete(id); else n.add(id);
-      return n;
-    });
-  };
-
-  const loadInLab = (id) => {
-    navigate(`/backtest?run=${id}`);
-  };
-
-  const visible = runs.filter((r) => {
+  const visible = signals.filter((s) => {
     if (!filter) return true;
     const q = filter.toLowerCase();
     return (
-      (r.name || "").toLowerCase().includes(q) ||
-      (r.strategy_id || "").toLowerCase().includes(q) ||
-      (r.instrument || "").toLowerCase().includes(q) ||
-      (r.config?.mode || "").toLowerCase().includes(q)
+      (s.instrument || "").toLowerCase().includes(q) ||
+      (s.strategy_id || "").toLowerCase().includes(q) ||
+      (s.direction || "").toLowerCase().includes(q) ||
+      (deploymentName[s.deployment_id] || "").toLowerCase().includes(q)
     );
   });
 
@@ -83,17 +74,27 @@ export default function SignalJournal() {
     <div className="space-y-3" data-testid="signal-journal-page">
       <div className="rounded-lg border border-line bg-bg-1">
         <div className="px-3 py-2 border-b border-line flex items-center gap-2 flex-wrap">
-          <BookOpen className="w-4 h-4 text-info" />
-          <div className="text-xs font-semibold uppercase tracking-wider text-dim">Backtest Run Journal</div>
-          <div className="text-[11px] text-dimmer ml-1">{visible.length} of {runs.length} runs</div>
+          <Activity className="w-4 h-4 text-info" />
+          <div className="text-xs font-semibold uppercase tracking-wider text-dim">Deployment Signal Journal</div>
+          <div className="text-[11px] text-dimmer ml-1">{visible.length} of {signals.length} signals</div>
 
-          <div className="relative ml-auto">
+          <select
+            value={stateFilter}
+            onChange={(e) => setStateFilter(e.target.value)}
+            className="ml-auto h-7 rounded-md border border-input bg-bg-2 px-2 text-xs text-foreground"
+            data-testid="journal-state-filter"
+          >
+            <option value="">All states</option>
+            {STATES.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+
+          <div className="relative">
             <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-dimmer pointer-events-none" />
             <Input
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
-              placeholder="Filter by name, strategy, instrument, mode…"
-              className="bg-bg-2 border-line h-7 text-xs pl-7 w-72"
+              placeholder="Filter by instrument, strategy, deployment…"
+              className="bg-bg-2 border-line h-7 text-xs pl-7 w-64"
               data-testid="journal-filter-input"
             />
             {filter && (
@@ -103,12 +104,9 @@ export default function SignalJournal() {
             )}
           </div>
 
-          {selected.size > 0 && (
-            <Button onClick={bulkDelete} size="sm" variant="destructive" className="h-7 text-xs" data-testid="journal-bulk-delete">
-              <Trash2 className="w-3 h-3 mr-1" /> Delete {selected.size}
-            </Button>
-          )}
-
+          <Button variant="ghost" size="sm" onClick={() => navigate("/live")} className="h-7 text-xs" data-testid="journal-go-live">
+            Live Signals
+          </Button>
           <Button variant="ghost" size="sm" onClick={refresh} className="h-7 text-xs" data-testid="journal-refresh-button">
             <RefreshCw className="w-3 h-3 mr-1" /> Refresh
           </Button>
@@ -118,83 +116,69 @@ export default function SignalJournal() {
           <table className="w-full text-xs" data-testid="signal-journal-table">
             <thead className="sticky top-0 bg-bg-2 z-10">
               <tr className="text-dim border-b border-line">
-                <th className="p-2 w-8"></th>
-                <th className="text-left p-2">Created</th>
-                <th className="text-left p-2">Name</th>
+                <th className="text-left p-2">Updated</th>
+                <th className="text-left p-2">Deployment</th>
                 <th className="text-left p-2">Instr.</th>
+                <th className="text-left p-2">Side</th>
+                <th className="text-left p-2">State</th>
+                <th className="text-right p-2">Score</th>
+                <th className="text-left p-2">Bar (IST)</th>
                 <th className="text-left p-2">Strategy</th>
-                <th className="text-left p-2">Mode</th>
-                <th className="text-right p-2">Trades</th>
-                <th className="text-right p-2">WinRate</th>
-                <th className="text-right p-2">PF</th>
-                <th className="text-right p-2">Net Pts</th>
-                <th className="text-right p-2">MaxDD</th>
-                <th className="text-left p-2">Significance</th>
-                <th className="p-2 w-24"></th>
+                <th className="text-left p-2">Regime</th>
+                <th className="text-left p-2">Contract</th>
+                <th className="text-left p-2">Tracked</th>
+                <th className="text-left p-2">Blockers</th>
               </tr>
             </thead>
             <tbody>
               {visible.length === 0 && (
-                <tr><td colSpan="13" className="p-6 text-center text-dimmer">
-                  {runs.length === 0 ? "No backtest runs yet. Run one from the Backtest Lab." : "No runs match filter."}
+                <tr><td colSpan="12" className="p-6 text-center text-dimmer">
+                  {signals.length === 0 ? "No deployment signals yet. Create a deployment in Live Signals to start forward testing." : "No signals match filter."}
                 </td></tr>
               )}
-              {visible.map((r) => (
-                <tr
-                  key={r.id}
-                  className={`border-b border-line hover:bg-bg-2 cursor-pointer ${selected.has(r.id) ? "bg-bg-2" : ""}`}
-                  onClick={() => loadInLab(r.id)}
-                  data-testid="signal-journal-row"
-                >
-                  <td className="p-2" onClick={(e) => e.stopPropagation()}>
-                    <input
-                      type="checkbox"
-                      checked={selected.has(r.id)}
-                      onChange={(e) => toggleSelected(r.id, e)}
-                      className="w-3.5 h-3.5 accent-info cursor-pointer"
-                      data-testid={`journal-select-${r.id.slice(0, 8)}`}
-                    />
-                  </td>
-                  <td className="p-2 font-mono text-dim">{isoToFull(r.created_at)}</td>
-                  <td className="p-2 font-medium">{r.name}</td>
-                  <td className="p-2 font-mono">{r.instrument}</td>
-                  <td className="p-2 font-mono text-dim">{r.strategy_id}</td>
-                  <td className="p-2 font-mono">{r.config?.mode}</td>
-                  <td className="p-2 font-mono text-right">{fmtInt(r.metrics?.trade_count)}</td>
-                  <td className="p-2 font-mono text-right">{fmtPct(r.metrics?.win_rate)}</td>
-                  <td className="p-2 font-mono text-right">{fmtNum(r.metrics?.profit_factor, 2)}</td>
-                  <td className={`p-2 font-mono text-right ${colorPnL(r.metrics?.total_pnl_pts)}`}>{fmtPnL(r.metrics?.total_pnl_pts)}</td>
-                  <td className="p-2 font-mono text-right text-danger">{fmtPnL(r.metrics?.max_dd_pts)}</td>
-                  <td className="p-2"><SignificanceBadge significance={r.significance} /></td>
-                  <td className="p-2" onClick={(e) => e.stopPropagation()}>
-                    <div className="flex gap-1 justify-end">
-                      <Button
-                        size="sm" variant="ghost"
-                        onClick={() => loadInLab(r.id)}
-                        className="h-6 w-6 p-0 hover:bg-bg-3"
-                        title="Load in Backtest Lab"
-                        data-testid={`journal-load-${r.id.slice(0, 8)}`}
-                      >
-                        <Play className="w-3 h-3 text-info" />
-                      </Button>
-                      <Button
-                        size="sm" variant="ghost"
-                        onClick={(e) => remove(r.id, e)}
-                        className="h-6 w-6 p-0 hover:bg-bg-3"
-                        title="Delete run"
-                        data-testid={`journal-delete-${r.id.slice(0, 8)}`}
-                      >
-                        <Trash2 className="w-3 h-3 text-rose-400" />
-                      </Button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
+              {visible.map((s) => {
+                const ctx = s.context || {};
+                const candle = ctx.candle || {};
+                const contract = s.option_contract || {};
+                const blockers = s.blockers || [];
+                return (
+                  <tr key={s.id} className="border-b border-line hover:bg-bg-2" data-testid="signal-journal-row">
+                    <td className="p-2 font-mono text-dim">{isoToFull(s.updated_at)}</td>
+                    <td className="p-2 font-medium truncate max-w-[140px]" title={deploymentName[s.deployment_id] || s.deployment_id}>
+                      {deploymentName[s.deployment_id] || s.deployment_id?.slice(0, 8)}
+                    </td>
+                    <td className="p-2 font-mono">{s.instrument}</td>
+                    <td className="p-2">
+                      <span className={`font-mono ${s.direction === "CE" ? "text-emerald-400" : "text-red-400"}`}>{s.direction}</span>
+                    </td>
+                    <td className="p-2">
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded border font-mono ${STATE_STYLE[s.state] || "border-line text-dim"}`}>{s.state}</span>
+                    </td>
+                    <td className="p-2 font-mono text-right">{fmtNum(s.confidence)}</td>
+                    <td className="p-2 font-mono text-dim">{candle.ist_time || "—"}</td>
+                    <td className="p-2 font-mono text-dim truncate max-w-[150px]" title={`${s.strategy_id} ${ctx.strategy_hash || ""}`}>
+                      {s.strategy_id}{ctx.strategy_hash ? ` · ${String(ctx.strategy_hash).slice(0, 8)}` : ""}
+                    </td>
+                    <td className="p-2 text-dim">{ctx.regime || "—"}</td>
+                    <td className="p-2 font-mono text-dim">
+                      {contract.strike ? `${contract.strike} ${contract.side || ""}` : "—"}
+                    </td>
+                    <td className="p-2">
+                      <span className={`text-[10px] font-mono ${s.tracked_for_pnl ? "text-emerald-400" : "text-dimmer"}`}>
+                        {s.tracked_for_pnl ? "yes" : "no"}
+                      </span>
+                    </td>
+                    <td className="p-2 text-dimmer truncate max-w-[200px]" title={blockers.join("; ")}>
+                      {blockers.length ? blockers.join("; ") : "—"}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
         <div className="px-3 py-1.5 border-t border-line text-[10px] text-dimmer">
-          Tip: Click any row to load that run's config + result into the Backtest Lab.
+          This is the forward-testing audit trail. Approve / skip signals in Live Signals. Backtest run history is in the Backtest Lab.
         </div>
       </div>
     </div>

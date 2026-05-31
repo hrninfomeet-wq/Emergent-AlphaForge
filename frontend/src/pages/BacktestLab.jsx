@@ -17,6 +17,7 @@ import { RegimeBadge } from "@/components/RegimeBadge";
 import { SignificanceBadge } from "@/components/SignificanceBadge";
 import { MultiPaneChart } from "@/components/charts/MultiPaneChart";
 import { NumberSliderInput } from "@/components/NumberSliderInput";
+import BacktestRunJournal from "@/components/BacktestRunJournal";
 import { Play, Save, Filter, ChevronDown, ChevronRight, Download, FileJson, FileText, FolderOpen, ShieldCheck } from "lucide-react";
 
 const INSTRUMENTS = ["NIFTY", "BANKNIFTY", "SENSEX"];
@@ -213,7 +214,8 @@ export default function BacktestLab() {
   };
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-[320px_minmax(0,1fr)] gap-3" data-testid="backtest-lab-page">
+    <div className="space-y-3" data-testid="backtest-lab-page">
+    <div className="grid grid-cols-1 lg:grid-cols-[320px_minmax(0,1fr)] gap-3">
       {/* LEFT: Setup Panel */}
       <aside className="space-y-3">
         <Panel title="Setup" testid="backtest-setup-panel">
@@ -447,6 +449,9 @@ export default function BacktestLab() {
           <ResultsView result={result} />
         )}
       </section>
+    </div>
+
+      <BacktestRunJournal onLoadRun={loadPastRun} refreshKey={pastRuns.length} />
     </div>
   );
 }

@@ -3,7 +3,7 @@ import { api } from "@/lib/api";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Database, Download, RefreshCw, CheckCircle2, AlertCircle, Link2, Unplug, ShieldCheck, Trash2 } from "lucide-react";
+import { Database, Download, RefreshCw, CheckCircle2, AlertCircle, Link2, Unplug, ShieldCheck, Trash2, Clock, AlertTriangle } from "lucide-react";
 import { fmtInt, fmtNum, fmtSigned, isoToFull, tsToFull } from "@/lib/fmt";
 import { Skeleton } from "@/components/ui/skeleton";
 import HolidayCalendarDialog from "@/components/HolidayCalendarDialog";
@@ -566,6 +566,48 @@ export default function DataWarehouse() {
   );
 }
 
+function TokenExpiryBadge({ status }) {
+  const expiresAt = status?.expires_at;
+  const connected = status?.connected;
+  const [now, setNow] = useState(Date.now());
+
+  useEffect(() => {
+    if (!connected || !expiresAt) return;
+    const t = setInterval(() => setNow(Date.now()), 30000);
+    return () => clearInterval(t);
+  }, [connected, expiresAt]);
+
+  if (!connected || !expiresAt) return null;
+
+  const expMs = Date.parse(expiresAt);
+  if (Number.isNaN(expMs)) return null;
+  const remainingMs = expMs - now;
+  const expired = remainingMs <= 0;
+  const mins = Math.max(0, Math.floor(remainingMs / 60000));
+  const hrs = Math.floor(mins / 60);
+  const remMins = mins % 60;
+  const label = expired ? "token expired" : hrs > 0 ? `${hrs}h ${remMins}m left` : `${remMins}m left`;
+
+  // Color escalates as expiry nears: green > 2h, amber 30m-2h, red < 30m / expired.
+  const cls = expired || mins < 30
+    ? "bg-rose-950 text-rose-200 border-rose-900"
+    : mins < 120
+      ? "bg-amber-950 text-amber-200 border-amber-900"
+      : "bg-emerald-950 text-emerald-200 border-emerald-900";
+  const Icon = expired || mins < 30 ? AlertTriangle : Clock;
+
+  return (
+    <span
+      className={`text-[10px] px-1.5 py-0.5 rounded border font-mono inline-flex items-center gap-1 ${cls}`}
+      data-testid="upstox-token-expiry-badge"
+      title={`Upstox token ${expired ? "expired" : "expires"} at ${expiresAt}`}
+    >
+      <Icon className="w-3 h-3" />
+      {label}
+    </span>
+  );
+}
+
 function UpstoxPanel({ status, busy, ingesting, form, setForm, ingestJob, onConnect, onDisconnect, onIngest, onQuote, quote, quoteLoading }) {
   const configured = status?.configured;
   const connected = status?.connected && !status?.expired;
@@ -583,9 +625,12 @@ function UpstoxPanel({ status, busy, ingesting, form, setForm, ingestJob, onConn
       <div className="px-3 py-2 border-b border-line flex items-center gap-2">
         <Link2 className="w-4 h-4 text-info" />
         <div className="text-xs font-semibold uppercase tracking-wider text-dim">Upstox Broker Data</div>
-        <span className={`ml-auto text-[10px] px-1.5 py-0.5 rounded border font-mono ${statusClass}`} data-testid="upstox-status-badge">
-          {statusText}
-        </span>
+        <div className="ml-auto flex items-center gap-2">
+          <TokenExpiryBadge status={status} />
+          <span className={`text-[10px] px-1.5 py-0.5 rounded border font-mono ${statusClass}`} data-testid="upstox-status-badge">
+            {statusText}
+          </span>
+        </div>
       </div>
       <div className="p-3 grid grid-cols-1 xl:grid-cols-[1fr_2fr] gap-3">
         <div className="rounded-md border border-line bg-bg-2 p-3">
