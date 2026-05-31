@@ -23,6 +23,7 @@ import { fmtInt } from "@/lib/fmt";
 const JobsContext = createContext(null);
 
 const STORAGE_KEY = "alphaforge.activeJobs";
+const HYGIENE_STORAGE_KEY = "alphaforge.activeHygiene";
 const POLL_INTERVAL_MS = 2500;
 const TERMINAL_EXCLUDED = ["queued", "running"];
 
@@ -74,14 +75,37 @@ function savePersisted(map) {
   }
 }
 
+function loadHygiene() {
+  try {
+    const raw = localStorage.getItem(HYGIENE_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveHygiene(batch) {
+  try {
+    if (batch) localStorage.setItem(HYGIENE_STORAGE_KEY, JSON.stringify(batch));
+    else localStorage.removeItem(HYGIENE_STORAGE_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
 export function JobsProvider({ children }) {
   // jobs[kind] = latest job document (or null)
   const [jobs, setJobs] = useState({});
+  // Aggregated state of the most recent Data Hygiene execute batch.
+  const [hygiene, setHygiene] = useState(null);
   // Active run IDs being polled, kept in a ref so the poll loop reads fresh values.
   const activeRef = useRef({});
   // Completion listeners: { kind: Set<fn> }
   const listenersRef = useRef({});
   const pollingRef = useRef(false);
+  // Active hygiene batch tracking: { runIds: [...], submittedAt, total } or null.
+  const hygieneRef = useRef(null);
+  const hygienePollingRef = useRef(false);
 
   const persist = useCallback(() => {
     const map = {};
@@ -168,23 +192,124 @@ export function JobsProvider({ children }) {
     return () => listenersRef.current[kind]?.delete(handler);
   }, []);
 
+  // ---- Data Hygiene batch tracking -----------------------------------------
+  // A hygiene "execute" submits several warehouse_runs (one per instrument x
+  // kind). We poll /data-hygiene/status, match our submitted run IDs, and
+  // aggregate progress. The batch (run IDs) is persisted so progress survives
+  // navigation and reload, like the single-job kinds above.
+  const ensureHygienePolling = useCallback(() => {
+    if (hygienePollingRef.current) return;
+    hygienePollingRef.current = true;
+
+    const tick = async () => {
+      const batch = hygieneRef.current;
+      if (!batch || !batch.runIds?.length) {
+        hygienePollingRef.current = false;
+        return;
+      }
+      try {
+        const res = await api.dataHygieneStatus();
+        const all = res.items || [];
+        const tracked = all.filter((r) => batch.runIds.includes(r.id));
+        const done = tracked.filter((r) => !TERMINAL_EXCLUDED.includes(r.status));
+        const failed = tracked.filter((r) => r.status === "failed");
+        const total = batch.runIds.length;
+        const avgPct = tracked.length
+          ? Math.round(tracked.reduce((acc, r) => acc + (Number(r.progress_pct) || 0), 0) / total)
+          : 0;
+        const allDone = done.length >= total && total > 0;
+
+        setHygiene({
+          runIds: batch.runIds,
+          total,
+          completed: done.length,
+          failed: failed.length,
+          progress_pct: allDone ? 100 : avgPct,
+          runs: tracked,
+          done: allDone,
+        });
+
+        if (allDone) {
+          hygieneRef.current = null;
+          saveHygiene(null);
+          hygienePollingRef.current = false;
+          if (failed.length) {
+            toast.error(`Data hygiene finished with ${failed.length} failed job(s) of ${total}`);
+          } else {
+            toast.success(`Data hygiene complete: ${total} job(s) finished`);
+          }
+          emitComplete("data_hygiene", { total, failed: failed.length });
+          return;
+        }
+      } catch {
+        // Transient status error: keep trying on the next tick.
+      }
+      setTimeout(tick, POLL_INTERVAL_MS);
+    };
+
+    tick();
+  }, [emitComplete]);
+
+  const startHygieneBatch = useCallback((submitResult) => {
+    const runIds = (submitResult?.submitted || [])
+      .map((s) => s.run_id)
+      .filter(Boolean);
+    if (runIds.length === 0) return 0;
+    const batch = {
+      runIds,
+      submittedAt: new Date().toISOString(),
+      total: runIds.length,
+    };
+    hygieneRef.current = batch;
+    saveHygiene(batch);
+    setHygiene({
+      runIds,
+      total: runIds.length,
+      completed: 0,
+      failed: 0,
+      progress_pct: 0,
+      runs: [],
+      done: false,
+    });
+    ensureHygienePolling();
+    return runIds.length;
+  }, [ensureHygienePolling]);
+
   // On mount: rehydrate persisted active jobs and resume polling.
   useEffect(() => {
     const persisted = loadPersisted();
     const resumeKinds = Object.keys(persisted).filter((k) => JOB_KINDS[k] && persisted[k]);
-    if (resumeKinds.length === 0) return;
     for (const kind of resumeKinds) {
       activeRef.current[kind] = persisted[kind];
     }
-    ensurePolling();
+    if (resumeKinds.length > 0) ensurePolling();
+
+    // Resume an in-flight hygiene batch if one was persisted.
+    const savedHygiene = loadHygiene();
+    if (savedHygiene?.runIds?.length) {
+      hygieneRef.current = savedHygiene;
+      setHygiene({
+        runIds: savedHygiene.runIds,
+        total: savedHygiene.total || savedHygiene.runIds.length,
+        completed: 0,
+        failed: 0,
+        progress_pct: 0,
+        runs: [],
+        done: false,
+      });
+      ensureHygienePolling();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const value = {
     jobs,
+    hygiene,
     startJob,
+    startHygieneBatch,
     onJobComplete,
     isJobActive: (kind) => Boolean(activeRef.current[kind]),
+    isHygieneActive: () => Boolean(hygieneRef.current),
   };
 
   return <JobsContext.Provider value={value}>{children}</JobsContext.Provider>;

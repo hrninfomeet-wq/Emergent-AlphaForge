@@ -7,6 +7,7 @@ import { Database, Download, RefreshCw, CheckCircle2, AlertCircle, Link2, Unplug
 import { fmtInt, fmtNum, fmtSigned, isoToFull, tsToFull } from "@/lib/fmt";
 import { Skeleton } from "@/components/ui/skeleton";
 import HolidayCalendarDialog from "@/components/HolidayCalendarDialog";
+import DataHygienePanel from "@/components/DataHygienePanel";
 import { useJobs } from "@/lib/jobs";
 
 const INSTRUMENTS = ["NIFTY", "BANKNIFTY", "SENSEX"];
@@ -411,49 +412,12 @@ export default function DataWarehouse() {
         quoteLoading={quoteLoading}
       />
 
-      <OptionWarehousePanel
-        status={upstoxStatus}
-        form={optionPlanForm}
-        setForm={setOptionPlanForm}
-        plan={optionPlanResult}
-        fetchResult={optionFetchResult}
-        fetchJob={optionFetchJob}
-        planning={optionPlanning}
-        fetching={optionFetching}
-        onPreview={handleOptionPreview}
-        onFetch={handleOptionFetch}
-      />
+      {/* ============ Data Hygiene (one-click health + fill) ============ */}
+      <SectionHeader title="Data Hygiene" subtitle="One-click warehouse health check and gap fill" />
+      <DataHygienePanel upstoxConnected={upstoxStatus?.connected && !upstoxStatus?.expired} />
 
-      <OptionAuditPanel
-        form={optionAuditForm}
-        setForm={setOptionAuditForm}
-        result={optionAuditResult}
-        loading={optionAuditLoading}
-        clearing={optionClearing}
-        onAudit={handleOptionAudit}
-        onClear={handleClearOptionData}
-      />
-
-      <ExpiredContractBackfillPanel
-        status={upstoxStatus}
-        form={expiredBackfillForm}
-        setForm={setExpiredBackfillForm}
-        result={expiredBackfillResult}
-        running={expiredBackfilling}
-        onBackfill={handleExpiredBackfill}
-      />
-
-      <DataTrustPanel
-        auditForm={auditForm}
-        setAuditForm={setAuditForm}
-        auditResult={auditResult}
-        auditLoading={auditLoading}
-        onAudit={handleAudit}
-        clearInstrument={clearInstrument}
-        setClearInstrument={setClearInstrument}
-        clearing={clearing}
-        onClear={handleClearWarehouse}
-      />
+      {/* ============ Index data ============ */}
+      <SectionHeader title="Index Data" subtitle="1-minute spot candles for NIFTY, BANKNIFTY, SENSEX" />
 
       {/* Index data coverage (status only; ingest is handled via Upstox above) */}
       <div className="rounded-lg border border-line bg-bg-1">
@@ -495,9 +459,62 @@ export default function DataWarehouse() {
         </div>
       </div>
 
-      {/* Per-day coverage heatmap */}
       <CoverageHeatmap coverage={coverage} />
+
+      {/* ============ Option data ============ */}
+      <SectionHeader title="Option Data" subtitle="ATM CE/PE candles, contract metadata, and coverage" />
+
+      <OptionWarehousePanel
+        status={upstoxStatus}
+        form={optionPlanForm}
+        setForm={setOptionPlanForm}
+        plan={optionPlanResult}
+        fetchResult={optionFetchResult}
+        fetchJob={optionFetchJob}
+        planning={optionPlanning}
+        fetching={optionFetching}
+        onPreview={handleOptionPreview}
+        onFetch={handleOptionFetch}
+      />
+
+      <ExpiredContractBackfillPanel
+        status={upstoxStatus}
+        form={expiredBackfillForm}
+        setForm={setExpiredBackfillForm}
+        result={expiredBackfillResult}
+        running={expiredBackfilling}
+        onBackfill={handleExpiredBackfill}
+      />
+
       <OptionCoverageHeatmap coverage={optionCoverage} loading={optionCoverageLoading} />
+
+      {/* ============ Verify & audit ============ */}
+      <SectionHeader title="Verify & Audit" subtitle="Confirm completeness and integrity of stored data" />
+
+      <DataTrustPanel
+        auditForm={auditForm}
+        setAuditForm={setAuditForm}
+        auditResult={auditResult}
+        auditLoading={auditLoading}
+        onAudit={handleAudit}
+        clearInstrument={clearInstrument}
+        setClearInstrument={setClearInstrument}
+        clearing={clearing}
+        onClear={handleClearWarehouse}
+      />
+
+      <OptionAuditPanel
+        form={optionAuditForm}
+        setForm={setOptionAuditForm}
+        result={optionAuditResult}
+        loading={optionAuditLoading}
+        clearing={optionClearing}
+        onAudit={handleOptionAudit}
+        onClear={handleClearOptionData}
+      />
+
+      {/* ============ Diagnostics ============ */}
+      <SectionHeader title="Diagnostics" subtitle="Recent ingest and fetch activity" />
 
       {/* Recent ingest runs */}
       <div className="rounded-lg border border-line bg-bg-1">
@@ -1584,7 +1601,17 @@ function DataTrustPanel({
   );
 }
 
+function SectionHeader({ title, subtitle }) {
+  return (
+    <div className="flex items-baseline gap-2 pt-2 pb-0.5 px-1" data-testid={`section-${title.toLowerCase().replace(/\s+/g, "-")}`}>
+      <div className="text-xs font-semibold uppercase tracking-wider text-foreground">{title}</div>
+      {subtitle && <div className="text-[11px] text-dimmer">{subtitle}</div>}
+    </div>
+  );
+}
+
 function AuditStat({ label, value }) {
+
   return (
     <div className="rounded-md border border-line bg-bg-2 p-2">
       <div className="text-[10px] uppercase tracking-wider text-dimmer">{label}</div>

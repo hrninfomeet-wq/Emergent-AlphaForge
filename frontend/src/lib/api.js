@@ -76,6 +76,16 @@ export const api = {
       params: year ? { year } : {},
     }).then((r) => r.data),
 
+  // Data Hygiene
+  dataHygienePlan: (payload = {}) =>
+    apiClient.post("/data-hygiene/plan", payload).then((r) => r.data),
+  dataHygieneExecute: (plan, payload = {}) =>
+    apiClient.post("/data-hygiene/execute", { plan, ...payload }).then((r) => r.data),
+  dataHygieneStatus: (planId) =>
+    apiClient.get("/data-hygiene/status", {
+      params: planId ? { plan_id: planId } : {},
+    }).then((r) => r.data),
+
   // Profiles
   listProfiles: () => apiClient.get("/profiles").then((r) => r.data),
   saveProfile: (name, settings) =>

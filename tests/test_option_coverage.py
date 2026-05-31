@@ -102,3 +102,23 @@ def test_background_jobs_tracked_globally_above_router():
     assert "startJob" in warehouse
     assert "pollOptionFetchJob" not in warehouse
     assert "pollUpstoxIngestJob" not in warehouse
+
+
+def test_data_hygiene_wired_into_warehouse_ui():
+    """The Data Hygiene workflow must be surfaced in the UI and routed through
+    the global job tracker."""
+    api = (ROOT / "frontend" / "src" / "lib" / "api.js").read_text(encoding="utf-8")
+    panel = (ROOT / "frontend" / "src" / "components" / "DataHygienePanel.jsx").read_text(encoding="utf-8")
+    warehouse = (ROOT / "frontend" / "src" / "pages" / "DataWarehouse.jsx").read_text(encoding="utf-8")
+    jobs = (ROOT / "frontend" / "src" / "lib" / "jobs.jsx").read_text(encoding="utf-8")
+
+    # API methods exist for the three hygiene endpoints.
+    assert "dataHygienePlan" in api
+    assert "dataHygieneExecute" in api
+    assert "dataHygieneStatus" in api
+    # Panel calls plan + execute and is mounted on the page.
+    assert "dataHygienePlan" in panel
+    assert "dataHygieneExecute" in panel
+    assert "DataHygienePanel" in warehouse
+    # Execute jobs are tracked via the global job batch tracker.
+    assert "startHygieneBatch" in jobs

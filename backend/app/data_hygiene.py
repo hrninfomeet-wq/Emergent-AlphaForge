@@ -54,29 +54,30 @@ def _expected_weekday_count(start_iso: str, end_iso: str) -> int:
 async def _spot_coverage(db: Any, instrument: str, start_iso: str, end_iso: str) -> Dict[str, Any]:
     """Count distinct trading days with candles in the window for an instrument.
 
-    Avoids relying on session_date (some rows lack it) by deriving the date
-    from each candle's IST-localized timestamp.
+    Uses a Mongo aggregation that derives the IST date from each candle's
+    timestamp server-side and groups by it, so we never pull hundreds of
+    thousands of rows into Python. The (instrument, ts) index supports the match.
     """
     instrument = instrument.upper()
-    cursor = db.candles_1m.find(
-        {"instrument": instrument},
-        {"_id": 0, "ts": 1, "session_date": 1},
-    )
-    rows = await cursor.to_list(length=None)
+    pipeline = [
+        {"$match": {"instrument": instrument}},
+        {"$project": {
+            "date": {
+                "$dateToString": {
+                    "format": "%Y-%m-%d",
+                    "timezone": "Asia/Kolkata",
+                    "date": {"$toDate": "$ts"},
+                }
+            },
+        }},
+        {"$group": {"_id": "$date"}},
+    ]
     distinct_dates: set[str] = set()
-    for r in rows:
-        d = r.get("session_date")
+    rows = await db.candles_1m.aggregate(pipeline).to_list(length=None)
+    for doc in rows:
+        d = doc.get("_id")
         if d:
             distinct_dates.add(str(d))
-            continue
-        ts = r.get("ts")
-        if ts is None:
-            continue
-        try:
-            d = (datetime.fromtimestamp(int(ts) / 1000, tz=timezone.utc) + IST_OFFSET).strftime("%Y-%m-%d")
-            distinct_dates.add(d)
-        except (TypeError, ValueError, OverflowError, OSError):
-            continue
     in_window = {d for d in distinct_dates if start_iso <= d <= end_iso}
     expected = _expected_weekday_count(start_iso, end_iso)
     return {
@@ -111,40 +112,31 @@ async def _option_contracts_summary(db: Any, instrument: str, start_iso: str, en
 
 
 async def _option_candles_summary(db: Any, instrument: str, start_iso: str, end_iso: str) -> Dict[str, Any]:
-    """Summarize option-candle coverage by joining options_1m -> option_contracts."""
+    """Summarize option-candle coverage per instrument.
+
+    `options_1m` already stores `underlying` and `expiry_date` on each candle
+    (set at fetch time), so we can group directly on those fields. The
+    (underlying, expiry_date, strike, side, ts) index supports the match,
+    avoiding the previous full-collection `$lookup` join over 5M+ docs.
+    """
     instrument = instrument.upper()
     pipeline = [
-        {"$lookup": {
-            "from": "option_contracts",
-            "localField": "instrument_key",
-            "foreignField": "instrument_key",
-            "as": "contract",
-        }},
-        {"$unwind": "$contract"},
         {"$match": {
-            "contract.underlying": instrument,
-            "contract.expiry_date": {"$gte": start_iso, "$lte": end_iso},
+            "underlying": instrument,
+            "expiry_date": {"$gte": start_iso, "$lte": end_iso},
         }},
         {"$group": {
-            "_id": "$contract.expiry_date",
+            "_id": "$expiry_date",
             "candles": {"$sum": 1},
-            "contracts": {"$addToSet": "$instrument_key"},
         }},
         {"$sort": {"_id": 1}},
     ]
     rows = await db.options_1m.aggregate(pipeline).to_list(length=None)
     total_candles = sum(int(r.get("candles") or 0) for r in rows)
-    total_contracts = 0
-    expiries_with_data: List[str] = []
-    for r in rows:
-        contracts = r.get("contracts") or []
-        total_contracts += len(contracts)
-        if r.get("_id"):
-            expiries_with_data.append(str(r["_id"]))
+    expiries_with_data: List[str] = [str(r["_id"]) for r in rows if r.get("_id")]
     return {
         "instrument": instrument,
         "total_candles": total_candles,
-        "total_contracts_with_data": total_contracts,
         "expiries_with_data": len(expiries_with_data),
         "first_expiry_with_data": expiries_with_data[0] if expiries_with_data else None,
         "last_expiry_with_data": expiries_with_data[-1] if expiries_with_data else None,

@@ -105,18 +105,27 @@ class FakeDB:
 
 
 def seed_full_spot_coverage(db: FakeDB, instrument: str, start_iso: str, end_iso: str):
-    """Add candles for every weekday in the range so coverage_pct == 100."""
+    """Add candles for every weekday in the range so coverage_pct == 100.
+
+    Spot coverage now runs a Mongo aggregation that groups by IST date, so we
+    seed both the raw rows (for any find-based callers) and the aggregation
+    result (distinct {_id: date} docs) that _spot_coverage consumes.
+    """
     cur = datetime.fromisoformat(start_iso)
     end = datetime.fromisoformat(end_iso)
+    agg_rows = []
     while cur.date() <= end.date():
         if cur.weekday() < 5:
             ts = int(cur.replace(tzinfo=timezone.utc).timestamp() * 1000)
+            date_str = cur.strftime("%Y-%m-%d")
             db.candles_1m.rows.append({
                 "instrument": instrument.upper(),
                 "ts": ts,
-                "session_date": cur.strftime("%Y-%m-%d"),
+                "session_date": date_str,
             })
+            agg_rows.append({"_id": date_str})
         cur += timedelta(days=1)
+    db.candles_1m._agg_result = list(agg_rows)
 
 
 def seed_contracts(db: FakeDB, instrument: str, expiries: List[str]):
