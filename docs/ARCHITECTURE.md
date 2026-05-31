@@ -1,6 +1,6 @@
 # Architecture
 
-Updated: 2026-05-29
+Updated: 2026-05-31
 
 ## Purpose
 
@@ -70,7 +70,7 @@ flowchart TD
 | `backend/app/models.py` | Shared Pydantic models |
 | `backend/app/encryption.py` | Fernet-encrypted token storage |
 | **Data warehouse** | |
-| `backend/app/warehouse.py` | Index candle persistence, coverage, audit, clear |
+| `backend/app/warehouse.py` | Index candle persistence, coverage, **holiday-aware** audit (uses `nse_calendar.trading_days_in_range`), clear |
 | `backend/app/chunking.py` | Auto chunk guidance (uses 7-day chunks for spot to avoid Feb→Mar boundary issue) |
 | `backend/app/upstox_client.py` | OAuth, token storage, REST historical, WebSocket authorize URL |
 | `backend/app/upstox_stream.py` | V3 read-only WebSocket stream, protobuf decode, sanitized tick persistence |
@@ -85,8 +85,12 @@ flowchart TD
 | `backend/app/option_data_planner.py` | Preview-first planner with indexed expiry/side/strike lookup |
 | `backend/app/option_plan_response.py` | Compact response shaping for option planner |
 | `backend/app/option_warehouse_jobs.py` | Background option fetch jobs (selected-date task planning) |
-| `backend/app/data_hygiene.py` | Warehouse diff vs desired scope; submits dependency-ordered fetches |
-| `backend/app/nse_calendar.py` | NSE 2024–2026 holidays + Budget Saturdays + shifted-expiry days |
+| `backend/app/data_hygiene.py` | Warehouse diff vs desired scope; submits dependency-ordered fetches. Index-friendly aggregations (no `$lookup`) so the plan runs in ~6s, not 120s+ |
+| `backend/app/warehouse_autoupdate.py` | Automatic catch-up: guarded plan→execute on startup, OAuth-connect, and a daily 18:00 IST timer; pure decision helpers + `AutoUpdateState` |
+| `backend/app/warehouse_lookup.py` | Point-in-time lookup: spot + derived ATM + nearest expiry + ATM CE/PE candles for a given IST date/time (local reads only) |
+| `backend/app/warehouse_ohlc.py` | Server-side OHLC resampling (1m→5m/15m/1h/1d on IST buckets) + intraday gap detection (days < 375 stored minutes) |
+| `backend/app/option_coverage_cache.py` | Precomputed per-underlying option-coverage cache (`option_coverage_cache` collection) with single-flight lock; fixes the 8s page-load aggregation |
+| `backend/app/nse_calendar.py` | NSE 2024–2026 holidays + Budget Saturdays + shifted-expiry days; labeled `calendar_for_year()` for the holiday-calendar modal |
 | `backend/app/live_candle_roller.py` | Subscribes to WS broadcast, aggregates per-minute OHLC, persists into `candles_1m` |
 | `backend/app/market_header.py` | Normalized market header quote aggregation (WS-first, REST fallback) |
 | **Research engine** | |
@@ -113,19 +117,25 @@ flowchart TD
 
 | File | Responsibility |
 |---|---|
-| `frontend/src/App.js` | Router, layout wrapper, theme provider, toaster |
+| `frontend/src/App.js` | Router, layout wrapper, theme provider, **JobsProvider** (global background-job tracker), toaster |
 | `frontend/src/lib/theme.jsx` | System / Black / White theme state |
+| `frontend/src/lib/jobs.jsx` | Global job tracker mounted above the router: tracks index-ingest + option-fetch jobs and the data-hygiene batch; persists active run IDs to `localStorage` so progress survives navigation/reload |
 | `frontend/src/lib/api.js` | Axios wrapper for `/api/*` |
 | `frontend/src/index.css` | Design tokens (CSS variables) for both themes |
-| `frontend/src/components/Layout.jsx` | Sidebar, top bar, theme selector |
+| `frontend/src/components/Layout.jsx` | Sidebar, top bar, theme selector, global active-jobs indicator, OAuth token-expiry countdown |
 | `frontend/src/components/MarketHeader.jsx` | Persistent market quote header |
+| `frontend/src/components/DataHygienePanel.jsx` | Data Hygiene hero panel: check (plan) + fill (execute) + auto-update status/toggle |
+| `frontend/src/components/WarehouseLookup.jsx` | Spot + ATM CE/PE point-in-time lookup search bar |
+| `frontend/src/components/WarehouseChart.jsx` | Per-index candlestick chart (1m/5m/15m/1h/1d), OHLC crosshair legend, date/time locator, gap banner |
+| `frontend/src/components/HolidayCalendarDialog.jsx` | NSE/BSE holiday calendar modal with year selector |
+| `frontend/src/components/BacktestRunJournal.jsx` | Reusable, collapsible backtest run history table (mounted in Backtest Lab) |
 | `frontend/src/pages/Dashboard.jsx` | Status cards |
-| `frontend/src/pages/DataWarehouse.jsx` | Ingest, audit, planner, expired backfill, coverage heatmap |
-| `frontend/src/pages/BacktestLab.jsx` | Strategy testing + option pairing |
+| `frontend/src/pages/DataWarehouse.jsx` | Sectioned page: Connection, Data Hygiene, Index Data (+chart), Option Data, Verify & Audit (+lookup), Diagnostics |
+| `frontend/src/pages/BacktestLab.jsx` | Strategy testing + option pairing + Backtest Run Journal |
 | `frontend/src/pages/Optimizer.jsx` | Optimizer workflow |
 | `frontend/src/pages/StrategyLibrary.jsx` | Built-in + plugin browser |
-| `frontend/src/pages/SignalJournal.jsx` | Past run journal |
-| `frontend/src/pages/PreTrade.jsx` | Pre-trade checklist profiles |
+| `frontend/src/pages/SignalJournal.jsx` | Deployment signal audit trail (forward-test lifecycle) |
+| `frontend/src/pages/PreTradeChecklist.jsx` | Pre-trade checklist profiles |
 | `frontend/src/pages/LiveSignals.jsx` | Pending Approval panel + deployment form (PreflightBadge + QualityBadge) |
 | `frontend/src/pages/PaperTrading.jsx` | Paper trade journal with risk badges |
 
@@ -147,6 +157,7 @@ flowchart TD
 | `signals` | Lifecycle state, reasons, blockers, audit events. Has unique partial index `signals_deployment_bar_unique` over `(deployment_id, candle_ts)` |
 | `paper_trades` | Paper fills, mark-to-market, realized/unrealized P&L, source flag |
 | `strategy_deployments` | Forward-test deployment definitions |
+| `option_coverage_cache` | Precomputed per-underlying option-coverage summary (one small doc per index) for fast Data Warehouse page loads |
 
 ## API Routes (High Level)
 
@@ -161,8 +172,12 @@ All routes are prefixed with `/api`. See `docs/API_REFERENCE.md` for full reques
 
 - `GET /strategies` `GET /strategies/{id}`
 - `POST /warehouse/ingest` (yfinance fallback)
-- `GET /warehouse/coverage` `GET /warehouse/runs` `GET /warehouse/audit/{instrument}`
+- `GET /warehouse/coverage` `GET /warehouse/runs` `GET /warehouse/audit/{instrument}` (holiday-aware)
 - `GET /warehouse/candles/{instrument}` `DELETE /warehouse/data/{instrument}`
+- `GET /warehouse/lookup?instrument=&date=&time=` — point-in-time spot + ATM CE/PE
+- `GET /warehouse/ohlc/{instrument}?timeframe=&start_ts=&end_ts=&include_gaps=` — resampled candles + gap report
+- `GET /warehouse/auto-update/status` `POST /warehouse/auto-update/toggle` `POST /warehouse/auto-update/run`
+- `GET /calendar/holidays?year=YYYY` — NSE/BSE holiday calendar for the modal
 
 ### Upstox
 
@@ -235,6 +250,9 @@ All routes are prefixed with `/api`. See `docs/API_REFERENCE.md` for full reques
 - **Lot size is metadata.** Always read from `option_contracts.lot_size` (Upstox-supplied).
 - **Expiry resolution is metadata-driven.** Never weekday-hardcoded. The contract picker filters `expiry_date >= today`.
 - **CSS variable theming.** The dark and white themes are tokenized; per-panel hex codes are forbidden.
+- **Performance: precompute, don't scan on read.** Two page-load aggregations over millions of docs were replaced. Option coverage is served from `option_coverage_cache` (~200ms vs ~8s); the data-hygiene plan groups directly on the embedded `underlying`/`expiry_date` fields in `options_1m` instead of a `$lookup` join (~6s vs 120s+ timeout). Any new read-path aggregation over `options_1m` (5M+ docs) must be cached or windowed.
+- **Background jobs survive navigation.** Long-running ingest/fetch/hygiene jobs are tracked by a `JobsProvider` mounted above the router, with active run IDs persisted to `localStorage`. Polling loops must never live in page-local state.
+- **Warehouse auto-update.** On startup, on OAuth-connect, and daily at 18:00 IST, the warehouse catches up to yesterday's close via the data-hygiene plan/execute (today's bars come from the live roller). Gated on Upstox connected + not expired; single in-flight guard; user-toggleable.
 
 ## Main Risks
 

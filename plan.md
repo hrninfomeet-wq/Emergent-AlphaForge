@@ -1,8 +1,12 @@
 # AlphaForge Trading Lab — Updated plan.md
 
-## Current state for handoff (2026-05-29)
+## Current state for handoff (2026-05-31)
 
-Phase 4b is **10 of 12 slices done**. Latest commit on main: `ae4428f`. 223 backend tests pass. Local Docker stack is healthy. Live tick → 1m roller is running, evaluator scheduler is running, WS auto-start works. **Next slice is Slice 10 — Forward metrics aggregation per deployment**. Slice 12 (kill switches) is the only other remaining slice in this phase. After that, Phase 5 (probability engine) is deferred until ≥6 months of forward signal history exists.
+Phase 4b is **10 of 12 slices done**. Latest commit on main: `882092d`. **272 backend tests pass.** Local Docker stack is healthy.
+
+Since the last handoff, a full **Data Warehouse hardening** pass was completed (not part of the numbered Phase 4b slices — the user prioritized perfecting the warehouse before resuming the product roadmap): option-coverage caching, holiday-aware audit, persistent background jobs, a Data Hygiene UI, automatic daily catch-up, a point-in-time spot+ATM lookup, a per-index candlestick chart with gap detection, plus UI cleanup (Emergent/PostHog removal, run-journal move, signal-journal repurpose, OAuth token-expiry countdown). See `docs/HANDOFF.md` "Recent Work" for the commit list.
+
+**Next numbered slice is Slice 10 — Forward metrics aggregation per deployment.** Slice 12 (kill switches) is the only other remaining slice in this phase. After that, Phase 5 (probability engine) is deferred until ≥6 months of forward signal history exists.
 
 Read `docs/HANDOFF.md` and `docs/PROJECT_OVERVIEW.md` first if you are picking this up fresh.
 
@@ -16,6 +20,23 @@ These were explicitly deferred by the user; do not start them without confirmati
 - **Paper / recommendation modes for the deployment evaluator** — first slice ships strict `shadow` (journal only) mode.
 - **Strategy Deployment evaluator → broker order execution** — never automatic; recommendation mode shows context, user clicks Take/Skip.
 - **Online hosting / always-on uptime** — out of scope for now. Forward-test sessions will be intermittent because the local PC isn't always running. Forward metrics must be annotated with session completeness.
+
+## Data Warehouse Hardening (2026-05-31) — COMPLETE
+
+A focused, user-prioritized pass to make the warehouse fast, trustworthy, self-maintaining, and inspectable before resuming the numbered product roadmap. All shipped, tested, committed, and pushed to `main`.
+
+1. **DONE — Perf cache (`190ba45`):** `option_coverage_cache` collection + module; `/options/coverage` 8s → ~200ms; page renders on fast calls and loads the heatmap independently; single-flight lock prevents a startup stampede.
+2. **DONE — Quick wins (`23b07f9`):** removed "Made with Emergent" badge + `emergent-main.js` + PostHog telemetry; removed obsolete yfinance ingest panel (kept read-only coverage cards); NSE holiday-calendar modal + `/calendar/holidays`.
+3. **DONE — Holiday-aware audit (`76fb99c`):** `warehouse.audit_integrity` uses `nse_calendar.trading_days_in_range` instead of a weekday-only generator (it was counting NSE holidays as missing days).
+4. **DONE — Persistent jobs (`6242b08`):** `frontend/src/lib/jobs.jsx` `JobsProvider` above the router; tracks ingest/fetch jobs, persists run IDs to `localStorage`, survives navigation; global active-jobs indicator in the top bar.
+5. **DONE — Data Hygiene UI + page regroup (`8f9c695`):** plan/execute/status surfaced as the hero panel; page sections = Connection / Data Hygiene / Index Data / Option Data / Verify & Audit / Diagnostics. Plan optimized 120s+ → ~6s by replacing a `$lookup` join with a group on embedded `underlying`/`expiry_date`.
+6. **DONE — Auto-update (`70e5b4a`):** `warehouse_autoupdate.py` catches up to yesterday's close on startup, OAuth-connect, and daily 18:00 IST; gated on Upstox connected; status + toggle UI; routes under `/warehouse/auto-update/*`.
+7. **DONE — Point lookup (`d8bb4b5`):** `warehouse_lookup.py` + `/warehouse/lookup`; spot + derived ATM + nearest expiry + ATM CE/PE candles for a date/time, warehouse-only, for broker-terminal cross-check.
+8. **DONE — Candlestick chart (`7b16457`, `882092d`):** `warehouse_ohlc.py` server-side resample (1m/5m/15m/1h/1d) + gap detection; `WarehouseChart.jsx` with OHLC crosshair legend, date/time locator (validate + snap + mark), gap banner.
+9. **DONE — UI follow-ups (`2fcb9d0`):** Backtest Run Journal moved into Backtest Lab; Signal Journal repurposed as the deployment signal audit trail; OAuth token-expiry countdown in the top bar.
+10. **DONE — Cleanup (`882092d`):** removed the redundant Raw Option Universe Audit panel (clear-options action relocated to Data Trust Audit; `/options/audit` route kept for programmatic use).
+
+Optional warehouse extras left for later: option price sanity check, `mongodump` backup button, OI staleness check.
 
 ## Phase 4b — current work (2026-05-27)
 

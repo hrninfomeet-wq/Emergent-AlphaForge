@@ -1,6 +1,6 @@
 # API Reference
 
-Updated: 2026-05-29
+Updated: 2026-05-31
 
 All routes are prefixed with `/api`. JSON request/response. CORS open in dev.
 
@@ -45,10 +45,28 @@ Per-instrument coverage with per-day breakdown for heatmap.
 Ingest run audit log (also surfaces hygiene and option fetch jobs).
 
 ### `GET /api/warehouse/audit/{instrument}?start_ts=...&end_ts=...`
-Per-day index candle audit.
+Per-day index candle audit. **Holiday-aware**: expected trading days come from `nse_calendar.trading_days_in_range` (skips weekends + NSE/BSE holidays, includes Budget Saturdays). `summary.calendar_assumption == "nse_trading_calendar"`.
 
 ### `GET /api/warehouse/candles/{instrument}?limit=500`
 Latest N candles for chart preview.
+
+### `GET /api/warehouse/lookup?instrument=...&date=YYYY-MM-DD&time=HH:MM`
+Point-in-time warehouse lookup (reads only `candles_1m`, `options_1m`, `option_contracts` — never the broker). Returns the spot candle for that IST minute (exact or nearest bar within 5 min, `spot_exact` flag), the derived ATM strike (nearest to spot close, step per index), the nearest stored expiry on/after the date, and the ATM CE/PE candles with OI. Useful for cross-checking stored data against a broker terminal.
+
+### `GET /api/warehouse/ohlc/{instrument}?timeframe=1d&start_ts=&end_ts=&include_gaps=true`
+Server-side OHLC resampling of stored 1m candles. `timeframe ∈ {1m, 5m, 15m, 1h, 1d}` (resampled on IST-localized buckets). Returns `{ instrument, timeframe, bar_count, bars: [{ts, time, open, high, low, close, volume}], gaps: [{date, stored, expected, missing_count, missing_sample[]}], gap_day_count }`. `gaps` lists trading days with fewer than 375 stored minutes. Omit the window for full history (used by the 1d view); the frontend windows intraday timeframes for responsiveness.
+
+### `GET /api/warehouse/auto-update/status`
+Auto-update worker state: `{ enabled, in_progress, last_started_at, last_finished_at, last_status, last_reason, last_submitted_count, last_actions_planned, runs_count, history[] }`.
+
+### `POST /api/warehouse/auto-update/toggle`
+Body: `{ enabled: bool }`. Enable/disable automatic warehouse catch-up.
+
+### `POST /api/warehouse/auto-update/run`
+Trigger a catch-up immediately (manual). Returns `{ summary, state }`.
+
+### `GET /api/calendar/holidays?year=YYYY`
+NSE/BSE market-holiday calendar for the year (omit `year` for available years + current year). Returns `{ available_years: [...], calendar: { year, verified_through, holidays: [{date, label, weekday}], special_sessions: [{date, label, weekday}], holiday_count } }`.
 
 ### `DELETE /api/warehouse/data/{instrument}?confirm=CLEAR`
 Developer-only clear. `instrument=ALL` clears all three indices. Does not touch options.
@@ -308,11 +326,11 @@ Force-close all OPEN paper trades immediately. Idempotent. Used by the 15:00 IST
 ### `GET /api/options/candles?instrument_key=...&...`
 Local stored option candle reads.
 
-### `GET /api/options/coverage?underlying=...`
-Stored option candle summary by date for the heatmap.
+### `GET /api/options/coverage?underlying=...&refresh=`
+Stored option candle summary by date for the heatmap. Served from the precomputed `option_coverage_cache` (~200ms vs ~8s for the raw aggregation). The cache is warmed on startup, refreshed after option-fetch jobs and after clearing option data. Pass `refresh=1` to force a recompute.
 
 ### `GET /api/options/audit/{instrument}?start_ts=...&end_ts=...&expiry=&side=&limit_contracts=`
-Raw broad audit by contract metadata. Use Option Data Planner's planned coverage for the trust gate; this is a diagnostic.
+Raw broad audit by contract metadata. Programmatic/diagnostic only — the UI panel was removed (the Data Hygiene panel, Option Coverage Heatmap, and Planner planned-coverage cover this). Use the Option Data Planner's planned coverage for the trust gate.
 
 ### `GET /api/options/contracts/{instrument}`
 Local stored contract metadata.

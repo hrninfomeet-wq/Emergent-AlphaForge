@@ -1,6 +1,6 @@
 # Project Overview
 
-Updated: 2026-05-29
+Updated: 2026-05-31
 
 ## What AlphaForge Is
 
@@ -19,43 +19,52 @@ End-to-end quant workflow:
 5. Approve, paper-trade, or skip every signal with a manual gate.
 6. Review forward profitability per deployment before trusting a strategy with capital.
 
-## Status Snapshot (2026-05-29)
+## Status Snapshot (2026-05-31)
 
 | Area | Status |
 |---|---|
 | Local Docker stack | Working on Windows: MongoDB, FastAPI, React/nginx |
-| Index data warehouse | NIFTY/BANKNIFTY/SENSEX 1m candles, ~138.8K each, 100% coverage 2024-11-27 → today |
-| Option warehouse | NIFTY 1.44M / BANKNIFTY 1.69M / SENSEX 2.21M ATM CE/PE candles |
-| NSE holiday calendar | 2024–2026 with Budget Saturdays + shifted-expiry exceptions |
+| Index data warehouse | NIFTY/BANKNIFTY/SENSEX 1m candles, ~100% coverage 2024-11-27 → today |
+| Option warehouse | NIFTY ~1.46M / BANKNIFTY ~1.69M / SENSEX ~2.21M ATM CE/PE candles (OI populated) |
+| NSE holiday calendar | 2024–2026 with Budget Saturdays + shifted-expiry exceptions; holiday-calendar modal |
+| Data Hygiene (UI + backend) | Hero panel: check (plan ~6s) + fill (dependency-ordered execute) |
+| Warehouse auto-update | On startup, OAuth-connect, and daily 18:00 IST |
+| Option coverage page load | Cache-backed (~200ms, was ~8s) |
+| Persistent background jobs | Progress survives navigation (global JobsProvider) |
+| Point-in-time lookup | Spot + ATM CE/PE at any date/time, warehouse-only |
+| Candlestick chart | Per-index 1m/5m/15m/1h/1d, OHLC legend, date/time locator, gap banner |
 | Live tick → 1m OHLC roller | Running, closes Upstox same-day historical gap |
 | Strategy plugin system | Built-in + drop-in `.py` plugins |
 | Backtest + walk-forward | Complete; statistical significance and regime detector wired |
 | Optimizer | Bayesian, Grid, CMA-ES; robustness, importance, heatmap |
-| Slippage + volatility | Slice 7 done; expiry-tail slippage + post-hoc detector |
+| Slippage + volatility | Expiry-tail slippage + post-hoc detector |
 | Strategy Deployments | 1m_close evaluator running, scheduler ON, drift detection ON |
 | Pending Approval UI | Approve / Skip / Mark Blocked + auto-paper-trade on approval |
 | Auto square-off | 15:00 IST every market day, override per deployment |
 | Pre-flight + quality gates | Surfaced at deployment creation, ack required for warnings |
+| OAuth token-expiry countdown | In the global top bar |
 | Forward metrics aggregation | **Slice 10 — next** |
 | Per-deployment kill switches | Slice 12 — pending |
 | Phase 5 probability engine | Deferred until ≥6 months forward signal history |
 | Phase 6 swing extension | Not started |
 
-223 backend tests pass. The local stack is healthy. Latest GitHub commit on `main`: `ae4428f`.
+272 backend tests pass. The local stack is healthy. Latest GitHub commit on `main`: `882092d`.
 
 ## Capabilities Summary
 
 ### Data warehouse
 
-- Index 1-minute candles for NIFTY, BANKNIFTY, SENSEX in `candles_1m`, audited per day in `integrity_hashes`.
+- Index 1-minute candles for NIFTY, BANKNIFTY, SENSEX in `candles_1m`, audited per day in `integrity_hashes` (holiday-aware via `nse_calendar`).
 - Option 1-minute candles in `options_1m` with OI preserved.
 - Option contract metadata in `option_contracts` with strike, side, expiry date, lot size from Upstox.
-- Background ingest jobs for large 12–18 month index ranges with progress polling.
+- Background ingest jobs for large 12–18 month index ranges, tracked by the global JobsProvider so progress survives navigation.
 - Background option fetch jobs that fetch only the selected contract dates rather than the full date range per contract.
 - Option Data Planner with preview, ATM-only default, configurable OTM/ITM, expiry mode, sample interval, and max-contract guard.
-- Option Coverage Heatmap and Raw Option Universe Audit for diagnostics.
-- Data Hygiene workflow that diff's the desired warehouse against current state and submits dependency-ordered fetches.
-- NSE holiday calendar with Budget Saturday and shifted-expiry support.
+- Option Coverage Heatmap (served from `option_coverage_cache` for fast loads) and per-index candlestick chart with gap detection.
+- **Data Hygiene** workflow (UI hero panel + backend): diffs the desired warehouse against current state and submits dependency-ordered fetches (~6s plan).
+- **Automatic warehouse catch-up** on startup, OAuth-connect, and daily 18:00 IST (gated on Upstox connected; toggleable).
+- **Point-in-time lookup**: spot + ATM CE/PE at a chosen date/time, read only from the warehouse, for cross-checking against a broker terminal.
+- NSE holiday calendar with Budget Saturday and shifted-expiry support, surfaced as a modal.
 
 ### Research
 
@@ -102,12 +111,13 @@ The system is a React + FastAPI + MongoDB stack running locally via Docker Compo
 
 ### 1. Refresh the warehouse
 
-1. Open Data Warehouse.
-2. Confirm Upstox is connected.
-3. Run Data Hygiene plan: `POST /api/data-hygiene/plan` (or the UI button when wired).
-4. Execute the plan: `POST /api/data-hygiene/execute`. The flow is spot → contracts → option_candles in dependency order.
-5. Re-run plan to confirm gaps closed.
-6. Inspect Option Coverage Heatmap and the Trust Audit page.
+Day-to-day this is automatic: the warehouse catches up to yesterday's close on backend startup, on Upstox OAuth-connect, and daily at 18:00 IST (today's bars come from the live roller). To do it manually:
+
+1. Open Data Warehouse, confirm Upstox is connected (top-bar token countdown is green).
+2. In the **Data Hygiene** panel, click **Check warehouse** (runs the plan, ~6s) to see the per-instrument spot/contracts/option-candle diff.
+3. Click **Fill gaps** to submit the fetches in dependency order (spot → contracts → option_candles). Progress shows in the panel and the top bar and survives navigation.
+4. Re-run **Check warehouse** to confirm gaps closed.
+5. Verify with the candlestick chart (gap banner) and the point-in-time lookup.
 
 ### 2. Build and tune a strategy
 
@@ -142,8 +152,9 @@ The system is a React + FastAPI + MongoDB stack running locally via Docker Compo
 
 ## What Is Not Done
 
-- **Slice 10 — Forward metrics aggregation per deployment.** Win-rate, avg P&L, profit factor, annotated with session completeness ≥70% of 10:00–15:00 IST, surfaced in Strategy Library when ≥10 complete sessions exist.
+- **Slice 10 — Forward metrics aggregation per deployment.** Win-rate, avg P&L, profit factor, annotated with session completeness ≥70% of 10:00–15:00 IST, surfaced in Strategy Library when ≥10 complete sessions exist. **This is the next planned work.**
 - **Slice 12 — Per-deployment kill switches.** `max_consecutive_losses`, `daily_loss_cutoff_pct`, `max_open_paper_trades`.
+- **Optional warehouse extras** (not blocking): option price sanity check (intrinsic floor / impossible jumps), `mongodump` backup button, OI staleness check (OI is populated; no dedicated check yet).
 - Phase 5 — probability engine (Kaplan–Meier survival), meta-model, Kelly sizing, Telegram alerts. Deferred until ≥6 months forward history exists.
 - Phase 6 — swing/positional extension on 1H/1D timeframes. Not started.
 - Online hosting / always-on uptime. Local PC is the runtime. Forward sessions are intermittent — `session_completeness` is the right concept.

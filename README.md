@@ -4,27 +4,32 @@ A local-first research and forward-testing terminal for Indian index options on 
 
 This is a research tool. Options trading is high risk; treat every signal as a hypothesis until it survives walk-forward, forward testing, and paper trading.
 
-## Status (2026-05-29)
+## Status (2026-05-31)
 
 | Area | Status |
 |---|---|
 | Local Docker stack | Working on Windows: MongoDB, FastAPI, React/nginx |
-| Index data warehouse | NIFTY/BANKNIFTY/SENSEX 1m candles, 100% coverage 2024-11-27 → today |
-| Option data warehouse | NIFTY 1.44M / BANKNIFTY 1.69M / SENSEX 2.21M ATM CE/PE candles |
-| NSE holiday calendar | 2024–2026 with Budget Saturdays + shifted-expiry exceptions |
+| Index data warehouse | NIFTY/BANKNIFTY/SENSEX 1m candles, ~100% coverage 2024-11-27 → today |
+| Option data warehouse | NIFTY ~1.46M / BANKNIFTY ~1.69M / SENSEX ~2.21M ATM CE/PE candles (OI populated) |
+| Data Hygiene | UI hero panel: check (plan ~6s) + dependency-ordered fill |
+| Warehouse auto-update | On startup, OAuth-connect, and daily 18:00 IST |
+| Option coverage page load | Cache-backed (~200ms) |
+| Point-in-time lookup + chart | Spot/ATM lookup + per-index candlestick chart with gap detection |
+| NSE holiday calendar | 2024–2026 with Budget Saturdays + shifted-expiry; holiday modal |
 | Live tick → 1m OHLC roller | Running, closes Upstox same-day historical gap |
 | Strategy plugin system | Built-in + drop-in `.py` plugins |
 | Backtest + walk-forward | Complete with significance and regime detection |
 | Optimizer | Bayesian / Grid / CMA-ES with robustness, importance, heatmap |
-| Slippage + volatility | Slice 7 done; expiry-tail slippage + post-hoc detector |
+| Slippage + volatility | Expiry-tail slippage + post-hoc detector |
 | Strategy Deployments | 1m_close evaluator running, drift detection ON |
 | Pending Approval UI | Approve / Skip / Mark Blocked + auto-paper on approval |
 | Auto square-off | 15:00 IST every market day, override per deployment |
 | Pre-flight + quality gates | Surfaced at deployment creation, ack required |
+| OAuth token-expiry countdown | In the global top bar |
 | Forward metrics aggregation | Slice 10 — next |
 | Per-deployment kill switches | Slice 12 — pending |
 
-223 backend tests pass.
+272 backend tests pass.
 
 ## Quick Start
 

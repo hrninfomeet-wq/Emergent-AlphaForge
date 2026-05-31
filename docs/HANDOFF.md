@@ -1,12 +1,12 @@
 # Handoff
 
-Updated: 2026-05-29
+Updated: 2026-05-31
 
 This is the entry point for the next AI agent or developer. Read it before editing code. The repository and tests are the source of truth — not any prior chat.
 
 ## Status In One Line
 
-Phase 4b is 10 of 12 slices done. The local Docker stack is healthy. 223 backend tests pass. Next planned work is **Slice 10 — Forward metrics aggregation per deployment**.
+The Data Warehouse has been hardened end-to-end (fast, auto-updating, hygiene-managed, calendar-aware, verifiable, and chartable). **272 backend tests pass.** The local Docker stack is healthy. Latest commit on `main`: `882092d`. The next planned product work is **Phase 4b Slice 10 — Forward metrics aggregation per deployment** (paused earlier to perfect the warehouse).
 
 ## Read Order For A New Agent
 
@@ -14,7 +14,23 @@ Phase 4b is 10 of 12 slices done. The local Docker stack is healthy. 223 backend
 2. `plan.md`
 3. `docs/PROJECT_OVERVIEW.md`
 4. `docs/ARCHITECTURE.md`
-5. The slice 10 entry in `plan.md` and the supporting modules listed in the architecture map.
+5. `docs/API_REFERENCE.md`
+6. The relevant code + tests for the next task.
+
+## Recent Work — Data Warehouse Hardening (2026-05-31)
+
+A full pass to make the warehouse trustworthy and fast. All slices committed and pushed to `main`:
+
+- **Perf:** option coverage served from `option_coverage_cache` (8s → ~200ms); the page renders on fast calls and loads the heatmap independently. (`190ba45`)
+- **Quick wins:** removed the "Made with Emergent" badge + loader script + PostHog telemetry; removed the obsolete yfinance ingest panel; added the NSE holiday-calendar modal. (`23b07f9`)
+- **Correctness:** Data Trust Audit is now holiday-aware (was counting NSE holidays as missing days). (`76fb99c`)
+- **Persistent jobs:** `JobsProvider` above the router tracks ingest/fetch/hygiene jobs and persists run IDs to `localStorage`, so progress bars survive navigation; global active-jobs indicator in the top bar. (`6242b08`)
+- **Data Hygiene UI:** the plan/execute/status workflow is surfaced as the hero panel; page regrouped into Connection / Data Hygiene / Index Data / Option Data / Verify & Audit / Diagnostics. The hygiene plan was optimized from a 120s+ timeout to ~6s by dropping a `$lookup` join. (`8f9c695`)
+- **Auto-update:** warehouse catches up to yesterday's close on startup, on OAuth-connect, and daily at 18:00 IST; status + toggle in the UI. (`70e5b4a`)
+- **Point lookup:** spot + ATM CE/PE for any date/time, read from the warehouse only, to cross-check against a broker terminal. (`d8bb4b5`)
+- **Candlestick chart:** per-index chart (1m/5m/15m/1h/1d) with an OHLC crosshair legend, a date/time locator (validates + snaps to bucket + marks the bar), and a gap banner. (`7b16457`, `882092d`)
+- **UI follow-ups:** Backtest Run Journal moved into Backtest Lab; Signal Journal repurposed as the deployment signal audit trail; OAuth token-expiry countdown in the top bar. (`2fcb9d0`)
+- **Cleanup:** removed the redundant Raw Option Universe Audit panel (kept the clear-options action in Data Trust Audit; the `/options/audit` route stays for programmatic use). (`882092d`)
 
 ## Working Local Stack
 
@@ -22,21 +38,24 @@ Phase 4b is 10 of 12 slices done. The local Docker stack is healthy. 223 backend
 |---|---|---|
 | Frontend | `http://localhost:3000` | React + nginx, dark/light theme |
 | Backend | `http://localhost:8001` | FastAPI, all routes under `/api` |
-| MongoDB | container `alphaforge_mongo` | Persistent volume |
-| Upstox | OAuth flow, REST historical, V3 WebSocket stream | OAuth must be re-done after token expiry |
+| MongoDB | container `alphaforge_mongo` | Persistent named volume `mongo_data` (NOT in the project folder / OneDrive) |
+| Upstox | OAuth flow, REST historical, V3 WebSocket stream | OAuth expires daily; re-connect drives the auto-update |
 
-The stack is launched with `docker compose up -d --build`. Use `start.bat` (Windows) or `start.sh` (Mac/Linux) for the same flow.
+The stack is launched with `docker compose up -d --build`. Use `start.bat` (Windows) or `start.sh` (Mac/Linux).
 
 ## What Is Working End-To-End
 
 Data:
 
-- Index 1-minute candles for NIFTY, BANKNIFTY, SENSEX in `candles_1m`, audited per day in `integrity_hashes`.
-- ATM CE/PE option candles in `options_1m` (NIFTY 1.44M / BANKNIFTY 1.69M / SENSEX 2.21M as of 2026-05-29).
-- Option contract metadata in `option_contracts` (NIFTY 17,979 / BANKNIFTY 6,273 / SENSEX 30,794 contracts).
-- NSE holiday calendar with budget-Saturday and shifted-expiry exceptions in `backend/app/nse_calendar.py`.
+- Index 1-minute candles for NIFTY, BANKNIFTY, SENSEX in `candles_1m`, audited per day in `integrity_hashes`. Holiday-aware audit via `nse_calendar`.
+- ATM CE/PE option candles in `options_1m` (NIFTY ~1.46M / BANKNIFTY ~1.69M / SENSEX ~2.21M; OI populated).
+- Option contract metadata in `option_contracts` (strike, side, expiry_date, instrument_key, lot_size).
+- NSE holiday calendar with budget-Saturday and shifted-expiry exceptions in `backend/app/nse_calendar.py`; surfaced as a holiday-calendar modal.
 - Live tick → 1m OHLC roller closes the same-day historical gap (`backend/app/live_candle_roller.py`).
-- Data Hygiene workflow audits the warehouse against a default scope (2024-11-27 → today, ATM only) and submits dependency-ordered fetches.
+- Data Hygiene workflow (UI + backend) audits the warehouse against a default scope (2024-11-27 → today, ATM only) and submits dependency-ordered fetches; ~6s plan.
+- Automatic warehouse catch-up (`backend/app/warehouse_autoupdate.py`) on startup, OAuth-connect, and daily 18:00 IST.
+- Option coverage served from a precomputed cache (`option_coverage_cache`) for fast page loads.
+- Point-in-time lookup (spot + ATM CE/PE at a date/time) and a per-index candlestick chart with gap detection, both warehouse-only.
 
 Research:
 
@@ -65,7 +84,11 @@ Live data:
 
 ## What Is Not Done
 
-- Slice 10: Forward metrics aggregation per deployment (win-rate, avg P&L, profit factor, annotated with session completeness ≥70% of 10:00–15:00 IST). Surface in Strategy Library only after ≥10 complete sessions.
+Warehouse: complete for v1 (this session). Optional warehouse extras not yet built: option price sanity check (intrinsic floor / impossible-jump flagging), a `mongodump` backup button. OI is populated but a dedicated staleness check is not built.
+
+Product roadmap (from `plan.md`):
+
+- **Slice 10 (next): Forward metrics aggregation per deployment** — win-rate, avg P&L, profit factor, annotated with session completeness ≥70% of 10:00–15:00 IST. Surface in Strategy Library only after ≥10 complete sessions.
 - Slice 12: Per-deployment kill switches (`max_consecutive_losses`, `daily_loss_cutoff_pct`, `max_open_paper_trades`).
 - Phase 5 profitability boosters (Kaplan–Meier survival, meta-model, Kelly sizing, Telegram alerts) are deferred until ≥6 months of forward signal history exists.
 - Phase 6 swing/positional extension is not started.
@@ -128,6 +151,21 @@ These are the gotchas that bit us. Read this section before doing related work.
 - The `acknowledged_warnings=true` flag is required at deployment creation when `deployment_quality.evaluate(...)` returns warnings. The 400 error code is `acknowledgment_required`. Pre-existing deployments are unaffected.
 - Quality is evaluated against the source preset or backtest run. Five checks: missing walk-forward, walk-forward divergence (OOS < IS × 0.7 or explicit divergence flag), trade count < 30, Sharpe < 0.5, |max_dd|/total_pnl > 0.15.
 
+### Performance (warehouse page) — learned 2026-05-31
+
+- `options_1m` has 5M+ docs. Any aggregation over it on a page-load path is too slow. Option coverage is precomputed into `option_coverage_cache`; the data-hygiene plan groups on the embedded `underlying`/`expiry_date` fields (the `(underlying, expiry_date, strike, side, ts)` index supports it) instead of a `$lookup` join. If you add a new read-path aggregation, cache it or window it.
+- `options_1m` candles already carry `underlying` and `expiry_date` (set at fetch time in `option_warehouse_jobs.persist_option_candles_bulk`), so you rarely need to join to `option_contracts`.
+- The candlestick chart windows intraday timeframes (1m=3d, 5m=7d, 15m=21d, 1h=90d, 1d=full) so requests stay ~100ms. Full-history 5m is ~3s.
+
+### Frontend background jobs — learned 2026-05-31
+
+- Long-running job polling must live in `frontend/src/lib/jobs.jsx` (`JobsProvider`, mounted above the router in `App.js`), not in page-local state, or progress is lost on navigation. Active run IDs are persisted to `localStorage` (`alphaforge.activeJobs`, `alphaforge.activeHygiene`) and resumed on mount.
+- The provider tracks single jobs (`upstox_ingest`, `option_fetch`) and the data-hygiene batch separately; pages subscribe to completion via `onJobComplete(kind, fn)`.
+
+### Git on this repo
+
+- `core.autocrlf=true`, so `git push`/`commit` print CRLF warnings — harmless. Splitting mixed-file commits by hunk requires `git apply --cached --recount --ignore-whitespace`.
+
 ## Architecture Snapshot
 
 Backend modules of note:
@@ -137,8 +175,12 @@ Backend modules of note:
 - `backend/app/deployment_evaluator.py` — 1m_close forward evaluator + scheduler logic.
 - `backend/app/deployment_preflight.py` — pre-flight data realism check.
 - `backend/app/deployment_quality.py` — quality warnings (5 checks).
-- `backend/app/data_hygiene.py` — warehouse fill plan + execute.
-- `backend/app/nse_calendar.py` — holiday list, Budget Saturdays, shifted expiry days.
+- `backend/app/data_hygiene.py` — warehouse fill plan + execute (index-friendly aggregations, ~6s).
+- `backend/app/warehouse_autoupdate.py` — automatic catch-up (startup / OAuth / daily 18:00 IST).
+- `backend/app/warehouse_lookup.py` — point-in-time spot + ATM CE/PE lookup.
+- `backend/app/warehouse_ohlc.py` — OHLC resampling + intraday gap detection.
+- `backend/app/option_coverage_cache.py` — precomputed option-coverage cache (fast page loads).
+- `backend/app/nse_calendar.py` — holiday list, Budget Saturdays, shifted expiry days, labeled year calendar.
 - `backend/app/live_candle_roller.py` — tick → 1m OHLC for same-day intraday.
 - `backend/app/paper_squareoff.py` — 15:00 IST auto square-off loop.
 - `backend/app/slippage.py` + `volatility.py` — execution realism.
@@ -146,15 +188,19 @@ Backend modules of note:
 - `backend/app/option_data_planner.py` + `option_warehouse_jobs.py` — option fetch flow.
 - `backend/app/upstox_client.py` + `upstox_stream.py` — broker REST + WebSocket.
 
-Frontend pages of note:
+Frontend of note:
 
-- `frontend/src/pages/LiveSignals.jsx` — Pending Approval panel + Strategy Deployment form with PreflightBadge and QualityBadge.
-- `frontend/src/pages/DataWarehouse.jsx` — ingest, audit, planner.
+- `frontend/src/lib/jobs.jsx` — global `JobsProvider` (background-job tracker, survives navigation).
+- `frontend/src/components/Layout.jsx` — sidebar, top bar, active-jobs indicator, token-expiry countdown.
+- `frontend/src/components/DataHygienePanel.jsx`, `WarehouseLookup.jsx`, `WarehouseChart.jsx`, `HolidayCalendarDialog.jsx`, `BacktestRunJournal.jsx`.
+- `frontend/src/pages/DataWarehouse.jsx` — sectioned warehouse console (hygiene, index, options, verify, diagnostics).
+- `frontend/src/pages/LiveSignals.jsx` — Pending Approval panel + Strategy Deployment form.
+- `frontend/src/pages/SignalJournal.jsx` — deployment signal audit trail.
 - `frontend/src/pages/BacktestLab.jsx`, `Optimizer.jsx`, `PaperTrading.jsx`.
 
 Mongo collections in active use:
 
-- `candles_1m`, `options_1m`, `option_contracts`, `integrity_hashes`, `warehouse_runs`
+- `candles_1m`, `options_1m`, `option_contracts`, `integrity_hashes`, `warehouse_runs`, `option_coverage_cache`
 - `backtest_runs`, `optimization_jobs`, `presets`, `pretrade_profiles`
 - `strategy_deployments`, `signals` (with the unique partial index above), `paper_trades`
 - `ticks`, `upstox_tokens`
@@ -164,7 +210,7 @@ See `docs/ARCHITECTURE.md` for the full module map.
 ## Verification Checklist
 
 ```bash
-python -m pytest tests -q
+python -m pytest tests -q     # 272 pass as of 2026-05-31
 cd frontend
 npm run build
 cd ..
@@ -175,7 +221,8 @@ docker compose ps
 UI smoke checks:
 
 - Theme selector switches System / Black / White cleanly.
-- Data Warehouse coverage heatmap renders.
+- Data Warehouse: Data Hygiene "Check warehouse" returns per-instrument status; coverage heatmaps render fast; candlestick chart loads and the date/time locator marks a bar; holiday-calendar modal opens.
+- Top bar shows the OAuth token-expiry countdown.
 - Live Signals page shows the deployment list and the Pending Approval panel.
 - Creating a deployment with quality warnings is blocked until the ack checkbox is ticked.
 
@@ -184,6 +231,7 @@ Service health:
 - `GET /api/health` returns `{db: "ok"}`.
 - `GET /api/upstox/status` shows connected when OAuth is current.
 - `GET /api/live-candles/status` shows the roller running during market hours.
+- `GET /api/warehouse/auto-update/status` shows the last catch-up run.
 
 ## Recommendations For The Next Agent
 

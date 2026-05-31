@@ -1,6 +1,6 @@
 # User Manual
 
-Updated: 2026-05-29
+Updated: 2026-05-31
 
 This guide explains how to use AlphaForge as a local research and forward-testing app.
 
@@ -41,58 +41,48 @@ The WebSocket stream is read-only market data. It does not place orders.
 
 ## Data Warehouse
 
-The Data Warehouse page is your data discipline hub. Use it before any serious research.
+The Data Warehouse page is your data discipline hub. Use it before any serious research. It is organized into sections: **Connection**, **Data Hygiene**, **Index Data**, **Option Data**, **Verify & Audit**, and **Diagnostics**.
 
-### Upstox connection
+### Connection (Upstox)
 
-Confirm Upstox is connected at the top of the page. The Quote button validates a live REST quote during market hours.
+Confirm Upstox is connected at the top of the page. The header shows a **token-expiry countdown** (also in the global top bar): green > 2h, amber 30m–2h, red < 30m / expired. The Quote button validates a live REST quote during market hours.
 
-### Index ingest (1-minute candles)
+### Data Hygiene (recommended — the hero panel)
 
-For long ranges (12–18 months), use the background job path:
+Day-to-day the warehouse updates itself: it catches up to yesterday's close automatically on backend startup, on Upstox connect, and daily at 18:00 IST (today's bars come from the live roller). The Data Hygiene panel shows the auto-update status and a toggle.
 
-1. Select instrument.
-2. Set From and To dates.
-3. Leave Chunk as Auto. The chunker uses 7-day chunks for spot to avoid the Upstox `400 Invalid date range` on Feb→Mar boundaries.
-4. Click Ingest.
-5. Watch progress in the run panel. It reports `total_chunks`, `completed_chunks`, `progress_pct`, `total_fetched`, `candles_added`, `candles_updated`, `matched_existing`, `failed_chunks`.
+To refresh manually:
 
-For small ranges, the synchronous endpoint is fine.
+1. Click **Check warehouse**. It runs the plan (~6s) and shows a per-instrument diff: spot / option-contracts / option-candle status, with action chips for anything missing. Scope is the project default (2024-11-27 → today, NIFTY+BANKNIFTY+SENSEX, ATM CE+PE, sample=1m).
+2. Click **Fill gaps** to submit the fetches in dependency order (spot → contracts → option_candles). Progress shows in the panel and the top bar and **survives navigating away and back**.
+3. Click **Check warehouse** again to confirm gaps closed.
 
-### Data Hygiene workflow (recommended)
+Re-running is safe; only missing data is fetched; partial failures resume cleanly.
 
-The Data Hygiene workflow handles bulk data refresh against the project's default scope (2024-11-27 → today, NIFTY+BANKNIFTY+SENSEX, ATM CE+PE only, sample=1m). It is the easiest way to bring the warehouse up to date.
+### Index Data
 
-1. `POST /api/data-hygiene/plan` (or the UI button) computes the diff vs current warehouse state.
-2. Review the prioritized actions per instrument: spot ingest, contract sync, option candle fetch.
-3. `POST /api/data-hygiene/execute` submits the actions in dependency order (spot → contracts → option_candles).
-4. `GET /api/data-hygiene/status` shows recent hygiene runs.
+Read-only coverage cards per index (candle count, date range, trading days) and the per-day coverage heatmap. Bulk index ingest is handled by Data Hygiene; for a one-off range use the Upstox ingest control in the Connection panel (Auto chunk uses 7-day chunks to avoid the Upstox Feb→Mar boundary error).
 
-Re-running is safe; partial failures resume cleanly.
+**Candlestick chart:** pick NIFTY / BANKNIFTY / SENSEX and a timeframe (1m / 5m / 15m / 1h / 1d, default 1d). The OHLC of the hovered candle shows top-left (TradingView style). The **Locate** tool takes an IST date + time, validates it against the loaded range (prompts if out of range), snaps a finer time to the bar that contains it, and marks that bar with an arrow. A gap banner lists trading days missing 1m candles.
 
-### Option Data Planner
+### Option Data
 
-For targeted option fetches outside of Data Hygiene:
+- **Option Data Planner** — targeted option fetches. Confirm spot + expired-contract metadata exist, then choose underlying, From/To, expiry mode (`Next available`), Sample (`1` for accuracy, `15` for fast), moneyness (`ATM` default), CE/PE legs, Max contracts (default 500). Click Preview, inspect Planned coverage / Need fetch / Missing meta, then Fetch Missing. Re-Preview to confirm 100% / 0 / 0. For long ranges fetch month by month with Sample=1, ATM, CE+PE, Missing only.
+- **Backfill expired option contracts** — sync expired contract metadata before planning historical option candles.
+- **Option Coverage Heatmap** — stored option candles by date and contract count (served from a fast cache).
 
-1. Confirm spot candles already exist for the period.
-2. Confirm expired option contract metadata is synced for the period.
-3. Choose underlying, From / To, expiry mode (`Next available`), Sample (`1` for high-accuracy, `15` for fast estimates), moneyness (`ATM` default), CE/PE legs.
-4. Set Max contracts (default 500).
-5. Click Preview.
-6. Inspect Planned coverage, Need fetch, Missing meta, planned contracts, estimated API calls.
-7. Click Fetch Missing.
-8. Watch the background job progress.
-9. Click Preview again to confirm the month is ready when Planned coverage = 100%, Need fetch = 0, Missing meta = 0.
+### Verify & Audit
 
-Recommended for long ranges: fetch month by month with Sample = 1, ATM only, CE + PE, Missing only enabled, Max contracts = 500.
+- **Spot & ATM Option Lookup** — pick an index, date, and time (IST); see what the warehouse stored for that minute: spot OHLC, derived ATM strike, resolved expiry, and the ATM CE/PE candles with OI. Cross-check this against your broker terminal. Reads only the warehouse.
+- **Data Trust Audit** — per-day index candle audit by integrity hash. **Holiday-aware**: NSE holidays, Budget Saturdays (2025-02-01, 2026-02-01), and the Diwali Muhurat session are recognized, so holidays are not counted as missing days. This panel also hosts the developer "Clear index" and "Clear options" maintenance actions.
 
-### Coverage and audits
+### Diagnostics
 
-- **Option Coverage Heatmap** shows stored option candles by date and contract count. Diagnostic only.
-- **Raw Option Universe Audit** shows broad coverage by contract metadata. It can show many missing contracts even when the planner-selected ATM window is covered. Trust the planner Preview, not raw audit alone.
-- **Data Trust Audit** for index candles by date and integrity hash.
+Recent ingest / fetch / hygiene runs.
 
-Holiday handling: the audit recognizes NSE holidays, Budget Saturday sessions (2025-02-01, 2026-02-01), and the Diwali Muhurat session (limited evening session, 60 candles).
+### Holiday calendar
+
+The **Holiday Calendar** button (page header) opens a modal listing NSE/BSE holidays and special trading sessions for a selected year, with labels and weekdays.
 
 ## Backtest Lab
 
