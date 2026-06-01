@@ -1,6 +1,6 @@
 # API Reference
 
-Updated: 2026-05-31
+Updated: 2026-06-01
 
 All routes are prefixed with `/api`. JSON request/response. CORS open in dev.
 
@@ -54,7 +54,7 @@ Latest N candles for chart preview.
 Point-in-time warehouse lookup (reads only `candles_1m`, `options_1m`, `option_contracts` — never the broker). Returns the spot candle for that IST minute (exact or nearest bar within 5 min, `spot_exact` flag), the derived ATM strike (nearest to spot close, step per index), the nearest stored expiry on/after the date, and the ATM CE/PE candles with OI. Useful for cross-checking stored data against a broker terminal.
 
 ### `GET /api/warehouse/ohlc/{instrument}?timeframe=1d&start_ts=&end_ts=&include_gaps=true`
-Server-side OHLC resampling of stored 1m candles. `timeframe ∈ {1m, 5m, 15m, 1h, 1d}` (resampled on IST-localized buckets). Returns `{ instrument, timeframe, bar_count, bars: [{ts, time, open, high, low, close, volume}], gaps: [{date, stored, expected, missing_count, missing_sample[]}], gap_day_count }`. `gaps` lists trading days with fewer than 375 stored minutes. Omit the window for full history (used by the 1d view); the frontend windows intraday timeframes for responsiveness.
+Server-side OHLC resampling of stored 1m candles. `timeframe ∈ {1m, 5m, 15m, 1h, 1d}` (resampled on IST-localized buckets; 1h is anchored to 09:15 IST). Returns `{ instrument, timeframe, bar_count, bars: [{ts, time, open, high, low, close, volume}], gaps: [{date, stored, expected, missing_count, missing_sample[]}], gap_day_count }`. `gaps` lists completed trading days with fewer than 375 stored minutes. Omit the window for full stored history; the Warehouse chart now does this for every timeframe.
 
 ### `GET /api/warehouse/auto-update/status`
 Auto-update worker state: `{ enabled, in_progress, last_started_at, last_finished_at, last_status, last_reason, last_submitted_count, last_actions_planned, runs_count, history[] }`.
@@ -98,6 +98,12 @@ Sanitized status: running flag, session id, mode, subscribed count, latest tick 
 
 #### `GET /api/upstox/stream/ticks/latest?limit=50`
 Recent sanitized tick snapshots from memory, falling back to stored `ticks`.
+
+#### `GET /api/upstox/stream/options/universe?underlyings=NIFTY,BANKNIFTY,SENSEX&radius=1&max_option_keys=60`
+Preview the current live option subscription universe without mutating the stream. Uses live spot ticks first, falls back to latest stored `candles_1m`, then reads the nearest stored `option_contracts.expiry_date >= today`. Default radius `1` returns ATM +/- one strike for CE and PE.
+
+#### `POST /api/upstox/stream/options/restart`
+Body: `{ underlyings?, radius?, max_option_keys?, mode?, persist_ticks? }`. Restarts the read-only Upstox stream with the normal market-header instruments plus the previewed option universe. Use during market hours after current option contracts are synced. No broker orders are placed.
 
 ### Index ingest
 

@@ -53,6 +53,10 @@ export const api = {
     apiClient.get("/upstox/stream/status").then((r) => r.data),
   latestUpstoxTicks: (limit = 50) =>
     apiClient.get(`/upstox/stream/ticks/latest?limit=${limit}`).then((r) => r.data),
+  upstoxOptionStreamUniverse: (params = {}) =>
+    apiClient.get("/upstox/stream/options/universe", { params }).then((r) => r.data),
+  restartUpstoxOptionStream: (payload = {}) =>
+    apiClient.post("/upstox/stream/options/restart", payload).then((r) => r.data),
   ingestUpstox: (payload) =>
     apiClient.post("/upstox/warehouse/ingest", payload).then((r) => r.data),
   startUpstoxIngestJob: (payload) =>

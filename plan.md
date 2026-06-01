@@ -1,8 +1,8 @@
 # AlphaForge Trading Lab — Updated plan.md
 
-## Current state for handoff (2026-05-31)
+## Current state for handoff (2026-06-01)
 
-Phase 4b is **10 of 12 slices done**. Latest commit on main: `882092d`. **272 backend tests pass.** Local Docker stack is healthy.
+Phase 4b is **10 of 12 slices done**. The Data Warehouse hardening and live option tick universe slices are complete. **284 backend tests pass locally.** Local Docker stack is healthy.
 
 Since the last handoff, a full **Data Warehouse hardening** pass was completed (not part of the numbered Phase 4b slices — the user prioritized perfecting the warehouse before resuming the product roadmap): option-coverage caching, holiday-aware audit, persistent background jobs, a Data Hygiene UI, automatic daily catch-up, a point-in-time spot+ATM lookup, a per-index candlestick chart with gap detection, plus UI cleanup (Emergent/PostHog removal, run-journal move, signal-journal repurpose, OAuth token-expiry countdown). See `docs/HANDOFF.md` "Recent Work" for the commit list.
 
@@ -16,6 +16,7 @@ These were explicitly deferred by the user; do not start them without confirmati
 
 - **Event-day blocking (RBI, FOMC, CPI, etc.)** — auto-pause deployments on calendar events. Requires a hand-curated event collection editable from the UI.
 - **WebSocket reconnect storm investigation** — 3-hour live session on 2026-05-27 hit `reconnect_count = 15` with "All connection attempts failed" recovering. Needs root-cause work after evaluator ships.
+- **Wider live option universe** — ATM +/- 1 strike is implemented for read-only option ticks. Do not jump to ATM +/- 5 until stream stability, storage impact, and paper/recommendation marking are observed over multiple live sessions.
 - **Per-tick deployment evaluation** — only after `1m_close` mode is trusted, and only as a manual user switch.
 - **Paper / recommendation modes for the deployment evaluator** — first slice ships strict `shadow` (journal only) mode.
 - **Strategy Deployment evaluator → broker order execution** — never automatic; recommendation mode shows context, user clicks Take/Skip.
@@ -276,7 +277,7 @@ Delivered full handover-quality docs:
   - ✅ Uses Upstox V3 authorized WebSocket URL, binary JSON subscription message, protobuf tick decoding, reconnect/backoff, and sanitized `ticks` persistence.
   - ✅ Market Header prefers fresh ticks and falls back to REST/API sources when ticks are stale or unavailable.
   - ⏳ Needs multi-session live hardening and latency/reconnect observation.
-  - ⏳ Dynamic ATM±5 options universe subscription is still pending.
+  - ✅ Preview-first live option universe + stream restart route implemented for ATM±1 by default (`/upstox/stream/options/universe`, `/upstox/stream/options/restart`).
 - **Options universe + contracts**
   - Daily/weekly expiries selection and strike selection.
   - Store instruments/contract metadata (new: `contracts`).

@@ -6,7 +6,7 @@ This is the entry point for the next AI agent or developer. Read it before editi
 
 ## Status In One Line
 
-The Data Warehouse has been hardened end-to-end (fast, auto-updating, hygiene-managed, calendar-aware, verifiable, and chartable). **280 pytest tests pass.** The local Docker stack is healthy. The next planned product work is **Phase 4b Slice 10 — Forward metrics aggregation per deployment** (paused earlier to perfect the warehouse).
+The Data Warehouse has been hardened end-to-end (fast, auto-updating, hygiene-managed, calendar-aware, verifiable, and chartable), and the read-only Upstox stream can now be restarted with a narrow live ATM option universe. **284 pytest tests pass.** The local Docker stack is healthy. The next planned product work is **Phase 4b Slice 10 — Forward metrics aggregation per deployment**.
 
 ## Read Order For A New Agent
 
@@ -16,6 +16,17 @@ The Data Warehouse has been hardened end-to-end (fast, auto-updating, hygiene-ma
 4. `docs/ARCHITECTURE.md`
 5. `docs/API_REFERENCE.md`
 6. The relevant code + tests for the next task.
+
+## Recent Work — Live Option Tick Universe (2026-06-01)
+
+Live-session slice completed while the Upstox stream was active:
+
+- Added `backend/app/live_option_universe.py`, which builds a narrow read-only option subscription set from current live spot ticks, stored `option_contracts`, nearest `expiry_date >= today`, and an ATM-centered strike band.
+- Added `GET /api/upstox/stream/options/universe` to preview the current option keys before mutating the stream.
+- Added `POST /api/upstox/stream/options/restart` to restart the read-only Upstox V3 stream with the normal market-header instruments plus the live option universe. This is necessary because Upstox subscriptions are captured at WebSocket connect time.
+- Default live option universe is NIFTY, BANKNIFTY, SENSEX with `radius=1` (ATM, one strike below, one strike above; CE+PE = 6 contracts per index). Keep this small until forward/paper behavior is trusted.
+- Live verification on 2026-06-01: stream restarted with 29 instruments (11 header + 18 option keys); option ticks arrived; live candle roller remained healthy and continued aggregating only spot index candles.
+- If the universe preview shows `missing_contracts`, run the existing current contract sync route first: `POST /api/upstox/options/contracts/{instrument}/sync`.
 
 ## Recent Work — Warehouse Chart Trust UI (2026-06-01)
 
@@ -93,6 +104,7 @@ Live data:
 
 - Upstox V3 read-only market-data WebSocket stream auto-starts on backend boot.
 - Market header prefers fresh ticks and falls back to REST quotes when ticks are stale or absent.
+- During market hours, the stream can be restarted with a small current ATM option universe through `/api/upstox/stream/options/restart`; this feeds live option LTPs into the in-memory latest-tick map for paper/recommendation marking.
 
 ## What Is Not Done
 
@@ -134,6 +146,7 @@ These are the gotchas that bit us. Read this section before doing related work.
 - `GLOBAL_INDICATOR|USDINR` is rejected by the REST quote endpoint (HTTP 400) but works on the WebSocket. Market header gracefully falls back per-tile.
 - Expired option candles must be requested through `/v2/expired-instruments/historical-candle/{expired_key}/1minute/{to}/{from}`. Sending expired keys to the normal V3 endpoint returns `UDAPI1021`.
 - The WS stream's subscribed instrument set is captured at connect time. Changing the subscription list in code does not auto-update an already-running stream — you must stop and restart.
+- The live option stream preview requires current `option_contracts`. If BANKNIFTY/SENSEX/NIFTY show `missing_contracts`, sync current contracts first. As of this work, BANKNIFTY current expiry resolved to the next available monthly contract because weekly BANKNIFTY options are discontinued.
 
 ### Index expiry calendar
 
@@ -199,6 +212,7 @@ Backend modules of note:
 - `backend/app/strategy_source_hash.py` — drift detection.
 - `backend/app/option_data_planner.py` + `option_warehouse_jobs.py` — option fetch flow.
 - `backend/app/upstox_client.py` + `upstox_stream.py` — broker REST + WebSocket.
+- `backend/app/live_option_universe.py` — live ATM option universe preview/restart support for read-only option ticks.
 
 Frontend of note:
 

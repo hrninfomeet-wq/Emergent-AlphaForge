@@ -50,6 +50,7 @@ from app.deployment_quality import evaluate_source_quality
 from app.upstox_index_ingest import persist_index_candles_bulk, run_upstox_index_ingest_job
 from app.upstox_stream import DEFAULT_STREAM_MODE, UpstoxMarketStreamManager
 from app.live_candle_roller import LiveCandleRoller
+from app.live_option_universe import build_live_option_universe
 from app.deployment_evaluator import (
     evaluate_active_deployments,
     evaluate_deployment_on_close,
@@ -1731,12 +1732,26 @@ class UpstoxStreamStartReq(BaseModel):
     persist_ticks: bool = True
 
 
+class UpstoxOptionStreamRestartReq(BaseModel):
+    underlyings: Optional[List[str]] = None
+    radius: int = Field(1, ge=0, le=5)
+    max_option_keys: int = Field(60, ge=2, le=200)
+    mode: str = DEFAULT_STREAM_MODE
+    persist_ticks: bool = True
+
+
 def _default_stream_instrument_keys() -> List[str]:
     keys: List[str] = []
     for item in DEFAULT_ITEMS:
         if item.get("source") == "upstox" and item.get("instrument_key"):
             keys.append(str(item["instrument_key"]))
     return list(dict.fromkeys(keys))
+
+
+def _parse_underlyings_query(value: Optional[str]) -> Optional[List[str]]:
+    if not value:
+        return None
+    return [part.strip() for part in value.split(",") if part.strip()]
 
 
 @api.post("/upstox/stream/start")
@@ -1770,6 +1785,58 @@ async def upstox_stream_stop():
 async def upstox_stream_status():
     """Return sanitized local WebSocket stream status."""
     return serialize_doc(upstox_stream_manager.status())
+
+
+@api.get("/upstox/stream/options/universe")
+async def upstox_stream_options_universe(
+    underlyings: Optional[str] = Query(None, description="Comma-separated index underlyings, e.g. NIFTY,BANKNIFTY"),
+    radius: int = Query(1, ge=0, le=5),
+    max_option_keys: int = Query(60, ge=2, le=200),
+):
+    """Preview the nearest-expiry ATM option keys suitable for the live WS stream."""
+    result = await build_live_option_universe(
+        get_db(),
+        latest_ticks=upstox_stream_manager.latest_tick_map(),
+        underlyings=_parse_underlyings_query(underlyings),
+        radius=radius,
+        max_option_keys=max_option_keys,
+    )
+    return serialize_doc(result)
+
+
+@api.post("/upstox/stream/options/restart")
+async def upstox_stream_options_restart(req: UpstoxOptionStreamRestartReq):
+    """Restart the read-only stream with market-header keys plus live ATM option keys."""
+    status = await upstox_client.get_connection_status()
+    if not status.get("connected"):
+        raise HTTPException(400, "Upstox is not connected. Complete OAuth before starting the stream.")
+    if status.get("expired"):
+        raise HTTPException(400, "Upstox token expired. Reconnect Upstox before starting the stream.")
+
+    universe = await build_live_option_universe(
+        get_db(),
+        latest_ticks=upstox_stream_manager.latest_tick_map(),
+        underlyings=req.underlyings,
+        radius=req.radius,
+        max_option_keys=req.max_option_keys,
+    )
+    option_keys = universe.get("instrument_keys") or []
+    if not option_keys:
+        raise HTTPException(400, "No live option keys available. Sync current option contracts and ensure spot data exists.")
+
+    stream_keys = list(dict.fromkeys([*_default_stream_instrument_keys(), *option_keys]))
+    await upstox_stream_manager.stop()
+    stream_status = await upstox_stream_manager.start(
+        instrument_keys=stream_keys,
+        mode=req.mode,
+        persist=req.persist_ticks,
+    )
+    return serialize_doc({
+        "status": "ok",
+        "stream": stream_status,
+        "universe": universe,
+        "stream_instrument_count": len(stream_keys),
+    })
 
 
 @api.get("/upstox/stream/ticks/latest")

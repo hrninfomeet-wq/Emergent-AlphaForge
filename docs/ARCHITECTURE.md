@@ -1,6 +1,6 @@
 # Architecture
 
-Updated: 2026-05-31
+Updated: 2026-06-01
 
 ## Purpose
 
@@ -25,7 +25,9 @@ flowchart LR
   F -->|"/api"| A["FastAPI"]
   A <--> M["MongoDB"]
   A <--> B["Upstox REST"]
-  WS["Upstox WebSocket V3"] -->|"ticks"| ROL["Live Candle Roller"]
+  WS["Upstox WebSocket V3"] -->|"index ticks"| ROL["Live Candle Roller"]
+  WS -->|"option ticks"| LM["Latest Tick Map"]
+  LM --> A
   ROL --> M
   A -->|"scheduler"| E["Deployment Evaluator (1m_close)"]
   E --> M
@@ -40,6 +42,9 @@ flowchart LR
 flowchart TD
   HIST["Upstox historical / yfinance"] --> C["candles_1m"]
   TICKS["Upstox WebSocket ticks"] --> ROL["Live Candle Roller"]
+  TICKS --> LT["Latest Tick Map"]
+  LT --> PT
+  LT --> SQ
   ROL --> C
   C --> H["integrity_hashes"]
   C --> EV["Deployment Evaluator"]
@@ -74,6 +79,7 @@ flowchart TD
 | `backend/app/chunking.py` | Auto chunk guidance (uses 7-day chunks for spot to avoid Feb→Mar boundary issue) |
 | `backend/app/upstox_client.py` | OAuth, token storage, REST historical, WebSocket authorize URL |
 | `backend/app/upstox_stream.py` | V3 read-only WebSocket stream, protobuf decode, sanitized tick persistence |
+| `backend/app/live_option_universe.py` | Builds the nearest-expiry ATM option subscription keys for live paper/recommendation marking; preview first, then restart the read-only stream |
 | `backend/app/upstox_index_ingest.py` | Background index ingest jobs, bulk persistence |
 | `backend/app/instruments.py` | Supported index metadata, lot/strike settings |
 | `backend/app/options_universe.py` | ATM rounding and moneyness selection |
@@ -184,6 +190,7 @@ All routes are prefixed with `/api`. See `docs/API_REFERENCE.md` for full reques
 - `GET /upstox/status` `GET /upstox/auth/start` `GET /upstox/auth/callback` `POST /upstox/disconnect`
 - `GET /upstox/market-quote/{instrument}`
 - `POST /upstox/stream/start` `POST /upstox/stream/stop` `GET /upstox/stream/status` `GET /upstox/stream/ticks/latest`
+- `GET /upstox/stream/options/universe` `POST /upstox/stream/options/restart`
 - `POST /upstox/warehouse/ingest` `POST /upstox/warehouse/ingest/jobs` `GET /upstox/warehouse/ingest/jobs/{run_id}`
 - `GET /upstox/expiries/{instrument}`
 - `GET /upstox/options/contracts/{instrument}` `POST /upstox/options/contracts/{instrument}/sync`
@@ -259,6 +266,7 @@ All routes are prefixed with `/api`. See `docs/API_REFERENCE.md` for full reques
 - **Upstox token expiry.** The OAuth flow must be re-run when tokens lapse; the evaluator and roller both depend on a valid token.
 - **Same-day historical empty.** Without the live candle roller, the evaluator stalls. The roller must be running during market hours.
 - **WS subscribed instruments captured at connect time.** Subscription edits in code do not propagate to a running stream — restart it.
+- **Live option ticks are intentionally narrow.** Use the universe preview/restart route during market hours. Default `radius=1` subscribes only ATM +/- 1 strike for CE/PE on NIFTY, BANKNIFTY, and SENSEX. Expand only after measuring stream stability and storage impact.
 - **Big option fetches.** A naive plan can spawn thousands of broker calls. Use Sample, Max contracts, and Missing only. Run month by month for high-accuracy data.
 - **Walk-forward divergence is informational.** The ack checkbox is the discipline; the user must use it honestly.
 - **Strategy source drift on a long-running deployment.** The evaluator auto-pauses, but the operator must re-create the deployment to resume on a new SHA.
