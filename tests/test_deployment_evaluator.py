@@ -112,6 +112,9 @@ class FakeCollection:
     async def insert_one(self, doc: Dict[str, Any]):
         self.rows.append(dict(doc))
 
+    async def count_documents(self, query: Dict[str, Any]):
+        return sum(1 for r in self.rows if _matches(r, query))
+
     async def distinct(self, key: str, query: Optional[Dict[str, Any]] = None):
         rows = [r for r in self.rows if _matches(r, query or {})]
         seen = []
@@ -161,6 +164,7 @@ class FakeDB:
         self.signals = FakeCollection()
         self.strategy_deployments = FakeCollection()
         self.pretrade_profiles = FakeCollection()
+        self.paper_trades = FakeCollection()
 
 
 def seed_db(
@@ -635,4 +639,62 @@ async def test_evaluator_no_pinned_sha_means_no_drift_check(monkeypatch):
     res = await evaluate_deployment_on_close(db, db.strategy_deployments.rows[0])
 
     assert res["outcome"] == "clean"
+    assert db.strategy_deployments.rows[0]["status"] == "ACTIVE"
+
+
+# ---------- kill switches (Slice 12) ------------------------------------------
+
+@pytest.mark.asyncio
+async def test_kill_switch_pauses_paper_deployment_on_consecutive_losses():
+    """A paper deployment that has hit max_consecutive_losses must auto-pause
+    before generating any new signal."""
+    db = FakeDB()
+    candles = make_candles(n=80)
+    deployment = make_deployment()
+    deployment["mode"] = "paper"
+    deployment["risk"] = {"max_consecutive_losses": 2}
+    seed_db(db, candles=candles, deployment=deployment,
+            contracts=make_contracts(), profiles=[make_profile()])
+    # Two trailing losing closed paper trades for this deployment.
+    db.paper_trades.rows = [
+        {"deployment_id": "test-deploy-1", "status": "CLOSED", "realized_pnl": -10,
+         "closed_at": "2026-05-30T05:00:00+00:00", "entry_value": 1000},
+        {"deployment_id": "test-deploy-1", "status": "CLOSED", "realized_pnl": -25,
+         "closed_at": "2026-05-31T05:00:00+00:00", "entry_value": 1000},
+    ]
+    StubStrategy.set_next(Signal(direction="CE", score=80))
+
+    res = await evaluate_deployment_on_close(db, deployment)
+
+    assert res["outcome"] == "skipped"
+    assert res.get("kill_switch") == "max_consecutive_losses"
+    # Deployment auto-paused; no signal journaled.
+    assert db.strategy_deployments.rows[0]["status"] == "PAUSED"
+    assert len(db.signals.rows) == 0
+
+
+@pytest.mark.asyncio
+async def test_kill_switch_blocks_signal_on_max_open_without_pausing():
+    """max_open_paper_trades is a soft block: the signal is journaled as blocked
+    but the deployment stays ACTIVE so it self-clears as trades close."""
+    db = FakeDB()
+    candles = make_candles(n=80)
+    deployment = make_deployment()
+    deployment["mode"] = "paper"
+    deployment["risk"] = {"max_open_paper_trades": 1}
+    seed_db(db, candles=candles, deployment=deployment,
+            contracts=make_contracts(), profiles=[make_profile()])
+    db.paper_trades.rows = [
+        {"deployment_id": "test-deploy-1", "status": "OPEN"},
+    ]
+    # Seed recent option data so the signal would otherwise be clean.
+    last_ts = int(candles.iloc[-1]["ts"])
+    db.options_1m.rows = [{"instrument_key": "NSE_FO|TEST|23950CE", "ts": now_ms()}]
+    StubStrategy.set_next(Signal(direction="CE", score=80))
+
+    res = await evaluate_deployment_on_close(db, deployment)
+
+    assert res["outcome"] == "blocked"
+    assert any("max_open_paper_trades" in b for b in res.get("blockers", []))
+    # Still ACTIVE — soft block only.
     assert db.strategy_deployments.rows[0]["status"] == "ACTIVE"

@@ -6,7 +6,7 @@ This is the entry point for the next AI agent or developer. Read it before editi
 
 ## Status In One Line
 
-The Data Warehouse has been hardened end-to-end (fast, auto-updating, hygiene-managed, calendar-aware, verifiable, and chartable), the read-only Upstox stream can be restarted with a narrow live ATM option universe, and forward metrics now aggregate per deployment behind a 10-complete-session Strategy Library gate. **287 pytest tests pass.** The local Docker stack is healthy. The next planned product work is **Phase 4b Slice 12 — per-deployment kill switches**.
+The Data Warehouse has been hardened end-to-end (fast, auto-updating, hygiene-managed, calendar-aware, verifiable, and chartable), the read-only Upstox stream can be restarted with a narrow live ATM option universe, forward metrics aggregate per deployment behind a 10-complete-session Strategy Library gate, and per-deployment kill switches auto-pause/-block paper deployments on risk limits. **306 pytest tests pass.** The local Docker stack is healthy. Phase 4b is **complete (12/12 slices)**; the next planned product work is **Phase 5 (probability engine), deferred until ≥6 months of forward signal history exists** — confirm scope before starting.
 
 ## Read Order For A New Agent
 
@@ -17,7 +17,18 @@ The Data Warehouse has been hardened end-to-end (fast, auto-updating, hygiene-ma
 5. `docs/API_REFERENCE.md`
 6. The relevant code + tests for the next task.
 
-## Recent Work — Live Option Tick Universe (2026-06-01)
+## Recent Work — Per-Deployment Kill Switches (2026-06-01)
+
+Phase 4b Slice 12 completed (paper deployments only):
+
+- Added `backend/app/deployment_kill_switch.py` — pure decision helpers (`trailing_consecutive_losses`, `daily_realized_summary`, `evaluate_kill_switches`) + an async wrapper `check_deployment_kill_switches` that loads the deployment's paper trades.
+- Three switches, configured under `deployment.risk`:
+  - `max_consecutive_losses` → **PAUSE** (hard circuit-breaker, like drift) when the trailing run of losing closed paper trades reaches the limit.
+  - `daily_loss_cutoff_pct` → **PAUSE** when today's net realized paper P&L as a % of capital deployed today drops to/below the (negative) cutoff.
+  - `max_open_paper_trades` → **BLOCK** (soft) new signals while this many paper trades are OPEN; self-clears as trades close; does not pause.
+- Wired into `deployment_evaluator.evaluate_deployment_on_close`: the pause check runs right after the drift check (auto-pauses with `kill_switch_reason`/`kill_switch_inputs` stamped on the deployment); the block reason is added to the bar's signal blockers.
+- New `DeploymentCreateReq` fields (`max_consecutive_losses`, `daily_loss_cutoff_pct`, `max_open_paper_trades`) merged into `risk`. Live Signals form exposes them; the deployment card shows the pause reason.
+- Only paper deployments are governed. 16 unit + 2 evaluator-integration + 1 contract test.
 
 Live-session slice completed while the Upstox stream was active:
 

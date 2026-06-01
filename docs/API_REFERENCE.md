@@ -256,6 +256,9 @@ Body: `DeploymentCreateReq`:
     "default_lots": 1,
     "allow_overnight": false
   },
+  "max_consecutive_losses": null,
+  "daily_loss_cutoff_pct": null,
+  "max_open_paper_trades": null,
   "acknowledged_warnings": false
 }
 ```
@@ -266,6 +269,7 @@ Behavior:
 - Calls `deployment_quality.evaluate(...)`. If warnings exist and `acknowledged_warnings=false`, returns `400 acknowledgment_required` with the warning detail.
 - Stores `quality_at_creation` plus the ack flag for audit.
 - Manual approval is always required for paper or recommendation mode.
+- Kill switches (Slice 12, paper mode only) are merged into `risk`. `max_consecutive_losses` and `daily_loss_cutoff_pct` (negative %) auto-PAUSE the deployment; `max_open_paper_trades` soft-BLOCKs new signals while that many trades are open. Omit/null/0 disables a switch. A paused deployment stamps `kill_switch_reason`, `kill_switch`, and `kill_switch_inputs`.
 
 ### `GET /api/deployments/preflight?instrument=...`
 Slice 5 pre-flight check. Returns spot coverage (last 30 trading days), upcoming option expiries, active vs expired contracts, Upstox token state, and per-instrument structural break notes.

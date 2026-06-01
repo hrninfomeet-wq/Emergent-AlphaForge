@@ -1153,6 +1153,14 @@ async def create_deployment(req: DeploymentCreateReq):
     strategy_id = str(source.get("strategy_id") or (source.get("config") or {}).get("strategy_id") or "")
     strategy_obj = get_registry().get(strategy_id) if strategy_id else None
     pinned_source_sha = hash_strategy_source(strategy_obj) if strategy_obj else None
+    # Merge explicit kill-switch fields into the risk dict (only when provided).
+    kill_switch_cfg = {
+        k: v for k, v in {
+            "max_consecutive_losses": req.max_consecutive_losses,
+            "daily_loss_cutoff_pct": req.daily_loss_cutoff_pct,
+            "max_open_paper_trades": req.max_open_paper_trades,
+        }.items() if v is not None
+    }
     try:
         doc = build_deployment_doc(
             source_type=req.source_type,
@@ -1162,7 +1170,7 @@ async def create_deployment(req: DeploymentCreateReq):
             confirmation_mode=req.confirmation_mode,
             option_moneyness=req.option_moneyness,
             pretrade_profile=req.pretrade_profile,
-            risk={**(req.risk or {}), "default_lots": int(req.default_lots or 1)},
+            risk={**(req.risk or {}), **kill_switch_cfg, "default_lots": int(req.default_lots or 1)},
             dte_filter=req.dte_filter,
             allow_overnight=req.allow_overnight,
             strategy_source_sha=pinned_source_sha,
@@ -1984,6 +1992,10 @@ class DeploymentCreateReq(BaseModel):
     dte_filter: List[int] = Field(default_factory=lambda: [0, 1, 2, 3, 4, 5, 6])
     allow_overnight: bool = False
     default_lots: int = 1
+    # Per-deployment kill switches (Slice 12). Paper mode only. Omit/0/None to disable.
+    max_consecutive_losses: Optional[int] = None
+    daily_loss_cutoff_pct: Optional[float] = None
+    max_open_paper_trades: Optional[int] = None
     acknowledged_warnings: bool = False
 
 

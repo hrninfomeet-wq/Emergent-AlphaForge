@@ -30,6 +30,7 @@ from app.options_universe import select_contract_for_signal
 from app.regime import classify_regime_series
 from app.signal_lifecycle import create_signal_doc, transition_signal
 from app.strategies.base import StrategyBase, get_registry
+from app.deployment_kill_switch import check_deployment_kill_switches
 
 log = logging.getLogger(__name__)
 
@@ -285,6 +286,37 @@ async def evaluate_deployment_on_close(
                 "drift_current_sha": current_sha,
             }
 
+    # Kill switches (Slice 12): paper deployments only. A pause switch
+    # (max_consecutive_losses / daily_loss_cutoff_pct) is a hard circuit-breaker
+    # that auto-pauses the deployment, like drift. The block switch
+    # (max_open_paper_trades) is soft: it adds a blocker to this bar's signal but
+    # leaves the deployment ACTIVE so it self-clears as trades close.
+    kill = await check_deployment_kill_switches(db, deployment)
+    if kill.get("pause"):
+        await db.strategy_deployments.update_one(
+            {"id": deployment_id},
+            {"$set": {
+                "status": "PAUSED",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "kill_switch_paused_at": datetime.now(timezone.utc).isoformat(),
+                "kill_switch_reason": kill.get("pause_reason"),
+                "kill_switch": kill.get("pause_switch"),
+                "kill_switch_inputs": kill.get("inputs"),
+            }},
+        )
+        log.warning(
+            "kill_switch on deployment %s: %s -> auto-paused",
+            deployment_id, kill.get("pause_reason"),
+        )
+        return {
+            "deployment_id": deployment_id,
+            "outcome": "skipped",
+            "reason": f"{kill.get('pause_reason')}; deployment auto-paused",
+            "kill_switch": kill.get("pause_switch"),
+            "kill_switch_inputs": kill.get("inputs"),
+        }
+    kill_block_reason = kill.get("block_reason")
+
     df = await _load_recent_candles(db, instrument, lookback=200)
     if df.empty or len(df) < MIN_BARS_FOR_EVALUATION:
         return {
@@ -372,6 +404,8 @@ async def evaluate_deployment_on_close(
         all_blockers.append(window_blocker)
     if expiry_blocker:
         all_blockers.append(expiry_blocker)
+    if kill_block_reason:
+        all_blockers.append(kill_block_reason)
     all_blockers.extend(pretrade_blockers)
     all_blockers.extend(strategy_blockers)
     if contract_blocker:

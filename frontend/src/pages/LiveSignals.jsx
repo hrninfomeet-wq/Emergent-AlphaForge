@@ -28,6 +28,9 @@ export default function LiveSignals() {
     dte_filter: "0,1,2,3,4,5,6",
     default_lots: 1,
     allow_overnight: false,
+    max_consecutive_losses: "",
+    daily_loss_cutoff_pct: "",
+    max_open_paper_trades: "",
     acknowledged_warnings: false,
   });
   const [preflight, setPreflight] = useState(null);
@@ -207,6 +210,9 @@ export default function LiveSignals() {
           .filter((n) => Number.isFinite(n) && n >= 0),
         default_lots: Math.max(1, parseInt(deploymentForm.default_lots, 10) || 1),
         allow_overnight: Boolean(deploymentForm.allow_overnight),
+        max_consecutive_losses: deploymentForm.max_consecutive_losses === "" ? null : Math.max(0, parseInt(deploymentForm.max_consecutive_losses, 10) || 0),
+        daily_loss_cutoff_pct: deploymentForm.daily_loss_cutoff_pct === "" ? null : Number(deploymentForm.daily_loss_cutoff_pct),
+        max_open_paper_trades: deploymentForm.max_open_paper_trades === "" ? null : Math.max(0, parseInt(deploymentForm.max_open_paper_trades, 10) || 0),
         acknowledged_warnings: Boolean(deploymentForm.acknowledged_warnings),
       };
       await api.createDeployment(payload);
@@ -589,6 +595,53 @@ function StrategyDeploymentsPanel({ deployments, presets, backtestRuns, form, se
               />
               <span>Allow overnight (skip 15:00 IST auto-square-off for this deployment)</span>
             </label>
+            <div className="col-span-2 mt-1 pt-2 border-t border-line">
+              <div className="text-[10px] uppercase tracking-wider text-dimmer mb-1.5">
+                Kill switches (paper mode) — leave blank to disable
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                <label className="text-[11px] text-dim">
+                  Max consecutive losses
+                  <Input
+                    type="number"
+                    min="0"
+                    value={form.max_consecutive_losses}
+                    onChange={(e) => setFormValue("max_consecutive_losses", e.target.value)}
+                    className="mt-1 bg-bg-1 border-line"
+                    placeholder="off"
+                    title="Auto-pause the deployment after this many losing paper trades in a row."
+                    data-testid="kill-max-consecutive-losses"
+                  />
+                </label>
+                <label className="text-[11px] text-dim">
+                  Daily loss cutoff %
+                  <Input
+                    type="number"
+                    step="0.1"
+                    max="0"
+                    value={form.daily_loss_cutoff_pct}
+                    onChange={(e) => setFormValue("daily_loss_cutoff_pct", e.target.value)}
+                    className="mt-1 bg-bg-1 border-line"
+                    placeholder="e.g. -3"
+                    title="Auto-pause when today's net paper P&L (% of capital deployed today) drops to/below this negative value."
+                    data-testid="kill-daily-loss-cutoff"
+                  />
+                </label>
+                <label className="text-[11px] text-dim">
+                  Max open paper trades
+                  <Input
+                    type="number"
+                    min="0"
+                    value={form.max_open_paper_trades}
+                    onChange={(e) => setFormValue("max_open_paper_trades", e.target.value)}
+                    className="mt-1 bg-bg-1 border-line"
+                    placeholder="off"
+                    title="Block new signals while this many paper trades are already open. Soft block; self-clears as trades close."
+                    data-testid="kill-max-open-trades"
+                  />
+                </label>
+              </div>
+            </div>
           </div>
           <PreflightBadge
             instrument={formInstrument}
@@ -630,6 +683,11 @@ function StrategyDeploymentsPanel({ deployments, presets, backtestRuns, form, se
                     <div className="mt-1 text-[11px] text-dimmer">
                       {deployment.option_policy?.moneyness?.join(", ").toUpperCase()} · manual approval required
                     </div>
+                    {deployment.status === "PAUSED" && (deployment.kill_switch_reason || deployment.drift_reason) && (
+                      <div className="mt-1 text-[11px] text-amber-300 font-mono" data-testid="deployment-pause-reason">
+                        ⏸ {deployment.kill_switch_reason || deployment.drift_reason}
+                      </div>
+                    )}
                   </div>
                   <div className="ml-auto flex flex-wrap justify-end gap-1.5">
                     {deployment.status === "ACTIVE" && (
