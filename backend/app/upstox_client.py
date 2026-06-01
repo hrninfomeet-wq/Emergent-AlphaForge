@@ -364,6 +364,57 @@ async def fetch_historical_1m(
     return df
 
 
+async def fetch_intraday_1m(
+    instrument: str,
+    user_id: str = DEFAULT_USER_ID,
+) -> pd.DataFrame:
+    """Fetch the CURRENT trading day's 1-minute candles from Upstox V3.
+
+    The normal historical endpoint returns empty for the current day, which is
+    why intraday bars usually come from the live tick->1m roller. If the roller
+    was not running at market open, the morning is missing from the warehouse.
+    This endpoint serves today's candles from 09:15 IST and is the correct way
+    to backfill that gap.
+
+    Upstox V3: /v3/historical-candle/intraday/{instrument_key}/minutes/1
+    Response: data.candles = [[ts_iso, open, high, low, close, volume, oi], ...]
+    (newest-first; we sort ascending). Same column shape as fetch_historical_1m.
+    """
+    instrument = instrument.upper()
+    if instrument not in INSTRUMENT_KEYS:
+        raise ValueError(f"Unsupported instrument: {instrument}")
+    instrument_key = INSTRUMENT_KEYS[instrument]
+    encoded = quote(instrument_key, safe="")
+    url = f"{_base_url()}/v3/historical-candle/intraday/{encoded}/minutes/1"
+    log.info(f"Upstox fetch intraday 1m {instrument}")
+    data = await _authenticated_get(url, user_id)
+    candles = (data.get("data") or {}).get("candles") or []
+    if not candles:
+        return pd.DataFrame()
+    rows = []
+    for c in candles:
+        ts_iso = c[0]
+        try:
+            dt = pd.to_datetime(ts_iso, utc=True)
+        except Exception:
+            continue
+        rows.append({
+            "instrument": instrument,
+            "ts": int(dt.value // 10**6),
+            "datetime": ts_iso,
+            "open": float(c[1]),
+            "high": float(c[2]),
+            "low": float(c[3]),
+            "close": float(c[4]),
+            "volume": float(c[5] or 0),
+        })
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows).drop_duplicates(subset=["instrument", "ts"]).sort_values("ts").reset_index(drop=True)
+    log.info(f"  fetched {len(df)} intraday candles for {instrument}")
+    return df
+
+
 async def fetch_historical_1m_chunked(
     instrument: str,
     from_date: str,

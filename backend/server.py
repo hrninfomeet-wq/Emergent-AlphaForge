@@ -420,6 +420,46 @@ async def warehouse_runs(limit: int = Query(50, le=200)):
     return {"items": runs}
 
 
+@api.post("/warehouse/intraday-backfill/{instrument}")
+async def warehouse_intraday_backfill(instrument: str):
+    """Backfill the CURRENT trading day's 1m candles from Upstox intraday.
+
+    The historical endpoint returns empty for today, so today's bars normally
+    come from the live tick->1m roller. If the roller was not running at market
+    open, the morning is missing. This route pulls today's candles (from 09:15
+    IST) via the Upstox intraday endpoint and upserts them into candles_1m,
+    closing that gap. `instrument=ALL` does all three indices.
+    """
+    inst = instrument.upper()
+    targets = list(upstox_client.INSTRUMENT_KEYS.keys()) if inst == "ALL" else [inst]
+    for t in targets:
+        if t not in upstox_client.INSTRUMENT_KEYS:
+            raise HTTPException(400, f"Unsupported instrument: {t}")
+    status = await upstox_client.get_connection_status()
+    if not status.get("connected") or status.get("expired"):
+        raise HTTPException(400, "Upstox not connected (or token expired). Connect first.")
+
+    results = []
+    for t in targets:
+        try:
+            df = await upstox_client.fetch_intraday_1m(t)
+            if df.empty:
+                results.append({"instrument": t, "status": "empty", "candles_added": 0})
+                continue
+            saved = await persist_candles_df(t, df)
+            results.append({
+                "instrument": t,
+                "status": "ok",
+                "fetched": int(saved.get("total_fetched") or 0),
+                "candles_added": int(saved.get("candles_added") or 0),
+                "candles_updated": int(saved.get("candles_updated") or 0),
+            })
+        except Exception as exc:
+            log.exception("intraday backfill failed for %s", t)
+            results.append({"instrument": t, "status": "error", "error": str(exc)[:300]})
+    return {"results": results}
+
+
 @api.get("/warehouse/candles/{instrument}")
 async def warehouse_candles(instrument: str, limit: int = Query(500, le=5000)):
     rows = await candle_sample(instrument.upper(), limit=limit)
