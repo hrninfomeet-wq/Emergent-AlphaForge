@@ -9,7 +9,7 @@ import pandas as pd
 
 from app.db import get_db
 from app.yfinance_source import fetch_1m
-from app.nse_calendar import trading_days_in_range
+from app.nse_calendar import trading_days_in_range, expected_candle_count, is_trading_day
 
 log = logging.getLogger(__name__)
 
@@ -225,6 +225,13 @@ async def get_coverage() -> Dict[str, Any]:
         # Per-day counts from integrity_hashes
         days_cur = db.integrity_hashes.find({"instrument": instrument}, {"_id": 0, "date": 1, "candle_count": 1, "hash": 1}).sort("date", 1)
         days = await days_cur.to_list(length=2000)
+        # Annotate each day with calendar context so the heatmap can skip
+        # non-trading days (weekends/holidays) and color short sessions (Muhurat)
+        # against the correct expected count instead of a flat 375.
+        for day in days:
+            iso = str(day.get("date") or "")
+            day["is_trading_day"] = is_trading_day(iso)
+            day["expected_candles"] = expected_candle_count(iso)
         out[instrument] = {
             "candle_count": doc["count"],
             "min_ts": doc["min_ts"],

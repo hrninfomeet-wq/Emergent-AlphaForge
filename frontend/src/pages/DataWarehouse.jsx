@@ -1481,12 +1481,24 @@ function CoverageHeatmap({ coverage }) {
       </div>
     );
   }
-  // Build unique date list across all instruments
-  const dateSet = new Set();
-  Object.values(coverage).forEach((c) => (c.days || []).forEach((d) => dateSet.add(d.date)));
-  const dates = [...dateSet].sort();
-  // Expected ~375 candles per Indian trading day (NSE 09:15-15:30 = 375 minutes)
-  const TARGET = 375;
+  // Build the trading-day date list. The backend annotates each day with
+  // `is_trading_day` (calendar-aware: skips weekends/holidays, includes special
+  // sessions). Non-trading days — including stray weekend ticks the roller may
+  // have captured — are excluded so they are not flagged red.
+  const DEFAULT_TARGET = 375;
+  const tradingFlag = {};   // date -> is this a trading day (any instrument says so)
+  const expectedByDate = {}; // date -> expected candle count for that session
+  Object.values(coverage).forEach((c) =>
+    (c.days || []).forEach((d) => {
+      // Backward-compatible: if the flag is absent (older payloads), treat as trading.
+      const isTrading = d.is_trading_day === undefined ? true : Boolean(d.is_trading_day);
+      if (isTrading) tradingFlag[d.date] = true;
+      const exp = Number(d.expected_candles);
+      if (Number.isFinite(exp) && exp > 0) expectedByDate[d.date] = exp;
+    })
+  );
+  const dates = Object.keys(tradingFlag).sort();
+
   return (
     <div className="rounded-lg border border-line bg-bg-1" data-testid="data-coverage-heatmap">
       <div className="px-3 py-2 border-b border-line">
@@ -1510,12 +1522,14 @@ function CoverageHeatmap({ coverage }) {
                   <td className="text-dim text-xs pr-2 py-1">{inst}</td>
                   {dates.map((d) => {
                     const day = dayMap[d];
+                    const target = expectedByDate[d] || DEFAULT_TARGET;
                     if (!day) return <td key={d} className="px-0.5"><div className="w-4 h-4 bg-bg-3 rounded-sm border border-line" title={`${d}: no data`}></div></td>;
-                    const pct = Math.min(100, Math.round((day.candle_count / TARGET) * 100));
+                    const pct = Math.min(100, Math.round((day.candle_count / target) * 100));
                     const color = pct >= 90 ? "bg-emerald-600" : pct >= 50 ? "bg-amber-600" : "bg-rose-700";
+                    const shortNote = target < DEFAULT_TARGET ? " (short session)" : "";
                     return (
                       <td key={d} className="px-0.5">
-                        <div className={`w-4 h-4 ${color} rounded-sm border border-line cursor-help`} title={`${inst} · ${d}: ${day.candle_count}/${TARGET} candles (${pct}%)\nhash ${day.hash}`}></div>
+                        <div className={`w-4 h-4 ${color} rounded-sm border border-line cursor-help`} title={`${inst} · ${d}: ${day.candle_count}/${target} candles (${pct}%)${shortNote}\nhash ${day.hash}`}></div>
                       </td>
                     );
                   })}
@@ -1529,6 +1543,7 @@ function CoverageHeatmap({ coverage }) {
           <div className="flex items-center gap-1"><span className="w-3 h-3 bg-amber-600 rounded-sm"></span>50–90%</div>
           <div className="flex items-center gap-1"><span className="w-3 h-3 bg-rose-700 rounded-sm"></span>&lt;50%</div>
           <div className="flex items-center gap-1"><span className="w-3 h-3 bg-bg-3 rounded-sm border border-line"></span>no data</div>
+          <div className="ml-auto">Trading days only · weekends/holidays excluded · short sessions scaled to their expected length</div>
         </div>
       </div>
     </div>

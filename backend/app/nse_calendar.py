@@ -95,6 +95,16 @@ SPECIAL_SATURDAY_SESSIONS: Set[str] = {
     "2026-02-01",  # Union Budget 2026-27 (declared Saturday session)
 }
 
+# Standard NSE/BSE regular session is 09:15-15:30 IST = 375 one-minute candles.
+REGULAR_SESSION_CANDLES = 375
+
+# Muhurat (Diwali) trading is a special ~1-hour evening session. These dates ARE
+# trading days but have a reduced expected candle count, so a complete short
+# session is not flagged red by the coverage audit/heatmap.
+MUHURAT_SESSIONS: dict = {
+    "2025-10-21": 60,   # Diwali Muhurat 2025: ~1h evening session, ~60 candles observed
+}
+
 ALL_HOLIDAYS: Set[str] = _HOLIDAYS_2024 | _HOLIDAYS_2025 | _HOLIDAYS_2026
 
 # Human-readable labels for each holiday, keyed by ISO date. Used by the UI
@@ -214,6 +224,21 @@ def is_trading_day(iso_date: str) -> bool:
     if is_weekend(d):
         return False
     return iso_date not in ALL_HOLIDAYS
+
+
+def expected_candle_count(iso_date: str) -> int:
+    """Expected 1-minute candle count for a date.
+
+    Returns 0 for non-trading days (weekend/holiday, unless a special session),
+    a reduced count for known short sessions (Muhurat), and the full regular
+    session count otherwise. Used by the coverage audit/heatmap so weekends and
+    holidays are not flagged red and short sessions are not penalized.
+    """
+    if iso_date in MUHURAT_SESSIONS:
+        return int(MUHURAT_SESSIONS[iso_date])
+    if not is_trading_day(iso_date):
+        return 0
+    return REGULAR_SESSION_CANDLES
 
 
 def expected_trading_days(start_iso: str, end_iso: str) -> int:
