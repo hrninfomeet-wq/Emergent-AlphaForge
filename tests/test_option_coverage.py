@@ -204,3 +204,26 @@ def test_warehouse_candlestick_chart_wired_end_to_end():
     # Date/time locator with marker.
     assert "chart-locate-button" in chart
     assert "createSeriesMarkers" in chart
+
+
+def test_warehouse_chart_has_ist_axis_theme_and_session_context():
+    """The warehouse chart must make candle OHLC, chart theme, and IST session
+    context explicit so stored data can be audited visually."""
+    chart = (ROOT / "frontend" / "src" / "components" / "WarehouseChart.jsx").read_text(encoding="utf-8")
+
+    # OHLC values are separately addressable in the overlay, not only the close.
+    assert "chart-ohlc-open" in chart
+    assert "chart-ohlc-high" in chart
+    assert "chart-ohlc-low" in chart
+    assert "chart-ohlc-close" in chart
+    # The chart has local theme controls independent of the page theme.
+    assert "chart-theme-system" in chart
+    assert "chart-theme-dark" in chart
+    assert "chart-theme-light" in chart
+    # Time labels and session markers must be IST-aware.
+    assert "tickMarkFormatter" in chart
+    assert "axisLabel" in chart
+    assert "buildSessionMarkers" in chart
+    assert "chart-session-note" in chart
+    # Slow full-history requests must not overwrite a newer timeframe selection.
+    assert "loadSeqRef" in chart

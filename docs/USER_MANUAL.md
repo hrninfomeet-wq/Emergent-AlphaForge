@@ -1,6 +1,6 @@
 # User Manual
 
-Updated: 2026-05-31
+Updated: 2026-06-01
 
 This guide explains how to use AlphaForge as a local research and forward-testing app.
 
@@ -65,7 +65,7 @@ Re-running is safe; only missing data is fetched; partial failures resume cleanl
 
 Read-only coverage cards per index (candle count, date range, trading days) and the per-day coverage heatmap. Bulk index ingest is handled by Data Hygiene; for a one-off range use the Upstox ingest control in the Connection panel (Auto chunk uses 7-day chunks to avoid the Upstox Feb→Mar boundary error).
 
-**Candlestick chart:** pick NIFTY / BANKNIFTY / SENSEX and a timeframe (1m / 5m / 15m / 1h / 1d, default 1d). The chart renders calendar-approved regular sessions only (09:15-15:30 IST) so weekend, holiday, and off-session rows do not become candles or false gap warnings. The OHLC of the hovered candle shows top-left (TradingView style). The **Locate** tool takes an IST date + time, validates it against the loaded range (prompts if out of range), snaps a finer time to the bar that contains it, and marks that bar with an arrow. A gap banner lists trading days missing 1m candles.
+**Candlestick chart:** pick NIFTY / BANKNIFTY / SENSEX and a timeframe (1m / 5m / 15m / 1h / 1d, default 1d). The chart renders calendar-approved regular sessions only (09:15-15:30 IST) so weekend, holiday, and off-session rows do not become candles or false gap warnings. The chart axis is IST, session-open markers show where a trading day begins, and the footer reminds you that the regular session is 09:15-15:30. The top-left overlay always shows the selected candle's Open, High, Low, and Close, and the small monitor/moon/sun icon buttons switch the chart between System, Dark, and Light themes. The **Locate** tool takes an IST date + time, validates it against the loaded range (prompts if out of range), snaps a finer time to the bar that contains it, and marks that bar with an arrow. A gap banner lists trading days missing 1m candles.
 
 ### Option Data
 
