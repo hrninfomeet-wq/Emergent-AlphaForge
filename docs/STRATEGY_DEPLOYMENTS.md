@@ -193,7 +193,7 @@ Approval routes:
 | 7 | Slippage + post-hoc volatility detector | Done |
 | 8 | Strategy source SHA pinning + drift detection | Done |
 | 9 | Quality warnings + ack checkbox | Done |
-| 10 | Forward metrics aggregation per deployment | **Next** |
+| 10 | Forward metrics aggregation per deployment | Done |
 | 11 | Idempotency partial unique index | Done |
 | 12 | Per-deployment kill switches | Pending |
 
@@ -215,4 +215,4 @@ The deployment system is considered solid when:
 - Drift detection auto-pauses deployments when plugin source changes.
 - Approval auto-creates paper trades with correct lot size and source provenance.
 - Auto square-off at 15:00 IST closes intraday positions while honoring `allow_overnight`.
-- Forward metrics per deployment (Slice 10) surface profitability honestly with session completeness annotation.
+- Forward metrics per deployment surface profitability honestly with session completeness annotation.

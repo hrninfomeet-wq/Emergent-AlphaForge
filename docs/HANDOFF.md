@@ -6,7 +6,7 @@ This is the entry point for the next AI agent or developer. Read it before editi
 
 ## Status In One Line
 
-The Data Warehouse has been hardened end-to-end (fast, auto-updating, hygiene-managed, calendar-aware, verifiable, and chartable), and the read-only Upstox stream can now be restarted with a narrow live ATM option universe. **284 pytest tests pass.** The local Docker stack is healthy. The next planned product work is **Phase 4b Slice 10 — Forward metrics aggregation per deployment**.
+The Data Warehouse has been hardened end-to-end (fast, auto-updating, hygiene-managed, calendar-aware, verifiable, and chartable), the read-only Upstox stream can be restarted with a narrow live ATM option universe, and forward metrics now aggregate per deployment behind a 10-complete-session Strategy Library gate. **287 pytest tests pass.** The local Docker stack is healthy. The next planned product work is **Phase 4b Slice 12 — per-deployment kill switches**.
 
 ## Read Order For A New Agent
 
@@ -27,6 +27,17 @@ Live-session slice completed while the Upstox stream was active:
 - Default live option universe is NIFTY, BANKNIFTY, SENSEX with `radius=1` (ATM, one strike below, one strike above; CE+PE = 6 contracts per index). Keep this small until forward/paper behavior is trusted.
 - Live verification on 2026-06-01: stream restarted with 29 instruments (11 header + 18 option keys); option ticks arrived; live candle roller remained healthy and continued aggregating only spot index candles.
 - If the universe preview shows `missing_contracts`, run the existing current contract sync route first: `POST /api/upstox/options/contracts/{instrument}/sync`.
+
+## Recent Work — Forward Metrics Aggregation (2026-06-01)
+
+Phase 4b Slice 10 completed:
+
+- Added `backend/app/forward_metrics.py` to compute deployment-level paper metrics from closed `paper_trades`.
+- Session completeness is measured from `candles_1m` for the deployment instrument in the 10:00-15:00 IST window. A session is complete at `>=70%` coverage, i.e. at least 210 of 300 expected minutes.
+- Headline metrics include only closed paper trades whose entry session was complete. Trades from incomplete/missing sessions are counted under `excluded_incomplete_session_trade_count` for audit.
+- New routes: `GET /api/deployments/metrics?include_ineligible=1` and `GET /api/deployments/{deployment_id}/metrics`.
+- Strategy Library now fetches visible deployment metrics and shows them inside the relevant strategy card only when `complete_session_count >= 10`.
+- Live DB smoke on 2026-06-01: 7 deployments are collecting metrics, 0 visible yet because none has 10 complete sessions.
 
 ## Recent Work — Warehouse Chart Trust UI (2026-06-01)
 
@@ -94,6 +105,7 @@ Forward testing:
 - 1-minute close evaluator (`backend/app/deployment_evaluator.py`) running on a background scheduler during NSE market hours.
 - Deployment-generated CONFIRMED signals show in the Pending Approval panel; user clicks Approve / Skip / Mark Blocked.
 - Approve auto-creates a paper trade when `deployment.mode == "paper"`, with lot size pulled from the option contract.
+- Forward metrics aggregate win-rate, average P&L, and profit factor from closed paper trades, gated by complete 10:00-15:00 IST sessions.
 - Auto square-off at 15:00 IST every market day (override per deployment with `risk.allow_overnight=true`).
 - Expiry-day cutoff at 15:00 IST blocks new signals on the deployment instrument's expiry day.
 - Strategy source SHA is pinned on every new deployment; the evaluator auto-pauses on drift.
@@ -112,8 +124,7 @@ Warehouse: complete for v1 (this session). Optional warehouse extras not yet bui
 
 Product roadmap (from `plan.md`):
 
-- **Slice 10 (next): Forward metrics aggregation per deployment** — win-rate, avg P&L, profit factor, annotated with session completeness ≥70% of 10:00–15:00 IST. Surface in Strategy Library only after ≥10 complete sessions.
-- Slice 12: Per-deployment kill switches (`max_consecutive_losses`, `daily_loss_cutoff_pct`, `max_open_paper_trades`).
+- **Slice 12 (next): Per-deployment kill switches** — `max_consecutive_losses`, `daily_loss_cutoff_pct`, `max_open_paper_trades`.
 - Phase 5 profitability boosters (Kaplan–Meier survival, meta-model, Kelly sizing, Telegram alerts) are deferred until ≥6 months of forward signal history exists.
 - Phase 6 swing/positional extension is not started.
 - No automatic broker order placement. The manual approval gate is intentional and must remain.
@@ -198,6 +209,7 @@ Backend modules of note:
 - `backend/server.py` — FastAPI routes and orchestration.
 - `backend/app/db.py` — Mongo client, `ensure_indexes()`, JSON-safe serialization.
 - `backend/app/deployment_evaluator.py` — 1m_close forward evaluator + scheduler logic.
+- `backend/app/forward_metrics.py` — session-gated forward paper metrics for deployments.
 - `backend/app/deployment_preflight.py` — pre-flight data realism check.
 - `backend/app/deployment_quality.py` — quality warnings (5 checks).
 - `backend/app/data_hygiene.py` — warehouse fill plan + execute (index-friendly aggregations, ~6s).
@@ -236,7 +248,7 @@ See `docs/ARCHITECTURE.md` for the full module map.
 ## Verification Checklist
 
 ```bash
-python -m pytest tests -q     # 280 pass as of 2026-06-01
+python -m pytest tests -q     # 287 pass as of 2026-06-01
 cd frontend
 npm run build
 cd ..
@@ -250,6 +262,7 @@ UI smoke checks:
 - Data Warehouse: Data Hygiene "Check warehouse" returns per-instrument status; coverage heatmaps render fast; candlestick chart loads, O/H/L/C overlay is readable, axis is IST, chart theme icons switch, date/time locator marks a bar, and holiday-calendar modal opens.
 - Top bar shows the OAuth token-expiry countdown.
 - Live Signals page shows the deployment list and the Pending Approval panel.
+- Strategy Library loads without console errors; forward metrics remain hidden until a deployment has at least 10 complete sessions.
 - Creating a deployment with quality warnings is blocked until the ack checkbox is ticked.
 
 Service health:

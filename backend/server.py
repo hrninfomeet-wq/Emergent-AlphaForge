@@ -47,6 +47,7 @@ from app.signal_lifecycle import SignalStateError, create_signal_doc, transition
 from app.strategy_deployments import build_deployment_doc
 from app.strategy_source_hash import detect_drift, hash_strategy_source
 from app.deployment_quality import evaluate_source_quality
+from app.forward_metrics import compute_forward_metrics_for_deployment, compute_forward_metrics_for_deployments
 from app.upstox_index_ingest import persist_index_candles_bulk, run_upstox_index_ingest_job
 from app.upstox_stream import DEFAULT_STREAM_MODE, UpstoxMarketStreamManager
 from app.live_candle_roller import LiveCandleRoller
@@ -1204,6 +1205,39 @@ async def deployment_quality_route(
     """
     source = await _load_deployment_source(get_db(), source_type, source_id)
     return serialize_doc(evaluate_source_quality(source))
+
+
+@api.get("/deployments/metrics")
+async def list_deployment_metrics(
+    strategy_id: Optional[str] = Query(None),
+    include_ineligible: bool = Query(False),
+    limit: int = Query(100, le=300),
+):
+    """Return session-gated forward metrics for deployments.
+
+    By default this returns only deployments that have met the Strategy Library
+    visibility gate (>=10 complete forward sessions). Pass include_ineligible=1
+    for audit/debug views that need to see collecting deployments too.
+    """
+    db = get_db()
+    query: Dict[str, Any] = {}
+    if strategy_id:
+        query["strategy_id"] = strategy_id
+    deployments = await db.strategy_deployments.find(query, {"_id": 0}).sort("created_at", -1).limit(limit).to_list(length=limit)
+    items = await compute_forward_metrics_for_deployments(db, deployments)
+    if not include_ineligible:
+        items = [item for item in items if (item.get("library_gate") or {}).get("visible")]
+    return serialize_doc({"items": items, "count": len(items)})
+
+
+@api.get("/deployments/{deployment_id}/metrics")
+async def get_deployment_metrics(deployment_id: str):
+    """Return session-gated forward metrics for one deployment."""
+    db = get_db()
+    deployment = await db.strategy_deployments.find_one({"id": deployment_id}, {"_id": 0})
+    if not deployment:
+        raise HTTPException(404, "Deployment not found")
+    return serialize_doc(await compute_forward_metrics_for_deployment(db, deployment))
 
 
 @api.get("/deployments/{deployment_id}")

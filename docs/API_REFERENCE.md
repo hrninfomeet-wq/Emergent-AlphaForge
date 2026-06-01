@@ -273,6 +273,12 @@ Slice 5 pre-flight check. Returns spot coverage (last 30 trading days), upcoming
 ### `GET /api/deployments/quality?source_type=...&source_id=...`
 Slice 9 quality evaluation against the source. Returns severity-colored warnings.
 
+### `GET /api/deployments/metrics?strategy_id=&include_ineligible=false&limit=100`
+Session-gated forward metrics for deployments. By default returns only deployments visible in Strategy Library (`complete_session_count >= 10`). Pass `include_ineligible=1` for audit/debug views. Metrics are computed from closed `paper_trades`, but headline win-rate / avg P&L / profit factor include only trades whose entry session had at least 70% coverage in the 10:00-15:00 IST window.
+
+### `GET /api/deployments/{deployment_id}/metrics`
+Forward metrics for one deployment, including session-completeness summary and excluded incomplete-session trade count.
+
 ### `GET /api/deployments/{id}`
 Single deployment doc.
 

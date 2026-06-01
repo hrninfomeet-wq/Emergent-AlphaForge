@@ -1,6 +1,6 @@
 # Project Overview
 
-Updated: 2026-05-31
+Updated: 2026-06-01
 
 ## What AlphaForge Is
 
@@ -43,12 +43,12 @@ End-to-end quant workflow:
 | Auto square-off | 15:00 IST every market day, override per deployment |
 | Pre-flight + quality gates | Surfaced at deployment creation, ack required for warnings |
 | OAuth token-expiry countdown | In the global top bar |
-| Forward metrics aggregation | **Slice 10 — next** |
+| Forward metrics aggregation | Complete: session-gated deployment metrics in Strategy Library |
 | Per-deployment kill switches | Slice 12 — pending |
 | Phase 5 probability engine | Deferred until ≥6 months forward signal history |
 | Phase 6 swing extension | Not started |
 
-272 backend tests pass. The local stack is healthy. Latest GitHub commit on `main`: `882092d`.
+287 backend tests pass. The local stack is healthy.
 
 ## Capabilities Summary
 
@@ -89,6 +89,7 @@ End-to-end quant workflow:
 - DTE filter (default `[0..6]`) and `option_no_data` blockers.
 - Concurrency rule: keep highest-score per `(instrument, candle_ts)`.
 - Audit trail invariants: `bar_ts`, `decision_ts`, `strategy_id`, `strategy_version`, `strategy_hash`, `pretrade_settings_snapshot`, `regime`, `option_contract`, `tracked_for_pnl`, `blockers[]`.
+- Forward metrics per deployment: win-rate, avg P&L, total P&L, profit factor, and excluded incomplete-session trades. Strategy Library shows them only after at least 10 complete sessions.
 
 ### Approval and paper trading
 
@@ -148,12 +149,11 @@ Day-to-day this is automatic: the warehouse catches up to yesterday's close on b
 
 1. Inspect signals per deployment via `GET /api/deployments/{id}/signals`.
 2. Inspect paper trades via `GET /api/paper/trades`.
-3. Slice 10 will roll these into per-deployment win-rate, avg P&L, profit factor, and session completeness. Until that lands, the data is in the audit trail but not yet aggregated.
+3. Strategy Library surfaces deployment metrics after the 10-complete-session gate. For audit/debug views, call `GET /api/deployments/metrics?include_ineligible=1`.
 
 ## What Is Not Done
 
-- **Slice 10 — Forward metrics aggregation per deployment.** Win-rate, avg P&L, profit factor, annotated with session completeness ≥70% of 10:00–15:00 IST, surfaced in Strategy Library when ≥10 complete sessions exist. **This is the next planned work.**
-- **Slice 12 — Per-deployment kill switches.** `max_consecutive_losses`, `daily_loss_cutoff_pct`, `max_open_paper_trades`.
+- **Slice 12 — Per-deployment kill switches.** `max_consecutive_losses`, `daily_loss_cutoff_pct`, `max_open_paper_trades`. **This is the next planned work.**
 - **Optional warehouse extras** (not blocking): option price sanity check (intrinsic floor / impossible jumps), `mongodump` backup button, OI staleness check (OI is populated; no dedicated check yet).
 - Phase 5 — probability engine (Kaplan–Meier survival), meta-model, Kelly sizing, Telegram alerts. Deferred until ≥6 months forward history exists.
 - Phase 6 — swing/positional extension on 1H/1D timeframes. Not started.
@@ -229,4 +229,4 @@ If you are a new agent picking this up:
 1. Read `docs/HANDOFF.md`.
 2. Read `plan.md` for the slice roadmap.
 3. Read `docs/ARCHITECTURE.md` for the module map.
-4. The next implementation work is **Slice 10 — Forward metrics aggregation per deployment**.
+4. The next implementation work is **Slice 12 — per-deployment kill switches**.

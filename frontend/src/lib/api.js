@@ -154,6 +154,10 @@ export const api = {
     apiClient.post("/deployments/evaluate-active").then((r) => r.data),
   listDeploymentSignals: (id, params = {}) =>
     apiClient.get(`/deployments/${id}/signals`, { params }).then((r) => r.data),
+  listDeploymentMetrics: (params = {}) =>
+    apiClient.get("/deployments/metrics", { params }).then((r) => r.data),
+  deploymentMetrics: (id) =>
+    apiClient.get(`/deployments/${id}/metrics`).then((r) => r.data),
   deploymentPreflight: (instrument, params = {}) =>
     apiClient.get("/deployments/preflight", { params: { instrument, ...params } }).then((r) => r.data),
   deploymentQuality: (sourceType, sourceId) =>

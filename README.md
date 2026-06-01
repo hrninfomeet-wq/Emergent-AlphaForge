@@ -4,7 +4,7 @@ A local-first research and forward-testing terminal for Indian index options on 
 
 This is a research tool. Options trading is high risk; treat every signal as a hypothesis until it survives walk-forward, forward testing, and paper trading.
 
-## Status (2026-05-31)
+## Status (2026-06-01)
 
 | Area | Status |
 |---|---|
@@ -26,10 +26,10 @@ This is a research tool. Options trading is high risk; treat every signal as a h
 | Auto square-off | 15:00 IST every market day, override per deployment |
 | Pre-flight + quality gates | Surfaced at deployment creation, ack required |
 | OAuth token-expiry countdown | In the global top bar |
-| Forward metrics aggregation | Slice 10 — next |
+| Forward metrics aggregation | Complete: session-gated deployment metrics |
 | Per-deployment kill switches | Slice 12 — pending |
 
-272 backend tests pass.
+287 backend tests pass.
 
 ## Quick Start
 

@@ -115,6 +115,7 @@ flowchart TD
 | `backend/app/deployment_preflight.py` | Spot coverage, expiries, active vs expired contracts, Upstox token state |
 | `backend/app/deployment_quality.py` | 5 quality checks; ack required when warnings present |
 | `backend/app/deployment_evaluator.py` | 1m_close evaluator, scheduler, time-of-day blocks, expiry cutoff, drift auto-pause |
+| `backend/app/forward_metrics.py` | Session-gated deployment metrics from closed paper trades; Strategy Library visibility waits for >=10 complete sessions |
 | `backend/app/signal_lifecycle.py` | Lifecycle state machine and audit events |
 | `backend/app/paper_trading.py` | Paper trade create/mark/close, stop/target auto-close |
 | `backend/app/paper_squareoff.py` | 15:00 IST background close-all loop with `allow_overnight` opt-out |
@@ -225,6 +226,7 @@ All routes are prefixed with `/api`. See `docs/API_REFERENCE.md` for full reques
 - `POST /deployments/{id}/evaluate-on-close` `POST /deployments/evaluate-active`
 - `GET /deployments/preflight?instrument=...`
 - `GET /deployments/quality?source_type=preset|backtest_run&source_id=...`
+- `GET /deployments/metrics` `GET /deployments/{id}/metrics`
 
 ### Signals and paper trading
 

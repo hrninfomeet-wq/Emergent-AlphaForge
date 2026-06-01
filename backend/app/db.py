@@ -65,6 +65,7 @@ async def ensure_indexes() -> None:
     await db.chain_snapshots.create_index([("created_at", -1)])
     await db.paper_trades.create_index([("created_at", -1)])
     await db.paper_trades.create_index([("status", 1), ("updated_at", -1)])
+    await db.paper_trades.create_index([("deployment_id", 1), ("status", 1), ("closed_at", -1)])
     await db.presets.create_index([("name", 1)], unique=True)
     await db.pretrade_profiles.create_index([("name", 1)], unique=True)
     await db.optimization_jobs.create_index([("created_at", -1)])
