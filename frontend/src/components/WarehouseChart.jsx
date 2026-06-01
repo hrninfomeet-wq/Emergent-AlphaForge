@@ -11,10 +11,6 @@ import { LineChart, AlertTriangle, Crosshair, Target, Monitor, Moon, Sun } from 
 const INSTRUMENTS = ["NIFTY", "BANKNIFTY", "SENSEX"];
 const TIMEFRAMES = ["1m", "5m", "15m", "1h", "1d"];
 
-// How many days of history to request per timeframe (intraday TFs need less so
-// the chart stays responsive; daily shows the whole warehouse).
-const LOOKBACK_DAYS = { "1m": 3, "5m": 7, "15m": 21, "1h": 90, "1d": 0 };
-
 // Bucket size in seconds for each timeframe (used to snap a locate-time to its bar).
 const TF_SECONDS = { "1m": 60, "5m": 300, "15m": 900, "1h": 3600, "1d": 86400 };
 
@@ -53,14 +49,6 @@ const CHART_PALETTES = {
     session: "#2563EB",
   },
 };
-
-function windowFor(timeframe) {
-  const days = LOOKBACK_DAYS[timeframe] ?? 30;
-  if (!days) return {}; // full history
-  const end = Date.now();
-  const start = end - days * 24 * 60 * 60 * 1000;
-  return { start_ts: start, end_ts: end };
-}
 
 // IST date + time -> UTC epoch ms (minute-truncated).
 function istToMs(dateStr, timeStr) {
@@ -164,7 +152,7 @@ function buildSessionMarkers(bars, timeframe, palette) {
     position: "belowBar",
     color: palette.session,
     shape: "circle",
-    text: index % textEvery === 0 ? `${session.date.slice(5)} 09:15 IST` : "09:15",
+    ...(index % textEvery === 0 ? { text: `${session.date.slice(5)} 09:15 IST` } : {}),
   }));
 }
 
@@ -253,7 +241,7 @@ export default function WarehouseChart() {
     setLoading(true);
     setLocateMsg(null);
     try {
-      const res = await api.warehouseOhlc(requestedInstrument, { timeframe: requestedTimeframe, ...windowFor(requestedTimeframe), include_gaps: true });
+      const res = await api.warehouseOhlc(requestedInstrument, { timeframe: requestedTimeframe, include_gaps: true });
       if (seq !== loadSeqRef.current) return;
       const bars = (res.bars || []).map((b) => ({
         time: b.time, open: b.open, high: b.high, low: b.low, close: b.close,
@@ -298,7 +286,7 @@ export default function WarehouseChart() {
     const bucket = TF_SECONDS[timeframe] || 60;
 
     if (targetSec < firstSec) {
-      setLocateMsg({ type: "err", text: `Selected time is before the loaded range (${barLabel(firstSec, timeframe)} IST). Switch to 1d for older data.` });
+      setLocateMsg({ type: "err", text: `Selected time is before the loaded range (${barLabel(firstSec, timeframe)} IST).` });
       return;
     }
     if (targetSec > lastSec + bucket) {
@@ -466,7 +454,7 @@ export default function WarehouseChart() {
         </div>
         <div className="mt-2 text-[10px] text-dimmer font-mono">
           {instrument} · {timeframe} · {fmtInt(meta.bar_count)} bars · stored warehouse data
-          {timeframe !== "1d" && LOOKBACK_DAYS[timeframe] ? ` · last ${LOOKBACK_DAYS[timeframe]}d` : " · full history"}
+          {" · full stored range"}
           <span data-testid="chart-session-note"> · Axis: IST · regular session 09:15-15:30 · blue dots mark session opens</span>
         </div>
       </div>

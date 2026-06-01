@@ -6,7 +6,7 @@ This is the entry point for the next AI agent or developer. Read it before editi
 
 ## Status In One Line
 
-The Data Warehouse has been hardened end-to-end (fast, auto-updating, hygiene-managed, calendar-aware, verifiable, and chartable). **278 pytest tests pass.** The local Docker stack is healthy. The next planned product work is **Phase 4b Slice 10 — Forward metrics aggregation per deployment** (paused earlier to perfect the warehouse).
+The Data Warehouse has been hardened end-to-end (fast, auto-updating, hygiene-managed, calendar-aware, verifiable, and chartable). **280 pytest tests pass.** The local Docker stack is healthy. The next planned product work is **Phase 4b Slice 10 — Forward metrics aggregation per deployment** (paused earlier to perfect the warehouse).
 
 ## Read Order For A New Agent
 
@@ -23,8 +23,10 @@ Focused pass on the Data Warehouse candlestick panel:
 
 - The top-left chart overlay now shows explicit Open / High / Low / Close values with chart-theme-safe colors. It no longer relies on the app page theme, which made O/H/L hard to read on a dark chart.
 - Added small icon-only chart theme controls: System, Dark, Light. This is local to the chart and does not change the whole app theme.
+- Every timeframe now requests the full stored warehouse range. The earlier short-range behavior was a frontend `LOOKBACK_DAYS` optimization (`1m=3d`, `5m=7d`, `15m=21d`, `1h=90d`), not missing warehouse data.
 - Chart time labels are formatted in IST through the Lightweight Charts tick formatter, with a footer reminder that the regular session is 09:15-15:30 IST.
 - Added session-open markers so intraday multi-session views show where a new Indian market session begins.
+- 1h resampling is anchored to 09:15 IST, not 09:00. Gap detection skips the current in-progress trading session until after 15:30 IST.
 - Fixed a stale async request race: the slow default full-history `1d` load could finish after a quick `1m`/`5m` switch and overwrite the chart while the toolbar showed the newer timeframe. `loadSeqRef` now ignores older responses.
 
 ## Recent Work — Data Warehouse Hardening (2026-05-31)
@@ -220,7 +222,7 @@ See `docs/ARCHITECTURE.md` for the full module map.
 ## Verification Checklist
 
 ```bash
-python -m pytest tests -q     # 278 pass as of 2026-06-01
+python -m pytest tests -q     # 280 pass as of 2026-06-01
 cd frontend
 npm run build
 cd ..

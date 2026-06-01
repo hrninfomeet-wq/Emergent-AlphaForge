@@ -72,7 +72,16 @@ def resample_ohlc(df: pd.DataFrame, timeframe: str) -> List[Dict[str, Any]]:
         # No aggregation needed; just normalize the rows.
         bars = work.reset_index()
     else:
-        agg = work.resample(rule, label="left", closed="left").agg({
+        resample_kwargs = {"label": "left", "closed": "left"}
+        if timeframe != "1d":
+            # Intraday buckets must align to the 09:15 IST session open.
+            # Otherwise 1h candles start at 09:00 because pandas anchors hourly
+            # resampling at midnight by default.
+            resample_kwargs.update({
+                "origin": "start_day",
+                "offset": pd.Timedelta(minutes=SESSION_START_MINUTE),
+            })
+        agg = work.resample(rule, **resample_kwargs).agg({
             "open": "first",
             "high": "max",
             "low": "min",
@@ -100,7 +109,20 @@ def resample_ohlc(df: pd.DataFrame, timeframe: str) -> List[Dict[str, Any]]:
     return out
 
 
-def find_intraday_gaps(df: pd.DataFrame, max_report: int = 50) -> List[Dict[str, Any]]:
+def _now_ist(now: Optional[pd.Timestamp] = None) -> pd.Timestamp:
+    if now is None:
+        return pd.Timestamp.now(tz="Asia/Kolkata")
+    ts = pd.Timestamp(now)
+    if ts.tzinfo is None:
+        return ts.tz_localize("Asia/Kolkata")
+    return ts.tz_convert("Asia/Kolkata")
+
+
+def find_intraday_gaps(
+    df: pd.DataFrame,
+    max_report: int = 50,
+    now: Optional[pd.Timestamp] = None,
+) -> List[Dict[str, Any]]:
     """Identify trading days whose stored 1m count is below the expected 375.
 
     Returns up to `max_report` day summaries with the stored count and a small
@@ -115,7 +137,12 @@ def find_intraday_gaps(df: pd.DataFrame, max_report: int = 50) -> List[Dict[str,
         return []
 
     gaps: List[Dict[str, Any]] = []
+    current = _now_ist(now)
+    current_date = current.strftime("%Y-%m-%d")
+    current_minute = current.hour * 60 + current.minute
     for date_str, grp in work.groupby("date"):
+        if date_str == current_date and current_minute < SESSION_END_MINUTE_EXCLUSIVE:
+            continue
         stored = int(len(grp))
         if stored >= EXPECTED_1M_PER_SESSION:
             continue

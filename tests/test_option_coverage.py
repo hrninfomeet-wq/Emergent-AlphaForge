@@ -227,3 +227,9 @@ def test_warehouse_chart_has_ist_axis_theme_and_session_context():
     assert "chart-session-note" in chart
     # Slow full-history requests must not overwrite a newer timeframe selection.
     assert "loadSeqRef" in chart
+    # Every timeframe should request the full stored range; the backend already
+    # resamples server-side and the warehouse chart is an audit surface.
+    assert "LOOKBACK_DAYS" not in chart
+    assert "windowFor" not in chart
+    assert "start_ts" not in chart
+    assert "full stored range" in chart

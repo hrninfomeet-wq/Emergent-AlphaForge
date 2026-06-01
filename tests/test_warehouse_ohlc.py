@@ -74,6 +74,18 @@ def test_resample_5m_aggregates_ohlc():
     assert first["volume"] == 50
 
 
+def test_resample_1h_aligns_to_session_start():
+    df = _one_minute_df("2026-05-20", 130)
+    bars = resample_ohlc(df, "1h")
+
+    assert len(bars) == 3
+    assert bars[0]["ts"] == _ts("2026-05-20", 9, 15)
+    assert bars[1]["ts"] == _ts("2026-05-20", 10, 15)
+    assert bars[2]["ts"] == _ts("2026-05-20", 11, 15)
+    assert bars[0]["open"] == 100
+    assert bars[0]["close"] == 160
+
+
 def test_resample_daily_one_bar_per_session():
     df = pd.concat([_one_minute_df("2026-05-20", 375), _one_minute_df("2026-05-21", 375)], ignore_index=True)
     bars = resample_ohlc(df, "1d")
@@ -132,6 +144,13 @@ def test_partial_session_reports_missing_minutes():
     assert g["missing_count"] == 5
     # The missing minutes are the last 5 of the session (15:25..15:29).
     assert "15:25" in g["missing_sample"]
+
+
+def test_gap_detection_does_not_flag_current_incomplete_session():
+    df = _one_minute_df("2026-05-20", 60)
+    now = pd.Timestamp("2026-05-20 10:30", tz="Asia/Kolkata")
+
+    assert find_intraday_gaps(df, now=now) == []
 
 
 def test_gap_detection_ignores_non_trading_dates_and_off_session_rows():
