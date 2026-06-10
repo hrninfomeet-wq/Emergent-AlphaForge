@@ -327,3 +327,68 @@ async def test_execute_handles_submitter_errors_without_aborting():
     assert result["submitted_count"] == 1
     assert len(result["errors"]) == 1
     assert "simulated" in result["errors"][0]["error"]
+
+
+# ---- compute_catch_up_plan: incremental spot + option window ----------------
+
+from app.data_hygiene import compute_catch_up_plan, most_recent_closed_session  # noqa: E402
+
+
+def _ms(iso: str) -> int:
+    # IST 15:30 close for the given date, expressed as epoch ms (UTC).
+    dt = datetime.fromisoformat(iso).replace(tzinfo=IST, hour=15, minute=30)
+    return int(dt.astimezone(timezone.utc).timestamp() * 1000)
+
+
+@pytest.mark.asyncio
+async def test_catch_up_plan_proposes_window_from_last_stored_date():
+    db = FakeDB()
+    # NIFTY last stored 2026-06-02 (Tue). Target end Fri 2026-06-05 (after close).
+    db.candles_1m._agg_result = [{"_id": None, "max_ts": _ms("2026-06-02")}]
+    now = datetime(2026, 6, 5, 16, 0, tzinfo=IST)
+    plan = await compute_catch_up_plan(db, instruments=["NIFTY"], now_ist=now)
+    nifty = plan["instruments"][0]
+    assert nifty["last_spot_date"] == "2026-06-02"
+    assert nifty["from_date"] == "2026-06-03"   # day after last stored
+    assert nifty["to_date"] == "2026-06-05"
+    assert nifty["up_to_date"] is False
+    kinds = sorted(a["kind"] for a in nifty["actions"])
+    assert kinds == ["contracts", "option_candles", "spot"]
+
+
+@pytest.mark.asyncio
+async def test_catch_up_plan_up_to_date_yields_no_actions():
+    db = FakeDB()
+    # Last stored is the most recent closed session already.
+    db.candles_1m._agg_result = [{"_id": None, "max_ts": _ms("2026-06-05")}]
+    now = datetime(2026, 6, 5, 16, 0, tzinfo=IST)
+    plan = await compute_catch_up_plan(db, instruments=["NIFTY"], now_ist=now)
+    nifty = plan["instruments"][0]
+    assert nifty["up_to_date"] is True
+    assert nifty["actions"] == []
+    assert plan["summary"]["total_actions"] == 0
+
+
+@pytest.mark.asyncio
+async def test_catch_up_plan_empty_warehouse_uses_fallback_start():
+    db = FakeDB()
+    db.candles_1m._agg_result = []  # no stored candles
+    now = datetime(2026, 6, 5, 16, 0, tzinfo=IST)
+    plan = await compute_catch_up_plan(
+        db, instruments=["NIFTY"], now_ist=now, fallback_start_date="2024-11-27",
+    )
+    nifty = plan["instruments"][0]
+    assert nifty["last_spot_date"] is None
+    assert nifty["from_date"] == "2024-11-27"
+    assert nifty["up_to_date"] is False
+
+
+def test_most_recent_closed_session_intraday_targets_yesterday():
+    # Friday 10:00 IST: market still open, so most recent closed session is Thu.
+    now = datetime(2026, 6, 5, 10, 0, tzinfo=IST)
+    assert most_recent_closed_session(now) == "2026-06-04"
+
+
+def test_most_recent_closed_session_weekend_targets_friday():
+    now = datetime(2026, 6, 7, 12, 0, tzinfo=IST)  # Sunday
+    assert most_recent_closed_session(now) == "2026-06-05"

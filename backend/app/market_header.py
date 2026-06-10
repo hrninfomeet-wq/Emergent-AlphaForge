@@ -94,6 +94,13 @@ def normalize_quote(
 
     timestamp = raw.get("timestamp") or raw.get("last_trade_time") or datetime.now(timezone.utc).isoformat()
 
+    # Day range (session high/low + open). Upstox quotes carry these under
+    # `ohlc`; WS ticks carry them under `marketOHLC` (the 1d bucket). The header
+    # tile uses these to draw a low→high range bar with a current-price marker.
+    day_high = _to_float(raw.get("high") or ohlc.get("high"))
+    day_low = _to_float(raw.get("low") or ohlc.get("low"))
+    day_open = _to_float(raw.get("open") or ohlc.get("open"))
+
     return {
         "key": key,
         "label": label,
@@ -101,6 +108,10 @@ def normalize_quote(
         "last_price": _round_or_none(last_price, 4),
         "change": _round_or_none(change, 4),
         "change_pct": _round_or_none(change_pct, 2),
+        "open": _round_or_none(day_open, 4),
+        "high": _round_or_none(day_high, 4),
+        "low": _round_or_none(day_low, 4),
+        "previous_close": _round_or_none(previous_close, 4),
         "timestamp": str(timestamp),
         "source": source_label,
         "status": "ok" if last_price is not None else "error",
@@ -256,6 +267,41 @@ def _is_fresh_tick(raw: Dict[str, Any], max_age_seconds: int = 120) -> bool:
     return (datetime.now(timezone.utc) - tick_dt).total_seconds() <= max_age_seconds
 
 
+# Last-known day range (high/low/open) per header key. WS ticks in `ltpc` mode
+# do not carry day OHLC, so when a fresh tick drives the price we backfill the
+# range bar from the most recent quote that did carry it (REST fallback or a
+# `full`-mode tick). This keeps the header range bar stable during market hours.
+_DAY_RANGE_CACHE: Dict[str, Dict[str, Any]] = {}
+
+
+def _remember_day_range(key: str, quote: Dict[str, Any]) -> None:
+    if not key:
+        return
+    high = quote.get("high")
+    low = quote.get("low")
+    if high is None and low is None:
+        return
+    _DAY_RANGE_CACHE[key] = {
+        "open": quote.get("open"),
+        "high": high,
+        "low": low,
+        "previous_close": quote.get("previous_close"),
+    }
+
+
+def _apply_cached_day_range(key: str, quote: Dict[str, Any]) -> Dict[str, Any]:
+    """Backfill high/low/open from cache when the quote itself lacks them."""
+    if quote.get("high") is not None or quote.get("low") is not None:
+        _remember_day_range(key, quote)
+        return quote
+    cached = _DAY_RANGE_CACHE.get(key)
+    if cached:
+        for field in ("open", "high", "low", "previous_close"):
+            if quote.get(field) is None and cached.get(field) is not None:
+                quote[field] = cached[field]
+    return quote
+
+
 async def _fetch_item_with_tick_preference(
     item: MarketItem,
     fetch_upstox: QuoteFetcher,
@@ -263,16 +309,19 @@ async def _fetch_item_with_tick_preference(
     latest_ticks: Dict[str, Dict[str, Any]],
 ) -> Dict[str, Any]:
     instrument_key = str(item.get("instrument_key") or "")
+    key = str(item.get("key") or "")
     tick = latest_ticks.get(instrument_key)
     if tick and _is_fresh_tick(tick):
-        return normalize_quote(
+        quote = normalize_quote(
             tick,
             label=str(item.get("label") or item.get("key")),
-            key=str(item.get("key")),
+            key=key,
             group=str(item.get("group") or "primary"),
             source_label="Upstox WS",
         )
-    return await _fetch_item(item, fetch_upstox, fetch_fallback)
+        return _apply_cached_day_range(key, quote)
+    quote = await _fetch_item(item, fetch_upstox, fetch_fallback)
+    return _apply_cached_day_range(key, quote)
 
 
 async def build_market_header_snapshot(

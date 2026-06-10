@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ChevronDown, Play, RefreshCw, Square, Wifi, WifiOff } from "lucide-react";
+import { ChevronDown, ChevronUp, Play, RefreshCw, Square, Wifi, WifiOff } from "lucide-react";
 import { api, API } from "@/lib/api";
 
 const PRIMARY_FALLBACK = [
@@ -245,7 +245,57 @@ function MarketTile({ item, compact = false }) {
         <span>{formatSigned(item.change)}</span>
         <span>{formatSigned(item.change_pct, "%")}</span>
       </div>
+      <RangeBar item={item} />
       <div className="mt-1 truncate text-[10px] text-dimmer">{source}</div>
     </article>
+  );
+}
+
+/**
+ * Day low→high range bar with a marker for the current/last price.
+ *
+ * Renders only when the quote carries a valid day high/low spread. The marker
+ * position is the last price interpolated between low and high; an up/down
+ * caret reflects the change direction. Degrades silently (renders nothing)
+ * when high/low are unavailable, e.g. an ltpc-only WS tick.
+ */
+function RangeBar({ item }) {
+  const low = Number(item?.low);
+  const high = Number(item?.high);
+  const last = Number(item?.last_price);
+  const ok =
+    item?.status === "ok" &&
+    Number.isFinite(low) &&
+    Number.isFinite(high) &&
+    Number.isFinite(last) &&
+    high > low;
+  if (!ok) return null;
+
+  const pct = Math.max(0, Math.min(100, ((last - low) / (high - low)) * 100));
+  const change = Number(item?.change ?? 0);
+  const markerColor = change > 0 ? "bg-emerald-400" : change < 0 ? "bg-red-400" : "bg-foreground";
+  const Caret = change < 0 ? ChevronDown : ChevronUp;
+  const caretColor = change > 0 ? "text-emerald-400" : change < 0 ? "text-red-400" : "text-dimmer";
+
+  return (
+    <div className="mt-1.5" data-testid="market-tile-range" title={`Day range ${formatNumber(low)} – ${formatNumber(high)}`}>
+      <div className="relative h-1.5 rounded-full bg-bg-3 overflow-hidden">
+        {/* low→current fill */}
+        <div
+          className={`absolute inset-y-0 left-0 ${change < 0 ? "bg-red-500/40" : "bg-emerald-500/40"}`}
+          style={{ width: `${pct}%` }}
+        />
+        {/* current-price marker */}
+        <div
+          className={`absolute top-1/2 h-2.5 w-0.5 -translate-y-1/2 -translate-x-1/2 ${markerColor}`}
+          style={{ left: `${pct}%` }}
+        />
+      </div>
+      <div className="mt-0.5 flex items-center justify-between text-[9px] font-mono text-dimmer leading-none">
+        <span title="Day low">L {formatNumber(low)}</span>
+        <Caret className={`h-3 w-3 ${caretColor}`} />
+        <span title="Day high">H {formatNumber(high)}</span>
+      </div>
+    </div>
   );
 }

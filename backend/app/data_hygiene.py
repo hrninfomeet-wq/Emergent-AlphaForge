@@ -29,6 +29,7 @@ from typing import Any, Dict, List, Optional
 from app.nse_calendar import (
     expected_trading_days as _calendar_expected_trading_days,
     holidays_in_range,
+    is_trading_day,
     trading_days_in_range,
 )
 
@@ -44,6 +45,32 @@ IST_OFFSET = timedelta(hours=5, minutes=30)
 
 def _today_ist_iso() -> str:
     return (datetime.now(timezone.utc) + IST_OFFSET).strftime("%Y-%m-%d")
+
+
+def _now_ist() -> datetime:
+    return datetime.now(timezone.utc) + IST_OFFSET
+
+
+def most_recent_closed_session(now_ist: Optional[datetime] = None) -> Optional[str]:
+    """Return the ISO date of the most recent *closed* trading session.
+
+    A session counts as closed once it is in the past, or it is today and the
+    wall clock is at/after 15:30 IST. Upstox historical returns empty for the
+    in-progress day, so an incremental catch-up should target this date as its
+    upper bound. Returns None if no trading day is found in the lookback.
+    """
+    now = now_ist or _now_ist()
+    today_iso = now.strftime("%Y-%m-%d")
+    market_closed_today = (now.hour, now.minute) >= (15, 30)
+    # Walk backwards from today up to ~10 calendar days to find a trading day.
+    cur = date.fromisoformat(today_iso)
+    for _ in range(12):
+        iso = cur.isoformat()
+        if is_trading_day(iso):
+            if iso < today_iso or (iso == today_iso and market_closed_today):
+                return iso
+        cur = cur - timedelta(days=1)
+    return None
 
 
 def _expected_weekday_count(start_iso: str, end_iso: str) -> int:
@@ -275,6 +302,146 @@ async def compute_hygiene_plan(
             "overall_status": worst_status,
             "total_actions": total_actions,
             "instruments_count": len(insts),
+        },
+    }
+
+
+async def _last_spot_date(db: Any, instrument: str) -> Optional[str]:
+    """Return the most recent IST date that has any stored spot candle, or None."""
+    instrument = instrument.upper()
+    pipeline = [
+        {"$match": {"instrument": instrument}},
+        {"$group": {"_id": None, "max_ts": {"$max": "$ts"}}},
+    ]
+    rows = await db.candles_1m.aggregate(pipeline).to_list(length=1)
+    if not rows or rows[0].get("max_ts") is None:
+        return None
+    max_ts = int(rows[0]["max_ts"])
+    dt = datetime.fromtimestamp(max_ts / 1000, timezone.utc) + IST_OFFSET
+    return dt.strftime("%Y-%m-%d")
+
+
+async def compute_catch_up_plan(
+    db: Any,
+    *,
+    instruments: Optional[List[str]] = None,
+    moneyness: Optional[List[str]] = None,
+    legs: Optional[List[str]] = None,
+    sample_interval_minutes: int = DEFAULT_SAMPLE_INTERVAL_MIN,
+    fallback_start_date: str = DEFAULT_START_DATE,
+    now_ist: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Build an *incremental* catch-up plan per instrument.
+
+    Unlike `compute_hygiene_plan`, which always diffs against the full fixed
+    scope (2024-11-27 -> today) and is expensive to re-run daily, this targets
+    only the gap between each instrument's last stored spot date and the most
+    recent closed trading session. For each instrument with a real gap it emits
+    spot + contracts + option_candles actions over that small window so both
+    spot and the corresponding option data are refreshed together.
+
+    The upper bound is the most recently *closed* session (Upstox historical is
+    empty for the in-progress day; today's bars arrive via the live roller), so
+    the plan never chases data the broker cannot yet return.
+    """
+    insts = [str(i).upper() for i in (instruments or DEFAULT_INSTRUMENTS) if i]
+    money = list(moneyness or DEFAULT_MONEYNESS)
+    legs_list = list(legs or DEFAULT_LEGS)
+    target_end = most_recent_closed_session(now_ist)
+
+    inst_reports: List[Dict[str, Any]] = []
+    total_actions = 0
+
+    for inst in insts:
+        last_date = await _last_spot_date(db, inst)
+        # Start the day after the last stored session; if the warehouse is empty
+        # for this instrument, fall back to the configured baseline start date.
+        if last_date:
+            start_dt = date.fromisoformat(last_date) + timedelta(days=1)
+            from_date = start_dt.isoformat()
+        else:
+            from_date = fallback_start_date
+
+        if not target_end or from_date > target_end:
+            inst_reports.append({
+                "instrument": inst,
+                "last_spot_date": last_date,
+                "from_date": from_date,
+                "to_date": target_end,
+                "up_to_date": True,
+                "missing_trading_days": 0,
+                "actions": [],
+            })
+            continue
+
+        missing_days = trading_days_in_range(from_date, target_end)
+        if not missing_days:
+            inst_reports.append({
+                "instrument": inst,
+                "last_spot_date": last_date,
+                "from_date": from_date,
+                "to_date": target_end,
+                "up_to_date": True,
+                "missing_trading_days": 0,
+                "actions": [],
+            })
+            continue
+
+        actions: List[Dict[str, Any]] = [
+            {
+                "id": f"spot_{inst}",
+                "kind": "spot",
+                "instrument": inst,
+                "from_date": from_date,
+                "to_date": target_end,
+                "reason": f"{len(missing_days)} trading day(s) missing since {last_date or 'inception'}",
+                "eta_minutes": 2,
+            },
+            {
+                "id": f"contracts_{inst}",
+                "kind": "contracts",
+                "instrument": inst,
+                "from_date": from_date,
+                "to_date": target_end,
+                "reason": "Sync option contracts covering the catch-up window",
+                "eta_minutes": 3,
+            },
+            {
+                "id": f"options_{inst}",
+                "kind": "option_candles",
+                "instrument": inst,
+                "from_date": from_date,
+                "to_date": target_end,
+                "moneyness": money,
+                "legs": legs_list,
+                "sample_interval_minutes": sample_interval_minutes,
+                "reason": f"Fetch ATM option candles for {len(missing_days)} new session(s)",
+                "eta_minutes": max(5, len(missing_days) * 2),
+            },
+        ]
+        total_actions += len(actions)
+        inst_reports.append({
+            "instrument": inst,
+            "last_spot_date": last_date,
+            "from_date": from_date,
+            "to_date": target_end,
+            "up_to_date": False,
+            "missing_trading_days": len(missing_days),
+            "actions": actions,
+        })
+
+    return {
+        "id": str(uuid.uuid4()),
+        "mode": "catch_up",
+        "computed_at": datetime.now(timezone.utc).isoformat(),
+        "window": {"start": None, "end": target_end},
+        "scope": {"moneyness": money, "legs": legs_list, "sample_interval_minutes": sample_interval_minutes},
+        "instruments": inst_reports,
+        "summary": {
+            "overall_status": "verified" if total_actions == 0 else "warning",
+            "total_actions": total_actions,
+            "instruments_count": len(insts),
+            "target_end": target_end,
         },
     }
 

@@ -9,6 +9,7 @@ import { useTheme } from "@/lib/theme";
 import { useJobs } from "@/lib/jobs";
 import { api } from "@/lib/api";
 import MarketHeader from "@/components/MarketHeader";
+import TokenCountdown from "@/components/TokenCountdown";
 
 const NAV_GROUPS = [
   {
@@ -117,7 +118,7 @@ function TopBar({ location }) {
     <header className="h-14 border-b border-line bg-bg-1 flex items-center px-4 gap-3" data-testid="app-topbar">
       <h1 className="text-base font-semibold" data-testid="page-title">{title}</h1>
       <ActiveJobsIndicator />
-      <TokenExpiryIndicator />
+      <TokenCountdown variant="button" />
       <div className="ml-auto flex items-center gap-3 text-[11px] font-mono text-dimmer">
         <label className="flex items-center gap-1.5">
           <ThemeIcon className="w-3.5 h-3.5 text-info" />
@@ -166,60 +167,6 @@ function ActiveJobsIndicator() {
         </span>
       ))}
     </div>
-  );
-}
-
-function TokenExpiryIndicator() {
-  const [status, setStatus] = useState(null);
-  const [now, setNow] = useState(Date.now());
-
-  useEffect(() => {
-    let alive = true;
-    const load = () => api.upstoxStatus().then((s) => { if (alive) setStatus(s); }).catch(() => {});
-    load();
-    const poll = setInterval(load, 60000);  // re-check connection state every minute
-    const tick = setInterval(() => setNow(Date.now()), 30000);  // recompute countdown
-    return () => { alive = false; clearInterval(poll); clearInterval(tick); };
-  }, []);
-
-  if (!status) return null;
-
-  // Not connected at all: show a quiet "disconnected" hint so the user knows
-  // forward testing / auto-update is paused.
-  if (!status.connected) {
-    return (
-      <span
-        className="flex items-center gap-1 px-2 py-1 rounded-md border border-amber-900 bg-amber-950/40 text-[11px] font-mono text-amber-200"
-        data-testid="topbar-token-indicator"
-        title="Upstox is not connected. Connect it in Data Warehouse."
-      >
-        <AlertTriangle className="w-3.5 h-3.5" /> Upstox off
-      </span>
-    );
-  }
-
-  const expMs = status.expires_at ? Date.parse(status.expires_at) : NaN;
-  if (Number.isNaN(expMs)) return null;
-  const mins = Math.floor((expMs - now) / 60000);
-  const expired = mins <= 0 || status.expired;
-  const hrs = Math.floor(Math.max(0, mins) / 60);
-  const remMins = Math.max(0, mins) % 60;
-  const label = expired ? "token expired" : hrs > 0 ? `${hrs}h ${remMins}m` : `${remMins}m`;
-  const cls = expired || mins < 30
-    ? "border-rose-900 bg-rose-950/40 text-rose-200"
-    : mins < 120
-      ? "border-amber-900 bg-amber-950/40 text-amber-200"
-      : "border-line bg-bg-2 text-dim";
-  const Icon = expired || mins < 30 ? AlertTriangle : Clock;
-
-  return (
-    <span
-      className={`flex items-center gap-1 px-2 py-1 rounded-md border text-[11px] font-mono ${cls}`}
-      data-testid="topbar-token-indicator"
-      title={`Upstox token ${expired ? "expired" : "expires"} at ${status.expires_at}`}
-    >
-      <Icon className="w-3.5 h-3.5" /> {expired ? "Reconnect Upstox" : `Token ${label}`}
-    </span>
   );
 }
 

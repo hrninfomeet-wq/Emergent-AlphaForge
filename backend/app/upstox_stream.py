@@ -405,6 +405,42 @@ def _ltpc_from_feed(feed: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _day_ohlc_from_feed(feed: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Pull the day (1d) OHLC bucket from a feed's marketOHLC, if present.
+
+    Only `full`/`full_d30` stream modes carry marketOHLC; `ltpc` does not. We
+    pick the bucket whose interval denotes a full day ("1d"/"1day"/"I1") so the
+    header tile can draw a session low->high range bar. Returns None when no
+    day bucket is available.
+    """
+    full_feed = feed.get("fullFeed") or {}
+    market_ohlc = (
+        feed.get("marketOHLC")
+        or (full_feed.get("marketFF") or {}).get("marketOHLC")
+        or (full_feed.get("indexFF") or {}).get("marketOHLC")
+        or {}
+    )
+    rows = market_ohlc.get("ohlc") if isinstance(market_ohlc, dict) else None
+    if not rows:
+        return None
+    day_markers = {"1d", "1day", "i1", "day"}
+    chosen = None
+    for row in rows:
+        interval = str(row.get("interval") or "").lower()
+        if interval in day_markers:
+            chosen = row
+            break
+    if chosen is None:
+        # Fall back to the last bucket (Upstox orders intraday then day).
+        chosen = rows[-1]
+    high = _to_float(chosen.get("high"))
+    low = _to_float(chosen.get("low"))
+    open_ = _to_float(chosen.get("open"))
+    if high is None and low is None:
+        return None
+    return {"open": open_, "high": high, "low": low}
+
+
 def normalize_feed_response(decoded: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Normalize decoded feed response into sanitized tick documents."""
     ticks: List[Dict[str, Any]] = []
@@ -417,7 +453,7 @@ def normalize_feed_response(decoded: Dict[str, Any]) -> List[Dict[str, Any]]:
         ts = _to_int(ltpc.get("ltt")) or received_ts
         if ltp is None or ts is None:
             continue
-        ticks.append({
+        tick = {
             "instrument_key": str(instrument_key),
             "ts": ts,
             "received_ts": received_ts or ts,
@@ -426,7 +462,15 @@ def normalize_feed_response(decoded: Dict[str, Any]) -> List[Dict[str, Any]]:
             "close_price": _to_float(ltpc.get("cp")),
             "source": "upstox_ws_v3",
             "mode": str((feed or {}).get("requestMode") or DEFAULT_STREAM_MODE),
-        })
+        }
+        day_ohlc = _day_ohlc_from_feed(feed or {})
+        if day_ohlc:
+            tick.update({
+                "open": day_ohlc.get("open"),
+                "high": day_ohlc.get("high"),
+                "low": day_ohlc.get("low"),
+            })
+        ticks.append(tick)
     return ticks
 
 

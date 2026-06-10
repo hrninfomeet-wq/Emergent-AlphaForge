@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { useJobs } from "@/lib/jobs";
 import { fmtInt, isoToFull } from "@/lib/fmt";
-import { ShieldCheck, RefreshCw, Play, CheckCircle2, AlertTriangle, AlertCircle } from "lucide-react";
+import { ShieldCheck, RefreshCw, Play, CheckCircle2, AlertTriangle, AlertCircle, Download } from "lucide-react";
 
 const STATUS_STYLES = {
   verified: "bg-emerald-950 text-emerald-200 border-emerald-900",
@@ -48,7 +48,19 @@ export default function DataHygienePanel({ upstoxConnected }) {
   const [plan, setPlan] = useState(null);
   const [planning, setPlanning] = useState(false);
   const [executing, setExecuting] = useState(false);
+  const [catchingUp, setCatchingUp] = useState(false);
+  const [catchUpResult, setCatchUpResult] = useState(null);
   const [autoUpdate, setAutoUpdate] = useState(null);
+  const [vix, setVix] = useState(null);
+  const [vixBusy, setVixBusy] = useState(false);
+
+  const loadVix = async () => {
+    try {
+      setVix(await api.vixCoverage());
+    } catch {
+      setVix(null);
+    }
+  };
 
   const loadAutoUpdate = async () => {
     try {
@@ -61,7 +73,27 @@ export default function DataHygienePanel({ upstoxConnected }) {
 
   useEffect(() => {
     loadAutoUpdate();
+    loadVix();
   }, []);
+
+  const ingestVix = async () => {
+    if (!upstoxConnected) {
+      toast.error("Connect Upstox before ingesting VIX.");
+      return;
+    }
+    setVixBusy(true);
+    try {
+      // Default baseline 2025-12-29 -> today; the backend dedups so re-running is safe.
+      const today = new Date(Date.now() + (5 * 60 + 30) * 60 * 1000).toISOString().slice(0, 10);
+      const res = await api.vixIngest({ from_date: "2025-12-29", to_date: today, chunk_days: 7 });
+      toast.success(`India VIX: ${res.status} · +${res.candles_added || 0} candles`);
+      await loadVix();
+    } catch (e) {
+      toast.error(`VIX ingest failed: ${e.response?.data?.detail || e.message}`);
+    } finally {
+      setVixBusy(false);
+    }
+  };
 
   const toggleAutoUpdate = async () => {
     try {
@@ -131,6 +163,39 @@ export default function DataHygienePanel({ upstoxConnected }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Incremental catch-up: fetch spot + option data from each instrument's last
+  // stored session up to the most recent closed trading session, in one click.
+  const runCatchUp = async () => {
+    if (!upstoxConnected) {
+      toast.error("Connect Upstox before running catch-up.");
+      return;
+    }
+    setCatchingUp(true);
+    setCatchUpResult(null);
+    try {
+      const res = await api.dataHygieneCatchUp({ include_options: true });
+      if (res.up_to_date) {
+        toast.info("Warehouse already up to date — no new sessions to fetch.");
+        setCatchUpResult({ up_to_date: true, plan: res.plan });
+        return;
+      }
+      const submitted = startHygieneBatch(res);
+      const errors = (res.errors || []).length;
+      setCatchUpResult(res);
+      if (submitted > 0) {
+        toast.success(`Catch-up started: ${submitted} job(s) (spot + options) in dependency order`);
+      } else {
+        toast.warning("No catch-up jobs were submitted. Check Upstox connection.");
+      }
+      if (errors) toast.error(`${errors} action(s) failed to submit`);
+    } catch (e) {
+      const msg = e.response?.data?.detail || e.message;
+      toast.error(`Catch-up failed: ${msg}`);
+    } finally {
+      setCatchingUp(false);
+    }
+  };
+
   const summary = plan?.summary;
   const overall = summary?.overall_status;
   const hygieneActive = isHygieneActive();
@@ -193,16 +258,77 @@ export default function DataHygienePanel({ upstoxConnected }) {
               {autoUpdate.last_submitted_count ? ` (${autoUpdate.last_submitted_count} jobs)` : ""} · {isoToFull(autoUpdate.last_finished_at)}
             </span>
           )}
+          <div className="ml-auto flex items-center gap-2">
+            <Button
+              size="sm"
+              onClick={runCatchUp}
+              disabled={catchingUp || hygieneActive || !upstoxConnected}
+              className="h-6 text-[11px] bg-bg-3 border border-line hover:bg-bg-2"
+              data-testid="catch-up-button"
+              title="Fetch spot + option data from the last stored session up to the most recent closed trading day"
+            >
+              <Download className={`w-3 h-3 mr-1 ${catchingUp ? "animate-pulse" : ""}`} />
+              {catchingUp ? "Updating…" : hygieneActive ? "Running…" : !upstoxConnected ? "Connect Upstox" : "Update to latest"}
+            </Button>
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={toggleAutoUpdate}
+              className="h-6 text-[11px]"
+              data-testid="auto-update-toggle"
+            >
+              {autoUpdate?.enabled ? "Disable" : "Enable"}
+            </Button>
+          </div>
+        </div>
+
+        {/* India VIX status + ingest — powers the volatility-context layer. */}
+        <div className="rounded-md border border-line bg-bg-2 p-2.5 flex items-center gap-2 flex-wrap" data-testid="vix-row">
+          <span className={`w-2 h-2 rounded-full ${vix?.count > 0 ? "bg-emerald-500" : "bg-dimmer"}`} />
+          <span className="text-[11px] text-dim">
+            India VIX {vix?.count > 0 ? `· ${fmtInt(vix.count)} candles` : "· not ingested"}
+            <span className="text-dimmer"> · used for volatility-regime context</span>
+          </span>
           <Button
             size="sm"
             variant="secondary"
-            onClick={toggleAutoUpdate}
+            onClick={ingestVix}
+            disabled={vixBusy || !upstoxConnected}
             className="ml-auto h-6 text-[11px]"
-            data-testid="auto-update-toggle"
+            data-testid="vix-ingest-button"
+            title="Fetch India VIX 1m candles from 2025-12-29 to today"
           >
-            {autoUpdate?.enabled ? "Disable" : "Enable"}
+            <Download className={`w-3 h-3 mr-1 ${vixBusy ? "animate-pulse" : ""}`} />
+            {vixBusy ? "Fetching…" : !upstoxConnected ? "Connect Upstox" : vix?.count > 0 ? "Update VIX" : "Ingest VIX"}
           </Button>
         </div>
+
+        {/* Catch-up summary: which instruments had a gap and the target window */}
+        {catchUpResult && (
+          <div className="rounded-md border border-line bg-bg-2 p-2.5 text-[11px]" data-testid="catch-up-summary">
+            {catchUpResult.up_to_date ? (
+              <span className="text-emerald-300 inline-flex items-center gap-1">
+                <CheckCircle2 className="w-3 h-3" /> All instruments up to date (through{" "}
+                {catchUpResult.plan?.summary?.target_end || "last session"}).
+              </span>
+            ) : (
+              <div className="space-y-1">
+                <div className="text-dim">
+                  Catching up to <span className="font-mono">{catchUpResult.plan?.summary?.target_end || "—"}</span> · spot + options
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {(catchUpResult.plan?.instruments || [])
+                    .filter((i) => !i.up_to_date)
+                    .map((i) => (
+                      <span key={i.instrument} className="px-1.5 py-0.5 rounded bg-amber-950 text-amber-200 border border-amber-900 font-mono">
+                        {i.instrument}: {i.missing_trading_days}d ({i.from_date} → {i.to_date})
+                      </span>
+                    ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Active hygiene batch progress */}
         {hygiene && (

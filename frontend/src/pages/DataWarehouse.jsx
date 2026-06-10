@@ -5,11 +5,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Database, Download, RefreshCw, CheckCircle2, AlertCircle, Link2, Unplug, ShieldCheck, Trash2, Clock, AlertTriangle } from "lucide-react";
 import { fmtInt, fmtNum, fmtSigned, isoToFull, tsToFull } from "@/lib/fmt";
+import { dateToMs } from "@/lib/time";
 import { Skeleton } from "@/components/ui/skeleton";
 import HolidayCalendarDialog from "@/components/HolidayCalendarDialog";
 import DataHygienePanel from "@/components/DataHygienePanel";
 import WarehouseLookup from "@/components/WarehouseLookup";
 import WarehouseChart from "@/components/WarehouseChart";
+import TokenCountdown from "@/components/TokenCountdown";
 import { useJobs } from "@/lib/jobs";
 
 const INSTRUMENTS = ["NIFTY", "BANKNIFTY", "SENSEX"];
@@ -19,15 +21,6 @@ const LEG_OPTIONS = ["CE", "PE"];
 function dateInput(daysAgo = 0) {
   const d = new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000);
   return d.toISOString().slice(0, 10);
-}
-
-function dateToMs(s, endOfDay = false) {
-  if (!s) return null;
-  const [y, m, d] = s.split("-").map(Number);
-  if (!y || !m || !d) return null;
-  const istHour = endOfDay ? 15 : 9;
-  const istMin = endOfDay ? 30 : 15;
-  return Date.UTC(y, m - 1, d, istHour, istMin, 0) - (5 * 60 + 30) * 60 * 1000;
 }
 
 function quoteTimeDisplay(quote) {
@@ -530,45 +523,7 @@ export default function DataWarehouse() {
 }
 
 function TokenExpiryBadge({ status }) {
-  const expiresAt = status?.expires_at;
-  const connected = status?.connected;
-  const [now, setNow] = useState(Date.now());
-
-  useEffect(() => {
-    if (!connected || !expiresAt) return;
-    const t = setInterval(() => setNow(Date.now()), 30000);
-    return () => clearInterval(t);
-  }, [connected, expiresAt]);
-
-  if (!connected || !expiresAt) return null;
-
-  const expMs = Date.parse(expiresAt);
-  if (Number.isNaN(expMs)) return null;
-  const remainingMs = expMs - now;
-  const expired = remainingMs <= 0;
-  const mins = Math.max(0, Math.floor(remainingMs / 60000));
-  const hrs = Math.floor(mins / 60);
-  const remMins = mins % 60;
-  const label = expired ? "token expired" : hrs > 0 ? `${hrs}h ${remMins}m left` : `${remMins}m left`;
-
-  // Color escalates as expiry nears: green > 2h, amber 30m-2h, red < 30m / expired.
-  const cls = expired || mins < 30
-    ? "bg-rose-950 text-rose-200 border-rose-900"
-    : mins < 120
-      ? "bg-amber-950 text-amber-200 border-amber-900"
-      : "bg-emerald-950 text-emerald-200 border-emerald-900";
-  const Icon = expired || mins < 30 ? AlertTriangle : Clock;
-
-  return (
-    <span
-      className={`text-[10px] px-1.5 py-0.5 rounded border font-mono inline-flex items-center gap-1 ${cls}`}
-      data-testid="upstox-token-expiry-badge"
-      title={`Upstox token ${expired ? "expired" : "expires"} at ${expiresAt}`}
-    >
-      <Icon className="w-3 h-3" />
-      {label}
-    </span>
-  );
+  return <TokenCountdown status={status} variant="badge" />;
 }
 
 function UpstoxPanel({ status, busy, ingesting, form, setForm, ingestJob, onConnect, onDisconnect, onIngest, onQuote, quote, quoteLoading }) {
