@@ -10,9 +10,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from app.strategies.base import StrategyBase, Signal
 from app.costs import apply_round_trip_cost
+from app.exit_engine import intrabar_exit
 
 TRADE_WINDOW_START = "09:25"
-TRADE_WINDOW_END = "14:50"
+# Default session end for entries: 15:00 IST. Combined with the 09:25 start this
+# implements the discipline rule of no entries in the first 10 min or last 30 min
+# (09:15-09:25 and 15:00-15:30). Both ends are overridable per backtest.
+TRADE_WINDOW_END = "15:00"
 
 
 @dataclass
@@ -32,6 +36,10 @@ class Trade:
     score: int = 0
     reasons: List[str] = field(default_factory=list)
     bars_held: int = 0
+    # Market-context snapshot at entry (regime + IST time). Used downstream to
+    # tag option trades and analyze where a strategy actually has edge.
+    regime: str = ""
+    ist_time: str = ""
 
 
 def _in_window(ist: str, start: str, end: str) -> bool:
@@ -80,6 +88,12 @@ def run_backtest(
         }
 
     df = df.reset_index(drop=True)
+    # Pre-materialize rows as plain dicts ONCE. Indexing df.iloc[i] inside the
+    # hot loop builds a fresh pandas Series every bar (very slow and GIL-heavy);
+    # a list of dicts is 5-20x faster and is fully compatible with strategies,
+    # which only use row["col"] / row.get("col"). history_df in ctx stays a
+    # DataFrame for strategies that need windowed lookback.
+    records = df.to_dict("records")
     trades: List[Trade] = []
     open_trade: Optional[Trade] = None
     last_signal_bar = -10_000
@@ -94,14 +108,14 @@ def run_backtest(
               "position_open": 0, "signals_fired": 0}
 
     # Strategy-level context
-    ctx_global: Dict[str, Any] = {"history_df": df}
+    ctx_global: Dict[str, Any] = {"history_df": df, "instrument": instrument}
     if strategy.id == "opening_range_breakout":
         rng = int(params.get("range_minutes", 15))
         ctx_global.update(_compute_orb_for_session(df, range_minutes=rng))
 
     for i in range(1, len(df)):
-        row = df.iloc[i]
-        prev = df.iloc[i - 1]
+        row = records[i]
+        prev = records[i - 1]
         ts = int(row["ts"])
         ist = row.get("ist_time", "")
 
@@ -119,17 +133,12 @@ def run_backtest(
             stp_p = open_trade.__dict__.get("_stop_pts", stop_pts_default)
             stop = entry - stp_p if open_trade.direction == "CE" else entry + stp_p
             target = entry + tgt_p if open_trade.direction == "CE" else entry - tgt_p
-            exit_price, exit_reason = None, ""
-            if open_trade.direction == "CE":
-                if low <= stop:
-                    exit_price, exit_reason = stop, "STOP"
-                elif high >= target:
-                    exit_price, exit_reason = target, "TARGET"
-            else:
-                if high >= stop:
-                    exit_price, exit_reason = stop, "STOP"
-                elif low <= target:
-                    exit_price, exit_reason = target, "TARGET"
+            # Shared intrabar exit decision (stop-first, pessimistic). Used by
+            # both the spot and option engines so the rule never drifts.
+            exit_price, exit_reason = intrabar_exit(
+                high=high, low=low, stop=stop, target=target,
+                is_long=(open_trade.direction == "CE"),
+            )
             if exit_price is None and ist >= trade_window_end:
                 exit_price, exit_reason = close, "TIME_EXIT"
             if exit_price is not None:
@@ -180,6 +189,8 @@ def run_backtest(
             entry_datetime=str(row.get("datetime", "")),
             score=sig.score,
             reasons=sig.reasons,
+            regime=str(row.get("regime", "") or ""),
+            ist_time=str(ist or ""),
         )
         open_trade.__dict__["_target_pts"] = sig.spot_target_pts or target_pts_default
         open_trade.__dict__["_stop_pts"] = sig.spot_stop_pts or stop_pts_default
@@ -188,7 +199,7 @@ def run_backtest(
 
     # Close any trailing trade at EOD
     if open_trade is not None:
-        last = df.iloc[-1]
+        last = records[-1]
         exit_price = float(last["close"])
         entry = open_trade.entry_price
         gross = (exit_price - entry) if open_trade.direction == "CE" else (entry - exit_price)

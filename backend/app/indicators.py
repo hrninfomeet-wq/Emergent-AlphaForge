@@ -89,26 +89,45 @@ def fibonacci_levels(swing_high: float, swing_low: float) -> dict:
 
 
 def detect_fvg(df: pd.DataFrame) -> pd.Series:
-    """Fair Value Gap detection — 3-candle imbalance.
-    Returns 'UP', 'DOWN', or None per row (FVG location is at index i; gap is between i-2 and i)."""
-    out = pd.Series([None] * len(df), index=df.index, dtype=object)
-    for i in range(2, len(df)):
-        h_prev2 = df.iloc[i - 2]["high"]
-        l_prev2 = df.iloc[i - 2]["low"]
-        h_cur = df.iloc[i]["high"]
-        l_cur = df.iloc[i]["low"]
-        if l_cur > h_prev2:
-            out.iloc[i] = "UP"
-        elif h_cur < l_prev2:
-            out.iloc[i] = "DOWN"
-    return out
+    """Fair Value Gap detection — 3-candle imbalance (vectorized).
+
+    A bullish ("UP") FVG at bar i is when low[i] > high[i-2]; a bearish ("DOWN")
+    FVG is when high[i] < low[i-2]. The two are mutually exclusive (low <= high
+    on every bar). Returns 'UP', 'DOWN', or None per row, indexed like df.
+
+    Vectorized with positional `shift(2)` to match the original `iloc[i-2]`
+    logic. The first two rows compare against NaN (shift fill), which yields
+    False, so they remain None — identical to the prior loop that started at
+    i=2. This replaces an O(n) Python loop that held the GIL and could stall
+    the event loop on large (full-history) frames.
+    """
+    high = df["high"]
+    low = df["low"]
+    up = (low > high.shift(2)).to_numpy(dtype=bool, na_value=False)
+    down = (high < low.shift(2)).to_numpy(dtype=bool, na_value=False)
+    out = np.full(len(df), None, dtype=object)
+    out[up] = "UP"
+    out[down] = "DOWN"
+    return pd.Series(out, index=df.index, dtype=object)
 
 
 def detect_swing_points(df: pd.DataFrame, lookback: int = 5) -> pd.DataFrame:
-    """Mark swing highs/lows using rolling N-bar window."""
+    """Mark swing highs/lows using a CAUSAL trailing window (no look-ahead).
+
+    IMPORTANT: this must never peek at future bars. A centered rolling window
+    (center=True) would confirm a swing using bars that, at decision time, have
+    not happened yet — silently making any strategy that reads these columns
+    look-ahead biased and over-optimistic. We therefore confirm a swing only
+    using the trailing `2*lookback+1` bars ending at the current bar. A swing
+    high/low is flagged when the window's extreme occurs at its right edge
+    (i.e. the most recent bar is the highest high / lowest low so far).
+    """
     out = df.copy()
-    out["is_swing_high"] = (df["high"] == df["high"].rolling(2 * lookback + 1, center=True).max())
-    out["is_swing_low"] = (df["low"] == df["low"].rolling(2 * lookback + 1, center=True).min())
+    window = 2 * lookback + 1
+    roll_high_max = df["high"].rolling(window, min_periods=1).max()
+    roll_low_min = df["low"].rolling(window, min_periods=1).min()
+    out["is_swing_high"] = df["high"] >= roll_high_max
+    out["is_swing_low"] = df["low"] <= roll_low_min
     return out
 
 

@@ -16,6 +16,8 @@ def walk_forward(
     pretrade_filters: Dict[str, Any] | None = None,
     train_pct: float = 0.6,
     n_folds: int = 3,
+    trade_window_start: str = "09:25",
+    trade_window_end: str = "15:00",
 ) -> Dict[str, Any]:
     if df.empty or len(df) < 200:
         return {"folds": [], "is_vs_oos": {}, "stitched_oos_equity": [], "stitched_oos_trade_count": 0}
@@ -34,8 +36,10 @@ def walk_forward(
         test_df = slice_df.iloc[train_end:].reset_index(drop=True)
         if len(train_df) < 50 or len(test_df) < 30:
             continue
-        is_res = run_backtest(train_df, strategy, params, instrument, costs_enabled, pretrade_filters)
-        oos_res = run_backtest(test_df, strategy, params, instrument, costs_enabled, pretrade_filters)
+        is_res = run_backtest(train_df, strategy, params, instrument, costs_enabled, pretrade_filters,
+                              trade_window_start=trade_window_start, trade_window_end=trade_window_end)
+        oos_res = run_backtest(test_df, strategy, params, instrument, costs_enabled, pretrade_filters,
+                               trade_window_start=trade_window_start, trade_window_end=trade_window_end)
         folds.append({
             "fold": k + 1,
             "train_range": [str(train_df.iloc[0].get("datetime", "")), str(train_df.iloc[-1].get("datetime", ""))],
