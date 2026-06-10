@@ -55,6 +55,15 @@ const DEFAULT_SETUP = {
   method: "bayesian",
   objective: "risk_adjusted",
   n_trials: 150,
+  // Run type: "single" (one optimization over the whole window) or
+  // "walkforward" (re-optimize per train window, stitch OOS — honest result).
+  run_kind: "single",
+  wf_train_days: 60,
+  wf_test_days: 20,
+  wf_step_days: "",
+  wf_mode: "rolling",
+  wf_trials_per_window: 40,
+  wf_max_windows: 12,
   costs_enabled: true,
   pretrade_filters: {},
   pretrade_profile: "None",
@@ -181,6 +190,40 @@ export default function Optimizer() {
 
   const start = async () => {
     try {
+      if (config.run_kind === "walkforward") {
+        const payload = {
+          instrument: config.instrument,
+          mode: config.mode,
+          strategy_id: config.strategy_id,
+          method: config.method === "grid" ? "bayesian" : config.method,
+          objective: config.objective,
+          costs_enabled: config.costs_enabled,
+          pretrade_filters: config.pretrade_profile && config.pretrade_profile !== "None"
+            ? (selectedProfile?.settings || {})
+            : {},
+          pretrade_profile: config.pretrade_profile || "None",
+          param_overrides: config.param_overrides,
+          optimize_indicator_periods: config.optimize_indicator_periods,
+          min_trades: config.guards_enabled ? (Number(config.min_trades) || 0) : 0,
+          min_direction_share: config.guards_enabled
+            ? Math.max(0, Math.min(50, Number(config.min_direction_pct) || 0)) / 100
+            : 0,
+          start_ts: dateToMs(config.start_date, false),
+          end_ts: dateToMs(config.end_date, true),
+          name: config.name,
+          train_days: Number(config.wf_train_days) || 60,
+          test_days: Number(config.wf_test_days) || 20,
+          step_days: config.wf_step_days === "" ? null : Number(config.wf_step_days),
+          wf_mode: config.wf_mode,
+          n_trials_per_window: Number(config.wf_trials_per_window) || 40,
+          max_windows: Number(config.wf_max_windows) || 12,
+        };
+        const res = await api.startWfo(payload);
+        setCurrentJobId(res.job_id);
+        setCurrentJob({ id: res.job_id, status: "queued", kind: "wfo" });
+        toast.success("Walk-forward optimization started");
+        return;
+      }
       const optionRerank = config.evaluation_mode === "option_rerank";
       const optionConfig = optionRerank ? {
         moneyness: config.option_moneyness,
@@ -315,6 +358,13 @@ export default function Optimizer() {
     const share = Number(c.min_direction_share || 0);
     setConfig((prev) => ({
       ...prev,
+      run_kind: job.kind === "wfo" ? "walkforward" : "single",
+      wf_train_days: c.train_days ?? prev.wf_train_days,
+      wf_test_days: c.test_days ?? prev.wf_test_days,
+      wf_step_days: c.step_days ?? "",
+      wf_mode: c.wf_mode ?? prev.wf_mode,
+      wf_trials_per_window: c.n_trials_per_window ?? prev.wf_trials_per_window,
+      wf_max_windows: c.max_windows ?? prev.wf_max_windows,
       instrument: c.instrument ?? prev.instrument,
       mode: c.mode ?? prev.mode,
       strategy_id: c.strategy_id ?? prev.strategy_id,
@@ -385,7 +435,12 @@ export default function Optimizer() {
                   {METHODS.map((m) => <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>)}
                 </SelectContent>
               </Select>
-              <div className="text-[10px] text-dimmer mt-1">{METHODS.find((m) => m.id === config.method)?.desc}</div>
+              <div className="text-[10px] text-dimmer mt-1">
+                {METHODS.find((m) => m.id === config.method)?.desc}
+                {config.run_kind === "walkforward" && config.method === "grid" && (
+                  <span className="text-warning"> Walk-forward does not support Grid — Bayesian will be used.</span>
+                )}
+              </div>
             </Row>
             <Row label="Objective">
               <Select value={config.objective} onValueChange={(v) => setConfig({ ...config, objective: v })}>
@@ -408,6 +463,73 @@ export default function Optimizer() {
                 Apply the same pre-trade filter you'll backtest/trade with, so optimized params match live behaviour. "None" optimizes raw strategy signals.
               </div>
             </Row>
+            <Row label="Run type">
+              <Select value={config.run_kind} onValueChange={(v) => setConfig({ ...config, run_kind: v })}>
+                <SelectTrigger className="bg-bg-2 border-line h-8" data-testid="opt-run-kind-select"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="single">Single optimization</SelectItem>
+                  <SelectItem value="walkforward">Walk-forward (honest OOS)</SelectItem>
+                </SelectContent>
+              </Select>
+              <div className="text-[10px] text-dimmer mt-1">
+                {config.run_kind === "walkforward"
+                  ? "Re-optimizes on each train window, evaluates on the UNSEEN window after it, stitches the out-of-sample results. The honest answer to \"would these params have worked?\""
+                  : "One search over the whole date window. Fast, but the result is in-sample — verify with walk-forward before trusting it."}
+              </div>
+            </Row>
+
+            {config.run_kind === "walkforward" && (
+              <div className="rounded-md border border-emerald-500/30 bg-emerald-500/5 p-2 space-y-2" data-testid="opt-wf-config">
+                <div className="text-[10px] uppercase tracking-wider text-emerald-400">Walk-forward windows (trading days)</div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <Label className="text-[11px] text-dim">Train days</Label>
+                    <Input type="number" min={20} max={250} value={config.wf_train_days}
+                      onChange={(e) => setConfig({ ...config, wf_train_days: e.target.value })}
+                      className="bg-bg-2 border-line h-8 text-xs font-mono mt-1" data-testid="opt-wf-train-days" />
+                  </div>
+                  <div>
+                    <Label className="text-[11px] text-dim">Test days</Label>
+                    <Input type="number" min={5} max={60} value={config.wf_test_days}
+                      onChange={(e) => setConfig({ ...config, wf_test_days: e.target.value })}
+                      className="bg-bg-2 border-line h-8 text-xs font-mono mt-1" data-testid="opt-wf-test-days" />
+                  </div>
+                  <div>
+                    <Label className="text-[11px] text-dim">Step (blank = test days)</Label>
+                    <Input type="number" min={1} max={60} value={config.wf_step_days} placeholder={String(config.wf_test_days)}
+                      onChange={(e) => setConfig({ ...config, wf_step_days: e.target.value })}
+                      className="bg-bg-2 border-line h-8 text-xs font-mono mt-1" data-testid="opt-wf-step-days" />
+                  </div>
+                  <div>
+                    <Label className="text-[11px] text-dim">Window mode</Label>
+                    <Select value={config.wf_mode} onValueChange={(v) => setConfig({ ...config, wf_mode: v })}>
+                      <SelectTrigger className="bg-bg-2 border-line h-8 mt-1" data-testid="opt-wf-mode"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="rolling">Rolling (fixed train size)</SelectItem>
+                        <SelectItem value="anchored">Anchored (growing train)</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <Label className="text-[11px] text-dim">Trials per window</Label>
+                    <Input type="number" min={10} max={500} value={config.wf_trials_per_window}
+                      onChange={(e) => setConfig({ ...config, wf_trials_per_window: e.target.value })}
+                      className="bg-bg-2 border-line h-8 text-xs font-mono mt-1" data-testid="opt-wf-trials" />
+                  </div>
+                  <div>
+                    <Label className="text-[11px] text-dim">Max windows</Label>
+                    <Input type="number" min={2} max={36} value={config.wf_max_windows}
+                      onChange={(e) => setConfig({ ...config, wf_max_windows: e.target.value })}
+                      className="bg-bg-2 border-line h-8 text-xs font-mono mt-1" data-testid="opt-wf-max-windows" />
+                  </div>
+                </div>
+                <div className="text-[10px] text-dimmer leading-snug">
+                  Days are trading days actually present in the data (holiday-aware). With more windows than Max, the oldest are dropped — deployable params always come from the most recent train window. Walk-forward runs on spot evaluation; pair the final preset with an option re-rank run if needed.
+                </div>
+              </div>
+            )}
+
+            {config.run_kind !== "walkforward" && (
             <Row label="Evaluation">
               <Select value={config.evaluation_mode} onValueChange={(v) => setConfig({ ...config, evaluation_mode: v })}>
                 <SelectTrigger className="bg-bg-2 border-line h-8" data-testid="opt-eval-mode-select"><SelectValue /></SelectTrigger>
@@ -422,8 +544,9 @@ export default function Optimizer() {
                   : "Scores the index backtest only. Fast, but spot P&L can mislead for option buying."}
               </div>
             </Row>
+            )}
 
-            {config.evaluation_mode === "option_rerank" && (
+            {config.run_kind !== "walkforward" && config.evaluation_mode === "option_rerank" && (
               <div className="rounded-md border border-info/30 bg-info/5 p-2 space-y-2">
                 <div className="text-[10px] uppercase tracking-wider text-info">Option execution (re-rank)</div>
                 <div className="grid grid-cols-2 gap-2">
@@ -490,16 +613,20 @@ export default function Optimizer() {
               </div>
             )}
 
-            <NumberSliderInput
-              label="Trial budget"
-              value={config.n_trials}
-              min={10} max={5000} step={10} decimals={0}
-              onChange={(v) => setConfig({ ...config, n_trials: v })}
-              testid="opt-trials"
-            />
-            <div className="text-[10px] text-dimmer -mt-1 leading-snug">
-              Up to 5000. More trials ≠ better — beyond a few hundred the gains flatten for small spaces and overfitting risk rises. Scale the budget to how many params you're searching.
-            </div>
+            {config.run_kind !== "walkforward" && (
+              <>
+                <NumberSliderInput
+                  label="Trial budget"
+                  value={config.n_trials}
+                  min={10} max={5000} step={10} decimals={0}
+                  onChange={(v) => setConfig({ ...config, n_trials: v })}
+                  testid="opt-trials"
+                />
+                <div className="text-[10px] text-dimmer -mt-1 leading-snug">
+                  Up to 5000. More trials ≠ better — beyond a few hundred the gains flatten for small spaces and overfitting risk rises. Scale the budget to how many params you're searching.
+                </div>
+              </>
+            )}
             <div className="flex items-center gap-2 pt-1">
               <Switch checked={config.costs_enabled} onCheckedChange={(v) => setConfig({ ...config, costs_enabled: v })} data-testid="opt-costs-switch" />
               <span className="text-xs text-dim">Apply realistic costs</span>
@@ -664,6 +791,7 @@ function EmptyOptimizer() {
 function CurrentJobView({ job, onApply, onStop, onPause, onResume, onOpenBest }) {
   const pct = job.n_trials_total ? Math.round((job.n_trials_completed / job.n_trials_total) * 100) : 0;
   const bsf = job.best_so_far || {};
+  const isWfo = job.kind === "wfo";
   const status = job.status;
   const finished = status === "done";
   const cancelled = status === "cancelled";
@@ -672,7 +800,8 @@ function CurrentJobView({ job, onApply, onStop, onPause, onResume, onOpenBest })
   const interrupted = status === "interrupted";
   const inProgress = status === "running" || status === "queued" || status === "analyzing";
   const resumable = paused || interrupted || failed;
-  const hasBest = bsf.params && Object.keys(bsf.params).length > 0;
+  const hasBest = (bsf.params && Object.keys(bsf.params).length > 0)
+    || (isWfo && job.best_params && Object.keys(job.best_params).length > 0);
   const showResults = finished || cancelled || resumable;
 
   return (
@@ -727,7 +856,14 @@ function CurrentJobView({ job, onApply, onStop, onPause, onResume, onOpenBest })
           </div>
         </div>
         <div className="text-[11px] font-mono text-dim mb-1 flex items-center justify-between">
-          <span>{job.n_trials_completed || 0} / {job.n_trials_total || 0} trials</span>
+          <span>
+            {job.n_trials_completed || 0} / {job.n_trials_total || 0} trials
+            {isWfo && job.wfo_progress && (
+              <span className="text-emerald-400 ml-2">
+                window {job.wfo_progress.window}/{job.wfo_progress.window_count}
+              </span>
+            )}
+          </span>
           <span>{pct}%</span>
         </div>
         <div className="h-2 bg-bg-2 rounded-sm overflow-hidden border border-line">
@@ -752,7 +888,7 @@ function CurrentJobView({ job, onApply, onStop, onPause, onResume, onOpenBest })
       </div>
 
       {/* No usable result — every trial took no trades or failed the guard rails */}
-      {(finished || cancelled) && (!bsf.params || Object.keys(bsf.params).length === 0) && (
+      {(finished || cancelled) && !hasBest && (
         <div className="rounded-lg border border-warning/40 bg-warning/10 p-3 text-xs text-warning leading-relaxed" data-testid="opt-no-result">
           No trial produced a usable result — every candidate either took no trades or was disqualified by the guard rails.
           Try lowering <b>Min trades</b> / <b>Min CE-PE side %</b> (or turning Guard rails off), widening the date window,
@@ -793,20 +929,189 @@ function CurrentJobView({ job, onApply, onStop, onPause, onResume, onOpenBest })
       )}
 
       {(finished || cancelled) && (
-        <>
-          {job.rerank ? (
-            <RerankResults rerank={job.rerank} />
-          ) : (
-            <>
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-                <RobustnessCard robustness={job.robustness} />
-                <ImportanceCard importance={job.parameter_importance} />
+        isWfo ? (
+          <WfoResults job={job} />
+        ) : (
+          <>
+            {job.rerank ? (
+              <RerankResults rerank={job.rerank} />
+            ) : (
+              <>
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                  <RobustnessCard robustness={job.robustness} />
+                  <ImportanceCard importance={job.parameter_importance} />
+                </div>
+                <HeatmapCard heatmap={job.heatmap} />
+              </>
+            )}
+            <TopAlternatives items={job.top_n_alternatives} />
+          </>
+        )
+      )}
+    </div>
+  );
+}
+
+// Compact SVG equity line for the stitched OOS curve (no chart dependency).
+function OosEquitySparkline({ curve }) {
+  if (!curve || curve.length < 2) return null;
+  const W = 640, H = 120, PAD = 6;
+  const vals = curve.map((p) => p.equity_pts);
+  const lo = Math.min(0, ...vals);
+  const hi = Math.max(0, ...vals);
+  const span = hi - lo || 1;
+  const x = (i) => PAD + (i / (curve.length - 1)) * (W - 2 * PAD);
+  const y = (v) => PAD + (1 - (v - lo) / span) * (H - 2 * PAD);
+  const pts = vals.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
+  const zeroY = y(0);
+  const last = vals[vals.length - 1];
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-28" preserveAspectRatio="none" data-testid="wfo-equity-sparkline">
+      <line x1={PAD} y1={zeroY} x2={W - PAD} y2={zeroY} stroke="currentColor" strokeOpacity="0.2" strokeDasharray="4 4" />
+      <polyline points={pts} fill="none" stroke={last >= 0 ? "#10b981" : "#f43f5e"} strokeWidth="1.5" />
+    </svg>
+  );
+}
+
+function WfoResults({ job }) {
+  const wfo = job.wfo;
+  if (!wfo) return null;
+  const s = wfo.stitched_oos || {};
+  const eff = wfo.efficiency;
+  const cons = wfo.consistency || {};
+  const windows = wfo.windows || [];
+  const stability = wfo.param_stability || [];
+  const effColor = eff == null ? "text-dim" : eff >= 0.7 ? "text-emerald-400" : eff >= 0.4 ? "text-amber-400" : "text-rose-400";
+  const effLabel = eff == null ? "n/a" : eff.toFixed(2);
+  return (
+    <div className="space-y-3" data-testid="wfo-results">
+      {/* Headline: the stitched OOS result is the number to believe */}
+      <div className="rounded-lg border border-emerald-500/30 bg-bg-1 p-3">
+        <div className="flex items-center gap-2 mb-2">
+          <Trophy className="w-4 h-4 text-emerald-400" />
+          <div className="text-xs font-semibold uppercase tracking-wider text-dim">Stitched Out-of-Sample Result</div>
+          <div className="ml-auto text-[10px] text-dimmer">every trade below was earned on data the optimizer never saw</div>
+        </div>
+        <div className="grid grid-cols-3 lg:grid-cols-7 gap-2 text-xs mb-2">
+          <SmallMetric label="OOS Net Pts" value={fmtNum(s.total_pnl_pts)} />
+          <SmallMetric label="Trades" value={fmtInt(s.trade_count)} />
+          <SmallMetric label="WinRate" value={fmtPct(s.win_rate)} />
+          <SmallMetric label="PF" value={fmtNum(s.profit_factor)} />
+          <SmallMetric label="MaxDD" value={fmtNum(s.max_dd_pts)} />
+          <SmallMetric label="Sharpe" value={fmtNum(s.sharpe)} />
+          <div className="rounded-md bg-bg-2 border border-line p-2">
+            <div className="text-[10px] uppercase tracking-wider text-dimmer">WF Efficiency</div>
+            <div className={`font-mono mt-0.5 ${effColor}`}>{effLabel}</div>
+          </div>
+        </div>
+        <OosEquitySparkline curve={wfo.stitched_oos_equity} />
+        <div className="flex items-center gap-3 text-[11px] text-dim mt-1 flex-wrap">
+          <span>
+            Consistency: <b className="text-foreground">{cons.positive_windows ?? 0}/{cons.windows ?? 0}</b> windows OOS-positive
+            {cons.consistency_pct != null && <span className="text-dimmer"> ({cons.consistency_pct}%)</span>}
+          </span>
+          <span className="text-dimmer">
+            WF efficiency = OOS pnl/day ÷ IS pnl/day. ≥0.7 strong · 0.4–0.7 some decay · &lt;0.4 likely overfit. Deployable params come from the most recent window (saved via Save as Preset / View Best in Lab).
+          </span>
+        </div>
+      </div>
+
+      {/* Final params (most recent train window) */}
+      {wfo.final_params && (
+        <div className="rounded-lg border border-line bg-bg-1 p-3" data-testid="wfo-final-params">
+          <div className="text-xs font-semibold uppercase tracking-wider text-dim mb-2">
+            Final Params <span className="text-dimmer normal-case">(re-optimized on the most recent train window #{(wfo.final_params_window ?? 0) + 1})</span>
+          </div>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
+            {Object.entries(wfo.final_params).map(([k, v]) => (
+              <div key={k} className="rounded-md bg-bg-2 border border-line p-2 text-xs">
+                <div className="text-[10px] uppercase tracking-wider text-dimmer truncate">{k}</div>
+                <div className="font-mono text-foreground mt-0.5 truncate">{typeof v === "number" ? v.toFixed(2) : String(v)}</div>
               </div>
-              <HeatmapCard heatmap={job.heatmap} />
-            </>
-          )}
-          <TopAlternatives items={job.top_n_alternatives} />
-        </>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Per-window table */}
+      <div className="rounded-lg border border-line bg-bg-1" data-testid="wfo-window-table">
+        <div className="px-3 py-2 border-b border-line text-xs font-semibold uppercase tracking-wider text-dim">
+          Windows ({windows.length})
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-dim border-b border-line">
+                <th className="text-left p-2">#</th>
+                <th className="text-left p-2">Train</th>
+                <th className="text-left p-2">Test (OOS)</th>
+                <th className="text-right p-2">IS Obj</th>
+                <th className="text-right p-2">IS Pts</th>
+                <th className="text-right p-2">OOS Pts</th>
+                <th className="text-right p-2">OOS Trades</th>
+                <th className="text-right p-2">OOS WR</th>
+                <th className="text-left p-2">Params</th>
+              </tr>
+            </thead>
+            <tbody>
+              {windows.map((w) => {
+                const oosPts = w.oos_metrics?.total_pnl_pts;
+                return (
+                  <tr key={w.index} className="border-b border-line">
+                    <td className="p-2 font-mono text-dim">{w.index + 1}</td>
+                    <td className="p-2 font-mono text-dim whitespace-nowrap">{w.train_start} → {w.train_end}</td>
+                    <td className="p-2 font-mono whitespace-nowrap">{w.test_start} → {w.test_end}</td>
+                    {w.no_qualifying_params ? (
+                      <td colSpan="6" className="p-2 text-warning">no qualifying params in this train window (guard rails) — no OOS trades taken</td>
+                    ) : (
+                      <>
+                        <td className="p-2 font-mono text-right text-dim">{fmtBest(w.is_objective)}</td>
+                        <td className="p-2 font-mono text-right text-dim">{fmtNum(w.is_metrics?.total_pnl_pts)}</td>
+                        <td className={`p-2 font-mono text-right ${oosPts > 0 ? "text-emerald-400" : oosPts < 0 ? "text-rose-400" : ""}`}>{fmtNum(oosPts)}</td>
+                        <td className="p-2 font-mono text-right">{fmtInt(w.oos_trade_count)}</td>
+                        <td className="p-2 font-mono text-right">{fmtPct(w.oos_metrics?.win_rate)}</td>
+                        <td className="p-2">
+                          <details>
+                            <summary className="cursor-pointer text-dim hover:text-foreground">view</summary>
+                            <pre className="text-[10px] font-mono text-dimmer whitespace-pre-wrap max-w-[260px]">{JSON.stringify(w.best_params, null, 1)}</pre>
+                          </details>
+                        </td>
+                      </>
+                    )}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Param stability across windows */}
+      {stability.length > 0 && (
+        <div className="rounded-lg border border-line bg-bg-1 p-3" data-testid="wfo-stability">
+          <div className="text-xs font-semibold uppercase tracking-wider text-dim mb-1">Parameter Stability Across Windows</div>
+          <div className="text-[10px] text-dimmer mb-2">
+            Low spread = the optimizer keeps choosing the same value (robust). High spread = the value wanders window to window (fitted to noise — treat with suspicion).
+          </div>
+          <div className="space-y-1.5">
+            {stability.map((row) => (
+              <div key={row.param} className="grid grid-cols-[140px_1fr_120px] items-center gap-2 text-xs">
+                <div className="font-mono text-dim truncate">{row.param}</div>
+                <div className="h-2 bg-bg-2 rounded-sm overflow-hidden border border-line">
+                  <div
+                    className={`h-full ${row.rel_spread <= 0.25 ? "bg-emerald-600" : row.rel_spread <= 0.5 ? "bg-amber-500" : "bg-rose-600"}`}
+                    style={{ width: `${Math.max(3, Math.round(row.rel_spread * 100))}%` }}
+                  />
+                </div>
+                <div className="font-mono text-dim text-right">
+                  {row.type === "bool"
+                    ? `${row.agreement_pct}% agree`
+                    : `med ${row.median} · ±${Math.round(row.rel_spread * 100)}%`}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
       )}
     </div>
   );
@@ -1168,7 +1473,9 @@ function JobHistory({ jobs, onLoad, onClone, onResume, onDelete, onRefresh }) {
                 <td className="p-2"><StatusBadge status={j.status} /></td>
                 <td className="p-2 font-mono text-dim">{j.strategy_id}</td>
                 <td className="p-2 font-mono">{j.instrument}</td>
-                <td className="p-2 font-mono">{j.method}</td>
+                <td className="p-2 font-mono">
+                  {j.kind === "wfo" ? <span className="text-emerald-400">walk-fwd</span> : j.method}
+                </td>
                 <td className="p-2 font-mono text-dim">{j.objective}</td>
                 <td className="p-2 font-mono text-right">{j.n_trials_completed || 0}/{j.n_trials_total}</td>
                 <td className="p-2 font-mono text-right text-foreground">{j.best_so_far?.value !== undefined ? fmtBest(j.best_so_far.value) : "–"}</td>

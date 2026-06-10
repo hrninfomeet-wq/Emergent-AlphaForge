@@ -174,6 +174,8 @@ export const api = {
   // Optimizer
   startOptimization: (payload) =>
     apiClient.post("/optimize/start", payload).then((r) => r.data),
+  startWfo: (payload) =>
+    apiClient.post("/optimize/wfo", payload).then((r) => r.data),
   listOptJobs: (limit = 50) =>
     apiClient.get(`/optimize/jobs?limit=${limit}`).then((r) => r.data),
   getOptJob: (id) =>

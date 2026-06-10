@@ -224,13 +224,28 @@ Body: `OptimizerStartReq`. Key fields:
 
 Returns `{ job_id, status: "queued" }`. Runs as a background asyncio task.
 
+### `POST /api/optimize/wfo`
+Honest walk-forward optimization. Body: `WfoStartReq` — the single-optimizer fields (instrument, strategy_id, objective, costs, pretrade, param_overrides, guards, date window) plus window configuration:
+
+| Field | Default | Notes |
+|-------|---------|-------|
+| `train_days` | 60 | Train window size in TRADING days present in the data (20–250) |
+| `test_days` | 20 | Unseen test window after each train window (5–60) |
+| `step_days` | null | Window step; default = `test_days` → contiguous, non-overlapping OOS |
+| `wf_mode` | `"rolling"` | `rolling` (fixed train size) \| `anchored` (train grows from first session) |
+| `n_trials_per_window` | 40 | Optuna trials per train window (10–500) |
+| `max_windows` | 12 | Cap (2–36); the OLDEST windows are dropped so deployable params come from the newest data |
+| `method` | `"bayesian"` | `bayesian` \| `genetic` (grid unsupported per-window) |
+
+Per window: re-optimize on the train slice only → evaluate that window's best params on its unseen test slice → stitch all test-window trades into one OOS equity curve. The job doc gets `kind="wfo"` and, when done, a `wfo` object: `windows[]` (train/test ranges, per-window best params, IS/OOS metrics), `stitched_oos` (the headline metrics), `stitched_oos_equity`, `efficiency` (OOS pnl/day ÷ IS pnl/day; null when IS ≤ 0), `consistency`, `param_stability` (rel_spread of each param across windows), `final_params` (best of the most recent train window; also saved as `best_params` plus a full `best_backtest_run_id`). Cancel works at trial boundaries; pause/resume works at window granularity (a half-finished window re-runs). Returns `{ job_id, status: "queued", kind: "wfo" }`.
+
 ### `GET /api/optimize/jobs?limit=50`
-Recent jobs (lightweight projection — excludes `trial_log`, `heatmap`, `robustness`, `rerank`, `param_space`, `top_n_alternatives`).
+Recent jobs (lightweight projection — excludes `trial_log`, `heatmap`, `robustness`, `rerank`, `param_space`, `top_n_alternatives`, `wfo`, `wfo_windows`, `wfo_oos_trades`).
 
 ### `GET /api/optimize/jobs/{job_id}`
 Full job document. Statuses: `queued → running → analyzing → done | cancelled | paused | interrupted | failed`.
-When done/cancelled: `best_params`, `best_value`, `best_metrics`, `best_backtest_run_id`, `evaluation_mode`, `top_n_alternatives`, `parameter_importance`, `heatmap`, `robustness`, `rerank` (when `evaluation_mode=option_rerank`).
-When paused/interrupted: `best_so_far`, `trial_log` (compact, for resume).
+When done/cancelled: `best_params`, `best_value`, `best_metrics`, `best_backtest_run_id`, `evaluation_mode`, `top_n_alternatives`, `parameter_importance`, `heatmap`, `robustness`, `rerank` (when `evaluation_mode=option_rerank`), `wfo` (when `kind=wfo`).
+When paused/interrupted: `best_so_far`, `trial_log` (compact, for resume); WFO jobs persist `wfo_windows` + `wfo_oos_trades` instead.
 
 ### `POST /api/optimize/jobs/{job_id}/cancel`
 Sets `cancelled=true`. Worker breaks at the next trial boundary. Analysis (heatmap/robustness) is skipped; best-so-far is still saved.

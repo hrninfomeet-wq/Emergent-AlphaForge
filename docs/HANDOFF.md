@@ -1,12 +1,24 @@
 # Handoff
 
-Updated: 2026-06-09
+Updated: 2026-06-10
 
 This is the entry point for the next AI agent or developer. Read it before editing code. The repository and tests are the source of truth — not any prior chat.
 
 ## Status In One Line
 
-The research stack has been deepened for a disciplined **options-buying** workflow: a shared decision engine (backtest = paper = live), a rupee cost model, premium-at-risk sizing, market-context + India-VIX tagging, a pre-run option-data preflight, and a substantially upgraded **Auto-Optimizer** (optional guard rails, indicator-period search, net-rupee objective, an **option-aware two-stage re-rank**, an ~8.8x-faster backtest loop, and full **pause / resume / crash-resume** with progress persistence). The earlier forward-testing stack (deployments, evaluator, kill switches, forward metrics) remains intact. **378 pytest tests pass.** The local Docker stack is healthy. Backend code changes require a container rebuild.
+The optimizer now has an **honest walk-forward mode** (`POST /api/optimize/wfo`, "Run type: Walk-forward" in the Optimizer page): re-optimize per train window, evaluate on the unseen test window, stitch the OOS trades — the stitched OOS result is the headline, with walk-forward efficiency, OOS consistency, and param-stability analyses. This sits on top of the 2026-06-09 options-buying + optimizer-overhaul work (shared decision engine, rupee cost model, premium-at-risk sizing, market-context + India-VIX tagging, option preflight, guard rails, indicator-period search, option re-rank, pause/resume, ~8.8x faster loop). **400 pytest tests pass.** The local Docker stack is healthy. Backend code changes require a container rebuild.
+
+## Recent Work — Honest Walk-Forward Optimization (2026-06-10)
+
+The single optimizer maximizes its objective over the full window, so its result is in-sample by definition (the post-hoc walk_forward() check measures param stability, not selection bias). The new WFO mode does the honest version:
+
+- `backend/app/wfo.py` — window splitter over TRADING days present in the data (rolling / anchored, holiday-aware by construction), per-window Optuna TPE re-optimization on the train slice only, OOS evaluation of each window's best on its unseen test slice, stitched OOS equity + metrics (same formulas as `compute_metrics`), **walk-forward efficiency** (OOS pnl/day ÷ IS pnl/day; ≥0.7 strong, <0.4 overfit), **OOS consistency** (share of OOS-positive windows), **param stability** (rel_spread of each chosen param across windows). Final deployable params = best of the most recent train window; saved as `best_params` + a full `best_backtest_run_id` so Save-as-Preset / View-in-Lab / deployment flows work unchanged.
+- Indicators are computed once on the full frame and sliced per window — safe because every indicator in `app/indicators.py` is causal (trailing windows only), and it gives test windows realistic warmup history exactly like live.
+- Jobs live in `optimization_jobs` with `kind="wfo"`; cancel at trial boundaries; **pause/resume at window granularity** (completed windows persist in `wfo_windows`; a half-finished window re-runs). Startup orphan-marking covers WFO jobs automatically.
+- Routes: `POST /api/optimize/wfo` (window config: `train_days=60`, `test_days=20`, `step_days=None→test_days`, `wf_mode=rolling|anchored`, `n_trials_per_window=40`, `max_windows=12` — oldest windows dropped so deployable params come from the newest data). Resume route branches on job kind.
+- UI (`Optimizer.jsx`): "Run type" selector (Single | Walk-forward), window config block, WFO results panel — stitched-OOS headline badges + equity sparkline, WF-efficiency color coding, per-window table with per-window params, param-stability bars. Job history tags WFO runs.
+- 22 unit tests in `tests/test_wfo.py` (window math, stitch metrics incl. max-DD, efficiency guards, stability).
+- WFO evaluates on spot only (v1). For option realism, run the final preset through an option re-rank optimization or an option backtest afterwards.
 
 ## Read Order For A New Agent
 
@@ -169,7 +181,8 @@ Warehouse: complete for v1 (this session). Optional warehouse extras not yet bui
 Product roadmap (from `plan.md`):
 
 - Phase 4b forward-testing stack is **complete** (incl. Slice 12 per-deployment kill switches).
-- **Optimizer follow-ups (recommended next):** after A/B-validating the option re-rank advantage, retire the legacy spot-only path; then a **risk engine** (live-only hard rules: position sizing, daily loss cutoff, regime gating — paper/forward stay tagged-not-blocked) and **honest walk-forward**, which are the highest-value steps for profitability.
+- **Optimizer follow-ups:** honest walk-forward is DONE (2026-06-10). Remaining: after A/B-validating the option re-rank advantage, retire the legacy spot-only path; then a **risk engine** (live-only hard rules: position sizing, daily loss cutoff, regime gating — paper/forward stay tagged-not-blocked). Possible WFO v2: option-aware OOS evaluation per window.
+- **User-requested (2026-06-10):** signal-generation deployments should auto-create a paper trade per confirmed signal (configurable lots, default 1) without requiring manual approval, so signal quality is auditable; and forward metrics' 10-complete-session display gate should not block starting paper trials (consider showing low-sample metrics with a warning).
 - Deferred optimizer items: full per-trial option-aware evaluation, loop speedups (split signal-gen from trade-sim, memoization, multi-fidelity pruners, numba JIT — user granted dependency-install permission).
 - Data: Flattrade/Fyers historical-option API as a fallback source to fill residual ~5-8% option-data gaps Upstox lacks (TradingView is NOT viable for option premium).
 - Phase 5 profitability boosters (Kaplan–Meier survival, meta-model, Kelly sizing, Telegram alerts) deferred until ≥6 months of forward signal history exists.
@@ -295,7 +308,7 @@ See `docs/ARCHITECTURE.md` for the full module map.
 ## Verification Checklist
 
 ```bash
-python -m pytest tests -q     # 378 pass as of 2026-06-09
+python -m pytest tests -q     # 400 pass as of 2026-06-10
 cd frontend
 npm run build
 cd ..

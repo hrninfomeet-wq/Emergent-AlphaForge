@@ -98,6 +98,7 @@ from app.warehouse import (
 )
 from app.optimizer import create_job as optimizer_create_job
 from app.optimizer import resume_optimization as optimizer_resume_job
+from app.wfo import create_wfo_job, resume_wfo_job
 from app import upstox_client
 from app.option_candles import persist_option_candles_df
 from app.option_contract_store import upsert_option_contracts
@@ -2050,7 +2051,7 @@ async def list_opt_jobs(limit: int = Query(50, le=200)):
     db = get_db()
     cur = db.optimization_jobs.find(
         {},
-        {"_id": 0, "param_space": 0, "top_n_alternatives": 0, "heatmap": 0, "robustness": 0, "rerank": 0, "trial_log": 0},
+        {"_id": 0, "param_space": 0, "top_n_alternatives": 0, "heatmap": 0, "robustness": 0, "rerank": 0, "trial_log": 0, "wfo": 0, "wfo_windows": 0, "wfo_oos_trades": 0},
     ).sort("created_at", -1).limit(limit)
     rows = await cur.to_list(length=limit)
     return {"items": rows}
@@ -2098,10 +2099,67 @@ async def pause_opt_job(job_id: str):
 
 @api.post("/optimize/jobs/{job_id}/resume")
 async def resume_opt_job(job_id: str):
-    ok = await optimizer_resume_job(job_id)
+    db = get_db()
+    doc = await db.optimization_jobs.find_one({"id": job_id}, {"_id": 0, "kind": 1})
+    if not doc:
+        raise HTTPException(404, "Job not found")
+    if doc.get("kind") == "wfo":
+        ok = await resume_wfo_job(job_id)
+    else:
+        ok = await optimizer_resume_job(job_id)
     if not ok:
         raise HTTPException(400, "Job cannot be resumed (not paused/interrupted/failed, or missing config)")
     return {"ok": True, "status": "running"}
+
+
+class WfoStartReq(BaseModel):
+    """Walk-forward optimization: re-optimize on each train window, evaluate on
+    the unseen test window, stitch OOS. Window sizes are in TRADING DAYS present
+    in the data (holiday-aware by construction)."""
+    instrument: str = "NIFTY"
+    mode: str = "SCALP"
+    strategy_id: str
+    method: str = "bayesian"  # bayesian | genetic (grid is not supported per-window)
+    objective: str = "risk_adjusted"
+    costs_enabled: bool = True
+    pretrade_filters: Dict[str, Any] = Field(default_factory=dict)
+    pretrade_profile: Optional[str] = None
+    param_overrides: Dict[str, Any] = Field(default_factory=dict)
+    start_ts: Optional[int] = None
+    end_ts: Optional[int] = None
+    name: str = "Walk-forward optimization"
+    min_trades: int = 10
+    min_direction_share: float = 0.0
+    optimize_indicator_periods: bool = False
+    # Window configuration
+    train_days: int = 60
+    test_days: int = 20
+    step_days: Optional[int] = None  # default = test_days (contiguous OOS)
+    wf_mode: str = "rolling"  # rolling | anchored
+    n_trials_per_window: int = 40
+    max_windows: int = 12
+
+
+@api.post("/optimize/wfo")
+async def optimize_wfo_start(req: WfoStartReq):
+    if req.method not in ("bayesian", "genetic"):
+        raise HTTPException(400, f"Unknown method {req.method} (wfo supports bayesian | genetic)")
+    if not get_registry().get(req.strategy_id):
+        raise HTTPException(404, f"Strategy {req.strategy_id} not found")
+    if req.wf_mode not in ("rolling", "anchored"):
+        raise HTTPException(400, f"Unknown wf_mode {req.wf_mode}")
+    if not (20 <= req.train_days <= 250):
+        raise HTTPException(400, "train_days must be 20–250 trading days")
+    if not (5 <= req.test_days <= 60):
+        raise HTTPException(400, "test_days must be 5–60 trading days")
+    if req.step_days is not None and not (1 <= req.step_days <= 60):
+        raise HTTPException(400, "step_days must be 1–60 trading days")
+    if not (10 <= req.n_trials_per_window <= 500):
+        raise HTTPException(400, "n_trials_per_window must be 10–500")
+    if not (2 <= req.max_windows <= 36):
+        raise HTTPException(400, "max_windows must be 2–36")
+    job_id = await create_wfo_job(req.model_dump())
+    return {"job_id": job_id, "status": "queued", "kind": "wfo"}
 
 
 @api.post("/optimize/apply-as-preset/{job_id}")
