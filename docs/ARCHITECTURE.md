@@ -1,6 +1,6 @@
 # Architecture
 
-Updated: 2026-06-01
+Updated: 2026-06-09
 
 ## Purpose
 
@@ -100,14 +100,19 @@ flowchart TD
 | `backend/app/live_candle_roller.py` | Subscribes to WS broadcast, aggregates per-minute OHLC, persists into `candles_1m`; drops non-trading-day and off-session ticks before they can create warehouse candles |
 | `backend/app/market_header.py` | Normalized market header quote aggregation (WS-first, REST fallback) |
 | **Research engine** | |
-| `backend/app/indicators.py` | Vectorized indicators |
+| `backend/app/indicators.py` | Vectorized indicators (incl. vectorized `detect_fvg`; param-driven periods consumed by the optimizer's indicator-period search) |
 | `backend/app/regime.py` | Regime detection (ADX + Choppiness + ATR expansion) |
-| `backend/app/costs.py` | Realistic Indian intraday cost model |
-| `backend/app/backtest.py` | Strategy execution, metrics, statistical significance |
-| `backend/app/option_backtest.py` | Paired INDEX + OPTION leg simulation |
+| `backend/app/costs.py` | Realistic Indian intraday cost model (spot points) |
+| `backend/app/exit_engine.py` | Shared `intrabar_exit(high,low,stop,target,is_long,stop_first)` used by BOTH spot and option engines |
+| `backend/app/backtest.py` | Strategy execution, metrics, statistical significance. Hot loop uses pre-materialized dict records (`df.to_dict("records")`) instead of per-row `df.iloc` (~8.8x faster) |
+| `backend/app/dte.py` | DTE filter (0..6 trading days before nearest expiry), metadata-driven |
+| `backend/app/option_costs.py` | Rupee option cost model: brokerage + STT/exchange/SEBI/GST/stamp + %-of-premium bid-ask spread |
+| `backend/app/portfolio.py` | Premium-at-risk position sizing + rupee equity curve (lot SIZE from contract metadata) |
+| `backend/app/market_context.py` + `vix.py` + `context_signals.py` | Regime/time-of-day/DTE/VIX bucket tagging; India-VIX ingest+as-of join; S/R, round levels, RSI/MACD divergence (additive scores) |
+| `backend/app/option_backtest.py` | Paired INDEX + OPTION leg simulation (`simulate_paired_option_trades`); candles pre-grouped by `instrument_key`; spot_exit / option_levels exit modes; cost+sizing+slippage+context wired |
 | `backend/app/slippage.py` | Slippage config (ATM 0.5pt, OTM1/ITM1 1pt, OTM2+ 2pt, expiry-day 30-min 2x) |
 | `backend/app/volatility.py` | Post-hoc 5-min realized vs 30-day baseline detector |
-| `backend/app/optimizer.py` | Optuna TPE / Grid / CMA-ES with cancellation, robustness, importance, heatmap |
+| `backend/app/optimizer.py` | Optuna TPE / Grid / CMA-ES. Lazy per-indicator-period enriched cache; guard rails (min_trades + CE/PE share, optional); `net_pnl_inr` objective; **two-stage option re-rank** (`_option_rerank`); **pause/resume/crash-resume** (`_job_control`, `_flush_trial_log`, `_rebuild_study`, `resume_optimization`); robustness/importance/heatmap; heavy work via `asyncio.to_thread` |
 | `backend/app/strategies/` | Built-in strategies + plugin loader |
 | **Forward testing** | |
 | `backend/app/strategy_deployments.py` | Deployment doc builder, validation, source resolution |
@@ -156,7 +161,7 @@ flowchart TD
 | `integrity_hashes` | Per-day index candle counts and hashes |
 | `warehouse_runs` | Ingest and fetch audit log (covers spot, contracts, options, hygiene) |
 | `backtest_runs` | Backtest configs, trades, metrics, option results |
-| `optimization_jobs` | Optimizer jobs and best results |
+| `optimization_jobs` | Optimizer jobs + best results. Statuses: queued/running/analyzing/done/cancelled/**paused**/**interrupted**/failed. Carries `evaluation_mode`, `rerank` (option re-rank table), and a transient compact `trial_log` for pause/crash resume |
 | `presets` | Saved strategy configurations |
 | `pretrade_profiles` | Conservative / Balanced / Aggressive plus custom |
 | `upstox_tokens` | Encrypted OAuth tokens |
@@ -213,8 +218,9 @@ All routes are prefixed with `/api`. See `docs/API_REFERENCE.md` for full reques
 ### Backtest, optimizer, presets, profiles
 
 - `POST /backtest/run` `GET /backtest/runs` `GET /backtest/runs/{id}` `DELETE /backtest/runs/{id}`
+- `POST /backtest/option-preflight?ingest_missing=0|1` — pre-run option-data coverage report (+ optional background ingest of missing option data)
 - `POST /optimize/start` `GET /optimize/jobs` `GET /optimize/jobs/{job_id}` `DELETE /optimize/jobs/{job_id}`
-- `POST /optimize/jobs/{job_id}/cancel` `POST /optimize/apply-as-preset/{job_id}?name=...`
+- `POST /optimize/jobs/{job_id}/cancel` `POST /optimize/jobs/{job_id}/pause` `POST /optimize/jobs/{job_id}/resume` `POST /optimize/apply-as-preset/{job_id}?name=...`
 - `GET /presets` `PUT /presets/{name}` `DELETE /presets/{name}`
 - `GET /profiles` `PUT /profiles/{name}`
 

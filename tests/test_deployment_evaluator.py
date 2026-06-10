@@ -245,8 +245,17 @@ def make_deployment(
     }
 
 
-def make_contracts(*, atm_strike: int = 23950) -> List[Dict[str, Any]]:
-    """Build NIFTY ATM/OTM1/ITM1 CE/PE contracts spaced by 50."""
+def make_contracts(*, atm_strike: int = 23950, expiry_date: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Build NIFTY ATM/OTM1/ITM1 CE/PE contracts spaced by 50.
+
+    The expiry defaults to a few days in the FUTURE relative to wall-clock now so
+    the evaluator's active-expiry filter (expiry_date >= today IST) keeps these
+    fixtures valid over time instead of going stale on a hard-coded date.
+    """
+    if expiry_date is None:
+        future = datetime.now(timezone.utc) + IST_OFFSET + timedelta(days=3)
+        expiry_date = future.strftime("%Y-%m-%d")
+    expiry_compact = datetime.fromisoformat(expiry_date).strftime("%y%b").upper()
     contracts = []
     for offset in (-100, -50, 0, 50, 100):
         strike = atm_strike + offset
@@ -255,10 +264,10 @@ def make_contracts(*, atm_strike: int = 23950) -> List[Dict[str, Any]]:
                 "underlying": "NIFTY",
                 "strike": float(strike),
                 "side": side,
-                "expiry": "2026-06-04",
-                "expiry_date": "2026-06-04",
+                "expiry": expiry_date,
+                "expiry_date": expiry_date,
                 "instrument_key": f"NSE_FO|TEST|{strike}{side}",
-                "trading_symbol": f"NIFTY26JUN{strike}{side}",
+                "trading_symbol": f"NIFTY{expiry_compact}{strike}{side}",
             })
     return contracts
 

@@ -184,11 +184,12 @@ Body: `VolatilityAuditReq` with optional config override. Annotates spot 1m bars
 ## Backtest
 
 ### `POST /api/backtest/run`
-Body: `BacktestConfig`. Includes `instrument`, `mode`, `strategy_id`, `params`, `costs_enabled`, `walkforward`, `start_ts`, `end_ts`, `pretrade_filters`, `name`.
-
-For paired option backtests, supply option fields and `slippage_config` (Slice 7) to override default slippage buckets.
+Body: `BacktestReq`. Includes `instrument`, `mode`, `strategy_id`, `params`, `costs_enabled`, `walkforward`, `start_ts`, `end_ts`, `pretrade_filters`, `name`, `trade_window_start/end`, and an `option_backtest` block (enabled, moneyness, lots, exit_mode, dte_filter, cost_config, sizing_config).
 
 Returns full result with `id`, `metrics`, `trades`, `equity_curve`, `walkforward`, `significance`, `signal_funnel`, `regime_distribution`, optional `option_results`.
+
+### `POST /api/backtest/option-preflight?ingest_missing=0|1`
+Same body as `POST /backtest/run` with `option_backtest.enabled=true`. Returns a would-pair coverage report: `{ enabled, total_spot_trades, would_pair, missing_contract, missing_candle, coverage_pct, missing_contract_keys, expiry_mode, window }`. With `ingest_missing=1` and Upstox connected, submits a background option-warehouse fetch for the window.
 
 ### `GET /api/backtest/runs?limit=50`
 Recent runs (lightweight).
@@ -202,24 +203,49 @@ Remove a run.
 ## Optimizer
 
 ### `POST /api/optimize/start`
-Body: `OptimizerStartReq` with `method ∈ {bayesian, grid, genetic}`, `objective ∈ {risk_adjusted, sharpe, profit_factor, total_pnl_pts, win_rate, neg_max_dd}`, `n_trials`, `costs_enabled`, `pretrade_filters`, `param_overrides`, `start_ts`, `end_ts`.
+Body: `OptimizerStartReq`. Key fields:
 
-Returns `{ job_id, status: "queued" }`. Runs as a background task.
+| Field | Default | Notes |
+|-------|---------|-------|
+| `method` | `"bayesian"` | `bayesian` \| `grid` \| `genetic` |
+| `objective` | `"risk_adjusted"` | `risk_adjusted` \| `sharpe` \| `profit_factor` \| `total_pnl_pts` \| `net_pnl_inr` \| `win_rate` \| `neg_max_dd` |
+| `n_trials` | 200 | 10–5000 |
+| `evaluation_mode` | `"spot"` | `"spot"` (original, fast) \| `"option_rerank"` (two-stage: spot search then re-rank top-K by real option net rupee) |
+| `rerank_top_k` | 50 | 1–500; number of spot-best candidates re-evaluated on real option P&L |
+| `option_config` | null | Required when `evaluation_mode="option_rerank"`: `{ moneyness, dte_filter, lots, exit_mode, option_target_pct, option_stop_pct, cost_config, entry_max_age_sec, exit_max_age_sec }` |
+| `guards_enabled` (frontend→) | — | Translated to `min_trades` / `min_direction_share` in the payload |
+| `min_trades` | 10 | 0 = no floor; disqualifies statistically meaningless samples |
+| `min_direction_share` | 0.0 | 0 = off; minority CE/PE share floor (0.10 = 10% minimum) |
+| `optimize_indicator_periods` | false | Also tunes RSI/MACD/ATR/EMA/ADX/CHOP/swing lengths; indicators recomputed per trial |
+| `pretrade_filters` | `{}` | Apply same pre-trade profile used in live trading |
+| `pretrade_profile` | `"None"` | Stored for display/clone; engine uses `pretrade_filters` |
+| `param_overrides` | `{}` | Widen/narrow per-param bounds |
+| `start_ts`, `end_ts` | null | IST epoch ms window |
+
+Returns `{ job_id, status: "queued" }`. Runs as a background asyncio task.
 
 ### `GET /api/optimize/jobs?limit=50`
-Recent jobs (lightweight).
+Recent jobs (lightweight projection — excludes `trial_log`, `heatmap`, `robustness`, `rerank`, `param_space`, `top_n_alternatives`).
 
 ### `GET /api/optimize/jobs/{job_id}`
-Full job. When done: `best_params`, `best_value`, `best_metrics`, `best_backtest_run_id`, `top_n_alternatives`, `parameter_importance`, `heatmap`, `robustness`.
+Full job document. Statuses: `queued → running → analyzing → done | cancelled | paused | interrupted | failed`.
+When done/cancelled: `best_params`, `best_value`, `best_metrics`, `best_backtest_run_id`, `evaluation_mode`, `top_n_alternatives`, `parameter_importance`, `heatmap`, `robustness`, `rerank` (when `evaluation_mode=option_rerank`).
+When paused/interrupted: `best_so_far`, `trial_log` (compact, for resume).
 
 ### `POST /api/optimize/jobs/{job_id}/cancel`
-Sets `cancelled=true`. Worker exits at next checkpoint (every 5 trials). Best so far preserved.
+Sets `cancelled=true`. Worker breaks at the next trial boundary. Analysis (heatmap/robustness) is skipped; best-so-far is still saved.
+
+### `POST /api/optimize/jobs/{job_id}/pause`
+Sets `paused=true`. Worker flushes the compact trial log and best-so-far, then sets `status=paused` and exits. Can be Resumed.
+
+### `POST /api/optimize/jobs/{job_id}/resume`
+Re-launches the worker for a `paused` / `interrupted` / `failed` job. Rehydrates prior trial history, re-seeds the Optuna study, and continues from the last saved trial.
 
 ### `DELETE /api/optimize/jobs/{job_id}`
 Remove a job.
 
 ### `POST /api/optimize/apply-as-preset/{job_id}?name=<preset_name>`
-Save best params as a Preset.
+Save best params as a Preset. Accepts jobs with status `done`, `cancelled`, `paused`, `interrupted`, or `failed` — uses `best_params` with a fallback to `best_so_far.params`. Returns 400 if no params exist yet.
 
 ## Presets and Profiles
 

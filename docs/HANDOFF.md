@@ -1,21 +1,52 @@
 # Handoff
 
-Updated: 2026-06-01
+Updated: 2026-06-09
 
 This is the entry point for the next AI agent or developer. Read it before editing code. The repository and tests are the source of truth — not any prior chat.
 
 ## Status In One Line
 
-The Data Warehouse has been hardened end-to-end (fast, auto-updating, hygiene-managed, calendar-aware, verifiable, and chartable), the read-only Upstox stream can be restarted with a narrow live ATM option universe, forward metrics aggregate per deployment behind a 10-complete-session Strategy Library gate, and per-deployment kill switches auto-pause/-block paper deployments on risk limits. **306 pytest tests pass.** The local Docker stack is healthy. Phase 4b is **complete (12/12 slices)**; the next planned product work is **Phase 5 (probability engine), deferred until ≥6 months of forward signal history exists** — confirm scope before starting.
+The research stack has been deepened for a disciplined **options-buying** workflow: a shared decision engine (backtest = paper = live), a rupee cost model, premium-at-risk sizing, market-context + India-VIX tagging, a pre-run option-data preflight, and a substantially upgraded **Auto-Optimizer** (optional guard rails, indicator-period search, net-rupee objective, an **option-aware two-stage re-rank**, an ~8.8x-faster backtest loop, and full **pause / resume / crash-resume** with progress persistence). The earlier forward-testing stack (deployments, evaluator, kill switches, forward metrics) remains intact. **378 pytest tests pass.** The local Docker stack is healthy. Backend code changes require a container rebuild.
 
 ## Read Order For A New Agent
 
 1. This file (`docs/HANDOFF.md`)
-2. `plan.md`
-3. `docs/PROJECT_OVERVIEW.md`
-4. `docs/ARCHITECTURE.md`
-5. `docs/API_REFERENCE.md`
-6. The relevant code + tests for the next task.
+2. `plan.md` (product roadmap) + `docs/PROJECT_OVERVIEW.md`
+3. `docs/ARCHITECTURE.md`
+4. `docs/API_REFERENCE.md`
+5. `.kiro/specs/optimizer-enhancements/` (a worked example of the spec workflow used here)
+6. `ltm/runtime/active-context.json` + `ltm/runtime/last-recall.md` (long-term memory of recent sessions — richest record of the latest work)
+7. The relevant code + tests for the next task.
+
+## Recent Work — Optimizer Overhaul + Options-Buying Upgrades (2026-06-09)
+
+The most recent and richest work. The user's goal is a disciplined 0/1/2-DTE index-options **buying** system; the guiding principle is ONE shared decision engine where backtest, paper, and live agree, hard rules apply only to live real-money, and paper/forward/signal stay unrestricted but tagged.
+
+**Trading-logic slices (backend `app/`):**
+- `dte.py` — DTE filter (0..6 trading days before nearest expiry), metadata-driven.
+- `option_costs.py` — rupee cost model: brokerage + STT/exchange/SEBI/GST/stamp + **bid-ask spread as a % of premium** (the silent killer on cheap OTM/0DTE).
+- `portfolio.py` — premium-at-risk position sizing + rupee equity curve. Lot SIZE always from `option_contracts.lot_size`; user picks lot COUNT or % risk.
+- `market_context.py` + `vix.py` — regime / time-of-day / DTE / India-VIX buckets; India VIX ingested as `INDIAVIX` in `candles_1m` (AUX key `NSE_INDEX|India VIX`), baseline from 2025-12-29.
+- `context_signals.py` + `strategies/builtin/explosive_reversal.py` — S/R, round levels (NIFTY 50/100; BANKNIFTY & SENSEX 500s), RSI/MACD divergence; score-based (additive), NOT hard gates.
+- `exit_engine.py` — single shared `intrabar_exit(high,low,stop,target,is_long,stop_first)` used by both spot and option engines (deduped 3 exit decisions).
+
+**Option pairing fixes (server.py / option_backtest.py):** windowed contract query (`length=None` + expiry-window filter) fixed near-zero pairing; expiry-mode selector (auto nearest-per-trade vs fixed); hardened against silent oldest-contract fallback. `simulate_paired_option_trades` now pre-groups candles by `instrument_key` once (was O(trades×candles) per-trade scan).
+
+**Pre-run option preflight:** `POST /api/backtest/option-preflight?ingest_missing=0|1` — reports would-pair coverage % and missing contracts/candles before a backtest; with `ingest_missing=1` + Upstox connected, submits a background option-warehouse fetch. UI: "Option Data Preflight" panel in Backtest Lab.
+
+**Auto-Optimizer overhaul (`app/optimizer.py`, `Optimizer.jsx`) — see the optimizer section below for detail:**
+- Spec authored at `.kiro/specs/optimizer-enhancements/` (requirements → design → tasks).
+- Optional **guard rails** (single toggle, default ON): `min_trades` significance floor (default 10) + optional CE/PE `min_direction_share`. OFF = pure objective maximization (one-sided/all-PE allowed — profitability is the objective, not balance).
+- **Indicator-period search** (`optimize_indicator_periods`): RSI/MACD/ATR/EMA/ADX/CHOP/swing lengths become tunable; indicators are recomputed (cached) per indicator-period combo — fixed a bug where they were frozen at defaults.
+- **net_pnl_inr** objective (net points × latest lot size).
+- **Two-stage option re-rank** (`evaluation_mode: "spot" | "option_rerank"`): Stage 1 fast spot search; Stage 2 re-ranks top-K (default 50, ≤500) by REAL paired-option net rupee (option candles loaded once, simulated in-memory). Exposes that spot-profitable params can LOSE on options. Old "spot" path is fully intact for A/B.
+- **Speed:** backtest hot loop converted from `df.iloc[i]` to pre-materialized dict records → ~8.8x faster row access; `indicators.detect_fvg` vectorized (was a GIL-holding O(n) Python loop). Heavy work runs in `asyncio.to_thread` so the API stays responsive.
+- **Pause / Resume / crash-resume:** `POST /optimize/jobs/{id}/pause` + `/resume`. Progress (compact trial log + best-so-far) is flushed to the job doc; resume rehydrates and re-seeds the Optuna study. On restart, orphaned jobs are marked **`interrupted`** (resumable), not failed. Save-as-preset works for paused/interrupted/failed via best-so-far fallback.
+- UI niceties: pre-trade profile selector (was a dead backend↔frontend link), clone-config-to-setup from Job History, "no usable result" hint, preset delete button, setup config persisted to `localStorage`.
+
+**Why parallelism was removed from the plan:** evaluated and permanently dropped. For an options-buying app, raw trial speed is a non-bottleneck and "more trials" raises overfitting risk. The actual per-bar bottleneck was solved non-parallelly (dict records ~8.8x; vectorized FVG). Process parallelism fights the pause/resume design, degrades Bayesian TPE's sample efficiency, and adds Windows `spawn` complexity. If specific loop speedups are ever needed, use algorithmic approaches: split signal-gen from trade-sim, memoize duplicate params, multi-fidelity pruning, numba JIT.
+
+
 
 ## Recent Work — Per-Deployment Kill Switches (2026-06-01)
 
@@ -104,9 +135,11 @@ Data:
 
 Research:
 
-- 6 built-in strategies plus a custom plugin loader (`backend/app/strategies/builtin/*.py`, `plugins/*.py`).
-- Backtest with realistic costs, walk-forward IS/OOS, statistical significance, regime detection.
-- Optimizer (Bayesian / Grid / CMA-ES) with robustness, importance, heatmap, top-N alternatives.
+- 6 built-in strategies plus a custom plugin loader (`backend/app/strategies/builtin/*.py`, `plugins/*.py`); includes `explosive_reversal` (score-based context detector).
+- Backtest with realistic costs, walk-forward IS/OOS, statistical significance, regime detection. Hot loop is dict-records based (~8.8x faster than per-row `df.iloc`); `intrabar_exit` is shared between spot and option engines.
+- Rupee cost model (`option_costs.py`: brokerage + statutory charges + %-of-premium spread), premium-at-risk sizing (`portfolio.py`), DTE filter (`dte.py`), market-context + India-VIX tagging (`market_context.py`, `vix.py`).
+- Pre-run option-data preflight (`POST /api/backtest/option-preflight`) reports would-pair coverage and optionally ingests missing option data.
+- **Auto-Optimizer (upgraded):** Bayesian / Grid / CMA-ES with robustness, importance, heatmap, top-N. Optional guard rails (min_trades + CE/PE share), indicator-period search, `net_pnl_inr` objective, an **option-aware two-stage re-rank** (`evaluation_mode=option_rerank`), and **pause / resume / crash-resume** with persisted progress. The legacy spot-only path is preserved for A/B.
 - Slippage model wired into paired option backtests (`backend/app/slippage.py`).
 - Post-hoc volatility detector (`backend/app/volatility.py`) replaces the rejected event calendar.
 
@@ -135,8 +168,11 @@ Warehouse: complete for v1 (this session). Optional warehouse extras not yet bui
 
 Product roadmap (from `plan.md`):
 
-- **Slice 12 (next): Per-deployment kill switches** — `max_consecutive_losses`, `daily_loss_cutoff_pct`, `max_open_paper_trades`.
-- Phase 5 profitability boosters (Kaplan–Meier survival, meta-model, Kelly sizing, Telegram alerts) are deferred until ≥6 months of forward signal history exists.
+- Phase 4b forward-testing stack is **complete** (incl. Slice 12 per-deployment kill switches).
+- **Optimizer follow-ups (recommended next):** after A/B-validating the option re-rank advantage, retire the legacy spot-only path; then a **risk engine** (live-only hard rules: position sizing, daily loss cutoff, regime gating — paper/forward stay tagged-not-blocked) and **honest walk-forward**, which are the highest-value steps for profitability.
+- Deferred optimizer items: full per-trial option-aware evaluation, loop speedups (split signal-gen from trade-sim, memoization, multi-fidelity pruners, numba JIT — user granted dependency-install permission).
+- Data: Flattrade/Fyers historical-option API as a fallback source to fill residual ~5-8% option-data gaps Upstox lacks (TradingView is NOT viable for option premium).
+- Phase 5 profitability boosters (Kaplan–Meier survival, meta-model, Kelly sizing, Telegram alerts) deferred until ≥6 months of forward signal history exists.
 - Phase 6 swing/positional extension is not started.
 - No automatic broker order placement. The manual approval gate is intentional and must remain.
 
@@ -259,7 +295,7 @@ See `docs/ARCHITECTURE.md` for the full module map.
 ## Verification Checklist
 
 ```bash
-python -m pytest tests -q     # 287 pass as of 2026-06-01
+python -m pytest tests -q     # 378 pass as of 2026-06-09
 cd frontend
 npm run build
 cd ..

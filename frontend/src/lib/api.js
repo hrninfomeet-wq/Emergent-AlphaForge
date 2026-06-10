@@ -91,6 +91,8 @@ export const api = {
     apiClient.post("/data-hygiene/plan", payload).then((r) => r.data),
   dataHygieneExecute: (plan, payload = {}) =>
     apiClient.post("/data-hygiene/execute", { plan, ...payload }).then((r) => r.data),
+  dataHygieneCatchUp: (payload = {}) =>
+    apiClient.post("/data-hygiene/catch-up", payload).then((r) => r.data),
   dataHygieneStatus: (planId) =>
     apiClient.get("/data-hygiene/status", {
       params: planId ? { plan_id: planId } : {},
@@ -101,6 +103,10 @@ export const api = {
     apiClient.post("/warehouse/auto-update/toggle", { enabled }).then((r) => r.data),
   autoUpdateRunNow: () =>
     apiClient.post("/warehouse/auto-update/run").then((r) => r.data),
+  vixCoverage: () =>
+    apiClient.get("/warehouse/vix/coverage").then((r) => r.data),
+  vixIngest: (payload) =>
+    apiClient.post("/warehouse/vix/ingest", payload).then((r) => r.data),
 
   // Profiles
   listProfiles: () => apiClient.get("/profiles").then((r) => r.data),
@@ -110,6 +116,8 @@ export const api = {
   // Backtest
   runBacktest: (payload) =>
     apiClient.post("/backtest/run", payload).then((r) => r.data),
+  optionPreflight: (payload, ingestMissing = false) =>
+    apiClient.post("/backtest/option-preflight", payload, { params: { ingest_missing: ingestMissing } }).then((r) => r.data),
   listBacktestRuns: (limit = 50) =>
     apiClient.get(`/backtest/runs?limit=${limit}`).then((r) => r.data),
   getBacktestRun: (id) =>
@@ -174,6 +182,10 @@ export const api = {
     apiClient.delete(`/optimize/jobs/${id}`).then((r) => r.data),
   cancelOptJob: (id) =>
     apiClient.post(`/optimize/jobs/${id}/cancel`).then((r) => r.data),
+  pauseOptJob: (id) =>
+    apiClient.post(`/optimize/jobs/${id}/pause`).then((r) => r.data),
+  resumeOptJob: (id) =>
+    apiClient.post(`/optimize/jobs/${id}/resume`).then((r) => r.data),
   applyOptAsPreset: (jobId, name) =>
     apiClient.post(`/optimize/apply-as-preset/${jobId}?name=${encodeURIComponent(name)}`).then((r) => r.data),
 

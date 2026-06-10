@@ -30,6 +30,12 @@ from app.regime import classify_regime_series
 from app.strategies.base import get_registry
 from app.backtest import run_backtest, stat_significance
 from app.option_backtest import simulate_paired_option_trades
+from app.dte import compute_dte, normalize_dte_filter
+from app.vix import VIX_INSTRUMENT, vix_instrument_key, annotate_trades_with_vix
+
+# India VIX backtest baseline start (user-chosen). Auto-update tops up VIX from
+# the last stored date, falling back to this when the warehouse has no VIX yet.
+VIX_BASELINE_START = "2025-12-29"
 from app.option_data_audit import audit_option_data, clear_option_data
 from app.option_data_planner import DEFAULT_LEGS, build_option_warehouse_plan
 from app.option_plan_response import compact_option_plan_for_response
@@ -64,6 +70,7 @@ from app.data_hygiene import (
     DEFAULT_MONEYNESS as HYGIENE_DEFAULT_MONEYNESS,
     DEFAULT_SAMPLE_INTERVAL_MIN as HYGIENE_DEFAULT_SAMPLE,
     DEFAULT_START_DATE as HYGIENE_DEFAULT_START,
+    compute_catch_up_plan,
     compute_hygiene_plan,
     execute_hygiene_plan,
     hygiene_status,
@@ -90,6 +97,7 @@ from app.warehouse import (
     persist_candles_df,
 )
 from app.optimizer import create_job as optimizer_create_job
+from app.optimizer import resume_optimization as optimizer_resume_job
 from app import upstox_client
 from app.option_candles import persist_option_candles_df
 from app.option_contract_store import upsert_option_contracts
@@ -258,8 +266,52 @@ async def _autoupdate_execute_plan(plan: Dict[str, Any]) -> Dict[str, Any]:
     )
 
 
+async def _topup_vix() -> Dict[str, Any]:
+    """Best-effort: fetch India VIX 1m candles from the last stored VIX date (or
+    the configured baseline 2025-12-29) up to today, into candles_1m as INDIAVIX.
+
+    Runs as part of the warehouse auto-update so the volatility-context layer
+    stays current without manual work. Never raises.
+    """
+    db = get_db()
+    try:
+        status = await upstox_client.get_connection_status()
+        if not status.get("connected") or status.get("expired"):
+            return {"status": "skipped", "reason": "upstox_unavailable"}
+        # Last stored VIX date, else baseline.
+        rows = await db.candles_1m.aggregate([
+            {"$match": {"instrument": VIX_INSTRUMENT}},
+            {"$group": {"_id": None, "max_ts": {"$max": "$ts"}}},
+        ]).to_list(length=1)
+        from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+        ist = _td(hours=5, minutes=30)
+        if rows and rows[0].get("max_ts"):
+            last = (_dt.fromtimestamp(int(rows[0]["max_ts"]) / 1000, tz=_tz.utc) + ist)
+            from_date = (last + _td(days=1)).strftime("%Y-%m-%d")
+        else:
+            from_date = VIX_BASELINE_START
+        to_date = (_dt.now(_tz.utc) + ist).strftime("%Y-%m-%d")
+        if from_date > to_date:
+            return {"status": "ok", "reason": "up_to_date"}
+        result = await upstox_client.fetch_historical_1m_for_key_chunked(
+            vix_instrument_key(), from_date, to_date, max_days_per_call=7,
+        )
+        df = result["df"]
+        if df.empty:
+            return {"status": "empty", "from_date": from_date, "to_date": to_date}
+        df = df.copy()
+        df["instrument"] = VIX_INSTRUMENT
+        saved = await persist_index_candles_bulk(VIX_INSTRUMENT, df)
+        return {"status": "ok", "candles_added": saved["upserted"], "from_date": from_date, "to_date": to_date}
+    except Exception as exc:
+        log.warning("VIX top-up failed: %s", exc)
+        return {"status": "error", "error": str(exc)[:200]}
+
+
 async def _trigger_autoupdate(reason: str) -> Dict[str, Any]:
     """Run one auto-update catch-up with the standard injected callables."""
+    # Keep India VIX current alongside spot/option catch-up (best-effort).
+    await _topup_vix()
     return await run_autoupdate_once(
         reason=reason,
         connection_status_fn=_autoupdate_connection_status,
@@ -283,6 +335,27 @@ async def startup() -> None:
             upsert=True,
         )
     log.info("Pre-trade profiles seeded")
+
+    # Reconcile orphaned optimization jobs. Optimization workers are in-process
+    # fire-and-forget asyncio tasks, so any job left "queued"/"running"/
+    # "analyzing" in the DB belongs to a previous process (e.g. a container
+    # rebuild). Mark them "interrupted" — a resumable state — so the UI stops
+    # polling, the Auto-Optimize button re-enables, and the user can Resume the
+    # job from its last persisted trial instead of starting over.
+    try:
+        reconciled = await db.optimization_jobs.update_many(
+            {"status": {"$in": ["queued", "running", "analyzing"]}},
+            {"$set": {
+                "status": "interrupted",
+                "paused": False,
+                "error": "Interrupted by a server restart — resume to continue.",
+                "interrupted_at": datetime.now(timezone.utc).isoformat(),
+            }},
+        )
+        if reconciled.modified_count:
+            log.info("Reconciled %d interrupted optimization job(s) (resumable)", reconciled.modified_count)
+    except Exception as exc:
+        log.warning("Optimization job reconciliation failed: %s", exc)
 
     # Warm the option-coverage cache in the background so the first Data Warehouse
     # page load is fast. The persisted cache from the previous run is still valid
@@ -580,6 +653,23 @@ class OptionBacktestReq(BaseModel):
     auto_fetch: bool = True
     max_auto_fetch_contracts: int = 12
     slippage_config: Optional[Dict[str, Any]] = None
+    # Option exit mode: "spot_exit" (option mirrors the spot trade's exit) or
+    # "option_levels" (exit on the option's own premium target/stop).
+    exit_mode: str = "spot_exit"
+    option_target_pts: Optional[float] = None
+    option_stop_pts: Optional[float] = None
+    option_target_pct: Optional[float] = None
+    option_stop_pct: Optional[float] = None
+    # DTE filter: None/"all" = every weekly expiry; "dte0".."dte6" or 0..6 =
+    # only sessions that many trading days before the nearest expiry. Lets the
+    # user test a strategy on, e.g., expiry-day (0DTE) only.
+    dte_filter: Optional[str] = None
+    # Rupee cost model (brokerage + STT + charges + % bid-ask spread). Opt-in;
+    # when omitted/disabled the backtest reports gross premium P&L as before.
+    cost_config: Optional[Dict[str, Any]] = None
+    # Position sizing + capital (premium-at-risk or fixed lots). Opt-in; off keeps
+    # the fixed `lots` count. Lot SIZE always comes from the contract metadata.
+    sizing_config: Optional[Dict[str, Any]] = None
 
 
 class BacktestReq(BaseModel):
@@ -596,6 +686,11 @@ class BacktestReq(BaseModel):
     n_folds: int = 3
     pretrade_filters: Dict[str, Any] = Field(default_factory=dict)
     option_backtest: OptionBacktestReq = Field(default_factory=OptionBacktestReq)
+    # Intraday trade window (IST HH:MM). Default 09:25-15:00 implements the
+    # user's discipline rule: no entries in the first 10 min (09:15-09:25) or the
+    # last 30 min (15:00-15:30). Configurable per run.
+    trade_window_start: str = "09:25"
+    trade_window_end: str = "15:00"
     name: str = "Untitled Run"
 
 
@@ -702,25 +797,83 @@ async def _run_paired_option_backtest(req: BacktestReq, spot_trades: List[Dict[s
 
     db = get_db()
     underlying = req.instrument.upper()
+
+    # Volatility context: annotate spot trades with India VIX (as-of join) so the
+    # context breakdown can show edge by VIX regime. Best-effort — if VIX has not
+    # been ingested, trades simply carry vix=None.
+    if spot_trades:
+        trade_ts = [int(t["entry_ts"]) for t in spot_trades if t.get("entry_ts") is not None]
+        if trade_ts:
+            vix_rows = await db.candles_1m.find(
+                {"instrument": VIX_INSTRUMENT,
+                 "ts": {"$gte": min(trade_ts) - 7 * 24 * 3600 * 1000, "$lte": max(trade_ts)}},
+                {"_id": 0, "ts": 1, "close": 1},
+            ).sort("ts", 1).to_list(length=1000000)
+            if vix_rows:
+                annotate_trades_with_vix(spot_trades, vix_rows)
+
     contract_query: Dict[str, Any] = {"underlying": underlying}
     fixed_expiry_date = config.expiry_date
     if fixed_expiry_date:
         contract_query["expiry_date"] = fixed_expiry_date
+    elif spot_trades:
+        # Load only contracts whose expiry is relevant to the backtest window.
+        # This keeps the working set small AND fixes a real bug: an unbounded
+        # contract universe sorted ascending would, under a row cap, truncate to
+        # the OLDEST expiries and leave recent trades unable to resolve their
+        # nearest expiry. We bound by the trades' date span plus a forward margin
+        # to cover the last trades' next weekly expiry.
+        _ts = [int(t["entry_ts"]) for t in spot_trades if t.get("entry_ts") is not None]
+        _xt = [int(t["exit_ts"]) for t in spot_trades if t.get("exit_ts") is not None]
+        if _ts:
+            win_start = _ts_ms_to_ist_date_str(min(_ts))
+            last_ms = max(_xt) if _xt else max(_ts)
+            # +21 days forward margin so a trade late in the window still finds
+            # its nearest upcoming weekly/monthly expiry.
+            win_end = _ts_ms_to_ist_date_str(last_ms + 21 * 24 * 3600 * 1000)
+            contract_query["expiry_date"] = {"$gte": win_start, "$lte": win_end}
 
     contracts = await db.option_contracts.find(contract_query, {"_id": 0}).sort([
         ("expiry_date", 1),
         ("strike", 1),
         ("side", 1),
-    ]).to_list(length=10000)
+    ]).to_list(length=None)
+
+    # DTE filter: keep only spot trades whose entry session is the selected number
+    # of trading days before the nearest expiry. Metadata-driven via stored
+    # expiry_date values; "all"/None keeps every trade. Applied before pairing so
+    # downstream indices, expiry resolution and option fetch all stay consistent.
+    dte_target = normalize_dte_filter(config.dte_filter)
+    dte_stats = {"filter": config.dte_filter, "input_trades": len(spot_trades)}
+    if dte_target is not None:
+        expiry_dates_sorted = sorted({
+            str(c.get("expiry_date")) for c in contracts if c.get("expiry_date")
+        })
+        kept: List[Dict[str, Any]] = []
+        for trade in spot_trades:
+            entry_ts = trade.get("entry_ts")
+            if entry_ts is None:
+                continue
+            trade_date = _ts_ms_to_ist_date_str(int(entry_ts))
+            if compute_dte(trade_date, expiry_dates_sorted) == dte_target:
+                kept.append(trade)
+        spot_trades = kept
+        dte_stats["matched_trades"] = len(spot_trades)
+
     expiry_by_trade = _resolve_option_expiry_by_trade(spot_trades, contracts, fixed_expiry_date=fixed_expiry_date)
 
     selected_keys: set[str] = set()
     for idx, trade in enumerate(spot_trades):
         resolved_expiry = fixed_expiry_date or expiry_by_trade.get(idx)
+        if not resolved_expiry:
+            # No upcoming expiry resolved for this trade — do NOT fall back to the
+            # whole contract universe (that silently picks the oldest expiry). Skip;
+            # simulate() will mark it MISSING_CONTRACT with a clear reason.
+            continue
         eligible_contracts = [
             contract
             for contract in contracts
-            if not resolved_expiry or str(contract.get("expiry_date", "")) == str(resolved_expiry)
+            if str(contract.get("expiry_date", "")) == str(resolved_expiry)
         ]
         try:
             selected = select_contract_for_signal(
@@ -813,6 +966,13 @@ async def _run_paired_option_backtest(req: BacktestReq, spot_trades: List[Dict[s
         expiry_by_trade=expiry_by_trade,
         fixed_expiry_date=fixed_expiry_date,
         slippage_config=config.slippage_config,
+        exit_mode=config.exit_mode,
+        option_target_pts=config.option_target_pts,
+        option_stop_pts=config.option_stop_pts,
+        option_target_pct=config.option_target_pct,
+        option_stop_pct=config.option_stop_pct,
+        cost_config=config.cost_config,
+        sizing_config=config.sizing_config,
     )
     result["request"] = config.model_dump()
     resolved_expiries = sorted(set(expiry_by_trade.values()))
@@ -826,8 +986,201 @@ async def _run_paired_option_backtest(req: BacktestReq, spot_trades: List[Dict[s
         "candles_loaded": len(candle_rows),
         "source": "options_1m",
         "auto_fetch": auto_fetch,
+        "dte_filter": dte_stats,
     }
     return result
+
+
+async def _option_preflight_report(req: BacktestReq) -> Dict[str, Any]:
+    """Run the strategy + resolve the option contracts it would need, then report
+    how many trades WOULD pair against stored option data — without running the
+    full option simulation or persisting anything.
+
+    This is the pre-run data-availability check: it tells the user, before they
+    trust a backtest, whether the option warehouse actually covers the signals.
+    """
+    registry = get_registry()
+    strategy = registry.get(req.strategy_id)
+    if not strategy:
+        raise HTTPException(404, f"Strategy {req.strategy_id} not found")
+    config = req.option_backtest
+    if not config.enabled:
+        return {"enabled": False, "note": "Option execution is off — nothing to check."}
+
+    underlying = req.instrument.upper()
+    df = await load_candles_df(underlying, req.start_ts, req.end_ts)
+    if df.empty or len(df) < 50:
+        raise HTTPException(400, f"Insufficient spot candles for {underlying} in the window.")
+    params = strategy.merged_params(req.params)
+    df_enriched = precompute_all_indicators(df, params)
+    df_enriched["regime"] = classify_regime_series(df_enriched)
+    res = run_backtest(
+        df_enriched, strategy, params, instrument=underlying,
+        costs_enabled=req.costs_enabled, pretrade_filters=req.pretrade_filters,
+        trade_window_start=req.trade_window_start, trade_window_end=req.trade_window_end,
+    )
+    spot_trades = res["trades"]
+    db = get_db()
+
+    # Windowed contract load (same correctness rules as the real run).
+    contract_query: Dict[str, Any] = {"underlying": underlying}
+    fixed_expiry_date = config.expiry_date
+    if fixed_expiry_date:
+        contract_query["expiry_date"] = fixed_expiry_date
+    elif spot_trades:
+        _ts = [int(t["entry_ts"]) for t in spot_trades if t.get("entry_ts") is not None]
+        _xt = [int(t["exit_ts"]) for t in spot_trades if t.get("exit_ts") is not None]
+        if _ts:
+            win_start = _ts_ms_to_ist_date_str(min(_ts))
+            last_ms = max(_xt) if _xt else max(_ts)
+            win_end = _ts_ms_to_ist_date_str(last_ms + 21 * 24 * 3600 * 1000)
+            contract_query["expiry_date"] = {"$gte": win_start, "$lte": win_end}
+    contracts = await db.option_contracts.find(contract_query, {"_id": 0}).sort([
+        ("expiry_date", 1), ("strike", 1), ("side", 1),
+    ]).to_list(length=None)
+
+    # DTE filter (same as the run).
+    dte_target = normalize_dte_filter(config.dte_filter)
+    if dte_target is not None:
+        exp_sorted = sorted({str(c.get("expiry_date")) for c in contracts if c.get("expiry_date")})
+        spot_trades = [t for t in spot_trades if t.get("entry_ts") is not None
+                       and compute_dte(_ts_ms_to_ist_date_str(int(t["entry_ts"])), exp_sorted) == dte_target]
+
+    expiry_by_trade = _resolve_option_expiry_by_trade(spot_trades, contracts, fixed_expiry_date=fixed_expiry_date)
+
+    # Resolve the needed contract per trade.
+    needed: Dict[str, Dict[str, Any]] = {}
+    no_contract = 0
+    per_trade = []
+    for idx, trade in enumerate(spot_trades):
+        rexp = fixed_expiry_date or expiry_by_trade.get(idx)
+        if not rexp:
+            no_contract += 1
+            per_trade.append({"idx": idx, "status": "no_expiry"})
+            continue
+        elig = [c for c in contracts if str(c.get("expiry_date", "")) == str(rexp)]
+        try:
+            sel = select_contract_for_signal(
+                contracts=elig, underlying=underlying,
+                spot_price=float(trade.get("entry_price", 0.0)),
+                direction=str(trade.get("direction", "")).upper(), moneyness=config.moneyness,
+            )
+        except Exception:
+            sel = None
+        if not sel or not sel.get("instrument_key"):
+            no_contract += 1
+            per_trade.append({"idx": idx, "status": "no_contract", "expiry": rexp})
+            continue
+        key = str(sel["instrument_key"])
+        needed.setdefault(key, {"key": key, "ts": []})
+        needed[key]["ts"].append((int(trade.get("entry_ts", 0)), int(trade.get("exit_ts") or trade.get("entry_ts") or 0)))
+        per_trade.append({"idx": idx, "status": "needs_candle", "key": key, "strike": sel.get("strike"), "side": sel.get("side"), "expiry": rexp})
+
+    # Check candle presence for the needed keys.
+    would_pair = 0
+    missing_candle = 0
+    entry_age_ms = max(0, int(config.entry_max_age_sec or 0)) * 1000
+    key_ts_index: Dict[str, list] = {}
+    if needed:
+        all_ts = [t for v in needed.values() for pair in v["ts"] for t in pair]
+        rows = await db.options_1m.find(
+            {"instrument_key": {"$in": list(needed.keys())},
+             "ts": {"$gte": min(all_ts) - entry_age_ms, "$lte": max(all_ts)}},
+            {"_id": 0, "instrument_key": 1, "ts": 1},
+        ).sort("ts", 1).to_list(length=2000000)
+        for r in rows:
+            key_ts_index.setdefault(str(r["instrument_key"]), []).append(int(r["ts"]))
+    import bisect
+    missing_keys_set = set()
+    for pt in per_trade:
+        if pt["status"] != "needs_candle":
+            continue
+        key = pt["key"]
+        ts_list = key_ts_index.get(key, [])
+        entry_ts = int(spot_trades[pt["idx"]].get("entry_ts", 0))
+        ok = False
+        if ts_list:
+            pos = bisect.bisect_right(ts_list, entry_ts) - 1
+            if pos >= 0 and (entry_ts - ts_list[pos]) <= entry_age_ms:
+                ok = True
+        if ok:
+            would_pair += 1
+        else:
+            missing_candle += 1
+            missing_keys_set.add(key)
+
+    total = len(spot_trades)
+    pct = round(would_pair / total * 100, 1) if total else 0.0
+    return {
+        "enabled": True,
+        "instrument": underlying,
+        "total_spot_trades": total,
+        "would_pair": would_pair,
+        "missing_contract": no_contract,
+        "missing_candle": missing_candle,
+        "coverage_pct": pct,
+        "missing_contract_keys": sorted(missing_keys_set)[:50],
+        "expiry_mode": "fixed" if fixed_expiry_date else "per_trade_nearest",
+        "window": {
+            "from": _ts_ms_to_ist_date_str(req.start_ts) if req.start_ts else None,
+            "to": _ts_ms_to_ist_date_str(req.end_ts) if req.end_ts else None,
+        },
+        "moneyness": config.moneyness,
+        "dte_filter": config.dte_filter,
+    }
+
+
+@api.post("/backtest/option-preflight")
+async def backtest_option_preflight(req: BacktestReq, ingest_missing: bool = Query(False)):
+    """Pre-run check: does the option warehouse cover the signals this config
+    would generate? Returns a would-pair coverage report. With ingest_missing=1
+    and Upstox connected, also submits a background fetch of the option data for
+    the window (ATM/ITM1/OTM1) so the gaps are filled before the real run."""
+    report = await _option_preflight_report(req)
+    if not report.get("enabled"):
+        return serialize_doc(report)
+
+    if ingest_missing and (report["missing_candle"] > 0 or report["missing_contract"] > 0):
+        status = await upstox_client.get_connection_status()
+        if not status.get("connected") or status.get("expired"):
+            report["ingest"] = {"status": "skipped", "reason": "upstox_not_connected"}
+        elif not (req.start_ts and req.end_ts):
+            report["ingest"] = {"status": "skipped", "reason": "no_window"}
+        else:
+            # Fetch ATM + ITM1 + OTM1 both legs over the window via the standard
+            # option warehouse fetch job (missing-only, so re-running is cheap).
+            plan_req = OptionWarehousePlanReq(
+                underlying=report["instrument"],
+                from_date=_ts_ms_to_ist_date_str(req.start_ts),
+                to_date=_ts_ms_to_ist_date_str(req.end_ts),
+                expiry_policy="next_available",
+                moneyness=["atm", "itm1", "otm1"],
+                legs=["CE", "PE"],
+                sample_interval_minutes=1,
+                max_contracts=2000,
+                fetch_missing_only=True,
+            )
+            try:
+                preview = await _build_option_warehouse_preview(plan_req)
+                chunk_days = int(preview.get("chunk_guidance", {}).get("chunk_days") or 5)
+                run_id = str(_uuid.uuid4())
+                ts = datetime.now(timezone.utc).isoformat()
+                await get_db().warehouse_runs.insert_one({
+                    "id": run_id, "instrument": report["instrument"],
+                    "source": "backtest_preflight", "kind": "option_candles",
+                    "started_at": ts, "updated_at": ts, "status": "queued",
+                    "from_date": plan_req.from_date, "to_date": plan_req.to_date,
+                    "moneyness": plan_req.moneyness, "legs": plan_req.legs,
+                    "chunk_days": chunk_days, "progress_pct": 0,
+                })
+                asyncio.create_task(run_option_warehouse_fetch_job(
+                    run_id, preview, fetch_missing_only=True, chunk_days=chunk_days,
+                ))
+                report["ingest"] = {"status": "started", "run_id": run_id,
+                                    "to_fetch": int(preview.get("summary", {}).get("missing_data_contracts", 0))}
+            except Exception as e:
+                report["ingest"] = {"status": "error", "error": str(e)[:300]}
+    return serialize_doc(report)
 
 
 @api.post("/backtest/run")
@@ -868,6 +1221,8 @@ async def backtest_run(req: BacktestReq):
         instrument=req.instrument.upper(),
         costs_enabled=req.costs_enabled,
         pretrade_filters=req.pretrade_filters,
+        trade_window_start=req.trade_window_start,
+        trade_window_end=req.trade_window_end,
     )
     metrics = res["metrics"]
     option_result = await _run_paired_option_backtest(req, res["trades"])
@@ -883,6 +1238,8 @@ async def backtest_run(req: BacktestReq):
             pretrade_filters=req.pretrade_filters,
             train_pct=req.train_pct,
             n_folds=req.n_folds,
+            trade_window_start=req.trade_window_start,
+            trade_window_end=req.trade_window_end,
         )
 
     sig = stat_significance(metrics["trade_count"], metrics["win_rate"], metrics.get("profit_factor"))
@@ -1651,14 +2008,25 @@ class OptimizerStartReq(BaseModel):
     mode: str = "SCALP"
     strategy_id: str
     method: str = "bayesian"  # bayesian | grid | genetic
-    objective: str = "risk_adjusted"  # sharpe | profit_factor | total_pnl_pts | win_rate | neg_max_dd | risk_adjusted
+    objective: str = "risk_adjusted"  # sharpe | profit_factor | total_pnl_pts | net_pnl_inr | win_rate | neg_max_dd | risk_adjusted
     n_trials: int = 200
     costs_enabled: bool = True
     pretrade_filters: Dict[str, Any] = Field(default_factory=dict)
+    pretrade_profile: Optional[str] = None  # stored for lossless clone/display; engine uses pretrade_filters
     param_overrides: Dict[str, Any] = Field(default_factory=dict)
     start_ts: Optional[int] = None
     end_ts: Optional[int] = None
     name: str = "Optimization run"
+    # Guard rails against degenerate solutions (1-trade / all-PE etc.)
+    min_trades: int = 10
+    min_direction_share: float = 0.0  # 0 disables one-sided guard
+    optimize_indicator_periods: bool = False
+    # Evaluation mode: "spot" (default, original — score the index backtest) or
+    # "option_rerank" (two-stage: spot search, then re-rank the top-K candidates
+    # by REAL paired-option net rupee P&L). option_config mirrors OptionBacktestReq.
+    evaluation_mode: str = "spot"
+    rerank_top_k: int = 50
+    option_config: Optional[Dict[str, Any]] = None
 
 
 @api.post("/optimize/start")
@@ -1669,6 +2037,10 @@ async def optimize_start(req: OptimizerStartReq):
         raise HTTPException(404, f"Strategy {req.strategy_id} not found")
     if not (10 <= req.n_trials <= 5000):
         raise HTTPException(400, "n_trials must be 10–5000")
+    if req.evaluation_mode not in ("spot", "option_rerank"):
+        raise HTTPException(400, f"Unknown evaluation_mode {req.evaluation_mode}")
+    if req.evaluation_mode == "option_rerank" and not (1 <= req.rerank_top_k <= 500):
+        raise HTTPException(400, "rerank_top_k must be 1–500")
     job_id = await optimizer_create_job(req.model_dump())
     return {"job_id": job_id, "status": "queued"}
 
@@ -1678,7 +2050,7 @@ async def list_opt_jobs(limit: int = Query(50, le=200)):
     db = get_db()
     cur = db.optimization_jobs.find(
         {},
-        {"_id": 0, "param_space": 0, "top_n_alternatives": 0, "heatmap": 0, "robustness": 0},
+        {"_id": 0, "param_space": 0, "top_n_alternatives": 0, "heatmap": 0, "robustness": 0, "rerank": 0, "trial_log": 0},
     ).sort("created_at", -1).limit(limit)
     rows = await cur.to_list(length=limit)
     return {"items": rows}
@@ -1712,6 +2084,26 @@ async def cancel_opt_job(job_id: str):
     return {"ok": True}
 
 
+@api.post("/optimize/jobs/{job_id}/pause")
+async def pause_opt_job(job_id: str):
+    db = get_db()
+    doc = await db.optimization_jobs.find_one({"id": job_id}, {"_id": 0, "status": 1})
+    if not doc:
+        raise HTTPException(404, "Job not found")
+    if doc.get("status") not in ("running", "queued", "analyzing"):
+        return {"ok": False, "status": doc.get("status"), "reason": "not_running"}
+    await db.optimization_jobs.update_one({"id": job_id}, {"$set": {"paused": True}})
+    return {"ok": True}
+
+
+@api.post("/optimize/jobs/{job_id}/resume")
+async def resume_opt_job(job_id: str):
+    ok = await optimizer_resume_job(job_id)
+    if not ok:
+        raise HTTPException(400, "Job cannot be resumed (not paused/interrupted/failed, or missing config)")
+    return {"ok": True, "status": "running"}
+
+
 @api.post("/optimize/apply-as-preset/{job_id}")
 async def apply_opt_as_preset(job_id: str, name: str = Query(...)):
     """Save the best params from an optimization as a Preset for reuse in Backtest Lab."""
@@ -1719,13 +2111,16 @@ async def apply_opt_as_preset(job_id: str, name: str = Query(...)):
     job = await db.optimization_jobs.find_one({"id": job_id}, {"_id": 0})
     if not job:
         raise HTTPException(404, "Job not found")
-    if job.get("status") != "done":
-        raise HTTPException(400, "Job not finished")
+    if job.get("status") not in ("done", "cancelled", "paused", "interrupted", "failed"):
+        raise HTTPException(400, "Job has no finished result yet")
+    best_params = job.get("best_params") or (job.get("best_so_far") or {}).get("params")
+    if not best_params:
+        raise HTTPException(400, "Job has no best parameters to save (no qualifying trial yet)")
     config = {
         "instrument": job["instrument"],
         "mode": job.get("config", {}).get("mode", "SCALP"),
         "strategy_id": job["strategy_id"],
-        "params": job.get("best_params", {}),
+        "params": best_params,
         "source_optimization_job": job_id,
         "optimization_method": job["method"],
         "objective": job["objective"],
@@ -2568,6 +2963,293 @@ async def data_hygiene_plan_route(req: DataHygieneScopeReq):
     return serialize_doc(plan)
 
 
+class DataHygieneCatchUpReq(BaseModel):
+    instruments: Optional[List[str]] = None
+    moneyness: Optional[List[str]] = None
+    legs: Optional[List[str]] = None
+    sample_interval_minutes: int = HYGIENE_DEFAULT_SAMPLE
+    include_options: bool = True
+    dry_run: bool = False
+    chunk_days_spot: int = 30
+
+
+@api.post("/data-hygiene/catch-up")
+async def data_hygiene_catch_up_route(req: DataHygieneCatchUpReq):
+    """Incrementally bring spot + option data up to the last closed session.
+
+    For each instrument this computes the gap from the last stored spot date to
+    the most recent closed trading session, then runs a SEQUENTIAL per-instrument
+    chain: spot ingest -> current contract sync -> option-candle fetch. The
+    sequencing matters because the option-candle plan reads the freshly ingested
+    spot candles + contracts to resolve ATM strikes; running them in parallel
+    (as the full hygiene execute does) fails for brand-new days because the spot
+    candles are not persisted yet. `dry_run=true` returns the plan without
+    fetching. `include_options=false` updates spot only.
+
+    Requires a connected, non-expired Upstox token (unless dry_run).
+    """
+    db = get_db()
+    plan = await compute_catch_up_plan(
+        db,
+        instruments=req.instruments,
+        moneyness=req.moneyness,
+        legs=req.legs,
+        sample_interval_minutes=req.sample_interval_minutes,
+    )
+
+    # Spot-only mode: strip contracts/option_candles actions before executing.
+    if not req.include_options:
+        for inst in plan.get("instruments", []):
+            inst["actions"] = [a for a in inst.get("actions", []) if a.get("kind") == "spot"]
+        plan["summary"]["total_actions"] = sum(
+            len(inst.get("actions", [])) for inst in plan.get("instruments", [])
+        )
+
+    total_actions = int(plan.get("summary", {}).get("total_actions") or 0)
+    if req.dry_run:
+        return serialize_doc({"plan": plan, "submitted_count": 0, "dry_run": True})
+
+    if total_actions == 0:
+        return serialize_doc({"plan": plan, "submitted": [], "submitted_count": 0, "up_to_date": True})
+
+    status = await upstox_client.get_connection_status()
+    if not status.get("connected"):
+        raise HTTPException(400, "Upstox is not connected. Connect it before running catch-up.")
+    if status.get("expired"):
+        raise HTTPException(400, "Upstox token expired. Reconnect before running catch-up.")
+
+    # One sequential background chain per instrument that has a gap. Each chain
+    # creates its own tracked `data_hygiene` warehouse_runs doc (one per stage),
+    # so the existing Data Hygiene progress UI and job tracker pick it up.
+    submitted: List[Dict[str, Any]] = []
+    for inst_report in plan.get("instruments", []):
+        if inst_report.get("up_to_date"):
+            continue
+        instrument = str(inst_report["instrument"]).upper()
+        if instrument not in upstox_client.INSTRUMENT_KEYS:
+            continue
+        from_date = inst_report["from_date"]
+        to_date = inst_report["to_date"]
+        run_ids = await _start_catch_up_chain(
+            instrument=instrument,
+            from_date=from_date,
+            to_date=to_date,
+            include_options=bool(req.include_options),
+            moneyness=list(req.moneyness or HYGIENE_DEFAULT_MONEYNESS),
+            legs=list(req.legs or HYGIENE_DEFAULT_LEGS),
+            sample_interval_minutes=int(req.sample_interval_minutes or HYGIENE_DEFAULT_SAMPLE),
+            chunk_days_spot=int(req.chunk_days_spot or 30),
+        )
+        for kind, run_id in run_ids:
+            submitted.append({
+                "action_id": f"{kind}_{instrument}",
+                "kind": kind,
+                "instrument": instrument,
+                "run_id": run_id,
+            })
+
+    return serialize_doc({
+        "plan": plan,
+        "submitted": submitted,
+        "submitted_count": len(submitted),
+    })
+
+
+async def _start_catch_up_chain(
+    *,
+    instrument: str,
+    from_date: str,
+    to_date: str,
+    include_options: bool,
+    moneyness: List[str],
+    legs: List[str],
+    sample_interval_minutes: int,
+    chunk_days_spot: int,
+) -> List[tuple]:
+    """Create tracked run docs and launch ONE sequential task for an instrument.
+
+    Returns [(kind, run_id), ...] for the stages that were created so the caller
+    can report them and the job tracker can poll them. The actual work runs in a
+    single background task that awaits each stage before starting the next.
+    """
+    db = get_db()
+    now = datetime.now(timezone.utc).isoformat()
+
+    spot_run_id = str(_uuid.uuid4())
+    guidance = chunk_guidance_for_index(from_date, to_date, chunk_days_spot)
+    eff_chunk_days = int(guidance["chunk_days"])
+    await db.warehouse_runs.insert_one({
+        "id": spot_run_id, "instrument": instrument,
+        "source": "data_hygiene", "kind": "spot",
+        "started_at": now, "updated_at": now, "status": "queued",
+        "from_date": from_date, "to_date": to_date,
+        "days": guidance["calendar_days"], "chunk_days": eff_chunk_days,
+        "chunk_mode": guidance["mode"], "total_chunks": guidance["estimated_api_calls"],
+        "completed_chunks": 0, "progress_pct": 0,
+        "total_fetched": 0, "candles_added": 0, "candles_updated": 0,
+        "matched_existing": 0, "failed_chunks": [],
+    })
+    created: List[tuple] = [("spot", spot_run_id)]
+
+    contracts_run_id = None
+    options_run_id = None
+    if include_options:
+        contracts_run_id = str(_uuid.uuid4())
+        await db.warehouse_runs.insert_one({
+            "id": contracts_run_id, "instrument": instrument,
+            "source": "data_hygiene", "kind": "contracts",
+            "started_at": now, "updated_at": now, "status": "queued",
+            "from_date": from_date, "to_date": to_date, "progress_pct": 0,
+        })
+        created.append(("contracts", contracts_run_id))
+
+        options_run_id = str(_uuid.uuid4())
+        await db.warehouse_runs.insert_one({
+            "id": options_run_id, "instrument": instrument,
+            "source": "data_hygiene", "kind": "option_candles",
+            "started_at": now, "updated_at": now, "status": "queued",
+            "from_date": from_date, "to_date": to_date,
+            "moneyness": moneyness, "legs": legs, "progress_pct": 0,
+        })
+        created.append(("option_candles", options_run_id))
+
+    asyncio.create_task(_run_catch_up_chain(
+        instrument=instrument,
+        from_date=from_date,
+        to_date=to_date,
+        eff_chunk_days=eff_chunk_days,
+        spot_run_id=spot_run_id,
+        contracts_run_id=contracts_run_id,
+        options_run_id=options_run_id,
+        moneyness=moneyness,
+        legs=legs,
+        sample_interval_minutes=sample_interval_minutes,
+    ), name=f"catch-up-{instrument}")
+
+    return created
+
+
+async def _run_catch_up_chain(
+    *,
+    instrument: str,
+    from_date: str,
+    to_date: str,
+    eff_chunk_days: int,
+    spot_run_id: str,
+    contracts_run_id: Optional[str],
+    options_run_id: Optional[str],
+    moneyness: List[str],
+    legs: List[str],
+    sample_interval_minutes: int,
+) -> None:
+    """Sequential catch-up worker: spot -> contracts -> option candles.
+
+    Each stage updates its own warehouse_runs doc. A failed/empty earlier stage
+    short-circuits the option stage with a recorded reason so it never raises the
+    misleading "Index candles missing" error from a race.
+    """
+    db = get_db()
+
+    # Stage 1: spot ingest (await to completion).
+    try:
+        await run_upstox_index_ingest_job(spot_run_id, instrument, from_date, to_date, eff_chunk_days)
+    except Exception as exc:
+        log.exception("catch-up spot ingest failed for %s", instrument)
+        await db.warehouse_runs.update_one(
+            {"id": spot_run_id},
+            {"$set": {"status": "failed", "error": str(exc)[:300],
+                      "updated_at": datetime.now(timezone.utc).isoformat()}},
+        )
+        await _fail_remaining_catch_up(db, contracts_run_id, options_run_id, "spot_ingest_failed")
+        return
+
+    if contracts_run_id is None:
+        return  # spot-only mode
+
+    # Confirm spot candles actually landed before continuing; Upstox returns
+    # empty for the in-progress day, so a 0-candle result is a legitimate skip.
+    spot_doc = await db.warehouse_runs.find_one({"id": spot_run_id}, {"_id": 0, "candles_added": 1, "total_fetched": 1})
+    if not spot_doc or int(spot_doc.get("total_fetched") or 0) <= 0:
+        await _fail_remaining_catch_up(db, contracts_run_id, options_run_id, "no_spot_candles_fetched")
+        return
+
+    # Stage 2: sync current option contracts (covers current + upcoming expiry).
+    await db.warehouse_runs.update_one(
+        {"id": contracts_run_id},
+        {"$set": {"status": "running", "progress_pct": 10, "updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    try:
+        items = await upstox_client.fetch_option_contracts(instrument)
+        contract_result = await upsert_option_contracts(db, items)
+        await db.warehouse_runs.update_one(
+            {"id": contracts_run_id},
+            {"$set": {
+                "status": "ok", "progress_pct": 100,
+                "fetched_contracts": len(items),
+                "upserted": int(contract_result.get("upserted") or contract_result.get("inserted") or 0),
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }},
+        )
+    except Exception as exc:
+        log.exception("catch-up contract sync failed for %s", instrument)
+        await db.warehouse_runs.update_one(
+            {"id": contracts_run_id},
+            {"$set": {"status": "failed", "error": str(exc)[:300],
+                      "updated_at": datetime.now(timezone.utc).isoformat()}},
+        )
+        await _fail_remaining_catch_up(db, None, options_run_id, "contract_sync_failed")
+        return
+
+    # Stage 3: build the option plan (now that spot + contracts exist) and fetch.
+    try:
+        opt_req = OptionWarehousePlanReq(
+            underlying=instrument,
+            from_date=from_date,
+            to_date=to_date,
+            expiry_policy="next_available",
+            moneyness=moneyness,
+            legs=legs,
+            sample_interval_minutes=sample_interval_minutes,
+            max_contracts=2000,
+            fetch_missing_only=True,
+        )
+        preview = await _build_option_warehouse_preview(opt_req)
+        chunk_days = int(preview.get("chunk_guidance", {}).get("chunk_days") or 5)
+        await db.warehouse_runs.update_one(
+            {"id": options_run_id},
+            {"$set": {"status": "running", "progress_pct": 5, "chunk_days": chunk_days,
+                      "updated_at": datetime.now(timezone.utc).isoformat()}},
+        )
+        await run_option_warehouse_fetch_job(
+            options_run_id, preview, fetch_missing_only=True, chunk_days=chunk_days,
+        )
+    except HTTPException as exc:
+        await db.warehouse_runs.update_one(
+            {"id": options_run_id},
+            {"$set": {"status": "failed", "error": str(exc.detail)[:300],
+                      "updated_at": datetime.now(timezone.utc).isoformat()}},
+        )
+    except Exception as exc:
+        log.exception("catch-up option fetch failed for %s", instrument)
+        await db.warehouse_runs.update_one(
+            {"id": options_run_id},
+            {"$set": {"status": "failed", "error": str(exc)[:300],
+                      "updated_at": datetime.now(timezone.utc).isoformat()}},
+        )
+
+
+async def _fail_remaining_catch_up(db, contracts_run_id, options_run_id, reason: str) -> None:
+    """Mark not-yet-run catch-up stages as skipped with a reason."""
+    now = datetime.now(timezone.utc).isoformat()
+    for run_id in (contracts_run_id, options_run_id):
+        if run_id:
+            await db.warehouse_runs.update_one(
+                {"id": run_id},
+                {"$set": {"status": "skipped", "reason": reason, "progress_pct": 100, "updated_at": now}},
+            )
+
+
 async def _hygiene_submit_spot(instrument: str, from_date: str, to_date: str, chunk_days: int) -> str:
     """Submit a spot ingest as a background task and return the run_id."""
     db = get_db()
@@ -2745,6 +3427,65 @@ async def warehouse_autoupdate_run_now():
     """Trigger a warehouse auto-update catch-up immediately (manual)."""
     summary = await _trigger_autoupdate("manual")
     return {"summary": summary, "state": AUTOUPDATE_STATE.snapshot()}
+
+
+class VixIngestReq(BaseModel):
+    from_date: str
+    to_date: str
+    chunk_days: int = 7
+
+
+@api.get("/warehouse/vix/coverage")
+async def warehouse_vix_coverage():
+    """Report India VIX coverage in the warehouse (count + date range)."""
+    db = get_db()
+    pipeline = [
+        {"$match": {"instrument": VIX_INSTRUMENT}},
+        {"$group": {"_id": None, "count": {"$sum": 1}, "min_ts": {"$min": "$ts"}, "max_ts": {"$max": "$ts"}}},
+    ]
+    rows = await db.candles_1m.aggregate(pipeline).to_list(length=1)
+    if not rows:
+        return {"instrument": VIX_INSTRUMENT, "count": 0, "min_ts": None, "max_ts": None}
+    r = rows[0]
+    return {"instrument": VIX_INSTRUMENT, "count": int(r.get("count") or 0),
+            "min_ts": r.get("min_ts"), "max_ts": r.get("max_ts")}
+
+
+@api.post("/warehouse/vix/ingest")
+async def warehouse_vix_ingest(req: VixIngestReq):
+    """Fetch India VIX 1m candles from Upstox and persist into candles_1m as INDIAVIX.
+
+    VIX powers the volatility-context layer (vix_bucket on every trade). Requires
+    a connected, non-expired Upstox token.
+    """
+    status = await upstox_client.get_connection_status()
+    if not status.get("connected"):
+        raise HTTPException(400, "Upstox is not connected.")
+    if status.get("expired"):
+        raise HTTPException(400, "Upstox token expired. Reconnect first.")
+    try:
+        result = await upstox_client.fetch_historical_1m_for_key_chunked(
+            vix_instrument_key(), req.from_date, req.to_date, max_days_per_call=int(req.chunk_days or 7),
+        )
+        df = result["df"]
+        if df.empty:
+            return {"status": "empty", "fetched": 0, "candles_added": 0,
+                    "failed_chunks": result.get("failed_chunks", [])}
+        # The by-key fetch returns an `instrument_key` column; persist_index_candles_bulk
+        # dedups/sets on `instrument`. Stamp it as the AUX VIX instrument name.
+        df = df.copy()
+        df["instrument"] = VIX_INSTRUMENT
+        saved = await persist_index_candles_bulk(VIX_INSTRUMENT, df)
+        return {
+            "status": "ok",
+            "fetched": int(len(df)),
+            "candles_added": saved["upserted"],
+            "candles_updated": saved["modified"],
+            "dates": len(saved["dates"]),
+            "failed_chunks": result.get("failed_chunks", []),
+        }
+    except Exception as e:
+        raise HTTPException(400, str(e)[:300])
 
 
 def _overlay_option_contract_metadata(local_contract: Optional[Dict[str, Any]], req: UpstoxOptionCandleIngestReq) -> Dict[str, Any]:

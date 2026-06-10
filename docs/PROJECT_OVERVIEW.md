@@ -1,6 +1,6 @@
 # Project Overview
 
-Updated: 2026-06-01
+Updated: 2026-06-09
 
 ## What AlphaForge Is
 
@@ -19,7 +19,7 @@ End-to-end quant workflow:
 5. Approve, paper-trade, or skip every signal with a manual gate.
 6. Review forward profitability per deployment before trusting a strategy with capital.
 
-## Status Snapshot (2026-05-31)
+## Status Snapshot (2026-06-09)
 
 | Area | Status |
 |---|---|
@@ -36,19 +36,21 @@ End-to-end quant workflow:
 | Live tick → 1m OHLC roller | Running, closes Upstox same-day historical gap |
 | Strategy plugin system | Built-in + drop-in `.py` plugins |
 | Backtest + walk-forward | Complete; statistical significance and regime detector wired |
-| Optimizer | Bayesian, Grid, CMA-ES; robustness, importance, heatmap |
+| Optimizer | Bayesian, Grid, CMA-ES; robustness, importance, heatmap; optional guard rails; indicator-period search; net-rupee objective; **option-aware two-stage re-rank**; **pause/resume/crash-resume**; ~8.8x faster loop |
+| Option preflight | Pre-run would-pair coverage check (+ optional ingest) before a backtest |
 | Slippage + volatility | Expiry-tail slippage + post-hoc detector |
+| Rupee cost + sizing + context | Option cost model (%-spread), premium-at-risk sizing, regime/time/DTE/India-VIX tagging |
 | Strategy Deployments | 1m_close evaluator running, scheduler ON, drift detection ON |
 | Pending Approval UI | Approve / Skip / Mark Blocked + auto-paper-trade on approval |
 | Auto square-off | 15:00 IST every market day, override per deployment |
 | Pre-flight + quality gates | Surfaced at deployment creation, ack required for warnings |
 | OAuth token-expiry countdown | In the global top bar |
 | Forward metrics aggregation | Complete: session-gated deployment metrics in Strategy Library |
-| Per-deployment kill switches | Slice 12 — pending |
+| Per-deployment kill switches | Complete (max consecutive losses / daily loss cutoff / max open trades) |
 | Phase 5 probability engine | Deferred until ≥6 months forward signal history |
 | Phase 6 swing extension | Not started |
 
-287 backend tests pass. The local stack is healthy.
+378 backend tests pass. The local stack is healthy.
 
 ## Capabilities Summary
 
@@ -74,7 +76,9 @@ End-to-end quant workflow:
 - Statistical significance (Wilson 95% CI).
 - Regime detector (ADX + Choppiness + ATR expansion).
 - Pre-trade checklist with 3 profiles and live signal-pass counter.
-- Optimizer (Bayesian / Grid / CMA-ES) with robustness scoring, parameter importance, top-N alternatives.
+- Optimizer (Bayesian / Grid / CMA-ES) with robustness scoring, parameter importance, top-N alternatives. Plus: optional guard rails (min_trades + CE/PE share), indicator-period search, `net_pnl_inr` objective, an **option-aware two-stage re-rank** that selects params by real paired-option net rupee, and **pause / resume / crash-resume** with persisted progress. Backtest hot loop is ~8.8x faster (dict records).
+- Pre-run **option-data preflight** (`POST /api/backtest/option-preflight`) reports would-pair coverage and can ingest missing option data before a backtest.
+- Rupee option cost model (brokerage + statutory + %-of-premium spread), premium-at-risk sizing, DTE filter, and market-context + India-VIX tagging — a shared decision engine so backtest, paper, and live agree.
 - Slippage model (ATM 0.5pt, OTM1/ITM1 1pt, OTM2+/ITM2+ 2pt, expiry-day 30-min 2x) wired into paired option backtests.
 - Post-hoc volatility detector (5-min realized vs 30-day rolling baseline, spike threshold 2.5x).
 
@@ -153,11 +157,14 @@ Day-to-day this is automatic: the warehouse catches up to yesterday's close on b
 
 ## What Is Not Done
 
-- **Slice 12 — Per-deployment kill switches.** `max_consecutive_losses`, `daily_loss_cutoff_pct`, `max_open_paper_trades`. **This is the next planned work.**
-- **Optional warehouse extras** (not blocking): option price sanity check (intrinsic floor / impossible jumps), `mongodump` backup button, OI staleness check (OI is populated; no dedicated check yet).
+- Phase 4b forward-testing stack is **complete** (incl. per-deployment kill switches).
+- **Optimizer follow-ups (recommended next):** after A/B-validating the option re-rank advantage, retire the legacy spot-only evaluation path; then build a **live risk engine** (position sizing, daily loss cutoff, regime gating — applied only to live real-money; paper/forward stay tagged-not-blocked) and **honest walk-forward**. These are the highest-value steps toward consistent profitability.
+- Deferred optimizer items: full per-trial option-aware evaluation + parallelism (grid/random only), loop speedups (split signal-gen from trade-sim, memoization, multi-fidelity pruners, numba JIT).
+- **Data fallback:** integrate Flattrade/Fyers historical-option APIs to fill the residual ~5-8% option-data gaps Upstox lacks (TradingView is not viable for option premium).
+- **Optional warehouse extras** (not blocking): option price sanity check (intrinsic floor / impossible jumps), `mongodump` backup button, OI staleness check.
 - Phase 5 — probability engine (Kaplan–Meier survival), meta-model, Kelly sizing, Telegram alerts. Deferred until ≥6 months forward history exists.
 - Phase 6 — swing/positional extension on 1H/1D timeframes. Not started.
-- Online hosting / always-on uptime. Local PC is the runtime. Forward sessions are intermittent — `session_completeness` is the right concept.
+- Online hosting / always-on uptime. Local PC is the runtime.
 - No automatic broker order placement. The manual approval gate is intentional and must remain.
 
 ## Recommendations And Tips Discovered During Development
@@ -226,7 +233,7 @@ Health checks:
 
 If you are a new agent picking this up:
 
-1. Read `docs/HANDOFF.md`.
-2. Read `plan.md` for the slice roadmap.
+1. Read `docs/HANDOFF.md` (entry point; has the latest "Recent Work" section).
+2. Read `plan.md` for the slice roadmap and `ltm/runtime/last-recall.md` for the richest record of recent sessions.
 3. Read `docs/ARCHITECTURE.md` for the module map.
-4. The next implementation work is **Slice 12 — per-deployment kill switches**.
+4. The recommended next work is **(a) A/B-validate the optimizer's option re-rank, then retire the legacy spot path, and (b) the live risk engine + honest walk-forward** — the highest-value steps for profitability. The parallelism slice was deliberately deferred (see HANDOFF "Why no parallelism slice").

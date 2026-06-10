@@ -1,6 +1,6 @@
 # User Manual
 
-Updated: 2026-06-01
+Updated: 2026-06-09
 
 This guide explains how to use AlphaForge as a local research and forward-testing app.
 
@@ -88,11 +88,12 @@ The **Holiday Calendar** button (page header) opens a modal listing NSE/BSE holi
 
 ## Backtest Lab
 
-1. Select instrument, strategy, mode, date window.
+1. Select instrument, strategy, mode, date window, and trade window (default 09:25–15:00, no entries in first 10 min or last 30 min).
 2. Choose pre-trade profile.
 3. Enable costs for realistic results.
 4. Keep walk-forward enabled for robustness checks.
-5. (Optional) Enable Pair signals with option candles to test option premium execution.
+5. **(Optional) Enable Option Execution** — pair signals with real option candles.
+   - Before running, click **Check option data** (the preflight panel) to see what % of your signals have option candles available. If coverage is below 80%, click **Ingest missing & recheck** (requires Upstox connected) to fetch and store the missing contracts.
 6. Click Run Backtest.
 
 For paired option backtests, slippage is automatically applied (ATM 0.5pt, OTM1/ITM1 1pt, OTM2+ 2pt, expiry-day 30-min 2x). Override per backtest via the slippage config field.
@@ -105,16 +106,41 @@ Read results carefully:
 
 ## Optimizer
 
-1. Pick strategy and date window.
-2. Choose method: Bayesian (TPE), Grid, or Genetic (CMA-ES).
-3. Choose objective: `risk_adjusted` (default), `sharpe`, `profit_factor`, `total_pnl_pts`, `win_rate`, `neg_max_dd`.
-4. Set n_trials.
-5. Run.
-6. Review robustness, parameter importance, heatmap, top-N alternatives.
-7. Click Apply as Preset to save the best params.
-8. Click View Best in Lab to see the full backtest with trades and walk-forward.
+The Optimizer page runs automated parameter searches to find the best strategy configuration. It now has two distinct workflows:
 
-The Stop button cancels gracefully. The worker checks the cancel flag every 5 trials and preserves best-so-far.
+### Setup panel
+- **Strategy + Method + Objective + Trial budget:** pick your strategy, search method (Bayesian TPE recommended), objective, and how many trials to run (10–5000; note: more trials can increase overfitting risk for small parameter spaces).
+- **Evaluation mode:** the key decision.
+  - **Spot points (fast)** — the original mode. Searches quickly by maximizing index-point P&L. Useful for exploration, but can give misleading results for option buying because it ignores theta/spread/costs.
+  - **Option re-rank (realistic)** — the recommended mode. Stage 1 runs the fast spot search; Stage 2 loads the window's option candles *once* and re-scores the top-K candidates by **real paired-option net rupee** (costs + spread + DTE). Picks the option-best params. Use this before deploying or trusting a result.
+- **Option sub-panel** (shown when re-rank mode is active): moneyness, DTE filter, lots, exit mode, costs toggle.
+- **Guard rails** (toggle, default ON): `Min trades` prevents statistically meaningless results; `Min CE/PE side %` prevents all-one-direction solutions (default 0 = off). Turn guard rails OFF to let the optimizer purely maximize your chosen objective.
+- **Optimize indicator periods:** also tunes RSI/MACD/ATR/EMA/ADX lengths. Slower but searches the real space.
+- **Pre-trade profile:** apply the same filter you use in live trading so optimized params reflect what you'll actually trade.
+- **Setup persists** across navigation — your settings are saved automatically to localStorage and restored when you return to the page.
+
+### Running
+1. Click **Auto-Optimize**. The job runs in the background; you can navigate away.
+2. Click **Pause** to pause mid-run — progress is saved to the DB and you can Resume later from exactly that point.
+3. Click **Stop** to cancel (best-so-far is saved; heavy analysis is skipped so it stops quickly).
+4. If the backend restarts mid-run, jobs are marked **Interrupted** — click **Resume** from Job History.
+
+### Results (Spot mode)
+- Best-so-far card updates live with params + key metrics + direction split (CE vs PE).
+- Robustness score: % of ±10/20% perturbations that stay within 85% of the best objective.
+- Parameter importance bar chart.
+- 2D heatmap of the top-2 most-important parameters.
+- Top-10 alternatives table.
+
+### Results (Option re-rank mode)
+- **Re-rank table:** shows each candidate's net rupee P&L on real options, option win-rate, paired/total trade count, spot objective, and option-data coverage %. Sorted by option net rupee — this is the realistic ranking.
+- The "best" params and saved backtest run reflect the option-best selection, not the spot-best.
+
+### After the run
+- **View Best in Lab** — opens the saved best-result full backtest (with trades, equity curve, walk-forward) in the Backtest Lab.
+- **Save as Preset** — saves the best params as a Preset (available in Backtest Lab and deployments). Works for completed, cancelled, paused, and interrupted jobs.
+- **Clone config** — the copy icon on any Job History row repopulates the Setup panel with that job's configuration for re-running with tweaks.
+- **Delete** the trash icon removes the job record.
 
 ## Pre-Trade Checklist
 

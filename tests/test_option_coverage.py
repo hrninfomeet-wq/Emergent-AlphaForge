@@ -174,13 +174,18 @@ def test_backtest_run_journal_moved_to_backtest_lab():
 
 def test_oauth_token_expiry_countdown_present():
     """A token-expiry countdown must be surfaced in the global top bar and the
-    Upstox panel."""
+    Upstox panel. The logic lives in the shared TokenCountdown component used by
+    both Layout (button variant) and DataWarehouse (badge variant)."""
     layout = (ROOT / "frontend" / "src" / "components" / "Layout.jsx").read_text(encoding="utf-8")
     warehouse = (ROOT / "frontend" / "src" / "pages" / "DataWarehouse.jsx").read_text(encoding="utf-8")
+    token_component = (ROOT / "frontend" / "src" / "components" / "TokenCountdown.jsx").read_text(encoding="utf-8")
 
-    assert "topbar-token-indicator" in layout
-    assert "TokenExpiryIndicator" in layout
-    assert "upstox-token-expiry-badge" in warehouse
+    # Shared component carries both surfaces' testids.
+    assert "topbar-token-indicator" in token_component
+    assert "upstox-token-expiry-badge" in token_component
+    # Both surfaces mount the shared component.
+    assert "TokenCountdown" in layout
+    assert "TokenCountdown" in warehouse
 
 
 def test_warehouse_candlestick_chart_wired_end_to_end():

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
@@ -18,33 +18,16 @@ import { SignificanceBadge } from "@/components/SignificanceBadge";
 import { MultiPaneChart } from "@/components/charts/MultiPaneChart";
 import { NumberSliderInput } from "@/components/NumberSliderInput";
 import BacktestRunJournal from "@/components/BacktestRunJournal";
-import { Play, Save, Filter, ChevronDown, ChevronRight, Download, FileJson, FileText, FolderOpen, ShieldCheck } from "lucide-react";
+import { Play, Save, Filter, ChevronDown, ChevronRight, ChevronsUpDown, ArrowUp, ArrowDown, Download, FileJson, FileText, FolderOpen, ShieldCheck, Loader2 } from "lucide-react";
+import { dateToMs, msToDate } from "@/lib/time";
 
 const INSTRUMENTS = ["NIFTY", "BANKNIFTY", "SENSEX"];
-const MODES = ["SCALP", "INTRADAY"];
 const OPTION_MONEYNESS = ["atm", "otm1", "otm2", "otm3", "itm1", "itm2"];
 
-// Convert "YYYY-MM-DD" (interpreted as IST 09:15) to ms epoch UTC. Returns null if empty.
-const dateToMs = (s, endOfDay = false) => {
-  if (!s) return null;
-  // IST = UTC+5:30 → IST midnight = previous day 18:30 UTC
-  const [y, m, d] = s.split("-").map(Number);
-  if (!y || !m || !d) return null;
-  // Date.UTC returns ms UTC for given UTC y/m/d
-  const istHour = endOfDay ? 15 : 9;
-  const istMin = endOfDay ? 30 : 15;
-  // ms = Date.UTC(y, m-1, d, istHour-5, istMin-30) but easier: use offset
-  const baseUtc = Date.UTC(y, m - 1, d, istHour, istMin, 0);
-  // IST is +5:30, so UTC = IST - 5:30 = baseUtc - 5h30m
-  return baseUtc - (5 * 60 + 30) * 60 * 1000;
-};
-
-const msToDate = (ms) => {
-  if (!ms) return "";
-  // Convert UTC ms to IST date string YYYY-MM-DD
-  const d = new Date(Number(ms) + (5 * 60 + 30) * 60 * 1000);
-  return d.toISOString().slice(0, 10);
-};
+// Persist the last viewed run id so the results survive tab navigation /
+// unmount. We store only the id (not the heavy result payload) and re-hydrate
+// from the backtest_runs API on mount.
+const LAST_RUN_KEY = "alphaforge.backtest.lastRunId";
 
 export default function BacktestLab() {
   const [strategies, setStrategies] = useState([]);
@@ -65,16 +48,47 @@ export default function BacktestLab() {
     name: "Untitled Run",
     start_date: "",  // YYYY-MM-DD (IST)
     end_date: "",
+    trade_window_start: "09:25",
+    trade_window_end: "15:00",
     option_backtest_enabled: false,
+    option_expiry_mode: "auto",
     option_expiry_date: "",
     option_moneyness: "otm1",
     option_lots: 1,
     option_auto_fetch: true,
+    option_exit_mode: "spot_exit",
+    option_target_pts: "",
+    option_stop_pts: "",
+    option_target_pct: "",
+    option_stop_pct: "",
+    option_sl_tp_unit: "pts",
+    option_dte_filter: "all",
+    // Rupee cost model (opt-in). Flattrade brokerage = 0 by default.
+    option_costs_enabled: false,
+    option_brokerage_per_order: 0,
+    option_spread_pct: 1.0,
+    option_spread_min_pts: 0,
+    // Position sizing + capital (opt-in). Lot size always from contract.
+    option_sizing_enabled: false,
+    option_sizing_mode: "premium_at_risk",
+    option_capital: 200000,
+    option_risk_per_trade_pct: 1.0,
+    option_fixed_lots: 1,
+    option_max_lots: 10,
+    option_assumed_stop_pct: 50,
   });
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState(null);
+  const [progress, setProgress] = useState(0);
   const [paramsOpen, setParamsOpen] = useState(true);
   const [showFiltersOpen, setShowFiltersOpen] = useState(false);
+
+  // When a preset or past run is loaded it sets BOTH the strategy and its
+  // params. But changing the strategy triggers the "reset params to defaults"
+  // effect below, which would clobber those loaded params. We stash the
+  // intended params here keyed by strategy id; the reset effect consumes them
+  // instead of applying defaults for that one transition.
+  const pendingParamsRef = useRef(null);
 
   const refreshRuns = () => api.listBacktestRuns(50).then((d) => setPastRuns(d.items || []));
   const refreshPresets = () => api.listPresets().then((d) => setPresets(d.items || []));
@@ -86,7 +100,27 @@ export default function BacktestLab() {
     api.listProfiles().then((d) => setProfiles(d.items || []));
     refreshRuns();
     refreshPresets();
+    // Re-hydrate the last viewed result so switching tabs and returning does
+    // not blank the results panel. Deep-link (?run=) takes precedence and is
+    // handled in the effect below, so skip rehydration when one is present.
+    const sp = new URLSearchParams(window.location.search);
+    if (!sp.get("run") && !sp.get("preset")) {
+      const lastId = (() => { try { return localStorage.getItem(LAST_RUN_KEY); } catch { return null; } })();
+      if (lastId) {
+        api.getBacktestRun(lastId)
+          .then((r) => setResult(r))
+          .catch(() => { try { localStorage.removeItem(LAST_RUN_KEY); } catch { /* ignore */ } });
+      }
+    }
   }, []);
+
+  // Persist the id of whatever result is currently shown so it can be restored
+  // on remount. Storing only the id keeps localStorage small.
+  useEffect(() => {
+    try {
+      if (result?.id) localStorage.setItem(LAST_RUN_KEY, result.id);
+    } catch { /* ignore quota / privacy-mode errors */ }
+  }, [result?.id]);
 
   // Deep-link: ?run=<id> auto-loads that run, ?preset=<name> applies preset
   useEffect(() => {
@@ -108,12 +142,16 @@ export default function BacktestLab() {
       const p = list.find((x) => x.name === name);
       if (!p) { toast.error(`Preset "${name}" not found`); return; }
       const cfg = p.config || {};
+      const targetStrategy = cfg.strategy_id || config.strategy_id;
+      if (cfg.params) {
+        pendingParamsRef.current = { strategy_id: targetStrategy, params: { ...cfg.params } };
+      }
       setConfig((c) => ({
         ...c,
         instrument: cfg.instrument || c.instrument,
         mode: cfg.mode || c.mode,
         strategy_id: cfg.strategy_id || c.strategy_id,
-        params: cfg.params || c.params,
+        params: cfg.params ? { ...cfg.params } : c.params,
         name: name,
       }));
       toast.success(`Preset "${name}" applied. Click Run Backtest to test it.`);
@@ -128,9 +166,16 @@ export default function BacktestLab() {
   );
   const selectedProfile = profiles.find((p) => p.name === config.pretrade_profile);
 
-  // Reset params when strategy changes
+  // Reset params when strategy changes — unless a preset/past-run load stashed
+  // the params it wants for this strategy (then apply those instead of defaults).
   useEffect(() => {
     if (!selectedStrategy) return;
+    const pending = pendingParamsRef.current;
+    pendingParamsRef.current = null; // consume on every strategy transition
+    if (pending && pending.strategy_id === selectedStrategy.id && pending.params) {
+      setConfig((c) => ({ ...c, params: { ...pending.params } }));
+      return;
+    }
     const defaults = {};
     for (const [k, def] of Object.entries(selectedStrategy.parameter_schema || {})) {
       defaults[k] = def.default;
@@ -140,36 +185,100 @@ export default function BacktestLab() {
 
   const setParam = (k, v) => setConfig((c) => ({ ...c, params: { ...c.params, [k]: v } }));
 
+  const buildPayload = () => ({
+    instrument: config.instrument,
+    mode: config.mode,
+    strategy_id: config.strategy_id,
+    timeframe: config.timeframe,
+    params: config.params,
+    costs_enabled: config.costs_enabled,
+    walkforward: config.walkforward,
+    train_pct: config.train_pct,
+    n_folds: config.n_folds,
+    pretrade_filters: selectedProfile?.settings || {},
+    name: config.name,
+    start_ts: dateToMs(config.start_date, false),
+    end_ts: dateToMs(config.end_date, true),
+    trade_window_start: config.trade_window_start || "09:25",
+    trade_window_end: config.trade_window_end || "15:00",
+    option_backtest: {
+      enabled: !!config.option_backtest_enabled,
+      expiry_date: config.option_expiry_mode === "fixed" ? (config.option_expiry_date || null) : null,
+      moneyness: config.option_moneyness,
+      lots: Math.max(1, Number(config.option_lots || 1)),
+      entry_max_age_sec: 120,
+      exit_max_age_sec: 180,
+      auto_fetch: !!config.option_auto_fetch,
+      max_auto_fetch_contracts: 60,
+      exit_mode: config.option_exit_mode,
+      option_target_pts: config.option_exit_mode === "option_levels" && config.option_sl_tp_unit === "pts" && config.option_target_pts !== "" ? Number(config.option_target_pts) : null,
+      option_stop_pts: config.option_exit_mode === "option_levels" && config.option_sl_tp_unit === "pts" && config.option_stop_pts !== "" ? Number(config.option_stop_pts) : null,
+      option_target_pct: config.option_exit_mode === "option_levels" && config.option_sl_tp_unit === "pct" && config.option_target_pct !== "" ? Number(config.option_target_pct) : null,
+      option_stop_pct: config.option_exit_mode === "option_levels" && config.option_sl_tp_unit === "pct" && config.option_stop_pct !== "" ? Number(config.option_stop_pct) : null,
+      dte_filter: config.option_dte_filter && config.option_dte_filter !== "all" ? config.option_dte_filter : null,
+      cost_config: config.option_costs_enabled ? {
+        enabled: true,
+        brokerage_per_order: Number(config.option_brokerage_per_order || 0),
+        spread_pct_of_premium: Number(config.option_spread_pct || 0),
+        spread_min_pts: Number(config.option_spread_min_pts || 0),
+      } : null,
+      sizing_config: config.option_sizing_enabled ? {
+        enabled: true,
+        mode: config.option_sizing_mode,
+        capital: Number(config.option_capital || 200000),
+        risk_per_trade_pct: Number(config.option_risk_per_trade_pct || 1),
+        fixed_lots: Math.max(1, Number(config.option_fixed_lots || 1)),
+        max_lots: Math.max(1, Number(config.option_max_lots || 10)),
+        assumed_stop_pct_of_premium: Number(config.option_assumed_stop_pct || 50),
+      } : null,
+    },
+  });
+
+  const [preflight, setPreflight] = useState(null);
+  const [preflighting, setPreflighting] = useState(false);
+
+  const checkOptionData = async (ingest = false) => {
+    if (!config.option_backtest_enabled) {
+      toast.info("Enable Option Execution first to check option data.");
+      return;
+    }
+    setPreflighting(true);
+    try {
+      const res = await api.optionPreflight(buildPayload(), ingest);
+      setPreflight(res);
+      if (res.enabled === false) {
+        toast.info("Option execution is off.");
+      } else if (res.ingest?.status === "started") {
+        toast.success(`Coverage ${res.coverage_pct}% · ingesting missing option data (run ${res.ingest.run_id.slice(0, 8)})`);
+      } else {
+        toast.success(`Option data coverage: ${res.would_pair}/${res.total_spot_trades} signals (${res.coverage_pct}%)`);
+      }
+    } catch (e) {
+      toast.error(`Preflight failed: ${e.response?.data?.detail || e.message}`);
+    } finally {
+      setPreflighting(false);
+    }
+  };
+
   const runBacktest = async () => {
     setRunning(true);
     setResult(null);
+    setProgress(0);
+    // The backtest is a single synchronous request (no server-side progress
+    // stream), so we animate an *estimated* progress bar that eases toward 90%
+    // and snaps to 100% on completion. This gives the user clear "working"
+    // feedback instead of a silent wait.
+    const startedAt = Date.now();
+    const timer = setInterval(() => {
+      const elapsed = Date.now() - startedAt;
+      // Ease-out curve: fast at first, asymptotic toward ~90%.
+      const pct = Math.min(90, 90 * (1 - Math.exp(-elapsed / 4000)));
+      setProgress(pct);
+    }, 200);
     try {
-      const payload = {
-        instrument: config.instrument,
-        mode: config.mode,
-        strategy_id: config.strategy_id,
-        timeframe: config.timeframe,
-        params: config.params,
-        costs_enabled: config.costs_enabled,
-        walkforward: config.walkforward,
-        train_pct: config.train_pct,
-        n_folds: config.n_folds,
-        pretrade_filters: selectedProfile?.settings || {},
-        name: config.name,
-        start_ts: dateToMs(config.start_date, false),
-        end_ts: dateToMs(config.end_date, true),
-        option_backtest: {
-          enabled: !!config.option_backtest_enabled,
-          expiry_date: config.option_expiry_date || null,
-          moneyness: config.option_moneyness,
-          lots: Math.max(1, Number(config.option_lots || 1)),
-          entry_max_age_sec: 120,
-          exit_max_age_sec: 180,
-          auto_fetch: !!config.option_auto_fetch,
-          max_auto_fetch_contracts: 12,
-        },
-      };
+      const payload = buildPayload();
       const res = await api.runBacktest(payload);
+      setProgress(100);
       setResult(res);
       await refreshRuns();
       toast.success(`Backtest complete: ${res.metrics.trade_count} trades`);
@@ -177,6 +286,7 @@ export default function BacktestLab() {
       const msg = e.response?.data?.detail || e.message;
       toast.error(`Backtest failed: ${msg}`);
     } finally {
+      clearInterval(timer);
       setRunning(false);
     }
   };
@@ -186,6 +296,12 @@ export default function BacktestLab() {
     try {
       const r = await api.getBacktestRun(runId);
       setResult(r);
+      // Stash the run's params so the strategy-change effect doesn't reset them.
+      const runStrategy = r.strategy_id || r.config?.strategy_id || config.strategy_id;
+      const runParams = r.params_applied || r.config?.params;
+      if (runParams) {
+        pendingParamsRef.current = { strategy_id: runStrategy, params: { ...runParams } };
+      }
       // Restore configuration from the saved run
       setConfig((c) => ({
         ...c,
@@ -201,11 +317,32 @@ export default function BacktestLab() {
         name: r.name || c.name,
         start_date: msToDate(r.config?.start_ts),
         end_date: msToDate(r.config?.end_ts),
+        trade_window_start: r.config?.trade_window_start || "09:25",
+        trade_window_end: r.config?.trade_window_end || "15:00",
         option_backtest_enabled: !!r.config?.option_backtest?.enabled,
+        option_expiry_mode: r.config?.option_backtest?.expiry_date ? "fixed" : "auto",
         option_expiry_date: r.config?.option_backtest?.expiry_date || "",
         option_moneyness: r.config?.option_backtest?.moneyness || c.option_moneyness,
         option_lots: r.config?.option_backtest?.lots || c.option_lots,
         option_auto_fetch: r.config?.option_backtest?.auto_fetch ?? c.option_auto_fetch,
+        option_exit_mode: r.config?.option_backtest?.exit_mode || c.option_exit_mode,
+        option_target_pts: r.config?.option_backtest?.option_target_pts ?? "",
+        option_stop_pts: r.config?.option_backtest?.option_stop_pts ?? "",
+        option_target_pct: r.config?.option_backtest?.option_target_pct ?? "",
+        option_stop_pct: r.config?.option_backtest?.option_stop_pct ?? "",
+        option_sl_tp_unit: (r.config?.option_backtest?.option_target_pct != null || r.config?.option_backtest?.option_stop_pct != null) ? "pct" : "pts",
+        option_dte_filter: r.config?.option_backtest?.dte_filter || "all",
+        option_costs_enabled: !!r.config?.option_backtest?.cost_config?.enabled,
+        option_brokerage_per_order: r.config?.option_backtest?.cost_config?.brokerage_per_order ?? 0,
+        option_spread_pct: r.config?.option_backtest?.cost_config?.spread_pct_of_premium ?? 1.0,
+        option_spread_min_pts: r.config?.option_backtest?.cost_config?.spread_min_pts ?? 0,
+        option_sizing_enabled: !!r.config?.option_backtest?.sizing_config?.enabled,
+        option_sizing_mode: r.config?.option_backtest?.sizing_config?.mode || "premium_at_risk",
+        option_capital: r.config?.option_backtest?.sizing_config?.capital ?? 200000,
+        option_risk_per_trade_pct: r.config?.option_backtest?.sizing_config?.risk_per_trade_pct ?? 1.0,
+        option_fixed_lots: r.config?.option_backtest?.sizing_config?.fixed_lots ?? 1,
+        option_max_lots: r.config?.option_backtest?.sizing_config?.max_lots ?? 10,
+        option_assumed_stop_pct: r.config?.option_backtest?.sizing_config?.assumed_stop_pct_of_premium ?? 50,
       }));
       toast.success(`Loaded: ${r.name}`);
     } catch (e) {
@@ -275,16 +412,6 @@ export default function BacktestLab() {
                 </SelectContent>
               </Select>
             </Row>
-            <Row label="Mode">
-              <Select value={config.mode} onValueChange={(v) => setConfig({ ...config, mode: v })}>
-                <SelectTrigger className="bg-bg-2 border-line h-8" data-testid="backtest-mode-select">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {MODES.map((m) => <SelectItem key={m} value={m}>{m}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </Row>
             <Row label="Strategy">
               <Select value={config.strategy_id} onValueChange={(v) => setConfig({ ...config, strategy_id: v })}>
                 <SelectTrigger className="bg-bg-2 border-line h-8" data-testid="backtest-strategy-select">
@@ -346,6 +473,28 @@ export default function BacktestLab() {
                 Leave empty to use all available candles. Phase 4 (Upstox) will support years of history.
               </div>
             </div>
+            <div className="pt-2 border-t border-line">
+              <Label className="text-xs text-dim">Trade window (IST entries)</Label>
+              <div className="grid grid-cols-2 gap-2 mt-1">
+                <Input
+                  type="time"
+                  value={config.trade_window_start}
+                  onChange={(e) => setConfig({ ...config, trade_window_start: e.target.value })}
+                  className="bg-bg-2 border-line h-8 text-xs"
+                  data-testid="backtest-window-start"
+                />
+                <Input
+                  type="time"
+                  value={config.trade_window_end}
+                  onChange={(e) => setConfig({ ...config, trade_window_end: e.target.value })}
+                  className="bg-bg-2 border-line h-8 text-xs"
+                  data-testid="backtest-window-end"
+                />
+              </div>
+              <div className="text-[10px] text-dimmer mt-1">
+                No entries outside this window. Default 09:25–15:00 skips the first 10 min and last 30 min.
+              </div>
+            </div>
           </div>
         </Panel>
 
@@ -361,13 +510,18 @@ export default function BacktestLab() {
             </div>
             <div className="grid grid-cols-2 gap-2">
               <Row label="Expiry">
-                <Input
-                  type="date"
-                  value={config.option_expiry_date}
-                  onChange={(e) => setConfig({ ...config, option_expiry_date: e.target.value })}
-                  className="bg-bg-2 border-line h-8 text-xs"
-                  data-testid="option-expiry-input"
-                />
+                <Select
+                  value={config.option_expiry_mode}
+                  onValueChange={(v) => setConfig({ ...config, option_expiry_mode: v })}
+                >
+                  <SelectTrigger className="bg-bg-2 border-line h-8" data-testid="option-expiry-mode-select">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="auto">Nearest weekly (auto, per trade)</SelectItem>
+                    <SelectItem value="fixed">Fixed expiry date</SelectItem>
+                  </SelectContent>
+                </Select>
               </Row>
               <Row label="Moneyness">
                 <Select
@@ -383,6 +537,21 @@ export default function BacktestLab() {
                 </Select>
               </Row>
             </div>
+            {config.option_expiry_mode === "fixed" && (
+              <Row label="Fixed expiry date">
+                <Input
+                  type="date"
+                  value={config.option_expiry_date}
+                  onChange={(e) => setConfig({ ...config, option_expiry_date: e.target.value })}
+                  className="bg-bg-2 border-line h-8 text-xs"
+                  data-testid="option-expiry-input"
+                />
+                <div className="text-[10px] text-amber-300 mt-1">
+                  Pins ALL trades to this one expiry. Only use for single-expiry-day studies — for multi-day
+                  backtests keep "Nearest weekly (auto)".
+                </div>
+              </Row>
+            )}
             <div className="grid grid-cols-2 gap-2">
               <Row label="Lots">
                 <Input
@@ -404,6 +573,246 @@ export default function BacktestLab() {
                 <span className="text-xs text-dim">Auto-fetch</span>
               </div>
             </div>
+
+            {/* DTE filter — restrict the backtest to sessions a fixed number of
+                trading days before the weekly expiry (your 0/1/2-DTE buying style). */}
+            <Row label="DTE filter (days to expiry)">
+              <Select
+                value={config.option_dte_filter}
+                onValueChange={(v) => setConfig({ ...config, option_dte_filter: v })}
+              >
+                <SelectTrigger className="bg-bg-2 border-line h-8" data-testid="option-dte-select">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All (every weekly expiry)</SelectItem>
+                  <SelectItem value="dte0">DTE0 — expiry day (0DTE)</SelectItem>
+                  <SelectItem value="dte1">DTE1 — 1 day before expiry</SelectItem>
+                  <SelectItem value="dte2">DTE2 — 2 days before</SelectItem>
+                  <SelectItem value="dte3">DTE3 — 3 days before</SelectItem>
+                  <SelectItem value="dte4">DTE4 — 4 days before</SelectItem>
+                  <SelectItem value="dte5">DTE5 — 5 days before</SelectItem>
+                  <SelectItem value="dte6">DTE6 — 6 days before</SelectItem>
+                </SelectContent>
+              </Select>
+            </Row>
+
+            {/* Rupee cost model — brokerage + statutory charges + % bid-ask spread.
+                Flattrade = ₹0 brokerage; statutory charges always apply when on. */}
+            <div className="pt-2 border-t border-line space-y-2">
+              <div className="flex items-center gap-2">
+                <Switch
+                  checked={config.option_costs_enabled}
+                  onCheckedChange={(v) => setConfig({ ...config, option_costs_enabled: v })}
+                  data-testid="option-costs-switch"
+                />
+                <span className="text-xs text-dim">Apply rupee costs (brokerage + STT + charges + spread)</span>
+              </div>
+              {config.option_costs_enabled && (
+                <>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Row label="Brokerage / order (₹)">
+                      <Input
+                        type="number" min="0" step="1"
+                        value={config.option_brokerage_per_order}
+                        onChange={(e) => setConfig({ ...config, option_brokerage_per_order: e.target.value })}
+                        className="bg-bg-2 border-line h-8 text-xs"
+                        data-testid="option-brokerage-input"
+                      />
+                    </Row>
+                    <Row label="Bid-ask spread (% of premium)">
+                      <Input
+                        type="number" min="0" step="0.25"
+                        value={config.option_spread_pct}
+                        onChange={(e) => setConfig({ ...config, option_spread_pct: e.target.value })}
+                        className="bg-bg-2 border-line h-8 text-xs"
+                        data-testid="option-spread-pct-input"
+                      />
+                    </Row>
+                  </div>
+                  <div className="text-[10px] text-dimmer leading-snug">
+                    STT, exchange, SEBI, GST and stamp are applied automatically. Set brokerage to 0 for Flattrade,
+                    ₹20 for Upstox/Zerodha. Spread is modeled as a % of premium (half crossed each side) — this is the
+                    silent killer on cheap OTM / 0DTE options.
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* Position sizing + capital. Lot SIZE always from contract; here the
+                user picks fixed lots or premium-at-risk sizing of the lot COUNT. */}
+            <div className="pt-2 border-t border-line space-y-2">
+              <div className="flex items-center gap-2">
+                <Switch
+                  checked={config.option_sizing_enabled}
+                  onCheckedChange={(v) => setConfig({ ...config, option_sizing_enabled: v })}
+                  data-testid="option-sizing-switch"
+                />
+                <span className="text-xs text-dim">Capital & position sizing (rupee equity curve)</span>
+              </div>
+              {config.option_sizing_enabled && (
+                <>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Row label="Capital (₹)">
+                      <Input
+                        type="number" min="0" step="10000"
+                        value={config.option_capital}
+                        onChange={(e) => setConfig({ ...config, option_capital: e.target.value })}
+                        className="bg-bg-2 border-line h-8 text-xs"
+                        data-testid="option-capital-input"
+                      />
+                    </Row>
+                    <Row label="Sizing mode">
+                      <Select
+                        value={config.option_sizing_mode}
+                        onValueChange={(v) => setConfig({ ...config, option_sizing_mode: v })}
+                      >
+                        <SelectTrigger className="bg-bg-2 border-line h-8" data-testid="option-sizing-mode-select">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="premium_at_risk">Premium-at-risk (% of capital)</SelectItem>
+                          <SelectItem value="fixed_lots">Fixed lots</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </Row>
+                  </div>
+                  {config.option_sizing_mode === "premium_at_risk" ? (
+                    <div className="grid grid-cols-3 gap-2">
+                      <Row label="Risk/trade (%)">
+                        <Input
+                          type="number" min="0.1" step="0.1"
+                          value={config.option_risk_per_trade_pct}
+                          onChange={(e) => setConfig({ ...config, option_risk_per_trade_pct: e.target.value })}
+                          className="bg-bg-2 border-line h-8 text-xs"
+                          data-testid="option-risk-pct-input"
+                        />
+                      </Row>
+                      <Row label="Max lots">
+                        <Input
+                          type="number" min="1" step="1"
+                          value={config.option_max_lots}
+                          onChange={(e) => setConfig({ ...config, option_max_lots: e.target.value })}
+                          className="bg-bg-2 border-line h-8 text-xs"
+                          data-testid="option-max-lots-input"
+                        />
+                      </Row>
+                      <Row label="Assumed stop (%)">
+                        <Input
+                          type="number" min="1" step="5"
+                          value={config.option_assumed_stop_pct}
+                          onChange={(e) => setConfig({ ...config, option_assumed_stop_pct: e.target.value })}
+                          className="bg-bg-2 border-line h-8 text-xs"
+                          data-testid="option-assumed-stop-input"
+                        />
+                      </Row>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-2 gap-2">
+                      <Row label="Fixed lots">
+                        <Input
+                          type="number" min="1" step="1"
+                          value={config.option_fixed_lots}
+                          onChange={(e) => setConfig({ ...config, option_fixed_lots: e.target.value })}
+                          className="bg-bg-2 border-line h-8 text-xs"
+                          data-testid="option-fixed-lots-input"
+                        />
+                      </Row>
+                      <Row label="Max lots">
+                        <Input
+                          type="number" min="1" step="1"
+                          value={config.option_max_lots}
+                          onChange={(e) => setConfig({ ...config, option_max_lots: e.target.value })}
+                          className="bg-bg-2 border-line h-8 text-xs"
+                          data-testid="option-max-lots-input-2"
+                        />
+                      </Row>
+                    </div>
+                  )}
+                  <div className="text-[10px] text-dimmer leading-snug">
+                    Lot size is taken from the option contract automatically. Premium-at-risk sizes the lot count so
+                    each trade risks ≤ your % of capital (using the option stop, or the assumed-stop % when no option
+                    stop is set). A trade that can't fit even one lot in budget still takes one lot, tagged as risk-exceeded.
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* Option exit mode — item 9. spot_exit mirrors the index trade;
+                option_levels exits on the option's own premium target/stop. */}
+            <div className="pt-2 border-t border-line space-y-2">
+              <Row label="Option exit mode">
+                <Select
+                  value={config.option_exit_mode}
+                  onValueChange={(v) => setConfig({ ...config, option_exit_mode: v })}
+                >
+                  <SelectTrigger className="bg-bg-2 border-line h-8" data-testid="option-exit-mode-select">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="spot_exit">Mirror spot exit (index SL/target)</SelectItem>
+                    <SelectItem value="option_levels">Option premium SL/target</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Row>
+              {config.option_exit_mode === "option_levels" && (
+                <>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-dim">Level unit</span>
+                    <div className="flex rounded-md border border-line overflow-hidden">
+                      {["pts", "pct"].map((u) => (
+                        <button
+                          key={u}
+                          type="button"
+                          onClick={() => setConfig({ ...config, option_sl_tp_unit: u })}
+                          className={`px-2 py-1 text-[11px] font-mono ${config.option_sl_tp_unit === u ? "bg-info text-bg-0" : "bg-bg-2 text-dim hover:text-foreground"}`}
+                          data-testid={`option-unit-${u}`}
+                        >
+                          {u === "pts" ? "Points" : "Percent"}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Row label={`Target (${config.option_sl_tp_unit === "pts" ? "pts" : "%"})`}>
+                      <Input
+                        type="number"
+                        min="0"
+                        step="0.5"
+                        placeholder="e.g. 40"
+                        value={config.option_sl_tp_unit === "pts" ? config.option_target_pts : config.option_target_pct}
+                        onChange={(e) => setConfig({
+                          ...config,
+                          [config.option_sl_tp_unit === "pts" ? "option_target_pts" : "option_target_pct"]: e.target.value,
+                        })}
+                        className="bg-bg-2 border-line h-8 text-xs"
+                        data-testid="option-target-input"
+                      />
+                    </Row>
+                    <Row label={`Stop (${config.option_sl_tp_unit === "pts" ? "pts" : "%"})`}>
+                      <Input
+                        type="number"
+                        min="0"
+                        step="0.5"
+                        placeholder="e.g. 30"
+                        value={config.option_sl_tp_unit === "pts" ? config.option_stop_pts : config.option_stop_pct}
+                        onChange={(e) => setConfig({
+                          ...config,
+                          [config.option_sl_tp_unit === "pts" ? "option_stop_pts" : "option_stop_pct"]: e.target.value,
+                        })}
+                        className="bg-bg-2 border-line h-8 text-xs"
+                        data-testid="option-stop-input"
+                      />
+                    </Row>
+                  </div>
+                  <div className="text-[10px] text-dimmer leading-snug">
+                    Exits the option when its premium hits your target/stop, independent of the index.
+                    If neither is hit, the spot signal's exit closes the trade. Stop is assumed to fill
+                    first if a single 1-min bar spans both levels.
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         </Panel>
 
@@ -424,13 +833,22 @@ export default function BacktestLab() {
           )}
         </Panel>
 
+        {config.option_backtest_enabled && (
+          <PreflightPanel
+            preflight={preflight}
+            preflighting={preflighting}
+            onCheck={() => checkOptionData(false)}
+            onIngest={() => checkOptionData(true)}
+          />
+        )}
+
         <Button
           onClick={runBacktest}
           disabled={running}
           className="w-full bg-info text-bg-0 hover:bg-info/90 font-semibold"
           data-testid="backtest-run-button"
         >
-          <Play className="w-4 h-4 mr-2" />
+          {running ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Play className="w-4 h-4 mr-2" />}
           {running ? "Running…" : "Run Backtest"}
         </Button>
       </aside>
@@ -438,11 +856,7 @@ export default function BacktestLab() {
       {/* RIGHT: Results */}
       <section className="min-w-0 space-y-3">
         {running ? (
-          <div className="space-y-3">
-            <Skeleton className="h-24 bg-bg-1" />
-            <Skeleton className="h-[400px] bg-bg-1" />
-            <Skeleton className="h-40 bg-bg-1" />
-          </div>
+          <RunningResults progress={progress} config={config} />
         ) : !result ? (
           <EmptyResults />
         ) : (
@@ -452,6 +866,96 @@ export default function BacktestLab() {
     </div>
 
       <BacktestRunJournal onLoadRun={loadPastRun} refreshKey={pastRuns.length} />
+    </div>
+  );
+}
+
+function PreflightPanel({ preflight, preflighting, onCheck, onIngest }) {
+  const pct = preflight?.coverage_pct;
+  const covColor = pct == null ? "text-dim" : pct >= 90 ? "text-positive" : pct >= 60 ? "text-warning" : "text-negative";
+  return (
+    <div className="rounded-lg border border-line bg-bg-1" data-testid="option-preflight-panel">
+      <div className="px-3 py-2 border-b border-line flex items-center gap-2">
+        <ShieldCheck className="w-3.5 h-3.5 text-info" />
+        <div className="text-[11px] font-semibold uppercase tracking-wider text-dim">Option Data Preflight</div>
+      </div>
+      <div className="p-3 space-y-3">
+        <p className="text-[11px] text-dimmer leading-relaxed">
+          Verify that option candles exist for every spot signal before running. Missing data can be ingested from your broker.
+        </p>
+        <div className="flex gap-2">
+          <Button
+            onClick={onCheck}
+            disabled={preflighting}
+            variant="outline"
+            className="flex-1 text-xs h-8"
+            data-testid="option-preflight-check"
+          >
+            {preflighting ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : <ShieldCheck className="w-3.5 h-3.5 mr-1.5" />}
+            Check option data
+          </Button>
+          <Button
+            onClick={onIngest}
+            disabled={preflighting || !preflight || (preflight.missing_contract === 0 && preflight.missing_candle === 0)}
+            variant="outline"
+            className="flex-1 text-xs h-8"
+            data-testid="option-preflight-ingest"
+          >
+            Ingest missing & recheck
+          </Button>
+        </div>
+
+        {preflight && preflight.enabled !== false && (
+          <div className="rounded-md border border-line bg-bg-0 p-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] text-dim">Coverage</span>
+              <span className={`text-sm font-semibold ${covColor}`}>{pct}%</span>
+            </div>
+            <div className="h-1.5 rounded-full bg-bg-2 overflow-hidden">
+              <div
+                className={`h-full ${pct >= 90 ? "bg-positive" : pct >= 60 ? "bg-warning" : "bg-negative"}`}
+                style={{ width: `${Math.min(100, Math.max(0, pct || 0))}%` }}
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-[11px] pt-1">
+              <div className="flex justify-between"><span className="text-dimmer">Spot signals</span><span className="text-dim font-mono">{preflight.total_spot_trades}</span></div>
+              <div className="flex justify-between"><span className="text-dimmer">Would pair</span><span className="text-positive font-mono">{preflight.would_pair}</span></div>
+              <div className="flex justify-between"><span className="text-dimmer">Missing contract</span><span className={`font-mono ${preflight.missing_contract ? "text-negative" : "text-dim"}`}>{preflight.missing_contract}</span></div>
+              <div className="flex justify-between"><span className="text-dimmer">Missing candles</span><span className={`font-mono ${preflight.missing_candle ? "text-warning" : "text-dim"}`}>{preflight.missing_candle}</span></div>
+            </div>
+
+            {preflight.ingest?.status === "started" && (
+              <div className="rounded border border-info/40 bg-info/10 px-2 py-1.5 text-[11px] text-info">
+                Ingesting missing option data… run {String(preflight.ingest.run_id).slice(0, 8)}. Re-check in a minute.
+              </div>
+            )}
+            {preflight.ingest?.status && preflight.ingest.status !== "started" && (
+              <div className="rounded border border-warning/40 bg-warning/10 px-2 py-1.5 text-[11px] text-warning">
+                Ingest not started: {preflight.ingest.reason || preflight.ingest.status}
+              </div>
+            )}
+
+            {Array.isArray(preflight.missing_contract_keys) && preflight.missing_contract_keys.length > 0 && (
+              <details className="text-[11px]">
+                <summary className="cursor-pointer text-dimmer hover:text-dim">
+                  {preflight.missing_contract_keys.length} unresolved contract{preflight.missing_contract_keys.length > 1 ? "s" : ""}
+                </summary>
+                <div className="mt-1.5 max-h-28 overflow-auto font-mono text-dimmer space-y-0.5">
+                  {preflight.missing_contract_keys.slice(0, 40).map((k, i) => (
+                    <div key={i}>{k}</div>
+                  ))}
+                </div>
+              </details>
+            )}
+          </div>
+        )}
+
+        {preflight && preflight.enabled === false && (
+          <div className="rounded border border-line bg-bg-0 px-2 py-1.5 text-[11px] text-dimmer">
+            Option execution is disabled — nothing to check.
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -525,6 +1029,53 @@ function EmptyResults() {
     >
       <div className="text-sm font-semibold mb-1">No backtest run yet</div>
       <div className="text-xs text-dim">Configure your setup on the left and click <b>Run Backtest</b>. Make sure the data warehouse has candles for the selected instrument first (Data Warehouse → Ingest).</div>
+    </div>
+  );
+}
+
+function RunningResults({ progress, config }) {
+  const pct = Math.max(0, Math.min(100, Number(progress || 0)));
+  // Rough phase label derived from estimated progress so the user sees the
+  // pipeline moving even though it's a single backend request.
+  const phase = pct < 25
+    ? "Loading candles + indicators…"
+    : pct < 55
+      ? "Running strategy + simulating trades…"
+      : pct < 85
+        ? (config?.walkforward ? "Walk-forward folds (IS vs OOS)…" : "Computing metrics…")
+        : config?.option_backtest_enabled
+          ? "Pairing option candles…"
+          : "Finalizing results…";
+  return (
+    <div
+      className="rounded-lg border border-line bg-bg-1 p-6"
+      data-testid="backtest-running-state"
+      role="status"
+      aria-live="polite"
+      aria-busy="true"
+    >
+      <div className="flex items-center gap-3">
+        <Loader2 className="w-5 h-5 text-info animate-spin shrink-0" />
+        <div className="min-w-0">
+          <div className="text-sm font-semibold">Backtest running, please wait…</div>
+          <div className="text-xs text-dim truncate">
+            <span className="font-mono">{config?.instrument}</span> · <span className="font-mono">{config?.strategy_id}</span> · {phase}
+          </div>
+        </div>
+        <div className="ml-auto text-lg font-mono font-semibold text-info tabular-nums" data-testid="backtest-progress-pct">
+          {Math.round(pct)}%
+        </div>
+      </div>
+      <div className="mt-4 h-2 rounded bg-bg-3 overflow-hidden">
+        <div
+          className="h-full bg-info transition-all duration-200"
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      <div className="mt-4 space-y-3">
+        <Skeleton className="h-20 bg-bg-2" />
+        <Skeleton className="h-[320px] bg-bg-2" />
+      </div>
     </div>
   );
 }
@@ -644,6 +1195,7 @@ function ResultsView({ result }) {
 
       <DataAuditCard audit={result.data_audit} />
       <OptionBacktestCard optionBacktest={result.option_backtest} />
+      <ContextBreakdownCard optionBacktest={result.option_backtest} />
 
       {/* Chart */}
       <MultiPaneChart candles={candles} equity={equity} drawdown={drawdown} height={520} />
@@ -655,7 +1207,7 @@ function ResultsView({ result }) {
       </div>
 
       {/* Trades table */}
-      <TradesTable trades={result.trades || []} />
+      <TradesTable trades={result.trades || []} optionBacktest={result.option_backtest} />
     </div>
   );
 }
@@ -737,6 +1289,70 @@ function OptionBacktestCard({ optionBacktest }) {
         </div>
       </div>
 
+      {/* Rupee account view: capital, ending equity, return, drawdown, Sharpe. */}
+      {optionBacktest.portfolio && optionBacktest.sizing_config?.enabled && (
+        <div className="mb-3" data-testid="option-portfolio-summary">
+          <div className="text-[10px] uppercase tracking-wider text-dimmer mb-1">Account (rupee) — {optionBacktest.sizing_config.mode === "premium_at_risk" ? `${optionBacktest.sizing_config.risk_per_trade_pct}% risk/trade` : "fixed lots"}</div>
+          <div className="grid grid-cols-2 lg:grid-cols-6 gap-2">
+            <AuditMetric label="Capital" value={`₹${fmtInt(optionBacktest.portfolio.starting_capital)}`} />
+            <AuditMetric label="Ending Equity" value={`₹${fmtInt(optionBacktest.portfolio.ending_equity)}`} />
+            <div className="rounded-md border border-line bg-bg-2 p-2 min-w-0">
+              <div className="text-[10px] uppercase tracking-wider text-dimmer">Return</div>
+              <div className={`text-xs font-mono mt-0.5 ${colorPnL(optionBacktest.portfolio.total_return_pct)}`}>{fmtPct(optionBacktest.portfolio.total_return_pct, 2)}</div>
+            </div>
+            <div className="rounded-md border border-line bg-bg-2 p-2 min-w-0">
+              <div className="text-[10px] uppercase tracking-wider text-dimmer">Max DD</div>
+              <div className="text-xs font-mono mt-0.5 text-danger">{fmtPct(optionBacktest.portfolio.max_drawdown_pct, 2)}</div>
+            </div>
+            <AuditMetric label="Sharpe (daily)" value={optionBacktest.portfolio.sharpe_daily ?? "—"} />
+            <AuditMetric label="Sortino" value={optionBacktest.portfolio.sortino_daily ?? "—"} />
+          </div>
+        </div>
+      )}
+
+      {/* Cost summary: gross vs net after rupee charges + spread. */}
+      {optionBacktest.cost_config?.enabled && (
+        <div className="mb-3 rounded-md border border-line bg-bg-2 p-2 flex flex-wrap items-center gap-3 text-[11px]" data-testid="option-cost-summary">
+          <span className="text-dim">Costs: <span className="font-mono text-foreground">on</span></span>
+          <span className="font-mono text-dimmer">gross {fmtPnL(metrics.total_gross_option_pnl_value)}</span>
+          <span className="font-mono text-rose-300">charges -{fmtNum(metrics.total_charges, 2)}</span>
+          <span className={`font-mono ${colorPnL(metrics.total_option_pnl_value)}`}>net {fmtPnL(metrics.total_option_pnl_value)}</span>
+          <span className="text-dimmer font-mono ml-auto">
+            brokerage ₹{optionBacktest.cost_config.brokerage_per_order}/order · spread {optionBacktest.cost_config.spread_pct_of_premium}%
+          </span>
+        </div>
+      )}
+
+      {/* Exit-mode summary: when premium SL/target is on, show the exit breakdown. */}
+      {optionBacktest.exit_mode === "option_levels" && (
+        <div className="mb-3 rounded-md border border-line bg-bg-2 p-2 flex flex-wrap items-center gap-3 text-[11px]" data-testid="option-exit-mode-summary">
+          <span className="text-dim">Exit mode: <span className="font-mono text-foreground">option premium SL/target</span></span>
+          <span className="text-emerald-300 font-mono">target {fmtInt(metrics.option_target_exits || 0)}</span>
+          <span className="text-rose-300 font-mono">stop {fmtInt(metrics.option_stop_exits || 0)}</span>
+          <span className="text-dimmer font-mono">signal/EOD {fmtInt(metrics.option_signal_exits || 0)}</span>
+          {optionBacktest.option_exit_config && (
+            <span className="text-dimmer font-mono ml-auto">
+              {optionBacktest.option_exit_config.target_pts != null
+                ? `T ${optionBacktest.option_exit_config.target_pts}pt / S ${optionBacktest.option_exit_config.stop_pts ?? "—"}pt`
+                : `T ${optionBacktest.option_exit_config.target_pct ?? "—"}% / S ${optionBacktest.option_exit_config.stop_pct ?? "—"}%`}
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* DTE filter summary: how many sessions matched the selected DTE. */}
+      {data.dte_filter && data.dte_filter.filter && data.dte_filter.filter !== "all" && (
+        <div className="mb-3 rounded-md border border-line bg-bg-2 p-2 flex flex-wrap items-center gap-3 text-[11px]" data-testid="option-dte-summary">
+          <span className="text-dim">DTE filter: <span className="font-mono text-foreground uppercase">{data.dte_filter.filter}</span></span>
+          <span className="text-dimmer font-mono">
+            {fmtInt(data.dte_filter.matched_trades || 0)} of {fmtInt(data.dte_filter.input_trades || 0)} spot signals matched
+          </span>
+          {(data.dte_filter.matched_trades || 0) === 0 && (
+            <span className="text-amber-300">No signals fell on this DTE in the window — widen the date range or pick another DTE.</span>
+          )}
+        </div>
+      )}
+
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-2">
         <div className="rounded-md border border-line bg-bg-2 p-2" data-testid="option-pairing-coverage">
           <div className="text-[10px] uppercase tracking-wider text-dimmer mb-1">Pairing Coverage</div>
@@ -759,27 +1375,41 @@ function OptionBacktestCard({ optionBacktest }) {
       </div>
 
       {trades.length > 0 && (
-        <div className="overflow-x-auto mt-3 max-h-[220px]">
+        <div className="overflow-x-auto mt-3 max-h-[260px]">
           <table className="w-full text-xs">
             <thead className="sticky top-0 bg-bg-2 z-10">
               <tr className="text-dim">
                 <th className="text-left p-2">#</th>
                 <th className="text-left p-2">Option</th>
+                <th className="text-left p-2">Dir</th>
                 <th className="text-right p-2">Entry</th>
                 <th className="text-right p-2">Exit</th>
+                <th className="text-right p-2">Target</th>
+                <th className="text-right p-2">Stop</th>
+                <th className="text-right p-2">Lots</th>
+                <th className="text-left p-2">Exit Reason</th>
                 <th className="text-right p-2">P&L</th>
                 <th className="text-left p-2">Status</th>
               </tr>
             </thead>
             <tbody>
-              {trades.slice(0, 25).map((t, idx) => (
+              {trades.slice(0, 50).map((t, idx) => (
                 <tr key={`${t.index_trade_id}-${idx}`} className="border-b border-line">
                   <td className="p-2 font-mono">{idx + 1}</td>
                   <td className="p-2 font-mono">{t.trading_symbol || t.instrument_key || "-"}</td>
+                  <td className={`p-2 font-mono font-medium ${t.direction === "CE" ? "text-emerald-300" : "text-rose-300"}`}>{t.direction}</td>
                   <td className="p-2 text-right font-mono">{fmtNum(t.entry_option_price)}</td>
                   <td className="p-2 text-right font-mono">{fmtNum(t.exit_option_price)}</td>
+                  <td className="p-2 text-right font-mono text-dimmer">{t.option_target_level != null ? fmtNum(t.option_target_level) : "—"}</td>
+                  <td className="p-2 text-right font-mono text-dimmer">{t.option_stop_level != null ? fmtNum(t.option_stop_level) : "—"}</td>
+                  <td className="p-2 text-right font-mono" title={t.risk_amount != null ? `risk ₹${fmtNum(t.risk_amount, 0)}${t.risk_exceeded ? " (exceeded budget)" : ""}` : ""}>
+                    {t.lots != null ? t.lots : "—"}{t.risk_exceeded ? <span className="text-amber-300"> ⚠</span> : ""}
+                  </td>
+                  <td className="p-2 text-[10px]">
+                    <ExitReasonBadge reason={t.option_exit_reason} />
+                  </td>
                   <td className={`p-2 text-right font-mono ${colorPnL(t.option_pnl_value)}`}>{fmtPnL(t.option_pnl_value)}</td>
-                  <td className="p-2 text-[10px] text-dim">{t.status}</td>
+                  <td className="p-2 text-[10px] text-dim" title={t.miss_reason || ""}>{t.status}{t.miss_reason ? " ⓘ" : ""}</td>
                 </tr>
               ))}
             </tbody>
@@ -790,12 +1420,93 @@ function OptionBacktestCard({ optionBacktest }) {
   );
 }
 
+function ExitReasonBadge({ reason }) {
+  if (!reason) return <span className="text-dimmer">—</span>;
+  const map = {
+    OPTION_TARGET: "bg-emerald-950 text-emerald-200 border-emerald-900",
+    OPTION_STOP: "bg-rose-950 text-rose-200 border-rose-900",
+    OPTION_SIGNAL_EXIT: "bg-slate-800 text-slate-200 border-slate-700",
+    SPOT_EXIT: "bg-slate-800 text-slate-200 border-slate-700",
+  };
+  const label = {
+    OPTION_TARGET: "target",
+    OPTION_STOP: "stop",
+    OPTION_SIGNAL_EXIT: "signal exit",
+    SPOT_EXIT: "spot exit",
+  }[reason] || reason.toLowerCase();
+  return (
+    <span className={`px-1.5 py-0.5 rounded border font-mono ${map[reason] || "bg-bg-3 text-dim border-line"}`}>
+      {label}
+    </span>
+  );
+}
+
 function PairMetric({ label, value }) {
   return (
     <>
       <span className="text-dim truncate">{label}</span>
       <span className="text-right font-mono truncate" title={String(value)}>{typeof value === "number" ? fmtInt(value) : value}</span>
     </>
+  );
+}
+
+// Context edge table — where the strategy actually makes/loses money, by
+// regime / time-of-day / DTE / VIX bucket. This is the regime-routing insight.
+const CONTEXT_DIMS = [
+  { key: "regime", label: "Regime" },
+  { key: "time_of_day", label: "Time of Day" },
+  { key: "dte", label: "DTE" },
+  { key: "vix_bucket", label: "VIX Regime" },
+];
+
+function ContextBreakdownCard({ optionBacktest }) {
+  if (!optionBacktest?.enabled) return null;
+  const cb = optionBacktest.context_breakdown;
+  if (!cb) return null;
+  const hasAny = CONTEXT_DIMS.some((d) => cb[d.key] && Object.keys(cb[d.key]).length > 0);
+  if (!hasAny) return null;
+
+  return (
+    <Panel title="Context Edge — where this strategy works" testid="context-breakdown-card">
+      <div className="text-[11px] text-dimmer mb-2">
+        Net option P&L grouped by market context. Use this to find the regimes/sessions/DTEs where the strategy
+        has real edge — and where to switch it off. (VIX shows once India VIX is ingested.)
+      </div>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+        {CONTEXT_DIMS.map((dim) => {
+          const buckets = cb[dim.key] || {};
+          const rows = Object.entries(buckets).sort((a, b) => (b[1].total_pnl_value || 0) - (a[1].total_pnl_value || 0));
+          if (rows.length === 0) return null;
+          return (
+            <div key={dim.key} className="rounded-md border border-line bg-bg-2 p-2" data-testid={`context-dim-${dim.key}`}>
+              <div className="text-[10px] uppercase tracking-wider text-dimmer mb-1">{dim.label}</div>
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-dim">
+                    <th className="text-left p-1">Bucket</th>
+                    <th className="text-right p-1">Trades</th>
+                    <th className="text-right p-1">Win%</th>
+                    <th className="text-right p-1">Net P&L</th>
+                    <th className="text-right p-1">Avg</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map(([bucket, s]) => (
+                    <tr key={bucket} className="border-t border-line">
+                      <td className="p-1 font-mono">{dim.key === "dte" && bucket !== "UNKNOWN" ? `DTE${bucket}` : bucket}</td>
+                      <td className="p-1 text-right font-mono text-dim">{fmtInt(s.trade_count)}</td>
+                      <td className="p-1 text-right font-mono">{fmtPct(s.win_rate, 1)}</td>
+                      <td className={`p-1 text-right font-mono ${colorPnL(s.total_pnl_value)}`}>{fmtPnL(s.total_pnl_value)}</td>
+                      <td className={`p-1 text-right font-mono ${colorPnL(s.avg_pnl_value)}`}>{fmtPnL(s.avg_pnl_value)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          );
+        })}
+      </div>
+    </Panel>
   );
 }
 
@@ -867,7 +1578,115 @@ function SignalFunnelCard({ funnel, regimeDist, totalRegime }) {
   );
 }
 
-function TradesTable({ trades }) {
+const TRADE_COLUMNS = [
+  { key: "idx", label: "#", align: "left", sortable: true },
+  { key: "direction", label: "Dir", align: "left", sortable: true },
+  { key: "entry_ts", label: "Entry", align: "left", sortable: true },
+  { key: "entry_price", label: "Entry Px", align: "right", sortable: true },
+  { key: "exit_ts", label: "Exit", align: "left", sortable: true },
+  { key: "exit_price", label: "Exit Px", align: "right", sortable: true },
+  { key: "exit_reason", label: "Reason", align: "left", sortable: true },
+  { key: "score", label: "Score", align: "right", sortable: true },
+  { key: "pnl_pts", label: "P&L (pts)", align: "right", sortable: true },
+  { key: "pnl_pct", label: "P&L %", align: "right", sortable: true },
+];
+
+function SortHeader({ col, sort, onSort }) {
+  const active = sort.key === col.key;
+  const Icon = !active ? ChevronsUpDown : sort.dir === "asc" ? ArrowUp : ArrowDown;
+  const alignCls = col.align === "right" ? "text-right" : "text-left";
+  if (!col.sortable) {
+    return <th className={`${alignCls} p-2`}>{col.label}</th>;
+  }
+  return (
+    <th className={`${alignCls} p-2`}>
+      <button
+        type="button"
+        onClick={() => onSort(col.key)}
+        className={`inline-flex items-center gap-1 hover:text-foreground transition-colors ${active ? "text-foreground" : ""} ${col.align === "right" ? "flex-row-reverse" : ""}`}
+        data-testid={`trades-sort-${col.key}`}
+        title={`Sort by ${col.label}`}
+      >
+        <span>{col.label}</span>
+        <Icon className={`w-3 h-3 ${active ? "text-info" : "text-dimmer"}`} />
+      </button>
+    </th>
+  );
+}
+
+function TradesTable({ trades, optionBacktest }) {
+  const [sort, setSort] = useState({ key: "idx", dir: "asc" });
+  const [dirFilter, setDirFilter] = useState("ALL");
+  const [reasonFilter, setReasonFilter] = useState("ALL");
+  const [resultFilter, setResultFilter] = useState("ALL"); // ALL | win | loss
+
+  const onSort = (key) => {
+    setSort((s) => (s.key === key ? { key, dir: s.dir === "asc" ? "desc" : "asc" } : { key, dir: "asc" }));
+  };
+
+  // When option backtest ran, build a map from the spot trade index to its
+  // matched option leg so the table can show the correlated option detail.
+  const optionEnabled = !!optionBacktest?.enabled;
+  const optionByTradeId = useMemo(() => {
+    const map = {};
+    for (const ot of (optionBacktest?.trades || [])) {
+      if (ot?.index_trade_id != null) map[ot.index_trade_id] = ot;
+    }
+    return map;
+  }, [optionBacktest]);
+
+  // Stamp original index so "#" remains stable regardless of sort/filter, and
+  // flatten the matched option leg fields onto each row for sorting/rendering.
+  const indexed = useMemo(
+    () => (trades || []).map((t, i) => {
+      const opt = optionByTradeId[i] || null;
+      return {
+        ...t,
+        idx: i + 1,
+        opt_symbol: opt?.trading_symbol || opt?.instrument_key || null,
+        opt_strike: opt?.strike ?? null,
+        opt_side: opt?.side ?? null,
+        opt_entry: opt?.entry_option_price ?? null,
+        opt_exit: opt?.exit_option_price ?? null,
+        opt_pnl_value: opt?.option_pnl_value ?? null,
+        opt_exit_reason: opt?.option_exit_reason ?? null,
+        opt_status: opt?.status ?? null,
+      };
+    }),
+    [trades, optionByTradeId]
+  );
+
+  const exitReasons = useMemo(() => {
+    const set = new Set();
+    for (const t of indexed) if (t.exit_reason) set.add(t.exit_reason);
+    return Array.from(set).sort();
+  }, [indexed]);
+
+  const filtered = useMemo(() => {
+    let rows = indexed;
+    if (dirFilter !== "ALL") rows = rows.filter((t) => t.direction === dirFilter);
+    if (reasonFilter !== "ALL") rows = rows.filter((t) => t.exit_reason === reasonFilter);
+    if (resultFilter === "win") rows = rows.filter((t) => Number(t.pnl_pts) > 0);
+    if (resultFilter === "loss") rows = rows.filter((t) => Number(t.pnl_pts) <= 0);
+    return rows;
+  }, [indexed, dirFilter, reasonFilter, resultFilter]);
+
+  const sorted = useMemo(() => {
+    const rows = [...filtered];
+    const { key, dir } = sort;
+    const mul = dir === "asc" ? 1 : -1;
+    rows.sort((a, b) => {
+      const av = a[key];
+      const bv = b[key];
+      // Numeric vs string comparison.
+      const an = typeof av === "number" ? av : Number(av);
+      const bn = typeof bv === "number" ? bv : Number(bv);
+      if (Number.isFinite(an) && Number.isFinite(bn)) return (an - bn) * mul;
+      return String(av ?? "").localeCompare(String(bv ?? "")) * mul;
+    });
+    return rows;
+  }, [filtered, sort]);
+
   if (!trades.length) {
     return (
       <Panel title="Trades" testid="trades-panel">
@@ -875,28 +1694,73 @@ function TradesTable({ trades }) {
       </Panel>
     );
   }
+
+  const FilterSelect = ({ value, onChange, children, testid, title }) => (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className="h-7 rounded-md border border-line bg-bg-2 px-2 text-[11px] text-foreground outline-none focus:ring-1 focus:ring-ring"
+      data-testid={testid}
+      title={title}
+    >
+      {children}
+    </select>
+  );
+
+  // Build column set: base spot columns, plus option columns when paired.
+  const columns = optionEnabled
+    ? [
+        ...TRADE_COLUMNS,
+        { key: "opt_symbol", label: "Opt Leg", align: "left", sortable: true },
+        { key: "opt_entry", label: "Opt Entry", align: "right", sortable: true },
+        { key: "opt_exit", label: "Opt Exit", align: "right", sortable: true },
+        { key: "opt_exit_reason", label: "Opt Exit", align: "left", sortable: true },
+        { key: "opt_pnl_value", label: "Opt P&L (₹)", align: "right", sortable: true },
+      ]
+    : TRADE_COLUMNS;
+
   return (
-    <Panel title={`Trades (${trades.length})`} testid="trades-panel">
+    <Panel
+      title={`Trades (${sorted.length}${sorted.length !== indexed.length ? ` of ${indexed.length}` : ""})`}
+      testid="trades-panel"
+      right={
+        <div className="flex items-center gap-1.5">
+          <Filter className="w-3.5 h-3.5 text-dimmer" />
+          <FilterSelect value={dirFilter} onChange={setDirFilter} testid="trades-filter-dir" title="Filter by direction">
+            <option value="ALL">All dirs</option>
+            <option value="CE">CE</option>
+            <option value="PE">PE</option>
+          </FilterSelect>
+          <FilterSelect value={reasonFilter} onChange={setReasonFilter} testid="trades-filter-reason" title="Filter by exit reason">
+            <option value="ALL">All exits</option>
+            {exitReasons.map((r) => <option key={r} value={r}>{r}</option>)}
+          </FilterSelect>
+          <FilterSelect value={resultFilter} onChange={setResultFilter} testid="trades-filter-result" title="Filter by outcome">
+            <option value="ALL">Win+Loss</option>
+            <option value="win">Wins</option>
+            <option value="loss">Losses</option>
+          </FilterSelect>
+        </div>
+      }
+    >
+      {optionEnabled && (
+        <div className="mb-2 text-[10px] text-dimmer">
+          Spot signal paired with the option leg. "Opt Leg" is the contract chosen for the signal; Opt Entry/Exit are premium fills (after slippage).
+        </div>
+      )}
       <div className="overflow-x-auto max-h-[400px]">
         <table className="w-full text-xs" data-testid="trades-table">
           <thead className="sticky top-0 bg-bg-2 z-10">
             <tr className="text-dim">
-              <th className="text-left p-2">#</th>
-              <th className="text-left p-2">Dir</th>
-              <th className="text-left p-2">Entry</th>
-              <th className="text-right p-2">Entry Px</th>
-              <th className="text-left p-2">Exit</th>
-              <th className="text-right p-2">Exit Px</th>
-              <th className="text-left p-2">Reason</th>
-              <th className="text-right p-2">Score</th>
-              <th className="text-right p-2">P&L (pts)</th>
-              <th className="text-right p-2">P&L %</th>
+              {columns.map((col) => (
+                <SortHeader key={col.key} col={col} sort={sort} onSort={onSort} />
+              ))}
             </tr>
           </thead>
           <tbody>
-            {trades.map((t, idx) => (
-              <tr key={idx} className="border-b border-line hover:bg-bg-2" data-testid="trade-row">
-                <td className="p-2 font-mono">{idx + 1}</td>
+            {sorted.map((t) => (
+              <tr key={t.idx} className="border-b border-line hover:bg-bg-2" data-testid="trade-row">
+                <td className="p-2 font-mono">{t.idx}</td>
                 <td className={`p-2 font-mono font-medium ${t.direction === "CE" ? "text-emerald-300" : "text-rose-300"}`}>{t.direction}</td>
                 <td className="p-2 text-dim">{tsToTime(t.entry_ts)}</td>
                 <td className="p-2 text-right font-mono">{fmtNum(t.entry_price)}</td>
@@ -906,8 +1770,26 @@ function TradesTable({ trades }) {
                 <td className="p-2 text-right font-mono text-dim">{t.score}</td>
                 <td className={`p-2 text-right font-mono ${colorPnL(t.pnl_pts)}`}>{fmtPnL(t.pnl_pts)}</td>
                 <td className={`p-2 text-right font-mono ${colorPnL(t.pnl_pts)}`}>{fmtPct(t.pnl_pct, 2)}</td>
+                {optionEnabled && (
+                  <>
+                    <td className="p-2 font-mono text-[10px]" title={t.opt_symbol || ""}>
+                      {t.opt_symbol
+                        ? <span>{t.opt_side ? <span className={t.opt_side === "CE" ? "text-emerald-300" : "text-rose-300"}>{t.opt_strike} {t.opt_side}</span> : t.opt_symbol}</span>
+                        : <span className="text-dimmer">{t.opt_status ? t.opt_status.replace(/_/g, " ").toLowerCase() : "—"}</span>}
+                    </td>
+                    <td className="p-2 text-right font-mono">{t.opt_entry != null ? fmtNum(t.opt_entry) : "—"}</td>
+                    <td className="p-2 text-right font-mono">{t.opt_exit != null ? fmtNum(t.opt_exit) : "—"}</td>
+                    <td className="p-2 text-[10px]"><ExitReasonBadge reason={t.opt_exit_reason} /></td>
+                    <td className={`p-2 text-right font-mono ${colorPnL(t.opt_pnl_value)}`}>{t.opt_pnl_value != null ? fmtPnL(t.opt_pnl_value) : "—"}</td>
+                  </>
+                )}
               </tr>
             ))}
+            {sorted.length === 0 && (
+              <tr>
+                <td colSpan={columns.length} className="p-4 text-center text-dimmer">No trades match the current filters.</td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>
