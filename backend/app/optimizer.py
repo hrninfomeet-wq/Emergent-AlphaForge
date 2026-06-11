@@ -571,7 +571,7 @@ async def _option_rerank(
         ft = trades
         if dte_target is not None:
             ft = [t for t in trades if t.get("entry_ts") is not None
-                  and compute_dte(_ts_to_ist_date(int(t["entry_ts"])), expiry_dates_sorted) == dte_target]
+                  and compute_dte(_ts_to_ist_date(int(t["entry_ts"])), expiry_dates_sorted) in dte_target]
         ebt = _resolve_expiry_by_trade(ft, contracts, fixed_expiry)
         for idx, t in enumerate(ft):
             rexp = fixed_expiry or ebt.get(idx)

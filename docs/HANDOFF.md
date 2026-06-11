@@ -1,12 +1,24 @@
 # Handoff
 
-Updated: 2026-06-11
+Updated: 2026-06-12
 
 This is the entry point for the next AI agent or developer. Read it before editing code. The repository and tests are the source of truth — not any prior chat.
 
 ## Status In One Line
 
-Paper-mode deployments can now **auto-trade every clean signal** (no manual approval; `risk.auto_paper`, default ON for new deployments) with the entry at real **option premium** (live tick → fresh options_1m candle → refuse + journal), strategy-defined stops/targets, and a per-minute live marker that fires those exits intraday; the Strategy Library shows **low-sample forward metrics** with a warning badge instead of hiding them. Before that (2026-06-10): the optimizer's **honest walk-forward mode** (`POST /api/optimize/wfo`). **432 pytest tests pass.** The local Docker stack is healthy. Backend code changes require a container rebuild.
+Latest (2026-06-12): a **course-alignment pass on the research surfaces** — multi-select DTE filter, ATM default moneyness, premium exits replicable live via deployment pts fallbacks, optimizer re-rank pts support, walk-forward naming split, lots/sizing UI clarity; a unit audit found no mismatches. Before that (2026-06-11): paper-mode deployments **auto-trade every clean signal** (`risk.auto_paper`) at real option premium with strategy-defined exits and a per-minute marker; low-sample forward metrics visible with a badge. **440 pytest tests pass.** The local Docker stack is healthy and was rebuilt with these changes. Backend code changes require a container rebuild.
+
+## Recent Work — Backtest Lab / Optimizer Alignment Fixes (2026-06-12)
+
+From the user's systematic review of the Backtest Lab and Optimizer (course-correction toward the core objective). See CHANGELOG 0.15.x for the full list. Key points for the next agent:
+
+- `app/dte.py normalize_dte_filter` now returns an Optional **frozenset** (was Optional[int]) and accepts lists — all comparisons changed from `== target` to `in target` (server run + preflight paths, optimizer re-rank). `OptionBacktestReq.dte_filter` takes a token or a list; the Backtest Lab UI is a chip multi-select (empty = all).
+- `OptionBacktestReq.moneyness` and the Backtest Lab UI default to **ATM** (was OTM1 — contradicted the ATM-only warehouse auto-maintenance scope).
+- `compute_auto_risk_levels` precedence per leg: strategy hint pct → deployment `auto_paper_*_pts` (₹ of premium, NEW) → deployment `auto_paper_*_pct`. `DeploymentCreateReq` gained the pts fields; the Live Signals form has a ₹-points/percent toggle (UI-only `auto_paper_unit` key is stripped from the payload).
+- Optimizer option re-rank UI gained the Points/Percent toggle; the backend `_option_rerank` already read `option_target_pts`/`option_stop_pts`.
+- The Backtest Lab's old IS/OOS check is labeled "Walk-forward split check (same params, IS vs OOS)" everywhere to stop name-collision with the optimizer's honest WFO.
+- Unit audit across the money chain (pnl pts→₹, slippage/spread per side, sizing budgets, `net_pnl_inr`, WFO efficiency, marker tick routing, paper P&L quantity math): **no mismatches found** — documented in CHANGELOG.
+- Remaining known gap (deliberately NOT fixed yet, pending the user's alignment discussion): backtest exit config does not travel with presets into deployments; the deployment fallback fields are the manual bridge. The optimizer's DTE sub-panel select is still single-token (backend already accepts lists).
 
 ## Recent Work — Auto Paper Trading on Signals + Low-Sample Metrics (2026-06-11)
 
@@ -323,7 +335,7 @@ See `docs/ARCHITECTURE.md` for the full module map.
 ## Verification Checklist
 
 ```bash
-python -m pytest tests -q     # 432 pass as of 2026-06-11
+python -m pytest tests -q     # 440 pass as of 2026-06-12
 cd frontend
 npm run build
 cd ..

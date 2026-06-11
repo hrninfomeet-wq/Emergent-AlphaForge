@@ -11,7 +11,7 @@ import os
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from dotenv import load_dotenv
 from fastapi import APIRouter, BackgroundTasks, FastAPI, HTTPException, Query, Request
@@ -669,7 +669,9 @@ async def save_profile(name: str, body: ProfileSave):
 class OptionBacktestReq(BaseModel):
     enabled: bool = False
     expiry_date: Optional[str] = None
-    moneyness: str = "otm1"
+    # ATM is the default: it matches the warehouse's auto-maintained data scope
+    # (Data Hygiene keeps ATM CE/PE current) and the deployment default.
+    moneyness: str = "atm"
     lots: int = 1
     entry_max_age_sec: int = 120
     exit_max_age_sec: int = 180
@@ -683,10 +685,11 @@ class OptionBacktestReq(BaseModel):
     option_stop_pts: Optional[float] = None
     option_target_pct: Optional[float] = None
     option_stop_pct: Optional[float] = None
-    # DTE filter: None/"all" = every weekly expiry; "dte0".."dte6" or 0..6 =
-    # only sessions that many trading days before the nearest expiry. Lets the
-    # user test a strategy on, e.g., expiry-day (0DTE) only.
-    dte_filter: Optional[str] = None
+    # DTE filter: None/"all" = every weekly expiry; a single token ("dte0".."dte6"
+    # or 0..6) or a list of tokens ([0, 1, 2]) = only sessions that many trading
+    # days before the nearest expiry. Lets the user test a strategy on, e.g.,
+    # expiry-day only (0) or the 0-2 DTE buying window ([0, 1, 2]).
+    dte_filter: Optional[Union[str, int, List[Union[str, int]]]] = None
     # Rupee cost model (brokerage + STT + charges + % bid-ask spread). Opt-in;
     # when omitted/disabled the backtest reports gross premium P&L as before.
     cost_config: Optional[Dict[str, Any]] = None
@@ -878,7 +881,7 @@ async def _run_paired_option_backtest(req: BacktestReq, spot_trades: List[Dict[s
             if entry_ts is None:
                 continue
             trade_date = _ts_ms_to_ist_date_str(int(entry_ts))
-            if compute_dte(trade_date, expiry_dates_sorted) == dte_target:
+            if compute_dte(trade_date, expiry_dates_sorted) in dte_target:
                 kept.append(trade)
         spot_trades = kept
         dte_stats["matched_trades"] = len(spot_trades)
@@ -1067,7 +1070,7 @@ async def _option_preflight_report(req: BacktestReq) -> Dict[str, Any]:
     if dte_target is not None:
         exp_sorted = sorted({str(c.get("expiry_date")) for c in contracts if c.get("expiry_date")})
         spot_trades = [t for t in spot_trades if t.get("entry_ts") is not None
-                       and compute_dte(_ts_ms_to_ist_date_str(int(t["entry_ts"])), exp_sorted) == dte_target]
+                       and compute_dte(_ts_ms_to_ist_date_str(int(t["entry_ts"])), exp_sorted) in dte_target]
 
     expiry_by_trade = _resolve_option_expiry_by_trade(spot_trades, contracts, fixed_expiry_date=fixed_expiry_date)
 
@@ -1595,6 +1598,10 @@ async def create_deployment(req: DeploymentCreateReq):
                 **kill_switch_cfg,
                 "default_lots": int(req.default_lots or 1),
                 "auto_paper": bool(req.auto_paper),
+                **({"auto_paper_target_pts": float(req.auto_paper_target_pts)}
+                   if req.auto_paper_target_pts is not None else {}),
+                **({"auto_paper_stop_pts": float(req.auto_paper_stop_pts)}
+                   if req.auto_paper_stop_pts is not None else {}),
                 **({"auto_paper_target_pct": float(req.auto_paper_target_pct)}
                    if req.auto_paper_target_pct is not None else {}),
                 **({"auto_paper_stop_pct": float(req.auto_paper_stop_pct)}
@@ -2556,8 +2563,12 @@ class DeploymentCreateReq(BaseModel):
     # CONFIRMED signal opens a paper trade immediately (no manual approval) so
     # the signal's outcome is auditable. Default ON for new deployments.
     auto_paper: bool = True
-    # Optional deployment-level exits as % of entry premium (long options).
-    # The strategy's own risk hints on the signal take precedence.
+    # Optional deployment-level premium exits (long options): points (₹ of
+    # premium) or % of entry premium. Points take precedence over percent,
+    # matching the backtest's option_levels rule. The strategy's own risk
+    # hints on the signal take precedence over both.
+    auto_paper_target_pts: Optional[float] = None
+    auto_paper_stop_pts: Optional[float] = None
     auto_paper_target_pct: Optional[float] = None
     auto_paper_stop_pct: Optional[float] = None
     # Per-deployment kill switches (Slice 12). Paper mode only. Omit/0/None to disable.

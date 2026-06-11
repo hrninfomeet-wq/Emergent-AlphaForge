@@ -23,6 +23,21 @@ import { dateToMs, msToDate } from "@/lib/time";
 
 const INSTRUMENTS = ["NIFTY", "BANKNIFTY", "SENSEX"];
 const OPTION_MONEYNESS = ["atm", "otm1", "otm2", "otm3", "itm1", "itm2"];
+const DTE_VALUES = [0, 1, 2, 3, 4, 5, 6];
+
+// DTE filter is a multi-select array of ints (empty = all). Older runs stored
+// a single token ("dte2", "2") or null/"all" — normalize every shape here so
+// cloning an old run still works.
+const parseDteFilter = (value) => {
+  if (value == null || value === "all") return [];
+  const toInt = (v) => {
+    const s = String(v).trim().toLowerCase().replace(/^dte/, "");
+    const n = parseInt(s, 10);
+    return Number.isFinite(n) && n >= 0 ? n : null;
+  };
+  const arr = Array.isArray(value) ? value : [value];
+  return [...new Set(arr.map(toInt).filter((n) => n !== null))].sort((a, b) => a - b);
+};
 
 // Persist the last viewed run id so the results survive tab navigation /
 // unmount. We store only the id (not the heavy result payload) and re-hydrate
@@ -53,7 +68,9 @@ export default function BacktestLab() {
     option_backtest_enabled: false,
     option_expiry_mode: "auto",
     option_expiry_date: "",
-    option_moneyness: "otm1",
+    // ATM default: matches the warehouse's auto-maintained scope (Data Hygiene
+    // keeps ATM CE/PE current) and the deployment default.
+    option_moneyness: "atm",
     option_lots: 1,
     option_auto_fetch: true,
     option_exit_mode: "spot_exit",
@@ -62,7 +79,8 @@ export default function BacktestLab() {
     option_target_pct: "",
     option_stop_pct: "",
     option_sl_tp_unit: "pts",
-    option_dte_filter: "all",
+    // Multi-select DTE: array of ints (0..6). Empty = all weekly-expiry sessions.
+    option_dte_filter: [],
     // Rupee cost model (opt-in). Flattrade brokerage = 0 by default.
     option_costs_enabled: false,
     option_brokerage_per_order: 0,
@@ -215,7 +233,11 @@ export default function BacktestLab() {
       option_stop_pts: config.option_exit_mode === "option_levels" && config.option_sl_tp_unit === "pts" && config.option_stop_pts !== "" ? Number(config.option_stop_pts) : null,
       option_target_pct: config.option_exit_mode === "option_levels" && config.option_sl_tp_unit === "pct" && config.option_target_pct !== "" ? Number(config.option_target_pct) : null,
       option_stop_pct: config.option_exit_mode === "option_levels" && config.option_sl_tp_unit === "pct" && config.option_stop_pct !== "" ? Number(config.option_stop_pct) : null,
-      dte_filter: config.option_dte_filter && config.option_dte_filter !== "all" ? config.option_dte_filter : null,
+      dte_filter: Array.isArray(config.option_dte_filter)
+        && config.option_dte_filter.length > 0
+        && config.option_dte_filter.length < DTE_VALUES.length
+        ? config.option_dte_filter
+        : null,
       cost_config: config.option_costs_enabled ? {
         enabled: true,
         brokerage_per_order: Number(config.option_brokerage_per_order || 0),
@@ -331,7 +353,7 @@ export default function BacktestLab() {
         option_target_pct: r.config?.option_backtest?.option_target_pct ?? "",
         option_stop_pct: r.config?.option_backtest?.option_stop_pct ?? "",
         option_sl_tp_unit: (r.config?.option_backtest?.option_target_pct != null || r.config?.option_backtest?.option_stop_pct != null) ? "pct" : "pts",
-        option_dte_filter: r.config?.option_backtest?.dte_filter || "all",
+        option_dte_filter: parseDteFilter(r.config?.option_backtest?.dte_filter),
         option_costs_enabled: !!r.config?.option_backtest?.cost_config?.enabled,
         option_brokerage_per_order: r.config?.option_backtest?.cost_config?.brokerage_per_order ?? 0,
         option_spread_pct: r.config?.option_backtest?.cost_config?.spread_pct_of_premium ?? 1.0,
@@ -449,7 +471,12 @@ export default function BacktestLab() {
                 onCheckedChange={(v) => setConfig({ ...config, walkforward: v })}
                 data-testid="backtest-walkforward-switch"
               />
-              <span className="text-xs text-dim">Walk-forward (IS vs OOS)</span>
+              <span
+                className="text-xs text-dim"
+                title="Splits this run's window into folds and replays the SAME parameter set in-sample vs out-of-sample (a stability check). It does NOT re-optimize parameters — for the honest re-optimizing version use the Optimizer's Run type 'Walk-forward (honest OOS)'."
+              >
+                Walk-forward split check (same params, IS vs OOS)
+              </span>
             </div>
             <div className="pt-2 border-t border-line">
               <Label className="text-xs text-dim">Date window (IST, optional)</Label>
@@ -560,9 +587,18 @@ export default function BacktestLab() {
                   step="1"
                   value={config.option_lots}
                   onChange={(e) => setConfig({ ...config, option_lots: e.target.value })}
-                  className="bg-bg-2 border-line h-8 text-xs"
+                  className="bg-bg-2 border-line h-8 text-xs disabled:opacity-50"
+                  disabled={config.option_sizing_enabled}
+                  title={config.option_sizing_enabled
+                    ? "Ignored while Capital & position sizing is on — the sizing panel below controls the lot count."
+                    : "Lots per trade (lot size always comes from the contract)."}
                   data-testid="option-lots-input"
                 />
+                {config.option_sizing_enabled && (
+                  <div className="text-[10px] text-amber-300 mt-1">
+                    Controlled by the sizing panel below while sizing is on.
+                  </div>
+                )}
               </Row>
               <div className="flex items-end gap-2 pb-1">
                 <Switch
@@ -574,27 +610,45 @@ export default function BacktestLab() {
               </div>
             </div>
 
-            {/* DTE filter — restrict the backtest to sessions a fixed number of
-                trading days before the weekly expiry (your 0/1/2-DTE buying style). */}
+            {/* DTE filter — multi-select: restrict the backtest to sessions a
+                chosen number of trading days before the weekly expiry (e.g. tick
+                DTE0+DTE1+DTE2 for the 0-2 DTE buying window). None ticked = all. */}
             <Row label="DTE filter (days to expiry)">
-              <Select
-                value={config.option_dte_filter}
-                onValueChange={(v) => setConfig({ ...config, option_dte_filter: v })}
-              >
-                <SelectTrigger className="bg-bg-2 border-line h-8" data-testid="option-dte-select">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All (every weekly expiry)</SelectItem>
-                  <SelectItem value="dte0">DTE0 — expiry day (0DTE)</SelectItem>
-                  <SelectItem value="dte1">DTE1 — 1 day before expiry</SelectItem>
-                  <SelectItem value="dte2">DTE2 — 2 days before</SelectItem>
-                  <SelectItem value="dte3">DTE3 — 3 days before</SelectItem>
-                  <SelectItem value="dte4">DTE4 — 4 days before</SelectItem>
-                  <SelectItem value="dte5">DTE5 — 5 days before</SelectItem>
-                  <SelectItem value="dte6">DTE6 — 6 days before</SelectItem>
-                </SelectContent>
-              </Select>
+              <div className="flex flex-wrap items-center gap-1" data-testid="option-dte-multiselect">
+                <button
+                  type="button"
+                  onClick={() => setConfig({ ...config, option_dte_filter: [] })}
+                  className={`px-2 py-1 rounded text-[11px] font-mono border ${(config.option_dte_filter || []).length === 0 ? "bg-info text-bg-0 border-info" : "bg-bg-2 text-dim border-line hover:text-foreground"}`}
+                  title="Every weekly-expiry session (no DTE restriction)"
+                  data-testid="option-dte-all"
+                >
+                  ALL
+                </button>
+                {DTE_VALUES.map((d) => {
+                  const selected = (config.option_dte_filter || []).includes(d);
+                  return (
+                    <button
+                      key={d}
+                      type="button"
+                      onClick={() => {
+                        const cur = new Set(config.option_dte_filter || []);
+                        if (cur.has(d)) cur.delete(d); else cur.add(d);
+                        setConfig({ ...config, option_dte_filter: [...cur].sort((a, b) => a - b) });
+                      }}
+                      className={`px-2 py-1 rounded text-[11px] font-mono border ${selected ? "bg-info text-bg-0 border-info" : "bg-bg-2 text-dim border-line hover:text-foreground"}`}
+                      title={d === 0 ? "Expiry day (0DTE)" : `${d} trading day${d > 1 ? "s" : ""} before expiry`}
+                      data-testid={`option-dte-${d}`}
+                    >
+                      {d}
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="text-[10px] text-dimmer mt-1">
+                {(config.option_dte_filter || []).length === 0
+                  ? "All sessions (every weekly expiry)."
+                  : `Only sessions ${config.option_dte_filter.map((d) => `DTE${d}`).join(", ")} before the nearest expiry.`}
+              </div>
             </Row>
 
             {/* Rupee cost model — brokerage + statutory charges + % bid-ask spread.
@@ -734,6 +788,14 @@ export default function BacktestLab() {
                     each trade risks ≤ your % of capital (using the option stop, or the assumed-stop % when no option
                     stop is set). A trade that can't fit even one lot in budget still takes one lot, tagged as risk-exceeded.
                   </div>
+                  {config.option_sizing_mode === "premium_at_risk"
+                    && !(config.option_exit_mode === "option_levels"
+                      && (config.option_sl_tp_unit === "pts" ? config.option_stop_pts !== "" : config.option_stop_pct !== "")) && (
+                    <div className="text-[10px] text-amber-300 leading-snug" data-testid="option-sizing-estimate-note">
+                      No premium stop is set (exit mode is "{config.option_exit_mode === "spot_exit" ? "Mirror spot exit" : "Option premium SL/target"}{config.option_exit_mode === "option_levels" ? " without a stop" : ""}"),
+                      so the per-trade rupee risk uses the Assumed stop % — an estimate, not an exact bound.
+                    </div>
+                  )}
                 </>
               )}
             </div>
@@ -809,6 +871,11 @@ export default function BacktestLab() {
                     Exits the option when its premium hits your target/stop, independent of the index.
                     If neither is hit, the spot signal's exit closes the trade. Stop is assumed to fill
                     first if a single 1-min bar spans both levels.
+                  </div>
+                  <div className="text-[10px] text-amber-300 leading-snug">
+                    Live parity: these values do not travel with presets into deployments. To replicate premium
+                    exits in live auto-paper trading, set the deployment's auto-paper fallback target/stop
+                    (points or %) in the Live Signals form — strategy-defined exits still take priority there.
                   </div>
                 </>
               )}
@@ -1513,15 +1580,15 @@ function ContextBreakdownCard({ optionBacktest }) {
 function WalkForwardCard({ wf }) {
   if (!wf || !wf.folds || wf.folds.length === 0) {
     return (
-      <Panel title="Walk-Forward (IS vs OOS)" testid="walkforward-panel">
-        <div className="text-xs text-dimmer">Walk-forward disabled or insufficient candles (≥200 needed).</div>
+      <Panel title="Walk-Forward Split Check (same params, IS vs OOS)" testid="walkforward-panel">
+        <div className="text-xs text-dimmer">Walk-forward split check disabled or insufficient candles (≥200 needed).</div>
       </Panel>
     );
   }
   const iv = wf.is_vs_oos;
   const diverging = iv.divergence_warning;
   return (
-    <Panel title="Walk-Forward (IS vs OOS)" testid="walkforward-panel">
+    <Panel title="Walk-Forward Split Check (same params, IS vs OOS)" testid="walkforward-panel">
       <div className="grid grid-cols-2 gap-3 mb-3">
         <div className="rounded-md border border-line bg-bg-2 p-2">
           <div className="text-[10px] uppercase tracking-wider text-dimmer">Avg IS Win Rate</div>

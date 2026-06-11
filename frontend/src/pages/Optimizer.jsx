@@ -80,6 +80,9 @@ const DEFAULT_SETUP = {
   option_dte_filter: "all",
   option_lots: 1,
   option_exit_mode: "spot_exit",
+  option_sl_tp_unit: "pct",
+  option_target_pts: "",
+  option_stop_pts: "",
   option_target_pct: "",
   option_stop_pct: "",
   option_costs_enabled: true,
@@ -232,8 +235,10 @@ export default function Optimizer() {
         entry_max_age_sec: 120,
         exit_max_age_sec: 180,
         exit_mode: config.option_exit_mode,
-        option_target_pct: config.option_exit_mode === "option_levels" && config.option_target_pct !== "" ? Number(config.option_target_pct) : null,
-        option_stop_pct: config.option_exit_mode === "option_levels" && config.option_stop_pct !== "" ? Number(config.option_stop_pct) : null,
+        option_target_pts: config.option_exit_mode === "option_levels" && config.option_sl_tp_unit === "pts" && config.option_target_pts !== "" ? Number(config.option_target_pts) : null,
+        option_stop_pts: config.option_exit_mode === "option_levels" && config.option_sl_tp_unit === "pts" && config.option_stop_pts !== "" ? Number(config.option_stop_pts) : null,
+        option_target_pct: config.option_exit_mode === "option_levels" && config.option_sl_tp_unit === "pct" && config.option_target_pct !== "" ? Number(config.option_target_pct) : null,
+        option_stop_pct: config.option_exit_mode === "option_levels" && config.option_sl_tp_unit === "pct" && config.option_stop_pct !== "" ? Number(config.option_stop_pct) : null,
         cost_config: config.option_costs_enabled ? {
           enabled: true,
           brokerage_per_order: Number(config.option_brokerage_per_order || 0),
@@ -384,6 +389,9 @@ export default function Optimizer() {
       option_dte_filter: c.option_config?.dte_filter ?? "all",
       option_lots: c.option_config?.lots ?? prev.option_lots,
       option_exit_mode: c.option_config?.exit_mode ?? "spot_exit",
+      option_sl_tp_unit: (c.option_config?.option_target_pts != null || c.option_config?.option_stop_pts != null) ? "pts" : "pct",
+      option_target_pts: c.option_config?.option_target_pts ?? "",
+      option_stop_pts: c.option_config?.option_stop_pts ?? "",
       option_target_pct: c.option_config?.option_target_pct ?? "",
       option_stop_pct: c.option_config?.option_stop_pct ?? "",
       option_costs_enabled: c.option_config?.cost_config?.enabled ?? prev.option_costs_enabled,
@@ -583,25 +591,51 @@ export default function Optimizer() {
                     <SelectTrigger className="bg-bg-2 border-line h-8 mt-1"><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="spot_exit">Mirror spot exit</SelectItem>
-                      <SelectItem value="option_levels">Option premium SL/target (%)</SelectItem>
+                      <SelectItem value="option_levels">Option premium SL/target</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
                 {config.option_exit_mode === "option_levels" && (
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <Label className="text-[11px] text-dim">Target % of premium</Label>
-                      <Input type="number" min={0} step={5} value={config.option_target_pct}
-                        onChange={(e) => setConfig({ ...config, option_target_pct: e.target.value })}
-                        className="bg-bg-2 border-line h-8 text-xs font-mono mt-1" placeholder="e.g. 40" />
+                  <>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[11px] text-dim">Level unit</span>
+                      <div className="flex rounded-md border border-line overflow-hidden">
+                        {["pts", "pct"].map((u) => (
+                          <button
+                            key={u}
+                            type="button"
+                            onClick={() => setConfig({ ...config, option_sl_tp_unit: u })}
+                            className={`px-2 py-1 text-[11px] font-mono ${config.option_sl_tp_unit === u ? "bg-info text-bg-0" : "bg-bg-2 text-dim hover:text-foreground"}`}
+                            data-testid={`opt-option-unit-${u}`}
+                          >
+                            {u === "pts" ? "Points" : "Percent"}
+                          </button>
+                        ))}
+                      </div>
                     </div>
-                    <div>
-                      <Label className="text-[11px] text-dim">Stop % of premium</Label>
-                      <Input type="number" min={0} step={5} value={config.option_stop_pct}
-                        onChange={(e) => setConfig({ ...config, option_stop_pct: e.target.value })}
-                        className="bg-bg-2 border-line h-8 text-xs font-mono mt-1" placeholder="e.g. 50" />
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <Label className="text-[11px] text-dim">Target ({config.option_sl_tp_unit === "pts" ? "pts of premium" : "% of premium"})</Label>
+                        <Input type="number" min={0} step={config.option_sl_tp_unit === "pts" ? 0.5 : 5}
+                          value={config.option_sl_tp_unit === "pts" ? config.option_target_pts : config.option_target_pct}
+                          onChange={(e) => setConfig({
+                            ...config,
+                            [config.option_sl_tp_unit === "pts" ? "option_target_pts" : "option_target_pct"]: e.target.value,
+                          })}
+                          className="bg-bg-2 border-line h-8 text-xs font-mono mt-1" placeholder="e.g. 40" />
+                      </div>
+                      <div>
+                        <Label className="text-[11px] text-dim">Stop ({config.option_sl_tp_unit === "pts" ? "pts of premium" : "% of premium"})</Label>
+                        <Input type="number" min={0} step={config.option_sl_tp_unit === "pts" ? 0.5 : 5}
+                          value={config.option_sl_tp_unit === "pts" ? config.option_stop_pts : config.option_stop_pct}
+                          onChange={(e) => setConfig({
+                            ...config,
+                            [config.option_sl_tp_unit === "pts" ? "option_stop_pts" : "option_stop_pct"]: e.target.value,
+                          })}
+                          className="bg-bg-2 border-line h-8 text-xs font-mono mt-1" placeholder="e.g. 30" />
+                      </div>
                     </div>
-                  </div>
+                  </>
                 )}
                 <div className="flex items-center gap-2">
                   <Switch checked={config.option_costs_enabled} onCheckedChange={(v) => setConfig({ ...config, option_costs_enabled: v })} data-testid="opt-rerank-costs" />

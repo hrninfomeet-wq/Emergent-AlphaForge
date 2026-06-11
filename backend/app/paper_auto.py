@@ -123,14 +123,18 @@ def compute_auto_risk_levels(
     """(stop_price, target_price) for a LONG option position.
 
     The strategy's own hints (signal.risk_hints.target_pct / stop_pct, % of
-    entry premium) win over the deployment-level auto_paper_*_pct fallback —
-    the shared-decision-engine rule: the strategy that fired the signal defines
-    its exit. Missing on both sides → None (square-off remains the backstop).
+    entry premium) win over the deployment-level fallbacks — the
+    shared-decision-engine rule: the strategy that fired the signal defines its
+    exit. Deployment fallbacks support premium POINTS (auto_paper_target_pts /
+    auto_paper_stop_pts) and percent (auto_paper_target_pct / auto_paper_stop_pct);
+    points take precedence over percent, matching the backtest's
+    `_resolve_option_levels` rule. Missing on all sides → None (the spot-mirror
+    exits and the 15:00 IST square-off remain the backstops).
     """
     hints = risk_hints or {}
     dep = deployment_risk or {}
 
-    def _pct(value: Any) -> Optional[float]:
+    def _num(value: Any) -> Optional[float]:
         try:
             if value in (None, ""):
                 return None
@@ -139,15 +143,28 @@ def compute_auto_risk_levels(
         except (TypeError, ValueError):
             return None
 
-    target_pct = _pct(hints.get("target_pct"))
-    if target_pct is None:
-        target_pct = _pct(dep.get("auto_paper_target_pct"))
-    stop_pct = _pct(hints.get("stop_pct"))
-    if stop_pct is None:
-        stop_pct = _pct(dep.get("auto_paper_stop_pct"))
+    target: Optional[float] = None
+    hint_target_pct = _num(hints.get("target_pct"))
+    dep_target_pts = _num(dep.get("auto_paper_target_pts"))
+    dep_target_pct = _num(dep.get("auto_paper_target_pct"))
+    if hint_target_pct is not None:
+        target = round(entry_price * (1 + hint_target_pct / 100.0), 2)
+    elif dep_target_pts is not None:
+        target = round(entry_price + dep_target_pts, 2)
+    elif dep_target_pct is not None:
+        target = round(entry_price * (1 + dep_target_pct / 100.0), 2)
 
-    target = round(entry_price * (1 + target_pct / 100.0), 2) if target_pct else None
-    stop = round(max(0.05, entry_price * (1 - stop_pct / 100.0)), 2) if stop_pct else None
+    stop: Optional[float] = None
+    hint_stop_pct = _num(hints.get("stop_pct"))
+    dep_stop_pts = _num(dep.get("auto_paper_stop_pts"))
+    dep_stop_pct = _num(dep.get("auto_paper_stop_pct"))
+    if hint_stop_pct is not None:
+        stop = round(max(0.05, entry_price * (1 - hint_stop_pct / 100.0)), 2)
+    elif dep_stop_pts is not None:
+        stop = round(max(0.05, entry_price - dep_stop_pts), 2)
+    elif dep_stop_pct is not None:
+        stop = round(max(0.05, entry_price * (1 - dep_stop_pct / 100.0)), 2)
+
     return stop, target
 
 

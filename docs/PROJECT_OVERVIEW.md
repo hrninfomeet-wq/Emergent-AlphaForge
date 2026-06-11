@@ -1,6 +1,6 @@
 # Project Overview
 
-Updated: 2026-06-11
+Updated: 2026-06-12
 
 ## What AlphaForge Is
 
@@ -19,7 +19,7 @@ End-to-end quant workflow:
 5. Paper-trade signals — automatically on clean signals in paper mode (`risk.auto_paper`), or via the manual approval gate.
 6. Review forward profitability per deployment before trusting a strategy with capital.
 
-## Status Snapshot (2026-06-11)
+## Status Snapshot (2026-06-12)
 
 | Area | Status |
 |---|---|
@@ -52,7 +52,7 @@ End-to-end quant workflow:
 | Phase 5 probability engine | Deferred until ≥6 months forward signal history |
 | Phase 6 swing extension | Not started |
 
-432 backend tests pass. The local stack is healthy.
+440 backend tests pass. The local stack is healthy.
 
 ## Capabilities Summary
 
@@ -103,7 +103,7 @@ End-to-end quant workflow:
 
 - **Auto paper trading** (paper mode, `risk.auto_paper`, default ON for new deployments): every clean CONFIRMED signal opens a paper trade automatically — no clicking. The hook runs after the concurrency rule, with an atomic per-signal claim so the auto path and the approve route can never double-trade one signal.
 - **Entry is always real option premium**: live WS tick first, else a stored `options_1m` candle at most 5 minutes old, never the spot index level. No resolvable premium means no trade plus a journaled `paper_trade_error` (the signal stays approvable).
-- **Exits mirror the backtest**: strategy `risk_hints` win over deployment-level `auto_paper_target_pct`/`auto_paper_stop_pct` fallbacks. Built-in strategies define spot-point exits, so auto trades carry direction-aware spot-mirror levels — when the index hits the strategy's target/stop, the option closes at its current premium (`spot_target_hit`/`spot_stop_hit`). A background marker checks open trades every minute during market hours; anything left closes at the 15:00 IST square-off.
+- **Exits mirror the backtest**: strategy `risk_hints` win over the deployment-level fallbacks (`auto_paper_target_pts`/`auto_paper_stop_pts` in ₹ of premium, then `auto_paper_target_pct`/`auto_paper_stop_pct` in %). Built-in strategies define spot-point exits, so auto trades carry direction-aware spot-mirror levels — when the index hits the strategy's target/stop, the option closes at its current premium (`spot_target_hit`/`spot_stop_hit`). A background marker checks open trades every minute during market hours; anything left closes at the 15:00 IST square-off.
 - Pending Approval panel still shows CONFIRMED signals (shadow/recommendation deployments, paper deployments with auto-paper off, or auto-trade refusals) with Approve / Skip / Mark Blocked.
 - Approve resolves premium the same way and creates the paper trade when `deployment.mode == "paper"`, with lot size from `option_contracts.lot_size` and `lots` from `deployment.risk.default_lots` (default 1). Premium unavailable → HTTP 409 and the signal stays CONFIRMED.
 - Auto square-off at 15:00 IST every market day. `risk.allow_overnight=true` opts out per deployment.

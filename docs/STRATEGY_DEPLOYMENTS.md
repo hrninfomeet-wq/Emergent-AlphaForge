@@ -1,6 +1,6 @@
 # Strategy Deployments
 
-Updated: 2026-06-11
+Updated: 2026-06-12
 
 This document defines how a backtested strategy moves into forward testing. Paper-mode deployments can auto-trade every clean signal (default for new deployments) so signal quality is auditable; shadow and recommendation modes keep a manual approval gate; nothing places broker orders.
 
@@ -77,7 +77,7 @@ Direct deployment from a raw strategy plugin file is blocked.
 | `option_policy` | `{ moneyness, dte_filter }` — moneyness in `atm/otm1/itm1`, dte_filter default `[0..6]` |
 | `pretrade_profile` | Conservative / Balanced / Aggressive or custom |
 | `mode` | `shadow`, `paper`, or `recommendation` |
-| `risk` | `{ default_lots, allow_overnight, auto_paper, auto_paper_target_pct, auto_paper_stop_pct, max_consecutive_losses, daily_loss_cutoff_pct, max_open_paper_trades }` — default_lots default 1, allow_overnight default false, auto_paper default true on new deployments (absent on pre-2026-06-11 deployments → old behavior), the `auto_paper_*_pct` fields are optional premium-% exit fallbacks, the last three are the kill switches (null = off) |
+| `risk` | `{ default_lots, allow_overnight, auto_paper, auto_paper_target_pts, auto_paper_stop_pts, auto_paper_target_pct, auto_paper_stop_pct, max_consecutive_losses, daily_loss_cutoff_pct, max_open_paper_trades }` — default_lots default 1, allow_overnight default false, auto_paper default true on new deployments (absent on pre-2026-06-11 deployments → old behavior), the `auto_paper_*` exit fields are optional premium fallbacks (points take precedence over percent), the last three are the kill switches (null = off) |
 | `kill_switch_reason`, `kill_switch_inputs` | Stamped when a kill switch auto-pauses the deployment |
 | `status` | `ACTIVE`, `PAUSED`, or `ARCHIVED` |
 | `quality_at_creation` | Snapshot of quality warnings at creation time |
@@ -148,7 +148,7 @@ If multiple deployments fire on the same `(instrument, candle_ts)`, only the hig
 ## Auto Paper Trading (`backend/app/paper_auto.py`)
 
 - **Entry price** (`resolve_option_entry_price`): live WS tick for the chosen contract, else a stored `options_1m` candle at most 5 minutes old, else refuse — NEVER the spot index level. A refusal journals `paper_trade_error` on the signal.
-- **Risk levels** (`compute_auto_risk_levels`): the strategy's `risk_hints` (captured on every signal: `target_pct`/`stop_pct` as % of premium, `spot_target_pts`/`spot_stop_pts`, time stop) win over the deployment's `auto_paper_target_pct`/`auto_paper_stop_pct` fallbacks. Long-premium semantics; stop floors at ₹0.05.
+- **Risk levels** (`compute_auto_risk_levels`): the strategy's `risk_hints` (captured on every signal: `target_pct`/`stop_pct` as % of premium, `spot_target_pts`/`spot_stop_pts`, time stop) win over the deployment fallbacks. Deployment fallbacks resolve points first (`auto_paper_target_pts`/`auto_paper_stop_pts`, ₹ of premium), then percent (`auto_paper_target_pct`/`auto_paper_stop_pct`) — the same points-over-percent rule as the backtest's `option_levels` mode, so a premium-SL/target backtest can be replicated live. Long-premium semantics; stop floors at ₹0.05.
 - **Spot-mirror exits**: built-in strategies define exits in SPOT POINTS — the live equivalent of the backtest's `spot_exit` mode. Trades carry direction-aware `spot_exit` levels (CE target above entry spot, PE below); the marker closes the option at its current premium when the underlying hits a level (`spot_target_hit`/`spot_stop_hit`).
 - **Per-minute marker** (`mark_open_deployment_trades`): during market hours the server loop marks OPEN deployment trades to the latest option tick, fires premium stop/target and spot-mirror exits, and transitions the linked signal to EXITED. Writes are conditional on `status=OPEN` so a concurrent manual close wins; tickless trades are not touched.
 - **Single-trade guarantee**: an atomic claim on the signal (`paper_trade_claim`) is shared by the auto hook and the approve route, so one signal can never produce two trades. A stale claim with no trade (crash inside the claim→insert window) blocks later auto-trades for that signal and is visible on the signal doc for audit.

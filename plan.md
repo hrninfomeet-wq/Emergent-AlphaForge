@@ -9,7 +9,7 @@
 3. **Honest walk-forward optimization (2026-06-10):** `POST /api/optimize/wfo` — per-window re-optimization, stitched OOS equity, WF efficiency / consistency / param stability. The answer to "would these parameters actually have worked?"
 4. **Auto paper trading (2026-06-11):** paper-mode deployments auto-trade every clean signal at real option premium with strategy-defined exits, a per-minute live marker, and low-sample forward metrics in Strategy Library. Also fixed the approve route's spot-priced entry bug that corrupted forward P&L.
 
-**432 backend tests pass locally.** Local Docker stack is healthy.
+**440 backend tests pass locally.** Local Docker stack is healthy.
 
 Next priorities: verify auto-paper in the first live market session; A/B-validate the option re-rank then retire the legacy spot path; live risk engine. Phase 5 (probability engine) stays deferred until ≥6 months of forward signal history exists — confirm scope before starting.
 

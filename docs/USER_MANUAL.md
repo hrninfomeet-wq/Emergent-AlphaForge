@@ -1,6 +1,6 @@
 # User Manual
 
-Updated: 2026-06-11
+Updated: 2026-06-12
 
 This guide explains how to use AlphaForge as a local research and forward-testing app.
 
@@ -91,8 +91,12 @@ The **Holiday Calendar** button (page header) opens a modal listing NSE/BSE holi
 1. Select instrument, strategy, mode, date window, and trade window (default 09:25–15:00, no entries in first 10 min or last 30 min).
 2. Choose pre-trade profile.
 3. Enable costs for realistic results.
-4. Keep walk-forward enabled for robustness checks.
+4. Keep the **walk-forward split check** enabled. (Naming note: this replays the SAME parameter set in-sample vs out-of-sample as a stability check — it does not re-optimize. The honest re-optimizing version is the Optimizer's Run type "Walk-forward (honest OOS)".)
 5. **(Optional) Enable Option Execution** — pair signals with real option candles.
+   - **Moneyness** defaults to ATM, which matches the data the warehouse maintains automatically. Other moneyness levels need their option data fetched first.
+   - **DTE filter** is a multi-select: tick any combination of DTE 0–6 (e.g. 0+1+2 for the 0–2 DTE buying window); ALL = no restriction.
+   - **Lots** is ignored while Capital & position sizing is enabled — the sizing panel then controls the lot count (the input is disabled with a note).
+   - In premium-at-risk sizing without a premium stop (e.g. exit mode "Mirror spot exit"), the per-trade rupee risk uses the Assumed stop % — an estimate; the panel shows an amber note when this applies.
    - Before running, click **Check option data** (the preflight panel) to see what % of your signals have option candles available. If coverage is below 80%, click **Ingest missing & recheck** (requires Upstox connected) to fetch and store the missing contracts.
 6. Click Run Backtest.
 
@@ -116,7 +120,7 @@ The Optimizer page runs automated parameter searches to find the best strategy c
 - **Evaluation mode:** the key decision.
   - **Spot points (fast)** — the original mode. Searches quickly by maximizing index-point P&L. Useful for exploration, but can give misleading results for option buying because it ignores theta/spread/costs.
   - **Option re-rank (realistic)** — the recommended mode. Stage 1 runs the fast spot search; Stage 2 loads the window's option candles *once* and re-scores the top-K candidates by **real paired-option net rupee** (costs + spread + DTE). Picks the option-best params. Use this before deploying or trusting a result.
-- **Option sub-panel** (shown when re-rank mode is active): moneyness, DTE filter, lots, exit mode, costs toggle.
+- **Option sub-panel** (shown when re-rank mode is active): moneyness, DTE filter, lots, exit mode (premium SL/target supports points or percent of premium — points take precedence), costs toggle.
 - **Guard rails** (toggle, default ON): `Min trades` prevents statistically meaningless results; `Min CE/PE side %` prevents all-one-direction solutions (default 0 = off). Turn guard rails OFF to let the optimizer purely maximize your chosen objective.
 - **Optimize indicator periods:** also tunes RSI/MACD/ATR/EMA/ADX lengths. Slower but searches the real space.
 - **Pre-trade profile:** apply the same filter you use in live trading so optimized params reflect what you'll actually trade.
@@ -190,7 +194,7 @@ This is the forward-testing surface. Workflow:
    - Large drawdown ratio (|max_dd|/total_pnl > 0.15).
 5. If warnings exist, tick the acknowledgment checkbox. Otherwise the Create button is disabled.
 6. Choose mode (`shadow`, `paper`, `recommendation`), DTE filter (default `[0..6]`), default lots (default 1), and `allow_overnight` (default false).
-7. In **paper mode**, a green block appears: **"Auto paper trade on every clean signal"** (checked by default). Leave it on to have every clean signal open a paper trade by itself; the two optional fields set a fallback target/stop as % of the entry premium, used only when the strategy provides no exit hints of its own.
+7. In **paper mode**, a green block appears: **"Auto paper trade on every clean signal"** (checked by default). Leave it on to have every clean signal open a paper trade by itself. The two optional fallback target/stop fields apply only when the strategy provides no exit hints of its own, and take either unit via the toggle: **₹ points of premium** (matches the Backtest Lab's premium SL/target points mode) or **% of entry premium**.
 8. Optionally set the **kill switches**: max consecutive losses (auto-PAUSE), daily loss cutoff % (auto-PAUSE), max open paper trades (soft BLOCK that self-clears as trades close). Paper deployments only.
 9. Save. The deployment is `ACTIVE`.
 

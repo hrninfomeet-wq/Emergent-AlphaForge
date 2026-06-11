@@ -214,6 +214,49 @@ def test_risk_levels_stop_floors_at_tick():
     assert stop == 0.05  # never zero/negative premium
 
 
+def test_risk_levels_deployment_pts_fallback():
+    stop, target = compute_auto_risk_levels(
+        150.0, None, {"auto_paper_target_pts": 40, "auto_paper_stop_pts": 30})
+    assert target == 190.0  # entry + pts
+    assert stop == 120.0    # entry - pts
+
+
+def test_risk_levels_deployment_pts_win_over_pct():
+    # Points take precedence over percent at the deployment level, matching the
+    # backtest's _resolve_option_levels rule.
+    stop, target = compute_auto_risk_levels(
+        100.0, None,
+        {"auto_paper_target_pts": 40, "auto_paper_stop_pts": 30,
+         "auto_paper_target_pct": 80, "auto_paper_stop_pct": 60},
+    )
+    assert target == 140.0  # pts (not 180 from pct)
+    assert stop == 70.0     # pts (not 40 from pct)
+
+
+def test_risk_levels_strategy_hints_win_over_deployment_pts():
+    stop, target = compute_auto_risk_levels(
+        100.0,
+        {"target_pct": 40, "stop_pct": 30},
+        {"auto_paper_target_pts": 90, "auto_paper_stop_pts": 90},
+    )
+    assert target == 140.0
+    assert stop == 70.0
+
+
+def test_risk_levels_pts_stop_floors_at_tick():
+    stop, _ = compute_auto_risk_levels(1.0, None, {"auto_paper_stop_pts": 50})
+    assert stop == 0.05
+
+
+def test_risk_levels_mixed_units_per_leg():
+    # Target configured in pts only, stop in pct only — each leg resolves
+    # independently.
+    stop, target = compute_auto_risk_levels(
+        100.0, None, {"auto_paper_target_pts": 25, "auto_paper_stop_pct": 20})
+    assert target == 125.0
+    assert stop == 80.0
+
+
 # ---------- auto_paper_enabled ----------------------------------------------------
 
 def test_auto_paper_only_for_opted_in_paper_mode():

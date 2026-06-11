@@ -2,6 +2,21 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.15.x] — Backtest Lab / Optimizer Alignment Fixes (2026-06-12)
+
+440 backend tests pass. Course-alignment pass over the research surfaces (user review of 2026-06-12).
+
+- **Multi-select DTE filter** (Backtest Lab): the DTE dropdown is now a chip multi-select (ALL / 0–6), e.g. tick 0+1+2 for the 0–2 DTE buying window. Backend `normalize_dte_filter` accepts a single token or a list everywhere it's used (backtest run, option preflight, optimizer re-rank); old saved runs with `"dte2"`-style tokens still clone correctly.
+- **ATM default moneyness** (Backtest Lab UI + `OptionBacktestReq`): was OTM1, which contradicted the warehouse's auto-maintained ATM-only scope, the Optimizer default, and the deployment default.
+- **Premium exits now replicable live**: deployments accept `auto_paper_target_pts`/`auto_paper_stop_pts` (₹ of premium) alongside the existing `_pct` fallbacks — points take precedence over percent, the same rule as the backtest's `option_levels` mode. The Live Signals form gets a ₹-points/percent unit toggle; `compute_auto_risk_levels` resolves hint-pct → dep-pts → dep-pct per leg (stop still floors at ₹0.05).
+- **Optimizer re-rank premium exits in points**: the option sub-panel gains the same Points/Percent toggle as the Backtest Lab (the backend already accepted `option_target_pts`/`option_stop_pts`; the UI never sent them).
+- **"Walk-forward" naming split**: the Backtest Lab toggle/panel is now "Walk-forward split check (same params, IS vs OOS)" with a tooltip pointing to the Optimizer's honest re-optimizing WFO — two different things no longer share one name.
+- **Lots input clarity**: the Option Execution "Lots" input is disabled (with a note) while Capital & position sizing is on, since the sizing panel controls the lot count in that case — previously it was silently ignored.
+- **Sizing estimate visibility**: premium-at-risk sizing without a premium stop (e.g. spot-mirror exit mode) shows an amber note that per-trade rupee risk uses the Assumed stop % (an estimate, not an exact bound).
+- **Live-parity note** in the premium SL/target panel: backtest exit settings do not travel with presets; the deployment fallback fields are the live equivalent.
+- **Unit audit (no fixes needed)**: verified pnl pts→₹ via quantity (lots × contract lot_size), slippage points + half-spread per side, sizing ₹ vs ₹ budget, `net_pnl_inr` = cost-adjusted points × lot size, WFO efficiency = pts/day ÷ pts/day, marker routes premium levels to the option tick and spot-mirror levels to the index tick, paper P&L = (price − entry) × quantity. No unit mismatches found.
+- 8 new tests (3 multi-DTE, 5 premium-pts fallback).
+
 ## [0.14.x] — Auto Paper Trading on Signals + Low-Sample Forward Metrics (2026-06-11)
 
 432 backend tests pass.

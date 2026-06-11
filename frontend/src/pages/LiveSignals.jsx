@@ -28,6 +28,11 @@ export default function LiveSignals() {
     dte_filter: "0,1,2,3,4,5,6",
     default_lots: 1,
     auto_paper: true,
+    // Fallback premium exits: unit toggle (pts of premium | % of premium).
+    // Strategy-defined risk hints on the signal always take priority live.
+    auto_paper_unit: "pct",
+    auto_paper_target_pts: "",
+    auto_paper_stop_pts: "",
     auto_paper_target_pct: "",
     auto_paper_stop_pct: "",
     allow_overnight: false,
@@ -213,8 +218,11 @@ export default function LiveSignals() {
           .filter((n) => Number.isFinite(n) && n >= 0),
         default_lots: Math.max(1, parseInt(deploymentForm.default_lots, 10) || 1),
         auto_paper: Boolean(deploymentForm.auto_paper),
-        auto_paper_target_pct: deploymentForm.auto_paper_target_pct === "" ? null : Number(deploymentForm.auto_paper_target_pct),
-        auto_paper_stop_pct: deploymentForm.auto_paper_stop_pct === "" ? null : Number(deploymentForm.auto_paper_stop_pct),
+        auto_paper_unit: undefined, // UI-only toggle; not a backend field
+        auto_paper_target_pts: deploymentForm.auto_paper_unit === "pts" && deploymentForm.auto_paper_target_pts !== "" ? Number(deploymentForm.auto_paper_target_pts) : null,
+        auto_paper_stop_pts: deploymentForm.auto_paper_unit === "pts" && deploymentForm.auto_paper_stop_pts !== "" ? Number(deploymentForm.auto_paper_stop_pts) : null,
+        auto_paper_target_pct: deploymentForm.auto_paper_unit === "pct" && deploymentForm.auto_paper_target_pct !== "" ? Number(deploymentForm.auto_paper_target_pct) : null,
+        auto_paper_stop_pct: deploymentForm.auto_paper_unit === "pct" && deploymentForm.auto_paper_stop_pct !== "" ? Number(deploymentForm.auto_paper_stop_pct) : null,
         allow_overnight: Boolean(deploymentForm.allow_overnight),
         max_consecutive_losses: deploymentForm.max_consecutive_losses === "" ? null : Math.max(0, parseInt(deploymentForm.max_consecutive_losses, 10) || 0),
         daily_loss_cutoff_pct: deploymentForm.daily_loss_cutoff_pct === "" ? null : Number(deploymentForm.daily_loss_cutoff_pct),
@@ -606,32 +614,50 @@ function StrategyDeploymentsPanel({ deployments, presets, backtestRuns, form, se
                   </span>
                 </label>
                 {form.auto_paper && (
-                  <div className="grid grid-cols-2 gap-2 mt-2">
-                    <label className="text-[11px] text-dim">
-                      Target % of premium (fallback)
-                      <Input
-                        type="number" min="0" step="5"
-                        value={form.auto_paper_target_pct}
-                        onChange={(e) => setFormValue("auto_paper_target_pct", e.target.value)}
-                        className="mt-1 bg-bg-1 border-line"
-                        placeholder="strategy hint"
-                        title="Used only when the strategy's signal carries no target hint. Blank = no target; the 15:00 IST square-off still closes the trade."
-                        data-testid="auto-paper-target-pct"
-                      />
-                    </label>
-                    <label className="text-[11px] text-dim">
-                      Stop % of premium (fallback)
-                      <Input
-                        type="number" min="0" step="5"
-                        value={form.auto_paper_stop_pct}
-                        onChange={(e) => setFormValue("auto_paper_stop_pct", e.target.value)}
-                        className="mt-1 bg-bg-1 border-line"
-                        placeholder="strategy hint"
-                        title="Used only when the strategy's signal carries no stop hint. Blank = no stop."
-                        data-testid="auto-paper-stop-pct"
-                      />
-                    </label>
-                  </div>
+                  <>
+                    <div className="flex items-center gap-2 mt-2">
+                      <span className="text-[11px] text-dim">Fallback exit unit</span>
+                      <div className="flex rounded-md border border-line overflow-hidden">
+                        {["pts", "pct"].map((u) => (
+                          <button
+                            key={u}
+                            type="button"
+                            onClick={() => setFormValue("auto_paper_unit", u)}
+                            className={`px-2 py-1 text-[11px] font-mono ${form.auto_paper_unit === u ? "bg-info text-bg-0" : "bg-bg-1 text-dim hover:text-foreground"}`}
+                            data-testid={`auto-paper-unit-${u}`}
+                          >
+                            {u === "pts" ? "₹ points" : "Percent"}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 mt-2">
+                      <label className="text-[11px] text-dim">
+                        Target {form.auto_paper_unit === "pts" ? "(pts of premium)" : "(% of premium)"} (fallback)
+                        <Input
+                          type="number" min="0" step={form.auto_paper_unit === "pts" ? "0.5" : "5"}
+                          value={form.auto_paper_unit === "pts" ? form.auto_paper_target_pts : form.auto_paper_target_pct}
+                          onChange={(e) => setFormValue(form.auto_paper_unit === "pts" ? "auto_paper_target_pts" : "auto_paper_target_pct", e.target.value)}
+                          className="mt-1 bg-bg-1 border-line"
+                          placeholder="strategy hint"
+                          title="Used only when the strategy's signal carries no target hint. Blank = no target; the 15:00 IST square-off still closes the trade."
+                          data-testid="auto-paper-target-input"
+                        />
+                      </label>
+                      <label className="text-[11px] text-dim">
+                        Stop {form.auto_paper_unit === "pts" ? "(pts of premium)" : "(% of premium)"} (fallback)
+                        <Input
+                          type="number" min="0" step={form.auto_paper_unit === "pts" ? "0.5" : "5"}
+                          value={form.auto_paper_unit === "pts" ? form.auto_paper_stop_pts : form.auto_paper_stop_pct}
+                          onChange={(e) => setFormValue(form.auto_paper_unit === "pts" ? "auto_paper_stop_pts" : "auto_paper_stop_pct", e.target.value)}
+                          className="mt-1 bg-bg-1 border-line"
+                          placeholder="strategy hint"
+                          title="Used only when the strategy's signal carries no stop hint. Blank = no stop."
+                          data-testid="auto-paper-stop-input"
+                        />
+                      </label>
+                    </div>
+                  </>
                 )}
                 <div className="text-[10px] text-dimmer mt-1.5 leading-snug">
                   Exits: the strategy's own spot-point levels are mirrored automatically (the option closes when the

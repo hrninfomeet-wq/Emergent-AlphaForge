@@ -41,22 +41,41 @@ def compute_dte(trade_date_iso: str, expiry_dates_sorted: List[str]) -> Optional
     return max(0, len(span) - 1)
 
 
-def normalize_dte_filter(value) -> Optional[int]:
-    """Parse a DTE filter selection into an int, or None for "all"/unset.
-
-    Accepts: None, "all", "ALL", "dte2", "DTE2", "2", 2.
-    """
-    if value is None:
+def _normalize_single_dte(value) -> Optional[int]:
+    """Parse one DTE token into an int (None for "all"/unset/garbage)."""
+    if value is None or isinstance(value, bool):
         return None
+    if isinstance(value, (int, float)):
+        iv = int(value)
+        return iv if iv >= 0 else None
     s = str(value).strip().lower()
     if s in ("", "all"):
         return None
     if s.startswith("dte"):
         s = s[3:]
     try:
-        return int(s)
+        iv = int(s)
+        return iv if iv >= 0 else None
     except ValueError:
         return None
+
+
+def normalize_dte_filter(value) -> Optional[frozenset]:
+    """Parse a DTE filter selection into a set of ints, or None for "all"/unset.
+
+    Accepts a single token (None, "all", "ALL", "dte2", "DTE2", "2", 2) or a
+    list/tuple/set of tokens ([0, 1, 2], ["dte0", "dte1"]) for multi-DTE
+    selection. Invalid entries inside a list are ignored; an empty list or a
+    list with no valid entries means "all" (None), matching the single-token
+    behavior for "all"/garbage.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple, set, frozenset)):
+        out = {d for d in (_normalize_single_dte(v) for v in value) if d is not None}
+        return frozenset(out) if out else None
+    single = _normalize_single_dte(value)
+    return frozenset({single}) if single is not None else None
 
 
 def dte_matches(dte: Optional[int], selected) -> bool:
@@ -64,7 +83,7 @@ def dte_matches(dte: Optional[int], selected) -> bool:
     target = normalize_dte_filter(selected)
     if target is None:
         return True  # "all"
-    return dte is not None and dte == target
+    return dte is not None and dte in target
 
 
 def sessions_matching_dte(
@@ -78,6 +97,6 @@ def sessions_matching_dte(
         return list(session_dates)
     out: List[str] = []
     for d in session_dates:
-        if compute_dte(d, expiry_dates_sorted) == target:
+        if compute_dte(d, expiry_dates_sorted) in target:
             out.append(d)
     return out

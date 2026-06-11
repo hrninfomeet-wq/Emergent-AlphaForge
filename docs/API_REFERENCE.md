@@ -184,7 +184,7 @@ Body: `VolatilityAuditReq` with optional config override. Annotates spot 1m bars
 ## Backtest
 
 ### `POST /api/backtest/run`
-Body: `BacktestReq`. Includes `instrument`, `mode`, `strategy_id`, `params`, `costs_enabled`, `walkforward`, `start_ts`, `end_ts`, `pretrade_filters`, `name`, `trade_window_start/end`, and an `option_backtest` block (enabled, moneyness, lots, exit_mode, dte_filter, cost_config, sizing_config).
+Body: `BacktestReq`. Includes `instrument`, `mode`, `strategy_id`, `params`, `costs_enabled`, `walkforward`, `start_ts`, `end_ts`, `pretrade_filters`, `name`, `trade_window_start/end`, and an `option_backtest` block (enabled, moneyness — default `atm`, lots, exit_mode, dte_filter, cost_config, sizing_config). `dte_filter` accepts a single token (`"dte0"`, `0`) or a list (`[0, 1, 2]`) for multi-DTE selection; null/`"all"`/empty list = every weekly-expiry session.
 
 Returns full result with `id`, `metrics`, `trades`, `equity_curve`, `walkforward`, `significance`, `signal_funnel`, `regime_distribution`, optional `option_results`.
 
@@ -212,7 +212,7 @@ Body: `OptimizerStartReq`. Key fields:
 | `n_trials` | 200 | 10–5000 |
 | `evaluation_mode` | `"spot"` | `"spot"` (original, fast) \| `"option_rerank"` (two-stage: spot search then re-rank top-K by real option net rupee) |
 | `rerank_top_k` | 50 | 1–500; number of spot-best candidates re-evaluated on real option P&L |
-| `option_config` | null | Required when `evaluation_mode="option_rerank"`: `{ moneyness, dte_filter, lots, exit_mode, option_target_pct, option_stop_pct, cost_config, entry_max_age_sec, exit_max_age_sec }` |
+| `option_config` | null | Required when `evaluation_mode="option_rerank"`: `{ moneyness, dte_filter (token or list), lots, exit_mode, option_target_pts, option_stop_pts, option_target_pct, option_stop_pct, cost_config, entry_max_age_sec, exit_max_age_sec }` — premium levels in points take precedence over percent |
 | `guards_enabled` (frontend→) | — | Translated to `min_trades` / `min_direction_share` in the payload |
 | `min_trades` | 10 | 0 = no floor; disqualifies statistically meaningless samples |
 | `min_direction_share` | 0.0 | 0 = off; minority CE/PE share floor (0.10 = 10% minimum) |
@@ -298,6 +298,8 @@ Body: `DeploymentCreateReq`:
     "allow_overnight": false
   },
   "auto_paper": true,
+  "auto_paper_target_pts": null,
+  "auto_paper_stop_pts": null,
   "auto_paper_target_pct": null,
   "auto_paper_stop_pct": null,
   "max_consecutive_losses": null,
@@ -312,7 +314,7 @@ Behavior:
 - Resolves source preset/backtest run, freezes params, and stores `strategy_source_sha` (Slice 8).
 - Calls `deployment_quality.evaluate(...)`. If warnings exist and `acknowledged_warnings=false`, returns `400 acknowledgment_required` with the warning detail.
 - Stores `quality_at_creation` plus the ack flag for audit.
-- **Auto paper trading (2026-06-11, paper mode only):** `auto_paper` (default true) merges into `risk`. When ON, every clean CONFIRMED signal opens a paper trade automatically — no manual approval. Entry is real option PREMIUM (live tick → `options_1m` candle ≤5 min → refuse + journal `paper_trade_error` on the signal). Stop/target come from the signal's `risk_hints` (strategy-defined `target_pct`/`stop_pct` of entry premium) with `auto_paper_target_pct`/`auto_paper_stop_pct` as deployment-level fallback. The signal advances CONFIRMED→TRIGGERED→ACTIVE with an `auto_paper` audit snapshot and `paper_trade_id` link. A per-minute marker (`mark_open_deployment_trades`) marks OPEN trades to live ticks and fires stop/target exits intraday. Pre-existing deployments (no flag) keep approve-to-trade behavior.
+- **Auto paper trading (2026-06-11, paper mode only):** `auto_paper` (default true) merges into `risk`. When ON, every clean CONFIRMED signal opens a paper trade automatically — no manual approval. Entry is real option PREMIUM (live tick → `options_1m` candle ≤5 min → refuse + journal `paper_trade_error` on the signal). Stop/target come from the signal's `risk_hints` (strategy-defined `target_pct`/`stop_pct` of entry premium) with the deployment-level fallbacks next: `auto_paper_target_pts`/`auto_paper_stop_pts` (₹ points of premium; precedence) then `auto_paper_target_pct`/`auto_paper_stop_pct` (% of entry premium) — same points-over-percent rule as the backtest's `option_levels` mode. The signal advances CONFIRMED→TRIGGERED→ACTIVE with an `auto_paper` audit snapshot and `paper_trade_id` link. A per-minute marker (`mark_open_deployment_trades`) marks OPEN trades to live ticks and fires stop/target exits intraday. Pre-existing deployments (no flag) keep approve-to-trade behavior.
 - Manual approval remains for shadow/recommendation modes and paper deployments with `auto_paper=false`. Approve never duplicates a trade the auto path already created, and now also fills at resolved option premium (never spot).
 - Kill switches (Slice 12, paper mode only) are merged into `risk`. `max_consecutive_losses` and `daily_loss_cutoff_pct` (negative %) auto-PAUSE the deployment; `max_open_paper_trades` soft-BLOCKs new signals while that many trades are open. Omit/null/0 disables a switch. A paused deployment stamps `kill_switch_reason`, `kill_switch`, and `kill_switch_inputs`.
 

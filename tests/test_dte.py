@@ -45,22 +45,32 @@ def test_compute_dte_none_after_last_expiry():
     assert compute_dte("2025-06-25", EXPIRIES) is None
 
 
-def test_normalize_dte_filter_variants():
+def test_normalize_dte_filter_single_tokens():
     assert normalize_dte_filter(None) is None
     assert normalize_dte_filter("all") is None
     assert normalize_dte_filter("ALL") is None
     assert normalize_dte_filter("") is None
-    assert normalize_dte_filter("dte0") == 0
-    assert normalize_dte_filter("DTE3") == 3
-    assert normalize_dte_filter("2") == 2
-    assert normalize_dte_filter(1) == 1
+    assert normalize_dte_filter("dte0") == frozenset({0})
+    assert normalize_dte_filter("DTE3") == frozenset({3})
+    assert normalize_dte_filter("2") == frozenset({2})
+    assert normalize_dte_filter(1) == frozenset({1})
     assert normalize_dte_filter("garbage") is None
+
+
+def test_normalize_dte_filter_lists():
+    assert normalize_dte_filter([0, 1, 2]) == frozenset({0, 1, 2})
+    assert normalize_dte_filter(["dte0", "DTE1", "2"]) == frozenset({0, 1, 2})
+    assert normalize_dte_filter([]) is None  # empty selection = all
+    assert normalize_dte_filter(["garbage", None]) is None
+    assert normalize_dte_filter([0, "garbage", 6]) == frozenset({0, 6})
+    assert normalize_dte_filter((3,)) == frozenset({3})
 
 
 def test_dte_matches_all_matches_any():
     assert dte_matches(0, "all") is True
     assert dte_matches(5, None) is True
     assert dte_matches(None, "all") is True
+    assert dte_matches(4, []) is True  # empty multi-select = all
 
 
 def test_dte_matches_specific():
@@ -69,9 +79,23 @@ def test_dte_matches_specific():
     assert dte_matches(None, "dte0") is False
 
 
+def test_dte_matches_multi():
+    assert dte_matches(0, [0, 1, 2]) is True
+    assert dte_matches(2, [0, 1, 2]) is True
+    assert dte_matches(3, [0, 1, 2]) is False
+    assert dte_matches(None, [0, 1, 2]) is False
+
+
 def test_sessions_matching_dte_filters():
     sessions = ["2025-06-13", "2025-06-16", "2025-06-17"]  # DTE 2, 1, 0
     assert sessions_matching_dte(sessions, EXPIRIES, "dte0") == ["2025-06-17"]
     assert sessions_matching_dte(sessions, EXPIRIES, "dte1") == ["2025-06-16"]
     assert sessions_matching_dte(sessions, EXPIRIES, "dte2") == ["2025-06-13"]
     assert sessions_matching_dte(sessions, EXPIRIES, "all") == sessions
+
+
+def test_sessions_matching_dte_multi():
+    sessions = ["2025-06-13", "2025-06-16", "2025-06-17"]  # DTE 2, 1, 0
+    assert sessions_matching_dte(sessions, EXPIRIES, [0, 1]) == ["2025-06-16", "2025-06-17"]
+    assert sessions_matching_dte(sessions, EXPIRIES, ["dte0", "dte2"]) == ["2025-06-13", "2025-06-17"]
+    assert sessions_matching_dte(sessions, EXPIRIES, []) == sessions
