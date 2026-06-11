@@ -2,7 +2,7 @@
 
 Drop a single Python file into `backend/app/strategies/plugins/`. It will be auto-discovered on backend restart and appear in the **Strategy Library** + **Backtest Lab** + **Optimizer** automatically.
 
-Important: a plugin becoming available does not make it deployable for forward testing. Future Strategy Deployments will be created only from saved presets or saved backtest results so the exact parameters, source run, and audit context are preserved. See [Strategy Deployments](STRATEGY_DEPLOYMENTS.md).
+Important: a plugin becoming available does not make it deployable for forward testing. Strategy Deployments are created only from saved presets or saved backtest results so the exact parameters, source run, and audit context are preserved. The deployment also pins the plugin file's SHA — editing a deployed plugin auto-pauses its deployments (drift detection). See [Strategy Deployments](STRATEGY_DEPLOYMENTS.md).
 
 ## Template
 
@@ -96,9 +96,11 @@ class MyStrategy(StrategyBase):
 
 ## Restart Backend
 
+The plugins directory is volume-mounted into the backend container (`docker-compose.yml`), so a restart is enough — no image rebuild:
+
 ```bash
-sudo supervisorctl restart backend
-tail -n 20 /var/log/supervisor/backend.out.log
+docker compose restart backend
+docker compose logs --tail 20 backend
 # look for: "Strategy registered: my_strategy_v1 (My Strategy v1)"
 ```
 
@@ -123,6 +125,18 @@ Every `row` provided to `evaluate()` already has these columns computed (no per-
 | `session_date`, `ist_time` | For session-anchored logic |
 
 If you need more, add them to `app/indicators.py:precompute_all_indicators()`.
+
+## Risk Hints Drive Live Exits
+
+The exit fields you return on `Signal` are not just backtest inputs — in forward testing the deployment evaluator captures them as `risk_hints` on every journaled signal, and auto-created paper trades use them as live exit levels:
+
+| Signal field | Meaning | Live behavior (auto paper trade) |
+|---|---|---|
+| `spot_target_pts` / `spot_stop_pts` | Exit when the UNDERLYING moves this many index points | Spot-mirror exit: when the index hits the level, the option closes at its current premium (`spot_target_hit`/`spot_stop_hit`). Direction-aware (CE target above entry spot, PE below). This is the live equivalent of the backtest's `spot_exit` mode — all built-in strategies use it |
+| `target_pct` / `stop_pct` | Exit as % of the option entry premium | Premium stop/target on the trade itself (`target_hit`/`stop_hit`) |
+| `time_stop_minutes` | Maximum holding time | Captured in `risk_hints` for audit |
+
+Strategy hints take priority over the deployment's `auto_paper_target_pct`/`auto_paper_stop_pct` fallbacks. If your strategy returns no exit fields and the deployment sets no fallbacks, an auto trade only closes at the 15:00 IST square-off — so always return explicit exits for SCALP/INTRADAY modes.
 
 ## Test Your Plugin Quickly
 

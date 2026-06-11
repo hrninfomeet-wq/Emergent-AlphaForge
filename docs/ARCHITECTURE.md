@@ -1,10 +1,10 @@
 # Architecture
 
-Updated: 2026-06-09
+Updated: 2026-06-11
 
 ## Purpose
 
-AlphaForge is a local-first research and forward-testing terminal for Indian index options. It stores market data on disk, audits coverage, runs backtests, optimizes parameters, runs strategies forward against live 1-minute closes, and journals every signal with a manual approval gate.
+AlphaForge is a local-first research and forward-testing terminal for Indian index options. It stores market data on disk, audits coverage, runs backtests, optimizes parameters (including honest walk-forward), runs strategies forward against live 1-minute closes, and journals every signal. Paper-mode deployments can auto-trade clean signals at real option premiums; shadow and recommendation modes keep a manual approval gate; broker orders are never placed.
 
 ## Stack
 
@@ -50,7 +50,9 @@ flowchart TD
   C --> EV["Deployment Evaluator"]
   OC["Option contracts"] --> EV
   EV --> SIG["signals (deployment-generated)"]
-  SIG -->|approve| PT["paper_trades"]
+  SIG -->|"auto-paper (paper mode) / approve"| PT["paper_trades"]
+  LT --> MARK["Per-minute Trade Marker"]
+  MARK -->|"stop/target/spot-mirror exits"| PT
   PT -->|"15:00 IST"| SQ["Paper Square-off"]
   C --> BT["Backtest Engine"]
   OC --> OCP["Option Data Planner"]
@@ -113,14 +115,17 @@ flowchart TD
 | `backend/app/slippage.py` | Slippage config (ATM 0.5pt, OTM1/ITM1 1pt, OTM2+ 2pt, expiry-day 30-min 2x) |
 | `backend/app/volatility.py` | Post-hoc 5-min realized vs 30-day baseline detector |
 | `backend/app/optimizer.py` | Optuna TPE / Grid / CMA-ES. Lazy per-indicator-period enriched cache; guard rails (min_trades + CE/PE share, optional); `net_pnl_inr` objective; **two-stage option re-rank** (`_option_rerank`); **pause/resume/crash-resume** (`_job_control`, `_flush_trial_log`, `_rebuild_study`, `resume_optimization`); robustness/importance/heatmap; heavy work via `asyncio.to_thread` |
+| `backend/app/wfo.py` | **Honest walk-forward optimization** (`kind="wfo"` jobs): trading-day window splitter (rolling/anchored), per-window Optuna TPE re-optimization on the train slice only, OOS evaluation on the unseen test slice, stitched OOS equity + metrics, WF efficiency / OOS consistency / param stability; pause/resume at window granularity; deployable params from the most recent train window |
 | `backend/app/strategies/` | Built-in strategies + plugin loader |
 | **Forward testing** | |
 | `backend/app/strategy_deployments.py` | Deployment doc builder, validation, source resolution |
 | `backend/app/strategy_source_hash.py` | SHA-256 of plugin .py file (16 hex truncated) for drift detection |
 | `backend/app/deployment_preflight.py` | Spot coverage, expiries, active vs expired contracts, Upstox token state |
 | `backend/app/deployment_quality.py` | 5 quality checks; ack required when warnings present |
-| `backend/app/deployment_evaluator.py` | 1m_close evaluator, scheduler, time-of-day blocks, expiry cutoff, drift auto-pause |
-| `backend/app/forward_metrics.py` | Session-gated deployment metrics from closed paper trades; Strategy Library visibility waits for >=10 complete sessions |
+| `backend/app/deployment_evaluator.py` | 1m_close evaluator, scheduler, time-of-day blocks, expiry cutoff, drift auto-pause, kill-switch checks, `risk_hints` capture, auto-paper hook (after the concurrency rule) |
+| `backend/app/deployment_kill_switch.py` | Per-deployment kill switches: `max_consecutive_losses` / `daily_loss_cutoff_pct` → PAUSE, `max_open_paper_trades` → soft BLOCK (paper deployments only) |
+| `backend/app/paper_auto.py` | Auto paper trading: premium resolution (live tick → fresh `options_1m` candle → refuse; never spot), risk levels from strategy hints or deployment fallbacks, spot-mirror exit levels, atomic per-signal claim shared with the approve route, per-minute open-trade marker (`mark_open_deployment_trades`) |
+| `backend/app/forward_metrics.py` | Session-gated deployment metrics from closed paper trades; full visibility at >=10 complete sessions, low-sample results flagged via `include_ineligible` |
 | `backend/app/signal_lifecycle.py` | Lifecycle state machine and audit events |
 | `backend/app/paper_trading.py` | Paper trade create/mark/close, stop/target auto-close |
 | `backend/app/paper_squareoff.py` | 15:00 IST background close-all loop with `allow_overnight` opt-out |
@@ -135,6 +140,8 @@ flowchart TD
 | `frontend/src/lib/api.js` | Axios wrapper for `/api/*` |
 | `frontend/src/index.css` | Design tokens (CSS variables) for both themes |
 | `frontend/src/components/Layout.jsx` | Sidebar, top bar, theme selector, global active-jobs indicator, OAuth token-expiry countdown |
+| `frontend/src/components/TokenCountdown.jsx` | Reusable OAuth token-expiry countdown (color-escalating), used by Layout and the Upstox panel |
+| `frontend/src/lib/time.js` | IST time helpers |
 | `frontend/src/components/MarketHeader.jsx` | Persistent market quote header |
 | `frontend/src/components/DataHygienePanel.jsx` | Data Hygiene hero panel: check (plan) + fill (execute) + auto-update status/toggle |
 | `frontend/src/components/WarehouseLookup.jsx` | Spot + ATM CE/PE point-in-time lookup search bar |
@@ -161,13 +168,13 @@ flowchart TD
 | `integrity_hashes` | Per-day index candle counts and hashes |
 | `warehouse_runs` | Ingest and fetch audit log (covers spot, contracts, options, hygiene) |
 | `backtest_runs` | Backtest configs, trades, metrics, option results |
-| `optimization_jobs` | Optimizer jobs + best results. Statuses: queued/running/analyzing/done/cancelled/**paused**/**interrupted**/failed. Carries `evaluation_mode`, `rerank` (option re-rank table), and a transient compact `trial_log` for pause/crash resume |
+| `optimization_jobs` | Optimizer jobs + best results. Statuses: queued/running/analyzing/done/cancelled/**paused**/**interrupted**/failed. Carries `evaluation_mode`, `rerank` (option re-rank table), and a transient compact `trial_log` for pause/crash resume. WFO jobs use `kind="wfo"` with `wfo_windows` (completed windows persist for window-granularity resume) |
 | `presets` | Saved strategy configurations |
 | `pretrade_profiles` | Conservative / Balanced / Aggressive plus custom |
 | `upstox_tokens` | Encrypted OAuth tokens |
 | `ticks` | Sanitized live tick snapshots from the WebSocket stream |
-| `signals` | Lifecycle state, reasons, blockers, audit events. Has unique partial index `signals_deployment_bar_unique` over `(deployment_id, candle_ts)` |
-| `paper_trades` | Paper fills, mark-to-market, realized/unrealized P&L, source flag |
+| `signals` | Lifecycle state, reasons, blockers, audit events, `risk_hints` (strategy exit hints), `paper_trade_id` + `paper_trade_claim` (atomic auto/approve claim), `paper_trade_error` on refusals. Has unique partial index `signals_deployment_bar_unique` over `(deployment_id, candle_ts)` |
+| `paper_trades` | Paper fills (entry = option premium), mark-to-market, realized/unrealized P&L, `risk` (premium stop/target), `spot_exit` (direction-aware spot-mirror levels), source flag |
 | `strategy_deployments` | Forward-test deployment definitions |
 | `option_coverage_cache` | Precomputed per-underlying option-coverage summary (one small doc per index) for fast Data Warehouse page loads |
 
@@ -219,7 +226,7 @@ All routes are prefixed with `/api`. See `docs/API_REFERENCE.md` for full reques
 
 - `POST /backtest/run` `GET /backtest/runs` `GET /backtest/runs/{id}` `DELETE /backtest/runs/{id}`
 - `POST /backtest/option-preflight?ingest_missing=0|1` — pre-run option-data coverage report (+ optional background ingest of missing option data)
-- `POST /optimize/start` `GET /optimize/jobs` `GET /optimize/jobs/{job_id}` `DELETE /optimize/jobs/{job_id}`
+- `POST /optimize/start` `POST /optimize/wfo` (honest walk-forward) `GET /optimize/jobs` `GET /optimize/jobs/{job_id}` `DELETE /optimize/jobs/{job_id}`
 - `POST /optimize/jobs/{job_id}/cancel` `POST /optimize/jobs/{job_id}/pause` `POST /optimize/jobs/{job_id}/resume` `POST /optimize/apply-as-preset/{job_id}?name=...`
 - `GET /presets` `PUT /presets/{name}` `DELETE /presets/{name}`
 - `GET /profiles` `PUT /profiles/{name}`
@@ -255,13 +262,15 @@ All routes are prefixed with `/api`. See `docs/API_REFERENCE.md` for full reques
 
 - **Local-first.** The local Docker stack is the source of truth. Online hosting is out of scope.
 - **Audit-first.** Every signal carries `bar_ts`, `decision_ts`, strategy id/version/hash, frozen params, pretrade snapshot, regime, option contract, blockers, and `tracked_for_pnl`.
-- **Manual approval gate.** No auto-execution on either paper or recommendation. The user clicks Approve.
+- **Auto paper trading is opt-out, broker orders are non-existent.** Paper-mode deployments auto-trade clean signals when `risk.auto_paper` is on (default for new deployments) so signal quality is auditable; shadow and recommendation modes still require a manual Approve. Nothing places broker orders.
+- **Option entries are premium, never spot.** Both the auto path and the approve route resolve a real option premium (live tick → fresh stored candle); if none is available the trade is refused and journaled. An atomic per-signal claim guarantees the two paths never double-trade one signal.
 - **Strict source provenance.** Deployments can be created only from saved presets or saved backtest runs. Direct deployment from a raw plugin is blocked.
 - **Strategy source SHA pinned.** Drift between pinned and current SHA auto-pauses the deployment with full audit.
 - **Idempotent journaling.** Unique partial index on `(deployment_id, candle_ts)` plus E11000 handling in the evaluator.
 - **Time-of-day discipline.** Default blocks: first 10 min and last 30 min of the session. Expiry-day cutoff at 15:00 IST. Auto square-off at 15:00 IST every market day with `allow_overnight` opt-out.
 - **No event calendar.** The post-hoc volatility detector replaces this. Reliable scheduled-event timestamps are unavailable.
 - **Walk-forward warns, never blocks.** The user makes a conscious choice via the ack checkbox.
+- **Honest OOS lives in WFO.** The single optimizer's result is in-sample by definition; the WFO mode re-optimizes per train window and scores only unseen test slices. Indicators are computed once on the full frame and sliced per window — safe because every indicator is causal (trailing windows only).
 - **Lot size is metadata.** Always read from `option_contracts.lot_size` (Upstox-supplied).
 - **Expiry resolution is metadata-driven.** Never weekday-hardcoded. The contract picker filters `expiry_date >= today`.
 - **CSS variable theming.** The dark and white themes are tokenized; per-panel hex codes are forbidden.
@@ -281,7 +290,7 @@ All routes are prefixed with `/api`. See `docs/API_REFERENCE.md` for full reques
 
 ## Operational Notes
 
-- The 1m_close evaluator wakes 10s after each minute boundary during NSE market hours.
+- The 1m_close evaluator wakes 10s after each minute boundary during NSE market hours. The same server loop passes the live tick map into `evaluate_active_deployments` and runs `mark_open_deployment_trades` each minute, so open auto/approved paper trades are marked and stop/target/spot-mirror exits fire intraday.
 - The paper square-off loop runs at 15:00 IST every market day (idempotent).
 - The live candle roller auto-starts after WS auto-start at backend boot and auto-flushes on shutdown.
 - The pre-flight route is matched before `/deployments/{id}` so the literal path takes precedence.

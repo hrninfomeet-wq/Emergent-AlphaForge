@@ -1,10 +1,10 @@
 # AlphaForge Trading Lab
 
-A local-first research and forward-testing terminal for Indian index options on NIFTY 50, BANKNIFTY, and SENSEX. AlphaForge ingests clean market data, runs backtests with realistic costs and walk-forward, optimizes strategy parameters, and runs strategies forward against live 1-minute closes with a manual approval gate before any paper trade or recommendation.
+A local-first research and forward-testing terminal for Indian index options on NIFTY 50, BANKNIFTY, and SENSEX. AlphaForge ingests clean market data, runs backtests with realistic costs (including paired real-option-candle execution), optimizes strategy parameters with honest walk-forward validation, and runs strategies forward against live 1-minute closes. Paper-mode deployments can auto-open paper trades on clean signals at real option premiums; shadow and recommendation modes keep the manual approval gate, and no broker orders are ever placed.
 
 This is a research tool. Options trading is high risk; treat every signal as a hypothesis until it survives walk-forward, forward testing, and paper trading.
 
-## Status (2026-06-01)
+## Status (2026-06-11)
 
 | Area | Status |
 |---|---|
@@ -18,18 +18,21 @@ This is a research tool. Options trading is high risk; treat every signal as a h
 | NSE holiday calendar | 2024–2026 with Budget Saturdays + shifted-expiry; holiday modal |
 | Live tick → 1m OHLC roller | Running, closes Upstox same-day historical gap |
 | Strategy plugin system | Built-in + drop-in `.py` plugins |
-| Backtest + walk-forward | Complete with significance and regime detection |
-| Optimizer | Bayesian / Grid / CMA-ES with robustness, importance, heatmap |
+| Backtest + walk-forward | Complete with significance, regime detection, paired option execution + pre-run option-data preflight |
+| Optimizer | Bayesian / Grid / CMA-ES with robustness, importance, heatmap; guard rails, indicator-period search, option-aware re-rank, pause/resume |
+| Walk-forward optimization (WFO) | Honest OOS mode: per-window re-optimization, stitched OOS equity, WF efficiency / consistency / param stability |
+| India VIX | Ingested as `INDIAVIX` (baseline 2025-12-29); Data Hygiene scope; VIX-bucket context tagging + pre-trade VIX filters |
 | Slippage + volatility | Expiry-tail slippage + post-hoc detector |
 | Strategy Deployments | 1m_close evaluator running, drift detection ON |
-| Pending Approval UI | Approve / Skip / Mark Blocked + auto-paper on approval |
+| Auto paper trading | Paper-mode deployments auto-trade clean signals at real option premium (`risk.auto_paper`, default ON for new deployments) |
+| Pending Approval UI | Approve / Skip / Mark Blocked for non-auto signals + auto-paper on approval |
 | Auto square-off | 15:00 IST every market day, override per deployment |
 | Pre-flight + quality gates | Surfaced at deployment creation, ack required |
 | OAuth token-expiry countdown | In the global top bar |
-| Forward metrics aggregation | Complete: session-gated deployment metrics |
-| Per-deployment kill switches | Slice 12 — pending |
+| Forward metrics aggregation | Session-gated deployment metrics; low-sample results shown with an amber badge |
+| Per-deployment kill switches | Complete: max consecutive losses / daily loss cutoff / max open trades |
 
-287 backend tests pass.
+432 backend tests pass.
 
 ## Quick Start
 
@@ -90,7 +93,7 @@ docker compose ps
 │   ├── src/                  React app, Tailwind, shadcn/ui
 │   ├── public/
 │   └── Dockerfile
-├── tests/                    223 backend tests (pytest)
+├── tests/                    Backend test suite (pytest)
 ├── docs/                     Project documentation
 ├── ltm/                      Project-local long-term memory (LTM workflow)
 ├── memory/                   Local notes (gitignored secrets)
@@ -109,9 +112,10 @@ docker compose ps
 - Slippage defaults: ATM 0.5pt, OTM1/ITM1 1pt, OTM2+/ITM2+ 2pt, expiry-day 30-min 2x.
 - Deployments can only be created from saved Presets or saved Backtest Runs. Direct deployment from a raw plugin is blocked.
 - Walk-forward warns but does not block. The user makes a conscious choice via the ack checkbox.
-- Manual approval gate before any paper trade or recommendation. No auto-execution.
+- Paper-mode deployments may auto-open paper trades on clean signals when `risk.auto_paper` is on (default for new deployments). Entries are always real option premium — live tick, else a fresh stored candle — never the spot index level; no premium means no trade plus a journaled `paper_trade_error`.
+- Shadow and recommendation modes never act without manual approval. No automatic broker order placement, ever.
 - All routes under `/api`. Local Docker stack is the source of truth.
 
 ## Safety Note
 
-Options can lose money quickly. AlphaForge surfaces realistic costs, walk-forward divergence, statistical significance, and forward session completeness so weak strategies are caught before capital is committed. The manual approval gate is intentional and must remain.
+Options can lose money quickly. AlphaForge surfaces realistic costs, walk-forward divergence, statistical significance, and forward session completeness so weak strategies are caught before capital is committed. Auto paper trading exists only to audit signal quality without manual clicking; it never touches a broker. The no-broker-orders rule is intentional and must remain.

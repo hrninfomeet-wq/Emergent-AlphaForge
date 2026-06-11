@@ -1,10 +1,10 @@
 # Project Overview
 
-Updated: 2026-06-09
+Updated: 2026-06-11
 
 ## What AlphaForge Is
 
-AlphaForge is a local-first research and forward-testing terminal for Indian index options on NIFTY 50, BANKNIFTY, and SENSEX. It stores market data on disk, audits coverage, runs backtests, optimizes strategy parameters, and runs strategies forward against live 1-minute closes with a manual approval gate before any paper trade or recommendation is acted on.
+AlphaForge is a local-first research and forward-testing terminal for Indian index options on NIFTY 50, BANKNIFTY, and SENSEX. It stores market data on disk, audits coverage, runs backtests, optimizes strategy parameters (including honest walk-forward optimization), and runs strategies forward against live 1-minute closes. Paper-mode deployments can auto-trade every clean signal at real option premiums so signal quality is auditable without manual clicking; shadow and recommendation modes keep the manual approval gate, and nothing ever places a broker order.
 
 It is not a guaranteed-profit system. It is the disciplined research and execution-prep stack a serious systematic options trader would build for themselves.
 
@@ -14,12 +14,12 @@ End-to-end quant workflow:
 
 1. Ingest clean index and option data into a local warehouse with integrity audits.
 2. Build and tune strategies in a research lab with realistic costs and walk-forward validation.
-3. Auto-optimize parameters with multiple search methods and robustness scoring.
+3. Auto-optimize parameters with multiple search methods, robustness scoring, and an honest walk-forward (OOS) mode.
 4. Forward-test the optimized strategy on live 1-minute closes with full audit trail.
-5. Approve, paper-trade, or skip every signal with a manual gate.
+5. Paper-trade signals — automatically on clean signals in paper mode (`risk.auto_paper`), or via the manual approval gate.
 6. Review forward profitability per deployment before trusting a strategy with capital.
 
-## Status Snapshot (2026-06-09)
+## Status Snapshot (2026-06-11)
 
 | Area | Status |
 |---|---|
@@ -37,20 +37,22 @@ End-to-end quant workflow:
 | Strategy plugin system | Built-in + drop-in `.py` plugins |
 | Backtest + walk-forward | Complete; statistical significance and regime detector wired |
 | Optimizer | Bayesian, Grid, CMA-ES; robustness, importance, heatmap; optional guard rails; indicator-period search; net-rupee objective; **option-aware two-stage re-rank**; **pause/resume/crash-resume**; ~8.8x faster loop |
+| Walk-forward optimization (WFO) | **Honest OOS mode** (`POST /api/optimize/wfo`): per-window re-optimization, stitched OOS equity, WF efficiency / consistency / param stability |
 | Option preflight | Pre-run would-pair coverage check (+ optional ingest) before a backtest |
 | Slippage + volatility | Expiry-tail slippage + post-hoc detector |
-| Rupee cost + sizing + context | Option cost model (%-spread), premium-at-risk sizing, regime/time/DTE/India-VIX tagging |
+| Rupee cost + sizing + context | Option cost model (%-spread), premium-at-risk sizing, regime/time/DTE/India-VIX tagging; INDIAVIX ingest in Data Hygiene scope |
 | Strategy Deployments | 1m_close evaluator running, scheduler ON, drift detection ON |
-| Pending Approval UI | Approve / Skip / Mark Blocked + auto-paper-trade on approval |
+| Auto paper trading | Paper-mode deployments auto-trade clean signals at real option premium (`risk.auto_paper`, default ON for new deployments); per-minute live marker fires stop/target/spot-mirror exits |
+| Pending Approval UI | Approve / Skip / Mark Blocked for non-auto signals + auto-paper-trade on approval |
 | Auto square-off | 15:00 IST every market day, override per deployment |
 | Pre-flight + quality gates | Surfaced at deployment creation, ack required for warnings |
 | OAuth token-expiry countdown | In the global top bar |
-| Forward metrics aggregation | Complete: session-gated deployment metrics in Strategy Library |
+| Forward metrics aggregation | Session-gated deployment metrics in Strategy Library; low-sample deployments shown with an amber badge instead of hidden |
 | Per-deployment kill switches | Complete (max consecutive losses / daily loss cutoff / max open trades) |
 | Phase 5 probability engine | Deferred until ≥6 months forward signal history |
 | Phase 6 swing extension | Not started |
 
-378 backend tests pass. The local stack is healthy.
+432 backend tests pass. The local stack is healthy.
 
 ## Capabilities Summary
 
@@ -77,6 +79,7 @@ End-to-end quant workflow:
 - Regime detector (ADX + Choppiness + ATR expansion).
 - Pre-trade checklist with 3 profiles and live signal-pass counter.
 - Optimizer (Bayesian / Grid / CMA-ES) with robustness scoring, parameter importance, top-N alternatives. Plus: optional guard rails (min_trades + CE/PE share), indicator-period search, `net_pnl_inr` objective, an **option-aware two-stage re-rank** that selects params by real paired-option net rupee, and **pause / resume / crash-resume** with persisted progress. Backtest hot loop is ~8.8x faster (dict records).
+- **Honest walk-forward optimization** (`app/wfo.py`, run type "Walk-forward" in the Optimizer): rolling or anchored trading-day windows, per-window Optuna re-optimization on the train slice only, each window's best scored on its unseen test slice, stitched into one OOS equity curve. Reports walk-forward efficiency (OOS pnl/day ÷ IS pnl/day; ≥0.7 strong, <0.4 likely overfit), OOS consistency, and per-parameter stability. Deployable params come from the most recent train window; Save-as-Preset / deploy flows work unchanged. v1 evaluates on spot — run the final preset through an option re-rank or option backtest for rupee realism.
 - Pre-run **option-data preflight** (`POST /api/backtest/option-preflight`) reports would-pair coverage and can ingest missing option data before a backtest.
 - Rupee option cost model (brokerage + statutory + %-of-premium spread), premium-at-risk sizing, DTE filter, and market-context + India-VIX tagging — a shared decision engine so backtest, paper, and live agree.
 - Slippage model (ATM 0.5pt, OTM1/ITM1 1pt, OTM2+/ITM2+ 2pt, expiry-day 30-min 2x) wired into paired option backtests.
@@ -93,14 +96,17 @@ End-to-end quant workflow:
 - DTE filter (default `[0..6]`) and `option_no_data` blockers.
 - Concurrency rule: keep highest-score per `(instrument, candle_ts)`.
 - Audit trail invariants: `bar_ts`, `decision_ts`, `strategy_id`, `strategy_version`, `strategy_hash`, `pretrade_settings_snapshot`, `regime`, `option_contract`, `tracked_for_pnl`, `blockers[]`.
-- Forward metrics per deployment: win-rate, avg P&L, total P&L, profit factor, and excluded incomplete-session trades. Strategy Library shows them only after at least 10 complete sessions.
+- Per-deployment kill switches under `deployment.risk`: `max_consecutive_losses` and `daily_loss_cutoff_pct` auto-PAUSE; `max_open_paper_trades` soft-BLOCKs new signals until trades close. Paper deployments only.
+- Forward metrics per deployment: win-rate, avg P&L, total P&L, profit factor, and excluded incomplete-session trades. Strategy Library shows full metrics after 10 complete sessions and shows earlier results under an amber "low sample" badge (n/10 sessions) — preliminary, not evidence.
 
-### Approval and paper trading
+### Paper trading — automatic and approved
 
-- Pending Approval panel shows CONFIRMED deployment-generated signals with Approve / Skip / Mark Blocked.
-- Approve auto-creates a paper trade when `deployment.mode == "paper"`, with lot size from `option_contracts.lot_size` and `lots` from `deployment.risk.default_lots` (default 1).
+- **Auto paper trading** (paper mode, `risk.auto_paper`, default ON for new deployments): every clean CONFIRMED signal opens a paper trade automatically — no clicking. The hook runs after the concurrency rule, with an atomic per-signal claim so the auto path and the approve route can never double-trade one signal.
+- **Entry is always real option premium**: live WS tick first, else a stored `options_1m` candle at most 5 minutes old, never the spot index level. No resolvable premium means no trade plus a journaled `paper_trade_error` (the signal stays approvable).
+- **Exits mirror the backtest**: strategy `risk_hints` win over deployment-level `auto_paper_target_pct`/`auto_paper_stop_pct` fallbacks. Built-in strategies define spot-point exits, so auto trades carry direction-aware spot-mirror levels — when the index hits the strategy's target/stop, the option closes at its current premium (`spot_target_hit`/`spot_stop_hit`). A background marker checks open trades every minute during market hours; anything left closes at the 15:00 IST square-off.
+- Pending Approval panel still shows CONFIRMED signals (shadow/recommendation deployments, paper deployments with auto-paper off, or auto-trade refusals) with Approve / Skip / Mark Blocked.
+- Approve resolves premium the same way and creates the paper trade when `deployment.mode == "paper"`, with lot size from `option_contracts.lot_size` and `lots` from `deployment.risk.default_lots` (default 1). Premium unavailable → HTTP 409 and the signal stays CONFIRMED.
 - Auto square-off at 15:00 IST every market day. `risk.allow_overnight=true` opts out per deployment.
-- Failure to create the trade does not roll back the approval. The signal carries a `paper_trade_error`.
 
 ### Live data
 
@@ -128,8 +134,9 @@ Day-to-day this is automatic: the warehouse catches up to yesterday's close on b
 
 1. Pick a strategy in Backtest Lab. Add params, costs, walk-forward.
 2. Save the result. Open Optimizer with the same strategy + window.
-3. Run Bayesian search with risk-adjusted objective. Review robustness and alternatives.
-4. Apply best params as a Preset.
+3. Run Bayesian search with risk-adjusted objective. Review robustness and alternatives. Use evaluation mode "Option re-rank" before trusting a result for option buying.
+4. For deployment candidates, re-run as Run type **"Walk-forward (honest OOS)"** and check WF efficiency (≥0.7), OOS consistency, and param stability before believing the edge.
+5. Apply best params as a Preset.
 
 ### 3. Deploy for forward testing
 
@@ -138,27 +145,28 @@ Day-to-day this is automatic: the warehouse catches up to yesterday's close on b
 3. The Pre-flight badge highlights data realism warnings.
 4. The Quality badge surfaces walk-forward, trade-count, Sharpe, and drawdown warnings.
 5. Tick the acknowledgment checkbox if any warnings are present (HTTP 400 otherwise).
-6. Choose mode (`shadow`, `paper`, `recommendation`), DTE filter, default lots, and `allow_overnight` if desired.
+6. Choose mode (`shadow`, `paper`, `recommendation`), DTE filter, default lots, and `allow_overnight` if desired. In paper mode, the "Auto paper trade on every clean signal" block is checked by default; optional fallback target/stop as % of premium apply only when the strategy provides no risk hints. Kill-switch fields (max consecutive losses, daily loss cutoff %, max open trades) are also set here.
 7. Save. The deployment is `ACTIVE`. The scheduler picks it up on the next minute boundary +10s during market hours.
 
-### 4. Approve or skip signals
+### 4. Let signals trade (or approve them manually)
 
-1. The Pending Approval panel auto-refreshes every 15 seconds.
-2. For each CONFIRMED signal, click Approve, Skip, or Mark Blocked.
-3. Approve transitions CONFIRMED → TRIGGERED → ACTIVE and (in paper mode) auto-creates a paper trade.
+1. With auto-paper ON (paper mode), clean signals appear in the Signal Journal already ACTIVE with a `paper_trade_id`, and the trade shows in Paper Trading at a realistic premium entry. Nothing to click.
+2. The Pending Approval panel (auto-refreshes every 15 seconds) shows remaining CONFIRMED signals — shadow/recommendation deployments, auto-paper-off deployments, or auto-trade refusals.
+3. Approve transitions CONFIRMED → TRIGGERED → ACTIVE and (in paper mode) creates the paper trade at option premium.
 4. Skip transitions CONFIRMED → SKIPPED → AUDITED.
 5. Mark Blocked moves any non-AUDITED signal to AUDITED with the supplied note as a blocker.
 
 ### 5. Review forward performance
 
 1. Inspect signals per deployment via `GET /api/deployments/{id}/signals`.
-2. Inspect paper trades via `GET /api/paper/trades`.
-3. Strategy Library surfaces deployment metrics after the 10-complete-session gate. For audit/debug views, call `GET /api/deployments/metrics?include_ineligible=1`.
+2. Inspect paper trades via `GET /api/paper/trades`. Exit reasons tell the story: `spot_target_hit` / `spot_stop_hit` / `stop_hit` / `target_hit` / `auto_square_off_15_00_IST`.
+3. Strategy Library shows deployment forward metrics: full metrics after 10 complete sessions, earlier results under an amber "low sample" badge. The same data is at `GET /api/deployments/metrics?include_ineligible=1`.
 
 ## What Is Not Done
 
-- Phase 4b forward-testing stack is **complete** (incl. per-deployment kill switches).
-- **Optimizer follow-ups (recommended next):** after A/B-validating the option re-rank advantage, retire the legacy spot-only evaluation path; then build a **live risk engine** (position sizing, daily loss cutoff, regime gating — applied only to live real-money; paper/forward stay tagged-not-blocked) and **honest walk-forward**. These are the highest-value steps toward consistent profitability.
+- Phase 4b forward-testing stack is **complete** (incl. per-deployment kill switches), plus the 2026-06-11 auto-paper-trading extension.
+- **Optimizer follow-ups (recommended next):** after A/B-validating the option re-rank advantage, retire the legacy spot-only evaluation path; then build a **live risk engine** (position sizing, daily loss cutoff, regime gating — applied only to live real-money; paper/forward stay tagged-not-blocked). Honest walk-forward shipped 2026-06-10; a possible WFO v2 would evaluate OOS windows option-aware.
+- **Auto-paper validation:** the auto-trade path passed tests and review, but its first true end-to-end exercise is the next live market session. Forward P&L starts clean from deployments created after 2026-06-11 — trades created by the old spot-entry approve bug are still in history and should not be trusted.
 - Deferred optimizer items: full per-trial option-aware evaluation + parallelism (grid/random only), loop speedups (split signal-gen from trade-sim, memoization, multi-fidelity pruners, numba JIT).
 - **Data fallback:** integrate Flattrade/Fyers historical-option APIs to fill the residual ~5-8% option-data gaps Upstox lacks (TradingView is not viable for option premium).
 - **Optional warehouse extras** (not blocking): option price sanity check (intrinsic floor / impossible jumps), `mongodump` backup button, OI staleness check.
@@ -180,6 +188,7 @@ These are the practical lessons. Treat them as project conventions.
 - Walk-forward acceptance: warn but never block. The user makes a conscious choice via the ack checkbox.
 - Manual approval gate before any paper trade or recommendation. No auto-execution.
 - The post-hoc volatility detector replaces an event calendar that we cannot reliably maintain.
+- Paper-trade entries are option premium, never spot. The 2026-06-11 review found (and fixed) the approve flow opening trades at the spot index level while all marking used premium — any new code path that opens an option position must resolve a real premium or refuse.
 
 ### Data ingestion
 
@@ -236,4 +245,4 @@ If you are a new agent picking this up:
 1. Read `docs/HANDOFF.md` (entry point; has the latest "Recent Work" section).
 2. Read `plan.md` for the slice roadmap and `ltm/runtime/last-recall.md` for the richest record of recent sessions.
 3. Read `docs/ARCHITECTURE.md` for the module map.
-4. The recommended next work is **(a) A/B-validate the optimizer's option re-rank, then retire the legacy spot path, and (b) the live risk engine + honest walk-forward** — the highest-value steps for profitability. The parallelism slice was deliberately deferred (see HANDOFF "Why no parallelism slice").
+4. The recommended next work is **(a) verify auto paper trading in the first live market session, (b) A/B-validate the optimizer's option re-rank, then retire the legacy spot path, and (c) the live risk engine** — the highest-value steps for profitability. The parallelism slice was deliberately deferred (see HANDOFF "Why no parallelism slice").

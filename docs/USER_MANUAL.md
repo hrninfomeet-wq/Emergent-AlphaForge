@@ -1,6 +1,6 @@
 # User Manual
 
-Updated: 2026-06-09
+Updated: 2026-06-11
 
 This guide explains how to use AlphaForge as a local research and forward-testing app.
 
@@ -31,7 +31,7 @@ Use the top-right Theme dropdown:
 
 The market header appears at the top of every page with primary instruments first (NIFTY 50, SENSEX, BANKNIFTY, GOLD FUT, BTCUSD, USDINR, GIFT NIFTY, MIDCPNIFTY) and a collapsible Global Markets section.
 
-The header prefers fresh Upstox WebSocket ticks when the local stream is running; otherwise it falls back to REST quotes. A failed tile shows an error state without breaking the rest of the header.
+The header prefers fresh Upstox WebSocket ticks when the local stream is running; otherwise it falls back to REST quotes. A failed tile shows an error state without breaking the rest of the header. Each tile draws a day-range bar (session low → high with a current-price marker), backfilled from the last quote that carried day OHLC when ticks alone drive the price.
 
 To start the WS stream:
 
@@ -55,7 +55,7 @@ Day-to-day the warehouse updates itself: it catches up to yesterday's close auto
 
 To refresh manually:
 
-1. Click **Check warehouse**. It runs the plan (~6s) and shows a per-instrument diff: spot / option-contracts / option-candle status, with action chips for anything missing. Scope is the project default (2024-11-27 → today, NIFTY+BANKNIFTY+SENSEX, ATM CE+PE, sample=1m).
+1. Click **Check warehouse**. It runs the plan (~6s) and shows a per-instrument diff: spot / option-contracts / option-candle status, with action chips for anything missing. Scope is the project default (2024-11-27 → today, NIFTY+BANKNIFTY+SENSEX, ATM CE+PE, sample=1m) plus the India VIX series (`INDIAVIX`, baseline 2025-12-29) used for VIX-bucket context tagging and the pre-trade VIX filters; the panel shows the VIX coverage status with its own ingest control.
 2. Click **Fill gaps** to submit the fetches in dependency order (spot → contracts → option_candles). Progress shows in the panel and the top bar and **survives navigating away and back**.
 3. Click **Check warehouse** again to confirm gaps closed.
 
@@ -106,10 +106,13 @@ Read results carefully:
 
 ## Optimizer
 
-The Optimizer page runs automated parameter searches to find the best strategy configuration. It now has two distinct workflows:
+The Optimizer page runs automated parameter searches to find the best strategy configuration.
 
 ### Setup panel
-- **Strategy + Method + Objective + Trial budget:** pick your strategy, search method (Bayesian TPE recommended), objective, and how many trials to run (10–5000; note: more trials can increase overfitting risk for small parameter spaces).
+- **Run type:** the first decision.
+  - **Single** — one search over the whole window. Fast, but the result is in-sample by definition: parameters are picked on the same data they are scored on.
+  - **Walk-forward (honest OOS)** — the honest mode. Splits the window into chronological train/test windows (trading days actually present in the data, so holiday-aware), re-optimizes on each train window only, scores each window's best on its unseen test slice, and stitches all OOS trades into one out-of-sample equity curve — the number to believe. Use this before deploying anything.
+- **Strategy + Method + Objective + Trial budget:** pick your strategy, search method (Bayesian TPE recommended), objective, and how many trials to run (10–5000; note: more trials can increase overfitting risk for small parameter spaces). Walk-forward does not support Grid — Bayesian is used.
 - **Evaluation mode:** the key decision.
   - **Spot points (fast)** — the original mode. Searches quickly by maximizing index-point P&L. Useful for exploration, but can give misleading results for option buying because it ignores theta/spread/costs.
   - **Option re-rank (realistic)** — the recommended mode. Stage 1 runs the fast spot search; Stage 2 loads the window's option candles *once* and re-scores the top-K candidates by **real paired-option net rupee** (costs + spread + DTE). Picks the option-best params. Use this before deploying or trusting a result.
@@ -117,11 +120,12 @@ The Optimizer page runs automated parameter searches to find the best strategy c
 - **Guard rails** (toggle, default ON): `Min trades` prevents statistically meaningless results; `Min CE/PE side %` prevents all-one-direction solutions (default 0 = off). Turn guard rails OFF to let the optimizer purely maximize your chosen objective.
 - **Optimize indicator periods:** also tunes RSI/MACD/ATR/EMA/ADX lengths. Slower but searches the real space.
 - **Pre-trade profile:** apply the same filter you use in live trading so optimized params reflect what you'll actually trade.
+- **Walk-forward windows** (shown when Run type is Walk-forward): train days (default 60), test days (default 20), step days (default = test days), rolling vs anchored, trials per window (default 40), max windows (default 12 — with more, the oldest are dropped so deployable params always come from the newest data).
 - **Setup persists** across navigation — your settings are saved automatically to localStorage and restored when you return to the page.
 
 ### Running
-1. Click **Auto-Optimize**. The job runs in the background; you can navigate away.
-2. Click **Pause** to pause mid-run — progress is saved to the DB and you can Resume later from exactly that point.
+1. Click **Auto-Optimize**. The job runs in the background; you can navigate away. Walk-forward shows window k/N progress.
+2. Click **Pause** to pause mid-run — progress is saved to the DB and you can Resume later from exactly that point. (Walk-forward pauses at window granularity: completed windows persist, a half-finished window re-runs.)
 3. Click **Stop** to cancel (best-so-far is saved; heavy analysis is skipped so it stops quickly).
 4. If the backend restarts mid-run, jobs are marked **Interrupted** — click **Resume** from Job History.
 
@@ -136,6 +140,15 @@ The Optimizer page runs automated parameter searches to find the best strategy c
 - **Re-rank table:** shows each candidate's net rupee P&L on real options, option win-rate, paired/total trade count, spot objective, and option-data coverage %. Sorted by option net rupee — this is the realistic ranking.
 - The "best" params and saved backtest run reflect the option-best selection, not the spot-best.
 
+### Results (Walk-forward)
+- **Stitched Out-of-Sample Result panel:** OOS net points, win rate, and the stitched OOS equity sparkline — performance measured only on data the optimizer never saw.
+- **WF Efficiency** (OOS pnl/day ÷ IS pnl/day), color-coded: ≥0.7 green (the edge survives out of sample), <0.4 red (likely overfit). Negative means the OOS windows lost money.
+- **Consistency:** the share of windows that were OOS-positive.
+- **Parameter Stability bars:** red bars mark parameters that wander window-to-window — a sign they are fitted to noise, not structure.
+- **Per-window table:** each window's chosen params and IS/OOS results.
+- The deployable `best_params` come from the most recent train window, saved with a full backtest run, so Save-as-Preset / View-Best-in-Lab / deployments work exactly as for single runs. Job History tags these runs `walk-fwd`.
+- Walk-forward evaluates on spot points (v1). For option-rupee realism, run the resulting preset through an Option re-rank optimization or an option backtest before deploying.
+
 ### After the run
 - **View Best in Lab** — opens the saved best-result full backtest (with trades, equity curve, walk-forward) in the Backtest Lab.
 - **Save as Preset** — saves the best params as a Preset (available in Backtest Lab and deployments). Works for completed, cancelled, paused, and interrupted jobs.
@@ -149,6 +162,8 @@ Three profiles ship: Conservative, Balanced, Aggressive. Each has 10+ filters. T
 ## Strategy Library
 
 Browse built-in strategies and parameter schemas. For drop-in custom plugins, see `docs/STRATEGY_PLUGINS.md`.
+
+Strategy cards with closed paper trades show a **Forward** block per deployment: win rate, average P&L, total P&L, profit factor, and the complete-session count. Deployments with fewer than 10 complete sessions carry an amber **"low sample"** badge (n/10 sessions) — shown immediately so you can monitor a trial from day one, but treat it as preliminary, not evidence.
 
 ## Volatility Audit
 
@@ -175,7 +190,9 @@ This is the forward-testing surface. Workflow:
    - Large drawdown ratio (|max_dd|/total_pnl > 0.15).
 5. If warnings exist, tick the acknowledgment checkbox. Otherwise the Create button is disabled.
 6. Choose mode (`shadow`, `paper`, `recommendation`), DTE filter (default `[0..6]`), default lots (default 1), and `allow_overnight` (default false).
-7. Save. The deployment is `ACTIVE`.
+7. In **paper mode**, a green block appears: **"Auto paper trade on every clean signal"** (checked by default). Leave it on to have every clean signal open a paper trade by itself; the two optional fields set a fallback target/stop as % of the entry premium, used only when the strategy provides no exit hints of its own.
+8. Optionally set the **kill switches**: max consecutive losses (auto-PAUSE), daily loss cutoff % (auto-PAUSE), max open paper trades (soft BLOCK that self-clears as trades close). Paper deployments only.
+9. Save. The deployment is `ACTIVE`.
 
 ### 2. Wait for signals
 
@@ -190,19 +207,28 @@ The 1m_close evaluator scheduler wakes 10 seconds after each minute boundary dur
 
 Each ACTIVE deployment also has an Evaluate-now button.
 
-### 3. Approve, skip, or mark blocked
+### 3a. Auto paper trading (paper mode with auto-paper on)
 
-The Pending Approval panel auto-refreshes every 15 seconds and shows only CONFIRMED deployment-generated signals.
+For paper deployments with `auto_paper` enabled, every clean CONFIRMED signal opens a paper trade automatically — no clicking:
+
+- The signal appears in the Signal Journal already `ACTIVE` with a `paper_trade_id`.
+- The trade appears in Paper Trading at a **real option premium** entry (live tick first, else a stored option candle at most 5 minutes old — e.g. ~₹150, never the ~23,900 index level), with the contract's lot size and the strategy's stop/target levels.
+- Exits mirror the backtest: built-in strategies define exits in spot points, so when the index hits the strategy's target/stop, the option closes at its current premium (`spot_target_hit`/`spot_stop_hit`). Premium-% levels apply when set. A background marker checks every open trade once a minute during market hours; whatever is left closes at the 15:00 IST square-off (`auto_square_off_15_00_IST`).
+- If no usable premium exists (no live tick, no fresh candle), **no trade opens** — the signal carries a journaled `paper_trade_error` and remains approvable from the Pending Approval panel.
+
+### 3b. Approve, skip, or mark blocked (everything else)
+
+The Pending Approval panel auto-refreshes every 15 seconds and shows the CONFIRMED deployment-generated signals that did not auto-trade: shadow and recommendation deployments, paper deployments with auto-paper off, and auto-trade refusals.
 
 For each:
 
-- **Approve** transitions the signal `CONFIRMED → TRIGGERED → ACTIVE`. When `deployment.mode == "paper"`, a paper trade is auto-created with `lot_size` from the option contract and `lots` from `risk.default_lots`. The button label changes to "Approve + Paper" in that case. A trade-creation failure does not roll back the approval — it journals a `paper_trade_error`.
+- **Approve** transitions the signal `CONFIRMED → TRIGGERED → ACTIVE`. When `deployment.mode == "paper"`, a paper trade is created with `lot_size` from the option contract, `lots` from `risk.default_lots`, and the entry at the **resolved option premium** (same resolution as auto-paper). If no premium is available, the approve returns HTTP 409 and the signal stays CONFIRMED so you can retry. The button label changes to "Approve + Paper" in that case. If auto-paper already created the trade, Approve never duplicates it.
 - **Skip** transitions `CONFIRMED → SKIPPED → AUDITED`.
 - **Mark Blocked** moves any non-AUDITED signal to AUDITED with the supplied note as a blocker.
 
 ### 4. Watch trades and square-off
 
-Paper trades created from approvals appear in Paper Trading. They carry `deployment_id` so the auto square-off knows which to skip when `allow_overnight=true`.
+Paper trades — auto-created or approved — appear in Paper Trading. They carry `deployment_id` so the auto square-off knows which to skip when `allow_overnight=true`. During market hours a per-minute marker marks open deployment trades to the latest option tick and fires their exits (`stop_hit`/`target_hit` on premium levels, `spot_target_hit`/`spot_stop_hit` on spot-mirror levels); trades without a live tick are left untouched rather than closed at a stale price.
 
 The auto square-off background loop runs at 15:00 IST every market day. It:
 
@@ -222,13 +248,12 @@ For a fresh study:
 1. Start the stack with Docker Compose.
 2. Run Data Hygiene plan + execute to bring the warehouse current.
 3. Backtest a strategy in Backtest Lab.
-4. Optimize if results are promising. Apply best as a Preset.
-5. Re-test the preset.
-6. Create a Strategy Deployment from the Preset. Acknowledge any quality warnings.
-7. Let the evaluator run during market hours.
-8. Approve / skip signals from the Pending Approval panel.
-9. Watch paper trades. Auto square-off closes them at 15:00 IST.
-10. Review forward signals and trades per deployment.
+4. Optimize if results are promising — finish with a Walk-forward (honest OOS) run and check WF efficiency, consistency, and param stability before trusting it. Apply best as a Preset.
+5. Re-test the preset (use Option re-rank or an option backtest for rupee realism).
+6. Create a Strategy Deployment from the Preset in paper mode with auto-paper on. Acknowledge any quality warnings.
+7. Let the evaluator run during market hours — clean signals paper-trade themselves; approve/skip whatever lands in Pending Approval.
+8. Watch paper trades. The per-minute marker fires stops/targets; auto square-off closes the rest at 15:00 IST.
+9. Review forward results in Strategy Library (low-sample badge until 10 complete sessions) and per deployment.
 
 ## Common Issues
 
@@ -242,10 +267,14 @@ For a fresh study:
 | Live signal resolves to expired contract | Should not happen post-Slice 5. The blocker `option_contract_no_active_expiry` should fire. Check `option_contracts.expiry_date` for the instrument. |
 | Deployment auto-paused with `strategy_source_drift` | The plugin .py file changed since the deployment was created. Create a new deployment to pin the new SHA. |
 | `acknowledgment_required` 400 on deployment create | Quality warnings exist; tick the ack checkbox and retry. |
+| Signal has `paper_trade_error` instead of a trade | No usable option premium at signal time (no live tick, no fresh stored candle). The signal stays approvable; check the option stream / warehouse coverage. |
+| Approve returns 409 `option_entry_price_unavailable` | Same cause from the manual path. The signal stays CONFIRMED — approve again once live option data is available. |
+| Deployment auto-paused with `kill_switch_reason` | A kill switch tripped (consecutive losses or daily loss cutoff). Review the trades before resuming. |
 
 ## Trading Safety
 
-- Do not trust a strategy from one backtest. Use walk-forward, forward testing, and paper trading.
+- Do not trust a strategy from one backtest. Use walk-forward optimization (the honest OOS mode), forward testing, and paper trading.
 - The system warns about walk-forward divergence; do not silence the ack checkbox blindly.
-- The manual approval gate is intentional. Do not build around it.
-- Options can lose money quickly. Use strict per-trade risk and the daily loss controls (Slice 12 will add per-deployment kill switches).
+- Auto paper trading exists to audit signal quality without manual clicking — it never places broker orders, and nothing in this app ever will. Shadow and recommendation modes keep the manual gate.
+- Options can lose money quickly. Use strict per-trade risk and the per-deployment kill switches (max consecutive losses, daily loss cutoff, max open trades).
+- Forward P&L is trustworthy only for deployments created after 2026-06-11; older approval-created trades entered at the spot index level (a since-fixed bug) and their P&L should be ignored.

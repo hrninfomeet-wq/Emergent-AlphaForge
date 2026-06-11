@@ -4,7 +4,7 @@ All notable changes to AlphaForge Trading Lab.
 
 ## [0.14.x] — Auto Paper Trading on Signals + Low-Sample Forward Metrics (2026-06-11)
 
-422 backend tests pass.
+432 backend tests pass.
 
 - **Auto paper trading** (`backend/app/paper_auto.py`): paper-mode deployments with `risk.auto_paper` (new `DeploymentCreateReq` fields, default ON for new deployments) open a paper trade for every clean CONFIRMED signal automatically — no manual approval — so signal outcomes are auditable. Hook runs in `evaluate_active_deployments` AFTER the concurrency rule.
 - **Entry price = real option premium**: live WS tick → `options_1m` candle ≤5 min old → refuse and journal `paper_trade_error` on the signal. Fixes a pre-existing bug where approval-created trades opened at the SPOT index level while marks/square-off use option premium, corrupting P&L. The manual approve route now uses the same resolution and never duplicates a trade that auto_paper already created.
@@ -15,7 +15,7 @@ All notable changes to AlphaForge Trading Lab.
 - Kill switches govern auto trades unchanged (paper mode only; `max_open_paper_trades` blocks the signal so no trade opens).
 - **Low-sample forward metrics**: Strategy Library now requests `include_ineligible=1` and shows deployments with <10 complete sessions under an amber "low sample" badge (with n/10 sessions + trade count) instead of hiding them — per user decision, since the PC rarely runs full market sessions.
 - UI: auto-paper controls in the Live Signals deployment form (paper mode only: toggle + fallback target/stop % of premium).
-- 19 new tests (15 unit + 4 evaluator integration).
+- 32 new tests (28 unit in `tests/test_paper_auto.py` + 4 evaluator integration).
 
 ## [0.13.x] — Honest Walk-Forward Optimization (2026-06-10)
 

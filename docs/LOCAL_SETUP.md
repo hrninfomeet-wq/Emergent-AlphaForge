@@ -139,7 +139,7 @@ curl http://localhost:8001/api/live-candles/status
 
 # Backend tests
 python -m pytest tests -q
-# Expect: 223 tests pass
+# Expect: 432 tests pass (as of 2026-06-11)
 
 # Frontend build
 cd frontend

@@ -1,12 +1,17 @@
 # AlphaForge Trading Lab — Updated plan.md
 
-## Current state for handoff (2026-06-01)
+## Current state for handoff (2026-06-11)
 
-Phase 4b is **11 of 12 slices done**. The Data Warehouse hardening, live option tick universe, and forward metrics slices are complete. **287 backend tests pass locally.** Local Docker stack is healthy.
+**Phase 4b is complete (12/12 slices, including per-deployment kill switches).** On top of it, four major passes shipped since 2026-06-01:
 
-Since the last handoff, a full **Data Warehouse hardening** pass was completed (not part of the numbered Phase 4b slices — the user prioritized perfecting the warehouse before resuming the product roadmap): option-coverage caching, holiday-aware audit, persistent background jobs, a Data Hygiene UI, automatic daily catch-up, a point-in-time spot+ATM lookup, a per-index candlestick chart with gap detection, plus UI cleanup (Emergent/PostHog removal, run-journal move, signal-journal repurpose, OAuth token-expiry countdown). See `docs/HANDOFF.md` "Recent Work" for the commit list.
+1. **Optimizer overhaul + options-buying engine (2026-06-09):** guard rails, indicator-period search, `net_pnl_inr` objective, option-aware two-stage re-rank, pause/resume/crash-resume, ~8.8x faster backtest loop; DTE filter, rupee option cost model, premium-at-risk sizing, market-context + India-VIX tagging, shared exit engine; option pairing fixes + pre-run option-data preflight.
+2. **India VIX ingestion (2026-06-10):** `INDIAVIX` series in `candles_1m` (baseline 2025-12-29), in the Data Hygiene scope, feeding VIX-bucket tagging and pre-trade VIX filters.
+3. **Honest walk-forward optimization (2026-06-10):** `POST /api/optimize/wfo` — per-window re-optimization, stitched OOS equity, WF efficiency / consistency / param stability. The answer to "would these parameters actually have worked?"
+4. **Auto paper trading (2026-06-11):** paper-mode deployments auto-trade every clean signal at real option premium with strategy-defined exits, a per-minute live marker, and low-sample forward metrics in Strategy Library. Also fixed the approve route's spot-priced entry bug that corrupted forward P&L.
 
-**Phase 4b is complete (12/12 slices).** Next is Phase 5 (probability engine), deferred until ≥6 months of forward signal history exists — confirm scope before starting.
+**432 backend tests pass locally.** Local Docker stack is healthy.
+
+Next priorities: verify auto-paper in the first live market session; A/B-validate the option re-rank then retire the legacy spot path; live risk engine. Phase 5 (probability engine) stays deferred until ≥6 months of forward signal history exists — confirm scope before starting.
 
 Read `docs/HANDOFF.md` and `docs/PROJECT_OVERVIEW.md` first if you are picking this up fresh.
 
@@ -251,7 +256,7 @@ Delivered full handover-quality docs:
 ---
 
 ## Phase 4 — Upstox Live + Paper + Audit Trail + Options Backtest (BIGGEST)
-**Status:** ⚠️ PARTIAL PHASE 4 SCAFFOLD (OAuth, REST historical ingest, read-only WebSocket tick stream foundation, option data workflows, offline signal lifecycle, paper-trading foundation, and Strategy Deployment management present; deployment evaluator not complete)
+**Status:** ✅ COMPLETE (via Phase 4b slices 1–12 + the 2026-06-11 auto-paper extension: OAuth, REST historical ingest, read-only WS stream, option data workflows, paired option backtest, signal lifecycle, deployment evaluator, approvals, auto paper trading, kill switches). The per-step ⚠️/⏳ markers below are historical.
 
 ### User stories
 1. As a user, I can complete Upstox OAuth and start WS tick streaming.
@@ -404,9 +409,10 @@ Push the local repair/bootstrap changes back to the user’s GitHub repo when th
 
 ---
 
-## Next Actions (Immediate)
-1. ✅ Local Docker stack verified on this PC.
-2. ✅ Handoff/status docs reconciled with current code reality.
-3. ⏳ Validate Upstox OAuth locally with real credentials.
-4. ⏳ Harden Phase 4b WebSocket tick stream and build live signal evaluator.
-5. ⏳ Push local bootstrap/status repair changes to GitHub when approved.
+## Next Actions (Immediate, as of 2026-06-11)
+1. ✅ Local Docker stack verified; OAuth, WS stream, evaluator, approvals, auto-paper all live.
+2. ✅ Docs reconciled with current code reality (2026-06-11 pass).
+3. ⏳ Verify auto paper trading end-to-end in the first live market session (watch Paper Trading + Signal Journal + backend `auto-paper` log lines).
+4. ⏳ A/B-validate the optimizer's option re-rank advantage, then retire the legacy spot-only evaluation path.
+5. ⏳ Live risk engine (live-only hard rules: position sizing, daily loss cutoff, regime gating). Possible WFO v2: option-aware OOS evaluation.
+6. ⏳ Push pending local commits to GitHub when approved (per-changeset approval).

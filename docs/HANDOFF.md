@@ -6,7 +6,7 @@ This is the entry point for the next AI agent or developer. Read it before editi
 
 ## Status In One Line
 
-Paper-mode deployments can now **auto-trade every clean signal** (no manual approval; `risk.auto_paper`, default ON for new deployments) with the entry at real **option premium** (live tick → fresh options_1m candle → refuse + journal), strategy-defined stops/targets, and a per-minute live marker that fires those exits intraday; the Strategy Library shows **low-sample forward metrics** with a warning badge instead of hiding them. Before that (2026-06-10): the optimizer's **honest walk-forward mode** (`POST /api/optimize/wfo`). **422 pytest tests pass.** The local Docker stack is healthy. Backend code changes require a container rebuild.
+Paper-mode deployments can now **auto-trade every clean signal** (no manual approval; `risk.auto_paper`, default ON for new deployments) with the entry at real **option premium** (live tick → fresh options_1m candle → refuse + journal), strategy-defined stops/targets, and a per-minute live marker that fires those exits intraday; the Strategy Library shows **low-sample forward metrics** with a warning badge instead of hiding them. Before that (2026-06-10): the optimizer's **honest walk-forward mode** (`POST /api/optimize/wfo`). **432 pytest tests pass.** The local Docker stack is healthy. Backend code changes require a container rebuild.
 
 ## Recent Work — Auto Paper Trading on Signals + Low-Sample Metrics (2026-06-11)
 
@@ -20,7 +20,7 @@ User requirement: a deployment generating live signals should also paper-trade e
 - UI: Live Signals deployment form gets the auto-paper block (visible in paper mode); Strategy Library fetches `include_ineligible=1` and shows an amber "LOW SAMPLE n/10 sessions" badge instead of hiding metrics (only deployments with ≥1 closed trade are listed).
 - **Spot-mirror exits**: builtin strategies define exits as SPOT POINTS (`risk_hints.spot_target_pts`/`spot_stop_pts`) — the live equivalent of the backtest's `spot_exit` mode. Auto trades carry `trade.spot_exit` (direction-aware levels); the marker watches the live spot tick and closes the option at its current premium on `spot_target_hit`/`spot_stop_hit`. Premium-% levels (strategy `target_pct`/`stop_pct` — no builtin sets these — or deployment `auto_paper_*_pct`) apply on top via `trade.risk`.
 - **Concurrency hardening** (from the adversarial review): atomic signal claim (`paper_trade_claim`) shared by the evaluator hook and approve route — single trade per signal guaranteed; approve resolves premium + claims BEFORE transitioning (premium unavailable → HTTP 409, signal stays CONFIRMED); marker replaces are conditional on `status=OPEN` (concurrent manual close wins); legacy `risk.stop_price`/`target_price` fallback removed from approve (spot-level units would instantly stop out a premium entry). A stale claim with no trade (crash in the claim→insert window) blocks later auto-trades for that signal — visible on the signal doc for audit.
-- 25 unit tests (`tests/test_paper_auto.py`) + 4 evaluator integration tests; 432 total pass. Live verification limited to off-market checks (form → deployment doc, routes) — the first real market session will exercise the full path; watch backend logs for `auto-paper` lines.
+- 28 unit tests (`tests/test_paper_auto.py`) + 4 evaluator integration tests; 432 total pass. Live verification limited to off-market checks (form → deployment doc, routes) — the first real market session will exercise the full path; watch backend logs for `auto-paper` lines.
 
 ## Recent Work — Honest Walk-Forward Optimization (2026-06-10)
 
@@ -173,9 +173,10 @@ Forward testing:
 
 - Strategy Deployments persisted in `strategy_deployments`, created only from saved presets or backtest runs.
 - 1-minute close evaluator (`backend/app/deployment_evaluator.py`) running on a background scheduler during NSE market hours.
-- Deployment-generated CONFIRMED signals show in the Pending Approval panel; user clicks Approve / Skip / Mark Blocked.
-- Approve auto-creates a paper trade when `deployment.mode == "paper"`, with lot size pulled from the option contract.
-- Forward metrics aggregate win-rate, average P&L, and profit factor from closed paper trades, gated by complete 10:00-15:00 IST sessions.
+- Paper deployments with `risk.auto_paper` (default ON for new deployments) auto-trade every clean CONFIRMED signal at real option premium; a per-minute marker fires premium and spot-mirror exits intraday.
+- Remaining CONFIRMED signals (shadow/recommendation, auto-paper off, auto-trade refusals) show in the Pending Approval panel; user clicks Approve / Skip / Mark Blocked.
+- Approve creates a paper trade when `deployment.mode == "paper"`, entry at resolved option premium, lot size pulled from the option contract; never duplicates an auto-created trade.
+- Forward metrics aggregate win-rate, average P&L, and profit factor from closed paper trades, gated by complete 10:00-15:00 IST sessions; low-sample results surface in Strategy Library under an amber badge.
 - Auto square-off at 15:00 IST every market day (override per deployment with `risk.allow_overnight=true`).
 - Expiry-day cutoff at 15:00 IST blocks new signals on the deployment instrument's expiry day.
 - Strategy source SHA is pinned on every new deployment; the evaluator auto-pauses on drift.
@@ -196,7 +197,7 @@ Product roadmap (from `plan.md`):
 
 - Phase 4b forward-testing stack is **complete** (incl. Slice 12 per-deployment kill switches).
 - **Optimizer follow-ups:** honest walk-forward is DONE (2026-06-10). Remaining: after A/B-validating the option re-rank advantage, retire the legacy spot-only path; then a **risk engine** (live-only hard rules: position sizing, daily loss cutoff, regime gating — paper/forward stay tagged-not-blocked). Possible WFO v2: option-aware OOS evaluation per window.
-- **User-requested (2026-06-10):** signal-generation deployments should auto-create a paper trade per confirmed signal (configurable lots, default 1) without requiring manual approval, so signal quality is auditable; and forward metrics' 10-complete-session display gate should not block starting paper trials (consider showing low-sample metrics with a warning).
+- ~~User-requested (2026-06-10): auto paper trading + low-sample metrics~~ — **DONE 2026-06-11** (see the top "Recent Work" section). Remaining follow-up: verify the auto-trade path in the first live market session.
 - Deferred optimizer items: full per-trial option-aware evaluation, loop speedups (split signal-gen from trade-sim, memoization, multi-fidelity pruners, numba JIT — user granted dependency-install permission).
 - Data: Flattrade/Fyers historical-option API as a fallback source to fill residual ~5-8% option-data gaps Upstox lacks (TradingView is NOT viable for option premium).
 - Phase 5 profitability boosters (Kaplan–Meier survival, meta-model, Kelly sizing, Telegram alerts) deferred until ≥6 months of forward signal history exists.
@@ -322,7 +323,7 @@ See `docs/ARCHITECTURE.md` for the full module map.
 ## Verification Checklist
 
 ```bash
-python -m pytest tests -q     # 400 pass as of 2026-06-10
+python -m pytest tests -q     # 432 pass as of 2026-06-11
 cd frontend
 npm run build
 cd ..
@@ -336,8 +337,9 @@ UI smoke checks:
 - Data Warehouse: Data Hygiene "Check warehouse" returns per-instrument status; coverage heatmaps render fast; candlestick chart loads, O/H/L/C overlay is readable, axis is IST, chart theme icons switch, date/time locator marks a bar, and holiday-calendar modal opens.
 - Top bar shows the OAuth token-expiry countdown.
 - Live Signals page shows the deployment list and the Pending Approval panel.
-- Strategy Library loads without console errors; forward metrics remain hidden until a deployment has at least 10 complete sessions.
+- Strategy Library loads without console errors; deployments with closed paper trades show a Forward block — full metrics at ≥10 complete sessions, an amber "low sample" badge below that.
 - Creating a deployment with quality warnings is blocked until the ack checkbox is ticked.
+- Live Signals deployment form shows the auto-paper block in paper mode and the kill-switch fields.
 
 Service health:
 
