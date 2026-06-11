@@ -129,6 +129,9 @@ class FakeCollection:
             if _matches(r, query):
                 if "$set" in update:
                     r.update(update["$set"])
+                if "$unset" in update:
+                    for key in update["$unset"]:
+                        r.pop(key, None)
                 return MagicMock(matched_count=1, modified_count=1)
         if upsert:
             new = dict(query)
@@ -137,10 +140,22 @@ class FakeCollection:
             self.rows.append(new)
         return MagicMock(matched_count=0, modified_count=0)
 
+    async def replace_one(self, query: Dict[str, Any], replacement: Dict[str, Any], upsert: bool = False):
+        for i, r in enumerate(self.rows):
+            if _matches(r, query):
+                self.rows[i] = dict(replacement)
+                return MagicMock(matched_count=1, modified_count=1)
+        if upsert:
+            self.rows.append(dict(replacement))
+        return MagicMock(matched_count=0, modified_count=0)
+
 
 def _matches(row: Dict[str, Any], query: Dict[str, Any]) -> bool:
     for k, v in query.items():
-        if isinstance(v, dict) and "$gte" in v:
+        if isinstance(v, dict) and "$exists" in v:
+            if bool(k in row) != bool(v["$exists"]):
+                return False
+        elif isinstance(v, dict) and "$gte" in v:
             row_val = row.get(k)
             if row_val is None:
                 return False
@@ -556,6 +571,107 @@ async def test_evaluator_handles_duplicate_key_as_skipped():
 
     # restore
     db.signals.insert_one = original  # type: ignore
+
+
+# ---------- auto paper trading on clean signals (2026-06-10) -------------------
+
+from app.deployment_evaluator import evaluate_active_deployments  # noqa: E402
+
+
+def _seed_clean_signal_setup(db: FakeDB, deployment: Dict[str, Any]) -> str:
+    """Seed candles/contracts/profile + a fresh option candle so the evaluator
+    produces a CLEAN signal. Returns the ATM CE instrument_key."""
+    candles = make_candles(n=80)
+    seed_db(db, candles=candles, deployment=deployment,
+            contracts=make_contracts(), profiles=[make_profile(min_score=50)])
+    atm_strike = round(float(candles["close"].iloc[-1]) / 50) * 50
+    key = f"NSE_FO|TEST|{atm_strike}CE"
+    db.options_1m.rows.append({"instrument_key": key, "ts": now_ms(), "close": 142.0})
+    return key
+
+
+@pytest.mark.asyncio
+async def test_auto_paper_creates_trade_at_option_premium_on_clean_signal():
+    db = FakeDB()
+    deployment = make_deployment()
+    deployment["mode"] = "paper"
+    deployment["risk"] = {"auto_paper": True, "default_lots": 1}
+    key = _seed_clean_signal_setup(db, deployment)
+    StubStrategy.set_next(Signal(direction="CE", score=80, reasons=["ok"],
+                                 target_pct=40, stop_pct=30))
+
+    results = await evaluate_active_deployments(
+        db, latest_tick_lookup={key: {"last_price": 150.0}}.get)
+
+    assert results[0]["outcome"] == "clean"
+    assert results[0]["auto_paper"]["created"] is True
+    assert len(db.paper_trades.rows) == 1
+    trade = db.paper_trades.rows[0]
+    # Entry MUST be the option premium from the live tick, never the spot close.
+    assert trade["entry_price"] == 150.0
+    assert trade["source"] == "paper_auto_on_signal"
+    # Strategy risk hints define the exits (shared decision engine).
+    assert trade["risk"]["target_price"] == round(150.0 * 1.4, 2)
+    assert trade["risk"]["stop_price"] == round(150.0 * 0.7, 2)
+    # Signal advanced past approval and linked to the trade.
+    sig = db.signals.rows[0]
+    assert sig["state"] == "ACTIVE"
+    assert sig["paper_trade_id"] == trade["id"]
+    assert sig["risk_hints"]["target_pct"] == 40
+
+
+@pytest.mark.asyncio
+async def test_auto_paper_not_triggered_for_shadow_deployment():
+    db = FakeDB()
+    deployment = make_deployment()  # mode stays "shadow"
+    deployment["risk"] = {"auto_paper": True, "default_lots": 1}
+    key = _seed_clean_signal_setup(db, deployment)
+    StubStrategy.set_next(Signal(direction="CE", score=80, reasons=["ok"]))
+
+    results = await evaluate_active_deployments(
+        db, latest_tick_lookup={key: {"last_price": 150.0}}.get)
+
+    assert results[0]["outcome"] == "clean"
+    assert "auto_paper" not in results[0]
+    assert len(db.paper_trades.rows) == 0
+    assert db.signals.rows[0]["state"] == "CONFIRMED"  # still awaiting manual approval
+
+
+@pytest.mark.asyncio
+async def test_auto_paper_falls_back_to_option_candle_without_tick():
+    db = FakeDB()
+    deployment = make_deployment()
+    deployment["mode"] = "paper"
+    deployment["risk"] = {"auto_paper": True, "default_lots": 1}
+    _seed_clean_signal_setup(db, deployment)  # fresh candle close = 142.0
+    StubStrategy.set_next(Signal(direction="CE", score=80, reasons=["ok"]))
+
+    results = await evaluate_active_deployments(db, latest_tick_lookup=None)
+
+    assert results[0]["auto_paper"]["created"] is True
+    assert db.paper_trades.rows[0]["entry_price"] == 142.0  # options_1m close fallback
+
+
+@pytest.mark.asyncio
+async def test_auto_paper_blocked_by_max_open_paper_trades_kill_switch():
+    db = FakeDB()
+    deployment = make_deployment()
+    deployment["mode"] = "paper"
+    deployment["risk"] = {"auto_paper": True, "default_lots": 1, "max_open_paper_trades": 1}
+    key = _seed_clean_signal_setup(db, deployment)
+    # One trade already OPEN for this deployment -> soft block on new signals.
+    db.paper_trades.rows.append({
+        "id": "existing-open", "deployment_id": deployment["id"], "status": "OPEN",
+        "instrument_key": "", "quantity": 75, "entry_price": 100.0,
+    })
+    StubStrategy.set_next(Signal(direction="CE", score=80, reasons=["ok"]))
+
+    results = await evaluate_active_deployments(
+        db, latest_tick_lookup={key: {"last_price": 150.0}}.get)
+
+    # The kill switch makes the signal blocked, so no second trade may open.
+    assert results[0]["outcome"] == "blocked"
+    assert len([t for t in db.paper_trades.rows if t.get("source") == "paper_auto_on_signal"]) == 0
 
 
 # ---------- strategy source drift (slice 8) ----------------------------------

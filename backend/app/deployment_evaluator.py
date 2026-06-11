@@ -461,6 +461,15 @@ async def evaluate_deployment_on_close(
     signal_doc["candle_ts"] = candle_ts
     signal_doc["blockers"] = all_blockers
     signal_doc["blocked"] = bool(all_blockers)
+    # The strategy's own exit definition, captured at signal time so paper trades
+    # (auto or approved) can honor the SAME exits the backtest simulated.
+    signal_doc["risk_hints"] = {
+        "target_pct": getattr(sig, "target_pct", None),
+        "stop_pct": getattr(sig, "stop_pct", None),
+        "spot_target_pts": getattr(sig, "spot_target_pts", None),
+        "spot_stop_pts": getattr(sig, "spot_stop_pts", None),
+        "time_stop_minutes": getattr(sig, "time_stop_minutes", None),
+    }
 
     if all_blockers:
         # Record as SKIPPED via lifecycle: WATCHING -> AUDITED is allowed but we also need
@@ -528,10 +537,20 @@ async def _mark_deployment_evaluated(db: Any, deployment_id: str, candle_ts: int
     )
 
 
-async def evaluate_active_deployments(db: Any) -> List[Dict[str, Any]]:
+async def evaluate_active_deployments(
+    db: Any,
+    *,
+    latest_tick_lookup: Optional[Any] = None,
+) -> List[Dict[str, Any]]:
     """Evaluate all ACTIVE deployments. If multiple deployments fire on the same instrument
     at the same minute, the highest-scoring clean signal is kept and lower-scoring ones
     are journaled as blocked with reason `concurrency_lower_score`.
+
+    After the concurrency rule has settled which clean signals survive, deployments
+    with mode="paper" and risk.auto_paper create a paper trade for their surviving
+    signal automatically (no manual approval). The hook MUST run post-concurrency —
+    creating trades inside evaluate_deployment_on_close would open positions for
+    signals that get demoted moments later.
     """
     cursor = db.strategy_deployments.find({"status": "ACTIVE"}, {"_id": 0})
     deployments = await cursor.to_list(length=None)
@@ -547,6 +566,27 @@ async def evaluate_active_deployments(db: Any) -> List[Dict[str, Any]]:
     # Concurrency rule (option b): per (instrument, candle_ts), keep highest-scoring clean signal,
     # demote others to blocked with reason `concurrency_lower_score`.
     await _apply_concurrency_rule(db, results)
+
+    # Auto paper trading (post-concurrency, opted-in paper deployments only).
+    from app.paper_auto import auto_paper_enabled, auto_paper_trade_for_signal
+    dep_by_id = {str(d.get("id") or ""): d for d in deployments}
+    for r in results:
+        if r.get("outcome") != "clean" or not r.get("signal_id"):
+            continue
+        deployment = dep_by_id.get(str(r.get("deployment_id") or ""))
+        if not deployment or not auto_paper_enabled(deployment):
+            continue
+        try:
+            # Re-read the signal: the concurrency rule may have demoted it.
+            sig = await db.signals.find_one({"id": r["signal_id"]}, {"_id": 0})
+            if not sig or str(sig.get("state") or "").upper() != "CONFIRMED" or sig.get("blocked"):
+                continue
+            r["auto_paper"] = await auto_paper_trade_for_signal(
+                db, deployment, sig, latest_tick_lookup=latest_tick_lookup,
+            )
+        except Exception as exc:
+            log.exception("auto-paper hook failed for signal %s", r.get("signal_id"))
+            r["auto_paper"] = {"created": False, "error": str(exc)}
     return results
 
 

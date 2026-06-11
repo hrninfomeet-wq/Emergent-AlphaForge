@@ -49,6 +49,13 @@ from app.expired_contract_backfill import backfill_expired_option_contracts
 from app.market_header import DEFAULT_ITEMS, build_market_header_snapshot
 from app.options_universe import select_contract_for_signal
 from app.paper_trading import close_trade, mark_trade_to_market, paper_trade_from_signal
+from app.paper_auto import (
+    build_auto_trade,
+    claim_signal_for_paper_trade,
+    mark_open_deployment_trades,
+    release_paper_trade_claim,
+    resolve_option_entry_price,
+)
 from app.signal_lifecycle import SignalStateError, create_signal_doc, transition_signal
 from app.strategy_deployments import build_deployment_doc
 from app.strategy_source_hash import detect_drift, hash_strategy_source
@@ -205,13 +212,28 @@ async def _deployment_evaluator_loop() -> None:
             if t < _time(9, 15) or t >= _time(15, 30):
                 continue
 
-            results = await evaluate_active_deployments(db)
+            tick_lookup = upstox_stream_manager.latest_tick_map().get
+            results = await evaluate_active_deployments(db, latest_tick_lookup=tick_lookup)
             interesting = [r for r in results if r.get("outcome") in ("clean", "blocked")]
             if interesting:
                 log.info(
                     "deployment_evaluator: %d evaluated, %d journaled (%s)",
                     len(results), len(interesting),
                     ", ".join(f"{r['outcome']}/{str(r.get('deployment_id') or '')[:8]}" for r in interesting[:5]),
+                )
+            auto_opened = [r for r in results if (r.get("auto_paper") or {}).get("created")]
+            if auto_opened:
+                log.info("auto-paper opened %d trade(s) this bar", len(auto_opened))
+
+            # Mark all OPEN paper trades against the latest live option ticks so
+            # stop/target exits actually fire intraday (minute granularity).
+            marked = await mark_open_deployment_trades(db, latest_tick_lookup=tick_lookup)
+            auto_closed = [m for m in marked if m.get("closed")]
+            if auto_closed:
+                log.info(
+                    "paper marker auto-closed %d trade(s): %s",
+                    len(auto_closed),
+                    ", ".join(f"{m['id'][:8]}/{m.get('exit_reason')}" for m in auto_closed[:5]),
                 )
 
             # Once per IST date, force-close any open paper trades when we cross the cutoff.
@@ -1568,7 +1590,16 @@ async def create_deployment(req: DeploymentCreateReq):
             confirmation_mode=req.confirmation_mode,
             option_moneyness=req.option_moneyness,
             pretrade_profile=req.pretrade_profile,
-            risk={**(req.risk or {}), **kill_switch_cfg, "default_lots": int(req.default_lots or 1)},
+            risk={
+                **(req.risk or {}),
+                **kill_switch_cfg,
+                "default_lots": int(req.default_lots or 1),
+                "auto_paper": bool(req.auto_paper),
+                **({"auto_paper_target_pct": float(req.auto_paper_target_pct)}
+                   if req.auto_paper_target_pct is not None else {}),
+                **({"auto_paper_stop_pct": float(req.auto_paper_stop_pct)}
+                   if req.auto_paper_stop_pct is not None else {}),
+            },
             dte_filter=req.dte_filter,
             allow_overnight=req.allow_overnight,
             strategy_source_sha=pinned_source_sha,
@@ -1809,37 +1840,73 @@ async def approve_signal_route(signal_id: str, req: SignalApprovalReq):
             "note": req.note,
         }
     }
+    # Paper-mode approval opens the trade. Resolve the option PREMIUM and claim
+    # the signal BEFORE any state transition: a premium failure leaves the
+    # signal CONFIRMED and re-approvable (never a dangling ACTIVE with no
+    # trade), and the atomic claim means the evaluator's auto-paper hook and
+    # this route can never both open a trade for the same signal.
+    will_trade = bool(
+        deployment
+        and str(deployment.get("mode") or "").lower() == "paper"
+        and not doc.get("paper_trade_id")
+    )
+    entry_premium: Optional[float] = None
+    if will_trade:
+        contract_key = str((doc.get("option_contract") or {}).get("instrument_key") or "")
+        # Entry must be option PREMIUM (live tick, else recent options_1m
+        # candle) — never the spot index level stored in signal.entry_price.
+        # A spot-priced option trade corrupts every forward metric downstream.
+        entry_premium = await resolve_option_entry_price(
+            db, contract_key,
+            latest_tick_lookup=upstox_stream_manager.latest_tick_map().get,
+        )
+        if entry_premium is None:
+            raise HTTPException(
+                409,
+                "option_entry_price_unavailable: no live tick or recent option candle for "
+                f"{contract_key or 'missing contract'}. The signal remains CONFIRMED — "
+                "approve again when live option data is available.",
+            )
+        if not await claim_signal_for_paper_trade(db, signal_id, "manual_approval"):
+            # The auto-paper hook (or a concurrent approval) won the race —
+            # the approval proceeds, but no second trade may open.
+            will_trade = False
+
     try:
         updated = transition_signal(doc, "TRIGGERED", reason="manual_approval", snapshot=snapshot)
         updated = transition_signal(updated, "ACTIVE", reason="manual_approval_active", snapshot=snapshot)
     except SignalStateError as e:
+        if will_trade:
+            await release_paper_trade_claim(db, signal_id)
         raise HTTPException(400, str(e))
     updated["approval"] = snapshot["approval"]
 
-    # Auto-paper for deployments in `paper` mode. Failure to create the trade does NOT
-    # roll back the approval - the approval is journaled either way for audit.
+    # Trade creation after this point does NOT roll back the approval — a
+    # failure is journaled as paper_trade_error for audit. NOTE (2026-06-11):
+    # the legacy risk.stop_price / risk.target_price fallback was removed —
+    # those fields are SPOT-level absolute prices from the pre-premium-entry
+    # era; applied against a premium entry they instantly fired bogus
+    # stop_hit/target_hit closes.
     trade: Optional[Dict[str, Any]] = None
-    if deployment and str(deployment.get("mode") or "").lower() == "paper":
+    if will_trade:
         try:
-            risk_cfg = deployment.get("risk") or {}
-            default_lots = max(1, int(risk_cfg.get("default_lots") or 1))
-            stop_price = risk_cfg.get("stop_price")
-            target_price = risk_cfg.get("target_price")
-            trade = paper_trade_from_signal(
-                updated,
-                lots=default_lots,
-                entry_price=updated.get("entry_price"),
-                stop_price=stop_price,
-                target_price=target_price,
-            )
+            trade = build_auto_trade(updated, deployment, entry_premium)
             # Stamp deployment_id on the trade so square-off can honor allow_overnight
             trade["deployment_id"] = deployment_id
             trade["source"] = "paper_auto_on_approval"
             await db.paper_trades.insert_one(trade)
             updated["paper_trade_id"] = trade["id"]
+            # Mirror the claim into the full-doc replace below so it isn't
+            # silently dropped (the in-memory doc predates the claim write).
+            updated["paper_trade_claim"] = {
+                "source": "manual_approval",
+                "at": snapshot["approval"]["approved_at"],
+            }
         except Exception as exc:
             log.exception("auto-paper failed for signal %s: %s", signal_id, exc)
             updated["paper_trade_error"] = str(exc)[:240]
+            # The full-doc replace below carries no claim field, which
+            # effectively releases the claim for a later retry via /paper.
 
     await db.signals.replace_one({"id": signal_id}, updated, upsert=False)
     response = {"signal": serialize_doc(updated)}
@@ -2485,6 +2552,14 @@ class DeploymentCreateReq(BaseModel):
     dte_filter: List[int] = Field(default_factory=lambda: [0, 1, 2, 3, 4, 5, 6])
     allow_overnight: bool = False
     default_lots: int = 1
+    # Auto paper trading (2026-06-10): paper mode only. When true, every clean
+    # CONFIRMED signal opens a paper trade immediately (no manual approval) so
+    # the signal's outcome is auditable. Default ON for new deployments.
+    auto_paper: bool = True
+    # Optional deployment-level exits as % of entry premium (long options).
+    # The strategy's own risk hints on the signal take precedence.
+    auto_paper_target_pct: Optional[float] = None
+    auto_paper_stop_pct: Optional[float] = None
     # Per-deployment kill switches (Slice 12). Paper mode only. Omit/0/None to disable.
     max_consecutive_losses: Optional[int] = None
     daily_loss_cutoff_pct: Optional[float] = None

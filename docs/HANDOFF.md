@@ -1,12 +1,26 @@
 # Handoff
 
-Updated: 2026-06-10
+Updated: 2026-06-11
 
 This is the entry point for the next AI agent or developer. Read it before editing code. The repository and tests are the source of truth — not any prior chat.
 
 ## Status In One Line
 
-The optimizer now has an **honest walk-forward mode** (`POST /api/optimize/wfo`, "Run type: Walk-forward" in the Optimizer page): re-optimize per train window, evaluate on the unseen test window, stitch the OOS trades — the stitched OOS result is the headline, with walk-forward efficiency, OOS consistency, and param-stability analyses. This sits on top of the 2026-06-09 options-buying + optimizer-overhaul work (shared decision engine, rupee cost model, premium-at-risk sizing, market-context + India-VIX tagging, option preflight, guard rails, indicator-period search, option re-rank, pause/resume, ~8.8x faster loop). **400 pytest tests pass.** The local Docker stack is healthy. Backend code changes require a container rebuild.
+Paper-mode deployments can now **auto-trade every clean signal** (no manual approval; `risk.auto_paper`, default ON for new deployments) with the entry at real **option premium** (live tick → fresh options_1m candle → refuse + journal), strategy-defined stops/targets, and a per-minute live marker that fires those exits intraday; the Strategy Library shows **low-sample forward metrics** with a warning badge instead of hiding them. Before that (2026-06-10): the optimizer's **honest walk-forward mode** (`POST /api/optimize/wfo`). **422 pytest tests pass.** The local Docker stack is healthy. Backend code changes require a container rebuild.
+
+## Recent Work — Auto Paper Trading on Signals + Low-Sample Metrics (2026-06-11)
+
+User requirement: a deployment generating live signals should also paper-trade each confirmed signal automatically (default 1 lot) so the signal's outcome is auditable; and the 10-complete-session gate should not hide forward evidence.
+
+- `backend/app/paper_auto.py` — the new module. `resolve_option_entry_price` (live WS tick → options_1m candle ≤5 min old → None; NEVER spot), `compute_auto_risk_levels` (strategy risk hints win over deployment `auto_paper_target_pct`/`auto_paper_stop_pct`; LONG-premium semantics; stop floors at 0.05), `auto_paper_trade_for_signal` (creates the trade, advances the signal CONFIRMED→TRIGGERED→ACTIVE, links `paper_trade_id`; refusal journals `paper_trade_error` and leaves the signal approvable), `mark_open_deployment_trades` (minute marker: marks OPEN trades to live ticks, auto-closes on stop/target via the existing `mark_trade_to_market`, transitions signals to EXITED; tickless trades untouched).
+- Evaluator hook runs in `evaluate_active_deployments` **after** `_apply_concurrency_rule` (a trade must never open for a signal that gets demoted moments later) and re-reads the signal state first. The evaluator also now captures the strategy's `risk_hints` (target_pct/stop_pct/spot pts/time stop) on every signal doc.
+- `evaluate_active_deployments(db, latest_tick_lookup=...)` — the server loop passes the live tick map and calls the marker each minute during market hours.
+- **Entry-price bug fixed in the approve route**: the old flow filled the option paper trade at `signal.entry_price` (the SPOT index close, e.g. ~23,900) while the trade's instrument and all later marks are option premium (~150) — corrupting every P&L. Both paths now resolve premium; no premium → no trade + journaled reason. Approve also skips trade creation when the signal already carries `paper_trade_id` (no duplicates with auto_paper).
+- `DeploymentCreateReq`: `auto_paper` (default true), `auto_paper_target_pct`, `auto_paper_stop_pct` merged into `deployment.risk`. Pre-existing deployments lack the flag → behavior unchanged. Kill switches govern auto trades automatically (paper mode; `max_open_paper_trades` blocks the signal → no trade).
+- UI: Live Signals deployment form gets the auto-paper block (visible in paper mode); Strategy Library fetches `include_ineligible=1` and shows an amber "LOW SAMPLE n/10 sessions" badge instead of hiding metrics (only deployments with ≥1 closed trade are listed).
+- **Spot-mirror exits**: builtin strategies define exits as SPOT POINTS (`risk_hints.spot_target_pts`/`spot_stop_pts`) — the live equivalent of the backtest's `spot_exit` mode. Auto trades carry `trade.spot_exit` (direction-aware levels); the marker watches the live spot tick and closes the option at its current premium on `spot_target_hit`/`spot_stop_hit`. Premium-% levels (strategy `target_pct`/`stop_pct` — no builtin sets these — or deployment `auto_paper_*_pct`) apply on top via `trade.risk`.
+- **Concurrency hardening** (from the adversarial review): atomic signal claim (`paper_trade_claim`) shared by the evaluator hook and approve route — single trade per signal guaranteed; approve resolves premium + claims BEFORE transitioning (premium unavailable → HTTP 409, signal stays CONFIRMED); marker replaces are conditional on `status=OPEN` (concurrent manual close wins); legacy `risk.stop_price`/`target_price` fallback removed from approve (spot-level units would instantly stop out a premium entry). A stale claim with no trade (crash in the claim→insert window) blocks later auto-trades for that signal — visible on the signal doc for audit.
+- 25 unit tests (`tests/test_paper_auto.py`) + 4 evaluator integration tests; 432 total pass. Live verification limited to off-market checks (form → deployment doc, routes) — the first real market session will exercise the full path; watch backend logs for `auto-paper` lines.
 
 ## Recent Work — Honest Walk-Forward Optimization (2026-06-10)
 

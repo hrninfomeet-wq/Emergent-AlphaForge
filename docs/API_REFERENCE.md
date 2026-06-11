@@ -297,6 +297,9 @@ Body: `DeploymentCreateReq`:
     "default_lots": 1,
     "allow_overnight": false
   },
+  "auto_paper": true,
+  "auto_paper_target_pct": null,
+  "auto_paper_stop_pct": null,
   "max_consecutive_losses": null,
   "daily_loss_cutoff_pct": null,
   "max_open_paper_trades": null,
@@ -309,7 +312,8 @@ Behavior:
 - Resolves source preset/backtest run, freezes params, and stores `strategy_source_sha` (Slice 8).
 - Calls `deployment_quality.evaluate(...)`. If warnings exist and `acknowledged_warnings=false`, returns `400 acknowledgment_required` with the warning detail.
 - Stores `quality_at_creation` plus the ack flag for audit.
-- Manual approval is always required for paper or recommendation mode.
+- **Auto paper trading (2026-06-11, paper mode only):** `auto_paper` (default true) merges into `risk`. When ON, every clean CONFIRMED signal opens a paper trade automatically — no manual approval. Entry is real option PREMIUM (live tick → `options_1m` candle ≤5 min → refuse + journal `paper_trade_error` on the signal). Stop/target come from the signal's `risk_hints` (strategy-defined `target_pct`/`stop_pct` of entry premium) with `auto_paper_target_pct`/`auto_paper_stop_pct` as deployment-level fallback. The signal advances CONFIRMED→TRIGGERED→ACTIVE with an `auto_paper` audit snapshot and `paper_trade_id` link. A per-minute marker (`mark_open_deployment_trades`) marks OPEN trades to live ticks and fires stop/target exits intraday. Pre-existing deployments (no flag) keep approve-to-trade behavior.
+- Manual approval remains for shadow/recommendation modes and paper deployments with `auto_paper=false`. Approve never duplicates a trade the auto path already created, and now also fills at resolved option premium (never spot).
 - Kill switches (Slice 12, paper mode only) are merged into `risk`. `max_consecutive_losses` and `daily_loss_cutoff_pct` (negative %) auto-PAUSE the deployment; `max_open_paper_trades` soft-BLOCKs new signals while that many trades are open. Omit/null/0 disables a switch. A paused deployment stamps `kill_switch_reason`, `kill_switch`, and `kill_switch_inputs`.
 
 ### `GET /api/deployments/preflight?instrument=...`

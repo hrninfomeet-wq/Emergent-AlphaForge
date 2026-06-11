@@ -2,6 +2,21 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.14.x] — Auto Paper Trading on Signals + Low-Sample Forward Metrics (2026-06-11)
+
+422 backend tests pass.
+
+- **Auto paper trading** (`backend/app/paper_auto.py`): paper-mode deployments with `risk.auto_paper` (new `DeploymentCreateReq` fields, default ON for new deployments) open a paper trade for every clean CONFIRMED signal automatically — no manual approval — so signal outcomes are auditable. Hook runs in `evaluate_active_deployments` AFTER the concurrency rule.
+- **Entry price = real option premium**: live WS tick → `options_1m` candle ≤5 min old → refuse and journal `paper_trade_error` on the signal. Fixes a pre-existing bug where approval-created trades opened at the SPOT index level while marks/square-off use option premium, corrupting P&L. The manual approve route now uses the same resolution and never duplicates a trade that auto_paper already created.
+- **Strategy-defined exits**: the evaluator captures each signal's `risk_hints` (target_pct/stop_pct/spot pts/time stop); auto trades compute stop/target from those hints first, deployment-level `auto_paper_target_pct`/`auto_paper_stop_pct` second (LONG-premium semantics, stop floored at ₹0.05).
+- **Per-minute live marker** (`mark_open_deployment_trades`): every minute during market hours, OPEN paper trades are marked to the latest option tick and auto-closed on stop/target (existing `mark_trade_to_market` machinery); the linked signal transitions to EXITED. Without this, stop/target levels only ever fired on manual marks. Tickless trades are left untouched (no stale-price closes).
+- **Spot-mirror exits** (post-review fix): the builtin strategies define exits as SPOT INDEX POINTS, not premium-% — exactly what the backtest's `spot_exit` mode simulates. Auto trades now carry `spot_exit` levels (direction-aware: CE target above entry spot, PE below) and the marker closes the option at its current premium when the UNDERLYING hits the level (`spot_target_hit`/`spot_stop_hit`). Without this, trades from every current strategy would have had no intraday exit at all.
+- **Race hardening** (post-review fixes): an atomic claim on the signal (`claim_signal_for_paper_trade`) guarantees the evaluator hook and the manual approve route can never both open a trade for one signal; the approve route resolves premium and claims BEFORE any state transition (premium unavailable → 409 and the signal stays CONFIRMED/re-approvable instead of dangling ACTIVE); the marker's writes are conditional on `status=OPEN` so a concurrent manual close is never clobbered; the legacy `risk.stop_price`/`target_price` fallback in the approve route was removed (spot-level units vs premium entry → instant bogus stop_hit).
+- Kill switches govern auto trades unchanged (paper mode only; `max_open_paper_trades` blocks the signal so no trade opens).
+- **Low-sample forward metrics**: Strategy Library now requests `include_ineligible=1` and shows deployments with <10 complete sessions under an amber "low sample" badge (with n/10 sessions + trade count) instead of hiding them — per user decision, since the PC rarely runs full market sessions.
+- UI: auto-paper controls in the Live Signals deployment form (paper mode only: toggle + fallback target/stop % of premium).
+- 19 new tests (15 unit + 4 evaluator integration).
+
 ## [0.13.x] — Honest Walk-Forward Optimization (2026-06-10)
 
 400 backend tests pass. The single optimizer's result is in-sample by definition; this release adds the honest mode.

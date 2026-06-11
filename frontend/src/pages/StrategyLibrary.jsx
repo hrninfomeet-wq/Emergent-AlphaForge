@@ -17,10 +17,15 @@ export default function StrategyLibrary() {
         if (cancelled) return;
         setStrategies(strategyData.items || []);
         try {
-          const metricData = await api.listDeploymentMetrics();
+          // include_ineligible: low-sample deployments are shown with a warning
+          // badge instead of being hidden until 10 complete sessions (user
+          // decision 2026-06-10 — the PC rarely runs full sessions, so the old
+          // gate hid all forward evidence indefinitely).
+          const metricData = await api.listDeploymentMetrics({ include_ineligible: 1 });
           if (cancelled) return;
           const grouped = {};
           for (const item of metricData.items || []) {
+            if (!(item.closed_trade_count > 0)) continue; // nothing to show yet
             const key = item.strategy_id || "";
             grouped[key] = [...(grouped[key] || []), item];
           }
@@ -119,17 +124,32 @@ function ForwardMetricsBlock({ metrics }) {
         Forward
       </div>
       <div className="space-y-2">
-        {visible.map((item) => (
-          <div key={item.deployment_id} className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px]">
-            <div className="min-w-0">
-              <div className="font-medium truncate">{item.deployment_name || item.deployment_id}</div>
-              <div className="text-dimmer font-mono">{item.session_completeness?.complete_session_count || 0} sessions</div>
+        {visible.map((item) => {
+          const lowSample = !(item.library_gate?.visible);
+          const sessions = item.session_completeness?.complete_session_count || 0;
+          const minSessions = item.library_gate?.min_complete_sessions || 10;
+          return (
+            <div key={item.deployment_id} className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px]">
+              <div className="min-w-0">
+                <div className="font-medium truncate flex items-center gap-1.5">
+                  {item.deployment_name || item.deployment_id}
+                  {lowSample && (
+                    <span
+                      className="text-[9px] uppercase tracking-wide px-1 py-px rounded bg-amber-950 text-amber-300 border border-amber-900 shrink-0"
+                      title={`Only ${sessions} of ${minSessions} complete forward sessions — treat these numbers as preliminary, not evidence.`}
+                    >
+                      low sample
+                    </span>
+                  )}
+                </div>
+                <div className="text-dimmer font-mono">{sessions}/{minSessions} sessions · {item.trade_count || 0} trades</div>
+              </div>
+              <Metric label="WR" value={fmtPct(item.win_rate)} />
+              <Metric label="Avg PnL" value={fmtSigned(item.avg_pnl)} tone={item.avg_pnl} />
+              <Metric label="PF" value={fmtNum(item.profit_factor)} />
             </div>
-            <Metric label="WR" value={fmtPct(item.win_rate)} />
-            <Metric label="Avg PnL" value={fmtSigned(item.avg_pnl)} tone={item.avg_pnl} />
-            <Metric label="PF" value={fmtNum(item.profit_factor)} />
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

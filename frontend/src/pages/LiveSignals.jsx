@@ -27,6 +27,9 @@ export default function LiveSignals() {
     pretrade_profile: "Balanced",
     dte_filter: "0,1,2,3,4,5,6",
     default_lots: 1,
+    auto_paper: true,
+    auto_paper_target_pct: "",
+    auto_paper_stop_pct: "",
     allow_overnight: false,
     max_consecutive_losses: "",
     daily_loss_cutoff_pct: "",
@@ -209,6 +212,9 @@ export default function LiveSignals() {
           .map((item) => parseInt(item.trim(), 10))
           .filter((n) => Number.isFinite(n) && n >= 0),
         default_lots: Math.max(1, parseInt(deploymentForm.default_lots, 10) || 1),
+        auto_paper: Boolean(deploymentForm.auto_paper),
+        auto_paper_target_pct: deploymentForm.auto_paper_target_pct === "" ? null : Number(deploymentForm.auto_paper_target_pct),
+        auto_paper_stop_pct: deploymentForm.auto_paper_stop_pct === "" ? null : Number(deploymentForm.auto_paper_stop_pct),
         allow_overnight: Boolean(deploymentForm.allow_overnight),
         max_consecutive_losses: deploymentForm.max_consecutive_losses === "" ? null : Math.max(0, parseInt(deploymentForm.max_consecutive_losses, 10) || 0),
         daily_loss_cutoff_pct: deploymentForm.daily_loss_cutoff_pct === "" ? null : Number(deploymentForm.daily_loss_cutoff_pct),
@@ -585,6 +591,56 @@ function StrategyDeploymentsPanel({ deployments, presets, backtestRuns, form, se
                 title="Number of lots when paper trade is auto-created on approval. Lot size comes from option_contracts (Upstox)."
               />
             </label>
+            {form.mode === "paper" && (
+              <div className="col-span-2 rounded-md border border-emerald-500/30 bg-emerald-500/5 p-2">
+                <label className="text-[11px] text-dim flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(form.auto_paper)}
+                    onChange={(e) => setFormValue("auto_paper", e.target.checked)}
+                    className="h-4 w-4 rounded border-line"
+                    data-testid="auto-paper-checkbox"
+                  />
+                  <span>
+                    <b>Auto paper trade on every clean signal</b> — no approval needed; entry at live option premium
+                  </span>
+                </label>
+                {form.auto_paper && (
+                  <div className="grid grid-cols-2 gap-2 mt-2">
+                    <label className="text-[11px] text-dim">
+                      Target % of premium (fallback)
+                      <Input
+                        type="number" min="0" step="5"
+                        value={form.auto_paper_target_pct}
+                        onChange={(e) => setFormValue("auto_paper_target_pct", e.target.value)}
+                        className="mt-1 bg-bg-1 border-line"
+                        placeholder="strategy hint"
+                        title="Used only when the strategy's signal carries no target hint. Blank = no target; the 15:00 IST square-off still closes the trade."
+                        data-testid="auto-paper-target-pct"
+                      />
+                    </label>
+                    <label className="text-[11px] text-dim">
+                      Stop % of premium (fallback)
+                      <Input
+                        type="number" min="0" step="5"
+                        value={form.auto_paper_stop_pct}
+                        onChange={(e) => setFormValue("auto_paper_stop_pct", e.target.value)}
+                        className="mt-1 bg-bg-1 border-line"
+                        placeholder="strategy hint"
+                        title="Used only when the strategy's signal carries no stop hint. Blank = no stop."
+                        data-testid="auto-paper-stop-pct"
+                      />
+                    </label>
+                  </div>
+                )}
+                <div className="text-[10px] text-dimmer mt-1.5 leading-snug">
+                  Exits: the strategy's own spot-point levels are mirrored automatically (the option closes when the
+                  INDEX hits the strategy's target/stop — same as the backtest). The % fields above add premium-based
+                  exits on top. If no live option premium is available at signal time, no trade is created and the
+                  reason is journaled on the signal.
+                </div>
+              </div>
+            )}
             <label className="text-[11px] text-dim col-span-2 flex items-center gap-2 pt-1">
               <input
                 type="checkbox"
