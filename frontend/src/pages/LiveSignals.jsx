@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
-  Activity, Archive, ChevronLeft, ChevronRight, Pause, Play, Plus,
+  Activity, Archive, ChevronLeft, ChevronRight, Pause, Pin, Play, Plus,
   RefreshCw, Rocket, ShieldAlert, X, Zap,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -146,6 +146,7 @@ export default function LiveSignals() {
             <DeploymentCard key={item.deployment.id} item={item} busy={busy}
               onPause={() => act(() => api.pauseDeployment(item.deployment.id), "Paused")}
               onResume={() => act(() => api.resumeDeployment(item.deployment.id), "Resumed")}
+              onRepin={() => act(() => api.repinDeploymentSource(item.deployment.id), "Re-pinned strategy source")}
               onEvaluate={() => act(() => api.evaluateDeployment(item.deployment.id), "Evaluated")}
               onUndeploy={() => undeploy(item)}
               onSignals={() => navigate(`/journal?deployment=${encodeURIComponent(item.deployment.id)}`)}
@@ -176,13 +177,14 @@ function HeaderStat({ label, value, tone }) {
   );
 }
 
-function DeploymentCard({ item, busy, onPause, onResume, onEvaluate, onUndeploy, onSignals, onTrades }) {
+function DeploymentCard({ item, busy, onPause, onResume, onRepin, onEvaluate, onUndeploy, onSignals, onTrades }) {
   const d = item.deployment;
   const t = item.today;
   const lt = item.lifetime;
   const paused = d.status === "PAUSED";
   const isPaper = d.mode === "paper";
   const pausedReason = d.kill_switch_reason || d.drift_reason;
+  const isDriftPaused = paused && d.drift_reason === "strategy_source_drift";
   const mtm = Number(t.realized_pnl || 0) + Number(t.open_unrealized || 0);
   return (
     <div className="rounded-lg border border-line bg-bg-1 p-3 space-y-2" data-testid="deployment-card">
@@ -209,6 +211,14 @@ function DeploymentCard({ item, busy, onPause, onResume, onEvaluate, onUndeploy,
         <div className="flex items-center gap-1.5 text-[11px] text-amber-300" data-testid="deployment-pause-reason">
           <ShieldAlert className="w-3.5 h-3.5 shrink-0" />
           <span className="truncate" title={pausedReason}>Auto-paused: {pausedReason}</span>
+          {isDriftPaused && (
+            <Button size="sm" variant="ghost"
+              className="ml-auto h-6 text-[11px] text-info hover:text-info shrink-0"
+              disabled={busy} onClick={onRepin} data-testid="repin-source-button"
+              title={`Strategy source changed (pinned ${d.drift_pinned_sha || "?"} → current ${d.drift_current_sha || "?"}). Re-pin to the current code and resume.`}>
+              <Pin className="w-3 h-3 mr-1" /> Re-pin &amp; resume
+            </Button>
+          )}
         </div>
       )}
 

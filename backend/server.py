@@ -52,7 +52,7 @@ from app.paper_trading import close_trade, mark_trade_to_market
 from app.paper_auto import mark_open_deployment_trades
 from app.signal_lifecycle import SignalStateError, transition_signal
 from app.strategy_deployments import build_deployment_doc
-from app.strategy_source_hash import detect_drift, hash_strategy_source
+from app.strategy_source_hash import detect_drift, hash_strategy_source, build_repin_update
 from app.deployment_quality import evaluate_source_quality
 from app.preset_execution import execution_from_option_config
 from app.forward_metrics import compute_forward_metrics_for_deployment, compute_forward_metrics_for_deployments
@@ -2119,6 +2119,40 @@ async def resume_deployment(deployment_id: str):
     doc = await _set_deployment_status(deployment_id, "ACTIVE")
     stream = await _auto_follow_option_stream()
     return serialize_doc({**doc, "option_stream": stream})
+
+
+@api.post("/deployments/{deployment_id}/repin-source")
+async def repin_deployment_source(deployment_id: str):
+    """Re-pin a deployment to its strategy's CURRENT source after a drift pause.
+
+    Recomputes the plugin's source SHA, updates `strategy_source_sha`, clears the
+    drift audit fields, appends a `repin_history` entry, and (only if the
+    deployment was auto-paused for `strategy_source_drift`) resumes it. Use this
+    when the plugin edit was intentional and you accept the new code as the
+    pinned baseline."""
+    db = get_db()
+    deployment = await db.strategy_deployments.find_one({"id": deployment_id}, {"_id": 0})
+    if not deployment:
+        raise HTTPException(404, "Deployment not found")
+    strategy_id = str(deployment.get("strategy_id") or "")
+    strategy_obj = get_registry().get(strategy_id) if strategy_id else None
+    if strategy_obj is None:
+        raise HTTPException(409, f"Strategy '{strategy_id}' is not loaded — cannot re-pin its source.")
+    current_sha = hash_strategy_source(strategy_obj)
+    if not current_sha:
+        raise HTTPException(409, "Could not resolve the strategy's source file to re-pin.")
+
+    upd = build_repin_update(deployment, current_sha)
+    mongo_update: Dict[str, Any] = {
+        "$set": upd["set"],
+        "$unset": upd["unset"],
+        "$push": {"repin_history": upd["audit"]},
+    }
+    await db.strategy_deployments.update_one({"id": deployment_id}, mongo_update)
+    doc = await db.strategy_deployments.find_one({"id": deployment_id}, {"_id": 0})
+    stream = await _auto_follow_option_stream() if upd["resumed"] else {}
+    return serialize_doc({**doc, "repinned_to": current_sha, "resumed": upd["resumed"],
+                          **({"option_stream": stream} if upd["resumed"] else {})})
 
 
 @api.post("/deployments/{deployment_id}/archive")

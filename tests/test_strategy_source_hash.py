@@ -16,6 +16,8 @@ from app.strategy_source_hash import (  # noqa: E402
     detect_drift,
     hash_strategy_source,
     strategy_file_path,
+    build_repin_update,
+    DRIFT_FIELDS,
 )
 from app.strategies.base import StrategyBase  # noqa: E402
 
@@ -108,3 +110,65 @@ def test_strategy_file_path_returns_existing_file_for_real_plugin():
 
 def test_strategy_file_path_returns_none_for_none_input():
     assert strategy_file_path(None) is None
+
+
+# ---- build_repin_update pure logic (drift re-pin route helper) -------------
+
+
+def test_build_repin_update_resumes_drift_paused_deployment():
+    dep = {
+        "id": "d1",
+        "status": "PAUSED",
+        "strategy_source_sha": "old0000000000000",
+        "drift_reason": "strategy_source_drift",
+        "drift_detected_at": "2026-06-10T10:00:00+00:00",
+        "drift_pinned_sha": "old0000000000000",
+        "drift_current_sha": "new1111111111111",
+    }
+    upd = build_repin_update(dep, "new1111111111111", at="2026-06-12T05:00:00+00:00")
+    assert upd["resumed"] is True
+    assert upd["set"]["strategy_source_sha"] == "new1111111111111"
+    assert upd["set"]["status"] == "ACTIVE"
+    assert upd["set"]["updated_at"] == "2026-06-12T05:00:00+00:00"
+    # Every drift field is cleared via $unset.
+    assert set(upd["unset"].keys()) == set(DRIFT_FIELDS)
+    # Audit captures the before/after for the journal.
+    assert upd["audit"]["prior_sha"] == "old0000000000000"
+    assert upd["audit"]["new_sha"] == "new1111111111111"
+    assert upd["audit"]["prior_drift_reason"] == "strategy_source_drift"
+    assert upd["audit"]["resumed"] is True
+
+
+def test_build_repin_update_does_not_resume_kill_switch_pause():
+    """A deployment paused by a kill switch (not drift) keeps its PAUSED status;
+    we only re-pin the source and clear any stale drift fields."""
+    dep = {
+        "id": "d2",
+        "status": "PAUSED",
+        "strategy_source_sha": "old0000000000000",
+        "kill_switch_reason": "max_consecutive_losses",
+    }
+    upd = build_repin_update(dep, "new1111111111111", at="2026-06-12T05:00:00+00:00")
+    assert upd["resumed"] is False
+    assert "status" not in upd["set"]
+    assert upd["set"]["strategy_source_sha"] == "new1111111111111"
+
+
+def test_build_repin_update_on_active_deployment_just_repins():
+    dep = {"id": "d3", "status": "ACTIVE", "strategy_source_sha": "old0000000000000"}
+    upd = build_repin_update(dep, "new1111111111111", at="2026-06-12T05:00:00+00:00")
+    assert upd["resumed"] is False
+    assert "status" not in upd["set"]
+    assert upd["set"]["strategy_source_sha"] == "new1111111111111"
+    assert upd["audit"]["prior_drift_reason"] is None
+
+
+def test_build_repin_update_handles_unresolvable_current_sha_as_none():
+    """If the current source hash can't be computed we still produce a clean
+    update (the route guards against None before calling, but the helper must
+    not crash)."""
+    dep = {"id": "d4", "status": "PAUSED", "drift_reason": "strategy_source_drift",
+           "strategy_source_sha": "old0000000000000"}
+    upd = build_repin_update(dep, None, at="2026-06-12T05:00:00+00:00")
+    assert upd["set"]["strategy_source_sha"] is None
+    assert upd["resumed"] is True

@@ -147,6 +147,7 @@ def test_backend_exposes_signal_and_paper_routes():
         '@api.post("/paper/trades/purge")',
         '@api.post("/paper/trades/{trade_id}/mark")',
         '@api.post("/paper/trades/{trade_id}/close")',
+        '@api.post("/deployments/{deployment_id}/repin-source")',
     ):
         assert needle in server
 

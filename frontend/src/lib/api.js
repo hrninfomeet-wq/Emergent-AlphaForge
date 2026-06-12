@@ -151,6 +151,8 @@ export const api = {
     apiClient.post(`/deployments/${id}/pause`).then((r) => r.data),
   resumeDeployment: (id) =>
     apiClient.post(`/deployments/${id}/resume`).then((r) => r.data),
+  repinDeploymentSource: (id) =>
+    apiClient.post(`/deployments/${id}/repin-source`).then((r) => r.data),
   archiveDeployment: (id, params = {}) =>
     apiClient.post(`/deployments/${id}/archive`, null, { params }).then((r) => r.data),
   evaluateDeployment: (id) =>
