@@ -7,6 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 
 from app.expired_contract_backfill import backfill_expired_option_contracts, select_expiries_for_range  # noqa: E402
+from tests.contract_corpus import backend_api_text
 
 
 class FakeCollection:
@@ -99,7 +100,7 @@ def test_backfill_expired_option_contracts_fetches_and_persists_each_expiry():
 
 
 def test_backend_exposes_expired_contract_backfill_route():
-    server = (ROOT / "backend" / "server.py").read_text(encoding="utf-8")
+    server = backend_api_text()
 
     assert "ExpiredOptionContractBackfillReq" in server
     assert '@api.post("/upstox/expired-options/contracts/{instrument}/sync")' in server

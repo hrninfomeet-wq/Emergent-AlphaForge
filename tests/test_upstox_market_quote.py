@@ -19,6 +19,7 @@ sys.modules.setdefault("motor", motor_module)
 sys.modules.setdefault("motor.motor_asyncio", motor_asyncio_module)
 
 from app import upstox_client  # noqa: E402
+from tests.contract_corpus import backend_api_text
 
 
 def test_normalize_market_quote_keeps_only_safe_snapshot_fields():
@@ -60,7 +61,7 @@ def test_normalize_market_quote_keeps_only_safe_snapshot_fields():
 
 
 def test_backend_exposes_upstox_market_quote_route():
-    server = (ROOT / "backend" / "server.py").read_text(encoding="utf-8")
+    server = backend_api_text()
 
     assert "upstox_market_quote" in server
     assert '@api.get("/upstox/market-quote/{instrument}")' in server

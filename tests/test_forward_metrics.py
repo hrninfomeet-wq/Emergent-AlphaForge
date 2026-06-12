@@ -5,6 +5,7 @@ import os
 import sys
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
+from tests.contract_corpus import backend_api_text
 
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -195,7 +196,7 @@ def test_forward_metrics_hides_strategy_library_until_ten_complete_sessions():
 
 
 def test_backend_and_frontend_expose_forward_metrics():
-    server = open(os.path.join(ROOT, "backend", "server.py"), encoding="utf-8").read()
+    server = backend_api_text()
     api = open(os.path.join(ROOT, "frontend", "src", "lib", "api.js"), encoding="utf-8").read()
     library = open(os.path.join(ROOT, "frontend", "src", "pages", "StrategyLibrary.jsx"), encoding="utf-8").read()
 

@@ -1,17 +1,21 @@
 from pathlib import Path
 import py_compile
 import subprocess
+from tests.contract_corpus import backend_api_text
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_backend_server_is_syntax_valid():
-    py_compile.compile(str(ROOT / "backend" / "server.py"), doraise=True)
+    backend = ROOT / "backend"
+    for f in [backend / "server.py", backend / "app" / "schemas.py",
+              backend / "app" / "runtime.py", *sorted((backend / "app" / "routers").glob("*.py"))]:
+        py_compile.compile(str(f), doraise=True)
 
 
 def test_backend_server_imports_pandas_for_upstox_ingest():
-    server = (ROOT / "backend" / "server.py").read_text(encoding="utf-8")
+    server = backend_api_text()
 
     assert "import pandas as pd" in server
     assert 'pd.to_datetime(df["ts"]' in server
@@ -209,7 +213,7 @@ def test_frontend_exposes_upstox_warehouse_controls():
 
 
 def test_backend_upstox_index_ingest_supports_auto_chunk_guidance():
-    server = (ROOT / "backend" / "server.py").read_text(encoding="utf-8")
+    server = backend_api_text()
     chunking = ROOT / "backend" / "app" / "chunking.py"
 
     assert chunking.exists()
@@ -220,7 +224,7 @@ def test_backend_upstox_index_ingest_supports_auto_chunk_guidance():
 
 
 def test_backend_exposes_data_trust_routes_and_backtest_audit():
-    server = (ROOT / "backend" / "server.py").read_text(encoding="utf-8")
+    server = backend_api_text()
 
     assert 'audit_integrity' in server
     assert '@api.get("/warehouse/audit/{instrument}")' in server
@@ -229,7 +233,7 @@ def test_backend_exposes_data_trust_routes_and_backtest_audit():
 
 
 def test_backend_exposes_read_only_upstox_option_contract_routes():
-    server = (ROOT / "backend" / "server.py").read_text(encoding="utf-8")
+    server = backend_api_text()
     client = (ROOT / "backend" / "app" / "upstox_client.py").read_text(encoding="utf-8")
 
     assert "fetch_option_contracts" in client
@@ -254,7 +258,7 @@ def test_backend_declares_phase4_option_and_tick_indexes():
 
 
 def test_backend_exposes_option_candle_ingest_routes():
-    server = (ROOT / "backend" / "server.py").read_text(encoding="utf-8")
+    server = backend_api_text()
     client = (ROOT / "backend" / "app" / "upstox_client.py").read_text(encoding="utf-8")
 
     assert "fetch_historical_1m_for_key_chunked" in client
@@ -263,7 +267,7 @@ def test_backend_exposes_option_candle_ingest_routes():
 
 
 def test_backend_exposes_option_warehouse_preview_and_fetch_routes():
-    server = (ROOT / "backend" / "server.py").read_text(encoding="utf-8")
+    server = backend_api_text()
     planner = ROOT / "backend" / "app" / "option_data_planner.py"
 
     assert planner.exists()
@@ -276,7 +280,7 @@ def test_backend_exposes_option_warehouse_preview_and_fetch_routes():
 
 
 def test_backend_exposes_optional_paired_option_backtest():
-    server = (ROOT / "backend" / "server.py").read_text(encoding="utf-8")
+    server = backend_api_text()
     option_backtest = (ROOT / "backend" / "app" / "option_backtest.py")
 
     assert option_backtest.exists()

@@ -58,8 +58,8 @@ that truth in the UI and close the remaining accepted review items.
 5. **risk_hints in the Signals Ledger** detail row: show the captured
    `risk_hints` (spot pts / premium % / time stop) next to the trigger reasons.
 
-## Slice C — server.py split (GATED: do not start until HANDOFF says the
-senior agent has landed the execution-policy extraction; ask the user if unsure)
+## Slice C — server.py split (DONE 2026-06-13 — executed by the senior agent
+in-session at the user's direction; the Kiro prompt below is superseded)
 
 Mechanical refactor, zero behavior change: move Pydantic request models into
 `backend/app/schemas.py` and split `backend/server.py` routes into
@@ -92,8 +92,7 @@ in that order, each browser-verified before the next. Client-side math only;
 no backend changes except none. One CHANGELOG entry at the end + HANDOFF
 status line; do not push."
 
-Slice C (UNLOCKED 2026-06-13 — the execution-policy extraction has landed;
-paste into Kiro as-is):
+Slice C (DONE — completed by the senior agent on 2026-06-13; do not run):
 "Read docs/HANDOFF.md and .kiro/specs/quality-hardening/spec.md (Slice C), and
 .kiro/specs/forward-surfaces-overhaul/design.md for conventions. Execute the
 Slice C mechanical refactor exactly as specified: move all Pydantic request

@@ -6,6 +6,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 
 from app.option_plan_response import compact_option_plan_for_response  # noqa: E402
+from tests.contract_corpus import backend_api_text
 
 
 def test_compact_option_plan_for_response_keeps_coverage_but_removes_large_date_maps():
@@ -50,7 +51,7 @@ def test_compact_option_plan_for_response_keeps_coverage_but_removes_large_date_
 
 
 def test_backend_and_frontend_default_option_planning_to_atm_only():
-    server = (ROOT / "backend" / "server.py").read_text(encoding="utf-8")
+    server = backend_api_text()
     warehouse = (ROOT / "frontend" / "src" / "pages" / "DataWarehouse.jsx").read_text(encoding="utf-8")
 
     assert 'Field(default_factory=lambda: ["atm"])' in server

@@ -2,6 +2,15 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.28.x] — Quality Hardening, Slice C: server.py split into routers/schemas/runtime (2026-06-13)
+
+503 backend tests pass. The 4,271-line `backend/server.py` monolith is now a 203-line app factory; every route, model, and helper moved **byte-for-byte** (no frontend changes):
+
+- **`app/schemas.py`** — all 24 Pydantic request models. **`app/runtime.py`** — shared singletons (`upstox_stream_manager`, `live_candle_roller`), constants, and the 43 route helpers. **`app/routers/{research,warehouse,journals,deployments,broker}.py`** — 103 routes (22/38/9/16/16); each router file declares its own `api = APIRouter()` so decorators and bodies needed zero edits. `server.py` keeps the app factory, root/health, startup/shutdown + scheduler wiring, and mounts the group routers. Import DAG: server → routers → runtime → app business modules (no cycles, nothing imports server).
+- **Zero-behavior-change proof, not eyeballs**: the OpenAPI schema dumped from the running container before vs after the split is **byte-identical** (sorted-JSON compare); the route table is set-identical (107 routes); a first-match probe replayed 111 (URL, method) pairs through both apps' compiled route regexes in original vs new registration order — same winning route every time (no literal-vs-`{param}` shadowing introduced). Full suite + rebuilt container + 18-endpoint curl smoke + browser sweep of all 7 pages (no console errors).
+- **Contract tests** updated in the same commit: new `tests/contract_corpus.py` (`backend_api_text()` = server.py + schemas + runtime + routers concatenated); the 17 test files that string-asserted on server.py text now assert on the corpus, and the bootstrap `py_compile` check covers all 9 split files. Tests still never import server.py.
+- The quality-hardening spec (Slices A/B/C) is now **fully delivered**, closing out the 2026-06-12 architecture review.
+
 ## [0.27.x] — Execution Policy: One Source of Exit Truth + Sim↔Live Parity Tests (2026-06-13)
 
 503 backend tests pass (11 new parity invariants). The last big item from the accepted architecture review.

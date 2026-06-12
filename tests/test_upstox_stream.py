@@ -15,6 +15,7 @@ from app.upstox_stream import (  # noqa: E402
     normalize_feed_response,
     persist_ticks,
 )
+from tests.contract_corpus import backend_api_text
 
 
 def _varint(value: int) -> bytes:
@@ -177,7 +178,7 @@ def test_stream_manager_status_is_sanitized_and_tracks_subscription():
 
 
 def test_backend_and_frontend_expose_upstox_stream_controls():
-    server = (ROOT / "backend" / "server.py").read_text(encoding="utf-8")
+    server = backend_api_text()
     api = (ROOT / "frontend" / "src" / "lib" / "api.js").read_text(encoding="utf-8")
     header = (ROOT / "frontend" / "src" / "components" / "MarketHeader.jsx").read_text(encoding="utf-8")
 

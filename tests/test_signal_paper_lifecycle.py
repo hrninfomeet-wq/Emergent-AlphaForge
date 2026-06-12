@@ -7,6 +7,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 
 from app.paper_trading import close_trade, mark_trade_to_market, paper_trade_from_signal  # noqa: E402
 from app.signal_lifecycle import SignalStateError, create_signal_doc, transition_signal  # noqa: E402
+from tests.contract_corpus import backend_api_text
 
 
 def test_signal_lifecycle_persists_transition_history():
@@ -136,7 +137,7 @@ def test_backend_exposes_signal_and_paper_routes():
     ledger / purge / overview routes exist, and the retired manual flows
     (research-signal create, transitions, approve/skip/mark-blocked, manual
     deploy-to-paper) stay gone."""
-    server = (ROOT / "backend" / "server.py").read_text(encoding="utf-8")
+    server = backend_api_text()
 
     for needle in (
         '@api.get("/signals")',

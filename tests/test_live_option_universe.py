@@ -137,7 +137,7 @@ def test_build_live_option_universe_falls_back_to_latest_spot_candle():
 
 
 def test_backend_exposes_live_option_stream_routes():
-    server = open(os.path.join(ROOT, "backend", "server.py"), encoding="utf-8").read()
+    server = backend_api_text()
     api = open(os.path.join(ROOT, "frontend", "src", "lib", "api.js"), encoding="utf-8").read()
 
     assert '@api.get("/upstox/stream/options/universe")' in server
@@ -151,6 +151,7 @@ def test_backend_exposes_live_option_stream_routes():
 # ---------------------------------------------------------------------------
 
 from app.live_option_universe import radius_for_deployments  # noqa: E402
+from tests.contract_corpus import backend_api_text
 
 
 def test_radius_default_is_one_with_no_deployments():
@@ -185,7 +186,7 @@ def test_radius_clamps_to_five_and_ignores_unknown():
 
 
 def test_market_hours_loop_wires_baseline_option_stream_follow():
-    server = open(os.path.join(ROOT, "backend", "server.py"), encoding="utf-8").read()
+    server = backend_api_text()
     # A baseline radius constant exists and covers ATM±3 for the chain snapshot.
     assert "OPTION_CHAIN_BASELINE_RADIUS = 3" in server
     # The market-hours loop calls auto-follow with that baseline floor.

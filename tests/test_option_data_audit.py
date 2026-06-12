@@ -6,6 +6,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 
 from app.option_data_audit import summarize_option_audit  # noqa: E402
+from tests.contract_corpus import backend_api_text
 
 
 def test_summarize_option_audit_flags_missing_and_incomplete_contract_days():
@@ -55,7 +56,7 @@ def test_summarize_option_audit_flags_missing_and_incomplete_contract_days():
 
 
 def test_backend_exposes_option_audit_routes():
-    server = (ROOT / "backend" / "server.py").read_text(encoding="utf-8")
+    server = backend_api_text()
 
     assert '@api.get("/options/audit/{instrument}")' in server
     assert '@api.delete("/options/data/{instrument}")' in server

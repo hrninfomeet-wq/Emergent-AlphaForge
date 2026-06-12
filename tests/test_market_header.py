@@ -11,6 +11,7 @@ from app.market_header import (  # noqa: E402
     normalize_quote,
     pct_change,
 )
+from tests.contract_corpus import backend_api_text
 
 
 def test_pct_change_uses_previous_close():
@@ -101,7 +102,7 @@ def test_build_market_header_snapshot_keeps_failed_items_visible():
 
 
 def test_backend_exposes_market_header_route():
-    server = (ROOT / "backend" / "server.py").read_text(encoding="utf-8")
+    server = backend_api_text()
 
     assert '@api.get("/market/header")' in server
     assert "market_header_snapshot" in server

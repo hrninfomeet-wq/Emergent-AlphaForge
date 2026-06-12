@@ -10,6 +10,7 @@ refactor cannot silently drop them. Each item is added in its own commit:
   5. risk_hints in the Signals Ledger detail row
 """
 from pathlib import Path
+from tests.contract_corpus import backend_api_text
 
 ROOT = Path(__file__).resolve().parents[1]
 FRONTEND = ROOT / "frontend" / "src"
@@ -61,7 +62,7 @@ def test_backtest_run_journal_exposes_run_comparison():
 
 
 def test_data_warehouse_exposes_volatility_audit_panel():
-    server = (ROOT / "backend" / "server.py").read_text(encoding="utf-8")
+    server = backend_api_text()
     api = _read("lib", "api.js")
     warehouse = _read("pages", "DataWarehouse.jsx")
     # Endpoint already exists (no backend change needed) and api.js calls it.

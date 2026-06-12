@@ -6,6 +6,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 
 from app.option_coverage import summarize_option_coverage  # noqa: E402
+from tests.contract_corpus import backend_api_text
 
 
 def test_summarize_option_coverage_groups_days_and_contract_counts():
@@ -39,7 +40,7 @@ def test_summarize_option_coverage_groups_days_and_contract_counts():
 
 
 def test_backend_and_frontend_expose_option_coverage_heatmap():
-    server = (ROOT / "backend" / "server.py").read_text(encoding="utf-8")
+    server = backend_api_text()
     api = (ROOT / "frontend" / "src" / "lib" / "api.js").read_text(encoding="utf-8")
     warehouse = (ROOT / "frontend" / "src" / "pages" / "DataWarehouse.jsx").read_text(encoding="utf-8")
 
@@ -51,13 +52,13 @@ def test_backend_and_frontend_expose_option_coverage_heatmap():
 def test_option_coverage_endpoint_is_cache_backed():
     """The coverage endpoint must read the precomputed cache, not the slow
     full-collection aggregation, on the page-load path."""
-    server = (ROOT / "backend" / "server.py").read_text(encoding="utf-8")
+    server = backend_api_text()
     assert "get_option_coverage_cached" in server
 
 
 def test_holiday_calendar_wired_end_to_end():
     """Holiday calendar endpoint + UI modal must be present and connected."""
-    server = (ROOT / "backend" / "server.py").read_text(encoding="utf-8")
+    server = backend_api_text()
     api = (ROOT / "frontend" / "src" / "lib" / "api.js").read_text(encoding="utf-8")
     warehouse = (ROOT / "frontend" / "src" / "pages" / "DataWarehouse.jsx").read_text(encoding="utf-8")
     dialog = (ROOT / "frontend" / "src" / "components" / "HolidayCalendarDialog.jsx").read_text(encoding="utf-8")
@@ -136,7 +137,7 @@ def test_data_hygiene_wired_into_warehouse_ui():
 def test_warehouse_auto_update_wired_end_to_end():
     """Auto-update must be triggered on startup, on OAuth connect, and daily,
     with status/toggle routes and a UI surface."""
-    server = (ROOT / "backend" / "server.py").read_text(encoding="utf-8")
+    server = backend_api_text()
     api = (ROOT / "frontend" / "src" / "lib" / "api.js").read_text(encoding="utf-8")
     panel = (ROOT / "frontend" / "src" / "components" / "DataHygienePanel.jsx").read_text(encoding="utf-8")
 
@@ -154,7 +155,7 @@ def test_warehouse_auto_update_wired_end_to_end():
 
 def test_warehouse_point_lookup_wired_end_to_end():
     """The spot + ATM CE/PE point-in-time lookup must be wired end to end."""
-    server = (ROOT / "backend" / "server.py").read_text(encoding="utf-8")
+    server = backend_api_text()
     api = (ROOT / "frontend" / "src" / "lib" / "api.js").read_text(encoding="utf-8")
     lookup = (ROOT / "frontend" / "src" / "components" / "WarehouseLookup.jsx").read_text(encoding="utf-8")
     warehouse = (ROOT / "frontend" / "src" / "pages" / "DataWarehouse.jsx").read_text(encoding="utf-8")
@@ -201,7 +202,7 @@ def test_oauth_token_expiry_countdown_present():
 def test_warehouse_candlestick_chart_wired_end_to_end():
     """The per-index candlestick chart + resample endpoint must be wired, with
     1m timeframe, an OHLC crosshair legend, and a date/time locator."""
-    server = (ROOT / "backend" / "server.py").read_text(encoding="utf-8")
+    server = backend_api_text()
     api = (ROOT / "frontend" / "src" / "lib" / "api.js").read_text(encoding="utf-8")
     chart = (ROOT / "frontend" / "src" / "components" / "WarehouseChart.jsx").read_text(encoding="utf-8")
     warehouse = (ROOT / "frontend" / "src" / "pages" / "DataWarehouse.jsx").read_text(encoding="utf-8")

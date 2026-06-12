@@ -1,11 +1,12 @@
 from pathlib import Path
+from tests.contract_corpus import backend_api_text
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_backend_exposes_background_upstox_index_ingest_job_routes():
-    server = (ROOT / "backend" / "server.py").read_text(encoding="utf-8")
+    server = backend_api_text()
     db = (ROOT / "backend" / "app" / "db.py").read_text(encoding="utf-8")
 
     assert '@api.post("/upstox/warehouse/ingest/jobs")' in server

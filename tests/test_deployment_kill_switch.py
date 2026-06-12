@@ -213,6 +213,7 @@ def test_wrapper_blocks_on_max_open():
 # ---- end-to-end wiring contract --------------------------------------------
 
 from pathlib import Path  # noqa: E402
+from tests.contract_corpus import backend_api_text
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -221,7 +222,7 @@ def test_kill_switch_wired_end_to_end():
     """Kill switches must be wired: evaluator import, create-request fields, and
     the deployment form inputs."""
     evaluator = (ROOT / "backend" / "app" / "deployment_evaluator.py").read_text(encoding="utf-8")
-    server = (ROOT / "backend" / "server.py").read_text(encoding="utf-8")
+    server = backend_api_text()
     live = (ROOT / "frontend" / "src" / "pages" / "LiveSignals.jsx").read_text(encoding="utf-8")
 
     # Evaluator checks kill switches and can pause.

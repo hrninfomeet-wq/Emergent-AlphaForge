@@ -6,6 +6,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 
 from app.strategy_deployments import build_deployment_doc  # noqa: E402
+from tests.contract_corpus import backend_api_text
 
 
 def test_build_deployment_from_preset_freezes_auditable_config():
@@ -85,7 +86,7 @@ def test_build_deployment_rejects_unknown_mode():
 
 
 def test_backend_exposes_strategy_deployment_routes_and_index():
-    server = (ROOT / "backend" / "server.py").read_text(encoding="utf-8")
+    server = backend_api_text()
     db = (ROOT / "backend" / "app" / "db.py").read_text(encoding="utf-8")
 
     for needle in (

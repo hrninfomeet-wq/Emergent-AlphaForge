@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from tests.contract_corpus import backend_api_text
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 
@@ -13,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_intraday_fetch_and_backfill_route_are_wired():
     """The intraday client fn and the backfill route must exist and be reachable."""
     client = (ROOT / "backend" / "app" / "upstox_client.py").read_text(encoding="utf-8")
-    server = (ROOT / "backend" / "server.py").read_text(encoding="utf-8")
+    server = backend_api_text()
 
     # Client uses the Upstox INTRADAY endpoint (serves the current day, unlike
     # the historical endpoint which is empty for today).
