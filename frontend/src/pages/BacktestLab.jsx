@@ -1360,6 +1360,7 @@ function ResultsView({ result }) {
       <DataAuditCard audit={result.data_audit} />
       <OptionBacktestCard optionBacktest={result.option_backtest} />
       <ContextBreakdownCard optionBacktest={result.option_backtest} />
+      <MaeMfeCard trades={result.trades} optionBacktest={result.option_backtest} />
 
       {/* Chart */}
       <MultiPaneChart candles={candles} equity={equity} drawdown={drawdown} height={520} />
@@ -1670,6 +1671,103 @@ function ContextBreakdownCard({ optionBacktest }) {
           );
         })}
       </div>
+    </Panel>
+  );
+}
+
+// ---- Client-side research analytics (no backend math) ----
+// MAE = Maximum Adverse Excursion: how far a trade ran AGAINST you before it
+// closed. MFE = Maximum Favorable Excursion: how far it ran in your favor.
+// When option execution ran we use the option-leg excursions (premium points —
+// what a real stop/target acts on); otherwise the spot-leg ones.
+function median(arr) {
+  if (!arr.length) return null;
+  const s = [...arr].sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+}
+
+function buildHistogram(values, bins = 12) {
+  if (!values.length) return [];
+  const max = Math.max(...values, 0);
+  if (max <= 0) return [{ lo: 0, hi: 0, count: values.length }];
+  const width = max / bins;
+  const out = Array.from({ length: bins }, (_, i) => ({ lo: i * width, hi: (i + 1) * width, count: 0 }));
+  for (const v of values) {
+    const idx = Math.min(bins - 1, Math.max(0, Math.floor(v / width)));
+    out[idx].count += 1;
+  }
+  return out;
+}
+
+function MiniHistogram({ data, color, testid }) {
+  const maxCount = Math.max(...data.map((d) => d.count), 1);
+  return (
+    <div className="flex items-end gap-0.5 h-20 border-b border-line" data-testid={testid}>
+      {data.map((d, i) => (
+        <div
+          key={i}
+          className="flex-1 flex items-end h-full"
+          title={`${fmtNum(d.lo, 1)}–${fmtNum(d.hi, 1)} pts · ${fmtInt(d.count)} trades`}
+        >
+          <div className={`w-full rounded-t-sm ${color}`} style={{ height: `${(d.count / maxCount) * 100}%` }} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function MaeMfeCard({ trades, optionBacktest }) {
+  const optionEnabled = !!optionBacktest?.enabled;
+  const source = optionEnabled ? (optionBacktest.trades || []) : (trades || []);
+  const mfeKey = optionEnabled ? "option_mfe_pts" : "mfe_pts";
+  const maeKey = optionEnabled ? "option_mae_pts" : "mae_pts";
+  const mfe = source.map((t) => Number(t[mfeKey])).filter((v) => Number.isFinite(v));
+  const mae = source.map((t) => Number(t[maeKey])).filter((v) => Number.isFinite(v));
+  if (mfe.length === 0 && mae.length === 0) return null;
+
+  const medMfe = median(mfe);
+  const medMae = median(mae);
+  const maxMfe = mfe.length ? Math.max(...mfe) : 0;
+  const maxMae = mae.length ? Math.max(...mae) : 0;
+  const mfeHist = buildHistogram(mfe);
+  const maeHist = buildHistogram(mae);
+  const unit = optionEnabled ? "premium pts" : "spot pts";
+
+  return (
+    <Panel title="MAE / MFE Distribution" testid="mae-mfe-card">
+      <div className="text-[11px] text-dimmer mb-3">
+        Excursion of each trade in {unit}, from the {optionEnabled ? "paired option leg" : "spot leg"}. MFE = best
+        unrealized move in your favor; MAE = worst move against you before exit.
+      </div>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div data-testid="mfe-histogram-block">
+          <div className="flex items-baseline justify-between mb-1">
+            <span className="text-[10px] uppercase tracking-wider text-dimmer">MFE (favorable)</span>
+            <span className="text-xs font-mono text-emerald-300">median {fmtNum(medMfe)} · max {fmtNum(maxMfe)}</span>
+          </div>
+          <MiniHistogram data={mfeHist} color="bg-emerald-700" testid="mfe-histogram" />
+          <div className="flex justify-between text-[10px] text-dimmer font-mono mt-0.5">
+            <span>0</span><span>{fmtNum(maxMfe, 1)}</span>
+          </div>
+        </div>
+        <div data-testid="mae-histogram-block">
+          <div className="flex items-baseline justify-between mb-1">
+            <span className="text-[10px] uppercase tracking-wider text-dimmer">MAE (adverse)</span>
+            <span className="text-xs font-mono text-rose-300">median {fmtNum(medMae)} · max {fmtNum(maxMae)}</span>
+          </div>
+          <MiniHistogram data={maeHist} color="bg-rose-700" testid="mae-histogram" />
+          <div className="flex justify-between text-[10px] text-dimmer font-mono mt-0.5">
+            <span>0</span><span>{fmtNum(maxMae, 1)}</span>
+          </div>
+        </div>
+      </div>
+      {medMae != null && (
+        <div className="mt-3 text-[11px] text-dim" data-testid="mae-mfe-hint">
+          Median MAE is <span className="font-mono text-foreground">{fmtNum(medMae)} {unit}</span> — a stop tighter than
+          that would have closed half your trades early, including winners that later recovered.
+        </div>
+      )}
     </Panel>
   );
 }
