@@ -2,6 +2,15 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.27.x] — Execution Policy: One Source of Exit Truth + Sim↔Live Parity Tests (2026-06-13)
+
+503 backend tests pass (11 new parity invariants). The last big item from the accepted architecture review.
+
+- **`app/execution_policy.py` (new)** — THE place exit semantics live: `resolve_premium_levels` (pts-over-pct, target above / stop below, configurable floor — sim 0.0, live ₹0.05), `tick_exit_reason` (a live tick is a degenerate bar routed through the backtest's own `intrabar_exit`), `spot_mirror_levels` (byte-for-byte the spot engine's CE/PE formulas), `spot_mirror_exit_reason`.
+- **Delegations (behavior-preserving)**: `option_backtest._resolve_option_levels`, `paper_auto.compute_auto_risk_levels` / `compute_spot_exit_levels` / `spot_exit_reason`, and `paper_trading.risk_exit_reason` now all resolve through the shared policy.
+- **Real parity bug fixed by the extraction**: both live tick deciders (`risk_exit_reason`, `spot_exit_reason`) checked the TARGET first while the entire sim stack is pessimistic STOP-FIRST — in degenerate configurations (stop ≥ target) live would book the lucky fill the backtest refuses. Live now routes through `intrabar_exit`, so sim and live cannot drift; `tests/test_execution_policy.py` replays identical inputs through both paths (levels, tick-vs-bar decisions, both directions, floors/rounding documented) and pins stop-first forever.
+- Kiro quality-hardening **Slice C (server.py split) is now UNLOCKED** — prompt added to `.kiro/specs/quality-hardening/spec.md`.
+
 ## [0.26.x] — Quality Hardening, Slice B: Research analytics the data already supports (2026-06-12)
 
 492 backend tests pass (5 new contract pins); frontend builds clean (no new eslint warnings). Frontend-only, client-side math, no backend changes — five separately-committed, separately browser-verified analytics surfaces over data the existing endpoints already return. Each commit rebuilt the frontend container and was confirmed served on `http://localhost:3000`.
@@ -30,15 +39,6 @@ All notable changes to AlphaForge Trading Lab.
 - **Auto-update history** (`DataHygienePanel`): a collapsible list of the last ~10 runs from `GET /api/warehouse/auto-update/status` `history[]` (status · trigger · jobs submitted · finished-at · error).
 - **Opt-in retention** (`frontend/src/pages/SignalJournal.jsx`): a "auto-purge AUDITED older than N days" input in the cleanup bar, persisted in `localStorage`. Applied client-side on page load via `POST /api/signals/purge` `{older_than_days, states: ["AUDITED"]}` at most once per IST day (timestamp guard). Empty = off (default off); confirm-free because the user opted in by setting N.
 - Contract tests pinned in the same commit: band fields + history (`test_option_coverage.py`), the warehouse-health banner (`test_bootstrap_contract.py`), and the retention surface (`test_signal_paper_lifecycle.py`).
-
-## [0.24.x] — Execution Policy: One Source of Exit Truth + Sim↔Live Parity Tests (2026-06-13)
-
-503 backend tests pass (11 new parity invariants). The last big item from the accepted architecture review.
-
-- **`app/execution_policy.py` (new)** — THE place exit semantics live: `resolve_premium_levels` (pts-over-pct, target above / stop below, configurable floor — sim 0.0, live ₹0.05), `tick_exit_reason` (a live tick is a degenerate bar routed through the backtest's own `intrabar_exit`), `spot_mirror_levels` (byte-for-byte the spot engine's CE/PE formulas), `spot_mirror_exit_reason`.
-- **Delegations (behavior-preserving)**: `option_backtest._resolve_option_levels`, `paper_auto.compute_auto_risk_levels` / `compute_spot_exit_levels` / `spot_exit_reason`, and `paper_trading.risk_exit_reason` now all resolve through the shared policy.
-- **Real parity bug fixed by the extraction**: both live tick deciders (`risk_exit_reason`, `spot_exit_reason`) checked the TARGET first while the entire sim stack is pessimistic STOP-FIRST — in degenerate configurations (stop ≥ target) live would book the lucky fill the backtest refuses. Live now routes through `intrabar_exit`, so sim and live cannot drift; `tests/test_execution_policy.py` replays identical inputs through both paths (levels, tick-vs-bar decisions, both directions, floors/rounding documented) and pins stop-first forever.
-- Kiro quality-hardening **Slice C (server.py split) is now UNLOCKED** — prompt added to `.kiro/specs/quality-hardening/spec.md`.
 
 ## [0.23.x] — Warehouse Truth: Daily ATM-Band Completeness + Rolling 9-Month Scope (2026-06-12)
 
