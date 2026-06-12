@@ -16,3 +16,12 @@ def backend_api_text() -> str:
     parts = [backend / "server.py", backend / "app" / "schemas.py", backend / "app" / "runtime.py"]
     parts += sorted((backend / "app" / "routers").glob("*.py"))
     return "\n".join(p.read_text(encoding="utf-8") for p in parts)
+
+
+def warehouse_page_text() -> str:
+    """DataWarehouse page + its split panel components (W4): testid/route pins
+    keep working no matter which warehouse component file they live in."""
+    fe = ROOT / "frontend" / "src"
+    parts = [fe / "pages" / "DataWarehouse.jsx"]
+    parts += sorted((fe / "components" / "warehouse").glob("*.jsx"))
+    return "\n".join(q.read_text(encoding="utf-8") for q in parts)

@@ -1,5 +1,6 @@
 from pathlib import Path
 from tests.contract_corpus import backend_api_text
+from tests.contract_corpus import warehouse_page_text
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -31,7 +32,7 @@ def test_upstox_index_ingest_module_tracks_progress_and_bulk_persists():
 
 def test_frontend_uses_background_ingest_job_and_large_import_hint():
     api = (ROOT / "frontend" / "src" / "lib" / "api.js").read_text(encoding="utf-8")
-    warehouse = (ROOT / "frontend" / "src" / "pages" / "DataWarehouse.jsx").read_text(encoding="utf-8")
+    warehouse = warehouse_page_text()
 
     assert "startUpstoxIngestJob" in api
     assert "getUpstoxIngestJob" in api

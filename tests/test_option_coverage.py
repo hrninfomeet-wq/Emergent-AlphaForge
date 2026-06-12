@@ -7,6 +7,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 
 from app.option_coverage import summarize_option_coverage  # noqa: E402
 from tests.contract_corpus import backend_api_text
+from tests.contract_corpus import warehouse_page_text
 
 
 def test_summarize_option_coverage_groups_days_and_contract_counts():
@@ -42,7 +43,7 @@ def test_summarize_option_coverage_groups_days_and_contract_counts():
 def test_backend_and_frontend_expose_option_coverage_heatmap():
     server = backend_api_text()
     api = (ROOT / "frontend" / "src" / "lib" / "api.js").read_text(encoding="utf-8")
-    warehouse = (ROOT / "frontend" / "src" / "pages" / "DataWarehouse.jsx").read_text(encoding="utf-8")
+    warehouse = warehouse_page_text()
 
     assert '@api.get("/options/coverage")' in server
     assert "optionCoverage" in api
@@ -60,7 +61,7 @@ def test_holiday_calendar_wired_end_to_end():
     """Holiday calendar endpoint + UI modal must be present and connected."""
     server = backend_api_text()
     api = (ROOT / "frontend" / "src" / "lib" / "api.js").read_text(encoding="utf-8")
-    warehouse = (ROOT / "frontend" / "src" / "pages" / "DataWarehouse.jsx").read_text(encoding="utf-8")
+    warehouse = warehouse_page_text()
     dialog = (ROOT / "frontend" / "src" / "components" / "HolidayCalendarDialog.jsx").read_text(encoding="utf-8")
 
     assert '@api.get("/calendar/holidays")' in server
@@ -70,9 +71,14 @@ def test_holiday_calendar_wired_end_to_end():
 
 
 def test_obsolete_yfinance_ingest_panel_removed():
-    """The yfinance 7d/14d ingest panel was obsolete and must be gone."""
-    warehouse = (ROOT / "frontend" / "src" / "pages" / "DataWarehouse.jsx").read_text(encoding="utf-8")
-    assert "yfinance" not in warehouse
+    """The yfinance 7d/14d ingest panel was obsolete and must be gone.
+
+    The diagnostics runs table may still LABEL historic yfinance-sourced runs
+    (RUN_SOURCE_LABELS) — that single mention is allowed; any other yfinance
+    reference (a button, an api call, a panel) is a regression."""
+    warehouse = warehouse_page_text()
+    assert warehouse.count("yfinance") == 1
+    assert 'yfinance: "Yahoo Finance ingest"' in warehouse
     assert "Ingest 7d" not in warehouse
 
 
@@ -91,7 +97,7 @@ def test_background_jobs_tracked_globally_above_router():
     the router so progress survives navigation."""
     app = (ROOT / "frontend" / "src" / "App.js").read_text(encoding="utf-8")
     jobs = (ROOT / "frontend" / "src" / "lib" / "jobs.jsx").read_text(encoding="utf-8")
-    warehouse = (ROOT / "frontend" / "src" / "pages" / "DataWarehouse.jsx").read_text(encoding="utf-8")
+    warehouse = warehouse_page_text()
 
     # Provider wraps the app shell (which contains the router).
     assert "JobsProvider" in app
@@ -110,7 +116,7 @@ def test_data_hygiene_wired_into_warehouse_ui():
     the global job tracker."""
     api = (ROOT / "frontend" / "src" / "lib" / "api.js").read_text(encoding="utf-8")
     panel = (ROOT / "frontend" / "src" / "components" / "DataHygienePanel.jsx").read_text(encoding="utf-8")
-    warehouse = (ROOT / "frontend" / "src" / "pages" / "DataWarehouse.jsx").read_text(encoding="utf-8")
+    warehouse = warehouse_page_text()
     jobs = (ROOT / "frontend" / "src" / "lib" / "jobs.jsx").read_text(encoding="utf-8")
 
     # API methods exist for the three hygiene endpoints.
@@ -158,7 +164,7 @@ def test_warehouse_point_lookup_wired_end_to_end():
     server = backend_api_text()
     api = (ROOT / "frontend" / "src" / "lib" / "api.js").read_text(encoding="utf-8")
     lookup = (ROOT / "frontend" / "src" / "components" / "WarehouseLookup.jsx").read_text(encoding="utf-8")
-    warehouse = (ROOT / "frontend" / "src" / "pages" / "DataWarehouse.jsx").read_text(encoding="utf-8")
+    warehouse = warehouse_page_text()
 
     assert '@api.get("/warehouse/lookup")' in server
     assert "lookup_market_snapshot" in server
@@ -188,7 +194,7 @@ def test_oauth_token_expiry_countdown_present():
     Upstox panel. The logic lives in the shared TokenCountdown component used by
     both Layout (button variant) and DataWarehouse (badge variant)."""
     layout = (ROOT / "frontend" / "src" / "components" / "Layout.jsx").read_text(encoding="utf-8")
-    warehouse = (ROOT / "frontend" / "src" / "pages" / "DataWarehouse.jsx").read_text(encoding="utf-8")
+    warehouse = warehouse_page_text()
     token_component = (ROOT / "frontend" / "src" / "components" / "TokenCountdown.jsx").read_text(encoding="utf-8")
 
     # Shared component carries both surfaces' testids.
@@ -205,7 +211,7 @@ def test_warehouse_candlestick_chart_wired_end_to_end():
     server = backend_api_text()
     api = (ROOT / "frontend" / "src" / "lib" / "api.js").read_text(encoding="utf-8")
     chart = (ROOT / "frontend" / "src" / "components" / "WarehouseChart.jsx").read_text(encoding="utf-8")
-    warehouse = (ROOT / "frontend" / "src" / "pages" / "DataWarehouse.jsx").read_text(encoding="utf-8")
+    warehouse = warehouse_page_text()
 
     assert '@api.get("/warehouse/ohlc/{instrument}")' in server
     assert "build_ohlc_response" in server

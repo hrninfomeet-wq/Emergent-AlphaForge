@@ -7,6 +7,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 
 from app.option_plan_response import compact_option_plan_for_response  # noqa: E402
 from tests.contract_corpus import backend_api_text
+from tests.contract_corpus import warehouse_page_text
 
 
 def test_compact_option_plan_for_response_keeps_coverage_but_removes_large_date_maps():
@@ -52,14 +53,14 @@ def test_compact_option_plan_for_response_keeps_coverage_but_removes_large_date_
 
 def test_backend_and_frontend_default_option_planning_to_atm_only():
     server = backend_api_text()
-    warehouse = (ROOT / "frontend" / "src" / "pages" / "DataWarehouse.jsx").read_text(encoding="utf-8")
+    warehouse = warehouse_page_text()
 
     assert 'Field(default_factory=lambda: ["atm"])' in server
     assert 'moneyness: ["atm"]' in warehouse
 
 
 def test_frontend_explains_planned_coverage_scope():
-    warehouse = (ROOT / "frontend" / "src" / "pages" / "DataWarehouse.jsx").read_text(encoding="utf-8")
+    warehouse = warehouse_page_text()
 
     assert "option-warehouse-planned-coverage" in warehouse
     assert "Planned coverage" in warehouse

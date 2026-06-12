@@ -2,6 +2,15 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.29.x] — Data Warehouse Overhaul: honest status, one-button sync, band-truth heatmap (2026-06-13)
+
+513 backend tests pass. Full implementation of the four approved workstreams from the Data Warehouse page review (commits `51a7fd2`, `d15ec40`, + this one):
+
+- **W1 — the perpetual "warning" is fixed, honestly.** The nightly catch-up's option stage was still the close-sampled moneyness preview (pre-band philosophy); it is now `build_band_fetch_plan` over the FULL rolling window, so automation self-heals wick-edge gaps and stops re-fetching stored candles (observed: 24,330 fetched / 0 added in one boot run). New **broker-empty ledger** (`option_known_empty`): pairs a clean fetch proves the broker has no candles for are recorded once, excluded from missing counts/actions, and reported as `broker_empty_pairs` — verified live: NIFTY/BANKNIFTY/SENSEX **100% band / verified / 0 actions** with 102 pairs ledgered. A **grace rule** protects the latest closed session (Upstox publishes F&O history with a lag — a same-night sync saw Friday's whole band empty and would have mis-ledgered it; those 76 pairs were purged and stay actionable until published). `POST /api/warehouse/sync` = catch-up + band sweep for spot-current instruments.
+- **W2 — status-first page.** The hygiene plan persists (`data_hygiene_latest`, `GET /api/data-hygiene/latest`) and renders ON LOAD: per-index band chips + broker-empty footnote + checked-at + action count — no forced 5–15s check. "Update to latest" → **"Sync now"**; stale fixed-scope caption replaced by the live rolling window; collapsible "How this page works"; IST date defaults; VIX baseline served by the backend.
+- **W3 — heatmaps tell the truth.** The option heatmap's old metric (`candles / 375×stored contracts`) was self-referential — green days could miss entire wick strikes. Cells are now per-day **band coverage** (`per_day` from `band_completeness`, served from the persisted plan; the heavy `/options/coverage` load is gone from the page). Both heatmaps get 8-weeks/3-months/All range selectors instead of ~270 unbounded columns.
+- **W4 — structure.** Option planner + expired-contract backfill demoted into a collapsed **Advanced tools** section (banner: routine maintenance is automatic); destructive clears moved into a **danger zone** requiring typed instrument-name confirmation; runs table gets human source labels + a status filter; `DataWarehouse.jsx` split 1,909 → 526 lines + 8 panel components under `components/warehouse/`; contract tests read `tests/contract_corpus.warehouse_page_text()`.
+
 ## [0.28.x] — Quality Hardening, Slice C: server.py split into routers/schemas/runtime (2026-06-13)
 
 503 backend tests pass. The 4,271-line `backend/server.py` monolith is now a 203-line app factory; every route, model, and helper moved **byte-for-byte** (no frontend changes):

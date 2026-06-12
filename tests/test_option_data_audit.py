@@ -7,6 +7,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 
 from app.option_data_audit import summarize_option_audit  # noqa: E402
 from tests.contract_corpus import backend_api_text
+from tests.contract_corpus import warehouse_page_text
 
 
 def test_summarize_option_audit_flags_missing_and_incomplete_contract_days():
@@ -69,7 +70,7 @@ def test_frontend_option_clear_retained_audit_panel_removed():
     'clear option candles' maintenance action was relocated into the Data Trust
     Audit panel and must still be present."""
     api = (ROOT / "frontend" / "src" / "lib" / "api.js").read_text(encoding="utf-8")
-    page = (ROOT / "frontend" / "src" / "pages" / "DataWarehouse.jsx").read_text(encoding="utf-8")
+    page = warehouse_page_text()
 
     # API helpers remain (route still exists for programmatic use).
     assert "clearOptionData" in api

@@ -2,6 +2,7 @@ from pathlib import Path
 import py_compile
 import subprocess
 from tests.contract_corpus import backend_api_text
+from tests.contract_corpus import warehouse_page_text
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -192,7 +193,7 @@ def test_project_docs_and_user_manual_are_current():
 
 def test_frontend_exposes_upstox_warehouse_controls():
     api = (ROOT / "frontend" / "src" / "lib" / "api.js").read_text(encoding="utf-8")
-    warehouse = (ROOT / "frontend" / "src" / "pages" / "DataWarehouse.jsx").read_text(encoding="utf-8")
+    warehouse = warehouse_page_text()
 
     for method in ("upstoxStatus", "startUpstoxAuth", "disconnectUpstox", "ingestUpstox", "marketQuote"):
         assert method in api
@@ -295,7 +296,7 @@ def test_backend_exposes_optional_paired_option_backtest():
 
 def test_frontend_exposes_data_trust_controls():
     api = (ROOT / "frontend" / "src" / "lib" / "api.js").read_text(encoding="utf-8")
-    warehouse = (ROOT / "frontend" / "src" / "pages" / "DataWarehouse.jsx").read_text(encoding="utf-8")
+    warehouse = warehouse_page_text()
     backtest = (ROOT / "frontend" / "src" / "pages" / "BacktestLab.jsx").read_text(encoding="utf-8")
 
     for method in ("auditWarehouse", "clearWarehouseData"):
@@ -330,7 +331,7 @@ def test_frontend_exposes_option_backtest_controls_and_results():
 
 def test_frontend_exposes_option_warehouse_planner_controls():
     api = (ROOT / "frontend" / "src" / "lib" / "api.js").read_text(encoding="utf-8")
-    warehouse = (ROOT / "frontend" / "src" / "pages" / "DataWarehouse.jsx").read_text(encoding="utf-8")
+    warehouse = warehouse_page_text()
 
     for method in ("previewOptionWarehouse", "fetchOptionWarehouse"):
         assert method in api
@@ -361,7 +362,7 @@ def test_frontend_exposes_option_warehouse_planner_controls():
 
 def test_frontend_exposes_expired_option_contract_backfill_controls():
     api = (ROOT / "frontend" / "src" / "lib" / "api.js").read_text(encoding="utf-8")
-    warehouse = (ROOT / "frontend" / "src" / "pages" / "DataWarehouse.jsx").read_text(encoding="utf-8")
+    warehouse = warehouse_page_text()
 
     assert "backfillExpiredOptionContracts" in api
     assert "/upstox/expired-options/contracts/" in api

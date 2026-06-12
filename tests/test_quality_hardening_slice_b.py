@@ -11,6 +11,7 @@ refactor cannot silently drop them. Each item is added in its own commit:
 """
 from pathlib import Path
 from tests.contract_corpus import backend_api_text
+from tests.contract_corpus import warehouse_page_text
 
 ROOT = Path(__file__).resolve().parents[1]
 FRONTEND = ROOT / "frontend" / "src"
@@ -64,7 +65,7 @@ def test_backtest_run_journal_exposes_run_comparison():
 def test_data_warehouse_exposes_volatility_audit_panel():
     server = backend_api_text()
     api = _read("lib", "api.js")
-    warehouse = _read("pages", "DataWarehouse.jsx")
+    warehouse = warehouse_page_text()
     # Endpoint already exists (no backend change needed) and api.js calls it.
     assert '@api.post("/volatility/audit")' in server
     assert "volatilityAudit" in api

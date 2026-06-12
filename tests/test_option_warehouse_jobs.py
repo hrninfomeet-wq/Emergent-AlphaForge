@@ -7,6 +7,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 
 from app.option_warehouse_jobs import compact_date_ranges, option_fetch_tasks_from_plan  # noqa: E402
 from tests.contract_corpus import backend_api_text
+from tests.contract_corpus import warehouse_page_text
 
 
 def test_compact_date_ranges_groups_contiguous_calendar_dates():
@@ -68,7 +69,7 @@ def test_option_fetch_tasks_use_missing_selected_dates_not_whole_window():
 def test_backend_and_frontend_expose_background_option_fetch_jobs():
     server = backend_api_text()
     api = (ROOT / "frontend" / "src" / "lib" / "api.js").read_text(encoding="utf-8")
-    warehouse = (ROOT / "frontend" / "src" / "pages" / "DataWarehouse.jsx").read_text(encoding="utf-8")
+    warehouse = warehouse_page_text()
 
     assert '@api.post("/upstox/options/warehouse/fetch/jobs")' in server
     assert '@api.get("/upstox/options/warehouse/fetch/jobs/{run_id}")' in server
