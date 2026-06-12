@@ -286,10 +286,25 @@ function DeployWizard({ presets, initialPreset, onClose, onCreated }) {
   const [readiness, setReadiness] = useState(null);
   const [readinessBusy, setReadinessBusy] = useState(false);
   const [quality, setQuality] = useState(null);
+  const [preflight, setPreflight] = useState(null);
+  const [preflightBusy, setPreflightBusy] = useState(false);
   const set = (k, v) => setForm((prev) => ({ ...prev, [k]: v }));
 
   const preset = presets.find((p) => p.name === form.source_id);
   const instrument = (preset?.config?.instrument || "").toUpperCase();
+
+  // Data-realism preflight for the chosen preset's instrument (informational,
+  // never blocks). Re-runs when the instrument changes.
+  useEffect(() => {
+    let cancelled = false;
+    if (!instrument) { setPreflight(null); return () => {}; }
+    setPreflightBusy(true);
+    api.deploymentPreflight(instrument)
+      .then((r) => { if (!cancelled) setPreflight(r); })
+      .catch(() => { if (!cancelled) setPreflight(null); })
+      .finally(() => { if (!cancelled) setPreflightBusy(false); });
+    return () => { cancelled = true; };
+  }, [instrument]);
 
   // Evidence + quality for the chosen preset.
   useEffect(() => {
@@ -419,6 +434,8 @@ function DeployWizard({ presets, initialPreset, onClose, onCreated }) {
               </label>
               {readinessBusy && <div className="text-dimmer text-[11px]">Checking validation evidence…</div>}
               {readiness && <ReadinessSummary readiness={readiness} />}
+              {preflightBusy && <div className="text-dimmer text-[11px]">Checking data realism…</div>}
+              {preflight && <PreflightSummary preflight={preflight} />}
               {form.source_id && preset?.config?.execution == null && (
                 <div className="text-[10px] text-dimmer">
                   This preset carries no execution policy (older preset or spot-only run) — review step 2 manually.
@@ -632,6 +649,46 @@ function ReadinessSummary({ readiness }) {
         `Option rupee (${oe?.kind === "rerank" ? "re-rank" : "backtest"}): net ${inr(oe?.net_pnl_value)}, ${oe?.paired_trade_count} paired`,
         `Option rupee evidence ${oe?.params_match ? `is negative (${inr(oe?.net_pnl_value)})` : "exists but for different params"}`,
         "No option-rupee validation — run an Option re-rank or option backtest first.")}
+    </div>
+  );
+}
+
+// Compact data-realism preflight for step 1 (GET /api/deployments/preflight):
+// per-instrument warehouse coverage, upcoming option contracts, token state and
+// known structural breaks. Informational only — never blocks deployment.
+function PreflightSummary({ preflight }) {
+  const checks = preflight.checks || [];
+  const breaks = preflight.structural_breaks || [];
+  const dot = (status) =>
+    status === "verified" ? "bg-emerald-400"
+      : status === "warning" ? "bg-amber-400"
+      : status === "degraded" ? "bg-rose-400"
+      : "bg-zinc-600";
+  const text = (status) =>
+    status === "verified" ? "text-emerald-400"
+      : status === "warning" ? "text-amber-400"
+      : status === "degraded" ? "text-rose-400"
+      : "text-dimmer";
+  return (
+    <div className="rounded-md border border-line bg-bg-2 p-2 space-y-1" data-testid="preflight-summary">
+      <div className="flex items-center gap-2">
+        <span className={`inline-block w-1.5 h-1.5 rounded-full ${dot(preflight.status)}`} />
+        <div className="text-[10px] uppercase tracking-wider text-dimmer">
+          Data realism · {preflight.instrument} (informational)
+        </div>
+      </div>
+      {checks.map((c) => (
+        <div key={c.id} className={`flex items-start gap-2 text-[11px] ${text(c.status)}`} title={c.detail}>
+          <span className={`mt-1.5 inline-block w-1.5 h-1.5 rounded-full shrink-0 ${dot(c.status)}`} />
+          <span><span className="text-dim">{c.label}:</span> {c.detail}</span>
+        </div>
+      ))}
+      {breaks.map((b) => (
+        <div key={b.id} className={`flex items-start gap-2 text-[11px] ${text(b.status)}`} title={b.detail}>
+          <span className={`mt-1.5 inline-block w-1.5 h-1.5 rounded-full shrink-0 ${dot(b.status)}`} />
+          <span><span className="text-dim">{b.label}:</span> {b.detail}</span>
+        </div>
+      ))}
     </div>
   );
 }
