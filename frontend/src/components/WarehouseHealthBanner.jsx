@@ -101,17 +101,15 @@ export default function WarehouseHealthBanner() {
   // Overall: green only when every verified signal we have is good. If the band
   // has not been checked this session, it cannot be confirmed green.
   const allVerified = autoOk && streamOk && tokenOk && bandOk === true;
-  const tone = allVerified
-    ? "border-emerald-900 bg-emerald-950/30"
-    : "border-amber-900 bg-amber-950/20";
+  const accent = allVerified ? "border-l-emerald-500" : "border-l-amber-500";
 
   return (
-    <div className={`rounded-lg border ${tone}`} data-testid="warehouse-health-banner">
+    <div className={`rounded-lg border border-line bg-bg-1 border-l-2 ${accent}`} data-testid="warehouse-health-banner">
       <div className="px-3 py-2 border-b border-line flex items-center gap-2">
         <ShieldCheck className={`w-4 h-4 ${allVerified ? "text-emerald-400" : "text-amber-400"}`} />
         <div className="text-xs font-semibold uppercase tracking-wider text-dim">Warehouse Health</div>
         <span
-          className={`text-[10px] px-1.5 py-0.5 rounded border font-mono ${allVerified ? "border-emerald-900 text-emerald-300" : "border-amber-900 text-amber-300"}`}
+          className={`text-[10px] px-2 py-0.5 rounded-full border font-mono ${allVerified ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300" : "border-amber-500/30 bg-amber-500/10 text-amber-300"}`}
           data-testid="warehouse-health-overall"
         >
           {allVerified ? "trustworthy" : "check needed"}
@@ -134,7 +132,7 @@ export default function WarehouseHealthBanner() {
 
       <div className="p-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-[11px]">
         {/* Auto-update */}
-        <div data-testid="health-auto-update">
+        <div className="rounded-md border border-line bg-bg-2 p-2.5" data-testid="health-auto-update">
           <div className="flex items-center gap-1.5 text-dimmer uppercase tracking-wider mb-1">
             <RefreshCw className="w-3 h-3" /> Auto-update
           </div>
@@ -147,7 +145,7 @@ export default function WarehouseHealthBanner() {
         </div>
 
         {/* Band coverage */}
-        <div data-testid="health-band-coverage">
+        <div className="rounded-md border border-line bg-bg-2 p-2.5" data-testid="health-band-coverage">
           <div className="flex items-center gap-1.5 text-dimmer uppercase tracking-wider mb-1">
             <Database className="w-3 h-3" /> ATM-band coverage
           </div>
@@ -169,7 +167,7 @@ export default function WarehouseHealthBanner() {
         </div>
 
         {/* Live stream */}
-        <div data-testid="health-stream">
+        <div className="rounded-md border border-line bg-bg-2 p-2.5" data-testid="health-stream">
           <div className="flex items-center gap-1.5 text-dimmer uppercase tracking-wider mb-1">
             <Activity className="w-3 h-3" /> Live stream
           </div>
@@ -184,7 +182,7 @@ export default function WarehouseHealthBanner() {
         </div>
 
         {/* OAuth token */}
-        <div data-testid="health-token">
+        <div className="rounded-md border border-line bg-bg-2 p-2.5" data-testid="health-token">
           <div className="flex items-center gap-1.5 text-dimmer uppercase tracking-wider mb-1">
             <Clock className="w-3 h-3" /> Upstox token
           </div>
