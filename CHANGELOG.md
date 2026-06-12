@@ -2,6 +2,14 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.25.x] — Fix: hygiene option fetch under-requested the completeness band (2026-06-12)
+
+487 backend tests pass (2 new). Bug found while verifying Slice A in the browser: after running "Fill gaps", the Data Hygiene panel stayed **degraded** (~91–93% band coverage) and re-running did nothing — the fetch jobs reported `status: ok` but added **0 candles**.
+
+- **Root cause (contradicts the 0.23.x "honest residual" claim)**: the band-completeness check demands every strike in `round(day_low)−1 … round(day_high)+1` (the day's intraday extremes + 1 pad), but the hygiene fetch re-derived a SEPARATE per-day ATM ± moneyness (`atm+otm1+itm1`) selection via `_build_option_warehouse_preview`. The two disagree at the edges, so intraday-wick / band-edge strikes were judged "missing" forever yet **never requested**. Verified against the broker: NIFTY 25200 CE on 2025-09-15 (day high 25138.45 → rounds to 25150 → +1 pad demands 25200) had **375 candles available at Upstox** but was never fetched. The ~7–9% residual was NOT broker-unavailability — it was fetchable data the fetch path skipped.
+- **Fix**: the hygiene option fetch is now driven by the SAME completeness band it is judged against. New `data_hygiene.build_band_fetch_plan` recomputes `completeness.missing_band_pairs` and resolves each missing `(day, expiry, side, strike)` to its stored contract, building a fetch plan that requests EXACTLY the missing pairs (pure, tested grouping helper `fetch_items_from_missing_pairs`; unresolved strikes are surfaced, not dropped). `_hygiene_submit_option_candles` uses it instead of the moneyness preview; the run doc now records `missing_pairs` + `unresolved_contracts`.
+- **Verified end-to-end on the live warehouse**: one hygiene run added NIFTY +68,368 / BANKNIFTY +98,946 / SENSEX +114,726 candles (the old path added 0). Band coverage **92.9% → 99.24% (NIFTY), 91.43% → 98.86% (BANKNIFTY), 91.46% → 99.04% (SENSEX)**. The small remaining residual (22/41/39 pairs) equals the `empty` fetch tasks — strikes the broker genuinely has no data for, now honestly shown as amber "warning" instead of red "degraded".
+
 ## [0.24.x] — Quality Hardening, Slice A: Warehouse Truth in the UI + Retention (2026-06-12)
 
 485 backend tests pass (3 new contract pins); frontend builds clean (no new eslint warnings). Frontend-only — surfaces the daily ATM-band completeness truth from 0.23.x and closes the remaining UI review items. All four Slice-A items verified against the live stack (plan/auto-update/stream/token endpoint shapes confirmed field-by-field).

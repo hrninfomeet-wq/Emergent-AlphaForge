@@ -24,7 +24,7 @@ import asyncio
 import logging
 import uuid
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from app.nse_calendar import (
     expected_trading_days as _calendar_expected_trading_days,
@@ -32,7 +32,7 @@ from app.nse_calendar import (
     is_trading_day,
     trading_days_in_range,
 )
-from app.completeness import band_completeness
+from app.completeness import band_completeness, missing_band_pairs
 from app.options_universe import strike_step_for
 
 log = logging.getLogger(__name__)
@@ -258,6 +258,114 @@ def _coverage_status(pct: float, *, ok: float = 95.0, warn: float = 75.0) -> str
     if pct >= warn:
         return "warning"
     return "degraded"
+
+
+def fetch_items_from_missing_pairs(
+    missing: Sequence[Tuple[str, str, str, int]],
+    contract_map: Dict[Tuple[str, str, int], Dict[str, Any]],
+    *,
+    underlying: str,
+) -> Dict[str, Any]:
+    """Group missing (day, expiry, side, strike) band pairs into per-contract
+    fetch items and resolve each to a stored option contract.
+
+    Pure (no I/O) so it is unit-testable. Each item carries `needs_fetch=True`
+    and the exact `fetch_dates` the completeness band reports missing for that
+    contract — `option_fetch_tasks_from_plan` turns these into contract/date
+    fetch tasks. Pairs whose contract is not in `contract_map` (or has no
+    instrument_key) are reported under `unresolved_contracts` instead of being
+    silently dropped (those are a contracts-sync gap, not a candle gap).
+    """
+    by_contract: Dict[Tuple[str, str, int], List[str]] = {}
+    for day, expiry, side, strike in missing:
+        by_contract.setdefault((str(expiry), str(side).upper(), int(strike)), []).append(str(day))
+
+    items: List[Dict[str, Any]] = []
+    unresolved: List[Dict[str, Any]] = []
+    for (expiry, side, strike), days in sorted(by_contract.items()):
+        contract = contract_map.get((expiry, side, strike))
+        if not contract or not contract.get("instrument_key"):
+            unresolved.append({"expiry": expiry, "side": side, "strike": strike, "days": len(set(days))})
+            continue
+        items.append({
+            "instrument_key": contract["instrument_key"],
+            "underlying": underlying,
+            "expiry_date": expiry,
+            "strike": strike,
+            "side": side,
+            "trading_symbol": contract.get("trading_symbol", ""),
+            "lot_size": contract.get("lot_size"),
+            "needs_fetch": True,
+            "fetch_dates": sorted(set(days)),
+        })
+    return {"items": items, "unresolved_contracts": unresolved}
+
+
+async def build_band_fetch_plan(
+    db: Any,
+    instrument: str,
+    start_iso: str,
+    end_iso: str,
+    *,
+    legs: Optional[List[str]] = None,
+    pad_steps: int = BAND_PAD_STEPS,
+) -> Dict[str, Any]:
+    """Build an exact option-candle fetch plan from the completeness band.
+
+    The hygiene fetch must request EXACTLY the (day, expiry, side, strike)
+    pairs band-completeness reports missing. The older path re-derived a
+    SEPARATE per-day ATM ± moneyness selection via the option-warehouse
+    preview, which does not cover the padded spot-range band — so intraday-wick
+    and band-edge strikes (e.g. NIFTY 25200 on 2025-09-15, where the day's high
+    rounded to 25150 and the +1 pad demanded 25200) were judged "missing"
+    forever yet never fetched, even though the broker had the candles. Driving
+    the fetch from `missing_band_pairs` closes that loop. Returns a plan dict
+    consumable by `run_option_warehouse_fetch_job`.
+    """
+    instrument = instrument.upper()
+    legs_list = list(legs or DEFAULT_LEGS)
+    day_rows = await _spot_day_rows(db, instrument)
+    window_rows = [r for r in day_rows if start_iso <= r["date"] <= end_iso]
+    contracts = await _option_contracts_summary(db, instrument, start_iso, end_iso)
+    pairs = await _option_pairs_by_day(db, instrument, start_iso, end_iso)
+
+    missing = missing_band_pairs(
+        window_rows,
+        expiries_sorted=contracts["expiries_sorted_from_start"],
+        stored_pairs=pairs["stored_pairs"],
+        step=strike_step_for(instrument),
+        legs=legs_list,
+        pad_steps=pad_steps,
+        judge_until=most_recent_closed_session(),
+        min_spot_minutes=MIN_SPOT_MINUTES_TO_JUDGE,
+    )
+
+    needed_expiries = sorted({expiry for (_d, expiry, _s, _k) in missing})
+    contract_docs = (
+        await db.option_contracts.find({
+            "underlying": instrument,
+            "expiry_date": {"$in": needed_expiries},
+        }).to_list(length=None)
+        if needed_expiries else []
+    )
+    contract_map: Dict[Tuple[str, str, int], Dict[str, Any]] = {}
+    for contract in contract_docs:
+        try:
+            key = (str(contract.get("expiry_date")), str(contract.get("side")).upper(), int(float(contract.get("strike"))))
+        except (TypeError, ValueError):
+            continue
+        contract_map.setdefault(key, contract)
+
+    grouped = fetch_items_from_missing_pairs(missing, contract_map, underlying=instrument)
+    return {
+        "items": grouped["items"],
+        "instrument": instrument,
+        "from_date": start_iso,
+        "to_date": end_iso,
+        "missing_pairs": len(missing),
+        "fetch_contracts": len(grouped["items"]),
+        "unresolved_contracts": grouped["unresolved_contracts"],
+    }
 
 
 async def compute_hygiene_plan(

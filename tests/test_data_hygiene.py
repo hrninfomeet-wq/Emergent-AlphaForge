@@ -480,3 +480,51 @@ def test_most_recent_closed_session_intraday_targets_yesterday():
 def test_most_recent_closed_session_weekend_targets_friday():
     now = datetime(2026, 6, 7, 12, 0, tzinfo=IST)  # Sunday
     assert most_recent_closed_session(now) == "2026-06-05"
+
+
+def test_fetch_items_from_missing_pairs_groups_and_resolves():
+    """The band-driven fetch must request EXACTLY the missing (day, expiry,
+    side, strike) pairs, grouped per contract with the missing days as
+    fetch_dates. Regression for the permanent-degraded bug: the per-day ATM
+    moneyness preview never fetched intraday-wick / band-edge strikes the
+    completeness band demanded, even though the broker had the candles."""
+    from app.data_hygiene import fetch_items_from_missing_pairs
+
+    # Two missing days for the 25200 CE (the wick/pad strike) + one day for a
+    # PE; one pair has no resolvable contract.
+    missing = [
+        ("2025-09-15", "2025-09-16", "CE", 25200),
+        ("2025-09-12", "2025-09-16", "CE", 25200),
+        ("2025-09-15", "2025-09-16", "PE", 25000),
+        ("2025-09-15", "2025-09-16", "CE", 99999),  # no contract -> unresolved
+    ]
+    contract_map = {
+        ("2025-09-16", "CE", 25200): {"instrument_key": "NSE_FO|44730|16-09-2025", "trading_symbol": "NIFTY 25200 CE", "lot_size": 25},
+        ("2025-09-16", "PE", 25000): {"instrument_key": "NSE_FO|44900|16-09-2025", "trading_symbol": "NIFTY 25000 PE", "lot_size": 25},
+    }
+
+    out = fetch_items_from_missing_pairs(missing, contract_map, underlying="NIFTY")
+    items = {(i["side"], i["strike"]): i for i in out["items"]}
+
+    assert len(out["items"]) == 2
+    ce = items[("CE", 25200)]
+    assert ce["instrument_key"] == "NSE_FO|44730|16-09-2025"
+    assert ce["needs_fetch"] is True
+    # Both missing days requested, sorted+deduped — 09-15 is no longer dropped.
+    assert ce["fetch_dates"] == ["2025-09-12", "2025-09-15"]
+    assert ce["expiry_date"] == "2025-09-16"
+
+    pe = items[("PE", 25000)]
+    assert pe["fetch_dates"] == ["2025-09-15"]
+
+    # The strike with no stored contract is surfaced, not silently dropped.
+    assert len(out["unresolved_contracts"]) == 1
+    assert out["unresolved_contracts"][0]["strike"] == 99999
+
+
+def test_fetch_items_from_missing_pairs_empty():
+    from app.data_hygiene import fetch_items_from_missing_pairs
+
+    out = fetch_items_from_missing_pairs([], {}, underlying="NIFTY")
+    assert out["items"] == []
+    assert out["unresolved_contracts"] == []

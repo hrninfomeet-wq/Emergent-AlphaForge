@@ -72,6 +72,7 @@ from app.data_hygiene import (
     DEFAULT_LEGS as HYGIENE_DEFAULT_LEGS,
     DEFAULT_MONEYNESS as HYGIENE_DEFAULT_MONEYNESS,
     DEFAULT_SAMPLE_INTERVAL_MIN as HYGIENE_DEFAULT_SAMPLE,
+    build_band_fetch_plan,
     compute_catch_up_plan,
     compute_hygiene_plan,
     execute_hygiene_plan,
@@ -3813,41 +3814,43 @@ async def _hygiene_submit_contracts(instrument: str, from_date: str, to_date: st
 
 
 async def _hygiene_submit_option_candles(action: Dict[str, Any]) -> str:
-    """Compute the option warehouse plan for the action and submit the fetch job."""
+    """Compute the option warehouse plan for the action and submit the fetch job.
+
+    The fetch is driven by the SAME completeness band the plan/UI reports
+    against (`data_hygiene.build_band_fetch_plan` → `missing_band_pairs`), so
+    every (day, expiry, side, strike) judged missing is requested exactly —
+    closing the old gap where the per-day ATM±moneyness preview never fetched
+    intraday-wick / band-edge strikes the band demanded (permanent "degraded").
+    """
     inst = str(action["instrument"]).upper()
     if inst not in upstox_client.INSTRUMENT_KEYS:
         raise ValueError(f"Unsupported instrument: {inst}")
-    # Build a synthetic OptionWarehousePlanReq so we can reuse the existing planner path
-    req = OptionWarehousePlanReq(
-        underlying=inst,
-        from_date=action["from_date"],
-        to_date=action["to_date"],
-        expiry_policy="next_available",
-        moneyness=list(action.get("moneyness") or HYGIENE_DEFAULT_MONEYNESS),
-        legs=list(action.get("legs") or HYGIENE_DEFAULT_LEGS),
-        sample_interval_minutes=int(action.get("sample_interval_minutes") or HYGIENE_DEFAULT_SAMPLE),
-        max_contracts=2000,
-        fetch_missing_only=True,
-    )
-    preview = await _build_option_warehouse_preview(req)
-    items = preview.get("items", [])
-    to_fetch = [i for i in items if i.get("needs_fetch")]
-    chunk_days = int(preview.get("chunk_guidance", {}).get("chunk_days") or 5)
     db = get_db()
+    plan = await build_band_fetch_plan(
+        db,
+        inst,
+        action["from_date"],
+        action["to_date"],
+        legs=list(action.get("legs") or HYGIENE_DEFAULT_LEGS),
+    )
+    to_fetch = plan.get("items", [])
+    chunk_days = 5
     run_id = str(_uuid.uuid4())
     timestamp = datetime.now(timezone.utc).isoformat()
     await db.warehouse_runs.insert_one({
         "id": run_id, "instrument": inst,
         "source": "data_hygiene", "kind": "option_candles",
         "started_at": timestamp, "updated_at": timestamp, "status": "queued",
-        "from_date": req.from_date, "to_date": req.to_date,
-        "moneyness": req.moneyness, "legs": req.legs,
+        "from_date": plan["from_date"], "to_date": plan["to_date"],
+        "legs": list(action.get("legs") or HYGIENE_DEFAULT_LEGS),
         "to_fetch_count": len(to_fetch),
+        "missing_pairs": plan.get("missing_pairs", 0),
+        "unresolved_contracts": plan.get("unresolved_contracts", [])[:50],
         "chunk_days": chunk_days,
         "progress_pct": 0,
     })
     asyncio.create_task(run_option_warehouse_fetch_job(
-        run_id, preview,
+        run_id, plan,
         fetch_missing_only=True,
         chunk_days=chunk_days,
     ))

@@ -92,15 +92,21 @@ day's full strike BAND. Implementation notes for the next agent:
   you add ANY new options_1m query keyed by instrument_key, canonicalize it.
 - **Acceptance:** confluence-10 re-run = 124/124 paired, 0 missing. Band
   residual (~7–9%) is broker-unavailable band-edge strikes — honest, visible.
+  **[CORRECTED 2026-06-12, CHANGELOG 0.25.x]** This was WRONG: most of that
+  ~7–9% was fetchable data the hygiene fetch never requested (the fetch used a
+  per-day ATM±moneyness selection that did not cover the padded spot-range
+  band). After driving the fetch from `completeness.missing_band_pairs`, real
+  coverage is ~99% and the true residual is only the genuinely broker-empty
+  strikes (~1%).
 - Frontend DataHygienePanel still displays the OLD summary fields — surfacing
   `missing_pairs`/`coverage_pct`/`missing_by_month` is Kiro quality-hardening
   Slice A (`.kiro/specs/quality-hardening/`).
 
 ## Status In One Line
 
-Latest (2026-06-12, quality-hardening Slice A): **warehouse truth is now in the UI** — DataHygienePanel surfaces daily ATM-band coverage %/missing strike-days/missing-by-month + an expandable missing-sample list and the auto-update run history; the Dashboard gained a warehouse-health banner (last auto-update, per-index band coverage behind a lazy Check button, live-stream running/stale, OAuth token countdown); the Signals Ledger gained an opt-in once-per-day AUDITED retention purge. Frontend-only, all four surfaces browser/endpoint-verified. **485 pytest tests pass (3 new contract pins); frontend builds clean; Docker stack rebuilt and healthy.** Slice B (research analytics) is next; Slice C (server.py split) stays gated.
+Latest (2026-06-12): **fixed the hygiene option fetch under-requesting the completeness band** — "Fill gaps" used to leave the panel permanently "degraded" (added 0 candles) because the fetch re-derived a per-day ATM±moneyness selection that didn't cover the padded spot-range band; intraday-wick/band-edge strikes were demanded forever but never fetched (the broker HAD the data — the 0.23.x "honest residual" claim was wrong for this class). Fetch is now driven by the same band via `data_hygiene.build_band_fetch_plan` → `completeness.missing_band_pairs`. Verified live: one run added 68k/99k/115k candles; band coverage 92.9%→99.24% (NIFTY), 91.4%→98.9% (BANKNIFTY), 91.5%→99.0% (SENSEX); residual now equals genuinely broker-empty strikes (amber "warning"). **487 pytest tests pass; both containers rebuilt and healthy.** Preceded by quality-hardening Slice A (warehouse truth in the UI + retention — see below).
 
-## Status (previous)
+## Status (Slice A)
 
 ## Recent Work — Forward Surfaces Overhaul, Slice 3: Signals Ledger (2026-06-12)
 
