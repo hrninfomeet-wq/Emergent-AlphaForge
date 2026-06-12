@@ -176,6 +176,12 @@ DEFAULT_PROFILES = {
 }
 
 
+# Strike radius the live option stream keeps subscribed during market hours so
+# the ATM±3 option-chain snapshot and paper marks always have fresh premiums,
+# even with no active deployments.
+OPTION_CHAIN_BASELINE_RADIUS = 3
+
+
 async def _deployment_evaluator_loop() -> None:
     """Wake up ~10s after each minute boundary and evaluate ACTIVE deployments.
 
@@ -230,6 +236,14 @@ async def _deployment_evaluator_loop() -> None:
                     len(auto_closed),
                     ", ".join(f"{m['id'][:8]}/{m.get('exit_reason')}" for m in auto_closed[:5]),
                 )
+
+            # Keep a baseline ATM±3 option universe subscribed during market hours
+            # so the live option-chain snapshot (and paper marks) always have fresh
+            # premiums, with no manual stream restart needed. Idempotent: only
+            # restarts when the ATM band drifts out of the current subscription.
+            stream_follow = await _auto_follow_option_stream(min_radius=OPTION_CHAIN_BASELINE_RADIUS)
+            if stream_follow.get("restarted"):
+                log.info("option stream auto-follow (market-hours baseline): %s", stream_follow)
 
             # Once per IST date, force-close any open paper trades when we cross the cutoff.
             if last_squareoff_ist_date != today_ist and is_square_off_due(ist_now):
@@ -1802,16 +1816,22 @@ async def create_deployment(req: DeploymentCreateReq):
     return serialize_doc({**doc, "option_stream": stream})
 
 
-async def _auto_follow_option_stream() -> Dict[str, Any]:
-    """Align the live option subscription with ACTIVE paper deployments.
+async def _auto_follow_option_stream(min_radius: int = 0) -> Dict[str, Any]:
+    """Align the live option subscription with ACTIVE paper deployments — and,
+    when `min_radius` > 0, keep a baseline ATM-centered universe subscribed even
+    with no deployments (so the option-chain snapshot and paper marks always have
+    fresh premiums during market hours).
 
-    Derives the needed strike radius from their moneyness policies
-    (`radius_for_deployments`) and restarts the read-only stream with the
-    refreshed universe. Upstox captures subscriptions at connect time, so a
-    restart is the only way to widen coverage. Best-effort by design: only
-    acts when Upstox is connected and the stream is already running (i.e. a
-    live session); any failure is reported, never raised — a deployment must
-    never fail to create because the stream couldn't restart.
+    Derives the needed strike radius from the deployments' moneyness policies
+    (`radius_for_deployments`), floored at `min_radius`, and restarts the
+    read-only stream with the refreshed universe. Upstox captures subscriptions
+    at connect time, so a restart is the only way to widen coverage.
+
+    Idempotent: when the live subscription already covers every desired option
+    key, it does NOT restart (a restart briefly drops the WS). Best-effort by
+    design: only acts when Upstox is connected and the stream is already running;
+    any failure is reported, never raised — a deployment must never fail to
+    create because the stream couldn't restart.
     """
     try:
         status = await upstox_client.get_connection_status()
@@ -1823,9 +1843,12 @@ async def _auto_follow_option_stream() -> Dict[str, Any]:
         deployments = await db.strategy_deployments.find(
             {"status": "ACTIVE", "mode": "paper"}, {"_id": 0, "option_policy": 1}
         ).to_list(length=None)
-        if not deployments:
+        radius = max(
+            radius_for_deployments(deployments) if deployments else 0,
+            int(min_radius or 0),
+        )
+        if radius <= 0:
             return {"restarted": False, "reason": "no_active_paper_deployments"}
-        radius = radius_for_deployments(deployments)
         universe = await build_live_option_universe(
             db,
             latest_ticks=upstox_stream_manager.latest_tick_map(),
@@ -1834,6 +1857,12 @@ async def _auto_follow_option_stream() -> Dict[str, Any]:
         option_keys = universe.get("instrument_keys") or []
         if not option_keys:
             return {"restarted": False, "reason": "no_option_keys", "radius": radius}
+        # Idempotent: skip the (disruptive) restart when every desired option key
+        # is already subscribed. As the ATM band drifts intraday, missing keys
+        # trigger a re-center restart automatically.
+        current_keys = set(upstox_stream_manager.status().get("instrument_keys") or [])
+        if set(option_keys).issubset(current_keys):
+            return {"restarted": False, "reason": "already_covered", "radius": radius, "option_keys": len(option_keys)}
         stream_keys = list(dict.fromkeys([*_default_stream_instrument_keys(), *option_keys]))
         await upstox_stream_manager.stop()
         await upstox_stream_manager.start(

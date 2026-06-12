@@ -175,3 +175,21 @@ def test_radius_clamps_to_five_and_ignores_unknown():
     assert radius_for_deployments(deps) == 4
     # unknown-only policies fall back to the minimum useful radius
     assert radius_for_deployments([{"option_policy": {"moneyness": ["weird"]}}]) == 1
+
+
+# ---------------------------------------------------------------------------
+# Market-hours baseline: the evaluator loop keeps an ATM±3 option universe
+# subscribed automatically (no manual stream restart), even with no deployments.
+# server.py can't be imported on the host (motor); assert on its source text.
+# ---------------------------------------------------------------------------
+
+
+def test_market_hours_loop_wires_baseline_option_stream_follow():
+    server = open(os.path.join(ROOT, "backend", "server.py"), encoding="utf-8").read()
+    # A baseline radius constant exists and covers ATM±3 for the chain snapshot.
+    assert "OPTION_CHAIN_BASELINE_RADIUS = 3" in server
+    # The market-hours loop calls auto-follow with that baseline floor.
+    assert "_auto_follow_option_stream(min_radius=OPTION_CHAIN_BASELINE_RADIUS)" in server
+    # Auto-follow takes a min_radius floor and is idempotent (skips redundant restarts).
+    assert "async def _auto_follow_option_stream(min_radius: int = 0)" in server
+    assert "already_covered" in server
