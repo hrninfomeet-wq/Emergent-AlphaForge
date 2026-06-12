@@ -42,7 +42,9 @@ from app.data_hygiene import (
     DEFAULT_SAMPLE_INTERVAL_MIN as HYGIENE_DEFAULT_SAMPLE,
     build_band_fetch_plan,
     compute_hygiene_plan,
+    default_scope_start,
     execute_hygiene_plan,
+    record_broker_empty_pairs,
 )
 from app.warehouse_autoupdate import run_autoupdate_once
 from app.paper_squareoff import is_square_off_due, square_off_open_paper_trades
@@ -1216,29 +1218,36 @@ async def _run_catch_up_chain(
         await _fail_remaining_catch_up(db, None, options_run_id, "contract_sync_failed")
         return
 
-    # Stage 3: build the option plan (now that spot + contracts exist) and fetch.
+    # Stage 3: band-exact option fill over the FULL rolling hygiene window (not
+    # just the catch-up days). The fetch is driven by the same completeness
+    # band the hygiene plan judges against (build_band_fetch_plan ->
+    # missing_band_pairs), so one catch-up run is a complete self-heal: the new
+    # sessions' band pairs AND any wick-edge gaps left in earlier days are
+    # requested in the same pass, while broker-proven-empty pairs are excluded
+    # by the option_known_empty ledger. (The old path here re-derived a
+    # close-sampled ATM±moneyness preview, which silently skipped wick strikes
+    # the band demands — gaps accumulated daily until a manual "Fill gaps".
+    # `moneyness`/`sample_interval_minutes` are kept in the signature for API
+    # compatibility but the band needs neither.)
     try:
-        opt_req = OptionWarehousePlanReq(
-            underlying=instrument,
-            from_date=from_date,
-            to_date=to_date,
-            expiry_policy="next_available",
-            moneyness=moneyness,
-            legs=legs,
-            sample_interval_minutes=sample_interval_minutes,
-            max_contracts=2000,
-            fetch_missing_only=True,
-        )
-        preview = await _build_option_warehouse_preview(opt_req)
-        chunk_days = int(preview.get("chunk_guidance", {}).get("chunk_days") or 5)
+        window_start = default_scope_start()
+        plan = await build_band_fetch_plan(db, instrument, window_start, to_date, legs=legs)
+        chunk_days = 5
         await db.warehouse_runs.update_one(
             {"id": options_run_id},
             {"$set": {"status": "running", "progress_pct": 5, "chunk_days": chunk_days,
+                      "band": True, "from_date": window_start,
+                      "missing_pairs": plan.get("missing_pairs", 0),
+                      "to_fetch_count": len(plan.get("items") or []),
+                      "unresolved_contracts": (plan.get("unresolved_contracts") or [])[:50],
                       "updated_at": datetime.now(timezone.utc).isoformat()}},
         )
         await run_option_warehouse_fetch_job(
-            options_run_id, preview, fetch_missing_only=True, chunk_days=chunk_days,
+            options_run_id, plan, fetch_missing_only=True, chunk_days=chunk_days,
         )
+        recorded = await record_broker_empty_pairs(db, instrument, plan, options_run_id)
+        if recorded:
+            log.info("catch-up %s: %d band pair(s) ledgered as broker-empty", instrument, recorded)
     except HTTPException as exc:
         await db.warehouse_runs.update_one(
             {"id": options_run_id},
@@ -1373,28 +1382,48 @@ async def _hygiene_submit_option_candles(action: Dict[str, Any]) -> str:
         action["to_date"],
         legs=list(action.get("legs") or HYGIENE_DEFAULT_LEGS),
     )
-    to_fetch = plan.get("items", [])
+    return await submit_band_fetch_run(inst, plan)
+
+
+async def submit_band_fetch_run(instrument: str, plan: Dict[str, Any]) -> str:
+    """Create the tracked warehouse_runs doc for a prebuilt band fetch plan and
+    fire the fetch+reconcile in the background. Returns the run_id."""
+    db = get_db()
     chunk_days = 5
     run_id = str(_uuid.uuid4())
     timestamp = datetime.now(timezone.utc).isoformat()
     await db.warehouse_runs.insert_one({
-        "id": run_id, "instrument": inst,
+        "id": run_id, "instrument": instrument.upper(),
         "source": "data_hygiene", "kind": "option_candles",
         "started_at": timestamp, "updated_at": timestamp, "status": "queued",
         "from_date": plan["from_date"], "to_date": plan["to_date"],
-        "legs": list(action.get("legs") or HYGIENE_DEFAULT_LEGS),
-        "to_fetch_count": len(to_fetch),
+        "band": True,
+        "to_fetch_count": len(plan.get("items") or []),
         "missing_pairs": plan.get("missing_pairs", 0),
-        "unresolved_contracts": plan.get("unresolved_contracts", [])[:50],
+        "unresolved_contracts": (plan.get("unresolved_contracts") or [])[:50],
         "chunk_days": chunk_days,
         "progress_pct": 0,
     })
-    asyncio.create_task(run_option_warehouse_fetch_job(
-        run_id, plan,
-        fetch_missing_only=True,
-        chunk_days=chunk_days,
-    ))
+    asyncio.create_task(_band_fill_with_reconcile(run_id, instrument.upper(), plan, chunk_days=chunk_days))
     return run_id
+
+
+async def _band_fill_with_reconcile(run_id: str, instrument: str, plan: Dict[str, Any], *, chunk_days: int = 5) -> None:
+    """Run a band fetch job, then ledger requested-but-still-absent pairs as
+    broker-empty (only pairs whose fetch did not fail count as proven empty)."""
+    db = get_db()
+    await run_option_warehouse_fetch_job(run_id, plan, fetch_missing_only=True, chunk_days=chunk_days)
+    try:
+        recorded = await record_broker_empty_pairs(db, instrument, plan, run_id)
+        if recorded:
+            log.info("band fill %s: %d pair(s) ledgered as broker-empty", instrument, recorded)
+            await db.warehouse_runs.update_one(
+                {"id": run_id},
+                {"$set": {"broker_empty_recorded": recorded,
+                          "updated_at": datetime.now(timezone.utc).isoformat()}},
+            )
+    except Exception:
+        log.exception("broker-empty reconcile failed for %s run %s", instrument, run_id)
 
 
 def _overlay_option_contract_metadata(local_contract: Optional[Dict[str, Any]], req: UpstoxOptionCandleIngestReq) -> Dict[str, Any]:

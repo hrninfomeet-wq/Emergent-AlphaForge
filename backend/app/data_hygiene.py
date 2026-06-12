@@ -24,7 +24,7 @@ import asyncio
 import logging
 import uuid
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from app.nse_calendar import (
     expected_trading_days as _calendar_expected_trading_days,
@@ -301,6 +301,114 @@ def fetch_items_from_missing_pairs(
     return {"items": items, "unresolved_contracts": unresolved}
 
 
+# ---------------------------------------------------------------------------
+# Broker-empty ledger (option_known_empty)
+#
+# Some band pairs are unfixable: the contract existed, the fetch succeeded,
+# and Upstox returned zero candles (thin strikes the exchange never traded /
+# the broker never archived). Without a ledger those pairs generate "Fill
+# gaps" actions forever and pin the hygiene status at amber even though there
+# is nothing anyone can do. After every band-driven fetch we record the pairs
+# that were cleanly requested yet still have no candles; the plan and the
+# fetch builder exclude them from then on and report them as
+# `broker_empty_pairs` instead of `missing_pairs`.
+# ---------------------------------------------------------------------------
+
+KNOWN_EMPTY_COLLECTION = "option_known_empty"
+
+
+async def load_known_empty_pairs(
+    db: Any, instrument: str, start_iso: str, end_iso: str
+) -> Set[Tuple[str, str, str, int]]:
+    """Load the broker-empty ledger for one instrument/window as band tuples."""
+    rows = await db.option_known_empty.find(
+        {"underlying": instrument.upper(), "date": {"$gte": start_iso, "$lte": end_iso}},
+        {"_id": 0, "date": 1, "expiry": 1, "side": 1, "strike": 1},
+    ).to_list(length=None)
+    out: Set[Tuple[str, str, str, int]] = set()
+    for r in rows:
+        try:
+            out.add((str(r["date"]), str(r["expiry"]), str(r["side"]).upper(), int(float(r["strike"]))))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
+
+
+def pairs_from_band_plan_items(items: Sequence[Dict[str, Any]]) -> Dict[Tuple[str, str, str, int], str]:
+    """(day, expiry, side, strike) -> instrument_key for every pair a band
+    fetch plan actually requested. Pure (unit-testable)."""
+    out: Dict[Tuple[str, str, str, int], str] = {}
+    for item in items:
+        try:
+            expiry = str(item["expiry_date"])
+            side = str(item["side"]).upper()
+            strike = int(float(item["strike"]))
+            key = str(item.get("instrument_key") or "")
+        except (KeyError, TypeError, ValueError):
+            continue
+        for day in item.get("fetch_dates") or []:
+            out[(str(day), expiry, side, strike)] = key
+    return out
+
+
+def broker_empty_candidates(
+    requested: Dict[Tuple[str, str, str, int], str],
+    stored_pairs: Set[Tuple[str, str, str, int]],
+    failed_entries: Sequence[Dict[str, Any]],
+) -> List[Tuple[str, str, str, int]]:
+    """Pairs that were cleanly requested but still have no stored candles.
+
+    A pair is NOT a broker-empty candidate when its task/chunk FAILED (error,
+    rate limit, ...) — only a successful fetch that returned nothing proves
+    emptiness. Pure (unit-testable)."""
+    failed_ranges: List[Tuple[str, str, str]] = []
+    for f in failed_entries or []:
+        key = str(f.get("instrument_key") or "")
+        lo = str(f.get("from_date") or f.get("from") or "")
+        hi = str(f.get("to_date") or f.get("to") or "9999-12-31")
+        if key:
+            failed_ranges.append((key, lo, hi))
+
+    out: List[Tuple[str, str, str, int]] = []
+    for pair, key in requested.items():
+        if pair in stored_pairs:
+            continue
+        day = pair[0]
+        if any(k == key and lo <= day <= hi for (k, lo, hi) in failed_ranges):
+            continue
+        out.append(pair)
+    return sorted(out)
+
+
+async def record_broker_empty_pairs(
+    db: Any, instrument: str, plan: Dict[str, Any], run_id: str
+) -> int:
+    """After a band-driven fetch run: ledger every requested-but-still-absent
+    pair whose fetch did not fail. Returns the number of pairs recorded."""
+    instrument = instrument.upper()
+    requested = pairs_from_band_plan_items(plan.get("items") or [])
+    if not requested:
+        return 0
+    pairs = await _option_pairs_by_day(db, instrument, plan["from_date"], plan["to_date"])
+    run = await db.warehouse_runs.find_one({"id": run_id}, {"_id": 0, "failed": 1}) or {}
+    candidates = broker_empty_candidates(requested, pairs["stored_pairs"], run.get("failed") or [])
+    if not candidates:
+        return 0
+    now = datetime.now(timezone.utc).isoformat()
+    for day, expiry, side, strike in candidates:
+        await db.option_known_empty.update_one(
+            {"underlying": instrument, "date": day, "expiry": expiry, "side": side, "strike": strike},
+            {"$setOnInsert": {
+                "underlying": instrument, "date": day, "expiry": expiry,
+                "side": side, "strike": strike,
+                "instrument_key": requested.get((day, expiry, side, strike), ""),
+                "recorded_at": now, "run_id": run_id,
+            }},
+            upsert=True,
+        )
+    return len(candidates)
+
+
 async def build_band_fetch_plan(
     db: Any,
     instrument: str,
@@ -309,6 +417,7 @@ async def build_band_fetch_plan(
     *,
     legs: Optional[List[str]] = None,
     pad_steps: int = BAND_PAD_STEPS,
+    retest_known_empty: bool = False,
 ) -> Dict[str, Any]:
     """Build an exact option-candle fetch plan from the completeness band.
 
@@ -328,6 +437,10 @@ async def build_band_fetch_plan(
     window_rows = [r for r in day_rows if start_iso <= r["date"] <= end_iso]
     contracts = await _option_contracts_summary(db, instrument, start_iso, end_iso)
     pairs = await _option_pairs_by_day(db, instrument, start_iso, end_iso)
+    known_empty = (
+        set() if retest_known_empty
+        else await load_known_empty_pairs(db, instrument, start_iso, end_iso)
+    )
 
     missing = missing_band_pairs(
         window_rows,
@@ -338,6 +451,7 @@ async def build_band_fetch_plan(
         pad_steps=pad_steps,
         judge_until=most_recent_closed_session(),
         min_spot_minutes=MIN_SPOT_MINUTES_TO_JUDGE,
+        known_empty=known_empty,
     )
 
     needed_expiries = sorted({expiry for (_d, expiry, _s, _k) in missing})
@@ -425,6 +539,7 @@ async def compute_hygiene_plan(
         # must have candles for both legs at the day's resolved expiry. This is
         # the exact-need check — the old per-expiry heuristic reported
         # verified-but-incomplete and silently starved backtests of strikes.
+        known_empty = await load_known_empty_pairs(db, inst, start_date, end_date)
         band = band_completeness(
             window_rows,
             expiries_sorted=contracts["expiries_sorted_from_start"],
@@ -434,6 +549,7 @@ async def compute_hygiene_plan(
             pad_steps=BAND_PAD_STEPS,
             judge_until=judge_until,
             min_spot_minutes=MIN_SPOT_MINUTES_TO_JUDGE,
+            known_empty=known_empty,
         )
         opt = {
             **band,
@@ -470,10 +586,11 @@ async def compute_hygiene_plan(
                 "reason": "No option_contracts in window. Run expired-contract backfill.",
                 "eta_minutes": 5,
             })
-        # Option candles fetch action — whenever ANY band pair is missing. The
-        # submit path re-derives exact per-contract per-date needs via the
-        # planner preview (sample=1, atm+otm1+itm1), so this action is cheap to
-        # emit and idempotent to execute.
+        # Option candles fetch action — whenever ANY ACTIONABLE band pair is
+        # missing (broker-proven-empty pairs are excluded by the ledger). The
+        # submit path re-derives exact per-contract per-date needs via
+        # build_band_fetch_plan, so this action is cheap to emit and
+        # idempotent to execute.
         if contract_status == "verified" and band["missing_pairs"] > 0:
             months = ", ".join(f"{m}: {n}" for m, n in list(band["missing_by_month"].items())[:6])
             actions.append({

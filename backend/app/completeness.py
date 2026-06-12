@@ -78,6 +78,7 @@ def band_completeness(
     judge_until: Optional[str] = None,
     min_spot_minutes: int = 60,
     missing_sample_cap: int = 50,
+    known_empty: Optional[Set[Tuple[str, str, str, int]]] = None,
 ) -> Dict[str, Any]:
     """Diff expected band pairs against stored (day, expiry, side, strike) pairs.
 
@@ -87,6 +88,12 @@ def band_completeness(
     `judge_until`: last fully-closed session (an in-progress day is never
     judged incomplete). Returns counts, coverage %, and a bounded sample of
     missing pairs for the plan payload — execute re-derives the full set.
+
+    `known_empty`: pairs the broker has already PROVEN it has no data for (a
+    clean fetch returned zero candles — the option_known_empty ledger). They
+    are excluded from `missing_pairs` and from the coverage denominator, and
+    reported separately as `broker_empty_pairs`, so the status can honestly
+    reach "verified" instead of flagging unfixable gaps forever.
     """
     expected: Set[Tuple[str, str, str, int]] = set()
     judged_days = 0
@@ -106,18 +113,24 @@ def band_completeness(
         if pairs:
             judged_days += 1
             expected |= pairs
-    missing = sorted(expected - set(stored_pairs))
+    excused = expected & set(known_empty or ())
+    missing = sorted(expected - set(stored_pairs) - excused)
     planned = len(expected)
+    actionable_planned = planned - len(excused)
     missing_by_month: Dict[str, int] = {}
     for day, _e, _s, _k in missing:
         month = day[:7]
         missing_by_month[month] = missing_by_month.get(month, 0) + 1
-    coverage_pct = round((planned - len(missing)) / planned * 100, 2) if planned else 100.0
+    coverage_pct = (
+        round((actionable_planned - len(missing)) / actionable_planned * 100, 2)
+        if actionable_planned else 100.0
+    )
     return {
         "judged_days": judged_days,
         "planned_pairs": planned,
-        "stored_pairs": planned - len(missing),
+        "stored_pairs": actionable_planned - len(missing),
         "missing_pairs": len(missing),
+        "broker_empty_pairs": len(excused),
         "coverage_pct": coverage_pct,
         "missing_by_month": dict(sorted(missing_by_month.items())),
         "missing_sample": [
@@ -137,10 +150,12 @@ def missing_band_pairs(
     pad_steps: int = 1,
     judge_until: Optional[str] = None,
     min_spot_minutes: int = 60,
+    known_empty: Optional[Set[Tuple[str, str, str, int]]] = None,
 ) -> List[Tuple[str, str, str, int]]:
     """Full missing (day, expiry, side, strike) list — used by execute to build
     exact per-contract per-date fetch tasks. Same judging rules as
-    band_completeness."""
+    band_completeness; pairs in `known_empty` (broker proven empty) are never
+    requested again."""
     expected: Set[Tuple[str, str, str, int]] = set()
     for row in day_rows:
         day = str(row.get("date") or row.get("_id") or "")
@@ -152,4 +167,4 @@ def missing_band_pairs(
             day, row.get("low"), row.get("high"), step=step,
             expiries_sorted=expiries_sorted, legs=legs, pad_steps=pad_steps,
         )
-    return sorted(expected - set(stored_pairs))
+    return sorted(expected - set(stored_pairs) - set(known_empty or ()))

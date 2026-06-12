@@ -425,6 +425,19 @@ export default function DataHygienePanel({ upstoxConnected }) {
                     </div>
                   </div>
 
+                  {/* Broker-empty footnote: pairs Upstox has proven it has no
+                      data for — excluded from coverage/actions by the ledger,
+                      so verified is reachable while staying honest. */}
+                  {(inst.option_candles?.broker_empty_pairs || 0) > 0 && (
+                    <div
+                      className="mt-1 text-[10px] text-dimmer"
+                      data-testid={`hygiene-broker-empty-${inst.instrument.toLowerCase()}`}
+                      title="Strike-days a clean fetch proved the broker has no candles for. They are excluded from coverage and never re-requested."
+                    >
+                      {fmtInt(inst.option_candles.broker_empty_pairs)} strike-day(s) broker-empty (excluded)
+                    </div>
+                  )}
+
                   {/* Band coverage detail — the daily ATM-band truth (CHANGELOG 0.23.x). */}
                   {(inst.option_candles?.missing_pairs || 0) > 0 && (
                     <div className="mt-2 pt-2 border-t border-line space-y-1 text-[10px]" data-testid={`hygiene-band-${inst.instrument.toLowerCase()}`}>

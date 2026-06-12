@@ -28,8 +28,10 @@ from app.data_hygiene import (
     DEFAULT_LEGS as HYGIENE_DEFAULT_LEGS,
     DEFAULT_MONEYNESS as HYGIENE_DEFAULT_MONEYNESS,
     DEFAULT_SAMPLE_INTERVAL_MIN as HYGIENE_DEFAULT_SAMPLE,
+    build_band_fetch_plan,
     compute_catch_up_plan,
     compute_hygiene_plan,
+    default_scope_start,
     execute_hygiene_plan,
     hygiene_status,
 )
@@ -58,6 +60,7 @@ from app.runtime import (
     _start_catch_up_chain,
     _trigger_autoupdate,
     log,
+    submit_band_fetch_run,
 )
 
 from app.schemas import (
@@ -618,15 +621,32 @@ async def data_hygiene_catch_up_route(req: DataHygieneCatchUpReq):
 
     For each instrument this computes the gap from the last stored spot date to
     the most recent closed trading session, then runs a SEQUENTIAL per-instrument
-    chain: spot ingest -> current contract sync -> option-candle fetch. The
-    sequencing matters because the option-candle plan reads the freshly ingested
-    spot candles + contracts to resolve ATM strikes; running them in parallel
-    (as the full hygiene execute does) fails for brand-new days because the spot
-    candles are not persisted yet. `dry_run=true` returns the plan without
-    fetching. `include_options=false` updates spot only.
+    chain: spot ingest -> current contract sync -> band-exact option-candle fill
+    over the full rolling window. The sequencing matters because the option
+    band reads the freshly ingested spot candles + contracts to resolve the
+    day's strike band; running them in parallel (as the full hygiene execute
+    does) fails for brand-new days because the spot candles are not persisted
+    yet. Instruments whose SPOT is already current still get a band sweep —
+    wick-edge strikes can be missing with no new session to ingest. `dry_run=
+    true` returns the plan without fetching. `include_options=false` updates
+    spot only.
 
     Requires a connected, non-expired Upstox token (unless dry_run).
     """
+    return await _run_warehouse_sync(req)
+
+
+@api.post("/warehouse/sync")
+async def warehouse_sync_route(req: DataHygieneCatchUpReq):
+    """One-button warehouse sync — alias of /data-hygiene/catch-up.
+
+    Catch-up to the last closed session, then band-exact gap fill, with
+    broker-proven-empty pairs excluded by the option_known_empty ledger.
+    """
+    return await _run_warehouse_sync(req)
+
+
+async def _run_warehouse_sync(req: DataHygieneCatchUpReq):
     db = get_db()
     plan = await compute_catch_up_plan(
         db,
@@ -648,7 +668,30 @@ async def data_hygiene_catch_up_route(req: DataHygieneCatchUpReq):
     if req.dry_run:
         return serialize_doc({"plan": plan, "submitted_count": 0, "dry_run": True})
 
-    if total_actions == 0:
+    # Band sweep for instruments whose spot is already current: the chain's
+    # option stage only runs for gapped instruments, but wick-edge band pairs
+    # can be missing even when there is no new session to ingest (e.g. the
+    # nightly update ran, yesterday was volatile, and the band demands strikes
+    # beyond what the live stream captured). Build the exact plans up front so
+    # an all-current warehouse with zero band needs short-circuits to
+    # up_to_date without touching the broker.
+    target_end = str(plan.get("summary", {}).get("target_end") or "")
+    band_sweeps: List[tuple] = []
+    if req.include_options and target_end:
+        for inst_report in plan.get("instruments", []):
+            if not inst_report.get("up_to_date"):
+                continue  # the catch-up chain band-fills these in stage 3
+            instrument = str(inst_report["instrument"]).upper()
+            if instrument not in upstox_client.INSTRUMENT_KEYS:
+                continue
+            band_plan = await build_band_fetch_plan(
+                db, instrument, default_scope_start(), target_end,
+                legs=list(req.legs or HYGIENE_DEFAULT_LEGS),
+            )
+            if band_plan.get("items"):
+                band_sweeps.append((instrument, band_plan))
+
+    if total_actions == 0 and not band_sweeps:
         return serialize_doc({"plan": plan, "submitted": [], "submitted_count": 0, "up_to_date": True})
 
     status = await upstox_client.get_connection_status()
@@ -687,10 +730,22 @@ async def data_hygiene_catch_up_route(req: DataHygieneCatchUpReq):
                 "run_id": run_id,
             })
 
+    for instrument, band_plan in band_sweeps:
+        run_id = await submit_band_fetch_run(instrument, band_plan)
+        submitted.append({
+            "action_id": f"options_{instrument}",
+            "kind": "option_candles",
+            "instrument": instrument,
+            "run_id": run_id,
+        })
+
     return serialize_doc({
         "plan": plan,
         "submitted": submitted,
         "submitted_count": len(submitted),
+        "band_sweeps": [
+            {"instrument": i, "missing_pairs": p.get("missing_pairs", 0)} for i, p in band_sweeps
+        ],
     })
 
 

@@ -101,6 +101,7 @@ class FakeDB:
         self.option_contracts = FakeCollection()
         self.options_1m = FakeCollection()
         self.warehouse_runs = FakeCollection()
+        self.option_known_empty = FakeCollection()  # broker-empty ledger (empty by default)
 
 
 # ---- helpers ----------------------------------------------------------------

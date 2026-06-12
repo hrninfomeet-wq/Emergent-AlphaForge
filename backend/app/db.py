@@ -60,6 +60,13 @@ async def ensure_indexes() -> None:
     await db.options_1m.create_index([("instrument_key", 1), ("ts", 1)], unique=True)
     await db.options_1m.create_index([("underlying", 1), ("expiry_date", 1), ("strike", 1), ("side", 1), ("ts", 1)])
     await db.option_coverage_cache.create_index([("underlying", 1)], unique=True)
+    # Broker-empty ledger: band pairs a clean fetch proved Upstox has no data
+    # for (data_hygiene.KNOWN_EMPTY_COLLECTION). One doc per pair, never
+    # re-requested, excluded from hygiene missing counts.
+    await db.option_known_empty.create_index(
+        [("underlying", 1), ("date", 1), ("expiry", 1), ("side", 1), ("strike", 1)],
+        unique=True,
+    )
     await db.ticks.create_index([("session_id", 1), ("ts", 1)])
     await db.ticks.create_index([("instrument_key", 1), ("ts", 1)])
     await db.chain_snapshots.create_index([("created_at", -1)])
