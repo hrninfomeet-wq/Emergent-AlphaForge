@@ -1361,6 +1361,7 @@ function ResultsView({ result }) {
       <OptionBacktestCard optionBacktest={result.option_backtest} />
       <ContextBreakdownCard optionBacktest={result.option_backtest} />
       <MaeMfeCard trades={result.trades} optionBacktest={result.option_backtest} />
+      <MonteCarloCard trades={result.trades} optionBacktest={result.option_backtest} />
 
       {/* Chart */}
       <MultiPaneChart candles={candles} equity={equity} drawdown={drawdown} height={520} />
@@ -1768,6 +1769,110 @@ function MaeMfeCard({ trades, optionBacktest }) {
           that would have closed half your trades early, including winners that later recovered.
         </div>
       )}
+    </Panel>
+  );
+}
+
+// ---- Monte Carlo: bootstrap-resample the per-trade P&L sequence ----
+// We draw N trades WITH REPLACEMENT from the run's realized per-trade P&L,
+// 1,000 times, rebuilding the equity path each time. This yields a distribution
+// of both max drawdown and ending P&L (a plain order-shuffle would leave ending
+// P&L constant). Shows P5/P50/P95 drawdown, ending-P&L percentiles, and the
+// probability the strategy ends underwater P(net<0). All client-side.
+function quantileAsc(sortedAsc, q) {
+  if (!sortedAsc.length) return null;
+  const pos = (sortedAsc.length - 1) * q;
+  const base = Math.floor(pos);
+  const rest = pos - base;
+  const next = sortedAsc[base + 1];
+  return next !== undefined ? sortedAsc[base] + rest * (next - sortedAsc[base]) : sortedAsc[base];
+}
+
+function MonteCarloCard({ trades, optionBacktest }) {
+  const optionEnabled = !!optionBacktest?.enabled;
+  const isMoney = optionEnabled;
+  const sims = useMemo(() => {
+    const source = optionEnabled ? (optionBacktest?.trades || []) : (trades || []);
+    const pnlKey = optionEnabled ? "option_pnl_value" : "pnl_pts";
+    const pnl = source.map((t) => Number(t[pnlKey])).filter((v) => Number.isFinite(v)).slice(0, 1000);
+    const N = pnl.length;
+    if (N < 5) return { N };
+    const RUNS = 1000;
+    const dd = new Array(RUNS);
+    const end = new Array(RUNS);
+    let negCount = 0;
+    for (let r = 0; r < RUNS; r++) {
+      let cum = 0, peak = 0, maxDD = 0;
+      for (let i = 0; i < N; i++) {
+        cum += pnl[(Math.random() * N) | 0];
+        if (cum > peak) peak = cum;
+        const d = peak - cum;
+        if (d > maxDD) maxDD = d;
+      }
+      dd[r] = maxDD;
+      end[r] = cum;
+      if (cum < 0) negCount += 1;
+    }
+    dd.sort((a, b) => a - b);
+    end.sort((a, b) => a - b);
+    return {
+      N, runs: RUNS,
+      ddP5: quantileAsc(dd, 0.05), ddP50: quantileAsc(dd, 0.5), ddP95: quantileAsc(dd, 0.95),
+      endP5: quantileAsc(end, 0.05), endP50: quantileAsc(end, 0.5), endP95: quantileAsc(end, 0.95),
+      pNeg: negCount / RUNS,
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trades, optionBacktest, optionEnabled]);
+
+  const fmtV = (v) => (v == null ? "–" : isMoney ? `₹${fmtInt(v)}` : fmtNum(v));
+  const unit = isMoney ? "net ₹" : "spot pts";
+
+  if (!sims || sims.N < 5) {
+    return (
+      <Panel title="Monte Carlo (trade resampling)" testid="monte-carlo-card">
+        <div className="text-xs text-dimmer">Need at least 5 trades to resample. This run has {fmtInt(sims?.N || 0)}.</div>
+      </Panel>
+    );
+  }
+
+  const pNegPct = sims.pNeg * 100;
+  return (
+    <Panel title="Monte Carlo (trade resampling)" testid="monte-carlo-card">
+      <div className="text-[11px] text-dimmer mb-3">
+        {fmtInt(sims.runs)} bootstrap runs over {fmtInt(sims.N)} trades (drawn with replacement, {unit}). Shows how
+        path-luck could reshape drawdown and the final result given this strategy's per-trade P&L.
+      </div>
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
+        <div className="rounded-md border border-line bg-bg-2 p-2" data-testid="mc-drawdown-block">
+          <div className="text-[10px] uppercase tracking-wider text-dimmer">Max DD P5 / P50 / P95</div>
+          <div className="text-xs font-mono mt-0.5 text-danger">
+            {fmtV(sims.ddP5)} <span className="text-dimmer">/</span> {fmtV(sims.ddP50)} <span className="text-dimmer">/</span> {fmtV(sims.ddP95)}
+          </div>
+        </div>
+        <div className="rounded-md border border-line bg-bg-2 p-2" data-testid="mc-ending-block">
+          <div className="text-[10px] uppercase tracking-wider text-dimmer">Ending P&L P5 / P50 / P95</div>
+          <div className="text-xs font-mono mt-0.5">
+            <span className={colorPnL(sims.endP5)}>{fmtV(sims.endP5)}</span> <span className="text-dimmer">/</span>{" "}
+            <span className={colorPnL(sims.endP50)}>{fmtV(sims.endP50)}</span> <span className="text-dimmer">/</span>{" "}
+            <span className={colorPnL(sims.endP95)}>{fmtV(sims.endP95)}</span>
+          </div>
+        </div>
+        <div className="rounded-md border border-line bg-bg-2 p-2" data-testid="mc-pneg-block">
+          <div className="text-[10px] uppercase tracking-wider text-dimmer">P(net &lt; 0)</div>
+          <div className={`text-base font-mono mt-0.5 ${pNegPct >= 25 ? "text-danger" : pNegPct >= 10 ? "text-amber-300" : "text-success"}`}>
+            {fmtPct(pNegPct, 1)}
+          </div>
+        </div>
+        <div className="rounded-md border border-line bg-bg-2 p-2">
+          <div className="text-[10px] uppercase tracking-wider text-dimmer">Median Ending</div>
+          <div className={`text-base font-mono mt-0.5 ${colorPnL(sims.endP50)}`}>{fmtV(sims.endP50)}</div>
+        </div>
+      </div>
+      <div className="mt-2 text-[11px] text-dim" data-testid="monte-carlo-hint">
+        {pNegPct >= 25
+          ? `In ${fmtPct(pNegPct, 0)} of resampled paths this strategy ends underwater — the edge is fragile to trade order/luck.`
+          : `Only ${fmtPct(pNegPct, 0)} of resampled paths end underwater, and the P5 drawdown is ${fmtV(sims.ddP5)} — size for the P95 drawdown of ${fmtV(sims.ddP95)}.`}
+      </div>
     </Panel>
   );
 }

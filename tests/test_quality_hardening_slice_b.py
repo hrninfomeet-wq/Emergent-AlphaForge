@@ -29,3 +29,16 @@ def test_backtest_lab_exposes_mae_mfe_distribution_card():
     # new backend field. Option-leg excursions are preferred when paired.
     assert "option_mfe_pts" in lab and "option_mae_pts" in lab
     assert "mfe_pts" in lab and "mae_pts" in lab
+
+
+def test_backtest_lab_exposes_monte_carlo_card():
+    lab = _read("pages", "BacktestLab.jsx")
+    assert "MonteCarloCard" in lab
+    for needle in ("monte-carlo-card", "mc-drawdown-block", "mc-ending-block",
+                   "mc-pneg-block", "monte-carlo-hint"):
+        assert needle in lab, f"missing Monte Carlo surface: {needle}"
+    # Bootstrap with replacement over the per-trade P&L, capped at 1,000 trades,
+    # 1,000 runs — all client-side, no backend field.
+    assert "slice(0, 1000)" in lab
+    assert "RUNS = 1000" in lab
+    assert "option_pnl_value" in lab and "pnl_pts" in lab
