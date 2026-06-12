@@ -1,25 +1,31 @@
 # Handoff
 
-Updated: 2026-06-12 (evening)
+Updated: 2026-06-12 (Slice 3 done)
 
 This is the entry point for the next AI agent or developer. Read it before editing code. The repository and tests are the source of truth — not any prior chat.
 
 ## NEXT AGENT — START HERE (Opus 4.8 in Kiro)
 
 Your work is fully spec'd: **`.kiro/specs/forward-surfaces-overhaul/`**
-(requirements → design → tasks). `tasks.md` contains ready-to-paste prompts for
-Slice 3 (Signals ledger page), Slice 4 (Paper trading journal page), and
-Slice 5 (polish) — one slice per session, in order. `design.md` carries the
-endpoint contracts, frontend conventions, testing rules, and the trading-domain
-rules that are non-negotiable (premium-never-spot, lot size from contract
-metadata, OPEN trades never deletable, IST everywhere, never push without the
-user's approval). The backend for those slices is already built and tested —
-the slices are UI + contract-test work. Anything trading-critical beyond the
-spec (evaluator, optimizer, WFO, paper_auto) goes back to the senior agent.
+(requirements → design → tasks). Slice 3 (Signals ledger `/journal`) is now
+**DONE** — `tasks.md` has the remaining ready-to-paste prompts for **Slice 4
+(Paper trading journal page)** and **Slice 5 (polish)**, one slice per session,
+in order. `design.md` carries the endpoint contracts, frontend conventions,
+testing rules, and the trading-domain rules that are non-negotiable
+(premium-never-spot, lot size from contract metadata, OPEN trades never
+deletable, IST everywhere, never push without the user's approval). The backend
+for those slices is already built and tested — the slices are UI + contract-test
+work. Anything trading-critical beyond the spec (evaluator, optimizer, WFO,
+paper_auto) goes back to the senior agent.
 
 ## Status In One Line
 
-Latest (2026-06-12, third pass): **forward-surfaces overhaul slices 1–2** — deployments are fully independent (concurrency rule removed), the approval flow and manual research-signal console are RETIRED (modes: `signal_only` | `paper`; routes deleted), new APIs: `/signals/enriched` (signal⟷trade ledger join + filters/sort/CSV), `/signals/purge`, `/paper/trades` upgraded + `/paper/trades/purge`, `/deployments/overview`, archive `?purge=1` (undeploy), option-stream auto-follow from deployment moneyness; `/live` rebuilt as the **Deployments command center** (cards + today/lifetime stats + Undeploy + 3-step deploy wizard). **453 pytest tests pass.** Verified against a live market session. Slices 3–5 are spec'd for Opus 4.8 in `.kiro/specs/forward-surfaces-overhaul/`. Earlier same day: pipeline alignment (preset execution policy, readiness evidence, option-aware WFO, optimizer multi-DTE) and the course-alignment fixes (multi-DTE backtest, ATM default, premium-pts exits live). The local Docker stack is healthy and rebuilt with all changes.
+Latest (2026-06-12, Slice 3): **`/journal` rebuilt as the Signals Ledger** on `GET /api/signals/enriched` — one row per deployment signal joined with its paper trade (entry/exit premium, P&L ₹ + premium points, trigger reasons, blockers, paper_trade_error), with server-side filter/sort/paginate/CSV, `?deployment=` preselect, 45s auto-refresh, and the signals-purge deletion toolkit (row-select / older-than-N / per-deployment). **453 pytest tests pass; frontend builds clean.** Slices 4–5 (Paper journal page, polish) remain in `.kiro/specs/forward-surfaces-overhaul/`. Earlier same day: **forward-surfaces slices 1–2** — deployments fully independent (concurrency rule removed), approval flow retired (modes `signal_only` | `paper`), new APIs (`/signals/enriched`, `/signals/purge`, `/paper/trades` upgraded + purge, `/deployments/overview`, archive `?purge=1`, option-stream auto-follow), `/live` rebuilt as the Deployments command center. The local Docker stack is healthy and rebuilt with all changes.
+
+## Recent Work — Forward Surfaces Overhaul, Slice 3: Signals Ledger (2026-06-12)
+
+See CHANGELOG 0.18.x. `frontend/src/pages/SignalJournal.jsx` (route `/journal`) was rebuilt from the old deployment-signal audit table into the **Signals Ledger** described in `forward-surfaces-overhaul` R3. It is pure UI over the already-shipped `GET /api/signals/enriched` (verified field-by-field against `server.py`): server-side filters (deployment via `?deployment=` URL param, instrument, state, clean/blocked, IST date range), whitelisted server-side sort (time/instrument/score/state via the `confidence` field for score), skip/limit pagination with total, CSV via `window.open` on the endpoint with `format=csv`, 45s auto-refresh, an expandable per-row detail showing entry-trigger `reasons`, and the deletion toolkit on `POST /api/signals/purge` (row-select ids / older-than-N-days / per-deployment, all `window.confirm`-gated). Two contract tests updated in the same commit. No backend changes. Slice 4 (rebuild `PaperTrading.jsx` on the upgraded `/paper/trades`) is next.
+
 
 ## Recent Work — Forward Surfaces Overhaul, Slices 1–2 (2026-06-12)
 

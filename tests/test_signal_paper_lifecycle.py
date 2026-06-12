@@ -165,6 +165,7 @@ def test_frontend_exposes_live_and_paper_operational_views():
     api = (ROOT / "frontend" / "src" / "lib" / "api.js").read_text(encoding="utf-8")
     live = (ROOT / "frontend" / "src" / "pages" / "LiveSignals.jsx").read_text(encoding="utf-8")
     paper = (ROOT / "frontend" / "src" / "pages" / "PaperTrading.jsx").read_text(encoding="utf-8")
+    ledger = (ROOT / "frontend" / "src" / "pages" / "SignalJournal.jsx").read_text(encoding="utf-8")
 
     for needle in ("listSignals", "listSignalsEnriched", "purgeSignals", "deploymentsOverview",
                    "listPaperTrades", "purgePaperTrades", "markPaperTrade", "closePaperTrade"):
@@ -174,3 +175,12 @@ def test_frontend_exposes_live_and_paper_operational_views():
         assert needle in live
     for needle in ("paper-trading-journal", "paper-trade-table", "mark-paper-trade", "close-paper-trade", "risk-badge"):
         assert needle in paper
+    # The Signals ledger (rebuilt /journal page, forward-surfaces R3, 2026-06-12).
+    # Built on the enriched endpoint, with server-side filter/sort/CSV and the
+    # signals-purge deletion toolkit.
+    assert "listSignalsEnriched" in ledger and "purgeSignals" in ledger
+    for needle in ("signals-ledger-page", "signals-ledger-table", "signals-ledger-row",
+                   "ledger-deployment-filter", "ledger-state-filter", "ledger-clean-filter",
+                   "ledger-export-csv", "ledger-delete-selected", "ledger-delete-older",
+                   "ledger-purge-deployment", "ledger-next-page"):
+        assert needle in ledger

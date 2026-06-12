@@ -3,7 +3,7 @@
 - [x] Slice 1 — backend foundations (independent deployments, enriched ledger,
       purge routes, overview, option-stream auto-follow, mode model) — DONE
 - [x] Slice 2 — Deployments command center at `/live` (cards, wizard, undeploy) — DONE
-- [ ] Slice 3 — Signals ledger page rebuild
+- [x] Slice 3 — Signals ledger page rebuild — DONE (2026-06-12)
 - [ ] Slice 4 — Paper trading journal rebuild
 - [ ] Slice 5 — Polish extras (only after 3+4 are verified live)
 

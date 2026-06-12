@@ -166,9 +166,10 @@ def test_backtest_run_journal_moved_to_backtest_lab():
 
     assert "BacktestRunJournal" in lab
     assert "backtest-run-journal" in journal_component
-    # Signal Journal is now the deployment signal audit trail, not backtest runs.
-    assert "Deployment Signal Journal" in signal_journal
-    assert "listSignals" in signal_journal
+    # Signal Journal is now the deployment SIGNALS LEDGER (forward-surfaces R3,
+    # rebuilt 2026-06-12 on GET /signals/enriched), not the backtest-run table.
+    assert "signals-ledger-page" in signal_journal
+    assert "listSignalsEnriched" in signal_journal
     assert "listBacktestRuns" not in signal_journal
 
 

@@ -2,6 +2,15 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.18.x] — Forward Surfaces Overhaul, Slice 3: Signals Ledger (2026-06-12)
+
+453 backend tests pass. Frontend builds clean (no new eslint warnings).
+
+- **`/journal` rebuilt as the Signals Ledger** (`frontend/src/pages/SignalJournal.jsx`), the trade-recommendation record built on `GET /api/signals/enriched`. One row per deployment signal joined with its paper trade: IST time, deployment, strategy, instrument, CE/PE, contract (strike+side) + expiry, spot at entry, entry premium, expandable entry-trigger `reasons`, exit time/premium/reason, P&L in ₹ and premium points, score, state, blockers and `paper_trade_error`.
+- **Server-side filter / sort / paginate / CSV**: deployment (preselected from `?deployment=` URL param, the command-center deep-link), instrument, state, clean/blocked, IST date range; clickable sort on the whitelisted columns (time, instrument, score, state); skip/limit pagination with total; CSV export honoring the current filters (`format=csv`); 45s auto-refresh.
+- **Deletion toolkit** (via `POST /api/signals/purge`, all confirmed): row-checkbox "Delete selected", "Delete older than N days", and per-deployment purge. Paper trades are never touched by this route; OPEN trades are unaffected.
+- Contract tests updated in the same commit: `test_signal_paper_lifecycle.py::test_frontend_exposes_live_and_paper_operational_views` now pins the ledger page's testids; `test_option_coverage.py::test_backtest_run_journal_moved_to_backtest_lab` updated for the rebuilt page (still asserts it is not the backtest-run table).
+
 ## [0.17.x] — Forward Surfaces Overhaul, Slices 1–2 (2026-06-12)
 
 453 backend tests pass. Slices 3–5 (Signals ledger, Paper journal, polish) are spec'd for the next agent in `.kiro/specs/forward-surfaces-overhaul/`.
