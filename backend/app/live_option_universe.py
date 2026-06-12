@@ -20,6 +20,21 @@ DEFAULT_LIVE_OPTION_RADIUS = 1
 DEFAULT_MAX_OPTION_KEYS = 60
 
 
+# Strike-offset each moneyness policy needs covered around ATM.
+_MONEYNESS_OFFSET = {"atm": 0, "otm1": 1, "itm1": 1, "otm2": 2, "itm2": 2, "otm3": 3, "itm3": 3}
+
+
+def radius_for_deployments(deployments: Optional[Iterable[Dict[str, Any]]]) -> int:
+    """Strike radius the live stream needs so every ACTIVE paper deployment's
+    moneyness policy is covered, +1 strike of intraday-drift headroom.
+    Bounded to [1, 5] (5 matches build_live_option_universe's clamp)."""
+    max_offset = 0
+    for d in deployments or []:
+        for m in ((d.get("option_policy") or {}).get("moneyness") or []):
+            max_offset = max(max_offset, _MONEYNESS_OFFSET.get(str(m or "").lower(), 0))
+    return max(1, min(max_offset + 1, 5))
+
+
 def normalize_underlyings(value: Optional[Iterable[str]]) -> List[str]:
     """Return supported underlyings in stable order without duplicates."""
     raw_values = list(DEFAULT_LIVE_OPTION_UNDERLYINGS if value is None else value)

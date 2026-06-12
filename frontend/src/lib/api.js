@@ -125,37 +125,34 @@ export const api = {
   deleteBacktestRun: (id) =>
     apiClient.delete(`/backtest/runs/${id}`).then((r) => r.data),
 
-  // Live signal lifecycle + paper trading
+  // Signals ledger + paper trading. (Manual research-signal creation,
+  // lifecycle transitions, and the approval flow were retired 2026-06-12.)
   listSignals: (params = {}) =>
     apiClient.get("/signals", { params }).then((r) => r.data),
-  createSignal: (payload) =>
-    apiClient.post("/signals", payload).then((r) => r.data),
-  transitionSignal: (id, payload) =>
-    apiClient.post(`/signals/${id}/transition`, payload).then((r) => r.data),
-  approveSignal: (id, payload = {}) =>
-    apiClient.post(`/signals/${id}/approve`, payload).then((r) => r.data),
-  skipSignal: (id, payload = {}) =>
-    apiClient.post(`/signals/${id}/skip`, payload).then((r) => r.data),
-  markBlockedSignal: (id, payload = {}) =>
-    apiClient.post(`/signals/${id}/mark-blocked`, payload).then((r) => r.data),
-  deploySignalToPaper: (id, payload) =>
-    apiClient.post(`/signals/${id}/paper`, payload).then((r) => r.data),
+  listSignalsEnriched: (params = {}) =>
+    apiClient.get("/signals/enriched", { params }).then((r) => r.data),
+  purgeSignals: (payload) =>
+    apiClient.post("/signals/purge", payload).then((r) => r.data),
   listPaperTrades: (params = {}) =>
     apiClient.get("/paper/trades", { params }).then((r) => r.data),
+  purgePaperTrades: (payload) =>
+    apiClient.post("/paper/trades/purge", payload).then((r) => r.data),
   markPaperTrade: (id, payload) =>
     apiClient.post(`/paper/trades/${id}/mark`, payload).then((r) => r.data),
   closePaperTrade: (id, payload) =>
     apiClient.post(`/paper/trades/${id}/close`, payload).then((r) => r.data),
   listDeployments: (params = {}) =>
     apiClient.get("/deployments", { params }).then((r) => r.data),
+  deploymentsOverview: () =>
+    apiClient.get("/deployments/overview").then((r) => r.data),
   createDeployment: (payload) =>
     apiClient.post("/deployments", payload).then((r) => r.data),
   pauseDeployment: (id) =>
     apiClient.post(`/deployments/${id}/pause`).then((r) => r.data),
   resumeDeployment: (id) =>
     apiClient.post(`/deployments/${id}/resume`).then((r) => r.data),
-  archiveDeployment: (id) =>
-    apiClient.post(`/deployments/${id}/archive`).then((r) => r.data),
+  archiveDeployment: (id, params = {}) =>
+    apiClient.post(`/deployments/${id}/archive`, null, { params }).then((r) => r.data),
   evaluateDeployment: (id) =>
     apiClient.post(`/deployments/${id}/evaluate-on-close`).then((r) => r.data),
   evaluateActiveDeployments: () =>

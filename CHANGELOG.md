@@ -2,6 +2,20 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.17.x] — Forward Surfaces Overhaul, Slices 1–2 (2026-06-12)
+
+453 backend tests pass. Slices 3–5 (Signals ledger, Paper journal, polish) are spec'd for the next agent in `.kiro/specs/forward-surfaces-overhaul/`.
+
+- **Independent deployments** (user decision): removed the highest-score-wins concurrency rule — every ACTIVE deployment journals and trades its own signals, enabling honest multi-strategy A/B. Exposure control = per-deployment `max_open_paper_trades`.
+- **Approval flow fully retired**: deleted `POST /signals` (manual research), `/signals/{id}/transition`, `/approve`, `/skip`, `/mark-blocked`, `/signals/{id}/paper` and their request models + api.js methods. Modes are now `signal_only` | `paper` (legacy `shadow`/`recommendation` map to signal_only on create; old stored docs render as signal-only). `manual_approval_required` is stamped False on new deployments.
+- **Signals ledger API** (`GET /api/signals/enriched`): signal⟷trade join — entry premium, exit premium/reason, P&L ₹ + premium points, trigger `reasons`, blockers, `paper_trade_error` — with server-side filters (deployment/strategy/instrument/state/clean/date-range), whitelisted sort, pagination, CSV export.
+- **Paper trades API upgraded**: same filter/sort/pagination/CSV treatment + `deployment_name` on every row; `events` excluded from lists.
+- **Deletion toolkit**: `POST /api/signals/purge` and `POST /api/paper/trades/purge` (ids / per-deployment / older-than-X; OPEN trades never deletable), and `POST /api/deployments/{id}/archive?purge=1` (undeploy + purge journals, keeping OPEN trades for the marker/square-off).
+- **Deployments overview API** (`GET /api/deployments/overview`): per-deployment today (clean/blocked signals, open trades, open MTM, realized) + lifetime (closed trades, realized ₹, win rate) + account totals in one call.
+- **Option stream auto-follow**: on deployment create/resume, the live option subscription re-derives its strike radius from ACTIVE paper deployments' moneyness policies (`radius_for_deployments`, +1 drift headroom, clamp 1–5) and restarts the read-only stream — best-effort, never blocks the deployment.
+- **`/live` rebuilt as the Deployments command center**: per-strategy cards (mode chip, status + auto-pause reason, today's signals/open MTM/realized, lifetime ₹ and win rate, links to its signals/trades) with Pause/Resume/Evaluate and **Undeploy** (archive ± purge); header totals (today MTM, open trades, signals today) with 30s auto-refresh; a 3-step deploy wizard (preset + readiness/quality evidence → execution prefilled from the preset's policy → kill switches & ack). Pending Approval panel and the manual research-signal console are gone.
+- Contract tests rewritten to pin the new surface and assert retired routes stay gone; +3 universe-radius tests. Verified against the live market session (overview/enriched/CSV endpoints + the new page and wizard in Chrome).
+
 ## [0.16.x] — Pipeline Alignment: Preset Execution Policy, Readiness, Option-Aware WFO (2026-06-12)
 
 449 backend tests pass. Implements the accepted alignment recommendations (1, 2, 4, 5); recommendation 3 (retiring the legacy spot evaluation) deferred by user decision.

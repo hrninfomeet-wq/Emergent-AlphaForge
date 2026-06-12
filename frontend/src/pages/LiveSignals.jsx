@@ -1,1246 +1,637 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
-import { Activity, Briefcase, Check, RefreshCw, ShieldAlert, SkipForward, Sparkles, X, Zap } from "lucide-react";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import {
+  Activity, Archive, ChevronLeft, ChevronRight, Pause, Play, Plus,
+  RefreshCw, Rocket, ShieldAlert, X, Zap,
+} from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { fmtNum, isoToFull } from "@/lib/fmt";
 
-const INSTRUMENTS = ["NIFTY", "BANKNIFTY", "SENSEX"];
-const STATES = ["WATCHING", "FORMING", "CONFIRMED", "TRIGGERED", "ACTIVE", "EXITED", "AUDITED"];
+/**
+ * Deployments command center (route /live, rebuilt 2026-06-12).
+ *
+ * One card per deployed strategy: what is deployed, what it did today, and
+ * lifetime paper results — with pause / resume / undeploy controls. New
+ * deployments are created through a 3-step wizard (preset → execution → risk).
+ * The old Pending Approval panel and manual research-signal console were
+ * retired: deployments journal and auto-trade their own signals.
+ */
+
+const MONEYNESS = ["atm", "otm1", "itm1"];
+const DTE_VALUES = [0, 1, 2, 3, 4, 5, 6];
+
+const inr = (v) =>
+  v == null ? "—" : `₹${Number(v).toLocaleString("en-IN", { maximumFractionDigits: 0 })}`;
+
+const toneClass = (v) =>
+  Number(v || 0) > 0 ? "text-emerald-400" : Number(v || 0) < 0 ? "text-red-400" : "text-dim";
 
 export default function LiveSignals() {
-  const [signals, setSignals] = useState([]);
-  const [deployments, setDeployments] = useState([]);
-  const [presets, setPresets] = useState([]);
-  const [backtestRuns, setBacktestRuns] = useState([]);
+  const navigate = useNavigate();
+  const [overview, setOverview] = useState(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [filterState, setFilterState] = useState("");
-  const [deploymentForm, setDeploymentForm] = useState({
-    name: "NIFTY shadow deployment",
-    source_type: "preset",
-    source_id: "",
-    mode: "shadow",
-    confirmation_mode: "1m_close",
-    option_moneyness: "atm",
-    pretrade_profile: "Balanced",
-    dte_filter: "0,1,2,3,4,5,6",
-    default_lots: 1,
-    auto_paper: true,
-    // Fallback premium exits: unit toggle (pts of premium | % of premium).
-    // Strategy-defined risk hints on the signal always take priority live.
-    auto_paper_unit: "pct",
-    auto_paper_target_pts: "",
-    auto_paper_stop_pts: "",
-    auto_paper_target_pct: "",
-    auto_paper_stop_pct: "",
-    allow_overnight: false,
-    max_consecutive_losses: "",
-    daily_loss_cutoff_pct: "",
-    max_open_paper_trades: "",
-    acknowledged_warnings: false,
-  });
-  const [preflight, setPreflight] = useState(null);
-  const [preflightBusy, setPreflightBusy] = useState(false);
-  const [quality, setQuality] = useState(null);
-  const [qualityBusy, setQualityBusy] = useState(false);
-  const [form, setForm] = useState({
-    instrument: "NIFTY",
-    direction: "LONG",
-    entry_price: 24000,
-    confidence: 70,
-    strategy_id: "manual_research",
-    reasons: "manual setup, offline validation",
-    trading_symbol: "NIFTY PAPER CE",
-    lot_size: 50,
-    stop_price: "",
-    target_price: "",
-  });
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const [presets, setPresets] = useState([]);
 
   const refresh = useCallback(async () => {
     try {
-      const res = await api.listSignals({ ...(filterState ? { state: filterState } : {}), limit: 50 });
-      setSignals(res.items || []);
+      const [ov, presetList] = await Promise.all([
+        api.deploymentsOverview(),
+        api.listPresets().catch(() => ({ items: [] })),
+      ]);
+      setOverview(ov);
+      setPresets(presetList.items || []);
     } catch (e) {
-      toast.error(`Signals load failed: ${e.response?.data?.detail || e.message}`);
+      toast.error(`Load failed: ${e.response?.data?.detail || e.message}`);
     } finally {
       setLoading(false);
     }
-  }, [filterState]);
-
-  const refreshDeployments = useCallback(async () => {
-    try {
-      const [dep, presetList, runList] = await Promise.all([
-        api.listDeployments({ limit: 50 }),
-        api.listPresets(),
-        api.listBacktestRuns(50),
-      ]);
-      setDeployments(dep.items || []);
-      setPresets(presetList.items || []);
-      setBacktestRuns(runList.items || []);
-      setDeploymentForm((prev) => {
-        if (prev.source_id) return prev;
-        const firstSource = prev.source_type === "preset" ? presetList.items?.[0]?.name : runList.items?.[0]?.id;
-        return firstSource ? { ...prev, source_id: firstSource } : prev;
-      });
-    } catch (e) {
-      toast.error(`Deployments load failed: ${e.response?.data?.detail || e.message}`);
-    }
   }, []);
 
+  useEffect(() => { refresh(); }, [refresh]);
+  // Live cadence: the evaluator fires each minute during market hours.
   useEffect(() => {
-    refresh();
-  }, [refresh]);
-
-  // Auto-refresh signals every 15s so deployment-generated signals appear without manual reload.
-  useEffect(() => {
-    const id = window.setInterval(refresh, 15000);
+    const id = window.setInterval(refresh, 30000);
     return () => window.clearInterval(id);
   }, [refresh]);
 
-  useEffect(() => {
-    refreshDeployments();
-  }, [refreshDeployments]);
-
-  // Derive the instrument that the chosen preset/backtest source targets, then
-  // call the deployment preflight to surface data-realism warnings.
-  const formInstrument = useMemo(() => {
-    if (!deploymentForm.source_id) return null;
-    if (deploymentForm.source_type === "preset") {
-      const preset = presets.find((p) => p.name === deploymentForm.source_id);
-      return (preset?.config?.instrument || preset?.instrument || "").toUpperCase() || null;
-    }
-    const run = backtestRuns.find((r) => r.id === deploymentForm.source_id);
-    return (run?.instrument || run?.config?.instrument || "").toUpperCase() || null;
-  }, [deploymentForm.source_id, deploymentForm.source_type, presets, backtestRuns]);
-
-  useEffect(() => {
-    let cancelled = false;
-    if (!formInstrument) {
-      setPreflight(null);
-      return () => {};
-    }
-    setPreflightBusy(true);
-    api.deploymentPreflight(formInstrument)
-      .then((res) => {
-        if (!cancelled) {
-          setPreflight(res);
-        }
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          setPreflight({
-            status: "degraded",
-            instrument: formInstrument,
-            checks: [{
-              id: "preflight_error",
-              status: "degraded",
-              label: "Pre-flight call failed",
-              detail: err?.response?.data?.detail || err?.message || "request failed",
-            }],
-            structural_breaks: [],
-          });
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setPreflightBusy(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [formInstrument]);
-
-  // Deep-link: /live?preset=NAME preselects that preset as the deployment
-  // source (used by the Optimizer's per-preset Deploy button). Applied once.
+  // Deep-link /live?preset=NAME (Optimizer's Deploy rocket): open the wizard
+  // with that preset preselected. Applied once per page load.
   const [searchParams] = useSearchParams();
-  const deepLinkAppliedRef = useRef(false);
+  const deepLinkRef = useRef(false);
+  const [wizardPreset, setWizardPreset] = useState("");
   useEffect(() => {
-    const presetName = searchParams.get("preset");
-    if (!presetName || deepLinkAppliedRef.current || presets.length === 0) return;
-    if (!presets.some((p) => p.name === presetName)) return;
-    deepLinkAppliedRef.current = true;
-    setDeploymentForm((prev) => ({
-      ...prev,
-      source_type: "preset",
-      source_id: presetName,
-      name: `${presetName} deployment`,
-    }));
+    const name = searchParams.get("preset");
+    if (!name || deepLinkRef.current || presets.length === 0) return;
+    if (!presets.some((p) => p.name === name)) return;
+    deepLinkRef.current = true;
+    setWizardPreset(name);
+    setWizardOpen(true);
   }, [searchParams, presets]);
 
-  // Execution policy travels with the preset: prefill option policy and the
-  // auto-paper premium fallbacks from preset.config.execution so the
-  // deployment runs under the same terms the result was validated under.
-  // The user can still override any field before creating. Guarded by a ref so
-  // the 15s preset refresh can't re-apply and clobber in-progress edits.
-  const prefillAppliedRef = useRef(null);
-  useEffect(() => {
-    if (deploymentForm.source_type !== "preset" || !deploymentForm.source_id) return;
-    if (prefillAppliedRef.current === deploymentForm.source_id) return;
-    const preset = presets.find((p) => p.name === deploymentForm.source_id);
-    const ex = preset?.config?.execution;
-    if (!ex) return;
-    prefillAppliedRef.current = deploymentForm.source_id;
-    const dteList = Array.isArray(ex.dte_filter) ? ex.dte_filter
-      : (ex.dte_filter != null && ex.dte_filter !== "all" ? [ex.dte_filter] : null);
-    const usePts = ex.option_target_pts != null || ex.option_stop_pts != null;
-    setDeploymentForm((prev) => ({
-      ...prev,
-      option_moneyness: ex.moneyness || prev.option_moneyness,
-      ...(dteList && dteList.length ? { dte_filter: dteList.join(",") } : {}),
-      default_lots: ex.lots || prev.default_lots,
-      ...(ex.exit_mode === "option_levels" ? {
-        auto_paper_unit: usePts ? "pts" : "pct",
-        auto_paper_target_pts: ex.option_target_pts ?? "",
-        auto_paper_stop_pts: ex.option_stop_pts ?? "",
-        auto_paper_target_pct: ex.option_target_pct ?? "",
-        auto_paper_stop_pct: ex.option_stop_pct ?? "",
-      } : {}),
-    }));
-  }, [deploymentForm.source_type, deploymentForm.source_id, presets]);
-
-  // Deployment-readiness evidence (honest WFO + option-rupee) for the source.
-  const [readiness, setReadiness] = useState(null);
-  const [readinessBusy, setReadinessBusy] = useState(false);
-  useEffect(() => {
-    let cancelled = false;
-    if (!deploymentForm.source_id) {
-      setReadiness(null);
-      return () => {};
-    }
-    setReadinessBusy(true);
-    api.deploymentReadiness(deploymentForm.source_type, deploymentForm.source_id)
-      .then((res) => { if (!cancelled) setReadiness(res); })
-      .catch(() => { if (!cancelled) setReadiness(null); })
-      .finally(() => { if (!cancelled) setReadinessBusy(false); });
-    return () => { cancelled = true; };
-  }, [deploymentForm.source_type, deploymentForm.source_id]);
-
-  // Fetch deployment quality whenever source changes. Resets acknowledgment
-  // checkbox to false so the user must consciously re-tick it for each source.
-  useEffect(() => {
-    let cancelled = false;
-    if (!deploymentForm.source_id) {
-      setQuality(null);
-      return () => {};
-    }
-    setQualityBusy(true);
-    setDeploymentForm((prev) => ({ ...prev, acknowledged_warnings: false }));
-    api.deploymentQuality(deploymentForm.source_type, deploymentForm.source_id)
-      .then((res) => {
-        if (!cancelled) setQuality(res);
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          setQuality({
-            acknowledgment_required: true,
-            warnings: [{
-              id: "quality_check_failed",
-              severity: "warning",
-              label: "Quality check failed",
-              detail: err?.response?.data?.detail || err?.message || "request failed",
-            }],
-            metrics_snapshot: {},
-          });
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setQualityBusy(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [deploymentForm.source_type, deploymentForm.source_id]);
-
-  const set = (key, value) => setForm((prev) => ({ ...prev, [key]: value }));
-  const setDeployment = (key, value) => {
-    setDeploymentForm((prev) => {
-      const next = { ...prev, [key]: value };
-      if (key === "source_type") {
-        const firstSource = value === "preset" ? presets[0]?.name : backtestRuns[0]?.id;
-        next.source_id = firstSource || "";
-      }
-      return next;
-    });
-  };
-
-  const createDeployment = async () => {
-    if (!deploymentForm.source_id) {
-      toast.error("Choose a saved preset or backtest run first");
-      return;
-    }
+  const act = async (fn, okMsg) => {
     setBusy(true);
     try {
-      const payload = {
-        ...deploymentForm,
-        option_moneyness: String(deploymentForm.option_moneyness || "atm")
-          .split(",")
-          .map((item) => item.trim().toLowerCase())
-          .filter(Boolean),
-        dte_filter: String(deploymentForm.dte_filter || "0,1,2,3,4,5,6")
-          .split(",")
-          .map((item) => parseInt(item.trim(), 10))
-          .filter((n) => Number.isFinite(n) && n >= 0),
-        default_lots: Math.max(1, parseInt(deploymentForm.default_lots, 10) || 1),
-        auto_paper: Boolean(deploymentForm.auto_paper),
-        auto_paper_unit: undefined, // UI-only toggle; not a backend field
-        auto_paper_target_pts: deploymentForm.auto_paper_unit === "pts" && deploymentForm.auto_paper_target_pts !== "" ? Number(deploymentForm.auto_paper_target_pts) : null,
-        auto_paper_stop_pts: deploymentForm.auto_paper_unit === "pts" && deploymentForm.auto_paper_stop_pts !== "" ? Number(deploymentForm.auto_paper_stop_pts) : null,
-        auto_paper_target_pct: deploymentForm.auto_paper_unit === "pct" && deploymentForm.auto_paper_target_pct !== "" ? Number(deploymentForm.auto_paper_target_pct) : null,
-        auto_paper_stop_pct: deploymentForm.auto_paper_unit === "pct" && deploymentForm.auto_paper_stop_pct !== "" ? Number(deploymentForm.auto_paper_stop_pct) : null,
-        allow_overnight: Boolean(deploymentForm.allow_overnight),
-        max_consecutive_losses: deploymentForm.max_consecutive_losses === "" ? null : Math.max(0, parseInt(deploymentForm.max_consecutive_losses, 10) || 0),
-        daily_loss_cutoff_pct: deploymentForm.daily_loss_cutoff_pct === "" ? null : Number(deploymentForm.daily_loss_cutoff_pct),
-        max_open_paper_trades: deploymentForm.max_open_paper_trades === "" ? null : Math.max(0, parseInt(deploymentForm.max_open_paper_trades, 10) || 0),
-        acknowledged_warnings: Boolean(deploymentForm.acknowledged_warnings),
-      };
-      await api.createDeployment(payload);
-      toast.success("Strategy deployment created");
-      await refreshDeployments();
-    } catch (e) {
-      toast.error(`Deployment failed: ${e.response?.data?.detail || e.message}`);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const setDeploymentStatus = async (deployment, action) => {
-    setBusy(true);
-    try {
-      if (action === "pause") await api.pauseDeployment(deployment.id);
-      if (action === "resume") await api.resumeDeployment(deployment.id);
-      if (action === "archive") await api.archiveDeployment(deployment.id);
-      await refreshDeployments();
-    } catch (e) {
-      toast.error(`Deployment update failed: ${e.response?.data?.detail || e.message}`);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const evaluateNow = async (deployment) => {
-    setBusy(true);
-    try {
-      const res = await api.evaluateDeployment(deployment.id);
-      if (res.outcome === "clean") {
-        toast.success(`Clean ${res.direction} signal journaled — pending approval`);
-      } else if (res.outcome === "blocked") {
-        toast.warning(`Signal blocked: ${(res.blockers || [])[0] || "see audit"}`);
-      } else if (res.outcome === "no_setup") {
-        toast.message("No setup on the latest closed bar");
-      } else {
-        toast.message(`Evaluator: ${res.outcome} (${res.reason || "ok"})`);
-      }
-      await refresh();
-      await refreshDeployments();
-    } catch (e) {
-      toast.error(`Evaluate failed: ${e.response?.data?.detail || e.message}`);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const approveSignal = async (signal, note = "") => {
-    setBusy(true);
-    try {
-      const res = await api.approveSignal(signal.id, { note });
-      if (res?.trade) {
-        toast.success(`Approved + paper trade opened: ${res.trade.trading_symbol || res.trade.id}`);
-      } else if (res?.signal?.paper_trade_error) {
-        toast.warning(`Signal approved but paper trade failed: ${res.signal.paper_trade_error}`);
-      } else {
-        toast.success("Signal approved");
-      }
+      await fn();
+      if (okMsg) toast.success(okMsg);
       await refresh();
     } catch (e) {
-      toast.error(`Approve failed: ${e.response?.data?.detail || e.message}`);
+      toast.error(e.response?.data?.detail?.message || e.response?.data?.detail || e.message);
     } finally {
       setBusy(false);
     }
   };
 
-  const skipSignal = async (signal, note = "") => {
-    setBusy(true);
-    try {
-      await api.skipSignal(signal.id, { note });
-      toast.success("Signal skipped");
-      await refresh();
-    } catch (e) {
-      toast.error(`Skip failed: ${e.response?.data?.detail || e.message}`);
-    } finally {
-      setBusy(false);
-    }
+  const undeploy = (item) => {
+    const name = item.deployment.name;
+    if (!window.confirm(`Undeploy "${name}"?\n\nThis stops signal generation and paper trading for this strategy. Its journaled signals and trades are kept.`)) return;
+    const purge = item.lifetime.closed_trades > 0 || item.today.clean_signals + item.today.blocked_signals > 0
+      ? window.confirm("Also DELETE its journaled signals and CLOSED trades?\n\nOK = delete journals too (open trades are kept until the marker/square-off closes them)\nCancel = keep all journals for analysis")
+      : false;
+    act(() => api.archiveDeployment(item.deployment.id, purge ? { purge: 1 } : {}),
+      purge ? `Undeployed "${name}" and purged its journals` : `Undeployed "${name}"`);
   };
 
-  const markBlocked = async (signal, note = "") => {
-    setBusy(true);
-    try {
-      await api.markBlockedSignal(signal.id, { note: note || "manual review" });
-      toast.success("Marked as blocked");
-      await refresh();
-    } catch (e) {
-      toast.error(`Mark blocked failed: ${e.response?.data?.detail || e.message}`);
-    } finally {
-      setBusy(false);
-    }
-  };
+  const items = overview?.items || [];
+  const totals = overview?.totals || {};
+  const todayMtm = Number(totals.realized_today || 0) + Number(totals.open_unrealized || 0);
 
-  const createResearchSignal = async () => {
-    setBusy(true);
-    try {
-      const payload = {
-        instrument: form.instrument,
-        direction: form.direction,
-        strategy_id: form.strategy_id,
-        entry_price: Number(form.entry_price || 0),
-        confidence: Number(form.confidence || 0),
-        reasons: String(form.reasons || "").split(",").map((item) => item.trim()).filter(Boolean),
-        option_contract: {
-          trading_symbol: form.trading_symbol,
-          lot_size: Number(form.lot_size || 1),
-        },
-        context: { source: "manual_offline_console" },
-      };
-      await api.createSignal(payload);
-      toast.success("Research signal created");
-      await refresh();
-    } catch (e) {
-      toast.error(`Create failed: ${e.response?.data?.detail || e.message}`);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const transition = async (signal, toState) => {
-    setBusy(true);
-    try {
-      await api.transitionSignal(signal.id, { to_state: toState, reason: `manual ${toState.toLowerCase()}` });
-      toast.success(`Signal moved to ${toState}`);
-      await refresh();
-    } catch (e) {
-      toast.error(`Transition failed: ${e.response?.data?.detail || e.message}`);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const deployToPaper = async (signal) => {
-    setBusy(true);
-    try {
-      await api.deploySignalToPaper(signal.id, {
-        lots: 1,
-        entry_price: signal.entry_price,
-        stop_price: form.stop_price === "" ? null : Number(form.stop_price),
-        target_price: form.target_price === "" ? null : Number(form.target_price),
-      });
-      toast.success("Deployed to paper");
-      await refresh();
-    } catch (e) {
-      toast.error(`Paper deploy failed: ${e.response?.data?.detail || e.message}`);
-    } finally {
-      setBusy(false);
-    }
-  };
+  if (loading) {
+    return <div className="h-96 rounded-lg border border-line bg-bg-1 animate-pulse" data-testid="deployments-page" />;
+  }
 
   return (
-    <div className="space-y-3" data-testid="live-signals-page">
-      <StrategyDeploymentsPanel
-        deployments={deployments}
-        presets={presets}
-        backtestRuns={backtestRuns}
-        form={deploymentForm}
-        setFormValue={setDeployment}
-        onCreate={createDeployment}
-        onStatus={setDeploymentStatus}
-        onEvaluate={evaluateNow}
-        preflight={preflight}
-        preflightBusy={preflightBusy}
-        formInstrument={formInstrument}
-        quality={quality}
-        qualityBusy={qualityBusy}
-        readiness={readiness}
-        readinessBusy={readinessBusy}
-        busy={busy}
-      />
-
-      <PendingApprovalPanel
-        signals={signals}
-        busy={busy}
-        onApprove={approveSignal}
-        onSkip={skipSignal}
-        onMarkBlocked={markBlocked}
-        onRefresh={refresh}
-      />
-      <section className="rounded-lg border border-line bg-bg-1" data-testid="live-signal-console">
-        <div className="px-3 py-2 border-b border-line flex items-center gap-2">
+    <div className="space-y-3" data-testid="deployments-page">
+      {/* Header: combined live picture across all deployed strategies */}
+      <div className="rounded-lg border border-line bg-bg-1 px-3 py-2 flex items-center gap-4 flex-wrap">
+        <div className="flex items-center gap-2">
           <Activity className="w-4 h-4 text-info" />
-          <div className="text-xs font-semibold uppercase tracking-wider text-dim">Live Signal Console</div>
-          <div className="ml-auto text-[10px] font-mono text-dimmer">offline lifecycle foundation</div>
+          <div className="text-xs font-semibold uppercase tracking-wider text-dim">Deployed Strategies</div>
+          <span className="text-[11px] text-dimmer">{items.length} deployed</span>
         </div>
-        <div className="p-3 grid grid-cols-1 xl:grid-cols-[420px_1fr] gap-3">
-          <div className="rounded-md border border-line bg-bg-2 p-3" data-testid="create-research-signal">
-            <div className="grid grid-cols-2 gap-2">
-              <label className="text-[11px] text-dim">
-                Instrument
-                <select value={form.instrument} onChange={(e) => set("instrument", e.target.value)} className="mt-1 h-9 w-full rounded-md border border-input bg-bg-1 px-3 text-sm">
-                  {INSTRUMENTS.map((inst) => <option key={inst} value={inst}>{inst}</option>)}
-                </select>
-              </label>
-              <label className="text-[11px] text-dim">
-                Direction
-                <select value={form.direction} onChange={(e) => set("direction", e.target.value)} className="mt-1 h-9 w-full rounded-md border border-input bg-bg-1 px-3 text-sm">
-                  <option value="LONG">LONG</option>
-                  <option value="SHORT">SHORT</option>
-                </select>
-              </label>
-              <label className="text-[11px] text-dim">
-                Entry
-                <Input type="number" value={form.entry_price} onChange={(e) => set("entry_price", e.target.value)} className="mt-1 bg-bg-1 border-line" />
-              </label>
-              <label className="text-[11px] text-dim">
-                Confidence
-                <Input type="number" value={form.confidence} onChange={(e) => set("confidence", e.target.value)} className="mt-1 bg-bg-1 border-line" />
-              </label>
-              <label className="text-[11px] text-dim col-span-2">
-                Strategy
-                <Input value={form.strategy_id} onChange={(e) => set("strategy_id", e.target.value)} className="mt-1 bg-bg-1 border-line" />
-              </label>
-              <label className="text-[11px] text-dim">
-                Paper symbol
-                <Input value={form.trading_symbol} onChange={(e) => set("trading_symbol", e.target.value)} className="mt-1 bg-bg-1 border-line" />
-              </label>
-              <label className="text-[11px] text-dim">
-                Lot size
-                <Input type="number" value={form.lot_size} onChange={(e) => set("lot_size", e.target.value)} className="mt-1 bg-bg-1 border-line" />
-              </label>
-              <label className="text-[11px] text-dim">
-                Paper stop
-                <Input type="number" value={form.stop_price} onChange={(e) => set("stop_price", e.target.value)} className="mt-1 bg-bg-1 border-line" />
-              </label>
-              <label className="text-[11px] text-dim">
-                Paper target
-                <Input type="number" value={form.target_price} onChange={(e) => set("target_price", e.target.value)} className="mt-1 bg-bg-1 border-line" />
-              </label>
-              <label className="text-[11px] text-dim col-span-2">
-                Reasons
-                <Input value={form.reasons} onChange={(e) => set("reasons", e.target.value)} className="mt-1 bg-bg-1 border-line" />
-              </label>
-            </div>
-            <Button onClick={createResearchSignal} disabled={busy} className="mt-3 h-9 text-xs bg-bg-3 border border-line hover:bg-bg-2">
-              <Zap className="w-3 h-3 mr-1" />
-              Create Research Signal
-            </Button>
-          </div>
-
-          <div className="rounded-md border border-line bg-bg-2 p-3">
-            <div className="flex items-center gap-2 mb-3">
-              <select value={filterState} onChange={(e) => setFilterState(e.target.value)} className="h-8 rounded-md border border-input bg-bg-1 px-2 text-xs" data-testid="signal-state">
-                <option value="">All states</option>
-                {STATES.map((state) => <option key={state} value={state}>{state}</option>)}
-              </select>
-              <Button size="sm" variant="ghost" onClick={refresh} className="h-8 text-xs">
-                <RefreshCw className="w-3 h-3 mr-1" />
-                Refresh
-              </Button>
-            </div>
-            {loading ? (
-              <div className="text-sm text-dim">Loading signals...</div>
-            ) : (
-              <div className="space-y-2">
-                {signals.map((signal) => (
-                  <SignalCard
-                    key={signal.id}
-                    signal={signal}
-                    busy={busy}
-                    onTransition={transition}
-                    onDeploy={deployToPaper}
-                  />
-                ))}
-                {signals.length === 0 && (
-                  <div className="rounded-md border border-line bg-bg-1 p-4 text-sm text-dim">
-                    No signals yet. Create a research signal to exercise the lifecycle without live market data.
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-      </section>
-    </div>
-  );
-}
-
-function StrategyDeploymentsPanel({ deployments, presets, backtestRuns, form, setFormValue, onCreate, onStatus, onEvaluate, preflight, preflightBusy, formInstrument, quality, qualityBusy, readiness, readinessBusy, busy }) {
-  const sourceOptions = form.source_type === "preset"
-    ? presets.map((preset) => ({ id: preset.name, label: preset.name })).filter((item) => item.id)
-    : backtestRuns
-      .map((run) => {
-        const id = String(run.id || "");
-        return { id, label: `${run.name || run.strategy_id || "Backtest"} · ${id.slice(0, 8)}` };
-      })
-      .filter((item) => item.id);
-
-  return (
-    <section className="rounded-lg border border-line bg-bg-1" data-testid="strategy-deployments-panel">
-      <div className="px-3 py-2 border-b border-line flex items-center gap-2">
-        <Zap className="w-4 h-4 text-info" />
-        <div className="text-xs font-semibold uppercase tracking-wider text-dim">Strategy Deployments</div>
-        <div className="ml-auto text-[10px] font-mono text-dimmer">1m close · manual approval</div>
-      </div>
-      <div className="p-3 grid grid-cols-1 xl:grid-cols-[420px_1fr] gap-3">
-        <div className="rounded-md border border-line bg-bg-2 p-3">
-          <div className="grid grid-cols-2 gap-2">
-            <label className="text-[11px] text-dim col-span-2">
-              Name
-              <Input value={form.name} onChange={(e) => setFormValue("name", e.target.value)} className="mt-1 bg-bg-1 border-line" />
-            </label>
-            <label className="text-[11px] text-dim">
-              Source
-              <select
-                value={form.source_type}
-                onChange={(e) => setFormValue("source_type", e.target.value)}
-                className="mt-1 h-9 w-full rounded-md border border-input bg-bg-1 px-3 text-sm"
-                data-testid="deployment-source-type"
-              >
-                <option value="preset">Saved preset</option>
-                <option value="backtest_run">Backtest result</option>
-              </select>
-            </label>
-            <label className="text-[11px] text-dim">
-              Mode
-              <select
-                value={form.mode}
-                onChange={(e) => setFormValue("mode", e.target.value)}
-                className="mt-1 h-9 w-full rounded-md border border-input bg-bg-1 px-3 text-sm"
-                data-testid="deployment-mode"
-              >
-                <option value="shadow">Shadow</option>
-                <option value="paper">Paper approval</option>
-                <option value="recommendation">Recommendation</option>
-              </select>
-            </label>
-            <label className="text-[11px] text-dim col-span-2">
-              Source artifact
-              <select
-                value={form.source_id}
-                onChange={(e) => setFormValue("source_id", e.target.value)}
-                className="mt-1 h-9 w-full rounded-md border border-input bg-bg-1 px-3 text-sm"
-              >
-                <option value="">Choose source</option>
-                {sourceOptions.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
-              </select>
-            </label>
-            <label className="text-[11px] text-dim">
-              Confirmation
-              <select value={form.confirmation_mode} onChange={(e) => setFormValue("confirmation_mode", e.target.value)} className="mt-1 h-9 w-full rounded-md border border-input bg-bg-1 px-3 text-sm">
-                <option value="1m_close">1m close</option>
-                <option value="tick">Tick/manual later</option>
-              </select>
-            </label>
-            <label className="text-[11px] text-dim">
-              Moneyness
-              <select value={form.option_moneyness} onChange={(e) => setFormValue("option_moneyness", e.target.value)} className="mt-1 h-9 w-full rounded-md border border-input bg-bg-1 px-3 text-sm">
-                <option value="atm">ATM</option>
-                <option value="atm,otm1">ATM + OTM1</option>
-                <option value="atm,itm1">ATM + ITM1</option>
-              </select>
-            </label>
-            <label className="text-[11px] text-dim">
-              DTE filter
-              <Input
-                value={form.dte_filter}
-                onChange={(e) => setFormValue("dte_filter", e.target.value)}
-                className="mt-1 bg-bg-1 border-line"
-                placeholder="0,1,2,3,4,5,6"
-                title="Days-to-expiry list (comma separated). Default 0-6."
-              />
-            </label>
-            <label className="text-[11px] text-dim">
-              Default lots
-              <Input
-                type="number"
-                min="1"
-                value={form.default_lots}
-                onChange={(e) => setFormValue("default_lots", e.target.value)}
-                className="mt-1 bg-bg-1 border-line"
-                title="Number of lots when paper trade is auto-created on approval. Lot size comes from option_contracts (Upstox)."
-              />
-            </label>
-            {form.mode === "paper" && (
-              <div className="col-span-2 rounded-md border border-emerald-500/30 bg-emerald-500/5 p-2">
-                <label className="text-[11px] text-dim flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={Boolean(form.auto_paper)}
-                    onChange={(e) => setFormValue("auto_paper", e.target.checked)}
-                    className="h-4 w-4 rounded border-line"
-                    data-testid="auto-paper-checkbox"
-                  />
-                  <span>
-                    <b>Auto paper trade on every clean signal</b> — no approval needed; entry at live option premium
-                  </span>
-                </label>
-                {form.auto_paper && (
-                  <>
-                    <div className="flex items-center gap-2 mt-2">
-                      <span className="text-[11px] text-dim">Fallback exit unit</span>
-                      <div className="flex rounded-md border border-line overflow-hidden">
-                        {["pts", "pct"].map((u) => (
-                          <button
-                            key={u}
-                            type="button"
-                            onClick={() => setFormValue("auto_paper_unit", u)}
-                            className={`px-2 py-1 text-[11px] font-mono ${form.auto_paper_unit === u ? "bg-info text-bg-0" : "bg-bg-1 text-dim hover:text-foreground"}`}
-                            data-testid={`auto-paper-unit-${u}`}
-                          >
-                            {u === "pts" ? "₹ points" : "Percent"}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-2 gap-2 mt-2">
-                      <label className="text-[11px] text-dim">
-                        Target {form.auto_paper_unit === "pts" ? "(pts of premium)" : "(% of premium)"} (fallback)
-                        <Input
-                          type="number" min="0" step={form.auto_paper_unit === "pts" ? "0.5" : "5"}
-                          value={form.auto_paper_unit === "pts" ? form.auto_paper_target_pts : form.auto_paper_target_pct}
-                          onChange={(e) => setFormValue(form.auto_paper_unit === "pts" ? "auto_paper_target_pts" : "auto_paper_target_pct", e.target.value)}
-                          className="mt-1 bg-bg-1 border-line"
-                          placeholder="strategy hint"
-                          title="Used only when the strategy's signal carries no target hint. Blank = no target; the 15:00 IST square-off still closes the trade."
-                          data-testid="auto-paper-target-input"
-                        />
-                      </label>
-                      <label className="text-[11px] text-dim">
-                        Stop {form.auto_paper_unit === "pts" ? "(pts of premium)" : "(% of premium)"} (fallback)
-                        <Input
-                          type="number" min="0" step={form.auto_paper_unit === "pts" ? "0.5" : "5"}
-                          value={form.auto_paper_unit === "pts" ? form.auto_paper_stop_pts : form.auto_paper_stop_pct}
-                          onChange={(e) => setFormValue(form.auto_paper_unit === "pts" ? "auto_paper_stop_pts" : "auto_paper_stop_pct", e.target.value)}
-                          className="mt-1 bg-bg-1 border-line"
-                          placeholder="strategy hint"
-                          title="Used only when the strategy's signal carries no stop hint. Blank = no stop."
-                          data-testid="auto-paper-stop-input"
-                        />
-                      </label>
-                    </div>
-                  </>
-                )}
-                <div className="text-[10px] text-dimmer mt-1.5 leading-snug">
-                  Exits: the strategy's own spot-point levels are mirrored automatically (the option closes when the
-                  INDEX hits the strategy's target/stop — same as the backtest). The % fields above add premium-based
-                  exits on top. If no live option premium is available at signal time, no trade is created and the
-                  reason is journaled on the signal.
-                </div>
-              </div>
-            )}
-            <label className="text-[11px] text-dim col-span-2 flex items-center gap-2 pt-1">
-              <input
-                type="checkbox"
-                checked={Boolean(form.allow_overnight)}
-                onChange={(e) => setFormValue("allow_overnight", e.target.checked)}
-                className="h-4 w-4 rounded border-line"
-                data-testid="allow-overnight-checkbox"
-              />
-              <span>Allow overnight (skip 15:00 IST auto-square-off for this deployment)</span>
-            </label>
-            <div className="col-span-2 mt-1 pt-2 border-t border-line">
-              <div className="text-[10px] uppercase tracking-wider text-dimmer mb-1.5">
-                Kill switches (paper mode) — leave blank to disable
-              </div>
-              <div className="grid grid-cols-3 gap-2">
-                <label className="text-[11px] text-dim">
-                  Max consecutive losses
-                  <Input
-                    type="number"
-                    min="0"
-                    value={form.max_consecutive_losses}
-                    onChange={(e) => setFormValue("max_consecutive_losses", e.target.value)}
-                    className="mt-1 bg-bg-1 border-line"
-                    placeholder="off"
-                    title="Auto-pause the deployment after this many losing paper trades in a row."
-                    data-testid="kill-max-consecutive-losses"
-                  />
-                </label>
-                <label className="text-[11px] text-dim">
-                  Daily loss cutoff %
-                  <Input
-                    type="number"
-                    step="0.1"
-                    max="0"
-                    value={form.daily_loss_cutoff_pct}
-                    onChange={(e) => setFormValue("daily_loss_cutoff_pct", e.target.value)}
-                    className="mt-1 bg-bg-1 border-line"
-                    placeholder="e.g. -3"
-                    title="Auto-pause when today's net paper P&L (% of capital deployed today) drops to/below this negative value."
-                    data-testid="kill-daily-loss-cutoff"
-                  />
-                </label>
-                <label className="text-[11px] text-dim">
-                  Max open paper trades
-                  <Input
-                    type="number"
-                    min="0"
-                    value={form.max_open_paper_trades}
-                    onChange={(e) => setFormValue("max_open_paper_trades", e.target.value)}
-                    className="mt-1 bg-bg-1 border-line"
-                    placeholder="off"
-                    title="Block new signals while this many paper trades are already open. Soft block; self-clears as trades close."
-                    data-testid="kill-max-open-trades"
-                  />
-                </label>
-              </div>
-            </div>
-          </div>
-          <PreflightBadge
-            instrument={formInstrument}
-            preflight={preflight}
-            preflightBusy={preflightBusy}
-          />
-          <ReadinessBadge readiness={readiness} readinessBusy={readinessBusy} />
-          <QualityBadge
-            quality={quality}
-            qualityBusy={qualityBusy}
-            sourceId={form.source_id}
-            acknowledged={Boolean(form.acknowledged_warnings)}
-            onAcknowledge={(checked) => setFormValue("acknowledged_warnings", checked)}
-          />
-          <Button
-            onClick={onCreate}
-            disabled={busy || !form.source_id || (quality?.acknowledgment_required && !form.acknowledged_warnings)}
-            className="mt-3 h-9 text-xs bg-bg-3 border border-line hover:bg-bg-2"
-            data-testid="create-deployment-button"
-          >
-            Create Deployment
+        <HeaderStat label="Today MTM" value={inr(todayMtm)} tone={todayMtm} />
+        <HeaderStat label="Realized today" value={inr(totals.realized_today)} tone={totals.realized_today} />
+        <HeaderStat label="Open trades" value={totals.open_trades ?? 0} />
+        <HeaderStat label="Signals today" value={totals.signals_today ?? 0} />
+        <div className="ml-auto flex items-center gap-1.5">
+          <Button size="sm" variant="ghost" className="h-7 text-xs" disabled={busy}
+            onClick={() => act(() => api.evaluateActiveDeployments(), "Evaluation triggered")}
+            title="Run the 1m-close evaluator once for every ACTIVE deployment"
+            data-testid="evaluate-all-button">
+            <Zap className="w-3 h-3 mr-1" /> Evaluate now
           </Button>
-        </div>
-
-        <div className="rounded-md border border-line bg-bg-2 p-3">
-          <div className="text-[10px] uppercase tracking-wider text-dimmer mb-2">Deployments</div>
-          <div className="space-y-2">
-            {deployments.map((deployment) => (
-              <article key={deployment.id} className="rounded-md border border-line bg-bg-1 p-3" data-testid="deployment-card">
-                <div className="flex items-start gap-3">
-                  <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-semibold">{deployment.name}</span>
-                      <span className="text-[10px] px-1.5 py-0.5 rounded border border-line bg-bg-3 font-mono">{deployment.status}</span>
-                      <span className="text-[10px] text-dimmer font-mono">{deployment.mode} · {deployment.confirmation_mode}</span>
-                    </div>
-                    <div className="mt-1 text-xs text-dim">
-                      {deployment.instrument} · {deployment.strategy_id} · {deployment.source_type}:{deployment.source_id}
-                    </div>
-                    <div className="mt-1 text-[11px] text-dimmer">
-                      {deployment.option_policy?.moneyness?.join(", ").toUpperCase()} · manual approval required
-                    </div>
-                    {deployment.status === "PAUSED" && (deployment.kill_switch_reason || deployment.drift_reason) && (
-                      <div className="mt-1 text-[11px] text-amber-300 font-mono" data-testid="deployment-pause-reason">
-                        ⏸ {deployment.kill_switch_reason || deployment.drift_reason}
-                      </div>
-                    )}
-                  </div>
-                  <div className="ml-auto flex flex-wrap justify-end gap-1.5">
-                    {deployment.status === "ACTIVE" && (
-                      <Button size="sm" variant="secondary" disabled={busy} onClick={() => onEvaluate(deployment)} className="h-7 text-xs border border-line" data-testid="evaluate-now-button" title="Run the 1m close evaluator against this deployment now">
-                        <Sparkles className="w-3 h-3 mr-1" />
-                        Evaluate now
-                      </Button>
-                    )}
-                    {deployment.status === "ACTIVE" ? (
-                      <Button size="sm" variant="secondary" disabled={busy} onClick={() => onStatus(deployment, "pause")} className="h-7 text-xs border border-line">Pause</Button>
-                    ) : deployment.status === "PAUSED" ? (
-                      <Button size="sm" variant="secondary" disabled={busy} onClick={() => onStatus(deployment, "resume")} className="h-7 text-xs border border-line">Resume</Button>
-                    ) : null}
-                    {deployment.status !== "ARCHIVED" && (
-                      <Button size="sm" variant="secondary" disabled={busy} onClick={() => onStatus(deployment, "archive")} className="h-7 text-xs border border-line">Archive</Button>
-                    )}
-                  </div>
-                </div>
-              </article>
-            ))}
-            {deployments.length === 0 && (
-              <div className="rounded-md border border-line bg-bg-1 p-4 text-sm text-dim">
-                No deployments yet. Create one from a saved preset or backtest result.
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function PendingApprovalPanel({ signals, busy, onApprove, onSkip, onMarkBlocked, onRefresh }) {
-  const pending = useMemo(
-    () => (signals || []).filter((s) => s.state === "CONFIRMED" && s.deployment_id),
-    [signals],
-  );
-  const recentlyClosed = useMemo(
-    () => (signals || [])
-      .filter((s) => s.deployment_id && (s.state === "AUDITED" || s.state === "ACTIVE"))
-      .slice(0, 5),
-    [signals],
-  );
-
-  return (
-    <section className="rounded-lg border border-line bg-bg-1" data-testid="pending-approval-panel">
-      <div className="px-3 py-2 border-b border-line flex items-center gap-2">
-        <ShieldAlert className="w-4 h-4 text-warning" />
-        <div className="text-xs font-semibold uppercase tracking-wider text-dim">Pending Approval</div>
-        <div className="ml-auto flex items-center gap-2">
-          <span className="text-[10px] font-mono text-dimmer">{pending.length} awaiting · auto-refreshes 15s</span>
-          <Button size="sm" variant="ghost" onClick={onRefresh} className="h-7 text-xs">
-            <RefreshCw className="w-3 h-3 mr-1" />
-            Refresh
+          <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={refresh} data-testid="deployments-refresh">
+            <RefreshCw className="w-3 h-3 mr-1" /> Refresh
+          </Button>
+          <Button size="sm" className="h-7 text-xs bg-info text-bg-0 hover:bg-info/90 font-semibold"
+            onClick={() => { setWizardPreset(""); setWizardOpen(true); }}
+            data-testid="open-deploy-wizard">
+            <Plus className="w-3 h-3 mr-1" /> Deploy strategy
           </Button>
         </div>
       </div>
-      <div className="p-3 space-y-2">
-        {pending.length === 0 ? (
-          <div className="rounded-md border border-line bg-bg-2 p-4 text-sm text-dim">
-            No deployment-generated signals awaiting approval. Active deployments will journal clean signals here once a 1-minute close fires a setup.
-          </div>
-        ) : (
-          pending.map((signal) => (
-            <PendingSignalCard
-              key={signal.id}
-              signal={signal}
-              busy={busy}
-              onApprove={onApprove}
-              onSkip={onSkip}
-              onMarkBlocked={onMarkBlocked}
+
+      {/* Deployment cards */}
+      {items.length === 0 ? (
+        <div className="rounded-lg border border-line bg-bg-1 p-8 text-center text-dimmer text-sm">
+          Nothing deployed. Click <b>Deploy strategy</b> to run a saved preset live —
+          signal generation and (in paper mode) automatic paper trading start with the next market minute.
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+          {items.map((item) => (
+            <DeploymentCard key={item.deployment.id} item={item} busy={busy}
+              onPause={() => act(() => api.pauseDeployment(item.deployment.id), "Paused")}
+              onResume={() => act(() => api.resumeDeployment(item.deployment.id), "Resumed")}
+              onEvaluate={() => act(() => api.evaluateDeployment(item.deployment.id), "Evaluated")}
+              onUndeploy={() => undeploy(item)}
+              onSignals={() => navigate(`/journal?deployment=${encodeURIComponent(item.deployment.id)}`)}
+              onTrades={() => navigate(`/paper?deployment=${encodeURIComponent(item.deployment.id)}`)}
             />
-          ))
-        )}
-        {recentlyClosed.length > 0 && (
-          <details className="mt-2 rounded-md border border-line bg-bg-2 p-2">
-            <summary className="cursor-pointer text-[11px] uppercase tracking-wider text-dimmer">Recently decided ({recentlyClosed.length})</summary>
-            <div className="mt-2 space-y-1.5">
-              {recentlyClosed.map((s) => (
-                <div key={s.id} className="text-[11px] font-mono text-dim flex flex-wrap items-center gap-2">
-                  <span className={s.blocked ? "text-red-400" : "text-emerald-400"}>{s.state}</span>
-                  <span>{s.instrument}</span>
-                  <span>{s.direction}</span>
-                  <span>score {fmtNum(s.confidence)}</span>
-                  <span className="text-dimmer">{isoToFull(s.updated_at)}</span>
-                  {s.blocked && (
-                    <span className="text-dimmer truncate max-w-[260px]">{(s.blockers || [])[0] || ""}</span>
-                  )}
-                </div>
-              ))}
-            </div>
-          </details>
-        )}
-      </div>
-    </section>
-  );
-}
-
-
-function PendingSignalCard({ signal, busy, onApprove, onSkip, onMarkBlocked }) {
-  const [note, setNote] = useState("");
-  const ctx = signal.context || {};
-  const candle = ctx.candle || {};
-  const contract = signal.option_contract || {};
-  const deploymentMode = String(ctx.deployment_mode || "shadow").toLowerCase();
-  const willCreateTrade = deploymentMode === "paper";
-  return (
-    <article className="rounded-md border border-warning/40 bg-bg-2 p-3" data-testid="pending-signal-card">
-      <div className="flex flex-wrap items-start gap-3">
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="font-semibold text-base">{signal.instrument}</span>
-            <span className={`text-xs font-mono px-1.5 py-0.5 rounded border ${signal.direction === "CE" ? "border-emerald-500/40 text-emerald-400" : "border-red-500/40 text-red-400"}`}>{signal.direction}</span>
-            <span className="text-[10px] px-1.5 py-0.5 rounded border border-line bg-bg-3 font-mono">{signal.state}</span>
-            <span className={`text-[10px] px-1.5 py-0.5 rounded border font-mono ${willCreateTrade ? "border-emerald-500/40 text-emerald-400" : "border-line text-dimmer"}`}>
-              {deploymentMode}
-            </span>
-            <span className="text-[10px] text-dimmer font-mono">score {fmtNum(signal.confidence)}</span>
-            {candle.ist_time && <span className="text-[10px] text-dimmer font-mono">bar {candle.ist_time} IST</span>}
-          </div>
-          <div className="mt-1 text-xs text-dim">
-            <span className="font-mono">{signal.strategy_id}</span>
-            {ctx.strategy_version && <span className="text-dimmer font-mono"> v{ctx.strategy_version}</span>}
-            {ctx.strategy_hash && <span className="text-dimmer font-mono"> · {ctx.strategy_hash.slice(0, 8)}</span>}
-          </div>
-          <div className="mt-1 text-xs text-dim">
-            entry {fmtNum(signal.entry_price)} · regime {ctx.regime || "?"} · profile {ctx.pretrade_profile_name || "?"}
-          </div>
-          {contract.trading_symbol && (
-            <div className="mt-1 text-[11px] text-dimmer font-mono">
-              contract {contract.trading_symbol} · strike {fmtNum(contract.strike)} · {contract.side} · lot {contract.lot_size || "?"}
-            </div>
-          )}
-          {signal.reasons?.length > 0 && (
-            <div className="mt-1 text-[11px] text-dimmer">
-              reasons: {signal.reasons.join(", ")}
-            </div>
-          )}
-          {willCreateTrade && (
-            <div className="mt-1 text-[11px] text-emerald-400/80">
-              Approve will auto-create a paper trade.
-            </div>
-          )}
-          <div className="mt-2 flex items-center gap-2">
-            <Input
-              placeholder="optional note for audit"
-              value={note}
-              onChange={(e) => setNote(e.target.value)}
-              className="h-8 text-xs bg-bg-1 border-line"
-              data-testid="approval-note"
-            />
-          </div>
+          ))}
         </div>
-        <div className="flex flex-col gap-1.5 min-w-[140px]">
-          <Button
-            size="sm"
-            disabled={busy}
-            onClick={() => onApprove(signal, note)}
-            className="h-8 text-xs bg-emerald-600/80 hover:bg-emerald-600 text-white border border-emerald-500/60"
-            data-testid="approve-button"
-          >
-            <Check className="w-3 h-3 mr-1" />
-            {willCreateTrade ? "Approve + Paper" : "Approve"}
-          </Button>
-          <Button
-            size="sm"
-            variant="secondary"
-            disabled={busy}
-            onClick={() => onSkip(signal, note)}
-            className="h-8 text-xs border border-line"
-            data-testid="skip-button"
-          >
-            <SkipForward className="w-3 h-3 mr-1" />
-            Skip
-          </Button>
-          <Button
-            size="sm"
-            variant="secondary"
-            disabled={busy}
-            onClick={() => onMarkBlocked(signal, note)}
-            className="h-8 text-xs border border-line text-red-400 hover:text-red-300"
-            data-testid="mark-blocked-button"
-          >
-            <X className="w-3 h-3 mr-1" />
-            Mark blocked
-          </Button>
-        </div>
-      </div>
-    </article>
-  );
-}
+      )}
 
-
-function PreflightBadge({ instrument, preflight, preflightBusy }) {
-  if (!instrument) {
-    return (
-      <div className="mt-3 rounded-md border border-line bg-bg-1 p-2 text-[11px] text-dimmer" data-testid="preflight-empty">
-        Choose a saved preset or backtest result to see the data realism check.
-      </div>
-    );
-  }
-  if (preflightBusy && !preflight) {
-    return (
-      <div className="mt-3 rounded-md border border-line bg-bg-1 p-2 text-[11px] text-dim flex items-center gap-2" data-testid="preflight-loading">
-        <RefreshCw className="w-3 h-3 animate-spin" />
-        <span>Checking data quality for {instrument}...</span>
-      </div>
-    );
-  }
-  if (!preflight) return null;
-  const status = String(preflight.status || "verified").toLowerCase();
-  const statusConfig = {
-    verified: { color: "border-emerald-500/40 text-emerald-400", label: "Verified" },
-    warning: { color: "border-amber-500/40 text-amber-400", label: "Warning" },
-    degraded: { color: "border-red-500/40 text-red-400", label: "Degraded" },
-  };
-  const cfg = statusConfig[status] || statusConfig.warning;
-  const checks = preflight.checks || [];
-  const breaks = preflight.structural_breaks || [];
-  const items = [...checks, ...breaks];
-  return (
-    <details className={`mt-3 rounded-md border ${cfg.color} bg-bg-1 p-2`} data-testid="preflight-badge">
-      <summary className="cursor-pointer flex items-center gap-2 text-xs">
-        <span className={`px-1.5 py-0.5 rounded font-mono uppercase border ${cfg.color}`}>{cfg.label}</span>
-        <span className="text-dim">Data realism for {instrument}</span>
-        <span className="ml-auto text-dimmer">{items.length} check{items.length === 1 ? "" : "s"}</span>
-      </summary>
-      <div className="mt-2 space-y-1.5">
-        {items.map((c) => {
-          const itemStatus = String(c.status || "verified").toLowerCase();
-          const itemCfg = statusConfig[itemStatus] || statusConfig.warning;
-          return (
-            <div key={c.id} className={`rounded-md border ${itemCfg.color} bg-bg-2 p-2 text-[11px]`}>
-              <div className="flex flex-wrap items-center gap-1.5">
-                <span className={`px-1.5 py-0.5 rounded font-mono uppercase border ${itemCfg.color} text-[9px]`}>{itemStatus}</span>
-                <span className="font-semibold text-foreground">{c.label}</span>
-              </div>
-              <div className="mt-1 text-dim">{c.detail}</div>
-            </div>
-          );
-        })}
-      </div>
-      <div className="mt-2 text-[10px] text-dimmer">
-        Informational only. Deployment creation is never blocked.
-      </div>
-    </details>
-  );
-}
-
-
-// Deployment-readiness evidence: did the honest validation steps happen for
-// this source? Informational only (quality gating stays in QualityBadge).
-function ReadinessBadge({ readiness, readinessBusy }) {
-  if (readinessBusy) {
-    return <div className="mt-2 text-[11px] text-dimmer">Checking validation evidence…</div>;
-  }
-  if (!readiness) return null;
-  const wfo = readiness.wfo;
-  const oe = readiness.option_evidence;
-
-  const wfoOk = wfo && wfo.efficiency != null && wfo.efficiency >= 0.7 && (wfo.consistency_pct ?? 0) >= 50;
-  const wfoTone = !wfo ? "miss" : wfoOk ? "ok" : "weak";
-  const oeOk = oe && oe.params_match && Number(oe.net_pnl_value || 0) > 0;
-  const oeTone = !oe ? "miss" : oeOk ? "ok" : "weak";
-
-  const toneCls = { ok: "text-emerald-400", weak: "text-amber-400", miss: "text-dimmer" };
-  const dot = (tone) => (
-    <span className={`inline-block w-1.5 h-1.5 rounded-full ${tone === "ok" ? "bg-emerald-400" : tone === "weak" ? "bg-amber-400" : "bg-zinc-600"}`} />
-  );
-  const inr = (v) => (v == null ? "—" : `₹${Number(v).toLocaleString("en-IN", { maximumFractionDigits: 0 })}`);
-
-  return (
-    <div className="mt-2 rounded-md border border-line bg-bg-1 p-2 space-y-1" data-testid="readiness-badge">
-      <div className="text-[10px] uppercase tracking-wider text-dimmer">Validation evidence (informational)</div>
-      <div className={`flex items-start gap-2 text-[11px] ${toneCls[wfoTone]}`} data-testid="readiness-wfo">
-        <span className="mt-1.5 shrink-0">{dot(wfoTone)}</span>
-        <span>
-          {!wfo && <>No completed honest walk-forward for this strategy. Run one in the Optimizer (Run type: Walk-forward) before trusting the edge.</>}
-          {wfo && (
-            <>
-              Walk-forward: efficiency <b>{wfo.efficiency ?? "n/a"}</b>, {wfo.positive_windows ?? 0}/{wfo.windows ?? 0} windows OOS-positive
-              {wfo.option_oos_net != null && <> · option OOS {inr(wfo.option_oos_net)}</>}
-              {!wfo.params_match && <span className="text-dimmer"> · latest WFO's params differ from this preset</span>}
-            </>
-          )}
-        </span>
-      </div>
-      <div className={`flex items-start gap-2 text-[11px] ${toneCls[oeTone]}`} data-testid="readiness-option">
-        <span className="mt-1.5 shrink-0">{dot(oeTone)}</span>
-        <span>
-          {!oe && <>No option-rupee validation found. Run an Option re-rank optimization or an option-paired backtest so the rupee edge is proven, not assumed.</>}
-          {oe && (
-            <>
-              Option rupee ({oe.kind === "rerank" ? "re-rank" : "backtest"}): net <b>{inr(oe.net_pnl_value)}</b>, win rate {oe.win_rate != null ? `${Number(oe.win_rate).toFixed(1)}%` : "—"}, {oe.paired_trade_count ?? 0} paired
-              {!oe.params_match && <span className="text-dimmer"> · params differ from this preset</span>}
-            </>
-          )}
-        </span>
-      </div>
-      {readiness.source?.has_execution === false && readiness.source?.type === "preset" && (
-        <div className="text-[10px] text-dimmer">
-          This preset carries no execution policy (saved before 2026-06-12 or from a spot-only run) — option policy below is manual.
-        </div>
+      {wizardOpen && (
+        <DeployWizard
+          presets={presets}
+          initialPreset={wizardPreset}
+          onClose={() => setWizardOpen(false)}
+          onCreated={() => { setWizardOpen(false); refresh(); }}
+        />
       )}
     </div>
   );
 }
 
-function QualityBadge({ quality, qualityBusy, sourceId, acknowledged, onAcknowledge }) {
-  if (!sourceId) return null;
-  if (qualityBusy && !quality) {
-    return (
-      <div className="mt-3 rounded-md border border-line bg-bg-1 p-2 text-[11px] text-dim flex items-center gap-2" data-testid="quality-loading">
-        <RefreshCw className="w-3 h-3 animate-spin" />
-        <span>Checking source quality...</span>
-      </div>
-    );
-  }
-  if (!quality) return null;
-  const ackRequired = Boolean(quality.acknowledgment_required);
-  const warnings = quality.warnings || [];
-  if (!ackRequired) {
-    return (
-      <div className="mt-3 rounded-md border border-emerald-500/40 bg-emerald-500/5 p-2 text-[11px] text-emerald-400" data-testid="quality-clean">
-        <span className="px-1.5 py-0.5 rounded font-mono uppercase border border-emerald-500/40 mr-2 text-[9px]">CLEAN</span>
-        Source backtest passes all quality checks. No acknowledgment needed.
-      </div>
-    );
-  }
+function HeaderStat({ label, value, tone }) {
   return (
-    <details className="mt-3 rounded-md border border-amber-500/40 bg-amber-500/5 p-2" data-testid="quality-warnings" open>
-      <summary className="cursor-pointer flex items-center gap-2 text-xs">
-        <span className="px-1.5 py-0.5 rounded font-mono uppercase border border-amber-500/40 text-amber-400">WARN</span>
-        <span className="text-foreground font-semibold">{warnings.length} quality warning{warnings.length === 1 ? "" : "s"}</span>
-        <span className="ml-auto text-dimmer text-[10px]">acknowledgment required</span>
-      </summary>
-      <div className="mt-2 space-y-1.5">
-        {warnings.map((w) => (
-          <div key={w.id} className="rounded-md border border-amber-500/30 bg-bg-2 p-2 text-[11px]">
-            <div className="flex flex-wrap items-center gap-1.5">
-              <span className="px-1.5 py-0.5 rounded font-mono uppercase border border-amber-500/40 text-amber-400 text-[9px]">{w.severity}</span>
-              <span className="font-semibold text-foreground">{w.label}</span>
-            </div>
-            <div className="mt-1 text-dim">{w.detail}</div>
-          </div>
-        ))}
-      </div>
-      <label className="mt-3 flex items-start gap-2 text-[11px] text-foreground cursor-pointer">
-        <input
-          type="checkbox"
-          checked={Boolean(acknowledged)}
-          onChange={(e) => onAcknowledge(e.target.checked)}
-          className="mt-0.5 h-4 w-4 rounded border-line"
-          data-testid="acknowledge-warnings-checkbox"
-        />
-        <span>
-          I acknowledge these warnings and want to deploy anyway. The source-quality
-          snapshot will be saved on the deployment for audit.
-        </span>
-      </label>
-    </details>
+    <div className="flex items-baseline gap-1.5">
+      <span className="text-[10px] uppercase tracking-wider text-dimmer">{label}</span>
+      <span className={`text-sm font-mono ${tone !== undefined ? toneClass(tone) : "text-foreground"}`}>{value}</span>
+    </div>
   );
 }
 
-
-function SignalCard({ signal, busy, onTransition, onDeploy }) {
-  const nextState = {
-    WATCHING: "FORMING",
-    FORMING: "CONFIRMED",
-    CONFIRMED: "TRIGGERED",
-    TRIGGERED: "ACTIVE",
-    ACTIVE: "EXITED",
-    EXITED: "AUDITED",
-  }[signal.state];
+function DeploymentCard({ item, busy, onPause, onResume, onEvaluate, onUndeploy, onSignals, onTrades }) {
+  const d = item.deployment;
+  const t = item.today;
+  const lt = item.lifetime;
+  const paused = d.status === "PAUSED";
+  const isPaper = d.mode === "paper";
+  const pausedReason = d.kill_switch_reason || d.drift_reason;
+  const mtm = Number(t.realized_pnl || 0) + Number(t.open_unrealized || 0);
   return (
-    <article className="rounded-md border border-line bg-bg-1 p-3">
-      <div className="flex items-start gap-3">
+    <div className="rounded-lg border border-line bg-bg-1 p-3 space-y-2" data-testid="deployment-card">
+      <div className="flex items-start gap-2">
         <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <span className="font-semibold">{signal.instrument}</span>
-            <span className="text-xs font-mono text-dim">{signal.direction}</span>
-            <span className="text-[10px] px-1.5 py-0.5 rounded border border-line bg-bg-3 font-mono">{signal.state}</span>
-          </div>
-          <div className="mt-1 text-xs text-dim">
-            {signal.strategy_id} · entry {fmtNum(signal.entry_price)} · confidence {fmtNum(signal.confidence)}%
-          </div>
-          <div className="mt-1 text-[11px] text-dimmer">
-            {signal.reasons?.join(", ") || "no reasons"} · {isoToFull(signal.updated_at || signal.created_at)}
+          <div className="text-sm font-semibold truncate" title={d.name}>{d.name}</div>
+          <div className="text-[11px] font-mono text-dimmer truncate">
+            {d.strategy_id} · {d.instrument} · {(d.option_policy?.moneyness || []).join("/").toUpperCase() || "ATM"}
+            {" · DTE "}{(d.option_policy?.dte_filter || []).join(",") || "all"}
+            {" · from "}{d.source_type === "preset" ? `preset "${d.source_id}"` : "backtest run"}
           </div>
         </div>
-        <div className="ml-auto flex flex-wrap justify-end gap-1.5">
-          {nextState && (
-            <Button size="sm" variant="secondary" disabled={busy} onClick={() => onTransition(signal, nextState)} className="h-7 text-xs border border-line">
-              {nextState}
-            </Button>
-          )}
-          <Button size="sm" disabled={busy || signal.state === "AUDITED"} onClick={() => onDeploy(signal)} className="h-7 text-xs bg-bg-3 border border-line hover:bg-bg-2" data-testid="deploy-paper-button">
-            <Briefcase className="w-3 h-3 mr-1" />
-            Paper
-          </Button>
+        <div className="ml-auto flex items-center gap-1.5 shrink-0">
+          <span className={`text-[10px] px-1.5 py-0.5 rounded border font-mono ${isPaper ? "border-emerald-500/40 text-emerald-300" : "border-info/40 text-info"}`}>
+            {isPaper ? "PAPER AUTO-TRADE" : "SIGNAL ONLY"}
+          </span>
+          <span className={`text-[10px] px-1.5 py-0.5 rounded border font-mono ${paused ? "border-amber-500/40 text-amber-300" : "border-emerald-500/40 text-emerald-300"}`}>
+            {d.status}
+          </span>
         </div>
       </div>
-    </article>
+
+      {paused && pausedReason && (
+        <div className="flex items-center gap-1.5 text-[11px] text-amber-300" data-testid="deployment-pause-reason">
+          <ShieldAlert className="w-3.5 h-3.5 shrink-0" />
+          <span className="truncate" title={pausedReason}>Auto-paused: {pausedReason}</span>
+        </div>
+      )}
+
+      <div className="grid grid-cols-3 lg:grid-cols-6 gap-2 text-xs">
+        <CardStat label="Signals today" value={`${t.clean_signals}${t.blocked_signals ? ` (+${t.blocked_signals} blocked)` : ""}`} />
+        <CardStat label="Open trades" value={t.open_trades} />
+        <CardStat label="Open MTM" value={inr(t.open_unrealized)} tone={t.open_unrealized} />
+        <CardStat label="Today ₹" value={inr(mtm)} tone={mtm} />
+        <CardStat label="Lifetime ₹" value={inr(lt.realized_pnl)} tone={lt.realized_pnl} />
+        <CardStat label="Win rate" value={lt.win_rate != null ? `${lt.win_rate}% (${lt.closed_trades})` : `— (${lt.closed_trades})`} />
+      </div>
+
+      <div className="flex items-center gap-1.5 pt-1 border-t border-line flex-wrap">
+        {paused ? (
+          <Button size="sm" variant="ghost" className="h-7 text-xs" disabled={busy} onClick={onResume} data-testid="resume-deployment">
+            <Play className="w-3 h-3 mr-1" /> Resume
+          </Button>
+        ) : (
+          <Button size="sm" variant="ghost" className="h-7 text-xs" disabled={busy} onClick={onPause} data-testid="pause-deployment">
+            <Pause className="w-3 h-3 mr-1" /> Pause
+          </Button>
+        )}
+        <Button size="sm" variant="ghost" className="h-7 text-xs" disabled={busy || paused} onClick={onEvaluate} title="Evaluate the latest closed 1m bar now">
+          <Zap className="w-3 h-3 mr-1" /> Evaluate
+        </Button>
+        <Button size="sm" variant="ghost" className="h-7 text-xs text-dim" onClick={onSignals}>Signals →</Button>
+        <Button size="sm" variant="ghost" className="h-7 text-xs text-dim" onClick={onTrades}>Trades →</Button>
+        <Button size="sm" variant="ghost" className="h-7 text-xs ml-auto text-rose-300 hover:text-rose-200" disabled={busy}
+          onClick={onUndeploy} title="Stop signal generation and paper trading for this strategy" data-testid="undeploy-button">
+          <Archive className="w-3 h-3 mr-1" /> Undeploy
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function CardStat({ label, value, tone }) {
+  return (
+    <div className="rounded-md border border-line bg-bg-2 p-1.5">
+      <div className="text-[9px] uppercase tracking-wider text-dimmer">{label}</div>
+      <div className={`font-mono mt-0.5 ${tone !== undefined ? toneClass(tone) : ""}`}>{value}</div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------------ */
+/* Deploy wizard: preset → execution → risk & go                            */
+/* ------------------------------------------------------------------------ */
+
+const WIZARD_DEFAULTS = {
+  name: "",
+  source_id: "",
+  mode: "paper",
+  option_moneyness: "atm",
+  dte_filter: [],
+  default_lots: 1,
+  pretrade_profile: "Balanced",
+  auto_paper: true,
+  auto_paper_unit: "pct",
+  auto_paper_target_pts: "",
+  auto_paper_stop_pts: "",
+  auto_paper_target_pct: "",
+  auto_paper_stop_pct: "",
+  allow_overnight: false,
+  max_consecutive_losses: "",
+  daily_loss_cutoff_pct: "",
+  max_open_paper_trades: "",
+  acknowledged_warnings: false,
+};
+
+function DeployWizard({ presets, initialPreset, onClose, onCreated }) {
+  const [step, setStep] = useState(1);
+  const [form, setForm] = useState({ ...WIZARD_DEFAULTS, source_id: initialPreset || "" });
+  const [busy, setBusy] = useState(false);
+  const [readiness, setReadiness] = useState(null);
+  const [readinessBusy, setReadinessBusy] = useState(false);
+  const [quality, setQuality] = useState(null);
+  const set = (k, v) => setForm((prev) => ({ ...prev, [k]: v }));
+
+  const preset = presets.find((p) => p.name === form.source_id);
+  const instrument = (preset?.config?.instrument || "").toUpperCase();
+
+  // Evidence + quality for the chosen preset.
+  useEffect(() => {
+    let cancelled = false;
+    if (!form.source_id) { setReadiness(null); setQuality(null); return () => {}; }
+    setReadinessBusy(true);
+    setForm((prev) => ({ ...prev, acknowledged_warnings: false }));
+    Promise.all([
+      api.deploymentReadiness("preset", form.source_id).catch(() => null),
+      api.deploymentQuality("preset", form.source_id).catch(() => null),
+    ]).then(([r, q]) => {
+      if (cancelled) return;
+      setReadiness(r);
+      setQuality(q);
+    }).finally(() => { if (!cancelled) setReadinessBusy(false); });
+    return () => { cancelled = true; };
+  }, [form.source_id]);
+
+  // Execution policy travels with the preset: prefill once per preset choice.
+  const prefillRef = useRef(null);
+  useEffect(() => {
+    if (!form.source_id || prefillRef.current === form.source_id) return;
+    const ex = preset?.config?.execution;
+    prefillRef.current = form.source_id;
+    setForm((prev) => ({
+      ...prev,
+      name: prev.name || `${form.source_id} deployment`,
+      ...(ex ? {
+        option_moneyness: ex.moneyness || prev.option_moneyness,
+        dte_filter: Array.isArray(ex.dte_filter) ? ex.dte_filter : prev.dte_filter,
+        default_lots: ex.lots || prev.default_lots,
+        ...(ex.exit_mode === "option_levels" ? {
+          auto_paper_unit: (ex.option_target_pts != null || ex.option_stop_pts != null) ? "pts" : "pct",
+          auto_paper_target_pts: ex.option_target_pts ?? "",
+          auto_paper_stop_pts: ex.option_stop_pts ?? "",
+          auto_paper_target_pct: ex.option_target_pct ?? "",
+          auto_paper_stop_pct: ex.option_stop_pct ?? "",
+        } : {}),
+      } : {}),
+    }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.source_id, preset]);
+
+  const create = async () => {
+    setBusy(true);
+    try {
+      const payload = {
+        name: form.name || `${form.source_id} deployment`,
+        source_type: "preset",
+        source_id: form.source_id,
+        mode: form.mode,
+        confirmation_mode: "1m_close",
+        option_moneyness: [form.option_moneyness],
+        pretrade_profile: form.pretrade_profile,
+        dte_filter: form.dte_filter.length ? form.dte_filter : DTE_VALUES,
+        default_lots: Math.max(1, parseInt(form.default_lots, 10) || 1),
+        auto_paper: form.mode === "paper" ? Boolean(form.auto_paper) : false,
+        auto_paper_target_pts: form.auto_paper_unit === "pts" && form.auto_paper_target_pts !== "" ? Number(form.auto_paper_target_pts) : null,
+        auto_paper_stop_pts: form.auto_paper_unit === "pts" && form.auto_paper_stop_pts !== "" ? Number(form.auto_paper_stop_pts) : null,
+        auto_paper_target_pct: form.auto_paper_unit === "pct" && form.auto_paper_target_pct !== "" ? Number(form.auto_paper_target_pct) : null,
+        auto_paper_stop_pct: form.auto_paper_unit === "pct" && form.auto_paper_stop_pct !== "" ? Number(form.auto_paper_stop_pct) : null,
+        allow_overnight: Boolean(form.allow_overnight),
+        max_consecutive_losses: form.max_consecutive_losses === "" ? null : Math.max(0, parseInt(form.max_consecutive_losses, 10) || 0),
+        daily_loss_cutoff_pct: form.daily_loss_cutoff_pct === "" ? null : Number(form.daily_loss_cutoff_pct),
+        max_open_paper_trades: form.max_open_paper_trades === "" ? null : Math.max(0, parseInt(form.max_open_paper_trades, 10) || 0),
+        acknowledged_warnings: Boolean(form.acknowledged_warnings),
+      };
+      const res = await api.createDeployment(payload);
+      const stream = res.option_stream || {};
+      toast.success(stream.restarted
+        ? `Deployed. Option stream realigned (radius ${stream.radius}).`
+        : "Deployed. Signals start with the next market minute.");
+      onCreated();
+    } catch (e) {
+      toast.error(`Deployment failed: ${e.response?.data?.detail?.message || e.response?.data?.detail || e.message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const needAck = Boolean(quality?.acknowledgment_required);
+  const canNext1 = Boolean(form.source_id);
+  const canCreate = canNext1 && (!needAck || form.acknowledged_warnings);
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 flex items-start justify-center p-4 overflow-y-auto" data-testid="deploy-wizard">
+      <div className="w-full max-w-2xl rounded-lg border border-line bg-bg-1 mt-8">
+        <div className="px-4 py-3 border-b border-line flex items-center gap-2">
+          <Rocket className="w-4 h-4 text-info" />
+          <div className="text-sm font-semibold">Deploy strategy</div>
+          <div className="ml-3 flex items-center gap-1 text-[10px] font-mono text-dimmer">
+            {[1, 2, 3].map((n) => (
+              <span key={n} className={`px-1.5 py-0.5 rounded ${step === n ? "bg-info text-bg-0" : "bg-bg-2"}`}>
+                {n}. {n === 1 ? "Preset" : n === 2 ? "Execution" : "Risk & go"}
+              </span>
+            ))}
+          </div>
+          <button onClick={onClose} className="ml-auto text-dimmer hover:text-foreground" data-testid="wizard-close">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="p-4 space-y-3 text-xs">
+          {step === 1 && (
+            <>
+              <label className="block text-[11px] text-dim">
+                Strategy preset (optimized + saved in the Optimizer)
+                <select
+                  value={form.source_id}
+                  onChange={(e) => set("source_id", e.target.value)}
+                  className="mt-1 h-8 w-full rounded-md border border-input bg-bg-2 px-2 text-xs"
+                  data-testid="wizard-preset-select"
+                >
+                  <option value="">— choose a preset —</option>
+                  {presets.map((p) => (
+                    <option key={p.name} value={p.name}>
+                      {p.name} ({p.config?.strategy_id} · {p.config?.instrument}{p.config?.execution ? " · exec policy" : ""})
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="block text-[11px] text-dim">
+                Deployment name
+                <Input value={form.name} onChange={(e) => set("name", e.target.value)}
+                  placeholder={form.source_id ? `${form.source_id} deployment` : "name shown on the card"}
+                  className="mt-1 bg-bg-2 border-line h-8" />
+              </label>
+              {readinessBusy && <div className="text-dimmer text-[11px]">Checking validation evidence…</div>}
+              {readiness && <ReadinessSummary readiness={readiness} />}
+              {form.source_id && preset?.config?.execution == null && (
+                <div className="text-[10px] text-dimmer">
+                  This preset carries no execution policy (older preset or spot-only run) — review step 2 manually.
+                </div>
+              )}
+            </>
+          )}
+
+          {step === 2 && (
+            <>
+              <div className="grid grid-cols-3 gap-2">
+                <label className="block text-[11px] text-dim">
+                  Mode
+                  <select value={form.mode} onChange={(e) => set("mode", e.target.value)}
+                    className="mt-1 h-8 w-full rounded-md border border-input bg-bg-2 px-2 text-xs" data-testid="wizard-mode-select">
+                    <option value="paper">Paper — auto-trade every clean signal</option>
+                    <option value="signal_only">Signal only — journal, no trades</option>
+                  </select>
+                </label>
+                <label className="block text-[11px] text-dim">
+                  Moneyness
+                  <select value={form.option_moneyness} onChange={(e) => set("option_moneyness", e.target.value)}
+                    className="mt-1 h-8 w-full rounded-md border border-input bg-bg-2 px-2 text-xs">
+                    {MONEYNESS.map((m) => <option key={m} value={m}>{m.toUpperCase()}</option>)}
+                  </select>
+                </label>
+                <label className="block text-[11px] text-dim">
+                  Lots per trade
+                  <Input type="number" min="1" step="1" value={form.default_lots}
+                    onChange={(e) => set("default_lots", e.target.value)} className="mt-1 bg-bg-2 border-line h-8"
+                    title="Lot size always comes from the option contract (Upstox)." />
+                </label>
+              </div>
+
+              <div>
+                <div className="text-[11px] text-dim mb-1">DTE filter (days to expiry — none selected = all)</div>
+                <div className="flex flex-wrap items-center gap-1">
+                  <button type="button" onClick={() => set("dte_filter", [])}
+                    className={`px-2 py-1 rounded text-[11px] font-mono border ${form.dte_filter.length === 0 ? "bg-info text-bg-0 border-info" : "bg-bg-2 text-dim border-line hover:text-foreground"}`}>
+                    ALL
+                  </button>
+                  {DTE_VALUES.map((d) => {
+                    const sel = form.dte_filter.includes(d);
+                    return (
+                      <button key={d} type="button"
+                        onClick={() => {
+                          const cur = new Set(form.dte_filter);
+                          if (cur.has(d)) cur.delete(d); else cur.add(d);
+                          set("dte_filter", [...cur].sort((a, b) => a - b));
+                        }}
+                        className={`px-2 py-1 rounded text-[11px] font-mono border ${sel ? "bg-info text-bg-0 border-info" : "bg-bg-2 text-dim border-line hover:text-foreground"}`}>
+                        {d}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {form.mode === "paper" && (
+                <div className="rounded-md border border-emerald-500/30 bg-emerald-500/5 p-2 space-y-2">
+                  <label className="text-[11px] text-dim flex items-center gap-2">
+                    <input type="checkbox" checked={Boolean(form.auto_paper)}
+                      onChange={(e) => set("auto_paper", e.target.checked)} className="h-4 w-4 rounded border-line" />
+                    <span><b>Auto paper trade on every clean signal</b> — entry at live option premium</span>
+                  </label>
+                  {form.auto_paper && (
+                    <>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[11px] text-dim">Fallback exit unit</span>
+                        <div className="flex rounded-md border border-line overflow-hidden">
+                          {["pts", "pct"].map((u) => (
+                            <button key={u} type="button" onClick={() => set("auto_paper_unit", u)}
+                              className={`px-2 py-1 text-[11px] font-mono ${form.auto_paper_unit === u ? "bg-info text-bg-0" : "bg-bg-2 text-dim hover:text-foreground"}`}>
+                              {u === "pts" ? "₹ points" : "Percent"}
+                            </button>
+                          ))}
+                        </div>
+                        <span className="text-[10px] text-dimmer">used only when the strategy gives no exit hints</span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <label className="text-[11px] text-dim">
+                          Target {form.auto_paper_unit === "pts" ? "(pts of premium)" : "(% of premium)"}
+                          <Input type="number" min="0" step={form.auto_paper_unit === "pts" ? "0.5" : "5"}
+                            value={form.auto_paper_unit === "pts" ? form.auto_paper_target_pts : form.auto_paper_target_pct}
+                            onChange={(e) => set(form.auto_paper_unit === "pts" ? "auto_paper_target_pts" : "auto_paper_target_pct", e.target.value)}
+                            className="mt-1 bg-bg-2 border-line h-8" placeholder="strategy hint" />
+                        </label>
+                        <label className="text-[11px] text-dim">
+                          Stop {form.auto_paper_unit === "pts" ? "(pts of premium)" : "(% of premium)"}
+                          <Input type="number" min="0" step={form.auto_paper_unit === "pts" ? "0.5" : "5"}
+                            value={form.auto_paper_unit === "pts" ? form.auto_paper_stop_pts : form.auto_paper_stop_pct}
+                            onChange={(e) => set(form.auto_paper_unit === "pts" ? "auto_paper_stop_pts" : "auto_paper_stop_pct", e.target.value)}
+                            className="mt-1 bg-bg-2 border-line h-8" placeholder="strategy hint" />
+                        </label>
+                      </div>
+                    </>
+                  )}
+                  <div className="text-[10px] text-dimmer leading-snug">
+                    The strategy's own exits always win: spot-point levels are mirrored automatically (option closes
+                    when the index hits the level), premium-% hints apply directly. No live premium → no trade, reason journaled.
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+
+          {step === 3 && (
+            <>
+              <div className="grid grid-cols-3 gap-2">
+                <label className="text-[11px] text-dim">
+                  Max consecutive losses
+                  <Input type="number" min="0" value={form.max_consecutive_losses}
+                    onChange={(e) => set("max_consecutive_losses", e.target.value)}
+                    className="mt-1 bg-bg-2 border-line h-8" placeholder="off"
+                    title="Auto-PAUSE the deployment after this many losing paper trades in a row" />
+                </label>
+                <label className="text-[11px] text-dim">
+                  Daily loss cutoff (%)
+                  <Input type="number" value={form.daily_loss_cutoff_pct}
+                    onChange={(e) => set("daily_loss_cutoff_pct", e.target.value)}
+                    className="mt-1 bg-bg-2 border-line h-8" placeholder="off"
+                    title="Auto-PAUSE when today's realized paper P&L falls to/below this negative % of capital deployed today" />
+                </label>
+                <label className="text-[11px] text-dim">
+                  Max open trades
+                  <Input type="number" min="0" value={form.max_open_paper_trades}
+                    onChange={(e) => set("max_open_paper_trades", e.target.value)}
+                    className="mt-1 bg-bg-2 border-line h-8" placeholder="off"
+                    title="Soft-block new signals while this many paper trades are open (self-clears)" />
+                </label>
+              </div>
+              <label className="text-[11px] text-dim flex items-center gap-2">
+                <input type="checkbox" checked={Boolean(form.allow_overnight)}
+                  onChange={(e) => set("allow_overnight", e.target.checked)} className="h-4 w-4 rounded border-line" />
+                <span>Allow overnight (skip the 15:00 IST auto-square-off for this deployment)</span>
+              </label>
+
+              {needAck && (
+                <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-2 space-y-1">
+                  <div className="text-[11px] text-amber-300 font-semibold">
+                    Quality warnings on this preset — acknowledge to deploy:
+                  </div>
+                  <ul className="text-[11px] text-amber-200/90 list-disc pl-4">
+                    {(quality?.warnings || []).map((w) => <li key={w.id}>{w.label}{w.detail ? ` — ${w.detail}` : ""}</li>)}
+                  </ul>
+                  <label className="text-[11px] text-dim flex items-center gap-2 pt-1">
+                    <input type="checkbox" checked={Boolean(form.acknowledged_warnings)}
+                      onChange={(e) => set("acknowledged_warnings", e.target.checked)}
+                      className="h-4 w-4 rounded border-line" data-testid="wizard-ack-checkbox" />
+                    <span>I understand these warnings and want to deploy anyway</span>
+                  </label>
+                </div>
+              )}
+
+              <div className="text-[10px] text-dimmer leading-snug">
+                Summary: <b className="text-dim">{form.source_id || "?"}</b> on <b className="text-dim">{instrument || "?"}</b> ·
+                {form.mode === "paper" ? " paper auto-trade" : " signal only"} · {String(form.option_moneyness).toUpperCase()} ·
+                DTE {form.dte_filter.length ? form.dte_filter.join(",") : "all"} · {form.default_lots} lot(s).
+                Evaluation runs every market minute (09:15–15:30 IST, signal window 09:25–14:50); square-off 15:00 IST.
+              </div>
+            </>
+          )}
+        </div>
+
+        <div className="px-4 py-3 border-t border-line flex items-center gap-2">
+          {step > 1 && (
+            <Button size="sm" variant="ghost" className="h-8 text-xs" onClick={() => setStep(step - 1)}>
+              <ChevronLeft className="w-3 h-3 mr-1" /> Back
+            </Button>
+          )}
+          <div className="ml-auto flex items-center gap-2">
+            <Button size="sm" variant="ghost" className="h-8 text-xs" onClick={onClose}>Cancel</Button>
+            {step < 3 ? (
+              <Button size="sm" className="h-8 text-xs bg-info text-bg-0 hover:bg-info/90" disabled={!canNext1}
+                onClick={() => setStep(step + 1)} data-testid="wizard-next">
+                Next <ChevronRight className="w-3 h-3 ml-1" />
+              </Button>
+            ) : (
+              <Button size="sm" className="h-8 text-xs bg-emerald-500 text-bg-0 hover:bg-emerald-400 font-semibold"
+                disabled={busy || !canCreate} onClick={create} data-testid="wizard-create">
+                <Rocket className="w-3 h-3 mr-1" /> Deploy
+              </Button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Compact validation-evidence rows (honest-WFO + option-rupee) for step 1.
+function ReadinessSummary({ readiness }) {
+  const wfo = readiness.wfo;
+  const oe = readiness.option_evidence;
+  const wfoOk = wfo && wfo.efficiency != null && wfo.efficiency >= 0.7 && (wfo.consistency_pct ?? 0) >= 50;
+  const oeOk = oe && oe.params_match && Number(oe.net_pnl_value || 0) > 0;
+  const row = (ok, present, okText, weakText, missText) => (
+    <div className={`flex items-start gap-2 text-[11px] ${!present ? "text-dimmer" : ok ? "text-emerald-400" : "text-amber-400"}`}>
+      <span className={`mt-1.5 inline-block w-1.5 h-1.5 rounded-full shrink-0 ${!present ? "bg-zinc-600" : ok ? "bg-emerald-400" : "bg-amber-400"}`} />
+      <span>{!present ? missText : ok ? okText : weakText}</span>
+    </div>
+  );
+  return (
+    <div className="rounded-md border border-line bg-bg-2 p-2 space-y-1" data-testid="readiness-badge">
+      <div className="text-[10px] uppercase tracking-wider text-dimmer">Validation evidence (informational)</div>
+      {row(wfoOk, Boolean(wfo),
+        `Walk-forward: efficiency ${wfo?.efficiency}, ${wfo?.positive_windows}/${wfo?.windows} windows OOS-positive${wfo?.option_oos_net != null ? `, option OOS ${inr(wfo.option_oos_net)}` : ""}${wfo?.params_match ? "" : " (params differ)"}`,
+        `Walk-forward found but weak: efficiency ${wfo?.efficiency}, ${wfo?.positive_windows}/${wfo?.windows} OOS-positive${wfo?.params_match ? "" : " (params differ)"}`,
+        "No completed honest walk-forward for this strategy — run one in the Optimizer first.")}
+      {row(oeOk, Boolean(oe),
+        `Option rupee (${oe?.kind === "rerank" ? "re-rank" : "backtest"}): net ${inr(oe?.net_pnl_value)}, ${oe?.paired_trade_count} paired`,
+        `Option rupee evidence ${oe?.params_match ? `is negative (${inr(oe?.net_pnl_value)})` : "exists but for different params"}`,
+        "No option-rupee validation — run an Option re-rank or option backtest first.")}
+    </div>
   );
 }

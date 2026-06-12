@@ -48,15 +48,9 @@ from app.option_warehouse_jobs import option_fetch_tasks_from_plan, run_option_w
 from app.expired_contract_backfill import backfill_expired_option_contracts
 from app.market_header import DEFAULT_ITEMS, build_market_header_snapshot
 from app.options_universe import select_contract_for_signal
-from app.paper_trading import close_trade, mark_trade_to_market, paper_trade_from_signal
-from app.paper_auto import (
-    build_auto_trade,
-    claim_signal_for_paper_trade,
-    mark_open_deployment_trades,
-    release_paper_trade_claim,
-    resolve_option_entry_price,
-)
-from app.signal_lifecycle import SignalStateError, create_signal_doc, transition_signal
+from app.paper_trading import close_trade, mark_trade_to_market
+from app.paper_auto import mark_open_deployment_trades
+from app.signal_lifecycle import SignalStateError, transition_signal
 from app.strategy_deployments import build_deployment_doc
 from app.strategy_source_hash import detect_drift, hash_strategy_source
 from app.deployment_quality import evaluate_source_quality
@@ -65,7 +59,7 @@ from app.forward_metrics import compute_forward_metrics_for_deployment, compute_
 from app.upstox_index_ingest import persist_index_candles_bulk, run_upstox_index_ingest_job
 from app.upstox_stream import DEFAULT_STREAM_MODE, UpstoxMarketStreamManager
 from app.live_candle_roller import LiveCandleRoller
-from app.live_option_universe import build_live_option_universe
+from app.live_option_universe import build_live_option_universe, radius_for_deployments
 from app.deployment_evaluator import (
     evaluate_active_deployments,
     evaluate_deployment_on_close,
@@ -1529,6 +1523,168 @@ async def list_signals(state: Optional[str] = Query(None), limit: int = Query(50
     return {"items": serialize_doc(rows), "count": len(rows)}
 
 
+
+def _ist_day_bounds_ms_full(date_from: Optional[str], date_to: Optional[str]) -> tuple:
+    """Full-day IST bounds in epoch-ms for inclusive YYYY-MM-DD date filters."""
+    ist = timezone(timedelta(hours=5, minutes=30))
+    start_ms = end_ms = None
+    if date_from:
+        start_ms = int(datetime.fromisoformat(f"{date_from}T00:00:00").replace(tzinfo=ist).timestamp() * 1000)
+    if date_to:
+        end_ms = int((datetime.fromisoformat(f"{date_to}T00:00:00").replace(tzinfo=ist) + timedelta(days=1)).timestamp() * 1000)
+    return start_ms, end_ms
+
+
+def _csv_response(rows: List[Dict[str, Any]], columns: List[str], filename: str):
+    import csv as _csv
+    import io as _io
+    from fastapi.responses import Response
+    buf = _io.StringIO()
+    writer = _csv.writer(buf)
+    writer.writerow(columns)
+    for r in rows:
+        writer.writerow(["" if r.get(c) is None else r.get(c) for c in columns])
+    return Response(content=buf.getvalue(), media_type="text/csv",
+                    headers={"Content-Disposition": f"attachment; filename={filename}"})
+
+
+_ENRICHED_SORT_FIELDS = {"bar_ts", "updated_at", "confidence", "instrument", "state"}
+
+_ENRICHED_CSV_COLUMNS = [
+    "bar_ist", "deployment_name", "strategy_id", "instrument", "direction", "state",
+    "score", "contract", "spot_entry", "entry_premium", "exit_premium", "exit_reason",
+    "pnl_value", "pnl_premium_pts", "lots", "quantity", "reasons", "blockers",
+]
+
+
+@api.get("/signals/enriched")
+async def list_signals_enriched(
+    deployment_id: Optional[str] = Query(None),
+    strategy_id: Optional[str] = Query(None),
+    instrument: Optional[str] = Query(None),
+    state: Optional[str] = Query(None),
+    clean: Optional[bool] = Query(None, description="true = clean only, false = blocked only"),
+    date_from: Optional[str] = Query(None, description="YYYY-MM-DD (IST)"),
+    date_to: Optional[str] = Query(None, description="YYYY-MM-DD (IST)"),
+    sort: str = Query("-bar_ts", description="bar_ts | updated_at | confidence | instrument | state, prefix - for desc"),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, le=500),
+    format: Optional[str] = Query(None, description="csv to download"),
+):
+    """The trade-recommendation ledger: deployment signals JOINED with their
+    paper trades (entry premium, exit price/reason, P&L in rupees and premium
+    points) plus the strategy's entry-trigger reasons. Server-side filter /
+    sort / pagination / CSV. Manual research signals (no deployment_id) are
+    excluded by design."""
+    db = get_db()
+    q: Dict[str, Any] = {"deployment_id": {"$exists": True, "$type": "string"}}
+    if deployment_id:
+        q["deployment_id"] = deployment_id
+    if strategy_id:
+        q["strategy_id"] = strategy_id
+    if instrument:
+        q["instrument"] = instrument.upper()
+    if state:
+        q["state"] = state.upper()
+    if clean is True:
+        q["blocked"] = {"$ne": True}
+    elif clean is False:
+        q["blocked"] = True
+    start_ms, end_ms = _ist_day_bounds_ms_full(date_from, date_to)
+    if start_ms is not None or end_ms is not None:
+        rng: Dict[str, Any] = {}
+        if start_ms is not None:
+            rng["$gte"] = start_ms
+        if end_ms is not None:
+            rng["$lt"] = end_ms
+        q["bar_ts"] = rng
+
+    field = sort.lstrip("-")
+    direction = -1 if sort.startswith("-") else 1
+    if field not in _ENRICHED_SORT_FIELDS:
+        field, direction = "bar_ts", -1
+
+    total = await db.signals.count_documents(q)
+    rows = await db.signals.find(q, {"_id": 0}).sort(field, direction).skip(skip).limit(limit).to_list(length=limit)
+
+    trade_ids = [str(r.get("paper_trade_id")) for r in rows if r.get("paper_trade_id")]
+    trades_by_id: Dict[str, Dict[str, Any]] = {}
+    if trade_ids:
+        for t in await db.paper_trades.find({"id": {"$in": trade_ids}}, {"_id": 0, "events": 0}).to_list(length=len(trade_ids)):
+            trades_by_id[str(t.get("id"))] = t
+    dep_ids = sorted({str(r.get("deployment_id")) for r in rows if r.get("deployment_id")})
+    dep_names: Dict[str, str] = {}
+    if dep_ids:
+        for d in await db.strategy_deployments.find({"id": {"$in": dep_ids}}, {"_id": 0, "id": 1, "name": 1}).to_list(length=len(dep_ids)):
+            dep_names[str(d.get("id"))] = str(d.get("name") or "")
+
+    items: List[Dict[str, Any]] = []
+    for s in rows:
+        t = trades_by_id.get(str(s.get("paper_trade_id") or ""))
+        contract = s.get("option_contract") or {}
+        closed = bool(t and t.get("status") == "CLOSED")
+        qty = int((t or {}).get("quantity") or 0)
+        entry_premium = (t or {}).get("entry_price")
+        exit_premium = (t or {}).get("exit_price") if closed else None
+        pnl_value = (t or {}).get("realized_pnl") if closed else ((t or {}).get("unrealized_pnl") if t else None)
+        pnl_pts = round(float(pnl_value) / qty, 2) if (pnl_value is not None and qty) else None
+        items.append({
+            **{k: s.get(k) for k in (
+                "id", "deployment_id", "strategy_id", "instrument", "direction", "state",
+                "bar_ts", "decision_ts", "updated_at", "blocked", "blockers", "reasons",
+                "risk_hints", "paper_trade_id", "paper_trade_error", "tracked_for_pnl",
+            )},
+            "score": s.get("confidence"),
+            "spot_entry": s.get("entry_price"),
+            "bar_ist": ((s.get("context") or {}).get("candle") or {}).get("ist_time") or _ts_ms_to_ist_date_str(int(s.get("bar_ts") or 0)),
+            "deployment_name": dep_names.get(str(s.get("deployment_id") or ""), ""),
+            "contract": (str(contract.get("strike") or "") + " " + str(contract.get("side") or "")).strip(),
+            "contract_expiry": contract.get("expiry_date"),
+            "trade_status": (t or {}).get("status"),
+            "entry_premium": entry_premium,
+            "exit_premium": exit_premium,
+            "exit_reason": (t or {}).get("exit_reason"),
+            "closed_at": (t or {}).get("closed_at"),
+            "lots": (t or {}).get("lots"),
+            "quantity": qty or None,
+            "pnl_value": pnl_value,
+            "pnl_premium_pts": pnl_pts,
+        })
+
+    if (format or "").lower() == "csv":
+        flat = [{**i, "reasons": "; ".join(i.get("reasons") or []), "blockers": "; ".join(i.get("blockers") or [])} for i in items]
+        return _csv_response(flat, _ENRICHED_CSV_COLUMNS, "signals_enriched.csv")
+    return {"items": serialize_doc(items), "count": len(items), "total": total, "skip": skip, "limit": limit}
+
+
+class SignalsPurgeReq(BaseModel):
+    ids: Optional[List[str]] = None
+    deployment_id: Optional[str] = None
+    older_than_days: Optional[int] = None
+    states: Optional[List[str]] = None
+
+
+@api.post("/signals/purge")
+async def purge_signals(req: SignalsPurgeReq):
+    """Delete journaled signals. Requires at least one criterion (ids,
+    deployment_id, or older_than_days); criteria AND together. Returns the
+    deleted count. Paper trades are never touched by this route."""
+    if not (req.ids or req.deployment_id or req.older_than_days):
+        raise HTTPException(400, "Provide ids, deployment_id, or older_than_days")
+    q: Dict[str, Any] = {}
+    if req.ids:
+        q["id"] = {"$in": [str(i) for i in req.ids]}
+    if req.deployment_id:
+        q["deployment_id"] = req.deployment_id
+    if req.older_than_days:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=int(req.older_than_days))).isoformat()
+        q["updated_at"] = {"$lt": cutoff}
+    if req.states:
+        q["state"] = {"$in": [str(s).upper() for s in req.states]}
+    res = await get_db().signals.delete_many(q)
+    return {"deleted": int(res.deleted_count)}
+
+
 @api.get("/deployments")
 async def list_deployments(status: Optional[str] = Query(None), limit: int = Query(50, le=200)):
     q: Dict[str, Any] = {}
@@ -1618,7 +1774,54 @@ async def create_deployment(req: DeploymentCreateReq):
     doc["quality_at_creation"] = quality
     doc["acknowledged_warnings"] = bool(req.acknowledged_warnings) if quality["acknowledgment_required"] else None
     await db.strategy_deployments.insert_one(doc)
-    return serialize_doc(doc)
+    # Best-effort: re-align the live option subscription with the now-ACTIVE
+    # deployments so paper trades have premiums to fill/mark against.
+    stream = await _auto_follow_option_stream()
+    return serialize_doc({**doc, "option_stream": stream})
+
+
+async def _auto_follow_option_stream() -> Dict[str, Any]:
+    """Align the live option subscription with ACTIVE paper deployments.
+
+    Derives the needed strike radius from their moneyness policies
+    (`radius_for_deployments`) and restarts the read-only stream with the
+    refreshed universe. Upstox captures subscriptions at connect time, so a
+    restart is the only way to widen coverage. Best-effort by design: only
+    acts when Upstox is connected and the stream is already running (i.e. a
+    live session); any failure is reported, never raised — a deployment must
+    never fail to create because the stream couldn't restart.
+    """
+    try:
+        status = await upstox_client.get_connection_status()
+        if not status.get("connected") or status.get("expired"):
+            return {"restarted": False, "reason": "upstox_not_connected"}
+        if not upstox_stream_manager.status().get("running"):
+            return {"restarted": False, "reason": "stream_not_running"}
+        db = get_db()
+        deployments = await db.strategy_deployments.find(
+            {"status": "ACTIVE", "mode": "paper"}, {"_id": 0, "option_policy": 1}
+        ).to_list(length=None)
+        if not deployments:
+            return {"restarted": False, "reason": "no_active_paper_deployments"}
+        radius = radius_for_deployments(deployments)
+        universe = await build_live_option_universe(
+            db,
+            latest_ticks=upstox_stream_manager.latest_tick_map(),
+            radius=radius,
+        )
+        option_keys = universe.get("instrument_keys") or []
+        if not option_keys:
+            return {"restarted": False, "reason": "no_option_keys", "radius": radius}
+        stream_keys = list(dict.fromkeys([*_default_stream_instrument_keys(), *option_keys]))
+        await upstox_stream_manager.stop()
+        await upstox_stream_manager.start(
+            instrument_keys=stream_keys, mode=DEFAULT_STREAM_MODE, persist=True,
+        )
+        log.info("option stream auto-follow: restarted with %d keys (radius=%d)", len(stream_keys), radius)
+        return {"restarted": True, "radius": radius, "option_keys": len(option_keys)}
+    except Exception as exc:  # never block deployment lifecycle on stream issues
+        log.exception("option stream auto-follow failed")
+        return {"restarted": False, "reason": f"error: {exc}"}
 
 
 @api.get("/deployments/preflight")
@@ -1788,6 +1991,83 @@ async def get_deployment_metrics(deployment_id: str):
     return serialize_doc(await compute_forward_metrics_for_deployment(db, deployment))
 
 
+@api.get("/deployments/overview")
+async def deployments_overview():
+    """Command-center summary: one row per non-archived deployment with today's
+    activity (signals, open trades, realized + open P&L) and lifetime paper
+    results. Powers the Deployments page cards in a single call."""
+    db = get_db()
+    deployments = await db.strategy_deployments.find(
+        {"status": {"$ne": "ARCHIVED"}}, {"_id": 0}
+    ).sort("created_at", -1).to_list(length=200)
+    dep_ids = [str(d.get("id")) for d in deployments]
+    ist_now = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+    today_iso = ist_now.strftime("%Y-%m-%d")
+    start_ms, end_ms = _ist_day_bounds_ms_full(today_iso, today_iso)
+    utc_day_start_iso = datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc).isoformat()
+
+    sig_stats: Dict[str, Dict[str, int]] = {}
+    if dep_ids:
+        rows = await db.signals.aggregate([
+            {"$match": {"deployment_id": {"$in": dep_ids}, "bar_ts": {"$gte": start_ms, "$lt": end_ms}}},
+            {"$group": {"_id": {"dep": "$deployment_id", "blocked": {"$eq": ["$blocked", True]}}, "n": {"$sum": 1}}},
+        ]).to_list(length=None)
+        for r in rows:
+            dep = str((r.get("_id") or {}).get("dep") or "")
+            entry = sig_stats.setdefault(dep, {"clean": 0, "blocked": 0})
+            entry["blocked" if (r.get("_id") or {}).get("blocked") else "clean"] += int(r.get("n") or 0)
+
+    trade_stats: Dict[str, Dict[str, Any]] = {}
+    if dep_ids:
+        rows = await db.paper_trades.aggregate([
+            {"$match": {"deployment_id": {"$in": dep_ids}}},
+            {"$group": {
+                "_id": "$deployment_id",
+                "open_count": {"$sum": {"$cond": [{"$eq": ["$status", "OPEN"]}, 1, 0]}},
+                "open_unrealized": {"$sum": {"$cond": [{"$eq": ["$status", "OPEN"]}, {"$ifNull": ["$unrealized_pnl", 0]}, 0]}},
+                "closed_count": {"$sum": {"$cond": [{"$eq": ["$status", "CLOSED"]}, 1, 0]}},
+                "realized_total": {"$sum": {"$cond": [{"$eq": ["$status", "CLOSED"]}, {"$ifNull": ["$realized_pnl", 0]}, 0]}},
+                "wins": {"$sum": {"$cond": [{"$and": [{"$eq": ["$status", "CLOSED"]}, {"$gt": [{"$ifNull": ["$realized_pnl", 0]}, 0]}]}, 1, 0]}},
+                "realized_today": {"$sum": {"$cond": [{"$and": [{"$eq": ["$status", "CLOSED"]}, {"$gte": [{"$ifNull": ["$closed_at", ""]}, utc_day_start_iso]}]}, {"$ifNull": ["$realized_pnl", 0]}, 0]}},
+            }},
+        ]).to_list(length=None)
+        for r in rows:
+            trade_stats[str(r.get("_id") or "")] = r
+
+    items = []
+    totals = {"open_trades": 0, "open_unrealized": 0.0, "realized_today": 0.0, "signals_today": 0}
+    for d in deployments:
+        dep_id = str(d.get("id"))
+        sig = sig_stats.get(dep_id, {"clean": 0, "blocked": 0})
+        tr = trade_stats.get(dep_id, {})
+        closed = int(tr.get("closed_count") or 0)
+        wins = int(tr.get("wins") or 0)
+        item = {
+            "deployment": {k: d.get(k) for k in (
+                "id", "name", "mode", "status", "instrument", "strategy_id", "source_type", "source_id",
+                "option_policy", "risk", "pretrade_profile", "created_at", "kill_switch_reason", "drift_reason",
+            )},
+            "today": {
+                "clean_signals": sig["clean"],
+                "blocked_signals": sig["blocked"],
+                "realized_pnl": round(float(tr.get("realized_today") or 0.0), 2),
+                "open_trades": int(tr.get("open_count") or 0),
+                "open_unrealized": round(float(tr.get("open_unrealized") or 0.0), 2),
+            },
+            "lifetime": {
+                "closed_trades": closed,
+                "realized_pnl": round(float(tr.get("realized_total") or 0.0), 2),
+                "win_rate": round(wins / closed * 100, 1) if closed else None,
+            },
+        }
+        items.append(item)
+        totals["open_trades"] += item["today"]["open_trades"]
+        totals["open_unrealized"] = round(totals["open_unrealized"] + item["today"]["open_unrealized"], 2)
+        totals["realized_today"] = round(totals["realized_today"] + item["today"]["realized_pnl"], 2)
+        totals["signals_today"] += sig["clean"] + sig["blocked"]
+    return serialize_doc({"items": items, "totals": totals, "as_of_ist": ist_now.isoformat()})
+
+
 @api.get("/deployments/{deployment_id}")
 async def get_deployment(deployment_id: str):
     doc = await get_db().strategy_deployments.find_one({"id": deployment_id}, {"_id": 0})
@@ -1814,12 +2094,27 @@ async def pause_deployment(deployment_id: str):
 
 @api.post("/deployments/{deployment_id}/resume")
 async def resume_deployment(deployment_id: str):
-    return serialize_doc(await _set_deployment_status(deployment_id, "ACTIVE"))
+    doc = await _set_deployment_status(deployment_id, "ACTIVE")
+    stream = await _auto_follow_option_stream()
+    return serialize_doc({**doc, "option_stream": stream})
 
 
 @api.post("/deployments/{deployment_id}/archive")
-async def archive_deployment(deployment_id: str):
-    return serialize_doc(await _set_deployment_status(deployment_id, "ARCHIVED"))
+async def archive_deployment(deployment_id: str, purge: int = Query(0, description="1 = also delete this deployment's signals and CLOSED trades")):
+    """Undeploy: stops signal generation and paper trading for this strategy.
+    With purge=1 its journaled signals and CLOSED trades are deleted too
+    (OPEN trades are kept so the marker / square-off can finish them)."""
+    doc = await _set_deployment_status(deployment_id, "ARCHIVED")
+    purged: Dict[str, Any] = {}
+    if purge:
+        db = get_db()
+        sig_res = await db.signals.delete_many({"deployment_id": deployment_id})
+        trade_res = await db.paper_trades.delete_many({"deployment_id": deployment_id, "status": "CLOSED"})
+        open_left = await db.paper_trades.count_documents({"deployment_id": deployment_id, "status": "OPEN"})
+        purged = {"signals_deleted": int(sig_res.deleted_count),
+                  "closed_trades_deleted": int(trade_res.deleted_count),
+                  "open_trades_kept": int(open_left)}
+    return serialize_doc({**doc, **({"purged": purged} if purge else {})})
 
 
 @api.get("/deployments/{deployment_id}/signals")
@@ -1888,264 +2183,99 @@ async def live_candle_roller_stop():
     return serialize_doc(live_candle_roller.status())
 
 
-@api.post("/signals")
-async def create_signal(req: SignalCreateReq):
-    doc = create_signal_doc(
-        instrument=req.instrument,
-        direction=req.direction,
-        strategy_id=req.strategy_id,
-        entry_price=req.entry_price,
-        confidence=req.confidence,
-        reasons=req.reasons,
-        option_contract=req.option_contract,
-        context=req.context,
-    )
-    await get_db().signals.insert_one(doc)
-    return serialize_doc(doc)
+# Manual research-signal creation, lifecycle transitions, the approval flow
+# (approve / skip / mark-blocked), and manual deploy-to-paper were retired on
+# 2026-06-12 (user decision): deployments journal and auto-trade their own
+# signals; nothing requires manual approval. Old journaled signals remain
+# readable through GET /signals and /signals/enriched.
 
 
-@api.post("/signals/{signal_id}/transition")
-async def transition_signal_route(signal_id: str, req: SignalTransitionReq):
-    db = get_db()
-    doc = await db.signals.find_one({"id": signal_id}, {"_id": 0})
-    if not doc:
-        raise HTTPException(404, "Signal not found")
-    try:
-        updated = transition_signal(doc, req.to_state, reason=req.reason, snapshot=req.snapshot)
-    except SignalStateError as e:
-        raise HTTPException(400, str(e))
-    await db.signals.replace_one({"id": signal_id}, updated, upsert=False)
-    return serialize_doc(updated)
+_TRADES_SORT_FIELDS = {"updated_at", "created_at", "closed_at", "realized_pnl", "entry_price"}
 
-
-@api.post("/signals/{signal_id}/approve")
-async def approve_signal_route(signal_id: str, req: SignalApprovalReq):
-    """Approve a deployment-generated signal.
-
-    Always: transitions CONFIRMED -> TRIGGERED -> ACTIVE and stamps approval audit.
-    If deployment.mode == "paper": also creates a paper trade automatically using the
-        contract from the signal, lots from deployment.risk.default_lots (default 1),
-        and stop/target from the signal's risk hints if present.
-    Mode "shadow" or "recommendation": journaling-only, no paper trade.
-    """
-    db = get_db()
-    doc = await db.signals.find_one({"id": signal_id}, {"_id": 0})
-    if not doc:
-        raise HTTPException(404, "Signal not found")
-    state = str(doc.get("state") or "").upper()
-    if state != "CONFIRMED":
-        raise HTTPException(400, f"Approve requires state=CONFIRMED, got {state}")
-
-    # Resolve the parent deployment (if any) so we know the mode and risk defaults.
-    # Evaluator-generated signals carry deployment_id at top level; manually-created
-    # signals may carry it inside context. Check both for robustness.
-    deployment_id = str(doc.get("deployment_id") or (doc.get("context") or {}).get("deployment_id") or "")
-    deployment: Optional[Dict[str, Any]] = None
-    if deployment_id:
-        deployment = await db.strategy_deployments.find_one({"id": deployment_id}, {"_id": 0})
-
-    snapshot = {
-        "approval": {
-            "approved_at": datetime.now(timezone.utc).isoformat(),
-            "approved_by": req.approved_by,
-            "note": req.note,
-        }
-    }
-    # Paper-mode approval opens the trade. Resolve the option PREMIUM and claim
-    # the signal BEFORE any state transition: a premium failure leaves the
-    # signal CONFIRMED and re-approvable (never a dangling ACTIVE with no
-    # trade), and the atomic claim means the evaluator's auto-paper hook and
-    # this route can never both open a trade for the same signal.
-    will_trade = bool(
-        deployment
-        and str(deployment.get("mode") or "").lower() == "paper"
-        and not doc.get("paper_trade_id")
-    )
-    entry_premium: Optional[float] = None
-    if will_trade:
-        contract_key = str((doc.get("option_contract") or {}).get("instrument_key") or "")
-        # Entry must be option PREMIUM (live tick, else recent options_1m
-        # candle) — never the spot index level stored in signal.entry_price.
-        # A spot-priced option trade corrupts every forward metric downstream.
-        entry_premium = await resolve_option_entry_price(
-            db, contract_key,
-            latest_tick_lookup=upstox_stream_manager.latest_tick_map().get,
-        )
-        if entry_premium is None:
-            raise HTTPException(
-                409,
-                "option_entry_price_unavailable: no live tick or recent option candle for "
-                f"{contract_key or 'missing contract'}. The signal remains CONFIRMED — "
-                "approve again when live option data is available.",
-            )
-        if not await claim_signal_for_paper_trade(db, signal_id, "manual_approval"):
-            # The auto-paper hook (or a concurrent approval) won the race —
-            # the approval proceeds, but no second trade may open.
-            will_trade = False
-
-    try:
-        updated = transition_signal(doc, "TRIGGERED", reason="manual_approval", snapshot=snapshot)
-        updated = transition_signal(updated, "ACTIVE", reason="manual_approval_active", snapshot=snapshot)
-    except SignalStateError as e:
-        if will_trade:
-            await release_paper_trade_claim(db, signal_id)
-        raise HTTPException(400, str(e))
-    updated["approval"] = snapshot["approval"]
-
-    # Trade creation after this point does NOT roll back the approval — a
-    # failure is journaled as paper_trade_error for audit. NOTE (2026-06-11):
-    # the legacy risk.stop_price / risk.target_price fallback was removed —
-    # those fields are SPOT-level absolute prices from the pre-premium-entry
-    # era; applied against a premium entry they instantly fired bogus
-    # stop_hit/target_hit closes.
-    trade: Optional[Dict[str, Any]] = None
-    if will_trade:
-        try:
-            trade = build_auto_trade(updated, deployment, entry_premium)
-            # Stamp deployment_id on the trade so square-off can honor allow_overnight
-            trade["deployment_id"] = deployment_id
-            trade["source"] = "paper_auto_on_approval"
-            await db.paper_trades.insert_one(trade)
-            updated["paper_trade_id"] = trade["id"]
-            # Mirror the claim into the full-doc replace below so it isn't
-            # silently dropped (the in-memory doc predates the claim write).
-            updated["paper_trade_claim"] = {
-                "source": "manual_approval",
-                "at": snapshot["approval"]["approved_at"],
-            }
-        except Exception as exc:
-            log.exception("auto-paper failed for signal %s: %s", signal_id, exc)
-            updated["paper_trade_error"] = str(exc)[:240]
-            # The full-doc replace below carries no claim field, which
-            # effectively releases the claim for a later retry via /paper.
-
-    await db.signals.replace_one({"id": signal_id}, updated, upsert=False)
-    response = {"signal": serialize_doc(updated)}
-    if trade:
-        response["trade"] = serialize_doc(trade)
-    return response
-
-
-@api.post("/signals/{signal_id}/skip")
-async def skip_signal_route(signal_id: str, req: SignalApprovalReq):
-    """Skip a deployment-generated signal. Transitions CONFIRMED -> SKIPPED -> AUDITED."""
-    db = get_db()
-    doc = await db.signals.find_one({"id": signal_id}, {"_id": 0})
-    if not doc:
-        raise HTTPException(404, "Signal not found")
-    state = str(doc.get("state") or "").upper()
-    if state not in ("CONFIRMED", "TRIGGERED", "WATCHING", "FORMING"):
-        raise HTTPException(400, f"Skip not allowed from state {state}")
-    snapshot = {
-        "skip": {
-            "skipped_at": datetime.now(timezone.utc).isoformat(),
-            "skipped_by": req.approved_by,
-            "note": req.note,
-        }
-    }
-    # CONFIRMED can go to TRIGGERED first, then TRIGGERED -> SKIPPED is allowed
-    try:
-        updated = dict(doc)
-        if str(updated.get("state") or "").upper() == "CONFIRMED":
-            updated = transition_signal(updated, "TRIGGERED", reason="manual_skip_pre", snapshot=snapshot)
-        if str(updated.get("state") or "").upper() in ("TRIGGERED", "WATCHING", "FORMING"):
-            updated = transition_signal(updated, "SKIPPED", reason="manual_skip", snapshot=snapshot)
-        updated = transition_signal(updated, "AUDITED", reason="manual_skip_audit", snapshot=snapshot)
-    except SignalStateError as e:
-        raise HTTPException(400, str(e))
-    updated["skip"] = snapshot["skip"]
-    await db.signals.replace_one({"id": signal_id}, updated, upsert=False)
-    return serialize_doc(updated)
-
-
-@api.post("/signals/{signal_id}/mark-blocked")
-async def mark_blocked_signal_route(signal_id: str, req: SignalApprovalReq):
-    """Manually mark a signal as blocked. Adds the user-provided note as a blocker
-    and transitions to AUDITED. Useful when reviewing journaled signals after the fact.
-    """
-    db = get_db()
-    doc = await db.signals.find_one({"id": signal_id}, {"_id": 0})
-    if not doc:
-        raise HTTPException(404, "Signal not found")
-    state = str(doc.get("state") or "").upper()
-    if state == "AUDITED":
-        raise HTTPException(400, "Signal already AUDITED")
-    snapshot = {
-        "manual_block": {
-            "blocked_at": datetime.now(timezone.utc).isoformat(),
-            "blocked_by": req.approved_by,
-            "note": req.note,
-        }
-    }
-    blockers = list(doc.get("blockers") or [])
-    blockers.append(f"manual_block: {req.note or 'no note'}")
-    try:
-        updated = transition_signal(doc, "AUDITED", reason="manual_block", snapshot=snapshot)
-    except SignalStateError as e:
-        raise HTTPException(400, str(e))
-    updated["blocked"] = True
-    updated["blockers"] = blockers
-    updated["manual_block"] = snapshot["manual_block"]
-    await db.signals.replace_one({"id": signal_id}, updated, upsert=False)
-    return serialize_doc(updated)
-
-
-def _advance_signal_for_paper(signal: Dict[str, Any]) -> Dict[str, Any]:
-    state = str(signal.get("state") or "WATCHING").upper()
-    if state in ("AUDITED", "EXITED", "SKIPPED"):
-        raise SignalStateError(f"Cannot deploy signal in state {state}")
-    updated = dict(signal)
-    for target in ("FORMING", "CONFIRMED", "TRIGGERED", "ACTIVE"):
-        if str(updated.get("state") or "").upper() == target:
-            continue
-        if target in ("FORMING", "CONFIRMED", "TRIGGERED", "ACTIVE"):
-            try:
-                updated = transition_signal(updated, target, reason="paper_deploy_auto_transition")
-            except SignalStateError:
-                continue
-        if str(updated.get("state") or "").upper() == "ACTIVE":
-            break
-    if str(updated.get("state") or "").upper() != "ACTIVE":
-        raise SignalStateError(f"Could not deploy signal from state {state}")
-    return updated
-
-
-@api.post("/signals/{signal_id}/paper")
-async def deploy_signal_to_paper(signal_id: str, req: PaperDeployReq):
-    db = get_db()
-    signal = await db.signals.find_one({"id": signal_id}, {"_id": 0})
-    if not signal:
-        raise HTTPException(404, "Signal not found")
-    try:
-        active_signal = _advance_signal_for_paper(signal)
-        trade = paper_trade_from_signal(
-            active_signal,
-            lots=req.lots,
-            entry_price=req.entry_price,
-            stop_price=req.stop_price,
-            target_price=req.target_price,
-        )
-    except (SignalStateError, ValueError) as e:
-        raise HTTPException(400, str(e))
-
-    # Carry deployment_id onto the trade so square-off honors allow_overnight.
-    if signal.get("deployment_id"):
-        trade["deployment_id"] = signal["deployment_id"]
-        trade["source"] = "paper_manual_deploy"
-    await db.paper_trades.insert_one(trade)
-    active_signal["paper_trade_id"] = trade["id"]
-    active_signal["updated_at"] = trade["updated_at"]
-    await db.signals.replace_one({"id": signal_id}, active_signal, upsert=False)
-    return {"signal": serialize_doc(active_signal), "trade": serialize_doc(trade)}
+_TRADES_CSV_COLUMNS = [
+    "created_at", "deployment_name", "strategy_id", "instrument", "trading_symbol",
+    "direction", "lots", "quantity", "entry_price", "exit_price", "exit_reason",
+    "closed_at", "realized_pnl", "unrealized_pnl", "status",
+]
 
 
 @api.get("/paper/trades")
-async def list_paper_trades(status: Optional[str] = Query(None), limit: int = Query(50, le=200)):
+async def list_paper_trades(
+    status: Optional[str] = Query(None),
+    deployment_id: Optional[str] = Query(None),
+    strategy_id: Optional[str] = Query(None),
+    instrument: Optional[str] = Query(None),
+    date_from: Optional[str] = Query(None, description="YYYY-MM-DD (IST), on entry time"),
+    date_to: Optional[str] = Query(None, description="YYYY-MM-DD (IST)"),
+    sort: str = Query("-updated_at"),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, le=500),
+    format: Optional[str] = Query(None, description="csv to download"),
+):
+    """Paper-trade journal with server-side filter / sort / pagination / CSV.
+    Each row carries the deployment name so the journal reads by strategy."""
+    db = get_db()
     q: Dict[str, Any] = {}
     if status:
         q["status"] = status.upper()
-    rows = await get_db().paper_trades.find(q, {"_id": 0}).sort("updated_at", -1).limit(limit).to_list(length=limit)
-    return {"items": serialize_doc(rows), "count": len(rows)}
+    if deployment_id:
+        q["deployment_id"] = deployment_id
+    if strategy_id:
+        q["strategy_id"] = strategy_id
+    if instrument:
+        q["instrument"] = instrument.upper()
+    start_ms, end_ms = _ist_day_bounds_ms_full(date_from, date_to)
+    if start_ms is not None or end_ms is not None:
+        rng: Dict[str, Any] = {}
+        if start_ms is not None:
+            rng["$gte"] = datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc).isoformat()
+        if end_ms is not None:
+            rng["$lt"] = datetime.fromtimestamp(end_ms / 1000, tz=timezone.utc).isoformat()
+        q["created_at"] = rng
+
+    field = sort.lstrip("-")
+    direction = -1 if sort.startswith("-") else 1
+    if field not in _TRADES_SORT_FIELDS:
+        field, direction = "updated_at", -1
+
+    total = await db.paper_trades.count_documents(q)
+    rows = await db.paper_trades.find(q, {"_id": 0, "events": 0}).sort(field, direction).skip(skip).limit(limit).to_list(length=limit)
+
+    dep_ids = sorted({str(r.get("deployment_id")) for r in rows if r.get("deployment_id")})
+    dep_names: Dict[str, str] = {}
+    if dep_ids:
+        for d in await db.strategy_deployments.find({"id": {"$in": dep_ids}}, {"_id": 0, "id": 1, "name": 1}).to_list(length=len(dep_ids)):
+            dep_names[str(d.get("id"))] = str(d.get("name") or "")
+    for r in rows:
+        r["deployment_name"] = dep_names.get(str(r.get("deployment_id") or ""), "")
+
+    if (format or "").lower() == "csv":
+        return _csv_response(rows, _TRADES_CSV_COLUMNS, "paper_trades.csv")
+    return {"items": serialize_doc(rows), "count": len(rows), "total": total, "skip": skip, "limit": limit}
+
+
+class TradesPurgeReq(BaseModel):
+    ids: Optional[List[str]] = None
+    deployment_id: Optional[str] = None
+    older_than_days: Optional[int] = None
+
+
+@api.post("/paper/trades/purge")
+async def purge_paper_trades(req: TradesPurgeReq):
+    """Delete CLOSED paper trades (OPEN trades are never deletable). Requires
+    at least one criterion; criteria AND together."""
+    if not (req.ids or req.deployment_id or req.older_than_days):
+        raise HTTPException(400, "Provide ids, deployment_id, or older_than_days")
+    q: Dict[str, Any] = {"status": "CLOSED"}
+    if req.ids:
+        q["id"] = {"$in": [str(i) for i in req.ids]}
+    if req.deployment_id:
+        q["deployment_id"] = req.deployment_id
+    if req.older_than_days:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=int(req.older_than_days))).isoformat()
+        q["updated_at"] = {"$lt": cutoff}
+    res = await get_db().paper_trades.delete_many(q)
+    return {"deleted": int(res.deleted_count)}
 
 
 @api.post("/paper/trades/{trade_id}/mark")
@@ -2624,36 +2754,6 @@ class ExpiredOptionContractBackfillReq(BaseModel):
     confirm_large_fetch: bool = False
 
 
-class SignalCreateReq(BaseModel):
-    instrument: str = "NIFTY"
-    direction: str = "LONG"
-    strategy_id: str = "manual_research"
-    entry_price: float
-    confidence: float = 50
-    reasons: List[str] = Field(default_factory=list)
-    option_contract: Dict[str, Any] = Field(default_factory=dict)
-    context: Dict[str, Any] = Field(default_factory=dict)
-
-
-class SignalTransitionReq(BaseModel):
-    to_state: str
-    reason: str = ""
-    snapshot: Optional[Dict[str, Any]] = None
-
-
-class SignalApprovalReq(BaseModel):
-    note: Optional[str] = None
-    approved_by: Optional[str] = None  # reserved for multi-user later
-    snapshot: Dict[str, Any] = Field(default_factory=dict)
-
-
-class PaperDeployReq(BaseModel):
-    lots: int = 1
-    entry_price: Optional[float] = None
-    stop_price: Optional[float] = None
-    target_price: Optional[float] = None
-
-
 class PaperMarkReq(BaseModel):
     last_price: float
     auto_close_on_risk: bool = True
@@ -2668,7 +2768,7 @@ class DeploymentCreateReq(BaseModel):
     name: str
     source_type: str
     source_id: str
-    mode: str = "shadow"
+    mode: str = "signal_only"  # signal_only | paper (legacy shadow/recommendation map to signal_only)
     confirmation_mode: str = "1m_close"
     option_moneyness: List[str] = Field(default_factory=lambda: ["atm"])
     pretrade_profile: str = "Balanced"

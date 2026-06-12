@@ -7,7 +7,12 @@ from typing import Any, Dict, Iterable, List, Optional
 
 
 ALLOWED_SOURCE_TYPES = {"preset", "backtest_run"}
-ALLOWED_MODES = {"shadow", "paper", "recommendation"}
+# Two modes (user decision 2026-06-12): "signal_only" journals signals without
+# trading; "paper" auto-trades clean signals. Legacy values map on create:
+# "shadow" -> signal_only; "recommendation" was retired (treated as signal_only
+# on old stored docs — the evaluator only ever trades when mode == "paper").
+ALLOWED_MODES = {"signal_only", "paper"}
+LEGACY_MODE_MAP = {"shadow": "signal_only", "recommendation": "signal_only"}
 ALLOWED_CONFIRMATION_MODES = {"1m_close", "tick"}
 ALLOWED_MONEYNESS = {"atm", "otm1", "itm1"}
 
@@ -64,7 +69,7 @@ def build_deployment_doc(
     source_type: str,
     source_doc: Dict[str, Any],
     name: str,
-    mode: str = "shadow",
+    mode: str = "signal_only",
     confirmation_mode: str = "1m_close",
     option_moneyness: Optional[Iterable[str]] = None,
     pretrade_profile: str = "Balanced",
@@ -75,12 +80,13 @@ def build_deployment_doc(
     now: Optional[str] = None,
 ) -> Dict[str, Any]:
     source_type = str(source_type or "").lower()
-    mode = str(mode or "shadow").lower()
+    mode = str(mode or "signal_only").lower()
+    mode = LEGACY_MODE_MAP.get(mode, mode)
     confirmation_mode = str(confirmation_mode or "1m_close").lower()
     if source_type not in ALLOWED_SOURCE_TYPES:
         raise ValueError("Deployment source_type must be preset or backtest_run")
     if mode not in ALLOWED_MODES:
-        raise ValueError("Deployment mode must be shadow, paper, or recommendation")
+        raise ValueError("Deployment mode must be signal_only or paper")
     if confirmation_mode not in ALLOWED_CONFIRMATION_MODES:
         raise ValueError("Deployment confirmation_mode must be 1m_close or tick")
 
@@ -131,12 +137,14 @@ def build_deployment_doc(
         "option_policy": {
             "moneyness": _clean_moneyness(option_moneyness),
             "expiry_policy": "next_available",
-            "manual_approval_required": True,
             "dte_filter": dte_values,
         },
         "pretrade_profile": str(pretrade_profile or "Balanced"),
         "mode": mode,
-        "manual_approval_required": True,
+        # Approval flow retired 2026-06-12: paper deployments auto-trade clean
+        # signals; signal_only deployments journal only. Kept for doc-shape
+        # compat with pre-existing readers.
+        "manual_approval_required": False,
         "risk": {**(risk or {}), "allow_overnight": bool(allow_overnight)},
         "status": "ACTIVE",
         "created_at": timestamp,

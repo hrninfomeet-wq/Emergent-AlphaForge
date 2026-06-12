@@ -132,18 +132,33 @@ def test_paper_trade_auto_closes_on_target_and_stop():
 
 
 def test_backend_exposes_signal_and_paper_routes():
+    """Forward-surfaces contract after the 2026-06-12 overhaul: the enriched
+    ledger / purge / overview routes exist, and the retired manual flows
+    (research-signal create, transitions, approve/skip/mark-blocked, manual
+    deploy-to-paper) stay gone."""
     server = (ROOT / "backend" / "server.py").read_text(encoding="utf-8")
 
     for needle in (
         '@api.get("/signals")',
-        '@api.post("/signals")',
-        '@api.post("/signals/{signal_id}/transition")',
-        '@api.post("/signals/{signal_id}/paper")',
+        '@api.get("/signals/enriched")',
+        '@api.post("/signals/purge")',
+        '@api.get("/deployments/overview")',
         '@api.get("/paper/trades")',
+        '@api.post("/paper/trades/purge")',
         '@api.post("/paper/trades/{trade_id}/mark")',
         '@api.post("/paper/trades/{trade_id}/close")',
     ):
         assert needle in server
+
+    for retired in (
+        '@api.post("/signals")',
+        '@api.post("/signals/{signal_id}/transition")',
+        '@api.post("/signals/{signal_id}/approve")',
+        '@api.post("/signals/{signal_id}/skip")',
+        '@api.post("/signals/{signal_id}/mark-blocked")',
+        '@api.post("/signals/{signal_id}/paper")',
+    ):
+        assert retired not in server, f"retired route resurfaced: {retired}"
 
 
 def test_frontend_exposes_live_and_paper_operational_views():
@@ -151,9 +166,11 @@ def test_frontend_exposes_live_and_paper_operational_views():
     live = (ROOT / "frontend" / "src" / "pages" / "LiveSignals.jsx").read_text(encoding="utf-8")
     paper = (ROOT / "frontend" / "src" / "pages" / "PaperTrading.jsx").read_text(encoding="utf-8")
 
-    for needle in ("listSignals", "createSignal", "transitionSignal", "deploySignalToPaper", "listPaperTrades", "markPaperTrade", "closePaperTrade"):
+    for needle in ("listSignals", "listSignalsEnriched", "purgeSignals", "deploymentsOverview",
+                   "listPaperTrades", "purgePaperTrades", "markPaperTrade", "closePaperTrade"):
         assert needle in api
-    for needle in ("live-signal-console", "create-research-signal", "deploy-paper-button", "signal-state"):
+    # The Deployments command center (rebuilt Live page, 2026-06-12).
+    for needle in ("deployments-page", "deployment-card", "open-deploy-wizard", "undeploy-button"):
         assert needle in live
     for needle in ("paper-trading-journal", "paper-trade-table", "mark-paper-trade", "close-paper-trade", "risk-badge"):
         assert needle in paper

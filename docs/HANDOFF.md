@@ -1,12 +1,36 @@
 # Handoff
 
-Updated: 2026-06-12
+Updated: 2026-06-12 (evening)
 
 This is the entry point for the next AI agent or developer. Read it before editing code. The repository and tests are the source of truth — not any prior chat.
 
+## NEXT AGENT — START HERE (Opus 4.8 in Kiro)
+
+Your work is fully spec'd: **`.kiro/specs/forward-surfaces-overhaul/`**
+(requirements → design → tasks). `tasks.md` contains ready-to-paste prompts for
+Slice 3 (Signals ledger page), Slice 4 (Paper trading journal page), and
+Slice 5 (polish) — one slice per session, in order. `design.md` carries the
+endpoint contracts, frontend conventions, testing rules, and the trading-domain
+rules that are non-negotiable (premium-never-spot, lot size from contract
+metadata, OPEN trades never deletable, IST everywhere, never push without the
+user's approval). The backend for those slices is already built and tested —
+the slices are UI + contract-test work. Anything trading-critical beyond the
+spec (evaluator, optimizer, WFO, paper_auto) goes back to the senior agent.
+
 ## Status In One Line
 
-Latest (2026-06-12, second pass): **pipeline alignment** — presets carry their execution policy (`config.execution`, applied in Backtest Lab + prefilled in the deployment form), a deployment-readiness evidence card (`GET /api/deployments/readiness`) + per-preset Deploy deep-link, **option-aware WFO** (stitched OOS paired with real option candles → `wfo.option_oos` rupee block), and a multi-select Optimizer DTE filter. Recommendation 3 (retire legacy spot evaluation) deferred by user. Earlier same day: multi-select DTE in Backtest Lab, ATM default moneyness, premium exits replicable live (deployment pts fallbacks), re-rank pts support, walk-forward naming split. **449 pytest tests pass.** The local Docker stack is healthy and rebuilt with these changes.
+Latest (2026-06-12, third pass): **forward-surfaces overhaul slices 1–2** — deployments are fully independent (concurrency rule removed), the approval flow and manual research-signal console are RETIRED (modes: `signal_only` | `paper`; routes deleted), new APIs: `/signals/enriched` (signal⟷trade ledger join + filters/sort/CSV), `/signals/purge`, `/paper/trades` upgraded + `/paper/trades/purge`, `/deployments/overview`, archive `?purge=1` (undeploy), option-stream auto-follow from deployment moneyness; `/live` rebuilt as the **Deployments command center** (cards + today/lifetime stats + Undeploy + 3-step deploy wizard). **453 pytest tests pass.** Verified against a live market session. Slices 3–5 are spec'd for Opus 4.8 in `.kiro/specs/forward-surfaces-overhaul/`. Earlier same day: pipeline alignment (preset execution policy, readiness evidence, option-aware WFO, optimizer multi-DTE) and the course-alignment fixes (multi-DTE backtest, ATM default, premium-pts exits live). The local Docker stack is healthy and rebuilt with all changes.
+
+## Recent Work — Forward Surfaces Overhaul, Slices 1–2 (2026-06-12)
+
+See CHANGELOG 0.17.x for the feature list. Implementation notes:
+
+- `deployment_evaluator.evaluate_active_deployments`: `_apply_concurrency_rule` deleted; the auto-paper hook still re-reads signal state before trading (guards concurrent mutations). `concurrency_lower_score` no longer occurs on new signals (old journaled ones keep it).
+- Mode model: `strategy_deployments.ALLOWED_MODES = {signal_only, paper}` with `LEGACY_MODE_MAP` (shadow/recommendation → signal_only) applied at create; stored legacy docs untouched — anything ≠ `paper` is treated as signal-only everywhere. `manual_approval_required` now stamped False.
+- Retired from `server.py`: POST /signals, /signals/{id}/transition|approve|skip|mark-blocked|paper + SignalCreateReq/SignalTransitionReq/SignalApprovalReq/PaperDeployReq + api.js methods. Contract tests now assert these STAY gone (`test_signal_paper_lifecycle.py`).
+- New routes live next to their kin: `/signals/enriched` + `/signals/purge` before the deployments list; `/deployments/overview` before `/deployments/{id}` (route order matters); trades purge after the upgraded list. `_ist_day_bounds_ms_full` + `_csv_response` are shared helpers.
+- Option-stream auto-follow: `live_option_universe.radius_for_deployments` (pure, tested) + `server._auto_follow_option_stream()` called on deployment create/resume — best-effort, returns `{restarted, reason|radius}` in the response under `option_stream`, never raises.
+- `/live` page: full rewrite (`LiveSignals.jsx`) — overview-driven cards, wizard (preset → execution → risk) with readiness + quality ack inside, undeploy with optional purge (double confirm). Deep-link `/live?preset=NAME` opens the wizard preselected. PreflightBadge UI was dropped from the wizard (route still exists) — restoring it is Slice 5 item 2.
 
 ## Recent Work — Pipeline Alignment (2026-06-12, second pass)
 

@@ -542,15 +542,17 @@ async def evaluate_active_deployments(
     *,
     latest_tick_lookup: Optional[Any] = None,
 ) -> List[Dict[str, Any]]:
-    """Evaluate all ACTIVE deployments. If multiple deployments fire on the same instrument
-    at the same minute, the highest-scoring clean signal is kept and lower-scoring ones
-    are journaled as blocked with reason `concurrency_lower_score`.
+    """Evaluate all ACTIVE deployments — each one independently.
 
-    After the concurrency rule has settled which clean signals survive, deployments
-    with mode="paper" and risk.auto_paper create a paper trade for their surviving
-    signal automatically (no manual approval). The hook MUST run post-concurrency —
-    creating trades inside evaluate_deployment_on_close would open positions for
-    signals that get demoted moments later.
+    Deployments are intentionally independent (user decision 2026-06-12): when
+    two strategies fire on the same instrument at the same minute, BOTH journal
+    and BOTH may paper-trade, enabling honest head-to-head comparison. (The old
+    highest-score-wins concurrency rule that demoted lower-score signals with
+    `concurrency_lower_score` was removed; per-deployment exposure is governed
+    by the `max_open_paper_trades` kill switch.)
+
+    Deployments with mode="paper" and risk.auto_paper open a paper trade for
+    every clean signal automatically (no manual approval).
     """
     cursor = db.strategy_deployments.find({"status": "ACTIVE"}, {"_id": 0})
     deployments = await cursor.to_list(length=None)
@@ -563,11 +565,7 @@ async def evaluate_active_deployments(
             log.exception("evaluator failed for deployment %s", deployment.get("id"))
             results.append({"deployment_id": deployment.get("id"), "outcome": "error", "reason": str(exc)})
 
-    # Concurrency rule (option b): per (instrument, candle_ts), keep highest-scoring clean signal,
-    # demote others to blocked with reason `concurrency_lower_score`.
-    await _apply_concurrency_rule(db, results)
-
-    # Auto paper trading (post-concurrency, opted-in paper deployments only).
+    # Auto paper trading (opted-in paper deployments only).
     from app.paper_auto import auto_paper_enabled, auto_paper_trade_for_signal
     dep_by_id = {str(d.get("id") or ""): d for d in deployments}
     for r in results:
@@ -577,7 +575,8 @@ async def evaluate_active_deployments(
         if not deployment or not auto_paper_enabled(deployment):
             continue
         try:
-            # Re-read the signal: the concurrency rule may have demoted it.
+            # Re-read the signal state: it must still be a clean CONFIRMED
+            # signal (guards against concurrent manual mutations).
             sig = await db.signals.find_one({"id": r["signal_id"]}, {"_id": 0})
             if not sig or str(sig.get("state") or "").upper() != "CONFIRMED" or sig.get("blocked"):
                 continue
@@ -588,35 +587,3 @@ async def evaluate_active_deployments(
             log.exception("auto-paper hook failed for signal %s", r.get("signal_id"))
             r["auto_paper"] = {"created": False, "error": str(exc)}
     return results
-
-
-async def _apply_concurrency_rule(db: Any, results: List[Dict[str, Any]]) -> None:
-    by_bar: Dict[Tuple[str, int], List[Dict[str, Any]]] = {}
-    for r in results:
-        if r.get("outcome") != "clean":
-            continue
-        signal_id = r.get("signal_id")
-        candle_ts = r.get("candle_ts")
-        if not signal_id or not candle_ts:
-            continue
-        # Need instrument from the signal record
-        sig = await db.signals.find_one({"id": signal_id}, {"_id": 0, "instrument": 1, "confidence": 1})
-        if not sig:
-            continue
-        key = (str(sig["instrument"]), int(candle_ts))
-        by_bar.setdefault(key, []).append({"signal_id": signal_id, "score": float(sig.get("confidence") or 0), "result": r})
-
-    for (instrument, ts), entries in by_bar.items():
-        if len(entries) <= 1:
-            continue
-        entries.sort(key=lambda e: e["score"], reverse=True)
-        winner = entries[0]
-        losers = entries[1:]
-        for loser in losers:
-            blocker = f"concurrency_lower_score (kept signal_id={winner['signal_id']} score={winner['score']})"
-            await db.signals.update_one(
-                {"id": loser["signal_id"]},
-                {"$set": {"state": "AUDITED", "blocked": True, "blockers": [blocker], "concurrency_demoted": True}},
-            )
-            loser["result"]["outcome"] = "blocked"
-            loser["result"].setdefault("blockers", []).append(blocker)

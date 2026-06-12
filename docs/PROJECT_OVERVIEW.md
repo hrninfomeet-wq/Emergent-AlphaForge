@@ -4,7 +4,7 @@ Updated: 2026-06-12
 
 ## What AlphaForge Is
 
-AlphaForge is a local-first research and forward-testing terminal for Indian index options on NIFTY 50, BANKNIFTY, and SENSEX. It stores market data on disk, audits coverage, runs backtests, optimizes strategy parameters (including honest walk-forward optimization), and runs strategies forward against live 1-minute closes. Paper-mode deployments can auto-trade every clean signal at real option premiums so signal quality is auditable without manual clicking; shadow and recommendation modes keep the manual approval gate, and nothing ever places a broker order.
+AlphaForge is a local-first research and forward-testing terminal for Indian index options on NIFTY 50, BANKNIFTY, and SENSEX. It stores market data on disk, audits coverage, runs backtests, optimizes strategy parameters (including honest walk-forward optimization), and runs strategies forward against live 1-minute closes. Deployed strategies run independently and concurrently: paper-mode deployments auto-trade every clean signal at real option premiums, signal-only deployments journal without trading, and nothing ever places a broker order (approval flow retired 2026-06-12).
 
 It is not a guaranteed-profit system. It is the disciplined research and execution-prep stack a serious systematic options trader would build for themselves.
 
@@ -16,7 +16,7 @@ End-to-end quant workflow:
 2. Build and tune strategies in a research lab with realistic costs and walk-forward validation.
 3. Auto-optimize parameters with multiple search methods, robustness scoring, and an honest walk-forward (OOS) mode.
 4. Forward-test the optimized strategy on live 1-minute closes with full audit trail.
-5. Paper-trade signals — automatically on clean signals in paper mode (`risk.auto_paper`), or via the manual approval gate.
+5. Paper-trade signals automatically on clean signals (paper mode), or journal-only (signal_only mode) — multiple strategies concurrently and independently.
 6. Review forward profitability per deployment before trusting a strategy with capital.
 
 ## Status Snapshot (2026-06-12)
@@ -43,16 +43,16 @@ End-to-end quant workflow:
 | Rupee cost + sizing + context | Option cost model (%-spread), premium-at-risk sizing, regime/time/DTE/India-VIX tagging; INDIAVIX ingest in Data Hygiene scope |
 | Strategy Deployments | 1m_close evaluator running, scheduler ON, drift detection ON |
 | Auto paper trading | Paper-mode deployments auto-trade clean signals at real option premium (`risk.auto_paper`, default ON for new deployments); per-minute live marker fires stop/target/spot-mirror exits |
-| Pending Approval UI | Approve / Skip / Mark Blocked for non-auto signals + auto-paper-trade on approval |
+| Deployments command center | Per-strategy cards + 3-step wizard + undeploy; approval flow retired 2026-06-12; deployments independent |
 | Auto square-off | 15:00 IST every market day, override per deployment |
-| Pre-flight + quality gates | Surfaced at deployment creation, ack required for warnings |
+| Quality gates + readiness | In the deploy wizard: validation evidence + warning acknowledgment |
 | OAuth token-expiry countdown | In the global top bar |
 | Forward metrics aggregation | Session-gated deployment metrics in Strategy Library; low-sample deployments shown with an amber badge instead of hidden |
 | Per-deployment kill switches | Complete (max consecutive losses / daily loss cutoff / max open trades) |
 | Phase 5 probability engine | Deferred until ≥6 months forward signal history |
 | Phase 6 swing extension | Not started |
 
-440 backend tests pass. The local stack is healthy.
+453 backend tests pass. The local stack is healthy.
 
 ## Capabilities Summary
 
@@ -99,7 +99,9 @@ End-to-end quant workflow:
 - Per-deployment kill switches under `deployment.risk`: `max_consecutive_losses` and `daily_loss_cutoff_pct` auto-PAUSE; `max_open_paper_trades` soft-BLOCKs new signals until trades close. Paper deployments only.
 - Forward metrics per deployment: win-rate, avg P&L, total P&L, profit factor, and excluded incomplete-session trades. Strategy Library shows full metrics after 10 complete sessions and shows earlier results under an amber "low sample" badge (n/10 sessions) — preliminary, not evidence.
 
-### Paper trading — automatic and approved
+### Paper trading — automatic
+
+> 2026-06-12: the approval flow was retired and deployments became fully independent (modes: `signal_only` | `paper`). Approve/skip bullets below were removed; see CHANGELOG 0.17.x and `docs/HANDOFF.md`.
 
 - **Auto paper trading** (paper mode, `risk.auto_paper`, default ON for new deployments): every clean CONFIRMED signal opens a paper trade automatically — no clicking. The hook runs after the concurrency rule, with an atomic per-signal claim so the auto path and the approve route can never double-trade one signal.
 - **Entry is always real option premium**: live WS tick first, else a stored `options_1m` candle at most 5 minutes old, never the spot index level. No resolvable premium means no trade plus a journaled `paper_trade_error` (the signal stays approvable).

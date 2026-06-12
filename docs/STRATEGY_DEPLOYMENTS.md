@@ -1,6 +1,8 @@
 # Strategy Deployments
 
-Updated: 2026-06-12
+Updated: 2026-06-12 (overhaul evening pass)
+
+> **2026-06-12 overhaul:** modes are now `signal_only` | `paper` (legacy shadow/recommendation map to signal_only), the manual approval flow and its routes were RETIRED, deployments evaluate **independently** (the highest-score concurrency rule was removed; `risk.max_open_paper_trades` governs exposure), and undeploy = archive (`?purge=1` optionally deletes journals). Sections below describing Approve/Skip flows are historical context. Current truth: CHANGELOG 0.17.x + `docs/HANDOFF.md`.
 
 This document defines how a backtested strategy moves into forward testing. Paper-mode deployments can auto-trade every clean signal (default for new deployments) so signal quality is auditable; shadow and recommendation modes keep a manual approval gate; nothing places broker orders.
 

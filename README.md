@@ -1,6 +1,6 @@
 # AlphaForge Trading Lab
 
-A local-first research and forward-testing terminal for Indian index options on NIFTY 50, BANKNIFTY, and SENSEX. AlphaForge ingests clean market data, runs backtests with realistic costs (including paired real-option-candle execution), optimizes strategy parameters with honest walk-forward validation, and runs strategies forward against live 1-minute closes. Paper-mode deployments can auto-open paper trades on clean signals at real option premiums; shadow and recommendation modes keep the manual approval gate, and no broker orders are ever placed.
+A local-first research and forward-testing terminal for Indian index options on NIFTY 50, BANKNIFTY, and SENSEX. AlphaForge ingests clean market data, runs backtests with realistic costs (including paired real-option-candle execution), optimizes strategy parameters with honest walk-forward validation, and runs strategies forward against live 1-minute closes. Deployed strategies run independently and concurrently: paper-mode deployments auto-trade every clean signal at real option premiums, signal-only deployments journal without trading, and no broker orders are ever placed.
 
 This is a research tool. Options trading is high risk; treat every signal as a hypothesis until it survives walk-forward, forward testing, and paper trading.
 
@@ -25,14 +25,14 @@ This is a research tool. Options trading is high risk; treat every signal as a h
 | Slippage + volatility | Expiry-tail slippage + post-hoc detector |
 | Strategy Deployments | 1m_close evaluator running, drift detection ON |
 | Auto paper trading | Paper-mode deployments auto-trade clean signals at real option premium (`risk.auto_paper`, default ON for new deployments) |
-| Pending Approval UI | Approve / Skip / Mark Blocked for non-auto signals + auto-paper on approval |
+| Deployments command center | Per-strategy cards (today/lifetime stats), 3-step deploy wizard, undeploy ± journal purge |
 | Auto square-off | 15:00 IST every market day, override per deployment |
-| Pre-flight + quality gates | Surfaced at deployment creation, ack required |
+| Quality gates + readiness | In the deploy wizard: validation evidence + warning acknowledgment |
 | OAuth token-expiry countdown | In the global top bar |
 | Forward metrics aggregation | Session-gated deployment metrics; low-sample results shown with an amber badge |
 | Per-deployment kill switches | Complete: max consecutive losses / daily loss cutoff / max open trades |
 
-440 backend tests pass.
+453 backend tests pass.
 
 ## Quick Start
 
@@ -113,7 +113,7 @@ docker compose ps
 - Deployments can only be created from saved Presets or saved Backtest Runs. Direct deployment from a raw plugin is blocked.
 - Walk-forward warns but does not block. The user makes a conscious choice via the ack checkbox.
 - Paper-mode deployments may auto-open paper trades on clean signals when `risk.auto_paper` is on (default for new deployments). Entries are always real option premium — live tick, else a fresh stored candle — never the spot index level; no premium means no trade plus a journaled `paper_trade_error`.
-- Shadow and recommendation modes never act without manual approval. No automatic broker order placement, ever.
+- Deployment modes: `paper` (auto-trades every clean signal) and `signal_only` (journals only). The approval flow was retired 2026-06-12. No automatic broker order placement, ever.
 - All routes under `/api`. Local Docker stack is the source of truth.
 
 ## Safety Note

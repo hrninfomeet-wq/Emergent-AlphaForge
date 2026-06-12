@@ -288,7 +288,7 @@ Body: `DeploymentCreateReq`:
   "name": "string",
   "source_type": "preset" | "backtest_run",
   "source_id": "string",
-  "mode": "shadow" | "paper" | "recommendation",
+  "mode": "signal_only" | "paper",  // legacy shadow/recommendation map to signal_only
   "confirmation_mode": "1m_close",
   "option_policy": {
     "moneyness": "atm" | "otm1" | "itm1",
@@ -317,7 +317,7 @@ Behavior:
 - Calls `deployment_quality.evaluate(...)`. If warnings exist and `acknowledged_warnings=false`, returns `400 acknowledgment_required` with the warning detail.
 - Stores `quality_at_creation` plus the ack flag for audit.
 - **Auto paper trading (2026-06-11, paper mode only):** `auto_paper` (default true) merges into `risk`. When ON, every clean CONFIRMED signal opens a paper trade automatically — no manual approval. Entry is real option PREMIUM (live tick → `options_1m` candle ≤5 min → refuse + journal `paper_trade_error` on the signal). Stop/target come from the signal's `risk_hints` (strategy-defined `target_pct`/`stop_pct` of entry premium) with the deployment-level fallbacks next: `auto_paper_target_pts`/`auto_paper_stop_pts` (₹ points of premium; precedence) then `auto_paper_target_pct`/`auto_paper_stop_pct` (% of entry premium) — same points-over-percent rule as the backtest's `option_levels` mode. The signal advances CONFIRMED→TRIGGERED→ACTIVE with an `auto_paper` audit snapshot and `paper_trade_id` link. A per-minute marker (`mark_open_deployment_trades`) marks OPEN trades to live ticks and fires stop/target exits intraday. Pre-existing deployments (no flag) keep approve-to-trade behavior.
-- Manual approval remains for shadow/recommendation modes and paper deployments with `auto_paper=false`. Approve never duplicates a trade the auto path already created, and now also fills at resolved option premium (never spot).
+- The approval flow is retired (2026-06-12): `signal_only` deployments journal without trading; `paper` deployments auto-trade clean signals when `risk.auto_paper` is on. Entries always fill at resolved option premium (never spot).
 - Kill switches (Slice 12, paper mode only) are merged into `risk`. `max_consecutive_losses` and `daily_loss_cutoff_pct` (negative %) auto-PAUSE the deployment; `max_open_paper_trades` soft-BLOCKs new signals while that many trades are open. Omit/null/0 disables a switch. A paused deployment stamps `kill_switch_reason`, `kill_switch`, and `kill_switch_inputs`.
 
 ### `GET /api/deployments/preflight?instrument=...`
@@ -350,35 +350,34 @@ Slice 1. Run the 1m_close evaluator once for this deployment. Used by the schedu
 ### `POST /api/deployments/evaluate-active`
 Run the evaluator across every ACTIVE deployment. Used by the scheduler and on-demand.
 
-## Signals (Slices 2, 4)
+## Signals
+
+Retired 2026-06-12 (user decision — deployments journal and auto-trade their own signals; no manual flow): `POST /signals`, `/signals/{id}/transition`, `/approve`, `/skip`, `/mark-blocked`, `/signals/{id}/paper`. Old journaled signals remain readable.
 
 ### `GET /api/signals?state=&limit=`
-List recent signal records.
+Raw recent signal records (kept for compat/debug; the ledger below is the primary read).
 
-### `POST /api/signals`
-Create a manual research signal.
+### `GET /api/signals/enriched`
+The trade-recommendation ledger: deployment signals joined with their paper trades. Params: `deployment_id, strategy_id, instrument, state, clean (true=clean only / false=blocked only), date_from, date_to (YYYY-MM-DD IST), sort (bar_ts|updated_at|confidence|instrument|state, "-" prefix desc), skip, limit (≤500), format=csv`. Each row adds: `score, spot_entry, bar_ist, deployment_name, contract, contract_expiry, trade_status, entry_premium, exit_premium, exit_reason, closed_at, lots, quantity, pnl_value (₹), pnl_premium_pts` to the signal's own `reasons[]` (entry triggers), `blockers[]`, `risk_hints`, `paper_trade_error`. Returns `{items, count, total, skip, limit}` or CSV.
 
-### `POST /api/signals/{id}/transition`
-Body: `{ to_state, reason, snapshot }`. Guarded lifecycle transitions.
+### `POST /api/signals/purge`
+Body `{ids?|deployment_id?|older_than_days?|states?}` (at least one of the first three). Deletes matching signals; returns `{deleted}`. Never touches trades.
 
-### `POST /api/signals/{id}/approve`
-Body: `SignalApprovalReq` (optional note).
+## Deployments overview / undeploy
 
-CONFIRMED → TRIGGERED → ACTIVE. When the signal carries `deployment_id` and `deployment.mode == "paper"`, auto-creates a paper trade with `lot_size` from `option_contracts` and `lots` from `deployment.risk.default_lots`. Trade carries `deployment_id` and `source="paper_auto_on_approval"`. A failure to create the trade does not roll back the approval — it journals a `paper_trade_error`.
+### `GET /api/deployments/overview`
+One call for the command center: per non-archived deployment `{deployment, today: {clean_signals, blocked_signals, realized_pnl, open_trades, open_unrealized}, lifetime: {closed_trades, realized_pnl, win_rate}}` plus account `totals`.
 
-### `POST /api/signals/{id}/skip`
-CONFIRMED → SKIPPED → AUDITED.
+### `POST /api/deployments/{id}/archive?purge=0|1`
+Undeploy: stops signal generation and paper trading. `purge=1` also deletes the deployment's signals and CLOSED trades (OPEN trades are kept for the marker/square-off); response reports the purge counts. Deployment create/resume responses include `option_stream` — the result of the best-effort live-option-stream realignment (`radius_for_deployments` derives the strike radius from ACTIVE paper deployments' moneyness).
 
-### `POST /api/signals/{id}/mark-blocked`
-Any non-AUDITED → AUDITED with the supplied note as a blocker.
+## Paper Trading
 
-### `POST /api/signals/{id}/paper`
-Manual paper deploy. Body: `{ lots, entry_price?, stop_price?, target_price? }`.
+### `GET /api/paper/trades`
+Journal with `status, deployment_id, strategy_id, instrument, date_from, date_to (YYYY-MM-DD IST), sort (updated_at|created_at|closed_at|realized_pnl|entry_price), skip, limit (≤500), format=csv`. Rows carry `deployment_name`; `events` excluded. Returns `{items, count, total, skip, limit}` or CSV.
 
-## Paper Trading (Slices 3, 4)
-
-### `GET /api/paper/trades?status=&limit=`
-List paper trades.
+### `POST /api/paper/trades/purge`
+Body `{ids?|deployment_id?|older_than_days?}`. Deletes **CLOSED** trades only; returns `{deleted}`.
 
 ### `POST /api/paper/trades/{id}/mark`
 Body: `{ last_price, auto_close_on_risk? }`. Updates unrealized P&L. Auto-closes if mark hits stored stop or target.

@@ -174,67 +174,34 @@ Strategy cards with closed paper trades show a **Forward** block per deployment:
 
 `POST /api/volatility/audit` runs the post-hoc volatility detector on a date window. It annotates spot 1m bars with realized 5-min vol vs 30-day rolling baseline and flags `volatility_spike` when ratio ≥ 2.5x. Use this to identify high-volatility periods after the fact instead of relying on a calendar of scheduled events.
 
-## Live Signals (Strategy Deployments)
+## Deployments Command Center (`/live`, rebuilt 2026-06-12)
 
-This is the forward-testing surface. Workflow:
+The page shows every deployed strategy as a card and is the home of deploy /
+pause / resume / **undeploy**. There is no approval flow anymore: paper
+deployments trade every clean signal automatically; signal-only deployments
+just journal. The old Pending Approval panel and the manual research-signal
+console were removed.
 
-### 1. Create a deployment
+### 1. Deploy a strategy (3-step wizard)
 
-1. From Live Signals, click Create Deployment.
-2. Choose source: a saved Preset or a saved Backtest Run.
-3. The PreflightBadge collapses above the Create button. Expand it to review:
-   - Spot coverage (last 30 trading days).
-   - Upcoming option expiries.
-   - Active vs expired contracts.
-   - Upstox token state.
-3b. The **Validation evidence** card (informational) shows whether the honest pipeline ran for this source: the latest completed walk-forward for the strategy (efficiency + OOS-positive windows) and the latest option-rupee proof (re-rank or option backtest), each flagged when its params differ from the preset. Missing evidence names the step to run — green/green before deploying is the canonical path.
-4. The QualityBadge surfaces walk-forward and metrics warnings:
-   - Missing walk-forward validation.
-   - Walk-forward IS/OOS divergence (OOS < IS × 0.7 or explicit divergence flag).
-   - Low trade count (< 30).
-   - Weak Sharpe (< 0.5).
-   - Large drawdown ratio (|max_dd|/total_pnl > 0.15).
-5. If warnings exist, tick the acknowledgment checkbox. Otherwise the Create button is disabled.
-6. Choose mode (`shadow`, `paper`, `recommendation`), DTE filter (default `[0..6]`), default lots (default 1), and `allow_overnight` (default false).
-7. In **paper mode**, a green block appears: **"Auto paper trade on every clean signal"** (checked by default). Leave it on to have every clean signal open a paper trade by itself. The two optional fallback target/stop fields apply only when the strategy provides no exit hints of its own, and take either unit via the toggle: **₹ points of premium** (matches the Backtest Lab's premium SL/target points mode) or **% of entry premium**.
-8. Optionally set the **kill switches**: max consecutive losses (auto-PAUSE), daily loss cutoff % (auto-PAUSE), max open paper trades (soft BLOCK that self-clears as trades close). Paper deployments only.
-9. Save. The deployment is `ACTIVE`.
+1. Click **Deploy strategy** (or use the rocket button on a preset in the Optimizer — it lands here preselected).
+2. **Step 1 — Preset:** pick the saved preset and name the deployment. The Validation evidence card shows whether the honest pipeline ran (latest walk-forward efficiency/consistency + option-rupee proof, flagged when params differ).
+3. **Step 2 — Execution** (prefilled from the preset's execution policy): mode — **Paper (auto-trade every clean signal)** or **Signal only** — plus moneyness, multi-select DTE filter, lots, and (paper mode) the auto-paper toggle with fallback exits in ₹ points or % of premium (used only when the strategy gives no exit hints).
+4. **Step 3 — Risk & go:** kill switches (max consecutive losses / daily loss cutoff % → auto-PAUSE; max open trades → soft block), allow-overnight, and the quality-warning acknowledgment when the preset has warnings. Click **Deploy** — signals start with the next market minute, and the live option stream re-aligns its strikes to your deployments automatically.
 
-### 2. Wait for signals
+### 2. Read the cards
 
-The 1m_close evaluator scheduler wakes 10 seconds after each minute boundary during NSE market hours. It:
+Each card: mode chip (PAPER AUTO-TRADE / SIGNAL ONLY), status with any auto-pause reason (kill switch or source drift), today's clean/blocked signals, open trades and open MTM, today ₹, lifetime ₹ and win rate, plus **Signals →** and **Trades →** links into the filtered journals. The header strip totals today's MTM across all deployed strategies. Multiple strategies run concurrently and independently — two strategies firing on the same bar both trade their own signals.
 
-- Pulls the latest closed 1-minute candle.
-- Runs the strategy.
-- Applies pre-trade filters.
-- Picks the ATM/OTM1/ITM1 contract from `option_contracts` with `expiry_date >= today` and `dte_filter` honored.
-- Applies time-of-day blocks (09:15–09:25 and 14:50–15:30 IST) and expiry-day cutoff (15:00 IST).
-- Journals the signal: `CONFIRMED` if clean, `AUDITED` with `blockers[]` if rejected.
+### 3. What happens each market minute
 
-Each ACTIVE deployment also has an Evaluate-now button.
+The evaluator wakes 10s after each minute close (09:15–15:30 IST; signal window 09:25–14:50; expiry-day cutoff 15:00): runs every ACTIVE deployment's strategy, applies pre-trade filters, picks the contract (`expiry_date >= today`, DTE filter honored), and journals CONFIRMED (clean) or AUDITED (blocked, with reasons). For paper deployments with auto-paper on, every clean signal opens a paper trade at the **real option premium** (live tick, else a stored candle ≤5 min old — never the spot level); the strategy's exits are mirrored live (index hits the spot target/stop → option closes at its premium; premium-% levels apply when set), checked by a per-minute marker; no usable premium → no trade, with `paper_trade_error` journaled on the signal.
 
-### 3a. Auto paper trading (paper mode with auto-paper on)
+### 4. Undeploy
 
-For paper deployments with `auto_paper` enabled, every clean CONFIRMED signal opens a paper trade automatically — no clicking:
+**Undeploy** on a card stops signal generation and paper trading for that strategy. You'll be offered an optional purge of its journaled signals and CLOSED trades (OPEN trades are kept so the marker/square-off can finish them). Pause/Resume is the non-destructive alternative.
 
-- The signal appears in the Signal Journal already `ACTIVE` with a `paper_trade_id`.
-- The trade appears in Paper Trading at a **real option premium** entry (live tick first, else a stored option candle at most 5 minutes old — e.g. ~₹150, never the ~23,900 index level), with the contract's lot size and the strategy's stop/target levels.
-- Exits mirror the backtest: built-in strategies define exits in spot points, so when the index hits the strategy's target/stop, the option closes at its current premium (`spot_target_hit`/`spot_stop_hit`). Premium-% levels apply when set. A background marker checks every open trade once a minute during market hours; whatever is left closes at the 15:00 IST square-off (`auto_square_off_15_00_IST`).
-- If no usable premium exists (no live tick, no fresh candle), **no trade opens** — the signal carries a journaled `paper_trade_error` and remains approvable from the Pending Approval panel.
-
-### 3b. Approve, skip, or mark blocked (everything else)
-
-The Pending Approval panel auto-refreshes every 15 seconds and shows the CONFIRMED deployment-generated signals that did not auto-trade: shadow and recommendation deployments, paper deployments with auto-paper off, and auto-trade refusals.
-
-For each:
-
-- **Approve** transitions the signal `CONFIRMED → TRIGGERED → ACTIVE`. When `deployment.mode == "paper"`, a paper trade is created with `lot_size` from the option contract, `lots` from `risk.default_lots`, and the entry at the **resolved option premium** (same resolution as auto-paper). If no premium is available, the approve returns HTTP 409 and the signal stays CONFIRMED so you can retry. The button label changes to "Approve + Paper" in that case. If auto-paper already created the trade, Approve never duplicates it.
-- **Skip** transitions `CONFIRMED → SKIPPED → AUDITED`.
-- **Mark Blocked** moves any non-AUDITED signal to AUDITED with the supplied note as a blocker.
-
-### 4. Watch trades and square-off
-
-Paper trades — auto-created or approved — appear in Paper Trading. They carry `deployment_id` so the auto square-off knows which to skip when `allow_overnight=true`. During market hours a per-minute marker marks open deployment trades to the latest option tick and fires their exits (`stop_hit`/`target_hit` on premium levels, `spot_target_hit`/`spot_stop_hit` on spot-mirror levels); trades without a live tick are left untouched rather than closed at a stale price.
+### 5. Square-off
 
 The auto square-off background loop runs at 15:00 IST every market day. It:
 
@@ -257,7 +224,7 @@ For a fresh study:
 4. Optimize if results are promising — finish with a Walk-forward (honest OOS) run and check WF efficiency, consistency, and param stability before trusting it. Apply best as a Preset.
 5. Re-test the preset (use Option re-rank or an option backtest for rupee realism).
 6. Create a Strategy Deployment from the Preset in paper mode with auto-paper on. Acknowledge any quality warnings.
-7. Let the evaluator run during market hours — clean signals paper-trade themselves; approve/skip whatever lands in Pending Approval.
+7. Let the evaluator run during market hours — clean signals paper-trade themselves; the Deployments cards show live activity.
 8. Watch paper trades. The per-minute marker fires stops/targets; auto square-off closes the rest at 15:00 IST.
 9. Review forward results in Strategy Library (low-sample badge until 10 complete sessions) and per deployment.
 
@@ -274,13 +241,12 @@ For a fresh study:
 | Deployment auto-paused with `strategy_source_drift` | The plugin .py file changed since the deployment was created. Create a new deployment to pin the new SHA. |
 | `acknowledgment_required` 400 on deployment create | Quality warnings exist; tick the ack checkbox and retry. |
 | Signal has `paper_trade_error` instead of a trade | No usable option premium at signal time (no live tick, no fresh stored candle). The signal stays approvable; check the option stream / warehouse coverage. |
-| Approve returns 409 `option_entry_price_unavailable` | Same cause from the manual path. The signal stays CONFIRMED — approve again once live option data is available. |
 | Deployment auto-paused with `kill_switch_reason` | A kill switch tripped (consecutive losses or daily loss cutoff). Review the trades before resuming. |
 
 ## Trading Safety
 
 - Do not trust a strategy from one backtest. Use walk-forward optimization (the honest OOS mode), forward testing, and paper trading.
 - The system warns about walk-forward divergence; do not silence the ack checkbox blindly.
-- Auto paper trading exists to audit signal quality without manual clicking — it never places broker orders, and nothing in this app ever will. Shadow and recommendation modes keep the manual gate.
+- Auto paper trading exists to audit signal quality without manual clicking — it never places broker orders, and nothing in this app ever will. Signal-only mode journals without trading.
 - Options can lose money quickly. Use strict per-trade risk and the per-deployment kill switches (max consecutive losses, daily loss cutoff, max open trades).
 - Forward P&L is trustworthy only for deployments created after 2026-06-11; older approval-created trades entered at the spot index level (a since-fixed bug) and their P&L should be ignored.

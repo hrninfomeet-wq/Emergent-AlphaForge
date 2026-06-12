@@ -144,3 +144,34 @@ def test_backend_exposes_live_option_stream_routes():
     assert '@api.post("/upstox/stream/options/restart")' in server
     assert "upstoxOptionStreamUniverse" in api
     assert "restartUpstoxOptionStream" in api
+
+
+# ---------------------------------------------------------------------------
+# radius_for_deployments — live universe auto-follows deployment moneyness
+# ---------------------------------------------------------------------------
+
+from app.live_option_universe import radius_for_deployments  # noqa: E402
+
+
+def test_radius_default_is_one_with_no_deployments():
+    assert radius_for_deployments([]) == 1
+    assert radius_for_deployments(None) == 1
+
+
+def test_radius_covers_widest_moneyness_plus_drift_headroom():
+    deps = [
+        {"option_policy": {"moneyness": ["atm"]}},
+        {"option_policy": {"moneyness": ["otm1"]}},
+    ]
+    assert radius_for_deployments(deps) == 2  # otm1 offset 1 + 1 headroom
+    deps.append({"option_policy": {"moneyness": ["itm2", "atm"]}})
+    assert radius_for_deployments(deps) == 3  # itm2 offset 2 + 1
+
+
+def test_radius_clamps_to_five_and_ignores_unknown():
+    deps = [{"option_policy": {"moneyness": ["otm3", "weird9"]}}] * 3
+    assert radius_for_deployments(deps) == 4  # otm3 offset 3 + 1
+    deps.append({"option_policy": {"moneyness": ["otm3", "itm3"]}})
+    assert radius_for_deployments(deps) == 4
+    # unknown-only policies fall back to the minimum useful radius
+    assert radius_for_deployments([{"option_policy": {"moneyness": ["weird"]}}]) == 1

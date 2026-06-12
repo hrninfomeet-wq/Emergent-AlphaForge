@@ -24,7 +24,7 @@ def test_build_deployment_from_preset_freezes_auditable_config():
         source_type="preset",
         source_doc=preset,
         name="NIFTY forward test",
-        mode="shadow",
+        mode="shadow",  # legacy value: must map to signal_only
         confirmation_mode="1m_close",
         option_moneyness=["atm", "otm1"],
         pretrade_profile="Balanced",
@@ -39,7 +39,8 @@ def test_build_deployment_from_preset_freezes_auditable_config():
     assert doc["params"] == {"ema_fast": 9, "ema_slow": 21}
     assert doc["confirmation_mode"] == "1m_close"
     assert doc["option_policy"]["moneyness"] == ["atm", "otm1"]
-    assert doc["manual_approval_required"] is True
+    assert doc["mode"] == "signal_only"  # legacy "shadow" mapped
+    assert doc["manual_approval_required"] is False  # approval flow retired
     assert doc["status"] == "ACTIVE"
 
 
@@ -62,16 +63,25 @@ def test_build_deployment_from_backtest_uses_applied_params_and_metrics():
         source_type="backtest_run",
         source_doc=run,
         name="ORB forward",
-        mode="recommendation",
+        mode="recommendation",  # retired mode: must map to signal_only
         now="2026-05-26T11:00:00+00:00",
     )
 
     assert doc["source_type"] == "backtest_run"
     assert doc["source_id"] == "run-1"
-    assert doc["mode"] == "recommendation"
+    assert doc["mode"] == "signal_only"  # legacy "recommendation" mapped
     assert doc["params"] == {"range_minutes": 15, "stop": 40}
     assert doc["source_snapshot"]["metrics"]["trade_count"] == 8
     assert doc["option_policy"]["moneyness"] == ["atm"]
+
+
+def test_build_deployment_rejects_unknown_mode():
+    preset = {"name": "p", "config": {"instrument": "NIFTY", "strategy_id": "s", "params": {}}}
+    try:
+        build_deployment_doc(source_type="preset", source_doc=preset, name="x", mode="autopilot")
+        assert False, "expected ValueError for unknown mode"
+    except ValueError as e:
+        assert "signal_only or paper" in str(e)
 
 
 def test_backend_exposes_strategy_deployment_routes_and_index():
@@ -95,7 +105,9 @@ def test_frontend_exposes_strategy_deployment_panel():
     api = (ROOT / "frontend" / "src" / "lib" / "api.js").read_text(encoding="utf-8")
     live = (ROOT / "frontend" / "src" / "pages" / "LiveSignals.jsx").read_text(encoding="utf-8")
 
-    for needle in ("listDeployments", "createDeployment", "pauseDeployment", "resumeDeployment", "archiveDeployment"):
+    for needle in ("listDeployments", "deploymentsOverview", "createDeployment", "pauseDeployment", "resumeDeployment", "archiveDeployment"):
         assert needle in api
-    for needle in ("strategy-deployments-panel", "create-deployment-button", "deployment-source-type", "deployment-mode", "deployment-card"):
+    # Deployments command center (2026-06-12): cards + 3-step deploy wizard + undeploy.
+    for needle in ("deployments-page", "deployment-card", "open-deploy-wizard",
+                   "wizard-preset-select", "wizard-mode-select", "undeploy-button"):
         assert needle in live
