@@ -8,7 +8,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { fmtNum, fmtPct, colorPnL, isoToFull } from "@/lib/fmt";
 import {
   Briefcase, RefreshCw, Download, Trash2, Zap, XCircle,
-  ChevronLeft, ChevronRight,
+  ChevronLeft, ChevronRight, CalendarDays,
 } from "lucide-react";
 
 /**
@@ -220,6 +220,23 @@ export default function PaperTrading() {
     return { todayRealized, openMtm, openCount, winRate, profitFactor, equity, closedCount: closed.length };
   }, [statsRows]);
 
+  // ---- Per-day realized P&L for the calendar heat-grid (closed trades only,
+  // bucketed by IST close day) ----
+  const dayPnl = useMemo(() => {
+    const map = new Map(); // day -> { pnl, count }
+    for (const t of statsRows) {
+      if (String(t.status || "").toUpperCase() !== "CLOSED") continue;
+      const day = istParts(t.closed_at || t.updated_at)?.day;
+      if (!day) continue;
+      const cur = map.get(day) || { pnl: 0, count: 0 };
+      cur.pnl += Number(t.realized_pnl || 0);
+      cur.count += 1;
+      map.set(day, cur);
+    }
+    return map;
+  }, [statsRows]);
+  const [showCalendar, setShowCalendar] = useState(true);
+
   // ---- Selection / purge (CLOSED only) ----
   const closedVisibleIds = data.items.filter((t) => String(t.status || "").toUpperCase() === "CLOSED").map((t) => t.id);
   const toggleSelect = (id) => setSelected((s) => {
@@ -359,6 +376,23 @@ export default function PaperTrading() {
           <div className="text-[10px] uppercase tracking-wider text-dimmer">Realized equity</div>
           <Sparkline values={summary.equity} />
         </div>
+      </div>
+
+      {/* P&L calendar heat-grid (per-day realized ₹, filtered set) */}
+      <div className="rounded-lg border border-line bg-bg-1" data-testid="paper-pnl-calendar">
+        <div className="px-3 py-2 border-b border-line flex items-center gap-2">
+          <CalendarDays className="w-4 h-4 text-info" />
+          <div className="text-xs font-semibold uppercase tracking-wider text-dim">P&amp;L Calendar</div>
+          <span className="text-[11px] text-dimmer">realized ₹ per IST day{filters.deployment_id ? " · this deployment" : " · all deployments"}</span>
+          <Button variant="ghost" size="sm" onClick={() => setShowCalendar((v) => !v)} className="ml-auto h-6 text-[11px]" data-testid="paper-calendar-toggle">
+            {showCalendar ? "Hide" : "Show"}
+          </Button>
+        </div>
+        {showCalendar && (
+          <div className="p-3">
+            <CalendarHeatGrid dayPnl={dayPnl} />
+          </div>
+        )}
       </div>
 
       {/* Filters + actions */}
@@ -575,6 +609,88 @@ function Stat({ label, value, tone = null }) {
     <div className="rounded-md border border-line bg-bg-2 p-2">
       <div className="text-[10px] uppercase tracking-wider text-dimmer">{label}</div>
       <div className={`text-sm font-mono mt-0.5 ${toneClass}`}>{value}</div>
+    </div>
+  );
+}
+
+// GitHub-style P&L calendar heat-grid: weekday rows (Mon–Fri) × week columns,
+// each cell colored by that IST day's realized ₹ (green positive, red negative).
+function CalendarHeatGrid({ dayPnl }) {
+  const days = [...dayPnl.keys()].sort();
+  if (days.length === 0) {
+    return <div className="text-[11px] text-dimmer font-mono">No closed trades to chart yet.</div>;
+  }
+  const dayToUTC = (s) => { const [y, m, d] = s.split("-").map(Number); return Date.UTC(y, m - 1, d); };
+  const utcToDay = (ms) => {
+    const d = new Date(ms);
+    return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
+  };
+  const DAY_MS = 86400000;
+  let startMs = dayToUTC(days[0]);
+  const endMs = dayToUTC(days[days.length - 1]);
+  // Align the first column to Monday (getUTCDay: 0=Sun..6=Sat).
+  const startDow = new Date(startMs).getUTCDay();
+  startMs -= ((startDow + 6) % 7) * DAY_MS;
+  // Cap to the most recent ~16 weeks to keep the grid compact.
+  const MAX_WEEKS = 16;
+  const minStart = endMs - (MAX_WEEKS * 7 - 1) * DAY_MS;
+  if (startMs < minStart) {
+    const ms = new Date(minStart);
+    startMs = minStart - ((ms.getUTCDay() + 6) % 7) * DAY_MS;
+  }
+  const maxAbs = Math.max(1, ...[...dayPnl.values()].map((v) => Math.abs(v.pnl)));
+
+  const weeks = [];
+  for (let wkMs = startMs; wkMs <= endMs; wkMs += 7 * DAY_MS) {
+    const cells = [];
+    for (let i = 0; i < 5; i++) { // Mon..Fri (trading days)
+      const cellMs = wkMs + i * DAY_MS;
+      const day = utcToDay(cellMs);
+      cells.push({ day, future: cellMs > Date.now(), info: dayPnl.get(day) || null });
+    }
+    weeks.push({ key: utcToDay(wkMs), cells });
+  }
+
+  const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri"];
+  const cellStyle = (info) => {
+    if (!info || info.count === 0) return {};
+    const intensity = 0.25 + 0.75 * (Math.abs(info.pnl) / maxAbs);
+    if (info.pnl === 0) return {};
+    return {
+      backgroundColor: info.pnl > 0 ? "var(--color-success)" : "var(--color-danger)",
+      opacity: intensity,
+    };
+  };
+
+  return (
+    <div className="flex items-start gap-2">
+      <div className="flex flex-col gap-1 pt-0.5 mr-1">
+        {WEEKDAYS.map((d) => <div key={d} className="text-[9px] text-dimmer h-3.5 leading-3.5">{d}</div>)}
+      </div>
+      <div className="flex gap-1 overflow-x-auto">
+        {weeks.map((wk) => (
+          <div key={wk.key} className="flex flex-col gap-1">
+            {wk.cells.map((c) => (
+              <div
+                key={c.day}
+                className={`w-3.5 h-3.5 rounded-sm border ${c.info && c.info.count ? "border-transparent" : "border-line bg-bg-3"} ${c.future ? "opacity-20" : ""}`}
+                style={cellStyle(c.info)}
+                title={c.info && c.info.count
+                  ? `${c.day}: ₹${fmtNum(c.info.pnl, 0)} · ${c.info.count} trade${c.info.count === 1 ? "" : "s"}`
+                  : `${c.day}: no trades`}
+                data-testid="paper-calendar-cell"
+              />
+            ))}
+          </div>
+        ))}
+      </div>
+      <div className="flex items-center gap-1 ml-3 self-end text-[9px] text-dimmer">
+        <span>loss</span>
+        <span className="w-3 h-3 rounded-sm" style={{ backgroundColor: "var(--color-danger)" }} />
+        <span className="w-3 h-3 rounded-sm border border-line bg-bg-3" />
+        <span className="w-3 h-3 rounded-sm" style={{ backgroundColor: "var(--color-success)" }} />
+        <span>profit</span>
+      </div>
     </div>
   );
 }
