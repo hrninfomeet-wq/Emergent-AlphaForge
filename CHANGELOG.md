@@ -2,6 +2,13 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.22.x] — Auto-subscribe ATM±3 option universe in market hours (2026-06-12)
+
+458 backend tests pass (1 new). Follow-up to Slice 5 item 4:
+
+- The market-hours evaluator loop now keeps a baseline ATM±3 option universe subscribed on the read-only Upstox stream automatically (calls `_auto_follow_option_stream(min_radius=3)` each minute while connected). The live option-chain snapshot on `/live` — and paper-trade marks — now always have fresh premiums during market hours with **no manual stream restart and no active deployment required**.
+- `_auto_follow_option_stream` gained a `min_radius` floor and is now **idempotent**: it skips the disruptive WS restart when the current subscription already covers the desired keys, and re-centers automatically only when the ATM band drifts out of coverage.
+
 ## [0.21.x] — Forward Surfaces Overhaul, Slice 5: Polish (2026-06-12)
 
 457 backend tests pass (4 new); frontend builds clean (no new eslint warnings). Four small, separately-committed items closing out the forward-surfaces spec:

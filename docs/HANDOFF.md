@@ -4,6 +4,10 @@ Updated: 2026-06-12 (Slice 5 — forward-surfaces spec complete)
 
 This is the entry point for the next AI agent or developer. Read it before editing code. The repository and tests are the source of truth — not any prior chat.
 
+## Recent Work — Auto-subscribe ATM±3 option universe in market hours (2026-06-12)
+
+See CHANGELOG 0.22.x. Follow-up to Slice 5 item 4: the option-chain snapshot needed live ticks, which previously only flowed after a deploy/resume restarted the option stream. Now the market-hours evaluator loop calls `_auto_follow_option_stream(min_radius=OPTION_CHAIN_BASELINE_RADIUS=3)` each minute, so the universe stays subscribed automatically whenever Upstox is connected — no manual restart, no deployment required. `_auto_follow_option_stream` is now idempotent (skips the WS restart when coverage already includes the desired keys; re-centers when the ATM band drifts). 458 tests pass.
+
 ## Recent Work — Forward Surfaces Overhaul, Slice 5: Polish (2026-06-12)
 
 See CHANGELOG 0.21.x. The final slice — four small, separately-committed polish items closing out `.kiro/specs/forward-surfaces-overhaul/` (the whole spec is now DONE):
