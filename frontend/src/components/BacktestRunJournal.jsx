@@ -5,7 +5,8 @@ import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { fmtInt, fmtNum, fmtPct, fmtPnL, colorPnL, isoToFull } from "@/lib/fmt";
 import { SignificanceBadge } from "@/components/SignificanceBadge";
-import { Trash2, RefreshCw, BookOpen, Play, Search, X, ChevronDown, ChevronRight } from "lucide-react";
+import RunComparison from "@/components/RunComparison";
+import { Trash2, RefreshCw, BookOpen, Play, Search, X, ChevronDown, ChevronRight, GitCompare } from "lucide-react";
 
 /**
  * Backtest Run Journal — the saved-run history table.
@@ -20,6 +21,8 @@ export default function BacktestRunJournal({ onLoadRun, refreshKey = 0, defaultO
   const [filter, setFilter] = useState("");
   const [selected, setSelected] = useState(new Set());
   const [open, setOpen] = useState(defaultOpen);
+  const [comparison, setComparison] = useState(null); // { a, b } full run docs
+  const [comparing, setComparing] = useState(false);
 
   const refresh = async () => {
     setLoading(true);
@@ -68,6 +71,22 @@ export default function BacktestRunJournal({ onLoadRun, refreshKey = 0, defaultO
     });
   };
 
+  // Fetch both selected runs in full (the list payload is trimmed; params and
+  // equity_curve come from GET /backtest/runs/{id}) and open the comparison.
+  const compareSelected = async () => {
+    if (selected.size !== 2) return;
+    const [idA, idB] = [...selected];
+    setComparing(true);
+    try {
+      const [a, b] = await Promise.all([api.getBacktestRun(idA), api.getBacktestRun(idB)]);
+      setComparison({ a, b });
+    } catch (e) {
+      toast.error("Failed to load runs for comparison");
+    } finally {
+      setComparing(false);
+    }
+  };
+
   const visible = runs.filter((r) => {
     if (!filter) return true;
     const q = filter.toLowerCase();
@@ -107,6 +126,12 @@ export default function BacktestRunJournal({ onLoadRun, refreshKey = 0, defaultO
               )}
             </div>
 
+            {selected.size === 2 && (
+              <Button onClick={compareSelected} size="sm" variant="secondary" className="h-7 text-xs" disabled={comparing} data-testid="journal-compare-button">
+                <GitCompare className="w-3 h-3 mr-1" /> {comparing ? "Loading…" : "Compare 2"}
+              </Button>
+            )}
+
             {selected.size > 0 && (
               <Button onClick={bulkDelete} size="sm" variant="destructive" className="h-7 text-xs" data-testid="journal-bulk-delete">
                 <Trash2 className="w-3 h-3 mr-1" /> Delete {selected.size}
@@ -122,6 +147,9 @@ export default function BacktestRunJournal({ onLoadRun, refreshKey = 0, defaultO
 
       {open && (
         <>
+          {comparison && (
+            <RunComparison a={comparison.a} b={comparison.b} onClose={() => setComparison(null)} />
+          )}
           <div className="overflow-x-auto max-h-[420px] overflow-y-auto">
             <table className="w-full text-xs" data-testid="signal-journal-table">
               <thead className="sticky top-0 bg-bg-2 z-10">
@@ -205,7 +233,7 @@ export default function BacktestRunJournal({ onLoadRun, refreshKey = 0, defaultO
             </table>
           </div>
           <div className="px-3 py-1.5 border-t border-line text-[10px] text-dimmer">
-            Tip: Click any row to load that run's config + result into the lab above.
+            Tip: Click any row to load that run's config + result into the lab above. Select exactly two rows to compare them.
           </div>
         </>
       )}

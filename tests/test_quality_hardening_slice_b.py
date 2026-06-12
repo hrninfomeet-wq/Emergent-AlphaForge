@@ -42,3 +42,19 @@ def test_backtest_lab_exposes_monte_carlo_card():
     assert "slice(0, 1000)" in lab
     assert "RUNS = 1000" in lab
     assert "option_pnl_value" in lab and "pnl_pts" in lab
+
+
+def test_backtest_run_journal_exposes_run_comparison():
+    journal = _read("components", "BacktestRunJournal.jsx")
+    comp = _read("components", "RunComparison.jsx")
+    # The journal offers a two-run compare and renders the comparison component.
+    assert "RunComparison" in journal
+    assert "journal-compare-button" in journal
+    assert "selected.size === 2" in journal
+    # The comparison view: params diff, metric table, overlaid equity curves.
+    for needle in ("run-comparison-panel", "comparison-params-table",
+                   "comparison-metric-table", "comparison-equity-overlay",
+                   "comparison-param-diff"):
+        assert needle in comp, f"missing comparison surface: {needle}"
+    # Built on the existing per-run endpoint — no backend change.
+    assert "getBacktestRun" in journal
