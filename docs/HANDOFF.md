@@ -1,8 +1,17 @@
 # Handoff
 
-Updated: 2026-06-12 (Slice 3 + presets)
+Updated: 2026-06-12 (Slice 4 + presets)
 
 This is the entry point for the next AI agent or developer. Read it before editing code. The repository and tests are the source of truth — not any prior chat.
+
+## Recent Work — Forward Surfaces Overhaul, Slice 4: Paper Trading Journal (2026-06-12)
+
+See CHANGELOG 0.20.x. `frontend/src/pages/PaperTrading.jsx` (route `/paper`) was rebuilt from the old mark/close table into the **Paper Trading Journal** described in `forward-surfaces-overhaul` R4. Pure UI over the already-shipped upgraded `GET /api/paper/trades` (verified field-by-field against `server.py`):
+- Columns: deployment/strategy, contract (`trading_symbol`), CE/PE, lots × lot size, entry time+price, exit time+price, exit reason, holding time, P&L ₹ + % of entry premium, status. **Day-wise grouping** with per-day subtotals; **summary strip** (today realized, open MTM, open count, win rate, profit factor) + a cumulative-realized **equity sparkline** (computed client-side over the filtered set, capped 500).
+- Server-side filter (deployment via `?deployment=`, instrument, status, IST date range), whitelisted sort, skip/limit pagination + total, CSV (`format=csv`), 30s auto-refresh. A second lightweight fetch (no status filter, no pagination) drives the summary/sparkline so they reflect the whole filtered set, not just the page.
+- **Close flows** replace the manual type-a-price requirement: one-click "Close @ market" (uses `last_price`; prompt fallback only when null), confirmed "Close all open" (skips trades with no mark), and a small manual-premium field as an off-hours fallback. All closes post option PREMIUM, never spot.
+- **Purge** (CLOSED only) via `POST /api/paper/trades/purge`: row-select / older-than-N / per-deployment, all confirm-gated. OPEN trades are never selectable/deletable.
+- Contract test updated in the same commit (`test_signal_paper_lifecycle.py::test_frontend_exposes_live_and_paper_operational_views`) — old testids preserved, new surface pinned. No backend changes. **Slice 5 (polish) is the only remaining slice** in `.kiro/specs/forward-surfaces-overhaul/`.
 
 ## Recent Work — Save Backtest Setup as Preset + Rename (2026-06-12)
 
@@ -14,11 +23,11 @@ See CHANGELOG 0.19.x. Two small user-requested preset features:
 ## NEXT AGENT — START HERE (Opus 4.8 in Kiro)
 
 Your work is fully spec'd: **`.kiro/specs/forward-surfaces-overhaul/`**
-(requirements → design → tasks). Slice 3 (Signals ledger `/journal`) is now
-**DONE** — `tasks.md` has the remaining ready-to-paste prompts for **Slice 4
-(Paper trading journal page)** and **Slice 5 (polish)**, one slice per session,
-in order. `design.md` carries the endpoint contracts, frontend conventions,
-testing rules, and the trading-domain rules that are non-negotiable
+(requirements → design → tasks). Slices 3–4 (Signals ledger `/journal`, Paper
+trading journal `/paper`) are now **DONE** — `tasks.md` has the remaining
+ready-to-paste prompt for **Slice 5 (polish)**, the last slice. `design.md`
+carries the endpoint contracts, frontend conventions, testing rules, and the
+trading-domain rules that are non-negotiable
 (premium-never-spot, lot size from contract metadata, OPEN trades never
 deletable, IST everywhere, never push without the user's approval). The backend
 for those slices is already built and tested — the slices are UI + contract-test
@@ -27,7 +36,7 @@ paper_auto) goes back to the senior agent.
 
 ## Status In One Line
 
-Latest (2026-06-12, Slice 3): **`/journal` rebuilt as the Signals Ledger** on `GET /api/signals/enriched` — one row per deployment signal joined with its paper trade (entry/exit premium, P&L ₹ + premium points, trigger reasons, blockers, paper_trade_error), with server-side filter/sort/paginate/CSV, `?deployment=` preselect, 45s auto-refresh, and the signals-purge deletion toolkit (row-select / older-than-N / per-deployment). **453 pytest tests pass; frontend builds clean.** Slices 4–5 (Paper journal page, polish) remain in `.kiro/specs/forward-surfaces-overhaul/`. Earlier same day: **forward-surfaces slices 1–2** — deployments fully independent (concurrency rule removed), approval flow retired (modes `signal_only` | `paper`), new APIs (`/signals/enriched`, `/signals/purge`, `/paper/trades` upgraded + purge, `/deployments/overview`, archive `?purge=1`, option-stream auto-follow), `/live` rebuilt as the Deployments command center. The local Docker stack is healthy and rebuilt with all changes.
+Latest (2026-06-12, Slice 4): **`/paper` rebuilt as the Paper Trading Journal** on the upgraded `GET /api/paper/trades` — strategy-named rows (contract, CE/PE, lots × lot size, entry/exit time+price, exit reason, holding time, P&L ₹ + % of entry premium), day-wise grouping with subtotals, a summary strip (today realized, open MTM, open count, win rate, profit factor) + cumulative-realized equity sparkline, server-side filter/sort/paginate/CSV, 30s auto-refresh, one-click Close @ market / Close all open (premium, never spot) + manual off-hours fallback, and the CLOSED-only purge toolkit. **453 pytest tests pass; frontend builds clean.** Slice 5 (polish) is the only remaining slice in `.kiro/specs/forward-surfaces-overhaul/`.
 
 ## Recent Work — Forward Surfaces Overhaul, Slice 3: Signals Ledger (2026-06-12)
 

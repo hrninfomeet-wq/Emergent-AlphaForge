@@ -4,7 +4,7 @@
       purge routes, overview, option-stream auto-follow, mode model) — DONE
 - [x] Slice 2 — Deployments command center at `/live` (cards, wizard, undeploy) — DONE
 - [x] Slice 3 — Signals ledger page rebuild — DONE (2026-06-12)
-- [ ] Slice 4 — Paper trading journal rebuild
+- [x] Slice 4 — Paper trading journal rebuild — DONE (2026-06-12)
 - [ ] Slice 5 — Polish extras (only after 3+4 are verified live)
 
 Work ONE slice per session. Each slice: implement → `python -m pytest tests -q`

@@ -175,6 +175,16 @@ def test_frontend_exposes_live_and_paper_operational_views():
         assert needle in live
     for needle in ("paper-trading-journal", "paper-trade-table", "mark-paper-trade", "close-paper-trade", "risk-badge"):
         assert needle in paper
+    # The Paper Trading journal (rebuilt /paper page, forward-surfaces R4,
+    # 2026-06-12): strategy-named journal on the upgraded /paper/trades, with
+    # day-wise grouping, a summary strip + equity sparkline, server-side
+    # filter/sort/paginate/CSV, one-click close-at-market + close-all, and the
+    # CLOSED-only purge toolkit.
+    for needle in ("paper-trading-page", "paper-trade-row", "paper-deployment-filter",
+                   "paper-status-filter", "paper-summary-strip", "paper-equity-sparkline",
+                   "paper-close-all", "paper-export-csv", "paper-delete-selected",
+                   "paper-delete-older", "paper-purge-deployment", "paper-next-page"):
+        assert needle in paper
     # The Signals ledger (rebuilt /journal page, forward-surfaces R3, 2026-06-12).
     # Built on the enriched endpoint, with server-side filter/sort/CSV and the
     # signals-purge deletion toolkit.

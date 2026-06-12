@@ -2,6 +2,17 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.20.x] — Forward Surfaces Overhaul, Slice 4: Paper Trading Journal (2026-06-12)
+
+453 backend tests pass; frontend builds clean (no new eslint warnings).
+
+- **`/paper` rebuilt as the Paper Trading Journal** (`frontend/src/pages/PaperTrading.jsx`), a strategy-named trading journal on the upgraded `GET /api/paper/trades`. Columns: deployment / strategy, contract (`trading_symbol`), CE/PE, lots × lot size, entry time + price, exit time + price, exit reason, holding time, P&L in ₹ and as % of entry premium, status. Entries/exits are option premium (₹), never spot.
+- **Day-wise grouping** with per-day subtotal rows (realized + open MTM), and a **summary strip** (today realized, open MTM, open count, win rate, profit factor) above a small cumulative-realized **equity sparkline** — computed client-side over the filtered set (capped at 500 trades).
+- **Server-side filter / sort / paginate / CSV**: deployment (preselected from `?deployment=`), instrument, status, IST date range; clickable sort on whitelisted columns (entry time, entry price, P&L, exit time); skip/limit pagination with total; CSV honoring filters; 30s auto-refresh.
+- **One-click close flows** replace the old type-a-price requirement: "Close @ market" uses the trade's `last_price` (prompts for a premium only when `last_price` is null), a confirmed "Close all open" closes every open trade at its last mark (skipping unmarked ones), and a small manual-premium field remains as an off-hours fallback.
+- **Purge toolkit** (via `POST /api/paper/trades/purge`, all confirmed) for CLOSED trades only — row-select, older-than-N-days, per-deployment. OPEN trades are never deletable.
+- Contract test `test_frontend_exposes_live_and_paper_operational_views` pins the rebuilt page's testids (old `paper-trading-journal`/`paper-trade-table`/`mark-paper-trade`/`close-paper-trade`/`risk-badge` preserved).
+
 ## [0.19.x] — Save Backtest Setup as Preset + Preset Rename (2026-06-12)
 
 453 backend tests pass; frontend builds clean (no new eslint warnings).
