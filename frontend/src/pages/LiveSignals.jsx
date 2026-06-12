@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
-  Activity, Archive, ChevronLeft, ChevronRight, Pause, Pin, Play, Plus,
+  Activity, Archive, ChevronLeft, ChevronRight, Layers, Pause, Pin, Play, Plus,
   RefreshCw, Rocket, ShieldAlert, X, Zap,
 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
+import { fmtNum } from "@/lib/fmt";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
@@ -155,6 +156,11 @@ export default function LiveSignals() {
           ))}
         </div>
       )}
+
+      {/* ATM±3 option-chain snapshot (live LTPs from the read-only WS stream) */}
+      <OptionChainSnapshot
+        underlyings={[...new Set(items.map((i) => i.deployment.instrument).filter(Boolean))]}
+      />
 
       {wizardOpen && (
         <DeployWizard
@@ -699,6 +705,121 @@ function PreflightSummary({ preflight }) {
           <span><span className="text-dim">{b.label}:</span> {b.detail}</span>
         </div>
       ))}
+    </div>
+  );
+}
+
+// ATM±3 live option-chain snapshot for the Deployments page. Scaffolds strikes
+// from the existing option-universe route (nearest expiry, ATM-centered band)
+// and fills CE/PE LTPs from the read-only WS stream (/upstox/stream/ticks/latest).
+// Informational; auto-refreshes ≤30s. No new backend route.
+function OptionChainSnapshot({ underlyings }) {
+  const list = underlyings && underlyings.length ? underlyings : ["NIFTY", "BANKNIFTY", "SENSEX"];
+  const [universe, setUniverse] = useState(null);
+  const [priceMap, setPriceMap] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [open, setOpen] = useState(true);
+
+  const csv = list.join(",");
+  const load = useCallback(async () => {
+    try {
+      const [u, t] = await Promise.all([
+        api.upstoxOptionStreamUniverse({ underlyings: csv, radius: 3 }).catch(() => null),
+        api.latestUpstoxTicks(500).catch(() => null),
+      ]);
+      setUniverse(u);
+      const pm = {};
+      for (const tick of (t?.items || [])) {
+        if (tick.instrument_key != null) pm[tick.instrument_key] = tick.last_price;
+      }
+      setPriceMap(pm);
+    } finally {
+      setLoading(false);
+    }
+  }, [csv]);
+
+  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    const id = window.setInterval(load, 30000);
+    return () => window.clearInterval(id);
+  }, [load]);
+
+  const details = (universe?.underlyings || []).filter((d) => (d.contracts || []).length > 0);
+
+  return (
+    <div className="rounded-lg border border-line bg-bg-1" data-testid="option-chain-panel">
+      <div className="px-3 py-2 border-b border-line flex items-center gap-2">
+        <Layers className="w-4 h-4 text-info" />
+        <div className="text-xs font-semibold uppercase tracking-wider text-dim">Option Chain · ATM±3</div>
+        <span className="text-[11px] text-dimmer">live LTP from the read-only stream</span>
+        <div className="ml-auto flex items-center gap-1.5">
+          <Button variant="ghost" size="sm" onClick={load} className="h-6 text-[11px]" data-testid="option-chain-refresh">
+            <RefreshCw className="w-3 h-3 mr-1" /> Refresh
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => setOpen((v) => !v)} className="h-6 text-[11px]" data-testid="option-chain-toggle">
+            {open ? "Hide" : "Show"}
+          </Button>
+        </div>
+      </div>
+      {open && (
+        <div className="p-3">
+          {loading ? (
+            <div className="text-[11px] text-dimmer">Loading chain…</div>
+          ) : details.length === 0 ? (
+            <div className="text-[11px] text-dimmer">
+              No live option chain available. Needs current option_contracts for the nearest expiry and a connected Upstox stream — start the option stream on the Data Warehouse, or check preflight.
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-3">
+              {details.map((d) => <ChainTable key={d.underlying} detail={d} priceMap={priceMap} />)}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ChainTable({ detail, priceMap }) {
+  // Group the ATM band by strike → { ce, pe } contracts.
+  const byStrike = new Map();
+  for (const c of (detail.contracts || [])) {
+    const k = c.strike;
+    if (!byStrike.has(k)) byStrike.set(k, {});
+    byStrike.get(k)[String(c.side || "").toUpperCase() === "PE" ? "pe" : "ce"] = c;
+  }
+  const strikes = [...byStrike.keys()].sort((a, b) => a - b);
+  const atm = detail.atm;
+  const px = (c) => (c && priceMap[c.instrument_key] != null ? fmtNum(priceMap[c.instrument_key]) : "—");
+  return (
+    <div className="rounded-md border border-line bg-bg-2 overflow-hidden" data-testid="option-chain-table">
+      <div className="px-2 py-1.5 border-b border-line flex items-baseline gap-2">
+        <span className="text-xs font-semibold">{detail.underlying}</span>
+        <span className="text-[11px] font-mono text-dimmer">spot {detail.spot_price != null ? fmtNum(detail.spot_price) : "—"}</span>
+        <span className="text-[10px] text-dimmer ml-auto">exp {detail.expiry_date || "—"}</span>
+      </div>
+      <table className="w-full text-[11px]">
+        <thead className="text-dimmer">
+          <tr>
+            <th className="p-1 text-right font-medium">CE LTP</th>
+            <th className="p-1 text-center font-medium">Strike</th>
+            <th className="p-1 text-left font-medium">PE LTP</th>
+          </tr>
+        </thead>
+        <tbody>
+          {strikes.map((k) => {
+            const row = byStrike.get(k);
+            const isAtm = atm != null && Number(k) === Number(atm);
+            return (
+              <tr key={k} className={`border-t border-line ${isAtm ? "bg-info/10" : ""}`} data-testid="option-chain-row">
+                <td className="p-1 text-right font-mono text-emerald-300">{px(row.ce)}</td>
+                <td className={`p-1 text-center font-mono ${isAtm ? "text-info font-semibold" : "text-dim"}`}>{fmtNum(k, 0)}{isAtm ? " ·ATM" : ""}</td>
+                <td className="p-1 text-left font-mono text-rose-300">{px(row.pe)}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }
