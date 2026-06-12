@@ -236,8 +236,10 @@ Honest walk-forward optimization. Body: `WfoStartReq` — the single-optimizer f
 | `n_trials_per_window` | 40 | Optuna trials per train window (10–500) |
 | `max_windows` | 12 | Cap (2–36); the OLDEST windows are dropped so deployable params come from the newest data |
 | `method` | `"bayesian"` | `bayesian` \| `genetic` (grid unsupported per-window) |
+| `option_aware` | false | WFO v2: after stitching, pair the OOS trades with real option candles once and report rupee results |
+| `option_config` | null | Required when `option_aware=true`; same shape as the re-rank `option_config` |
 
-Per window: re-optimize on the train slice only → evaluate that window's best params on its unseen test slice → stitch all test-window trades into one OOS equity curve. The job doc gets `kind="wfo"` and, when done, a `wfo` object: `windows[]` (train/test ranges, per-window best params, IS/OOS metrics), `stitched_oos` (the headline metrics), `stitched_oos_equity`, `efficiency` (OOS pnl/day ÷ IS pnl/day; null when IS ≤ 0), `consistency`, `param_stability` (rel_spread of each param across windows), `final_params` (best of the most recent train window; also saved as `best_params` plus a full `best_backtest_run_id`). Cancel works at trial boundaries; pause/resume works at window granularity (a half-finished window re-runs). Returns `{ job_id, status: "queued", kind: "wfo" }`.
+Per window: re-optimize on the train slice only → evaluate that window's best params on its unseen test slice → stitch all test-window trades into one OOS equity curve. The job doc gets `kind="wfo"` and, when done, a `wfo` object: `windows[]` (train/test ranges, per-window best params, IS/OOS metrics), `stitched_oos` (the headline metrics), `stitched_oos_equity`, `efficiency` (OOS pnl/day ÷ IS pnl/day; null when IS ≤ 0), `consistency`, `param_stability` (rel_spread of each param across windows), `final_params` (best of the most recent train window; also saved as `best_params` plus a full `best_backtest_run_id`), and — when `option_aware` — `option_oos` (`net_pnl_value`, `win_rate`, `paired_trade_count`, `total_charges`, `coverage`, `per_window[]` rupee P&L, `rupee_consistency`, compact rupee `equity`, `config` echo; or `{error}` when pairing failed — the spot stitch is never affected). Window re-optimization itself stays on spot. Cancel works at trial boundaries; pause/resume works at window granularity (a half-finished window re-runs). Returns `{ job_id, status: "queued", kind: "wfo" }`.
 
 ### `GET /api/optimize/jobs?limit=50`
 Recent jobs (lightweight projection — excludes `trial_log`, `heatmap`, `robustness`, `rerank`, `param_space`, `top_n_alternatives`, `wfo`, `wfo_windows`, `wfo_oos_trades`).
@@ -260,7 +262,7 @@ Re-launches the worker for a `paused` / `interrupted` / `failed` job. Rehydrates
 Remove a job.
 
 ### `POST /api/optimize/apply-as-preset/{job_id}?name=<preset_name>`
-Save best params as a Preset. Accepts jobs with status `done`, `cancelled`, `paused`, `interrupted`, or `failed` — uses `best_params` with a fallback to `best_so_far.params`. Returns 400 if no params exist yet.
+Save best params as a Preset. Accepts jobs with status `done`, `cancelled`, `paused`, `interrupted`, or `failed` — uses `best_params` with a fallback to `best_so_far.params`. Returns 400 if no params exist yet. When the job carried an `option_config` (option re-rank or option-aware WFO), the preset stores `config.execution` (moneyness, dte_filter, exit_mode, premium levels, lots, cost_config) plus `source_job_kind` — Backtest Lab re-applies this policy on preset load and the deployment form prefills option policy + auto-paper fallbacks from it.
 
 ## Presets and Profiles
 
@@ -323,6 +325,9 @@ Slice 5 pre-flight check. Returns spot coverage (last 30 trading days), upcoming
 
 ### `GET /api/deployments/quality?source_type=...&source_id=...`
 Slice 9 quality evaluation against the source. Returns severity-colored warnings.
+
+### `GET /api/deployments/readiness?source_type=preset|backtest_run&source_id=...`
+Deployment-readiness evidence (informational, never blocks): `{source: {strategy_id, instrument, has_execution}, wfo, option_evidence}`. `wfo` = latest completed honest-WFO job for the strategy/instrument (`efficiency`, `windows`/`positive_windows`/`consistency_pct`, `option_oos_net`, `params_match` vs the source's params). `option_evidence` = latest option-rupee proof, preferring an exact-params option re-rank job, else an option-paired backtest run (`net_pnl_value`, `win_rate`, `paired_trade_count`, `params_match`). Surfaced as the "Validation evidence" card in the deployment form; missing evidence names the step to run.
 
 ### `GET /api/deployments/metrics?strategy_id=&include_ineligible=false&limit=100`
 Session-gated forward metrics for deployments. By default returns only fully eligible deployments (`complete_session_count >= 10`). Pass `include_ineligible=1` to also get low-sample deployments — the Strategy Library does this and renders them under an amber "low sample" badge. Metrics are computed from closed `paper_trades`, but headline win-rate / avg P&L / profit factor include only trades whose entry session had at least 70% coverage in the 10:00-15:00 IST window.

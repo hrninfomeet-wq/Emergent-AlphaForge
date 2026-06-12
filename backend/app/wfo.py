@@ -167,6 +167,100 @@ def stitch_equity_curve(trades: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return curve
 
 
+def _ts_ms_to_ist_date(ts_ms: Any) -> str:
+    """Epoch-ms → IST calendar date (ISO). Empty string on garbage."""
+    try:
+        from datetime import timedelta
+        dt = datetime.fromtimestamp(int(ts_ms) / 1000, tz=timezone.utc) + timedelta(hours=5, minutes=30)
+        return dt.strftime("%Y-%m-%d")
+    except (TypeError, ValueError, OSError):
+        return ""
+
+
+def bucket_option_pnl_by_window(
+    paired_trades: List[Dict[str, Any]],
+    windows: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Per-window rupee P&L for the option-aware OOS stitch.
+
+    Buckets PAIRED option trades into WFO test windows by the spot signal's
+    entry date (IST). Returns one row per window with the window's net rupee
+    P&L and paired-trade count — the rupee analogue of OOS consistency.
+    """
+    rows: List[Dict[str, Any]] = []
+    for w in windows:
+        a = str(w.get("test_start") or "")
+        b = str(w.get("test_end") or "")
+        pnl = 0.0
+        n = 0
+        for t in paired_trades:
+            d = _ts_ms_to_ist_date(t.get("signal_entry_ts"))
+            if a and b and d and a <= d <= b:
+                pnl += float(t.get("option_pnl_value", 0.0) or 0.0)
+                n += 1
+        rows.append({
+            "index": w.get("index"),
+            "test_start": a,
+            "test_end": b,
+            "pnl_value": round(pnl, 2),
+            "paired_trade_count": n,
+        })
+    return rows
+
+
+def option_oos_summary(
+    sim_result: Dict[str, Any],
+    windows: List[Dict[str, Any]],
+    option_cfg: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Shape the paired-simulation output into the compact `wfo.option_oos`
+    block: headline rupee metrics, per-window rupee consistency, and a small
+    rupee equity curve. Pure — testable without a DB."""
+    metrics = sim_result.get("metrics") or {}
+    coverage = sim_result.get("coverage") or {}
+    paired = [t for t in (sim_result.get("trades") or []) if t.get("status") == "PAIRED"]
+    paired_sorted = sorted(paired, key=lambda t: int(t.get("option_exit_ts") or t.get("signal_exit_ts") or 0))
+    eq = 0.0
+    curve: List[Dict[str, Any]] = []
+    for t in paired_sorted:
+        eq += float(t.get("option_pnl_value", 0.0) or 0.0)
+        curve.append({
+            "ts": t.get("option_exit_ts") or t.get("signal_exit_ts"),
+            "equity_value": round(eq, 2),
+        })
+    if len(curve) > _MAX_STITCHED_EQUITY_POINTS:
+        idx = np.linspace(0, len(curve) - 1, _MAX_STITCHED_EQUITY_POINTS).astype(int)
+        curve = [curve[i] for i in idx]
+    per_window = bucket_option_pnl_by_window(paired_sorted, windows)
+    with_trades = [r for r in per_window if r["paired_trade_count"] > 0]
+    positive = sum(1 for r in with_trades if r["pnl_value"] > 0)
+    return {
+        "net_pnl_value": float(metrics.get("total_option_pnl_value", 0.0) or 0.0),
+        "win_rate": float(metrics.get("win_rate", 0.0) or 0.0),
+        "paired_trade_count": int(metrics.get("paired_trade_count", 0) or 0),
+        "total_charges": float(metrics.get("total_charges", 0.0) or 0.0),
+        "coverage": coverage,
+        "per_window": per_window,
+        "rupee_consistency": {
+            "windows_with_trades": len(with_trades),
+            "positive_windows": positive,
+            "consistency_pct": round(positive / len(with_trades) * 100, 1) if with_trades else 0.0,
+        },
+        "equity": curve,
+        "config": {
+            "moneyness": option_cfg.get("moneyness", "atm"),
+            "dte_filter": option_cfg.get("dte_filter"),
+            "lots": option_cfg.get("lots", 1),
+            "exit_mode": option_cfg.get("exit_mode", "spot_exit"),
+            "option_target_pts": option_cfg.get("option_target_pts"),
+            "option_stop_pts": option_cfg.get("option_stop_pts"),
+            "option_target_pct": option_cfg.get("option_target_pct"),
+            "option_stop_pct": option_cfg.get("option_stop_pct"),
+            "costs_enabled": bool((option_cfg.get("cost_config") or {}).get("enabled")),
+        },
+    }
+
+
 def walk_forward_efficiency(windows: List[Dict[str, Any]]) -> Optional[float]:
     """OOS pnl-per-test-day divided by IS pnl-per-train-day, summed over all
     completed windows. ~1.0 means the optimized edge fully survived out of
@@ -273,6 +367,95 @@ def _evaluate_slice(
     metrics["ce_count"] = int(ce)
     metrics["pe_count"] = int(len(trades) - ce)
     return metrics, trades
+
+
+async def _pair_oos_with_options(
+    db, oos_trades: List[Dict[str, Any]], instrument: str, option_cfg: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Pair the stitched OOS spot trades with REAL option candles once — the
+    same engine and data-loading pattern as the optimizer's option re-rank,
+    but for a single trade list. Returns the raw simulate() result
+    ({metrics, coverage, trades}). Heavy imports stay lazy (see module note).
+    """
+    from app.optimizer import _resolve_expiry_by_trade
+    from app.options_universe import select_contract_for_signal
+    from app.option_backtest import simulate_paired_option_trades
+    from app.dte import normalize_dte_filter, compute_dte
+
+    moneyness = str(option_cfg.get("moneyness") or "atm")
+    lots = int(option_cfg.get("lots") or 1)
+    fixed_expiry = option_cfg.get("expiry_date")
+    dte_target = normalize_dte_filter(option_cfg.get("dte_filter"))
+    entry_max_age = int(option_cfg.get("entry_max_age_sec") or 120)
+    exit_max_age = int(option_cfg.get("exit_max_age_sec") or 180)
+
+    trades = [t for t in oos_trades if t.get("entry_ts") is not None]
+    all_ts = [int(t["entry_ts"]) for t in trades]
+    all_xt = [int(t["exit_ts"]) for t in trades if t.get("exit_ts") is not None]
+    if not all_ts:
+        return {"metrics": {}, "coverage": {}, "trades": []}
+
+    # Contracts windowed over the OOS span (+expiry margin), like the re-rank.
+    contract_query: Dict[str, Any] = {"underlying": instrument}
+    if fixed_expiry:
+        contract_query["expiry_date"] = fixed_expiry
+    else:
+        win_start = _ts_ms_to_ist_date(min(all_ts))
+        last_ms = max(all_xt) if all_xt else max(all_ts)
+        win_end = _ts_ms_to_ist_date(last_ms + 21 * 24 * 3600 * 1000)
+        contract_query["expiry_date"] = {"$gte": win_start, "$lte": win_end}
+    contracts = await db.option_contracts.find(contract_query, {"_id": 0}).sort(
+        [("expiry_date", 1), ("strike", 1), ("side", 1)]
+    ).to_list(length=None)
+    expiry_dates_sorted = sorted({str(c.get("expiry_date")) for c in contracts if c.get("expiry_date")})
+
+    if dte_target is not None:
+        trades = [t for t in trades
+                  if compute_dte(_ts_ms_to_ist_date(int(t["entry_ts"])), expiry_dates_sorted) in dte_target]
+    if not trades:
+        return {"metrics": {}, "coverage": {}, "trades": []}
+
+    expiry_by_trade = _resolve_expiry_by_trade(trades, contracts, fixed_expiry)
+    union_keys: set = set()
+    for idx, t in enumerate(trades):
+        rexp = fixed_expiry or expiry_by_trade.get(idx)
+        if not rexp:
+            continue
+        elig = [c for c in contracts if str(c.get("expiry_date", "")) == str(rexp)]
+        try:
+            sel = select_contract_for_signal(
+                contracts=elig, underlying=instrument,
+                spot_price=float(t.get("entry_price", 0.0)),
+                direction=str(t.get("direction", "")).upper(), moneyness=moneyness,
+            )
+        except Exception:
+            sel = None
+        if sel and sel.get("instrument_key"):
+            union_keys.add(str(sel["instrument_key"]))
+
+    candles_df = pd.DataFrame()
+    if union_keys:
+        cq = {"instrument_key": {"$in": sorted(union_keys)},
+              "ts": {"$gte": min(all_ts) - entry_max_age * 1000,
+                     "$lte": (max(all_xt) if all_xt else max(all_ts))}}
+        rows = await db.options_1m.find(cq, {"_id": 0}).sort("ts", 1).to_list(length=4000000)
+        if rows:
+            candles_df = pd.DataFrame(rows)
+
+    return await asyncio.to_thread(
+        simulate_paired_option_trades,
+        spot_trades=trades, contracts=contracts, option_candles=candles_df,
+        underlying=instrument, moneyness=moneyness, lots=lots,
+        entry_max_age_sec=entry_max_age, exit_max_age_sec=exit_max_age,
+        expiry_by_trade=expiry_by_trade, fixed_expiry_date=fixed_expiry,
+        exit_mode=option_cfg.get("exit_mode") or "spot_exit",
+        option_target_pts=option_cfg.get("option_target_pts"),
+        option_stop_pts=option_cfg.get("option_stop_pts"),
+        option_target_pct=option_cfg.get("option_target_pct"),
+        option_stop_pct=option_cfg.get("option_stop_pct"),
+        cost_config=option_cfg.get("cost_config"),
+        sizing_config=option_cfg.get("sizing_config"),
+    )
 
 
 async def run_wfo(job_id: str, payload: Dict[str, Any], resume: bool = False) -> None:
@@ -514,6 +697,22 @@ async def run_wfo(job_id: str, payload: Dict[str, Any], resume: bool = False) ->
                 job_id, payload, strategy, df_final, final_params,
                 instrument, costs, pretrade, run_walkforward=True, option_config=None)
 
+        # ---- Option-aware OOS (v2): rupee reality check on the stitch ----
+        # Pair the stitched OOS trades with real option candles once and report
+        # net rupee + per-window rupee consistency next to the spot stitch.
+        # Never fails the job: data gaps degrade to an `error`/low-coverage
+        # block the UI can show honestly.
+        option_oos = None
+        if payload.get("option_aware") and (payload.get("option_config") or {}) and oos_sorted:
+            try:
+                from app.db import get_db
+                opt_cfg = payload.get("option_config") or {}
+                sim = await _pair_oos_with_options(get_db(), oos_sorted, instrument, opt_cfg)
+                option_oos = option_oos_summary(sim, usable, opt_cfg)
+            except Exception as e:
+                log.exception(f"WFO {job_id}: option-aware OOS pairing failed")
+                option_oos = {"error": str(e)}
+
         final_status = "cancelled" if (cancelled and len(completed_windows) < len(windows)) else "done"
         await _update_job(job_id, {
             "status": final_status,
@@ -532,6 +731,7 @@ async def run_wfo(job_id: str, payload: Dict[str, Any], resume: bool = False) ->
                 "param_stability": stability,
                 "final_params": final_params,
                 "final_params_window": usable[-1]["index"] if usable else None,
+                "option_oos": option_oos,
             },
             # Bulky intermediates are no longer needed once `wfo` is written.
             "wfo_oos_trades": [],

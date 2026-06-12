@@ -14,7 +14,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 
 from app.wfo import (  # noqa: E402
+    bucket_option_pnl_by_window,
     oos_consistency,
+    option_oos_summary,
     param_stability,
     split_windows,
     stitch_equity_curve,
@@ -238,3 +240,92 @@ def test_stability_skips_fixed_params_and_sorts_by_spread():
 
 def test_stability_empty():
     assert param_stability([], SPACE) == []
+
+
+# ---------------------------------------------------------------------------
+# Option-aware OOS (WFO v2) pure helpers
+# ---------------------------------------------------------------------------
+
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+_IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def _ist_ms(date_iso, hh=10, mm=0):
+    dt = datetime.fromisoformat(f"{date_iso}T{hh:02d}:{mm:02d}:00").replace(tzinfo=_IST)
+    return int(dt.timestamp() * 1000)
+
+
+_WINDOWS = [
+    {"index": 0, "test_start": "2025-01-06", "test_end": "2025-01-10"},
+    {"index": 1, "test_start": "2025-01-13", "test_end": "2025-01-17"},
+]
+
+
+def _paired(date_iso, pnl, status="PAIRED"):
+    return {
+        "status": status,
+        "signal_entry_ts": _ist_ms(date_iso),
+        "option_exit_ts": _ist_ms(date_iso, 14),
+        "option_pnl_value": pnl,
+    }
+
+
+def test_bucket_option_pnl_by_window_sums_per_test_range():
+    paired = [
+        _paired("2025-01-06", 1000.0),
+        _paired("2025-01-09", -400.0),
+        _paired("2025-01-14", 250.0),
+        _paired("2025-01-20", 9999.0),  # outside both windows
+    ]
+    rows = bucket_option_pnl_by_window(paired, _WINDOWS)
+    assert rows[0]["pnl_value"] == 600.0
+    assert rows[0]["paired_trade_count"] == 2
+    assert rows[1]["pnl_value"] == 250.0
+    assert rows[1]["paired_trade_count"] == 1
+
+
+def test_bucket_handles_missing_entry_ts():
+    rows = bucket_option_pnl_by_window([{"option_pnl_value": 100.0}], _WINDOWS)
+    assert rows[0]["paired_trade_count"] == 0
+    assert rows[1]["paired_trade_count"] == 0
+
+
+def test_option_oos_summary_shapes_block():
+    trades = [
+        _paired("2025-01-06", 1000.0),
+        _paired("2025-01-14", -200.0),
+        _paired("2025-01-15", 50.0, status="MISSING_CONTRACT"),  # not PAIRED -> excluded
+    ]
+    sim = {
+        "metrics": {"total_option_pnl_value": 800.0, "win_rate": 50.0,
+                    "paired_trade_count": 2, "total_charges": 90.0},
+        "coverage": {"spot_trade_count": 3, "paired_trade_count": 2},
+        "trades": trades,
+    }
+    cfg = {"moneyness": "atm", "dte_filter": [0, 1, 2], "lots": 1,
+           "exit_mode": "spot_exit", "cost_config": {"enabled": True}}
+    out = option_oos_summary(sim, _WINDOWS, cfg)
+    assert out["net_pnl_value"] == 800.0
+    assert out["paired_trade_count"] == 2
+    assert out["total_charges"] == 90.0
+    # per-window rupee split and consistency
+    assert out["per_window"][0]["pnl_value"] == 1000.0
+    assert out["per_window"][1]["pnl_value"] == -200.0
+    assert out["rupee_consistency"]["windows_with_trades"] == 2
+    assert out["rupee_consistency"]["positive_windows"] == 1
+    assert out["rupee_consistency"]["consistency_pct"] == 50.0
+    # cumulative rupee equity over PAIRED trades only
+    assert [p["equity_value"] for p in out["equity"]] == [1000.0, 800.0]
+    # config echo for audit
+    assert out["config"]["moneyness"] == "atm"
+    assert out["config"]["dte_filter"] == [0, 1, 2]
+    assert out["config"]["costs_enabled"] is True
+
+
+def test_option_oos_summary_empty_sim():
+    out = option_oos_summary({"metrics": {}, "coverage": {}, "trades": []}, _WINDOWS, {})
+    assert out["net_pnl_value"] == 0.0
+    assert out["paired_trade_count"] == 0
+    assert out["rupee_consistency"]["windows_with_trades"] == 0
+    assert out["equity"] == []

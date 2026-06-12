@@ -151,7 +151,8 @@ The Optimizer page runs automated parameter searches to find the best strategy c
 - **Parameter Stability bars:** red bars mark parameters that wander window-to-window — a sign they are fitted to noise, not structure.
 - **Per-window table:** each window's chosen params and IS/OOS results.
 - The deployable `best_params` come from the most recent train window, saved with a full backtest run, so Save-as-Preset / View-Best-in-Lab / deployments work exactly as for single runs. Job History tags these runs `walk-fwd`.
-- Walk-forward evaluates on spot points (v1). For option-rupee realism, run the resulting preset through an Option re-rank optimization or an option backtest before deploying.
+- **Option OOS (₹) block** (when "Option-aware OOS" is on, default): the same stitched OOS trades paired with real option candles — net rupee after charges, win rate, pairing %, per-window rupee chips, and rupee consistency. A spot-positive stitch with a negative rupee result means theta/spread/costs eat the edge — do not deploy on the spot number alone. Window re-optimization itself still searches on spot points.
+- **Save as Preset stores the execution policy** (moneyness, DTE, exit mode, premium levels, costs) with the params. Loading the preset in Backtest Lab re-applies it; the deployment form prefills from it. The Rocket button on a preset row jumps straight to the deployment form with that preset preselected.
 
 ### After the run
 - **View Best in Lab** — opens the saved best-result full backtest (with trades, equity curve, walk-forward) in the Backtest Lab.
@@ -186,6 +187,7 @@ This is the forward-testing surface. Workflow:
    - Upcoming option expiries.
    - Active vs expired contracts.
    - Upstox token state.
+3b. The **Validation evidence** card (informational) shows whether the honest pipeline ran for this source: the latest completed walk-forward for the strategy (efficiency + OOS-positive windows) and the latest option-rupee proof (re-rank or option backtest), each flagged when its params differ from the preset. Missing evidence names the step to run — green/green before deploying is the canonical path.
 4. The QualityBadge surfaces walk-forward and metrics warnings:
    - Missing walk-forward validation.
    - Walk-forward IS/OOS divergence (OOS < IS × 0.7 or explicit divergence flag).

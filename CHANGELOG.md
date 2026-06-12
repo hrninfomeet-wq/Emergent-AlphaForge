@@ -2,6 +2,17 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.16.x] — Pipeline Alignment: Preset Execution Policy, Readiness, Option-Aware WFO (2026-06-12)
+
+449 backend tests pass. Implements the accepted alignment recommendations (1, 2, 4, 5); recommendation 3 (retiring the legacy spot evaluation) deferred by user decision.
+
+- **Presets carry their execution policy** (`app/preset_execution.py`): apply-as-preset now stores `config.execution` (moneyness, DTE filter, exit mode, premium levels, lots, costs) derived from the job's `option_config`, plus `source_job_kind`. Backtest Lab re-applies the policy on preset load (option pairing auto-enabled under the same terms); the deployment form prefills option policy + auto-paper premium fallbacks from it (pts/pct mapped, guarded so the 15s refresh never clobbers manual edits). Old presets keep working (no execution block → unchanged behavior).
+- **Deployment readiness** (`GET /api/deployments/readiness?source_type=&source_id=`): informational evidence card in the deployment form next to the quality gate — latest completed honest-WFO for the strategy (efficiency, OOS-positive windows, params-match, option-OOS ₹ when present) and latest option-rupee evidence (exact-params re-rank job preferred, else option-paired backtest run). Missing evidence shows as the next step to run, making the canonical pipeline (WFO → option rupee → deploy) visible at the decision point.
+- **Deploy deep-link**: each preset row in the Optimizer gets a Deploy button → `/live?preset=NAME` preselects it as the deployment source.
+- **Option-aware walk-forward (WFO v2)** (`WfoStartReq.option_aware` + `option_config`; default ON in the UI form): after stitching, the OOS trades are paired ONCE with real option candles (same engine + windowed data loading as the re-rank) and the results panel shows an "Option OOS (₹)" block — net rupee, win rate, charges, pairing %, per-window rupee chips, and rupee consistency. Pairing failures or data gaps degrade to an honest error/low-coverage note; the spot stitch is never affected. Window re-optimization itself stays on spot (per-window option evaluation remains future work).
+- **Optimizer DTE filter is a multi-select** (ALL / 0–6 chips, was a single-token dropdown capped at DTE3); legacy saved setups and job clones coerce automatically. The option sub-panel is shared by re-rank and WFO rupee check (top-K hidden for WFO).
+- New tests: 4 WFO option-OOS pure helpers (window bucketing, summary shaping) + 5 preset-execution derivation; 449 total.
+
 ## [0.15.x] — Backtest Lab / Optimizer Alignment Fixes (2026-06-12)
 
 440 backend tests pass. Course-alignment pass over the research surfaces (user review of 2026-06-12).

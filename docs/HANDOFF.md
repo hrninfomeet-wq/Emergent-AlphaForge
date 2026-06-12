@@ -6,7 +6,16 @@ This is the entry point for the next AI agent or developer. Read it before editi
 
 ## Status In One Line
 
-Latest (2026-06-12): a **course-alignment pass on the research surfaces** — multi-select DTE filter, ATM default moneyness, premium exits replicable live via deployment pts fallbacks, optimizer re-rank pts support, walk-forward naming split, lots/sizing UI clarity; a unit audit found no mismatches. Before that (2026-06-11): paper-mode deployments **auto-trade every clean signal** (`risk.auto_paper`) at real option premium with strategy-defined exits and a per-minute marker; low-sample forward metrics visible with a badge. **440 pytest tests pass.** The local Docker stack is healthy and was rebuilt with these changes. Backend code changes require a container rebuild.
+Latest (2026-06-12, second pass): **pipeline alignment** — presets carry their execution policy (`config.execution`, applied in Backtest Lab + prefilled in the deployment form), a deployment-readiness evidence card (`GET /api/deployments/readiness`) + per-preset Deploy deep-link, **option-aware WFO** (stitched OOS paired with real option candles → `wfo.option_oos` rupee block), and a multi-select Optimizer DTE filter. Recommendation 3 (retire legacy spot evaluation) deferred by user. Earlier same day: multi-select DTE in Backtest Lab, ATM default moneyness, premium exits replicable live (deployment pts fallbacks), re-rank pts support, walk-forward naming split. **449 pytest tests pass.** The local Docker stack is healthy and rebuilt with these changes.
+
+## Recent Work — Pipeline Alignment (2026-06-12, second pass)
+
+See CHANGELOG 0.16.x. Key implementation notes for the next agent:
+
+- `app/preset_execution.py execution_from_option_config` derives `preset.config.execution` in `apply_opt_as_preset` (works for single re-rank and option-aware WFO jobs; spot-only jobs store no block). Backtest Lab `applyPreset` maps it back onto the option form; LiveSignals prefills option policy + auto-paper fallbacks from it (`prefillAppliedRef` guards against the 15s preset refresh clobbering edits).
+- `GET /api/deployments/readiness` (registered before `/deployments/{id}`) returns `{source, wfo, option_evidence}`; evidence matching prefers exact `best_params == preset.params`. UI: `ReadinessBadge` in `LiveSignals.jsx` between Preflight and Quality badges. `/live?preset=NAME` deep-link preselects the source (Rocket button per preset row in the Optimizer).
+- WFO v2: `WfoStartReq.option_aware/option_config` → `wfo.py _pair_oos_with_options` (re-rank-style windowed contract/candle loading over the stitched OOS trades, simulated once) → `option_oos_summary` (pure; per-window bucketing by `signal_entry_ts` IST date against window test ranges). Wrapped in try/except — pairing failure writes `option_oos.error`, never fails the job. Resume-safe (runs in finalize, after windows complete).
+- Optimizer.jsx: one shared `buildOptionConfig()` feeds both the re-rank payload and the WFO payload; DTE chips state is an int array (legacy localStorage/job tokens coerced via `parseDteFilter` in `loadSetup`/clone).
 
 ## Recent Work — Backtest Lab / Optimizer Alignment Fixes (2026-06-12)
 

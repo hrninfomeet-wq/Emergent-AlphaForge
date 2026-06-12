@@ -164,6 +164,27 @@ export default function BacktestLab() {
       if (cfg.params) {
         pendingParamsRef.current = { strategy_id: targetStrategy, params: { ...cfg.params } };
       }
+      // Execution policy travels with the preset: re-apply the option context
+      // the result was validated under (moneyness, DTE, exit mode, levels,
+      // costs) so a re-test runs under the same terms it was optimized under.
+      const ex = cfg.execution || null;
+      const exFields = ex ? {
+        option_backtest_enabled: true,
+        option_moneyness: ex.moneyness || "atm",
+        option_dte_filter: parseDteFilter(ex.dte_filter),
+        option_lots: ex.lots || 1,
+        option_exit_mode: ex.exit_mode || "spot_exit",
+        option_sl_tp_unit: (ex.option_target_pts != null || ex.option_stop_pts != null) ? "pts" : "pct",
+        option_target_pts: ex.option_target_pts ?? "",
+        option_stop_pts: ex.option_stop_pts ?? "",
+        option_target_pct: ex.option_target_pct ?? "",
+        option_stop_pct: ex.option_stop_pct ?? "",
+        option_costs_enabled: Boolean(ex.cost_config?.enabled),
+        ...(ex.cost_config?.enabled ? {
+          option_brokerage_per_order: ex.cost_config.brokerage_per_order ?? 0,
+          option_spread_pct: ex.cost_config.spread_pct_of_premium ?? 1.0,
+        } : {}),
+      } : {};
       setConfig((c) => ({
         ...c,
         instrument: cfg.instrument || c.instrument,
@@ -171,8 +192,11 @@ export default function BacktestLab() {
         strategy_id: cfg.strategy_id || c.strategy_id,
         params: cfg.params ? { ...cfg.params } : c.params,
         name: name,
+        ...exFields,
       }));
-      toast.success(`Preset "${name}" applied. Click Run Backtest to test it.`);
+      toast.success(ex
+        ? `Preset "${name}" applied with its execution policy (option pairing on). Click Run Backtest.`
+        : `Preset "${name}" applied. Click Run Backtest to test it.`);
     } catch (e) {
       toast.error("Failed to apply preset");
     }

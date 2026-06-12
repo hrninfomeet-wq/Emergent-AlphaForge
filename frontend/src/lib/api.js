@@ -170,6 +170,8 @@ export const api = {
     apiClient.get("/deployments/preflight", { params: { instrument, ...params } }).then((r) => r.data),
   deploymentQuality: (sourceType, sourceId) =>
     apiClient.get("/deployments/quality", { params: { source_type: sourceType, source_id: sourceId } }).then((r) => r.data),
+  deploymentReadiness: (sourceType, sourceId) =>
+    apiClient.get("/deployments/readiness", { params: { source_type: sourceType, source_id: sourceId } }).then((r) => r.data),
 
   // Optimizer
   startOptimization: (payload) =>

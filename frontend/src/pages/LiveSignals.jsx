@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { Activity, Briefcase, Check, RefreshCw, ShieldAlert, SkipForward, Sparkles, X, Zap } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
@@ -150,6 +151,71 @@ export default function LiveSignals() {
       cancelled = true;
     };
   }, [formInstrument]);
+
+  // Deep-link: /live?preset=NAME preselects that preset as the deployment
+  // source (used by the Optimizer's per-preset Deploy button). Applied once.
+  const [searchParams] = useSearchParams();
+  const deepLinkAppliedRef = useRef(false);
+  useEffect(() => {
+    const presetName = searchParams.get("preset");
+    if (!presetName || deepLinkAppliedRef.current || presets.length === 0) return;
+    if (!presets.some((p) => p.name === presetName)) return;
+    deepLinkAppliedRef.current = true;
+    setDeploymentForm((prev) => ({
+      ...prev,
+      source_type: "preset",
+      source_id: presetName,
+      name: `${presetName} deployment`,
+    }));
+  }, [searchParams, presets]);
+
+  // Execution policy travels with the preset: prefill option policy and the
+  // auto-paper premium fallbacks from preset.config.execution so the
+  // deployment runs under the same terms the result was validated under.
+  // The user can still override any field before creating. Guarded by a ref so
+  // the 15s preset refresh can't re-apply and clobber in-progress edits.
+  const prefillAppliedRef = useRef(null);
+  useEffect(() => {
+    if (deploymentForm.source_type !== "preset" || !deploymentForm.source_id) return;
+    if (prefillAppliedRef.current === deploymentForm.source_id) return;
+    const preset = presets.find((p) => p.name === deploymentForm.source_id);
+    const ex = preset?.config?.execution;
+    if (!ex) return;
+    prefillAppliedRef.current = deploymentForm.source_id;
+    const dteList = Array.isArray(ex.dte_filter) ? ex.dte_filter
+      : (ex.dte_filter != null && ex.dte_filter !== "all" ? [ex.dte_filter] : null);
+    const usePts = ex.option_target_pts != null || ex.option_stop_pts != null;
+    setDeploymentForm((prev) => ({
+      ...prev,
+      option_moneyness: ex.moneyness || prev.option_moneyness,
+      ...(dteList && dteList.length ? { dte_filter: dteList.join(",") } : {}),
+      default_lots: ex.lots || prev.default_lots,
+      ...(ex.exit_mode === "option_levels" ? {
+        auto_paper_unit: usePts ? "pts" : "pct",
+        auto_paper_target_pts: ex.option_target_pts ?? "",
+        auto_paper_stop_pts: ex.option_stop_pts ?? "",
+        auto_paper_target_pct: ex.option_target_pct ?? "",
+        auto_paper_stop_pct: ex.option_stop_pct ?? "",
+      } : {}),
+    }));
+  }, [deploymentForm.source_type, deploymentForm.source_id, presets]);
+
+  // Deployment-readiness evidence (honest WFO + option-rupee) for the source.
+  const [readiness, setReadiness] = useState(null);
+  const [readinessBusy, setReadinessBusy] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    if (!deploymentForm.source_id) {
+      setReadiness(null);
+      return () => {};
+    }
+    setReadinessBusy(true);
+    api.deploymentReadiness(deploymentForm.source_type, deploymentForm.source_id)
+      .then((res) => { if (!cancelled) setReadiness(res); })
+      .catch(() => { if (!cancelled) setReadiness(null); })
+      .finally(() => { if (!cancelled) setReadinessBusy(false); });
+    return () => { cancelled = true; };
+  }, [deploymentForm.source_type, deploymentForm.source_id]);
 
   // Fetch deployment quality whenever source changes. Resets acknowledgment
   // checkbox to false so the user must consciously re-tick it for each source.
@@ -393,6 +459,8 @@ export default function LiveSignals() {
         formInstrument={formInstrument}
         quality={quality}
         qualityBusy={qualityBusy}
+        readiness={readiness}
+        readinessBusy={readinessBusy}
         busy={busy}
       />
 
@@ -503,7 +571,7 @@ export default function LiveSignals() {
   );
 }
 
-function StrategyDeploymentsPanel({ deployments, presets, backtestRuns, form, setFormValue, onCreate, onStatus, onEvaluate, preflight, preflightBusy, formInstrument, quality, qualityBusy, busy }) {
+function StrategyDeploymentsPanel({ deployments, presets, backtestRuns, form, setFormValue, onCreate, onStatus, onEvaluate, preflight, preflightBusy, formInstrument, quality, qualityBusy, readiness, readinessBusy, busy }) {
   const sourceOptions = form.source_type === "preset"
     ? presets.map((preset) => ({ id: preset.name, label: preset.name })).filter((item) => item.id)
     : backtestRuns
@@ -730,6 +798,7 @@ function StrategyDeploymentsPanel({ deployments, presets, backtestRuns, form, se
             preflight={preflight}
             preflightBusy={preflightBusy}
           />
+          <ReadinessBadge readiness={readiness} readinessBusy={readinessBusy} />
           <QualityBadge
             quality={quality}
             qualityBusy={qualityBusy}
@@ -1019,6 +1088,64 @@ function PreflightBadge({ instrument, preflight, preflightBusy }) {
   );
 }
 
+
+// Deployment-readiness evidence: did the honest validation steps happen for
+// this source? Informational only (quality gating stays in QualityBadge).
+function ReadinessBadge({ readiness, readinessBusy }) {
+  if (readinessBusy) {
+    return <div className="mt-2 text-[11px] text-dimmer">Checking validation evidence…</div>;
+  }
+  if (!readiness) return null;
+  const wfo = readiness.wfo;
+  const oe = readiness.option_evidence;
+
+  const wfoOk = wfo && wfo.efficiency != null && wfo.efficiency >= 0.7 && (wfo.consistency_pct ?? 0) >= 50;
+  const wfoTone = !wfo ? "miss" : wfoOk ? "ok" : "weak";
+  const oeOk = oe && oe.params_match && Number(oe.net_pnl_value || 0) > 0;
+  const oeTone = !oe ? "miss" : oeOk ? "ok" : "weak";
+
+  const toneCls = { ok: "text-emerald-400", weak: "text-amber-400", miss: "text-dimmer" };
+  const dot = (tone) => (
+    <span className={`inline-block w-1.5 h-1.5 rounded-full ${tone === "ok" ? "bg-emerald-400" : tone === "weak" ? "bg-amber-400" : "bg-zinc-600"}`} />
+  );
+  const inr = (v) => (v == null ? "—" : `₹${Number(v).toLocaleString("en-IN", { maximumFractionDigits: 0 })}`);
+
+  return (
+    <div className="mt-2 rounded-md border border-line bg-bg-1 p-2 space-y-1" data-testid="readiness-badge">
+      <div className="text-[10px] uppercase tracking-wider text-dimmer">Validation evidence (informational)</div>
+      <div className={`flex items-start gap-2 text-[11px] ${toneCls[wfoTone]}`} data-testid="readiness-wfo">
+        <span className="mt-1.5 shrink-0">{dot(wfoTone)}</span>
+        <span>
+          {!wfo && <>No completed honest walk-forward for this strategy. Run one in the Optimizer (Run type: Walk-forward) before trusting the edge.</>}
+          {wfo && (
+            <>
+              Walk-forward: efficiency <b>{wfo.efficiency ?? "n/a"}</b>, {wfo.positive_windows ?? 0}/{wfo.windows ?? 0} windows OOS-positive
+              {wfo.option_oos_net != null && <> · option OOS {inr(wfo.option_oos_net)}</>}
+              {!wfo.params_match && <span className="text-dimmer"> · latest WFO's params differ from this preset</span>}
+            </>
+          )}
+        </span>
+      </div>
+      <div className={`flex items-start gap-2 text-[11px] ${toneCls[oeTone]}`} data-testid="readiness-option">
+        <span className="mt-1.5 shrink-0">{dot(oeTone)}</span>
+        <span>
+          {!oe && <>No option-rupee validation found. Run an Option re-rank optimization or an option-paired backtest so the rupee edge is proven, not assumed.</>}
+          {oe && (
+            <>
+              Option rupee ({oe.kind === "rerank" ? "re-rank" : "backtest"}): net <b>{inr(oe.net_pnl_value)}</b>, win rate {oe.win_rate != null ? `${Number(oe.win_rate).toFixed(1)}%` : "—"}, {oe.paired_trade_count ?? 0} paired
+              {!oe.params_match && <span className="text-dimmer"> · params differ from this preset</span>}
+            </>
+          )}
+        </span>
+      </div>
+      {readiness.source?.has_execution === false && readiness.source?.type === "preset" && (
+        <div className="text-[10px] text-dimmer">
+          This preset carries no execution policy (saved before 2026-06-12 or from a spot-only run) — option policy below is manual.
+        </div>
+      )}
+    </div>
+  );
+}
 
 function QualityBadge({ quality, qualityBusy, sourceId, acknowledged, onAcknowledge }) {
   if (!sourceId) return null;

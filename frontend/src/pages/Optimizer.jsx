@@ -16,18 +16,25 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
   Gauge, Play, RefreshCw, Sparkles, Trash2, ChevronDown, ChevronRight,
   Save, Activity, Trophy, StopCircle, Download, FileJson, FileText, FolderOpen,
-  ExternalLink, Copy, PauseCircle, PlayCircle,
+  ExternalLink, Copy, PauseCircle, PlayCircle, Rocket,
 } from "lucide-react";
 
 const INSTRUMENTS = ["NIFTY", "BANKNIFTY", "SENSEX"];
 const OPT_MONEYNESS = ["atm", "otm1", "otm2", "itm1", "itm2"];
-const OPT_DTE = [
-  { id: "all", name: "All expiries" },
-  { id: "dte0", name: "DTE0 (expiry day)" },
-  { id: "dte1", name: "DTE1" },
-  { id: "dte2", name: "DTE2" },
-  { id: "dte3", name: "DTE3" },
-];
+const DTE_VALUES = [0, 1, 2, 3, 4, 5, 6];
+
+// DTE filter is a multi-select array of ints (empty = all). Older jobs/setups
+// stored a single token ("dte2") or "all" — normalize every shape.
+const parseDteFilter = (value) => {
+  if (value == null || value === "all") return [];
+  const toInt = (v) => {
+    const s = String(v).trim().toLowerCase().replace(/^dte/, "");
+    const n = parseInt(s, 10);
+    return Number.isFinite(n) && n >= 0 ? n : null;
+  };
+  const arr = Array.isArray(value) ? value : [value];
+  return [...new Set(arr.map(toInt).filter((n) => n !== null))].sort((a, b) => a - b);
+};
 const METHODS = [
   { id: "bayesian", name: "Bayesian (Optuna TPE)", desc: "Smart, focuses on promising regions. Recommended.", default_trials: 150 },
   { id: "grid", name: "Grid Search", desc: "Deterministic, exhaustive (sampled if space too large).", default_trials: 200 },
@@ -64,6 +71,9 @@ const DEFAULT_SETUP = {
   wf_mode: "rolling",
   wf_trials_per_window: 40,
   wf_max_windows: 12,
+  // WFO v2: pair the stitched OOS trades with real option candles (rupee
+  // reality check). Uses the same option sub-panel config as the re-rank.
+  wfo_option_aware: true,
   costs_enabled: true,
   pretrade_filters: {},
   pretrade_profile: "None",
@@ -77,7 +87,7 @@ const DEFAULT_SETUP = {
   evaluation_mode: "spot",
   rerank_top_k: 50,
   option_moneyness: "atm",
-  option_dte_filter: "all",
+  option_dte_filter: [], // multi-select ints; empty = all
   option_lots: 1,
   option_exit_mode: "spot_exit",
   option_sl_tp_unit: "pct",
@@ -100,7 +110,10 @@ function loadSetup() {
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object") return { ...DEFAULT_SETUP };
     // Shallow-merge onto defaults so newly added fields always have a value.
-    return { ...DEFAULT_SETUP, ...parsed };
+    const merged = { ...DEFAULT_SETUP, ...parsed };
+    // DTE filter became a multi-select array; coerce legacy "all"/"dte2" tokens.
+    merged.option_dte_filter = parseDteFilter(merged.option_dte_filter);
+    return merged;
   } catch {
     return { ...DEFAULT_SETUP };
   }
@@ -191,6 +204,30 @@ export default function Optimizer() {
     };
   }, [currentJobId, pollKey]);
 
+  // One option_config builder shared by the re-rank payload and the WFO
+  // option-aware OOS payload, so both validate under identical execution terms.
+  const buildOptionConfig = () => ({
+    moneyness: config.option_moneyness,
+    dte_filter: Array.isArray(config.option_dte_filter)
+      && config.option_dte_filter.length > 0
+      && config.option_dte_filter.length < DTE_VALUES.length
+      ? config.option_dte_filter
+      : null,
+    lots: Math.max(1, Number(config.option_lots || 1)),
+    entry_max_age_sec: 120,
+    exit_max_age_sec: 180,
+    exit_mode: config.option_exit_mode,
+    option_target_pts: config.option_exit_mode === "option_levels" && config.option_sl_tp_unit === "pts" && config.option_target_pts !== "" ? Number(config.option_target_pts) : null,
+    option_stop_pts: config.option_exit_mode === "option_levels" && config.option_sl_tp_unit === "pts" && config.option_stop_pts !== "" ? Number(config.option_stop_pts) : null,
+    option_target_pct: config.option_exit_mode === "option_levels" && config.option_sl_tp_unit === "pct" && config.option_target_pct !== "" ? Number(config.option_target_pct) : null,
+    option_stop_pct: config.option_exit_mode === "option_levels" && config.option_sl_tp_unit === "pct" && config.option_stop_pct !== "" ? Number(config.option_stop_pct) : null,
+    cost_config: config.option_costs_enabled ? {
+      enabled: true,
+      brokerage_per_order: Number(config.option_brokerage_per_order || 0),
+      spread_pct_of_premium: Number(config.option_spread_pct || 0),
+    } : null,
+  });
+
   const start = async () => {
     try {
       if (config.run_kind === "walkforward") {
@@ -220,6 +257,8 @@ export default function Optimizer() {
           wf_mode: config.wf_mode,
           n_trials_per_window: Number(config.wf_trials_per_window) || 40,
           max_windows: Number(config.wf_max_windows) || 12,
+          option_aware: Boolean(config.wfo_option_aware),
+          option_config: config.wfo_option_aware ? buildOptionConfig() : null,
         };
         const res = await api.startWfo(payload);
         setCurrentJobId(res.job_id);
@@ -228,23 +267,7 @@ export default function Optimizer() {
         return;
       }
       const optionRerank = config.evaluation_mode === "option_rerank";
-      const optionConfig = optionRerank ? {
-        moneyness: config.option_moneyness,
-        dte_filter: config.option_dte_filter && config.option_dte_filter !== "all" ? config.option_dte_filter : null,
-        lots: Math.max(1, Number(config.option_lots || 1)),
-        entry_max_age_sec: 120,
-        exit_max_age_sec: 180,
-        exit_mode: config.option_exit_mode,
-        option_target_pts: config.option_exit_mode === "option_levels" && config.option_sl_tp_unit === "pts" && config.option_target_pts !== "" ? Number(config.option_target_pts) : null,
-        option_stop_pts: config.option_exit_mode === "option_levels" && config.option_sl_tp_unit === "pts" && config.option_stop_pts !== "" ? Number(config.option_stop_pts) : null,
-        option_target_pct: config.option_exit_mode === "option_levels" && config.option_sl_tp_unit === "pct" && config.option_target_pct !== "" ? Number(config.option_target_pct) : null,
-        option_stop_pct: config.option_exit_mode === "option_levels" && config.option_sl_tp_unit === "pct" && config.option_stop_pct !== "" ? Number(config.option_stop_pct) : null,
-        cost_config: config.option_costs_enabled ? {
-          enabled: true,
-          brokerage_per_order: Number(config.option_brokerage_per_order || 0),
-          spread_pct_of_premium: Number(config.option_spread_pct || 0),
-        } : null,
-      } : null;
+      const optionConfig = optionRerank ? buildOptionConfig() : null;
       const payload = {
         instrument: config.instrument,
         mode: config.mode,
@@ -370,6 +393,7 @@ export default function Optimizer() {
       wf_mode: c.wf_mode ?? prev.wf_mode,
       wf_trials_per_window: c.n_trials_per_window ?? prev.wf_trials_per_window,
       wf_max_windows: c.max_windows ?? prev.wf_max_windows,
+      wfo_option_aware: job.kind === "wfo" ? Boolean(c.option_aware) : prev.wfo_option_aware,
       instrument: c.instrument ?? prev.instrument,
       mode: c.mode ?? prev.mode,
       strategy_id: c.strategy_id ?? prev.strategy_id,
@@ -386,7 +410,7 @@ export default function Optimizer() {
       evaluation_mode: c.evaluation_mode || "spot",
       rerank_top_k: c.rerank_top_k ?? 50,
       option_moneyness: c.option_config?.moneyness ?? prev.option_moneyness,
-      option_dte_filter: c.option_config?.dte_filter ?? "all",
+      option_dte_filter: parseDteFilter(c.option_config?.dte_filter),
       option_lots: c.option_config?.lots ?? prev.option_lots,
       option_exit_mode: c.option_config?.exit_mode ?? "spot_exit",
       option_sl_tp_unit: (c.option_config?.option_target_pts != null || c.option_config?.option_stop_pts != null) ? "pts" : "pct",
@@ -532,7 +556,17 @@ export default function Optimizer() {
                   </div>
                 </div>
                 <div className="text-[10px] text-dimmer leading-snug">
-                  Days are trading days actually present in the data (holiday-aware). With more windows than Max, the oldest are dropped — deployable params always come from the most recent train window. Walk-forward runs on spot evaluation; pair the final preset with an option re-rank run if needed.
+                  Days are trading days actually present in the data (holiday-aware). With more windows than Max, the oldest are dropped — deployable params always come from the most recent train window. Window re-optimization runs on spot evaluation.
+                </div>
+                <div className="flex items-center gap-2 pt-1 border-t border-emerald-500/20">
+                  <Switch
+                    checked={Boolean(config.wfo_option_aware)}
+                    onCheckedChange={(v) => setConfig({ ...config, wfo_option_aware: v })}
+                    data-testid="opt-wfo-option-aware"
+                  />
+                  <span className="text-[11px] text-dim">
+                    <b>Option-aware OOS (₹)</b> — after stitching, pair the OOS trades with real option candles and report net rupee + per-window rupee consistency
+                  </span>
                 </div>
               </div>
             )}
@@ -554,16 +588,21 @@ export default function Optimizer() {
             </Row>
             )}
 
-            {config.run_kind !== "walkforward" && config.evaluation_mode === "option_rerank" && (
+            {((config.run_kind !== "walkforward" && config.evaluation_mode === "option_rerank")
+              || (config.run_kind === "walkforward" && config.wfo_option_aware)) && (
               <div className="rounded-md border border-info/30 bg-info/5 p-2 space-y-2">
-                <div className="text-[10px] uppercase tracking-wider text-info">Option execution (re-rank)</div>
+                <div className="text-[10px] uppercase tracking-wider text-info">
+                  {config.run_kind === "walkforward" ? "Option execution (OOS rupee check)" : "Option execution (re-rank)"}
+                </div>
                 <div className="grid grid-cols-2 gap-2">
+                  {config.run_kind !== "walkforward" && (
                   <div>
                     <Label className="text-[11px] text-dim">Re-rank top-K</Label>
                     <Input type="number" min={1} max={500} value={config.rerank_top_k}
                       onChange={(e) => setConfig({ ...config, rerank_top_k: e.target.value })}
                       className="bg-bg-2 border-line h-8 text-xs font-mono mt-1" data-testid="opt-rerank-k" />
                   </div>
+                  )}
                   <div>
                     <Label className="text-[11px] text-dim">Moneyness</Label>
                     <Select value={config.option_moneyness} onValueChange={(v) => setConfig({ ...config, option_moneyness: v })}>
@@ -573,10 +612,34 @@ export default function Optimizer() {
                   </div>
                   <div>
                     <Label className="text-[11px] text-dim">DTE filter</Label>
-                    <Select value={config.option_dte_filter} onValueChange={(v) => setConfig({ ...config, option_dte_filter: v })}>
-                      <SelectTrigger className="bg-bg-2 border-line h-8 mt-1"><SelectValue /></SelectTrigger>
-                      <SelectContent>{OPT_DTE.map((d) => <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>)}</SelectContent>
-                    </Select>
+                    <div className="flex flex-wrap items-center gap-1 mt-1" data-testid="opt-dte-multiselect">
+                      <button
+                        type="button"
+                        onClick={() => setConfig({ ...config, option_dte_filter: [] })}
+                        className={`px-1.5 py-1 rounded text-[10px] font-mono border ${(config.option_dte_filter || []).length === 0 ? "bg-info text-bg-0 border-info" : "bg-bg-2 text-dim border-line hover:text-foreground"}`}
+                        title="Every weekly-expiry session"
+                      >
+                        ALL
+                      </button>
+                      {DTE_VALUES.map((d) => {
+                        const selected = (config.option_dte_filter || []).includes(d);
+                        return (
+                          <button
+                            key={d}
+                            type="button"
+                            onClick={() => {
+                              const cur = new Set(config.option_dte_filter || []);
+                              if (cur.has(d)) cur.delete(d); else cur.add(d);
+                              setConfig({ ...config, option_dte_filter: [...cur].sort((a, b) => a - b) });
+                            }}
+                            className={`px-1.5 py-1 rounded text-[10px] font-mono border ${selected ? "bg-info text-bg-0 border-info" : "bg-bg-2 text-dim border-line hover:text-foreground"}`}
+                            title={d === 0 ? "Expiry day (0DTE)" : `${d} trading day${d > 1 ? "s" : ""} before expiry`}
+                          >
+                            {d}
+                          </button>
+                        );
+                      })}
+                    </div>
                   </div>
                   <div>
                     <Label className="text-[11px] text-dim">Lots</Label>
@@ -766,7 +829,7 @@ export default function Optimizer() {
           {currentJob?.status === "running" || currentJob?.status === "queued" || currentJob?.status === "analyzing" ? "Optimizing…" : "Auto-Optimize"}
         </Button>
 
-        <PresetsPanel presets={presets} onLoadInLab={(name) => navigate(`/backtest?preset=${encodeURIComponent(name)}`)} onRefresh={refreshPresets} onDelete={deletePreset} />
+        <PresetsPanel presets={presets} onLoadInLab={(name) => navigate(`/backtest?preset=${encodeURIComponent(name)}`)} onDeploy={(name) => navigate(`/live?preset=${encodeURIComponent(name)}`)} onRefresh={refreshPresets} onDelete={deletePreset} />
       </aside>
 
       {/* RIGHT: Progress + Results + History */}
@@ -1050,6 +1113,56 @@ function WfoResults({ job }) {
         </div>
       </div>
 
+      {/* Option-aware OOS: the rupee reality check on the stitch */}
+      {wfo.option_oos && wfo.option_oos.error && (
+        <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-[11px] text-amber-300" data-testid="wfo-option-oos-error">
+          Option-aware OOS pairing failed: {String(wfo.option_oos.error)}. The spot stitch above is unaffected — check option-data coverage for the window.
+        </div>
+      )}
+      {wfo.option_oos && !wfo.option_oos.error && (() => {
+        const oo = wfo.option_oos;
+        const rc = oo.rupee_consistency || {};
+        const cov = oo.coverage || {};
+        const covPct = cov.paired_trade_count != null && cov.spot_trade_count
+          ? Math.round((cov.paired_trade_count / cov.spot_trade_count) * 100)
+          : null;
+        const netColor = (oo.net_pnl_value || 0) > 0 ? "text-emerald-400" : "text-rose-400";
+        return (
+          <div className="rounded-lg border border-info/30 bg-bg-1 p-3" data-testid="wfo-option-oos">
+            <div className="text-xs font-semibold uppercase tracking-wider text-dim mb-2">
+              Option OOS (₹ on real options)
+              <span className="text-dimmer normal-case font-normal"> — same stitched trades, paired with {String(oo.config?.moneyness || "atm").toUpperCase()} option candles{oo.config?.costs_enabled ? ", costs on" : ", costs off"}</span>
+            </div>
+            <div className="grid grid-cols-3 lg:grid-cols-5 gap-2 text-xs mb-2">
+              <div className="rounded-md bg-bg-2 border border-line p-2">
+                <div className="text-[10px] uppercase tracking-wider text-dimmer">OOS Net ₹</div>
+                <div className={`font-mono mt-0.5 ${netColor}`}>{Number(oo.net_pnl_value || 0).toLocaleString("en-IN", { maximumFractionDigits: 0 })}</div>
+              </div>
+              <SmallMetric label="Win Rate" value={fmtPct(oo.win_rate)} />
+              <SmallMetric label="Paired" value={fmtInt(oo.paired_trade_count)} />
+              <SmallMetric label="Charges ₹" value={Number(oo.total_charges || 0).toLocaleString("en-IN", { maximumFractionDigits: 0 })} />
+              <SmallMetric label="Pairing" value={covPct != null ? `${covPct}%` : "—"} />
+            </div>
+            {(oo.per_window || []).length > 0 && (
+              <div className="flex items-center gap-1 flex-wrap text-[10px] font-mono mb-1" title="Per-window OOS rupee P&L">
+                {oo.per_window.map((r) => (
+                  <span
+                    key={r.index}
+                    className={`px-1.5 py-0.5 rounded border ${r.paired_trade_count === 0 ? "border-line text-dimmer" : r.pnl_value > 0 ? "border-emerald-500/40 text-emerald-400" : "border-rose-500/40 text-rose-400"}`}
+                  >
+                    #{(r.index ?? 0) + 1}: {r.paired_trade_count === 0 ? "no trades" : `₹${Number(r.pnl_value).toLocaleString("en-IN", { maximumFractionDigits: 0 })}`}
+                  </span>
+                ))}
+              </div>
+            )}
+            <div className="text-[11px] text-dim">
+              Rupee consistency: <b className="text-foreground">{rc.positive_windows ?? 0}/{rc.windows_with_trades ?? 0}</b> windows ₹-positive.
+              <span className="text-dimmer"> A spot-positive stitch with a negative rupee result means theta/spread/costs eat the edge — do not deploy on the spot number alone. Low pairing % means option data is missing for part of the OOS span.</span>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Final params (most recent train window) */}
       {wfo.final_params && (
         <div className="rounded-lg border border-line bg-bg-1 p-3" data-testid="wfo-final-params">
@@ -1151,7 +1264,7 @@ function WfoResults({ job }) {
   );
 }
 
-function PresetsPanel({ presets, onLoadInLab, onRefresh, onDelete }) {
+function PresetsPanel({ presets, onLoadInLab, onDeploy, onRefresh, onDelete }) {
   return (
     <div className="rounded-lg border border-line bg-bg-1" data-testid="opt-presets-panel">
       <div className="px-3 py-2 border-b border-line flex items-center">
@@ -1185,7 +1298,17 @@ function PresetsPanel({ presets, onLoadInLab, onRefresh, onDelete }) {
                   <div className="text-[10px] font-mono text-dimmer truncate">
                     {p.config?.strategy_id || "?"} · {p.config?.instrument || "?"}
                     {p.config?.source_optimization_job ? " · from optimizer" : ""}
+                    {p.config?.execution ? " · exec policy" : ""}
                   </div>
+                </button>
+                <button
+                  onClick={() => onDeploy(p.name)}
+                  className="px-2 self-stretch flex items-center text-dimmer hover:text-emerald-400 shrink-0"
+                  data-testid={`preset-deploy-${p.name.replace(/[^a-z0-9]/gi, "_")}`}
+                  title={`Deploy "${p.name}" — open the deployment form with this preset preselected (readiness evidence shown there)`}
+                  aria-label={`Deploy preset ${p.name}`}
+                >
+                  <Rocket className="w-3.5 h-3.5" />
                 </button>
                 <button
                   onClick={() => onDelete(p.name)}

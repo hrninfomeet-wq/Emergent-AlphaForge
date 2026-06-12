@@ -60,6 +60,7 @@ from app.signal_lifecycle import SignalStateError, create_signal_doc, transition
 from app.strategy_deployments import build_deployment_doc
 from app.strategy_source_hash import detect_drift, hash_strategy_source
 from app.deployment_quality import evaluate_source_quality
+from app.preset_execution import execution_from_option_config
 from app.forward_metrics import compute_forward_metrics_for_deployment, compute_forward_metrics_for_deployments
 from app.upstox_index_ingest import persist_index_candles_bulk, run_upstox_index_ingest_job
 from app.upstox_stream import DEFAULT_STREAM_MODE, UpstoxMarketStreamManager
@@ -1651,6 +1652,109 @@ async def deployment_quality_route(
     return serialize_doc(evaluate_source_quality(source))
 
 
+@api.get("/deployments/readiness")
+async def deployment_readiness(
+    source_type: str = Query("preset", description="preset or backtest_run"),
+    source_id: str = Query(..., description="preset name or backtest run id"),
+):
+    """Deployment-readiness evidence for a source — the canonical pipeline check.
+
+    Complements /deployments/quality (which gates on the source's own backtest):
+    this surfaces whether the HONEST validation steps were done for the same
+    strategy/params — a completed walk-forward optimization (does the edge
+    survive out of sample?) and option-rupee evidence (does it survive premium,
+    spread, and costs?). Informational only; never blocks creation.
+    """
+    db = get_db()
+    source = await _load_deployment_source(db, source_type, source_id)
+    cfg = source.get("config") or {}
+    strategy_id = cfg.get("strategy_id") or source.get("strategy_id")
+    instrument = (cfg.get("instrument") or source.get("instrument") or "").upper()
+    params = cfg.get("params") or source.get("params") or {}
+
+    # --- Honest-WFO evidence: latest completed walk-forward for this strategy ---
+    wfo_job = await db.optimization_jobs.find_one(
+        {"kind": "wfo", "strategy_id": strategy_id, "instrument": instrument, "status": "done"},
+        {"_id": 0, "id": 1, "finished_at": 1, "best_params": 1,
+         "wfo.efficiency": 1, "wfo.consistency": 1, "wfo.option_oos.net_pnl_value": 1},
+        sort=[("finished_at", -1)],
+    )
+    wfo_evidence = None
+    if wfo_job:
+        w = wfo_job.get("wfo") or {}
+        consistency = w.get("consistency") or {}
+        option_oos = w.get("option_oos") or {}
+        wfo_evidence = {
+            "job_id": wfo_job.get("id"),
+            "finished_at": wfo_job.get("finished_at"),
+            "efficiency": w.get("efficiency"),
+            "windows": consistency.get("windows"),
+            "positive_windows": consistency.get("positive_windows"),
+            "consistency_pct": consistency.get("consistency_pct"),
+            "option_oos_net": option_oos.get("net_pnl_value"),
+            "params_match": (wfo_job.get("best_params") or {}) == params,
+        }
+
+    # --- Option-rupee evidence: exact-params re-rank job or option backtest ---
+    option_evidence = None
+    rerank_jobs = await db.optimization_jobs.find(
+        {"kind": {"$ne": "wfo"}, "strategy_id": strategy_id, "instrument": instrument,
+         "status": "done", "evaluation_mode": "option_rerank"},
+        {"_id": 0, "id": 1, "finished_at": 1, "best_params": 1, "rerank.ranked": {"$slice": 1}},
+    ).sort("finished_at", -1).limit(25).to_list(length=25)
+    for job in rerank_jobs:
+        # rerank = {top_k, evaluated, option_config, ranked: [...]}; the ranked
+        # list is sorted by option net rupee, so row 0 is the option-best.
+        top = ((job.get("rerank") or {}).get("ranked") or [{}])[0]
+        match = (job.get("best_params") or {}) == params
+        if option_evidence is None or (match and not option_evidence.get("params_match")):
+            option_evidence = {
+                "kind": "rerank",
+                "id": job.get("id"),
+                "at": job.get("finished_at"),
+                "net_pnl_value": top.get("option_pnl_value"),
+                "win_rate": top.get("option_win_rate"),
+                "paired_trade_count": top.get("paired_trade_count"),
+                "params_match": match,
+            }
+        if option_evidence.get("params_match"):
+            break
+    if option_evidence is None or not option_evidence.get("params_match"):
+        runs = await db.backtest_runs.find(
+            {"config.strategy_id": strategy_id, "config.instrument": instrument,
+             "config.option_backtest.enabled": True, "option_backtest.metrics": {"$ne": None}},
+            {"_id": 0, "id": 1, "created_at": 1, "config.params": 1, "option_backtest.metrics": 1},
+        ).sort("created_at", -1).limit(25).to_list(length=25)
+        for run in runs:
+            metrics = (run.get("option_backtest") or {}).get("metrics") or {}
+            match = (run.get("config") or {}).get("params") == params
+            candidate = {
+                "kind": "backtest_run",
+                "id": run.get("id"),
+                "at": run.get("created_at"),
+                "net_pnl_value": metrics.get("total_option_pnl_value"),
+                "win_rate": metrics.get("win_rate"),
+                "paired_trade_count": metrics.get("paired_trade_count"),
+                "params_match": match,
+            }
+            if option_evidence is None or (match and not option_evidence.get("params_match")):
+                option_evidence = candidate
+            if match:
+                break
+
+    return serialize_doc({
+        "source": {
+            "type": source_type,
+            "id": source_id,
+            "strategy_id": strategy_id,
+            "instrument": instrument,
+            "has_execution": bool(cfg.get("execution")),
+        },
+        "wfo": wfo_evidence,
+        "option_evidence": option_evidence,
+    })
+
+
 @api.get("/deployments/metrics")
 async def list_deployment_metrics(
     strategy_id: Optional[str] = Query(None),
@@ -2212,6 +2316,12 @@ class WfoStartReq(BaseModel):
     wf_mode: str = "rolling"  # rolling | anchored
     n_trials_per_window: int = 40
     max_windows: int = 12
+    # Option-aware OOS (WFO v2): after stitching, pair the OOS spot trades with
+    # real option candles ONCE and report net rupee + per-window rupee
+    # consistency alongside the spot stitch. option_config mirrors the
+    # optimizer re-rank's option_config shape.
+    option_aware: bool = False
+    option_config: Optional[Dict[str, Any]] = None
 
 
 @api.post("/optimize/wfo")
@@ -2254,9 +2364,16 @@ async def apply_opt_as_preset(job_id: str, name: str = Query(...)):
         "strategy_id": job["strategy_id"],
         "params": best_params,
         "source_optimization_job": job_id,
+        "source_job_kind": job.get("kind") or "single",
         "optimization_method": job["method"],
         "objective": job["objective"],
     }
+    # Carry the execution policy the result was validated under (option re-rank
+    # or option-aware WFO), so the preset is the full deployable artifact:
+    # Backtest Lab re-applies it on load and the deployment form prefills from it.
+    execution = execution_from_option_config((job.get("config") or {}).get("option_config"))
+    if execution:
+        config["execution"] = execution
     await db.presets.update_one(
         {"name": name},
         {"$set": {"name": name, "config": config, "saved_at": datetime.now(timezone.utc).isoformat()}},
