@@ -394,9 +394,9 @@ export default function PaperTrading() {
           </select>
 
           <Input type="date" value={filters.date_from} onChange={(e) => setFilter("date_from", e.target.value)}
-            className="bg-bg-2 border-line h-7 text-xs w-[130px]" data-testid="paper-date-from" title="From (IST)" />
+            className="bg-bg-2 border-line h-7 text-xs w-[150px] pr-1" data-testid="paper-date-from" title="From (IST)" />
           <Input type="date" value={filters.date_to} onChange={(e) => setFilter("date_to", e.target.value)}
-            className="bg-bg-2 border-line h-7 text-xs w-[130px]" data-testid="paper-date-to" title="To (IST)" />
+            className="bg-bg-2 border-line h-7 text-xs w-[150px] pr-1" data-testid="paper-date-to" title="To (IST)" />
 
           <Button variant="ghost" size="sm" onClick={closeAllOpen} disabled={busy || summary.openCount === 0}
             className="h-7 text-xs text-amber-300 hover:text-amber-200" data-testid="paper-close-all">

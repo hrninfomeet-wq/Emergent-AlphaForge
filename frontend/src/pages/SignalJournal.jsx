@@ -231,9 +231,9 @@ export default function SignalJournal() {
           </select>
 
           <Input type="date" value={filters.date_from} onChange={(e) => setFilter("date_from", e.target.value)}
-            className="bg-bg-2 border-line h-7 text-xs w-[130px]" data-testid="ledger-date-from" title="From (IST)" />
+            className="bg-bg-2 border-line h-7 text-xs w-[150px] pr-1" data-testid="ledger-date-from" title="From (IST)" />
           <Input type="date" value={filters.date_to} onChange={(e) => setFilter("date_to", e.target.value)}
-            className="bg-bg-2 border-line h-7 text-xs w-[130px]" data-testid="ledger-date-to" title="To (IST)" />
+            className="bg-bg-2 border-line h-7 text-xs w-[150px] pr-1" data-testid="ledger-date-to" title="To (IST)" />
 
           <Button variant="ghost" size="sm" onClick={exportCsv} className="h-7 text-xs" data-testid="ledger-export-csv">
             <Download className="w-3 h-3 mr-1" /> CSV
