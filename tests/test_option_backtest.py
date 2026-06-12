@@ -363,3 +363,69 @@ def test_missing_entry_candle_reports_no_candle_near_entry():
     trade = result["trades"][0]
     assert trade["status"] == "MISSING_ENTRY_CANDLE"
     assert "no_candle_near_entry" in trade["miss_reason"]
+
+
+def test_pairing_bridges_dated_contract_key_to_canonical_candle_key():
+    """Root cause #3 regression (2026-06-12): the same contract can be selected
+    via an expired-sourced metadata doc (dated 3-part key) while its candles
+    are stored under the canonical 2-part broker key. Pairing must bridge the
+    two forms — before the fix this produced MISSING_ENTRY_CANDLE even though
+    the candles existed."""
+    spot_trades = [{
+        "direction": "CE",
+        "entry_ts": 100_000,
+        "exit_ts": 220_000,
+        "entry_price": 26012.0,
+        "exit_price": 26045.0,
+        "entry_datetime": "2026-05-22T09:30:00+05:30",
+        "exit_datetime": "2026-05-22T09:32:00+05:30",
+    }]
+    # Contract metadata carries the DATED key (expired-backfill source)…
+    contracts = [
+        {"instrument_key": "NSE_FO|72171|26-05-2026", "side": "CE", "strike": 26050.0,
+         "lot_size": 65, "trading_symbol": "NIFTY 26050 CE"},
+    ]
+    # …while the candles are stored under the canonical 2-part key.
+    option_rows = pd.DataFrame([
+        {"instrument_key": "NSE_FO|72171", "ts": 90_000, "close": 100.0, "high": 102.0, "low": 99.0},
+        {"instrument_key": "NSE_FO|72171", "ts": 220_000, "close": 118.0, "high": 119.0, "low": 110.0},
+    ])
+
+    result = option_backtest.simulate_paired_option_trades(
+        spot_trades=spot_trades,
+        contracts=contracts,
+        option_candles=option_rows,
+        underlying="NIFTY",
+        moneyness="otm1",
+        lots=1,
+    )
+    trade = result["trades"][0]
+    assert trade["status"] == "PAIRED"
+    assert result["metrics"]["paired_trade_count"] == 1
+
+
+def test_pairing_merges_candles_split_across_key_forms():
+    """Candles for ONE contract split across both key forms (legacy + canonical)
+    must merge into a single lookup group."""
+    spot_trades = [{
+        "direction": "CE",
+        "entry_ts": 100_000,
+        "exit_ts": 220_000,
+        "entry_price": 26012.0,
+        "exit_price": 26045.0,
+        "entry_datetime": "2026-05-22T09:30:00+05:30",
+        "exit_datetime": "2026-05-22T09:32:00+05:30",
+    }]
+    contracts = [
+        {"instrument_key": "NSE_FO|72171", "side": "CE", "strike": 26050.0,
+         "lot_size": 65, "trading_symbol": "NIFTY 26050 CE"},
+    ]
+    option_rows = pd.DataFrame([
+        {"instrument_key": "NSE_FO|72171|26-05-2026", "ts": 90_000, "close": 100.0, "high": 102.0, "low": 99.0},
+        {"instrument_key": "NSE_FO|72171", "ts": 220_000, "close": 118.0, "high": 119.0, "low": 110.0},
+    ])
+    result = option_backtest.simulate_paired_option_trades(
+        spot_trades=spot_trades, contracts=contracts, option_candles=option_rows,
+        underlying="NIFTY", moneyness="otm1", lots=1,
+    )
+    assert result["trades"][0]["status"] == "PAIRED"

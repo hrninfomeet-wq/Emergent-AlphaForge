@@ -273,9 +273,19 @@ def simulate_paired_option_trades(
     # the candles for a contract on every trade; scanning the full frame per
     # trade is O(trades x candles) and becomes the bottleneck when the optimizer
     # re-ranks many candidates. A dict of per-key frames makes each lookup O(1).
+    # Keys are CANONICALIZED (2-part broker form): the same contract can be
+    # selected via a plain-keyed (current-sync) or dated-keyed (expired-sync)
+    # metadata doc, and candles must pair either way (root cause #3, 2026-06-12).
+    from app.instruments import canonical_instrument_key
     candles_by_key: Dict[str, pd.DataFrame] = {}
     if not candles.empty:
-        candles_by_key = {str(k): g for k, g in candles.groupby("instrument_key", sort=False)}
+        grouped: Dict[str, List[pd.DataFrame]] = {}
+        for k, g in candles.groupby("instrument_key", sort=False):
+            grouped.setdefault(canonical_instrument_key(str(k)), []).append(g)
+        candles_by_key = {
+            key: (frames[0] if len(frames) == 1 else pd.concat(frames).sort_values("ts"))
+            for key, frames in grouped.items()
+        }
 
     coverage = _coverage()
     coverage["spot_trade_count"] = len(spot_trade_list)
@@ -356,7 +366,7 @@ def simulate_paired_option_trades(
             continue
 
         instrument_key = selected["instrument_key"]
-        rows = candles_by_key.get(str(instrument_key), pd.DataFrame()) if candles_by_key else pd.DataFrame()
+        rows = candles_by_key.get(canonical_instrument_key(str(instrument_key)), pd.DataFrame()) if candles_by_key else pd.DataFrame()
         entry = _candle_at_or_before(rows, int(spot_trade.get("entry_ts", 0)), entry_max_age_ms)
         if not entry:
             coverage["missing_entry_candle"] += 1

@@ -4,6 +4,7 @@ Designed to extend the Data Warehouse beyond yfinance's 30-day cap.
 Reference: integration_playbook_expert_v2 playbook (in docs/).
 """
 from __future__ import annotations
+import asyncio
 import base64
 import json
 import logging
@@ -204,18 +205,35 @@ async def disconnect(user_id: str = DEFAULT_USER_ID) -> bool:
 # REST: authenticated GET helper
 # ---------------------------------------------------------------------------
 
+# Backoff schedule for 429 responses. Backfill jobs can momentarily exceed the
+# broker's per-second budget (e.g. parallel per-instrument jobs after startup
+# catch-up); dying on the first 429 turned whole contract-days into permanent
+# holes. Three patient retries absorb bursts; a still-throttled call raises so
+# the job records the failure honestly.
+_RATE_LIMIT_RETRY_DELAYS_SEC = (2.0, 5.0, 10.0)
+
+
 async def _authenticated_get(url: str, user_id: str = DEFAULT_USER_ID) -> Dict[str, Any]:
     token = await get_token(user_id)
     if not token:
         raise RuntimeError("Upstox not connected. Please complete OAuth first.")
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.get(
-            url,
-            headers={
-                "Accept": "application/json",
-                "Authorization": f"Bearer {token}",
-            },
-        )
+    attempt = 0
+    while True:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(
+                url,
+                headers={
+                    "Accept": "application/json",
+                    "Authorization": f"Bearer {token}",
+                },
+            )
+        if resp.status_code == 429 and attempt < len(_RATE_LIMIT_RETRY_DELAYS_SEC):
+            delay = _RATE_LIMIT_RETRY_DELAYS_SEC[attempt]
+            attempt += 1
+            log.warning(f"Upstox 429 — backing off {delay}s (attempt {attempt})")
+            await asyncio.sleep(delay)
+            continue
+        break
     if resp.status_code == 401:
         raise RuntimeError("Upstox token expired or invalid. Please reconnect.")
     if resp.status_code == 429:
@@ -470,17 +488,58 @@ async def fetch_historical_1m_for_key(
     return candles_to_df(candles, instrument_key=instrument_key, contract=contract)
 
 
+def _today_ist_date_iso() -> str:
+    return (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).strftime("%Y-%m-%d")
+
+
 def _is_expired_instrument_key(instrument_key: str, contract: Optional[Dict[str, Any]] = None) -> bool:
+    """Route to the expired-instruments endpoint when the contract is actually
+    expired — decided by EXPIRY DATE, not only provenance.
+
+    Root cause fixed 2026-06-12: contracts synced while ACTIVE keep
+    source="current_option_contract" forever, so after expiry the normal V3
+    endpoint was still used and Upstox rejected with UDAPI100011 ("Invalid
+    Instrument key") — leaving permanent band-backfill holes for every weekly
+    that was ever synced live. The provenance flag and the 3-part dated key
+    remain sufficient conditions; a past `expiry_date` is now one too.
+    """
     if str((contract or {}).get("source") or "") == "expired_option_contract":
         return True
     parts = str(instrument_key or "").split("|")
-    if len(parts) < 3:
-        return False
-    try:
-        datetime.strptime(parts[-1], "%d-%m-%Y")
-        return True
-    except ValueError:
-        return False
+    if len(parts) >= 3:
+        try:
+            datetime.strptime(parts[-1], "%d-%m-%Y")
+            return True
+        except ValueError:
+            pass
+    expiry = str((contract or {}).get("expiry_date") or "")
+    if expiry:
+        # Strictly before today (IST): on expiry day itself the contract is
+        # still live and the normal endpoint serves it.
+        return expiry < _today_ist_date_iso()
+    return False
+
+
+def _expired_endpoint_key(instrument_key: str, contract: Optional[Dict[str, Any]] = None) -> str:
+    """Key format the expired endpoint expects: `SEGMENT|TOKEN|DD-MM-YYYY`.
+
+    Expired-backfilled contracts already store the 3-part key. Contracts synced
+    while active store the plain 2-part key — synthesize the suffix from the
+    contract's expiry_date. Persisted candles keep the ORIGINAL key so metadata
+    joins and pairing are unaffected.
+    """
+    key = str(instrument_key or "")
+    parts = key.split("|")
+    if len(parts) >= 3:
+        return key
+    expiry = str((contract or {}).get("expiry_date") or "")
+    if expiry:
+        try:
+            suffix = datetime.strptime(expiry, "%Y-%m-%d").strftime("%d-%m-%Y")
+            return f"{key}|{suffix}"
+        except ValueError:
+            pass
+    return key
 
 
 async def fetch_expired_historical_1m_for_key(
@@ -491,9 +550,10 @@ async def fetch_expired_historical_1m_for_key(
     contract: Optional[Dict[str, Any]] = None,
 ) -> pd.DataFrame:
     """Fetch 1-minute candles for an expired Upstox instrument key."""
-    encoded = quote(instrument_key, safe="")
+    endpoint_key = _expired_endpoint_key(instrument_key, contract)
+    encoded = quote(endpoint_key, safe="")
     url = f"{_base_url()}/v2/expired-instruments/historical-candle/{encoded}/1minute/{to_date}/{from_date}"
-    log.info(f"Upstox fetch expired 1m {instrument_key} {from_date}→{to_date}")
+    log.info(f"Upstox fetch expired 1m {endpoint_key} {from_date}→{to_date}")
     data = await _authenticated_get(url, user_id)
     candles = (data.get("data") or {}).get("candles") or []
     return candles_to_df(candles, instrument_key=instrument_key, contract=contract)

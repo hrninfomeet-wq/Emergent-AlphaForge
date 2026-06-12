@@ -76,7 +76,9 @@ _DEFAULT_LOT_SIZE = {"NIFTY": 75, "BANKNIFTY": 35, "SENSEX": 20}
 # Max number of distinct indicator-period combinations to keep enriched frames
 # for. Bounds memory while still giving big speedups when only signal-threshold
 # params vary (common with TPE).
-_MAX_ENRICHED_CACHE = 64
+# Bounded: indicator-period search caches one enriched frame per period combo;
+# long windows make each frame tens of MB, so keep the cap memory-safe.
+_MAX_ENRICHED_CACHE = 16
 
 
 # ---------------------------------------------------------------------------
@@ -593,9 +595,19 @@ async def _option_rerank(
     # 4. Load option candles once for the union of needed contracts.
     candles_df = pd.DataFrame()
     if union_keys:
-        cq = {"instrument_key": {"$in": sorted(union_keys)},
+        # Query BOTH key forms: candles are stored canonical (2-part) but a
+        # selected contract doc may carry the dated 3-part key. Harmless
+        # post-migration; required while any legacy rows remain.
+        from app.instruments import canonical_instrument_key
+        query_keys = sorted({k for key in union_keys for k in (str(key), canonical_instrument_key(str(key)))})
+        cq = {"instrument_key": {"$in": query_keys},
               "ts": {"$gte": min(all_ts) - entry_max_age * 1000, "$lte": (max(all_xt) if all_xt else max(all_ts))}}
         rows = await db.options_1m.find(cq, {"_id": 0}).sort("ts", 1).to_list(length=4000000)
+        if len(rows) >= 4000000:
+            # Hitting the cap means later trades would silently lose pairing
+            # data — surface it instead of letting coverage quietly degrade.
+            log.warning("option re-rank candle load hit the 4M-row cap (%d keys); "
+                        "results beyond the cap window are not paired", len(union_keys))
         if rows:
             candles_df = pd.DataFrame(rows)
 

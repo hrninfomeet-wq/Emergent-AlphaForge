@@ -69,3 +69,35 @@ def test_select_atm_band_keeps_ce_pe_contracts_around_atm():
     assert [c["instrument_key"] for c in selected] == ["atm-ce", "otm-pe", "otm-ce"]
     assert selected[0]["moneyness"] == "ATM"
     assert selected[1]["rank"] == 2
+
+
+def test_select_contract_requires_exact_strike_no_fallback():
+    """Regression pin (2026-06-12 audit): selection must EXACT-match the target
+    strike or return None. A 'nearest available' fallback would let a backtest
+    or live signal silently trade a far strike when the true ATM contract is
+    missing from metadata — refusal is the correct behavior."""
+    from app.options_universe import select_contract_for_signal
+
+    contracts = [
+        # The true ATM (23550) is deliberately absent; nearest available is
+        # 400 points away.
+        {"underlying": "NIFTY", "side": "CE", "strike": 23950.0,
+         "instrument_key": "NSE_FO|x1", "expiry_date": "2026-05-26"},
+        {"underlying": "NIFTY", "side": "CE", "strike": 23150.0,
+         "instrument_key": "NSE_FO|x2", "expiry_date": "2026-05-26"},
+    ]
+    picked = select_contract_for_signal(
+        contracts=contracts, underlying="NIFTY",
+        spot_price=23535.4, direction="CE", moneyness="atm",
+    )
+    assert picked is None  # no silent far-strike substitution, ever
+
+
+def test_canonical_instrument_key_strips_only_dated_suffix():
+    from app.instruments import canonical_instrument_key as c
+    assert c("NSE_FO|72171|26-05-2026") == "NSE_FO|72171"
+    assert c("BSE_FO|823065|05-02-2026") == "BSE_FO|823065"
+    assert c("NSE_FO|72171") == "NSE_FO|72171"
+    assert c("NSE_INDEX|Nifty 50") == "NSE_INDEX|Nifty 50"
+    assert c("") == ""
+    assert c(None) == ""

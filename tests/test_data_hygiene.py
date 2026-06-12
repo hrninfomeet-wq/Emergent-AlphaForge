@@ -15,8 +15,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 from app.data_hygiene import (  # noqa: E402
     compute_hygiene_plan,
     execute_hygiene_plan,
+    default_scope_start,
     _expected_weekday_count,
 )
+from app.completeness import resolve_expiry_for_day, strike_band  # noqa: E402
 
 
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -104,12 +106,15 @@ class FakeDB:
 # ---- helpers ----------------------------------------------------------------
 
 
-def seed_full_spot_coverage(db: FakeDB, instrument: str, start_iso: str, end_iso: str):
-    """Add candles for every weekday in the range so coverage_pct == 100.
+def seed_full_spot_coverage(
+    db: FakeDB, instrument: str, start_iso: str, end_iso: str,
+    *, low: float = 24000.0, high: float = 24000.0, minutes: int = 375,
+):
+    """Add per-day spot aggregation rows for every weekday in the range.
 
-    Spot coverage now runs a Mongo aggregation that groups by IST date, so we
-    seed both the raw rows (for any find-based callers) and the aggregation
-    result (distinct {_id: date} docs) that _spot_coverage consumes.
+    The plan's single candles_1m aggregation now returns
+    {_id: date, count, low, high} per day — count drives spot coverage and
+    low/high drive the option band-completeness check.
     """
     cur = datetime.fromisoformat(start_iso)
     end = datetime.fromisoformat(end_iso)
@@ -123,9 +128,46 @@ def seed_full_spot_coverage(db: FakeDB, instrument: str, start_iso: str, end_iso
                 "ts": ts,
                 "session_date": date_str,
             })
-            agg_rows.append({"_id": date_str})
+            agg_rows.append({"_id": date_str, "count": minutes, "low": low, "high": high})
         cur += timedelta(days=1)
     db.candles_1m._agg_result = list(agg_rows)
+
+
+def weekdays_between(start_iso: str, end_iso: str):
+    cur = datetime.fromisoformat(start_iso)
+    end = datetime.fromisoformat(end_iso)
+    out = []
+    while cur.date() <= end.date():
+        if cur.weekday() < 5:
+            out.append(cur.strftime("%Y-%m-%d"))
+        cur += timedelta(days=1)
+    return out
+
+
+def seed_full_band_coverage(
+    db: FakeDB, start_iso: str, end_iso: str, expiries,
+    *, low: float = 24000.0, high: float = 24000.0, step: int = 50,
+    sides=("CE", "PE"), skip_pairs=(),
+):
+    """Seed the options_1m aggregation with the FULL daily ATM band — one
+    distinct (date, expiry, side, strike) row per pair — minus `skip_pairs`
+    ((date, side, strike) tuples) to simulate partially-covered days."""
+    rows = []
+    expiries_sorted = sorted(expiries)
+    for day in weekdays_between(start_iso, end_iso):
+        expiry = resolve_expiry_for_day(day, expiries_sorted)
+        if not expiry:
+            continue
+        for strike in strike_band(low, high, step, pad_steps=1):
+            for side in sides:
+                if (day, side, strike) in skip_pairs:
+                    continue
+                rows.append({
+                    "_id": {"date": day, "expiry": expiry, "side": side, "strike": float(strike)},
+                    "candles": 375,
+                })
+    db.options_1m._agg_result = rows
+    return rows
 
 
 def seed_contracts(db: FakeDB, instrument: str, expiries: List[str]):
@@ -141,7 +183,7 @@ def seed_contracts(db: FakeDB, instrument: str, expiries: List[str]):
 
 
 def seed_option_candle_aggregate(db: FakeDB, rows: List[Dict[str, Any]]):
-    """Pre-seed the aggregation result for options_1m -> _option_candles_summary."""
+    """Pre-seed the raw aggregation result for options_1m -> _option_pairs_by_day."""
     db.options_1m._agg_result = list(rows)
 
 
@@ -230,10 +272,7 @@ async def test_plan_fully_covered_yields_no_actions():
     db = FakeDB()
     seed_full_spot_coverage(db, "NIFTY", "2024-11-27", "2024-12-06")
     seed_contracts(db, "NIFTY", ["2024-11-28", "2024-12-05"])
-    seed_option_candle_aggregate(db, [
-        {"_id": "2024-11-28", "candles": 22000, "contracts": ["k1", "k2"]},
-        {"_id": "2024-12-05", "candles": 24000, "contracts": ["k3", "k4"]},
-    ])
+    seed_full_band_coverage(db, "2024-11-27", "2024-12-06", ["2024-11-28", "2024-12-05"])
     plan = await compute_hygiene_plan(
         db, start_date="2024-11-27", end_date="2024-12-06",
         instruments=["NIFTY"],
@@ -245,6 +284,55 @@ async def test_plan_fully_covered_yields_no_actions():
     assert nifty["actions"] == []
     assert plan["summary"]["total_actions"] == 0
     assert plan["summary"]["overall_status"] == "verified"
+
+
+# ---- band completeness: the May-2026 class of gap ---------------------------
+
+
+@pytest.mark.asyncio
+async def test_plan_detects_partial_day_band_gap():
+    """A day with candles for SOME band strikes but not all must produce an
+    option_candles action (the old per-expiry heuristic reported verified)."""
+    db = FakeDB()
+    seed_full_spot_coverage(db, "NIFTY", "2024-11-27", "2024-12-06")
+    seed_contracts(db, "NIFTY", ["2024-11-28", "2024-12-05"])
+    # Full band everywhere EXCEPT one strike-day (the 2026-05-20 23550CE case,
+    # distilled): 24050 CE missing on 2024-12-02.
+    seed_full_band_coverage(
+        db, "2024-11-27", "2024-12-06", ["2024-11-28", "2024-12-05"],
+        skip_pairs={("2024-12-02", "CE", 24050)},
+    )
+    plan = await compute_hygiene_plan(
+        db, start_date="2024-11-27", end_date="2024-12-06", instruments=["NIFTY"],
+    )
+    nifty = plan["instruments"][0]
+    opt = nifty["option_candles"]
+    assert opt["missing_pairs"] == 1
+    assert opt["status"] != "verified"
+    assert opt["missing_sample"][0] == {
+        "date": "2024-12-02", "expiry": "2024-12-05", "side": "CE", "strike": 24050,
+    }
+    actions = [a for a in nifty["actions"] if a["kind"] == "option_candles"]
+    assert len(actions) == 1
+    assert "strike-day" in actions[0]["reason"]
+
+
+# ---- rolling 9-month default scope -------------------------------------------
+
+
+def test_default_scope_start_rolls_nine_months():
+    assert default_scope_start("2026-06-12") == "2025-09-12"
+
+
+def test_default_scope_start_floors_at_baseline():
+    # 9 months before 2025-05-01 is 2024-08-01, which is before the project
+    # baseline -> floored.
+    assert default_scope_start("2025-05-01") == "2024-11-27"
+
+
+def test_default_scope_start_caps_day_of_month():
+    # 31st -> capped to 28 to avoid month-length issues.
+    assert default_scope_start("2026-05-31") == "2025-08-28"
 
 
 # ---- execute order ----------------------------------------------------------

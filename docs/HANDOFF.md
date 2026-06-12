@@ -50,6 +50,52 @@ for those slices is already built and tested — the slices are UI + contract-te
 work. Anything trading-critical beyond the spec (evaluator, optimizer, WFO,
 paper_auto) goes back to the senior agent.
 
+## Recent Work — Warehouse Truth: ATM-Band Completeness (2026-06-12, night)
+
+See CHANGELOG 0.23.x. The root cause of "verified warehouse, failing backtests":
+hygiene's option check was per-day/per-expiry presence while consumers need the
+day's full strike BAND. Implementation notes for the next agent:
+
+- `app/completeness.py` is now the single completeness definition (band math
+  uses `options_universe.round_to_step` on BOTH bounds — nearest rounding, not
+  floor/ceil, deliberately matching the per-minute ATM fetch path; a floor/ceil
+  band would demand strikes the fetcher never selects = permanently missing).
+- `data_hygiene.compute_hygiene_plan`: `_spot_day_rows` (one candles_1m agg →
+  date/count/low/high) + `_option_pairs_by_day` (one options_1m agg → exact
+  stored pairs) + `band_completeness`. Option action fires whenever
+  `missing_pairs > 0`; `_hygiene_submit_option_candles` was already exact and
+  unchanged. Default scope start = `default_scope_start()` = rolling 9 months
+  (floor 2024-11-27). Hygiene DEFAULT_MONEYNESS = atm+otm1+itm1 (band pad).
+- Audit corrections vs the earlier review notes: the optimizer enriched cache
+  was ALREADY capped (now 64→16); `select_contract_for_signal` has NO nearest-
+  strike fallback (exact match or None) — pinned by a regression test in
+  test_options_universe.py. The "#109 wrong strike" report was a journal
+  misread; real defect was missing band fetches only.
+- First real audit: ~83-84% band coverage, 1,701 missing strike-days across the
+  3 indices (9-month window); backfill ran via normal hygiene execute.
+- **Root cause #2 (found verifying the backfill):** endpoint routing for
+  option-candle fetches keyed off `contract.source` provenance, so contracts
+  synced while ACTIVE were still sent to the normal V3 endpoint after expiry →
+  `UDAPI100011` → permanent holes for every once-synced-live weekly.
+  `upstox_client._is_expired_instrument_key` now routes by `expiry_date <
+  today(IST)`, and `_expired_endpoint_key` synthesizes the
+  `SEGMENT|TOKEN|DD-MM-YYYY` expired-endpoint key for 2-part keys (stored
+  candles keep the original key). Plus a 3-step 429 backoff in
+  `_authenticated_get`. Tests: `tests/test_upstox_expired_routing.py` (stubs
+  motor — upstox_client transitively imports app.db).
+- **Root cause #3: split candle keys.** Expired-backfill contracts carry dated
+  3-part keys; current-sync stores 2-part for the same identity. Candles are
+  now ALWAYS stored canonical (`instruments.canonical_instrument_key`) and all
+  candle lookups canonicalize (pairing group+lookup, backtest-run loader,
+  preflight, preview counters, re-rank/WFO queries use both forms). One-time
+  migration done: 6,937 keys, 6.15M docs, 115k duplicate minutes removed. If
+  you add ANY new options_1m query keyed by instrument_key, canonicalize it.
+- **Acceptance:** confluence-10 re-run = 124/124 paired, 0 missing. Band
+  residual (~7–9%) is broker-unavailable band-edge strikes — honest, visible.
+- Frontend DataHygienePanel still displays the OLD summary fields — surfacing
+  `missing_pairs`/`coverage_pct`/`missing_by_month` is Kiro quality-hardening
+  Slice A (`.kiro/specs/quality-hardening/`).
+
 ## Status In One Line
 
 Latest (2026-06-12, Slice 5): **forward-surfaces-overhaul spec COMPLETE** — polish slice shipped four items: a P&L calendar heat-grid on `/paper`, a data-realism preflight line in the deploy wizard, a drift re-pin route + pause-banner button (`POST /api/deployments/{id}/repin-source`), and an ATM±3 live option-chain snapshot on `/live`. **457 pytest tests pass; frontend builds clean.** All five slices of the spec are delivered; the local Docker stack is healthy and rebuilt.

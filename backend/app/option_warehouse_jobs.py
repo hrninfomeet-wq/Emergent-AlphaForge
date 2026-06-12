@@ -63,10 +63,16 @@ async def persist_option_candles_bulk(db: Any, df: pd.DataFrame) -> Dict[str, in
     if df is None or df.empty:
         return {"candles_added": 0, "candles_updated": 0, "matched_existing": 0}
 
+    from app.instruments import canonical_instrument_key
+
     ops: List[UpdateOne] = []
     for row in df.to_dict(orient="records"):
         doc = {
-            "instrument_key": row["instrument_key"],
+            # Always store under the canonical 2-part broker key — expired
+            # fetches arrive with dated 3-part keys for the SAME contract the
+            # current-sync stored plain, and split keys fragment every
+            # exact-key lookup downstream (root cause #3, 2026-06-12).
+            "instrument_key": canonical_instrument_key(row["instrument_key"]),
             "underlying": row.get("underlying", ""),
             "expiry_date": row.get("expiry_date", ""),
             "strike": float(row.get("strike") or 0),

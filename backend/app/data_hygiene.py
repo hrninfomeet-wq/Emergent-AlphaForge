@@ -32,14 +32,40 @@ from app.nse_calendar import (
     is_trading_day,
     trading_days_in_range,
 )
+from app.completeness import band_completeness
+from app.options_universe import strike_step_for
 
 log = logging.getLogger(__name__)
 
-DEFAULT_START_DATE = "2024-11-27"
+DEFAULT_START_DATE = "2024-11-27"  # hard floor — never audit earlier than this
+# Rolling completeness window (user decision 2026-06-12): guarantee a complete
+# warehouse over the last N calendar months; older data is kept but no longer
+# audited/fetched by default.
+ROLLING_SCOPE_MONTHS = 9
 DEFAULT_INSTRUMENTS = ("NIFTY", "BANKNIFTY", "SENSEX")
-DEFAULT_MONEYNESS: tuple = ("atm",)
+# atm + otm1 + itm1 ensures the per-minute ATM fetch path covers the daily
+# strike band with +/-1 step of drift headroom (matches completeness.strike_band
+# with pad_steps=1).
+DEFAULT_MONEYNESS: tuple = ("atm", "otm1", "itm1")
 DEFAULT_LEGS: tuple = ("CE", "PE")
 DEFAULT_SAMPLE_INTERVAL_MIN = 1
+BAND_PAD_STEPS = 1
+MIN_SPOT_MINUTES_TO_JUDGE = 60
+
+
+def default_scope_start(today_iso: Optional[str] = None) -> str:
+    """Start of the rolling 9-month completeness window, floored at the project
+    baseline. Day-of-month is capped at 28 to avoid month-length edge cases."""
+    if today_iso:
+        today = date.fromisoformat(today_iso)
+    else:
+        today = (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).date()
+    year, month = today.year, today.month - ROLLING_SCOPE_MONTHS
+    while month <= 0:
+        month += 12
+        year -= 1
+    start = date(year, month, min(today.day, 28)).isoformat()
+    return max(start, DEFAULT_START_DATE)
 IST_OFFSET = timedelta(hours=5, minutes=30)
 
 
@@ -78,17 +104,20 @@ def _expected_weekday_count(start_iso: str, end_iso: str) -> int:
     return _calendar_expected_trading_days(start_iso, end_iso)
 
 
-async def _spot_coverage(db: Any, instrument: str, start_iso: str, end_iso: str) -> Dict[str, Any]:
-    """Count distinct trading days with candles in the window for an instrument.
+async def _spot_day_rows(db: Any, instrument: str) -> List[Dict[str, Any]]:
+    """Per-IST-day spot summary rows: [{date, count, low, high}].
 
-    Uses a Mongo aggregation that derives the IST date from each candle's
-    timestamp server-side and groups by it, so we never pull hundreds of
-    thousands of rows into Python. The (instrument, ts) index supports the match.
+    ONE aggregation per instrument serves both spot coverage and the option
+    band-completeness check (the day's low/high defines the strike band the
+    warehouse must hold). The (instrument, ts) index supports the match; the
+    grouping happens server-side so we never pull raw rows into Python.
     """
     instrument = instrument.upper()
     pipeline = [
         {"$match": {"instrument": instrument}},
         {"$project": {
+            "low": 1,
+            "high": 1,
             "date": {
                 "$dateToString": {
                     "format": "%Y-%m-%d",
@@ -97,18 +126,35 @@ async def _spot_coverage(db: Any, instrument: str, start_iso: str, end_iso: str)
                 }
             },
         }},
-        {"$group": {"_id": "$date"}},
+        {"$group": {
+            "_id": "$date",
+            "count": {"$sum": 1},
+            "low": {"$min": "$low"},
+            "high": {"$max": "$high"},
+        }},
     ]
-    distinct_dates: set[str] = set()
     rows = await db.candles_1m.aggregate(pipeline).to_list(length=None)
+    out: List[Dict[str, Any]] = []
     for doc in rows:
         d = doc.get("_id")
         if d:
-            distinct_dates.add(str(d))
-    in_window = {d for d in distinct_dates if start_iso <= d <= end_iso}
+            out.append({
+                "date": str(d),
+                "count": int(doc.get("count") or 0),
+                "low": doc.get("low"),
+                "high": doc.get("high"),
+            })
+    return sorted(out, key=lambda r: r["date"])
+
+
+def _spot_coverage_from_rows(
+    day_rows: List[Dict[str, Any]], instrument: str, start_iso: str, end_iso: str,
+) -> Dict[str, Any]:
+    """Spot coverage summary computed from the shared per-day rows (pure)."""
+    in_window = {r["date"] for r in day_rows if start_iso <= r["date"] <= end_iso}
     expected = _expected_weekday_count(start_iso, end_iso)
     return {
-        "instrument": instrument,
+        "instrument": instrument.upper(),
         "expected_weekdays": expected,
         "found_dates": len(in_window),
         "coverage_pct": round((len(in_window) / max(1, expected)) * 100, 1),
@@ -135,38 +181,74 @@ async def _option_contracts_summary(db: Any, instrument: str, start_iso: str, en
         "first_expiry_in_window": in_window[0] if in_window else None,
         "last_expiry_in_window": in_window[-1] if in_window else None,
         "upcoming_count": len(upcoming),
+        # For band completeness: every known expiry on/after the window start,
+        # so days near the window edge resolve their next upcoming expiry.
+        "expiries_sorted_from_start": [e for e in expiries if e >= start_iso],
     }
 
 
-async def _option_candles_summary(db: Any, instrument: str, start_iso: str, end_iso: str) -> Dict[str, Any]:
-    """Summarize option-candle coverage per instrument.
+# Expiries up to this many days after the window end still satisfy days near
+# the window edge that resolve to the next upcoming expiry.
+_EXPIRY_LOOKAHEAD_DAYS = 45
 
-    `options_1m` already stores `underlying` and `expiry_date` on each candle
-    (set at fetch time), so we can group directly on those fields. The
-    (underlying, expiry_date, strike, side, ts) index supports the match,
-    avoiding the previous full-collection `$lookup` join over 5M+ docs.
+
+async def _option_pairs_by_day(
+    db: Any, instrument: str, start_iso: str, end_iso: str,
+) -> Dict[str, Any]:
+    """Stored option coverage as exact (day, expiry, side, strike) pairs.
+
+    This is what the band-completeness diff consumes. `options_1m` embeds
+    `underlying`/`expiry_date`/`strike`/`side` on every candle (set at fetch
+    time), so ONE server-side group on the (underlying, expiry_date, strike,
+    side, ts) index produces the distinct pairs — no `$lookup`, no raw rows
+    in Python. (The old per-expiry candle-count heuristic lived here; it could
+    not see partially-covered days and reported verified-but-incomplete.)
     """
     instrument = instrument.upper()
+    lookahead = (date.fromisoformat(end_iso) + timedelta(days=_EXPIRY_LOOKAHEAD_DAYS)).isoformat()
     pipeline = [
         {"$match": {
             "underlying": instrument,
-            "expiry_date": {"$gte": start_iso, "$lte": end_iso},
+            "expiry_date": {"$gte": start_iso, "$lte": lookahead},
         }},
         {"$group": {
-            "_id": "$expiry_date",
+            "_id": {
+                "date": {
+                    "$dateToString": {
+                        "format": "%Y-%m-%d",
+                        "timezone": "Asia/Kolkata",
+                        "date": {"$toDate": "$ts"},
+                    }
+                },
+                "expiry": "$expiry_date",
+                "side": "$side",
+                "strike": "$strike",
+            },
             "candles": {"$sum": 1},
         }},
-        {"$sort": {"_id": 1}},
     ]
     rows = await db.options_1m.aggregate(pipeline).to_list(length=None)
-    total_candles = sum(int(r.get("candles") or 0) for r in rows)
-    expiries_with_data: List[str] = [str(r["_id"]) for r in rows if r.get("_id")]
+    stored_pairs: set = set()
+    total_candles = 0
+    expiries_with_data: set = set()
+    for doc in rows:
+        key = doc.get("_id") or {}
+        day = str(key.get("date") or "")
+        expiry = str(key.get("expiry") or "")
+        side = str(key.get("side") or "").upper()
+        try:
+            strike = int(float(key.get("strike")))
+        except (TypeError, ValueError):
+            continue
+        if not day or not expiry or not side:
+            continue
+        stored_pairs.add((day, expiry, side, strike))
+        total_candles += int(doc.get("candles") or 0)
+        expiries_with_data.add(expiry)
     return {
-        "instrument": instrument,
+        "stored_pairs": stored_pairs,
         "total_candles": total_candles,
         "expiries_with_data": len(expiries_with_data),
-        "first_expiry_with_data": expiries_with_data[0] if expiries_with_data else None,
-        "last_expiry_with_data": expiries_with_data[-1] if expiries_with_data else None,
     }
 
 
@@ -181,7 +263,7 @@ def _coverage_status(pct: float, *, ok: float = 95.0, warn: float = 75.0) -> str
 async def compute_hygiene_plan(
     db: Any,
     *,
-    start_date: str = DEFAULT_START_DATE,
+    start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     instruments: Optional[List[str]] = None,
     moneyness: Optional[List[str]] = None,
@@ -211,30 +293,51 @@ async def compute_hygiene_plan(
     Pure read - never mutates the warehouse.
     """
     end_date = end_date or _today_ist_iso()
+    start_date = start_date or default_scope_start(end_date)
     insts = [str(i).upper() for i in (instruments or DEFAULT_INSTRUMENTS) if i]
     money = list(moneyness or DEFAULT_MONEYNESS)
     legs_list = list(legs or DEFAULT_LEGS)
+    judge_until = most_recent_closed_session()
 
     inst_reports: List[Dict[str, Any]] = []
     total_actions = 0
     worst_status = "verified"
 
     for inst in insts:
-        spot = await _spot_coverage(db, inst, start_date, end_date)
+        day_rows = await _spot_day_rows(db, inst)
+        window_rows = [r for r in day_rows if start_date <= r["date"] <= end_date]
+        spot = _spot_coverage_from_rows(window_rows, inst, start_date, end_date)
         contracts = await _option_contracts_summary(db, inst, start_date, end_date)
-        opt = await _option_candles_summary(db, inst, start_date, end_date)
+        pairs = await _option_pairs_by_day(db, inst, start_date, end_date)
 
         spot_status = _coverage_status(spot["coverage_pct"])
         contract_status = "verified" if contracts["expiries_in_window"] > 0 else "degraded"
-        # Heuristic: option candle coverage in window is "verified" if at least one
-        # expiry has data AND first/last expiries with data span at least 60% of window
-        opt_status = "verified"
-        if opt["expiries_with_data"] == 0:
+
+        # Band completeness: every strike the day's spot range touched (+/- pad)
+        # must have candles for both legs at the day's resolved expiry. This is
+        # the exact-need check — the old per-expiry heuristic reported
+        # verified-but-incomplete and silently starved backtests of strikes.
+        band = band_completeness(
+            window_rows,
+            expiries_sorted=contracts["expiries_sorted_from_start"],
+            stored_pairs=pairs["stored_pairs"],
+            step=strike_step_for(inst),
+            legs=legs_list,
+            pad_steps=BAND_PAD_STEPS,
+            judge_until=judge_until,
+            min_spot_minutes=MIN_SPOT_MINUTES_TO_JUDGE,
+        )
+        opt = {
+            **band,
+            "total_candles": pairs["total_candles"],
+            "expiries_with_data": pairs["expiries_with_data"],
+        }
+        if band["missing_pairs"] == 0:
+            opt_status = "verified"
+        elif band["coverage_pct"] >= 98.0:
+            opt_status = "warning"
+        else:
             opt_status = "degraded"
-        elif contracts["expiries_in_window"] > 0:
-            ratio = opt["expiries_with_data"] / max(1, contracts["expiries_in_window"])
-            if ratio < 0.6:
-                opt_status = "warning"
 
         actions: List[Dict[str, Any]] = []
         # Spot fetch action
@@ -259,8 +362,12 @@ async def compute_hygiene_plan(
                 "reason": "No option_contracts in window. Run expired-contract backfill.",
                 "eta_minutes": 5,
             })
-        # Option candles fetch action - only if contracts exist
-        if contract_status == "verified" and opt_status != "verified":
+        # Option candles fetch action — whenever ANY band pair is missing. The
+        # submit path re-derives exact per-contract per-date needs via the
+        # planner preview (sample=1, atm+otm1+itm1), so this action is cheap to
+        # emit and idempotent to execute.
+        if contract_status == "verified" and band["missing_pairs"] > 0:
+            months = ", ".join(f"{m}: {n}" for m, n in list(band["missing_by_month"].items())[:6])
             actions.append({
                 "id": f"options_{inst}",
                 "kind": "option_candles",
@@ -271,10 +378,10 @@ async def compute_hygiene_plan(
                 "legs": legs_list,
                 "sample_interval_minutes": sample_interval_minutes,
                 "reason": (
-                    f"Option candle coverage low ({opt['expiries_with_data']} of "
-                    f"{contracts['expiries_in_window']} window expiries have data)"
+                    f"{band['missing_pairs']} strike-day(s) missing from the daily ATM band "
+                    f"({band['coverage_pct']}% band coverage; by month: {months})"
                 ),
-                "eta_minutes": max(15, contracts["expiries_in_window"] * 5),
+                "eta_minutes": max(5, band["missing_pairs"] // 10),
             })
 
         total_actions += len(actions)
@@ -328,7 +435,7 @@ async def compute_catch_up_plan(
     moneyness: Optional[List[str]] = None,
     legs: Optional[List[str]] = None,
     sample_interval_minutes: int = DEFAULT_SAMPLE_INTERVAL_MIN,
-    fallback_start_date: str = DEFAULT_START_DATE,
+    fallback_start_date: Optional[str] = None,
     now_ist: Optional[datetime] = None,
 ) -> Dict[str, Any]:
     """Build an *incremental* catch-up plan per instrument.
@@ -347,6 +454,7 @@ async def compute_catch_up_plan(
     insts = [str(i).upper() for i in (instruments or DEFAULT_INSTRUMENTS) if i]
     money = list(moneyness or DEFAULT_MONEYNESS)
     legs_list = list(legs or DEFAULT_LEGS)
+    fallback_start_date = fallback_start_date or default_scope_start()
     target_end = most_recent_closed_session(now_ist)
 
     inst_reports: List[Dict[str, Any]] = []

@@ -435,10 +435,17 @@ async def _pair_oos_with_options(
 
     candles_df = pd.DataFrame()
     if union_keys:
-        cq = {"instrument_key": {"$in": sorted(union_keys)},
+        # Both key forms — candles are stored canonical (2-part); contract docs
+        # may carry dated 3-part keys (see instruments.canonical_instrument_key).
+        from app.instruments import canonical_instrument_key
+        query_keys = sorted({k for key in union_keys for k in (str(key), canonical_instrument_key(str(key)))})
+        cq = {"instrument_key": {"$in": query_keys},
               "ts": {"$gte": min(all_ts) - entry_max_age * 1000,
                      "$lte": (max(all_xt) if all_xt else max(all_ts))}}
         rows = await db.options_1m.find(cq, {"_id": 0}).sort("ts", 1).to_list(length=4000000)
+        if len(rows) >= 4000000:
+            log.warning("WFO option-OOS candle load hit the 4M-row cap; "
+                        "pairing beyond the cap window will be missing")
         if rows:
             candles_df = pd.DataFrame(rows)
 

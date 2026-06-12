@@ -24,6 +24,7 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 
 from app.db import ensure_indexes, get_db, serialize_doc
+from app.instruments import canonical_instrument_key
 from app.chunking import chunk_guidance_for_index, chunk_guidance_for_options
 from app.indicators import precompute_all_indicators
 from app.regime import classify_regime_series
@@ -71,7 +72,6 @@ from app.data_hygiene import (
     DEFAULT_LEGS as HYGIENE_DEFAULT_LEGS,
     DEFAULT_MONEYNESS as HYGIENE_DEFAULT_MONEYNESS,
     DEFAULT_SAMPLE_INTERVAL_MIN as HYGIENE_DEFAULT_SAMPLE,
-    DEFAULT_START_DATE as HYGIENE_DEFAULT_START,
     compute_catch_up_plan,
     compute_hygiene_plan,
     execute_hygiene_plan,
@@ -274,10 +274,10 @@ async def _autoupdate_connection_status() -> Dict[str, Any]:
 
 
 async def _autoupdate_compute_plan() -> Dict[str, Any]:
-    """Compute a hygiene plan over the default scope (2024-11-27 -> today)."""
+    """Compute a hygiene plan over the default rolling 9-month scope."""
     return await compute_hygiene_plan(
         get_db(),
-        start_date=HYGIENE_DEFAULT_START,
+        start_date=None,  # rolling 9-month window (band-complete target)
         end_date=None,
         instruments=list(HYGIENE_DEFAULT_INSTRUMENTS),
         moneyness=list(HYGIENE_DEFAULT_MONEYNESS),
@@ -934,7 +934,9 @@ async def _run_paired_option_backtest(req: BacktestReq, spot_trades: List[Dict[s
         "failed": [],
     }
     if selected_keys:
-        candle_query: Dict[str, Any] = {"instrument_key": {"$in": sorted(selected_keys)}}
+        # Candles are stored under the canonical 2-part key; selected contract
+        # docs may carry dated 3-part keys (root cause #3) — query both forms.
+        candle_query: Dict[str, Any] = {"instrument_key": {"$in": _both_key_forms(sorted(selected_keys))}}
         trade_ts = [
             int(ts)
             for trade in spot_trades
@@ -948,8 +950,8 @@ async def _run_paired_option_backtest(req: BacktestReq, spot_trades: List[Dict[s
             }
         candle_rows = await db.options_1m.find(candle_query, {"_id": 0}).sort("ts", 1).to_list(length=1000000)
 
-        present_keys = {str(row.get("instrument_key")) for row in candle_rows}
-        missing_keys = sorted(selected_keys - present_keys)
+        present_keys = {canonical_instrument_key(str(row.get("instrument_key"))) for row in candle_rows}
+        missing_keys = sorted(k for k in selected_keys if canonical_instrument_key(str(k)) not in present_keys)
         if config.auto_fetch and missing_keys:
             if len(missing_keys) > max(0, int(config.max_auto_fetch_contracts)):
                 auto_fetch.update({
@@ -1119,19 +1121,19 @@ async def _option_preflight_report(req: BacktestReq) -> Dict[str, Any]:
     if needed:
         all_ts = [t for v in needed.values() for pair in v["ts"] for t in pair]
         rows = await db.options_1m.find(
-            {"instrument_key": {"$in": list(needed.keys())},
+            {"instrument_key": {"$in": _both_key_forms(list(needed.keys()))},
              "ts": {"$gte": min(all_ts) - entry_age_ms, "$lte": max(all_ts)}},
             {"_id": 0, "instrument_key": 1, "ts": 1},
         ).sort("ts", 1).to_list(length=2000000)
         for r in rows:
-            key_ts_index.setdefault(str(r["instrument_key"]), []).append(int(r["ts"]))
+            key_ts_index.setdefault(canonical_instrument_key(str(r["instrument_key"])), []).append(int(r["ts"]))
     import bisect
     missing_keys_set = set()
     for pt in per_trade:
         if pt["status"] != "needs_candle":
             continue
         key = pt["key"]
-        ts_list = key_ts_index.get(key, [])
+        ts_list = key_ts_index.get(canonical_instrument_key(str(key)), [])
         entry_ts = int(spot_trades[pt["idx"]].get("entry_ts", 0))
         ok = False
         if ts_list:
@@ -1388,7 +1390,13 @@ async def rename_preset(name: str, new_name: str = Query(...)):
     doc["saved_at"] = datetime.now(timezone.utc).isoformat()
     await db.presets.insert_one(doc)
     await db.presets.delete_one({"name": name})
-    return {"ok": True, "name": target}
+    # Keep deployment references intact: deployments resolve their source by
+    # preset NAME (readiness/quality lookups would 404 after a rename).
+    ref = await db.strategy_deployments.update_many(
+        {"source_type": "preset", "source_id": name},
+        {"$set": {"source_id": target, "updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return {"ok": True, "name": target, "deployments_updated": int(ref.modified_count)}
 
 
 # ---------------------------------------------------------------------------
@@ -2892,16 +2900,28 @@ def _option_chunk_guidance(req: OptionWarehousePlanReq, contract_count: int) -> 
     return chunk_guidance_for_options(req.from_date, req.to_date, contract_count, req.chunk_days)
 
 
+def _both_key_forms(instrument_keys: List[str]) -> List[str]:
+    """Each key in its stored AND canonical form — candles are persisted under
+    the canonical 2-part key, but planner items may carry dated 3-part keys
+    from expired-sourced contract docs (instruments.canonical_instrument_key)."""
+    return sorted({k for key in instrument_keys for k in (str(key), canonical_instrument_key(str(key)))})
+
+
 async def _option_candle_counts(db: Any, instrument_keys: List[str], start_ts: int, end_ts: int) -> Dict[str, int]:
     if not instrument_keys:
         return {}
     pipeline = [
-        {"$match": {"instrument_key": {"$in": instrument_keys}, "ts": {"$gte": int(start_ts), "$lte": int(end_ts)}}},
+        {"$match": {"instrument_key": {"$in": _both_key_forms(instrument_keys)}, "ts": {"$gte": int(start_ts), "$lte": int(end_ts)}}},
         {"$group": {"_id": "$instrument_key", "count": {"$sum": 1}}},
     ]
     counts: Dict[str, int] = {}
     async for doc in db.options_1m.aggregate(pipeline):
-        counts[str(doc["_id"])] = int(doc.get("count", 0) or 0)
+        ck = canonical_instrument_key(str(doc["_id"]))
+        counts[ck] = counts.get(ck, 0) + int(doc.get("count", 0) or 0)
+    # Items look up by their own (possibly dated) key — mirror the canonical
+    # totals onto every requested form.
+    for key in instrument_keys:
+        counts.setdefault(str(key), counts.get(canonical_instrument_key(str(key)), 0))
     return counts
 
 
@@ -2910,7 +2930,7 @@ async def _option_candle_date_counts(db: Any, instrument_keys: List[str], start_
         return {}
     counts: Dict[str, Dict[str, int]] = {}
     pipeline = [
-        {"$match": {"instrument_key": {"$in": instrument_keys}, "ts": {"$gte": int(start_ts), "$lte": int(end_ts)}}},
+        {"$match": {"instrument_key": {"$in": _both_key_forms(instrument_keys)}, "ts": {"$gte": int(start_ts), "$lte": int(end_ts)}}},
         {"$project": {
             "instrument_key": 1,
             "date": {
@@ -2924,12 +2944,18 @@ async def _option_candle_date_counts(db: Any, instrument_keys: List[str], start_
         {"$group": {"_id": {"key": "$instrument_key", "date": "$date"}, "count": {"$sum": 1}}},
     ]
     async for doc in db.options_1m.aggregate(pipeline):
-        key = str(doc.get("_id", {}).get("key") or "")
+        key = canonical_instrument_key(str(doc.get("_id", {}).get("key") or ""))
         date_str = str(doc.get("_id", {}).get("date") or "")
         if not key or not date_str:
             continue
         per_key = counts.setdefault(key, {})
-        per_key[date_str] = int(doc.get("count", 0) or 0)
+        per_key[date_str] = per_key.get(date_str, 0) + int(doc.get("count", 0) or 0)
+    for key in instrument_keys:
+        skey = str(key)
+        if skey not in counts:
+            ck = canonical_instrument_key(skey)
+            if ck in counts:
+                counts[skey] = counts[ck]
     return counts
 
 
@@ -3380,7 +3406,9 @@ async def get_upstox_option_warehouse_fetch_job(run_id: str):
 
 
 class DataHygieneScopeReq(BaseModel):
-    start_date: str = HYGIENE_DEFAULT_START
+    # None -> rolling 9-month window (data_hygiene.default_scope_start);
+    # pass an explicit date to audit a wider/narrower range.
+    start_date: Optional[str] = None
     end_date: Optional[str] = None
     instruments: Optional[List[str]] = None
     moneyness: Optional[List[str]] = None
