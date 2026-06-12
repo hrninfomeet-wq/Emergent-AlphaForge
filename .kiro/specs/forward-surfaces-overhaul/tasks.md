@@ -5,7 +5,8 @@
 - [x] Slice 2 — Deployments command center at `/live` (cards, wizard, undeploy) — DONE
 - [x] Slice 3 — Signals ledger page rebuild — DONE (2026-06-12)
 - [x] Slice 4 — Paper trading journal rebuild — DONE (2026-06-12)
-- [ ] Slice 5 — Polish extras (only after 3+4 are verified live)
+- [x] Slice 5 — Polish extras — DONE (2026-06-12): P&L calendar heat-grid,
+      deploy-wizard preflight line, drift re-pin route+button, ATM±3 chain panel
 
 Work ONE slice per session. Each slice: implement → `python -m pytest tests -q`
 green → `cd frontend && npm run build` clean → `docker compose up -d --build` →

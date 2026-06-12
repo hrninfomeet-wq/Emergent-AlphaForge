@@ -2,6 +2,15 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.21.x] — Forward Surfaces Overhaul, Slice 5: Polish (2026-06-12)
+
+457 backend tests pass (4 new); frontend builds clean (no new eslint warnings). Four small, separately-committed items closing out the forward-surfaces spec:
+
+- **P&L calendar heat-grid** on the Paper Trading page (`paper-pnl-calendar`): a GitHub-style per-day realized-₹ grid (weekday rows × week columns, cells colored green/red by realized P&L, intensity by magnitude), computed client-side from the closed trades already fetched for the summary strip; honors the active filter, capped to the most recent 16 weeks, collapsible.
+- **Data-realism preflight line** in deploy wizard step 1 (`preflight-summary`): fetches `GET /api/deployments/preflight` for the chosen preset's instrument and shows spot coverage, upcoming option expiries, active-vs-expired contracts, Upstox token state, and structural breaks with verified/warning/degraded dots. Informational; never blocks. Restores the surface dropped in the Slice-2 rebuild.
+- **Drift re-pin**: new route `POST /api/deployments/{id}/repin-source` (recompute the plugin's source SHA, update `strategy_source_sha`, clear all `drift_*` fields, append a `repin_history` audit entry, resume only if it was auto-paused for `strategy_source_drift`) backed by pure helper `build_repin_update` (4 unit tests). UI: a "Re-pin & resume" button on the deployment card's pause banner (drift-paused only) + `api.repinDeploymentSource`.
+- **ATM±3 option-chain snapshot** on the Deployments page (`option-chain-panel`): scaffolds the nearest-expiry ATM-centered strike band from the existing option-universe route and fills CE/PE LTPs from the read-only WS stream (`/upstox/stream/ticks/latest`); CE LTP | strike | PE LTP per deployed instrument with the ATM row highlighted, spot + expiry header, 30s auto-refresh, collapsible. No new backend route.
+
 ## [0.20.x] — Forward Surfaces Overhaul, Slice 4: Paper Trading Journal (2026-06-12)
 
 453 backend tests pass; frontend builds clean (no new eslint warnings).

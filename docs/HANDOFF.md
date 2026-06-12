@@ -1,8 +1,18 @@
 # Handoff
 
-Updated: 2026-06-12 (Slice 4 + presets)
+Updated: 2026-06-12 (Slice 5 — forward-surfaces spec complete)
 
 This is the entry point for the next AI agent or developer. Read it before editing code. The repository and tests are the source of truth — not any prior chat.
+
+## Recent Work — Forward Surfaces Overhaul, Slice 5: Polish (2026-06-12)
+
+See CHANGELOG 0.21.x. The final slice — four small, separately-committed polish items closing out `.kiro/specs/forward-surfaces-overhaul/` (the whole spec is now DONE):
+1. **P&L calendar heat-grid** on `/paper` (`paper-pnl-calendar`) — per-day realized-₹ GitHub-style grid, client-side from the closed trades already fetched, capped 16 weeks, collapsible.
+2. **Data-realism preflight line** in deploy wizard step 1 (`preflight-summary`) on `GET /api/deployments/preflight` for the preset's instrument — coverage / expiries / contracts / token / structural breaks, informational. Restores the surface dropped in Slice 2.
+3. **Drift re-pin** — `POST /api/deployments/{id}/repin-source` (pure helper `build_repin_update` in `app/strategy_source_hash.py`, 4 unit tests: recompute SHA, clear `drift_*`, append `repin_history`, resume only if drift-paused) + a "Re-pin & resume" button on the card's pause banner + `api.repinDeploymentSource`.
+4. **ATM±3 option-chain snapshot** on `/live` (`option-chain-panel`) — strike band from the option-universe route, CE/PE LTPs from `/upstox/stream/ticks/latest`, ATM highlighted, 30s refresh. No new backend route.
+
+**457 backend tests pass; frontend builds clean.** The forward-surfaces-overhaul spec is fully delivered (Slices 1–5). The next agent should pick the next item from `plan.md` / the optimizer-enhancements spec, or take direction from the user.
 
 ## Recent Work — Forward Surfaces Overhaul, Slice 4: Paper Trading Journal (2026-06-12)
 
@@ -23,9 +33,11 @@ See CHANGELOG 0.19.x. Two small user-requested preset features:
 ## NEXT AGENT — START HERE (Opus 4.8 in Kiro)
 
 Your work is fully spec'd: **`.kiro/specs/forward-surfaces-overhaul/`**
-(requirements → design → tasks). Slices 3–4 (Signals ledger `/journal`, Paper
-trading journal `/paper`) are now **DONE** — `tasks.md` has the remaining
-ready-to-paste prompt for **Slice 5 (polish)**, the last slice. `design.md`
+(requirements → design → tasks). **All five slices are now DONE** (Signals
+ledger `/journal`, Paper trading journal `/paper`, and the Slice-5 polish:
+P&L calendar, deploy-wizard preflight line, drift re-pin, ATM±3 chain). The
+spec is fully delivered — pick the next item from `plan.md` or the
+optimizer-enhancements spec, or take direction from the user. `design.md`
 carries the endpoint contracts, frontend conventions, testing rules, and the
 trading-domain rules that are non-negotiable
 (premium-never-spot, lot size from contract metadata, OPEN trades never
@@ -36,7 +48,7 @@ paper_auto) goes back to the senior agent.
 
 ## Status In One Line
 
-Latest (2026-06-12, Slice 4): **`/paper` rebuilt as the Paper Trading Journal** on the upgraded `GET /api/paper/trades` — strategy-named rows (contract, CE/PE, lots × lot size, entry/exit time+price, exit reason, holding time, P&L ₹ + % of entry premium), day-wise grouping with subtotals, a summary strip (today realized, open MTM, open count, win rate, profit factor) + cumulative-realized equity sparkline, server-side filter/sort/paginate/CSV, 30s auto-refresh, one-click Close @ market / Close all open (premium, never spot) + manual off-hours fallback, and the CLOSED-only purge toolkit. **453 pytest tests pass; frontend builds clean.** Slice 5 (polish) is the only remaining slice in `.kiro/specs/forward-surfaces-overhaul/`.
+Latest (2026-06-12, Slice 5): **forward-surfaces-overhaul spec COMPLETE** — polish slice shipped four items: a P&L calendar heat-grid on `/paper`, a data-realism preflight line in the deploy wizard, a drift re-pin route + pause-banner button (`POST /api/deployments/{id}/repin-source`), and an ATM±3 live option-chain snapshot on `/live`. **457 pytest tests pass; frontend builds clean.** All five slices of the spec are delivered; the local Docker stack is healthy and rebuilt.
 
 ## Recent Work — Forward Surfaces Overhaul, Slice 3: Signals Ledger (2026-06-12)
 
