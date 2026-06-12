@@ -2,6 +2,13 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.19.x] — Save Backtest Setup as Preset + Preset Rename (2026-06-12)
+
+453 backend tests pass; frontend builds clean (no new eslint warnings).
+
+- **Save setup as preset (Backtest Lab):** a new "Save setup as preset" button (`backtest-save-preset`) writes the current setup — strategy + modified params + the full Option Execution / exit policy — as a named preset. The `execution` block (moneyness, DTE, exit_mode, premium target/stop %/pts, lots, costs) is built to match `execution_from_option_config`, so the preset re-applies in the Lab and **prefills the deploy wizard, deploying as-is**. (Previously presets could only be created by the Optimizer's "Apply as preset".) Overwrite is confirmed.
+- **Rename preset:** new backend route `POST /api/presets/{name}/rename?new_name=` (preserves config + execution; 404 if missing, 409 on name collision, 400 on empty) + `api.renamePreset`. A rename (pencil) button (`preset-rename-*`) was added to the Optimizer's Saved Presets panel next to deploy/delete.
+
 ## [0.18.x] — Forward Surfaces Overhaul, Slice 3: Signals Ledger (2026-06-12)
 
 453 backend tests pass. Frontend builds clean (no new eslint warnings).

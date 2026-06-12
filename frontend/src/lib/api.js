@@ -194,6 +194,8 @@ export const api = {
   listPresets: () => apiClient.get("/presets").then((r) => r.data),
   savePreset: (name, config) =>
     apiClient.put(`/presets/${name}`, { name, config }).then((r) => r.data),
+  renamePreset: (name, newName) =>
+    apiClient.post(`/presets/${encodeURIComponent(name)}/rename`, null, { params: { new_name: newName } }).then((r) => r.data),
   deletePreset: (name) =>
     apiClient.delete(`/presets/${name}`).then((r) => r.data),
 };

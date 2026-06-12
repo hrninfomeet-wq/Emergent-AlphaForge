@@ -202,6 +202,64 @@ export default function BacktestLab() {
     }
   };
 
+  // Derive the preset `execution` block from the current Option Execution form,
+  // matching execution_from_option_config on the backend so the saved preset
+  // re-applies in the Lab and prefills the deploy wizard identically.
+  const buildExecutionFromConfig = () => {
+    if (!config.option_backtest_enabled) return null;
+    const ex = {
+      moneyness: config.option_moneyness || "atm",
+      dte_filter: parseDteFilter(config.option_dte_filter),
+      exit_mode: config.option_exit_mode || "spot_exit",
+      lots: Math.max(1, Number(config.option_lots || 1)),
+    };
+    if (config.option_exit_mode === "option_levels") {
+      if (config.option_sl_tp_unit === "pts") {
+        if (config.option_target_pts !== "") ex.option_target_pts = Number(config.option_target_pts);
+        if (config.option_stop_pts !== "") ex.option_stop_pts = Number(config.option_stop_pts);
+      } else {
+        if (config.option_target_pct !== "") ex.option_target_pct = Number(config.option_target_pct);
+        if (config.option_stop_pct !== "") ex.option_stop_pct = Number(config.option_stop_pct);
+      }
+    }
+    if (config.option_costs_enabled) {
+      ex.cost_config = {
+        enabled: true,
+        brokerage_per_order: Number(config.option_brokerage_per_order || 0),
+        spread_pct_of_premium: Number(config.option_spread_pct || 0),
+      };
+    }
+    return ex;
+  };
+
+  // Save the current Backtest Lab setup (params + option execution/exit policy)
+  // as a named preset so it can be re-tested and deployed as-is.
+  const saveAsPreset = async () => {
+    const suggested = config.name && config.name !== "Untitled Run"
+      ? config.name
+      : `${config.strategy_id} ${new Date().toISOString().slice(0, 10)}`;
+    const raw = window.prompt("Save current setup as a preset (name):", suggested);
+    if (raw == null) return;
+    const name = raw.trim();
+    if (!name) { toast.error("Preset name cannot be empty."); return; }
+    if (presets.some((p) => p.name === name) && !window.confirm(`Preset "${name}" already exists. Overwrite it?`)) return;
+    const cfg = {
+      strategy_id: config.strategy_id,
+      instrument: config.instrument,
+      mode: config.mode,
+      params: { ...config.params },
+    };
+    const ex = buildExecutionFromConfig();
+    if (ex) cfg.execution = ex;
+    try {
+      await api.savePreset(name, cfg);
+      await refreshPresets();
+      toast.success(`Saved preset "${name}"${ex ? " with execution policy" : ""}. Deploy it from Live Signals.`);
+    } catch (e) {
+      toast.error(`Save failed: ${e.response?.data?.detail || e.message}`);
+    }
+  };
+
   const selectedStrategy = useMemo(
     () => strategies.find((s) => s.id === config.strategy_id),
     [strategies, config.strategy_id]
@@ -438,6 +496,20 @@ export default function BacktestLab() {
                 </Select>
               </div>
             )}
+            <div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={saveAsPreset}
+                className="w-full h-8 text-xs border-line"
+                data-testid="backtest-save-preset"
+              >
+                <Save className="w-3.5 h-3.5 mr-1.5" /> Save setup as preset
+              </Button>
+              <div className="text-[10px] text-dimmer mt-1">
+                Captures the strategy params + option execution / exit policy. Deployable as-is from Live Signals.
+              </div>
+            </div>
             <div>
               <Label className="text-xs text-dim">Run name (saved to journal)</Label>
               <Input

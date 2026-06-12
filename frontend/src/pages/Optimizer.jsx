@@ -16,7 +16,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
   Gauge, Play, RefreshCw, Sparkles, Trash2, ChevronDown, ChevronRight,
   Save, Activity, Trophy, StopCircle, Download, FileJson, FileText, FolderOpen,
-  ExternalLink, Copy, PauseCircle, PlayCircle, Rocket,
+  ExternalLink, Copy, PauseCircle, PlayCircle, Rocket, Pencil,
 } from "lucide-react";
 
 const INSTRUMENTS = ["NIFTY", "BANKNIFTY", "SENSEX"];
@@ -322,6 +322,20 @@ export default function Optimizer() {
       toast.success(`Deleted preset "${name}"`);
     } catch (e) {
       toast.error("Delete failed: " + (e.response?.data?.detail || e.message));
+    }
+  };
+
+  const renamePreset = async (name) => {
+    const raw = window.prompt(`Rename preset "${name}" to:`, name);
+    if (raw == null) return;
+    const next = raw.trim();
+    if (!next || next === name) return;
+    try {
+      await api.renamePreset(name, next);
+      await refreshPresets();
+      toast.success(`Renamed "${name}" → "${next}"`);
+    } catch (e) {
+      toast.error("Rename failed: " + (e.response?.data?.detail || e.message));
     }
   };
 
@@ -829,7 +843,7 @@ export default function Optimizer() {
           {currentJob?.status === "running" || currentJob?.status === "queued" || currentJob?.status === "analyzing" ? "Optimizing…" : "Auto-Optimize"}
         </Button>
 
-        <PresetsPanel presets={presets} onLoadInLab={(name) => navigate(`/backtest?preset=${encodeURIComponent(name)}`)} onDeploy={(name) => navigate(`/live?preset=${encodeURIComponent(name)}`)} onRefresh={refreshPresets} onDelete={deletePreset} />
+        <PresetsPanel presets={presets} onLoadInLab={(name) => navigate(`/backtest?preset=${encodeURIComponent(name)}`)} onDeploy={(name) => navigate(`/live?preset=${encodeURIComponent(name)}`)} onRefresh={refreshPresets} onRename={renamePreset} onDelete={deletePreset} />
       </aside>
 
       {/* RIGHT: Progress + Results + History */}
@@ -1264,7 +1278,7 @@ function WfoResults({ job }) {
   );
 }
 
-function PresetsPanel({ presets, onLoadInLab, onDeploy, onRefresh, onDelete }) {
+function PresetsPanel({ presets, onLoadInLab, onDeploy, onRefresh, onRename, onDelete }) {
   return (
     <div className="rounded-lg border border-line bg-bg-1" data-testid="opt-presets-panel">
       <div className="px-3 py-2 border-b border-line flex items-center">
@@ -1309,6 +1323,15 @@ function PresetsPanel({ presets, onLoadInLab, onDeploy, onRefresh, onDelete }) {
                   aria-label={`Deploy preset ${p.name}`}
                 >
                   <Rocket className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  onClick={() => onRename(p.name)}
+                  className="px-2 self-stretch flex items-center text-dimmer hover:text-info shrink-0"
+                  data-testid={`preset-rename-${p.name.replace(/[^a-z0-9]/gi, "_")}`}
+                  title={`Rename preset "${p.name}"`}
+                  aria-label={`Rename preset ${p.name}`}
+                >
+                  <Pencil className="w-3.5 h-3.5" />
                 </button>
                 <button
                   onClick={() => onDelete(p.name)}

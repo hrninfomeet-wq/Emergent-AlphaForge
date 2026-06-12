@@ -1,8 +1,15 @@
 # Handoff
 
-Updated: 2026-06-12 (Slice 3 done)
+Updated: 2026-06-12 (Slice 3 + presets)
 
 This is the entry point for the next AI agent or developer. Read it before editing code. The repository and tests are the source of truth — not any prior chat.
+
+## Recent Work — Save Backtest Setup as Preset + Rename (2026-06-12)
+
+See CHANGELOG 0.19.x. Two small user-requested preset features:
+- **Backtest Lab "Save setup as preset"** (`backtest-save-preset`): captures strategy + current params + the Option Execution/exit policy into a preset's `config.execution` (same shape as `preset_execution.execution_from_option_config`), so a hand-tuned Lab setup is deployable as-is (the deploy wizard already prefills from `execution`). Closes the long-noted gap that backtest exit config didn't travel into deployments — now it does when you save the setup as a preset.
+- **Preset rename**: `POST /api/presets/{name}/rename?new_name=` (config-preserving, 409 on collision) + `api.renamePreset` + a pencil button in the Optimizer Saved Presets panel.
+- No new collections; `savePreset` was already in api.js (previously unused by any page). 453 tests pass, frontend clean, both containers rebuilt.
 
 ## NEXT AGENT — START HERE (Opus 4.8 in Kiro)
 

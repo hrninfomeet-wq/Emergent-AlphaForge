@@ -1355,6 +1355,28 @@ async def delete_preset(name: str):
     return {"deleted": res.deleted_count}
 
 
+@api.post("/presets/{name}/rename")
+async def rename_preset(name: str, new_name: str = Query(...)):
+    """Rename a saved preset, preserving its config (params + execution policy).
+    Rejects an empty or already-taken target name."""
+    target = (new_name or "").strip()
+    if not target:
+        raise HTTPException(400, "new_name is required")
+    if target == name:
+        return {"ok": True, "name": name}
+    db = get_db()
+    doc = await db.presets.find_one({"name": name}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, f"Preset '{name}' not found")
+    if await db.presets.find_one({"name": target}, {"_id": 0}):
+        raise HTTPException(409, f"A preset named '{target}' already exists")
+    doc["name"] = target
+    doc["saved_at"] = datetime.now(timezone.utc).isoformat()
+    await db.presets.insert_one(doc)
+    await db.presets.delete_one({"name": name})
+    return {"ok": True, "name": target}
+
+
 # ---------------------------------------------------------------------------
 # Dashboard summary
 # ---------------------------------------------------------------------------
