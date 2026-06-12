@@ -102,6 +102,18 @@ def test_broker_empty_candidates_excludes_stored_and_failed():
     assert out == [("2026-06-11", "2026-06-16", "CE", 23550)]
 
 
+def test_broker_empty_candidates_grace_protects_the_latest_session():
+    # Upstox serves historical F&O bars with a lag after the close: a
+    # same-night sync sees yesterday's WHOLE band as empty (ATM included).
+    # Pairs dated >= grace_from must stay actionable, not get ledgered.
+    requested = pairs_from_band_plan_items(PLAN_ITEMS)
+    out = broker_empty_candidates(requested, set(), [], grace_from="2026-06-11")
+    assert out == [("2026-06-10", "2026-06-16", "CE", 23550),
+                   ("2026-06-10", "2026-06-16", "PE", 23550)]
+    # everything graced -> nothing ledgered
+    assert broker_empty_candidates(requested, set(), [], grace_from="2026-06-10") == []
+
+
 def test_broker_empty_candidates_failure_outside_pair_dates_does_not_protect():
     requested = pairs_from_band_plan_items(PLAN_ITEMS)
     failed = [{"instrument_key": "NSE_FO|111",

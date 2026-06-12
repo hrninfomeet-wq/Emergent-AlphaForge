@@ -19,7 +19,9 @@ const MONEYNESS_OPTIONS = ["atm", "itm1", "itm2", "otm1", "otm2", "otm3"];
 const LEG_OPTIONS = ["CE", "PE"];
 
 function dateInput(daysAgo = 0) {
-  const d = new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000);
+  // IST calendar date (UTC+5:30) regardless of the browser timezone, so date
+  // defaults match the trading day the backend reasons about.
+  const d = new Date(Date.now() + (5 * 60 + 30) * 60 * 1000 - daysAgo * 24 * 60 * 60 * 1000);
   return d.toISOString().slice(0, 10);
 }
 
@@ -33,8 +35,6 @@ function quoteTimeDisplay(quote) {
 export default function DataWarehouse() {
   const { jobs, startJob, onJobComplete, isJobActive } = useJobs();
   const [coverage, setCoverage] = useState(null);
-  const [optionCoverage, setOptionCoverage] = useState(null);
-  const [optionCoverageLoading, setOptionCoverageLoading] = useState(true);
   const [runs, setRuns] = useState([]);
   const [upstoxStatus, setUpstoxStatus] = useState(null);
   const [upstoxBusy, setUpstoxBusy] = useState(false);
@@ -95,23 +95,9 @@ export default function DataWarehouse() {
     optionPlanResultRef.current = optionPlanResult;
   }, [optionPlanResult]);
 
-  const refreshOptionCoverage = async () => {
-    setOptionCoverageLoading(true);
-    try {
-      const optionCov = await api.optionCoverage();
-      setOptionCoverage(optionCov.instruments || {});
-    } catch (e) {
-      // Non-fatal: the rest of the page is still usable without the heatmap.
-      setOptionCoverage({});
-    } finally {
-      setOptionCoverageLoading(false);
-    }
-  };
-
   const refresh = async () => {
-    // Fast calls gate the page render. The option-coverage heatmap is loaded
-    // independently because its aggregation is heavier; it must not block the
-    // rest of the page from showing.
+    // Fast calls only — the option band heatmap reads the persisted hygiene
+    // plan on its own (instant), so nothing heavy gates the page render.
     try {
       const [cov, r, upstox] = await Promise.all([
         api.coverage(),
@@ -126,8 +112,6 @@ export default function DataWarehouse() {
     } finally {
       setLoading(false);
     }
-    // Kick off the heavier option-coverage load without awaiting it.
-    refreshOptionCoverage();
   };
 
   useEffect(() => {
@@ -158,6 +142,7 @@ export default function DataWarehouse() {
         handleOptionPreview(false);
       }
     });
+    // (the option band heatmap refreshes itself from the persisted plan)
     return () => {
       offIngest();
       offFetch();
@@ -360,6 +345,8 @@ export default function DataWarehouse() {
         </div>
       </div>
 
+      <HowThisPageWorks />
+
       <UpstoxPanel
         status={upstoxStatus}
         busy={upstoxBusy}
@@ -451,7 +438,7 @@ export default function DataWarehouse() {
         onBackfill={handleExpiredBackfill}
       />
 
-      <OptionCoverageHeatmap coverage={optionCoverage} loading={optionCoverageLoading} />
+      <OptionCoverageHeatmap />
 
       {/* ============ Verify & audit ============ */}
       <SectionHeader title="Verify & Audit" subtitle="Confirm completeness and integrity of stored data" />
@@ -523,6 +510,33 @@ export default function DataWarehouse() {
     </div>
   );
 }
+
+function HowThisPageWorks() {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="rounded-lg border border-line bg-bg-1" data-testid="warehouse-help">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="w-full px-3 py-2 flex items-center gap-2 text-left"
+        data-testid="warehouse-help-toggle"
+      >
+        <AlertCircle className="w-4 h-4 text-info" />
+        <span className="text-xs font-semibold uppercase tracking-wider text-dim">How this page works</span>
+        <span className="text-[11px] text-dimmer">{open ? "hide" : "show"}</span>
+      </button>
+      {open && (
+        <div className="px-3 pb-3 text-[11px] text-dim space-y-1.5">
+          <div>1. <span className="text-foreground font-semibold">Data flows in automatically.</span> While Upstox is connected, the warehouse catches up on startup, after connecting, and daily at 18:00 IST — spot candles, option contracts, and every strike the day's spot range touched (the ATM band).</div>
+          <div>2. <span className="text-foreground font-semibold">Sync now forces it.</span> One click in Data Hygiene catches up new sessions and band-fills any wick-edge gaps. Re-running is always safe — only missing data is requested.</div>
+          <div>3. <span className="text-foreground font-semibold">Verified means trustworthy.</span> Strike-days the broker has proven it has no candles for are excluded automatically (shown as "broker-empty"), so amber always means something is actually fixable.</div>
+          <div>4. <span className="text-foreground font-semibold">Explore</span> with the candlestick chart and the Spot &amp; ATM Option Lookup; <span className="text-foreground font-semibold">verify</span> with the audits below them.</div>
+          <div>5. <span className="text-foreground font-semibold">Manual tools</span> (date-range spot ingest, the option planner, expired-contract backfill) are only needed for research pulls beyond the rolling 9-month scope. Red buttons delete data — read their confirmations carefully.</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 
 function VolatilityAuditPanel() {
   const [form, setForm] = useState({
@@ -1565,7 +1579,36 @@ function AuditStat({ label, value }) {
   );
 }
 
+const HEATMAP_RANGES = [
+  { key: "8w", label: "8 weeks", days: 56 },
+  { key: "3m", label: "3 months", days: 92 },
+  { key: "all", label: "All", days: null },
+];
+
+function rangeCutoff(rangeKey) {
+  const range = HEATMAP_RANGES.find((r) => r.key === rangeKey);
+  if (!range || !range.days) return null;
+  return new Date(Date.now() - range.days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+
+function RangeChips({ value, onChange, testid }) {
+  return (
+    <div className="flex items-center gap-1" data-testid={testid}>
+      {HEATMAP_RANGES.map((r) => (
+        <button
+          key={r.key}
+          onClick={() => onChange(r.key)}
+          className={`text-[10px] px-1.5 py-0.5 rounded border font-mono ${value === r.key ? "border-info bg-bg-3 text-foreground" : "border-line bg-bg-1 text-dim hover:text-foreground"}`}
+        >
+          {r.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function CoverageHeatmap({ coverage }) {
+  const [range, setRange] = useState("8w");
   if (!coverage || Object.keys(coverage).length === 0) {
     return (
       <div className="rounded-lg border border-line bg-bg-1 p-6 text-center text-dimmer text-sm" data-testid="coverage-heatmap-empty">
@@ -1589,12 +1632,16 @@ function CoverageHeatmap({ coverage }) {
       if (Number.isFinite(exp) && exp > 0) expectedByDate[d.date] = exp;
     })
   );
-  const dates = Object.keys(tradingFlag).sort();
+  const cutoff = rangeCutoff(range);
+  const dates = Object.keys(tradingFlag).sort().filter((d) => !cutoff || d >= cutoff);
 
   return (
     <div className="rounded-lg border border-line bg-bg-1" data-testid="data-coverage-heatmap">
-      <div className="px-3 py-2 border-b border-line">
+      <div className="px-3 py-2 border-b border-line flex items-center gap-2">
         <div className="text-xs font-semibold uppercase tracking-wider text-dim">Coverage Heatmap (per trading day)</div>
+        <div className="ml-auto">
+          <RangeChips value={range} onChange={setRange} testid="coverage-heatmap-range" />
+        </div>
       </div>
       <div className="p-3 overflow-x-auto">
         <table className="text-[10px] font-mono">
@@ -1642,67 +1689,114 @@ function CoverageHeatmap({ coverage }) {
   );
 }
 
-function OptionCoverageHeatmap({ coverage, loading = false }) {
-  if (loading && (!coverage || Object.keys(coverage).length === 0)) {
+function OptionCoverageHeatmap() {
+  // Band truth per day, read from the persisted hygiene plan (instant). The
+  // old version showed candle DENSITY over whatever contracts happened to be
+  // stored — a self-referential denominator that could read 100% on a day
+  // missing entire wick strikes. Cells now answer the question that matters:
+  // "does this day have every strike its spot range demanded?"
+  const [plan, setPlan] = useState(null);
+  const [loaded, setLoaded] = useState(false);
+  const [range, setRange] = useState("8w");
+
+  const load = async () => {
+    try {
+      const res = await api.dataHygieneLatest();
+      setPlan(res?.plan || null);
+    } catch {
+      setPlan(null);
+    } finally {
+      setLoaded(true);
+    }
+  };
+  useEffect(() => {
+    load();
+  }, []);
+
+  const instruments = plan?.instruments || [];
+  if (!loaded) {
     return (
       <div className="rounded-lg border border-line bg-bg-1 p-6 flex items-center justify-center gap-2 text-dimmer text-sm" data-testid="option-coverage-heatmap-loading">
-        <RefreshCw className="w-4 h-4 animate-spin" /> Loading option coverage…
+        <RefreshCw className="w-4 h-4 animate-spin" /> Loading option band coverage…
       </div>
     );
   }
-  if (!coverage || Object.keys(coverage).length === 0) {
+  if (!instruments.length) {
     return (
       <div className="rounded-lg border border-line bg-bg-1 p-6 text-center text-dimmer text-sm" data-testid="option-coverage-heatmap-empty">
-        No option candles stored yet.
+        Run “Check warehouse” in Data Hygiene once to see daily ATM-band coverage here.
       </div>
     );
   }
 
+  const cutoff = rangeCutoff(range);
   const dateSet = new Set();
-  Object.values(coverage).forEach((c) => (c.days || []).forEach((d) => dateSet.add(d.date)));
+  instruments.forEach((i) => (i.option_candles?.per_day || []).forEach((d) => {
+    if (!cutoff || d.date >= cutoff) dateSet.add(d.date);
+  }));
   const dates = Array.from(dateSet).sort();
 
   return (
     <div className="rounded-lg border border-line bg-bg-1" data-testid="option-coverage-heatmap">
       <div className="px-3 py-2 border-b border-line flex items-center gap-2">
         <Database className="w-4 h-4 text-info" />
-        <div className="text-xs font-semibold uppercase tracking-wider text-dim">Option Coverage Heatmap</div>
-        <span className="ml-auto text-[10px] text-dimmer font-mono">stored candles by date</span>
+        <div className="text-xs font-semibold uppercase tracking-wider text-dim">Option Band Coverage</div>
+        <span className="text-[10px] text-dimmer font-mono">every strike the day&apos;s spot range touched</span>
+        <div className="ml-auto flex items-center gap-2">
+          {plan?.computed_at && (
+            <span className="text-[10px] text-dimmer font-mono">checked {isoToFull(plan.computed_at)}</span>
+          )}
+          <RangeChips value={range} onChange={setRange} testid="option-heatmap-range" />
+          <Button variant="ghost" size="sm" onClick={load} className="h-6 w-6 p-0" title="Reload from the last check" data-testid="option-heatmap-refresh">
+            <RefreshCw className="w-3 h-3" />
+          </Button>
+        </div>
       </div>
       <div className="p-3 overflow-x-auto">
-        <table className="w-full text-xs">
+        <table className="text-xs">
           <thead>
             <tr className="text-dim border-b border-line">
               <th className="text-left p-2 sticky left-0 bg-bg-1 z-10">Underlying</th>
               {dates.map((d) => (
-                <th key={d} className="p-1 text-center font-mono whitespace-nowrap">{d.slice(5)}</th>
+                <th key={d} className="p-1 text-center font-mono whitespace-nowrap text-[9px]">{d.slice(5)}</th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {Object.entries(coverage).map(([inst, c]) => {
-              const byDate = Object.fromEntries((c.days || []).map((d) => [d.date, d]));
+            {instruments.map((inst) => {
+              const oc = inst.option_candles || {};
+              const byDate = Object.fromEntries((oc.per_day || []).map((d) => [d.date, d]));
               return (
-                <tr key={inst} className="border-b border-line">
+                <tr key={inst.instrument} className="border-b border-line">
                   <td className="p-2 sticky left-0 bg-bg-1 z-10">
-                    <div className="font-semibold">{inst}</div>
+                    <div className="font-semibold">{inst.instrument}</div>
                     <div className="text-[10px] text-dimmer font-mono">
-                      {fmtInt(c.total_candles || 0)} candles · {fmtInt(c.contract_count || 0)} contracts
+                      band {fmtNum(oc.coverage_pct ?? 0, 1)}% · {fmtInt(oc.total_candles || 0)} candles
                     </div>
-                    <div className="text-[10px] text-dimmer font-mono">
-                      {c.first_date || "n/a"} → {c.last_date || "n/a"}
-                    </div>
+                    {(oc.broker_empty_pairs || 0) > 0 && (
+                      <div className="text-[10px] text-dimmer font-mono">{fmtInt(oc.broker_empty_pairs)} broker-empty excluded</div>
+                    )}
                   </td>
                   {dates.map((d) => {
                     const day = byDate[d];
-                    const pct = Number(day?.coverage_pct || 0);
-                    const cls = pct >= 95 ? "bg-emerald-600" : pct >= 50 ? "bg-amber-500" : day ? "bg-rose-700" : "bg-bg-3";
+                    if (!day) {
+                      return (
+                        <td key={d} className="p-0.5">
+                          <div className="w-5 h-5 rounded-sm bg-bg-3 border border-line" title={`${inst.instrument} ${d}: not judged (no spot data or in-progress day)`} />
+                        </td>
+                      );
+                    }
+                    const pct = Number(day.coverage_pct || 0);
+                    const cls = pct >= 100 ? "bg-emerald-600" : pct >= 95 ? "bg-amber-500" : "bg-rose-700";
+                    const note = [
+                      `${inst.instrument} ${d}: ${pct}% of band stored`,
+                      `${fmtInt(day.expected)} pair(s) demanded`,
+                      day.missing ? `${fmtInt(day.missing)} missing (fixable)` : null,
+                      day.broker_empty ? `${fmtInt(day.broker_empty)} broker-empty (excluded)` : null,
+                    ].filter(Boolean).join(" · ");
                     return (
-                      <td key={d} className="p-1">
-                        <div
-                          className={`w-6 h-6 rounded-sm ${cls} border border-line`}
-                          title={day ? `${inst} ${d}: ${fmtInt(day.candles)} candles, ${fmtInt(day.contracts)} contracts, ${pct}% stored-contract coverage` : `${inst} ${d}: no option candles`}
-                        />
+                      <td key={d} className="p-0.5">
+                        <div className={`w-5 h-5 rounded-sm ${cls} border border-line cursor-help`} title={note} />
                       </td>
                     );
                   })}
@@ -1712,13 +1806,13 @@ function OptionCoverageHeatmap({ coverage, loading = false }) {
           </tbody>
         </table>
         <div className="mt-3 flex flex-wrap gap-3 text-[11px] text-dim">
-          <div className="flex items-center gap-1"><span className="w-3 h-3 bg-emerald-600 rounded-sm"></span>≥95% for stored contracts</div>
-          <div className="flex items-center gap-1"><span className="w-3 h-3 bg-amber-500 rounded-sm"></span>partial stored-contract day</div>
-          <div className="flex items-center gap-1"><span className="w-3 h-3 bg-rose-700 rounded-sm"></span>low stored-contract coverage</div>
-          <div className="flex items-center gap-1"><span className="w-3 h-3 bg-bg-3 border border-line rounded-sm"></span>no stored option candles</div>
+          <div className="flex items-center gap-1"><span className="w-3 h-3 bg-emerald-600 rounded-sm"></span>band complete (broker-empty excluded)</div>
+          <div className="flex items-center gap-1"><span className="w-3 h-3 bg-amber-500 rounded-sm"></span>≥95% of band</div>
+          <div className="flex items-center gap-1"><span className="w-3 h-3 bg-rose-700 rounded-sm"></span>&lt;95% — run Sync now</div>
+          <div className="flex items-center gap-1"><span className="w-3 h-3 bg-bg-3 border border-line rounded-sm"></span>not judged</div>
         </div>
         <div className="mt-2 text-[11px] text-dimmer">
-          This heatmap shows what is stored in `options_1m`. Use Option Data Planner Planned coverage to verify a specific ATM/OTM/ITM download plan.
+          A day is complete when candles exist for BOTH legs of every strike its spot low–high touched (±1 step pad) at the day&apos;s resolved expiry — the same rule backtests and the hygiene plan use.
         </div>
       </div>
     </div>

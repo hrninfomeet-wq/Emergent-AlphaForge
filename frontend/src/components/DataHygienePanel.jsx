@@ -80,9 +80,21 @@ export default function DataHygienePanel({ upstoxConnected }) {
     }
   };
 
+  // Last persisted plan -> the page shows warehouse health instantly on load
+  // (with its checked-at time) instead of forcing a 5-15s "Check warehouse".
+  const loadLatest = async () => {
+    try {
+      const res = await api.dataHygieneLatest();
+      if (res?.plan) setPlan(res.plan);
+    } catch {
+      /* no cached plan yet — the Check button still works */
+    }
+  };
+
   useEffect(() => {
     loadAutoUpdate();
     loadVix();
+    loadLatest();
   }, []);
 
   const ingestVix = async () => {
@@ -92,9 +104,9 @@ export default function DataHygienePanel({ upstoxConnected }) {
     }
     setVixBusy(true);
     try {
-      // Default baseline 2025-12-29 -> today; the backend dedups so re-running is safe.
+      // Baseline comes from the backend (VIX_BASELINE_START); dedup makes re-runs safe.
       const today = new Date(Date.now() + (5 * 60 + 30) * 60 * 1000).toISOString().slice(0, 10);
-      const res = await api.vixIngest({ from_date: "2025-12-29", to_date: today, chunk_days: 7 });
+      const res = await api.vixIngest({ from_date: vix?.baseline_start || "2025-12-29", to_date: today, chunk_days: 7 });
       toast.success(`India VIX: ${res.status} · +${res.candles_added || 0} candles`);
       await loadVix();
     } catch (e) {
@@ -172,19 +184,21 @@ export default function DataHygienePanel({ upstoxConnected }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Incremental catch-up: fetch spot + option data from each instrument's last
-  // stored session up to the most recent closed trading session, in one click.
+  // One-button sync: catch-up new sessions (spot -> contracts -> band-exact
+  // option fill over the full rolling window), plus a band sweep for
+  // instruments whose spot is already current. Broker-proven-empty strike-days
+  // are excluded by the ledger, so an unfixable gap never blocks "up to date".
   const runCatchUp = async () => {
     if (!upstoxConnected) {
-      toast.error("Connect Upstox before running catch-up.");
+      toast.error("Connect Upstox before syncing.");
       return;
     }
     setCatchingUp(true);
     setCatchUpResult(null);
     try {
-      const res = await api.dataHygieneCatchUp({ include_options: true });
+      const res = await api.warehouseSync({ include_options: true });
       if (res.up_to_date) {
-        toast.info("Warehouse already up to date — no new sessions to fetch.");
+        toast.info("Warehouse already in sync — nothing to fetch.");
         setCatchUpResult({ up_to_date: true, plan: res.plan });
         return;
       }
@@ -192,14 +206,15 @@ export default function DataHygienePanel({ upstoxConnected }) {
       const errors = (res.errors || []).length;
       setCatchUpResult(res);
       if (submitted > 0) {
-        toast.success(`Catch-up started: ${submitted} job(s) (spot + options) in dependency order`);
+        const sweeps = (res.band_sweeps || []).length;
+        toast.success(`Sync started: ${submitted} job(s)${sweeps ? ` incl. ${sweeps} band sweep(s)` : ""}`);
       } else {
-        toast.warning("No catch-up jobs were submitted. Check Upstox connection.");
+        toast.warning("No sync jobs were submitted. Check Upstox connection.");
       }
       if (errors) toast.error(`${errors} action(s) failed to submit`);
     } catch (e) {
       const msg = e.response?.data?.detail || e.message;
-      toast.error(`Catch-up failed: ${msg}`);
+      toast.error(`Sync failed: ${msg}`);
     } finally {
       setCatchingUp(false);
     }
@@ -250,9 +265,40 @@ export default function DataHygienePanel({ upstoxConnected }) {
 
       <div className="p-3 space-y-3">
         <div className="text-[11px] text-dim">
-          Diffs the warehouse against the desired scope (2024-11-27 → today · NIFTY + BANKNIFTY + SENSEX · ATM CE/PE) and
-          fills gaps in dependency order: spot → contracts → option candles. Re-running is safe; only missing data is fetched.
+          Diffs the warehouse against the rolling 9-month scope
+          {plan?.window ? <span className="font-mono"> ({plan.window.start} → {plan.window.end})</span> : null}
+          {" "}· NIFTY + BANKNIFTY + SENSEX · daily ATM-band CE/PE — and fills gaps in dependency order:
+          spot → contracts → option candles. Re-running is safe; only missing data is fetched, and strike-days
+          the broker has proven empty are excluded automatically.
         </div>
+
+        {/* Instant health strip from the last persisted plan. */}
+        {plan && (
+          <div className="rounded-md border border-line bg-bg-2 p-2.5 flex items-center gap-3 flex-wrap" data-testid="hygiene-hero">
+            {(plan.instruments || []).map((i) => {
+              const oc = i.option_candles || {};
+              const cls = oc.status === "verified" ? "text-emerald-300" : oc.status === "warning" ? "text-amber-300" : "text-rose-300";
+              return (
+                <span key={i.instrument} className="text-[11px] font-mono inline-flex items-center gap-1.5">
+                  <span className="text-dim">{i.instrument}</span>
+                  <span className={cls} title={`band coverage · spot ${i.spot?.coverage_pct}%`}>
+                    {fmtNum(oc.coverage_pct ?? 0, 1)}%
+                  </span>
+                  {(oc.broker_empty_pairs || 0) > 0 && (
+                    <span className="text-dimmer" title="strike-days the broker has proven empty (excluded)">
+                      −{fmtInt(oc.broker_empty_pairs)}
+                    </span>
+                  )}
+                </span>
+              );
+            })}
+            {plan.computed_at && (
+              <span className="ml-auto text-[10px] text-dimmer font-mono" data-testid="hygiene-checked-at">
+                checked {isoToFull(plan.computed_at)}
+              </span>
+            )}
+          </div>
+        )}
 
         {/* Auto-update status + toggle */}
         <div className="rounded-md border border-line bg-bg-2 p-2.5 flex items-center gap-2 flex-wrap" data-testid="auto-update-row">
@@ -274,10 +320,10 @@ export default function DataHygienePanel({ upstoxConnected }) {
               disabled={catchingUp || hygieneActive || !upstoxConnected}
               className="h-6 text-[11px] bg-bg-3 border border-line hover:bg-bg-2"
               data-testid="catch-up-button"
-              title="Fetch spot + option data from the last stored session up to the most recent closed trading day"
+              title="Catch up new sessions and band-fill wick-edge gaps over the full rolling window — one click brings the warehouse fully in sync"
             >
               <Download className={`w-3 h-3 mr-1 ${catchingUp ? "animate-pulse" : ""}`} />
-              {catchingUp ? "Updating…" : hygieneActive ? "Running…" : !upstoxConnected ? "Connect Upstox" : "Update to latest"}
+              {catchingUp ? "Syncing…" : hygieneActive ? "Running…" : !upstoxConnected ? "Connect Upstox" : "Sync now"}
             </Button>
             <Button
               size="sm"
@@ -334,7 +380,7 @@ export default function DataHygienePanel({ upstoxConnected }) {
             disabled={vixBusy || !upstoxConnected}
             className="ml-auto h-6 text-[11px]"
             data-testid="vix-ingest-button"
-            title="Fetch India VIX 1m candles from 2025-12-29 to today"
+            title={`Fetch India VIX 1m candles from ${vix?.baseline_start || "the configured baseline"} to today`}
           >
             <Download className={`w-3 h-3 mr-1 ${vixBusy ? "animate-pulse" : ""}`} />
             {vixBusy ? "Fetching…" : !upstoxConnected ? "Connect Upstox" : vix?.count > 0 ? "Update VIX" : "Ingest VIX"}

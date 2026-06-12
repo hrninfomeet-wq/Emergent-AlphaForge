@@ -51,6 +51,7 @@ from app.option_candles import persist_option_candles_df
 from app.option_contract_store import upsert_option_contracts
 
 from app.runtime import (
+    VIX_BASELINE_START,
     _build_option_warehouse_preview,
     _hygiene_submit_contracts,
     _hygiene_submit_option_candles,
@@ -602,9 +603,13 @@ async def get_upstox_option_warehouse_fetch_job(run_id: str):
 
 @api.post("/data-hygiene/plan")
 async def data_hygiene_plan_route(req: DataHygieneScopeReq):
-    """Compute the hygiene plan against the current warehouse. Pure read - never fetches."""
+    """Compute the hygiene plan against the current warehouse. Pure read of the
+    warehouse - never fetches. The result is persisted as the single
+    `data_hygiene_latest` doc so the page can show the last-known state
+    instantly on load instead of forcing a 5-15s check first."""
+    db = get_db()
     plan = await compute_hygiene_plan(
-        get_db(),
+        db,
         start_date=req.start_date,
         end_date=req.end_date,
         instruments=req.instruments,
@@ -612,7 +617,23 @@ async def data_hygiene_plan_route(req: DataHygieneScopeReq):
         legs=req.legs,
         sample_interval_minutes=req.sample_interval_minutes,
     )
+    try:
+        # `id` must stay "latest" — the plan dict carries its own uuid `id`,
+        # so it is kept under `plan_id` and must not win the key collision.
+        await db.data_hygiene_latest.replace_one(
+            {"id": "latest"}, {**plan, "id": "latest", "plan_id": plan.get("id")}, upsert=True,
+        )
+    except Exception:
+        log.exception("failed to persist latest hygiene plan (non-fatal)")
     return serialize_doc(plan)
+
+
+@api.get("/data-hygiene/latest")
+async def data_hygiene_latest_route():
+    """Last persisted hygiene plan (instant — no aggregation). Null until the
+    first check has run."""
+    doc = await get_db().data_hygiene_latest.find_one({"id": "latest"}, {"_id": 0})
+    return serialize_doc({"plan": doc})
 
 
 @api.post("/data-hygiene/catch-up")
@@ -804,10 +825,12 @@ async def warehouse_vix_coverage():
     ]
     rows = await db.candles_1m.aggregate(pipeline).to_list(length=1)
     if not rows:
-        return {"instrument": VIX_INSTRUMENT, "count": 0, "min_ts": None, "max_ts": None}
+        return {"instrument": VIX_INSTRUMENT, "count": 0, "min_ts": None, "max_ts": None,
+                "baseline_start": VIX_BASELINE_START}
     r = rows[0]
     return {"instrument": VIX_INSTRUMENT, "count": int(r.get("count") or 0),
-            "min_ts": r.get("min_ts"), "max_ts": r.get("max_ts")}
+            "min_ts": r.get("min_ts"), "max_ts": r.get("max_ts"),
+            "baseline_start": VIX_BASELINE_START}
 
 
 @api.post("/warehouse/vix/ingest")

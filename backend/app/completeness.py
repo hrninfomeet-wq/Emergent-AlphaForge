@@ -97,6 +97,7 @@ def band_completeness(
     """
     expected: Set[Tuple[str, str, str, int]] = set()
     judged_days = 0
+    day_expected: Dict[str, int] = {}
     for row in day_rows:
         day = str(row.get("date") or row.get("_id") or "")
         if not day:
@@ -113,18 +114,39 @@ def band_completeness(
         if pairs:
             judged_days += 1
             expected |= pairs
+            day_expected[day] = len(pairs)
     excused = expected & set(known_empty or ())
     missing = sorted(expected - set(stored_pairs) - excused)
     planned = len(expected)
     actionable_planned = planned - len(excused)
     missing_by_month: Dict[str, int] = {}
+    day_missing: Dict[str, int] = {}
     for day, _e, _s, _k in missing:
         month = day[:7]
         missing_by_month[month] = missing_by_month.get(month, 0) + 1
+        day_missing[day] = day_missing.get(day, 0) + 1
+    day_excused: Dict[str, int] = {}
+    for day, _e, _s, _k in excused:
+        day_excused[day] = day_excused.get(day, 0) + 1
     coverage_pct = (
         round((actionable_planned - len(missing)) / actionable_planned * 100, 2)
         if actionable_planned else 100.0
     )
+    # Per-day band truth for the option coverage heatmap: a day is complete
+    # when every ACTIONABLE pair it demands is stored (broker-empty excluded).
+    per_day = []
+    for day in sorted(day_expected):
+        exp_n = day_expected[day]
+        miss_n = day_missing.get(day, 0)
+        exc_n = day_excused.get(day, 0)
+        denom = exp_n - exc_n
+        per_day.append({
+            "date": day,
+            "expected": exp_n,
+            "missing": miss_n,
+            "broker_empty": exc_n,
+            "coverage_pct": round((denom - miss_n) / denom * 100, 2) if denom else 100.0,
+        })
     return {
         "judged_days": judged_days,
         "planned_pairs": planned,
@@ -137,6 +159,7 @@ def band_completeness(
             {"date": d, "expiry": e, "side": s, "strike": k}
             for d, e, s, k in missing[: int(missing_sample_cap)]
         ],
+        "per_day": per_day,
     }
 
 

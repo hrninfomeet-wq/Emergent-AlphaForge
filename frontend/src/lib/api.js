@@ -95,6 +95,10 @@ export const api = {
     apiClient.post("/data-hygiene/execute", { plan, ...payload }).then((r) => r.data),
   dataHygieneCatchUp: (payload = {}) =>
     apiClient.post("/data-hygiene/catch-up", payload).then((r) => r.data),
+  dataHygieneLatest: () =>
+    apiClient.get("/data-hygiene/latest").then((r) => r.data),
+  warehouseSync: (payload = {}) =>
+    apiClient.post("/warehouse/sync", payload).then((r) => r.data),
   dataHygieneStatus: (planId) =>
     apiClient.get("/data-hygiene/status", {
       params: planId ? { plan_id: planId } : {},

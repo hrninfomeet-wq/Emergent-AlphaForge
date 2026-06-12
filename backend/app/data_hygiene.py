@@ -355,12 +355,23 @@ def broker_empty_candidates(
     requested: Dict[Tuple[str, str, str, int], str],
     stored_pairs: Set[Tuple[str, str, str, int]],
     failed_entries: Sequence[Dict[str, Any]],
+    *,
+    grace_from: Optional[str] = None,
 ) -> List[Tuple[str, str, str, int]]:
     """Pairs that were cleanly requested but still have no stored candles.
 
-    A pair is NOT a broker-empty candidate when its task/chunk FAILED (error,
-    rate limit, ...) — only a successful fetch that returned nothing proves
-    emptiness. Pure (unit-testable)."""
+    A pair is NOT a broker-empty candidate when:
+    - its task/chunk FAILED (error, rate limit, ...) — only a successful fetch
+      that returned nothing proves emptiness; or
+    - its date is >= `grace_from` (normally the most recent closed session).
+      Upstox publishes historical F&O bars with a lag after the close, so a
+      same-night fetch of yesterday's band legitimately returns empty even for
+      ATM strikes that traded all day. Without the grace rule one early sync
+      would permanently mis-ledger the whole previous session (observed live:
+      2026-06-12's full 20/28/28-pair bands came back empty at 00:45 IST).
+      Such pairs stay actionable and are simply retried on the next sync.
+
+    Pure (unit-testable)."""
     failed_ranges: List[Tuple[str, str, str]] = []
     for f in failed_entries or []:
         key = str(f.get("instrument_key") or "")
@@ -374,6 +385,8 @@ def broker_empty_candidates(
         if pair in stored_pairs:
             continue
         day = pair[0]
+        if grace_from and day >= str(grace_from):
+            continue
         if any(k == key and lo <= day <= hi for (k, lo, hi) in failed_ranges):
             continue
         out.append(pair)
@@ -391,7 +404,10 @@ async def record_broker_empty_pairs(
         return 0
     pairs = await _option_pairs_by_day(db, instrument, plan["from_date"], plan["to_date"])
     run = await db.warehouse_runs.find_one({"id": run_id}, {"_id": 0, "failed": 1}) or {}
-    candidates = broker_empty_candidates(requested, pairs["stored_pairs"], run.get("failed") or [])
+    candidates = broker_empty_candidates(
+        requested, pairs["stored_pairs"], run.get("failed") or [],
+        grace_from=most_recent_closed_session(),
+    )
     if not candidates:
         return 0
     now = datetime.now(timezone.utc).isoformat()
