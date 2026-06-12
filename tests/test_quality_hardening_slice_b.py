@@ -58,3 +58,18 @@ def test_backtest_run_journal_exposes_run_comparison():
         assert needle in comp, f"missing comparison surface: {needle}"
     # Built on the existing per-run endpoint — no backend change.
     assert "getBacktestRun" in journal
+
+
+def test_data_warehouse_exposes_volatility_audit_panel():
+    server = (ROOT / "backend" / "server.py").read_text(encoding="utf-8")
+    api = _read("lib", "api.js")
+    warehouse = _read("pages", "DataWarehouse.jsx")
+    # Endpoint already exists (no backend change needed) and api.js calls it.
+    assert '@api.post("/volatility/audit")' in server
+    assert "volatilityAudit" in api
+    # The read-only panel: spike count, spike share, top-10 spike bars table.
+    assert "VolatilityAuditPanel" in warehouse
+    for needle in ("volatility-audit-panel", "volatility-run-button",
+                   "volatility-summary", "volatility-spikes-table",
+                   "volatility-spike-row"):
+        assert needle in warehouse, f"missing volatility surface: {needle}"

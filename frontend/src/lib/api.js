@@ -38,6 +38,8 @@ export const api = {
         ...(endTs ? { end_ts: endTs } : {}),
       },
     }).then((r) => r.data),
+  volatilityAudit: (payload) =>
+    apiClient.post("/volatility/audit", payload).then((r) => r.data),
   clearWarehouseData: (instrument = "ALL") =>
     apiClient.delete(`/warehouse/data/${instrument}?confirm=CLEAR`).then((r) => r.data),
   upstoxStatus: () => apiClient.get("/upstox/status").then((r) => r.data),
