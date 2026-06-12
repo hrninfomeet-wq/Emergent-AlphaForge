@@ -73,3 +73,13 @@ def test_data_warehouse_exposes_volatility_audit_panel():
                    "volatility-summary", "volatility-spikes-table",
                    "volatility-spike-row"):
         assert needle in warehouse, f"missing volatility surface: {needle}"
+
+
+def test_signals_ledger_detail_shows_risk_hints():
+    ledger = _read("pages", "SignalJournal.jsx")
+    # The enriched row carries risk_hints; the detail row renders them next to
+    # the entry triggers (spot pts / premium % / time stop).
+    assert "ledger-risk-hints" in ledger
+    assert "risk_hints" in ledger
+    for needle in ("spot_target_pts", "spot_stop_pts", "target_pct", "stop_pct", "time_stop_minutes"):
+        assert needle in ledger, f"missing risk hint key: {needle}"

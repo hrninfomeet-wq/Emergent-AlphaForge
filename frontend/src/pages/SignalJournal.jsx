@@ -345,6 +345,7 @@ export default function SignalJournal() {
               const isOpen = expanded === s.id;
               const reasons = s.reasons || [];
               const blockers = s.blockers || [];
+              const rh = s.risk_hints || {};
               const exitBits = [];
               if (s.exit_premium != null) exitBits.push(`₹${fmtNum(s.exit_premium)}`);
               if (s.exit_reason) exitBits.push(s.exit_reason);
@@ -389,6 +390,22 @@ export default function SignalJournal() {
                           {reasons.length ? reasons.map((r, i) => (
                             <span key={i} className="inline-block mr-1.5 mb-1 px-1.5 py-0.5 rounded bg-bg-3 border border-line text-dim">{r}</span>
                           )) : <span className="text-dimmer">none recorded</span>}
+                        </div>
+                        <div data-testid="ledger-risk-hints">
+                          <span className="text-dimmer uppercase tracking-wider mr-2">Risk hints</span>
+                          {(() => {
+                            const chips = [];
+                            if (rh.spot_target_pts != null) chips.push(`spot target ${fmtNum(rh.spot_target_pts, 0)} pts`);
+                            if (rh.spot_stop_pts != null) chips.push(`spot stop ${fmtNum(rh.spot_stop_pts, 0)} pts`);
+                            if (rh.target_pct != null) chips.push(`target ${fmtNum(rh.target_pct, 1)}%`);
+                            if (rh.stop_pct != null) chips.push(`stop ${fmtNum(rh.stop_pct, 1)}%`);
+                            if (rh.time_stop_minutes != null) chips.push(`time stop ${fmtNum(rh.time_stop_minutes, 0)} min`);
+                            return chips.length
+                              ? chips.map((c, i) => (
+                                  <span key={i} className="inline-block mr-1.5 mb-1 px-1.5 py-0.5 rounded bg-bg-3 border border-line text-info">{c}</span>
+                                ))
+                              : <span className="text-dimmer">none captured</span>;
+                          })()}
                         </div>
                         {blockers.length > 0 && (
                           <div><span className="text-dimmer uppercase tracking-wider mr-2">Blockers</span>

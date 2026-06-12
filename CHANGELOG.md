@@ -2,6 +2,17 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.26.x] — Quality Hardening, Slice B: Research analytics the data already supports (2026-06-12)
+
+492 backend tests pass (5 new contract pins); frontend builds clean (no new eslint warnings). Frontend-only, client-side math, no backend changes — five separately-committed, separately browser-verified analytics surfaces over data the existing endpoints already return. Each commit rebuilt the frontend container and was confirmed served on `http://localhost:3000`.
+
+- **MAE / MFE distribution card** (`BacktestLab.jsx`, `mae-mfe-card`): two histograms (MFE favorable, MAE adverse) with medians + max and a one-line hint that median MAE is the level below which a tighter stop would have cut winners. Uses the paired option-leg excursions (`option_mfe_pts`/`option_mae_pts`, premium points) when option execution ran, else the spot-leg `mfe_pts`/`mae_pts`.
+- **Monte Carlo card** (`BacktestLab.jsx`, `monte-carlo-card`): bootstrap-resamples the run's per-trade P&L (draw N trades with replacement, 1,000 runs, input capped at 1,000 trades) and reports P5/P50/P95 max drawdown, P5/P50/P95 ending P&L, and **P(net<0)**. Bootstrap-with-replacement is deliberate — a plain order shuffle leaves the sum invariant, so ending P&L (and thus P(net<0)) would be degenerate. `option_pnl_value` (net ₹) when paired, else `pnl_pts`.
+- **Run comparison view** (`RunComparison.jsx` + `BacktestRunJournal.jsx`, `run-comparison-panel`): select exactly two saved runs → parameters diff (differing keys highlighted), headline metric table, and overlaid equity curves normalized to trade index so different-length runs line up. Fetches both runs in full via the existing `GET /api/backtest/runs/{id}`.
+- **Volatility audit panel** (`DataWarehouse.jsx`, `volatility-audit-panel`): read-only panel in Verify & Audit calling the existing `POST /api/volatility/audit` for an instrument + IST date range + spike threshold — total bars, spike-bar count, spike share %, max ratio, and a top-10 spike-bars table. Verified end-to-end against the live endpoint (NIFTY May–Jun 2026: 10,179 bars, 104 spikes, 1.02%). New `api.volatilityAudit`.
+- **risk_hints in the Signals Ledger detail row** (`SignalJournal.jsx`, `ledger-risk-hints`): renders the captured `risk_hints` (spot target/stop pts, premium target/stop %, time stop minutes) next to the entry triggers; only non-null hints are shown.
+- Contract tests: new `tests/test_quality_hardening_slice_b.py` pins all five surfaces (string-asserts on frontend source + the volatility route in server.py; no server import, no motor).
+
 ## [0.25.x] — Fix: hygiene option fetch under-requested the completeness band (2026-06-12)
 
 487 backend tests pass (2 new). Bug found while verifying Slice A in the browser: after running "Fill gaps", the Data Hygiene panel stayed **degraded** (~91–93% band coverage) and re-running did nothing — the fetch jobs reported `status: ok` but added **0 candles**.

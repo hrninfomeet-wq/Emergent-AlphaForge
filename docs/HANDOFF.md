@@ -1,6 +1,6 @@
 # Handoff
 
-Updated: 2026-06-12 (Slice 5 — forward-surfaces spec complete)
+Updated: 2026-06-12 (quality-hardening Slice B — research analytics)
 
 This is the entry point for the next AI agent or developer. Read it before editing code. The repository and tests are the source of truth — not any prior chat.
 
@@ -104,7 +104,9 @@ day's full strike BAND. Implementation notes for the next agent:
 
 ## Status In One Line
 
-Latest (2026-06-12): **fixed the hygiene option fetch under-requesting the completeness band** — "Fill gaps" used to leave the panel permanently "degraded" (added 0 candles) because the fetch re-derived a per-day ATM±moneyness selection that didn't cover the padded spot-range band; intraday-wick/band-edge strikes were demanded forever but never fetched (the broker HAD the data — the 0.23.x "honest residual" claim was wrong for this class). Fetch is now driven by the same band via `data_hygiene.build_band_fetch_plan` → `completeness.missing_band_pairs`. Verified live: one run added 68k/99k/115k candles; band coverage 92.9%→99.24% (NIFTY), 91.4%→98.9% (BANKNIFTY), 91.5%→99.0% (SENSEX); residual now equals genuinely broker-empty strikes (amber "warning"). **487 pytest tests pass; both containers rebuilt and healthy.** Preceded by quality-hardening Slice A (warehouse truth in the UI + retention — see below).
+Latest (2026-06-12): **quality-hardening Slice B delivered** — five client-side research-analytics surfaces (CHANGELOG 0.26.x), each a separate commit and each browser-verified on the live stack: MAE/MFE distribution card + Monte Carlo card (bootstrap, P(net<0)) in the Backtest Lab results, a two-run comparison view (params diff / metric table / overlaid equity) in the Backtest Run Journal, a read-only volatility-audit panel on the Data Warehouse page (on the existing `POST /api/volatility/audit`), and `risk_hints` in the Signals Ledger detail row. Frontend-only, no backend changes; new contract test `tests/test_quality_hardening_slice_b.py` pins all five. **492 pytest tests pass (5 new); frontend builds clean (no new eslint warnings); frontend container rebuilt per item.** Slice C (server.py split) is GATED — do not start until the senior agent's execution-policy extraction lands. Preceded by the hygiene band-fetch fix (below).
+
+## Prior Status In One Line — "Fill gaps" used to leave the panel permanently "degraded" (added 0 candles) because the fetch re-derived a per-day ATM±moneyness selection that didn't cover the padded spot-range band; intraday-wick/band-edge strikes were demanded forever but never fetched (the broker HAD the data — the 0.23.x "honest residual" claim was wrong for this class). Fetch is now driven by the same band via `data_hygiene.build_band_fetch_plan` → `completeness.missing_band_pairs`. Verified live: one run added 68k/99k/115k candles; band coverage 92.9%→99.24% (NIFTY), 91.4%→98.9% (BANKNIFTY), 91.5%→99.0% (SENSEX); residual now equals genuinely broker-empty strikes (amber "warning"). **487 pytest tests pass; both containers rebuilt and healthy.** Preceded by quality-hardening Slice A (warehouse truth in the UI + retention — see below).
 
 ## Status (Slice A)
 
