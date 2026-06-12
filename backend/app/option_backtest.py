@@ -71,23 +71,17 @@ def _resolve_option_levels(
 ) -> Dict[str, Optional[float]]:
     """Resolve absolute premium target/stop levels from points or percent.
 
-    Points take precedence over percent when both are supplied. A long option
-    is BUY-only, so target sits ABOVE entry and stop BELOW. Returns absolute
-    price levels (or None when that leg is not configured).
+    Delegates to the shared execution policy (`app.execution_policy`) so the
+    sim and the live marker can never disagree about level math. Points take
+    precedence over percent; target ABOVE entry, stop BELOW, floored at 0.
     """
-    target_level: Optional[float] = None
-    stop_level: Optional[float] = None
-    if target_pts is not None and target_pts > 0:
-        target_level = entry_price + float(target_pts)
-    elif target_pct is not None and target_pct > 0:
-        target_level = entry_price * (1.0 + float(target_pct) / 100.0)
-    if stop_pts is not None and stop_pts > 0:
-        stop_level = entry_price - float(stop_pts)
-    elif stop_pct is not None and stop_pct > 0:
-        stop_level = entry_price * (1.0 - float(stop_pct) / 100.0)
-    # A stop can never be below zero premium.
-    if stop_level is not None:
-        stop_level = max(0.0, stop_level)
+    from app.execution_policy import resolve_premium_levels
+    stop_level, target_level = resolve_premium_levels(
+        entry_price,
+        target_pts=target_pts, stop_pts=stop_pts,
+        target_pct=target_pct, stop_pct=stop_pct,
+        stop_floor=0.0,
+    )
     return {"target_level": target_level, "stop_level": stop_level}
 
 

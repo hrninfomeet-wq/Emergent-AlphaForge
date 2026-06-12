@@ -131,6 +131,8 @@ def compute_auto_risk_levels(
     `_resolve_option_levels` rule. Missing on all sides → None (the spot-mirror
     exits and the 15:00 IST square-off remain the backstops).
     """
+    from app.execution_policy import resolve_premium_levels
+
     hints = risk_hints or {}
     dep = deployment_risk or {}
 
@@ -143,27 +145,32 @@ def compute_auto_risk_levels(
         except (TypeError, ValueError):
             return None
 
-    target: Optional[float] = None
-    hint_target_pct = _num(hints.get("target_pct"))
-    dep_target_pts = _num(dep.get("auto_paper_target_pts"))
-    dep_target_pct = _num(dep.get("auto_paper_target_pct"))
-    if hint_target_pct is not None:
-        target = round(entry_price * (1 + hint_target_pct / 100.0), 2)
-    elif dep_target_pts is not None:
-        target = round(entry_price + dep_target_pts, 2)
-    elif dep_target_pct is not None:
-        target = round(entry_price * (1 + dep_target_pct / 100.0), 2)
+    # Source precedence per leg: strategy hint (pct) > deployment pts >
+    # deployment pct. The chosen source's value is then resolved through the
+    # SAME level math as the backtest (execution_policy), with the live
+    # floor (Rs 0.05 exchange tick) and 2dp storage rounding.
+    target_kwargs: Dict[str, Any] = {}
+    if _num(hints.get("target_pct")) is not None:
+        target_kwargs["target_pct"] = hints.get("target_pct")
+    elif _num(dep.get("auto_paper_target_pts")) is not None:
+        target_kwargs["target_pts"] = dep.get("auto_paper_target_pts")
+    elif _num(dep.get("auto_paper_target_pct")) is not None:
+        target_kwargs["target_pct"] = dep.get("auto_paper_target_pct")
 
-    stop: Optional[float] = None
-    hint_stop_pct = _num(hints.get("stop_pct"))
-    dep_stop_pts = _num(dep.get("auto_paper_stop_pts"))
-    dep_stop_pct = _num(dep.get("auto_paper_stop_pct"))
-    if hint_stop_pct is not None:
-        stop = round(max(0.05, entry_price * (1 - hint_stop_pct / 100.0)), 2)
-    elif dep_stop_pts is not None:
-        stop = round(max(0.05, entry_price - dep_stop_pts), 2)
-    elif dep_stop_pct is not None:
-        stop = round(max(0.05, entry_price * (1 - dep_stop_pct / 100.0)), 2)
+    stop_kwargs: Dict[str, Any] = {}
+    if _num(hints.get("stop_pct")) is not None:
+        stop_kwargs["stop_pct"] = hints.get("stop_pct")
+    elif _num(dep.get("auto_paper_stop_pts")) is not None:
+        stop_kwargs["stop_pts"] = dep.get("auto_paper_stop_pts")
+    elif _num(dep.get("auto_paper_stop_pct")) is not None:
+        stop_kwargs["stop_pct"] = dep.get("auto_paper_stop_pct")
+
+    _stop_unused, target = resolve_premium_levels(
+        entry_price, **target_kwargs, stop_floor=0.05, ndigits=2,
+    ) if target_kwargs else (None, None)
+    stop, _target_unused = resolve_premium_levels(
+        entry_price, **stop_kwargs, stop_floor=0.05, ndigits=2,
+    ) if stop_kwargs else (None, None)
 
     return stop, target
 
@@ -202,34 +209,31 @@ def compute_spot_exit_levels(signal_doc: Dict[str, Any]) -> Optional[Dict[str, A
     spot_key = INSTRUMENT_KEYS.get(instrument)
     if not spot_key:
         return None
-    sign = 1.0 if direction == "CE" else -1.0
+    from app.execution_policy import spot_mirror_levels
+    levels = spot_mirror_levels(direction, entry_spot, target_pts=target_pts, stop_pts=stop_pts)
     return {
         "instrument": instrument,
         "instrument_key": spot_key,
         "direction": direction,
         "entry_spot": round(entry_spot, 2),
-        "spot_target": round(entry_spot + sign * target_pts, 2) if target_pts else None,
-        "spot_stop": round(entry_spot - sign * stop_pts, 2) if stop_pts else None,
+        "spot_target": levels["spot_target"],
+        "spot_stop": levels["spot_stop"],
     }
 
 
 def spot_exit_reason(spot_exit: Dict[str, Any], spot_price: float) -> Optional[str]:
-    """Has the underlying hit a spot-mirror level? Direction-aware (see
-    compute_spot_exit_levels)."""
-    direction = str(spot_exit.get("direction") or "").upper()
-    target = spot_exit.get("spot_target")
-    stop = spot_exit.get("spot_stop")
-    if direction == "CE":
-        if target not in (None, "") and spot_price >= float(target):
-            return "spot_target_hit"
-        if stop not in (None, "") and spot_price <= float(stop):
-            return "spot_stop_hit"
-    elif direction == "PE":
-        if target not in (None, "") and spot_price <= float(target):
-            return "spot_target_hit"
-        if stop not in (None, "") and spot_price >= float(stop):
-            return "spot_stop_hit"
-    return None
+    """Has the underlying hit a spot-mirror level? Direction-aware.
+
+    Delegates to the shared execution policy, which routes through the SAME
+    `intrabar_exit` the backtest uses (tick = degenerate bar) — including the
+    pessimistic stop-first rule the old inline check got backwards."""
+    from app.execution_policy import spot_mirror_exit_reason
+    return spot_mirror_exit_reason(
+        str(spot_exit.get("direction") or ""),
+        spot_price,
+        spot_target=spot_exit.get("spot_target"),
+        spot_stop=spot_exit.get("spot_stop"),
+    )
 
 
 def auto_paper_enabled(deployment: Dict[str, Any]) -> bool:

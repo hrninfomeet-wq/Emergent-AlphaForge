@@ -31,6 +31,15 @@ All notable changes to AlphaForge Trading Lab.
 - **Opt-in retention** (`frontend/src/pages/SignalJournal.jsx`): a "auto-purge AUDITED older than N days" input in the cleanup bar, persisted in `localStorage`. Applied client-side on page load via `POST /api/signals/purge` `{older_than_days, states: ["AUDITED"]}` at most once per IST day (timestamp guard). Empty = off (default off); confirm-free because the user opted in by setting N.
 - Contract tests pinned in the same commit: band fields + history (`test_option_coverage.py`), the warehouse-health banner (`test_bootstrap_contract.py`), and the retention surface (`test_signal_paper_lifecycle.py`).
 
+## [0.24.x] — Execution Policy: One Source of Exit Truth + Sim↔Live Parity Tests (2026-06-13)
+
+503 backend tests pass (11 new parity invariants). The last big item from the accepted architecture review.
+
+- **`app/execution_policy.py` (new)** — THE place exit semantics live: `resolve_premium_levels` (pts-over-pct, target above / stop below, configurable floor — sim 0.0, live ₹0.05), `tick_exit_reason` (a live tick is a degenerate bar routed through the backtest's own `intrabar_exit`), `spot_mirror_levels` (byte-for-byte the spot engine's CE/PE formulas), `spot_mirror_exit_reason`.
+- **Delegations (behavior-preserving)**: `option_backtest._resolve_option_levels`, `paper_auto.compute_auto_risk_levels` / `compute_spot_exit_levels` / `spot_exit_reason`, and `paper_trading.risk_exit_reason` now all resolve through the shared policy.
+- **Real parity bug fixed by the extraction**: both live tick deciders (`risk_exit_reason`, `spot_exit_reason`) checked the TARGET first while the entire sim stack is pessimistic STOP-FIRST — in degenerate configurations (stop ≥ target) live would book the lucky fill the backtest refuses. Live now routes through `intrabar_exit`, so sim and live cannot drift; `tests/test_execution_policy.py` replays identical inputs through both paths (levels, tick-vs-bar decisions, both directions, floors/rounding documented) and pins stop-first forever.
+- Kiro quality-hardening **Slice C (server.py split) is now UNLOCKED** — prompt added to `.kiro/specs/quality-hardening/spec.md`.
+
 ## [0.23.x] — Warehouse Truth: Daily ATM-Band Completeness + Rolling 9-Month Scope (2026-06-12)
 
 484 backend tests pass (26 new). Root-cause fix from the architecture/data audit (user-confirmed): the warehouse reported "verified" while backtests hit `MISSING_ENTRY_CANDLE` — hygiene judged option coverage per-day/per-expiry ("any candle that day") while spot sweeps several strikes intraday, so strikes that were ATM for part of a session were never fetched and never flagged. Verified on real data: NIFTY 2026-05-20 (spot 23397→23691) was missing 23550CE entirely while hygiene said verified, 0 actions.

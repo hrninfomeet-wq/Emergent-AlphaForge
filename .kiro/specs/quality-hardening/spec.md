@@ -92,5 +92,20 @@ in that order, each browser-verified before the next. Client-side math only;
 no backend changes except none. One CHANGELOG entry at the end + HANDOFF
 status line; do not push."
 
-Slice C: gated — request the prompt from the senior agent after the
-execution-policy extraction lands.
+Slice C (UNLOCKED 2026-06-13 — the execution-policy extraction has landed;
+paste into Kiro as-is):
+"Read docs/HANDOFF.md and .kiro/specs/quality-hardening/spec.md (Slice C), and
+.kiro/specs/forward-surfaces-overhaul/design.md for conventions. Execute the
+Slice C mechanical refactor exactly as specified: move all Pydantic request
+models from backend/server.py into backend/app/schemas.py, then split the
+routes into backend/app/routers/{warehouse,research,deployments,journals,
+broker}.py using FastAPI APIRouter, keeping server.py as the app factory +
+scheduler wiring + startup/shutdown hooks. ZERO behavior change: preserve
+route paths, methods, and registration ORDER exactly (literal routes before
+/{id} routes). Do NOT touch backend/app/* business modules — only move code
+out of server.py. Update the contract tests that string-assert on server.py
+to scan the routers directory in the same commit. One commit per router file
+is fine; run the FULL pytest suite + npm build + docker compose up -d --build
++ smoke every page in the browser before each commit. If anything behavioral
+has to change to make the split work, STOP and report instead. Do not push."
+

@@ -97,15 +97,21 @@ def _mark_open_trade(trade: Dict[str, Any], *, last_price: Any, at: Optional[str
 
 
 def risk_exit_reason(trade: Dict[str, Any], last_price: Any) -> Optional[str]:
+    """Premium stop/target decision for a live mark.
+
+    Delegates to the shared execution policy (a tick is a degenerate bar
+    through the backtest's `intrabar_exit`), making the live marker provably
+    consistent with the sim — including STOP-FIRST when both levels are
+    satisfied (the old inline check tested the target first and booked the
+    lucky fill in degenerate configurations)."""
+    from app.execution_policy import tick_exit_reason
     risk = trade.get("risk") or {}
-    price = _float(last_price)
-    stop = risk.get("stop_price")
-    target = risk.get("target_price")
-    if target not in (None, "") and price >= _float(target):
-        return "target_hit"
-    if stop not in (None, "") and price <= _float(stop):
-        return "stop_hit"
-    return None
+    return tick_exit_reason(
+        _float(last_price),
+        stop=risk.get("stop_price"),
+        target=risk.get("target_price"),
+        is_long=True,
+    )
 
 
 def mark_trade_to_market(
