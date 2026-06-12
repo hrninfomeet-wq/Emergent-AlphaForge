@@ -195,3 +195,8 @@ def test_frontend_exposes_live_and_paper_operational_views():
                    "ledger-export-csv", "ledger-delete-selected", "ledger-delete-older",
                    "ledger-purge-deployment", "ledger-next-page"):
         assert needle in ledger
+    # Opt-in client-side retention (quality-hardening Slice A item 4): a
+    # localStorage-persisted "auto-purge AUDITED older than N days" applied at
+    # most once per IST day on load via signals/purge with states=["AUDITED"].
+    for needle in ("ledger-retention", "ledger-retention-days", "signalRetentionDays", '"AUDITED"'):
+        assert needle in ledger

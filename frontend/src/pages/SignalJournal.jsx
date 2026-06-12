@@ -51,6 +51,13 @@ const SORTABLE = {
 const inr = (v) =>
   v == null ? "—" : `₹${Number(v).toLocaleString("en-IN", { maximumFractionDigits: 0 })}`;
 
+// Opt-in client-side retention (quality-hardening Slice A item 4). Persisted in
+// localStorage; auto-purges AUDITED signals older than N days at most once per
+// IST day. Empty = off (default off); confirm-free because the user opted in.
+const RETENTION_DAYS_KEY = "signalRetentionDays";
+const RETENTION_LAST_RUN_KEY = "signalRetentionLastRun";
+const istDateStr = () => new Date(Date.now() + (5 * 60 + 30) * 60 * 1000).toISOString().slice(0, 10);
+
 export default function SignalJournal() {
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -72,6 +79,7 @@ export default function SignalJournal() {
   const [selected, setSelected] = useState(() => new Set());
   const [expanded, setExpanded] = useState(null);
   const [olderDays, setOlderDays] = useState("30");
+  const [retentionDays, setRetentionDays] = useState(() => localStorage.getItem(RETENTION_DAYS_KEY) || "");
 
   // Build the server param object from the current filters (empty values dropped).
   const params = useMemo(() => {
@@ -99,6 +107,24 @@ export default function SignalJournal() {
 
   useEffect(() => {
     api.listDeployments({ limit: 200 }).then((d) => setDeployments(d.items || [])).catch(() => {});
+  }, []);
+
+  // Opt-in retention: auto-purge old AUDITED signals at most once per IST day.
+  useEffect(() => {
+    const n = parseInt(localStorage.getItem(RETENTION_DAYS_KEY) || "", 10);
+    if (!n || n < 1) return;
+    const today = istDateStr();
+    if (localStorage.getItem(RETENTION_LAST_RUN_KEY) === today) return;
+    localStorage.setItem(RETENTION_LAST_RUN_KEY, today);
+    api.purgeSignals({ older_than_days: n, states: ["AUDITED"] })
+      .then((res) => {
+        if (res?.deleted > 0) {
+          toast.info(`Retention: purged ${res.deleted} AUDITED signal${res.deleted === 1 ? "" : "s"} older than ${n} days.`);
+          fetchRows();
+        }
+      })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => { fetchRows(); }, [fetchRows]);
@@ -185,6 +211,14 @@ export default function SignalJournal() {
     purge({ deployment_id: filters.deployment_id }, `Delete ALL journaled signals for deployment "${name}"? This cannot be undone.`);
   };
 
+  // Persist the opt-in retention setting; empty clears it (off).
+  const setRetention = (v) => {
+    setRetentionDays(v);
+    const n = parseInt(v, 10);
+    if (n && n > 0) localStorage.setItem(RETENTION_DAYS_KEY, String(n));
+    else localStorage.removeItem(RETENTION_DAYS_KEY);
+  };
+
   const total = data.total;
   const pageEnd = Math.min(skip + data.items.length, total);
 
@@ -264,6 +298,15 @@ export default function SignalJournal() {
             title={filters.deployment_id ? "" : "Select a deployment filter first"}>
             Purge this deployment
           </Button>
+
+          {/* Opt-in retention: auto-purge old AUDITED signals once per day (Slice A). */}
+          <div className="ml-auto flex items-center gap-1.5" data-testid="ledger-retention">
+            <span className="text-dimmer">Auto-purge AUDITED older than</span>
+            <Input value={retentionDays} onChange={(e) => setRetention(e.target.value)} type="number" min={1}
+              placeholder="off" className="bg-bg-2 border-line h-6 text-[11px] w-16" data-testid="ledger-retention-days"
+              title="Persisted locally. AUDITED signals older than this are purged automatically, at most once per day. Empty = off." />
+            <span>days</span>
+          </div>
         </div>
       </div>
 

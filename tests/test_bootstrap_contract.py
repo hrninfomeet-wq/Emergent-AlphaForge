@@ -102,6 +102,23 @@ def test_frontend_status_copy_matches_current_phase():
     assert "status: \"done\"" in dashboard
 
 
+def test_dashboard_warehouse_health_banner_present():
+    """The Dashboard must surface the warehouse-health banner (quality-hardening
+    Slice A): a 'can I trust today's data?' strip with a lazy band-coverage
+    Check button (the plan costs ~5s, so it must not auto-run on mount)."""
+    dashboard = (ROOT / "frontend" / "src" / "pages" / "Dashboard.jsx").read_text(encoding="utf-8")
+    banner = (ROOT / "frontend" / "src" / "components" / "WarehouseHealthBanner.jsx").read_text(encoding="utf-8")
+
+    assert "WarehouseHealthBanner" in dashboard
+    assert "warehouse-health-banner" in banner
+    # Lazy band-coverage check behind a button (no plan fetch on mount).
+    assert "warehouse-health-check" in banner
+    assert "dataHygienePlan" in banner
+    # The cheap status signals the strip aggregates.
+    assert "autoUpdateStatus" in banner
+    assert "upstoxStreamStatus" in banner
+
+
 def test_frontend_exposes_theme_selector_and_tokens():
     app = (ROOT / "frontend" / "src" / "App.js").read_text(encoding="utf-8")
     layout = (ROOT / "frontend" / "src" / "components" / "Layout.jsx").read_text(encoding="utf-8")

@@ -122,6 +122,15 @@ def test_data_hygiene_wired_into_warehouse_ui():
     assert "DataHygienePanel" in warehouse
     # Execute jobs are tracked via the global job batch tracker.
     assert "startHygieneBatch" in jobs
+    # Daily ATM-band truth surfaced in the panel (quality-hardening Slice A):
+    # band coverage %, missing strike-day count, missing-by-month, expandable
+    # missing-sample list, and the auto-update run history.
+    assert "coverage_pct" in panel
+    assert "missing_pairs" in panel
+    assert "missing_by_month" in panel
+    assert "missing_sample" in panel
+    assert "hygiene-band-sample-" in panel
+    assert "auto-update-history" in panel
 
 
 def test_warehouse_auto_update_wired_end_to_end():

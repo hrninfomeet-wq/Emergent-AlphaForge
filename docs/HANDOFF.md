@@ -98,7 +98,9 @@ day's full strike BAND. Implementation notes for the next agent:
 
 ## Status In One Line
 
-Latest (2026-06-12, Slice 5): **forward-surfaces-overhaul spec COMPLETE** — polish slice shipped four items: a P&L calendar heat-grid on `/paper`, a data-realism preflight line in the deploy wizard, a drift re-pin route + pause-banner button (`POST /api/deployments/{id}/repin-source`), and an ATM±3 live option-chain snapshot on `/live`. **457 pytest tests pass; frontend builds clean.** All five slices of the spec are delivered; the local Docker stack is healthy and rebuilt.
+Latest (2026-06-12, quality-hardening Slice A): **warehouse truth is now in the UI** — DataHygienePanel surfaces daily ATM-band coverage %/missing strike-days/missing-by-month + an expandable missing-sample list and the auto-update run history; the Dashboard gained a warehouse-health banner (last auto-update, per-index band coverage behind a lazy Check button, live-stream running/stale, OAuth token countdown); the Signals Ledger gained an opt-in once-per-day AUDITED retention purge. Frontend-only, all four surfaces browser/endpoint-verified. **485 pytest tests pass (3 new contract pins); frontend builds clean; Docker stack rebuilt and healthy.** Slice B (research analytics) is next; Slice C (server.py split) stays gated.
+
+## Status (previous)
 
 ## Recent Work — Forward Surfaces Overhaul, Slice 3: Signals Ledger (2026-06-12)
 

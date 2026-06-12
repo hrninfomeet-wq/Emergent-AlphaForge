@@ -3,8 +3,8 @@ import { api } from "@/lib/api";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { useJobs } from "@/lib/jobs";
-import { fmtInt, isoToFull } from "@/lib/fmt";
-import { ShieldCheck, RefreshCw, Play, CheckCircle2, AlertTriangle, AlertCircle, Download } from "lucide-react";
+import { fmtInt, fmtNum, isoToFull } from "@/lib/fmt";
+import { ShieldCheck, RefreshCw, Play, CheckCircle2, AlertTriangle, AlertCircle, Download, ChevronDown, ChevronRight, History } from "lucide-react";
 
 const STATUS_STYLES = {
   verified: "bg-emerald-950 text-emerald-200 border-emerald-900",
@@ -16,6 +16,13 @@ const STATUS_ICON = {
   verified: CheckCircle2,
   warning: AlertTriangle,
   degraded: AlertCircle,
+};
+
+// Auto-update run status (ok | skipped | error) → text color.
+const STATUS_TEXT = {
+  ok: "text-emerald-300",
+  skipped: "text-dim",
+  error: "text-rose-300",
 };
 
 const KIND_LABEL = {
@@ -53,6 +60,8 @@ export default function DataHygienePanel({ upstoxConnected }) {
   const [autoUpdate, setAutoUpdate] = useState(null);
   const [vix, setVix] = useState(null);
   const [vixBusy, setVixBusy] = useState(false);
+  const [expandedBand, setExpandedBand] = useState(null); // instrument whose missing-sample list is open
+  const [showHistory, setShowHistory] = useState(false);
 
   const loadVix = async () => {
     try {
@@ -282,6 +291,35 @@ export default function DataHygienePanel({ upstoxConnected }) {
           </div>
         </div>
 
+        {/* Auto-update run history (last ~10 runs) — collapsible. */}
+        {(autoUpdate?.history || []).length > 0 && (
+          <div className="rounded-md border border-line bg-bg-2 p-2.5" data-testid="auto-update-history">
+            <button
+              onClick={() => setShowHistory((v) => !v)}
+              className="flex items-center gap-1.5 text-[11px] text-dim hover:text-foreground w-full"
+              data-testid="auto-update-history-toggle"
+            >
+              {showHistory ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+              <History className="w-3 h-3" />
+              Auto-update history
+              <span className="text-dimmer">({autoUpdate.history.length})</span>
+            </button>
+            {showHistory && (
+              <div className="mt-2 space-y-1">
+                {[...autoUpdate.history].reverse().map((h, i) => (
+                  <div key={i} className="flex items-center gap-2 text-[10px] font-mono" data-testid="auto-update-history-row">
+                    <span className={STATUS_TEXT[h.status] || "text-dimmer"}>{h.status || "—"}</span>
+                    <span className="text-dim">{h.trigger || "—"}</span>
+                    <span className="text-dimmer">{fmtInt(h.submitted_count || 0)} job(s)</span>
+                    {h.error && <span className="text-rose-300 truncate max-w-[140px]" title={h.error}>{h.error}</span>}
+                    <span className="ml-auto text-dimmer">{isoToFull(h.finished_at)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* India VIX status + ingest — powers the volatility-context layer. */}
         <div className="rounded-md border border-line bg-bg-2 p-2.5 flex items-center gap-2 flex-wrap" data-testid="vix-row">
           <span className={`w-2 h-2 rounded-full ${vix?.count > 0 ? "bg-emerald-500" : "bg-dimmer"}`} />
@@ -377,13 +415,47 @@ export default function DataHygienePanel({ upstoxConnected }) {
                       </span>
                     </div>
                     <div className="flex items-center justify-between gap-2">
-                      <span className="text-dim">Option candles</span>
+                      <span className="text-dim">Option band</span>
                       <span className="flex items-center gap-1.5">
-                        <span className="font-mono text-dimmer">{fmtInt(inst.option_candles?.expiries_with_data || 0)} exp</span>
+                        <span className="font-mono text-dimmer" title="Daily ATM-band coverage (both legs, every strike the day's spot range touched)">
+                          {fmtNum(inst.option_candles?.coverage_pct ?? 100, 1)}%
+                        </span>
                         <StatusPill status={inst.option_candles?.status} />
                       </span>
                     </div>
                   </div>
+
+                  {/* Band coverage detail — the daily ATM-band truth (CHANGELOG 0.23.x). */}
+                  {(inst.option_candles?.missing_pairs || 0) > 0 && (
+                    <div className="mt-2 pt-2 border-t border-line space-y-1 text-[10px]" data-testid={`hygiene-band-${inst.instrument.toLowerCase()}`}>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-amber-300">{fmtInt(inst.option_candles.missing_pairs)} strike-day(s) missing</span>
+                        <span className="text-dimmer font-mono">{fmtInt(inst.option_candles.judged_days || 0)} days judged</span>
+                      </div>
+                      <div className="text-dimmer font-mono leading-snug" title="missing strike-days by month">
+                        {Object.entries(inst.option_candles.missing_by_month || {}).map(([m, n]) => `${m}: ${n}`).join(" · ") || "—"}
+                      </div>
+                      {(inst.option_candles.missing_sample || []).length > 0 && (
+                        <>
+                          <button
+                            onClick={() => setExpandedBand(expandedBand === inst.instrument ? null : inst.instrument)}
+                            className="text-info hover:underline inline-flex items-center gap-1"
+                            data-testid={`hygiene-band-toggle-${inst.instrument.toLowerCase()}`}
+                          >
+                            {expandedBand === inst.instrument ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+                            {expandedBand === inst.instrument ? "Hide" : "Show"} sample ({inst.option_candles.missing_sample.length})
+                          </button>
+                          {expandedBand === inst.instrument && (
+                            <div className="max-h-40 overflow-y-auto space-y-0.5 font-mono text-dimmer pl-1" data-testid={`hygiene-band-sample-${inst.instrument.toLowerCase()}`}>
+                              {inst.option_candles.missing_sample.map((mp, i) => (
+                                <div key={i}>{mp.date} · {mp.expiry} · {fmtInt(mp.strike)} {mp.side}</div>
+                              ))}
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  )}
                   {(inst.actions || []).length > 0 ? (
                     <div className="mt-2 pt-2 border-t border-line flex flex-wrap gap-1">
                       {inst.actions.map((a) => (

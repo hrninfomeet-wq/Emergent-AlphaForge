@@ -2,6 +2,16 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.24.x] — Quality Hardening, Slice A: Warehouse Truth in the UI + Retention (2026-06-12)
+
+485 backend tests pass (3 new contract pins); frontend builds clean (no new eslint warnings). Frontend-only — surfaces the daily ATM-band completeness truth from 0.23.x and closes the remaining UI review items. All four Slice-A items verified against the live stack (plan/auto-update/stream/token endpoint shapes confirmed field-by-field).
+
+- **DataHygienePanel band-coverage fields** (`frontend/src/components/DataHygienePanel.jsx`): the per-instrument option block now reads the band diff instead of the retired per-expiry heuristic — daily ATM-band **coverage %** with status color, **missing strike-day count**, a compact **missing-by-month** line, and an **expandable missing-sample** list (`date · expiry · strike · side`, capped 50 by the backend). The existing check/fill flow is untouched.
+- **Dashboard warehouse-health banner** (`frontend/src/components/WarehouseHealthBanner.jsx`, mounted on `Dashboard.jsx`): one "can I trust today's data?" strip — last auto-update result + time, per-index band coverage, live-stream running/stale (tick freshness within 3m), and the OAuth token countdown. Green only when everything is verified/running, amber otherwise. The band-coverage plan costs ~5s, so it is **lazy behind a Check button** (never run on mount) and cached for the browser session.
+- **Auto-update history** (`DataHygienePanel`): a collapsible list of the last ~10 runs from `GET /api/warehouse/auto-update/status` `history[]` (status · trigger · jobs submitted · finished-at · error).
+- **Opt-in retention** (`frontend/src/pages/SignalJournal.jsx`): a "auto-purge AUDITED older than N days" input in the cleanup bar, persisted in `localStorage`. Applied client-side on page load via `POST /api/signals/purge` `{older_than_days, states: ["AUDITED"]}` at most once per IST day (timestamp guard). Empty = off (default off); confirm-free because the user opted in by setting N.
+- Contract tests pinned in the same commit: band fields + history (`test_option_coverage.py`), the warehouse-health banner (`test_bootstrap_contract.py`), and the retention surface (`test_signal_paper_lifecycle.py`).
+
 ## [0.23.x] — Warehouse Truth: Daily ATM-Band Completeness + Rolling 9-Month Scope (2026-06-12)
 
 484 backend tests pass (26 new). Root-cause fix from the architecture/data audit (user-confirmed): the warehouse reported "verified" while backtests hit `MISSING_ENTRY_CANDLE` — hygiene judged option coverage per-day/per-expiry ("any candle that day") while spot sweeps several strikes intraday, so strikes that were ATM for part of a session were never fetched and never flagged. Verified on real data: NIFTY 2026-05-20 (spot 23397→23691) was missing 23550CE entirely while hygiene said verified, 0 actions.

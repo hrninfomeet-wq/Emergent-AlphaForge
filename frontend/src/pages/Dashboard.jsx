@@ -5,6 +5,7 @@ import { fmtInt, fmtNum, fmtPct, fmtPnL, colorPnL } from "@/lib/fmt";
 import { MetricCard } from "@/components/MetricCard";
 import { RegimeBadge } from "@/components/RegimeBadge";
 import { SignificanceBadge } from "@/components/SignificanceBadge";
+import WarehouseHealthBanner from "@/components/WarehouseHealthBanner";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Database, FlaskConical, Library, ListChecks, ArrowRight, Activity } from "lucide-react";
@@ -35,6 +36,9 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-4" data-testid="dashboard-page">
+      {/* Can I trust today's data? */}
+      <WarehouseHealthBanner />
+
       {/* Top KPI cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <MetricCard
