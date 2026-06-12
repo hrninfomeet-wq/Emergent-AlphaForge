@@ -16,6 +16,47 @@ approves pushes). Then STOP and report.
 
 ---
 
+## Transparency note — evaluator/optimizer/WFO/paper_auto edits this session (2026-06-12)
+
+The user asked whether this session edited the trading-critical internals
+(`deployment_evaluator.py`, `optimizer.py`, `wfo.py`, `paper_auto.py`).
+
+- **No edits** were made to `backend/app/deployment_evaluator.py`,
+  `backend/app/optimizer.py`, `backend/app/wfo.py`, or `backend/app/paper_auto.py`.
+  Confirmed via `git diff --stat` over the session's commits — zero changes to all
+  four files. No signal-generation, paper-trade-creation, marking, exit, or
+  optimization logic was altered.
+- **One evaluator-ADJACENT change** (in `backend/server.py`, NOT in the modules
+  above), commit `b684f09` "Auto-subscribe ATM±3 option universe during market
+  hours":
+  - Added module constant `OPTION_CHAIN_BASELINE_RADIUS = 3`.
+  - Inside the background scheduler `_deployment_evaluator_loop()` (the loop that
+    *drives* the evaluator), added one best-effort call **after** the existing
+    `evaluate_active_deployments(...)` + `mark_open_deployment_trades(...)` calls:
+    `await _auto_follow_option_stream(min_radius=OPTION_CHAIN_BASELINE_RADIUS)`.
+    This only maintains the live Upstox option SUBSCRIPTION (so the `/live`
+    option-chain snapshot and paper marks have fresh premiums during market
+    hours); it does not call into or change any evaluator/paper_auto decision
+    logic, and it runs inside the existing try/except so a failure can't disrupt
+    evaluation.
+  - Refactored the helper `_auto_follow_option_stream()` (a server.py utility, not
+    an evaluator module): added a `min_radius` floor so a baseline ATM±3 universe
+    stays subscribed even with no active deployments, and made it idempotent — it
+    skips the disruptive WS restart when the current subscription already covers
+    the desired option keys, and re-centers only when the ATM band drifts out.
+  - Contract test `tests/test_live_option_universe.py::test_market_hours_loop_wires_baseline_option_stream_follow`
+    pins this wiring (string-assert on server.py).
+- Other backend change this session (also outside the four modules): the drift
+  re-pin route `POST /api/deployments/{id}/repin-source` + pure helper
+  `build_repin_update` in `backend/app/strategy_source_hash.py` (commit `dd9a9da`).
+  This re-pins a deployment's source SHA and clears drift fields; it does not
+  modify evaluator drift-DETECTION logic (which lives in `deployment_evaluator.py`
+  and was left untouched).
+
+Everything else this session was frontend (pages + api.js), tests, and docs.
+
+---
+
 ## Prompt for Slice 3 (paste into Kiro as-is)
 
 Read docs/HANDOFF.md, then .kiro/specs/forward-surfaces-overhaul/requirements.md
