@@ -497,20 +497,6 @@ export default function BacktestLab() {
               </div>
             )}
             <div>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={saveAsPreset}
-                className="w-full h-8 text-xs border-line"
-                data-testid="backtest-save-preset"
-              >
-                <Save className="w-3.5 h-3.5 mr-1.5" /> Save setup as preset
-              </Button>
-              <div className="text-[10px] text-dimmer mt-1">
-                Captures the strategy params + option execution / exit policy. Deployable as-is from Live Signals.
-              </div>
-            </div>
-            <div>
               <Label className="text-xs text-dim">Run name (saved to journal)</Label>
               <Input
                 value={config.name}
@@ -1014,6 +1000,21 @@ export default function BacktestLab() {
           {running ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Play className="w-4 h-4 mr-2" />}
           {running ? "Running…" : "Run Backtest"}
         </Button>
+
+        <div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={saveAsPreset}
+            className="w-full h-8 text-xs border-line"
+            data-testid="backtest-save-preset"
+          >
+            <Save className="w-3.5 h-3.5 mr-1.5" /> Save setup as preset
+          </Button>
+          <div className="text-[10px] text-dimmer mt-1">
+            Captures the strategy params + option execution / exit policy. Deployable as-is from Live Signals.
+          </div>
+        </div>
       </aside>
 
       {/* RIGHT: Results */}
