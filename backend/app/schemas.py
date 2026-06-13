@@ -238,11 +238,15 @@ class ExpiredOptionContractBackfillReq(BaseModel):
 class PaperMarkReq(BaseModel):
     last_price: float
     auto_close_on_risk: bool = True
+    # Bypass the option-premium sanity check (e.g. an intentional far value). The
+    # UI sets this only after the operator confirms a flagged price.
+    override_sanity: bool = False
 
 
 class PaperCloseReq(BaseModel):
     exit_price: float
     reason: str = "manual"
+    override_sanity: bool = False
 
 
 class DeploymentCreateReq(BaseModel):

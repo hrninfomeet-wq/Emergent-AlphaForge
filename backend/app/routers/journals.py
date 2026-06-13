@@ -11,7 +11,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from app.db import get_db, serialize_doc
 from app.strategies.base import get_registry
-from app.paper_trading import close_trade, mark_trade_to_market
+from app.paper_trading import close_trade, mark_trade_to_market, premium_sanity_error
 from app.signal_lifecycle import SignalStateError, transition_signal
 from app.paper_squareoff import square_off_open_paper_trades
 from app.warehouse import get_coverage
@@ -282,14 +282,43 @@ async def purge_paper_trades(req: TradesPurgeReq):
     return {"deleted": int(res.deleted_count)}
 
 
+def _require_open(trade: Dict[str, Any]) -> None:
+    """Manual mark/close act on OPEN trades only — block a late write that would
+    clobber an auto-close / square-off (the auto-marker is already OPEN-guarded;
+    these routes were not)."""
+    status = str(trade.get("status") or "").upper()
+    if status != "OPEN":
+        raise HTTPException(409, f"Trade is {status or 'unknown'}, not OPEN — refresh; only open trades can be marked or closed.")
+
+
+def _check_premium(trade: Dict[str, Any], price: float, override: bool) -> None:
+    """Reject an implausible option premium (e.g. a fat-fingered spot level)
+    unless the operator explicitly overrode it."""
+    if override:
+        return
+    err = premium_sanity_error(trade, price)
+    if err:
+        raise HTTPException(400, detail={
+            "code": "implausible_premium",
+            "message": err,
+            "reference_price": trade.get("last_price") or trade.get("entry_price"),
+        })
+
+
 @api.post("/paper/trades/{trade_id}/mark")
 async def mark_paper_trade(trade_id: str, req: PaperMarkReq):
     db = get_db()
     trade = await db.paper_trades.find_one({"id": trade_id}, {"_id": 0})
     if not trade:
         raise HTTPException(404, "Paper trade not found")
+    _require_open(trade)
+    _check_premium(trade, req.last_price, req.override_sanity)
     updated = mark_trade_to_market(trade, last_price=req.last_price, auto_close_on_risk=req.auto_close_on_risk)
-    await db.paper_trades.replace_one({"id": trade_id}, updated, upsert=False)
+    # Conditional on status=OPEN so a concurrent auto-close/square-off is never
+    # clobbered (matches the auto-marker's guarded write).
+    res = await db.paper_trades.replace_one({"id": trade_id, "status": "OPEN"}, updated, upsert=False)
+    if int(getattr(res, "matched_count", 0) or 0) != 1:
+        raise HTTPException(409, "Trade was closed concurrently — refresh and retry.")
     return serialize_doc(updated)
 
 
@@ -299,8 +328,12 @@ async def close_paper_trade(trade_id: str, req: PaperCloseReq):
     trade = await db.paper_trades.find_one({"id": trade_id}, {"_id": 0})
     if not trade:
         raise HTTPException(404, "Paper trade not found")
+    _require_open(trade)
+    _check_premium(trade, req.exit_price, req.override_sanity)
     updated = close_trade(trade, exit_price=req.exit_price, reason=req.reason)
-    await db.paper_trades.replace_one({"id": trade_id}, updated, upsert=False)
+    res = await db.paper_trades.replace_one({"id": trade_id, "status": "OPEN"}, updated, upsert=False)
+    if int(getattr(res, "matched_count", 0) or 0) != 1:
+        raise HTTPException(409, "Trade was closed concurrently — refresh and retry.")
     if updated.get("signal_id"):
         signal = await db.signals.find_one({"id": updated["signal_id"]}, {"_id": 0})
         if signal and str(signal.get("state") or "").upper() == "ACTIVE":

@@ -281,6 +281,32 @@ export default function PaperTrading() {
   };
 
   // ---- Close flows (premium, never spot) ----
+  // Close with the backend safety guards surfaced to the operator: a flagged
+  // implausible premium (e.g. a fat-fingered spot level) prompts an explicit
+  // override; a concurrent auto-close/square-off (409) refreshes instead of
+  // clobbering. Returns true on success, false if the operator declined.
+  const closeWithSanity = async (tradeId, body) => {
+    try {
+      await api.closePaperTrade(tradeId, body);
+      return true;
+    } catch (e) {
+      const detail = e.response?.data?.detail;
+      if (e.response?.status === 400 && detail?.code === "implausible_premium") {
+        if (window.confirm(`${detail.message}\n\nBook it anyway?`)) {
+          await api.closePaperTrade(tradeId, { ...body, override_sanity: true });
+          return true;
+        }
+        return false;  // operator chose to re-enter the price
+      }
+      if (e.response?.status === 409) {
+        toast.info("Trade was already closed — refreshed.");
+        await fetchRows();
+        return false;
+      }
+      throw e;
+    }
+  };
+
   const closeAtMarket = async (trade) => {
     let price = trade.last_price;
     if (price == null) {
@@ -291,11 +317,12 @@ export default function PaperTrading() {
     }
     setBusy(true);
     try {
-      await api.closePaperTrade(trade.id, { exit_price: Number(price), reason: "manual_close_at_market" });
-      toast.success(`Closed ${trade.trading_symbol || trade.instrument} @ ₹${fmtNum(price)}`);
-      await fetchRows();
+      if (await closeWithSanity(trade.id, { exit_price: Number(price), reason: "manual_close_at_market" })) {
+        toast.success(`Closed ${trade.trading_symbol || trade.instrument} @ ₹${fmtNum(price)}`);
+        await fetchRows();
+      }
     } catch (e) {
-      toast.error(`Close failed: ${e.response?.data?.detail || e.message}`);
+      toast.error(`Close failed: ${e.response?.data?.detail?.message || e.response?.data?.detail || e.message}`);
     } finally {
       setBusy(false);
     }
@@ -310,12 +337,13 @@ export default function PaperTrading() {
     }
     setBusy(true);
     try {
-      await api.closePaperTrade(trade.id, { exit_price: price, reason: "manual_close" });
-      toast.success(`Closed ${trade.trading_symbol || trade.instrument} @ ₹${fmtNum(price)}`);
-      setManualPrice((m) => { const n = { ...m }; delete n[trade.id]; return n; });
-      await fetchRows();
+      if (await closeWithSanity(trade.id, { exit_price: price, reason: "manual_close" })) {
+        toast.success(`Closed ${trade.trading_symbol || trade.instrument} @ ₹${fmtNum(price)}`);
+        setManualPrice((m) => { const n = { ...m }; delete n[trade.id]; return n; });
+        await fetchRows();
+      }
     } catch (e) {
-      toast.error(`Close failed: ${e.response?.data?.detail || e.message}`);
+      toast.error(`Close failed: ${e.response?.data?.detail?.message || e.response?.data?.detail || e.message}`);
     } finally {
       setBusy(false);
     }

@@ -42,6 +42,33 @@ def _iso_to_ms(value: Any) -> int:
     return int(datetime.now(timezone.utc).timestamp() * 1000)
 
 
+# Manual mark/close sanity bounds: catch a fat-fingered SPOT/index level typed
+# where an option PREMIUM is expected (e.g. 23950 instead of ~150). Premiums move
+# sharply (theta/gamma), so the guard trips only on the HIGH side and only when
+# BOTH a large multiple AND a large absolute gap vs the last known premium are
+# exceeded — small premiums (a 0.5→8 move) are never over-guarded, while a spot
+# value against any realistic premium is caught. The operator can still override.
+PREMIUM_SANITY_MAX_MULTIPLE = 20.0
+PREMIUM_SANITY_ABS_BAND = 500.0
+
+
+def premium_sanity_error(trade: Dict[str, Any], price: Any) -> Optional[str]:
+    """Human message when `price` is an implausible option premium for this trade,
+    else None. Pure + tested; the manual mark/close routes call it and let the
+    operator override deliberately (the conscious-choice rule)."""
+    p = _float(price, -1.0)
+    if p <= 0:
+        return "Price must be a positive option premium (₹ > 0)."
+    reference = _float(trade.get("last_price")) or _float(trade.get("entry_price"))
+    if reference and reference > 0:
+        if p > reference * PREMIUM_SANITY_MAX_MULTIPLE and p > reference + PREMIUM_SANITY_ABS_BAND:
+            return (
+                f"₹{p:g} looks like a spot/index level, not an option premium "
+                f"(last known ≈ ₹{reference:g}). Re-enter the premium, or override to book it anyway."
+            )
+    return None
+
+
 def paper_trade_from_signal(
     signal: Dict[str, Any],
     *,
