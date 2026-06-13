@@ -67,6 +67,9 @@ log = logging.getLogger(__name__)
 
 # How fresh an options_1m candle must be to serve as an entry-price fallback.
 ENTRY_CANDLE_MAX_AGE_MINUTES = 5
+# A live tick older than this is not booked as a fill by the minute marker — a
+# minutes-old premium shouldn't auto-close a trade at a price that isn't trading.
+MARK_TICK_MAX_AGE_SECONDS = 120
 
 TickLookup = Callable[[str], Optional[Dict[str, Any]]]
 
@@ -442,7 +445,13 @@ async def mark_open_deployment_trades(
     if latest_tick_lookup is None:
         return []
 
+    now_ms = int(_now_utc().timestamp() * 1000)
+
     def _tick_price(key: str) -> Optional[float]:
+        """Latest tick price for a key, but ONLY when fresh — a tick older than
+        MARK_TICK_MAX_AGE_SECONDS is treated as absent so the marker never books a
+        fill (or fires a stop/target) on a minutes-old premium. Ticks with no
+        timestamp (tests / legacy) are treated as current."""
         if not key:
             return None
         tick = latest_tick_lookup(key)
@@ -452,7 +461,16 @@ async def mark_open_deployment_trades(
             price = float(tick["last_price"])
         except (TypeError, ValueError):
             return None
-        return price if price > 0 else None
+        if price <= 0:
+            return None
+        age_ref = tick.get("received_ts") or tick.get("ts")
+        if age_ref is not None:
+            try:
+                if now_ms - int(age_ref) > MARK_TICK_MAX_AGE_SECONDS * 1000:
+                    return None
+            except (TypeError, ValueError):
+                pass
+        return price
 
     async def _exit_linked_signal(trade_doc: Dict[str, Any]) -> None:
         if not trade_doc.get("signal_id"):
@@ -480,21 +498,28 @@ async def mark_open_deployment_trades(
             wrote = False
 
             # 1. Premium mark + premium stop/target via the existing machinery.
+            #    option_price is None when there is no FRESH option tick, so a
+            #    stop/target can only fire on a current premium (staleness bound).
             if option_price is not None:
                 updated = mark_trade_to_market(
                     trade, last_price=option_price, at=at, auto_close_on_risk=True)
                 wrote = True
+                if str(updated.get("status") or "").upper() == "CLOSED":
+                    updated["exit_price_source"] = "live_tick"
+                    updated["exit_price_stale"] = False
 
             # 2. Spot-mirror exits (the backtest's spot_exit mode, live): close
             #    the option at its current premium when the UNDERLYING hits the
-            #    strategy's spot level. Falls back to the last known premium
-            #    when no fresh option tick exists (same as square-off).
+            #    strategy's spot level. When no FRESH option tick exists the fill
+            #    is the last known premium — booked (the spot level was hit) but
+            #    flagged stale so the journal shows it is an estimate, not a fill.
             spot_exit = updated.get("spot_exit") or {}
             if str(updated.get("status") or "").upper() == "OPEN" and spot_exit:
                 spot_price = _tick_price(str(spot_exit.get("instrument_key") or ""))
                 if spot_price is not None:
                     reason = spot_exit_reason(spot_exit, spot_price)
                     if reason:
+                        had_fresh_option = option_price is not None
                         exit_premium = option_price
                         if exit_premium is None:
                             try:
@@ -505,6 +530,8 @@ async def mark_open_deployment_trades(
                         updated = close_trade(updated, exit_price=exit_premium,
                                               reason=reason, at=at)
                         updated["spot_exit"] = {**spot_exit, "hit_spot_price": spot_price}
+                        updated["exit_price_source"] = "live_tick" if had_fresh_option else "last_mark"
+                        updated["exit_price_stale"] = not had_fresh_option
                         wrote = True
 
             if not wrote:
@@ -523,6 +550,7 @@ async def mark_open_deployment_trades(
                 "last_price": updated.get("last_price"),
                 "closed": closed, "exit_reason": updated.get("exit_reason"),
                 "realized_pnl": updated.get("realized_pnl") if closed else None,
+                "exit_price_stale": updated.get("exit_price_stale") if closed else None,
             })
             if closed:
                 await _exit_linked_signal(updated)

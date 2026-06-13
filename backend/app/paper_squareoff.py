@@ -12,12 +12,15 @@ import logging
 from datetime import datetime, time, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional
 
+from app.nse_calendar import is_trading_day
 from app.paper_trading import close_trade
 
 log = logging.getLogger(__name__)
 
 IST_OFFSET = timedelta(hours=5, minutes=30)
 DEFAULT_SQUARE_OFF_IST = time(15, 0)
+# A tick older than this is not treated as a usable fill (it gets flagged stale).
+SQUAREOFF_TICK_MAX_AGE_SECONDS = 120
 
 
 def _ist_now() -> datetime:
@@ -25,7 +28,10 @@ def _ist_now() -> datetime:
 
 
 def _is_market_day(ist_dt: datetime) -> bool:
-    return ist_dt.weekday() < 5
+    """Trading-session check — holiday-aware. Was weekday-only, which would fire
+    the 15:00 square-off on a gazetted holiday (a day the market never opened) and
+    book entry-price fake-zero closes; now it uses the NSE/BSE trading calendar."""
+    return is_trading_day(ist_dt.strftime("%Y-%m-%d"))
 
 
 def is_square_off_due(now_ist: Optional[datetime] = None, *, cutoff: time = DEFAULT_SQUARE_OFF_IST) -> bool:
@@ -41,32 +47,56 @@ async def _resolve_exit_price(
     trade: Dict[str, Any],
     *,
     latest_tick_lookup: Optional[Callable[[str], Optional[Dict[str, Any]]]] = None,
-) -> float:
-    """Pick a sensible exit price for square-off.
+    max_tick_age_seconds: int = SQUAREOFF_TICK_MAX_AGE_SECONDS,
+) -> tuple:
+    """Pick an exit price for square-off AND report how it was resolved, so a
+    stale or fabricated close is flagged rather than silently booked.
 
-    Order:
-      1. Latest WS tick for the trade's instrument_key (if provided)
-      2. Last known mark on the trade itself (`last_price`)
-      3. Original entry price (zero-PnL fallback so the close never crashes)
+    Returns (price, source, stale):
+      1. ("live_tick",  False) — fresh WS tick for the contract
+      2. ("stale_tick", True)  — a tick older than max_tick_age_seconds
+      3. ("last_mark",  False) — the trade's last per-minute mark (a real premium)
+      4. ("entry_fallback", True) — never marked all session: closing at entry is an
+         estimate (₹0 P&L), NOT a real fill. The price is still used so the trade
+         doesn't dangle OPEN forever, but it is flagged so the journal/metrics can
+         tell it apart from a genuine exit (was a silent fake-zero before).
     """
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
     instrument_key = str(trade.get("instrument_key") or "")
     if instrument_key and latest_tick_lookup:
         tick = latest_tick_lookup(instrument_key)
         if tick and tick.get("last_price") not in (None, ""):
             try:
-                return float(tick["last_price"])
+                price = float(tick["last_price"])
             except (TypeError, ValueError):
-                pass
+                price = None
+            if price and price > 0:
+                age_ref = tick.get("received_ts") or tick.get("ts")
+                fresh = True
+                if age_ref is not None:
+                    try:
+                        fresh = (now_ms - int(age_ref)) <= max_tick_age_seconds * 1000
+                    except (TypeError, ValueError):
+                        fresh = True
+                return (price, "live_tick", False) if fresh else (price, "stale_tick", True)
     last_price = trade.get("last_price")
     if last_price not in (None, ""):
         try:
-            return float(last_price)
+            lp = float(last_price)
+            entry = float(trade.get("entry_price") or 0.0)
+            # "Marked" = touched after creation (the per-minute marker / a manual
+            # mark moved updated_at). An untouched last_price == entry is the
+            # fake-zero case the review flagged.
+            marked = trade.get("updated_at") not in (None, "") and trade.get("updated_at") != trade.get("created_at")
+            if marked or lp != entry:
+                return lp, "last_mark", False
+            return lp, "entry_fallback", True
         except (TypeError, ValueError):
             pass
     try:
-        return float(trade.get("entry_price") or 0.0)
+        return float(trade.get("entry_price") or 0.0), "entry_fallback", True
     except (TypeError, ValueError):
-        return 0.0
+        return 0.0, "entry_fallback", True
 
 
 async def square_off_open_paper_trades(
@@ -107,13 +137,20 @@ async def square_off_open_paper_trades(
             summaries.append({"id": trade.get("id"), "skipped": "allow_overnight"})
             continue
         try:
-            exit_price = await _resolve_exit_price(db, trade, latest_tick_lookup=latest_tick_lookup)
+            exit_price, price_source, price_stale = await _resolve_exit_price(
+                db, trade, latest_tick_lookup=latest_tick_lookup)
             updated = close_trade(trade, exit_price=exit_price, reason=reason, at=closed_at)
+            # Provenance: a stale-tick / never-marked (entry-fallback) close is an
+            # estimate, not a real fill — flag it so the journal/metrics can see it.
+            updated["exit_price_source"] = price_source
+            updated["exit_price_stale"] = bool(price_stale)
             await db.paper_trades.replace_one({"id": trade["id"]}, updated, upsert=False)
             summaries.append({
                 "id": trade["id"],
                 "instrument_key": trade.get("instrument_key"),
                 "exit_price": exit_price,
+                "exit_price_source": price_source,
+                "exit_price_stale": bool(price_stale),
                 "realized_pnl": updated.get("realized_pnl"),
                 "reason": reason,
             })

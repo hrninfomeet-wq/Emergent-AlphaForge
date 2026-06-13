@@ -482,6 +482,8 @@ async def test_marker_closes_on_spot_mirror_target():
     assert trade["exit_price"] == 171.0  # closed at option PREMIUM, not spot
     assert trade["realized_pnl"] == round((171.0 - 150.0) * 75, 2)
     assert trade["spot_exit"]["hit_spot_price"] == 23985.0
+    assert trade["exit_price_stale"] is False  # filled on a fresh option tick
+    assert trade["exit_price_source"] == "live_tick"
     assert db.signals.rows[0]["state"] == "EXITED"
 
 
@@ -502,6 +504,32 @@ async def test_marker_spot_stop_uses_last_premium_when_option_tick_missing():
     trade = db.paper_trades.rows[0]
     assert trade["exit_reason"] == "spot_stop_hit"
     assert trade["exit_price"] == 150.0  # last known premium fallback
+    # No fresh option tick existed -> the fill is the last mark, flagged stale so
+    # the journal shows it is an estimate (not a real fill at the exit minute).
+    assert trade["exit_price_stale"] is True
+    assert trade["exit_price_source"] == "last_mark"
+    assert marked[0]["exit_price_stale"] is True
+
+
+@pytest.mark.asyncio
+async def test_marker_ignores_stale_option_tick():
+    """A tick older than the staleness bound is not booked as a fill — the trade
+    is left OPEN rather than marked/closed on a minutes-old premium."""
+    db = FakeDB()
+    sig = make_confirmed_signal(risk_hints={"spot_target_pts": 30, "spot_stop_pts": 15})
+    db.signals.rows.append(dict(sig))
+    await auto_paper_trade_for_signal(
+        db, make_paper_deployment(), sig,
+        latest_tick_lookup={KEY: {"last_price": 150.0}}.get)
+
+    stale_ms = now_ms() - 10 * 60_000  # 10 minutes old
+    ticks = {KEY: {"last_price": 999.0, "received_ts": stale_ms}}  # stale + far price
+    marked = await mark_open_deployment_trades(db, latest_tick_lookup=ticks.get)
+
+    assert marked == []  # nothing fresh to act on
+    trade = db.paper_trades.rows[0]
+    assert trade["status"] == "OPEN"       # not closed on a stale tick
+    assert trade["last_price"] == 150.0    # not marked to the stale price
 
 
 # ---------- atomic claim (race guard) ----------------------------------------------

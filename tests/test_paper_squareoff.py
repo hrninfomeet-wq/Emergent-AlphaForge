@@ -44,6 +44,12 @@ def test_is_square_off_due_on_weekend_returns_false():
     assert not is_square_off_due(ist(2026, 5, 30, 15, 30))
 
 
+def test_is_square_off_due_on_holiday_returns_false():
+    # 2026-01-26 is Republic Day (a Monday) — market closed, so no square-off
+    # (was a bug: the weekday-only check fired a 15:00 square-off on holidays).
+    assert not is_square_off_due(ist(2026, 1, 26, 15, 30))
+
+
 # --- async helpers --------------------------------------------------------
 
 
@@ -154,6 +160,42 @@ async def test_square_off_falls_back_to_entry_price_when_no_data():
     summaries = await square_off_open_paper_trades(db)
 
     assert summaries[0]["exit_price"] == 100.0  # entry fallback -> zero PnL
+    # ...but it is no longer a SILENT fake-zero: it's flagged as an estimate.
+    assert summaries[0]["exit_price_source"] == "entry_fallback"
+    assert summaries[0]["exit_price_stale"] is True
+    assert db.paper_trades.rows[0]["exit_price_stale"] is True
+
+
+@pytest.mark.asyncio
+async def test_square_off_flags_stale_tick_but_still_uses_it():
+    db = FakeDB()
+    trade = make_open_trade(instrument_key="NSE_FO|TEST|CE", entry=100.0, last=110.0)
+    db.paper_trades.rows.append(trade)
+    old_ms = int(datetime.now(timezone.utc).timestamp() * 1000) - 10 * 60_000  # 10 min old
+
+    def lookup(key):
+        return {"last_price": 130.0, "received_ts": old_ms} if key == "NSE_FO|TEST|CE" else None
+
+    summaries = await square_off_open_paper_trades(db, latest_tick_lookup=lookup)
+    assert summaries[0]["exit_price"] == 130.0           # still used (better than nothing)
+    assert summaries[0]["exit_price_source"] == "stale_tick"
+    assert summaries[0]["exit_price_stale"] is True
+
+
+@pytest.mark.asyncio
+async def test_square_off_fresh_tick_is_not_stale():
+    db = FakeDB()
+    trade = make_open_trade(instrument_key="NSE_FO|TEST|CE", entry=100.0, last=110.0)
+    db.paper_trades.rows.append(trade)
+    fresh_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+
+    def lookup(key):
+        return {"last_price": 125.0, "received_ts": fresh_ms} if key == "NSE_FO|TEST|CE" else None
+
+    summaries = await square_off_open_paper_trades(db, latest_tick_lookup=lookup)
+    assert summaries[0]["exit_price"] == 125.0
+    assert summaries[0]["exit_price_source"] == "live_tick"
+    assert summaries[0]["exit_price_stale"] is False
 
 
 @pytest.mark.asyncio
