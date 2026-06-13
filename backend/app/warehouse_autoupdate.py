@@ -117,9 +117,15 @@ async def run_autoupdate_once(
     connection_status_fn: Callable[[], Awaitable[Dict[str, Any]]],
     compute_plan_fn: Callable[[], Awaitable[Dict[str, Any]]],
     execute_plan_fn: Callable[[Dict[str, Any]], Awaitable[Dict[str, Any]]],
+    pre_run_fn: Optional[Callable[[], Awaitable[Any]]] = None,
     state: AutoUpdateState = STATE,
 ) -> Dict[str, Any]:
-    """Run a single catch-up: guard -> plan -> execute (only if there are actions).
+    """Run a single catch-up: guard -> [pre_run] -> plan -> execute (only if there
+    are actions).
+
+    `pre_run_fn` is an optional best-effort side-task run once the guard passes
+    (used to top up India VIX alongside spot/option catch-up so the daily timer
+    keeps VIX current too, not just app startup).
 
     Returns a summary dict. Never raises; failures are captured in the summary
     and the state so a scheduler loop keeps running.
@@ -146,6 +152,11 @@ async def run_autoupdate_once(
     state.last_started_at = started
     state.last_reason = reason
     state.last_error = None
+    if pre_run_fn is not None:
+        try:
+            await pre_run_fn()
+        except Exception as exc:  # best-effort; never block the catch-up
+            log.warning("autoupdate(%s): pre_run side-task failed: %s", reason, exc)
     try:
         plan = await compute_plan_fn()
         actions_planned = int((plan.get("summary") or {}).get("total_actions") or 0)
@@ -195,11 +206,15 @@ async def daily_autoupdate_loop(
     connection_status_fn: Callable[[], Awaitable[Dict[str, Any]]],
     compute_plan_fn: Callable[[], Awaitable[Dict[str, Any]]],
     execute_plan_fn: Callable[[Dict[str, Any]], Awaitable[Dict[str, Any]]],
+    pre_run_fn: Optional[Callable[[], Awaitable[Any]]] = None,
     hour_ist: int = DEFAULT_DAILY_HOUR_IST,
     minute_ist: int = DEFAULT_DAILY_MINUTE_IST,
     state: AutoUpdateState = STATE,
 ) -> None:
-    """Sleep until the next HH:MM IST, run a catch-up, repeat. Cancellation-safe."""
+    """Sleep until the next HH:MM IST, run a catch-up, repeat. Cancellation-safe.
+
+    `pre_run_fn` (e.g. the India VIX top-up) runs before each daily catch-up so
+    the timer keeps VIX current too, matching the startup/connect trigger."""
     log.info("Warehouse auto-update daily loop initialized (%02d:%02d IST)", hour_ist, minute_ist)
     while True:
         try:
@@ -210,6 +225,7 @@ async def daily_autoupdate_loop(
                 connection_status_fn=connection_status_fn,
                 compute_plan_fn=compute_plan_fn,
                 execute_plan_fn=execute_plan_fn,
+                pre_run_fn=pre_run_fn,
                 state=state,
             )
         except asyncio.CancelledError:

@@ -371,7 +371,7 @@ export default function DataHygienePanel({ upstoxConnected }) {
           <span className={`w-2 h-2 rounded-full ${vix?.count > 0 ? "bg-emerald-500" : "bg-dimmer"}`} />
           <span className="text-[11px] text-dim">
             India VIX {vix?.count > 0 ? `· ${fmtInt(vix.count)} candles` : "· not ingested"}
-            <span className="text-dimmer"> · used for volatility-regime context</span>
+            <span className="text-dimmer"> · used for volatility-regime context · auto-refreshes with Sync &amp; daily update</span>
           </span>
           <Button
             size="sm"

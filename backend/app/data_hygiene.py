@@ -27,6 +27,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from app.nse_calendar import (
+    expected_candle_count,
     expected_trading_days as _calendar_expected_trading_days,
     holidays_in_range,
     is_trading_day,
@@ -654,6 +655,44 @@ async def compute_hygiene_plan(
     }
 
 
+# A closed trading day whose stored spot count falls short of the calendar's
+# expected session length by more than this many bars is treated as
+# under-captured (e.g. the PC was off mid-session and only the live roller's
+# partial morning was stored) and is re-fetched from Upstox historical. The
+# tolerance keeps a couple of genuinely-missing illiquid prints from causing
+# perpetual re-fetch churn; expected_candle_count already handles short
+# sessions (Muhurat) so those are never flagged.
+SPOT_INCOMPLETE_TOLERANCE = 15
+# How far back catch-up will reach to repair an under-captured day. Recent
+# partial sessions (PC off mid-day) are repaired; older days that remain short
+# after a re-fetch are treated as genuine broker gaps, not re-pulled every sync.
+SPOT_REPAIR_LOOKBACK_DAYS = 21
+
+
+def incomplete_spot_days(
+    window_rows: Sequence[Dict[str, Any]],
+    *,
+    judge_until: Optional[str] = None,
+    tolerance: int = SPOT_INCOMPLETE_TOLERANCE,
+) -> List[Dict[str, Any]]:
+    """Closed trading days whose stored spot bar count is materially below the
+    calendar-expected session length. Pure (unit-testable). Weekend/holiday
+    days (expected 0) and short sessions (Muhurat) are handled by
+    expected_candle_count, so only genuine partial captures are returned."""
+    out: List[Dict[str, Any]] = []
+    for row in window_rows:
+        day = str(row.get("date") or row.get("_id") or "")
+        if not day or (judge_until and day > str(judge_until)):
+            continue
+        count = int(row.get("count") or 0)
+        if count <= 0:
+            continue
+        expected = expected_candle_count(day)
+        if expected > 0 and count < expected - int(tolerance):
+            out.append({"date": day, "count": count, "expected": expected})
+    return sorted(out, key=lambda d: d["date"])
+
+
 async def _last_spot_date(db: Any, instrument: str) -> Optional[str]:
     """Return the most recent IST date that has any stored spot candle, or None."""
     instrument = instrument.upper()
@@ -707,34 +746,62 @@ async def compute_catch_up_plan(
         # for this instrument, fall back to the configured baseline start date.
         if last_date:
             start_dt = date.fromisoformat(last_date) + timedelta(days=1)
-            from_date = start_dt.isoformat()
+            forward_from = start_dt.isoformat()
         else:
-            from_date = fallback_start_date
+            forward_from = fallback_start_date
 
-        if not target_end or from_date > target_end:
+        has_forward_gap = bool(target_end) and forward_from <= target_end and bool(
+            trading_days_in_range(forward_from, target_end)
+        )
+
+        # Under-captured PAST days: a partial session (PC off mid-day → only the
+        # live roller's morning stored) sits BELOW the high-water mark, so the
+        # forward-gap logic alone never repairs it. Detect those and pull the
+        # catch-up window back to the earliest one so the chain re-fetches the
+        # full session from Upstox historical (which dedups/overwrites) and
+        # re-bands the widened day. (This is the 2026-06-12 255/375 case.)
+        day_rows = await _spot_day_rows(db, inst)
+        # Reach back only a bounded window: "PC off mid-session" is a recent
+        # operational gap, while an ancient day that stays short after a re-fetch
+        # is a genuine broker gap not worth re-pulling every sync (churn guard).
+        repair_floor = (
+            (date.fromisoformat(target_end) - timedelta(days=SPOT_REPAIR_LOOKBACK_DAYS)).isoformat()
+            if target_end else fallback_start_date
+        )
+        scope_lo = max(fallback_start_date, repair_floor)
+        scope_rows = [r for r in day_rows if scope_lo <= r["date"] <= (target_end or "")]
+        incomplete = incomplete_spot_days(scope_rows, judge_until=target_end)
+
+        candidate_from: Optional[str] = forward_from if has_forward_gap else None
+        if incomplete:
+            earliest = incomplete[0]["date"]
+            candidate_from = earliest if candidate_from is None else min(candidate_from, earliest)
+
+        if not target_end or candidate_from is None:
             inst_reports.append({
                 "instrument": inst,
                 "last_spot_date": last_date,
-                "from_date": from_date,
+                "from_date": forward_from,
                 "to_date": target_end,
                 "up_to_date": True,
                 "missing_trading_days": 0,
+                "incomplete_days": incomplete,
                 "actions": [],
             })
             continue
 
+        from_date = candidate_from
         missing_days = trading_days_in_range(from_date, target_end)
-        if not missing_days:
-            inst_reports.append({
-                "instrument": inst,
-                "last_spot_date": last_date,
-                "from_date": from_date,
-                "to_date": target_end,
-                "up_to_date": True,
-                "missing_trading_days": 0,
-                "actions": [],
-            })
-            continue
+        new_days = len(trading_days_in_range(forward_from, target_end)) if has_forward_gap else 0
+        reason_bits = []
+        if new_days:
+            reason_bits.append(f"{new_days} new session(s) since {last_date or 'inception'}")
+        if incomplete:
+            reason_bits.append(
+                f"{len(incomplete)} under-captured day(s) to repair "
+                f"(e.g. {incomplete[0]['date']} {incomplete[0]['count']}/{incomplete[0]['expected']})"
+            )
+        reason = "; ".join(reason_bits) or "catch-up"
 
         actions: List[Dict[str, Any]] = [
             {
@@ -743,7 +810,7 @@ async def compute_catch_up_plan(
                 "instrument": inst,
                 "from_date": from_date,
                 "to_date": target_end,
-                "reason": f"{len(missing_days)} trading day(s) missing since {last_date or 'inception'}",
+                "reason": reason,
                 "eta_minutes": 2,
             },
             {
@@ -764,7 +831,7 @@ async def compute_catch_up_plan(
                 "moneyness": money,
                 "legs": legs_list,
                 "sample_interval_minutes": sample_interval_minutes,
-                "reason": f"Fetch ATM option candles for {len(missing_days)} new session(s)",
+                "reason": f"Fetch ATM-band option candles ({reason})",
                 "eta_minutes": max(5, len(missing_days) * 2),
             },
         ]
@@ -776,6 +843,7 @@ async def compute_catch_up_plan(
             "to_date": target_end,
             "up_to_date": False,
             "missing_trading_days": len(missing_days),
+            "incomplete_days": incomplete,
             "actions": actions,
         })
 

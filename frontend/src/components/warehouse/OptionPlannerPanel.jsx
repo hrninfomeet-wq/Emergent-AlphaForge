@@ -45,7 +45,7 @@ export function OptionWarehousePanel({
     <div className="rounded-lg border border-line bg-bg-1" data-testid="option-warehouse-panel">
       <div className="px-3 py-2 border-b border-line flex items-center gap-2">
         <Database className="w-4 h-4 text-info" />
-        <div className="text-xs font-semibold uppercase tracking-wider text-dim">Option Data Planner</div>
+        <div className="text-xs font-semibold uppercase tracking-wider text-dim">Option Data Planner <span className="text-dimmer normal-case font-normal">(manual research — moneyness selection)</span></div>
         {plan && (
           <span className="ml-auto text-[10px] px-1.5 py-0.5 rounded border font-mono bg-bg-3 text-dim border-line">
             {fmtInt(summary.planned_contracts || 0)} contracts
@@ -53,6 +53,13 @@ export function OptionWarehousePanel({
         )}
       </div>
       <div className="p-3 space-y-3">
+        <div className="rounded-md border border-amber-900/40 bg-amber-950/20 p-2 text-[11px] text-dim" data-testid="option-warehouse-philosophy-note">
+          <span className="font-semibold text-amber-200">Not the same as warehouse completeness.</span> This tool selects specific
+          moneyness strikes (ATM, ITM1-2, OTM1-3) around a sampled reference price and counts a contract “covered” if it has
+          <em> any</em> stored candle. Routine completeness — every strike the day’s spot range touched, for both legs — is the
+          <span className="font-semibold"> daily ATM band</span>, maintained automatically by <span className="font-semibold">Sync now</span> /
+          auto-update. Use this only for research pulls the band doesn’t cover (deep OTM wings, fixed-expiry studies).
+        </div>
         <div className="rounded-md border border-line bg-bg-2 p-3">
           <div className="grid grid-cols-2 xl:grid-cols-[1fr_1fr_1fr_1fr_0.8fr_0.8fr_auto] gap-2 items-end">
             <label className="text-[11px] text-dim">

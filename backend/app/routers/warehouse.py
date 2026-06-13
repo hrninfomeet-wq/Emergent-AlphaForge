@@ -59,6 +59,7 @@ from app.runtime import (
     _ist_market_bounds_ms,
     _overlay_option_contract_metadata,
     _start_catch_up_chain,
+    _topup_vix,
     _trigger_autoupdate,
     log,
     submit_band_fetch_run,
@@ -689,6 +690,11 @@ async def _run_warehouse_sync(req: DataHygieneCatchUpReq):
     if req.dry_run:
         return serialize_doc({"plan": plan, "submitted_count": 0, "dry_run": True})
 
+    # India VIX is part of "in sync" too — refresh it on every real sync, even
+    # when spot/options are already current (the volatility-context layer should
+    # not need a separate manual click). Self-guards on the Upstox connection.
+    vix_result = await _topup_vix()
+
     # Band sweep for instruments whose spot is already current: the chain's
     # option stage only runs for gapped instruments, but wick-edge band pairs
     # can be missing even when there is no new session to ingest (e.g. the
@@ -713,7 +719,8 @@ async def _run_warehouse_sync(req: DataHygieneCatchUpReq):
                 band_sweeps.append((instrument, band_plan))
 
     if total_actions == 0 and not band_sweeps:
-        return serialize_doc({"plan": plan, "submitted": [], "submitted_count": 0, "up_to_date": True})
+        return serialize_doc({"plan": plan, "submitted": [], "submitted_count": 0,
+                              "up_to_date": True, "vix": vix_result})
 
     status = await upstox_client.get_connection_status()
     if not status.get("connected"):
@@ -767,6 +774,7 @@ async def _run_warehouse_sync(req: DataHygieneCatchUpReq):
         "band_sweeps": [
             {"instrument": i, "missing_pairs": p.get("missing_pairs", 0)} for i, p in band_sweeps
         ],
+        "vix": vix_result,
     })
 
 

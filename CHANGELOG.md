@@ -2,6 +2,14 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.30.x] — Warehouse review follow-ups: partial-day repair, VIX in sync, planner relabel (2026-06-13)
+
+522 backend tests pass (9 new). Fixes from the Data Warehouse Q&A review. **Investigation correction first:** the "broker-empty" strikes flagged in the review (NIFTY 25000 PE, SENSEX 81000/82000/83000, etc.) were re-verified against Upstox's own expired-contract master — each maps to exactly one authoritative token that returns zero candles, with **no duplicate/alternative** anywhere in the 61,700-contract store. They are genuinely unavailable at Upstox (late-listed strikes Upstox never archived), so the W1 broker-empty ledger was correct; the earlier "wrong-key, re-fetchable" hypothesis was withdrawn (a neighbor-token probe had returned an adjacent strike's data). No contract-key "fix" was applied because there was nothing to fix.
+
+- **F2 — under-captured spot day repair (the real Q4 amber cause).** A trading day captured only partially (PC off mid-session → only the live roller's morning stored, e.g. 2026-06-12 at 255/375) sat at the last-stored-date high-water mark, so incremental catch-up declared "up to date" and never re-pulled the full session. `compute_catch_up_plan` now also detects closed trading days whose stored bar count is materially below the **calendar-expected** session length (`incomplete_spot_days`; Muhurat/short sessions and weekend stray ticks are never flagged), pulls the catch-up window back to repair them (bounded by `SPOT_REPAIR_LOOKBACK_DAYS=21` to avoid churn on genuine broker-short days), and the chain re-fetches the full session + re-bands the widened day. Verified live: 2026-06-12 went 255→375 for all three indices and its option band filled (NIFTY 20 / BANKNIFTY 30 / SENSEX 28 pairs), heatmap now green, overall **verified**.
+- **F3 — India VIX folded into sync.** VIX previously refreshed only on startup/connect/run-now. It now also runs on the **daily 18:00 loop** (`daily_autoupdate_loop` gained a `pre_run_fn` side-task = `_topup_vix`) and on **"Sync now"** (`/warehouse/sync` tops up VIX on every real sync and reports it). UI caption notes the auto-refresh.
+- **F5 — manual Option Planner relabeled** (`OptionPlannerPanel`): an amber note makes explicit it is moneyness-relative selection with "any candle = covered", **not** the daily ATM-band completeness that Sync/auto-update maintain — use it only for research pulls the band doesn't cover.
+
 ## [0.29.x] — Data Warehouse Overhaul: honest status, one-button sync, band-truth heatmap (2026-06-13)
 
 513 backend tests pass. Full implementation of the four approved workstreams from the Data Warehouse page review (commits `51a7fd2`, `d15ec40`, + this one):

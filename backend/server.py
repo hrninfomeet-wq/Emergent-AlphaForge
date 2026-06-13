@@ -38,6 +38,7 @@ from app.runtime import (
     _autoupdate_execute_plan,
     _default_stream_instrument_keys,
     _deployment_evaluator_loop,
+    _topup_vix,
     _trigger_autoupdate,
     live_candle_roller,
     upstox_stream_manager,
@@ -143,6 +144,7 @@ async def startup() -> None:
             connection_status_fn=_autoupdate_connection_status,
             compute_plan_fn=_autoupdate_compute_plan,
             execute_plan_fn=_autoupdate_execute_plan,
+            pre_run_fn=_topup_vix,  # keep India VIX current on the daily timer too
         ),
         name="warehouse-autoupdate-daily",
     )
