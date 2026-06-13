@@ -27,6 +27,11 @@ const INSTRUMENTS = ["NIFTY", "BANKNIFTY", "SENSEX"];
 const OPTION_MONEYNESS = ["atm", "otm1", "otm2", "otm3", "itm1", "itm2"];
 const DTE_VALUES = [0, 1, 2, 3, 4, 5, 6];
 
+// Canonical (sorted-key) JSON of a pretrade-filters object, for matching a saved
+// run's stored filters back to a named profile so loading a run restores the
+// profile that produced it (the run stores resolved filters, not the profile name).
+const canonFilters = (o) => JSON.stringify(Object.fromEntries(Object.entries(o || {}).sort()));
+
 // DTE filter is a multi-select array of ints (empty = all). Older runs stored
 // a single token ("dte2", "2") or null/"all" — normalize every shape here so
 // cloning an old run still works.
@@ -294,9 +299,10 @@ export default function BacktestLab() {
 
   // Save THIS loaded result's exact strategy params + option execution as a
   // named preset, read from the run doc so it matches the displayed result even
-  // if the setup form was edited afterwards. The preset deploys as-is and the
-  // run can be replicated by re-running over the same window (the ?run= load
-  // already restores the window + filters; the preset itself carries no dates).
+  // if the setup form was edited afterwards. The preset deploys as-is; to replicate
+  // the BACKTEST, re-run the loaded run as-is — the ?run= load restores params +
+  // date window + option execution + the matching pretrade profile. The preset
+  // itself carries no dates (presets are for live deployment, which has no window).
   const savePresetFromResult = async (run) => {
     if (!run) return;
     const strategy_id = run.strategy_id || run.config?.strategy_id;
@@ -473,6 +479,15 @@ export default function BacktestLab() {
       if (runParams) {
         pendingParamsRef.current = { strategy_id: runStrategy, params: { ...runParams } };
       }
+      // Restore the pretrade PROFILE too: the run stores resolved filters, not the
+      // profile name, so match those filters back to a known profile. Without this,
+      // re-running a loaded run used the form's current profile and the numbers
+      // wouldn't replicate. Falls back to the current profile if none matches
+      // (a genuinely custom filter set) or if profiles haven't loaded yet.
+      const runFilters = r.config?.pretrade_filters;
+      const matchedProfile = runFilters
+        ? profiles.find((p) => canonFilters(p.settings) === canonFilters(runFilters))?.name
+        : null;
       // Restore configuration from the saved run
       setConfig((c) => ({
         ...c,
@@ -481,6 +496,7 @@ export default function BacktestLab() {
         strategy_id: r.strategy_id || r.config?.strategy_id || c.strategy_id,
         timeframe: r.config?.timeframe || c.timeframe,
         params: r.params_applied || r.config?.params || c.params,
+        pretrade_profile: matchedProfile || c.pretrade_profile,
         costs_enabled: r.config?.costs_enabled ?? c.costs_enabled,
         walkforward: r.config?.walkforward ?? c.walkforward,
         train_pct: r.config?.train_pct ?? c.train_pct,
