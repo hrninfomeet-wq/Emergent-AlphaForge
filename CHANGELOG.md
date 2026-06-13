@@ -54,6 +54,17 @@ One review claim was REFUTED on verification and NOT acted on: the warehouse
 heatmap already renders band-truth coverage (the old density-heuristic endpoint
 is dead code with zero frontend call sites) — no change made.
 
+Follow-ups completed in the same session: the **paper journal** now surfaces the
+slice-1/4 data — "P&L ₹ (net)" with a gross/friction sub-line + a stale-fill
+"est" badge from `exit_price_source`/`exit_price_stale`. **Verified in the running
+stack** (`docker compose up -d --build` + browser smoke): all six changes render
+with no console errors — cockpit market badge/clock/last-evaluated, the deploy
+wizard's friction control (default ON, prefilled) + selection-bias readiness line
++ gate ack warnings, the journal net column, the chart's premium focus strip on an
+option_levels run (`premium exit · Entry ₹ · Tgt ₹`), and the Optimizer's
+diversity-shortlist toggle. API spot-checks confirm `market_status`,
+`last_evaluated_ts`, `n_trials`, and `deflated_sharpe`/`option_oos_net`.
+
 ## [0.36.x] — Backtest chart: full-screen (maximize) button (2026-06-13)
 
 533 backend tests pass. A maximize button (top-right of the chart header, Maximize2/Minimize2 icon) toggles the price chart to full screen via the browser **Fullscreen API**; Esc exits. The chart container resizes (`window.innerHeight − 180`) and lightweight-charts' autoSize redraws to fill.
