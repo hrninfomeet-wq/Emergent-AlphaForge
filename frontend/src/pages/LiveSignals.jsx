@@ -292,6 +292,16 @@ const WIZARD_DEFAULTS = {
   max_consecutive_losses: "",
   daily_loss_cutoff_pct: "",
   max_open_paper_trades: "",
+  // Live execution realism (friction): price paper fills like the backtest so
+  // forward P&L mirrors it instead of overstating gross. ON by default; the
+  // costs sub-toggle + rates prefill from the preset's backtest policy.
+  friction_enabled: true,
+  friction_slip_atm: 0.5,
+  friction_slip_otm1: 1.0,
+  friction_slip_otm2: 2.0,
+  friction_costs_enabled: false,
+  friction_brokerage: 0,
+  friction_spread_pct: 0,
   acknowledged_warnings: false,
 };
 
@@ -359,6 +369,12 @@ function DeployWizard({ presets, initialPreset, onClose, onCreated }) {
           auto_paper_target_pct: ex.option_target_pct ?? "",
           auto_paper_stop_pct: ex.option_stop_pct ?? "",
         } : {}),
+        // Mirror the backtest's cost model so live fills are charged the same.
+        // Slippage is always-on with defaults in the backtest, so we leave the
+        // slippage knobs at their defaults; only the cost_config is preset-driven.
+        friction_costs_enabled: Boolean(ex.cost_config?.enabled),
+        friction_brokerage: ex.cost_config?.brokerage_per_order ?? prev.friction_brokerage,
+        friction_spread_pct: ex.cost_config?.spread_pct_of_premium ?? prev.friction_spread_pct,
       } : {}),
     }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -386,6 +402,24 @@ function DeployWizard({ presets, initialPreset, onClose, onCreated }) {
         max_consecutive_losses: form.max_consecutive_losses === "" ? null : Math.max(0, parseInt(form.max_consecutive_losses, 10) || 0),
         daily_loss_cutoff_pct: form.daily_loss_cutoff_pct === "" ? null : Number(form.daily_loss_cutoff_pct),
         max_open_paper_trades: form.max_open_paper_trades === "" ? null : Math.max(0, parseInt(form.max_open_paper_trades, 10) || 0),
+        // Live execution realism: only meaningful for paper mode. Slippage maps
+        // ATM / OTM1=ITM1 / OTM2+=ITM2+ to the backtest's buckets; costs mirror
+        // the preset's backtest cost model. Backend normalizes to FrictionConfig.
+        friction: form.mode === "paper" ? {
+          enabled: Boolean(form.friction_enabled),
+          slippage: {
+            atm_pts: Number(form.friction_slip_atm) || 0,
+            otm1_pts: Number(form.friction_slip_otm1) || 0,
+            itm1_pts: Number(form.friction_slip_otm1) || 0,
+            otm2_plus_pts: Number(form.friction_slip_otm2) || 0,
+            itm2_plus_pts: Number(form.friction_slip_otm2) || 0,
+          },
+          costs: {
+            enabled: Boolean(form.friction_costs_enabled),
+            brokerage_per_order: Number(form.friction_brokerage) || 0,
+            spread_pct_of_premium: Number(form.friction_spread_pct) || 0,
+          },
+        } : null,
         acknowledged_warnings: Boolean(form.acknowledged_warnings),
       };
       const res = await api.createDeployment(payload);
@@ -553,6 +587,61 @@ function DeployWizard({ presets, initialPreset, onClose, onCreated }) {
                     The strategy's own exits always win: spot-point levels are mirrored automatically (option closes
                     when the index hits the level), premium-% hints apply directly. No live premium → no trade, reason journaled.
                   </div>
+                </div>
+              )}
+
+              {form.mode === "paper" && (
+                <div className="rounded-md border border-sky-500/30 bg-sky-500/5 p-2 space-y-2" data-testid="wizard-friction">
+                  <label className="text-[11px] text-dim flex items-center gap-2">
+                    <input type="checkbox" checked={Boolean(form.friction_enabled)}
+                      onChange={(e) => set("friction_enabled", e.target.checked)} className="h-4 w-4 rounded border-line"
+                      data-testid="wizard-friction-toggle" />
+                    <span><b>Price paper fills like the backtest</b> — slippage{form.friction_costs_enabled ? " + charges/spread" : ""} so forward P&amp;L isn't overstated</span>
+                  </label>
+                  {form.friction_enabled ? (
+                    <>
+                      <div className="grid grid-cols-3 gap-2">
+                        <label className="text-[11px] text-dim">Slippage ATM (pts)
+                          <Input type="number" min="0" step="0.5" value={form.friction_slip_atm}
+                            onChange={(e) => set("friction_slip_atm", e.target.value)} className="mt-1 bg-bg-2 border-line h-8" />
+                        </label>
+                        <label className="text-[11px] text-dim">OTM1/ITM1 (pts)
+                          <Input type="number" min="0" step="0.5" value={form.friction_slip_otm1}
+                            onChange={(e) => set("friction_slip_otm1", e.target.value)} className="mt-1 bg-bg-2 border-line h-8" />
+                        </label>
+                        <label className="text-[11px] text-dim">OTM2+/ITM2+ (pts)
+                          <Input type="number" min="0" step="0.5" value={form.friction_slip_otm2}
+                            onChange={(e) => set("friction_slip_otm2", e.target.value)} className="mt-1 bg-bg-2 border-line h-8" />
+                        </label>
+                      </div>
+                      <label className="text-[11px] text-dim flex items-center gap-2">
+                        <input type="checkbox" checked={Boolean(form.friction_costs_enabled)}
+                          onChange={(e) => set("friction_costs_enabled", e.target.checked)} className="h-4 w-4 rounded border-line" />
+                        <span>Include statutory charges + bid-ask spread (STT/GST/stamp + % spread)</span>
+                      </label>
+                      {form.friction_costs_enabled && (
+                        <div className="grid grid-cols-2 gap-2">
+                          <label className="text-[11px] text-dim">Brokerage per order (₹)
+                            <Input type="number" min="0" step="1" value={form.friction_brokerage}
+                              onChange={(e) => set("friction_brokerage", e.target.value)} className="mt-1 bg-bg-2 border-line h-8"
+                              title="₹0 for Flattrade; ~20 for Zerodha/Upstox-style" />
+                          </label>
+                          <label className="text-[11px] text-dim">Bid-ask spread (% of premium, per side)
+                            <Input type="number" min="0" step="0.5" value={form.friction_spread_pct}
+                              onChange={(e) => set("friction_spread_pct", e.target.value)} className="mt-1 bg-bg-2 border-line h-8" />
+                          </label>
+                        </div>
+                      )}
+                      <div className="text-[10px] text-dimmer leading-snug">
+                        Prefilled from this preset's backtest policy. The same costs apply to entry &amp; exit fills, and the
+                        paper journal records gross vs net so you can see the drag. Set the knobs to 0 to keep fills gross.
+                      </div>
+                    </>
+                  ) : (
+                    <div className="text-[10px] text-amber-400/80 leading-snug">
+                      Fills booked gross (no slippage/charges) — forward P&amp;L will look better than your backtest. Recommended ON.
+                    </div>
+                  )}
                 </div>
               )}
             </>

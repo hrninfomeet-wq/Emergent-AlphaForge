@@ -8,9 +8,10 @@ import numpy as np
 import pandas as pd
 
 from app.options_universe import select_contract_for_signal
-from app.slippage import SlippageConfig, apply_slippage, estimate_slippage_per_side
+from app.slippage import SlippageConfig
 from app.exit_engine import intrabar_exit
-from app.option_costs import CostConfig, round_trip_charges, spread_pts_for_premium
+from app.option_costs import CostConfig, round_trip_charges
+from app.live_friction import fill_premium
 from app.portfolio import SizingConfig, size_position, build_rupee_equity_curve
 from app.market_context import build_trade_context
 from app.dte import compute_dte
@@ -391,18 +392,18 @@ def simulate_paired_option_trades(
         raw_entry_price = float(entry["close"])
         # Apply entry slippage first so option target/stop levels are measured
         # against the actual (slipped) fill, matching how a real buyer manages.
-        entry_slip = estimate_slippage_per_side(
-            moneyness=moneyness,
-            ts_ms=int(entry["ts"]),
+        # fill_premium (app.live_friction) is the SHARED fill model: point
+        # slippage + half the %-of-premium spread. The live paper path books
+        # entry/exit fills through the exact same function, so sim and live can
+        # never disagree about the fill price (see tests/test_live_friction.py).
+        entry_fill = fill_premium(
+            raw_premium=raw_entry_price, side="BUY",
+            moneyness=moneyness, ts_ms=int(entry["ts"]),
             expiry_iso=str(selected.get("expiry_date") or "") or None,
-            cfg=slippage_cfg,
+            slippage_cfg=slippage_cfg, cost_cfg=cost_cfg,
         )
-        # Bid-ask spread (percentage-of-premium model) is layered on top of the
-        # point slippage. Half the spread is crossed on each side. Disabled when
-        # cost_config.enabled is False.
-        entry_spread_pts = spread_pts_for_premium(raw_entry_price, cost_cfg) / 2.0
-        entry_fill_pts = entry_slip["pts"] + entry_spread_pts
-        entry_price = apply_slippage(fill_price=raw_entry_price, side="BUY", pts=entry_fill_pts)
+        entry_spread_pts = entry_fill["spread_pts"]
+        entry_price = entry_fill["price"]
 
         # Determine the exit. In spot_exit mode the option is sold at the spot
         # trade's exit candle. In option_levels mode we scan option candles
@@ -433,16 +434,16 @@ def simulate_paired_option_trades(
             raw_exit_price = float(exit_candle["close"])
             exit_candle_ts = int(exit_candle["ts"])
 
-        # Apply exit slippage. Selling exit receives LESS than mid.
-        exit_slip = estimate_slippage_per_side(
-            moneyness=moneyness,
-            ts_ms=exit_candle_ts,
+        # Apply exit slippage. Selling exit receives LESS than mid. Same shared
+        # fill model as the entry (and the live close path).
+        exit_fill = fill_premium(
+            raw_premium=raw_exit_price, side="SELL",
+            moneyness=moneyness, ts_ms=exit_candle_ts,
             expiry_iso=str(selected.get("expiry_date") or "") or None,
-            cfg=slippage_cfg,
+            slippage_cfg=slippage_cfg, cost_cfg=cost_cfg,
         )
-        exit_spread_pts = spread_pts_for_premium(raw_exit_price, cost_cfg) / 2.0
-        exit_fill_pts = exit_slip["pts"] + exit_spread_pts
-        exit_price = apply_slippage(fill_price=raw_exit_price, side="SELL", pts=exit_fill_pts)
+        exit_spread_pts = exit_fill["spread_pts"]
+        exit_price = exit_fill["price"]
         pnl_pts = round(exit_price - entry_price, 3)
         lot_size = int(selected.get("lot_size") or 1)
         # Position sizing. lot SIZE comes from the contract; the lot COUNT is
@@ -483,10 +484,10 @@ def simulate_paired_option_trades(
             "option_exit_reason": option_exit_reason,
             "option_target_level": round(option_levels["target_level"], 3) if option_levels["target_level"] is not None else None,
             "option_stop_level": round(option_levels["stop_level"], 3) if option_levels["stop_level"] is not None else None,
-            "entry_slippage_pts": entry_slip["pts"],
-            "exit_slippage_pts": exit_slip["pts"],
-            "slippage_bucket": entry_slip["bucket"],
-            "expiry_tail_applied": bool(entry_slip.get("tail_multiplier_applied") or exit_slip.get("tail_multiplier_applied")),
+            "entry_slippage_pts": entry_fill["slippage_pts"],
+            "exit_slippage_pts": exit_fill["slippage_pts"],
+            "slippage_bucket": entry_fill["bucket"],
+            "expiry_tail_applied": bool(entry_fill["tail"] or exit_fill["tail"]),
             "lot_size": lot_size,
             "lots": sized_lots,
             "quantity": quantity,

@@ -28,6 +28,20 @@ def _int(value: Any, default: int = 0) -> int:
         return default
 
 
+def _iso_to_ms(value: Any) -> int:
+    """Best-effort ISO-timestamp → epoch ms (for the friction model's
+    expiry-tail check). Falls back to 'now' when the value is missing/unparseable."""
+    if isinstance(value, str) and value:
+        try:
+            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return int(dt.timestamp() * 1000)
+        except ValueError:
+            pass
+    return int(datetime.now(timezone.utc).timestamp() * 1000)
+
+
 def paper_trade_from_signal(
     signal: Dict[str, Any],
     *,
@@ -36,16 +50,24 @@ def paper_trade_from_signal(
     stop_price: Optional[float] = None,
     target_price: Optional[float] = None,
     at: Optional[str] = None,
+    raw_entry_price: Optional[float] = None,
+    friction: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    """Build a paper-trade doc. `entry_price` is the booked fill (already
+    friction-adjusted by the caller when applicable); `raw_entry_price` is the
+    unslipped premium kept for gross-vs-net analysis. `friction`, when provided,
+    is stored on the trade so `close_trade` applies the SAME exit slippage +
+    charges the entry was opened with (so forward P&L mirrors the backtest)."""
     option_contract = signal.get("option_contract") or {}
     lot_size = max(1, _int(option_contract.get("lot_size"), 1))
     lots = max(1, _int(lots, 1))
     quantity = lots * lot_size
     fill_price = _float(entry_price, _float(signal.get("entry_price"), 0.0))
+    raw_entry = _float(raw_entry_price, fill_price) if raw_entry_price not in (None, "") else fill_price
     stop = _float(stop_price) if stop_price not in (None, "") else None
     target = _float(target_price) if target_price not in (None, "") else None
     timestamp = at or _now_iso()
-    return {
+    trade = {
         "id": str(uuid.uuid4()),
         "signal_id": signal.get("id"),
         "instrument": signal.get("instrument"),
@@ -57,6 +79,7 @@ def paper_trade_from_signal(
         "lot_size": lot_size,
         "quantity": quantity,
         "entry_price": fill_price,
+        "raw_entry_price": round(raw_entry, 4),
         "entry_value": round(fill_price * quantity, 2),
         "last_price": fill_price,
         "risk": {
@@ -77,6 +100,9 @@ def paper_trade_from_signal(
         }],
         "source": "paper",
     }
+    if friction:
+        trade["friction"] = friction
+    return trade
 
 
 def _mark_open_trade(trade: Dict[str, Any], *, last_price: Any, at: Optional[str] = None) -> Dict[str, Any]:
@@ -139,23 +165,50 @@ def close_trade(
     at: Optional[str] = None,
 ) -> Dict[str, Any]:
     updated = dict(trade)
-    price = _float(exit_price)
+    raw_exit = _float(exit_price)            # the tick/mark that triggered the close
     quantity = _int(updated.get("quantity"))
     entry = _float(updated.get("entry_price"))
+    raw_entry = _float(updated.get("raw_entry_price"), entry)
     timestamp = at or _now_iso()
-    realized = round((price - entry) * quantity, 2)
+
+    # Friction parity (app.live_friction): when the trade was opened with a
+    # friction config, the exit is slipped (SELL) and round-trip charges are
+    # subtracted so realized P&L mirrors the backtest. Absent the block, the
+    # close stays gross — realized = (raw_exit - entry) * quantity — exactly as
+    # before, so deployments/tests without friction are unchanged.
+    from app.live_friction import FrictionConfig, close_economics
+    friction = FrictionConfig.from_dict(updated.get("friction"))
+    econ = close_economics(
+        raw_exit_premium=raw_exit,
+        entry_price=entry,
+        raw_entry_price=raw_entry,
+        quantity=quantity,
+        friction=friction,
+        ts_ms=_iso_to_ms(timestamp),
+    )
+    fill_price = _float(econ["exit_fill_price"], raw_exit)
+    realized = econ["realized_pnl"]
     updated.update({
         "status": "CLOSED",
-        "exit_price": price,
-        "exit_value": round(price * quantity, 2),
+        "exit_price": fill_price,
+        "raw_exit_price": raw_exit,
+        "exit_value": round(fill_price * quantity, 2),
         "exit_reason": reason,
         "realized_pnl": realized,
+        "gross_realized_pnl": econ["gross_realized_pnl"],
+        "friction_cost": econ["friction_cost"],
+        "total_charges": econ["total_charges"],
+        "exit_slippage_pts": econ["exit_slippage_pts"],
+        "exit_spread_pts": econ["exit_spread_pts"],
         "unrealized_pnl": 0.0,
-        "last_price": price,
+        "last_price": raw_exit,
         "closed_at": timestamp,
         "updated_at": timestamp,
     })
+    if econ.get("charges"):
+        updated["charges"] = econ["charges"]
     events = list(updated.get("events") or [])
-    events.append({"type": "CLOSE", "at": timestamp, "price": price, "realized_pnl": realized, "reason": reason})
+    events.append({"type": "CLOSE", "at": timestamp, "price": fill_price,
+                   "realized_pnl": realized, "reason": reason})
     updated["events"] = events
     return updated

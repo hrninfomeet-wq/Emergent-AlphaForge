@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException, Query
 from app.db import get_db, serialize_doc
 from app.strategies.base import get_registry
 from app.strategy_deployments import build_deployment_doc
+from app.live_friction import FrictionConfig
 from app.strategy_source_hash import hash_strategy_source, build_repin_update
 from app.deployment_quality import evaluate_source_quality
 from app.forward_metrics import (
@@ -98,6 +99,11 @@ async def create_deployment(req: DeploymentCreateReq):
                    if req.auto_paper_target_pct is not None else {}),
                 **({"auto_paper_stop_pct": float(req.auto_paper_stop_pct)}
                    if req.auto_paper_stop_pct is not None else {}),
+                # Live execution-realism config, normalized to the canonical
+                # FrictionConfig shape so the live close path can apply the same
+                # slippage + charges the backtest used.
+                **({"friction": FrictionConfig.from_dict(req.friction).to_dict()}
+                   if req.friction is not None else {}),
             },
             dte_filter=req.dte_filter,
             allow_overnight=req.allow_overnight,

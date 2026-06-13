@@ -273,6 +273,13 @@ class DeploymentCreateReq(BaseModel):
     max_consecutive_losses: Optional[int] = None
     daily_loss_cutoff_pct: Optional[float] = None
     max_open_paper_trades: Optional[int] = None
+    # Live execution realism (app.live_friction). When enabled, auto-paper fills
+    # are slipped (BUY entry / SELL exit) and charged with the SAME model the
+    # backtest uses, so forward P&L mirrors it instead of overstating gross.
+    # Shape: {"enabled": bool, "slippage": {...SlippageConfig}, "costs": {...CostConfig}}.
+    # Default None → gross (legacy); the deploy wizard prefills it ON from the
+    # preset's backtest execution policy and lets the user tune every knob.
+    friction: Optional[Dict[str, Any]] = None
     acknowledged_warnings: bool = False
 
 

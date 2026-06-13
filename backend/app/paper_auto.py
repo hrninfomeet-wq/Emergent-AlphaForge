@@ -284,16 +284,41 @@ def build_auto_trade(
     hints. The caller stamps deployment_id / source before insert."""
     risk_cfg = deployment.get("risk") or {}
     lots = max(1, int(risk_cfg.get("default_lots") or 1))
+
+    # Live execution-realism (app.live_friction): when the deployment opted in
+    # (risk.friction.enabled), slip the ENTRY (BUY) BEFORE levels are computed —
+    # exactly as the backtest does — so the forward fill, and the stop/target
+    # measured off it, match the simulation. The moneyness + expiry travel with
+    # the trade so the exit fill uses the same slippage bucket / expiry-tail rule.
+    # Disabled (the default) → the raw premium is the fill, unchanged behavior.
+    from app.live_friction import FrictionConfig, apply_entry_friction
+    friction = FrictionConfig.from_dict(risk_cfg.get("friction"))
+    policy = deployment.get("option_policy") or {}
+    mlist = policy.get("moneyness") or ["atm"]
+    friction.moneyness = str(mlist[0] if isinstance(mlist, list) and mlist else "atm").lower()
+    contract = signal_doc.get("option_contract") or {}
+    friction.expiry_iso = str(contract.get("expiry_date") or "") or None
+
+    raw_entry = float(entry_price)
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    entry_fill = apply_entry_friction(raw_entry, friction, ts_ms=now_ms)
+    fill_entry = entry_fill["price"]
+
     stop_price, target_price = compute_auto_risk_levels(
-        entry_price, signal_doc.get("risk_hints"), risk_cfg,
+        fill_entry, signal_doc.get("risk_hints"), risk_cfg,
     )
     trade = paper_trade_from_signal(
         signal_doc,
         lots=lots,
-        entry_price=entry_price,
+        entry_price=fill_entry,
+        raw_entry_price=raw_entry,
         stop_price=stop_price,
         target_price=target_price,
+        friction=friction.to_dict() if friction.enabled else None,
     )
+    if friction.enabled:
+        trade["entry_slippage_pts"] = entry_fill["slippage_pts"]
+        trade["entry_spread_pts"] = round(entry_fill["spread_pts"], 4)
     spot_exit = compute_spot_exit_levels(signal_doc)
     if spot_exit:
         trade["spot_exit"] = spot_exit
@@ -362,13 +387,19 @@ async def auto_paper_trade_for_signal(
     trade["auto_created"] = True
     await db.paper_trades.insert_one(trade)
 
+    # The booked entry is the friction-adjusted fill when the deployment opted
+    # into live realism, else the raw resolved premium (identical to entry_price).
+    booked_entry = float(trade.get("entry_price") or entry_price)
+
     snapshot = {"auto_paper": {
         "trade_id": trade["id"],
-        "entry_price": entry_price,
+        "entry_price": booked_entry,
+        "raw_entry_price": float(trade.get("raw_entry_price") or entry_price),
         "lots": trade.get("lots"),
         "stop_price": (trade.get("risk") or {}).get("stop_price"),
         "target_price": (trade.get("risk") or {}).get("target_price"),
         "spot_exit": trade.get("spot_exit"),
+        "friction_enabled": bool(trade.get("friction")),
         "at": datetime.now(timezone.utc).isoformat(),
     }}
     try:
@@ -389,8 +420,10 @@ async def auto_paper_trade_for_signal(
 
     log.info("auto-paper trade %s opened for signal %s (%s @ %.2f x %s lots)",
              trade["id"], signal_id, trade.get("trading_symbol") or instrument_key,
-             entry_price, trade.get("lots"))
-    return {"created": True, "trade_id": trade["id"], "entry_price": entry_price,
+             booked_entry, trade.get("lots"))
+    return {"created": True, "trade_id": trade["id"], "entry_price": booked_entry,
+            "raw_entry_price": float(trade.get("raw_entry_price") or entry_price),
+            "friction_enabled": bool(trade.get("friction")),
             "stop_price": (trade.get("risk") or {}).get("stop_price"),
             "target_price": (trade.get("risk") or {}).get("target_price"),
             "spot_exit": trade.get("spot_exit")}
