@@ -214,6 +214,11 @@ export function computeKeyMetrics(result) {
   const returnOverMaxDd = ddForRatio > 0 ? netForRatio / ddForRatio : null;
   const sharpe = cur ? (portfolio?.sharpe_daily ?? null) : (result?.metrics?.sharpe ?? null);
 
+  // Lowest / highest the account (capital growth) ever reached.
+  const accVals = series.accountValue.map((p) => p.value).filter((v) => Number.isFinite(v));
+  const minAccountValue = accVals.length ? Math.min(...accVals) : null;
+  const maxAccountValue = accVals.length ? Math.max(...accVals) : null;
+
   const tradingDays = portfolio?.trading_days
     || new Set((result?.trades || []).map((t) => String(t.exit_datetime || "").slice(0, 10)).filter(Boolean)).size
     || 0;
@@ -232,6 +237,7 @@ export function computeKeyMetrics(result) {
     maxWinStreak: maxWin, maxLossStreak: maxLoss,
     ddDurationDays: dd.days, recovered: dd.recovered,
     returnOverMaxDd, sharpe,
+    minAccountValue, maxAccountValue,
     cagr, calmar, years, tradingDays, avgTradesPerDay,
     tradeCount: n,
   };

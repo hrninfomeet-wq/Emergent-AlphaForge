@@ -2,6 +2,14 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.33.x] — Backtest charts split + named axes + account-value range (2026-06-13)
+
+532 backend tests pass. Acts on the user's review of 0.32.x.
+
+- **Two separate charts** (the dual-pane chart was split): `DualAxisChart` rendered twice — **"Cumulative P&L vs trade value"** (left: Cumulative P&L, right: Trade value) and **"Account value & drawdown"** (left: Account value, right: Drawdown). `EquityUnderlyingChart` removed.
+- **Named vertical axis titles** (text-up orientation, `writing-mode: vertical-rl` + 180° rotate) on the left and right of each chart, so each axis says what it plots.
+- **Lowest / highest account-value cards** in the trade-quality block (min/max of the capital-growth curve). On the live run these read **₹−49,130 (lowest) / ₹1,109,497 (highest)** — surfacing that the account briefly went negative before recovering, a risk the +₹582,939 headline hides.
+
 ## [0.32.x] — Backtest results: chart corrected to per-trade buy value + monthly P&L + trade columns (2026-06-13)
 
 530 backend tests pass (4 new/updated pins). Follow-up to 0.31.x acting on the user's review of the first cut. Frontend-only, still all client-side.

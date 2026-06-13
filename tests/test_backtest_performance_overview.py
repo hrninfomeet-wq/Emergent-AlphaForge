@@ -20,11 +20,25 @@ def _read(*parts):
 
 def test_performance_overview_components_exist():
     metrics = _read("lib", "backtestMetrics.js")
-    chart = _read("components", "backtest", "EquityUnderlyingChart.jsx")
+    chart = _read("components", "backtest", "DualAxisChart.jsx")
     overview = _read("components", "backtest", "PerformanceOverview.jsx")
     assert "buildPerformanceSeries" in metrics and "computeKeyMetrics" in metrics
-    assert "equity-underlying-chart" in chart
+    assert "DualAxisChart" in chart
     assert "performance-overview" in overview and "perf-key-metrics" in overview
+
+
+def test_two_separate_charts_with_named_axes():
+    # The single dual-pane chart was split into two separate charts, each with
+    # NAMED, vertically-oriented (text-up) left and right axis titles.
+    overview = _read("components", "backtest", "PerformanceOverview.jsx")
+    assert "chart-pnl-vs-value" in overview and "chart-account-drawdown" in overview
+    # axis labels passed to the two charts
+    for label in ('label: "Cumulative P&L"', '"Trade value"', 'label: "Account value"', 'label: "Drawdown"'):
+        assert label in overview
+    chart = _read("components", "backtest", "DualAxisChart.jsx")
+    # vertical, text-up axis-title rendering
+    assert "writingMode" in chart and "rotate(180deg)" in chart
+    assert "AxisTitle" in chart
 
 
 def test_chart_right_axis_is_per_trade_buy_value_not_index():
@@ -33,10 +47,15 @@ def test_chart_right_axis_is_per_trade_buy_value_not_index():
     metrics = _read("lib", "backtestMetrics.js")
     assert "tradeBuyValue" in metrics and "tradeSellValue" in metrics
     assert "entry_option_price" in metrics and "total_charges" in metrics
-    chart = _read("components", "backtest", "EquityUnderlyingChart.jsx")
-    assert "Trade buy value" in chart  # default right-axis label
-    # account value + drawdown are clubbed in the lower pane (4 series total).
-    assert chart.count("chart.addSeries(") == 4
+    overview = _read("components", "backtest", "PerformanceOverview.jsx")
+    assert '"Trade value"' in overview
+
+
+def test_account_value_low_high_cards():
+    metrics = _read("lib", "backtestMetrics.js")
+    overview = _read("components", "backtest", "PerformanceOverview.jsx")
+    assert "minAccountValue" in metrics and "maxAccountValue" in metrics
+    assert "Lowest account value" in overview and "Highest account value" in overview
 
 
 def test_monthly_pnl_calendar_present():
@@ -85,10 +104,8 @@ def test_metrics_are_honest_not_vanity():
 
 
 def test_no_buy_and_hold_benchmark_series():
-    # The user explicitly declined a buy-and-hold benchmark. The right-axis line
-    # is per-trade buy value (or, spot-only, the index level) — never a
-    # buy-and-hold equity series. Pin: no benchmark series in the chart.
-    chart = _read("components", "backtest", "EquityUnderlyingChart.jsx").lower()
-    assert "not a benchmark" in chart  # documented intent
-    # the four series are cum P&L, buy value, account value, drawdown — no 5th.
-    assert chart.count("chart.addseries(") == 4
+    # The user explicitly declined a buy-and-hold benchmark. Each chart has
+    # exactly TWO series (left + right) — no benchmark/buy-and-hold overlay.
+    overview = _read("components", "backtest", "PerformanceOverview.jsx").lower()
+    assert "benchmark" not in overview
+    assert "buy-and-hold" not in overview

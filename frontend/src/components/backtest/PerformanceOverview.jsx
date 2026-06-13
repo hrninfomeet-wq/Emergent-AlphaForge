@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import { MetricCard } from "@/components/MetricCard";
 import { fmtInt, fmtNum, fmtPct, fmtPnL, colorPnL } from "@/lib/fmt";
 import { buildPerformanceSeries, computeKeyMetrics } from "@/lib/backtestMetrics";
-import { EquityUnderlyingChart } from "./EquityUnderlyingChart";
+import { DualAxisChart } from "./DualAxisChart";
 import { MonthlyPnlCalendar } from "./MonthlyPnlCalendar";
 
 const money = (n) => (n == null ? "—" : `₹${fmtInt(n)}`);
@@ -43,14 +43,22 @@ export function PerformanceOverview({ result }) {
         {hero.map((c) => <MetricCard key={c.testid} {...c} />)}
       </div>
 
-      <EquityUnderlyingChart
-        cumPnl={series.cumPnl}
-        buyValue={series.buyValue}
-        accountValue={series.accountValue}
-        drawdown={series.drawdown}
+      {/* Two separate charts (split from one dual-pane chart per request). */}
+      <DualAxisChart
+        testid="chart-pnl-vs-value"
+        title="Cumulative P&L vs trade value"
+        left={{ data: series.cumPnl, kind: "area", color: "#2ED47A", label: "Cumulative P&L" }}
+        right={{ data: series.buyValue, kind: "line", color: "#5AA9FF", label: cur ? "Trade value" : series.rightLabel }}
         currency={cur}
-        rightLabel={series.rightLabel}
-        height={460}
+        height={300}
+      />
+      <DualAxisChart
+        testid="chart-account-drawdown"
+        title="Account value & drawdown"
+        left={{ data: series.accountValue, kind: "line", color: "#C9A227", label: "Account value" }}
+        right={{ data: series.drawdown, kind: "baseline", color: "#FF5D5D", label: "Drawdown" }}
+        currency={cur}
+        height={260}
       />
 
       <MonthlyPnlCalendar result={result} />
@@ -76,6 +84,19 @@ export function PerformanceOverview({ result }) {
                 ? "it climbed back to a new high (fully recovered by the end of the test)."
                 : "the test ended — it had NOT returned to that peak (still underwater at the end).")
             }
+          />
+          <Stat
+            label="Lowest account value"
+            value={k.minAccountValue == null ? "—" : (cur ? money(k.minAccountValue) : fmtNum(k.minAccountValue, 0))}
+            sub={cur && k.capital != null ? `from ${money(k.capital)}` : null}
+            accent={cur && k.minAccountValue != null && k.capital != null && k.minAccountValue < k.capital ? "text-danger" : undefined}
+            title="The lowest the account (capital + cumulative P&L) ever fell to during the test."
+          />
+          <Stat
+            label="Highest account value"
+            value={k.maxAccountValue == null ? "—" : (cur ? money(k.maxAccountValue) : fmtNum(k.maxAccountValue, 0))}
+            accent="text-success"
+            title="The peak the account reached during the test."
           />
           <Stat label="Trading days" value={fmtInt(k.tradingDays)} />
           <Stat label="Avg trades / day" value={k.avgTradesPerDay == null ? "—" : fmtNum(k.avgTradesPerDay, 1)} />

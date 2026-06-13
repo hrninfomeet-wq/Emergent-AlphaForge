@@ -104,6 +104,8 @@ day's full strike BAND. Implementation notes for the next agent:
 
 ## Status In One Line
 
+Latest (2026-06-13): **backtest charts split + named axes (CHANGELOG 0.33.x)** — one `DualAxisChart` rendered twice (Cumulative-P&L-vs-trade-value, Account-value-vs-drawdown) with named vertical (text-up) axis titles; EquityUnderlyingChart removed; added Lowest/Highest account-value cards (min/max of capital-growth curve; live run -Rs49,130 / Rs1,109,497). 532 tests pass.
+
 Latest (2026-06-13): **backtest results refinements (CHANGELOG 0.32.x)** — chart right axis is now per-trade NET BUY VALUE (premium×qty+charges) not the index level (`tradeBuyValue`); top pane cum-P&L+buy-value, bottom pane account-value+drawdown; new `MonthlyPnlCalendar`; trades table gains Lots(Qty)/Buy ₹/Sell ₹ (Sell−Buy=net P&L); "recovered" reworded + tooltip. 530 tests pass.
 
 Latest (2026-06-13): **backtest results redesign (CHANGELOG 0.31.x)** — decision-first `PerformanceOverview` (rupee hero, account-value+underlying chart with drawdown pane, trade-quality metrics) in `components/backtest/` + pure `lib/backtestMetrics.js`; deep research cards collapsed into Advanced analytics. CAGR/Calmar suppressed <1y (vanity-number guard); headline reward/risk is span-independent Profit÷maxDD. Underlying line is context, NOT a benchmark (user declined). Frontend-only, derived from existing run data. Follow-ups not done (optional): full monolith split into tabs, a shared backend performance-metrics module, monthly P&L calendar.
