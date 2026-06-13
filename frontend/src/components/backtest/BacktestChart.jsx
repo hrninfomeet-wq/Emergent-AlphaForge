@@ -349,12 +349,16 @@ export function BacktestChart({ result }) {
       <div className="p-3">
         <div className="relative">
           {lg && (
-            <div className="absolute top-2 left-2 z-20 rounded-md border border-[#9FB2CC] bg-[#11161D]/95 px-2.5 py-1.5 text-[12px] font-mono pointer-events-none flex flex-wrap gap-x-2" data-testid="backtest-chart-legend">
-              <span className="font-semibold">{title} · {timeframe} · {barLabel(lg.time, timeframe)} IST</span>
-              <span><span className="text-dimmer">O</span> {fmtNum(lg.open, 2)}</span>
-              <span><span className="text-dimmer">H</span> {fmtNum(lg.high, 2)}</span>
-              <span><span className="text-dimmer">L</span> {fmtNum(lg.low, 2)}</span>
-              <span><span className="text-dimmer">C</span> <span className={lgUp ? "text-emerald-300" : "text-rose-300"}>{fmtNum(lg.close, 2)}</span></span>
+            <div
+              className="absolute top-2 left-2 z-20 rounded-md border px-2.5 py-1.5 text-[12px] font-mono pointer-events-none flex flex-wrap gap-x-2 shadow-sm"
+              style={{ backgroundColor: "rgba(17,22,29,0.96)", borderColor: "#9FB2CC", color: "#F5F8FF" }}
+              data-testid="backtest-chart-legend"
+            >
+              <span className="font-semibold" style={{ color: "#F5F8FF" }}>{title} · {timeframe} · {barLabel(lg.time, timeframe)} IST</span>
+              <span><span style={{ color: "#9FB2CC" }}>O</span> <span style={{ color: "#F5F8FF" }}>{fmtNum(lg.open, 2)}</span></span>
+              <span><span style={{ color: "#9FB2CC" }}>H</span> <span style={{ color: "#F5F8FF" }}>{fmtNum(lg.high, 2)}</span></span>
+              <span><span style={{ color: "#9FB2CC" }}>L</span> <span style={{ color: "#F5F8FF" }}>{fmtNum(lg.low, 2)}</span></span>
+              <span><span style={{ color: "#9FB2CC" }}>C</span> <span style={{ color: lgUp ? "#2ED47A" : "#FF5D5D" }}>{fmtNum(lg.close, 2)}</span></span>
             </div>
           )}
           {loading && <div className="absolute inset-0 z-10 flex items-center justify-center bg-bg-1/60 text-xs text-dim">Loading {title} {timeframe}…</div>}
