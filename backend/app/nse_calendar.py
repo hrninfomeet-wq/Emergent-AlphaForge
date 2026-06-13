@@ -226,6 +226,41 @@ def is_trading_day(iso_date: str) -> bool:
     return iso_date not in ALL_HOLIDAYS
 
 
+# Regular session bounds in IST minutes-of-day (09:15 .. 15:30).
+SESSION_OPEN_MIN = 9 * 60 + 15
+SESSION_CLOSE_MIN = 15 * 60 + 30
+
+
+def market_status(now_ist) -> dict:
+    """Regular-session market status for a given IST datetime — the single,
+    holiday-aware source of "is the market open right now?" so the UI never has
+    to guess. `now_ist` is a naive/aware datetime already shifted to IST.
+
+    Phases: weekend | holiday | pre_open | open | closed. Muhurat evening
+    sessions are intentionally not modeled (rare; is_trading_day still True, so
+    a Muhurat-only day reads as 'closed' during regular hours — acceptable).
+    """
+    iso = now_ist.strftime("%Y-%m-%d")
+    minutes = now_ist.hour * 60 + now_ist.minute
+    trading = is_trading_day(iso)
+    if not trading:
+        phase = "weekend" if now_ist.weekday() >= 5 else "holiday"
+    elif minutes < SESSION_OPEN_MIN:
+        phase = "pre_open"
+    elif minutes < SESSION_CLOSE_MIN:
+        phase = "open"
+    else:
+        phase = "closed"
+    return {
+        "is_open": phase == "open",
+        "phase": phase,
+        "is_trading_day": trading,
+        "session_open_ist": "09:15",
+        "session_close_ist": "15:30",
+        "now_ist": now_ist.strftime("%Y-%m-%dT%H:%M:%S+05:30"),
+    }
+
+
 def expected_candle_count(iso_date: str) -> int:
     """Expected 1-minute candle count for a date.
 

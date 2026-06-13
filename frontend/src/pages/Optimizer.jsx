@@ -54,6 +54,10 @@ const OBJECTIVES = [
 // fields are stored (never transient run state), so returning to the page
 // restores the operator's last configuration instead of resetting to defaults.
 const SETUP_KEY = "alphaforge.optimizer.setupConfig";
+// Persist the RUNNING job id too, so navigating away and back re-attaches to the
+// live progress instead of dropping it (the backend job keeps running). Mirrors
+// the JobsProvider pattern used for warehouse jobs. Cleared once the job is terminal.
+const RUN_KEY = "alphaforge.optimizer.activeJobId";
 
 const DEFAULT_SETUP = {
   instrument: "NIFTY",
@@ -129,12 +133,20 @@ export default function Optimizer() {
   const [presets, setPresets] = useState([]);
   const [profiles, setProfiles] = useState([]);
   const [config, setConfig] = useState(loadSetup);
-  const [currentJobId, setCurrentJobId] = useState(null);
+  // Rehydrate the running job id on mount so a long optimization survives
+  // navigating away (e.g. to check the warehouse) and back.
+  const [currentJobId, setCurrentJobId] = useState(() => {
+    try { return localStorage.getItem(RUN_KEY) || null; } catch { return null; }
+  });
   const [currentJob, setCurrentJob] = useState(null);
   const [jobs, setJobs] = useState([]);
   const [showOverrides, setShowOverrides] = useState(false);
   const [pollKey, setPollKey] = useState(0);
   const pollRef = useRef(null);
+  // Last-seen status for the active job, so we toast only on a genuine
+  // transition into a terminal state — not when re-attaching to a job that had
+  // already finished while we were on another page.
+  const prevStatusRef = useRef(null);
 
   // Persist setup config on every change (transient run state lives in separate
   // state and is never written here). Storage failures are swallowed so a full
@@ -144,6 +156,14 @@ export default function Optimizer() {
       localStorage.setItem(SETUP_KEY, JSON.stringify(config));
     } catch { /* ignore quota / privacy-mode errors */ }
   }, [config]);
+
+  // Persist / clear the active job id so it can be re-attached after navigation.
+  useEffect(() => {
+    try {
+      if (currentJobId) localStorage.setItem(RUN_KEY, currentJobId);
+      else localStorage.removeItem(RUN_KEY);
+    } catch { /* ignore */ }
+  }, [currentJobId]);
 
   useEffect(() => {
     api.listStrategies().then((d) => setStrategies(d.items || []));
@@ -169,30 +189,45 @@ export default function Optimizer() {
   useEffect(() => {
     if (!currentJobId) return;
     let cancelled = false;
+    prevStatusRef.current = null;  // reset per job so we detect the terminal transition
+    const TERMINAL = ["done", "failed", "cancelled", "paused", "interrupted"];
     const tick = async () => {
       try {
         const j = await api.getOptJob(currentJobId);
         if (cancelled) return;
         setCurrentJob(j);
-        const TERMINAL = ["done", "failed", "cancelled", "paused", "interrupted"];
+        // Was the job ALREADY terminal on our first look? (re-attached to a job
+        // that finished while we were elsewhere) -> update UI but don't re-toast.
+        const alreadyDone = prevStatusRef.current === null && TERMINAL.includes(j.status);
+        prevStatusRef.current = j.status;
         if (TERMINAL.includes(j.status)) {
           if (pollRef.current) clearInterval(pollRef.current);
           pollRef.current = null;
+          try { localStorage.removeItem(RUN_KEY); } catch { /* ignore */ }
           refreshJobs();
-          if (j.status === "done") {
-            toast.success(`Optimization complete: best ${fmtBest(j.best_value)}`);
-          } else if (j.status === "cancelled") {
-            toast.info("Optimization stopped. Best result so far was saved.");
-          } else if (j.status === "paused") {
-            toast.info("Optimization paused — Resume to continue from here.");
-          } else if (j.status === "interrupted") {
-            toast.warning("Optimization was interrupted — Resume to continue.");
-          } else {
-            toast.error(`Optimization failed: ${j.error}`);
+          if (!alreadyDone) {
+            if (j.status === "done") {
+              toast.success(`Optimization complete: best ${fmtBest(j.best_value)}`);
+            } else if (j.status === "cancelled") {
+              toast.info("Optimization stopped. Best result so far was saved.");
+            } else if (j.status === "paused") {
+              toast.info("Optimization paused — Resume to continue from here.");
+            } else if (j.status === "interrupted") {
+              toast.warning("Optimization was interrupted — Resume to continue.");
+            } else {
+              toast.error(`Optimization failed: ${j.error}`);
+            }
           }
         }
       } catch (e) {
-        // ignore transient
+        // A rehydrated id that no longer exists (deleted job) would otherwise
+        // poll forever — drop it on the first failed look. Established runs
+        // tolerate transient errors (prevStatusRef already set).
+        if (!cancelled && prevStatusRef.current === null) {
+          if (pollRef.current) clearInterval(pollRef.current);
+          pollRef.current = null;
+          setCurrentJobId(null);
+        }
       }
     };
     tick();

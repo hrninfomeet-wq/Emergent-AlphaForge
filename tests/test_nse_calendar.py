@@ -11,6 +11,8 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 
+from datetime import datetime  # noqa: E402
+
 from app.nse_calendar import (  # noqa: E402
     available_calendar_years,
     calendar_for_year,
@@ -19,8 +21,34 @@ from app.nse_calendar import (  # noqa: E402
     is_market_holiday,
     is_trading_day,
     is_weekend,
+    market_status,
     trading_days_in_range,
 )
+
+
+# ---- market_status (live-cockpit signal) -----------------------------------
+
+
+def test_market_status_open_during_regular_session():
+    s = market_status(datetime(2026, 1, 27, 10, 0))  # Tuesday, regular hours
+    assert s["is_open"] is True
+    assert s["phase"] == "open"
+    assert s["is_trading_day"] is True
+
+
+def test_market_status_boundaries():
+    # 09:15 is the open; 15:30 is the close (not open at the close minute).
+    assert market_status(datetime(2026, 1, 27, 9, 15))["phase"] == "open"
+    assert market_status(datetime(2026, 1, 27, 9, 0))["phase"] == "pre_open"
+    assert market_status(datetime(2026, 1, 27, 15, 30))["phase"] == "closed"
+    assert market_status(datetime(2026, 1, 27, 16, 0))["is_open"] is False
+
+
+def test_market_status_holiday_and_weekend():
+    holiday = market_status(datetime(2026, 1, 26, 11, 0))  # Republic Day (Monday)
+    assert holiday["phase"] == "holiday" and holiday["is_open"] is False
+    weekend = market_status(datetime(2026, 1, 31, 11, 0))  # Saturday
+    assert weekend["phase"] == "weekend" and weekend["is_open"] is False
 
 
 def test_known_holidays_are_recognised():

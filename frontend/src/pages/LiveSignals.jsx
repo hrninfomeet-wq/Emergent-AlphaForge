@@ -29,6 +29,23 @@ const inr = (v) =>
 const toneClass = (v) =>
   Number(v || 0) > 0 ? "text-emerald-400" : Number(v || 0) < 0 ? "text-red-400" : "text-dim";
 
+// IST clock helpers (display only; the authoritative market_status comes from
+// the backend, which is holiday-aware). en-GB gives 24h HH:MM:SS.
+const istNowClock = () =>
+  new Date().toLocaleTimeString("en-GB", { timeZone: "Asia/Kolkata", hour12: false });
+const fmtIstHm = (ms) =>
+  ms == null ? null
+    : new Date(Number(ms)).toLocaleTimeString("en-GB", { timeZone: "Asia/Kolkata", hour12: false, hour: "2-digit", minute: "2-digit" });
+
+// Map the backend market_status phase to a label + chip classes.
+const MARKET_PHASE = {
+  open: { label: "Market open", cls: "border-emerald-500/40 text-emerald-300" },
+  pre_open: { label: "Pre-open", cls: "border-amber-500/40 text-amber-300" },
+  closed: { label: "Market closed", cls: "border-line text-dimmer" },
+  weekend: { label: "Weekend — closed", cls: "border-line text-dimmer" },
+  holiday: { label: "Holiday — closed", cls: "border-line text-dimmer" },
+};
+
 export default function LiveSignals() {
   const navigate = useNavigate();
   const [overview, setOverview] = useState(null);
@@ -58,6 +75,13 @@ export default function LiveSignals() {
     const id = window.setInterval(refresh, 30000);
     return () => window.clearInterval(id);
   }, [refresh]);
+  // Ticking IST clock so the cockpit always shows the current time (the page
+  // refreshes overview every 30s; the clock ticks every second for liveness).
+  const [nowIst, setNowIst] = useState(istNowClock);
+  useEffect(() => {
+    const id = window.setInterval(() => setNowIst(istNowClock()), 1000);
+    return () => window.clearInterval(id);
+  }, []);
 
   // Deep-link /live?preset=NAME (Optimizer's Deploy rocket): open the wizard
   // with that preset preselected. Applied once per page load.
@@ -113,6 +137,18 @@ export default function LiveSignals() {
           <div className="text-xs font-semibold uppercase tracking-wider text-dim">Deployed Strategies</div>
           <span className="text-[11px] text-dimmer">{items.length} deployed</span>
         </div>
+        {(() => {
+          const phase = overview?.market_status?.phase;
+          const m = MARKET_PHASE[phase] || { label: "—", cls: "border-line text-dimmer" };
+          return (
+            <div className="flex items-center gap-2" data-testid="market-status">
+              <span className={`text-[10px] px-1.5 py-0.5 rounded border font-mono ${m.cls}`} title="Holiday-aware NSE regular-session status (09:15–15:30 IST)">
+                {m.label}
+              </span>
+              <span className="text-[11px] font-mono text-dim tabular-nums" title="Current IST time">{nowIst} IST</span>
+            </div>
+          );
+        })()}
         <HeaderStat label="Today MTM" value={inr(todayMtm)} tone={todayMtm} />
         <HeaderStat label="Realized today" value={inr(totals.realized_today)} tone={totals.realized_today} />
         <HeaderStat label="Open trades" value={totals.open_trades ?? 0} />
@@ -201,6 +237,11 @@ function DeploymentCard({ item, busy, onPause, onResume, onRepin, onEvaluate, on
             {d.strategy_id} · {d.instrument} · {(d.option_policy?.moneyness || []).join("/").toUpperCase() || "ATM"}
             {" · DTE "}{(d.option_policy?.dte_filter || []).join(",") || "all"}
             {" · from "}{d.source_type === "preset" ? `preset "${d.source_id}"` : "backtest run"}
+          </div>
+          <div className="text-[10px] text-dimmer" data-testid="deployment-last-evaluated">
+            {item.last_evaluated_ts
+              ? `Last evaluated ${fmtIstHm(item.last_evaluated_ts)} IST`
+              : "Not yet evaluated this deployment"}
           </div>
         </div>
         <div className="ml-auto flex items-center gap-1.5 shrink-0">

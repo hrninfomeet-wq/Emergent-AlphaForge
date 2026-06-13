@@ -21,6 +21,7 @@ from app.forward_metrics import (
 )
 from app.deployment_evaluator import evaluate_active_deployments, evaluate_deployment_on_close
 from app.deployment_preflight import compute_data_realism
+from app.nse_calendar import market_status
 
 from app.runtime import (
     _auto_follow_option_stream,
@@ -437,13 +438,24 @@ async def deployments_overview():
                 "realized_pnl": round(float(tr.get("realized_total") or 0.0), 2),
                 "win_rate": round(wins / closed * 100, 1) if closed else None,
             },
+            # When the evaluator last ran a 1m-close for this deployment (epoch ms,
+            # the candle minute). Lets the UI show "last evaluated HH:MM" so an
+            # operator can tell a live deployment from a stalled one.
+            "last_evaluated_ts": d.get("last_evaluated_ts"),
         }
         items.append(item)
         totals["open_trades"] += item["today"]["open_trades"]
         totals["open_unrealized"] = round(totals["open_unrealized"] + item["today"]["open_unrealized"], 2)
         totals["realized_today"] = round(totals["realized_today"] + item["today"]["realized_pnl"], 2)
         totals["signals_today"] += sig["clean"] + sig["blocked"]
-    return serialize_doc({"items": items, "totals": totals, "as_of_ist": ist_now.isoformat()})
+    return serialize_doc({
+        "items": items,
+        "totals": totals,
+        "as_of_ist": ist_now.isoformat(),
+        # Holiday-aware "is the market open right now?" so the page is an honest
+        # live cockpit instead of leaving the operator to guess off-hours.
+        "market_status": market_status(ist_now),
+    })
 
 
 @api.get("/deployments/{deployment_id}")
