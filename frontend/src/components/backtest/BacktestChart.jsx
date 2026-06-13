@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { fmtNum, fmtPnL } from "@/lib/fmt";
-import { LineChart, Crosshair, ChevronLeft, ChevronRight, X } from "lucide-react";
+import { LineChart, Crosshair, ChevronLeft, ChevronRight, X, Maximize2, Minimize2 } from "lucide-react";
 
 const TIMEFRAMES = ["1m", "5m", "15m", "1h", "1d"];
 const TF_SECONDS = { "1m": 60, "5m": 300, "15m": 900, "1h": 3600, "1d": 86400 };
@@ -81,7 +81,9 @@ export function BacktestChart({ result }) {
   const tgtPts = Number(params.spot_target_pts ?? 30);
   const stpPts = Number(params.spot_stop_pts ?? 15);
 
-  const window = useMemo(() => {
+  // NOTE: must NOT be named `window` — that shadows the global and breaks
+  // window.addEventListener / window.innerHeight (the full-screen handler).
+  const tradeWindow = useMemo(() => {
     const e = trades.map((t) => Number(t.entry_ts)).filter(Boolean);
     const x = trades.map((t) => Number(t.exit_ts || t.entry_ts)).filter(Boolean);
     return { from: e.length ? Math.min(...e) : null, to: x.length ? Math.max(...x) : null };
@@ -93,6 +95,35 @@ export function BacktestChart({ result }) {
   const [legend, setLegend] = useState(null);
   const [locate, setLocate] = useState({ date: "", time: "09:15" });
   const [locateMsg, setLocateMsg] = useState(null);
+  const [maximized, setMaximized] = useState(false);
+  const [chartHeight, setChartHeight] = useState(460);
+  const panelRef = useRef(null);
+
+  // Full screen via the browser Fullscreen API — this resizes the panel WITHOUT
+  // restructuring React's tree (no fixed/flex re-render of the live chart, which
+  // crashes lightweight-charts). autoSize picks up the container height change.
+  // Esc is handled natively by the Fullscreen API.
+  useEffect(() => {
+    const sync = () => {
+      const fs = document.fullscreenElement === panelRef.current;
+      setMaximized(fs);
+      setChartHeight(fs ? Math.max(360, window.innerHeight - 180) : 460);
+    };
+    document.addEventListener("fullscreenchange", sync);
+    window.addEventListener("resize", sync);
+    return () => {
+      document.removeEventListener("fullscreenchange", sync);
+      window.removeEventListener("resize", sync);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const toggleMaximize = () => {
+    const el = panelRef.current;
+    if (!el) return;
+    if (document.fullscreenElement) document.exitFullscreen?.();
+    else el.requestFullscreen?.().catch(() => {});
+  };
 
   const containerRef = useRef(null);
   const chartRef = useRef(null);
@@ -110,9 +141,9 @@ export function BacktestChart({ result }) {
       const e = Number(f.entry_ts); const x = Number(f.exit_ts || f.entry_ts);
       return { start_ts: e - 2 * DAY_MS, end_ts: x + 2 * DAY_MS };
     }
-    if (timeframe === "1m" && window.to) return { start_ts: window.to - 5 * DAY_MS, end_ts: window.to };
-    return { start_ts: window.from, end_ts: window.to };
-  }, [focusIdx, timeframe, trades, window]);
+    if (timeframe === "1m" && tradeWindow.to) return { start_ts: tradeWindow.to - 5 * DAY_MS, end_ts: tradeWindow.to };
+    return { start_ts: tradeWindow.from, end_ts: tradeWindow.to };
+  }, [focusIdx, timeframe, trades, tradeWindow]);
 
   // Create chart once.
   useEffect(() => {
@@ -275,7 +306,11 @@ export function BacktestChart({ result }) {
   const focus = focusIdx >= 0 ? trades[focusIdx] : null;
 
   return (
-    <div className="rounded-lg border border-line bg-bg-1" data-testid="backtest-chart-panel">
+    <div
+      ref={panelRef}
+      className="rounded-lg border border-line bg-bg-1 overflow-auto"
+      data-testid="backtest-chart-panel"
+    >
       <div className="px-3 py-2 border-b border-line flex items-center gap-2 flex-wrap">
         <LineChart className="w-4 h-4 text-info" />
         <div className="text-sm font-semibold text-foreground" data-testid="backtest-chart-title">{title}</div>
@@ -293,6 +328,17 @@ export function BacktestChart({ result }) {
               {tf}
             </Button>
           ))}
+          <Button
+            size="icon"
+            variant="secondary"
+            onClick={toggleMaximize}
+            className="h-7 w-7 border border-line bg-bg-2 text-dim ml-1"
+            title={maximized ? "Exit full screen (Esc)" : "Maximize chart (full screen)"}
+            aria-label={maximized ? "Exit full screen" : "Maximize chart"}
+            data-testid="backtest-chart-maximize"
+          >
+            {maximized ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
+          </Button>
         </div>
       </div>
 
@@ -362,7 +408,7 @@ export function BacktestChart({ result }) {
             </div>
           )}
           {loading && <div className="absolute inset-0 z-10 flex items-center justify-center bg-bg-1/60 text-xs text-dim">Loading {title} {timeframe}…</div>}
-          <div ref={containerRef} style={{ width: "100%", height: 460 }} data-testid="backtest-chart-canvas" />
+          <div ref={containerRef} style={{ width: "100%", height: chartHeight }} data-testid="backtest-chart-canvas" />
         </div>
         <div className="mt-2 text-[10px] text-dimmer font-mono">
           {title} · {timeframe} · ▲/▼ entry (CE/PE) · ● exit · #n = trade number (shown when few in view) · pick a trade for entry/target/stop lines · Axis IST

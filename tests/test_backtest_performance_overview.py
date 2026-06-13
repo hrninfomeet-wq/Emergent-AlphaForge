@@ -116,6 +116,10 @@ def test_backtest_chart_moved_below_overview_and_out_of_advanced():
     # Markers carry the trade number (#N), gated by density so the dense
     # overview doesn't become an unreadable wall of labels.
     assert "labelMarkers" in chart and "`#${n} ${t.direction}`" in chart
+    # Full-screen / maximize toggle via the Fullscreen API (Esc exits natively;
+    # no React tree restructuring of the live chart).
+    assert "backtest-chart-maximize" in chart and "maximized" in chart
+    assert "requestFullscreen" in chart and "fullscreenchange" in chart
 
 
 def test_metrics_are_honest_not_vanity():

@@ -2,6 +2,12 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.36.x] — Backtest chart: full-screen (maximize) button (2026-06-13)
+
+533 backend tests pass. A maximize button (top-right of the chart header, Maximize2/Minimize2 icon) toggles the price chart to full screen via the browser **Fullscreen API**; Esc exits. The chart container resizes (`window.innerHeight − 180`) and lightweight-charts' autoSize redraws to fill.
+
+- **Bug fixed in the same change**: the component had `const window = useMemo(...)` (the trade time-window) which **shadowed the global `window`** — so the full-screen handler's `window.addEventListener` / `window.innerHeight` hit that object and threw `addEventListener is not a function`, blanking the page. Renamed the local to `tradeWindow`. (Chose the Fullscreen API over a `fixed inset-0` React overlay specifically to avoid restructuring the live chart's DOM subtree.)
+
 ## [0.35.x] — Backtest chart: trade-number labels on markers (2026-06-13)
 
 533 backend tests pass. Small follow-up to the backtest price chart.

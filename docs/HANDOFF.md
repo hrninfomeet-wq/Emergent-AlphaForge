@@ -104,6 +104,8 @@ day's full strike BAND. Implementation notes for the next agent:
 
 ## Status In One Line
 
+Latest (2026-06-13): **backtest chart full-screen button (CHANGELOG 0.36.x)** — Fullscreen-API maximize toggle (Esc exits; container resizes via autoSize). Fixed a `const window` shadowing bug that crashed the page (`addEventListener is not a function`) — renamed to `tradeWindow`. 533 tests pass.
+
 Latest (2026-06-13): **backtest chart trade-number markers (CHANGELOG 0.35.x)** — entry/exit markers carry #N (e.g. #3 CE / #3), density-gated (shown when focused or <=50 in view; plain arrows at dense overview). 533 tests pass.
 
 Latest (2026-06-13): **backtest price chart (CHANGELOG 0.34.x)** — new `BacktestChart` (instrument title, 1m-1d timeframes, entry/exit markers, focused-trade Entry/Target/Stop/Exit price lines from spot_target_pts/spot_stop_pts, trade navigator, date/time go-to, OHLC legend) placed below the Trade-quality pane; removed the old MultiPaneChart; fixed DualAxisChart "Object is disposed" (stable effect deps). 533 tests pass.
