@@ -52,10 +52,14 @@ def test_chart_right_axis_is_per_trade_buy_value_not_index():
 
 
 def test_account_value_low_high_cards():
-    metrics = _read("lib", "backtestMetrics.js")
+    # Lowest/Highest account value live in the top KPI grid (with Trades / Win
+    # Rate), not the Trade-quality block.
+    page = _read("pages", "BacktestLab.jsx")
+    assert "result-acct-low" in page and "result-acct-high" in page
+    assert "Lowest Acct Value" in page and "Highest Acct Value" in page
+    assert "buildPerformanceSeries" in page  # account range computed in ResultsView
     overview = _read("components", "backtest", "PerformanceOverview.jsx")
-    assert "minAccountValue" in metrics and "maxAccountValue" in metrics
-    assert "Lowest account value" in overview and "Highest account value" in overview
+    assert "Lowest account value" not in overview  # moved out of Trade-quality
 
 
 def test_monthly_pnl_calendar_present():

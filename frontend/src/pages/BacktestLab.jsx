@@ -17,6 +17,7 @@ import { RegimeBadge } from "@/components/RegimeBadge";
 import { SignificanceBadge } from "@/components/SignificanceBadge";
 import { MultiPaneChart } from "@/components/charts/MultiPaneChart";
 import { PerformanceOverview } from "@/components/backtest/PerformanceOverview";
+import { buildPerformanceSeries } from "@/lib/backtestMetrics";
 import { NumberSliderInput } from "@/components/NumberSliderInput";
 import BacktestRunJournal from "@/components/BacktestRunJournal";
 import { Play, Save, Filter, ChevronDown, ChevronRight, ChevronsUpDown, ArrowUp, ArrowDown, Download, FileJson, FileText, FolderOpen, ShieldCheck, Loader2 } from "lucide-react";
@@ -1251,6 +1252,19 @@ function ResultsView({ result }) {
   const totalRegime = Object.values(regimeDist).reduce((s, v) => s + v, 0);
   const funnel = result.signal_funnel || {};
 
+  // Lowest / highest the account (capital growth) ever reached — shown in the
+  // KPI grid alongside Trades / Win Rate.
+  const acctRange = useMemo(() => {
+    const s = buildPerformanceSeries(result);
+    const vals = s.accountValue.map((p) => p.value).filter((v) => Number.isFinite(v));
+    return {
+      currency: s.currency,
+      capital: s.capital,
+      min: vals.length ? Math.min(...vals) : null,
+      max: vals.length ? Math.max(...vals) : null,
+    };
+  }, [result]);
+
   const [candles, setCandles] = useState([]);
   useEffect(() => {
     // Fetch candles for the instrument to display in the price pane
@@ -1349,13 +1363,26 @@ function ResultsView({ result }) {
       </div>
 
       {/* KPI grid */}
-      <div className="grid grid-cols-2 lg:grid-cols-6 gap-3">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <MetricCard label="Trades" value={fmtInt(m.trade_count)} testid="result-trades" />
         <MetricCard label="Win Rate" value={fmtPct(m.win_rate)} testid="result-winrate" />
         <MetricCard label="Profit Factor" value={fmtNum(m.profit_factor, 2)} testid="result-pf" />
         <MetricCard label="Net P&L (pts)" value={fmtPnL(m.total_pnl_pts)} accent={colorPnL(m.total_pnl_pts)} testid="result-pnl" />
         <MetricCard label="Max DD (pts)" value={fmtPnL(m.max_dd_pts)} accent="text-danger" testid="result-dd" />
         <MetricCard label="Sharpe" value={fmtNum(m.sharpe, 2)} testid="result-sharpe" />
+        <MetricCard
+          label={acctRange.currency ? "Lowest Acct Value" : "Lowest Equity"}
+          value={acctRange.min == null ? "—" : (acctRange.currency ? `₹${fmtInt(acctRange.min)}` : fmtNum(acctRange.min, 0))}
+          sub={acctRange.currency && acctRange.capital != null ? `from ₹${fmtInt(acctRange.capital)}` : undefined}
+          accent={acctRange.currency && acctRange.min != null && acctRange.capital != null && acctRange.min < acctRange.capital ? "text-danger" : undefined}
+          testid="result-acct-low"
+        />
+        <MetricCard
+          label={acctRange.currency ? "Highest Acct Value" : "Highest Equity"}
+          value={acctRange.max == null ? "—" : (acctRange.currency ? `₹${fmtInt(acctRange.max)}` : fmtNum(acctRange.max, 0))}
+          accent="text-success"
+          testid="result-acct-high"
+        />
       </div>
 
       {/* Performance: rupee-first hero + account/underlying chart + drawdown +

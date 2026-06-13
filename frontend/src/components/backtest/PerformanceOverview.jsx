@@ -85,19 +85,6 @@ export function PerformanceOverview({ result }) {
                 : "the test ended — it had NOT returned to that peak (still underwater at the end).")
             }
           />
-          <Stat
-            label="Lowest account value"
-            value={k.minAccountValue == null ? "—" : (cur ? money(k.minAccountValue) : fmtNum(k.minAccountValue, 0))}
-            sub={cur && k.capital != null ? `from ${money(k.capital)}` : null}
-            accent={cur && k.minAccountValue != null && k.capital != null && k.minAccountValue < k.capital ? "text-danger" : undefined}
-            title="The lowest the account (capital + cumulative P&L) ever fell to during the test."
-          />
-          <Stat
-            label="Highest account value"
-            value={k.maxAccountValue == null ? "—" : (cur ? money(k.maxAccountValue) : fmtNum(k.maxAccountValue, 0))}
-            accent="text-success"
-            title="The peak the account reached during the test."
-          />
           <Stat label="Trading days" value={fmtInt(k.tradingDays)} />
           <Stat label="Avg trades / day" value={k.avgTradesPerDay == null ? "—" : fmtNum(k.avgTradesPerDay, 1)} />
           {cur && (
