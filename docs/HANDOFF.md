@@ -104,6 +104,8 @@ day's full strike BAND. Implementation notes for the next agent:
 
 ## Status In One Line
 
+Latest (2026-06-13): **backtest chart trade-number markers (CHANGELOG 0.35.x)** — entry/exit markers carry #N (e.g. #3 CE / #3), density-gated (shown when focused or <=50 in view; plain arrows at dense overview). 533 tests pass.
+
 Latest (2026-06-13): **backtest price chart (CHANGELOG 0.34.x)** — new `BacktestChart` (instrument title, 1m-1d timeframes, entry/exit markers, focused-trade Entry/Target/Stop/Exit price lines from spot_target_pts/spot_stop_pts, trade navigator, date/time go-to, OHLC legend) placed below the Trade-quality pane; removed the old MultiPaneChart; fixed DualAxisChart "Object is disposed" (stable effect deps). 533 tests pass.
 
 Latest (2026-06-13): **backtest charts split + named axes (CHANGELOG 0.33.x)** — one `DualAxisChart` rendered twice (Cumulative-P&L-vs-trade-value, Account-value-vs-drawdown) with named vertical (text-up) axis titles; EquityUnderlyingChart removed; added Lowest/Highest account-value cards (min/max of capital-growth curve; live run -Rs49,130 / Rs1,109,497). 532 tests pass.

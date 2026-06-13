@@ -2,6 +2,13 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.35.x] — Backtest chart: trade-number labels on markers (2026-06-13)
+
+533 backend tests pass. Small follow-up to the backtest price chart.
+
+- Entry/exit markers now carry the **trade number** (e.g. `#3 CE` on the entry arrow, `#3` on the exit dot) so a marker maps directly to the dropdown / trade-list row.
+- **Density-gated**: the `#N` text shows only when legible — when a trade is focused or ≤50 markers are in view; at the dense full-overview (hundreds of trades) markers fall back to plain ▲/▼ CE/PE arrows + ● dots so labels don't become an unreadable wall. (Deliberately did NOT put verbose per-marker labels like "Entry @… / 26000 PE 30 DEC 25" on the chart — that detail lives in the focus strip + dropdown; on-marker it would bury the price action.)
+
 ## [0.34.x] — Backtest price chart: trades on chart, timeframes, go-to (2026-06-13)
 
 533 backend tests pass. Replaces the basic candle pane with a professional, dedicated `BacktestChart` and moves it out of Advanced analytics to sit directly below the Trade-quality view.

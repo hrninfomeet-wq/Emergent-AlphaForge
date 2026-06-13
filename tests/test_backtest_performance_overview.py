@@ -113,6 +113,9 @@ def test_backtest_chart_moved_below_overview_and_out_of_advanced():
     assert "createSeriesMarkers" in chart and "createPriceLine" in chart
     assert "spot_target_pts" in chart and "spot_stop_pts" in chart
     assert "backtest-chart-goto-date" in chart and "backtest-chart-trade-select" in chart
+    # Markers carry the trade number (#N), gated by density so the dense
+    # overview doesn't become an unreadable wall of labels.
+    assert "labelMarkers" in chart and "`#${n} ${t.direction}`" in chart
 
 
 def test_metrics_are_honest_not_vanity():

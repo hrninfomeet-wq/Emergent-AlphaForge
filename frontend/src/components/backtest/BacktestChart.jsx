@@ -148,14 +148,21 @@ export function BacktestChart({ result }) {
     for (const pl of priceLinesRef.current) { try { seriesRef.current.removePriceLine(pl); } catch (e) { /* ignore */ } }
     priceLinesRef.current = [];
 
-    const inRange = trades.filter((t) => {
+    // Keep each trade's number (matches the dropdown + trade list) so markers
+    // can be labelled #N.
+    const inRange = [];
+    trades.forEach((t, i) => {
       const e = toSec(t.entry_ts);
-      return e >= first - bucket && e <= last + bucket;
+      if (e >= first - bucket && e <= last + bucket) inRange.push({ t, n: i + 1 });
     });
     const entryOnly = inRange.length > 120 && focusIdx < 0;
+    // Trade-number labels only when they stay legible — when a trade is focused
+    // or few markers are in view. At the dense overview (hundreds of trades) the
+    // numbers would be an unreadable wall, so fall back to plain arrows/dots.
+    const labelMarkers = focusIdx >= 0 || inRange.length <= 50;
 
     const markers = [];
-    for (const t of inRange) {
+    for (const { t, n } of inRange) {
       const isCE = String(t.direction).toUpperCase() === "CE";
       const eBar = snapToBar(toSec(t.entry_ts), barTimes, bucket);
       if (eBar != null) {
@@ -164,7 +171,7 @@ export function BacktestChart({ result }) {
           position: isCE ? "belowBar" : "aboveBar",
           color: isCE ? "#2ED47A" : "#FF5D5D",
           shape: isCE ? "arrowUp" : "arrowDown",
-          text: `${t.direction}`,
+          text: labelMarkers ? `#${n} ${t.direction}` : t.direction,
         });
       }
       if (!entryOnly && t.exit_ts != null) {
@@ -175,14 +182,16 @@ export function BacktestChart({ result }) {
             position: "aboveBar",
             color: Number(t.pnl_pts) >= 0 ? "#2ED47A" : "#FF5D5D",
             shape: "circle",
+            text: labelMarkers ? `#${n}` : undefined,
           });
         }
       }
     }
-    // De-dupe by (time, position) and sort — lightweight-charts needs ascending.
+    // De-dupe by (time, position, shape, text) and sort — keep distinct #N
+    // markers; lightweight-charts needs ascending time.
     const seen = new Set();
     const clean = markers
-      .filter((m) => { const k = `${m.time}-${m.position}-${m.shape}`; if (seen.has(k)) return false; seen.add(k); return true; })
+      .filter((m) => { const k = `${m.time}-${m.position}-${m.shape}-${m.text || ""}`; if (seen.has(k)) return false; seen.add(k); return true; })
       .sort((a, b) => a.time - b.time);
     markersRef.current.setMarkers(clean);
 
@@ -352,7 +361,7 @@ export function BacktestChart({ result }) {
           <div ref={containerRef} style={{ width: "100%", height: 460 }} data-testid="backtest-chart-canvas" />
         </div>
         <div className="mt-2 text-[10px] text-dimmer font-mono">
-          {title} · {timeframe} · ▲/▼ entry (CE/PE) · ● exit · pick a trade for entry/target/stop lines · Axis IST
+          {title} · {timeframe} · ▲/▼ entry (CE/PE) · ● exit · #n = trade number (shown when few in view) · pick a trade for entry/target/stop lines · Axis IST
           {timeframe === "1m" && focusIdx < 0 ? " · 1m shows the last 5 days — pick a trade to inspect older ones" : ""}
         </div>
       </div>
