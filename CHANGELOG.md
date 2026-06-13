@@ -2,6 +2,58 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.37.x] — Live-realism & gate-rigor hardening (6 slices) (2026-06-13)
+
+566 backend tests pass (was 533; +33). A multi-agent review of the whole app
+(features, code quality, day-trader fit) found the engine is honest about WHEN to
+exit and WHETHER data exists, but not yet about AT WHAT NET PRICE the live path
+fills, nor about out-of-sample edge at the deploy gate. Six slices, each its own
+commit, each with the user-choice principle (tune a parameter / override / analyze
+the output) rather than silent behavior changes:
+
+- **Live-friction parity** (`4bc7df3`): the live paper path booked GROSS fills
+  while the backtest is net-of-friction, so forward P&L overstated the backtest.
+  New `app/live_friction.py` is the single source of the entry/exit fill math
+  (`fill_premium`); `option_backtest` now calls it too (sim↔live can't diverge on
+  fill price). `paper_trading.close_trade` applies exit slippage + round-trip
+  charges and records gross + net + friction_cost when the trade carries a
+  friction block; `paper_auto.build_auto_trade` slips the ENTRY before levels are
+  set. Per-deployment, tunable: `DeploymentCreateReq.friction` → `risk.friction`;
+  deploy wizard control (default ON, prefilled from the preset's backtest cost
+  policy). Absent the block → unchanged gross behavior.
+- **Deploy-gate rigor** (`754ebb2`): the gate read only in-sample spot stability.
+  `deployment_quality` now also consumes out-of-sample evidence via
+  `_gather_deployment_evidence` (shared with `/readiness`): a **selection-bias /
+  deflated-Sharpe** check (Bailey & López de Prado expected-max over n_trials;
+  Acklam inverse-normal, no scipy) and an **option-rupee-OOS** check (negative /
+  missing). Acknowledgeable (never-blocking) warnings; every threshold tunable via
+  `QualityThresholds` (+ `/deployments/quality` query params). `evidence=None`
+  reproduces the historical gate exactly.
+- **Live cockpit** (`24347db`): `nse_calendar.market_status` (holiday-aware
+  open/closed); `/deployments/overview` returns it + per-deployment
+  `last_evaluated_ts`. Live Signals header shows a market badge + ticking IST
+  clock; cards show last-evaluated. The Optimizer's running job now persists
+  across navigation (re-attaches on mount, mirroring `JobsProvider`).
+- **Live exit edges** (`e914de4`): square-off is holiday-aware (`is_trading_day`,
+  was weekday-only → fired on holidays); the entry-price fallback no longer books
+  a silent fake-zero (flagged `exit_price_source=entry_fallback`/stale); a 120s
+  staleness bound stops the marker/square-off booking a minutes-old tick as a fill
+  (`exit_price_source` / `exit_price_stale` stamped + flow to the journal).
+- **Manual mark/close safety** (`6d4b8d3`): `/paper/trades/{id}/mark` & `/close`
+  gained an OPEN-status guard + conditional `replace_one({id, status:OPEN})` (no
+  longer clobbers an auto-close) and a `premium_sanity_error` check that flags a
+  fat-fingered spot level (overridable via `override_sanity`; UI prompts + 409
+  refresh).
+- **Chart + re-rank fidelity** (`50a0062`): the backtest chart no longer draws
+  fictitious spot SL/target lines on option-level-exit runs (shows real premium
+  Entry/Tgt/SL/Exit in the focus strip instead); the option re-rank gained an
+  opt-in `rerank_diversity` shortlist (pure `app/rerank_select.py`) so an
+  option-best-but-spot-mediocre config can surface (default off = unchanged).
+
+One review claim was REFUTED on verification and NOT acted on: the warehouse
+heatmap already renders band-truth coverage (the old density-heuristic endpoint
+is dead code with zero frontend call sites) — no change made.
+
 ## [0.36.x] — Backtest chart: full-screen (maximize) button (2026-06-13)
 
 533 backend tests pass. A maximize button (top-right of the chart header, Maximize2/Minimize2 icon) toggles the price chart to full screen via the browser **Fullscreen API**; Esc exits. The chart container resizes (`window.innerHeight − 180`) and lightweight-charts' autoSize redraws to fill.

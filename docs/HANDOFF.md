@@ -12,9 +12,10 @@ AlphaForge Trading Lab — a local-first research & forward-testing terminal for
 
 ## 2. Status — current state (2026-06-13)
 
-- **533 backend tests pass.** Both containers build clean.
-- **Unpushed: 4 commits** on `main` (origin at `1db8173`): `44eae45` (backtest price chart), `880cc05` (#N trade-number markers), `696ceda` (chart legend contrast), `a145ce0` (chart full-screen button). Push only on the user's explicit "push" (per-changeset approval).
-- Most recent work: a multi-session **Data Warehouse overhaul** (CHANGELOG 0.23–0.30) and a **Backtest results redesign** (0.31–0.36). Before that: execution-policy extraction (0.27), the server.py split (0.28), quality-hardening slices A/B (0.24/0.26).
+- **566 backend tests pass.** Frontend builds clean (1 pre-existing BacktestLab exhaustive-deps warning). `optimizer.py` is syntax-checked via `py_compile` only (optuna absent on host).
+- **Unpushed: 10 commits** on `main` (origin at `1db8173`): the 4 chart commits (`44eae45`/`880cc05`/`696ceda`/`a145ce0`) + the **6-slice live-realism/gate-rigor hardening pass** (`4bc7df3` friction, `754ebb2` gate, `24347db` cockpit, `e914de4` exits, `6d4b8d3` manual-safety, `50a0062` chart+rerank). Push only on the user's explicit "push" (per-changeset approval).
+- Most recent work: a multi-agent **app review** → a **6-slice hardening pass** (CHANGELOG 0.37.x; see it for the per-slice detail and the principle that each fix is a user choice, not a silent change). Before that: Data Warehouse overhaul (0.23–0.30), Backtest results redesign (0.31–0.36), execution-policy extraction (0.27), server.py split (0.28).
+- **New since the review** (read CHANGELOG 0.37.x before touching these): `app/live_friction.py` (single fill-model, shared by `option_backtest` + the live close path; per-deployment `risk.friction`); `app/rerank_select.py` (pure re-rank shortlist, opt-in `rerank_diversity`); `deployment_quality` now takes `evidence=` (selection-bias deflated-Sharpe + option-rupee-OOS) + `QualityThresholds`; `nse_calendar.market_status`; closed paper trades carry `gross_realized_pnl`/`friction_cost`/`total_charges` + `exit_price_source`/`exit_price_stale`.
 - Untracked local note files exist in the repo root ("Fable reply on progress.md", a docs note) — the user's, leave them.
 
 ## 3. Running the stack
@@ -127,7 +128,10 @@ UI smoke: Data Warehouse hero + Sync now + band heatmaps; Backtest results — K
 
 ## 14. What's next (open items)
 
-- After A/B-validating the option re-rank, retire the legacy spot-only optimizer path (deferred by user), then a live-only risk engine.
+- **Verify the 0.37.x hardening pass in the running stack**: `docker compose up -d --build` then a browser smoke — deploy a paper strategy with friction ON (check the journal's net vs gross), the Live Signals market badge/clock + last-evaluated, the deploy-gate selection-bias/option-OOS warnings, a manual close with a fat-fingered price (override prompt), and the chart's premium focus strip on an option-levels run. (Tests + FE build are green; the live/browser check was deferred.)
+- **Surface the new paper-trade fields in the journal UI** (data already flows via `/paper/trades`): a gross-vs-net column + `friction_cost`/`total_charges`, and a "stale/estimated" badge from `exit_price_stale`. (Deferred FE follow-up to 0.37.x friction + exit-edge work.)
+- **Dead-code cleanup**: the old self-referential option-coverage endpoint/cache/`api.optionCoverage` (the heatmap reads band truth; this path has zero frontend call sites) — safe to delete.
+- After A/B-validating the option re-rank (now with the opt-in `rerank_diversity` shortlist), retire the legacy spot-only optimizer path (deferred by user), then a live-only risk engine.
 - Optional warehouse extras: option-price sanity check, `mongodump` backup button.
 - Backtest follow-ups (optional): a shared backend performance-metrics module so the optimizer/forward metrics reuse identical definitions; benchmark overlay was explicitly declined.
 - Phase 5/6 (survival models, Kelly, swing) deferred until ≥6 months of forward history.
