@@ -515,7 +515,7 @@ export default function PaperTrading() {
               <th className="text-left p-2">Exit reason</th>
               <th className="text-right p-2">Hold</th>
               <th className="text-left p-2">Risk</th>
-              <th className="text-right p-2 cursor-pointer hover:text-foreground" onClick={() => toggleSort("pnl")}>P&L ₹{sortMark("pnl")}</th>
+              <th className="text-right p-2 cursor-pointer hover:text-foreground" onClick={() => toggleSort("pnl")} title="Net of slippage, spread and charges when the deployment priced fills like the backtest">P&L ₹ (net){sortMark("pnl")}</th>
               <th className="text-right p-2">P&L %</th>
               <th className="text-left p-2">Status</th>
               <th className="text-right p-2">Actions</th>
@@ -563,7 +563,15 @@ export default function PaperTrading() {
                       <td className="p-2 font-mono text-right">{fmtNum(t.entry_price)}</td>
                       <td className="p-2 font-mono text-dim whitespace-nowrap">{exit ? exit.time : (isOpen ? "open" : "—")}</td>
                       <td className="p-2 font-mono text-right">{t.exit_price != null ? fmtNum(t.exit_price) : (isOpen ? fmtNum(t.last_price) : "—")}</td>
-                      <td className="p-2 text-dimmer truncate max-w-[130px]" title={t.exit_reason}>{t.exit_reason || (isOpen ? "—" : "—")}</td>
+                      <td className="p-2 text-dimmer">
+                        <div className="flex items-center gap-1 max-w-[150px]">
+                          <span className="truncate" title={t.exit_reason}>{t.exit_reason || "—"}</span>
+                          {t.exit_price_stale && (
+                            <span className="shrink-0 text-[9px] px-1 rounded border border-amber-500/40 text-amber-300" data-testid="paper-stale-fill"
+                              title={`Exit price estimated (${t.exit_price_source || "stale"}) — not a fresh fill at the exit minute; treat the P&L as approximate.`}>est</span>
+                          )}
+                        </div>
+                      </td>
                       <td className="p-2 font-mono text-right text-dim">{holdingTime(t.created_at, t.closed_at)}</td>
                       <td className="p-2">
                         <span className="text-[10px] px-1.5 py-0.5 rounded border border-line bg-bg-3 font-mono" data-testid="risk-badge"
@@ -571,7 +579,15 @@ export default function PaperTrading() {
                           S {risk.stop_price ?? "--"} / T {risk.target_price ?? "--"}
                         </span>
                       </td>
-                      <td className={`p-2 font-mono text-right ${colorPnL(pnl)}`}>{inr(pnl)}</td>
+                      <td className={`p-2 font-mono text-right ${colorPnL(pnl)}`}>
+                        {inr(pnl)}
+                        {!isOpen && t.friction_cost != null && Number(t.friction_cost) !== 0 && (
+                          <div className="text-[9px] text-dimmer font-normal" data-testid="paper-gross-friction"
+                            title={`gross ${inr(t.gross_realized_pnl)} − friction ${inr(Math.abs(Number(t.friction_cost)))} (incl. charges ${inr(t.total_charges)}) = net ${inr(pnl)}`}>
+                            gross {inr(t.gross_realized_pnl)} · −{inr(Math.abs(Number(t.friction_cost)))} fric
+                          </div>
+                        )}
+                      </td>
                       <td className={`p-2 font-mono text-right ${colorPnL(pct)}`}>{pct == null ? "—" : fmtPct(pct, 1)}</td>
                       <td className="p-2">
                         <span className={`text-[10px] px-1.5 py-0.5 rounded border font-mono ${isOpen ? "border-emerald-500/40 text-emerald-300" : "border-line text-dim"}`}>{t.status}</span>
