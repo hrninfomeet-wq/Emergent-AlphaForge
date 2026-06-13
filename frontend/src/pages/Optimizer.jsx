@@ -90,6 +90,7 @@ const DEFAULT_SETUP = {
   // (re-rank top-K by real paired-option net rupee).
   evaluation_mode: "spot",
   rerank_top_k: 50,
+  rerank_diversity: false,
   option_moneyness: "atm",
   option_dte_filter: [], // multi-select ints; empty = all
   option_lots: 1,
@@ -326,6 +327,7 @@ export default function Optimizer() {
         name: config.name,
         evaluation_mode: config.evaluation_mode,
         rerank_top_k: Math.max(1, Math.min(500, Number(config.rerank_top_k) || 50)),
+        rerank_diversity: Boolean(config.rerank_diversity),
         option_config: optionConfig,
       };
       const res = await api.startOptimization(payload);
@@ -458,6 +460,7 @@ export default function Optimizer() {
       pretrade_profile: c.pretrade_profile || "None",
       evaluation_mode: c.evaluation_mode || "spot",
       rerank_top_k: c.rerank_top_k ?? 50,
+      rerank_diversity: c.rerank_diversity ?? false,
       option_moneyness: c.option_config?.moneyness ?? prev.option_moneyness,
       option_dte_filter: parseDteFilter(c.option_config?.dte_filter),
       option_lots: c.option_config?.lots ?? prev.option_lots,
@@ -650,6 +653,13 @@ export default function Optimizer() {
                     <Input type="number" min={1} max={500} value={config.rerank_top_k}
                       onChange={(e) => setConfig({ ...config, rerank_top_k: e.target.value })}
                       className="bg-bg-2 border-line h-8 text-xs font-mono mt-1" data-testid="opt-rerank-k" />
+                    <label className="flex items-center gap-1.5 mt-1.5 text-[10px] text-dim"
+                      title="Also re-score a spread of lower-spot-ranked configs (same option-eval budget) so an option-best-but-spot-mediocre setup can surface.">
+                      <input type="checkbox" checked={Boolean(config.rerank_diversity)}
+                        onChange={(e) => setConfig({ ...config, rerank_diversity: e.target.checked })}
+                        className="h-3 w-3 rounded border-line" data-testid="opt-rerank-diversity" />
+                      Diversity shortlist
+                    </label>
                   </div>
                   )}
                   <div>

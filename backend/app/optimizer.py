@@ -41,7 +41,8 @@ log = logging.getLogger(__name__)
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 # Heavy penalty used to disqualify degenerate / guard-failing trials.
-_DISQUALIFY = -1e9
+from app.rerank_select import DISQUALIFY as _DISQUALIFY, select_rerank_candidates  # noqa: E402
+
 
 # Indicator-period params that `precompute_all_indicators` actually consumes.
 # When ANY of these change between trials, the enriched dataframe (and the
@@ -667,6 +668,10 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
         # Two-stage option re-rank (opt-in). "spot" keeps the original behavior.
         evaluation_mode = str(payload.get("evaluation_mode", "spot"))
         rerank_top_k = int(payload.get("rerank_top_k", 50) or 50)
+        # Opt-in: broaden the re-rank shortlist beyond the top-K spot performers
+        # with a diversity sample, so an option-profitable-but-spot-mediocre config
+        # can surface. Default off -> identical to the historical top-K selection.
+        rerank_diversity = bool(payload.get("rerank_diversity", False))
         option_cfg = payload.get("option_config") or {}
 
         strategy = get_registry().get(strategy_id)
@@ -880,18 +885,8 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
         # paired-option net rupee and pick the option-best as the final best.
         rerank_info = None
         if evaluation_mode == "option_rerank" and not cancelled_flag and sorted_trials:
-            seen: set = set()
-            candidates: List[Dict[str, Any]] = []
-            for t in sorted_trials:
-                if t["objective_value"] <= _DISQUALIFY:
-                    continue
-                key = json.dumps(t["params"], sort_keys=True, default=str)
-                if key in seen:
-                    continue
-                seen.add(key)
-                candidates.append(t)
-                if len(candidates) >= rerank_top_k:
-                    break
+            candidates = select_rerank_candidates(
+                sorted_trials, top_k=rerank_top_k, diversity=rerank_diversity)
             ranked: List[Dict[str, Any]] = []
             if candidates:
                 await _update_job(job_id, {"rerank_progress": {"stage": "option_rerank", "candidates": len(candidates)}})
@@ -917,6 +912,8 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                 }
             rerank_info = {
                 "top_k": rerank_top_k,
+                "diversity": rerank_diversity,
+                "candidates": len(candidates),
                 "evaluated": len(ranked),
                 "option_config": option_cfg,
                 "ranked": ranked[:50],

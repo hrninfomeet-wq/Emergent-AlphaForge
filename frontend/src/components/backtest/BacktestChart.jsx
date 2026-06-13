@@ -81,6 +81,24 @@ export function BacktestChart({ result }) {
   const tgtPts = Number(params.spot_target_pts ?? 30);
   const stpPts = Number(params.spot_stop_pts ?? 15);
 
+  // When the run exited on the OPTION's own premium levels (exit_mode
+  // "option_levels"), the spot target/stop points above are NOT the exit logic —
+  // drawing them as index lines is fiction. Detect that mode and join each spot
+  // trade to its paired option trade (by the shared spot entry ts) so we can show
+  // the real premium Entry/Tgt/SL/Exit instead.
+  const optionExitMode = String(result?.option_backtest?.exit_mode || "spot_exit");
+  const optionLevelsRun = optionExitMode === "option_levels"
+    && Boolean(result?.option_backtest?.option_exit_config?.applied);
+  const optionByEntryTs = useMemo(() => {
+    const m = new Map();
+    for (const ot of (result?.option_backtest?.trades || [])) {
+      if (ot.signal_entry_ts != null) m.set(Number(ot.signal_entry_ts), ot);
+    }
+    return m;
+  }, [result]);
+  const focusOption = (trade) =>
+    optionLevelsRun && trade ? optionByEntryTs.get(Number(trade.entry_ts)) : null;
+
   // NOTE: must NOT be named `window` — that shadows the global and breaks
   // window.addEventListener / window.innerHeight (the full-screen handler).
   const tradeWindow = useMemo(() => {
@@ -231,17 +249,22 @@ export function BacktestChart({ result }) {
     if (f && seriesRef.current) {
       const isCE = String(f.direction).toUpperCase() === "CE";
       const entry = Number(f.entry_price);
-      const target = isCE ? entry + tgtPts : entry - tgtPts;
-      const stop = isCE ? entry - stpPts : entry + stpPts;
       const mk = (price, color, title2) => seriesRef.current.createPriceLine({
         price, color, lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: title2,
       });
       priceLinesRef.current.push(mk(entry, "#9FB2CC", "Entry"));
-      priceLinesRef.current.push(mk(target, "#2ED47A", "Target"));
-      priceLinesRef.current.push(mk(stop, "#FF5D5D", "Stop"));
+      // Spot target/stop lines are the real exit logic ONLY for spot-mirror runs.
+      // For premium-level runs they'd be fictitious on an index chart, so we draw
+      // just Entry + the actual Exit (the premium levels show in the focus strip).
+      if (!focusOption(f)) {
+        const target = isCE ? entry + tgtPts : entry - tgtPts;
+        const stop = isCE ? entry - stpPts : entry + stpPts;
+        priceLinesRef.current.push(mk(target, "#2ED47A", "Target"));
+        priceLinesRef.current.push(mk(stop, "#FF5D5D", "Stop"));
+      }
       if (f.exit_price != null) priceLinesRef.current.push(mk(Number(f.exit_price), "#5AA9FF", "Exit"));
     }
-  }, [trades, focusIdx, tgtPts, stpPts]);
+  }, [trades, focusIdx, tgtPts, stpPts, optionLevelsRun, optionByEntryTs]);
 
   const load = useCallback(async () => {
     if (!fetchRange.start_ts || !fetchRange.end_ts) return;
@@ -379,18 +402,34 @@ export function BacktestChart({ result }) {
         {locateMsg && <span className={`font-mono ${locateMsg.type === "err" ? "text-rose-300" : "text-emerald-300"}`}>{locateMsg.text}</span>}
       </div>
 
-      {focus && (
-        <div className="px-3 py-1.5 border-b border-line text-[11px] font-mono flex flex-wrap gap-x-3 gap-y-0.5" data-testid="backtest-chart-focus-detail">
-          <span className="text-dim">#{focusIdx + 1}</span>
-          <span className={focus.direction === "CE" ? "text-emerald-300" : "text-rose-300"}>{focus.direction}</span>
-          <span><span className="text-dimmer">Entry</span> {fmtNum(focus.entry_price, 2)}</span>
-          <span><span className="text-dimmer">Exit</span> {focus.exit_price != null ? fmtNum(focus.exit_price, 2) : "—"}</span>
-          <span className="text-emerald-300"><span className="text-dimmer">Tgt</span> {fmtNum(focus.direction === "CE" ? focus.entry_price + tgtPts : focus.entry_price - tgtPts, 2)}</span>
-          <span className="text-rose-300"><span className="text-dimmer">SL</span> {fmtNum(focus.direction === "CE" ? focus.entry_price - stpPts : focus.entry_price + stpPts, 2)}</span>
-          <span className="text-dimmer">{focus.exit_reason}</span>
-          <span className={Number(focus.pnl_pts) >= 0 ? "text-emerald-300" : "text-rose-300"}>{fmtPnL(focus.pnl_pts)} pts</span>
-        </div>
-      )}
+      {focus && (() => {
+        const fo = focusOption(focus);
+        return (
+          <div className="px-3 py-1.5 border-b border-line text-[11px] font-mono flex flex-wrap gap-x-3 gap-y-0.5" data-testid="backtest-chart-focus-detail">
+            <span className="text-dim">#{focusIdx + 1}</span>
+            <span className={focus.direction === "CE" ? "text-emerald-300" : "text-rose-300"}>{focus.direction}</span>
+            {fo ? (
+              <>
+                <span className="text-sky-300">premium exit</span>
+                <span><span className="text-dimmer">Entry ₹</span> {fmtNum(fo.entry_option_price, 2)}</span>
+                <span><span className="text-dimmer">Exit ₹</span> {fo.exit_option_price != null ? fmtNum(fo.exit_option_price, 2) : "—"}</span>
+                <span className="text-emerald-300"><span className="text-dimmer">Tgt ₹</span> {fo.option_target_level != null ? fmtNum(fo.option_target_level, 2) : "—"}</span>
+                <span className="text-rose-300"><span className="text-dimmer">SL ₹</span> {fo.option_stop_level != null ? fmtNum(fo.option_stop_level, 2) : "—"}</span>
+                <span className="text-dimmer" title="Index entry/exit on the chart; SL/Tgt are premium ₹, not index points">{fo.option_exit_reason || focus.exit_reason}</span>
+              </>
+            ) : (
+              <>
+                <span><span className="text-dimmer">Entry</span> {fmtNum(focus.entry_price, 2)}</span>
+                <span><span className="text-dimmer">Exit</span> {focus.exit_price != null ? fmtNum(focus.exit_price, 2) : "—"}</span>
+                <span className="text-emerald-300"><span className="text-dimmer">Tgt</span> {fmtNum(focus.direction === "CE" ? focus.entry_price + tgtPts : focus.entry_price - tgtPts, 2)}</span>
+                <span className="text-rose-300"><span className="text-dimmer">SL</span> {fmtNum(focus.direction === "CE" ? focus.entry_price - stpPts : focus.entry_price + stpPts, 2)}</span>
+                <span className="text-dimmer">{focus.exit_reason}</span>
+              </>
+            )}
+            <span className={Number(focus.pnl_pts) >= 0 ? "text-emerald-300" : "text-rose-300"}>{fmtPnL(focus.pnl_pts)} pts</span>
+          </div>
+        );
+      })()}
 
       <div className="p-3">
         <div className="relative">

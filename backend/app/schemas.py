@@ -143,6 +143,9 @@ class OptimizerStartReq(BaseModel):
     # by REAL paired-option net rupee P&L). option_config mirrors OptionBacktestReq.
     evaluation_mode: str = "spot"
     rerank_top_k: int = 50
+    # Broaden the re-rank shortlist with a diversity sample so an option-profitable
+    # but spot-mediocre config can surface (default off = top-K by spot objective).
+    rerank_diversity: bool = False
     option_config: Optional[Dict[str, Any]] = None
 
 
