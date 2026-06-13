@@ -16,6 +16,7 @@ import { MetricCard } from "@/components/MetricCard";
 import { RegimeBadge } from "@/components/RegimeBadge";
 import { SignificanceBadge } from "@/components/SignificanceBadge";
 import { MultiPaneChart } from "@/components/charts/MultiPaneChart";
+import { PerformanceOverview } from "@/components/backtest/PerformanceOverview";
 import { NumberSliderInput } from "@/components/NumberSliderInput";
 import BacktestRunJournal from "@/components/BacktestRunJournal";
 import { Play, Save, Filter, ChevronDown, ChevronRight, ChevronsUpDown, ArrowUp, ArrowDown, Download, FileJson, FileText, FolderOpen, ShieldCheck, Loader2 } from "lucide-react";
@@ -1357,23 +1358,46 @@ function ResultsView({ result }) {
         <MetricCard label="Sharpe" value={fmtNum(m.sharpe, 2)} testid="result-sharpe" />
       </div>
 
-      <DataAuditCard audit={result.data_audit} />
-      <OptionBacktestCard optionBacktest={result.option_backtest} />
-      <ContextBreakdownCard optionBacktest={result.option_backtest} />
-      <MaeMfeCard trades={result.trades} optionBacktest={result.option_backtest} />
-      <MonteCarloCard trades={result.trades} optionBacktest={result.option_backtest} />
+      {/* Performance: rupee-first hero + account/underlying chart + drawdown +
+          high-value trade-quality metrics. The decision view, kept scannable. */}
+      <PerformanceOverview result={result} />
 
-      {/* Chart */}
-      <MultiPaneChart candles={candles} equity={equity} drawdown={drawdown} height={520} />
-
-      {/* Two-column: walkforward + funnel + regime */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-        <WalkForwardCard wf={result.walkforward} />
-        <SignalFunnelCard funnel={funnel} regimeDist={regimeDist} totalRegime={totalRegime} />
-      </div>
+      {/* Deep research analytics — collapsed by default so the decision view
+          above stays uncluttered; expand for data-trust, option pairing,
+          context breakdown, excursions, robustness and the signal funnel. */}
+      <AdvancedAnalytics>
+        <DataAuditCard audit={result.data_audit} />
+        <OptionBacktestCard optionBacktest={result.option_backtest} />
+        <ContextBreakdownCard optionBacktest={result.option_backtest} />
+        <MaeMfeCard trades={result.trades} optionBacktest={result.option_backtest} />
+        <MonteCarloCard trades={result.trades} optionBacktest={result.option_backtest} />
+        <MultiPaneChart candles={candles} equity={equity} drawdown={drawdown} height={520} />
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+          <WalkForwardCard wf={result.walkforward} />
+          <SignalFunnelCard funnel={funnel} regimeDist={regimeDist} totalRegime={totalRegime} />
+        </div>
+      </AdvancedAnalytics>
 
       {/* Trades table */}
       <TradesTable trades={result.trades || []} optionBacktest={result.option_backtest} />
+    </div>
+  );
+}
+
+function AdvancedAnalytics({ children }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="rounded-lg border border-line bg-bg-1" data-testid="backtest-advanced-analytics">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="w-full px-3 py-2 flex items-center gap-2 text-left"
+        data-testid="backtest-advanced-toggle"
+      >
+        {open ? <ChevronDown className="w-4 h-4 text-dim" /> : <ChevronRight className="w-4 h-4 text-dim" />}
+        <span className="text-[11px] font-semibold uppercase tracking-wider text-dim">Advanced analytics</span>
+        <span className="text-[11px] text-dimmer">data trust · option pairing · context · excursions · robustness · funnel</span>
+      </button>
+      {open && <div className="px-3 pb-3 space-y-3">{children}</div>}
     </div>
   );
 }

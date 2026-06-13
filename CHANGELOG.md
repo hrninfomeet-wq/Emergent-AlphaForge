@@ -2,6 +2,16 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.31.x] — Backtest results: decision-first Performance overview (2026-06-13)
+
+526 backend tests pass (4 new contract pins). A redesign of the backtest results to match popular options-backtesting platforms (algotest/quantman) on *presentation* while keeping our deeper research rigor. Frontend-only — all of it is derived client-side from data the run already returns; no engine/endpoint change.
+
+- **`PerformanceOverview`** at the top of results (`components/backtest/`): a **rupee-first hero** (Net ₹, Return on capital %, Ending equity from the configured capital, Max DD ₹/%, **Profit ÷ max DD**, annualized Sharpe) when a starting capital is set, else a points hero.
+- **Account value & underlying chart** (`EquityUnderlyingChart`, lightweight-charts): the requested algotest-style view — account value (₹, capital-growth curve, e.g. ₹200,000 → ₹782,939) on the right axis with the **underlying (NIFTY) value as context** on the left axis, plus a dedicated **drawdown** pane below. The underlying is context only — explicitly **not** a buy-and-hold benchmark (declined by the user).
+- **Trade-quality block** (`lib/backtestMetrics.js`, pure): avg win / avg loss, payoff ratio, expectancy ₹/trade, largest win/loss, max win/loss streak, longest-drawdown duration + recovered flag, trading days, avg trades/day.
+- **Honesty guard**: CAGR/Calmar are suppressed under a ~1-year window (annualizing a few months produced absurd 1900% vanity numbers); the span-independent **Profit ÷ max DD** is the headline reward/risk ratio instead (the live run honestly reads 1.12× — barely above its worst drawdown).
+- **Declutter**: the deep research cards (data-trust, option pairing, context breakdown, MAE/MFE, Monte Carlo, walk-forward, signal funnel, old multi-pane chart) move into a collapsible **Advanced analytics** section so the decision view stays scannable.
+
 ## [0.30.x] — Warehouse review follow-ups: partial-day repair, VIX in sync, planner relabel (2026-06-13)
 
 522 backend tests pass (9 new). Fixes from the Data Warehouse Q&A review. **Investigation correction first:** the "broker-empty" strikes flagged in the review (NIFTY 25000 PE, SENSEX 81000/82000/83000, etc.) were re-verified against Upstox's own expired-contract master — each maps to exactly one authoritative token that returns zero candles, with **no duplicate/alternative** anywhere in the 61,700-contract store. They are genuinely unavailable at Upstox (late-listed strikes Upstox never archived), so the W1 broker-empty ledger was correct; the earlier "wrong-key, re-fetchable" hypothesis was withdrawn (a neighbor-token probe had returned an adjacent strike's data). No contract-key "fix" was applied because there was nothing to fix.
