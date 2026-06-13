@@ -24,39 +24,87 @@ function dedupeAscending(points) {
   return out.sort((a, b) => a.time - b.time);
 }
 
+/** Per-trade net BUY value = entry premium × quantity + round-trip charges.
+ * Loading all charges on the buy keeps the table consistent: Sell − Buy = net
+ * P&L (sell = exit premium × qty). Matches the user's ₹165k + ₹5k = ₹170k. */
+export function tradeBuyValue(t) {
+  return Number(t.entry_option_price) * Number(t.quantity) + Number(t.total_charges || 0);
+}
+export function tradeSellValue(t) {
+  return Number(t.exit_option_price) * Number(t.quantity);
+}
+
 /**
  * Build the chartable series for the Performance section.
- * Returns { currency, unit, capital, equity[], drawdown[], underlying[], cumPnl[] }
- * where each series is [{time(sec), value}] ascending & de-duped.
+ * Returns { currency, unit, capital, cumPnl[], buyValue[], accountValue[],
+ * drawdown[], rightLabel } — each series [{time(sec), value}] ascending & deduped.
+ *
+ * Rupee mode (option execution): cumPnl = cumulative ₹ P&L from 0; buyValue =
+ * per-trade net buy value (the algotest-style right-axis series, per the user's
+ * definition — capital deployed per trade incl. charges, NOT the index level);
+ * accountValue = capital growth (capital + cumulative P&L); drawdown in ₹.
  */
 export function buildPerformanceSeries(result) {
   const ob = result?.option_backtest;
   const portfolio = ob?.enabled ? ob.portfolio : null;
   const curve = portfolio?.curve || [];
-  const paired = (ob?.trades || []).filter((t) => t.status === "PAIRED");
+  const paired = (ob?.trades || [])
+    .filter((t) => t.status === "PAIRED")
+    .sort((a, b) => Number(a.option_exit_ts || a.signal_exit_ts || 0) - Number(b.option_exit_ts || b.signal_exit_ts || 0));
 
-  // Rupee mode: a capital-based curve exists.
   if (curve.length && portfolio?.starting_capital != null) {
     const capital = Number(portfolio.starting_capital);
-    const equity = dedupeAscending(curve.map((p) => ({ time: toSec(p.ts), value: Number(p.equity_value) })));
+    const accountValue = dedupeAscending(curve.map((p) => ({ time: toSec(p.ts), value: Number(p.equity_value) })));
     const drawdown = dedupeAscending(curve.map((p) => ({ time: toSec(p.ts), value: Number(p.drawdown_value) })));
     const cumPnl = dedupeAscending(curve.map((p) => ({ time: toSec(p.ts), value: Number(p.equity_value) - capital })));
-    const underlying = dedupeAscending(
-      paired
-        .map((t) => ({ time: toSec(t.option_exit_ts || t.signal_exit_ts), value: Number(t.index_exit_price) }))
+    const buyValue = dedupeAscending(
+      paired.map((t) => ({ time: toSec(t.option_exit_ts || t.signal_exit_ts), value: tradeBuyValue(t) }))
     );
-    return { currency: true, unit: "₹", capital, equity, drawdown, underlying, cumPnl };
+    return { currency: true, unit: "₹", capital, cumPnl, buyValue, accountValue, drawdown, rightLabel: "Trade buy value" };
   }
 
-  // Points fallback (spot-only run): equity_curve carries cumulative points.
+  // Points fallback (spot-only run): no option premiums to value a position, so
+  // the right-axis context is the index level at each trade.
   const ec = result?.equity_curve || [];
-  const equity = dedupeAscending(ec.map((p) => ({ time: toSec(p.ts), value: Number(p.equity_pts) })));
+  const accountValue = dedupeAscending(ec.map((p) => ({ time: toSec(p.ts), value: Number(p.equity_pts) })));
   const drawdown = dedupeAscending(ec.map((p) => ({ time: toSec(p.ts), value: Number(p.drawdown_pts) })));
-  const cumPnl = equity;
-  const underlying = dedupeAscending(
+  const cumPnl = accountValue;
+  const buyValue = dedupeAscending(
     (result?.trades || []).map((t) => ({ time: toSec(t.exit_ts), value: Number(t.exit_price) }))
   );
-  return { currency: false, unit: "pts", capital: null, equity, drawdown, underlying, cumPnl };
+  return { currency: false, unit: "pts", capital: null, cumPnl, buyValue, accountValue, drawdown, rightLabel: "Index level" };
+}
+
+/**
+ * Net P&L per calendar month for the monthly calendar. Rupee when option
+ * execution ran, else index points. Returns { currency, byMonth: Map<"YYYY-MM", pnl> }.
+ */
+export function monthlyPnl(result) {
+  const ob = result?.option_backtest;
+  const byMonth = new Map();
+  const add = (iso, pnl) => {
+    if (!iso || !Number.isFinite(pnl)) return;
+    const key = String(iso).slice(0, 7);
+    byMonth.set(key, (byMonth.get(key) || 0) + pnl);
+  };
+  if (ob?.enabled) {
+    for (const t of ob.trades || []) {
+      if (t.status !== "PAIRED") continue;
+      add(t.signal_exit_datetime || isoFromTs(t.option_exit_ts), Number(t.option_pnl_value));
+    }
+    return { currency: true, unit: "₹", byMonth };
+  }
+  for (const t of result?.trades || []) {
+    add(t.exit_datetime || isoFromTs(t.exit_ts), Number(t.pnl_pts));
+  }
+  return { currency: false, unit: "pts", byMonth };
+}
+
+function isoFromTs(ts) {
+  if (ts == null) return null;
+  // IST date (UTC+5:30) so months bucket on the trading calendar, not UTC.
+  const d = new Date(Number(ts) + (5 * 60 + 30) * 60 * 1000);
+  return d.toISOString().slice(0, 10);
 }
 
 function streaks(pnls) {
@@ -137,12 +185,12 @@ export function computeKeyMetrics(result) {
   const largestWin = wins.length ? Math.max(...wins) : 0;
   const largestLoss = losses.length ? Math.min(...losses) : 0;
   const { maxWin, maxLoss } = streaks(pnls);
-  const dd = drawdownDuration(series.equity);
+  const dd = drawdownDuration(series.accountValue);
 
   // Time span. CAGR/Calmar are ONLY meaningful over a multi-year window —
   // annualizing a large return over a few months produces absurd, misleading
   // numbers (e.g. 1900% CAGR), so they are suppressed (null) under ~1 year.
-  const tEq = series.equity;
+  const tEq = series.accountValue;
   let years = null;
   if (tEq.length >= 2) years = (tEq[tEq.length - 1].time - tEq[0].time) / (365.25 * 86400);
   let cagr = null;

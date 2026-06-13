@@ -3,6 +3,7 @@ import { MetricCard } from "@/components/MetricCard";
 import { fmtInt, fmtNum, fmtPct, fmtPnL, colorPnL } from "@/lib/fmt";
 import { buildPerformanceSeries, computeKeyMetrics } from "@/lib/backtestMetrics";
 import { EquityUnderlyingChart } from "./EquityUnderlyingChart";
+import { MonthlyPnlCalendar } from "./MonthlyPnlCalendar";
 
 const money = (n) => (n == null ? "—" : `₹${fmtInt(n)}`);
 const moneySigned = (n) => (n == null ? "—" : `${n < 0 ? "−" : "+"}₹${fmtInt(Math.abs(n))}`);
@@ -43,12 +44,16 @@ export function PerformanceOverview({ result }) {
       </div>
 
       <EquityUnderlyingChart
-        equity={series.equity}
-        underlying={series.underlying}
+        cumPnl={series.cumPnl}
+        buyValue={series.buyValue}
+        accountValue={series.accountValue}
         drawdown={series.drawdown}
         currency={cur}
-        height={420}
+        rightLabel={series.rightLabel}
+        height={460}
       />
+
+      <MonthlyPnlCalendar result={result} />
 
       {/* High-value, decision-critical metrics — kept tight on purpose. */}
       <div className="rounded-lg border border-line bg-bg-1 p-3" data-testid="perf-key-metrics">
@@ -63,8 +68,14 @@ export function PerformanceOverview({ result }) {
           <Stat label="Max win / loss streak" value={`${fmtInt(k.maxWinStreak)} / ${fmtInt(k.maxLossStreak)}`} />
           <Stat
             label="Longest drawdown"
-            value={k.ddDurationDays ? `${fmtInt(k.ddDurationDays)}d` : "—"}
-            sub={k.recovered ? "recovered" : "still underwater"}
+            value={k.ddDurationDays ? `${fmtInt(k.ddDurationDays)} days` : "—"}
+            sub={k.recovered ? "recovered to new high" : "not yet recovered"}
+            title={
+              "The longest stretch the account stayed below a previous peak before "
+              + (k.recovered
+                ? "it climbed back to a new high (fully recovered by the end of the test)."
+                : "the test ended — it had NOT returned to that peak (still underwater at the end).")
+            }
           />
           <Stat label="Trading days" value={fmtInt(k.tradingDays)} />
           <Stat label="Avg trades / day" value={k.avgTradesPerDay == null ? "—" : fmtNum(k.avgTradesPerDay, 1)} />
@@ -81,11 +92,11 @@ export function PerformanceOverview({ result }) {
   );
 }
 
-function Stat({ label, value, sub, accent }) {
+function Stat({ label, value, sub, accent, title }) {
   return (
-    <div className="rounded-md border border-line bg-bg-2 p-2 min-w-0">
+    <div className="rounded-md border border-line bg-bg-2 p-2 min-w-0" title={title || undefined}>
       <div className="text-[10px] uppercase tracking-wider text-dimmer">{label}</div>
-      <div className={`text-sm font-mono mt-0.5 truncate ${accent || ""}`} title={String(value)}>{value}</div>
+      <div className={`text-sm font-mono mt-0.5 truncate ${accent || ""}`}>{value}</div>
       {sub && <div className="text-[10px] text-dimmer mt-0.5">{sub}</div>}
     </div>
   );

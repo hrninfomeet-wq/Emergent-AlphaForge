@@ -2,6 +2,15 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.32.x] — Backtest results: chart corrected to per-trade buy value + monthly P&L + trade columns (2026-06-13)
+
+530 backend tests pass (4 new/updated pins). Follow-up to 0.31.x acting on the user's review of the first cut. Frontend-only, still all client-side.
+
+- **Chart corrected to the user's definition.** The right-axis line is now the **per-trade net buy value** (entry premium × qty + round-trip charges — capital deployed per trade), not the index spot level. Top pane: **Cumulative P&L (left)** + **Trade buy value (right)**; bottom pane: **Account value (capital growth)** + **drawdown**, clubbed as requested. (`tradeBuyValue`/`tradeSellValue` in `backtestMetrics.js`; chart rebuilt in `EquityUnderlyingChart`.)
+- **Monthly P&L calendar** (`MonthlyPnlCalendar`): year × month grid of net P&L (₹ when option execution ran, else points), green/red shaded, with per-year totals — the consistency-at-a-glance view.
+- **Trades table** gains three columns (option runs): **Lots (Qty)** e.g. `10 (750)`, **Buy ₹**, **Sell ₹**, where Sell − Buy = the trade's net P&L (charges loaded on the buy, consistent with the chart).
+- **"recovered" clarified**: the longest-drawdown stat now reads "recovered to new high" / "not yet recovered" with an explanatory tooltip ("the longest stretch the account stayed below a previous peak before …"). The live run honestly shows 49 days, *not yet recovered* — i.e. it never made a new high after its deepest stretch by the test end.
+
 ## [0.31.x] — Backtest results: decision-first Performance overview (2026-06-13)
 
 526 backend tests pass (4 new contract pins). A redesign of the backtest results to match popular options-backtesting platforms (algotest/quantman) on *presentation* while keeping our deeper research rigor. Frontend-only — all of it is derived client-side from data the run already returns; no engine/endpoint change.

@@ -2042,6 +2042,16 @@ function TradesTable({ trades, optionBacktest }) {
         opt_pnl_value: opt?.option_pnl_value ?? null,
         opt_exit_reason: opt?.option_exit_reason ?? null,
         opt_status: opt?.status ?? null,
+        opt_lots: opt?.lots ?? null,
+        opt_qty: opt?.quantity ?? null,
+        // Buy value loads all charges on entry so Sell − Buy = net option P&L
+        // (entry premium × qty + round-trip charges; sell = exit premium × qty).
+        opt_buy_value: opt?.status === "PAIRED"
+          ? Number(opt.entry_option_price) * Number(opt.quantity) + Number(opt.total_charges || 0)
+          : null,
+        opt_sell_value: opt?.status === "PAIRED"
+          ? Number(opt.exit_option_price) * Number(opt.quantity)
+          : null,
       };
     }),
     [trades, optionByTradeId]
@@ -2103,8 +2113,11 @@ function TradesTable({ trades, optionBacktest }) {
     ? [
         ...TRADE_COLUMNS,
         { key: "opt_symbol", label: "Opt Leg", align: "left", sortable: true },
+        { key: "opt_qty", label: "Lots (Qty)", align: "right", sortable: true },
         { key: "opt_entry", label: "Opt Entry", align: "right", sortable: true },
         { key: "opt_exit", label: "Opt Exit", align: "right", sortable: true },
+        { key: "opt_buy_value", label: "Buy ₹", align: "right", sortable: true },
+        { key: "opt_sell_value", label: "Sell ₹", align: "right", sortable: true },
         { key: "opt_exit_reason", label: "Opt Exit", align: "left", sortable: true },
         { key: "opt_pnl_value", label: "Opt P&L (₹)", align: "right", sortable: true },
       ]
@@ -2168,8 +2181,13 @@ function TradesTable({ trades, optionBacktest }) {
                         ? <span>{t.opt_side ? <span className={t.opt_side === "CE" ? "text-emerald-300" : "text-rose-300"}>{t.opt_strike} {t.opt_side}</span> : t.opt_symbol}</span>
                         : <span className="text-dimmer">{t.opt_status ? t.opt_status.replace(/_/g, " ").toLowerCase() : "—"}</span>}
                     </td>
+                    <td className="p-2 text-right font-mono text-[10px]" title={t.opt_qty != null ? `${fmtInt(t.opt_qty)} qty` : ""}>
+                      {t.opt_lots != null ? `${fmtInt(t.opt_lots)} (${fmtInt(t.opt_qty)})` : "—"}
+                    </td>
                     <td className="p-2 text-right font-mono">{t.opt_entry != null ? fmtNum(t.opt_entry) : "—"}</td>
                     <td className="p-2 text-right font-mono">{t.opt_exit != null ? fmtNum(t.opt_exit) : "—"}</td>
+                    <td className="p-2 text-right font-mono text-dim">{t.opt_buy_value != null ? `₹${fmtInt(t.opt_buy_value)}` : "—"}</td>
+                    <td className="p-2 text-right font-mono text-dim">{t.opt_sell_value != null ? `₹${fmtInt(t.opt_sell_value)}` : "—"}</td>
                     <td className="p-2 text-[10px]"><ExitReasonBadge reason={t.opt_exit_reason} /></td>
                     <td className={`p-2 text-right font-mono ${colorPnL(t.opt_pnl_value)}`}>{t.opt_pnl_value != null ? fmtPnL(t.opt_pnl_value) : "—"}</td>
                   </>

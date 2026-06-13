@@ -27,6 +27,41 @@ def test_performance_overview_components_exist():
     assert "performance-overview" in overview and "perf-key-metrics" in overview
 
 
+def test_chart_right_axis_is_per_trade_buy_value_not_index():
+    # The user's definition: right axis = per-trade net buy value (premium × qty
+    # + charges), NOT the index spot level. Sell − Buy must equal net P&L.
+    metrics = _read("lib", "backtestMetrics.js")
+    assert "tradeBuyValue" in metrics and "tradeSellValue" in metrics
+    assert "entry_option_price" in metrics and "total_charges" in metrics
+    chart = _read("components", "backtest", "EquityUnderlyingChart.jsx")
+    assert "Trade buy value" in chart  # default right-axis label
+    # account value + drawdown are clubbed in the lower pane (4 series total).
+    assert chart.count("chart.addSeries(") == 4
+
+
+def test_monthly_pnl_calendar_present():
+    cal = _read("components", "backtest", "MonthlyPnlCalendar.jsx")
+    overview = _read("components", "backtest", "PerformanceOverview.jsx")
+    assert "monthly-pnl-calendar" in cal
+    assert "MonthlyPnlCalendar" in overview
+    assert "monthlyPnl" in _read("lib", "backtestMetrics.js")
+
+
+def test_recovered_is_explained():
+    overview = _read("components", "backtest", "PerformanceOverview.jsx")
+    # Self-explanatory wording + an explanatory tooltip (the user couldn't tell
+    # what "recovered" meant).
+    assert "recovered to new high" in overview and "not yet recovered" in overview
+    assert "below a previous peak" in overview
+
+
+def test_trades_table_has_lots_buy_sell_columns():
+    page = _read("pages", "BacktestLab.jsx")
+    assert 'label: "Lots (Qty)"' in page
+    assert 'label: "Buy ₹"' in page and 'label: "Sell ₹"' in page
+    assert "opt_buy_value" in page and "opt_sell_value" in page
+
+
 def test_results_uses_overview_and_collapses_advanced():
     page = _read("pages", "BacktestLab.jsx")
     assert "<PerformanceOverview result={result} />" in page
@@ -49,12 +84,11 @@ def test_metrics_are_honest_not_vanity():
         assert needle in metrics
 
 
-def test_underlying_is_context_not_a_benchmark():
-    # The user explicitly declined a buy-and-hold benchmark; the underlying line
-    # is context only. Pin that intent: the chart documents it AND there is no
-    # benchmark/buy-and-hold SERIES (only equity, underlying, drawdown series).
-    chart = _read("components", "backtest", "EquityUnderlyingChart.jsx")
-    assert "context only" in chart.lower()
-    assert "benchmark" not in chart.lower().replace("not a buy-and-hold benchmark", "")
-    # exactly three data series — no extra benchmark/buy-hold overlay
-    assert chart.count("chart.addSeries(") == 3
+def test_no_buy_and_hold_benchmark_series():
+    # The user explicitly declined a buy-and-hold benchmark. The right-axis line
+    # is per-trade buy value (or, spot-only, the index level) — never a
+    # buy-and-hold equity series. Pin: no benchmark series in the chart.
+    chart = _read("components", "backtest", "EquityUnderlyingChart.jsx").lower()
+    assert "not a benchmark" in chart  # documented intent
+    # the four series are cum P&L, buy value, account value, drawdown — no 5th.
+    assert chart.count("chart.addseries(") == 4
