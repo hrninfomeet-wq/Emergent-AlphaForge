@@ -262,6 +262,71 @@ export default function BacktestLab() {
     }
   };
 
+  // Build the preset `execution` block from a LOADED RUN DOC (not the editable
+  // form), so "Save as preset" on a result always reflects what produced the
+  // displayed result. Same shape as buildExecutionFromConfig / the backend's
+  // execution_from_option_config, so it re-applies in the Lab and prefills the
+  // deploy wizard identically.
+  const buildExecutionFromRun = (run) => {
+    const ob = run?.config?.option_backtest;
+    if (!ob?.enabled) return null;
+    const ex = {
+      moneyness: ob.moneyness || "atm",
+      dte_filter: parseDteFilter(ob.dte_filter),
+      exit_mode: ob.exit_mode || "spot_exit",
+      lots: Math.max(1, Number(ob.lots || 1)),
+    };
+    if ((ob.exit_mode || "spot_exit") === "option_levels") {
+      if (ob.option_target_pts != null) ex.option_target_pts = Number(ob.option_target_pts);
+      if (ob.option_stop_pts != null) ex.option_stop_pts = Number(ob.option_stop_pts);
+      if (ob.option_target_pct != null) ex.option_target_pct = Number(ob.option_target_pct);
+      if (ob.option_stop_pct != null) ex.option_stop_pct = Number(ob.option_stop_pct);
+    }
+    if (ob.cost_config?.enabled) {
+      ex.cost_config = {
+        enabled: true,
+        brokerage_per_order: Number(ob.cost_config.brokerage_per_order || 0),
+        spread_pct_of_premium: Number(ob.cost_config.spread_pct_of_premium || 0),
+      };
+    }
+    return ex;
+  };
+
+  // Save THIS loaded result's exact strategy params + option execution as a
+  // named preset, read from the run doc so it matches the displayed result even
+  // if the setup form was edited afterwards. The preset deploys as-is and the
+  // run can be replicated by re-running over the same window (the ?run= load
+  // already restores the window + filters; the preset itself carries no dates).
+  const savePresetFromResult = async (run) => {
+    if (!run) return;
+    const strategy_id = run.strategy_id || run.config?.strategy_id;
+    const params = run.params_applied || run.config?.params;
+    if (!strategy_id || !params) { toast.error("This result has no saved params to preset."); return; }
+    const suggested = run.name && run.name !== "Untitled Run"
+      ? run.name
+      : `${strategy_id} ${new Date().toISOString().slice(0, 10)}`;
+    const raw = window.prompt("Save THIS result's strategy params + option execution as a preset (name):", suggested);
+    if (raw == null) return;
+    const name = raw.trim();
+    if (!name) { toast.error("Preset name cannot be empty."); return; }
+    if (presets.some((p) => p.name === name) && !window.confirm(`Preset "${name}" already exists. Overwrite it?`)) return;
+    const cfg = {
+      strategy_id,
+      instrument: run.instrument || run.config?.instrument,
+      mode: run.config?.mode || config.mode,
+      params: { ...params },
+    };
+    const ex = buildExecutionFromRun(run);
+    if (ex) cfg.execution = ex;
+    try {
+      await api.savePreset(name, cfg);
+      await refreshPresets();
+      toast.success(`Saved preset "${name}"${ex ? " with this run's option execution" : " (spot params only — option execution was off)"}. Deploy it from Live Signals.`);
+    } catch (e) {
+      toast.error(`Save failed: ${e.response?.data?.detail || e.message}`);
+    }
+  };
+
   const selectedStrategy = useMemo(
     () => strategies.find((s) => s.id === config.strategy_id),
     [strategies, config.strategy_id]
@@ -1026,7 +1091,7 @@ export default function BacktestLab() {
         ) : !result ? (
           <EmptyResults />
         ) : (
-          <ResultsView result={result} />
+          <ResultsView result={result} onSaveAsPreset={() => savePresetFromResult(result)} />
         )}
       </section>
     </div>
@@ -1246,7 +1311,7 @@ function RunningResults({ progress, config }) {
   );
 }
 
-function ResultsView({ result }) {
+function ResultsView({ result, onSaveAsPreset }) {
   const m = result.metrics || {};
   const regimeDist = result.regime_distribution || {};
   const totalRegime = Object.values(regimeDist).reduce((s, v) => s + v, 0);
@@ -1310,6 +1375,17 @@ function ResultsView({ result }) {
           >
             <FileText className="w-3 h-3 mr-1" /> Trades.csv
           </Button>
+          {onSaveAsPreset && (
+            <Button
+              size="sm"
+              className="h-7 text-xs bg-info text-bg-0 hover:bg-info/90 font-semibold"
+              onClick={onSaveAsPreset}
+              data-testid="result-save-preset"
+              title="Save THIS result's exact strategy params + option execution as a preset — deploy it to paper trading as-is, or re-test it"
+            >
+              <Save className="w-3 h-3 mr-1" /> Save as preset
+            </Button>
+          )}
         </div>
       </div>
 
