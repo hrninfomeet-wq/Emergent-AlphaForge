@@ -2,6 +2,17 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.34.x] — Backtest price chart: trades on chart, timeframes, go-to (2026-06-13)
+
+533 backend tests pass. Replaces the basic candle pane with a professional, dedicated `BacktestChart` and moves it out of Advanced analytics to sit directly below the Trade-quality view.
+
+- **Instrument-titled chart** (NIFTY 50 / BANKNIFTY / SENSEX) with **timeframe buttons 1m/5m/15m/1h/1d** (server-resampled OHLC, scoped to the backtest window; 1m lazily windows to keep long runs light).
+- **Trades drawn on the chart**: ▲/▼ entry markers (CE/PE) and ● exit markers; selecting a trade draws **Entry / Target / Stop / Exit** price lines (SL/target reconstructed in index points from the run's `spot_target_pts` / `spot_stop_pts`).
+- **Trade navigator** (dropdown + prev/next) jumps to any trade's 1m candles and shows an entry/exit/target/stop/P&L detail strip — the fast way to inspect a row from the trade list on the chart.
+- **Go-to date/time locator** (TradingView-style) centers any IST minute; crosshair **OHLC legend** and IST axis.
+- The superseded `MultiPaneChart` was removed from the results (account value + drawdown already live in the Performance section).
+- Fix: `DualAxisChart` recreated its chart every render (volatile effect deps) which raced lightweight-charts' autoSize observer ("Object is disposed"); deps now key off stable data refs.
+
 ## [0.33.x] — Backtest charts split + named axes + account-value range (2026-06-13)
 
 532 backend tests pass. Acts on the user's review of 0.32.x.

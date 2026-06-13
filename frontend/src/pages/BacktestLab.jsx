@@ -15,8 +15,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { MetricCard } from "@/components/MetricCard";
 import { RegimeBadge } from "@/components/RegimeBadge";
 import { SignificanceBadge } from "@/components/SignificanceBadge";
-import { MultiPaneChart } from "@/components/charts/MultiPaneChart";
 import { PerformanceOverview } from "@/components/backtest/PerformanceOverview";
+import { BacktestChart } from "@/components/backtest/BacktestChart";
 import { buildPerformanceSeries } from "@/lib/backtestMetrics";
 import { NumberSliderInput } from "@/components/NumberSliderInput";
 import BacktestRunJournal from "@/components/BacktestRunJournal";
@@ -1265,55 +1265,6 @@ function ResultsView({ result }) {
     };
   }, [result]);
 
-  const [candles, setCandles] = useState([]);
-  useEffect(() => {
-    // Fetch candles for the instrument to display in the price pane
-    api.candles(result.instrument, 500).then((r) => {
-      const items = (r.items || []).map((c) => ({
-        time: Math.floor(Number(c.ts) / 1000),
-        open: Number(c.open),
-        high: Number(c.high),
-        low: Number(c.low),
-        close: Number(c.close),
-      }));
-      // Deduplicate by time + ensure ascending order (lightweight-charts requirement)
-      const seen = new Set();
-      const dedup = [];
-      for (const c of items) {
-        if (!seen.has(c.time)) {
-          seen.add(c.time);
-          dedup.push(c);
-        }
-      }
-      dedup.sort((a, b) => a.time - b.time);
-      setCandles(dedup);
-    }).catch(() => setCandles([]));
-  }, [result.instrument, result.id]);
-
-  // Build equity / drawdown — handle dedup as well
-  const equity = useMemo(() => {
-    const seen = new Set();
-    const out = [];
-    for (const p of result.equity_curve || []) {
-      const t = Math.floor(Number(p.ts) / 1000);
-      if (seen.has(t)) continue;
-      seen.add(t);
-      out.push({ time: t, value: p.equity_pts });
-    }
-    return out.sort((a, b) => a.time - b.time);
-  }, [result]);
-  const drawdown = useMemo(() => {
-    const seen = new Set();
-    const out = [];
-    for (const p of result.equity_curve || []) {
-      const t = Math.floor(Number(p.ts) / 1000);
-      if (seen.has(t)) continue;
-      seen.add(t);
-      out.push({ time: t, value: p.drawdown_pts });
-    }
-    return out.sort((a, b) => a.time - b.time);
-  }, [result]);
-
   return (
     <div className="space-y-3" data-testid="backtest-results">
       {/* Header with badges + export */}
@@ -1389,6 +1340,12 @@ function ResultsView({ result }) {
           high-value trade-quality metrics. The decision view, kept scannable. */}
       <PerformanceOverview result={result} />
 
+      {/* Price chart with the strategy's trades drawn on it — moved out of
+          Advanced analytics to sit directly below the performance/trade-quality
+          view. Timeframe switch, entry/exit markers, focused-trade SL/target
+          lines, and a date/time go-to. */}
+      <BacktestChart result={result} />
+
       {/* Deep research analytics — collapsed by default so the decision view
           above stays uncluttered; expand for data-trust, option pairing,
           context breakdown, excursions, robustness and the signal funnel. */}
@@ -1398,7 +1355,6 @@ function ResultsView({ result }) {
         <ContextBreakdownCard optionBacktest={result.option_backtest} />
         <MaeMfeCard trades={result.trades} optionBacktest={result.option_backtest} />
         <MonteCarloCard trades={result.trades} optionBacktest={result.option_backtest} />
-        <MultiPaneChart candles={candles} equity={equity} drawdown={drawdown} height={520} />
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
           <WalkForwardCard wf={result.walkforward} />
           <SignalFunnelCard funnel={funnel} regimeDist={regimeDist} totalRegime={totalRegime} />
@@ -2232,8 +2188,3 @@ function TradesTable({ trades, optionBacktest }) {
     </Panel>
   );
 }
-
-function buildCandlesFromTrades() {
-  return [];
-}
-// (legacy placeholder — candle fetching now done in ResultsView via api.candles)

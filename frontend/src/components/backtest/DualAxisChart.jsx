@@ -75,14 +75,16 @@ export function DualAxisChart({ title, left, right, currency = true, height = 30
     if (right.data?.length) rs.setData(right.data);
 
     chart.timeScale().fitContent();
-    const ro = new ResizeObserver(() => chart.applyOptions({}));
-    ro.observe(containerRef.current);
     return () => {
-      ro.disconnect();
       chart.remove();
     };
+    // Depend on STABLE values (data refs are memoized upstream, kind/color are
+    // constant per chart), NOT the freshly-built left/right objects — otherwise
+    // the chart is disposed + recreated on every parent render, which races the
+    // autoSize ResizeObserver ("Object is disposed"). autoSize handles resizing,
+    // so no manual ResizeObserver is needed.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [left, right, currency]);
+  }, [left.data, right.data, left.kind, right.kind, left.color, right.color, currency]);
 
   const unit = currency ? "₹" : "pts";
   return (

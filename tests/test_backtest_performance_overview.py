@@ -94,6 +94,27 @@ def test_results_uses_overview_and_collapses_advanced():
         assert testid in page
 
 
+def test_backtest_chart_moved_below_overview_and_out_of_advanced():
+    page = _read("pages", "BacktestLab.jsx")
+    chart = _read("components", "backtest", "BacktestChart.jsx")
+    # Dedicated chart exists and is placed after the overview, before Advanced.
+    assert "<BacktestChart result={result} />" in page
+    i_overview = page.index("<PerformanceOverview result={result} />")
+    i_chart = page.index("<BacktestChart result={result} />")
+    i_adv = page.index("<AdvancedAnalytics>")
+    assert i_overview < i_chart < i_adv
+    # The old MultiPaneChart is no longer in the results.
+    assert "MultiPaneChart" not in page
+    # Pro features: title, timeframe buttons, entry/exit markers, SL/target
+    # price lines, and a date/time go-to.
+    assert "backtest-chart-title" in chart
+    assert "backtest-chart-tf-" in chart  # timeframe buttons (template testid)
+    assert '"1m", "5m", "15m", "1h", "1d"' in chart  # TIMEFRAMES
+    assert "createSeriesMarkers" in chart and "createPriceLine" in chart
+    assert "spot_target_pts" in chart and "spot_stop_pts" in chart
+    assert "backtest-chart-goto-date" in chart and "backtest-chart-trade-select" in chart
+
+
 def test_metrics_are_honest_not_vanity():
     metrics = _read("lib", "backtestMetrics.js")
     overview = _read("components", "backtest", "PerformanceOverview.jsx")
