@@ -32,6 +32,15 @@ const DTE_VALUES = [0, 1, 2, 3, 4, 5, 6];
 // profile that produced it (the run stores resolved filters, not the profile name).
 const canonFilters = (o) => JSON.stringify(Object.fromEntries(Object.entries(o || {}).sort()));
 
+// Auto run-name = descriptive (strategy · instrument) + a timestamp, so a forgotten
+// default never collides and runs are identifiable in the journal / Load-past-run list.
+const runNameStamp = () => {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+};
+const autoRunName = (cfg) => `${cfg.strategy_id} · ${cfg.instrument} · ${runNameStamp()}`;
+
 // DTE filter is a multi-select array of ints (empty = all). Older runs stored
 // a single token ("dte2", "2") or null/"all" — normalize every shape here so
 // cloning an old run still works.
@@ -114,6 +123,9 @@ export default function BacktestLab() {
   // intended params here keyed by strategy id; the reset effect consumes them
   // instead of applying defaults for that one transition.
   const pendingParamsRef = useRef(null);
+  // True once the user types their own run name (or a preset/past-run load set one),
+  // so the auto-name regenerator leaves it alone. Reset after each completed run.
+  const nameTouchedRef = useRef(false);
 
   const refreshRuns = () => api.listBacktestRuns(50).then((d) => setPastRuns(d.items || []));
   const refreshPresets = () => api.listPresets().then((d) => setPresets(d.items || []));
@@ -161,6 +173,16 @@ export default function BacktestLab() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams.get("run"), searchParams.get("preset")]);
 
+  // Auto-fill the Run name with a fresh descriptive+timestamp default whenever the
+  // strategy / instrument changes (and on mount) — unless the user typed their own
+  // or a preset/past-run load set one. Stops a forgotten default from saving many
+  // runs to the journal under one name.
+  useEffect(() => {
+    if (nameTouchedRef.current) return;
+    setConfig((c) => ({ ...c, name: autoRunName(c) }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [config.strategy_id, config.instrument]);
+
   const applyPreset = async (name) => {
     try {
       const list = presets.length ? presets : (await api.listPresets()).items;
@@ -174,6 +196,7 @@ export default function BacktestLab() {
       // Execution policy travels with the preset: re-apply the option context
       // the result was validated under (moneyness, DTE, exit mode, levels,
       // costs) so a re-test runs under the same terms it was optimized under.
+      nameTouchedRef.current = true; // applying a named preset sets an explicit name
       const ex = cfg.execution || null;
       const exFields = ex ? {
         option_backtest_enabled: true,
@@ -438,6 +461,14 @@ export default function BacktestLab() {
   };
 
   const runBacktest = async () => {
+    // Finalize the run name: keep an explicitly-set name (warn on dup), else a fresh
+    // descriptive+timestamp name so a forgotten default never collides in the journal.
+    const auto = !nameTouchedRef.current;
+    const finalName = auto ? autoRunName(config) : (config.name?.trim() || autoRunName(config));
+    if (!auto) {
+      const dup = (pastRuns || []).some((r) => (r.name || "") === finalName);
+      if (dup && !window.confirm(`A saved run is already named "${finalName}".\nRun and save another with the same name?`)) return;
+    }
     setRunning(true);
     setResult(null);
     setProgress(0);
@@ -453,11 +484,14 @@ export default function BacktestLab() {
       setProgress(pct);
     }, 200);
     try {
-      const payload = buildPayload();
+      const payload = { ...buildPayload(), name: finalName };
       const res = await api.runBacktest(payload);
       setProgress(100);
       setResult(res);
       await refreshRuns();
+      // Reset to auto-naming so the next run gets a fresh, unique default name.
+      nameTouchedRef.current = false;
+      setConfig((c) => ({ ...c, name: autoRunName(c) }));
       toast.success(`Backtest complete: ${res.metrics.trade_count} trades`);
     } catch (e) {
       const msg = e.response?.data?.detail || e.message;
@@ -473,6 +507,7 @@ export default function BacktestLab() {
     try {
       const r = await api.getBacktestRun(runId);
       setResult(r);
+      nameTouchedRef.current = true; // a loaded run carries its own name (re-run warns on dup)
       // Stash the run's params so the strategy-change effect doesn't reset them.
       const runStrategy = r.strategy_id || r.config?.strategy_id || config.strategy_id;
       const runParams = r.params_applied || r.config?.params;
@@ -583,7 +618,7 @@ export default function BacktestLab() {
               <Label className="text-xs text-dim">Run name (saved to journal)</Label>
               <Input
                 value={config.name}
-                onChange={(e) => setConfig({ ...config, name: e.target.value })}
+                onChange={(e) => { nameTouchedRef.current = true; setConfig({ ...config, name: e.target.value }); }}
                 className="bg-bg-2 border-line h-8 mt-1"
                 data-testid="backtest-name-input"
                 placeholder="e.g. NIFTY scalp v2"

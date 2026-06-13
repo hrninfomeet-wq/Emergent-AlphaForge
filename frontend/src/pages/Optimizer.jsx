@@ -128,6 +128,15 @@ function loadSetup() {
 // sentinel (~ -1e9). Render that as "—" instead of a meaningless huge number.
 const fmtBest = (v) => (v == null || v <= -1e8) ? "—" : Number(v).toFixed(3);
 
+// Auto run-name = descriptive (strategy · instrument · objective) + a timestamp,
+// so a forgotten default never collides and runs are identifiable in Job History.
+const runNameStamp = () => {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+};
+const autoRunName = (cfg) => `${cfg.strategy_id} · ${cfg.instrument} · ${cfg.objective} · ${runNameStamp()}`;
+
 export default function Optimizer() {
   const navigate = useNavigate();
   const [strategies, setStrategies] = useState([]);
@@ -144,6 +153,9 @@ export default function Optimizer() {
   const [showOverrides, setShowOverrides] = useState(false);
   const [pollKey, setPollKey] = useState(0);
   const pollRef = useRef(null);
+  // True once the operator types their own run name (or a clone set one), so the
+  // auto-name regenerator below leaves it alone. Reset after each successful start.
+  const nameTouchedRef = useRef(false);
   // Last-seen status for the active job, so we toast only on a genuine
   // transition into a terminal state — not when re-attaching to a job that had
   // already finished while we were on another page.
@@ -172,6 +184,16 @@ export default function Optimizer() {
     api.listPresets().then((d) => setPresets(d.items || []));
     api.listProfiles().then((d) => setProfiles(d.items || []));
   }, []);
+
+  // Auto-fill the Run name with a fresh descriptive+timestamp default whenever the
+  // strategy / instrument / objective changes (and on mount) — unless the operator
+  // typed their own or a clone set one. This is what stops a forgotten default from
+  // saving multiple jobs under the same name.
+  useEffect(() => {
+    if (nameTouchedRef.current) return;
+    setConfig((c) => ({ ...c, name: autoRunName(c) }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [config.strategy_id, config.instrument, config.objective]);
 
   const refreshJobs = () => api.listOptJobs(30).then((d) => setJobs(d.items || []));
   const refreshPresets = () => api.listPresets().then((d) => setPresets(d.items || []));
@@ -265,6 +287,18 @@ export default function Optimizer() {
   });
 
   const start = async () => {
+    // Finalize the run name: an explicitly-set name is kept (with a dup warning),
+    // otherwise a fresh descriptive+timestamp name so a forgotten default is unique.
+    const auto = !nameTouchedRef.current;
+    const finalName = auto ? autoRunName(config) : (config.name?.trim() || autoRunName(config));
+    if (!auto) {
+      const dup = (jobs || []).some((j) => (j.name || "") === finalName);
+      if (dup && !window.confirm(`An optimization is already named "${finalName}".\nStart another with the same name?`)) return;
+    }
+    const afterStart = () => {
+      nameTouchedRef.current = false;
+      setConfig((c) => ({ ...c, name: autoRunName(c) }));
+    };
     try {
       if (config.run_kind === "walkforward") {
         const payload = {
@@ -286,7 +320,7 @@ export default function Optimizer() {
             : 0,
           start_ts: dateToMs(config.start_date, false),
           end_ts: dateToMs(config.end_date, true),
-          name: config.name,
+          name: finalName,
           train_days: Number(config.wf_train_days) || 60,
           test_days: Number(config.wf_test_days) || 20,
           step_days: config.wf_step_days === "" ? null : Number(config.wf_step_days),
@@ -300,6 +334,7 @@ export default function Optimizer() {
         setCurrentJobId(res.job_id);
         setCurrentJob({ id: res.job_id, status: "queued", kind: "wfo" });
         toast.success("Walk-forward optimization started");
+        afterStart();
         return;
       }
       const optionRerank = config.evaluation_mode === "option_rerank";
@@ -324,7 +359,7 @@ export default function Optimizer() {
           : 0,
         start_ts: dateToMs(config.start_date, false),
         end_ts: dateToMs(config.end_date, true),
-        name: config.name,
+        name: finalName,
         evaluation_mode: config.evaluation_mode,
         rerank_top_k: Math.max(1, Math.min(500, Number(config.rerank_top_k) || 50)),
         rerank_diversity: Boolean(config.rerank_diversity),
@@ -334,6 +369,7 @@ export default function Optimizer() {
       setCurrentJobId(res.job_id);
       setCurrentJob({ id: res.job_id, status: "queued" });
       toast.success("Optimization started");
+      afterStart();
     } catch (e) {
       toast.error("Failed to start: " + (e.response?.data?.detail || e.message));
     }
@@ -435,6 +471,7 @@ export default function Optimizer() {
   const cloneJobConfig = (job) => {
     const c = job.config || {};
     const share = Number(c.min_direction_share || 0);
+    nameTouchedRef.current = true; // clone sets an explicit "(copy)" name — keep it
     setConfig((prev) => ({
       ...prev,
       run_kind: job.kind === "wfo" ? "walkforward" : "single",
@@ -491,7 +528,7 @@ export default function Optimizer() {
               <Label className="text-xs text-dim">Run name</Label>
               <Input
                 value={config.name}
-                onChange={(e) => setConfig({ ...config, name: e.target.value })}
+                onChange={(e) => { nameTouchedRef.current = true; setConfig({ ...config, name: e.target.value }); }}
                 className="bg-bg-2 border-line h-8 mt-1"
                 data-testid="opt-name-input"
               />
