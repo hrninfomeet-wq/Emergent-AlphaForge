@@ -754,6 +754,12 @@ function ReadinessSummary({ readiness }) {
         `Option rupee (${oe?.kind === "rerank" ? "re-rank" : "backtest"}): net ${inr(oe?.net_pnl_value)}, ${oe?.paired_trade_count} paired`,
         `Option rupee evidence ${oe?.params_match ? `is negative (${inr(oe?.net_pnl_value)})` : "exists but for different params"}`,
         "No option-rupee validation — run an Option re-rank or option backtest first.")}
+      {readiness.n_trials ? (
+        <div className="flex items-start gap-2 text-[11px] text-dimmer" data-testid="readiness-selection-bias">
+          <span className="mt-1.5 inline-block w-1.5 h-1.5 rounded-full shrink-0 bg-zinc-600" />
+          <span>Best of {readiness.n_trials} optimizer trials — the deploy gate computes a selection-bias-adjusted Sharpe (step 3 flags it if within luck).</span>
+        </div>
+      ) : null}
     </div>
   );
 }

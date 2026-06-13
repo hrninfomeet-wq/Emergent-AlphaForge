@@ -14,7 +14,10 @@ from app.deployment_quality import (  # noqa: E402
     MIN_TRADE_COUNT,
     SEVERITY_WARNING,
     WALK_FORWARD_RATIO_THRESHOLD,
+    QualityThresholds,
+    deflated_sharpe,
     evaluate_source_quality,
+    expected_max_sharpe,
 )
 
 
@@ -224,3 +227,87 @@ def test_metrics_snapshot_includes_key_fields():
     snap = res["metrics_snapshot"]
     for key in ("trade_count", "win_rate", "profit_factor", "sharpe", "max_dd_pts", "total_pnl_pts", "has_walkforward"):
         assert key in snap
+
+
+# ---- gate-rigor pass: deflated Sharpe + evidence-driven checks --------------
+
+
+def test_deflated_sharpe_monotonic_in_trials_and_obs():
+    # More trials searched -> bigger expected-max haircut -> lower deflated SR.
+    assert expected_max_sharpe(500, 120) > expected_max_sharpe(50, 120)
+    assert deflated_sharpe(2.0, 500, 120) < deflated_sharpe(2.0, 50, 120)
+    # More observations -> smaller haircut -> higher deflated SR.
+    assert deflated_sharpe(2.0, 200, 1000) > deflated_sharpe(2.0, 200, 60)
+    # Degenerate inputs -> no haircut.
+    assert expected_max_sharpe(1, 120) == 0.0
+    assert deflated_sharpe(1.5, 0, 120) == 1.5
+
+
+def test_evidence_none_adds_no_new_warnings():
+    """The historical in-sample gate is unchanged when no evidence is supplied."""
+    source = {"metrics": _good_metrics(), "walkforward": _good_walkforward()}
+    res = evaluate_source_quality(source, evidence=None)
+    assert res["warnings"] == []
+
+
+def test_selection_bias_warns_when_deflated_sharpe_within_luck():
+    """200 trials over 120 trades makes a Sharpe of 1.2 indistinguishable from luck."""
+    source = {"metrics": _good_metrics(), "walkforward": _good_walkforward()}
+    res = evaluate_source_quality(source, evidence={"n_trials": 200})
+    ids = [w["id"] for w in res["warnings"]]
+    assert "selection_bias" in ids
+    w = next(x for x in res["warnings"] if x["id"] == "selection_bias")
+    assert w["value"]["n_trials"] == 200 and w["value"]["deflated_sharpe"] <= 0
+    assert res["metrics_snapshot"]["deflated_sharpe"] is not None
+
+
+def test_selection_bias_suppressed_by_strong_walk_forward():
+    """A strong, params-matched honest WFO confirms the edge OOS -> no warning."""
+    source = {"metrics": _good_metrics(), "walkforward": _good_walkforward()}
+    evidence = {"n_trials": 200, "wfo": {"efficiency": 0.85, "params_match": True,
+                                         "option_oos_net": 5000.0}}
+    res = evaluate_source_quality(source, evidence=evidence)
+    ids = [w["id"] for w in res["warnings"]]
+    assert "selection_bias" not in ids
+
+
+def test_selection_bias_not_assessed_below_trial_floor():
+    source = {"metrics": _good_metrics(), "walkforward": _good_walkforward()}
+    evidence = {"n_trials": 10, "option_evidence": {"net_pnl_value": 9000.0, "params_match": True}}
+    res = evaluate_source_quality(source, evidence=evidence)
+    ids = [w["id"] for w in res["warnings"]]
+    assert "selection_bias" not in ids
+
+
+def test_option_oos_negative_warns():
+    source = {"metrics": _good_metrics(), "walkforward": _good_walkforward()}
+    evidence = {"wfo": {"option_oos_net": -8200.0, "params_match": True}}
+    res = evaluate_source_quality(source, evidence=evidence)
+    ids = [w["id"] for w in res["warnings"]]
+    assert "option_oos_negative" in ids
+    assert res["metrics_snapshot"]["option_oos_net"] == -8200.0
+
+
+def test_option_oos_positive_no_warning():
+    source = {"metrics": _good_metrics(), "walkforward": _good_walkforward()}
+    evidence = {"option_evidence": {"kind": "rerank", "net_pnl_value": 15000.0, "params_match": True}}
+    res = evaluate_source_quality(source, evidence=evidence)
+    ids = [w["id"] for w in res["warnings"]]
+    assert "option_oos_negative" not in ids and "missing_option_oos" not in ids
+
+
+def test_missing_option_oos_warns_when_no_evidence():
+    source = {"metrics": _good_metrics(), "walkforward": _good_walkforward()}
+    res = evaluate_source_quality(source, evidence={"n_trials": 10})  # no option evidence at all
+    ids = [w["id"] for w in res["warnings"]]
+    assert "missing_option_oos" in ids
+
+
+def test_thresholds_override_relaxes_selection_bias():
+    """The user can preview the gate at a looser setting (tunable, not hard-coded)."""
+    source = {"metrics": _good_metrics(), "walkforward": _good_walkforward()}
+    th = QualityThresholds.from_overrides(selection_bias_min_trials=1000)
+    evidence = {"n_trials": 200, "option_evidence": {"net_pnl_value": 9000.0, "params_match": True}}
+    res = evaluate_source_quality(source, evidence=evidence, thresholds=th)
+    ids = [w["id"] for w in res["warnings"]]
+    assert "selection_bias" not in ids

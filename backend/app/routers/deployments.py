@@ -14,7 +14,7 @@ from app.strategies.base import get_registry
 from app.strategy_deployments import build_deployment_doc
 from app.live_friction import FrictionConfig
 from app.strategy_source_hash import hash_strategy_source, build_repin_update
-from app.deployment_quality import evaluate_source_quality
+from app.deployment_quality import evaluate_source_quality, QualityThresholds
 from app.forward_metrics import (
     compute_forward_metrics_for_deployment,
     compute_forward_metrics_for_deployments,
@@ -34,6 +34,120 @@ from app.schemas import DeploymentCreateReq
 api = APIRouter()
 
 
+async def _gather_deployment_evidence(
+    db: Any,
+    *,
+    strategy_id: str,
+    instrument: str,
+    params: Dict[str, Any],
+    source_doc: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Gather out-of-sample + selection-bias evidence for a deployment source.
+
+    Shared by /deployments/readiness (display) and the quality gate (warnings)
+    so the two never drift: the latest honest walk-forward (efficiency,
+    consistency, option-rupee OOS net), the exact-params option-rupee evidence
+    (re-rank job or option backtest), and the optimizer trial count behind the
+    chosen params (the selection-bias signal for the deflated Sharpe).
+    """
+    strategy_id = strategy_id or ""
+    instrument = (instrument or "").upper()
+    params = params or {}
+
+    # Honest-WFO evidence: latest completed walk-forward for this strategy.
+    wfo_job = await db.optimization_jobs.find_one(
+        {"kind": "wfo", "strategy_id": strategy_id, "instrument": instrument, "status": "done"},
+        {"_id": 0, "id": 1, "finished_at": 1, "best_params": 1,
+         "wfo.efficiency": 1, "wfo.consistency": 1, "wfo.option_oos.net_pnl_value": 1},
+        sort=[("finished_at", -1)],
+    )
+    wfo_evidence = None
+    if wfo_job:
+        w = wfo_job.get("wfo") or {}
+        consistency = w.get("consistency") or {}
+        option_oos = w.get("option_oos") or {}
+        wfo_evidence = {
+            "job_id": wfo_job.get("id"),
+            "finished_at": wfo_job.get("finished_at"),
+            "efficiency": w.get("efficiency"),
+            "windows": consistency.get("windows"),
+            "positive_windows": consistency.get("positive_windows"),
+            "consistency_pct": consistency.get("consistency_pct"),
+            "option_oos_net": option_oos.get("net_pnl_value"),
+            "params_match": (wfo_job.get("best_params") or {}) == params,
+        }
+
+    # Option-rupee evidence: exact-params re-rank job, else option backtest run.
+    option_evidence = None
+    rerank_jobs = await db.optimization_jobs.find(
+        {"kind": {"$ne": "wfo"}, "strategy_id": strategy_id, "instrument": instrument,
+         "status": "done", "evaluation_mode": "option_rerank"},
+        {"_id": 0, "id": 1, "finished_at": 1, "best_params": 1, "rerank.ranked": {"$slice": 1}},
+    ).sort("finished_at", -1).limit(25).to_list(length=25)
+    for job in rerank_jobs:
+        top = ((job.get("rerank") or {}).get("ranked") or [{}])[0]
+        match = (job.get("best_params") or {}) == params
+        if option_evidence is None or (match and not option_evidence.get("params_match")):
+            option_evidence = {
+                "kind": "rerank", "id": job.get("id"), "at": job.get("finished_at"),
+                "net_pnl_value": top.get("option_pnl_value"),
+                "win_rate": top.get("option_win_rate"),
+                "paired_trade_count": top.get("paired_trade_count"),
+                "params_match": match,
+            }
+        if option_evidence.get("params_match"):
+            break
+    if option_evidence is None or not option_evidence.get("params_match"):
+        runs = await db.backtest_runs.find(
+            {"config.strategy_id": strategy_id, "config.instrument": instrument,
+             "config.option_backtest.enabled": True, "option_backtest.metrics": {"$ne": None}},
+            {"_id": 0, "id": 1, "created_at": 1, "config.params": 1, "option_backtest.metrics": 1},
+        ).sort("created_at", -1).limit(25).to_list(length=25)
+        for run in runs:
+            metrics = (run.get("option_backtest") or {}).get("metrics") or {}
+            match = (run.get("config") or {}).get("params") == params
+            candidate = {
+                "kind": "backtest_run", "id": run.get("id"), "at": run.get("created_at"),
+                "net_pnl_value": metrics.get("total_option_pnl_value"),
+                "win_rate": metrics.get("win_rate"),
+                "paired_trade_count": metrics.get("paired_trade_count"),
+                "params_match": match,
+            }
+            if option_evidence is None or (match and not option_evidence.get("params_match")):
+                option_evidence = candidate
+            if match:
+                break
+
+    # Optimizer trial count behind the chosen params (selection-bias signal).
+    n_trials = None
+    job_id = None
+    if source_doc:
+        job_id = source_doc.get("optimization_job_id") or (source_doc.get("config") or {}).get("optimization_job_id")
+    if job_id:
+        job = await db.optimization_jobs.find_one(
+            {"id": job_id}, {"_id": 0, "n_trials_completed": 1, "n_trials_total": 1})
+        if job:
+            n_trials = job.get("n_trials_completed") or job.get("n_trials_total")
+    if not n_trials:
+        cand = await db.optimization_jobs.find(
+            {"kind": {"$ne": "wfo"}, "strategy_id": strategy_id, "instrument": instrument, "status": "done"},
+            {"_id": 0, "best_params": 1, "n_trials_completed": 1, "n_trials_total": 1},
+        ).sort("finished_at", -1).limit(25).to_list(length=25)
+        for job in cand:
+            if (job.get("best_params") or {}) == params:
+                n_trials = job.get("n_trials_completed") or job.get("n_trials_total")
+                break
+
+    return {
+        "strategy_id": strategy_id,
+        "instrument": instrument,
+        "params": params,
+        "wfo": wfo_evidence,
+        "option_evidence": option_evidence,
+        "n_trials": int(n_trials) if n_trials else None,
+    }
+
+
 @api.get("/deployments")
 async def list_deployments(status: Optional[str] = Query(None), limit: int = Query(50, le=200)):
     q: Dict[str, Any] = {}
@@ -47,10 +161,21 @@ async def list_deployments(status: Optional[str] = Query(None), limit: int = Que
 async def create_deployment(req: DeploymentCreateReq):
     db = get_db()
     source = await _load_deployment_source(db, req.source_type, req.source_id)
-    # Quality gate (slice 9): warn but never silently allow problematic backtests.
-    # If any warning is present, the user must acknowledge by setting
-    # acknowledged_warnings=true in the create request.
-    quality = evaluate_source_quality(source)
+    # Quality gate (slice 9 + gate-rigor pass): warn but never silently allow
+    # problematic backtests. The gate now also consumes out-of-sample evidence
+    # (selection-bias-adjusted Sharpe over the optimizer search + option-rupee
+    # OOS) so an overfit / premium-bleeding strategy is flagged, not just
+    # in-sample spot stability. If any warning is present, the user must
+    # acknowledge by setting acknowledged_warnings=true in the create request.
+    _cfg = source.get("config") or {}
+    evidence = await _gather_deployment_evidence(
+        db,
+        strategy_id=_cfg.get("strategy_id") or source.get("strategy_id") or "",
+        instrument=_cfg.get("instrument") or source.get("instrument") or "",
+        params=_cfg.get("params") or source.get("params") or {},
+        source_doc=source,
+    )
+    quality = evaluate_source_quality(source, evidence=evidence)
     if quality["acknowledgment_required"] and not req.acknowledged_warnings:
         warning_summary = "; ".join(w["label"] for w in quality["warnings"])
         raise HTTPException(
@@ -141,15 +266,37 @@ async def deployment_preflight_route(
 async def deployment_quality_route(
     source_type: str = Query(..., description="preset or backtest_run"),
     source_id: str = Query(..., description="preset name or backtest run id"),
+    min_sharpe: Optional[float] = Query(None, description="override weak-Sharpe threshold"),
+    min_trade_count: Optional[int] = Query(None, description="override low-trade-count threshold"),
+    selection_bias_min_trials: Optional[int] = Query(None, description="trials before selection-bias is assessed"),
+    min_deflated_sharpe: Optional[float] = Query(None, description="deflated-Sharpe warn threshold"),
 ):
     """Quality / acknowledgment check for a deployment source.
 
-    Returns warnings (overfit, low trade count, weak Sharpe, missing walkforward,
-    large drawdown). Never blocks creation by itself - the user must pass
+    Returns warnings (overfit, low trade count, weak Sharpe, missing walk-forward,
+    large drawdown, plus selection-bias and option-rupee-OOS checks from the
+    optimizer evidence). Never blocks creation by itself - the user must pass
     `acknowledged_warnings=true` on the create request when warnings are present.
+    Thresholds are tunable via the optional query params so the user can preview
+    the gate at stricter/looser settings.
     """
-    source = await _load_deployment_source(get_db(), source_type, source_id)
-    return serialize_doc(evaluate_source_quality(source))
+    db = get_db()
+    source = await _load_deployment_source(db, source_type, source_id)
+    cfg = source.get("config") or {}
+    evidence = await _gather_deployment_evidence(
+        db,
+        strategy_id=cfg.get("strategy_id") or source.get("strategy_id") or "",
+        instrument=cfg.get("instrument") or source.get("instrument") or "",
+        params=cfg.get("params") or source.get("params") or {},
+        source_doc=source,
+    )
+    thresholds = QualityThresholds.from_overrides(
+        min_sharpe=min_sharpe,
+        min_trade_count=min_trade_count,
+        selection_bias_min_trials=selection_bias_min_trials,
+        min_deflated_sharpe=min_deflated_sharpe,
+    )
+    return serialize_doc(evaluate_source_quality(source, evidence=evidence, thresholds=thresholds))
 
 
 @api.get("/deployments/readiness")
@@ -172,76 +319,9 @@ async def deployment_readiness(
     instrument = (cfg.get("instrument") or source.get("instrument") or "").upper()
     params = cfg.get("params") or source.get("params") or {}
 
-    # --- Honest-WFO evidence: latest completed walk-forward for this strategy ---
-    wfo_job = await db.optimization_jobs.find_one(
-        {"kind": "wfo", "strategy_id": strategy_id, "instrument": instrument, "status": "done"},
-        {"_id": 0, "id": 1, "finished_at": 1, "best_params": 1,
-         "wfo.efficiency": 1, "wfo.consistency": 1, "wfo.option_oos.net_pnl_value": 1},
-        sort=[("finished_at", -1)],
+    evidence = await _gather_deployment_evidence(
+        db, strategy_id=strategy_id, instrument=instrument, params=params, source_doc=source,
     )
-    wfo_evidence = None
-    if wfo_job:
-        w = wfo_job.get("wfo") or {}
-        consistency = w.get("consistency") or {}
-        option_oos = w.get("option_oos") or {}
-        wfo_evidence = {
-            "job_id": wfo_job.get("id"),
-            "finished_at": wfo_job.get("finished_at"),
-            "efficiency": w.get("efficiency"),
-            "windows": consistency.get("windows"),
-            "positive_windows": consistency.get("positive_windows"),
-            "consistency_pct": consistency.get("consistency_pct"),
-            "option_oos_net": option_oos.get("net_pnl_value"),
-            "params_match": (wfo_job.get("best_params") or {}) == params,
-        }
-
-    # --- Option-rupee evidence: exact-params re-rank job or option backtest ---
-    option_evidence = None
-    rerank_jobs = await db.optimization_jobs.find(
-        {"kind": {"$ne": "wfo"}, "strategy_id": strategy_id, "instrument": instrument,
-         "status": "done", "evaluation_mode": "option_rerank"},
-        {"_id": 0, "id": 1, "finished_at": 1, "best_params": 1, "rerank.ranked": {"$slice": 1}},
-    ).sort("finished_at", -1).limit(25).to_list(length=25)
-    for job in rerank_jobs:
-        # rerank = {top_k, evaluated, option_config, ranked: [...]}; the ranked
-        # list is sorted by option net rupee, so row 0 is the option-best.
-        top = ((job.get("rerank") or {}).get("ranked") or [{}])[0]
-        match = (job.get("best_params") or {}) == params
-        if option_evidence is None or (match and not option_evidence.get("params_match")):
-            option_evidence = {
-                "kind": "rerank",
-                "id": job.get("id"),
-                "at": job.get("finished_at"),
-                "net_pnl_value": top.get("option_pnl_value"),
-                "win_rate": top.get("option_win_rate"),
-                "paired_trade_count": top.get("paired_trade_count"),
-                "params_match": match,
-            }
-        if option_evidence.get("params_match"):
-            break
-    if option_evidence is None or not option_evidence.get("params_match"):
-        runs = await db.backtest_runs.find(
-            {"config.strategy_id": strategy_id, "config.instrument": instrument,
-             "config.option_backtest.enabled": True, "option_backtest.metrics": {"$ne": None}},
-            {"_id": 0, "id": 1, "created_at": 1, "config.params": 1, "option_backtest.metrics": 1},
-        ).sort("created_at", -1).limit(25).to_list(length=25)
-        for run in runs:
-            metrics = (run.get("option_backtest") or {}).get("metrics") or {}
-            match = (run.get("config") or {}).get("params") == params
-            candidate = {
-                "kind": "backtest_run",
-                "id": run.get("id"),
-                "at": run.get("created_at"),
-                "net_pnl_value": metrics.get("total_option_pnl_value"),
-                "win_rate": metrics.get("win_rate"),
-                "paired_trade_count": metrics.get("paired_trade_count"),
-                "params_match": match,
-            }
-            if option_evidence is None or (match and not option_evidence.get("params_match")):
-                option_evidence = candidate
-            if match:
-                break
-
     return serialize_doc({
         "source": {
             "type": source_type,
@@ -250,8 +330,9 @@ async def deployment_readiness(
             "instrument": instrument,
             "has_execution": bool(cfg.get("execution")),
         },
-        "wfo": wfo_evidence,
-        "option_evidence": option_evidence,
+        "wfo": evidence["wfo"],
+        "option_evidence": evidence["option_evidence"],
+        "n_trials": evidence["n_trials"],
     })
 
 
