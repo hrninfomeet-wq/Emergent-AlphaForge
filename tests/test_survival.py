@@ -3,7 +3,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 
-from app.survival import SurvivalConfig, calmar, CALMAR_DD_FLOOR_PCT
+from app.survival import SurvivalConfig, calmar, CALMAR_DD_FLOOR_PCT, _finite
 
 
 def test_survival_config_from_dict_defaults_and_overrides():
@@ -22,3 +22,8 @@ def test_calmar_floors_denominator_at_meaningful_dd():
     assert calmar(150.0, -0.5) == 150.0 / CALMAR_DD_FLOOR_PCT
     assert calmar(150.0, 0.0) == 150.0 / CALMAR_DD_FLOOR_PCT
     assert calmar(-40.0, -20.0) < 0
+
+
+def test_finite_drops_nonfinite_and_nonnumeric():
+    assert _finite([1.0, None, float("nan"), float("inf"), float("-inf"), "abc", 2]) == [1.0, 2.0]
+    assert _finite([]) == []
