@@ -1084,7 +1084,7 @@ function CurrentJobView({ job, onApply, onStop, onPause, onResume, onOpenBest })
   const bsf = job.best_so_far || {};
   const isWfo = job.kind === "wfo";
   const status = job.status;
-  const finished = status === "done";
+  const finished = status === "done" || status === "done_no_survivor";
   const cancelled = status === "cancelled";
   const failed = status === "failed";
   const paused = status === "paused";
@@ -1225,7 +1225,7 @@ function CurrentJobView({ job, onApply, onStop, onPause, onResume, onOpenBest })
         ) : (
           <>
             {job.rerank ? (
-              <RerankResults rerank={job.rerank} />
+              <RerankResults rerank={job.rerank} survivalSummary={job.survival_summary ?? job.rerank?.survival_summary} jobStatus={job.status} />
             ) : (
               <>
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
@@ -1537,6 +1537,7 @@ function StatusBadge({ status }) {
     running: { c: "bg-info/20 text-info border-info/50 animate-pulse", label: "RUNNING" },
     analyzing: { c: "bg-amber-950 text-amber-200 border-amber-900 animate-pulse", label: "ANALYZING" },
     done: { c: "bg-emerald-950 text-emerald-200 border-emerald-900", label: "DONE" },
+    done_no_survivor: { c: "bg-rose-950 text-rose-200 border-rose-900", label: "NO SURVIVOR" },
     cancelled: { c: "bg-amber-950 text-amber-200 border-amber-900", label: "CANCELLED" },
     paused: { c: "bg-sky-950 text-sky-200 border-sky-900", label: "PAUSED" },
     interrupted: { c: "bg-orange-950 text-orange-200 border-orange-900", label: "INTERRUPTED" },
@@ -1695,12 +1696,103 @@ function HeatmapCard({ heatmap }) {
   );
 }
 
-function RerankResults({ rerank }) {
+// Inline SVG scatter: x = max drawdown %, y = total return %, coloured by survived.
+function SurvivalScatter({ ranked }) {
+  const points = ranked
+    .filter((r) => r.survival)
+    .map((r) => ({
+      x: Math.abs(r.survival.max_dd_pct),
+      y: r.survival.total_return_pct,
+      survived: r.survival.survived,
+    }));
+  if (points.length === 0) return null;
+
+  const W = 460, H = 300, PL = 48, PR = 16, PT = 24, PB = 36;
+  const IW = W - PL - PR;
+  const IH = H - PT - PB;
+
+  const xs = points.map((p) => p.x);
+  const ys = points.map((p) => p.y);
+  const xMin = 0;
+  const xMax = Math.max(...xs) * 1.1 || 10;
+  const yMin = Math.min(0, ...ys) * 1.1 || -10;
+  const yMax = Math.max(0, ...ys) * 1.1 || 10;
+
+  const toSvgX = (v) => PL + ((v - xMin) / (xMax - xMin)) * IW;
+  const toSvgY = (v) => PT + IH - ((v - yMin) / (yMax - yMin)) * IH;
+
+  const zeroY = toSvgY(0);
+
+  // Simple axis tick labels
+  const xTicks = [0, xMax * 0.25, xMax * 0.5, xMax * 0.75, xMax].map((v) => ({
+    v, sx: toSvgX(v),
+  }));
+  const yRange = yMax - yMin;
+  const yTicks = [yMin, yMin + yRange * 0.25, yMin + yRange * 0.5, yMin + yRange * 0.75, yMax].map((v) => ({
+    v, sy: toSvgY(v),
+  }));
+
+  return (
+    <div className="rounded-lg border border-line bg-bg-1 p-3" data-testid="opt-survival-scatter">
+      <div className="text-xs font-semibold uppercase tracking-wider text-dim mb-2">Return vs Drawdown (finalists)</div>
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ maxHeight: 300 }}>
+        {/* zero line */}
+        <line x1={PL} y1={zeroY} x2={W - PR} y2={zeroY} stroke="currentColor" strokeOpacity="0.15" strokeDasharray="4 3" />
+        {/* axes */}
+        <line x1={PL} y1={PT} x2={PL} y2={PT + IH} stroke="currentColor" strokeOpacity="0.3" />
+        <line x1={PL} y1={PT + IH} x2={W - PR} y2={PT + IH} stroke="currentColor" strokeOpacity="0.3" />
+        {/* x ticks */}
+        {xTicks.map(({ v, sx }, i) => (
+          <g key={i}>
+            <line x1={sx} y1={PT + IH} x2={sx} y2={PT + IH + 4} stroke="currentColor" strokeOpacity="0.3" />
+            <text x={sx} y={PT + IH + 14} textAnchor="middle" fontSize="9" fill="currentColor" fillOpacity="0.5">{v.toFixed(1)}</text>
+          </g>
+        ))}
+        {/* y ticks */}
+        {yTicks.map(({ v, sy }, i) => (
+          <g key={i}>
+            <line x1={PL - 4} y1={sy} x2={PL} y2={sy} stroke="currentColor" strokeOpacity="0.3" />
+            <text x={PL - 6} y={sy + 3} textAnchor="end" fontSize="9" fill="currentColor" fillOpacity="0.5">{v.toFixed(1)}</text>
+          </g>
+        ))}
+        {/* axis labels */}
+        <text x={PL + IW / 2} y={H - 2} textAnchor="middle" fontSize="10" fill="currentColor" fillOpacity="0.6">Max DD %</text>
+        <text x={10} y={PT + IH / 2} textAnchor="middle" fontSize="10" fill="currentColor" fillOpacity="0.6" transform={`rotate(-90, 10, ${PT + IH / 2})`}>Return %</text>
+        {/* data points */}
+        {points.map((p, i) => (
+          <circle
+            key={i}
+            cx={toSvgX(p.x)}
+            cy={toSvgY(p.y)}
+            r={5}
+            fill={p.survived ? "#10b981" : "#f43f5e"}
+            fillOpacity={0.75}
+            stroke={p.survived ? "#10b981" : "#f43f5e"}
+            strokeWidth={1}
+          />
+        ))}
+      </svg>
+      <div className="flex items-center gap-4 mt-1 text-[10px] text-dimmer">
+        <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-full bg-emerald-500" />Survived</span>
+        <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-full bg-rose-500" />Disqualified</span>
+      </div>
+    </div>
+  );
+}
+
+function RerankResults({ rerank, survivalSummary, jobStatus }) {
   const ranked = rerank?.ranked || [];
+
+  // Zero-survivor banner — shown even when ranked list is empty (done_no_survivor path).
+  const noSurvivor = jobStatus === "done_no_survivor" || survivalSummary?.survivors === 0;
+
   if (ranked.length === 0) {
     return (
-      <div className="rounded-lg border border-warning/40 bg-warning/10 p-3 text-xs text-warning" data-testid="opt-rerank-empty">
-        Option re-rank produced no paired results — likely missing option data for this window/strikes. Check option-data coverage in the Data Warehouse, or widen moneyness/DTE.
+      <div className="space-y-2">
+        {noSurvivor && <NoSurvivorBanner summary={survivalSummary} />}
+        <div className="rounded-lg border border-warning/40 bg-warning/10 p-3 text-xs text-warning" data-testid="opt-rerank-empty">
+          Option re-rank produced no paired results — likely missing option data for this window/strikes. Check option-data coverage in the Data Warehouse, or widen moneyness/DTE.
+        </div>
       </div>
     );
   }
@@ -1709,50 +1801,97 @@ function RerankResults({ rerank }) {
     const s = n < 0 ? "-" : "";
     return `${s}₹${Math.abs(n).toLocaleString("en-IN", { maximumFractionDigits: 0 })}`;
   };
+
+  // Check whether any finalist has survival data — determines whether to show badge column + scatter.
+  const hasSurvivalData = ranked.some((r) => r.survival);
+
   return (
-    <div className="rounded-lg border border-line bg-bg-1" data-testid="opt-rerank-results">
-      <div className="px-3 py-2 border-b border-line flex items-center gap-2">
-        <Trophy className="w-3.5 h-3.5 text-info" />
-        <div className="text-xs font-semibold uppercase tracking-wider text-dim">Option Re-rank · top {rerank.evaluated} by net ₹</div>
+    <div className="space-y-2">
+      {noSurvivor && <NoSurvivorBanner summary={survivalSummary} />}
+      <div className="rounded-lg border border-line bg-bg-1" data-testid="opt-rerank-results">
+        <div className="px-3 py-2 border-b border-line flex items-center gap-2">
+          <Trophy className="w-3.5 h-3.5 text-info" />
+          <div className="text-xs font-semibold uppercase tracking-wider text-dim">Option Re-rank · top {rerank.evaluated} by net ₹</div>
+        </div>
+        <div className="px-3 py-2 text-[10px] text-dimmer leading-snug border-b border-line">
+          Each candidate's spot signals were paired with real {String(rerank.option_config?.moneyness || "ATM").toUpperCase()} option candles and scored on net rupee P&L (delta/theta/costs). Ranked best-first — this is the realistic ranking.
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-dim border-b border-line">
+                <th className="text-left p-2">#</th>
+                <th className="text-right p-2">Net ₹ (option)</th>
+                <th className="text-right p-2">Opt WR</th>
+                <th className="text-right p-2">Paired</th>
+                <th className="text-right p-2">Spot obj</th>
+                <th className="text-right p-2">Coverage</th>
+                {hasSurvivalData && <th className="text-left p-2">Survival</th>}
+                <th className="text-left p-2">Params</th>
+              </tr>
+            </thead>
+            <tbody>
+              {ranked.map((r, i) => {
+                const cov = r.coverage || {};
+                const covPct = cov.spot_trade_count ? Math.round((cov.paired_trade_count / cov.spot_trade_count) * 100) : null;
+                const pnl = Number(r.option_pnl_value || 0);
+                const sv = r.survival;
+                return (
+                  <tr key={i} className={`border-b border-line ${i === 0 ? "bg-info/5" : ""}`}>
+                    <td className="p-2 font-mono">{i + 1}</td>
+                    <td className={`p-2 font-mono text-right font-semibold ${pnl >= 0 ? "text-success" : "text-danger"}`}>{fmtRs(pnl)}</td>
+                    <td className="p-2 font-mono text-right">{fmtPct(r.option_win_rate)}</td>
+                    <td className="p-2 font-mono text-right">{fmtInt(r.paired_trade_count)}/{fmtInt(r.spot_trade_count)}</td>
+                    <td className="p-2 font-mono text-right text-dim">{fmtNum(r.spot_objective)}</td>
+                    <td className={`p-2 font-mono text-right ${covPct != null && covPct < 80 ? "text-warning" : "text-dim"}`}>{covPct != null ? `${covPct}%` : "–"}</td>
+                    {hasSurvivalData && (
+                      <td className="p-2">
+                        {sv ? (
+                          sv.survived ? (
+                            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded border bg-emerald-950 text-emerald-200 border-emerald-900 whitespace-nowrap" data-testid="opt-survival-badge-survived">
+                              Survived · Calmar {Number(sv.calmar).toFixed(2)} · DD {Math.abs(sv.max_dd_pct).toFixed(1)}% · RoR {Number(sv.ror_pct).toFixed(1)}%
+                            </span>
+                          ) : (
+                            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded border bg-rose-950 text-rose-200 border-rose-900 whitespace-nowrap" data-testid="opt-survival-badge-disqualified">
+                              Disqualified · {sv.reason}
+                            </span>
+                          )
+                        ) : (
+                          <span className="text-[10px] text-dimmer">—</span>
+                        )}
+                      </td>
+                    )}
+                    <td className="p-2 font-mono text-[10px] text-dim">
+                      {Object.entries(r.params).slice(0, 4).map(([k, v]) => `${k}=${typeof v === "number" ? v.toFixed(1) : v}`).join("  ")}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       </div>
-      <div className="px-3 py-2 text-[10px] text-dimmer leading-snug border-b border-line">
-        Each candidate's spot signals were paired with real {String(rerank.option_config?.moneyness || "ATM").toUpperCase()} option candles and scored on net rupee P&L (delta/theta/costs). Ranked best-first — this is the realistic ranking.
-      </div>
-      <div className="overflow-x-auto">
-        <table className="w-full text-xs">
-          <thead>
-            <tr className="text-dim border-b border-line">
-              <th className="text-left p-2">#</th>
-              <th className="text-right p-2">Net ₹ (option)</th>
-              <th className="text-right p-2">Opt WR</th>
-              <th className="text-right p-2">Paired</th>
-              <th className="text-right p-2">Spot obj</th>
-              <th className="text-right p-2">Coverage</th>
-              <th className="text-left p-2">Params</th>
-            </tr>
-          </thead>
-          <tbody>
-            {ranked.map((r, i) => {
-              const cov = r.coverage || {};
-              const covPct = cov.spot_trade_count ? Math.round((cov.paired_trade_count / cov.spot_trade_count) * 100) : null;
-              const pnl = Number(r.option_pnl_value || 0);
-              return (
-                <tr key={i} className={`border-b border-line ${i === 0 ? "bg-info/5" : ""}`}>
-                  <td className="p-2 font-mono">{i + 1}</td>
-                  <td className={`p-2 font-mono text-right font-semibold ${pnl >= 0 ? "text-success" : "text-danger"}`}>{fmtRs(pnl)}</td>
-                  <td className="p-2 font-mono text-right">{fmtPct(r.option_win_rate)}</td>
-                  <td className="p-2 font-mono text-right">{fmtInt(r.paired_trade_count)}/{fmtInt(r.spot_trade_count)}</td>
-                  <td className="p-2 font-mono text-right text-dim">{fmtNum(r.spot_objective)}</td>
-                  <td className={`p-2 font-mono text-right ${covPct != null && covPct < 80 ? "text-warning" : "text-dim"}`}>{covPct != null ? `${covPct}%` : "–"}</td>
-                  <td className="p-2 font-mono text-[10px] text-dim">
-                    {Object.entries(r.params).slice(0, 4).map(([k, v]) => `${k}=${typeof v === "number" ? v.toFixed(1) : v}`).join("  ")}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+      {hasSurvivalData && <SurvivalScatter ranked={ranked} />}
+    </div>
+  );
+}
+
+function NoSurvivorBanner({ summary }) {
+  return (
+    <div className="rounded-lg border border-rose-500/40 bg-rose-500/10 p-3 text-xs text-rose-300 space-y-2" data-testid="opt-no-survivor">
+      <div className="font-semibold text-rose-200">No strategy survived your constraints.</div>
+      {summary?.reason_counts && Object.keys(summary.reason_counts).length > 0 && (
+        <div className="space-y-0.5 text-[11px] text-rose-300/80">
+          {Object.entries(summary.reason_counts).map(([reason, n]) => (
+            <div key={reason} className="font-mono">{reason}: {n}</div>
+          ))}
+        </div>
+      )}
+      {summary?.suggestions && summary.suggestions.length > 0 && (
+        <ul className="list-disc list-inside space-y-0.5 text-[11px] text-rose-300/80">
+          {summary.suggestions.map((s, i) => <li key={i}>{s}</li>)}
+        </ul>
+      )}
     </div>
   );
 }
