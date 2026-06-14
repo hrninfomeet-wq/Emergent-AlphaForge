@@ -119,3 +119,82 @@ def monte_carlo_risk_of_ruin(
     se = math.sqrt(max(p * (1.0 - p), 1e-9) / float(n_paths))
     ci_high = min(1.0, p + 1.96 * se)
     return {"ror_pct": round(p * 100.0, 3), "ror_ci_high": round(ci_high * 100.0, 3), "n_days": n_days}
+
+
+def daily_from_curve(curve: Sequence[Dict[str, Any]]) -> List[float]:
+    """Bucket a rupee equity curve's per-trade pnl_value into per-IST-day totals."""
+    by_day: Dict[str, float] = {}
+    for pt in curve:
+        try:
+            ts = int(pt.get("ts"))
+            pnl = float(pt.get("pnl_value", 0.0))
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(pnl):
+            continue
+        d = (datetime.fromtimestamp(ts / 1000, tz=timezone.utc) + _IST).strftime("%Y-%m-%d")
+        by_day[d] = by_day.get(d, 0.0) + pnl
+    return list(by_day.values())
+
+
+def survival_verdict(
+    *,
+    portfolio: Dict[str, Any],
+    trade_pnls: Sequence[Any],
+    cfg: SurvivalConfig,
+    coverage: Dict[str, Any],
+    capital: float,
+    seed: int = 42,
+) -> Dict[str, Any]:
+    """Decide whether one finalist's RUPEE equity curve SURVIVES. Guards run
+    first; then the gates in priority order: absolute floor -> DD% -> RoR.
+    `survived` reflects SAFETY only; the caller additionally requires
+    total_return_pct > 0 before promoting a survivor.
+    """
+    pnls = _finite(trade_pnls)
+    n = len(pnls)
+    spot_ct = int((coverage or {}).get("spot_trade_count", 0) or 0)
+    paired_ct = int((coverage or {}).get("paired_trade_count", n) or 0)
+    max_dd_pct = portfolio.get("max_drawdown_pct")
+    total_return_pct = portfolio.get("total_return_pct")
+    curve = portfolio.get("curve") or []
+
+    base = {
+        "survived": False, "calmar": None, "ror_pct": None, "ror_ci_high": None,
+        "min_equity": None, "max_dd_pct": max_dd_pct,
+        "total_return_pct": total_return_pct,
+        "insufficient_sample": False, "low_coverage": False, "reason": None,
+    }
+
+    # --- Guards (fail-closed) ---
+    if n == 0:
+        return {**base, "insufficient_sample": True, "reason": "no_trades"}
+    if max_dd_pct is None or total_return_pct is None or not math.isfinite(float(total_return_pct)):
+        return {**base, "reason": "non_finite_metrics"}
+    if spot_ct > 0 and (paired_ct / spot_ct) < MIN_COVERAGE:
+        return {**base, "low_coverage": True, "reason": "low_coverage"}
+
+    cal = calmar(float(total_return_pct), float(max_dd_pct))
+    base["calmar"] = round(cal, 4)
+
+    eqs = _finite([pt.get("equity_value") for pt in curve])
+    min_equity = min(eqs) if eqs else float(capital)
+    base["min_equity"] = round(min_equity, 2)
+
+    # 1. PRIMARY — absolute equity floor
+    if min_equity <= cfg.min_equity:
+        return {**base, "reason": "equity_floor"}
+    # 2. Drawdown-% cap (MAGNITUDE compare — max_dd_pct is negative)
+    if abs(float(max_dd_pct)) > cfg.max_drawdown_pct:
+        return {**base, "reason": "max_drawdown"}
+    # 3. Risk-of-ruin (needs a tail-sized sample)
+    if n < MIN_TRADES_FOR_RUIN:
+        return {**base, "insufficient_sample": True, "reason": "insufficient_sample"}
+    daily = daily_from_curve(curve)
+    ror = monte_carlo_risk_of_ruin(daily, capital=capital, ruin_floor=cfg.ruin_floor, seed=seed)
+    base["ror_pct"] = ror["ror_pct"]
+    base["ror_ci_high"] = ror["ror_ci_high"]
+    if ror["ror_ci_high"] > cfg.max_ror_pct:
+        return {**base, "reason": "risk_of_ruin"}
+
+    return {**base, "survived": True, "reason": "ok"}

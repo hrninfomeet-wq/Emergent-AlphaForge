@@ -62,3 +62,99 @@ def test_ror_drops_nonfinite_days():
     r = monte_carlo_risk_of_ruin([float("nan"), 10.0, float("inf"), -5.0], 1000, 0,
                                  n_paths=500, seed=1)
     assert r["n_days"] == 2
+
+
+from app.survival import survival_verdict, daily_from_curve, MIN_TRADES_FOR_RUIN
+
+
+def _curve(equity_points):
+    out = []
+    prev = equity_points[0][1]
+    for ts, eq in equity_points:
+        out.append({"ts": ts, "equity_value": eq, "pnl_value": eq - prev,
+                    "drawdown_value": 0.0, "drawdown_pct": 0.0})
+        prev = eq
+    return out
+
+
+def _portfolio(curve, max_dd_pct, total_return_pct, capital=200_000):
+    return {"starting_capital": capital, "curve": curve,
+            "max_drawdown_pct": max_dd_pct, "total_return_pct": total_return_pct}
+
+
+def _cfg(**kw):
+    from app.survival import SurvivalConfig
+    base = dict(enabled=True, min_equity=0.0, max_drawdown_pct=35.0, max_ror_pct=5.0)
+    base.update(kw)
+    return SurvivalConfig.from_dict(base)
+
+
+def test_verdict_rejects_account_that_went_negative_PRIMARY_floor():
+    curve = _curve([(1, 200_000), (2, 80_000), (3, -49_130), (4, 50_000)])
+    trade_pnls = [120_000, -129_130, 99_130] * 40
+    port = _portfolio(curve, max_dd_pct=-30.0, total_return_pct=10.0)
+    v = survival_verdict(portfolio=port, trade_pnls=trade_pnls, cfg=_cfg(),
+                         coverage={"spot_trade_count": 120, "paired_trade_count": 120},
+                         capital=200_000)
+    assert v["survived"] is False
+    assert v["reason"] == "equity_floor"
+
+
+def test_verdict_drawdown_sign_regression():
+    curve = _curve([(1, 200_000), (2, 350_000), (3, 210_000)])
+    trade_pnls = [150_000, -140_000] * 60
+    port = _portfolio(curve, max_dd_pct=-40.0, total_return_pct=5.0)
+    v = survival_verdict(portfolio=port, trade_pnls=trade_pnls, cfg=_cfg(),
+                         coverage={"spot_trade_count": 120, "paired_trade_count": 120},
+                         capital=200_000)
+    assert v["survived"] is False
+    assert v["reason"] == "max_drawdown"
+
+
+def test_verdict_survives_clean_run():
+    curve = _curve([(1, 200_000), (2, 230_000), (3, 290_000), (4, 312_000)])
+    trade_pnls = [800.0] * 150
+    port = _portfolio(curve, max_dd_pct=-12.0, total_return_pct=56.0)
+    v = survival_verdict(portfolio=port, trade_pnls=trade_pnls, cfg=_cfg(),
+                         coverage={"spot_trade_count": 160, "paired_trade_count": 150},
+                         capital=200_000)
+    assert v["survived"] is True
+    assert v["calmar"] > 0
+
+
+def test_verdict_fails_low_coverage_hard():
+    curve = _curve([(1, 200_000), (2, 260_000)])
+    port = _portfolio(curve, max_dd_pct=-5.0, total_return_pct=30.0)
+    v = survival_verdict(portfolio=port, trade_pnls=[1000.0] * 150, cfg=_cfg(),
+                         coverage={"spot_trade_count": 300, "paired_trade_count": 150},
+                         capital=200_000)
+    assert v["survived"] is False
+    assert v["reason"] == "low_coverage"
+
+
+def test_verdict_fails_insufficient_sample():
+    curve = _curve([(1, 200_000), (2, 260_000)])
+    port = _portfolio(curve, max_dd_pct=-5.0, total_return_pct=30.0)
+    v = survival_verdict(portfolio=port, trade_pnls=[1000.0] * 10, cfg=_cfg(),
+                         coverage={"spot_trade_count": 10, "paired_trade_count": 10},
+                         capital=200_000)
+    assert v["survived"] is False
+    assert v["insufficient_sample"] is True
+
+
+def test_verdict_fails_empty_trades():
+    port = _portfolio([], max_dd_pct=0.0, total_return_pct=0.0)
+    v = survival_verdict(portfolio=port, trade_pnls=[], cfg=_cfg(),
+                         coverage={"spot_trade_count": 0, "paired_trade_count": 0},
+                         capital=200_000)
+    assert v["survived"] is False
+
+
+def test_daily_from_curve_buckets_by_ist_date():
+    day1a = 1_700_000_000_000
+    day1b = day1a + 60_000
+    day2 = day1a + 24 * 3600 * 1000
+    curve = [{"ts": day1a, "pnl_value": 100.0}, {"ts": day1b, "pnl_value": -40.0},
+             {"ts": day2, "pnl_value": 25.0}]
+    daily = daily_from_curve(curve)
+    assert sorted(daily) == sorted([60.0, 25.0])
