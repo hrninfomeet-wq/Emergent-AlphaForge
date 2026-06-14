@@ -142,6 +142,18 @@ def test_verdict_fails_insufficient_sample():
     assert v["insufficient_sample"] is True
 
 
+def test_verdict_rejects_nan_drawdown():
+    # A NaN max_dd_pct must NOT slip through: abs(nan) > cap is False, so without
+    # the non-finite guard a blown account could read survived=True.
+    curve = _curve([(1, 200_000), (2, 240_000)])
+    v = survival_verdict(portfolio=_portfolio(curve, max_dd_pct=float("nan"), total_return_pct=20.0),
+                         trade_pnls=[1000.0] * 150, cfg=_cfg(),
+                         coverage={"spot_trade_count": 150, "paired_trade_count": 150},
+                         capital=200_000)
+    assert v["survived"] is False
+    assert v["reason"] == "non_finite_metrics"
+
+
 def test_verdict_fails_empty_trades():
     port = _portfolio([], max_dd_pct=0.0, total_return_pct=0.0)
     v = survival_verdict(portfolio=port, trade_pnls=[], cfg=_cfg(),

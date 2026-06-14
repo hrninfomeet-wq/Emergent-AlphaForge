@@ -169,7 +169,11 @@ def survival_verdict(
     # --- Guards (fail-closed) ---
     if n == 0:
         return {**base, "insufficient_sample": True, "reason": "no_trades"}
-    if max_dd_pct is None or total_return_pct is None or not math.isfinite(float(total_return_pct)):
+    # max_dd_pct is None short-circuits before float(); a NaN max_dd_pct must be
+    # rejected here — abs(nan) > cap is False, so it would silently slip the DD gate.
+    if (max_dd_pct is None or total_return_pct is None
+            or not math.isfinite(float(total_return_pct))
+            or not math.isfinite(float(max_dd_pct))):
         return {**base, "reason": "non_finite_metrics"}
     if spot_ct > 0 and (paired_ct / spot_ct) < MIN_COVERAGE:
         return {**base, "low_coverage": True, "reason": "low_coverage"}
