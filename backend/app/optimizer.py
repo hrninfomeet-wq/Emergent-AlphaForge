@@ -595,7 +595,7 @@ async def _survival_eval_oos(
 async def _option_rerank(
     db, strategy, get_enriched, candidates: List[Dict[str, Any]],
     instrument: str, costs: bool, pretrade: Dict[str, Any], option_cfg: Dict[str, Any],
-) -> List[Dict[str, Any]]:
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Any]:  # (ranked, contracts, candles_df)
     """Stage 2: re-score the top-K spot candidates on REAL paired-option net
     rupee. Option contracts + candles are loaded from the DB ONCE (over the
     union of all candidates' needed strikes), then each candidate is simulated
