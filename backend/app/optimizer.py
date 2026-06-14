@@ -626,10 +626,10 @@ async def _option_rerank(
     all_ts = [int(t["entry_ts"]) for tr in cand_trades for t in tr if t.get("entry_ts") is not None]
     all_xt = [int(t["exit_ts"]) for tr in cand_trades for t in tr if t.get("exit_ts") is not None]
     if not all_ts:
-        return [{"params": c["params"], "spot_objective": c["objective_value"],
-                 "spot_metrics": c["metrics"], "option_pnl_value": 0.0, "option_pnl_pts": 0.0,
-                 "option_win_rate": 0.0, "paired_trade_count": 0, "spot_trade_count": 0,
-                 "coverage": {}} for c in candidates]
+        return ([{"params": c["params"], "spot_objective": c["objective_value"],
+                  "spot_metrics": c["metrics"], "option_pnl_value": 0.0, "option_pnl_pts": 0.0,
+                  "option_win_rate": 0.0, "paired_trade_count": 0, "spot_trade_count": 0,
+                  "coverage": {}} for c in candidates], [], pd.DataFrame())
 
     # 2. Load contracts once (windowed by the candidates' trade span + margin).
     contract_query: Dict[str, Any] = {"underlying": instrument}
@@ -718,7 +718,9 @@ async def _option_rerank(
         })
     # Rank by option net rupee; candidates with no paired trades sink to the bottom.
     ranked.sort(key=lambda r: (r["paired_trade_count"] > 0, r["option_pnl_value"]), reverse=True)
-    return ranked
+    # Also return the loaded contracts + candle frame so the survival evaluator can
+    # reuse the single (multi-million-row) option-candle load instead of re-querying.
+    return ranked, contracts, candles_df
 
 
 async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = False) -> None:
@@ -751,6 +753,8 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
         # can surface. Default off -> identical to the historical top-K selection.
         rerank_diversity = bool(payload.get("rerank_diversity", False))
         option_cfg = payload.get("option_config") or {}
+        # Capital-aware survival gate (off by default -> identical to legacy behavior).
+        survival = SurvivalConfig.from_dict(payload.get("survival_config"))
 
         strategy = get_registry().get(strategy_id)
         if not strategy:
@@ -962,19 +966,74 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
         # Two-stage option re-rank: re-score the top-K spot candidates on REAL
         # paired-option net rupee and pick the option-best as the final best.
         rerank_info = None
+        survival_summary = None  # defined for all paths (spot mode never enters the block below)
         if evaluation_mode == "option_rerank" and not cancelled_flag and sorted_trials:
             candidates = select_rerank_candidates(
                 sorted_trials, top_k=rerank_top_k, diversity=rerank_diversity)
             ranked: List[Dict[str, Any]] = []
+            rerank_contracts: List[Dict[str, Any]] = []
+            rerank_candles = pd.DataFrame()
             if candidates:
                 await _update_job(job_id, {"rerank_progress": {"stage": "option_rerank", "candidates": len(candidates)}})
                 try:
-                    ranked = await _option_rerank(get_db(), strategy, get_enriched, candidates,
-                                                  instrument, costs, pretrade, option_cfg)
+                    ranked, rerank_contracts, rerank_candles = await _option_rerank(
+                        get_db(), strategy, get_enriched, candidates,
+                        instrument, costs, pretrade, option_cfg)
                 except Exception as e:
                     log.warning(f"option re-rank failed: {e}")
                     ranked = []
-            if ranked and ranked[0]["paired_trade_count"] > 0:
+            if survival.enabled and ranked:
+                # Survival gate: evaluate each finalist's per-fold OOS rupee survival,
+                # keep PROFITABLE survivors, rank by the chosen objective. Reuses the
+                # contracts + candles already loaded by _option_rerank.
+                await _update_job(job_id, {"rerank_progress": {"stage": "survival", "candidates": len(ranked)}})
+                for r in ranked:
+                    try:
+                        merged = strategy.merged_params(r["params"])
+                        df_enr = get_enriched(merged)
+                        r["survival"] = await _survival_eval_oos(
+                            strategy, df_enr, merged, rerank_contracts, rerank_candles,
+                            instrument, costs, pretrade, option_cfg, survival)
+                    except Exception as e:
+                        log.warning(f"survival eval failed: {e}")
+                        r["survival"] = {"survived": False, "reason": "eval_error"}
+                survivors = [r for r in ranked if r.get("survival", {}).get("survived")
+                             and (r["survival"].get("total_return_pct") or 0) > 0]
+                if survival.objective == "calmar":
+                    survivors.sort(key=lambda r: (r["survival"].get("calmar") or -1e9, r["option_pnl_value"]), reverse=True)
+                else:
+                    survivors.sort(key=lambda r: (r["option_pnl_value"], r["survival"].get("calmar") or -1e9), reverse=True)
+                if survivors:
+                    best = survivors[0]
+                    best_so_far = {
+                        "value": (best["survival"].get("calmar") if survival.objective == "calmar"
+                                  else best["option_pnl_value"]),
+                        "params": best["params"],
+                        "metrics": {
+                            **(best.get("spot_metrics") or {}),
+                            "option_pnl_value": best["option_pnl_value"],
+                            "option_pnl_pts": best["option_pnl_pts"],
+                            "option_win_rate": best["option_win_rate"],
+                            "paired_trade_count": best["paired_trade_count"],
+                            "survival": best["survival"],
+                        },
+                        "trial_num": -1,
+                    }
+                    survival_summary = {"survivors": len(survivors), "evaluated": len(ranked),
+                                        "objective": survival.objective}
+                else:
+                    # Zero survivors: do NOT promote a disqualified candidate as "best".
+                    reasons: Dict[str, int] = {}
+                    for r in ranked:
+                        rs = r.get("survival", {}).get("reason", "unknown")
+                        reasons[rs] = reasons.get(rs, 0) + 1
+                    best_so_far = {"value": -1e9, "params": {}, "metrics": {}, "trial_num": -1}
+                    survival_summary = {
+                        "survivors": 0, "evaluated": len(ranked), "reason_counts": reasons,
+                        "suggestions": ["loosen max_drawdown_pct or max_ror_pct",
+                                        "widen parameter bounds / increase rerank_top_k",
+                                        "extend the date range for more OOS trades"]}
+            elif ranked and ranked[0]["paired_trade_count"] > 0:
                 best = ranked[0]
                 best_so_far = {
                     "value": best["option_pnl_value"],
@@ -995,6 +1054,7 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                 "evaluated": len(ranked),
                 "option_config": option_cfg,
                 "ranked": ranked[:50],
+                "survival_summary": survival_summary,
             }
 
         # Heatmap + robustness — spot-objective analyses; skipped on cancellation
@@ -1024,9 +1084,13 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                 option_config=(option_cfg if evaluation_mode == "option_rerank" else None),
             )
 
-        # Determine final status — cancelled if user cancelled before completion
+        # Determine final status — cancelled if user cancelled before completion;
+        # distinct done_no_survivor when survival mode found nothing deployable.
         cancelled_flag = await _is_cancelled(job_id)
-        final_status = "cancelled" if cancelled_flag and completed < n_trials else "done"
+        if survival.enabled and survival_summary is not None and survival_summary.get("survivors") == 0:
+            final_status = "done_no_survivor"
+        else:
+            final_status = "cancelled" if cancelled_flag and completed < n_trials else "done"
 
         finished = {
             "status": final_status,
@@ -1042,6 +1106,7 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
             "heatmap": heatmap,
             "robustness": robustness,
             "rerank": rerank_info,
+            "survival_summary": survival_summary,
             "trial_log": [],
         }
         await _update_job(job_id, finished)
