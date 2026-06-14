@@ -2,6 +2,36 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.39.x] — Backtests run as a background job (async, non-blocking) (2026-06-14)
+
+575 backend tests pass (was 571; +4 incl. the job-contract test). Phase 1 of the
+"run backtests efficiently like the Optimizer" track — the **core of the #3 future
+target** is now done; pause/resume + multi-core remain explicitly deferred.
+
+- **`POST /backtest/start` (fire-and-poll)** — the synchronous `POST /backtest/run`
+  ran `run_backtest` + `walk_forward` **inline on the event loop**, freezing every
+  other request for the whole run (and a 60s client abort + retry could double-run).
+  `/backtest/start` now inserts the run doc up front with `status:"running"` (so a
+  crash/failure leaves a visible record), launches `run_backtest_job` via
+  `asyncio.create_task`, and returns `{run_id, status}` instantly. The worker runs
+  indicators + `run_backtest` + optional `walk_forward` inside **one
+  `asyncio.to_thread` hop** (off the loop), then `$set`s the full result +
+  `status:"done"`; on error it `$set`s `status:"failed"` + `error`. Legacy
+  `POST /backtest/run` is kept unchanged for scripts/curl.
+- **Frontend polls instead of holding a request open** — `BacktestLab.runBacktest`
+  calls `api.startBacktest` then polls the existing `GET /backtest/runs/{id}` every
+  2s until terminal (done/failed); the eased bar stays as a "working" indicator. This
+  removes the **`timeout of 60000ms exceeded` / duplicate-on-retry** class entirely.
+  Preset re-run and `?run=` replicate flow through the same path. Verified in the
+  running stack: a browser run hits `/backtest/start` → 2 polls → result (`1841
+  trades`), no legacy call, **no console errors**; API lifecycle confirmed end-to-end
+  (instant `queued` → `running` → `done`, full metrics + walk-forward).
+- **Deferred by design** (HANDOFF §14): real per-step progress + cancel (Phase 2);
+  `JobsProvider` + restart-reconcile of orphaned `running` docs (Phase 3); true
+  multi-core via `ProcessPoolExecutor` (Phase 4). Pause/resume + fold-level
+  crash-resume were assessed and **dropped** — a single backtest is one monolithic
+  loop, not discrete optimizer trials, so they don't transfer.
+
 ## [0.38.x] — Saved Presets page, auto run-names, save-as-preset, long request timeouts (2026-06-14)
 
 571 backend tests pass. A batch of UX + workflow improvements (all frontend except
