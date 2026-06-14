@@ -1,4 +1,10 @@
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
+
 from tests.contract_corpus import backend_api_text
+from app.survival_validate import validate_survival_request
 
 
 def test_survival_config_in_schema_corpus():
@@ -13,15 +19,6 @@ def test_optimize_start_validates_survival():
     assert "survival_config" in src
     assert "costs_enabled" in src
     assert "option_rerank" in src
-
-
-import os
-import sys
-import pytest
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
-
-from app.survival_validate import validate_survival_request
 
 
 def _req(**kw):
