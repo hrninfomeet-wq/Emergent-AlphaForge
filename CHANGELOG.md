@@ -2,6 +2,50 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.40.x] — Survivable optimization (capital-aware, risk-constrained) (2026-06-15)
+
+600 backend tests pass (was 575; +25). Piece 1 of the Optimizer↔Backtest track,
+adversarially designed (a self-review + an 8-agent audit that caught 4 blockers),
+then built TDD task-by-task with per-task spec + code-quality review. On a feature
+branch (`feat/survivable-optimization`); **default-off → byte-identical to today**.
+
+The optimizer maximized a **spot-index-points** objective, but ruin happens on the
+**₹-capital option-equity curve** — so a strategy could win the metric and still
+bankrupt the account (the user's −₹49k run). Survival mode fixes that.
+
+- **New `app/survival.py`** (pure, host-tested): `calmar` (floored denominator),
+  `monte_carlo_risk_of_ruin` (seeded **per-day** bootstrap — preserves loss-streak
+  clustering — with a fail-closed upper-CI), and `survival_verdict` — the gate that
+  runs guards then, in priority order, an **absolute ₹ equity floor (primary)**, a
+  **magnitude drawdown-% cap**, and **risk-of-ruin**. (The DD compare is on
+  `abs(max_dd_pct)`: a naive `dd <= cap` passes every blown account, since the value
+  is negative; a NaN dd is also rejected.)
+- **Per-fold OOS evaluation**: the gate runs on each walk-forward **out-of-sample**
+  slice (not the in-sample window the search already mined — the key anti-overfit
+  fix), with RoR on the stitched OOS series. Survivors must also be **profitable**
+  (`total_return_pct > 0`) to be promoted.
+- **Wired into the optimizer's option re-rank** (`_survival_eval_oos`, reusing the
+  single option-candle load): each top-K finalist is gated; **profitable survivors**
+  are ranked by a **configurable objective (Calmar default / Total ₹)** — both now
+  fenced by the survival constraints. **Zero survivors → `done_no_survivor`** +
+  `survival_summary{reason_counts, suggestions}`; it never promotes a disqualified
+  candidate. The same DTE filter as the re-rank is applied so survival evaluates the
+  exact contract set the finalist was ranked on.
+- **Validation (`/optimize/start`, 400s)**: survival mode requires `option_rerank` +
+  option execution + `costs_enabled` (else RoR/Calmar run on gross P&L) + sane
+  `ruin_floor`/caps. New `SurvivalConfigReq` schema.
+- **Optimizer UI**: a Survivability setup panel (toggle + floor/DD%/RoR + objective,
+  shown only in option_rerank mode), per-finalist **Survived/Disqualified** badges, a
+  **return-vs-drawdown scatter** (inline SVG), and an honest **no-survivor** banner.
+- **Verified end-to-end** in the running stack: the validation 400s fire; a real
+  survival optimization ran (validation gate → option re-rank → survival stage →
+  `done_no_survivor`); the absolute floor correctly disqualified 4 finalists whose
+  **OOS** equity went to −₹336k…−₹811k though they looked fine in-sample — the
+  overfit-exposure working as designed. (Frontend pending the user's visual check.)
+- **Deferred**: Approach B (capital-aware *trials*) if survivor density proves thin;
+  pieces 2 (exit/risk controls) + 3 (integrated loop) as their own specs. See
+  [docs/superpowers/specs/2026-06-14-survivable-optimization-design.md](docs/superpowers/specs/2026-06-14-survivable-optimization-design.md).
+
 ## [0.39.x] — Backtests run as a background job (async, non-blocking) (2026-06-14)
 
 575 backend tests pass (was 571; +4 incl. the job-contract test). Phase 1 of the
