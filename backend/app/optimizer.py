@@ -36,6 +36,7 @@ from app.warehouse import load_candles_df
 from app.option_backtest import simulate_paired_option_trades
 from app.options_universe import select_contract_for_signal
 from app.dte import compute_dte, normalize_dte_filter
+from app.survival import survival_verdict, SurvivalConfig, oos_fold_index_ranges
 
 log = logging.getLogger(__name__)
 optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -512,6 +513,72 @@ def _resolve_expiry_by_trade(spot_trades, contracts, fixed_expiry_date=None) -> 
         if r:
             out[idx] = r
     return out
+
+
+async def _survival_eval_oos(
+    strategy, df_enriched, merged_params, contracts, candles_df,
+    instrument, costs, pretrade, option_cfg, sc, n_folds=3, train_pct=0.6,
+):
+    """Evaluate one finalist's survival on each walk-forward OOS slice. Floor + DD%
+    must hold per fold (per sc.min_oos_folds); RoR runs on the stitched OOS rupee
+    series. Returns the survival_verdict dict augmented with folds_ok/fold_pass."""
+    from app.portfolio import build_rupee_equity_curve
+    moneyness = str(option_cfg.get("moneyness") or "atm")
+    lots = int(option_cfg.get("lots") or 1)
+    fixed_expiry = option_cfg.get("expiry_date")
+    capital = float((option_cfg.get("sizing_config") or {}).get("capital", 200_000) or 200_000)
+    all_paired = []
+    fold_pass = []
+    spot_total = paired_total = 0
+    for _fold, a, b in oos_fold_index_ranges(len(df_enriched), n_folds, train_pct):
+        test_df = df_enriched.iloc[a:b].reset_index(drop=True)
+        res = await asyncio.to_thread(
+            run_backtest, test_df, strategy, merged_params,
+            instrument=instrument, costs_enabled=costs, pretrade_filters=pretrade)
+        spot_trades = res.get("trades", []) or []
+        if not spot_trades:
+            fold_pass.append(False)
+            continue
+        ebt = _resolve_expiry_by_trade(spot_trades, contracts, fixed_expiry)
+        sim = await asyncio.to_thread(
+            simulate_paired_option_trades,
+            spot_trades=spot_trades, contracts=contracts, option_candles=candles_df,
+            underlying=instrument, moneyness=moneyness, lots=lots,
+            entry_max_age_sec=int(option_cfg.get("entry_max_age_sec") or 120),
+            exit_max_age_sec=int(option_cfg.get("exit_max_age_sec") or 180),
+            expiry_by_trade=ebt, fixed_expiry_date=fixed_expiry,
+            exit_mode=option_cfg.get("exit_mode") or "spot_exit",
+            option_target_pts=option_cfg.get("option_target_pts"),
+            option_stop_pts=option_cfg.get("option_stop_pts"),
+            option_target_pct=option_cfg.get("option_target_pct"),
+            option_stop_pct=option_cfg.get("option_stop_pct"),
+            cost_config=option_cfg.get("cost_config"),
+            sizing_config=option_cfg.get("sizing_config"),
+        )
+        port = sim.get("portfolio") or {}
+        cov = sim.get("coverage") or {}
+        spot_total += int(cov.get("spot_trade_count", 0) or 0)
+        paired_total += int(cov.get("paired_trade_count", 0) or 0)
+        all_paired.extend(t for t in sim.get("trades", []) if t.get("status") == "PAIRED")
+        curve = port.get("curve") or []
+        eqs = [c.get("equity_value") for c in curve if c.get("equity_value") is not None]
+        floor_ok = (min(eqs) > sc.min_equity) if eqs else False
+        dd = port.get("max_drawdown_pct")
+        dd_ok = dd is not None and abs(float(dd)) <= sc.max_drawdown_pct
+        fold_pass.append(bool(floor_ok and dd_ok))
+
+    folds_ok = (all(fold_pass) if sc.min_oos_folds == "all"
+                else sum(fold_pass) > len(fold_pass) / 2) if fold_pass else False
+    stitched_port = build_rupee_equity_curve(all_paired, capital=capital)
+    trade_pnls = [float(t.get("option_pnl_value", 0.0)) for t in all_paired]
+    verdict = survival_verdict(
+        portfolio=stitched_port, trade_pnls=trade_pnls, cfg=sc,
+        coverage={"spot_trade_count": spot_total, "paired_trade_count": paired_total},
+        capital=capital)
+    verdict["folds_ok"] = folds_ok
+    verdict["fold_pass"] = fold_pass
+    verdict["survived"] = bool(verdict["survived"] and folds_ok)
+    return verdict
 
 
 async def _option_rerank(
