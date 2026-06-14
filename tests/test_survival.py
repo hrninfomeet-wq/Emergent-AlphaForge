@@ -160,6 +160,7 @@ def test_verdict_fails_empty_trades():
                          coverage={"spot_trade_count": 0, "paired_trade_count": 0},
                          capital=200_000)
     assert v["survived"] is False
+    assert v["reason"] == "no_trades"
 
 
 def test_daily_from_curve_buckets_by_ist_date():

@@ -128,8 +128,8 @@ def daily_from_curve(curve: Sequence[Dict[str, Any]]) -> List[float]:
         try:
             ts = int(pt.get("ts"))
             pnl = float(pt.get("pnl_value", 0.0))
-        except (TypeError, ValueError):
-            continue
+        except (TypeError, ValueError, AttributeError):
+            continue  # AttributeError: a non-dict curve entry (defensive)
         if not math.isfinite(pnl):
             continue
         d = (datetime.fromtimestamp(ts / 1000, tz=timezone.utc) + _IST).strftime("%Y-%m-%d")
