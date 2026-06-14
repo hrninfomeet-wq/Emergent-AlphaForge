@@ -13,3 +13,44 @@ def test_optimize_start_validates_survival():
     assert "survival_config" in src
     assert "costs_enabled" in src
     assert "option_rerank" in src
+
+
+import os
+import sys
+import pytest
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
+
+from app.survival_validate import validate_survival_request
+
+
+def _req(**kw):
+    base = dict(enabled=True, evaluation_mode="option_rerank", option_config={"enabled": True},
+                costs_enabled=True, capital=200_000, ruin_floor=0.0,
+                max_drawdown_pct=35.0, max_ror_pct=5.0)
+    base.update(kw)
+    return base
+
+
+def test_survival_ok_when_all_requirements_met():
+    assert validate_survival_request(**_req()) is None
+
+
+def test_survival_requires_option_rerank():
+    msg = validate_survival_request(**_req(evaluation_mode="spot"))
+    assert msg and "option_rerank" in msg
+
+
+def test_survival_requires_option_execution():
+    msg = validate_survival_request(**_req(option_config={"enabled": False}))
+    assert msg and "option execution" in msg
+
+
+def test_survival_requires_costs_enabled():
+    msg = validate_survival_request(**_req(costs_enabled=False))
+    assert msg and "costs" in msg.lower()
+
+
+def test_survival_rejects_ruin_floor_ge_capital():
+    msg = validate_survival_request(**_req(ruin_floor=200_000))
+    assert msg and "ruin_floor" in msg
