@@ -120,6 +120,18 @@ class TradesPurgeReq(BaseModel):
 # Auto-Optimizer (Phase 3)
 # ---------------------------------------------------------------------------
 
+class SurvivalConfigReq(BaseModel):
+    """Capital-aware survival constraints for the optimizer. Off by default ->
+    optimizer behaves exactly as before. See app/survival.py for the gate."""
+    enabled: bool = False
+    min_equity: float = 0.0            # PRIMARY gate: reject if realized rupee equity ever <= this
+    max_drawdown_pct: float = 35.0     # reject if |peak DD%| exceeds this
+    max_ror_pct: float = 5.0           # reject if risk-of-ruin upper-CI exceeds this
+    ruin_floor: float = 0.0            # RoR ruin level (rupees); 0 <= ruin_floor < capital
+    objective: str = "calmar"          # "calmar" | "net_inr"
+    min_oos_folds: str = "all"         # "all" | "majority"
+
+
 class OptimizerStartReq(BaseModel):
     instrument: str = "NIFTY"
     mode: str = "SCALP"
@@ -147,6 +159,7 @@ class OptimizerStartReq(BaseModel):
     # but spot-mediocre config can surface (default off = top-K by spot objective).
     rerank_diversity: bool = False
     option_config: Optional[Dict[str, Any]] = None
+    survival_config: Optional[SurvivalConfigReq] = None
 
 
 class WfoStartReq(BaseModel):
