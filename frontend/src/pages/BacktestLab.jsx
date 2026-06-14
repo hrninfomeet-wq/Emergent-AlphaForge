@@ -278,6 +278,7 @@ export default function BacktestLab() {
       instrument: config.instrument,
       mode: config.mode,
       params: { ...config.params },
+      source: "backtest",  // origin tag for the Saved Presets page grouping
     };
     const ex = buildExecutionFromConfig();
     if (ex) cfg.execution = ex;
@@ -344,6 +345,7 @@ export default function BacktestLab() {
       instrument: run.instrument || run.config?.instrument,
       mode: run.config?.mode || config.mode,
       params: { ...params },
+      source: "backtest",  // origin tag for the Saved Presets page grouping
     };
     const ex = buildExecutionFromRun(run);
     if (ex) cfg.execution = ex;

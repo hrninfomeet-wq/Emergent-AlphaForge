@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import {
   Home, LineChart, Database, ListChecks, BookOpen,
   Briefcase, Gauge, Activity, FlaskConical, Library,
-  Zap, Monitor, Moon, Sun, Loader2, Clock, AlertTriangle,
+  Zap, Monitor, Moon, Sun, Loader2, Clock, AlertTriangle, Bookmark,
 } from "lucide-react";
 import { useTheme } from "@/lib/theme";
 import { useJobs } from "@/lib/jobs";
@@ -25,6 +25,7 @@ const NAV_GROUPS = [
       { to: "/strategies", label: "Strategy Library", icon: Library, testid: "nav-strategies" },
       { to: "/warehouse", label: "Data Warehouse", icon: Database, testid: "nav-warehouse" },
       { to: "/optimizer", label: "Optimizer", icon: Gauge, testid: "nav-optimizer" },
+      { to: "/presets", label: "Saved Presets", icon: Bookmark, testid: "nav-presets" },
     ],
   },
   {
@@ -180,6 +181,7 @@ function pageTitle(path) {
     case "/journal": return "Signal Journal";
     case "/paper": return "Paper Trading";
     case "/optimizer": return "Auto Optimizer";
+    case "/presets": return "Saved Presets";
     case "/live": return "Live Signals";
     default: return "AlphaForge";
   }
