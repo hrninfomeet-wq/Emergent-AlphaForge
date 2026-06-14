@@ -103,6 +103,15 @@ const DEFAULT_SETUP = {
   option_costs_enabled: true,
   option_brokerage_per_order: 0,
   option_spread_pct: 1.0,
+  survival_config: {
+    enabled: false,
+    min_equity: 0,
+    max_drawdown_pct: 35,
+    max_ror_pct: 5,
+    ruin_floor: 0,
+    objective: "calmar",
+    min_oos_folds: "all",
+  },
   name: "Optimization run",
   start_date: "",
   end_date: "",
@@ -118,6 +127,8 @@ function loadSetup() {
     const merged = { ...DEFAULT_SETUP, ...parsed };
     // DTE filter became a multi-select array; coerce legacy "all"/"dte2" tokens.
     merged.option_dte_filter = parseDteFilter(merged.option_dte_filter);
+    // Deep-merge survival_config so new sub-keys added to DEFAULT_SETUP are always present.
+    merged.survival_config = { ...DEFAULT_SETUP.survival_config, ...(parsed.survival_config || {}) };
     return merged;
   } catch {
     return { ...DEFAULT_SETUP };
@@ -364,6 +375,15 @@ export default function Optimizer() {
         rerank_top_k: Math.max(1, Math.min(500, Number(config.rerank_top_k) || 50)),
         rerank_diversity: Boolean(config.rerank_diversity),
         option_config: optionConfig,
+        survival_config: optionRerank ? {
+          enabled: Boolean(config.survival_config?.enabled),
+          min_equity: Number(config.survival_config?.min_equity ?? 0),
+          max_drawdown_pct: Number(config.survival_config?.max_drawdown_pct ?? 35),
+          max_ror_pct: Number(config.survival_config?.max_ror_pct ?? 5),
+          ruin_floor: Number(config.survival_config?.ruin_floor ?? 0),
+          objective: config.survival_config?.objective ?? "calmar",
+          min_oos_folds: config.survival_config?.min_oos_folds ?? "all",
+        } : null,
       };
       const res = await api.startOptimization(payload);
       setCurrentJobId(res.job_id);
@@ -805,6 +825,84 @@ export default function Optimizer() {
                 </div>
               </div>
             )}
+
+            {config.run_kind !== "walkforward" && config.evaluation_mode === "option_rerank" && (() => {
+              const setSurvival = (patch) => setConfig((c) => ({
+                ...c,
+                survival_config: { ...c.survival_config, ...patch },
+              }));
+              return (
+                <div className="rounded-md border border-purple-500/30 bg-purple-500/5 p-2 space-y-2" data-testid="opt-survival-panel">
+                  <div className="text-[10px] uppercase tracking-wider text-purple-400">Survivability</div>
+                  <label className="flex items-center gap-2 text-[11px] text-dim">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(config.survival_config?.enabled)}
+                      onChange={(e) => setSurvival({ enabled: e.target.checked })}
+                      className="h-3 w-3 rounded border-line"
+                      data-testid="opt-survival-enabled"
+                    />
+                    Enable survival gating
+                  </label>
+                  {config.survival_config?.enabled && (
+                    <>
+                      <div className="text-[10px] text-dimmer leading-snug">
+                        Requires option execution + costs ON. Gates finalists on the rupee equity curve, evaluated per walk-forward OOS fold.
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <Label className="text-[11px] text-dim">Equity floor (₹)</Label>
+                          <Input
+                            type="number"
+                            value={config.survival_config?.min_equity ?? 0}
+                            onChange={(e) => setSurvival({ min_equity: Number(e.target.value) })}
+                            className="bg-bg-2 border-line h-8 text-xs font-mono mt-1"
+                            data-testid="opt-survival-min-equity"
+                          />
+                        </div>
+                        <div>
+                          <Label className="text-[11px] text-dim">Max drawdown %</Label>
+                          <Input
+                            type="number"
+                            min={0} max={100} step={1}
+                            value={config.survival_config?.max_drawdown_pct ?? 35}
+                            onChange={(e) => setSurvival({ max_drawdown_pct: Number(e.target.value) })}
+                            className="bg-bg-2 border-line h-8 text-xs font-mono mt-1"
+                            data-testid="opt-survival-max-dd"
+                          />
+                        </div>
+                        <div>
+                          <Label className="text-[11px] text-dim">Max risk-of-ruin %</Label>
+                          <Input
+                            type="number"
+                            min={0} max={100} step={1}
+                            value={config.survival_config?.max_ror_pct ?? 5}
+                            onChange={(e) => setSurvival({ max_ror_pct: Number(e.target.value) })}
+                            className="bg-bg-2 border-line h-8 text-xs font-mono mt-1"
+                            data-testid="opt-survival-max-ror"
+                          />
+                        </div>
+                        <div>
+                          <Label className="text-[11px] text-dim">Objective</Label>
+                          <Select
+                            value={config.survival_config?.objective ?? "calmar"}
+                            onValueChange={(v) => setSurvival({ objective: v })}
+                          >
+                            <SelectTrigger className="bg-bg-2 border-line h-8 mt-1" data-testid="opt-survival-objective">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="calmar">Risk-adjusted (Calmar)</SelectItem>
+                              <SelectItem value="net_inr">Total ₹</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </div>
+                    </>
+                  )}
+                </div>
+              );
+            })()}
 
             {config.run_kind !== "walkforward" && (
               <>
