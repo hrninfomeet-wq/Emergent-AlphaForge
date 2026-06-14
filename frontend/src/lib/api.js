@@ -132,6 +132,10 @@ export const api = {
   // Backtest
   runBacktest: (payload) =>
     apiClient.post("/backtest/run", payload, { timeout: LONG_TIMEOUT_MS }).then((r) => r.data),
+  // Fire-and-forget: returns {run_id, status} instantly; poll getBacktestRun until
+  // status is terminal. Avoids holding one long request (no 60s-timeout / dup-run).
+  startBacktest: (payload) =>
+    apiClient.post("/backtest/start", payload).then((r) => r.data),
   optionPreflight: (payload, ingestMissing = false) =>
     apiClient.post("/backtest/option-preflight", payload, { params: { ingest_missing: ingestMissing }, timeout: LONG_TIMEOUT_MS }).then((r) => r.data),
   listBacktestRuns: (limit = 50) =>

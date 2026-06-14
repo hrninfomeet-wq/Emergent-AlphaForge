@@ -5,6 +5,7 @@ Moved verbatim from backend/server.py (quality-hardening Slice C).
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 import uuid as _uuid
 from datetime import datetime, timezone
@@ -45,6 +46,7 @@ from app.schemas import (
 )
 
 api = APIRouter()
+log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -226,6 +228,107 @@ async def backtest_run(req: BacktestReq):
     db = get_db()
     await db.backtest_runs.insert_one(result_doc)
     return serialize_doc(result_doc)
+
+
+async def run_backtest_job(run_id: str, req: BacktestReq) -> None:
+    """Background worker for POST /backtest/start. Mirrors backtest_run, but runs
+    the CPU-heavy compute OFF the event loop via asyncio.to_thread (the Phase-1
+    fix — a long backtest no longer freezes every other request, matching the
+    optimizer which already offloads). Writes status + result onto the run doc
+    that /backtest/start inserted up front, so a failure leaves a visible record
+    instead of nothing."""
+    db = get_db()
+    try:
+        strategy = get_registry().get(req.strategy_id)
+        if not strategy:
+            await db.backtest_runs.update_one({"id": run_id}, {"$set": {
+                "status": "failed", "error": f"Strategy {req.strategy_id} not found"}})
+            return
+        data_audit = await _audit_and_fill_backtest_data(req)
+        df = await load_candles_df(req.instrument.upper(), req.start_ts, req.end_ts)
+        if df.empty or len(df) < 50:
+            await db.backtest_runs.update_one({"id": run_id}, {"$set": {
+                "status": "failed",
+                "error": f"Insufficient candles for {req.instrument}. Ingest data first via /api/warehouse/ingest."}})
+            return
+        params = strategy.merged_params(req.params)
+
+        # All CPU-bound work (indicators + spot backtest + optional walk-forward)
+        # runs inside ONE worker thread so the event loop stays responsive.
+        def _compute():
+            de = precompute_all_indicators(df, params)
+            de["regime"] = classify_regime_series(de)
+            r = run_backtest(
+                de, strategy, params,
+                instrument=req.instrument.upper(), costs_enabled=req.costs_enabled,
+                pretrade_filters=req.pretrade_filters,
+                trade_window_start=req.trade_window_start, trade_window_end=req.trade_window_end,
+            )
+            w = None
+            if req.walkforward and len(de) >= 200:
+                w = walk_forward(
+                    de, strategy, params,
+                    instrument=req.instrument.upper(), costs_enabled=req.costs_enabled,
+                    pretrade_filters=req.pretrade_filters, train_pct=req.train_pct, n_folds=req.n_folds,
+                    trade_window_start=req.trade_window_start, trade_window_end=req.trade_window_end,
+                )
+            rd = {str(k): int(v) for k, v in de["regime"].value_counts().to_dict().items()}
+            return r, w, rd, int(len(de))
+
+        res, wf, regime_dist, candle_count = await asyncio.to_thread(_compute)
+        metrics = res["metrics"]
+        option_result = await _run_paired_option_backtest(req, res["trades"])
+        sig = stat_significance(metrics["trade_count"], metrics["win_rate"], metrics.get("profit_factor"))
+
+        await db.backtest_runs.update_one({"id": run_id}, {"$set": {
+            "params_applied": params,
+            "metrics": metrics,
+            "trades": res["trades"],
+            "equity_curve": res["equity_curve"],
+            "walkforward": wf,
+            "significance": sig,
+            "candle_count": candle_count,
+            "regime_distribution": regime_dist,
+            "signal_funnel": res["signal_funnel"],
+            "data_audit": data_audit,
+            "option_backtest": option_result,
+            "status": "done",
+            "progress": 100,
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+        }})
+    except Exception as exc:  # mark the doc failed so the client sees a result, not a hang
+        log.exception("backtest job %s failed: %s", run_id, exc)
+        try:
+            await db.backtest_runs.update_one({"id": run_id}, {"$set": {
+                "status": "failed", "error": str(exc)[:500]}})
+        except Exception:
+            pass
+
+
+@api.post("/backtest/start")
+async def backtest_start(req: BacktestReq):
+    """Fire-and-forget backtest. Inserts the run doc immediately with status
+    'running', launches the worker, and returns {run_id, status} instantly so the
+    client polls GET /backtest/runs/{id} instead of holding one long request
+    (which used to hit the 60s client timeout and could double-run on retry).
+    The legacy synchronous POST /backtest/run is kept for scripts."""
+    strategy = get_registry().get(req.strategy_id)
+    if not strategy:
+        raise HTTPException(404, f"Strategy {req.strategy_id} not found")
+    run_id = str(uuid.uuid4())
+    db = get_db()
+    await db.backtest_runs.insert_one({
+        "id": run_id,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "name": req.name,
+        "config": req.model_dump(),
+        "instrument": req.instrument.upper(),
+        "strategy_id": req.strategy_id,
+        "status": "running",
+        "progress": 0,
+    })
+    asyncio.create_task(run_backtest_job(run_id, req))
+    return {"run_id": run_id, "status": "queued"}
 
 
 @api.get("/backtest/runs")

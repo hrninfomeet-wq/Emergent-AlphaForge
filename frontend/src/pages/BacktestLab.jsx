@@ -474,27 +474,45 @@ export default function BacktestLab() {
     setRunning(true);
     setResult(null);
     setProgress(0);
-    // The backtest is a single synchronous request (no server-side progress
-    // stream), so we animate an *estimated* progress bar that eases toward 90%
-    // and snaps to 100% on completion. This gives the user clear "working"
-    // feedback instead of a silent wait.
+    // The backtest now runs as a BACKGROUND JOB (POST /backtest/start → poll
+    // GET /backtest/runs/{id}); the heavy compute runs off the event loop on the
+    // backend, so a long run no longer holds one request open (no 60s timeout /
+    // duplicate-on-retry). The eased bar is a "working" indicator until real
+    // per-step progress lands (Phase 2); on completion it snaps to 100%.
     const startedAt = Date.now();
     const timer = setInterval(() => {
       const elapsed = Date.now() - startedAt;
       // Ease-out curve: fast at first, asymptotic toward ~90%.
       const pct = Math.min(90, 90 * (1 - Math.exp(-elapsed / 4000)));
-      setProgress(pct);
+      setProgress((cur) => Math.max(cur, pct));
     }, 200);
     try {
       const payload = { ...buildPayload(), name: finalName };
-      const res = await api.runBacktest(payload);
+      const { run_id } = await api.startBacktest(payload);
+      // Poll until the job reaches a terminal state.
+      let doc = null;
+      const MAX_POLLS = 600; // ~20 min at 2s; the job keeps running past this
+      for (let i = 0; i < MAX_POLLS; i += 1) {
+        await new Promise((r) => setTimeout(r, 2000));
+        doc = await api.getBacktestRun(run_id).catch(() => null);
+        const st = doc?.status;
+        if (st === "done" || st === "failed") break;
+        if (doc && typeof doc.progress === "number" && doc.progress > 0) {
+          setProgress((cur) => Math.max(cur, Math.min(95, doc.progress)));
+        }
+      }
+      if (!doc || doc.status === "running") {
+        toast.info("Backtest still running — it'll appear in “Load past run” when done.");
+        return;
+      }
+      if (doc.status === "failed") throw new Error(doc.error || "Backtest failed");
       setProgress(100);
-      setResult(res);
+      setResult(doc);
       await refreshRuns();
       // Reset to auto-naming so the next run gets a fresh, unique default name.
       nameTouchedRef.current = false;
       setConfig((c) => ({ ...c, name: autoRunName(c) }));
-      toast.success(`Backtest complete: ${res.metrics.trade_count} trades`);
+      toast.success(`Backtest complete: ${doc.metrics.trade_count} trades`);
     } catch (e) {
       const msg = e.response?.data?.detail || e.message;
       toast.error(`Backtest failed: ${msg}`);
