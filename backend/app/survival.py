@@ -83,3 +83,39 @@ def calmar(return_pct: float, dd_pct: float) -> float:
     """
     denom = max(abs(float(dd_pct)), CALMAR_DD_FLOOR_PCT)
     return float(return_pct) / denom
+
+
+def monte_carlo_risk_of_ruin(
+    daily_pnls: Sequence[Any],
+    capital: float,
+    ruin_floor: float = 0.0,
+    n_paths: int = 10000,
+    horizon: Optional[int] = None,
+    seed: int = 42,
+) -> Dict[str, Any]:
+    """Estimate P(account ever falls to/through ruin_floor) by bootstrapping
+    PER-DAY rupee P&L (preserves intraday loss clustering — a per-TRADE i.i.d.
+    bootstrap understates ruin in the unsafe direction).
+
+    Path 0 is the ACTUAL observed daily sequence so the realized worst path is
+    always counted. Returns {ror_pct, ror_ci_high, n_days}. Seeded =>
+    reproducible. Fully vectorized over (n_paths, horizon).
+    """
+    pnls = _finite(daily_pnls)
+    n_days = len(pnls)
+    if n_days == 0:
+        return {"ror_pct": 100.0, "ror_ci_high": 100.0, "n_days": 0}
+    h = int(horizon or n_days)
+    rng = np.random.default_rng(seed)
+    arr = np.asarray(pnls, dtype=float)
+    samples = rng.choice(arr, size=(int(n_paths), h), replace=True)
+    if h == n_days:
+        samples[0, :] = arr  # seed path 0 with the real observed sequence
+    equity = float(capital) + np.cumsum(samples, axis=1)
+    min_equity = equity.min(axis=1)
+    ruined = int(np.count_nonzero(min_equity <= float(ruin_floor)))
+    p = ruined / float(n_paths)
+    # Wald upper 95% bound — fail-closed: "can't prove safe" counts as unsafe.
+    se = math.sqrt(max(p * (1.0 - p), 1e-9) / float(n_paths))
+    ci_high = min(1.0, p + 1.96 * se)
+    return {"ror_pct": round(p * 100.0, 3), "ror_ci_high": round(ci_high * 100.0, 3), "n_days": n_days}
