@@ -209,8 +209,8 @@ def oos_fold_index_ranges(
 ) -> List[tuple]:
     """OOS (test) index ranges per walk-forward fold — mirrors walk_forward's split
     (walkforward.py). Returns [(fold_no, oos_start, oos_end), ...]; the OOS slice of
-    fold k is df.iloc[oos_start:oos_end]. Skips folds < 100 rows or OOS tail < 30,
-    and returns [] when n_rows < 200 (too small to walk-forward)."""
+    fold k is df.iloc[oos_start:oos_end]. Skips folds < 100 rows, train < 50, or
+    OOS tail < 30, and returns [] when n_rows < 200 (too small to walk-forward)."""
     if n_rows < 200:
         return []
     out: List[tuple] = []
@@ -223,7 +223,7 @@ def oos_fold_index_ranges(
         slice_len = end - start
         train_end = int(slice_len * train_pct)
         oos_start = start + train_end
-        if end - oos_start < 30:
+        if train_end < 50 or end - oos_start < 30:  # mirror walk_forward's train<50/test<30 guards
             continue
         out.append((k + 1, oos_start, end))
     return out

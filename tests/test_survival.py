@@ -188,3 +188,6 @@ def test_oos_fold_index_ranges_three_folds():
 def test_oos_fold_index_ranges_skips_too_small():
     assert oos_fold_index_ranges(100, n_folds=3, train_pct=0.6) == []   # folds < 100 rows
     assert oos_fold_index_ranges(150, n_folds=3) == []                  # < 200 total guard
+    # train < 50 guard (mirrors walk_forward): 600 rows / 3 folds = 200/fold;
+    # train_pct=0.2 -> train_end=40 < 50 -> every fold skipped.
+    assert oos_fold_index_ranges(600, n_folds=3, train_pct=0.2) == []

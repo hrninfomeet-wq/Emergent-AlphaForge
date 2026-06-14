@@ -527,6 +527,11 @@ async def _survival_eval_oos(
     lots = int(option_cfg.get("lots") or 1)
     fixed_expiry = option_cfg.get("expiry_date")
     capital = float((option_cfg.get("sizing_config") or {}).get("capital", 200_000) or 200_000)
+    # Apply the SAME DTE filter as _option_rerank, so survival is evaluated on the
+    # exact contract set the finalist was ranked on (else a dte_filter run would
+    # pair a broader set and give a non-comparable verdict).
+    dte_target = normalize_dte_filter(option_cfg.get("dte_filter"))
+    expiry_dates_sorted = sorted({str(c.get("expiry_date")) for c in contracts if c.get("expiry_date")})
     all_paired = []
     fold_pass = []
     spot_total = paired_total = 0
@@ -536,7 +541,13 @@ async def _survival_eval_oos(
             run_backtest, test_df, strategy, merged_params,
             instrument=instrument, costs_enabled=costs, pretrade_filters=pretrade)
         spot_trades = res.get("trades", []) or []
+        if dte_target is not None:
+            spot_trades = [t for t in spot_trades if t.get("entry_ts") is not None
+                           and compute_dte(_ts_to_ist_date(int(t["entry_ts"])), expiry_dates_sorted) in dte_target]
         if not spot_trades:
+            # Conservative: a fold with no (DTE-matching) signals yields no survival
+            # evidence -> fail it. Under min_oos_folds="all" an idle fold fails the
+            # candidate; the stitched-OOS sample guard also requires enough total trades.
             fold_pass.append(False)
             continue
         ebt = _resolve_expiry_by_trade(spot_trades, contracts, fixed_expiry)
