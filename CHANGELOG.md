@@ -2,6 +2,36 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.38.x] — Saved Presets page, auto run-names, save-as-preset, long request timeouts (2026-06-14)
+
+571 backend tests pass. A batch of UX + workflow improvements (all frontend except
+the preset source tag + the timeout review). See HANDOFF §14 for the open #3 target.
+
+- **Saved Presets page** (`/presets`, below Optimizer): every preset grouped into
+  *From Optimizer* / *From Backtest Lab*, with rich cards (strategy · instrument,
+  optimizer provenance, an option-execution summary or amber "spot-only", a green
+  "Deployed" badge cross-referenced from live deployments, expandable params), header
+  stats, search + filters (source / instrument / deployable / deployed) + sort, and
+  per-preset Deploy / Open-in-Lab / Rename / Duplicate / Delete. **Advanced extras:**
+  a per-preset **validation badge** from `/deployments/readiness` (honest-WFO + option-
+  rupee OOS → Validated / Partly / Weak / Unvalidated), **multi-select + bulk delete**,
+  and **compare two** (params side-by-side, diffs highlighted, + execution). Source is
+  inferred + now explicitly tagged (`config.source` on both save paths).
+- **`Save as preset` on a loaded backtest result** — saves the run's exact params +
+  option execution (from the run doc), and loading a run now also restores its matching
+  **pretrade profile** so `?run=` → Run replicates exactly (verified: every metric
+  identical incl. option net ₹312,841.78).
+- **Auto run-names** in Backtest Lab + Optimizer setup: a descriptive + timestamp
+  default (`strategy · instrument [· objective] · YYYY-MM-DD HH:MM:SS`), edit-aware,
+  regenerated after each run — so a forgotten default never saves duplicates.
+- **Long request timeouts (#1)**: heavy synchronous endpoints (backtest run, warehouse
+  sync, data-hygiene scans, audits) get a **per-request 10-min** timeout (`LONG_TIMEOUT_MS`,
+  build-time `REACT_APP_API_TIMEOUT_LONG`); the global stays 60s. Fixes
+  `"timeout of 60000ms exceeded"` on large-date-range backtests — which was the **axios
+  client** timeout, not a backend one (the backend has no request timeout and still
+  saves the run after a client abort). **#3 future target** (HANDOFF §14): convert
+  `/backtest/run` to the optimizer's fire-and-poll job pattern.
+
 ## [0.37.x] — Live-realism & gate-rigor hardening (6 slices) (2026-06-13)
 
 566 backend tests pass (was 533; +33). A multi-agent review of the whole app

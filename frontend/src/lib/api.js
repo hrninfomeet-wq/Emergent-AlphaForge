@@ -8,6 +8,15 @@ export const apiClient = axios.create({
   timeout: 60000,
 });
 
+// Heavy SYNCHRONOUS endpoints (backtest run, warehouse sync, data-hygiene scans,
+// audits) can run for several minutes on large date ranges. They get a long
+// PER-REQUEST timeout so they don't hit the 60s default — while ordinary calls keep
+// the short global so a wedged backend still fails fast. Build-time configurable via
+// REACT_APP_API_TIMEOUT_LONG (REACT_APP_* is baked at build, so it needs a rebuild;
+// it is not a live runtime dial). FUTURE (#3): move /backtest/run to the optimizer's
+// fire-and-poll job pattern, which removes this timeout class entirely.
+export const LONG_TIMEOUT_MS = parseInt(process.env.REACT_APP_API_TIMEOUT_LONG || "600000", 10);
+
 export const api = {
   // Health/Summary
   summary: () => apiClient.get("/dashboard/summary").then((r) => r.data),
@@ -37,9 +46,10 @@ export const api = {
         ...(startTs ? { start_ts: startTs } : {}),
         ...(endTs ? { end_ts: endTs } : {}),
       },
+      timeout: LONG_TIMEOUT_MS,
     }).then((r) => r.data),
   volatilityAudit: (payload) =>
-    apiClient.post("/volatility/audit", payload).then((r) => r.data),
+    apiClient.post("/volatility/audit", payload, { timeout: LONG_TIMEOUT_MS }).then((r) => r.data),
   clearWarehouseData: (instrument = "ALL") =>
     apiClient.delete(`/warehouse/data/${instrument}?confirm=CLEAR`).then((r) => r.data),
   upstoxStatus: () => apiClient.get("/upstox/status").then((r) => r.data),
@@ -90,15 +100,15 @@ export const api = {
 
   // Data Hygiene
   dataHygienePlan: (payload = {}) =>
-    apiClient.post("/data-hygiene/plan", payload).then((r) => r.data),
+    apiClient.post("/data-hygiene/plan", payload, { timeout: LONG_TIMEOUT_MS }).then((r) => r.data),
   dataHygieneExecute: (plan, payload = {}) =>
-    apiClient.post("/data-hygiene/execute", { plan, ...payload }).then((r) => r.data),
+    apiClient.post("/data-hygiene/execute", { plan, ...payload }, { timeout: LONG_TIMEOUT_MS }).then((r) => r.data),
   dataHygieneCatchUp: (payload = {}) =>
-    apiClient.post("/data-hygiene/catch-up", payload).then((r) => r.data),
+    apiClient.post("/data-hygiene/catch-up", payload, { timeout: LONG_TIMEOUT_MS }).then((r) => r.data),
   dataHygieneLatest: () =>
     apiClient.get("/data-hygiene/latest").then((r) => r.data),
   warehouseSync: (payload = {}) =>
-    apiClient.post("/warehouse/sync", payload).then((r) => r.data),
+    apiClient.post("/warehouse/sync", payload, { timeout: LONG_TIMEOUT_MS }).then((r) => r.data),
   dataHygieneStatus: (planId) =>
     apiClient.get("/data-hygiene/status", {
       params: planId ? { plan_id: planId } : {},
@@ -121,9 +131,9 @@ export const api = {
 
   // Backtest
   runBacktest: (payload) =>
-    apiClient.post("/backtest/run", payload).then((r) => r.data),
+    apiClient.post("/backtest/run", payload, { timeout: LONG_TIMEOUT_MS }).then((r) => r.data),
   optionPreflight: (payload, ingestMissing = false) =>
-    apiClient.post("/backtest/option-preflight", payload, { params: { ingest_missing: ingestMissing } }).then((r) => r.data),
+    apiClient.post("/backtest/option-preflight", payload, { params: { ingest_missing: ingestMissing }, timeout: LONG_TIMEOUT_MS }).then((r) => r.data),
   listBacktestRuns: (limit = 50) =>
     apiClient.get(`/backtest/runs?limit=${limit}`).then((r) => r.data),
   getBacktestRun: (id) =>
