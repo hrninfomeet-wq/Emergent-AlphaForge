@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import {
   Bookmark, Rocket, FlaskConical, Gauge, Pencil, Copy, Trash2,
   RefreshCw, Search, ChevronDown, ChevronRight, Cog, AlertTriangle,
+  ShieldCheck, Columns, X, Loader2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
@@ -13,15 +14,13 @@ import { Input } from "@/components/ui/input";
  * Saved Presets (route /presets) — one place for every preset saved from the
  * Backtest Lab and the Optimizer, grouped by source. Each preset is the full
  * deployable artifact (strategy + params + option-execution policy); this page
- * surfaces what each will deploy, whether it is already live, and one-click
- * Deploy / Open-in-Lab / Rename / Duplicate / Delete.
+ * surfaces what each will deploy, whether it is already live, a validation
+ * badge (honest-WFO + option-rupee OOS), and one-click Deploy / Open-in-Lab /
+ * Rename / Duplicate / Delete, plus multi-select Compare and bulk delete.
  */
 
 const INSTRUMENTS = ["NIFTY", "BANKNIFTY", "SENSEX"];
 
-// A preset's origin. Optimizer "apply-as-preset" stamps source_optimization_job /
-// source_job_kind / objective; Backtest Lab saves carry none of those. New saves
-// also carry an explicit config.source — prefer it, fall back to inference.
 const presetSource = (p) => {
   const c = p.config || {};
   if (c.source === "optimizer" || c.source === "backtest") return c.source;
@@ -29,8 +28,6 @@ const presetSource = (p) => {
     ? "optimizer" : "backtest";
 };
 
-// One-line summary of the option-execution policy a preset will deploy with, or
-// null when it is spot-only (no option pairing).
 const execSummary = (ex) => {
   if (!ex) return null;
   const out = [(ex.moneyness || "atm").toUpperCase()];
@@ -47,6 +44,35 @@ const execSummary = (ex) => {
   out.push(`${ex.lots || 1} lot${(ex.lots || 1) > 1 ? "s" : ""}`);
   if (ex.cost_config?.enabled) out.push(`costs ${ex.cost_config.spread_pct_of_premium ?? 0}%`);
   return out.join(" · ");
+};
+
+// Derive a validation verdict from a /deployments/readiness response: honest-WFO
+// efficiency + option-rupee OOS, both required to be params-matched + positive
+// for a "strong" badge. Surfaces whether the edge is proven out of sample.
+const validationVerdict = (rd) => {
+  if (!rd) return null;
+  const wfo = rd.wfo;
+  const oe = rd.option_evidence;
+  const wfoStrong = wfo && wfo.efficiency != null && Number(wfo.efficiency) >= 0.5 && wfo.params_match;
+  const optGood = oe && oe.params_match && Number(oe.net_pnl_value || 0) > 0;
+  let level, label;
+  if (wfoStrong && optGood) { level = "strong"; label = "Validated"; }
+  else if (wfoStrong || optGood) { level = "partial"; label = "Partly validated"; }
+  else if (wfo || oe) { level = "weak"; label = "Weak / params differ"; }
+  else { level = "none"; label = "Unvalidated"; }
+  const tip = [
+    wfo ? `WFO: eff ${wfo.efficiency}, ${wfo.positive_windows}/${wfo.windows} OOS+${wfo.option_oos_net != null ? `, opt OOS ₹${Math.round(wfo.option_oos_net).toLocaleString("en-IN")}` : ""}${wfo.params_match ? "" : " (params differ)"}` : "no honest walk-forward",
+    oe ? `option ${oe.kind === "rerank" ? "re-rank" : "backtest"}: net ₹${Math.round(oe.net_pnl_value || 0).toLocaleString("en-IN")}${oe.params_match ? "" : " (params differ)"}` : "no option-rupee evidence",
+    rd.n_trials ? `best of ${rd.n_trials} trials` : null,
+  ].filter(Boolean).join(" · ");
+  return { level, label, tip };
+};
+
+const VAL_CLS = {
+  strong: "border-emerald-500/40 text-emerald-300",
+  partial: "border-sky-500/40 text-sky-300",
+  weak: "border-amber-500/40 text-amber-300",
+  none: "border-line text-dimmer",
 };
 
 const relTime = (iso) => {
@@ -71,6 +97,8 @@ export default function SavedPresets() {
   const navigate = useNavigate();
   const [presets, setPresets] = useState([]);
   const [deployed, setDeployed] = useState({});
+  const [validation, setValidation] = useState({});
+  const [validating, setValidating] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [search, setSearch] = useState("");
@@ -81,6 +109,8 @@ export default function SavedPresets() {
   const [sortBy, setSortBy] = useState("saved");
   const [collapsed, setCollapsed] = useState({});
   const [expanded, setExpanded] = useState(() => new Set());
+  const [selected, setSelected] = useState(() => new Set());
+  const [compareOpen, setCompareOpen] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -109,12 +139,33 @@ export default function SavedPresets() {
 
   useEffect(() => { refresh(); }, [refresh]);
 
+  // Validation badges: fetch the readiness evidence (honest WFO + option-rupee
+  // OOS) per preset in the background once the list is in. Non-blocking — the
+  // list renders immediately and badges fill in as each resolves.
+  useEffect(() => {
+    if (!presets.length) return undefined;
+    let cancelled = false;
+    setValidating(true);
+    (async () => {
+      const results = await Promise.allSettled(
+        presets.map((p) => api.deploymentReadiness("preset", p.name).then((rd) => [p.name, rd]))
+      );
+      if (cancelled) return;
+      const map = {};
+      for (const r of results) if (r.status === "fulfilled" && r.value) map[r.value[0]] = r.value[1];
+      setValidation(map);
+      setValidating(false);
+    })();
+    return () => { cancelled = true; };
+  }, [presets]);
+
   const filtered = useMemo(() => {
     let list = presets.map((p) => ({
       ...p,
       _source: presetSource(p),
       _ex: p.config?.execution || null,
       _dep: deployed[p.name] || null,
+      _val: validationVerdict(validation[p.name]),
     }));
     const q = search.trim().toLowerCase();
     if (q) list = list.filter((p) =>
@@ -129,7 +180,7 @@ export default function SavedPresets() {
       return (b.saved_at || "").localeCompare(a.saved_at || "");
     });
     return list;
-  }, [presets, deployed, search, srcFilter, instFilter, deployableOnly, deployedOnly, sortBy]);
+  }, [presets, deployed, validation, search, srcFilter, instFilter, deployableOnly, deployedOnly, sortBy]);
 
   const groups = useMemo(() => ({
     optimizer: filtered.filter((p) => p._source === "optimizer"),
@@ -141,6 +192,11 @@ export default function SavedPresets() {
     deployable: presets.filter((p) => p.config?.execution).length,
     deployed: Object.keys(deployed).length,
   }), [presets, deployed]);
+
+  const compareItems = useMemo(
+    () => presets.filter((p) => selected.has(p.name)).slice(0, 2),
+    [presets, selected],
+  );
 
   // --- actions ---
   const deploy = (p) => navigate(`/live?preset=${encodeURIComponent(p.name)}`);
@@ -179,6 +235,31 @@ export default function SavedPresets() {
     act(() => api.deletePreset(p.name), `Deleted "${p.name}"`);
   };
 
+  const toggleSelect = (name) => setSelected((prev) => {
+    const next = new Set(prev);
+    next.has(name) ? next.delete(name) : next.add(name);
+    return next;
+  });
+
+  const bulkDelete = () => {
+    const names = [...selected];
+    if (!names.length) return;
+    const deployedNames = names.filter((n) => deployed[n]);
+    const warn = `Delete ${names.length} preset${names.length > 1 ? "s" : ""}?`
+      + (deployedNames.length ? `\n\n${deployedNames.length} of them back a live deployment — those lookups will break.` : "")
+      + "\nThis cannot be undone.";
+    if (!window.confirm(warn)) return;
+    setBusy(true);
+    (async () => {
+      let ok = 0;
+      for (const n of names) { try { await api.deletePreset(n); ok += 1; } catch { /* keep going */ } }
+      toast.success(`Deleted ${ok}/${names.length} preset${names.length > 1 ? "s" : ""}`);
+      setSelected(new Set());
+      await refresh();
+      setBusy(false);
+    })();
+  };
+
   const toggleExpand = (name) => setExpanded((prev) => {
     const next = new Set(prev);
     next.has(name) ? next.delete(name) : next.add(name);
@@ -196,6 +277,12 @@ export default function SavedPresets() {
     </button>
   );
 
+  const groupProps = {
+    collapsed, setCollapsed, expanded, toggleExpand, busy,
+    selected, onToggleSelect: toggleSelect,
+    onDeploy: deploy, onOpenLab: openInLab, onRename: rename, onDuplicate: duplicate, onRemove: remove,
+  };
+
   return (
     <div className="space-y-3" data-testid="saved-presets-page">
       {/* Header */}
@@ -207,6 +294,9 @@ export default function SavedPresets() {
         <HeaderStat label="Total" value={stats.total} />
         <HeaderStat label="Deployable" value={stats.deployable} title="Presets that carry an option-execution policy" />
         <HeaderStat label="Deployed" value={stats.deployed} title="Presets currently backing a live deployment" />
+        {validating && (
+          <span className="flex items-center gap-1 text-[10px] text-dimmer"><Loader2 className="w-3 h-3 animate-spin" /> validating…</span>
+        )}
         <div className="ml-auto flex items-center gap-2">
           <div className="relative">
             <Search className="w-3.5 h-3.5 absolute left-2 top-1/2 -translate-y-1/2 text-dimmer" />
@@ -250,30 +340,41 @@ export default function SavedPresets() {
         </div>
       </div>
 
+      {/* Selection toolbar */}
+      {selected.size > 0 && (
+        <div className="rounded-lg border border-info/40 bg-info/5 px-3 py-2 flex items-center gap-2 text-xs" data-testid="presets-selection-bar">
+          <span className="text-dim font-mono">{selected.size} selected</span>
+          <Button size="sm" variant="ghost" className="h-7 text-xs" disabled={compareItems.length !== 2}
+            onClick={() => setCompareOpen(true)} data-testid="presets-compare"
+            title={compareItems.length === 2 ? "Compare the two selected presets" : "Select exactly two to compare"}>
+            <Columns className="w-3 h-3 mr-1" /> Compare
+          </Button>
+          <Button size="sm" variant="ghost" className="h-7 text-xs text-rose-300 hover:text-rose-200" disabled={busy}
+            onClick={bulkDelete} data-testid="presets-bulk-delete">
+            <Trash2 className="w-3 h-3 mr-1" /> Delete selected
+          </Button>
+          <Button size="sm" variant="ghost" className="h-7 text-xs ml-auto text-dimmer" onClick={() => setSelected(new Set())}>
+            Clear
+          </Button>
+        </div>
+      )}
+
       {presets.length === 0 ? (
         <div className="rounded-lg border border-line bg-bg-1 p-8 text-center text-dimmer text-sm">
           No presets yet. Save one from a <b>Backtest Lab</b> result ("Save as preset") or the <b>Optimizer</b> ("Apply as preset") to see it here.
         </div>
       ) : (
         <>
-          <PresetGroup
-            id="optimizer" title="From Optimizer" icon={Gauge} accent="text-info"
-            items={groups.optimizer} collapsed={collapsed} setCollapsed={setCollapsed}
-            expanded={expanded} toggleExpand={toggleExpand} busy={busy}
-            onDeploy={deploy} onOpenLab={openInLab} onRename={rename} onDuplicate={duplicate} onRemove={remove}
-          />
-          <PresetGroup
-            id="backtest" title="From Backtest Lab" icon={FlaskConical} accent="text-emerald-300"
-            items={groups.backtest} collapsed={collapsed} setCollapsed={setCollapsed}
-            expanded={expanded} toggleExpand={toggleExpand} busy={busy}
-            onDeploy={deploy} onOpenLab={openInLab} onRename={rename} onDuplicate={duplicate} onRemove={remove}
-          />
+          <PresetGroup id="optimizer" title="From Optimizer" icon={Gauge} accent="text-info" items={groups.optimizer} {...groupProps} />
+          <PresetGroup id="backtest" title="From Backtest Lab" icon={FlaskConical} accent="text-emerald-300" items={groups.backtest} {...groupProps} />
           {groups.optimizer.length === 0 && groups.backtest.length === 0 && (
-            <div className="rounded-lg border border-line bg-bg-1 p-6 text-center text-dimmer text-sm">
-              No presets match these filters.
-            </div>
+            <div className="rounded-lg border border-line bg-bg-1 p-6 text-center text-dimmer text-sm">No presets match these filters.</div>
           )}
         </>
+      )}
+
+      {compareOpen && compareItems.length === 2 && (
+        <CompareDialog a={compareItems[0]} b={compareItems[1]} onClose={() => setCompareOpen(false)} />
       )}
     </div>
   );
@@ -288,7 +389,7 @@ function HeaderStat({ label, value, title }) {
   );
 }
 
-function PresetGroup({ id, title, icon: Icon, accent, items, collapsed, setCollapsed, expanded, toggleExpand, busy, onDeploy, onOpenLab, onRename, onDuplicate, onRemove }) {
+function PresetGroup({ id, title, icon: Icon, accent, items, collapsed, setCollapsed, expanded, toggleExpand, busy, selected, onToggleSelect, onDeploy, onOpenLab, onRename, onDuplicate, onRemove }) {
   const isCollapsed = !!collapsed[id];
   return (
     <div data-testid={`preset-group-${id}`}>
@@ -306,7 +407,8 @@ function PresetGroup({ id, title, icon: Icon, accent, items, collapsed, setColla
         ) : (
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-2">
             {items.map((p) => (
-              <PresetCard key={p.name} p={p} source={id} expanded={expanded.has(p.name)} onToggle={() => toggleExpand(p.name)} busy={busy}
+              <PresetCard key={p.name} p={p} source={id} expanded={expanded.has(p.name)} onToggle={() => toggleExpand(p.name)}
+                selected={selected.has(p.name)} onToggleSelect={() => onToggleSelect(p.name)} busy={busy}
                 onDeploy={onDeploy} onOpenLab={onOpenLab} onRename={onRename} onDuplicate={onDuplicate} onRemove={onRemove} />
             ))}
           </div>
@@ -316,21 +418,29 @@ function PresetGroup({ id, title, icon: Icon, accent, items, collapsed, setColla
   );
 }
 
-function PresetCard({ p, source, expanded, onToggle, busy, onDeploy, onOpenLab, onRename, onDuplicate, onRemove }) {
+function PresetCard({ p, source, expanded, onToggle, selected, onToggleSelect, busy, onDeploy, onOpenLab, onRename, onDuplicate, onRemove }) {
   const c = p.config || {};
-  const ex = p._ex;
-  const summary = execSummary(ex);
+  const summary = execSummary(p._ex);
   const params = c.params || {};
   const paramCount = Object.keys(params).length;
+  const val = p._val;
   return (
-    <div className="rounded-lg border border-line bg-bg-1 p-3 space-y-2" data-testid="preset-card">
+    <div className={`rounded-lg border bg-bg-1 p-3 space-y-2 ${selected ? "border-info" : "border-line"}`} data-testid="preset-card">
       <div className="flex items-start gap-2">
+        <input type="checkbox" checked={selected} onChange={onToggleSelect} data-testid="preset-select"
+          className="mt-1 h-3.5 w-3.5 rounded border-line shrink-0" title="Select for compare / bulk delete" />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-sm font-semibold truncate" title={p.name}>{p.name}</span>
             <span className={`text-[9px] px-1.5 py-0.5 rounded border font-mono ${source === "optimizer" ? "border-info/40 text-info" : "border-emerald-500/40 text-emerald-300"}`}>
               {source === "optimizer" ? "OPTIMIZER" : "BACKTEST"}
             </span>
+            {val && (
+              <span className={`text-[9px] px-1.5 py-0.5 rounded border font-mono inline-flex items-center gap-1 ${VAL_CLS[val.level]}`}
+                data-testid="preset-validation" title={val.tip}>
+                <ShieldCheck className="w-2.5 h-2.5" /> {val.label}
+              </span>
+            )}
             {p._dep && (
               <span className="text-[9px] px-1.5 py-0.5 rounded border border-emerald-500/40 text-emerald-300 font-mono" data-testid="preset-deployed-badge"
                 title={`Live deployment(s): ${p._dep.statuses.join(", ")}`}>
@@ -366,7 +476,6 @@ function PresetCard({ p, source, expanded, onToggle, busy, onDeploy, onOpenLab, 
         </div>
       </div>
 
-      {/* Execution policy — what this preset will deploy with */}
       {summary ? (
         <div className="flex items-center gap-1.5 text-[11px] text-sky-300/90" title="The option-execution policy this preset deploys with">
           <Cog className="w-3.5 h-3.5 shrink-0" />
@@ -395,6 +504,59 @@ function PresetCard({ p, source, expanded, onToggle, busy, onDeploy, onOpenLab, 
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+// Side-by-side comparison of two presets: every param (union of keys, differences
+// highlighted) and the option-execution policy. Helps decide between two saved
+// candidates before deploying.
+function CompareDialog({ a, b, onClose }) {
+  const pa = a.config?.params || {};
+  const pb = b.config?.params || {};
+  const keys = [...new Set([...Object.keys(pa), ...Object.keys(pb)])].sort();
+  const fmt = (v) => v === undefined ? "—" : (typeof v === "number" ? (Number.isInteger(v) ? String(v) : v.toFixed(4)) : String(v));
+  const diffCount = keys.filter((k) => fmt(pa[k]) !== fmt(pb[k])).length;
+  const Col = ({ p }) => (
+    <div className="text-[11px] font-mono text-dim truncate" title={p.name}>
+      {p.name}
+      <div className="text-[10px] text-dimmer">{p.config?.strategy_id} · {(p.config?.instrument || "").toUpperCase()}</div>
+    </div>
+  );
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 flex items-start justify-center p-4 overflow-y-auto" data-testid="compare-dialog">
+      <div className="w-full max-w-2xl rounded-lg border border-line bg-bg-1 mt-8">
+        <div className="px-4 py-3 border-b border-line flex items-center gap-2">
+          <Columns className="w-4 h-4 text-info" />
+          <div className="text-sm font-semibold">Compare presets</div>
+          <span className="text-[11px] text-dimmer">{diffCount} param{diffCount === 1 ? "" : "s"} differ</span>
+          <button onClick={onClose} className="ml-auto text-dimmer hover:text-foreground" data-testid="compare-close"><X className="w-4 h-4" /></button>
+        </div>
+        <div className="p-4 space-y-3 text-xs">
+          <div className="grid grid-cols-[160px_1fr_1fr] gap-2 items-end">
+            <div className="text-[10px] uppercase tracking-wider text-dimmer">Field</div>
+            <Col p={a} />
+            <Col p={b} />
+          </div>
+          <div className="rounded-md border border-line divide-y divide-line">
+            {keys.map((k) => {
+              const differ = fmt(pa[k]) !== fmt(pb[k]);
+              return (
+                <div key={k} className={`grid grid-cols-[160px_1fr_1fr] gap-2 px-2 py-1 ${differ ? "bg-amber-500/5" : ""}`}>
+                  <div className="text-[11px] text-dimmer truncate" title={k}>{k}</div>
+                  <div className={`text-[11px] font-mono ${differ ? "text-amber-300" : "text-dim"}`}>{fmt(pa[k])}</div>
+                  <div className={`text-[11px] font-mono ${differ ? "text-amber-300" : "text-dim"}`}>{fmt(pb[k])}</div>
+                </div>
+              );
+            })}
+          </div>
+          <div className="grid grid-cols-[160px_1fr_1fr] gap-2 px-2">
+            <div className="text-[11px] text-dimmer">option execution</div>
+            <div className="text-[11px] font-mono text-sky-300/90">{execSummary(a.config?.execution) || "spot-only"}</div>
+            <div className="text-[11px] font-mono text-sky-300/90">{execSummary(b.config?.execution) || "spot-only"}</div>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

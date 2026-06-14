@@ -432,6 +432,7 @@ async def apply_opt_as_preset(job_id: str, name: str = Query(...)):
         "mode": job.get("config", {}).get("mode", "SCALP"),
         "strategy_id": job["strategy_id"],
         "params": best_params,
+        "source": "optimizer",  # explicit origin tag for the Saved Presets page
         "source_optimization_job": job_id,
         "source_job_kind": job.get("kind") or "single",
         "optimization_method": job["method"],

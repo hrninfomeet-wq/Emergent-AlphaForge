@@ -45,3 +45,21 @@ def test_page_groups_by_source_with_actions():
 def test_backtest_saves_tag_their_source():
     bl = _read("pages/BacktestLab.jsx")
     assert 'source: "backtest"' in bl
+
+
+def test_optimizer_apply_as_preset_tags_source():
+    # Backend apply-as-preset now stamps an explicit optimizer source.
+    research = (Path(__file__).resolve().parents[1] / "backend" / "app" / "routers" / "research.py").read_text(encoding="utf-8")
+    assert '"source": "optimizer"' in research
+
+
+def test_advanced_extras_present():
+    src = _read("pages/SavedPresets.jsx")
+    # multi-select + bulk delete + compare
+    for tid in ("preset-select", "presets-selection-bar", "presets-compare",
+                "presets-bulk-delete", "compare-dialog"):
+        assert tid in src, tid
+    # validation badge driven by the readiness evidence
+    assert "preset-validation" in src
+    assert "deploymentReadiness" in src
+    assert "validationVerdict" in src
