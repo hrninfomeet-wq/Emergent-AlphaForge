@@ -202,3 +202,28 @@ def survival_verdict(
         return {**base, "reason": "risk_of_ruin"}
 
     return {**base, "survived": True, "reason": "ok"}
+
+
+def oos_fold_index_ranges(
+    n_rows: int, n_folds: int = 3, train_pct: float = 0.6,
+) -> List[tuple]:
+    """OOS (test) index ranges per walk-forward fold — mirrors walk_forward's split
+    (walkforward.py). Returns [(fold_no, oos_start, oos_end), ...]; the OOS slice of
+    fold k is df.iloc[oos_start:oos_end]. Skips folds < 100 rows or OOS tail < 30,
+    and returns [] when n_rows < 200 (too small to walk-forward)."""
+    if n_rows < 200:
+        return []
+    out: List[tuple] = []
+    fold_size = n_rows // n_folds
+    for k in range(n_folds):
+        start = k * fold_size
+        end = min((k + 1) * fold_size, n_rows)
+        if end - start < 100:
+            continue
+        slice_len = end - start
+        train_end = int(slice_len * train_pct)
+        oos_start = start + train_end
+        if end - oos_start < 30:
+            continue
+        out.append((k + 1, oos_start, end))
+    return out

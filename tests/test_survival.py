@@ -171,3 +171,20 @@ def test_daily_from_curve_buckets_by_ist_date():
              {"ts": day2, "pnl_value": 25.0}]
     daily = daily_from_curve(curve)
     assert sorted(daily) == sorted([60.0, 25.0])
+
+
+from app.survival import oos_fold_index_ranges
+
+
+def test_oos_fold_index_ranges_three_folds():
+    # 900 rows, 3 folds, 60% train -> each fold is 300 rows, OOS tail = 120 rows.
+    ranges = oos_fold_index_ranges(900, n_folds=3, train_pct=0.6)
+    assert len(ranges) == 3
+    assert ranges[0] == (1, 180, 300)      # (fold_no, oos_start, oos_end)
+    assert ranges[1] == (2, 480, 600)
+    assert ranges[2] == (3, 780, 900)
+
+
+def test_oos_fold_index_ranges_skips_too_small():
+    assert oos_fold_index_ranges(100, n_folds=3, train_pct=0.6) == []   # folds < 100 rows
+    assert oos_fold_index_ranges(150, n_folds=3) == []                  # < 200 total guard
