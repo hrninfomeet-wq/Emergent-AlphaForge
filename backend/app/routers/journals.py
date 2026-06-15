@@ -28,6 +28,7 @@ from app.runtime import (
 )
 
 from app.schemas import PaperCloseReq, PaperMarkReq, SignalsPurgeReq, TradesPurgeReq
+from app.paper_open_positions import build_open_positions
 
 api = APIRouter()
 
@@ -262,6 +263,23 @@ async def list_paper_trades(
     if (format or "").lower() == "csv":
         return _csv_response(rows, _TRADES_CSV_COLUMNS, "paper_trades.csv")
     return {"items": serialize_doc(rows), "count": len(rows), "total": total, "skip": skip, "limit": limit}
+
+
+@api.get("/paper/open-positions")
+async def paper_open_positions():
+    """Live OPEN positions: unrealized P&L from the latest tick at request time.
+    Lightweight (OPEN only) so the Paper page can poll it every ~2s."""
+    db = get_db()
+    rows = await db.paper_trades.find({"status": "OPEN"}, {"_id": 0, "events": 0}).to_list(length=500)
+    dep_ids = sorted({str(r.get("deployment_id")) for r in rows if r.get("deployment_id")})
+    if dep_ids:
+        names = {str(d["id"]): str(d.get("name") or "") for d in
+                 await db.strategy_deployments.find({"id": {"$in": dep_ids}}, {"_id": 0, "id": 1, "name": 1}).to_list(length=len(dep_ids))}
+        for r in rows:
+            r["deployment_name"] = names.get(str(r.get("deployment_id") or ""), "")
+    from app.runtime import upstox_stream_manager  # lazy: avoid circular import at module load
+    out = build_open_positions(rows, latest_tick_lookup=upstox_stream_manager.latest_tick_map().get)
+    return serialize_doc(out)
 
 
 @api.post("/paper/trades/purge")
