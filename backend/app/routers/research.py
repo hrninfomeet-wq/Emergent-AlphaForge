@@ -495,8 +495,11 @@ async def pause_opt_job(job_id: str):
 @api.post("/optimize/jobs/{job_id}/resume")
 async def resume_opt_job(job_id: str):
     db = get_db()
-    doc = await db.optimization_jobs.find_one({"id": job_id}, {"_id": 0, "kind": 1})
-    if not doc:
+    # Project `id` (always present) alongside `kind`: a regular (non-WFO) job has no
+    # `kind` field, so {"_id":0,"kind":1} alone returns an EMPTY dict for a job that
+    # DOES exist. Check `is None` (genuine miss), not falsiness, or a real job 404s.
+    doc = await db.optimization_jobs.find_one({"id": job_id}, {"_id": 0, "id": 1, "kind": 1})
+    if doc is None:
         raise HTTPException(404, "Job not found")
     if doc.get("kind") == "wfo":
         ok = await resume_wfo_job(job_id)
