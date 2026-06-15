@@ -13,6 +13,18 @@ from app.upstox_stream import DEFAULT_STREAM_MODE
 from app.data_hygiene import DEFAULT_SAMPLE_INTERVAL_MIN as HYGIENE_DEFAULT_SAMPLE
 
 
+# Exit/risk-control taxonomy (mirrors app/exit_controls.py; pinned here for contract tests + UI).
+OPTION_TRAIL_STOP = "OPTION_TRAIL_STOP"
+OPTION_BREAKEVEN_STOP = "OPTION_BREAKEVEN_STOP"
+DAILY_LOSS_HALT = "DAILY_LOSS_HALT"
+DAILY_TARGET_HALT = "DAILY_TARGET_HALT"
+MAX_TRADES_HALT = "MAX_TRADES_HALT"
+# Response-side attribution metric key names (built in corpus-invisible option_backtest.py).
+METRIC_OPTION_TRAIL_EXITS = "option_trail_exits"
+METRIC_OPTION_BREAKEVEN_EXITS = "option_breakeven_exits"
+METRIC_SKIPPED_BY_CAP = "skipped_by_cap"
+
+
 # ---------------------------------------------------------------------------
 # Data Warehouse
 # ---------------------------------------------------------------------------
@@ -61,6 +73,8 @@ class OptionBacktestReq(BaseModel):
     # Position sizing + capital (premium-at-risk or fixed lots). Opt-in; off keeps
     # the fixed `lots` count. Lot SIZE always comes from the contract metadata.
     sizing_config: Optional[Dict[str, Any]] = None
+    exit_controls: Optional[ExitControlsReq] = None
+    daily_caps: Optional[DailyCapsReq] = None
 
 
 class BacktestReq(BaseModel):
@@ -120,6 +134,32 @@ class TradesPurgeReq(BaseModel):
 # Auto-Optimizer (Phase 3)
 # ---------------------------------------------------------------------------
 
+class _BreakevenReq(BaseModel):
+    trigger: float = 0.0
+    lock: float = 0.0
+
+
+class _TrailingReq(BaseModel):
+    activation: float = 0.0
+    distance: float = 0.0
+
+
+class ExitControlsReq(BaseModel):
+    """Premium trailing-stop + breakeven overlay (long options). Off by default."""
+    enabled: bool = False
+    unit: str = "pct"                 # "pct" (of entry premium) | "pts"
+    breakeven: _BreakevenReq = Field(default_factory=_BreakevenReq)
+    trailing: _TrailingReq = Field(default_factory=_TrailingReq)
+
+
+class DailyCapsReq(BaseModel):
+    """Soft per-IST-session caps (auto-resume next session). Omit a field to disable."""
+    mode: str = "soft"
+    loss: Optional[float] = None      # ₹ realized loss (positive)
+    target: Optional[float] = None    # ₹ realized profit (positive)
+    max_trades: Optional[int] = None
+
+
 class SurvivalConfigReq(BaseModel):
     """Capital-aware survival constraints for the optimizer. Off by default ->
     optimizer behaves exactly as before. See app/survival.py for the gate."""
@@ -158,6 +198,8 @@ class OptimizerStartReq(BaseModel):
     # Broaden the re-rank shortlist with a diversity sample so an option-profitable
     # but spot-mediocre config can surface (default off = top-K by spot objective).
     rerank_diversity: bool = False
+    # Commit 2: search a bounded grid of exit/cap configs per surviving finalist.
+    search_exit_controls: bool = False
     option_config: Optional[Dict[str, Any]] = None
     survival_config: Optional[SurvivalConfigReq] = None
 
