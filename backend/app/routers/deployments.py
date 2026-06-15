@@ -190,6 +190,15 @@ async def create_deployment(req: DeploymentCreateReq):
                 "quality": quality,
             },
         )
+    _risk = req.risk or {}
+    if _risk.get("exit_controls") or _risk.get("daily_caps"):
+        from app.exit_controls import validate_exit_risk_config
+        _costs_on = bool(((req.friction or {}).get("costs") or {}).get("enabled"))
+        errs = validate_exit_risk_config(
+            _risk.get("exit_controls"), _risk.get("daily_caps"),
+            costs_on=_costs_on, option_exec_on=True)  # deployments always pair options live
+        if errs:
+            raise HTTPException(400, "; ".join(errs))
     # Pin the strategy source-file SHA at creation time so the evaluator can
     # later detect drift if the user edits the .py file without re-deploying.
     strategy_id = str(source.get("strategy_id") or (source.get("config") or {}).get("strategy_id") or "")

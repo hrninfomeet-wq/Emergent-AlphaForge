@@ -574,6 +574,16 @@ async def _run_paired_option_backtest(req: BacktestReq, spot_trades: List[Dict[s
             else:
                 auto_fetch.update({"status": "skipped", "reason": "missing_backtest_window"})
 
+    if config.exit_controls or config.daily_caps:
+        from app.exit_controls import validate_exit_risk_config
+        errs = validate_exit_risk_config(
+            config.exit_controls.model_dump() if config.exit_controls else None,
+            config.daily_caps.model_dump() if config.daily_caps else None,
+            costs_on=bool((config.cost_config or {}).get("enabled")),
+            option_exec_on=(config.exit_mode == "option_levels"))
+        if errs:
+            raise HTTPException(400, "; ".join(errs))
+
     result = simulate_paired_option_trades(
         spot_trades=spot_trades,
         contracts=contracts,
@@ -593,7 +603,12 @@ async def _run_paired_option_backtest(req: BacktestReq, spot_trades: List[Dict[s
         option_stop_pct=config.option_stop_pct,
         cost_config=config.cost_config,
         sizing_config=config.sizing_config,
+        exit_controls=config.exit_controls.model_dump() if config.exit_controls else None,
+        daily_caps=config.daily_caps.model_dump() if config.daily_caps else None,
     )
+    _trades = result.get("trades") or []
+    result["skipped_trades"] = [t for t in _trades if t.get("status") == "SKIPPED_DAILY_CAP"]
+    result["trades"] = [t for t in _trades if t.get("status") != "SKIPPED_DAILY_CAP"]
     result["request"] = config.model_dump()
     resolved_expiries = sorted(set(expiry_by_trade.values()))
     result["data"] = {

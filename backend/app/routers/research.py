@@ -437,6 +437,15 @@ async def optimize_start(req: OptimizerStartReq):
         )
         if err:
             raise HTTPException(400, err)
+    oc = req.option_config or {}
+    if oc.get("exit_controls") or oc.get("daily_caps"):
+        from app.exit_controls import validate_exit_risk_config
+        errs = validate_exit_risk_config(
+            oc.get("exit_controls"), oc.get("daily_caps"),
+            costs_on=bool(req.costs_enabled),
+            option_exec_on=(req.evaluation_mode == "option_rerank"))
+        if errs:
+            raise HTTPException(400, "; ".join(errs))
     job_id = await optimizer_create_job(req.model_dump())
     return {"job_id": job_id, "status": "queued"}
 
