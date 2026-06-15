@@ -43,3 +43,32 @@ def test_monotonic_never_below_base():
                                         "trailing": {"activation": 0.10, "distance": 0.90}})
     # huge distance would put trail below base; effective must not drop below base 80
     assert effective_premium_stop(entry=100.0, running_max=120.0, base_stop=80.0, cfg=cfg) == 80.0
+
+
+from app.exit_controls import stop_fill_price
+
+
+def test_stop_fill_gaps_to_open_below_level():
+    assert stop_fill_price(150.0, "STOP", bar_open=130.0) == 130.0       # gap-down fills at open
+
+
+def test_stop_fill_no_gap_uses_level():
+    assert stop_fill_price(150.0, "STOP", bar_open=151.0) == 150.0       # open above stop -> level
+    assert stop_fill_price(150.0, "STOP", bar_open=150.0) == 150.0       # boundary -> level
+
+
+def test_stop_fill_non_stop_reason_uses_level():
+    assert stop_fill_price(150.0, "TARGET", bar_open=130.0) == 150.0     # only STOP is gap-clamped
+
+
+def test_stop_fill_none_open_uses_level():
+    assert stop_fill_price(150.0, "STOP", bar_open=None) == 150.0
+
+
+def test_from_dict_ignores_garbage_values():
+    cfg = ExitControlsConfig.from_dict({"enabled": True, "unit": "pts",
+                                        "breakeven": {"trigger": "bad", "lock": None},
+                                        "trailing": {"activation": "", "distance": 10.0}})
+    assert cfg.enabled is True and cfg.unit == "pts"
+    assert cfg.be_trigger == 0.0 and cfg.be_lock == 0.0     # garbage left at defaults
+    assert cfg.trail_distance == 10.0

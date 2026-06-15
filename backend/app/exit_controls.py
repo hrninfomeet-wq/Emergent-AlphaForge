@@ -20,6 +20,7 @@ SKIP_DAILY_TARGET = "DAILY_TARGET_HALT"
 SKIP_MAX_TRADES = "MAX_TRADES_HALT"
 
 
+# Used by DailyCapsConfig.from_dict (added in the next task); not dead code.
 def _pos(value: Any) -> Optional[float]:
     try:
         if value in (None, ""):
@@ -62,7 +63,9 @@ class ExitControlsConfig:
 def effective_premium_stop(*, entry: float, running_max: float,
                            base_stop: Optional[float], cfg: ExitControlsConfig) -> Optional[float]:
     """The ratcheted LONG-option stop = max(base, breakeven?, trailing?). Monotonic
-    non-decreasing in running_max. Disabled cfg => base_stop unchanged."""
+    non-decreasing in running_max *when the caller supplies running_max as a true
+    running peak*; this function is stateless and does not enforce that invariant.
+    Disabled cfg => base_stop unchanged."""
     candidates: List[float] = []
     if base_stop is not None:
         candidates.append(float(base_stop))
