@@ -2,6 +2,43 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.41.x] — Live tick-driven paper-trading realism (2026-06-15)
+
+612 backend tests pass (+ a live-engine suite). On branch `feat/live-tick-paper-realism`.
+Brainstormed + researched (how Streak/retail platforms work) → spec → plan → built TDD
+task-by-task with per-task spec + code-quality review. Goal: make deployed-strategy
+paper trading reflect *live* execution so the Signal Journal + Paper page are
+trustworthy forward-test evidence (before any future broker API). **No broker orders.**
+
+Decision (researched): entries stay **candle-close** (matching the 1-minute backtest, no
+repainting — retail platforms signal on OHLC close, not LTP); ticks drive **fills and
+exits**, not entry evaluation.
+
+- **`LiveExitMonitor` (new)** — a ~1.5s loop that marks every OPEN paper trade to the
+  live premium and auto-closes on stop/target/spot-mirror/time-stop, replacing the old
+  once-per-minute mark. A stop breached at 10:32:15 now closes at ~10:32:16 at the real
+  premium instead of ~10:33:10 at a drifted price. `/api/live-exit-monitor/status`.
+- **Entries ~2–3s after close** — the evaluator now fires on each *new closed* 1-min bar
+  (poll-for-new-bar) instead of a fixed `minute+10s`; the roller flushes the bar ~1s
+  after close, so signals are prompt and never evaluated on the forming bucket. The
+  15:00 IST square-off was moved to run every cycle (time-based safety).
+- **Union subscription** — the option-stream auto-follow now subscribes
+  `{ATM band} ∪ {every open-trade contract}`, so a position whose strike drifts out of
+  the band stays markable (its stop can't blow past un-monitored).
+- **Tick-level time-stop + exit-friction parity** — `time_stop_minutes` is enforced at
+  the live premium (and `risk_hints` is now threaded onto the trade so it actually fires
+  live); every close routes through `close_trade → close_economics`, so exit
+  slippage/spread/charges match the backtest on all paths.
+- **Live Paper page** — `GET /paper/open-positions` computes unrealized P&L from the
+  latest tick at request time; the page polls it every ~2s (live per-trade P&L, premium,
+  distance-to-stop/target, stale flag, Open MTM) while the full journal/stats stay at 30s.
+- **Verified in the running stack:** exit monitor cycling ~1.5s; **25 trades closed
+  today (15 target_hit / 10 stop_hit), all `exit_price_source=live_tick`**; the
+  open-positions feed serves live P&L. (Also fixed earlier on this branch's base: the
+  `option_no_data` false-block and the optimizer resume 404 — unrelated pre-existing bugs.)
+- **Deferred:** tick-native intra-bar entries (a different product needing a tick
+  backtest); a forward-vs-backtest parity scorecard; broker-API live execution.
+
 ## [0.40.x] — Survivable optimization (capital-aware, risk-constrained) (2026-06-15)
 
 600 backend tests pass (was 575; +25). Piece 1 of the Optimizer↔Backtest track,
