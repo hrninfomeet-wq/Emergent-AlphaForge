@@ -128,6 +128,24 @@ UI smoke: Data Warehouse hero + Sync now + band heatmaps; Backtest results — K
 
 ## 14. What's next (open items)
 
+- **AGREED ROADMAP (2026-06-15, build in this order across upcoming sessions):**
+  **(1) Piece 2 — exit/risk controls**: trailing stop, breakeven / move-SL-on-profit, and
+  per-day loss/target/max-trades caps **inside the backtest sim** (so the optimizer +
+  survival gate can optimize over them, AND the live `LiveExitMonitor` can enforce them
+  live — trailing/breakeven currently do NOT exist in the engine; per-day caps exist only
+  in `deployment_kill_switch.py` for live, not in the backtest). **(2) Piece 3 — integrated
+  optimize→validate-OOS→accept loop** (survival constraints wired into the accept gate;
+  best after Piece 2 enriches the exit/risk model). **(3) Backtest-as-job Phase 2** (live
+  progress + cancel — verified design already on file in the Phase-2 bullet below). Each
+  goes through brainstorm → spec → plan → subagent-driven build, like 0.40.x/0.41.x.
+  **Branch state:** `main` (e6febbe, pushed) → `feat/survivable-optimization` (0.40.x) →
+  `feat/live-tick-paper-realism` (0.41.x); neither pushed/merged — user lands them on
+  explicit instruction. **User to-dos noted:** review deployment lot sizing (10-lot
+  deployments realize ~−₹13-14k per stop now that paper trades open+exit faithfully);
+  optionally re-optimize with the survival gate ON + deploy survivors for an honest
+  forward test; a forward-vs-backtest parity scorecard is the confidence gate before any
+  broker API.
+
 - **DONE — 0.37.x verified in the running stack** (`docker compose up -d --build` + browser smoke, both app images rebuilt): all six changes render with **no console errors** — cockpit market badge/clock + last-evaluated, the deploy wizard's friction control (default ON, prefilled) + selection-bias readiness line + gate ack warnings, the journal "P&L ₹ (net)" column, the chart's premium focus strip on an option_levels run, the Optimizer diversity toggle. API spot-checks confirmed `market_status` / `last_evaluated_ts` / `n_trials` / `deflated_sharpe` / `option_oos_net`. Two manual-flow checks were not exercised (no open trade / no stale close to trigger): the manual-close override prompt (#5) and a live stale-fill badge (#4) — both are guarded in code + unit-tested.
 - **DONE — paper journal surfaces the slice-1/4 data**: "P&L ₹ (net)" + gross/friction sub-line + `exit_price_stale` "est" badge.
 - **Request timeouts (done #1) + backtest-as-job Phase 1 (done #3 core)**: long synchronous calls (backtest run, warehouse sync, data-hygiene scans, audits) get a **per-request 10-min timeout** via `LONG_TIMEOUT_MS` in `frontend/src/lib/api.js` (global stays 60s; build-time tunable via `REACT_APP_API_TIMEOUT_LONG`). The `"timeout of 60000ms exceeded"` error was the **axios client** timeout, not a backend param. **Phase 1 now landed:** `POST /backtest/start` inserts the run doc up front with `status:"running"` (crash-visible), launches `run_backtest_job` via `asyncio.create_task`, and returns `{run_id}` instantly; the worker runs indicators + `run_backtest` + optional `walk_forward` inside **one `asyncio.to_thread` hop** (off the event loop — no more blocking the uvicorn loop / 5s healthcheck), then `$set`s the full result + `status:"done"` (or `"failed"` + `error`). The UI (`BacktestLab.runBacktest`) calls `api.startBacktest` then polls the existing `GET /backtest/runs/{id}` every 2s until terminal — so the **60s-timeout / duplicate-on-retry class is gone**. Legacy synchronous `POST /backtest/run` kept for scripts. Verified in the running stack: a browser run hits `/backtest/start` → 2 polls → result (`1841 trades`), no legacy call, no console errors; backend lifecycle confirmed via direct API (instant `queued` → `running` → `done`, full metrics + walk-forward). **Deferred (Phase 2-4, by user choice):** Phase 2 (live progress + cancel) has a verified design on file — see the dedicated "Phase 2" bullet below; Phase 3 (`JobsProvider` for backtests + restart-reconcile) and Phase 4 (true multi-core via `ProcessPoolExecutor`) follow it.
