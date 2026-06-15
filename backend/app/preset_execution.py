@@ -51,4 +51,10 @@ def execution_from_option_config(option_cfg: Optional[Dict[str, Any]]) -> Option
             "brokerage_per_order": float(cost_cfg.get("brokerage_per_order") or 0.0),
             "spread_pct_of_premium": float(cost_cfg.get("spread_pct_of_premium") or 0.0),
         }
+    exit_controls = (option_cfg or {}).get("exit_controls")
+    if exit_controls is not None:
+        execution["exit_controls"] = exit_controls
+    daily_caps = (option_cfg or {}).get("daily_caps")
+    if daily_caps is not None:
+        execution["daily_caps"] = daily_caps
     return execution

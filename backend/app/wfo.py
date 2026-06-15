@@ -462,6 +462,8 @@ async def _pair_oos_with_options(
         option_stop_pct=option_cfg.get("option_stop_pct"),
         cost_config=option_cfg.get("cost_config"),
         sizing_config=option_cfg.get("sizing_config"),
+        exit_controls=option_cfg.get("exit_controls"),
+        daily_caps=option_cfg.get("daily_caps"),
     )
 
 

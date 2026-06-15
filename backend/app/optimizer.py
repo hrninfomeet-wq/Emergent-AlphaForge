@@ -565,6 +565,8 @@ async def _survival_eval_oos(
             option_stop_pct=option_cfg.get("option_stop_pct"),
             cost_config=option_cfg.get("cost_config"),
             sizing_config=option_cfg.get("sizing_config"),
+            exit_controls=option_cfg.get("exit_controls"),
+            daily_caps=option_cfg.get("daily_caps"),
         )
         port = sim.get("portfolio") or {}
         cov = sim.get("coverage") or {}
@@ -609,6 +611,8 @@ async def _option_rerank(
     exit_mode = option_cfg.get("exit_mode") or "spot_exit"
     cost_config = option_cfg.get("cost_config")
     sizing_config = option_cfg.get("sizing_config")
+    exit_controls = option_cfg.get("exit_controls")
+    daily_caps = option_cfg.get("daily_caps")
     entry_max_age = int(option_cfg.get("entry_max_age_sec") or 120)
     exit_max_age = int(option_cfg.get("exit_max_age_sec") or 180)
     opt_tp, opt_sp = option_cfg.get("option_target_pts"), option_cfg.get("option_stop_pts")
@@ -704,6 +708,7 @@ async def _option_rerank(
             exit_mode=exit_mode, option_target_pts=opt_tp, option_stop_pts=opt_sp,
             option_target_pct=opt_tpct, option_stop_pct=opt_spct,
             cost_config=cost_config, sizing_config=sizing_config,
+            exit_controls=exit_controls, daily_caps=daily_caps,
         )
         m = sim.get("metrics", {})
         cov = sim.get("coverage", {})
@@ -1021,6 +1026,8 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                         },
                         "trial_num": -1,
                     }
+                    best_so_far["exit_controls"] = option_cfg.get("exit_controls")
+                    best_so_far["daily_caps"] = option_cfg.get("daily_caps")
                     survival_summary = {"survivors": len(survivors), "evaluated": len(ranked),
                                         "objective": survival.objective}
                 else:
@@ -1049,6 +1056,8 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                     },
                     "trial_num": -1,
                 }
+                best_so_far["exit_controls"] = option_cfg.get("exit_controls")
+                best_so_far["daily_caps"] = option_cfg.get("daily_caps")
             rerank_info = {
                 "top_k": rerank_top_k,
                 "diversity": rerank_diversity,
