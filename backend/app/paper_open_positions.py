@@ -31,7 +31,8 @@ def build_open_positions(
         entry = float(t.get("entry_price") or 0)
         live = _live_price(latest_tick_lookup, key)
         stale = live is None
-        if live is not None and qty:
+        if live is not None:
+            # live tick present -> P&L is live-computed (qty 0 -> 0, consistent with live_stale=False)
             unreal = round((live - entry) * qty, 2)
         else:
             unreal = round(float(t.get("unrealized_pnl") or 0), 2)
