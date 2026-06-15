@@ -175,6 +175,7 @@ class FakeDB:
     def __init__(self):
         self.candles_1m = FakeCollection()
         self.options_1m = FakeCollection()
+        self.ticks = FakeCollection()  # live option premiums (LTPC); empty -> falls back to options_1m
         self.option_contracts = FakeCollection()
         self.signals = FakeCollection()
         self.strategy_deployments = FakeCollection()

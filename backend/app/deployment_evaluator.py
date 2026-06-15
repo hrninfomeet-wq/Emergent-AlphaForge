@@ -200,12 +200,25 @@ def _is_blocked_by_expiry_day_cutoff(ist_dt: datetime, next_expiry_iso: Optional
 
 
 async def _has_recent_option_data(db: Any, instrument_key: str, *, max_age_minutes: int = 5) -> bool:
-    """Check whether the chosen option contract has at least one candle in the last N minutes.
+    """Whether the chosen option contract has LIVE TRADABLE data in the last N minutes.
 
-    Used to flag signals where the contract has no live tradable data, so they get journaled
-    but not tracked for P&L (per user's decision on 2026-05-27).
+    During a live session option premiums arrive as LTPC ticks in `ticks`; `options_1m`
+    is filled only by the historical/warehouse fetch and lags the session (it has no
+    today candles). So we check the live TICK first — mirroring
+    paper_auto.resolve_option_entry_price's tick→options_1m order — then fall back to a
+    recent warehouse candle. Checking options_1m alone falsely flags every live signal
+    `option_no_data`. Signals with neither are journaled but not tracked for P&L
+    (per user's decision on 2026-05-27).
     """
+    if not instrument_key:
+        return False
     cutoff_ms = int((datetime.now(timezone.utc) - timedelta(minutes=int(max_age_minutes))).timestamp() * 1000)
+    tick = await db.ticks.find_one(
+        {"instrument_key": instrument_key, "ts": {"$gte": cutoff_ms}, "last_price": {"$gt": 0}},
+        {"_id": 0, "ts": 1},
+    )
+    if tick:
+        return True
     doc = await db.options_1m.find_one(
         {"instrument_key": instrument_key, "ts": {"$gte": cutoff_ms}},
         {"_id": 0, "ts": 1},
