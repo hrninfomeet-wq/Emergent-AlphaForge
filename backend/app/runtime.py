@@ -185,6 +185,7 @@ async def _deployment_evaluator_loop() -> None:
             auto_opened = [r for r in results if (r.get("auto_paper") or {}).get("created")]
             if auto_opened:
                 log.info("auto-paper opened %d trade(s) this bar", len(auto_opened))
+                await _auto_follow_option_stream(min_radius=OPTION_CHAIN_BASELINE_RADIUS)
 
             # Mark all OPEN paper trades against the latest live option ticks so
             # stop/target exits actually fire intraday (minute granularity).
@@ -836,6 +837,11 @@ async def _auto_follow_option_stream(min_radius: int = 0) -> Dict[str, Any]:
             radius=radius,
         )
         option_keys = universe.get("instrument_keys") or []
+        # Always keep EVERY open paper trade's contract subscribed, even if its
+        # strike has drifted out of the ATM band — else the exit monitor loses its
+        # premium feed and a stop could blow past un-monitored.
+        open_keys = await db.paper_trades.distinct("instrument_key", {"status": "OPEN"})
+        option_keys = list(dict.fromkeys([*option_keys, *(str(k) for k in open_keys if k)]))
         if not option_keys:
             return {"restarted": False, "reason": "no_option_keys", "radius": radius}
         # Idempotent: skip the (disruptive) restart when every desired option key
