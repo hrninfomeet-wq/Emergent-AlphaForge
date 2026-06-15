@@ -212,6 +212,60 @@ def test_wrapper_blocks_on_max_open():
 
 # ---- end-to-end wiring contract --------------------------------------------
 
+from app.deployment_kill_switch import check_soft_daily_governor  # noqa: E402
+
+
+class _GovCur:
+    def __init__(self, docs): self._docs = docs
+    def sort(self, *a, **k): return self
+    async def to_list(self, length=None): return list(self._docs)
+
+
+class _GovColl:
+    def __init__(self, docs): self._docs = docs
+    def find(self, flt, *a, **k):
+        return _GovCur([d for d in self._docs if d.get("deployment_id") == flt.get("deployment_id")])
+
+
+class _GovDB:
+    def __init__(self, docs): self.paper_trades = _GovColl(docs)
+
+
+def test_soft_governor_halts_on_max_trades_including_open():
+    today = "2026-06-15"
+    docs = [
+        {"deployment_id": "d1", "status": "CLOSED", "created_at": "2026-06-15T04:00:00+00:00",
+         "closed_at": "2026-06-15T05:00:00+00:00", "realized_pnl": -500.0},
+        {"deployment_id": "d1", "status": "OPEN", "created_at": "2026-06-15T05:30:00+00:00"},
+    ]
+    dep = {"id": "d1", "mode": "paper", "risk": {"daily_caps": {"max_trades": 2}}}
+    d = asyncio.run(check_soft_daily_governor(_GovDB(docs), dep, today_ist=today))
+    assert d["halt"] and d["reason"] == "MAX_TRADES_HALT"
+
+
+def test_soft_governor_halts_on_daily_loss():
+    today = "2026-06-15"
+    docs = [{"deployment_id": "d1", "status": "CLOSED", "created_at": "2026-06-15T04:00:00+00:00",
+             "closed_at": "2026-06-15T05:00:00+00:00", "realized_pnl": -16000.0}]
+    dep = {"id": "d1", "mode": "paper", "risk": {"daily_caps": {"loss": 15000}}}
+    d = asyncio.run(check_soft_daily_governor(_GovDB(docs), dep, today_ist=today))
+    assert d["halt"] and d["reason"] == "DAILY_LOSS_HALT"
+
+
+def test_soft_governor_clear_when_no_caps_or_not_paper():
+    today = "2026-06-15"
+    docs = [{"deployment_id": "d1", "status": "CLOSED", "created_at": "2026-06-15T04:00:00+00:00",
+             "closed_at": "2026-06-15T05:00:00+00:00", "realized_pnl": -99999.0}]
+    # no daily_caps -> clear
+    dep = {"id": "d1", "mode": "paper", "risk": {}}
+    assert asyncio.run(check_soft_daily_governor(_GovDB(docs), dep, today_ist=today)) == {"halt": False, "reason": None}
+    # signal_only mode -> clear even with caps
+    dep2 = {"id": "d1", "mode": "signal_only", "risk": {"daily_caps": {"loss": 1}}}
+    assert asyncio.run(check_soft_daily_governor(_GovDB(docs), dep2, today_ist=today)) == {"halt": False, "reason": None}
+
+
+# ---- end-to-end wiring contract --------------------------------------------
+
 from pathlib import Path  # noqa: E402
 from tests.contract_corpus import backend_api_text
 

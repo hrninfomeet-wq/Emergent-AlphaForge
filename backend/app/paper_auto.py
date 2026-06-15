@@ -368,6 +368,11 @@ async def auto_paper_trade_for_signal(
         return {"created": False, "reason": "paper_trade_already_exists",
                 "trade_id": signal_doc.get("paper_trade_id")}
 
+    from app.deployment_kill_switch import check_soft_daily_governor
+    gov = await check_soft_daily_governor(db, deployment)
+    if gov.get("halt"):
+        return {"created": False, "reason": f"daily_cap:{gov.get('reason')}"}
+
     contract = signal_doc.get("option_contract") or {}
     instrument_key = str(contract.get("instrument_key") or "")
     if not instrument_key:

@@ -223,3 +223,34 @@ async def check_deployment_kill_switches(
         "open_trade_count": int(open_trade_count),
     }
     return decision
+
+
+async def check_soft_daily_governor(db, deployment, *, today_ist=None):
+    """Entry-session soft governor: halt NEW entries when today's (by ENTRY date)
+    realized cum-extremum trips loss/target or the entry count reaches max_trades.
+    Counts OPEN+CLOSED trades entered today; accumulates realized of closed-entered-today
+    trades in CLOSED_AT order (sticky extremum). Stateless (auto-resets next session).
+    Blocks entries only; never pauses. Paper deployments only."""
+    from app.exit_controls import DailyCapsConfig, daily_governor_decision
+    risk = dict(deployment.get("risk") or {})
+    caps = DailyCapsConfig.from_dict(risk.get("daily_caps"))
+    clear = {"halt": False, "reason": None}
+    if str(deployment.get("mode") or "").lower() != "paper" or not caps.active:
+        return clear
+    dep_id = str(deployment.get("id") or "")
+    today = today_ist or datetime.now(IST).date().isoformat()
+    rows = await (
+        db.paper_trades.find({"deployment_id": dep_id}, {"_id": 0}).sort("created_at", 1).to_list(length=None)
+    )
+    entered_today = [t for t in rows if _ist_date(t.get("created_at")) == today]
+    entry_count = len(entered_today)
+    closed_today = sorted(
+        [t for t in entered_today if str(t.get("status") or "").upper() == "CLOSED"],
+        key=lambda t: str(t.get("closed_at") or ""))
+    cum = cmin = cmax = 0.0
+    for t in closed_today:
+        cum += _float(t.get("realized_pnl"))
+        cmin = min(cmin, cum)
+        cmax = max(cmax, cum)
+    return daily_governor_decision(realized_cum_min=cmin, realized_cum_max=cmax,
+                                   entry_count=entry_count, cfg=caps)
