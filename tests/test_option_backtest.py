@@ -591,3 +591,12 @@ def test_metrics_report_exit_control_attribution():
     assert "option_trail_exits" in m and "option_breakeven_exits" in m
     assert "skipped_by_cap" in m and "skipped_daily_loss" in m
     assert m["option_trail_exits"] >= 1     # the trailing stop fired
+
+
+def test_empty_metrics_has_attribution_keys():
+    res = simulate_paired_option_trades(
+        spot_trades=[], contracts=[], option_candles=None, underlying="NIFTY")
+    m = res["metrics"]
+    for k in ("option_trail_exits", "option_breakeven_exits", "skipped_by_cap",
+              "skipped_daily_loss", "skipped_daily_target", "skipped_max_trades"):
+        assert m.get(k) == 0

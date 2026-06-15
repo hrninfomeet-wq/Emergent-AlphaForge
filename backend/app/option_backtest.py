@@ -31,6 +31,12 @@ def _empty_metrics() -> Dict[str, Any]:
         "avg_option_pnl_pts": 0.0,
         "best_option_pnl_pts": 0.0,
         "worst_option_pnl_pts": 0.0,
+        "option_trail_exits": 0,
+        "option_breakeven_exits": 0,
+        "skipped_by_cap": 0,
+        "skipped_daily_loss": 0,
+        "skipped_daily_target": 0,
+        "skipped_max_trades": 0,
     }
 
 
