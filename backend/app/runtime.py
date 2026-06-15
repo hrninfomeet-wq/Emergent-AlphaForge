@@ -33,6 +33,7 @@ from app.paper_auto import mark_open_deployment_trades
 from app.upstox_index_ingest import persist_index_candles_bulk, run_upstox_index_ingest_job
 from app.upstox_stream import DEFAULT_STREAM_MODE, UpstoxMarketStreamManager
 from app.live_candle_roller import LiveCandleRoller
+from app.live_exit_monitor import LiveExitMonitor
 from app.live_option_universe import build_live_option_universe, radius_for_deployments
 from app.deployment_evaluator import evaluate_active_deployments
 from app.data_hygiene import (
@@ -70,6 +71,12 @@ live_candle_roller = LiveCandleRoller(
     stream_manager=upstox_stream_manager,
     db_factory=get_db,
     persister=persist_index_candles_bulk,
+)
+
+live_exit_monitor = LiveExitMonitor(
+    db_factory=get_db,
+    tick_lookup_factory=lambda: upstox_stream_manager.latest_tick_map().get,
+    mark_fn=mark_open_deployment_trades,
 )
 
 

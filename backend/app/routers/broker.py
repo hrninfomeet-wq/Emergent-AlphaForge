@@ -25,6 +25,7 @@ from app.runtime import (
     _parse_underlyings_query,
     _trigger_autoupdate,
     live_candle_roller,
+    live_exit_monitor,
     log,
     upstox_stream_manager,
 )
@@ -111,6 +112,11 @@ async def market_header_sse(request: Request):
 async def live_candle_roller_status():
     """Return the live tick-to-OHLC roller status: tick counts, active buckets, last error."""
     return serialize_doc(live_candle_roller.status())
+
+
+@api.get("/live-exit-monitor/status")
+async def live_exit_monitor_status():
+    return serialize_doc(live_exit_monitor.status())
 
 
 @api.post("/live-candles/start")

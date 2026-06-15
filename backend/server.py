@@ -41,6 +41,7 @@ from app.runtime import (
     _topup_vix,
     _trigger_autoupdate,
     live_candle_roller,
+    live_exit_monitor,
     upstox_stream_manager,
 )
 
@@ -120,6 +121,7 @@ async def startup() -> None:
                 # Also start the live tick -> 1m bar roller so candles_1m gets today's bars.
                 # This is what makes the deployment evaluator able to fire on intraday data.
                 await live_candle_roller.start()
+                await live_exit_monitor.start()
         else:
             log.info("Upstox not connected at startup; skipping WS auto-start")
     except Exception as exc:
@@ -157,6 +159,10 @@ async def shutdown() -> None:
         await live_candle_roller.stop()
     except Exception as exc:
         log.warning("live_candle_roller.stop() failed: %s", exc)
+    try:
+        await live_exit_monitor.stop()
+    except Exception as exc:
+        log.warning("live_exit_monitor.stop() failed: %s", exc)
     from app.db import get_client
     get_client().close()
 
