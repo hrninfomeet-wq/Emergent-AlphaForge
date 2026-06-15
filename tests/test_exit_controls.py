@@ -74,7 +74,6 @@ def test_from_dict_ignores_garbage_values():
     assert cfg.trail_distance == 10.0
 
 
-# append to tests/test_exit_controls.py
 from app.exit_controls import (DailyCapsConfig, daily_governor_decision,
                                SKIP_DAILY_LOSS, SKIP_DAILY_TARGET, SKIP_MAX_TRADES)
 
@@ -109,3 +108,34 @@ def test_governor_loss_precedes_target_and_maxtrades():
     cfg = DailyCapsConfig.from_dict({"loss": 1000, "target": 1000, "max_trades": 1})
     d = daily_governor_decision(realized_cum_min=-2000.0, realized_cum_max=2000.0, entry_count=5, cfg=cfg)
     assert d["reason"] == SKIP_DAILY_LOSS
+
+
+from app.exit_controls import validate_exit_risk_config
+
+
+def test_validate_clean_config_no_errors():
+    errs = validate_exit_risk_config(
+        {"enabled": True, "unit": "pct", "breakeven": {"trigger": 0.3, "lock": 0.0},
+         "trailing": {"activation": 0.4, "distance": 0.25}},
+        {"loss": 15000, "max_trades": 6},
+        costs_on=True, option_exec_on=True)
+    assert errs == []
+
+
+def test_validate_rupee_cap_requires_costs():
+    errs = validate_exit_risk_config({}, {"loss": 15000}, costs_on=False, option_exec_on=True)
+    assert any("costs" in e.lower() for e in errs)
+
+
+def test_validate_exit_controls_require_option_exec():
+    errs = validate_exit_risk_config({"enabled": True, "trailing": {"activation": 0.4, "distance": 0.25}},
+                                     {}, costs_on=True, option_exec_on=False)
+    assert any("option" in e.lower() for e in errs)
+
+
+def test_validate_ranges():
+    errs = validate_exit_risk_config(
+        {"enabled": True, "unit": "pct", "breakeven": {"trigger": 0.2, "lock": 0.5},  # lock >= trigger
+         "trailing": {"activation": 0.4, "distance": 1.5}},                            # distance >= 1 (pct)
+        {"max_trades": 0}, costs_on=True, option_exec_on=True)
+    assert len(errs) >= 2

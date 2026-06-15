@@ -106,7 +106,6 @@ def stop_fill_price(level: float, reason: str, bar_open: Optional[float]) -> flo
     return float(level)
 
 
-# add to backend/app/exit_controls.py
 @dataclass
 class DailyCapsConfig:
     loss: Optional[float] = None        # ₹ (positive); halt when session cum-realized <= -loss
@@ -147,3 +146,36 @@ def daily_governor_decision(*, realized_cum_min: float, realized_cum_max: float,
     if cfg.max_trades is not None and int(entry_count) >= cfg.max_trades:
         return {"halt": True, "reason": SKIP_MAX_TRADES}
     return {"halt": False, "reason": None}
+
+
+def validate_exit_risk_config(exit_controls: Optional[Dict[str, Any]],
+                              daily_caps: Optional[Dict[str, Any]],
+                              *, costs_on: bool, option_exec_on: bool) -> List[str]:
+    """Pure validation; returns a list of error strings (empty = valid). The
+    corpus-visible routers call this and raise 400 on any error."""
+    errs: List[str] = []
+    ec = ExitControlsConfig.from_dict(exit_controls)
+    dc = DailyCapsConfig.from_dict(daily_caps)
+
+    if ec.enabled and not option_exec_on:
+        errs.append("exit_controls require option execution (option_levels / option re-rank); "
+                    "premium trailing is impossible spot-only.")
+    if (dc.loss is not None or dc.target is not None) and not costs_on:
+        errs.append("daily ₹ caps (loss/target) require costs enabled (else the cap acts on gross P&L).")
+
+    if ec.enabled:
+        unit = ec.unit
+        if ec.trail_distance and ec.trail_distance > 0:
+            if unit == "pct" and not (0.0 < ec.trail_distance < 1.0):
+                errs.append("trailing.distance must be in (0, 1) for unit=pct.")
+            if unit == "pts" and ec.trail_distance <= 0:
+                errs.append("trailing.distance must be > 0 for unit=pts.")
+        if ec.be_trigger and ec.be_trigger > 0 and ec.be_lock and ec.be_lock >= ec.be_trigger:
+            errs.append("breakeven.lock must be < breakeven.trigger.")
+    if dc.loss is not None and dc.loss <= 0:
+        errs.append("daily_caps.loss must be > 0.")
+    if dc.target is not None and dc.target <= 0:
+        errs.append("daily_caps.target must be > 0.")
+    if daily_caps and daily_caps.get("max_trades") is not None and dc.max_trades is None:
+        errs.append("daily_caps.max_trades must be an integer >= 1.")
+    return errs
