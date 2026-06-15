@@ -154,6 +154,8 @@ def survival_verdict(
     pnls = _finite(trade_pnls)
     n = len(pnls)
     spot_ct = int((coverage or {}).get("spot_trade_count", 0) or 0)
+    skipped_by_cap = int((coverage or {}).get("skipped_by_cap", 0) or 0)
+    eligible_ct = max(0, spot_ct - skipped_by_cap)   # cap-skips are deliberate, not missing data
     paired_ct = int((coverage or {}).get("paired_trade_count", n) or 0)
     max_dd_pct = portfolio.get("max_drawdown_pct")
     total_return_pct = portfolio.get("total_return_pct")
@@ -175,7 +177,7 @@ def survival_verdict(
             or not math.isfinite(float(total_return_pct))
             or not math.isfinite(float(max_dd_pct))):
         return {**base, "reason": "non_finite_metrics"}
-    if spot_ct > 0 and (paired_ct / spot_ct) < MIN_COVERAGE:
+    if eligible_ct > 0 and (paired_ct / eligible_ct) < MIN_COVERAGE:
         return {**base, "low_coverage": True, "reason": "low_coverage"}
 
     cal = calmar(float(total_return_pct), float(max_dd_pct))

@@ -567,3 +567,27 @@ def test_daily_cap_skips_later_same_session_entries():
     assert statuses.count("PAIRED") == 1              # trade 0 admitted
     assert statuses.count("SKIPPED_DAILY_CAP") == 1   # trade 1 capped despite having candles
     assert res["coverage"].get("skipped_by_cap", 0) == 1
+
+
+def test_metrics_report_exit_control_attribution():
+    day_ms = 1_700_000_000_000
+    spot = [{"direction": "CE", "entry_ts": day_ms, "exit_ts": day_ms + 240000,
+             "entry_price": 100.0, "exit_price": 100.0, "entry_datetime": "", "exit_datetime": "",
+             "regime": "", "ist_time": ""}]
+    contracts = [{"instrument_key": "NSE_FO|OPT", "underlying": "NIFTY", "expiry_date": "2023-11-16",
+                  "strike": 100, "side": "CE", "lot_size": 50, "trading_symbol": "X", "atm": 100}]
+    candles = _bars([
+        {"instrument_key": "NSE_FO|OPT", "ts": day_ms, "open": 10, "high": 10, "low": 10, "close": 10},
+        {"instrument_key": "NSE_FO|OPT", "ts": day_ms + 60000, "open": 16, "high": 16, "low": 16, "close": 16},
+        {"instrument_key": "NSE_FO|OPT", "ts": day_ms + 120000, "open": 11, "high": 11, "low": 11, "close": 11},
+        {"instrument_key": "NSE_FO|OPT", "ts": day_ms + 240000, "open": 14, "high": 14, "low": 14, "close": 14},
+    ])
+    res = simulate_paired_option_trades(
+        spot_trades=spot, contracts=contracts, option_candles=candles, underlying="NIFTY",
+        moneyness="atm", fixed_expiry_date="2023-11-16", exit_mode="option_levels",
+        option_stop_pct=50.0, option_target_pct=200.0,
+        exit_controls={"enabled": True, "unit": "pct", "trailing": {"activation": 0.10, "distance": 0.25}})
+    m = res["metrics"]
+    assert "option_trail_exits" in m and "option_breakeven_exits" in m
+    assert "skipped_by_cap" in m and "skipped_daily_loss" in m
+    assert m["option_trail_exits"] >= 1     # the trailing stop fired

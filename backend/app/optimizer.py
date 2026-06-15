@@ -534,7 +534,7 @@ async def _survival_eval_oos(
     expiry_dates_sorted = sorted({str(c.get("expiry_date")) for c in contracts if c.get("expiry_date")})
     all_paired = []
     fold_pass = []
-    spot_total = paired_total = 0
+    spot_total = paired_total = skipped_total = 0
     for _fold, a, b in oos_fold_index_ranges(len(df_enriched), n_folds, train_pct):
         test_df = df_enriched.iloc[a:b].reset_index(drop=True)
         res = await asyncio.to_thread(
@@ -570,6 +570,7 @@ async def _survival_eval_oos(
         cov = sim.get("coverage") or {}
         spot_total += int(cov.get("spot_trade_count", 0) or 0)
         paired_total += int(cov.get("paired_trade_count", 0) or 0)
+        skipped_total += int(cov.get("skipped_by_cap", 0) or 0)
         all_paired.extend(t for t in sim.get("trades", []) if t.get("status") == "PAIRED")
         curve = port.get("curve") or []
         eqs = [c.get("equity_value") for c in curve if c.get("equity_value") is not None]
@@ -584,7 +585,8 @@ async def _survival_eval_oos(
     trade_pnls = [float(t.get("option_pnl_value", 0.0)) for t in all_paired]
     verdict = survival_verdict(
         portfolio=stitched_port, trade_pnls=trade_pnls, cfg=sc,
-        coverage={"spot_trade_count": spot_total, "paired_trade_count": paired_total},
+        coverage={"spot_trade_count": spot_total, "paired_trade_count": paired_total,
+                  "skipped_by_cap": skipped_total},
         capital=capital)
     verdict["folds_ok"] = folds_ok
     verdict["fold_pass"] = fold_pass

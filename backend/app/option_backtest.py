@@ -185,6 +185,12 @@ def _compute_metrics(trades: List[Dict[str, Any]]) -> Dict[str, Any]:
         "option_target_exits": int(sum(1 for t in paired if t.get("option_exit_reason") == "OPTION_TARGET")),
         "option_stop_exits": int(sum(1 for t in paired if t.get("option_exit_reason") == "OPTION_STOP")),
         "option_signal_exits": int(sum(1 for t in paired if t.get("option_exit_reason") in ("OPTION_SIGNAL_EXIT", "SPOT_EXIT"))),
+        "option_trail_exits": int(sum(1 for t in paired if t.get("option_exit_reason") == "OPTION_TRAIL_STOP")),
+        "option_breakeven_exits": int(sum(1 for t in paired if t.get("option_exit_reason") == "OPTION_BREAKEVEN_STOP")),
+        "skipped_by_cap": int(sum(1 for t in trades if t.get("status") == "SKIPPED_DAILY_CAP")),
+        "skipped_daily_loss": int(sum(1 for t in trades if t.get("skip_reason") == "DAILY_LOSS_HALT")),
+        "skipped_daily_target": int(sum(1 for t in trades if t.get("skip_reason") == "DAILY_TARGET_HALT")),
+        "skipped_max_trades": int(sum(1 for t in trades if t.get("skip_reason") == "MAX_TRADES_HALT")),
     }
 
 

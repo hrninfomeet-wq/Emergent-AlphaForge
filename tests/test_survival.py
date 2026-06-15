@@ -191,3 +191,16 @@ def test_oos_fold_index_ranges_skips_too_small():
     # train < 50 guard (mirrors walk_forward): 600 rows / 3 folds = 200/fold;
     # train_pct=0.2 -> train_end=40 < 50 -> every fold skipped.
     assert oos_fold_index_ranges(600, n_folds=3, train_pct=0.2) == []
+
+
+def test_cap_skips_excluded_from_coverage_denominator():
+    from app.survival import survival_verdict, SurvivalConfig
+    cfg = SurvivalConfig(enabled=True)
+    port = {"max_drawdown_pct": -5.0, "total_return_pct": 10.0,
+            "curve": [{"equity_value": 210000, "ts": 1}]}
+    # 10 spot, 6 paired, 4 skipped_by_cap -> eligible = 10-4 = 6, ratio 6/6 = 1.0 (NOT low coverage)
+    verdict = survival_verdict(
+        portfolio=port, trade_pnls=[100.0] * 6, cfg=cfg,
+        coverage={"spot_trade_count": 10, "paired_trade_count": 6, "skipped_by_cap": 4},
+        capital=200000.0)
+    assert verdict["low_coverage"] is False
