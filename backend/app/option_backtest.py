@@ -15,6 +15,7 @@ from app.live_friction import fill_premium
 from app.portfolio import SizingConfig, size_position, build_rupee_equity_curve
 from app.market_context import build_trade_context
 from app.dte import compute_dte
+from app.exit_controls import ExitControlsConfig
 
 
 def _empty_metrics() -> Dict[str, Any]:
@@ -94,39 +95,61 @@ def _walk_option_exit(
     entry_price: float,
     target_level: Optional[float],
     stop_level: Optional[float],
+    exit_cfg: Optional["ExitControlsConfig"] = None,
 ) -> Dict[str, Any]:
-    """Walk option candles forward from entry to find the first premium-level exit.
-
-    Scans bars with entry_ts < ts <= backstop_ts. For each bar we test the STOP
-    first (pessimistic: if both stop and target are inside the same bar, assume
-    the stop filled first), then the TARGET. If neither triggers by the backstop
-    bar, the trade is closed at the backstop bar's close as a TIME/SPOT exit.
-
-    Returns {exit_ts, exit_price, exit_reason}. `exit_reason` is one of
-    OPTION_STOP, OPTION_TARGET, OPTION_SIGNAL_EXIT.
-    """
+    """Walk option candles forward to the first premium-level exit. With exit_cfg
+    enabled, the stop is ratcheted per bar via effective_premium_stop using the
+    running-max premium THROUGH the prior bar (look-ahead safe), and a long stop
+    that gaps below fills at the bar open."""
+    from app.exit_controls import (effective_premium_stop, stop_fill_price,
+                                   EXIT_TRAIL_STOP, EXIT_BREAKEVEN_STOP)
     forward = rows[(rows["ts"] > entry_ts) & (rows["ts"] <= backstop_ts)].sort_values("ts")
     last_close = entry_price
     last_ts = entry_ts
+    running_max = float(entry_price)
+    use_overlay = exit_cfg is not None and exit_cfg.enabled
     for _, bar in forward.iterrows():
         bar_ts = int(bar["ts"])
         high = float(bar.get("high", bar.get("close", entry_price)))
         low = float(bar.get("low", bar.get("close", entry_price)))
+        bar_open = bar.get("open")
         last_close = float(bar.get("close", last_close))
         last_ts = bar_ts
-        # A long option premium: stop below, target above. Shared decision with
-        # the spot engine (stop-first when a bar spans both levels).
+        eff_stop = (effective_premium_stop(entry=entry_price, running_max=running_max,
+                                           base_stop=stop_level, cfg=exit_cfg)
+                    if use_overlay else stop_level)
         level, reason = intrabar_exit(
-            high=high, low=low, stop=stop_level, target=target_level, is_long=True,
+            high=high, low=low, stop=eff_stop, target=target_level, is_long=True,
         )
         if level is not None:
-            return {
-                "exit_ts": bar_ts,
-                "exit_price": level,
-                "exit_reason": "OPTION_STOP" if reason == "STOP" else "OPTION_TARGET",
-            }
-    # No level hit: close at the last bar within the window (spot signal exit).
+            if reason == "STOP":
+                fill = stop_fill_price(level, reason, bar_open) if use_overlay else level
+                exit_reason = "OPTION_STOP"
+                if use_overlay and stop_level is not None and eff_stop is not None and eff_stop > float(stop_level):
+                    exit_reason = (EXIT_BREAKEVEN_STOP
+                                   if _breakeven_binding(entry_price, running_max, stop_level, eff_stop, exit_cfg)
+                                   else EXIT_TRAIL_STOP)
+                elif use_overlay and stop_level is None and eff_stop is not None:
+                    exit_reason = EXIT_TRAIL_STOP
+                return {"exit_ts": bar_ts, "exit_price": fill, "exit_reason": exit_reason}
+            return {"exit_ts": bar_ts, "exit_price": level, "exit_reason": "OPTION_TARGET"}
+        running_max = max(running_max, high)
     return {"exit_ts": last_ts, "exit_price": last_close, "exit_reason": "OPTION_SIGNAL_EXIT"}
+
+
+def _breakeven_binding(entry, running_max, base_stop, eff_stop, cfg) -> bool:
+    """True when the breakeven candidate (not trailing) produced eff_stop — for
+    exit-reason attribution. Recomputes the breakeven level only."""
+    e = float(entry)
+    if not (cfg.be_trigger and cfg.be_trigger > 0):
+        return False
+    if cfg.unit == "pts":
+        be_level = e + (cfg.be_lock or 0.0)
+        trig = e + cfg.be_trigger
+    else:
+        be_level = e * (1.0 + (cfg.be_lock or 0.0))
+        trig = e * (1.0 + cfg.be_trigger)
+    return float(running_max) >= trig and abs(be_level - float(eff_stop)) < 1e-9
 
 
 def _compute_metrics(trades: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -233,6 +256,8 @@ def simulate_paired_option_trades(
     option_stop_pct: Optional[float] = None,
     cost_config: Optional[Dict[str, Any]] = None,
     sizing_config: Optional[Dict[str, Any]] = None,
+    exit_controls: Optional[Dict[str, Any]] = None,
+    daily_caps: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Map each spot signal trade to a long CE/PE option premium trade.
 
@@ -261,6 +286,7 @@ def simulate_paired_option_trades(
     slippage_cfg = SlippageConfig.from_dict(slippage_config)
     cost_cfg = CostConfig.from_dict(cost_config)
     sizing_cfg = SizingConfig.from_dict(sizing_config)
+    exit_cfg = ExitControlsConfig.from_dict(exit_controls)
     if not candles.empty:
         candles["ts"] = candles["ts"].astype(int)
         candles = candles.sort_values(["instrument_key", "ts"]).reset_index(drop=True)
@@ -426,6 +452,7 @@ def simulate_paired_option_trades(
                 entry_price=entry_price,
                 target_level=option_levels["target_level"],
                 stop_level=option_levels["stop_level"],
+                exit_cfg=exit_cfg,
             )
             raw_exit_price = float(walk["exit_price"])
             exit_candle_ts = int(walk["exit_ts"])

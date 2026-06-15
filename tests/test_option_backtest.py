@@ -429,3 +429,75 @@ def test_pairing_merges_candles_split_across_key_forms():
         underlying="NIFTY", moneyness="otm1", lots=1,
     )
     assert result["trades"][0]["status"] == "PAIRED"
+
+
+from app.option_backtest import _walk_option_exit, simulate_paired_option_trades
+from app.exit_controls import ExitControlsConfig
+
+
+def _bars(rows):
+    return pd.DataFrame(rows)
+
+
+def test_walk_trailing_stop_exits_on_giveback_not_lookahead():
+    # entry 100 at ts0. Bars rise to 200 then pull back. Trail distance 0.25.
+    # The bar that prints the 200 high must NOT be stopped at 150 within itself.
+    cfg = ExitControlsConfig.from_dict({"enabled": True, "unit": "pct",
+                                        "trailing": {"activation": 0.10, "distance": 0.25}})
+    rows = _bars([
+        {"ts": 1, "open": 100, "high": 120, "low": 100, "close": 120},
+        {"ts": 2, "open": 120, "high": 200, "low": 118, "close": 190},  # sets peak 200; low 118 must NOT stop
+        {"ts": 3, "open": 150, "high": 152, "low": 140, "close": 145},  # trail=200*0.75=150; low 140 <= 150 -> STOP
+    ])
+    out = _walk_option_exit(rows, entry_ts=0, backstop_ts=3, entry_price=100.0,
+                            target_level=None, stop_level=None, exit_cfg=cfg)
+    assert out["exit_reason"] == "OPTION_TRAIL_STOP"
+    assert out["exit_ts"] == 3
+    assert out["exit_price"] == 150.0  # filled at the trail level (no gap)
+
+
+def test_walk_trailing_gap_fills_at_open():
+    cfg = ExitControlsConfig.from_dict({"enabled": True, "unit": "pct",
+                                        "trailing": {"activation": 0.10, "distance": 0.25}})
+    rows = _bars([
+        {"ts": 1, "open": 100, "high": 200, "low": 100, "close": 200},  # peak 200
+        {"ts": 2, "open": 130, "high": 131, "low": 120, "close": 125},  # opens 130 < trail 150 -> gap fill at 130
+    ])
+    out = _walk_option_exit(rows, entry_ts=0, backstop_ts=2, entry_price=100.0,
+                            target_level=None, stop_level=None, exit_cfg=cfg)
+    assert out["exit_reason"] == "OPTION_TRAIL_STOP"
+    assert out["exit_price"] == 130.0
+
+
+def test_walk_disabled_cfg_is_legacy_behavior():
+    # No exit_cfg -> the old fixed-level walk; no premium levels -> signal exit at last bar.
+    rows = _bars([{"ts": 1, "open": 100, "high": 110, "low": 95, "close": 108}])
+    out = _walk_option_exit(rows, entry_ts=0, backstop_ts=1, entry_price=100.0,
+                            target_level=None, stop_level=None)
+    assert out["exit_reason"] == "OPTION_SIGNAL_EXIT"
+
+
+def test_exit_controls_conduit_changes_rupee_curve():
+    # CONDUIT: proves exit_controls flows simulate_paired_option_trades -> _walk_option_exit
+    # and changes the realized ₹ vs disabled, on a crafted premium series.
+    day_ms = 1_700_000_000_000
+    spot = [{"direction": "CE", "entry_ts": day_ms, "exit_ts": day_ms + 240000,
+             "entry_price": 100.0, "exit_price": 100.0, "entry_datetime": "", "exit_datetime": "",
+             "regime": "", "ist_time": ""}]
+    contracts = [{"instrument_key": "NSE_FO|OPT", "underlying": "NIFTY", "expiry_date": "2023-11-16",
+                  "strike": 100, "side": "CE", "lot_size": 50, "trading_symbol": "NIFTY-CE-100", "atm": 100}]
+    candles = _bars([
+        {"instrument_key": "NSE_FO|OPT", "ts": day_ms, "open": 10, "high": 10, "low": 10, "close": 10},
+        {"instrument_key": "NSE_FO|OPT", "ts": day_ms + 60000, "open": 16, "high": 16, "low": 16, "close": 16},
+        {"instrument_key": "NSE_FO|OPT", "ts": day_ms + 120000, "open": 12, "high": 12, "low": 12, "close": 12},
+        {"instrument_key": "NSE_FO|OPT", "ts": day_ms + 240000, "open": 14, "high": 14, "low": 14, "close": 14},
+    ])
+    common = dict(spot_trades=spot, contracts=contracts, option_candles=candles, underlying="NIFTY",
+                  moneyness="atm", fixed_expiry_date="2023-11-16", exit_mode="option_levels",
+                  option_stop_pct=50.0, option_target_pct=100.0)
+    disabled = simulate_paired_option_trades(**common)
+    enabled = simulate_paired_option_trades(**common, exit_controls={
+        "enabled": True, "unit": "pct", "trailing": {"activation": 0.10, "distance": 0.25}})
+    dv = disabled["metrics"]["total_option_pnl_value"]
+    ev = enabled["metrics"]["total_option_pnl_value"]
+    assert dv != ev   # the trailing overlay changed the realized ₹ -> the kwarg reached the walk
