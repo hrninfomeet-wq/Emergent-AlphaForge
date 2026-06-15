@@ -155,16 +155,16 @@ async def _deployment_evaluator_loop() -> None:
     log.info("Deployment evaluator loop initialized")
     db = get_db()
     last_squareoff_ist_date: Optional[str] = None
+    # New-bar gate state: only (re)evaluate strategies when the live-candle roller
+    # has flushed a NEW closed 1-min spot bar — entries then fire ~2-3s after close
+    # (vs the old fixed minute+10s), and never on the still-forming bucket.
+    last_bar_ts = 0
+    EVAL_POLL_SECONDS = 2.0
     while True:
         try:
-            # Sleep until 10 seconds past the next minute boundary
-            now = datetime.now(timezone.utc)
-            next_minute = (now + timedelta(minutes=1)).replace(second=0, microsecond=0)
-            wake_at = next_minute + timedelta(seconds=10)
-            sleep_s = max(1.0, (wake_at - datetime.now(timezone.utc)).total_seconds())
-            await asyncio.sleep(sleep_s)
+            await asyncio.sleep(EVAL_POLL_SECONDS)
 
-            # Skip evaluation outside NSE market hours (Mon-Fri, 09:15-15:30 IST)
+            # Skip outside NSE market hours (Mon-Fri, 09:15-15:30 IST)
             ist_now = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
             today_ist = ist_now.strftime("%Y-%m-%d")
             if ist_now.weekday() >= 5:
@@ -172,6 +172,29 @@ async def _deployment_evaluator_loop() -> None:
             t = ist_now.time()
             if t < _time(9, 15) or t >= _time(15, 30):
                 continue
+
+            # 15:00 IST square-off is TIME-based + safety-critical, so it runs on
+            # EVERY cycle (~2s) — never gated behind a fresh bar, so positions are
+            # flattened on time even if the candle feed stalls near the cutoff.
+            if last_squareoff_ist_date != today_ist and is_square_off_due(ist_now):
+                summaries = await square_off_open_paper_trades(
+                    db,
+                    latest_tick_lookup=upstox_stream_manager.latest_tick_map().get,
+                    reason="auto_square_off_15_00_IST",
+                    now_ist=ist_now,
+                )
+                if summaries:
+                    log.info("paper square-off at 15:00 IST closed %d open trades", len(summaries))
+                last_squareoff_ist_date = today_ist
+
+            # New-bar gate. Exits are owned by LiveExitMonitor (~1.5s) — this loop
+            # only journals signals + auto-opens entries, once per fresh bar.
+            latest = await db.candles_1m.find_one(
+                {"instrument": "NIFTY"}, {"_id": 0, "ts": 1}, sort=[("ts", -1)])
+            latest_ts = int((latest or {}).get("ts") or 0)
+            if latest_ts <= last_bar_ts:
+                continue
+            last_bar_ts = latest_ts
 
             tick_lookup = upstox_stream_manager.latest_tick_map().get
             results = await evaluate_active_deployments(db, latest_tick_lookup=tick_lookup)
@@ -187,36 +210,12 @@ async def _deployment_evaluator_loop() -> None:
                 log.info("auto-paper opened %d trade(s) this bar", len(auto_opened))
                 await _auto_follow_option_stream(min_radius=OPTION_CHAIN_BASELINE_RADIUS)
 
-            # Mark all OPEN paper trades against the latest live option ticks so
-            # stop/target exits actually fire intraday (minute granularity).
-            marked = await mark_open_deployment_trades(db, latest_tick_lookup=tick_lookup)
-            auto_closed = [m for m in marked if m.get("closed")]
-            if auto_closed:
-                log.info(
-                    "paper marker auto-closed %d trade(s): %s",
-                    len(auto_closed),
-                    ", ".join(f"{m['id'][:8]}/{m.get('exit_reason')}" for m in auto_closed[:5]),
-                )
-
-            # Keep a baseline ATM±3 option universe subscribed during market hours
-            # so the live option-chain snapshot (and paper marks) always have fresh
-            # premiums, with no manual stream restart needed. Idempotent: only
-            # restarts when the ATM band drifts out of the current subscription.
+            # Keep the baseline ATM-band option universe subscribed so the option
+            # chain + paper marks always have fresh premiums. Idempotent: restarts
+            # only when the band drifts. Runs once per fresh bar (~once/min).
             stream_follow = await _auto_follow_option_stream(min_radius=OPTION_CHAIN_BASELINE_RADIUS)
             if stream_follow.get("restarted"):
                 log.info("option stream auto-follow (market-hours baseline): %s", stream_follow)
-
-            # Once per IST date, force-close any open paper trades when we cross the cutoff.
-            if last_squareoff_ist_date != today_ist and is_square_off_due(ist_now):
-                summaries = await square_off_open_paper_trades(
-                    db,
-                    latest_tick_lookup=upstox_stream_manager.latest_tick_map().get,
-                    reason="auto_square_off_15_00_IST",
-                    now_ist=ist_now,
-                )
-                if summaries:
-                    log.info("paper square-off at 15:00 IST closed %d open trades", len(summaries))
-                last_squareoff_ist_date = today_ist
         except asyncio.CancelledError:
             log.info("Deployment evaluator loop cancelled")
             return
