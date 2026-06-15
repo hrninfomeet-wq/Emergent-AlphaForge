@@ -325,6 +325,11 @@ def build_auto_trade(
     spot_exit = compute_spot_exit_levels(signal_doc)
     if spot_exit:
         trade["spot_exit"] = spot_exit
+    # Store risk_hints on the trade so the live marker can honour the strategy's
+    # time_stop_minutes (and any future strategy-defined exits) without querying
+    # the signal doc at mark time.
+    if signal_doc.get("risk_hints"):
+        trade["risk_hints"] = signal_doc["risk_hints"]
     return trade
 
 
@@ -508,7 +513,25 @@ async def mark_open_deployment_trades(
                     updated["exit_price_source"] = "live_tick"
                     updated["exit_price_stale"] = False
 
-            # 2. Spot-mirror exits (the backtest's spot_exit mode, live): close
+            # 2. Tick-level time-stop: close at the live premium when the
+            #    strategy's time_stop_minutes has elapsed (parity with the
+            #    backtest's time exit).  Uses created_at as the entry timestamp
+            #    because that is the field paper_trade_from_signal stamps.
+            if str(updated.get("status") or "").upper() == "OPEN":
+                tsm = (updated.get("risk_hints") or {}).get("time_stop_minutes")
+                created_at = updated.get("created_at")
+                if tsm and created_at and option_price is not None:
+                    from app.paper_trading import _iso_to_ms
+                    entry_ts_ms = _iso_to_ms(created_at)
+                    elapsed_min = (now_ms - entry_ts_ms) / 60000.0
+                    if elapsed_min >= float(tsm):
+                        updated = close_trade(updated, exit_price=option_price,
+                                              reason="time_stop", at=at)
+                        updated["exit_price_source"] = "live_tick"
+                        updated["exit_price_stale"] = False
+                        wrote = True
+
+            # 3. Spot-mirror exits (the backtest's spot_exit mode, live): close
             #    the option at its current premium when the UNDERLYING hits the
             #    strategy's spot level. When no FRESH option tick exists the fill
             #    is the last known premium — booked (the spot level was hit) but

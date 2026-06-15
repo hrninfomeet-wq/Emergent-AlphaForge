@@ -80,3 +80,21 @@ def test_mark_leaves_trade_open_when_no_fresh_tick():
     summaries = asyncio.run(mark_open_deployment_trades(db, latest_tick_lookup=lambda k: None))
     assert summaries == []
     assert str(db.paper_trades.rows[0]["status"]).upper() == "OPEN"
+
+
+import datetime as _dt
+
+
+def test_mark_closes_on_time_stop():
+    db = FakeDB()
+    # created_at is the entry-time field on the real trade doc (paper_trade_from_signal)
+    created_at = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(minutes=20)).isoformat()
+    tr = _open_trade()
+    tr["created_at"] = created_at
+    tr["risk_hints"] = {"time_stop_minutes": 10}
+    db.paper_trades.rows.append(tr)
+    tick = {"NSE_FO|50614": {"last_price": 205.0, "ts": None}}   # between stop & target
+    summaries = asyncio.run(mark_open_deployment_trades(db, latest_tick_lookup=tick.get))
+    assert summaries and summaries[0]["closed"] is True
+    closed = [t for t in db.paper_trades.rows if t["id"] == "trd1"][0]
+    assert "time_stop" in str(closed.get("exit_reason") or "")
