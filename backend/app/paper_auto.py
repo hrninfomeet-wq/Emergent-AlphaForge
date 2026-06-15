@@ -60,7 +60,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from app.instruments import INSTRUMENT_KEYS
-from app.paper_trading import close_trade, mark_trade_to_market, paper_trade_from_signal
+from app.paper_trading import close_trade, mark_trade_to_market, paper_trade_from_signal, _iso_to_ms
 from app.signal_lifecycle import SignalStateError, transition_signal
 
 log = logging.getLogger(__name__)
@@ -521,7 +521,6 @@ async def mark_open_deployment_trades(
                 tsm = (updated.get("risk_hints") or {}).get("time_stop_minutes")
                 created_at = updated.get("created_at")
                 if tsm and created_at and option_price is not None:
-                    from app.paper_trading import _iso_to_ms
                     entry_ts_ms = _iso_to_ms(created_at)
                     elapsed_min = (now_ms - entry_ts_ms) / 60000.0
                     if elapsed_min >= float(tsm):
