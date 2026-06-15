@@ -530,3 +530,33 @@ def test_walk_base_stop_and_trail_trail_wins():
                             target_level=None, stop_level=80.0, exit_cfg=cfg)
     assert out["exit_reason"] == "OPTION_TRAIL_STOP"
     assert out["exit_price"] == 150.0
+
+
+# ---- daily cap governor (Task 5) -------------------------------------------
+
+
+def _spot_trade(idx, entry_ts, exit_ts, entry_price=100.0, direction="CE"):
+    return {"direction": direction, "entry_ts": entry_ts, "exit_ts": exit_ts,
+            "entry_price": entry_price, "exit_price": entry_price, "entry_datetime": "",
+            "exit_datetime": "", "regime": "", "ist_time": ""}
+
+
+def test_daily_cap_skips_later_same_session_entries():
+    # Trade 0 must PAIR (admitted=1); trade 1 same IST session with max_trades=1 -> SKIPPED.
+    day_ms = 1_700_000_000_000
+    spot = [_spot_trade(0, day_ms, day_ms + 60000),
+            _spot_trade(1, day_ms + 120000, day_ms + 180000)]
+    contracts = [{"instrument_key": "NSE_FO|OPT", "underlying": "NIFTY",
+                  "expiry_date": "2023-11-16", "strike": 100, "side": "CE",
+                  "lot_size": 50, "trading_symbol": "NIFTY-CE-100", "atm": 100}]
+    candles = _bars([
+        {"instrument_key": "NSE_FO|OPT", "ts": day_ms, "open": 10, "high": 11, "low": 9, "close": 10},
+        {"instrument_key": "NSE_FO|OPT", "ts": day_ms + 60000, "open": 10, "high": 12, "low": 9, "close": 11},
+    ])
+    res = simulate_paired_option_trades(
+        spot_trades=spot, contracts=contracts, option_candles=candles, underlying="NIFTY",
+        moneyness="atm", fixed_expiry_date="2023-11-16", daily_caps={"max_trades": 1})
+    statuses = [t["status"] for t in res["trades"]]
+    assert statuses.count("PAIRED") == 1              # trade 0 admitted
+    assert statuses.count("SKIPPED_DAILY_CAP") == 1   # trade 1 capped
+    assert res["coverage"].get("skipped_by_cap", 0) == 1

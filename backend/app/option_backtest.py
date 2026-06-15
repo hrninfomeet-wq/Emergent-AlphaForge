@@ -33,6 +33,14 @@ def _empty_metrics() -> Dict[str, Any]:
     }
 
 
+def _ist_session_date(ts_ms: Any) -> Optional[str]:
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    try:
+        return (_dt.fromtimestamp(int(ts_ms) / 1000, tz=_tz.utc) + _td(hours=5, minutes=30)).strftime("%Y-%m-%d")
+    except Exception:
+        return None
+
+
 def _coverage() -> Dict[str, int]:
     return {
         "spot_trade_count": 0,
@@ -40,6 +48,7 @@ def _coverage() -> Dict[str, int]:
         "missing_contract": 0,
         "missing_entry_candle": 0,
         "missing_exit_candle": 0,
+        "skipped_by_cap": 0,
     }
 
 
@@ -286,6 +295,9 @@ def simulate_paired_option_trades(
     cost_cfg = CostConfig.from_dict(cost_config)
     sizing_cfg = SizingConfig.from_dict(sizing_config)
     exit_cfg = ExitControlsConfig.from_dict(exit_controls)
+    from app.exit_controls import DailyCapsConfig, daily_governor_decision, SKIPPED_STATUS
+    caps_cfg = DailyCapsConfig.from_dict(daily_caps)
+    session_ledger: Dict[str, Dict[str, float]] = {}
     if not candles.empty:
         candles["ts"] = candles["ts"].astype(int)
         candles = candles.sort_values(["instrument_key", "ts"]).reset_index(drop=True)
@@ -377,6 +389,17 @@ def simulate_paired_option_trades(
             dte=trade_dte,
             vix=spot_trade.get("vix"),
         )
+        sess = _ist_session_date(spot_trade.get("entry_ts")) if caps_cfg.active else None
+        if sess is not None:
+            led = session_ledger.setdefault(sess, {"cum": 0.0, "min": 0.0, "max": 0.0, "admitted": 0})
+            decision = daily_governor_decision(
+                realized_cum_min=led["min"], realized_cum_max=led["max"],
+                entry_count=int(led["admitted"]), cfg=caps_cfg)   # ALREADY-admitted (pre-this-trade)
+            if decision["halt"]:
+                coverage["skipped_by_cap"] += 1
+                paired_trades.append({**base, "status": SKIPPED_STATUS, "skip_reason": decision["reason"]})
+                continue
+
         if not selected:
             coverage["missing_contract"] += 1
             miss = ("no_expiry_resolved (no upcoming expiry on/after the trade date in contract metadata)"
@@ -494,6 +517,12 @@ def simulate_paired_option_trades(
         ) if cost_cfg.enabled else None
         total_charges = float(charges["total_charges"]) if charges else 0.0
         pnl_value = round(gross_pnl_value - total_charges, 2)
+        if sess is not None:
+            led = session_ledger[sess]
+            led["admitted"] += 1
+            led["cum"] += float(pnl_value)
+            led["min"] = min(led["min"], led["cum"])
+            led["max"] = max(led["max"], led["cum"])
         mfe_mae = _option_mfe_mae(rows, int(entry["ts"]), exit_candle_ts, entry_price)
         coverage["paired_trade_count"] += 1
         paired_trades.append({
