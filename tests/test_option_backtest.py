@@ -501,3 +501,32 @@ def test_exit_controls_conduit_changes_rupee_curve():
     dv = disabled["metrics"]["total_option_pnl_value"]
     ev = enabled["metrics"]["total_option_pnl_value"]
     assert dv != ev   # the trailing overlay changed the realized ₹ -> the kwarg reached the walk
+
+
+def test_walk_breakeven_stop_tagged():
+    # Breakeven is tagged only when it ratchets ABOVE a base stop. entry 100, base stop 80,
+    # breakeven trigger 0.20 lock 0.0 -> once running_max>=120, stop -> entry 100.
+    cfg = ExitControlsConfig.from_dict({"enabled": True, "unit": "pct",
+                                        "breakeven": {"trigger": 0.20, "lock": 0.0}})
+    rows = _bars([
+        {"ts": 1, "open": 100, "high": 130, "low": 110, "close": 125},  # peak->130 (check uses prior rm=100)
+        {"ts": 2, "open": 105, "high": 106, "low": 95, "close": 100},    # rm=130>=120 -> BE stop=100; low 95<=100 STOP
+    ])
+    out = _walk_option_exit(rows, entry_ts=0, backstop_ts=2, entry_price=100.0,
+                            target_level=None, stop_level=80.0, exit_cfg=cfg)
+    assert out["exit_reason"] == "OPTION_BREAKEVEN_STOP"
+    assert out["exit_price"] == 100.0
+
+
+def test_walk_base_stop_and_trail_trail_wins():
+    # Base stop 80 + trail; trail (150 from peak 200) ratchets above base -> tagged TRAIL.
+    cfg = ExitControlsConfig.from_dict({"enabled": True, "unit": "pct",
+                                        "trailing": {"activation": 0.10, "distance": 0.25}})
+    rows = _bars([
+        {"ts": 1, "open": 100, "high": 200, "low": 100, "close": 200},  # peak 200
+        {"ts": 2, "open": 151, "high": 152, "low": 149, "close": 150},   # rm=200 trail=150; low 149<=150 STOP
+    ])
+    out = _walk_option_exit(rows, entry_ts=0, backstop_ts=2, entry_price=100.0,
+                            target_level=None, stop_level=80.0, exit_cfg=cfg)
+    assert out["exit_reason"] == "OPTION_TRAIL_STOP"
+    assert out["exit_price"] == 150.0

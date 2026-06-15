@@ -15,7 +15,8 @@ from app.live_friction import fill_premium
 from app.portfolio import SizingConfig, size_position, build_rupee_equity_curve
 from app.market_context import build_trade_context
 from app.dte import compute_dte
-from app.exit_controls import ExitControlsConfig
+from app.exit_controls import (ExitControlsConfig, effective_premium_stop,
+                               stop_fill_price, EXIT_TRAIL_STOP, EXIT_BREAKEVEN_STOP)
 
 
 def _empty_metrics() -> Dict[str, Any]:
@@ -95,14 +96,12 @@ def _walk_option_exit(
     entry_price: float,
     target_level: Optional[float],
     stop_level: Optional[float],
-    exit_cfg: Optional["ExitControlsConfig"] = None,
+    exit_cfg: Optional[ExitControlsConfig] = None,
 ) -> Dict[str, Any]:
     """Walk option candles forward to the first premium-level exit. With exit_cfg
     enabled, the stop is ratcheted per bar via effective_premium_stop using the
     running-max premium THROUGH the prior bar (look-ahead safe), and a long stop
     that gaps below fills at the bar open."""
-    from app.exit_controls import (effective_premium_stop, stop_fill_price,
-                                   EXIT_TRAIL_STOP, EXIT_BREAKEVEN_STOP)
     forward = rows[(rows["ts"] > entry_ts) & (rows["ts"] <= backstop_ts)].sort_values("ts")
     last_close = entry_price
     last_ts = entry_ts
@@ -127,7 +126,7 @@ def _walk_option_exit(
                 exit_reason = "OPTION_STOP"
                 if use_overlay and stop_level is not None and eff_stop is not None and eff_stop > float(stop_level):
                     exit_reason = (EXIT_BREAKEVEN_STOP
-                                   if _breakeven_binding(entry_price, running_max, stop_level, eff_stop, exit_cfg)
+                                   if _breakeven_binding(entry_price, running_max, eff_stop, exit_cfg)
                                    else EXIT_TRAIL_STOP)
                 elif use_overlay and stop_level is None and eff_stop is not None:
                     exit_reason = EXIT_TRAIL_STOP
@@ -137,7 +136,7 @@ def _walk_option_exit(
     return {"exit_ts": last_ts, "exit_price": last_close, "exit_reason": "OPTION_SIGNAL_EXIT"}
 
 
-def _breakeven_binding(entry, running_max, base_stop, eff_stop, cfg) -> bool:
+def _breakeven_binding(entry, running_max, eff_stop, cfg) -> bool:
     """True when the breakeven candidate (not trailing) produced eff_stop — for
     exit-reason attribution. Recomputes the breakeven level only."""
     e = float(entry)
@@ -257,7 +256,7 @@ def simulate_paired_option_trades(
     cost_config: Optional[Dict[str, Any]] = None,
     sizing_config: Optional[Dict[str, Any]] = None,
     exit_controls: Optional[Dict[str, Any]] = None,
-    daily_caps: Optional[Dict[str, Any]] = None,
+    daily_caps: Optional[Dict[str, Any]] = None,  # wired in the next task (daily governor)
 ) -> Dict[str, Any]:
     """Map each spot signal trade to a long CE/PE option premium trade.
 
