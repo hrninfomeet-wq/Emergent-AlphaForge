@@ -82,7 +82,7 @@ class LiveExitMonitor:
                     log.info("exit monitor auto-closed %d trade(s): %s", len(closed),
                              ", ".join(f"{s.get('id','')[:8]}/{s.get('exit_reason')}" for s in closed[:5]))
         except asyncio.CancelledError:
-            return
+            raise  # propagate so task.cancelled() is True (finally still runs)
         finally:
             self._stats["running"] = False
 

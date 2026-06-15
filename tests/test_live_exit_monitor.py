@@ -26,6 +26,7 @@ def test_cycle_delegates_to_mark_and_records_stats():
     st = mon.status()
     assert st["cycles"] == 1
     assert st["auto_closes"] == 1
+    assert st["open_trades_checked"] == 2
     assert st["last_error"] is None
 
 
