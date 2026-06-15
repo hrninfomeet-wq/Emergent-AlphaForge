@@ -11,6 +11,7 @@ Trading-critical invariants covered here:
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 from datetime import datetime, timedelta, timezone
@@ -575,3 +576,58 @@ async def test_failed_premium_resolution_releases_claim():
     assert "paper_trade_claim" not in db.signals.rows[0]
     retry_ok = await claim_signal_for_paper_trade(db, sig["id"], "manual_approval")
     assert retry_ok is True
+
+
+# ---------- live trail ratchet (Task 10) -------------------------------------------
+
+class _RatchetCursor:
+    def __init__(self, docs): self._docs = docs
+    async def to_list(self, length=None): return [d for d in self._docs if d.get("status") == "OPEN"]
+
+
+class _RatchetTrades:
+    def __init__(self, docs): self.docs = docs; self.replaced = []
+    def find(self, *a, **k): return _RatchetCursor(self.docs)
+    async def replace_one(self, flt, doc, upsert=False):
+        self.replaced.append(doc)
+        for i, d in enumerate(self.docs):
+            if d.get("id") == flt.get("id"):
+                self.docs[i] = doc            # next mark cycle sees the update
+        class R: matched_count = 1
+        return R()
+
+
+class _RatchetDB:
+    def __init__(self, trades): self.paper_trades = _RatchetTrades(trades)
+    @property
+    def signals(self):
+        class _S:
+            async def find_one(self, *a, **k): return None
+            async def replace_one(self, *a, **k): return None
+        return _S()
+
+
+def test_live_trail_ratchets_stop_up_over_two_marks():
+    # Prior-running-max design (parity with the sim): the tick that sets a new peak
+    # does NOT stop itself; the trail ratchets on the NEXT cycle off the prior max.
+    trade = {"id": "t1", "status": "OPEN", "instrument_key": "OPT|1",
+             "entry_price": 100.0, "quantity": 75, "running_max_premium": 100.0,
+             "risk": {"stop_price": 80.0, "target_price": None},
+             "exit_controls": {"enabled": True, "unit": "pct",
+                               "trailing": {"activation": 0.10, "distance": 0.25}}}
+    db = _RatchetDB([trade])
+    # Cycle 1: tick 200. eff uses PRIOR running_max=100 -> activation 110 not reached ->
+    #          stop stays 80; running_max advances to 200.
+    ticks = {"OPT|1": {"last_price": 200.0}}
+    asyncio.run(mark_open_deployment_trades(db, latest_tick_lookup=lambda k: ticks.get(k)))
+    after1 = db.paper_trades.docs[0]
+    assert after1["running_max_premium"] == 200.0
+    assert after1["risk"]["stop_price"] == 80.0
+    assert after1["status"] == "OPEN"
+    # Cycle 2: tick 160. eff uses PRIOR running_max=200 -> trail = 200*0.75 = 150 (raised);
+    #          160 > 150 so no close.
+    ticks = {"OPT|1": {"last_price": 160.0}}
+    asyncio.run(mark_open_deployment_trades(db, latest_tick_lookup=lambda k: ticks.get(k)))
+    after2 = db.paper_trades.docs[0]
+    assert after2["risk"]["stop_price"] == 150.0
+    assert after2["status"] == "OPEN"

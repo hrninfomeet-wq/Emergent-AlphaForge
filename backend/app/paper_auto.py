@@ -330,6 +330,13 @@ def build_auto_trade(
     # the signal doc at mark time.
     if signal_doc.get("risk_hints"):
         trade["risk_hints"] = signal_doc["risk_hints"]
+    # Seed the running-max at entry so the live trail ratchet has a starting peak.
+    # Carry the exit_controls overlay so the live marker can ratchet the stop
+    # without querying the deployment doc at mark time.
+    trade["running_max_premium"] = float(fill_entry)
+    ec = (deployment.get("risk") or {}).get("exit_controls")
+    if ec:
+        trade["exit_controls"] = ec
     return trade
 
 
@@ -502,6 +509,22 @@ async def mark_open_deployment_trades(
             updated = trade
             wrote = False
 
+            # 0. Trail/breakeven ratchet: raise the stored stop from the PRIOR running-max
+            #    premium (look-ahead parity with the sim), then advance the max after (below).
+            ec_raw = trade.get("exit_controls")
+            if ec_raw and option_price is not None:
+                from app.exit_controls import ExitControlsConfig, effective_premium_stop
+                ec_cfg = ExitControlsConfig.from_dict(ec_raw)
+                if ec_cfg.enabled:
+                    rmax_prev = float(trade.get("running_max_premium") or trade.get("entry_price") or 0.0)
+                    base_stop = (trade.get("risk") or {}).get("stop_price")
+                    eff = effective_premium_stop(entry=float(trade.get("entry_price") or 0.0),
+                                                 running_max=rmax_prev, base_stop=base_stop, cfg=ec_cfg)
+                    if eff is not None and (base_stop is None or eff > float(base_stop)):
+                        trade.setdefault("risk", {})["stop_price"] = round(float(eff), 2)
+                        updated = trade   # carry the raised stop into the mark + write
+                        wrote = True
+
             # 1. Premium mark + premium stop/target via the existing machinery.
             #    option_price is None when there is no FRESH option tick, so a
             #    stop/target can only fire on a current premium (staleness bound).
@@ -555,6 +578,13 @@ async def mark_open_deployment_trades(
                         updated["exit_price_source"] = "live_tick" if had_fresh_option else "last_mark"
                         updated["exit_price_stale"] = not had_fresh_option
                         wrote = True
+
+            # Advance the running-max in the doc that will be written (after the mark
+            # has already checked the eff-stop against the PRIOR peak — look-ahead safe).
+            if str(updated.get("status") or "").upper() == "OPEN" and option_price is not None:
+                prev = float(updated.get("running_max_premium") or updated.get("entry_price") or 0.0)
+                updated["running_max_premium"] = max(prev, float(option_price))
+                wrote = True
 
             if not wrote:
                 continue  # no tick on either leg — leave untouched (no stale marks)
