@@ -631,3 +631,9 @@ def test_live_trail_ratchets_stop_up_over_two_marks():
     after2 = db.paper_trades.docs[0]
     assert after2["risk"]["stop_price"] == 150.0
     assert after2["status"] == "OPEN"
+    # Cycle 3: tick 100 < trailed stop 150 -> the trade CLOSES at the ratcheted stop.
+    ticks = {"OPT|1": {"last_price": 100.0}}
+    asyncio.run(mark_open_deployment_trades(db, latest_tick_lookup=lambda k: ticks.get(k)))
+    after3 = db.paper_trades.docs[0]
+    assert after3["status"] == "CLOSED"
+    assert after3.get("exit_reason")            # a premium-stop reason was set on close

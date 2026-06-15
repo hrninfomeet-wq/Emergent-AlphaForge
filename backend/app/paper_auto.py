@@ -522,7 +522,7 @@ async def mark_open_deployment_trades(
                                                  running_max=rmax_prev, base_stop=base_stop, cfg=ec_cfg)
                     if eff is not None and (base_stop is None or eff > float(base_stop)):
                         trade.setdefault("risk", {})["stop_price"] = round(float(eff), 2)
-                        updated = trade   # carry the raised stop into the mark + write
+                        # trade["risk"]["stop_price"] is mutated in place; mark_trade_to_market below reads it off the same object.
                         wrote = True
 
             # 1. Premium mark + premium stop/target via the existing machinery.
