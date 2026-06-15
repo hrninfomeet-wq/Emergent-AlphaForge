@@ -72,3 +72,40 @@ def test_from_dict_ignores_garbage_values():
     assert cfg.enabled is True and cfg.unit == "pts"
     assert cfg.be_trigger == 0.0 and cfg.be_lock == 0.0     # garbage left at defaults
     assert cfg.trail_distance == 10.0
+
+
+# append to tests/test_exit_controls.py
+from app.exit_controls import (DailyCapsConfig, daily_governor_decision,
+                               SKIP_DAILY_LOSS, SKIP_DAILY_TARGET, SKIP_MAX_TRADES)
+
+
+def test_governor_unset_never_halts():
+    cfg = DailyCapsConfig.from_dict(None)
+    d = daily_governor_decision(realized_cum_min=-99999.0, realized_cum_max=99999.0, entry_count=99, cfg=cfg)
+    assert d == {"halt": False, "reason": None}
+
+
+def test_governor_loss_trips_on_cumulative_min_sticky():
+    cfg = DailyCapsConfig.from_dict({"loss": 15000})
+    # current cumulative back above -15000 but the running MIN dipped below -> sticky halt
+    d = daily_governor_decision(realized_cum_min=-16000.0, realized_cum_max=2000.0, entry_count=3, cfg=cfg)
+    assert d["halt"] and d["reason"] == SKIP_DAILY_LOSS
+
+
+def test_governor_target_trips_on_cumulative_max():
+    cfg = DailyCapsConfig.from_dict({"target": 25000})
+    d = daily_governor_decision(realized_cum_min=-1000.0, realized_cum_max=25000.0, entry_count=2, cfg=cfg)
+    assert d["halt"] and d["reason"] == SKIP_DAILY_TARGET
+
+
+def test_governor_max_trades_counts_entries():
+    cfg = DailyCapsConfig.from_dict({"max_trades": 6})
+    assert daily_governor_decision(realized_cum_min=0.0, realized_cum_max=0.0, entry_count=5, cfg=cfg)["halt"] is False
+    d = daily_governor_decision(realized_cum_min=0.0, realized_cum_max=0.0, entry_count=6, cfg=cfg)
+    assert d["halt"] and d["reason"] == SKIP_MAX_TRADES
+
+
+def test_governor_loss_precedes_target_and_maxtrades():
+    cfg = DailyCapsConfig.from_dict({"loss": 1000, "target": 1000, "max_trades": 1})
+    d = daily_governor_decision(realized_cum_min=-2000.0, realized_cum_max=2000.0, entry_count=5, cfg=cfg)
+    assert d["reason"] == SKIP_DAILY_LOSS

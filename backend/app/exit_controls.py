@@ -104,3 +104,46 @@ def stop_fill_price(level: float, reason: str, bar_open: Optional[float]) -> flo
         except (TypeError, ValueError):
             pass
     return float(level)
+
+
+# add to backend/app/exit_controls.py
+@dataclass
+class DailyCapsConfig:
+    loss: Optional[float] = None        # ₹ (positive); halt when session cum-realized <= -loss
+    target: Optional[float] = None      # ₹ (positive); halt when session cum-realized >= target
+    max_trades: Optional[int] = None    # entries per IST session
+
+    @classmethod
+    def from_dict(cls, data: Optional[Dict[str, Any]]) -> "DailyCapsConfig":
+        if not data:
+            return cls()
+        cfg = cls()
+        cfg.loss = _pos(data.get("loss"))
+        cfg.target = _pos(data.get("target"))
+        mt = data.get("max_trades")
+        try:
+            cfg.max_trades = int(mt) if mt not in (None, "") and int(mt) > 0 else None
+        except (TypeError, ValueError):
+            cfg.max_trades = None
+        return cfg
+
+    @property
+    def active(self) -> bool:
+        return self.loss is not None or self.target is not None or self.max_trades is not None
+
+
+def daily_governor_decision(*, realized_cum_min: float, realized_cum_max: float,
+                            entry_count: int, cfg: DailyCapsConfig) -> Dict[str, Any]:
+    """Soft per-session halt from the session's cumulative-realized EXTREMA (sticky)
+    + the entry count. Loss is surfaced before target before max-trades.
+
+    `entry_count` is the count of trades ALREADY admitted this session (pre-this-trade);
+    halting on >= max_trades therefore admits exactly max_trades entries. The caller
+    must feed the same already-admitted convention live and in the sim (parity)."""
+    if cfg.loss is not None and float(realized_cum_min) <= -abs(cfg.loss):
+        return {"halt": True, "reason": SKIP_DAILY_LOSS}
+    if cfg.target is not None and float(realized_cum_max) >= abs(cfg.target):
+        return {"halt": True, "reason": SKIP_DAILY_TARGET}
+    if cfg.max_trades is not None and int(entry_count) >= cfg.max_trades:
+        return {"halt": True, "reason": SKIP_MAX_TRADES}
+    return {"halt": False, "reason": None}
