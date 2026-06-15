@@ -431,7 +431,7 @@ async def optimize_start(req: OptimizerStartReq):
         from app.survival_validate import validate_survival_request
         cap = float(((req.option_config or {}).get("sizing_config") or {}).get("capital", 200_000) or 200_000)
         err = validate_survival_request(
-            enabled=True, evaluation_mode=req.evaluation_mode, option_config=req.option_config,
+            enabled=True, evaluation_mode=req.evaluation_mode,
             costs_enabled=req.costs_enabled, capital=cap, ruin_floor=sc.ruin_floor,
             max_drawdown_pct=sc.max_drawdown_pct, max_ror_pct=sc.max_ror_pct,
         )

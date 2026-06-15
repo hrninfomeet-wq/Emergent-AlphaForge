@@ -22,7 +22,7 @@ def test_optimize_start_validates_survival():
 
 
 def _req(**kw):
-    base = dict(enabled=True, evaluation_mode="option_rerank", option_config={"enabled": True},
+    base = dict(enabled=True, evaluation_mode="option_rerank",
                 costs_enabled=True, capital=200_000, ruin_floor=0.0,
                 max_drawdown_pct=35.0, max_ror_pct=5.0)
     base.update(kw)
@@ -34,13 +34,9 @@ def test_survival_ok_when_all_requirements_met():
 
 
 def test_survival_requires_option_rerank():
+    # option execution in the optimizer IS option_rerank mode — that's the gate.
     msg = validate_survival_request(**_req(evaluation_mode="spot"))
     assert msg and "option_rerank" in msg
-
-
-def test_survival_requires_option_execution():
-    msg = validate_survival_request(**_req(option_config={"enabled": False}))
-    assert msg and "option execution" in msg
 
 
 def test_survival_requires_costs_enabled():
