@@ -155,6 +155,7 @@ export const api = {
     apiClient.post("/signals/purge", payload).then((r) => r.data),
   listPaperTrades: (params = {}) =>
     apiClient.get("/paper/trades", { params }).then((r) => r.data),
+  openPositions: () => apiClient.get("/paper/open-positions").then((r) => r.data),
   purgePaperTrades: (payload) =>
     apiClient.post("/paper/trades/purge", payload).then((r) => r.data),
   markPaperTrade: (id, payload) =>

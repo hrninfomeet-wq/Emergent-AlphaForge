@@ -154,6 +154,27 @@ export default function PaperTrading() {
     return () => window.clearInterval(id);
   }, [fetchRows]);
 
+  // Fast live open-positions poll (~2s) — overlays live P&L/premium onto OPEN rows only.
+  const [livePos, setLivePos] = useState({ items: [], open_mtm: 0 });
+  useEffect(() => {
+    let alive = true;
+    const tick = async () => {
+      try {
+        const data = await api.openPositions();
+        if (alive) setLivePos(data || { items: [], open_mtm: 0 });
+      } catch { /* transient; keep last value */ }
+    };
+    tick();
+    const id = window.setInterval(tick, 2000);
+    return () => { alive = false; window.clearInterval(id); };
+  }, []);
+
+  // Keyed by trade id for O(1) lookup in the row renderer.
+  const liveById = useMemo(
+    () => Object.fromEntries((livePos.items || []).map((p) => [p.id, p])),
+    [livePos],
+  );
+
   const setFilter = (k, v) => { setSkip(0); setSelected(new Set()); setFilters((f) => ({ ...f, [k]: v })); };
 
   // Keep ?deployment= in sync for links + reloads.
@@ -396,7 +417,7 @@ export default function PaperTrading() {
       {/* Summary strip */}
       <div className="grid grid-cols-2 lg:grid-cols-6 gap-2" data-testid="paper-summary-strip">
         <Stat label="Today realized" value={inr(summary.todayRealized)} tone={summary.todayRealized} />
-        <Stat label="Open MTM" value={inr(summary.openMtm)} tone={summary.openMtm} />
+        <Stat label="Open MTM" value={inr((livePos.items || []).length > 0 ? livePos.open_mtm : summary.openMtm)} tone={(livePos.items || []).length > 0 ? livePos.open_mtm : summary.openMtm} />
         <Stat label="Open trades" value={summary.openCount} />
         <Stat label="Win rate" value={summary.winRate == null ? "—" : fmtPct(summary.winRate, 1)} />
         <Stat label="Profit factor" value={summary.profitFactor == null ? "—" : (summary.profitFactor === Infinity ? "∞" : fmtNum(summary.profitFactor, 2))} />
@@ -539,7 +560,11 @@ export default function PaperTrading() {
                 </tr>
                 {g.rows.map((t) => {
                   const isOpen = String(t.status || "").toUpperCase() === "OPEN";
-                  const pnl = tradePnl(t);
+                  // Merge live feed data for OPEN rows (2s poll); fall back to 30s snapshot.
+                  const live = isOpen ? liveById[t.id] : undefined;
+                  const pnl = isOpen && live != null
+                    ? live.unrealized_pnl
+                    : tradePnl(t);
                   const pct = pnlPct(t, pnl);
                   const entry = istParts(t.created_at);
                   const exit = istParts(t.closed_at);
@@ -562,7 +587,16 @@ export default function PaperTrading() {
                       <td className="p-2 font-mono text-dim whitespace-nowrap">{entry ? entry.time : "—"}</td>
                       <td className="p-2 font-mono text-right">{fmtNum(t.entry_price)}</td>
                       <td className="p-2 font-mono text-dim whitespace-nowrap">{exit ? exit.time : (isOpen ? "open" : "—")}</td>
-                      <td className="p-2 font-mono text-right">{t.exit_price != null ? fmtNum(t.exit_price) : (isOpen ? fmtNum(t.last_price) : "—")}</td>
+                      <td className="p-2 font-mono text-right">
+                        {t.exit_price != null
+                          ? fmtNum(t.exit_price)
+                          : isOpen
+                            ? fmtNum(live?.live_premium ?? t.last_price)
+                            : "—"}
+                        {isOpen && live?.live_stale && (
+                          <span className="ml-1 text-[9px] px-1 rounded border border-amber-500/40 text-amber-300" title="Live premium is stale — no fresh tick recently">stale</span>
+                        )}
+                      </td>
                       <td className="p-2 text-dimmer">
                         <div className="flex items-center gap-1 max-w-[150px]">
                           <span className="truncate" title={t.exit_reason}>{t.exit_reason || "—"}</span>
@@ -578,6 +612,12 @@ export default function PaperTrading() {
                           title={spotExit.spot_target != null || spotExit.spot_stop != null ? `spot T ${spotExit.spot_target ?? "--"} / S ${spotExit.spot_stop ?? "--"}` : ""}>
                           S {risk.stop_price ?? "--"} / T {risk.target_price ?? "--"}
                         </span>
+                        {isOpen && live != null && (live.dist_to_stop != null || live.dist_to_target != null) && (
+                          <div className="text-[9px] font-mono text-dimmer mt-0.5 whitespace-nowrap" data-testid="live-dist-badge"
+                            title="Live distance to stop / target (pts from current premium)">
+                            Δs {live.dist_to_stop != null ? fmtNum(live.dist_to_stop, 1) : "--"} / Δt {live.dist_to_target != null ? fmtNum(live.dist_to_target, 1) : "--"}
+                          </div>
+                        )}
                       </td>
                       <td className={`p-2 font-mono text-right ${colorPnL(pnl)}`}>
                         {inr(pnl)}
