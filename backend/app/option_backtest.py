@@ -16,7 +16,8 @@ from app.portfolio import SizingConfig, size_position, build_rupee_equity_curve
 from app.market_context import build_trade_context
 from app.dte import compute_dte
 from app.exit_controls import (ExitControlsConfig, effective_premium_stop,
-                               stop_fill_price, EXIT_TRAIL_STOP, EXIT_BREAKEVEN_STOP)
+                               stop_fill_price, EXIT_TRAIL_STOP, EXIT_BREAKEVEN_STOP,
+                               DailyCapsConfig, daily_governor_decision, SKIPPED_STATUS)
 
 
 def _empty_metrics() -> Dict[str, Any]:
@@ -295,7 +296,6 @@ def simulate_paired_option_trades(
     cost_cfg = CostConfig.from_dict(cost_config)
     sizing_cfg = SizingConfig.from_dict(sizing_config)
     exit_cfg = ExitControlsConfig.from_dict(exit_controls)
-    from app.exit_controls import DailyCapsConfig, daily_governor_decision, SKIPPED_STATUS
     caps_cfg = DailyCapsConfig.from_dict(daily_caps)
     session_ledger: Dict[str, Dict[str, float]] = {}
     if not candles.empty:
@@ -372,15 +372,7 @@ def simulate_paired_option_trades(
         # Market-context snapshot: regime + time-of-day (from the spot signal)
         # and DTE (from expiry metadata). VIX is joined later by the caller when
         # available. This lets us analyze where the strategy actually has edge.
-        entry_date_iso = None
-        if spot_trade.get("entry_ts") is not None:
-            from app.market_context import ist_time_from_ts as _ist_hm  # local to avoid cycle at import
-            from datetime import datetime as _dt, timezone as _tz, timedelta as _td
-            try:
-                entry_date_iso = (_dt.fromtimestamp(int(spot_trade["entry_ts"]) / 1000, tz=_tz.utc)
-                                  + _td(hours=5, minutes=30)).strftime("%Y-%m-%d")
-            except Exception:
-                entry_date_iso = None
+        entry_date_iso = _ist_session_date(spot_trade.get("entry_ts"))
         trade_dte = compute_dte(entry_date_iso, _all_expiries_sorted) if entry_date_iso else None
         base["context"] = build_trade_context(
             regime=spot_trade.get("regime"),
@@ -389,7 +381,7 @@ def simulate_paired_option_trades(
             dte=trade_dte,
             vix=spot_trade.get("vix"),
         )
-        sess = _ist_session_date(spot_trade.get("entry_ts")) if caps_cfg.active else None
+        sess = entry_date_iso if caps_cfg.active else None
         if sess is not None:
             led = session_ledger.setdefault(sess, {"cum": 0.0, "min": 0.0, "max": 0.0, "admitted": 0})
             decision = daily_governor_decision(
@@ -397,6 +389,7 @@ def simulate_paired_option_trades(
                 entry_count=int(led["admitted"]), cfg=caps_cfg)   # ALREADY-admitted (pre-this-trade)
             if decision["halt"]:
                 coverage["skipped_by_cap"] += 1
+                # contract not resolved at this point -> no _contract_fields (governor gates the ENTRY)
                 paired_trades.append({**base, "status": SKIPPED_STATUS, "skip_reason": decision["reason"]})
                 continue
 

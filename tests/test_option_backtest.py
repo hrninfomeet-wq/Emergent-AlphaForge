@@ -552,11 +552,18 @@ def test_daily_cap_skips_later_same_session_entries():
     candles = _bars([
         {"instrument_key": "NSE_FO|OPT", "ts": day_ms, "open": 10, "high": 11, "low": 9, "close": 10},
         {"instrument_key": "NSE_FO|OPT", "ts": day_ms + 60000, "open": 10, "high": 12, "low": 9, "close": 11},
+        {"instrument_key": "NSE_FO|OPT", "ts": day_ms + 120000, "open": 11, "high": 13, "low": 10, "close": 12},
+        {"instrument_key": "NSE_FO|OPT", "ts": day_ms + 180000, "open": 12, "high": 14, "low": 11, "close": 13},
     ])
+    # control: WITHOUT the cap, both trades pair (so the cap is what suppresses trade 1, not missing data)
+    ctrl = simulate_paired_option_trades(
+        spot_trades=spot, contracts=contracts, option_candles=candles, underlying="NIFTY",
+        moneyness="atm", fixed_expiry_date="2023-11-16")
+    assert [t["status"] for t in ctrl["trades"]].count("PAIRED") == 2
     res = simulate_paired_option_trades(
         spot_trades=spot, contracts=contracts, option_candles=candles, underlying="NIFTY",
         moneyness="atm", fixed_expiry_date="2023-11-16", daily_caps={"max_trades": 1})
     statuses = [t["status"] for t in res["trades"]]
     assert statuses.count("PAIRED") == 1              # trade 0 admitted
-    assert statuses.count("SKIPPED_DAILY_CAP") == 1   # trade 1 capped
+    assert statuses.count("SKIPPED_DAILY_CAP") == 1   # trade 1 capped despite having candles
     assert res["coverage"].get("skipped_by_cap", 0) == 1
