@@ -315,6 +315,24 @@ async def backtest_start(req: BacktestReq):
     strategy = get_registry().get(req.strategy_id)
     if not strategy:
         raise HTTPException(404, f"Strategy {req.strategy_id} not found")
+    # Submit-time overlay validation. The async path runs the engine (and its
+    # in-worker validate) in a background task, so without this a bad overlay
+    # becomes a failed run instead of a clean 400. Mirror the in-worker backstop
+    # (runtime.py): option_backtest.exit_controls/daily_caps are pydantic models ->
+    # .model_dump() before the dict-based validator; gate on enabled so an inert
+    # overlay under enabled=False stays byte-identical (the worker returns early
+    # before validating when disabled).
+    ob = req.option_backtest
+    if ob.enabled and (ob.exit_controls or ob.daily_caps):
+        from app.exit_controls import validate_exit_risk_config
+        errs = validate_exit_risk_config(
+            ob.exit_controls.model_dump() if ob.exit_controls else None,
+            ob.daily_caps.model_dump() if ob.daily_caps else None,
+            costs_on=bool((ob.cost_config or {}).get("enabled")),
+            option_exec_on=(ob.exit_mode == "option_levels"),
+        )
+        if errs:
+            raise HTTPException(400, "; ".join(errs))
     run_id = str(uuid.uuid4())
     db = get_db()
     await db.backtest_runs.insert_one({

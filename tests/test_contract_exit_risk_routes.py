@@ -21,3 +21,11 @@ def test_exit_controls_forwarded_into_sim():
 def test_preset_carries_chosen_overlay():
     # apply_opt_as_preset overlays the job's chosen overlay onto the preset execution
     assert "best_exit_controls" in API
+
+
+def test_backtest_start_validates_overlay_at_submit():
+    # the async /backtest/start handler validates the overlay BEFORE launching the
+    # worker, mirroring the in-worker backstop — converting the pydantic sub-models
+    # to dicts (.model_dump()) so a bad overlay 400s at submit, not as a failed run.
+    assert "ob.exit_controls.model_dump()" in API
+    assert "ob.daily_caps.model_dump()" in API
