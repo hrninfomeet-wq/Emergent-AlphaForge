@@ -54,6 +54,32 @@ sim call sites, the overlay-conduit-into-survival gap).
 - **Pending the user:** running-stack verification (docker rebuild; force a live
   trail-stop + a daily-loss halt; confirm auto-resume next session).
 
+### Commit 2: auto-search (2026-06-16)
+
+657 host tests pass. On branch `feat/exit-risk-controls`. When `search_exit_controls`
+is on (plus Survivability ON + option re-rank), the optimizer sweeps a BOUNDED,
+deterministic grid of exit configs per SURVIVING finalist and keeps the
+best-surviving one (`chosen_exit_controls`) — the survival gate is the overfit
+guard; the search runs only on survivors so it can never promote a disqualified
+candidate.
+
+- **New pure `exit_control_grid`** in `app/exit_controls.py` (host-testable, no
+  motor/optuna): fixed-order Cartesian product of trail-distance × breakeven-trigger
+  candidates, capped at `max_grid=12` via a deterministic uniform stride — no RNG;
+  spec via `option_config.exit_control_search`. Default grid: `trail_distance
+  [0.20, 0.35]`, `breakeven_trigger [0.0, 0.30]` (fractions of premium, unit=pct).
+- **Optimizer wiring** (`optimizer.py`): `search_exit_controls` flag threads through
+  the option re-rank path; per-finalist grid sweep on survivors only; result carries
+  `chosen_exit_controls`. **Dormant by default** (verified by `py_compile` + the
+  running stack).
+- **Optimizer UI** (`Optimizer.jsx`): exit-control search toggle (gated on
+  Survivability + option re-rank) + optional custom grid-bounds inputs (fractions)
+  + per-finalist "auto-tuned exit" display; hint/placeholder text corrected to show
+  the real fraction defaults (0.20, 0.35 / 0.0, 0.30) not the previous wrong
+  whole-percentage claims.
+- **Pending the user:** run an optimization with Survivability + `search_exit_controls`
+  on; confirm survivors carry an auto-tuned `chosen_exit_controls` config.
+
 ## [0.41.x] — Live tick-driven paper-trading realism (2026-06-15)
 
 612 backend tests pass (+ a live-engine suite). On branch `feat/live-tick-paper-realism`.

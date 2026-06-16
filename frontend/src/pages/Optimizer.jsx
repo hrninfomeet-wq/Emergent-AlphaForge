@@ -959,25 +959,25 @@ export default function Optimizer() {
                 {config.search_exit_controls && config.survival_config?.enabled && (
                   <div className="space-y-2 pt-1 border-t border-amber-500/20">
                     <div className="text-[10px] text-dimmer">
-                      Grid bounds (comma-separated values; leave blank to use backend defaults: trail 15,20,25,30%, BE 20,25,30,35%).
+                      Grid bounds (comma-separated fractions; leave blank to use backend defaults: trail_distance 0.20, 0.35; breakeven_trigger 0.0, 0.30 — fractions of premium when unit=pct, e.g. 0.20 = give back 20% of peak, 0.30 = 30% gain arms breakeven).
                     </div>
                     <div className="grid grid-cols-2 gap-2">
                       <div>
-                        <Label className="text-[11px] text-dim">Trail distances (%)</Label>
+                        <Label className="text-[11px] text-dim">Trail distances (fraction)</Label>
                         <Input
                           value={config.exit_search_trail_distance}
                           onChange={(e) => setConfig({ ...config, exit_search_trail_distance: e.target.value })}
-                          placeholder="e.g. 15,20,25,30"
+                          placeholder="e.g. 0.20, 0.30, 0.40"
                           className="bg-bg-2 border-line h-8 text-xs font-mono mt-1"
                           data-testid="exit-search-trail-distance"
                         />
                       </div>
                       <div>
-                        <Label className="text-[11px] text-dim">BE trigger (%)</Label>
+                        <Label className="text-[11px] text-dim">BE trigger (fraction)</Label>
                         <Input
                           value={config.exit_search_breakeven_trigger}
                           onChange={(e) => setConfig({ ...config, exit_search_breakeven_trigger: e.target.value })}
-                          placeholder="e.g. 20,25,30,35"
+                          placeholder="e.g. 0.0, 0.30"
                           className="bg-bg-2 border-line h-8 text-xs font-mono mt-1"
                           data-testid="exit-search-breakeven-trigger"
                         />

@@ -129,37 +129,45 @@ UI smoke: Data Warehouse hero + Sync now + band heatmaps; Backtest results — K
 ## 14. What's next (open items)
 
 - **AGREED ROADMAP (2026-06-15, build in this order across upcoming sessions):**
-  **(1) Piece 2 — exit/risk controls** ✓ Commit 1 DONE (see below). **(2) Piece 3 —
-  integrated optimize→validate-OOS→accept loop** (survival constraints wired into the
-  accept gate; best after Piece 2 enriches the exit/risk model). **(3) Backtest-as-job
-  Phase 2** (live progress + cancel — verified design already on file in the Phase-2
-  bullet below). Each goes through brainstorm → spec → plan → subagent-driven build,
-  like 0.40.x/0.41.x.
+  **(1) Piece 2 — exit/risk controls** ✓ COMPLETE (Commit 1 enforce+evaluate + Commit 2
+  auto-search; both on `feat/exit-risk-controls`, 657 host tests, not pushed/merged).
+  **(2) Piece 3 — integrated optimize→validate-OOS→accept loop** (survival constraints
+  wired into the accept gate; next after Piece 2 is verified + landed). **(3)
+  Backtest-as-job Phase 2** (live progress + cancel — verified design already on file in
+  the Phase-2 bullet below). Each goes through brainstorm → spec → plan →
+  subagent-driven build, like 0.40.x/0.41.x.
   **Branch state:** `main` (e6febbe, pushed) → `feat/survivable-optimization` (0.40.x)
-  → `feat/live-tick-paper-realism` (0.41.x) → **`feat/exit-risk-controls` (Piece 2)**;
-  none pushed/merged — user lands them on explicit instruction. **User to-dos noted:**
-  review deployment lot sizing (10-lot deployments realize ~−₹13-14k per stop now that
-  paper trades open+exit faithfully); optionally re-optimize with the survival gate ON +
-  deploy survivors for an honest forward test; a forward-vs-backtest parity scorecard is
-  the confidence gate before any broker API.
+  → `feat/live-tick-paper-realism` (0.41.x) → **`feat/exit-risk-controls` (Piece 2,
+  0.42.x)**; none pushed/merged — user lands them on explicit instruction. **User
+  to-dos noted:** review deployment lot sizing (10-lot deployments realize ~−₹13-14k
+  per stop now that paper trades open+exit faithfully); optionally re-optimize with the
+  survival gate ON + deploy survivors for an honest forward test; a forward-vs-backtest
+  parity scorecard is the confidence gate before any broker API.
 
-- **DONE — Exit/Risk Controls Piece 2 Commit 1 (enforce + evaluate), on branch
+- **DONE — Exit/Risk Controls Piece 2 COMPLETE (Commit 1 + Commit 2), on branch
   `feat/exit-risk-controls` (2026-06-16; stacked on `feat/live-tick-paper-realism`).**
-  Premium-axis trailing-stop + breakeven + soft per-day loss/target/max-trades caps as
-  one execution overlay, off by default (byte-identical). 654 host tests pass. The sim
-  (`option_backtest`), optimizer/survival gate (`_survival_eval_oos` + `_option_rerank`,
-  `wfo`, `preset_execution`), and live (`mark_open_deployment_trades` + soft daily
-  governor in `deployment_kill_switch`) all enforce the same decider (shared pure
-  functions in `app/exit_controls.py`); the deployment `risk` round-trip is verified.
-  Each task went through TDD + spec + code-quality subagent review; the plan audit
-  (25 findings) caught the max_trades off-by-one and the real `runtime.py:577` +
-  `wfo.py` sim call sites. Spec [docs/superpowers/specs/2026-06-15-exit-risk-controls-design.md],
-  plan [docs/superpowers/plans/2026-06-15-exit-risk-controls.md].
-  **Commit 2 (bounded finalist-grid auto-search over exit configs, `search_exit_controls`
-  flag) is the sequenced next step**, to land AFTER the user verifies Commit 1 in the
-  running stack. **Running-stack verification is pending the user** (PC rarely runs in
-  market hours; force a live trail-stop + a daily-loss halt; confirm auto-resume next
-  session).
+  657 host tests pass. Not pushed/merged.
+  - *Commit 1 (enforce + evaluate):* Premium-axis trailing-stop + breakeven + soft
+    per-day loss/target/max-trades caps as one execution overlay, off by default
+    (byte-identical). Sim, optimizer/survival gate, and live all enforce the same
+    decider (shared pure `app/exit_controls.py`). TDD + spec + code-quality review per
+    task; 25-finding plan audit caught the max_trades off-by-one and real call sites.
+    Spec [docs/superpowers/specs/2026-06-15-exit-risk-controls-design.md], plan
+    [docs/superpowers/plans/2026-06-15-exit-risk-controls.md].
+  - *Commit 2 (auto-search):* `search_exit_controls` flag (requires Survivability ON +
+    option re-rank) sweeps a bounded, deterministic Cartesian grid of exit configs per
+    SURVIVING finalist and keeps the best-surviving one (`chosen_exit_controls`) — the
+    survival gate is the overfit guard. New pure `exit_control_grid` in
+    `app/exit_controls.py` (default: trail_distance [0.20, 0.35], breakeven_trigger
+    [0.0, 0.30]; capped at max_grid=12 via deterministic uniform stride, no RNG).
+    Optimizer wiring dormant-by-default (verified by py_compile + running stack). UI
+    toggle + corrected fraction-unit hint text.
+  **Running-stack verification pending the user:** docker rebuild; force a live
+  trail-stop + a daily-loss halt; confirm auto-resume next session; run an optimization
+  with Survivability + `search_exit_controls` on and confirm survivors carry an
+  auto-tuned `chosen_exit_controls` config. **Piece 3 (integrated
+  optimize→validate-OOS→accept loop) is the next roadmap item** after Piece 2 is
+  verified + landed.
 
 - **DONE — 0.37.x verified in the running stack** (`docker compose up -d --build` + browser smoke, both app images rebuilt): all six changes render with **no console errors** — cockpit market badge/clock + last-evaluated, the deploy wizard's friction control (default ON, prefilled) + selection-bias readiness line + gate ack warnings, the journal "P&L ₹ (net)" column, the chart's premium focus strip on an option_levels run, the Optimizer diversity toggle. API spot-checks confirmed `market_status` / `last_evaluated_ts` / `n_trials` / `deflated_sharpe` / `option_oos_net`. Two manual-flow checks were not exercised (no open trade / no stale close to trigger): the manual-close override prompt (#5) and a live stale-fill badge (#4) — both are guarded in code + unit-tested.
 - **DONE — paper journal surfaces the slice-1/4 data**: "P&L ₹ (net)" + gross/friction sub-line + `exit_price_stale` "est" badge.
