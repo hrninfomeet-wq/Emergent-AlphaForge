@@ -363,6 +363,13 @@ async def get_backtest_run(run_id: str):
     doc = await db.backtest_runs.find_one({"id": run_id}, {"_id": 0})
     if not doc:
         raise HTTPException(404, "Run not found")
+    # Fix-C: attach the trust verdict (compute-on-read; self-contained, no evidence
+    # needed). Never break the read — omit the scorecard if it can't compute.
+    try:
+        from app.deployment_quality import evaluate_source_quality
+        doc["quality"] = evaluate_source_quality(doc)
+    except Exception:
+        pass
     return serialize_doc(doc)
 
 
