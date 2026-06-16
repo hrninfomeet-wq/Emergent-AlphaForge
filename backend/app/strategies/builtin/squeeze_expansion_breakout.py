@@ -18,6 +18,8 @@ class SqueezeExpansionBreakout(AdaptiveStrategyBase):
                    "squeeze release with acceleration + VWAP confirm. Variance-timing edge.")
     extra_params = {
         "min_coil_bars": {"type": "int", "min": 2, "max": 20, "default": 6},
+        # bb_*/kc_*/sqz_mom_len tune the precomputed squeeze columns via the optimizer's
+        # INDICATOR_PARAM_KEYS recompute (consumed by precompute_all_indicators, not read here).
         "bb_len": {"type": "int", "min": 10, "max": 30, "default": 20},
         "bb_mult": {"type": "float", "min": 1.5, "max": 2.5, "default": 2.0},
         "kc_len": {"type": "int", "min": 10, "max": 30, "default": 20},

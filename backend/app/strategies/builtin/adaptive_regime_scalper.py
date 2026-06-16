@@ -19,6 +19,8 @@ class AdaptiveRegimeScalper(AdaptiveStrategyBase):
                    "biased by CPR day-type. Direction-timing edge.")
     extra_params = {
         "dead_band": {"type": "float", "min": 0.05, "max": 0.4, "default": 0.15},
+        # vr_*/st_* tune the precomputed regime_score/supertrend columns via the optimizer's
+        # INDICATOR_PARAM_KEYS recompute (consumed by precompute_all_indicators, not read here).
         "vr_q": {"type": "int", "min": 2, "max": 10, "default": 4},
         "vr_lookback": {"type": "int", "min": 40, "max": 150, "default": 90},
         "st_period": {"type": "int", "min": 5, "max": 20, "default": 10},
