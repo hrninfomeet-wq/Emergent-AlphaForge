@@ -16,7 +16,10 @@ const moneySigned = (n) => (n == null ? "—" : `${n < 0 ? "−" : "+"}₹${fmtI
 export function PerformanceOverview({ result }) {
   const series = useMemo(() => buildPerformanceSeries(result), [result]);
   const k = useMemo(() => computeKeyMetrics(result), [result]);
-  const m = result?.metrics || {};
+  // Exit-control attribution lives in the OPTION metrics (option_backtest.metrics),
+  // not the spot metrics. Spot-only / failed runs have no option_backtest -> {} ->
+  // anyNonZero false -> the attribution block (below) stays hidden (correct).
+  const m = result?.option_backtest?.metrics || {};
   const cur = series.currency;
 
   // Hero — rupee-first when an account exists, else points.

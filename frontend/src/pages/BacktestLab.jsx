@@ -110,6 +110,18 @@ export default function BacktestLab() {
     option_fixed_lots: 1,
     option_max_lots: 10,
     option_assumed_stop_pct: 50,
+    // Exit / risk overlay (Piece 2 on the Backtest page). Off by default =>
+    // buildPayload/buildExecution* emit no new keys => byte-identical. Fractions
+    // for pct (0.25 = 25%), matching the deploy wizard + optimizer overlay panels.
+    exit_controls_enabled: false,
+    exit_controls_unit: "pct",
+    breakeven_trigger: "",
+    breakeven_lock: "",
+    trailing_activation: "",
+    trailing_distance: "",
+    daily_cap_loss: "",
+    daily_cap_target: "",
+    daily_cap_max_trades: "",
   });
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState(null);
@@ -214,6 +226,17 @@ export default function BacktestLab() {
           option_brokerage_per_order: ex.cost_config.brokerage_per_order ?? 0,
           option_spread_pct: ex.cost_config.spread_pct_of_premium ?? 1.0,
         } : {}),
+        // Exit/risk overlay travels with the preset -> prefill the panel (fractions,
+        // no conversion). Same null-tolerant shape the deploy wizard reads.
+        exit_controls_enabled: Boolean(ex.exit_controls?.enabled),
+        exit_controls_unit: ex.exit_controls?.unit || "pct",
+        breakeven_trigger: ex.exit_controls?.breakeven?.trigger ?? "",
+        breakeven_lock: ex.exit_controls?.breakeven?.lock ?? "",
+        trailing_activation: ex.exit_controls?.trailing?.activation ?? "",
+        trailing_distance: ex.exit_controls?.trailing?.distance ?? "",
+        daily_cap_loss: ex.daily_caps?.loss ?? "",
+        daily_cap_target: ex.daily_caps?.target ?? "",
+        daily_cap_max_trades: ex.daily_caps?.max_trades ?? "",
       } : {};
       setConfig((c) => ({
         ...c,
@@ -257,6 +280,34 @@ export default function BacktestLab() {
         enabled: true,
         brokerage_per_order: Number(config.option_brokerage_per_order || 0),
         spread_pct_of_premium: Number(config.option_spread_pct || 0),
+      };
+    }
+    // Exit/risk overlay -> execution (same nested shape the deploy wizard reads).
+    // exit_controls only under option_levels (premium trailing); daily_caps whenever
+    // a cap is set, regardless of exit_mode (governor-vs-trail split).
+    if (config.exit_controls_enabled && config.option_exit_mode === "option_levels") {
+      ex.exit_controls = {
+        enabled: true,
+        unit: config.exit_controls_unit,
+        breakeven: (config.breakeven_trigger !== "" || config.breakeven_lock !== "")
+          ? {
+              trigger: config.breakeven_trigger !== "" ? Number(config.breakeven_trigger) : null,
+              lock: config.breakeven_lock !== "" ? Number(config.breakeven_lock) : null,
+            }
+          : null,
+        trailing: (config.trailing_activation !== "" || config.trailing_distance !== "")
+          ? {
+              activation: config.trailing_activation !== "" ? Number(config.trailing_activation) : null,
+              distance: config.trailing_distance !== "" ? Number(config.trailing_distance) : null,
+            }
+          : null,
+      };
+    }
+    if (config.daily_cap_loss !== "" || config.daily_cap_target !== "" || config.daily_cap_max_trades !== "") {
+      ex.daily_caps = {
+        loss: config.daily_cap_loss !== "" ? Number(config.daily_cap_loss) : null,
+        target: config.daily_cap_target !== "" ? Number(config.daily_cap_target) : null,
+        max_trades: config.daily_cap_max_trades !== "" ? Math.max(0, parseInt(config.daily_cap_max_trades, 10) || 0) : null,
       };
     }
     return ex;
@@ -316,6 +367,30 @@ export default function BacktestLab() {
         enabled: true,
         brokerage_per_order: Number(ob.cost_config.brokerage_per_order || 0),
         spread_pct_of_premium: Number(ob.cost_config.spread_pct_of_premium || 0),
+      };
+    }
+    // Exit/risk overlay from the RUN DOC -> execution (same shape the deploy wizard
+    // reads). exit_controls only under option_levels; daily_caps regardless. Sourced
+    // from ob.exit_controls/ob.daily_caps (round-tripped via OptionBacktestReq).
+    const rec = ob.exit_controls;
+    if (rec?.enabled && (ob.exit_mode || "spot_exit") === "option_levels") {
+      ex.exit_controls = {
+        enabled: true,
+        unit: rec.unit || "pct",
+        breakeven: rec.breakeven
+          ? { trigger: rec.breakeven.trigger ?? null, lock: rec.breakeven.lock ?? null }
+          : null,
+        trailing: rec.trailing
+          ? { activation: rec.trailing.activation ?? null, distance: rec.trailing.distance ?? null }
+          : null,
+      };
+    }
+    const rdc = ob.daily_caps;
+    if (rdc && (rdc.loss != null || rdc.target != null || rdc.max_trades != null)) {
+      ex.daily_caps = {
+        loss: rdc.loss ?? null,
+        target: rdc.target ?? null,
+        max_trades: rdc.max_trades ?? null,
       };
     }
     return ex;
@@ -433,6 +508,35 @@ export default function BacktestLab() {
         max_lots: Math.max(1, Number(config.option_max_lots || 10)),
         assumed_stop_pct_of_premium: Number(config.option_assumed_stop_pct || 50),
       } : null,
+      // Exit/risk overlay — gated emission (off => key absent, never {}). exit_controls
+      // only under option_levels (premium trailing is impossible spot-only); daily_caps
+      // whenever a cap is set (the governor runs regardless of exit_mode). Breakeven/
+      // trailing emitted as numeric-only dicts (ExitControlsReq sub-models reject null).
+      ...(config.exit_controls_enabled && config.option_exit_mode === "option_levels"
+        ? {
+            exit_controls: (() => {
+              const ec = { enabled: true, unit: config.exit_controls_unit };
+              const be = {};
+              if (config.breakeven_trigger !== "") be.trigger = Number(config.breakeven_trigger);
+              if (config.breakeven_lock !== "") be.lock = Number(config.breakeven_lock);
+              if (Object.keys(be).length) ec.breakeven = be;
+              const tr = {};
+              if (config.trailing_activation !== "") tr.activation = Number(config.trailing_activation);
+              if (config.trailing_distance !== "") tr.distance = Number(config.trailing_distance);
+              if (Object.keys(tr).length) ec.trailing = tr;
+              return ec;
+            })(),
+          }
+        : {}),
+      ...((config.daily_cap_loss !== "" || config.daily_cap_target !== "" || config.daily_cap_max_trades !== "")
+        ? {
+            daily_caps: {
+              loss: config.daily_cap_loss !== "" ? Number(config.daily_cap_loss) : null,
+              target: config.daily_cap_target !== "" ? Number(config.daily_cap_target) : null,
+              max_trades: config.daily_cap_max_trades !== "" ? Math.max(0, parseInt(config.daily_cap_max_trades, 10) || 0) : null,
+            },
+          }
+        : {}),
     },
   });
 
@@ -585,6 +689,16 @@ export default function BacktestLab() {
         option_fixed_lots: r.config?.option_backtest?.sizing_config?.fixed_lots ?? 1,
         option_max_lots: r.config?.option_backtest?.sizing_config?.max_lots ?? 10,
         option_assumed_stop_pct: r.config?.option_backtest?.sizing_config?.assumed_stop_pct_of_premium ?? 50,
+        // Exit/risk overlay from the loaded run -> prefill the panel (fractions).
+        exit_controls_enabled: Boolean(r.config?.option_backtest?.exit_controls?.enabled),
+        exit_controls_unit: r.config?.option_backtest?.exit_controls?.unit || "pct",
+        breakeven_trigger: r.config?.option_backtest?.exit_controls?.breakeven?.trigger ?? "",
+        breakeven_lock: r.config?.option_backtest?.exit_controls?.breakeven?.lock ?? "",
+        trailing_activation: r.config?.option_backtest?.exit_controls?.trailing?.activation ?? "",
+        trailing_distance: r.config?.option_backtest?.exit_controls?.trailing?.distance ?? "",
+        daily_cap_loss: r.config?.option_backtest?.daily_caps?.loss ?? "",
+        daily_cap_target: r.config?.option_backtest?.daily_caps?.target ?? "",
+        daily_cap_max_trades: r.config?.option_backtest?.daily_caps?.max_trades ?? "",
       }));
       toast.success(`Loaded: ${r.name}`);
     } catch (e) {
@@ -1100,6 +1214,129 @@ export default function BacktestLab() {
                 </>
               )}
             </div>
+
+            {/* Exit / risk overlay (optional). Premium trailing-stop + breakeven +
+                per-day caps — the SAME engine the optimizer searches and the deploy
+                wizard enforces. Off by default => byte-identical payload. */}
+            {config.option_backtest_enabled && (
+              <div className="pt-2 border-t border-line space-y-2" data-testid="exit-controls-panel">
+                <div className="flex items-center gap-2">
+                  <Switch
+                    checked={config.exit_controls_enabled}
+                    onCheckedChange={(v) => setConfig({ ...config, exit_controls_enabled: v })}
+                    data-testid="exit-controls-switch"
+                  />
+                  <span className="text-xs text-dim">Exit / risk controls (trailing · breakeven · daily caps)</span>
+                </div>
+                {config.exit_controls_enabled && (
+                  <>
+                    {config.option_exit_mode !== "option_levels" && (
+                      <div className="text-[10px] text-amber-300 leading-snug" data-testid="exit-controls-mode-note">
+                        Trailing &amp; breakeven need exit mode “Option premium SL/target” (they trail the option’s
+                        own premium). They’re skipped under “Mirror spot exit”. Daily caps still apply.
+                      </div>
+                    )}
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-dim">Unit</span>
+                      <div className="flex rounded-md border border-line overflow-hidden">
+                        {["pct", "pts"].map((u) => (
+                          <button
+                            key={u}
+                            type="button"
+                            onClick={() => setConfig({ ...config, exit_controls_unit: u })}
+                            className={`px-2 py-1 text-[11px] font-mono ${config.exit_controls_unit === u ? "bg-info text-bg-0" : "bg-bg-2 text-dim hover:text-foreground"}`}
+                            data-testid={`exit-controls-unit-${u}`}
+                          >
+                            {u === "pct" ? "Fraction" : "Points"}
+                          </button>
+                        ))}
+                      </div>
+                      <span className="text-[10px] text-dimmer">
+                        {config.exit_controls_unit === "pct" ? "0.25 = 25% of entry premium" : "absolute premium points"}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <Row label={`Breakeven trigger ${config.exit_controls_unit === "pts" ? "(pts profit)" : "(fraction)"}`}>
+                        <Input
+                          type="number" min="0" step={config.exit_controls_unit === "pts" ? "0.5" : "0.05"}
+                          value={config.breakeven_trigger}
+                          onChange={(e) => setConfig({ ...config, breakeven_trigger: e.target.value })}
+                          placeholder={config.exit_controls_unit === "pts" ? "off" : "0.30 = +30% arms BE"}
+                          className="bg-bg-2 border-line h-8 text-xs" data-testid="exit-be-trigger"
+                          disabled={config.option_exit_mode !== "option_levels"}
+                        />
+                      </Row>
+                      <Row label={`Breakeven lock ${config.exit_controls_unit === "pts" ? "(pts above entry)" : "(fraction)"}`}>
+                        <Input
+                          type="number" min="0" step={config.exit_controls_unit === "pts" ? "0.5" : "0.05"}
+                          value={config.breakeven_lock}
+                          onChange={(e) => setConfig({ ...config, breakeven_lock: e.target.value })}
+                          placeholder={config.exit_controls_unit === "pts" ? "0 = exact entry" : "0.0 = lock at entry"}
+                          className="bg-bg-2 border-line h-8 text-xs" data-testid="exit-be-lock"
+                          disabled={config.option_exit_mode !== "option_levels"}
+                        />
+                      </Row>
+                      <Row label={`Trail activate ${config.exit_controls_unit === "pts" ? "(pts profit)" : "(fraction)"}`}>
+                        <Input
+                          type="number" min="0" step={config.exit_controls_unit === "pts" ? "0.5" : "0.05"}
+                          value={config.trailing_activation}
+                          onChange={(e) => setConfig({ ...config, trailing_activation: e.target.value })}
+                          placeholder={config.exit_controls_unit === "pts" ? "off" : "0.40 = +40%"}
+                          className="bg-bg-2 border-line h-8 text-xs" data-testid="exit-trail-activation"
+                          disabled={config.option_exit_mode !== "option_levels"}
+                        />
+                      </Row>
+                      <Row label={`Trail distance ${config.exit_controls_unit === "pts" ? "(pts from peak)" : "(fraction)"}`}>
+                        <Input
+                          type="number" min="0" step={config.exit_controls_unit === "pts" ? "0.5" : "0.05"}
+                          value={config.trailing_distance}
+                          onChange={(e) => setConfig({ ...config, trailing_distance: e.target.value })}
+                          placeholder={config.exit_controls_unit === "pts" ? "—" : "0.25 = give back 25%"}
+                          className="bg-bg-2 border-line h-8 text-xs" data-testid="exit-trail-distance"
+                          disabled={config.option_exit_mode !== "option_levels"}
+                        />
+                      </Row>
+                    </div>
+                    <div className="pt-1 grid grid-cols-3 gap-2">
+                      <Row label="Daily loss ₹">
+                        <Input
+                          type="number" min="0" step="500"
+                          value={config.daily_cap_loss}
+                          onChange={(e) => setConfig({ ...config, daily_cap_loss: e.target.value })}
+                          placeholder={config.option_costs_enabled ? "e.g. 5000" : "needs costs"}
+                          className="bg-bg-2 border-line h-8 text-xs" data-testid="exit-cap-loss"
+                          disabled={!config.option_costs_enabled}
+                        />
+                      </Row>
+                      <Row label="Daily target ₹">
+                        <Input
+                          type="number" min="0" step="500"
+                          value={config.daily_cap_target}
+                          onChange={(e) => setConfig({ ...config, daily_cap_target: e.target.value })}
+                          placeholder={config.option_costs_enabled ? "e.g. 8000" : "needs costs"}
+                          className="bg-bg-2 border-line h-8 text-xs" data-testid="exit-cap-target"
+                          disabled={!config.option_costs_enabled}
+                        />
+                      </Row>
+                      <Row label="Max trades / day">
+                        <Input
+                          type="number" min="0" step="1"
+                          value={config.daily_cap_max_trades}
+                          onChange={(e) => setConfig({ ...config, daily_cap_max_trades: e.target.value })}
+                          placeholder="e.g. 5"
+                          className="bg-bg-2 border-line h-8 text-xs" data-testid="exit-cap-max-trades"
+                        />
+                      </Row>
+                    </div>
+                    <div className="text-[10px] text-dimmer leading-snug">
+                      Daily ₹ caps are soft per-session governors (auto-resume next session). Loss/target need
+                      costs on (they act on net ₹); max-trades doesn’t. Walk-forward toggle runs the spot WF only —
+                      the overlay shows in the full-window option result, not the IS/OOS WF panel.
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
           </div>
         </Panel>
 
