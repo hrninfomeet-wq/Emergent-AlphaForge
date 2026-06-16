@@ -64,3 +64,21 @@ def test_squeeze_fire_is_single_bar_edge():
     # fire only where prior bar was on and this bar is off
     expected = on.shift(1).fillna(False) & (~on)
     assert (fire == expected).all()
+
+
+from app.indicators import supertrend
+
+
+def test_supertrend_dir_flips_with_trend():
+    df = make_ohlc(list(range(100, 160)) + list(range(160, 100, -1)))
+    st, d = supertrend(df, period=10, mult=3.0)
+    assert d.iloc[40] == 1     # uptrend -> long
+    assert d.iloc[-1] == -1    # downtrend -> short
+
+
+def test_supertrend_is_causal():
+    closes = list(np.cumsum(np.random.default_rng(1).standard_normal(150)) + 100)
+    df = make_ohlc(closes)
+    st_full, d_full = supertrend(df, period=10, mult=3.0)
+    st_cut, d_cut = supertrend(df.iloc[:120], period=10, mult=3.0)
+    assert int(d_full.iloc[119]) == int(d_cut.iloc[119])

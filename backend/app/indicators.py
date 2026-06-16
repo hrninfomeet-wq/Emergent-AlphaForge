@@ -129,6 +129,32 @@ def squeeze(df: pd.DataFrame, bb_len: int = 20, bb_mult: float = 2.0,
     return on, fire, mom
 
 
+def supertrend(df: pd.DataFrame, period: int = 10, mult: float = 3.0):
+    """ATR-banded trailing trend with a path-dependent flip. Causal (bar i uses
+    only finalized bands through i-1). Returns (supertrend_line, st_dir ±1)."""
+    hl2 = (df["high"] + df["low"]) / 2.0
+    a = atr(df, period)
+    upper = (hl2 + mult * a).to_numpy()
+    lower = (hl2 - mult * a).to_numpy()
+    close = df["close"].to_numpy()
+    n = len(df)
+    f_up = upper.copy()
+    f_lo = lower.copy()
+    st = np.full(n, np.nan)
+    d = np.ones(n, dtype=int)
+    for i in range(1, n):
+        f_up[i] = upper[i] if (np.isnan(f_up[i - 1]) or upper[i] < f_up[i - 1] or close[i - 1] > f_up[i - 1]) else f_up[i - 1]
+        f_lo[i] = lower[i] if (np.isnan(f_lo[i - 1]) or lower[i] > f_lo[i - 1] or close[i - 1] < f_lo[i - 1]) else f_lo[i - 1]
+        if close[i] > f_up[i - 1]:
+            d[i] = 1
+        elif close[i] < f_lo[i - 1]:
+            d[i] = -1
+        else:
+            d[i] = d[i - 1]
+        st[i] = f_lo[i] if d[i] == 1 else f_up[i]
+    return pd.Series(st, index=df.index), pd.Series(d, index=df.index)
+
+
 def fibonacci_levels(swing_high: float, swing_low: float) -> dict:
     """Standard Fibonacci retracement levels."""
     diff = swing_high - swing_low
