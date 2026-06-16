@@ -17,6 +17,7 @@ import { RegimeBadge } from "@/components/RegimeBadge";
 import { SignificanceBadge } from "@/components/SignificanceBadge";
 import { PerformanceOverview } from "@/components/backtest/PerformanceOverview";
 import { BacktestChart } from "@/components/backtest/BacktestChart";
+import { useMaximize, MaximizeButton } from "@/components/MaximizeButton";
 import { buildPerformanceSeries } from "@/lib/backtestMetrics";
 import { NumberSliderInput } from "@/components/NumberSliderInput";
 import BacktestRunJournal from "@/components/BacktestRunJournal";
@@ -1499,9 +1500,9 @@ function PreflightPanel({ preflight, preflighting, onCheck, onIngest }) {
   );
 }
 
-function Panel({ title, children, right, testid }) {
+function Panel({ title, children, right, testid, rootRef, className = "" }) {
   return (
-    <div className="rounded-lg border border-line bg-bg-1" data-testid={testid}>
+    <div ref={rootRef} className={`rounded-lg border border-line bg-bg-1 ${className}`} data-testid={testid}>
       <div className="px-3 py-2 border-b border-line flex items-center">
         <div className="text-[11px] font-semibold uppercase tracking-wider text-dim">{title}</div>
         {right && <div className="ml-auto">{right}</div>}
@@ -2373,6 +2374,7 @@ function SortHeader({ col, sort, onSort }) {
 }
 
 function TradesTable({ trades, optionBacktest }) {
+  const { panelRef, maximized, toggleMaximize } = useMaximize();
   const [sort, setSort] = useState({ key: "idx", dir: "asc" });
   const [dirFilter, setDirFilter] = useState("ALL");
   const [reasonFilter, setReasonFilter] = useState("ALL");
@@ -2492,6 +2494,8 @@ function TradesTable({ trades, optionBacktest }) {
 
   return (
     <Panel
+      rootRef={panelRef}
+      className="overflow-auto"
       title={`Trades (${sorted.length}${sorted.length !== indexed.length ? ` of ${indexed.length}` : ""})`}
       testid="trades-panel"
       right={
@@ -2511,6 +2515,7 @@ function TradesTable({ trades, optionBacktest }) {
             <option value="win">Wins</option>
             <option value="loss">Losses</option>
           </FilterSelect>
+          <MaximizeButton maximized={maximized} onToggle={toggleMaximize} label="trades" testid="trades-maximize" />
         </div>
       }
     >

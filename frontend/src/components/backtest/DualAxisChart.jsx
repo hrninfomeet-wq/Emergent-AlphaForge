@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { createChart, ColorType, AreaSeries, LineSeries, BaselineSeries } from "lightweight-charts";
+import { useMaximize, MaximizeButton } from "@/components/MaximizeButton";
 
 // Vertical axis-title strip — text reads bottom-to-top ("text up" orientation).
 function AxisTitle({ text, color }) {
@@ -30,6 +31,7 @@ function addSeries(chart, kind, opts) {
  */
 export function DualAxisChart({ title, left, right, currency = true, height = 300, testid }) {
   const containerRef = useRef(null);
+  const { panelRef, maximized, toggleMaximize, fullHeight } = useMaximize(height);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -87,17 +89,21 @@ export function DualAxisChart({ title, left, right, currency = true, height = 30
   }, [left.data, right.data, left.kind, right.kind, left.color, right.color, currency]);
 
   const unit = currency ? "₹" : "pts";
+  const chartHeight = maximized ? fullHeight : height;
   return (
-    <div className="rounded-lg border border-line bg-bg-1 overflow-hidden" data-testid={testid}>
+    <div ref={panelRef} className="rounded-lg border border-line bg-bg-1 overflow-auto" data-testid={testid}>
       <div className="px-3 py-2 border-b border-line flex items-center gap-3 text-[11px] flex-wrap">
         <span className="font-semibold uppercase tracking-wider text-dim">{title}</span>
         <span className="inline-flex items-center gap-1 text-dimmer"><span className="w-3 h-0.5 inline-block" style={{ background: left.color }} /> {left.label} (left)</span>
         <span className="inline-flex items-center gap-1 text-dimmer"><span className="w-3 h-0.5 inline-block" style={{ background: right.color }} /> {right.label} (right)</span>
-        <span className="ml-auto text-dimmer">{unit} · scroll to zoom</span>
+        <div className="ml-auto flex items-center gap-2">
+          <span className="text-dimmer">{unit} · scroll to zoom</span>
+          <MaximizeButton maximized={maximized} onToggle={toggleMaximize} label="chart" testid={testid ? `${testid}-maximize` : "dual-axis-maximize"} />
+        </div>
       </div>
       <div className="flex">
         <AxisTitle text={`${left.label} (${unit})`} color={left.color} />
-        <div ref={containerRef} className="flex-1 min-w-0" style={{ height: `${height}px` }} />
+        <div ref={containerRef} className="flex-1 min-w-0" style={{ height: `${chartHeight}px` }} />
         <AxisTitle text={`${right.label}${right.kind === "baseline" ? ` (${unit})` : ""}`} color={right.color} />
       </div>
     </div>

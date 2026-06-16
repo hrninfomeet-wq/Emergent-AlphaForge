@@ -12,6 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { NumberSliderInput } from "@/components/NumberSliderInput";
+import { useMaximize, MaximizeButton } from "@/components/MaximizeButton";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
   Gauge, Play, RefreshCw, Sparkles, Trash2, ChevronDown, ChevronRight,
@@ -2046,17 +2047,22 @@ function TopAlternatives({ items }) {
 }
 
 function JobHistory({ jobs, onLoad, onClone, onResume, onDelete, onRefresh }) {
+  const { panelRef, maximized, toggleMaximize } = useMaximize();
   return (
-    <div className="rounded-lg border border-line bg-bg-1" data-testid="opt-job-history">
+    <div ref={panelRef} className="rounded-lg border border-line bg-bg-1 overflow-auto" data-testid="opt-job-history">
       <div className="px-3 py-2 border-b border-line flex items-center">
         <Activity className="w-3.5 h-3.5 mr-1.5 text-dim" />
         <div className="text-xs font-semibold uppercase tracking-wider text-dim">Job History</div>
-        <Button variant="ghost" size="sm" onClick={onRefresh} className="ml-auto h-7 text-xs"><RefreshCw className="w-3 h-3" /></Button>
+        <div className="ml-auto flex items-center gap-1">
+          <Button variant="ghost" size="sm" onClick={onRefresh} className="h-7 text-xs"><RefreshCw className="w-3 h-3" /></Button>
+          <MaximizeButton maximized={maximized} onToggle={toggleMaximize} label="job history" testid="opt-job-history-maximize" />
+        </div>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
           <thead>
             <tr className="text-dim border-b border-line">
+              <th className="text-right p-2 w-10">#</th>
               <th className="text-left p-2">Created</th>
               <th className="text-left p-2">Status</th>
               <th className="text-left p-2">Strategy</th>
@@ -2070,10 +2076,11 @@ function JobHistory({ jobs, onLoad, onClone, onResume, onDelete, onRefresh }) {
           </thead>
           <tbody>
             {jobs.length === 0 && (
-              <tr><td colSpan="9" className="p-4 text-center text-dimmer">No optimizations yet.</td></tr>
+              <tr><td colSpan="10" className="p-4 text-center text-dimmer">No optimizations yet.</td></tr>
             )}
-            {jobs.map((j) => (
+            {jobs.map((j, idx) => (
               <tr key={j.id} className="border-b border-line hover:bg-bg-2 cursor-pointer" onClick={() => onLoad(j.id)} data-testid="opt-history-row">
+                <td className="p-2 font-mono text-dimmer text-right">{idx + 1}</td>
                 <td className="p-2 font-mono text-dim">{isoToFull(j.created_at)}</td>
                 <td className="p-2"><StatusBadge status={j.status} /></td>
                 <td className="p-2 font-mono text-dim">{j.strategy_id}</td>

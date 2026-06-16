@@ -155,6 +155,7 @@ export default function BacktestRunJournal({ onLoadRun, refreshKey = 0, defaultO
               <thead className="sticky top-0 bg-bg-2 z-10">
                 <tr className="text-dim border-b border-line">
                   <th className="p-2 w-8"></th>
+                  <th className="text-right p-2 w-10">#</th>
                   <th className="text-left p-2">Created</th>
                   <th className="text-left p-2">Name</th>
                   <th className="text-left p-2">Instr.</th>
@@ -171,14 +172,14 @@ export default function BacktestRunJournal({ onLoadRun, refreshKey = 0, defaultO
               </thead>
               <tbody>
                 {loading && (
-                  <tr><td colSpan="13" className="p-6 text-center text-dimmer">Loading…</td></tr>
+                  <tr><td colSpan="14" className="p-6 text-center text-dimmer">Loading…</td></tr>
                 )}
                 {!loading && visible.length === 0 && (
-                  <tr><td colSpan="13" className="p-6 text-center text-dimmer">
+                  <tr><td colSpan="14" className="p-6 text-center text-dimmer">
                     {runs.length === 0 ? "No backtest runs yet. Run one above." : "No runs match filter."}
                   </td></tr>
                 )}
-                {!loading && visible.map((r) => (
+                {!loading && visible.map((r, idx) => (
                   <tr
                     key={r.id}
                     className={`border-b border-line hover:bg-bg-2 cursor-pointer ${selected.has(r.id) ? "bg-bg-2" : ""}`}
@@ -194,6 +195,7 @@ export default function BacktestRunJournal({ onLoadRun, refreshKey = 0, defaultO
                         data-testid={`journal-select-${r.id.slice(0, 8)}`}
                       />
                     </td>
+                    <td className="p-2 font-mono text-dimmer text-right">{idx + 1}</td>
                     <td className="p-2 font-mono text-dim">{isoToFull(r.created_at)}</td>
                     <td className="p-2 font-medium">{r.name}</td>
                     <td className="p-2 font-mono">{r.instrument}</td>
