@@ -82,3 +82,39 @@ def test_supertrend_is_causal():
     st_full, d_full = supertrend(df, period=10, mult=3.0)
     st_cut, d_cut = supertrend(df.iloc[:120], period=10, mult=3.0)
     assert int(d_full.iloc[119]) == int(d_cut.iloc[119])
+
+
+from app.indicators import vwap_sigma_bands, nr7
+from tests._adaptive_testutil import make_sessions
+from app.indicators import session_vwap
+
+
+def test_vwap_sigma_bands_widen_with_dispersion():
+    df = make_sessions([[100, 101, 99, 103, 97, 105, 95]])  # one volatile session
+    df["vwap"] = session_vwap(df)  # price-based (no volume) fallback
+    sigma, u1, u2, l1, l2 = vwap_sigma_bands(df)
+    assert (u2 >= u1).all() and (l2 <= l1).all()
+    assert sigma.iloc[-1] > 0
+
+
+def test_nr7_flags_session_after_narrow_day():
+    wide = list(range(100, 130))                      # big range
+    narrow = [110 + 0.1 * (i % 2) for i in range(30)] # tiny range (NR)
+    after = list(range(110, 140))
+    df = make_sessions([wide, wide, wide, wide, wide, wide, narrow, after])
+    flag = nr7(df)
+    last_date = df["session_date"].iloc[-1]
+    assert flag[df["session_date"] == last_date].iloc[0]  # day after the NR is flagged
+
+
+def test_nr7_does_not_use_today_full_range():
+    # today's flag must equal the prior session's NR status, independent of how
+    # today's later bars extend the range -> causal.
+    df = make_sessions([[100]*30, [100]*30, [100]*30, [100]*30, [100]*30,
+                        [100]*30, [100 + 0.1*(i%2) for i in range(30)], list(range(100, 200))])
+    full = nr7(df)
+    cut = nr7(df.iloc[: len(df) - 50])  # truncate today's tail
+    last_date = df["session_date"].iloc[-1]
+    a = full[df["session_date"] == last_date].iloc[0]
+    b = cut[cut.index][df["session_date"].iloc[: len(cut)] == last_date]
+    assert bool(a) == bool(b.iloc[0])

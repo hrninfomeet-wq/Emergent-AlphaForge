@@ -155,6 +155,31 @@ def supertrend(df: pd.DataFrame, period: int = 10, mult: float = 3.0):
     return pd.Series(st, index=df.index), pd.Series(d, index=df.index)
 
 
+def vwap_sigma_bands(df: pd.DataFrame):
+    """Price-based standard-deviation bands around session VWAP (matches
+    session_vwap's volume-zero fallback). Requires `vwap` + `session_date`
+    columns. Per-session expanding sigma (causal). Returns
+    (sigma, u1, u2, l1, l2)."""
+    typical = (df["high"] + df["low"] + df["close"]) / 3.0
+    dev2 = (typical - df["vwap"]) ** 2
+    sigma = pd.Series(index=df.index, dtype="float64")
+    for _, g in df.groupby("session_date", sort=False):
+        sigma.loc[g.index] = np.sqrt(dev2.loc[g.index].expanding().mean())
+    return sigma, df["vwap"] + sigma, df["vwap"] + 2 * sigma, df["vwap"] - sigma, df["vwap"] - 2 * sigma
+
+
+def nr7(df: pd.DataFrame) -> pd.Series:
+    """Per-bar flag: the PRIOR completed session's range was the narrowest of
+    its preceding 7 sessions (Crabel NR7 -> today may expand). Causal: today's
+    own (incomplete) range is never used. Requires `session_date`."""
+    g = df.groupby("session_date", sort=False)
+    rng = (g["high"].max() - g["low"].min()).sort_index()
+    is_nr7 = rng <= rng.rolling(7, min_periods=2).min()
+    prior_arr = np.concatenate([[False], is_nr7.to_numpy()[:-1]])
+    prior = pd.Series(prior_arr, index=is_nr7.index, dtype=bool)
+    return df["session_date"].map(prior).fillna(False).astype(bool)
+
+
 def fibonacci_levels(swing_high: float, swing_low: float) -> dict:
     """Standard Fibonacci retracement levels."""
     diff = swing_high - swing_low
