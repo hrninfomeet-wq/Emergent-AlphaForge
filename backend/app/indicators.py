@@ -72,6 +72,34 @@ def choppiness_index(df: pd.DataFrame, length: int = 14) -> pd.Series:
     return chop
 
 
+def velocity_accel(close: pd.Series, vel_n: int = 2, z_window: int = 60):
+    """Z-scored velocity (n-bar return) and acceleration (its change). Causal:
+    trailing rolling stats only. Returns (vel_z, accel_z)."""
+    def _z(s: pd.Series) -> pd.Series:
+        mu = s.rolling(z_window, min_periods=max(2, z_window // 2)).mean()
+        sd = s.rolling(z_window, min_periods=max(2, z_window // 2)).std(ddof=0)
+        out = (s - mu) / sd.replace(0, np.nan)
+        return out.replace([np.inf, -np.inf], np.nan)
+    vel = close.diff(vel_n)
+    accel = vel.diff()
+    return _z(vel), _z(accel)
+
+
+def variance_ratio(close: pd.Series, q: int = 4, lookback: int = 90, scale: float = 0.5):
+    """Lo-MacKinlay variance ratio over a trailing window: VR>1 trend, <1
+    mean-revert, ~1 random walk. regime_score = clip((VR-1)/scale, -1, 1).
+    Causal. Returns (vr, regime_score)."""
+    logp = np.log(close.clip(lower=1e-9))
+    r1 = logp.diff()
+    rq = logp.diff(q)
+    var1 = r1.rolling(lookback, min_periods=max(q + 2, lookback // 2)).var(ddof=1)
+    varq = rq.rolling(lookback, min_periods=max(q + 2, lookback // 2)).var(ddof=1)
+    vr = varq / (q * var1.replace(0, np.nan))
+    vr = vr.replace([np.inf, -np.inf], np.nan)
+    regime_score = ((vr - 1.0) / max(scale, 1e-6)).clip(-1.0, 1.0)
+    return vr, regime_score
+
+
 def fibonacci_levels(swing_high: float, swing_low: float) -> dict:
     """Standard Fibonacci retracement levels."""
     diff = swing_high - swing_low
