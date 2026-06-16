@@ -408,7 +408,7 @@ def _resolve_option_expiry_by_trade(
     return expiry_by_trade
 
 
-async def _run_paired_option_backtest(req: BacktestReq, spot_trades: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+async def _run_paired_option_backtest(req: BacktestReq, spot_trades: List[Dict[str, Any]], validate: bool = True) -> Optional[Dict[str, Any]]:
     config = req.option_backtest
     if not config.enabled:
         return None
@@ -574,7 +574,7 @@ async def _run_paired_option_backtest(req: BacktestReq, spot_trades: List[Dict[s
             else:
                 auto_fetch.update({"status": "skipped", "reason": "missing_backtest_window"})
 
-    if config.exit_controls or config.daily_caps:
+    if validate and (config.exit_controls or config.daily_caps):
         from app.exit_controls import validate_exit_risk_config
         errs = validate_exit_risk_config(
             config.exit_controls.model_dump() if config.exit_controls else None,
