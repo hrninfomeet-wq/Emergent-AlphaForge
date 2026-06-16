@@ -71,6 +71,8 @@ class QualityThresholds:
     selection_bias_min_trials: int = SELECTION_BIAS_MIN_TRIALS
     min_deflated_sharpe: float = MIN_DEFLATED_SHARPE
     wf_efficiency_min: float = WF_EFFICIENCY_MIN
+    ruin_floor: float = 0.0            # equity-floor for ruin breach (rupees)
+    min_coverage_ratio: float = 0.70   # paired / addressable below this -> coverage warning
 
     @classmethod
     def from_overrides(cls, **kw: Any) -> "QualityThresholds":
@@ -181,6 +183,7 @@ def evaluate_source_quality(
     th = thresholds or QualityThresholds()
     metrics = _metrics(source_doc)
     wf = _walkforward(source_doc)
+    om = source_doc.get("option_backtest")   # self-contained option result (Fix-B); also drives the dedup
     warnings: List[Dict[str, Any]] = []
 
     sharpe = metrics.get("sharpe")
@@ -347,6 +350,78 @@ def evaluate_source_quality(
                 "value": None,
             })
 
+    # --- Fix-B dedup: when a self-contained option result is present, the legacy
+    # evidence-driven option-OOS warnings are superseded by option_full_window_negative.
+    if om:
+        warnings = [w for w in warnings if w["id"] not in ("option_oos_negative", "missing_option_oos")]
+
+    # --- Option-rupee checks (Fix-B): self-contained from the source's option result ---
+    om_net = None
+    om_min_equity = None
+    om_ratio = None
+    if om:
+        port = om.get("portfolio") or {}
+        cov = om.get("coverage") or {}
+        paired = cov.get("paired_trade_count") or 0
+        spot = cov.get("spot_trade_count") or 0
+        skipped = cov.get("skipped_by_cap") or 0
+        om_net = port.get("net_pnl_value")
+        oos_rp = (evidence or {}).get("oos_return_pct")
+
+        # 1. Full-window fragility (gate on paired>0, strict <0; zero-pair routes to coverage)
+        if paired > 0 and om_net is not None and om_net < 0:
+            oos_positive = (oos_rp is not None and oos_rp > 0)
+            wf_ok = wf is not None and not (((wf or {}).get("is_vs_oos") or {}).get("divergence_warning"))
+            fragile = oos_positive or wf_ok
+            if fragile:
+                label = "Fragile: positive out-of-sample, negative full-window"
+                detail = (f"Option result is ₹{om_net:,.0f} over the full window even though it looked "
+                          "positive out-of-sample. The recent slice carried it - do not deploy on the OOS number alone.")
+            else:
+                label = "Negative full-window option result"
+                detail = (f"Option result is ₹{om_net:,.0f} over the full window after premium decay, "
+                          "bid-ask spread and charges.")
+            warnings.append({
+                "id": "option_full_window_negative", "severity": SEVERITY_WARNING,
+                "label": label, "detail": detail,
+                "value": {"net_pnl_value": om_net, "total_return_pct": port.get("total_return_pct"),
+                          "oos_signal": oos_rp},
+            })
+
+        # 2. Ruin / equity-floor breach (empty-curve guarded)
+        eqs = [c.get("equity_value") for c in (port.get("curve") or []) if c.get("equity_value") is not None]
+        om_min_equity = min(eqs) if eqs else None
+        ending = port.get("ending_equity")
+        max_dd = port.get("max_drawdown_pct")
+        if ((om_min_equity is not None and om_min_equity <= th.ruin_floor)
+                or (ending is not None and ending < 0)
+                or (abs(max_dd or 0) >= 100)):
+            shown = om_min_equity if om_min_equity is not None else (ending if ending is not None else 0.0)
+            warnings.append({
+                "id": "ruin_floor_breach", "severity": SEVERITY_WARNING,
+                "label": "Account ruin / equity-floor breach",
+                "detail": (f"Equity reached ₹{shown:,.0f} (floor ₹{th.ruin_floor:,.0f}). The account would "
+                           "be wiped, yet the backtest keeps trading past ruin - the rupee result is fiction."),
+                "value": {"min_equity": om_min_equity, "ending_equity": ending,
+                          "max_drawdown_pct": max_dd, "ruin_floor": th.ruin_floor},
+            })
+
+        # 3. Coverage attrition (DATA only; intentional cap-skips excluded)
+        addressable = spot - skipped
+        if addressable > 0 and (paired / addressable) < th.min_coverage_ratio:
+            om_ratio = round(paired / addressable, 3)
+            missing = (cov.get("missing_contract") or 0) + (cov.get("missing_entry_candle") or 0)
+            warnings.append({
+                "id": "coverage_attrition", "severity": SEVERITY_WARNING,
+                "label": "Low option-data coverage",
+                "detail": (f"Only {paired}/{addressable} non-capped signals ({round(100 * paired / addressable, 1)}%) "
+                           f"paired with option data - {missing} missing option data "
+                           f"({skipped} additionally skipped by daily caps). Result may not be representative."),
+                "value": {"paired": paired, "spot": spot, "addressable": addressable, "ratio": om_ratio,
+                          "skipped_by_cap": skipped, "missing_contract": cov.get("missing_contract"),
+                          "missing_entry_candle": cov.get("missing_entry_candle")},
+            })
+
     snapshot = {
         "trade_count": trade_count,
         "win_rate": metrics.get("win_rate"),
@@ -360,6 +435,10 @@ def evaluate_source_quality(
         "n_trials": n_trials,
         "option_oos_net": option_oos_net,
         "option_oos_source": option_oos_source,
+        # Fix-B self-contained option-rupee snapshot (None for spot-only sources).
+        "option_net_pnl_value": om_net,
+        "option_min_equity": om_min_equity,
+        "option_coverage_ratio": om_ratio,
     }
 
     return {
@@ -374,6 +453,8 @@ def evaluate_source_quality(
             "selection_bias_min_trials": th.selection_bias_min_trials,
             "min_deflated_sharpe": th.min_deflated_sharpe,
             "wf_efficiency_min": th.wf_efficiency_min,
+            "ruin_floor": th.ruin_floor,
+            "min_coverage_ratio": th.min_coverage_ratio,
         },
         "computed_at": datetime.now(timezone.utc).isoformat(),
     }
