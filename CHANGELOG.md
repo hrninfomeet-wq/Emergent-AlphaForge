@@ -2,6 +2,58 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.42.x] — Exit/Risk Controls (Piece 2) — Commit 1: enforce + evaluate (2026-06-16)
+
+654 host tests pass (was 612; +42). On branch `feat/exit-risk-controls` (stacked on
+`feat/live-tick-paper-realism`). Premium-axis trailing-stop + breakeven + soft per-day
+loss/target/max-trades caps as ONE execution overlay — enforced in the backtest sim,
+scored by the survival gate, and enforced live. **Off by default ⇒ byte-identical.**
+Built spec → plan → TDD task-by-task, each with per-task spec + code-quality subagent
+review. Hardened by a 40-finding spec audit + a 25-finding plan audit (caught the
+max_trades off-by-one, the sim↔live count convention, the real `runtime.py`/`wfo.py`
+sim call sites, the overlay-conduit-into-survival gap).
+
+- **New pure `app/exit_controls.py`** (host-testable, no motor/optuna):
+  `effective_premium_stop` (ratcheted long-option stop = max(base, breakeven, trailing);
+  pct/pts units), `daily_governor_decision` (sticky cumulative-realized extremum +
+  already-admitted entry count), `validate_exit_risk_config` (per-path costs +
+  option-exec + range guards), `stop_fill_price` (gap-open-clamp), exit/skip reason
+  constants.
+- **Sim** (`option_backtest.simulate_paired_option_trades`, one additive default-None
+  `exit_controls`/`daily_caps` kwarg pair): trail/breakeven in `_walk_option_exit` —
+  **look-ahead safe** (running-max advanced AFTER each bar's exit check, so the peak
+  bar can't self-stop) + gap-fill at the bar open; **entry-session daily governor** in
+  the pairing loop (`SKIPPED_DAILY_CAP` non-PAIRED status, `skipped_by_cap` coverage);
+  control-attribution metrics.
+- **Survival/optimizer**: cap-skips excluded from the `MIN_COVERAGE` denominator (a
+  deliberate halt can't trip `low_coverage`); the overlay is forwarded into BOTH
+  finalist sims (`_survival_eval_oos` + `_option_rerank`) so survival scores the
+  overlay-applied ₹ curve; `wfo` + `preset_execution` carry it; the saved best
+  persists it.
+- **Live**: per-tick trail/breakeven ratchet in `mark_open_deployment_trades` (raise
+  `risk.stop_price` from the PRIOR running-max → decider parity with the sim → single
+  status-conditional write); soft entry-session daily governor
+  (`deployment_kill_switch.check_soft_daily_governor` — counts OPEN+CLOSED entries
+  today, sticky closed_at-order realized extremum, auto-resets next session, blocks
+  entries only, distinct from the existing hard kill-switches).
+- **Config + validation**: `ExitControlsReq`/`DailyCapsReq` + reason/metric constants
+  in `schemas.py` (contract-pinned); 400s on the backtest (`runtime.py`), optimizer
+  (`optimize_start`), and deployment-create paths with per-path cost flags; `SKIPPED`
+  rows segregated out of the public `trades` response into `skipped_trades`. UI:
+  deploy-wizard Exit/Risk panel (writes `risk.exit_controls`/`daily_caps`; ₹ caps
+  gated behind costs) + backtest attribution display (`PerformanceOverview`).
+- **Parity** claimed at the DECIDER level (shared pure functions return identical
+  results for identical inputs); bar-vs-tick fill differences are documented not
+  eliminated (pre-existing for the fixed stop, amplified by trailing; the open-clamp
+  keeps the sim no rosier than live).
+- Spec [docs/superpowers/specs/2026-06-15-exit-risk-controls-design.md], plan
+  [docs/superpowers/plans/2026-06-15-exit-risk-controls.md].
+- **Deferred to Commit 2:** the bounded finalist-grid SEARCH over exit configs
+  (`search_exit_controls` flag, schema already present); the "₹-impact vs the same
+  finalist without the overlay" attribution estimate.
+- **Pending the user:** running-stack verification (docker rebuild; force a live
+  trail-stop + a daily-loss halt; confirm auto-resume next session).
+
 ## [0.41.x] — Live tick-driven paper-trading realism (2026-06-15)
 
 612 backend tests pass (+ a live-engine suite). On branch `feat/live-tick-paper-realism`.
