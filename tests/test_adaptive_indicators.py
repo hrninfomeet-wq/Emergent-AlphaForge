@@ -43,3 +43,24 @@ def test_variance_ratio_is_causal():
     full, _ = variance_ratio(df["close"], q=4, lookback=60)
     cut, _ = variance_ratio(df["close"].iloc[:150], q=4, lookback=60)
     assert full.iloc[149] == pytest.approx(cut.iloc[149], rel=1e-9, nan_ok=True)
+
+
+from app.indicators import bollinger, keltner, squeeze
+
+
+def test_squeeze_on_during_compression_then_fires():
+    flat = [100 + 0.05 * np.sin(i) for i in range(60)]   # tight range -> squeeze on
+    burst = list(np.linspace(100, 130, 30))              # expansion -> fires
+    df = make_ohlc(flat + burst, high_pad=0.2, low_pad=0.2)
+    on, fire, mom = squeeze(df, bb_len=20, bb_mult=2.0, kc_len=20, kc_atr_mult=1.5, mom_len=20)
+    assert on.iloc[40]            # compressed during the flat stretch
+    assert fire.iloc[60:75].any() # fires at/after the expansion onset
+    assert mom.iloc[75] > 0       # up-expansion -> positive momentum
+
+
+def test_squeeze_fire_is_single_bar_edge():
+    df = make_ohlc([100 + 0.05 * np.sin(i) for i in range(40)] + list(range(100, 140)))
+    on, fire, _ = squeeze(df)
+    # fire only where prior bar was on and this bar is off
+    expected = on.shift(1).fillna(False) & (~on)
+    assert (fire == expected).all()

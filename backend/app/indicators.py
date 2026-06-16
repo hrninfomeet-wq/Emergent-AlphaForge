@@ -100,6 +100,35 @@ def variance_ratio(close: pd.Series, q: int = 4, lookback: int = 90, scale: floa
     return vr, regime_score
 
 
+def bollinger(close: pd.Series, length: int = 20, mult: float = 2.0):
+    mid = close.rolling(length).mean()
+    sd = close.rolling(length).std(ddof=0)
+    return mid + mult * sd, mid - mult * sd, mid
+
+
+def keltner(df: pd.DataFrame, length: int = 20, atr_mult: float = 1.5):
+    mid = ema(df["close"], length)
+    a = atr(df, length)
+    return mid + atr_mult * a, mid - atr_mult * a
+
+
+def squeeze(df: pd.DataFrame, bb_len: int = 20, bb_mult: float = 2.0,
+            kc_len: int = 20, kc_atr_mult: float = 1.5, mom_len: int = 20):
+    """TTM-style squeeze. on = Bollinger inside Keltner (compression);
+    fire = released this bar (single-bar edge); mom = close minus the
+    Donchian-mid/SMA midline (sign+slope of expansion). Causal."""
+    bb_u, bb_l, _ = bollinger(df["close"], bb_len, bb_mult)
+    kc_u, kc_l = keltner(df, kc_len, kc_atr_mult)
+    on = ((bb_l > kc_l) & (bb_u < kc_u)).fillna(False).astype(bool)
+    on_prev = np.concatenate([[False], on.to_numpy()[:-1]])
+    fire = pd.Series(on_prev & ~on.to_numpy(), index=on.index, dtype=bool)
+    hh = df["high"].rolling(mom_len).max()
+    ll = df["low"].rolling(mom_len).min()
+    midline = (((hh + ll) / 2) + df["close"].rolling(mom_len).mean()) / 2
+    mom = df["close"] - midline
+    return on, fire, mom
+
+
 def fibonacci_levels(swing_high: float, swing_low: float) -> dict:
     """Standard Fibonacci retracement levels."""
     diff = swing_high - swing_low
