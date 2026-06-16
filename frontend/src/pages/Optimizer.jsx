@@ -112,6 +112,12 @@ const DEFAULT_SETUP = {
     objective: "calmar",
     min_oos_folds: "all",
   },
+  // Exit-control search (Piece 2): auto-tune trailing stop / breakeven trigger per survivor.
+  // Requires survival enabled + option_rerank. Posted as top-level search_exit_controls.
+  search_exit_controls: false,
+  // Optional explicit grid bounds — empty string = use backend defaults.
+  exit_search_trail_distance: "",
+  exit_search_breakeven_trigger: "",
   name: "Optimization run",
   start_date: "",
   end_date: "",
@@ -275,27 +281,52 @@ export default function Optimizer() {
 
   // One option_config builder shared by the re-rank payload and the WFO
   // option-aware OOS payload, so both validate under identical execution terms.
-  const buildOptionConfig = () => ({
-    moneyness: config.option_moneyness,
-    dte_filter: Array.isArray(config.option_dte_filter)
-      && config.option_dte_filter.length > 0
-      && config.option_dte_filter.length < DTE_VALUES.length
-      ? config.option_dte_filter
-      : null,
-    lots: Math.max(1, Number(config.option_lots || 1)),
-    entry_max_age_sec: 120,
-    exit_max_age_sec: 180,
-    exit_mode: config.option_exit_mode,
-    option_target_pts: config.option_exit_mode === "option_levels" && config.option_sl_tp_unit === "pts" && config.option_target_pts !== "" ? Number(config.option_target_pts) : null,
-    option_stop_pts: config.option_exit_mode === "option_levels" && config.option_sl_tp_unit === "pts" && config.option_stop_pts !== "" ? Number(config.option_stop_pts) : null,
-    option_target_pct: config.option_exit_mode === "option_levels" && config.option_sl_tp_unit === "pct" && config.option_target_pct !== "" ? Number(config.option_target_pct) : null,
-    option_stop_pct: config.option_exit_mode === "option_levels" && config.option_sl_tp_unit === "pct" && config.option_stop_pct !== "" ? Number(config.option_stop_pct) : null,
-    cost_config: config.option_costs_enabled ? {
-      enabled: true,
-      brokerage_per_order: Number(config.option_brokerage_per_order || 0),
-      spread_pct_of_premium: Number(config.option_spread_pct || 0),
-    } : null,
-  });
+  const buildOptionConfig = () => {
+    // Parse comma-separated exit-search grid bounds (e.g. "20,25,30").
+    // Returns an array of numbers when the string is non-empty and valid, otherwise null.
+    const parseGrid = (s) => {
+      if (!s || !String(s).trim()) return null;
+      const nums = String(s).split(",").map((v) => Number(v.trim())).filter((n) => Number.isFinite(n) && n > 0);
+      return nums.length > 0 ? nums : null;
+    };
+    const exitControlSearch =
+      config.search_exit_controls &&
+      config.survival_config?.enabled &&
+      config.evaluation_mode === "option_rerank"
+        ? (() => {
+            const trail = parseGrid(config.exit_search_trail_distance);
+            const be = parseGrid(config.exit_search_breakeven_trigger);
+            // Omit exit_control_search entirely when both grids are default (backend uses built-in grid).
+            if (!trail && !be) return null;
+            return {
+              ...(trail ? { trail_distance: trail } : {}),
+              ...(be ? { breakeven_trigger: be } : {}),
+            };
+          })()
+        : null;
+    return {
+      moneyness: config.option_moneyness,
+      dte_filter: Array.isArray(config.option_dte_filter)
+        && config.option_dte_filter.length > 0
+        && config.option_dte_filter.length < DTE_VALUES.length
+        ? config.option_dte_filter
+        : null,
+      lots: Math.max(1, Number(config.option_lots || 1)),
+      entry_max_age_sec: 120,
+      exit_max_age_sec: 180,
+      exit_mode: config.option_exit_mode,
+      option_target_pts: config.option_exit_mode === "option_levels" && config.option_sl_tp_unit === "pts" && config.option_target_pts !== "" ? Number(config.option_target_pts) : null,
+      option_stop_pts: config.option_exit_mode === "option_levels" && config.option_sl_tp_unit === "pts" && config.option_stop_pts !== "" ? Number(config.option_stop_pts) : null,
+      option_target_pct: config.option_exit_mode === "option_levels" && config.option_sl_tp_unit === "pct" && config.option_target_pct !== "" ? Number(config.option_target_pct) : null,
+      option_stop_pct: config.option_exit_mode === "option_levels" && config.option_sl_tp_unit === "pct" && config.option_stop_pct !== "" ? Number(config.option_stop_pct) : null,
+      cost_config: config.option_costs_enabled ? {
+        enabled: true,
+        brokerage_per_order: Number(config.option_brokerage_per_order || 0),
+        spread_pct_of_premium: Number(config.option_spread_pct || 0),
+      } : null,
+      ...(exitControlSearch ? { exit_control_search: exitControlSearch } : {}),
+    };
+  };
 
   const start = async () => {
     // Finalize the run name: an explicitly-set name is kept (with a dup warning),
@@ -384,6 +415,8 @@ export default function Optimizer() {
           objective: config.survival_config?.objective ?? "calmar",
           min_oos_folds: config.survival_config?.min_oos_folds ?? "all",
         } : null,
+        // Exit-control search: only meaningful when survival + option_rerank are on.
+        search_exit_controls: optionRerank && Boolean(config.survival_config?.enabled) && Boolean(config.search_exit_controls),
       };
       const res = await api.startOptimization(payload);
       setCurrentJobId(res.job_id);
@@ -903,6 +936,57 @@ export default function Optimizer() {
                 </div>
               );
             })()}
+
+            {config.run_kind !== "walkforward" && config.evaluation_mode === "option_rerank" && (
+              <div className="rounded-md border border-amber-500/30 bg-amber-500/5 p-2 space-y-2" data-testid="opt-exit-search-panel">
+                <div className="text-[10px] uppercase tracking-wider text-amber-400">Exit-Control Search</div>
+                <label className="flex items-center gap-2 text-[11px] text-dim">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(config.search_exit_controls)}
+                    onChange={(e) => setConfig({ ...config, search_exit_controls: e.target.checked })}
+                    className="h-3 w-3 rounded border-line"
+                    data-testid="search-exit-controls"
+                  />
+                  Auto-tune exit controls per survivor
+                </label>
+                <div className="text-[10px] text-dimmer leading-snug">
+                  Requires Survivability ON + Option re-rank. For each surviving finalist the optimizer sweeps a grid of trailing-stop distances and breakeven-trigger levels and keeps the best-surviving config (saved as <code className="font-mono">chosen_exit_controls</code> on the result).
+                  {(!config.survival_config?.enabled) && (
+                    <span className="text-amber-400 block mt-1"> Enable Survivability above to activate this search.</span>
+                  )}
+                </div>
+                {config.search_exit_controls && config.survival_config?.enabled && (
+                  <div className="space-y-2 pt-1 border-t border-amber-500/20">
+                    <div className="text-[10px] text-dimmer">
+                      Grid bounds (comma-separated values; leave blank to use backend defaults: trail 15,20,25,30%, BE 20,25,30,35%).
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <Label className="text-[11px] text-dim">Trail distances (%)</Label>
+                        <Input
+                          value={config.exit_search_trail_distance}
+                          onChange={(e) => setConfig({ ...config, exit_search_trail_distance: e.target.value })}
+                          placeholder="e.g. 15,20,25,30"
+                          className="bg-bg-2 border-line h-8 text-xs font-mono mt-1"
+                          data-testid="exit-search-trail-distance"
+                        />
+                      </div>
+                      <div>
+                        <Label className="text-[11px] text-dim">BE trigger (%)</Label>
+                        <Input
+                          value={config.exit_search_breakeven_trigger}
+                          onChange={(e) => setConfig({ ...config, exit_search_breakeven_trigger: e.target.value })}
+                          placeholder="e.g. 20,25,30,35"
+                          className="bg-bg-2 border-line h-8 text-xs font-mono mt-1"
+                          data-testid="exit-search-breakeven-trigger"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
 
             {config.run_kind !== "walkforward" && (
               <>
@@ -1804,6 +1888,8 @@ function RerankResults({ rerank, survivalSummary, jobStatus }) {
 
   // Check whether any finalist has survival data — determines whether to show badge column + scatter.
   const hasSurvivalData = ranked.some((r) => r.survival);
+  // Check whether any finalist has a chosen exit config (from exit-control search).
+  const hasChosenExit = ranked.some((r) => r.chosen_exit_controls);
 
   return (
     <div className="space-y-2">
@@ -1827,6 +1913,7 @@ function RerankResults({ rerank, survivalSummary, jobStatus }) {
                 <th className="text-right p-2">Spot obj</th>
                 <th className="text-right p-2">Coverage</th>
                 {hasSurvivalData && <th className="text-left p-2">Survival</th>}
+                {hasChosenExit && <th className="text-left p-2">Auto-tuned exit</th>}
                 <th className="text-left p-2">Params</th>
               </tr>
             </thead>
@@ -1857,6 +1944,25 @@ function RerankResults({ rerank, survivalSummary, jobStatus }) {
                             </span>
                           )
                         ) : (
+                          <span className="text-[10px] text-dimmer">—</span>
+                        )}
+                      </td>
+                    )}
+                    {hasChosenExit && (
+                      <td className="p-2" data-testid="finalist-chosen-exit">
+                        {r.chosen_exit_controls ? (() => {
+                          const ec = r.chosen_exit_controls;
+                          const trail = ec.trailing?.distance ?? ec.trail_distance ?? null;
+                          const be = ec.breakeven?.trigger ?? ec.breakeven_trigger ?? null;
+                          const parts = [];
+                          if (trail != null) parts.push(`trail ${trail}%`);
+                          if (be != null) parts.push(`BE ${be}%`);
+                          return (
+                            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded border bg-amber-950 text-amber-200 border-amber-900 whitespace-nowrap">
+                              auto-tuned: {parts.length > 0 ? parts.join(" / ") : "exit config"}
+                            </span>
+                          );
+                        })() : (
                           <span className="text-[10px] text-dimmer">—</span>
                         )}
                       </td>
