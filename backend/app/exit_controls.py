@@ -165,6 +165,15 @@ def validate_exit_risk_config(exit_controls: Optional[Dict[str, Any]],
 
     if ec.enabled:
         unit = ec.unit
+        if ec.be_trigger and ec.be_trigger > 0:
+            if unit == "pct" and not (0.0 < ec.be_trigger < 1.0):
+                errs.append("breakeven.trigger must be in (0, 1) for unit=pct (a fraction, e.g. 0.30).")
+        if ec.be_lock and ec.be_lock > 0:
+            if unit == "pct" and not (0.0 <= ec.be_lock < 1.0):
+                errs.append("breakeven.lock must be in [0, 1) for unit=pct.")
+        if ec.trail_activation and ec.trail_activation > 0:
+            if unit == "pct" and not (0.0 < ec.trail_activation < 1.0):
+                errs.append("trailing.activation must be in (0, 1) for unit=pct (a fraction, e.g. 0.40).")
         if ec.trail_distance and ec.trail_distance > 0:
             if unit == "pct" and not (0.0 < ec.trail_distance < 1.0):
                 errs.append("trailing.distance must be in (0, 1) for unit=pct.")

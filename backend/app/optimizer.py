@@ -1109,7 +1109,9 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
             best_backtest_run_id = await _save_best_as_backtest(
                 job_id, payload, strategy, df_best, best_so_far["params"],
                 instrument, costs, pretrade, run_walkforward=not cancelled_flag,
-                option_config=(option_cfg if evaluation_mode == "option_rerank" else None),
+                option_config={**(option_cfg or {}),
+                               "exit_controls": best_so_far.get("exit_controls"),
+                               "daily_caps": best_so_far.get("daily_caps")} if evaluation_mode == "option_rerank" else None,
             )
 
         # Determine final status — cancelled if user cancelled before completion;
@@ -1135,6 +1137,8 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
             "robustness": robustness,
             "rerank": rerank_info,
             "survival_summary": survival_summary,
+            "best_exit_controls": best_so_far.get("exit_controls"),
+            "best_daily_caps": best_so_far.get("daily_caps"),
             "trial_log": [],
         }
         await _update_job(job_id, finished)

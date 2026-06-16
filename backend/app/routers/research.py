@@ -567,7 +567,14 @@ async def apply_opt_as_preset(job_id: str, name: str = Query(...)):
     # Carry the execution policy the result was validated under (option re-rank
     # or option-aware WFO), so the preset is the full deployable artifact:
     # Backtest Lab re-applies it on load and the deployment form prefills from it.
-    execution = execution_from_option_config((job.get("config") or {}).get("option_config"))
+    # Overlay the survival-chosen exit_controls/daily_caps so a strategy whose
+    # survival DEPENDED on the overlay deploys WITH it (not bare).
+    _oc = dict(((job.get("config") or {}).get("option_config")) or {})
+    if job.get("best_exit_controls") is not None:
+        _oc["exit_controls"] = job.get("best_exit_controls")
+    if job.get("best_daily_caps") is not None:
+        _oc["daily_caps"] = job.get("best_daily_caps")
+    execution = execution_from_option_config(_oc)
     if execution:
         config["execution"] = execution
     await db.presets.update_one(

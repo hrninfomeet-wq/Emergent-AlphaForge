@@ -168,3 +168,26 @@ def test_grid_caps_large_product_uniformly():
     g = exit_control_grid(spec, max_grid=10)
     assert len(g) == 10
     assert g == exit_control_grid(spec, max_grid=10)   # deterministic sub-sample (no RNG)
+
+
+def test_validate_pct_breakeven_trigger_out_of_range():
+    errs = validate_exit_risk_config(
+        {"enabled": True, "unit": "pct", "breakeven": {"trigger": 30.0, "lock": 0.0}},  # 30 should be 0.30
+        {}, costs_on=True, option_exec_on=True)
+    assert any("trigger" in e.lower() for e in errs)
+
+
+def test_validate_pct_activation_out_of_range():
+    errs = validate_exit_risk_config(
+        {"enabled": True, "unit": "pct", "trailing": {"activation": 40.0, "distance": 0.25}},
+        {}, costs_on=True, option_exec_on=True)
+    assert any("activation" in e.lower() for e in errs)
+
+
+def test_validate_pts_allows_values_above_one():
+    # pts unit: absolute premium points, so >1 is fine (e.g. trail 20 points)
+    errs = validate_exit_risk_config(
+        {"enabled": True, "unit": "pts", "breakeven": {"trigger": 20.0, "lock": 5.0},
+         "trailing": {"activation": 30.0, "distance": 10.0}},
+        {}, costs_on=True, option_exec_on=True)
+    assert errs == []

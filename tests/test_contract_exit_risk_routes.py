@@ -16,3 +16,8 @@ def test_skipped_rows_segregated_at_response_boundary():
 def test_exit_controls_forwarded_into_sim():
     # the overlay kwargs are forwarded into the option sim on the backtest path
     assert "exit_controls=" in API or "exit_controls" in API
+
+
+def test_preset_carries_chosen_overlay():
+    # apply_opt_as_preset overlays the job's chosen overlay onto the preset execution
+    assert "best_exit_controls" in API
