@@ -179,3 +179,28 @@ def validate_exit_risk_config(exit_controls: Optional[Dict[str, Any]],
     if daily_caps and daily_caps.get("max_trades") is not None and dc.max_trades is None:
         errs.append("daily_caps.max_trades must be an integer >= 1.")
     return errs
+
+
+def exit_control_grid(spec: Optional[Dict[str, Any]] = None, *, max_grid: int = 12) -> List[Dict[str, Any]]:
+    """Bounded, FIXED-ORDER list of exit_controls config dicts for the Commit-2 finalist
+    search. `spec` (optional) supplies candidate value lists; defaults give a small
+    trailing-distance x breakeven-trigger grid. The Cartesian product is capped at
+    max_grid via a deterministic uniform stride (no RNG -> reproducible)."""
+    spec = spec or {}
+    unit = "pts" if str(spec.get("unit") or "pct").lower() == "pts" else "pct"
+    trail_d = list(spec.get("trail_distance") or [0.20, 0.35])
+    trail_a = list(spec.get("trail_activation") or [0.30])
+    be_trig = list(spec.get("breakeven_trigger") or [0.0, 0.30])
+    be_lock = list(spec.get("breakeven_lock") or [0.0])
+    grid: List[Dict[str, Any]] = []
+    for d in trail_d:
+        for a in trail_a:
+            for bt in be_trig:
+                for bl in be_lock:
+                    grid.append({"enabled": True, "unit": unit,
+                                 "breakeven": {"trigger": float(bt), "lock": float(bl)},
+                                 "trailing": {"activation": float(a), "distance": float(d)}})
+    if max_grid > 0 and len(grid) > max_grid:
+        step = len(grid) / float(max_grid)
+        grid = [grid[int(i * step)] for i in range(max_grid)]
+    return grid

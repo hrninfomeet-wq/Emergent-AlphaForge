@@ -139,3 +139,32 @@ def test_validate_ranges():
          "trailing": {"activation": 0.4, "distance": 1.5}},                            # distance >= 1 (pct)
         {"max_trades": 0}, costs_on=True, option_exec_on=True)
     assert len(errs) >= 2
+
+
+from app.exit_controls import exit_control_grid
+
+
+def test_grid_default_is_bounded_and_fixed_order():
+    g = exit_control_grid(None)
+    assert 1 <= len(g) <= 12
+    assert g == exit_control_grid(None)          # deterministic / fixed order
+    for cfg in g:
+        assert cfg["enabled"] is True and cfg["unit"] in ("pct", "pts")
+        assert "trailing" in cfg and "breakeven" in cfg
+
+
+def test_grid_respects_spec_values_and_cap():
+    spec = {"unit": "pct", "trail_distance": [0.2, 0.3, 0.4], "trail_activation": [0.3],
+            "breakeven_trigger": [0.0, 0.3], "breakeven_lock": [0.0]}
+    g = exit_control_grid(spec)               # 3*1*2*1 = 6 combos
+    assert len(g) == 6
+    dists = {cfg["trailing"]["distance"] for cfg in g}
+    assert dists == {0.2, 0.3, 0.4}
+
+
+def test_grid_caps_large_product_uniformly():
+    spec = {"trail_distance": [0.1, 0.2, 0.3, 0.4, 0.5], "trail_activation": [0.2, 0.3, 0.4],
+            "breakeven_trigger": [0.0, 0.2, 0.4], "breakeven_lock": [0.0]}  # 5*3*3 = 45
+    g = exit_control_grid(spec, max_grid=10)
+    assert len(g) == 10
+    assert g == exit_control_grid(spec, max_grid=10)   # deterministic sub-sample (no RNG)

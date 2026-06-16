@@ -1006,6 +1006,23 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                         r["survival"] = {"survived": False, "reason": "eval_error"}
                 survivors = [r for r in ranked if r.get("survival", {}).get("survived")
                              and (r["survival"].get("total_return_pct") or 0) > 0]
+                if payload.get("search_exit_controls"):
+                    from app.exit_controls import exit_control_grid
+                    grid = exit_control_grid(option_cfg.get("exit_control_search"))
+                    for r in survivors:
+                        try:
+                            merged = strategy.merged_params(r["params"])
+                            df_enr = get_enriched(merged)
+                            for gc in grid:
+                                v = await _survival_eval_oos(
+                                    strategy, df_enr, merged, rerank_contracts, rerank_candles,
+                                    instrument, costs, pretrade, {**option_cfg, "exit_controls": gc}, survival)
+                                better = (v.get("calmar") or -1e9) > (r["survival"].get("calmar") or -1e9)
+                                if v.get("survived") and (v.get("total_return_pct") or 0) > 0 and better:
+                                    r["survival"] = v
+                                    r["chosen_exit_controls"] = gc
+                        except Exception as e:
+                            log.warning(f"exit-control search failed for a finalist: {e}")
                 if survival.objective == "calmar":
                     survivors.sort(key=lambda r: (r["survival"].get("calmar") or -1e9, r["option_pnl_value"]), reverse=True)
                 else:
@@ -1026,7 +1043,7 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                         },
                         "trial_num": -1,
                     }
-                    best_so_far["exit_controls"] = option_cfg.get("exit_controls")
+                    best_so_far["exit_controls"] = best.get("chosen_exit_controls") or option_cfg.get("exit_controls")
                     best_so_far["daily_caps"] = option_cfg.get("daily_caps")
                     survival_summary = {"survivors": len(survivors), "evaluated": len(ranked),
                                         "objective": survival.objective}
