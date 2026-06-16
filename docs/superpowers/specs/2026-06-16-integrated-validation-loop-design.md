@@ -51,10 +51,11 @@ The app already has a mature, pure trust verdict — `app/deployment_quality.py:
 OPTIMIZER (run_optimization → finalize)
   _save_best_as_backtest(best_params, option_config={…,exit_controls:best,…})
      ├─ run_backtest (spot)                       (unchanged)
-     └─ Fix-A: BacktestReq → _run_paired_option_backtest(req, trades, validate=False)
-                 → doc["option_backtest"] = full-window option result  (conditional key)
-                 → job["best_option_pnl_value"] = portfolio.net_pnl_value  ──┐  (for Fix-D)
-  finalize: if best_run: job["best_quality"] = evaluate_source_quality(best_run, evidence={oos_return_pct, n_trials})
+     └─ Fix-A: BacktestReq(auto_fetch=False) → _run_paired_option_backtest(req, trades, validate=False)
+                 → doc["option_backtest"] = full-window option result  (conditional key; NO return-sig change)
+  finalize: load best_run →
+            job["best_option_pnl_value"] = best_run.option_backtest.portfolio.net_pnl_value  ──┐  (for Fix-D)
+            job["best_quality"]          = evaluate_source_quality(best_run, evidence={oos_return_pct, n_trials})
 
 deployment_quality.evaluate_source_quality(source_doc, evidence, thresholds)
   existing spot/WF/selection-bias/option-OOS checks               (option-OOS suppressed when option_backtest present)
@@ -104,7 +105,7 @@ Then in the `doc` — **conditional** so spot-mode runs are genuinely unchanged 
 ```
 (Keep the existing `config.option_backtest` config echo as-is. In spot mode `option_config is None` ⇒ no top-level `option_backtest` key is added — byte-identical to today.)
 
-**Capture for Fix-D — cross the function boundary (re-audit HIGH).** `option_result` is local to `_save_best_as_backtest`, which today returns only `run_id`, so the net must be passed out explicitly. **Change the return to `(doc["id"], best_option_pnl_value)`** where `best_option_pnl_value = (option_result.get("portfolio") or {}).get("net_pnl_value")` (None in spot mode / on failure). Update the **single** call site (optimizer.py:~1115) to `best_backtest_run_id, best_option_pnl_value = await _save_best_as_backtest(...)`, then at finalize `finished["best_option_pnl_value"] = best_option_pnl_value` (`$set` merges). `_save_best_as_backtest` has one caller, so the tuple change is contained. Consumed by §5.4.
+**Capture for Fix-D — read at finalize, NO return-signature change (re-audit BLOCKER).** Do **not** change `_save_best_as_backtest`'s return. It has **two** callers — optimizer.py:1115 **and `wfo.py:705`** (which assigns the result to a single `best_backtest_run_id` and persists it as a string id) — so a tuple return would corrupt the WFO job's run-id field (and the function's outer-except returns a bare `None`, so tuple-unpacking would `TypeError` and fail the job). Instead, the **finalize** block already loads `best_run` for `best_quality` (§5.3); read the net from it there: `finished["best_option_pnl_value"] = ((best_run.get("option_backtest") or {}).get("portfolio") or {}).get("net_pnl_value")` (None in spot/no-survivor → Fix-D falls back). No new callers touched; consumed by §5.4.
 
 **`auto_fetch=False` is required for parity (re-audit MEDIUM).** Without it `OptionBacktestReq` defaults `auto_fetch=True`, and `_run_paired_option_backtest` (runtime.py:538-572) would upstox-fetch missing candles and pair MORE signals than the survivor was scored on — the scoring paths (`_option_rerank`, `_survival_eval_oos`) **never fetch** (they load only `db.options_1m`). The replay must be candle-load-only so the stored net reproduces the score.
 
@@ -117,9 +118,9 @@ Then in the `doc` — **conditional** so spot-mode runs are genuinely unchanged 
 
 New `QualityThresholds` fields: `ruin_floor: float = 0.0`, `min_coverage_ratio: float = 0.70`.
 
-1. **`option_full_window_negative`** — **gate on `cov.get("paired_trade_count", 0) > 0` first**, then warn when `port.get("net_pnl_value")` is not None and **`< 0` (strict)**. A zero-pair run nets exactly `0.0` and is a *coverage* problem, not a loss — it routes to check 3, not here (audit HIGH: `≤ 0` would mislabel every empty option run as "fragile/negative"). **Escalate** the label to *"fragile — positive out-of-sample but negative over the full window"* only when **`(evidence or {}).get("oos_return_pct")`** is not None and `> 0` (the authoritative OOS signal, supplied by the optimizer surface — §5.3). **`evidence` itself can be `None`** (the results-page call passes none) — use `(evidence or {})`, NOT `evidence.get(...)`, or `None.get` raises `AttributeError`, which Fix-C's try/except swallows → the **entire scorecard silently disappears** (re-audit HIGH). **Else** a weak fallback using the spot WF (`wf.is_vs_oos.get("divergence_warning")` falsey — the real key is `divergence_warning`, NOT `divergence_flag`, which is only a local var name). Value: `{net_pnl_value, total_return_pct, oos_signal}`.
+1. **`option_full_window_negative`** — **gate on `cov.get("paired_trade_count", 0) > 0` first**, then warn when `port.get("net_pnl_value")` is not None and **`< 0` (strict)**. A zero-pair run nets exactly `0.0` and is a *coverage* problem, not a loss — it routes to check 3, not here (audit HIGH: `≤ 0` would mislabel every empty option run as "fragile/negative"). **Escalate** the label to *"fragile — positive out-of-sample but negative over the full window"* only when **`(evidence or {}).get("oos_return_pct")`** is not None and `> 0` (the authoritative OOS signal, supplied by the optimizer surface — §5.3). **`evidence` itself can be `None`** (the results-page call passes none) — use `(evidence or {})`, NOT `evidence.get(...)`, or `None.get` raises `AttributeError`, which Fix-C's try/except swallows → the **entire scorecard silently disappears** (re-audit HIGH). **Else** a weak fallback using the spot WF — **`((wf or {}).get("is_vs_oos") or {}).get("divergence_warning")` falsey**. Guard `wf` for `None`: an `option_backtest` source can carry `walkforward: None` (optimizer.py:485 when `not run_walkforward or len(df)<200`), and a bare `wf.is_vs_oos` would `AttributeError` → swallowed by Fix-C → scorecard dropped (re-audit MEDIUM). The real key is `divergence_warning`, NOT `divergence_flag` (a local var name). Value: `{net_pnl_value, total_return_pct, oos_signal}`.
 2. **`ruin_floor_breach`** — **empty-curve-safe (audit HIGH):** `eqs = [c["equity_value"] for c in (port.get("curve") or []) if c.get("equity_value") is not None]; min_equity = min(eqs) if eqs else None`. Warn when `(min_equity is not None and min_equity ≤ th.ruin_floor)` **or** `(port.get("ending_equity") is not None and ending_equity < 0)` **or** `abs(port.get("max_drawdown_pct") or 0) ≥ 100`. The `min()` MUST be guarded — a zero-pair run returns `curve: []`, and unguarded `min([])` raises `ValueError`, which Fix-C's try/except would swallow and silently drop the *entire* scorecard. Detail: *"Equity reached ₹{min_equity} (≤ floor ₹{ruin_floor}); the account would be wiped and the backtest keeps trading past ruin."* Value: `{min_equity, ending_equity, max_drawdown_pct, ruin_floor}`.
-3. **`coverage_attrition`** — **measure DATA attrition, not intentional cap-skips (audit MEDIUM):** `spot = cov.get("spot_trade_count")`, `paired = cov.get("paired_trade_count")`, `skipped = cov.get("skipped_by_cap", 0)`; `addressable = spot - skipped`; warn when `addressable > 0` and `paired/addressable < th.min_coverage_ratio` — so a config with deliberately tight daily caps is NOT flagged as a data gap. Detail: *"Only {paired}/{addressable} non-capped signals ({pct}%) paired with option data — {missing_contract + missing_entry_candle} missing data ({skipped} additionally skipped by daily caps)."* Value: `{paired, spot, addressable, ratio, skipped_by_cap, missing_contract, missing_entry_candle}`.
+3. **`coverage_attrition`** — **measure DATA attrition, not intentional cap-skips (audit MEDIUM):** `spot = cov.get("spot_trade_count") or 0`, `paired = cov.get("paired_trade_count") or 0`, `skipped = cov.get("skipped_by_cap") or 0` (the `or 0` defaults keep §7's "never raises" true for a crafted/partial `option_backtest` whose `coverage` is absent or None-valued — production `_coverage()` always inits to 0); `addressable = spot - skipped`; warn when `addressable > 0` and `paired/addressable < th.min_coverage_ratio` — so a config with deliberately tight daily caps is NOT flagged as a data gap. Detail: *"Only {paired}/{addressable} non-capped signals ({pct}%) paired with option data — {missing_contract + missing_entry_candle} missing data ({skipped} additionally skipped by daily caps)."* Value: `{paired, spot, addressable, ratio, skipped_by_cap, missing_contract, missing_entry_candle}`.
 
 All three use `severity: SEVERITY_WARNING`, append to `warnings`, and add their key fields to `metrics_snapshot`. The `acknowledgment_required = len(warnings) > 0` contract is unchanged.
 
@@ -138,6 +139,7 @@ All three use `severity: SEVERITY_WARNING`, append to `warnings`, and add their 
   ```python
   best_run = best_backtest_run_id and await db.backtest_runs.find_one({"id": best_backtest_run_id}, {"_id": 0})
   if best_run:
+      finished["best_option_pnl_value"] = ((best_run.get("option_backtest") or {}).get("portfolio") or {}).get("net_pnl_value")  # Fix-D
       oos = (best_so_far.get("metrics") or {}).get("survival", {}).get("total_return_pct")  # survival mode only; None otherwise
       finished["best_quality"] = evaluate_source_quality(best_run, evidence={"oos_return_pct": oos, "n_trials": n_trials})
   ```
@@ -161,7 +163,7 @@ option_evidence = {"kind": "rerank", "id": job.get("id"), "at": job.get("finishe
                    "net_pnl_value": net, "win_rate": top.get("option_win_rate"),
                    "paired_trade_count": top.get("paired_trade_count"), "params_match": match}
 ```
-With it, `option_oos_negative` evaluates the actual promoted-survivor full-window net → the fragile survivor is correctly flagged at the deploy gate (acknowledge-to-deploy), closing the last slip-through. (`params_match` is dict `==` on BSON-round-tripped optimizer floats/ints — stable for the deploy-the-survivor path; the residual edge is NaN/cross-type re-serialization only, not in scope.)
+**Preserve the loop control (re-audit LOW):** this `option_evidence = {…}` slots into the *existing* guarded assignment `if option_evidence is None or (match and not option_evidence.get("params_match")):` and the subsequent `if option_evidence.get("params_match"): break` (deployments.py:91,99) — only the `net_pnl_value` *source* changes; the prefer-exact-match-then-break semantics are unchanged. With it, `option_oos_negative` evaluates the actual promoted-survivor full-window net → the fragile survivor is correctly flagged at the deploy gate (acknowledge-to-deploy), closing the last slip-through. (`params_match` is dict `==` on BSON-round-tripped optimizer floats/ints — stable for the deploy-the-survivor path; the residual edge is NaN/cross-type re-serialization only, not in scope.)
 
 ## 6. Off-by-default + impact (no degradation)
 
@@ -223,9 +225,19 @@ A second adversarial pass verifying the above fixes: **7 findings (1 blocker, 2 
 |---|---|---|
 | **Blocker** | Fix-D reads `job.best_option_pnl_value` but the rerank-job query's **inclusion projection** omits it → always None → Fix-D inert (blocker #3 stays open). | **§5.4:** add `"best_option_pnl_value": 1` to the projection (deployments.py:86). |
 | High | Check-1 escalation `evidence.get(...)` crashes when `evidence is None` (results-page call) → Fix-C swallows → whole scorecard dropped. | **§5.2:** `(evidence or {}).get("oos_return_pct")`. |
-| High | `best_option_pnl_value` is local to `_save_best_as_backtest` (returns only `run_id`) → can't reach finalize. | **§5.1:** return `(run_id, best_option_pnl_value)`; capture at the one call site. |
+| High | `best_option_pnl_value` is local to `_save_best_as_backtest` → can't reach finalize. | **§5.1/§5.3:** read it at finalize from the already-loaded `best_run.option_backtest.portfolio.net_pnl_value` (no return-sig change — see completion-pass blocker). |
 | Med | Fix-A replay leaves `auto_fetch=True` → may fetch candles the scoring never had → net ≠ scored (parity). | **§5.1:** `auto_fetch=False` in the BacktestReq. |
 | Med | "established tunable-knob pattern" overstated (route exposes 4 of 7). | **§5.2:** softened — query-param exposure is optional. |
 | Low×2 | "manual re-run reproduces the number" conflates full-window vs OOS; raise line ref `:584`→`:585`. | **§5.1:** wording + line ref corrected. |
 
-**Net:** all blockers from both passes are closed (Fix-A `validate=False` + `auto_fetch=False` + tuple-return + conditional key; Fix-D + its projection; the zero-pair / None-evidence guards). The gate stays flag-only; no engine/scoring change.
+### Completion pass (the 3 lenses that had failed on transient errors)
+Re-run against the twice-hardened spec: **7 findings (2 blocker, 1 high, 2 med, 2 low) + 30 confirmations** (validate=False/auto_fetch/conditional-key/Fix-D-projection/dedup/null-guards/field-shapes/line-refs/frontend-hosts all re-confirmed consistent). The 7 (all folded):
+
+| Sev | Finding | Resolution |
+|---|---|---|
+| **Blocker×2 + High** | The tuple-return (above) is unsafe: `_save_best_as_backtest` has a **second caller `wfo.py:705`** (would store `(id, None)` as the run-id) and its outer-except returns bare `None` (tuple-unpack → `TypeError` → job fails). | **§5.1/§5.3/§4:** dropped the tuple-return entirely; read `best_option_pnl_value` at finalize from `best_run`. No caller touched. |
+| Med | Check-1 spot-WF fallback `wf.is_vs_oos.get(...)` raises when `wf is None` (option doc with `walkforward: None`). | **§5.2:** `((wf or {}).get("is_vs_oos") or {}).get("divergence_warning")`. |
+| Med | Checks 1/3 read `cov` counts without defaults → `None` arithmetic on a coverage-less crafted/partial doc raises. | **§5.2:** `cov.get(...) or 0` defaults. |
+| Low×2 | Fix-D snippet dropped the loop's `if option_evidence is None or (match and not …)` guard + `break`. | **§5.4:** noted — the net-source slots into the existing guarded assignment; semantics unchanged. |
+
+**Net:** all blockers across all three passes are closed (Fix-A `validate=False` + `auto_fetch=False` + conditional key + finalize-read net; Fix-D + its projection + preserved loop guard; the zero-pair / None-evidence / None-`wf` / None-`cov` guards). The gate stays flag-only; no engine/scoring change. No caller signatures change.
