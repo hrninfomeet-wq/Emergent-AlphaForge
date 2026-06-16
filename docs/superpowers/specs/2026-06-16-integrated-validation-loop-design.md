@@ -28,9 +28,10 @@ The app already has a mature, pure trust verdict — `app/deployment_quality.py:
 - The evidence gatherer's backtest-run source (deployments.py:102) filters `config.option_backtest.enabled:True` **AND `option_backtest.metrics != None`** — so a spot-only saved run is **invisible** to it; its other source reads `rerank.ranked[0]` (the highest-option-P&L candidate, base-config — *not* necessarily the promoted survivor).
 
 **This piece adds:**
-1. **Fix-A** — the optimizer computes + stores the promoted config's **full-window paired-option result** on the saved best run (§5.1).
-2. **Fix-B** — three new option-₹ checks in `evaluate_source_quality`, read self-contained from `source_doc.option_backtest` (§5.2).
+1. **Fix-A** — the optimizer computes + stores the promoted config's **full-window paired-option result** on the saved best run, via `_run_paired_option_backtest(..., validate=False)` so it works for overlay survivors (§5.1).
+2. **Fix-B** — three new option-₹ checks in `evaluate_source_quality`, read self-contained from `source_doc.option_backtest`, with a dedup vs the legacy evidence check (§5.2).
 3. **Fix-C** — surface the verdict on the **backtest results page** and the **optimizer promotion** via a reusable `TrustScorecard`, reusing the same pure function (§5.3).
+4. **Fix-D** — make the **deploy** evidence-gatherer read the promoted survivor's full-window number (not `rerank.ranked[0]`), so the deploy gate is honest (§5.4).
 
 ## 3. Decisions (locked with the user)
 
@@ -40,7 +41,8 @@ The app already has a mature, pure trust verdict — `app/deployment_quality.py:
 | Module | **No new module.** Extend `deployment_quality.py`; reuse `evaluate_source_quality`. A parallel `trust.py` would duplicate it. |
 | Checks in scope | **Full-window fragility, ruin/equity-floor breach, coverage & sample.** **Sizing-sanity is OUT** (deferred to adaptive Plan 4 — edge-proportional sizing; the ruin check still catches the *symptom*). |
 | Non-WF note | A **standing informational caveat** ("this option-₹ headline is not walk-forward validated"), not a pass/fail check. No option-WF engine is built here. |
-| Fix-A seam | `_save_best_as_backtest` builds a `BacktestReq` and calls `_run_paired_option_backtest(req, trades)` via a **lazy import** (mirrors the function's existing lazy imports) → **full shape parity** with a manual option backtest. |
+| Fix-A seam | `_save_best_as_backtest` builds a `BacktestReq` and calls `_run_paired_option_backtest(req, trades, validate=False)` via a lazy import. The `validate=False` **bypasses the boundary overlay-validation** — the validator rejects the optimizer's `spot_exit`+`exit_controls.enabled` combo with a 400 (audit blocker), yet the promoted config is grid-derived and already valid. Preserves the survivor's **actual `exit_mode`** (do NOT force `option_levels` — that would change how the survivor was scored); full shape parity. |
+| Deploy honesty | Add **Fix-D**: the deploy evidence-gatherer must read the **promoted survivor's** full-window number, not `rerank.ranked[0]` (§5.4). |
 | Branch | `feat/integrated-validation-loop` off `feat/backtest-exit-controls`. |
 
 ## 4. Architecture — fix the data, extend the gate, surface everywhere
@@ -49,57 +51,62 @@ The app already has a mature, pure trust verdict — `app/deployment_quality.py:
 OPTIMIZER (run_optimization → finalize)
   _save_best_as_backtest(best_params, option_config={…,exit_controls:best,…})
      ├─ run_backtest (spot)                       (unchanged)
-     └─ Fix-A: build BacktestReq → _run_paired_option_backtest(req, trades)
-                 → doc["option_backtest"] = full-window option result  ──┐
-  finalize: job["best_quality"] = evaluate_source_quality(best_run, evidence={…OOS…})
+     └─ Fix-A: BacktestReq → _run_paired_option_backtest(req, trades, validate=False)
+                 → doc["option_backtest"] = full-window option result  (conditional key)
+                 → job["best_option_pnl_value"] = portfolio.net_pnl_value  ──┐  (for Fix-D)
+  finalize: if best_run: job["best_quality"] = evaluate_source_quality(best_run, evidence={oos_return_pct, n_trials})
 
 deployment_quality.evaluate_source_quality(source_doc, evidence, thresholds)
-  existing spot/WF/selection-bias/option-OOS checks               (unchanged)
+  existing spot/WF/selection-bias/option-OOS checks               (option-OOS suppressed when option_backtest present)
   + Fix-B: when source_doc.option_backtest present →
         option_full_window_negative · ruin_floor_breach · coverage_attrition
+
+deployments._gather_deployment_evidence
+  + Fix-D: rerank-job branch reads job.best_option_pnl_value (promoted) ─◄─┘  instead of ranked[0] (base-config)
 
 SURFACES (Fix-C, all reuse the pure verdict; none block)
   GET /backtest/runs/{id}  → attach quality = evaluate_source_quality(doc)  → <TrustScorecard/>
   Optimizer result panel   → job.best_quality                              → <TrustScorecard/>
-  Deploy wizard            → already calls it (now honest, via Fix-A)      → existing ack-gate
+  Deploy wizard            → already calls it (now honest, via Fix-A+D)     → existing ack-gate
 ```
 
 ## 5. Components
 
 ### 5.1 Fix-A — optimizer saves the promoted config's full-window option result
 
-**File:** `backend/app/optimizer.py` — `_save_best_as_backtest` (line 445; called at 1132 with `option_config={**option_cfg, "exit_controls": best_so_far["exit_controls"], "daily_caps": best_so_far["daily_caps"]}`).
+**File:** `backend/app/optimizer.py` — `_save_best_as_backtest` (def ~line 444; called ~line 1115 with `option_config={**option_cfg, "exit_controls": best_so_far["exit_controls"], "daily_caps": best_so_far["daily_caps"]}`).
 
-Today the function runs `run_backtest` (spot) and stores `config.option_backtest = {**option_config, "enabled": True}` but **no option result**. Add: when `option_config` is present, after the spot backtest, compute the full-window paired-option result and store it.
+Today the function runs `run_backtest` (spot) and stores `config.option_backtest = {**option_config, "enabled": True}` but **no option result**. Add: when `option_config` is present, compute the promoted config's full-window paired-option result and store it.
 
 ```python
-# inside _save_best_as_backtest, after `res = run_backtest(...)`, before building `doc`:
+# inside _save_best_as_backtest, after `res = await asyncio.to_thread(run_backtest, ...)`, before building `doc`:
 option_result = None
 if option_config:
     try:
-        from app.runtime import _run_paired_option_backtest   # lazy: avoids module-load cycle
+        from app.runtime import _run_paired_option_backtest   # lazy: mirrors the existing lazy walk_forward import
         from app.schemas import BacktestReq, OptionBacktestReq
         req = BacktestReq(
             instrument=instrument, strategy_id=strategy.id, params=best_params,
             start_ts=payload.get("start_ts"), end_ts=payload.get("end_ts"),
-            costs_enabled=costs_enabled, walkforward=False,
-            pretrade_filters=pretrade,
-            option_backtest=OptionBacktestReq(**{**option_config, "enabled": True}),
+            costs_enabled=costs_enabled, walkforward=False, pretrade_filters=pretrade,
+            option_backtest=OptionBacktestReq(**{**option_config, "enabled": True}),  # keeps the survivor's ACTUAL exit_mode
         )
-        option_result = await _run_paired_option_backtest(req, res["trades"])
+        option_result = await _run_paired_option_backtest(req, res["trades"], validate=False)
     except Exception as e:
-        log.warning(f"save_best option backtest failed: {e}")  # fall back to spot-only
+        log.warning(f"save_best option backtest failed: {e}")  # caught -> spot-only fallback
 ```
 
-Then in the `doc`:
+**`validate=False` is load-bearing (audit BLOCKER).** Add a `validate: bool = True` parameter to `_run_paired_option_backtest` (runtime.py:411) that skips the `validate_exit_risk_config` block (runtime.py:577-585) when `False`; existing callers (research.py:188, :280) keep the default `True`. **Without this, Fix-A silently degrades to spot-only for every overlay survivor** — the optimizer's `option_cfg.exit_mode` defaults to `spot_exit` while the promoted `exit_controls.enabled=True`, and the validator rejects "enabled exit_controls under non-option_levels" (exit_controls.py:160-162) → `HTTPException(400)` (runtime.py:584), caught → no option result for exactly the configs Fix-A exists to fix. The promoted config is grid-derived (`exit_control_grid`) and already valid; the boundary validation is for user input, so bypassing it for this internally-trusted replay is correct. **Do NOT force `exit_mode='option_levels'`** to dodge the 400 — that changes the exit semantics vs how the survivor was scored (under `spot_exit` the overlay is inert; the replay must match).
+
+Then in the `doc` — **conditional** so spot-mode runs are genuinely unchanged (audit HIGH):
 ```python
-"option_backtest": option_result,    # full-window result of the PROMOTED config (params + chosen overlay)
+**({"option_backtest": option_result} if option_config else {}),   # full-window result of the PROMOTED config
 ```
-(Keep the existing `config.option_backtest` config echo as-is.)
+(Keep the existing `config.option_backtest` config echo as-is. In spot mode `option_config is None` ⇒ no top-level `option_backtest` key is added — byte-identical to today.)
 
-**Why `_run_paired_option_backtest` (not `simulate_paired_option_trades`):** it produces the **exact same shape** as a manual backtest (portfolio + metrics + coverage + segregated `skipped_trades`), so (a) the results-page UI reads it identically, (b) the evidence gatherer's `option_backtest.metrics != None` filter (deployments.py:104) now matches → the run is discoverable as **exact-params** option evidence, and (c) a manual re-run of the same config reproduces the number. The lazy import inside the function avoids any module-load circular import (the function already lazy-imports `walk_forward`). Cost: one extra option sim at job end (candles re-loaded for the best's trades — a subset of the re-rank's union load, so lighter than the re-rank stage). Validation inside `_run_paired_option_backtest` cannot 400 here (the promoted overlay comes from `exit_control_grid`, valid by construction); any failure is caught → spot-only fallback (today's behavior).
+**Capture for Fix-D:** stash the promoted full-window net for the deploy gate — when `option_result`, compute `best_option_pnl_value = (option_result.get("portfolio") or {}).get("net_pnl_value")` and persist it on the job at finalize (`finished["best_option_pnl_value"] = best_option_pnl_value`). Consumed by §5.4.
 
-**Note (no ranking change):** `best_metrics.option_pnl_value` (the re-rank's base-config ranking value) is left untouched; the new `option_backtest.portfolio.net_pnl_value` is the **authoritative** full-window with-overlay number that the quality checks + evidence consume.
+**Shape parity (audit-confirmed):** `_run_paired_option_backtest(req, res["trades"], …)` is the exact pattern the manual backtest uses (research.py:188); it **uses the passed spot trades** (does not re-run spot) and returns `{metrics, portfolio, coverage, trades, skipped_trades, …}` — so the results-page UI, the evidence gatherer (`option_backtest.metrics != None`, deployments.py:104), and Fix-B all read it identically; a manual re-run reproduces the number. The lazy import is cycle-free (runtime.py never imports optimizer; mirrors the function's existing lazy `walk_forward` import). Cost: **one extra independent option-contract + option-candle DB load** at job end (bounded by the best's trade span; it does NOT reuse the re-rank's loaded candles). `best_metrics.option_pnl_value` (the re-rank ranking value) is left untouched; `option_backtest.portfolio.net_pnl_value` is the **authoritative** full-window with-overlay number the checks + evidence consume.
 
 ### 5.2 Fix-B — three option-₹ checks in `evaluate_source_quality`
 
@@ -108,38 +115,70 @@ Then in the `doc`:
 
 New `QualityThresholds` fields: `ruin_floor: float = 0.0`, `min_coverage_ratio: float = 0.70`.
 
-1. **`option_full_window_negative`** — when `port.get("net_pnl_value")` is not None and `≤ 0` (fallback to `port.get("total_return_pct") ≤ 0`). **Escalate the label/detail to "fragile — positive out-of-sample but negative over the full window"** when an OOS-positive signal is available: spot WF OOS positive (`wf.is_vs_oos.avg_oos_win_rate` healthy / `divergence_flag` false) **or** an explicit `evidence["oos_return_pct"] > 0` (the optimizer passes the survival OOS return here — see §5.3). Value: `{net_pnl_value, total_return_pct, oos_signal}`.
-2. **`ruin_floor_breach`** — compute `min_equity = min(c["equity_value"] for c in port.get("curve", []) if equity present)`; warn when `min_equity ≤ th.ruin_floor` **or** `port.get("ending_equity") < 0` **or** `abs(port.get("max_drawdown_pct") or 0) ≥ 100`. Detail: *"Equity reached ₹{min_equity} (≤ floor ₹{ruin_floor}); the account would be wiped and the backtest keeps trading past ruin."* Value: `{min_equity, ending_equity, max_drawdown_pct, ruin_floor}`.
-3. **`coverage_attrition`** — `spot = cov.get("spot_trade_count")`, `paired = cov.get("paired_trade_count")`; when `spot > 0` and `paired/spot < th.min_coverage_ratio`, warn. Detail breaks it down: *"Only {paired}/{spot} signals ({pct}%) traded — {skipped_by_cap} skipped by daily caps, {missing} missing option data."* Value: `{paired, spot, ratio, skipped_by_cap, missing_contract, missing_entry_candle}`.
+1. **`option_full_window_negative`** — **gate on `cov.get("paired_trade_count", 0) > 0` first**, then warn when `port.get("net_pnl_value")` is not None and **`< 0` (strict)**. A zero-pair run nets exactly `0.0` and is a *coverage* problem, not a loss — it routes to check 3, not here (audit HIGH: `≤ 0` would mislabel every empty option run as "fragile/negative"). **Escalate** the label to *"fragile — positive out-of-sample but negative over the full window"* only when `evidence.get("oos_return_pct")` is not None and `> 0` (the authoritative OOS signal, supplied by the optimizer surface — §5.3); **else** a weak fallback using the spot WF (`wf.is_vs_oos.get("divergence_warning")` falsey — the real key is `divergence_warning`, NOT `divergence_flag`, which is only a local var name). Value: `{net_pnl_value, total_return_pct, oos_signal}`.
+2. **`ruin_floor_breach`** — **empty-curve-safe (audit HIGH):** `eqs = [c["equity_value"] for c in (port.get("curve") or []) if c.get("equity_value") is not None]; min_equity = min(eqs) if eqs else None`. Warn when `(min_equity is not None and min_equity ≤ th.ruin_floor)` **or** `(port.get("ending_equity") is not None and ending_equity < 0)` **or** `abs(port.get("max_drawdown_pct") or 0) ≥ 100`. The `min()` MUST be guarded — a zero-pair run returns `curve: []`, and unguarded `min([])` raises `ValueError`, which Fix-C's try/except would swallow and silently drop the *entire* scorecard. Detail: *"Equity reached ₹{min_equity} (≤ floor ₹{ruin_floor}); the account would be wiped and the backtest keeps trading past ruin."* Value: `{min_equity, ending_equity, max_drawdown_pct, ruin_floor}`.
+3. **`coverage_attrition`** — **measure DATA attrition, not intentional cap-skips (audit MEDIUM):** `spot = cov.get("spot_trade_count")`, `paired = cov.get("paired_trade_count")`, `skipped = cov.get("skipped_by_cap", 0)`; `addressable = spot - skipped`; warn when `addressable > 0` and `paired/addressable < th.min_coverage_ratio` — so a config with deliberately tight daily caps is NOT flagged as a data gap. Detail: *"Only {paired}/{addressable} non-capped signals ({pct}%) paired with option data — {missing_contract + missing_entry_candle} missing data ({skipped} additionally skipped by daily caps)."* Value: `{paired, spot, addressable, ratio, skipped_by_cap, missing_contract, missing_entry_candle}`.
 
-All three use `severity: SEVERITY_WARNING`, append to `warnings`, and add their key fields to `metrics_snapshot`. Existing checks and the `acknowledgment_required = len(warnings) > 0` contract are unchanged (the new warnings simply participate).
+All three use `severity: SEVERITY_WARNING`, append to `warnings`, and add their key fields to `metrics_snapshot`. The `acknowledgment_required = len(warnings) > 0` contract is unchanged.
 
-**Surface coverage (why this catches fragility everywhere):** these three checks read the option result **off the source doc**, so they fire on a **backtest_run** source (results page, optimizer best run). A **preset** source has no `option_backtest` result, so for the **deploy** path the *existing* evidence-driven `option_oos_negative` remains the fragility catch — and after Fix-A it reads the honest exact-params number. Net: a fragile config is flagged at every surface, via the self-contained check where an option result exists and via the evidence check where it doesn't.
+**Dedup (audit HIGH):** when `source_doc.get("option_backtest")` is present, check 1 covers option-₹ fragility, so **suppress the evidence-driven `option_oos_negative` / `missing_option_oos`** (deployment_quality.py:316-348). Otherwise a `backtest_run` deploy source double-warns, and the optimizer-promotion call (which passes evidence WITHOUT `wfo`/`option_evidence`) would emit a spurious "no option-rupee validation" next to a fresh option result on the same doc. The evidence-driven option checks stay for **preset** sources (no self-contained option result).
+
+**`oos_return_pct` is a NEW optional evidence key**, read only by check 1 via `evidence.get("oos_return_pct")` with a None guard. No existing code reads it; the **deploy** caller does not supply it (deploy-surface escalation uses the spot-WF fallback), only the **optimizer-finalize** caller does (§5.3).
+
+**Thresholds echo (resolves the byte-identical tension — audit HIGH):** add `ruin_floor` + `min_coverage_ratio` to the returned `thresholds` dict (deployment_quality.py:369-377) and to `deployment_quality_route`'s `from_overrides` query params, matching the established tunable-knob pattern. §6's "byte-identical" claim is therefore scoped to **warnings + `metrics_snapshot`** (no test asserts exact `thresholds`-dict equality — audit-confirmed); the `thresholds` echo simply gains two keys.
+
+**Surface coverage (fragility caught everywhere):** checks 1-3 read the option result **off the source doc**, firing on a **backtest_run** source (results page, optimizer best run). A **preset** source has no `option_backtest` result, so the **deploy** path relies on the evidence-driven `option_oos_negative` — and after Fix-A + Fix-D it reads the honest **promoted-survivor** number (§5.4). Net: fragility flagged at every surface.
 
 ### 5.3 Fix-C — surface the verdict on the research surfaces
 
-- **Backtest results page.** In `GET /backtest/runs/{id}` (`get_backtest_run`, research.py:342), after loading the doc, attach `doc["quality"] = evaluate_source_quality(doc)` (pure, no evidence needed — the new option-₹ checks are self-contained; spot-only runs get the existing in-sample checks). Compute-on-read ⇒ works **retroactively** on old runs, zero new endpoint, nothing stored.
-- **Optimizer promotion.** At optimizer finalize (after `_save_best_as_backtest` returns `best_backtest_run_id`), load that run doc and compute `job["best_quality"] = evaluate_source_quality(best_run, evidence={"oos_return_pct": <survival.total_return_pct>, "n_trials": …})`, so the fragility check gets the OOS contrast. Stored on the job doc; surfaced in the Optimizer result panel.
-- **Frontend.** One small reusable component `frontend/src/components/TrustScorecard.jsx` taking the `quality` object: an overall status chip (**green** when `warnings` empty, **amber** otherwise) + the warning list (`label` + `detail`), plus the standing "not walk-forward validated" caveat for option-₹ results. Render it in the backtest `ResultsView` (reads `result.quality`) and the Optimizer result panel (reads `job.best_quality`). The deploy wizard's existing warning UI is left as-is (it already renders `warnings`); reusing `TrustScorecard` there is **optional** (out of scope for this piece).
+- **Backtest results page.** In `GET /backtest/runs/{run_id}` (`get_backtest_run`, research.py:~360-366 — *not* :342, which is inside the POST create handler), after `doc = await db.backtest_runs.find_one(...)` and **before** `return serialize_doc(doc)`, attach `doc["quality"] = evaluate_source_quality(doc)` (pure, no evidence — the option-₹ checks are self-contained; spot-only runs get the existing in-sample checks; `serialize_doc` keeps the key and `computed_at` is already an ISO string). Compute-on-read ⇒ **retroactive**, zero new endpoint, nothing stored. (`deployment_quality` is a stdlib-only leaf module — no import cycle.)
+- **Optimizer promotion.** At finalize, compute `best_quality` **only when** `best_backtest_run_id` is non-None **and** the loaded run doc is non-None — else omit it (audit HIGH: `best_backtest_run_id` is `None` for `done_no_survivor` jobs, where `best_so_far["params"] == {}` skips the save at optimizer.py:~1112, and on any `_save_best_as_backtest` exception):
+  ```python
+  best_run = best_backtest_run_id and await db.backtest_runs.find_one({"id": best_backtest_run_id}, {"_id": 0})
+  if best_run:
+      oos = (best_so_far.get("metrics") or {}).get("survival", {}).get("total_return_pct")  # survival mode only; None otherwise
+      finished["best_quality"] = evaluate_source_quality(best_run, evidence={"oos_return_pct": oos, "n_trials": n_trials})
+  ```
+  The exact OOS source is `best_so_far["metrics"]["survival"]["total_return_pct"]` (promoted at optimizer.py:~1048; **None** for non-survival rerank jobs → the fragility escalation simply doesn't fire). The §5.2 dedup suppresses the legacy `missing_option_oos` here (the evidence dict carries no `wfo`/`option_evidence`), so there's no contradictory warning; `n_trials` keeps the legitimate `selection_bias` check working.
+- **Frontend.** One small reusable component `frontend/src/components/TrustScorecard.jsx` taking the `quality` object: an overall status chip (**green** when `warnings` empty, **amber** otherwise) + the warning list (`label` + `detail`), plus the standing "not walk-forward validated" caveat for option-₹ results. Render it in the backtest results view (`ResultsView`, inside `frontend/src/pages/BacktestLab.jsx:~1623`, which receives the full `result` carrying `result.quality`) and the Optimizer result panel (`frontend/src/pages/Optimizer.jsx:~1170`, which receives the full `job` carrying `job.best_quality`). The deploy wizard's existing warning UI is left as-is; reusing `TrustScorecard` there is **optional** (out of scope).
+
+### 5.4 Fix-D — the deploy gate must read the PROMOTED survivor's number (audit BLOCKER)
+
+**File:** `backend/app/routers/deployments.py` — `_gather_deployment_evidence` (~lines 88-100).
+
+Even after Fix-A, the deploy gate stays blind. When deploying the promoted survivor, `_gather_deployment_evidence` finds the matching re-rank job and reads `rerank.ranked[0].option_pnl_value` (deployments.py:89,94) — the **base-config, highest-option-P&L candidate, NOT the promoted survivor** (the exit-control search mutates `r["survival"]`/`r["chosen_exit_controls"]` but never `r["option_pnl_value"]`, optimizer.py:1015-1031; `ranked` is sorted base-config). It then `break`s on `params_match` (deployments.py:99) **before** reaching the backtest_run branch (102-120) where Fix-A's honest number lives. So `option_oos_negative` reads a *positive base-config* number and the fragile survivor passes the deploy gate clean.
+
+**Fix:** in the re-rank-job branch, when the job's `best_params == params`, source the option net from the **promoted survivor's** full-window result (the `best_option_pnl_value` Fix-A persists on the job, §5.1), not `ranked[0]`:
+```python
+# inside the matching re-rank job branch (deployments.py:~88-98)
+net = job.get("best_option_pnl_value")          # Fix-A/§5.1: promoted, with-overlay, full-window
+if net is None:
+    net = top.get("option_pnl_value")           # legacy fallback (base-config ranked[0])
+option_evidence = {"kind": "rerank", "id": job.get("id"), "at": job.get("finished_at"),
+                   "net_pnl_value": net, "win_rate": top.get("option_win_rate"),
+                   "paired_trade_count": top.get("paired_trade_count"), "params_match": match}
+```
+With it, `option_oos_negative` evaluates the actual promoted-survivor full-window net → the fragile survivor is correctly flagged at the deploy gate (acknowledge-to-deploy), closing the last slip-through. (`params_match` is dict `==` on BSON-round-tripped optimizer floats/ints — stable for the deploy-the-survivor path; the residual edge is NaN/cross-type re-serialization only, not in scope.)
 
 ## 6. Off-by-default + impact (no degradation)
 
-- **Backward-compatible verdict:** the Fix-B block runs only when `source_doc.option_backtest` is present; with `evidence=None` and no `option_backtest`, `evaluate_source_quality` returns exactly today's result (existing callers/tests unchanged). New `QualityThresholds` fields default to today's effective behavior (no `option_backtest` ⇒ no new warnings).
-- **Optimizer:** Fix-A only adds an `option_backtest` result to the saved best in **option_rerank** mode; spot-mode and the ranking/promotion logic are untouched. `best_metrics.option_pnl_value` is unchanged.
-- **Deploy path:** unchanged code; it simply benefits — the exact-params option run now exists (Fix-A) so `option_oos_negative` reads the honest number instead of "different params."
-- **Bounded cost:** Fix-A = one extra option sim per optimizer job (lighter than the re-rank). Surfacing = one pure function call per run-detail GET.
+- **Backward-compatible verdict:** the Fix-B block runs only when `source_doc.get("option_backtest")` is present; with `evidence=None` and no `option_backtest`, `evaluate_source_quality` returns today's **warnings + `metrics_snapshot`** unchanged. The returned `thresholds` dict gains two keys (`ruin_floor`, `min_coverage_ratio`) — no test asserts exact `thresholds` equality (audit-confirmed). New `QualityThresholds` fields are no-ops for non-option sources.
+- **Optimizer:** Fix-A adds an `option_backtest` result to the saved best **only in option_rerank mode** (the doc key is **conditional** — spot-mode `option_config is None` ⇒ no key added, byte-identical). Ranking/promotion logic and `best_metrics.option_pnl_value` are untouched. `best_quality` + `best_option_pnl_value` are new additive job fields.
+- **Deploy path:** improves via Fix-A+D — `option_oos_negative` now reads the honest **promoted-survivor** number; on a `backtest_run` deploy source, check 1 fires and the legacy `option_oos_negative` is suppressed (dedup, §5.2) ⇒ one option-₹ warning, not two.
+- **Bounded cost:** Fix-A = one extra independent option-contract + option-candle DB load per option_rerank job (bounded by the best's trade span). Surfacing = one pure function call per run-detail GET (a `min()` over the equity curve; doc serialization already dominates that GET).
 
 ## 7. Error handling
 
-- Fix-A option sim wrapped in try/except → spot-only fallback (today's behavior) on any failure; never fails the job.
-- Fix-B checks read every field defensively (`.get`, presence guards) → missing/partial `option_backtest` ⇒ that check is skipped, never raises.
-- Fix-C: if `evaluate_source_quality(doc)` raises, omit `quality` from the response (frontend renders the scorecard only when `result.quality`/`job.best_quality` is present).
+- **Fix-A:** option sim wrapped in try/except → spot-only fallback on any failure; never fails the job. With `validate=False` the overlay-coupling 400 no longer fires; the catch covers genuine sim/data errors.
+- **Fix-B:** checks read every field defensively. The ruin check's `min()` is **explicitly empty-curve-guarded** (`min(eqs) if eqs else None`) — a zero-pair `curve: []` must not raise (an unguarded `ValueError` would be swallowed by Fix-C and drop the whole scorecard). Missing/partial `option_backtest` ⇒ a check is skipped, never raises.
+- **Fix-C:** `best_quality` is computed only when `best_backtest_run_id` and the loaded run doc are both non-None (else omitted) — `done_no_survivor`/save-failure jobs carry no `best_quality`. On the results page, if `evaluate_source_quality(doc)` raises, omit `quality`. The frontend renders the scorecard only when `result.quality`/`job.best_quality` is present.
+- **Fix-D:** `best_option_pnl_value` may be absent (older jobs / save failure) ⇒ the gatherer falls back to the legacy `ranked[0]` number (no crash; pre-fix behavior for those jobs).
 
 ## 8. Testing & verification
 
-- **Fix-B (TDD, host-importable pure module):** `tests/test_deployment_quality_option.py` with crafted `source_doc`s — (a) full-window-negative option portfolio ⇒ `option_full_window_negative` (and the "fragile" escalation when an OOS-positive signal is supplied); (b) negative ending equity / curve dipping ≤ floor ⇒ `ruin_floor_breach`; (c) low `paired/spot` ⇒ `coverage_attrition`; (d) clean positive option run ⇒ none of the three; (e) **spot-only doc + `evidence=None` ⇒ result byte-identical to before** (no new warnings). Plus a thresholds test (`ruin_floor`, `min_coverage_ratio` via `from_overrides`).
-- **Contract corpus:** add an assertion that `get_backtest_run` attaches `quality` (research.py is in the corpus) — e.g. `"evaluate_source_quality"` appears in the API text on the backtest-read path. (`optimizer.py` is **not** in the corpus, so Fix-A is proven by running-stack only — the established pattern.)
-- **Running stack:** rebuild backend; run an `option_rerank` optimizer job → confirm the saved best run now has `option_backtest.metrics != None` and `job.best_quality`; deploy that preset → the deploy gate now shows a clean exact-params option-₹ warning (not "different params"); open a known-fragile run (e.g. the SEB survivor) on the results page → `TrustScorecard` shows **amber** with `option_full_window_negative` (fragile) + (for the −206% run) `ruin_floor_breach` + `coverage_attrition`; a clean spot-only run → no new warnings. Frontend `npm run build` clean.
+- **Fix-B (TDD, host-importable pure module):** `tests/test_deployment_quality_option.py` with crafted `source_doc`s — (a) full-window-negative option portfolio + paired>0 ⇒ `option_full_window_negative` (and the "fragile" escalation when `evidence={"oos_return_pct": +x}`); (b) negative ending equity / curve dipping ≤ floor ⇒ `ruin_floor_breach`; **(b2) zero-pair run (`portfolio.curve == []`, `net_pnl_value == 0.0`) ⇒ NO crash, NO `option_full_window_negative` (routes to coverage), ruin `min()` guarded**; (c) low DATA coverage ⇒ `coverage_attrition`, **and a high-`skipped_by_cap` config ⇒ NO `coverage_attrition`** (intentional caps excluded); (d) clean positive option run ⇒ none of the three; (e) **spot-only doc + `evidence=None` ⇒ warnings + `metrics_snapshot` byte-identical to before**; **(f) dedup: a source with `option_backtest` AND `evidence` ⇒ `option_oos_negative`/`missing_option_oos` suppressed (only `option_full_window_negative` for option-₹)**. Plus a thresholds test (`ruin_floor`, `min_coverage_ratio` via `from_overrides` + present in the returned `thresholds` dict).
+- **Contract corpus:** assert `get_backtest_run` attaches `quality` (research.py is in the corpus) — `"evaluate_source_quality"` appears on the backtest-read path. (`optimizer.py` is **not** in the corpus, so Fix-A/D are proven by running-stack only — confirmed, the established pattern.)
+- **Running stack:** rebuild backend; run an `option_rerank` + `search_exit_controls` optimizer job that promotes an **overlay survivor** (`exit_controls.enabled`, default `spot_exit`) → confirm the saved best now has `option_backtest.metrics != None` (proves `validate=False` — without it, the run is spot-only) and `job.best_quality` + `job.best_option_pnl_value`; deploy that preset → the deploy gate flags the honest **promoted-survivor** option-₹ net, not a positive base-config number (proves Fix-D); open a known-fragile run (the SEB survivor) on the results page → `TrustScorecard` shows **amber** with `option_full_window_negative` (fragile) + (for the −206% run) `ruin_floor_breach` + `coverage_attrition`; a `done_no_survivor` job → no `best_quality` (no crash); a clean spot-only run → no new warnings. Frontend `npm run build` clean.
 
 ## 9. Out of scope / future
 
@@ -149,4 +188,29 @@ All three use `severity: SEVERITY_WARNING`, append to `warnings`, and add their 
 - Reworking the deploy wizard's warning UI to the shared `TrustScorecard` → optional later.
 
 ## 10. Audit findings → resolutions
-_(Optional adversarial multi-agent audit before the plan, on request — consistent with prior pieces.)_
+
+Adversarial multi-agent audit (5 lenses): **30 findings (3 blocker, 8 high, 13 medium, 6 low) + 42 confirmations**. The audit **confirmed** the field shapes (portfolio/coverage/metrics keys all exist), the lazy-import is cycle-free, `_run_paired_option_backtest` uses the passed trades, the frontend hosts exist (`ResultsView` in BacktestLab.jsx:~1623, `Optimizer.jsx:~1170`), `serialize_doc` keeps `quality`, the contract-corpus claims, and that no existing test pins exact warnings/thresholds shapes. All findings folded in:
+
+| # | Sev | Finding | Resolution |
+|---|---|---|---|
+| 1,2 | **Blocker** | Fix-A's `_run_paired_option_backtest` **400s** for overlay survivors (`spot_exit`+`exit_controls.enabled` fails `validate_exit_risk_config`) → silent spot-only fallback → Fix-A no-ops on its primary target. | **§5.1 rewritten:** add `validate=False` to `_run_paired_option_backtest`; preserve the survivor's actual `exit_mode` (do NOT force option_levels). "cannot 400" claim removed. |
+| 3 | **Blocker** | Even after Fix-A, the deploy gate reads `rerank.ranked[0]` (base-config, not the promoted survivor) and short-circuits before Fix-A's saved run → fragile survivor passes deploy clean. | **New §5.4 (Fix-D):** optimizer persists `best_option_pnl_value`; `_gather_deployment_evidence` reads it instead of `ranked[0]`. |
+| 4,5 | High | "byte-identical" contradicts adding `ruin_floor`/`min_coverage_ratio` to the returned `thresholds` dict (runs unconditionally). | **§5.2 + §6:** add the two keys to the `thresholds` echo; scope "byte-identical" to **warnings + `metrics_snapshot`** (no test asserts exact thresholds). |
+| 6 | High | `oos_return_pct` only exists in survival mode; spec implied the optimizer always supplies it. | **§5.3:** exact source `best_so_far["metrics"]["survival"]["total_return_pct"]`; None for non-survival → escalation doesn't fire. |
+| 7 | High | No null-guard on `best_backtest_run_id` (None for `done_no_survivor`/save-failure) → loading id=None / crash. | **§5.3 + §7:** compute `best_quality` only when run_id and loaded doc are both non-None; else omit. |
+| 8 | High | Optimizer-promotion `evidence` lacks `wfo`/`option_evidence` → spurious `missing_option_oos` next to a fresh option result. | **§5.2 dedup:** suppress `option_oos_negative`/`missing_option_oos` when `source_doc.option_backtest` present. |
+| 9 | High | Fix-A writes `option_backtest: None` unconditionally → spot-mode runs gain a new key (not byte-identical). | **§5.1:** make the doc key **conditional** (`if option_config`). §6 updated. |
+| 10 | High | Ruin `min()` over empty `curve` (zero-pair run) raises `ValueError` → Fix-C swallows it → whole scorecard dropped. | **§5.2 #2 + §7:** empty-curve guard (`min(eqs) if eqs else None`). |
+| 11 | High | `option_full_window_negative` fires at `net == 0` (zero-pair run) → mislabels an empty run "fragile". | **§5.2 #1:** gate on `paired_trade_count > 0` and use strict `< 0`; zero-pair routes to coverage. |
+| — | Med | `coverage_attrition` counts intentional cap-skips as data attrition. | **§5.2 #3:** measure over `addressable = spot − skipped_by_cap`; caps excluded. |
+| — | Med | `divergence_flag` is a local var, not a doc key. | **§5.2 #1:** use the real key `is_vs_oos.get("divergence_warning")`; prefer `oos_return_pct` as the authoritative signal. |
+| — | Med | `oos_return_pct` is a brand-new evidence key no caller supplies on deploy. | **§5.2:** documented as a new optional key; deploy uses the spot-WF fallback. |
+| — | Med | On a `backtest_run` deploy source, check 1 AND legacy `option_oos_negative` both fire (double warning). | Resolved by the §5.2 dedup (#8). |
+| — | Med | `thresholds` echo + `deployment_quality_route` query params miss the new knobs. | **§5.2:** add both to the echo dict and `from_overrides`. |
+| — | Med×3 / Low×2 | Wrong line refs: `get_backtest_run` is research.py:~360 (not :342); `_save_best_as_backtest` def ~444 / call ~1115; `ResultsView` is a component **in** BacktestLab.jsx:~1623; Optimizer panel `Optimizer.jsx:~1170`. | **§5.1/§5.3/§8:** all references corrected. |
+| — | Low | Cost note understated (independent DB load, not cached subset). | **§5.1/§6:** reworded to "one extra independent option-contract + option-candle DB load". |
+| — | Low | Lazy-import rationale overstated (no real cycle today). | **§5.1:** softened to "mirrors the existing lazy-import pattern". |
+| — | Low | `OptionBacktestReq(**option_config)` "rejects" extras — actually Pydantic v2 ignores them. | Non-issue (confirmed); the real risk was the 400 (#1). |
+| — | Low | `params_match` dict `==` on floats — NaN/cross-type edge. | **§5.4:** noted (stable for the deploy-the-survivor path; out of scope). |
+
+**Net:** the three blockers are closed (Fix-A `validate=False`, conditional key; new Fix-D; the zero-pair guards), the gate stays flag-only, and no engine/scoring change. The piece is ready for the implementation plan.
