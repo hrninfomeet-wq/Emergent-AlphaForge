@@ -2,6 +2,40 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.39.1] — fix(backtest): paired-option backtest silently dropped the newest option candles at the load cap (2026-06-16)
+
+580 backend tests pass (was 575; +5 incl. this fix's source-contract regression).
+An independent hotfix branched off `main` — the 1M cap predates the
+survivable-optimization / exit-risk-controls tracks.
+
+- **The silent data loss** — `_run_paired_option_backtest` loaded option candles
+  oldest-first (`.sort("ts", 1)`) under a hard `to_list(length=1000000)`. On a date
+  range whose option-candle set exceeds 1M rows, the oldest-first sort means the
+  rows dropped are the **newest** ones, so every trade in the most recent period
+  reported `missing_entry_candle` (0% pairing) while the result still looked
+  plausible — **with no warning**. Verified 2026-06-16 against the running stack: a
+  19-month NIFTY `confluence_scalper` run paired **0%** in 2026-05/06, while a
+  12-month run over the same end paired **99.8%** including those exact months — the
+  data was fully present; the cap dropped it. `candles_loaded == 1,000,000` was the
+  only tell.
+- **Fix (`runtime.py`)** — the cap is raised to **4,000,000** (named
+  `OPTION_CANDLE_LOAD_CAP`, so the `to_list(length=…)` and the cap-hit check stay in
+  sync), matching the `optimizer._option_rerank` and `wfo` loaders. A cap-hit now
+  `log.warning()`s **and** is surfaced as `data.candles_capped: true` — a capped load
+  is never silent again. Sort order + per-strike windowing are left unchanged by
+  design: newest-first would merely move the drop to the *oldest* candles, and at a
+  4M backstop that is now loud, per-strike windowing is an unneeded refactor. The
+  earlier India-VIX `candles_1m` load keeps its 1M cap — single-instrument, can't
+  realistically hit it.
+- **Frontend** — the **Option Execution** card in Backtest Lab now renders an amber
+  `role="alert"` banner (`option-candles-capped-warning`) when `data.candles_capped`
+  is true, telling the user the newest candles were dropped and to narrow the range +
+  re-run. The silent-drop is now visible in the UI, not only the response JSON / log.
+- **Test** — `tests/test_option_candle_load_cap.py` pins the whole contract as source
+  text (runtime.py imports motor and is not host-importable — same pattern as
+  `test_broker_empty_ledger.py`): no 1M cap on the `options_1m` load, the 4M cap, the
+  cap-hit `log.warning`, the `candles_capped` response field, and the journal banner.
+
 ## [0.39.x] — Backtests run as a background job (async, non-blocking) (2026-06-14)
 
 575 backend tests pass (was 571; +4 incl. the job-contract test). Phase 1 of the

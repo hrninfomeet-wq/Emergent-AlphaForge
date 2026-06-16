@@ -1,6 +1,6 @@
 # Handoff
 
-Updated: 2026-06-13
+Updated: 2026-06-16
 
 This is the entry point for the next AI agent or developer. **Read this + `CHANGELOG.md` before editing.** The repository and `tests/` are the source of truth — not any prior chat. `CHANGELOG.md` holds the detailed, versioned history (currently 0.17.x → 0.36.x); this file is the current architectural + state overview.
 
@@ -12,6 +12,7 @@ AlphaForge Trading Lab — a local-first research & forward-testing terminal for
 
 ## 2. Status — current state (2026-06-13)
 
+- **Latest (2026-06-16, independent hotfix on `fix/option-candle-load-cap` off `main`):** fixed a **silent data-loss** bug in the paired-option backtest — the `options_1m` candle load was oldest-first under a 1M-row cap, so a long range dropped the **newest** candles and the most-recent months paired 0% with no warning. Cap raised to 4M (`OPTION_CANDLE_LOAD_CAP`, matching `optimizer`/`wfo`), a cap-hit now warns + surfaces `data.candles_capped`, and the Backtest Lab **Option Execution** card banners it. **580 backend tests pass** (+5). See CHANGELOG 0.39.1.
 - **566 backend tests pass.** Frontend builds clean (1 pre-existing BacktestLab exhaustive-deps warning). `optimizer.py` is syntax-checked via `py_compile` only (optuna absent on host).
 - **Unpushed** on `main` (origin at `1c2538c`; earlier chart commits already pushed): this session's **6-slice live-realism/gate-rigor hardening pass** (`4bc7df3` friction, `754ebb2` gate, `24347db` cockpit, `e914de4` exits, `6d4b8d3` manual-safety, `50a0062` chart+rerank) + its doc commits — run `git log --oneline origin/main..HEAD` for the exact list. Push only on the user's explicit "push" (per-changeset approval).
 - Most recent work: a multi-agent **app review** → a **6-slice hardening pass** (CHANGELOG 0.37.x; see it for the per-slice detail and the principle that each fix is a user choice, not a silent change). Before that: Data Warehouse overhaul (0.23–0.30), Backtest results redesign (0.31–0.36), execution-policy extraction (0.27), server.py split (0.28).

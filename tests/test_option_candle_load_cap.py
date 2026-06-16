@@ -88,3 +88,21 @@ def test_capped_option_candle_load_is_surfaced_in_response():
         "a capped option-candle load must be surfaced in the response data block "
         "(e.g. candles_capped: true) so a silently-truncated load is detectable"
     )
+
+
+# ---- frontend: the capped load must be VISIBLE in the backtest journal ----------
+# The response flag alone is invisible to a normal user reading the journal, so the
+# Option Execution card must render a banner when data.candles_capped is true.
+
+
+def test_backtest_journal_banners_a_capped_option_candle_load():
+    lab = (ROOT / "frontend" / "src" / "pages" / "BacktestLab.jsx").read_text(encoding="utf-8")
+    assert "candles_capped" in lab, (
+        "the backtest journal must read data.candles_capped to warn on a truncated "
+        "option-candle load"
+    )
+    assert "option-candles-capped-warning" in lab, (
+        "a capped option-candle load must render a dedicated banner in the Option "
+        "Execution card, so the silent-drop is visible in the UI and not only in the "
+        "response JSON / server log"
+    )
