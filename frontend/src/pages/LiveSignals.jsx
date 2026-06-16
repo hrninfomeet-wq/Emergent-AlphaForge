@@ -427,6 +427,18 @@ function DeployWizard({ presets, initialPreset, onClose, onCreated }) {
         friction_costs_enabled: Boolean(ex.cost_config?.enabled),
         friction_brokerage: ex.cost_config?.brokerage_per_order ?? prev.friction_brokerage,
         friction_spread_pct: ex.cost_config?.spread_pct_of_premium ?? prev.friction_spread_pct,
+        // Exit / risk controls: carry the survival-validated overlay from the
+        // preset so a deployment built from a validated preset retains it.
+        // Values are fractions (pct) or absolute pts — no conversion needed.
+        exit_controls_enabled: Boolean(ex.exit_controls?.enabled),
+        exit_controls_unit: ex.exit_controls?.unit || prev.exit_controls_unit,
+        breakeven_trigger: ex.exit_controls?.breakeven?.trigger ?? "",
+        breakeven_lock: ex.exit_controls?.breakeven?.lock ?? "",
+        trailing_activation: ex.exit_controls?.trailing?.activation ?? "",
+        trailing_distance: ex.exit_controls?.trailing?.distance ?? "",
+        daily_cap_loss: ex.daily_caps?.loss ?? "",
+        daily_cap_target: ex.daily_caps?.target ?? "",
+        daily_cap_max_trades: ex.daily_caps?.max_trades ?? "",
       } : {}),
     }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -768,33 +780,39 @@ function DeployWizard({ presets, initialPreset, onClose, onCreated }) {
                           <button key={u} type="button" onClick={() => set("exit_controls_unit", u)}
                             className={`px-2 py-1 text-[11px] font-mono ${form.exit_controls_unit === u ? "bg-info text-bg-0" : "bg-bg-2 text-dim hover:text-foreground"}`}
                             data-testid="exit-controls-unit">
-                            {u === "pts" ? "₹ points" : "Percent"}
+                            {u === "pts" ? "₹ points" : "fraction"}
                           </button>
                         ))}
                       </div>
-                      <span className="text-[10px] text-dimmer">all values below use this unit</span>
+                      <span className="text-[10px] text-dimmer">
+                        {form.exit_controls_unit === "pct"
+                          ? "pct = fraction of premium (0.25 = 25%); enter decimals e.g. 0.25, 0.40"
+                          : "pts = absolute premium points (e.g. 10 pts); enter whole or half points"}
+                      </span>
                     </div>
 
                     <div className="space-y-1">
                       <div className="text-[10px] uppercase tracking-wider text-dimmer">Breakeven lock</div>
                       <div className="grid grid-cols-2 gap-2">
                         <label className="text-[11px] text-dim">
-                          Trigger {form.exit_controls_unit === "pts" ? "(pts profit)" : "(% profit)"}
-                          <Input type="number" min="0" step={form.exit_controls_unit === "pts" ? "0.5" : "1"}
+                          Breakeven trigger {form.exit_controls_unit === "pts" ? "(pts profit)" : "(fraction)"}
+                          <Input type="number" min="0" step={form.exit_controls_unit === "pts" ? "0.5" : "0.05"}
                             value={form.breakeven_trigger}
                             onChange={(e) => set("breakeven_trigger", e.target.value)}
-                            className="mt-1 bg-bg-2 border-line h-8" placeholder="off"
+                            className="mt-1 bg-bg-2 border-line h-8"
+                            placeholder={form.exit_controls_unit === "pts" ? "off" : "0.30 = +30% arms breakeven"}
                             data-testid="breakeven-trigger"
-                            title="Move stop to breakeven once trade profits by this amount" />
+                            title={form.exit_controls_unit === "pts" ? "Move stop to breakeven once trade profits by this many premium points" : "Move stop to breakeven once trade profits by this fraction (0.30 = +30%)"} />
                         </label>
                         <label className="text-[11px] text-dim">
-                          Lock {form.exit_controls_unit === "pts" ? "(pts above entry)" : "(% above entry)"}
-                          <Input type="number" min="0" step={form.exit_controls_unit === "pts" ? "0.5" : "1"}
+                          Breakeven lock {form.exit_controls_unit === "pts" ? "(pts above entry)" : "(fraction)"}
+                          <Input type="number" min="0" step={form.exit_controls_unit === "pts" ? "0.5" : "0.05"}
                             value={form.breakeven_lock}
                             onChange={(e) => set("breakeven_lock", e.target.value)}
-                            className="mt-1 bg-bg-2 border-line h-8" placeholder="entry"
+                            className="mt-1 bg-bg-2 border-line h-8"
+                            placeholder={form.exit_controls_unit === "pts" ? "0 = exact entry" : "0.0 = lock at entry"}
                             data-testid="breakeven-lock"
-                            title="Stop is locked at this level above entry (0 = exact breakeven)" />
+                            title={form.exit_controls_unit === "pts" ? "Lock stop this many pts above entry (0 = exact breakeven)" : "Lock stop at this fraction above entry (0.0 = exact breakeven)"} />
                         </label>
                       </div>
                     </div>
@@ -803,22 +821,24 @@ function DeployWizard({ presets, initialPreset, onClose, onCreated }) {
                       <div className="text-[10px] uppercase tracking-wider text-dimmer">Trailing stop</div>
                       <div className="grid grid-cols-2 gap-2">
                         <label className="text-[11px] text-dim">
-                          Activation {form.exit_controls_unit === "pts" ? "(pts profit)" : "(% profit)"}
-                          <Input type="number" min="0" step={form.exit_controls_unit === "pts" ? "0.5" : "1"}
+                          Activate at {form.exit_controls_unit === "pts" ? "(pts profit)" : "(fraction)"}
+                          <Input type="number" min="0" step={form.exit_controls_unit === "pts" ? "0.5" : "0.05"}
                             value={form.trailing_activation}
                             onChange={(e) => set("trailing_activation", e.target.value)}
-                            className="mt-1 bg-bg-2 border-line h-8" placeholder="off"
+                            className="mt-1 bg-bg-2 border-line h-8"
+                            placeholder={form.exit_controls_unit === "pts" ? "off" : "0.40 = +40%"}
                             data-testid="trailing-activation"
-                            title="Trailing stop kicks in once trade profits by this amount" />
+                            title={form.exit_controls_unit === "pts" ? "Trailing stop kicks in once trade profits by this many premium points" : "Trailing stop kicks in once trade profits by this fraction (0.40 = +40%)"} />
                         </label>
                         <label className="text-[11px] text-dim">
-                          Distance {form.exit_controls_unit === "pts" ? "(pts from peak)" : "(% from peak)"}
-                          <Input type="number" min="0" step={form.exit_controls_unit === "pts" ? "0.5" : "1"}
+                          Trail distance {form.exit_controls_unit === "pts" ? "(pts from peak)" : "(fraction)"}
+                          <Input type="number" min="0" step={form.exit_controls_unit === "pts" ? "0.5" : "0.05"}
                             value={form.trailing_distance}
                             onChange={(e) => set("trailing_distance", e.target.value)}
-                            className="mt-1 bg-bg-2 border-line h-8" placeholder="—"
+                            className="mt-1 bg-bg-2 border-line h-8"
+                            placeholder={form.exit_controls_unit === "pts" ? "—" : "0.25 = give back 25% of peak"}
                             data-testid="trailing-distance"
-                            title="Trail the peak profit by this distance; exit when it retraces this far" />
+                            title={form.exit_controls_unit === "pts" ? "Trail the peak profit by this many pts; exit when it retraces this far" : "Give back at most this fraction of peak profit before exiting (0.25 = 25%)"} />
                         </label>
                       </div>
                     </div>
@@ -867,9 +887,10 @@ function DeployWizard({ presets, initialPreset, onClose, onCreated }) {
                     </div>
 
                     <div className="text-[10px] text-dimmer leading-snug">
-                      Exit controls apply per option trade. Daily ₹ caps require costs enabled in step 2 (the backend
-                      needs net P&L to compare against ₹ thresholds). Disable this entire panel to deploy without
-                      exit controls — the deployment behaves identically to the current behaviour.
+                      Exit controls apply per option trade. <b>pct mode: enter fractions</b> (0.25 = 25% of premium;
+                      the backend reads pct values as fractions, matching the Optimizer). pts mode: enter absolute
+                      premium points. Daily ₹ caps require costs enabled in step 2 (the backend needs net P&L to
+                      compare against ₹ thresholds). Disable this entire panel to deploy without exit controls.
                     </div>
                   </>
                 )}
