@@ -83,15 +83,21 @@ async def _gather_deployment_evidence(
     rerank_jobs = await db.optimization_jobs.find(
         {"kind": {"$ne": "wfo"}, "strategy_id": strategy_id, "instrument": instrument,
          "status": "done", "evaluation_mode": "option_rerank"},
-        {"_id": 0, "id": 1, "finished_at": 1, "best_params": 1, "rerank.ranked": {"$slice": 1}},
+        {"_id": 0, "id": 1, "finished_at": 1, "best_params": 1,
+         "best_option_pnl_value": 1, "rerank.ranked": {"$slice": 1}},
     ).sort("finished_at", -1).limit(25).to_list(length=25)
     for job in rerank_jobs:
         top = ((job.get("rerank") or {}).get("ranked") or [{}])[0]
         match = (job.get("best_params") or {}) == params
         if option_evidence is None or (match and not option_evidence.get("params_match")):
+            # Fix-D: prefer the PROMOTED survivor's full-window with-overlay net
+            # (Fix-A persists it on the job) over ranked[0] (base-config, not the survivor).
+            net = job.get("best_option_pnl_value")
+            if net is None:
+                net = top.get("option_pnl_value")
             option_evidence = {
                 "kind": "rerank", "id": job.get("id"), "at": job.get("finished_at"),
-                "net_pnl_value": top.get("option_pnl_value"),
+                "net_pnl_value": net,
                 "win_rate": top.get("option_win_rate"),
                 "paired_trade_count": top.get("paired_trade_count"),
                 "params_match": match,
