@@ -47,7 +47,7 @@ def make_ohlc(closes, *, start="2025-01-01 09:15", high_pad=0.5, low_pad=0.5, vo
     closes = np.asarray(closes, dtype=float)
     n = len(closes)
     idx = pd.date_range(start=start, periods=n, freq="1min", tz=IST)
-    ts = (idx.tz_convert("UTC").view("int64") // 1_000_000).astype("int64")
+    ts = (idx.asi8 // 1_000_000).astype("int64")  # UTC epoch-ms; asi8 avoids deprecated .view
     return pd.DataFrame({
         "ts": ts,
         "open": closes,
@@ -739,29 +739,38 @@ git commit -m "feat(indicators): wire adaptive toolkit columns into precompute"
 
 - [ ] **Step 1: Write the failing test**
 
-Create `tests/test_optimizer_indicator_keys.py`:
+Create `tests/test_optimizer_indicator_keys.py`. NOTE: `optimizer.py` imports
+`optuna`, which is **absent on the host** (it's `py_compile`-only — see HANDOFF),
+so we must NOT `import app.optimizer` in a host test. Assert on the source text
+instead — the same contract-corpus pattern the repo already uses for
+import-unsafe modules. The *behavioral* proof that these params recompute the
+frame is Task 7's `test_precompute_period_params_change_columns` (import-safe,
+no optuna).
 ```python
-from app.optimizer import INDICATOR_PARAM_KEYS, _indicator_key
+import pathlib
 
+SRC = pathlib.Path("backend/app/optimizer.py").read_text(encoding="utf-8")
 NEW = ["vel_n", "vel_z_window", "vr_q", "vr_lookback", "vr_scale", "bb_len", "bb_mult",
        "kc_len", "kc_atr_mult", "sqz_mom_len", "st_period", "st_mult",
        "cpr_narrow_pctile", "cpr_wide_pctile", "cpr_pctile_window",
        "tod_lookback_sessions", "tod_min_atr_frac"]
 
 
-def test_new_period_params_registered():
+def _keys_tuple_text() -> str:
+    i = SRC.index("INDICATOR_PARAM_KEYS")
+    return SRC[i:SRC.index(")", i)]  # text of the tuple literal
+
+
+def test_new_period_params_registered_in_keys_tuple():
+    block = _keys_tuple_text()
     for k in NEW:
-        assert k in INDICATOR_PARAM_KEYS, f"{k} not in INDICATOR_PARAM_KEYS"
-
-
-def test_indicator_key_distinguishes_vr_q():
-    assert _indicator_key({"vr_q": 4}) != _indicator_key({"vr_q": 12})
+        assert f'"{k}"' in block, f"{k} not registered in INDICATOR_PARAM_KEYS"
 ```
 
 - [ ] **Step 2: Run to verify failure**
 
 Run: `python -m pytest tests/test_optimizer_indicator_keys.py -q`
-Expected: FAIL — `vel_n not in INDICATOR_PARAM_KEYS`.
+Expected: FAIL — AssertionError `vel_n not registered in INDICATOR_PARAM_KEYS`.
 
 - [ ] **Step 3: Implement — extend `INDICATOR_PARAM_KEYS` in `backend/app/optimizer.py`**
 
@@ -783,7 +792,7 @@ INDICATOR_PARAM_KEYS = (
 - [ ] **Step 4: Run to verify pass**
 
 Run: `python -m pytest tests/test_optimizer_indicator_keys.py -q`
-Expected: 2 passed.
+Expected: 1 passed.
 
 - [ ] **Step 5: Commit**
 
