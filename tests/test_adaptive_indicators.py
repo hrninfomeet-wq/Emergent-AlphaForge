@@ -62,7 +62,7 @@ def test_squeeze_fire_is_single_bar_edge():
     df = make_ohlc([100 + 0.05 * np.sin(i) for i in range(40)] + list(range(100, 140)))
     on, fire, _ = squeeze(df)
     # fire only where prior bar was on and this bar is off
-    expected = on.shift(1).fillna(False) & (~on)
+    expected = on.shift(1, fill_value=False) & (~on)
     assert (fire == expected).all()
 
 
