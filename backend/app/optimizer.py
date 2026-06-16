@@ -459,6 +459,25 @@ async def _save_best_as_backtest(job_id: str, payload: Dict[str, Any], strategy,
         regime_dist = df_enriched["regime"].value_counts().to_dict()
         regime_dist = {str(k): int(v) for k, v in regime_dist.items()}
         run_name = f"Optimized · {payload.get('name', 'run')}"
+        # Fix-A: compute the PROMOTED config's full-window paired-option result so the
+        # saved run carries the honest exact-params option-rupee numbers. validate=False
+        # (the grid-derived spot_exit+exit_controls overlay is internally trusted and would
+        # otherwise 400); auto_fetch off so the replay pairs against the same warehouse
+        # snapshot the re-rank scored on.
+        option_result = None
+        if option_config:
+            try:
+                from app.runtime import _run_paired_option_backtest
+                from app.schemas import BacktestReq, OptionBacktestReq
+                _opt_req = BacktestReq(
+                    instrument=instrument, strategy_id=strategy.id, params=best_params,
+                    start_ts=payload.get("start_ts"), end_ts=payload.get("end_ts"),
+                    costs_enabled=costs_enabled, walkforward=False, pretrade_filters=pretrade,
+                    option_backtest=OptionBacktestReq(**{**option_config, "enabled": True, "auto_fetch": False}),
+                )
+                option_result = await _run_paired_option_backtest(_opt_req, res["trades"], validate=False)
+            except Exception as e:
+                log.warning(f"save_best option backtest failed: {e}")
         doc = {
             "id": str(uuid.uuid4()),
             "created_at": datetime.now(timezone.utc).isoformat(),
@@ -489,6 +508,8 @@ async def _save_best_as_backtest(job_id: str, payload: Dict[str, Any], strategy,
             "signal_funnel": res["signal_funnel"],
             "instrument": instrument,
             "strategy_id": strategy.id,
+            # Fix-A: top-level option result (conditional key -> spot mode byte-identical).
+            **({"option_backtest": option_result} if option_config else {}),
         }
         db = get_db()
         await db.backtest_runs.insert_one(doc)
@@ -1147,6 +1168,15 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
             "best_daily_caps": best_so_far.get("daily_caps"),
             "trial_log": [],
         }
+        # Fix-A/Fix-C: read the promoted full-window option net (for Fix-D's deploy gate)
+        # and compute the trust verdict, both off the already-saved best run. best_run is
+        # None for done_no_survivor / save-failure -> both keys simply omitted (no crash).
+        best_run = best_backtest_run_id and await get_db().backtest_runs.find_one({"id": best_backtest_run_id}, {"_id": 0})
+        if best_run:
+            from app.deployment_quality import evaluate_source_quality
+            finished["best_option_pnl_value"] = ((best_run.get("option_backtest") or {}).get("portfolio") or {}).get("net_pnl_value")
+            _oos = (best_so_far.get("metrics") or {}).get("survival", {}).get("total_return_pct")
+            finished["best_quality"] = evaluate_source_quality(best_run, evidence={"oos_return_pct": _oos, "n_trials": n_trials})
         await _update_job(job_id, finished)
         log.info(f"Optimization {job_id} {final_status}: best={best_so_far['value']:.4f} run_id={best_backtest_run_id}")
     except Exception as e:
