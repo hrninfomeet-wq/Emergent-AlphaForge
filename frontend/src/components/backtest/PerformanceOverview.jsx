@@ -16,6 +16,7 @@ const moneySigned = (n) => (n == null ? "—" : `${n < 0 ? "−" : "+"}₹${fmtI
 export function PerformanceOverview({ result }) {
   const series = useMemo(() => buildPerformanceSeries(result), [result]);
   const k = useMemo(() => computeKeyMetrics(result), [result]);
+  const m = result?.metrics || {};
   const cur = series.currency;
 
   // Hero — rupee-first when an account exists, else points.
@@ -96,6 +97,50 @@ export function PerformanceOverview({ result }) {
           )}
         </div>
       </div>
+
+      {/* Exit-control attribution — only rendered when any count is non-zero.
+          Older runs without these keys simply show nothing (|| 0 fallback). */}
+      {(() => {
+        const trailExits = m.option_trail_exits || 0;
+        const beExits = m.option_breakeven_exits || 0;
+        const skippedCap = m.skipped_by_cap || 0;
+        const skippedLoss = m.skipped_daily_loss || 0;
+        const skippedTarget = m.skipped_daily_target || 0;
+        const skippedMaxTrades = m.skipped_max_trades || 0;
+        const anyNonZero = trailExits + beExits + skippedCap + skippedLoss + skippedTarget + skippedMaxTrades > 0;
+        if (!anyNonZero) return null;
+        return (
+          <div className="rounded-lg border border-line bg-bg-1 p-3" data-testid="perf-exit-controls">
+            <div className="text-[11px] font-semibold uppercase tracking-wider text-dim mb-2">Exit controls</div>
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
+              {trailExits > 0 && (
+                <Stat label="Trailing stop exits" value={fmtInt(trailExits)}
+                  sub="trades closed by trail" title="Trades exited by the trailing stop control" />
+              )}
+              {beExits > 0 && (
+                <Stat label="Breakeven exits" value={fmtInt(beExits)}
+                  sub="locked to breakeven" title="Trades exited after the breakeven lock triggered" />
+              )}
+              {skippedCap > 0 && (
+                <Stat label="Skipped (cap)" value={fmtInt(skippedCap)}
+                  sub="signals blocked by cap" title="Signals skipped because a daily cap (loss/target/max-trades) was reached" />
+              )}
+              {skippedLoss > 0 && (
+                <Stat label="Skipped (daily loss)" value={fmtInt(skippedLoss)}
+                  sub="daily loss cap hit" title="Signals skipped because the daily loss cap was reached" />
+              )}
+              {skippedTarget > 0 && (
+                <Stat label="Skipped (daily target)" value={fmtInt(skippedTarget)}
+                  sub="daily target cap hit" title="Signals skipped because the daily profit target was reached" />
+              )}
+              {skippedMaxTrades > 0 && (
+                <Stat label="Skipped (max trades)" value={fmtInt(skippedMaxTrades)}
+                  sub="max-trades/day hit" title="Signals skipped because the max-trades-per-day cap was reached" />
+              )}
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }

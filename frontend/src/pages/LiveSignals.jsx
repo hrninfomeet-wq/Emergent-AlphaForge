@@ -344,6 +344,17 @@ const WIZARD_DEFAULTS = {
   friction_brokerage: 0,
   friction_spread_pct: 0,
   acknowledged_warnings: false,
+  // Exit / risk controls (Piece 2). Off by default so existing deployments
+  // are byte-identical — nothing is posted unless the user enables the panel.
+  exit_controls_enabled: false,
+  exit_controls_unit: "pct",
+  breakeven_trigger: "",
+  breakeven_lock: "",
+  trailing_activation: "",
+  trailing_distance: "",
+  daily_cap_loss: "",
+  daily_cap_target: "",
+  daily_cap_max_trades: "",
 };
 
 function DeployWizard({ presets, initialPreset, onClose, onCreated }) {
@@ -460,6 +471,27 @@ function DeployWizard({ presets, initialPreset, onClose, onCreated }) {
             brokerage_per_order: Number(form.friction_brokerage) || 0,
             spread_pct_of_premium: Number(form.friction_spread_pct) || 0,
           },
+        } : null,
+        // Exit / risk controls (Piece 2). Only posted when the user enables the
+        // panel; otherwise omitted so older deployments are byte-identical.
+        risk: form.exit_controls_enabled ? {
+          exit_controls: {
+            enabled: true,
+            unit: form.exit_controls_unit,
+            breakeven: (form.breakeven_trigger !== "" || form.breakeven_lock !== "") ? {
+              trigger: form.breakeven_trigger !== "" ? Number(form.breakeven_trigger) : null,
+              lock: form.breakeven_lock !== "" ? Number(form.breakeven_lock) : null,
+            } : null,
+            trailing: (form.trailing_activation !== "" || form.trailing_distance !== "") ? {
+              activation: form.trailing_activation !== "" ? Number(form.trailing_activation) : null,
+              distance: form.trailing_distance !== "" ? Number(form.trailing_distance) : null,
+            } : null,
+          },
+          daily_caps: (form.daily_cap_loss !== "" || form.daily_cap_target !== "" || form.daily_cap_max_trades !== "") ? {
+            loss: form.daily_cap_loss !== "" ? Number(form.daily_cap_loss) : null,
+            target: form.daily_cap_target !== "" ? Number(form.daily_cap_target) : null,
+            max_trades: form.daily_cap_max_trades !== "" ? Math.max(0, parseInt(form.daily_cap_max_trades, 10) || 0) : null,
+          } : null,
         } : null,
         acknowledged_warnings: Boolean(form.acknowledged_warnings),
       };
@@ -718,6 +750,130 @@ function DeployWizard({ presets, initialPreset, onClose, onCreated }) {
                   onChange={(e) => set("allow_overnight", e.target.checked)} className="h-4 w-4 rounded border-line" />
                 <span>Allow overnight (skip the 15:00 IST auto-square-off for this deployment)</span>
               </label>
+
+              {/* Exit / Risk Controls panel (Piece 2) */}
+              <div className="rounded-md border border-violet-500/30 bg-violet-500/5 p-2 space-y-2" data-testid="wizard-exit-controls">
+                <label className="text-[11px] text-dim flex items-center gap-2">
+                  <input type="checkbox" checked={Boolean(form.exit_controls_enabled)}
+                    onChange={(e) => set("exit_controls_enabled", e.target.checked)}
+                    className="h-4 w-4 rounded border-line" data-testid="exit-controls-enabled" />
+                  <span><b>Exit / Risk controls</b> — breakeven lock, trailing stop, and daily caps</span>
+                </label>
+                {form.exit_controls_enabled && (
+                  <>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[11px] text-dim">Exit unit</span>
+                      <div className="flex rounded-md border border-line overflow-hidden">
+                        {["pct", "pts"].map((u) => (
+                          <button key={u} type="button" onClick={() => set("exit_controls_unit", u)}
+                            className={`px-2 py-1 text-[11px] font-mono ${form.exit_controls_unit === u ? "bg-info text-bg-0" : "bg-bg-2 text-dim hover:text-foreground"}`}
+                            data-testid="exit-controls-unit">
+                            {u === "pts" ? "₹ points" : "Percent"}
+                          </button>
+                        ))}
+                      </div>
+                      <span className="text-[10px] text-dimmer">all values below use this unit</span>
+                    </div>
+
+                    <div className="space-y-1">
+                      <div className="text-[10px] uppercase tracking-wider text-dimmer">Breakeven lock</div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <label className="text-[11px] text-dim">
+                          Trigger {form.exit_controls_unit === "pts" ? "(pts profit)" : "(% profit)"}
+                          <Input type="number" min="0" step={form.exit_controls_unit === "pts" ? "0.5" : "1"}
+                            value={form.breakeven_trigger}
+                            onChange={(e) => set("breakeven_trigger", e.target.value)}
+                            className="mt-1 bg-bg-2 border-line h-8" placeholder="off"
+                            data-testid="breakeven-trigger"
+                            title="Move stop to breakeven once trade profits by this amount" />
+                        </label>
+                        <label className="text-[11px] text-dim">
+                          Lock {form.exit_controls_unit === "pts" ? "(pts above entry)" : "(% above entry)"}
+                          <Input type="number" min="0" step={form.exit_controls_unit === "pts" ? "0.5" : "1"}
+                            value={form.breakeven_lock}
+                            onChange={(e) => set("breakeven_lock", e.target.value)}
+                            className="mt-1 bg-bg-2 border-line h-8" placeholder="entry"
+                            data-testid="breakeven-lock"
+                            title="Stop is locked at this level above entry (0 = exact breakeven)" />
+                        </label>
+                      </div>
+                    </div>
+
+                    <div className="space-y-1">
+                      <div className="text-[10px] uppercase tracking-wider text-dimmer">Trailing stop</div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <label className="text-[11px] text-dim">
+                          Activation {form.exit_controls_unit === "pts" ? "(pts profit)" : "(% profit)"}
+                          <Input type="number" min="0" step={form.exit_controls_unit === "pts" ? "0.5" : "1"}
+                            value={form.trailing_activation}
+                            onChange={(e) => set("trailing_activation", e.target.value)}
+                            className="mt-1 bg-bg-2 border-line h-8" placeholder="off"
+                            data-testid="trailing-activation"
+                            title="Trailing stop kicks in once trade profits by this amount" />
+                        </label>
+                        <label className="text-[11px] text-dim">
+                          Distance {form.exit_controls_unit === "pts" ? "(pts from peak)" : "(% from peak)"}
+                          <Input type="number" min="0" step={form.exit_controls_unit === "pts" ? "0.5" : "1"}
+                            value={form.trailing_distance}
+                            onChange={(e) => set("trailing_distance", e.target.value)}
+                            className="mt-1 bg-bg-2 border-line h-8" placeholder="—"
+                            data-testid="trailing-distance"
+                            title="Trail the peak profit by this distance; exit when it retraces this far" />
+                        </label>
+                      </div>
+                    </div>
+
+                    <div className="space-y-1">
+                      <div className="text-[10px] uppercase tracking-wider text-dimmer">Daily caps</div>
+                      <div className="grid grid-cols-3 gap-2">
+                        <label className="text-[11px] text-dim">
+                          Daily loss cap (₹)
+                          <Input type="number" min="0" step="100"
+                            value={form.daily_cap_loss}
+                            onChange={(e) => set("daily_cap_loss", e.target.value)}
+                            disabled={!form.friction_costs_enabled}
+                            className={`mt-1 bg-bg-2 border-line h-8 ${!form.friction_costs_enabled ? "opacity-40 cursor-not-allowed" : ""}`}
+                            placeholder="off"
+                            data-testid="daily-cap-loss"
+                            title={!form.friction_costs_enabled ? "Requires costs enabled (friction panel in step 2)" : "Block new signals once today's realized loss exceeds this ₹ amount"} />
+                          {!form.friction_costs_enabled && (
+                            <div className="text-[10px] text-amber-400/80 mt-0.5">requires costs ON</div>
+                          )}
+                        </label>
+                        <label className="text-[11px] text-dim">
+                          Daily target (₹)
+                          <Input type="number" min="0" step="100"
+                            value={form.daily_cap_target}
+                            onChange={(e) => set("daily_cap_target", e.target.value)}
+                            disabled={!form.friction_costs_enabled}
+                            className={`mt-1 bg-bg-2 border-line h-8 ${!form.friction_costs_enabled ? "opacity-40 cursor-not-allowed" : ""}`}
+                            placeholder="off"
+                            data-testid="daily-cap-target"
+                            title={!form.friction_costs_enabled ? "Requires costs enabled (friction panel in step 2)" : "Block new signals once today's realized profit exceeds this ₹ amount"} />
+                          {!form.friction_costs_enabled && (
+                            <div className="text-[10px] text-amber-400/80 mt-0.5">requires costs ON</div>
+                          )}
+                        </label>
+                        <label className="text-[11px] text-dim">
+                          Max trades / day
+                          <Input type="number" min="0" step="1"
+                            value={form.daily_cap_max_trades}
+                            onChange={(e) => set("daily_cap_max_trades", e.target.value)}
+                            className="mt-1 bg-bg-2 border-line h-8" placeholder="off"
+                            data-testid="daily-cap-max-trades"
+                            title="Block new signals once this many trades are taken today" />
+                        </label>
+                      </div>
+                    </div>
+
+                    <div className="text-[10px] text-dimmer leading-snug">
+                      Exit controls apply per option trade. Daily ₹ caps require costs enabled in step 2 (the backend
+                      needs net P&L to compare against ₹ thresholds). Disable this entire panel to deploy without
+                      exit controls — the deployment behaves identically to the current behaviour.
+                    </div>
+                  </>
+                )}
+              </div>
 
               {needAck && (
                 <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-2 space-y-1">
