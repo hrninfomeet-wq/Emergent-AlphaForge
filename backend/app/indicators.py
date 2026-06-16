@@ -3,6 +3,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 from typing import Tuple
+from app.cpr import cpr_levels
+from app.vol_seasonality import attach_tod_tradeable
 
 
 def ema(series: pd.Series, length: int) -> pd.Series:
@@ -270,4 +272,25 @@ def precompute_all_indicators(df: pd.DataFrame, params: dict | None = None) -> p
     df["atr_avg"] = df["atr"].rolling(100, min_periods=20).mean()
     df["fvg"] = detect_fvg(df)
     df = detect_swing_points(df, lookback=int(p.get("swing_lookback", 5)))
+    # --- adaptive toolkit columns (Plan 1) ---
+    df["vel_z"], df["accel_z"] = velocity_accel(
+        df["close"], int(p.get("vel_n", 2)), int(p.get("vel_z_window", 60)))
+    df["vr"], df["regime_score"] = variance_ratio(
+        df["close"], int(p.get("vr_q", 4)), int(p.get("vr_lookback", 90)), float(p.get("vr_scale", 0.5)))
+    on, fire, mom = squeeze(
+        df, int(p.get("bb_len", 20)), float(p.get("bb_mult", 2.0)),
+        int(p.get("kc_len", 20)), float(p.get("kc_atr_mult", 1.5)), int(p.get("sqz_mom_len", 20)))
+    df["squeeze_on"], df["squeeze_fire"], df["sqz_mom"] = on, fire, mom
+    df["supertrend"], df["st_dir"] = supertrend(
+        df, int(p.get("st_period", 10)), float(p.get("st_mult", 3.0)))
+    sigma, u1, u2, l1, l2 = vwap_sigma_bands(df)
+    df["vwap_sigma"], df["vwap_u1"], df["vwap_u2"], df["vwap_l1"], df["vwap_l2"] = sigma, u1, u2, l1, l2
+    df["nr7"] = nr7(df)
+    cpr = cpr_levels(
+        df, float(p.get("cpr_narrow_pctile", 30.0)), float(p.get("cpr_wide_pctile", 70.0)),
+        int(p.get("cpr_pctile_window", 20)))
+    for c in cpr.columns:
+        df[c] = cpr[c]
+    df["tod_tradeable"] = attach_tod_tradeable(
+        df, int(p.get("tod_lookback_sessions", 20)), float(p.get("tod_min_atr_frac", 0.6)))
     return df
