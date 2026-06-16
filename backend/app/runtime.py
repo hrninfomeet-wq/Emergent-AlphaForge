@@ -62,6 +62,15 @@ log = logging.getLogger("alphaforge")
 # the last stored date, falling back to this when the warehouse has no VIX yet.
 VIX_BASELINE_START = "2025-12-29"
 
+# Hard row cap for a single option-candle load in a paired-option backtest.
+# Candles are loaded oldest-first, so a load that HITS this cap silently drops
+# the NEWEST candles — every trade in the most recent period would then report
+# missing_entry_candle (0% pairing) with no other signal. The cap exists only as
+# a memory backstop; it is set well above any realistic multi-strike multi-year
+# range, and a cap-hit is always warned + surfaced (never silent). Mirrors the
+# 4,000,000-row cap in optimizer._option_rerank and wfo.
+OPTION_CANDLE_LOAD_CAP = 4_000_000
+
 
 upstox_stream_manager = UpstoxMarketStreamManager()
 
@@ -500,6 +509,7 @@ async def _run_paired_option_backtest(req: BacktestReq, spot_trades: List[Dict[s
             selected_keys.add(str(selected["instrument_key"]))
 
     candle_rows: List[Dict[str, Any]] = []
+    candles_capped = False
     auto_fetch: Dict[str, Any] = {
         "attempted": False,
         "status": "skipped",
@@ -524,7 +534,17 @@ async def _run_paired_option_backtest(req: BacktestReq, spot_trades: List[Dict[s
                 "$gte": min(trade_ts) - max(0, int(config.entry_max_age_sec)) * 1000,
                 "$lte": max(trade_ts),
             }
-        candle_rows = await db.options_1m.find(candle_query, {"_id": 0}).sort("ts", 1).to_list(length=1000000)
+        candle_rows = await db.options_1m.find(candle_query, {"_id": 0}).sort("ts", 1).to_list(length=OPTION_CANDLE_LOAD_CAP)
+        if len(candle_rows) >= OPTION_CANDLE_LOAD_CAP:
+            # Oldest-first sort means a capped load drops the NEWEST candles, so
+            # the most recent trades silently fail to pair. Never let this pass
+            # unnoticed: warn and surface candles_capped in the response.
+            candles_capped = True
+            log.warning(
+                "paired-option backtest candle load hit the %d-row cap (%d strike keys); "
+                "newest candles were dropped (oldest-first) and recent trades will not pair",
+                OPTION_CANDLE_LOAD_CAP, len(selected_keys),
+            )
 
         present_keys = {canonical_instrument_key(str(row.get("instrument_key"))) for row in candle_rows}
         missing_keys = sorted(k for k in selected_keys if canonical_instrument_key(str(k)) not in present_keys)
@@ -597,6 +617,7 @@ async def _run_paired_option_backtest(req: BacktestReq, spot_trades: List[Dict[s
         "contracts_loaded": len(contracts),
         "instrument_keys_needed": len(selected_keys),
         "candles_loaded": len(candle_rows),
+        "candles_capped": candles_capped,
         "source": "options_1m",
         "auto_fetch": auto_fetch,
         "dte_filter": dte_stats,
