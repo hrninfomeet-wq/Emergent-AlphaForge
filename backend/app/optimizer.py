@@ -53,6 +53,12 @@ INDICATOR_PARAM_KEYS = (
     "ema_fast", "ema_slow", "rsi_length",
     "macd_fast", "macd_slow", "macd_signal",
     "atr_length", "adx_length", "chop_length", "swing_lookback",
+    # adaptive toolkit Plan 1 — every param precompute_all_indicators reads
+    "vel_n", "vel_z_window", "vr_q", "vr_lookback", "vr_scale",
+    "bb_len", "bb_mult", "kc_len", "kc_atr_mult", "sqz_mom_len",
+    "st_period", "st_mult",
+    "cpr_narrow_pctile", "cpr_wide_pctile", "cpr_pctile_window",
+    "tod_lookback_sessions", "tod_min_atr_frac",
 )
 
 # Catalog of indicator-period params the optimizer can inject into the search
