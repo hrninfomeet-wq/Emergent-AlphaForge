@@ -8,16 +8,18 @@ import { exportOptConfig, exportOptJob, exportOptAlternatives } from "@/lib/optE
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { TrustScorecard } from "@/components/TrustScorecard";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { NumberSliderInput } from "@/components/NumberSliderInput";
 import { useMaximize, MaximizeButton } from "@/components/MaximizeButton";
+import { useTableSort, SortHeader } from "@/components/SortHeader";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
   Gauge, Play, RefreshCw, Sparkles, Trash2, ChevronDown, ChevronRight,
   Save, Activity, Trophy, StopCircle, Download, FileJson, FileText, FolderOpen,
-  ExternalLink, Copy, PauseCircle, PlayCircle, Rocket, Pencil,
+  ExternalLink, Copy, PauseCircle, PlayCircle, Rocket, Pencil, Search, X,
 } from "lucide-react";
 
 const INSTRUMENTS = ["NIFTY", "BANKNIFTY", "SENSEX"];
@@ -1309,6 +1311,8 @@ function CurrentJobView({ job, onApply, onStop, onPause, onResume, onOpenBest })
           <WfoResults job={job} />
         ) : (
           <>
+            {/* Trust verdict (Piece 3) for the promoted best — advisory, never blocks. */}
+            {job.best_quality && <TrustScorecard quality={job.best_quality} />}
             {job.rerank ? (
               <RerankResults rerank={job.rerank} survivalSummary={job.survival_summary ?? job.rerank?.survival_summary} jobStatus={job.status} />
             ) : (
@@ -2048,12 +2052,32 @@ function TopAlternatives({ items }) {
 
 function JobHistory({ jobs, onLoad, onClone, onResume, onDelete, onRefresh }) {
   const { panelRef, maximized, toggleMaximize } = useMaximize();
+  const [filter, setFilter] = useState("");
+  const { sort, onSort, sortRows } = useTableSort();
+  const matches = (j) => {
+    if (!filter) return true;
+    const q = filter.toLowerCase();
+    return [j.strategy_id, j.instrument, j.method, j.objective, j.status, j.name, j.kind === "wfo" ? "walk-fwd" : ""]
+      .some((v) => String(v || "").toLowerCase().includes(q));
+  };
+  const sortValue = (j, key) => ({
+    created: j.created_at, status: j.status, strategy: j.strategy_id, instrument: j.instrument,
+    method: j.kind === "wfo" ? "walk-fwd" : j.method, objective: j.objective,
+    trials: j.n_trials_completed || 0, best: j.best_so_far?.value,
+  }[key]);
+  const view = sortRows((jobs || []).filter(matches), sortValue);
   return (
     <div ref={panelRef} className="rounded-lg border border-line bg-bg-1 overflow-auto" data-testid="opt-job-history">
-      <div className="px-3 py-2 border-b border-line flex items-center">
-        <Activity className="w-3.5 h-3.5 mr-1.5 text-dim" />
+      <div className="px-3 py-2 border-b border-line flex items-center gap-2 flex-wrap">
+        <Activity className="w-3.5 h-3.5 text-dim" />
         <div className="text-xs font-semibold uppercase tracking-wider text-dim">Job History</div>
-        <div className="ml-auto flex items-center gap-1">
+        <div className="text-[11px] text-dimmer">{view.length} of {(jobs || []).length}</div>
+        <div className="ml-auto flex items-center gap-1.5">
+          <div className="relative">
+            <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-dimmer pointer-events-none" />
+            <Input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Filter strategy, instrument, status…" className="bg-bg-2 border-line h-7 text-xs pl-7 w-60" data-testid="opt-history-filter" />
+            {filter && <button onClick={() => setFilter("")} className="absolute right-1.5 top-1/2 -translate-y-1/2 text-dimmer hover:text-foreground"><X className="w-3 h-3" /></button>}
+          </div>
           <Button variant="ghost" size="sm" onClick={onRefresh} className="h-7 text-xs"><RefreshCw className="w-3 h-3" /></Button>
           <MaximizeButton maximized={maximized} onToggle={toggleMaximize} label="job history" testid="opt-job-history-maximize" />
         </div>
@@ -2063,14 +2087,14 @@ function JobHistory({ jobs, onLoad, onClone, onResume, onDelete, onRefresh }) {
           <thead>
             <tr className="text-dim border-b border-line">
               <th className="text-right p-2 w-10">#</th>
-              <th className="text-left p-2">Created</th>
-              <th className="text-left p-2">Status</th>
-              <th className="text-left p-2">Strategy</th>
-              <th className="text-left p-2">Instr.</th>
-              <th className="text-left p-2">Method</th>
-              <th className="text-left p-2">Objective</th>
-              <th className="text-right p-2">Trials</th>
-              <th className="text-right p-2">Best</th>
+              <SortHeader col={{ key: "created", label: "Created", align: "left" }} sort={sort} onSort={onSort} testidPrefix="opt-history-sort" />
+              <SortHeader col={{ key: "status", label: "Status", align: "left" }} sort={sort} onSort={onSort} testidPrefix="opt-history-sort" />
+              <SortHeader col={{ key: "strategy", label: "Strategy", align: "left" }} sort={sort} onSort={onSort} testidPrefix="opt-history-sort" />
+              <SortHeader col={{ key: "instrument", label: "Instr.", align: "left" }} sort={sort} onSort={onSort} testidPrefix="opt-history-sort" />
+              <SortHeader col={{ key: "method", label: "Method", align: "left" }} sort={sort} onSort={onSort} testidPrefix="opt-history-sort" />
+              <SortHeader col={{ key: "objective", label: "Objective", align: "left" }} sort={sort} onSort={onSort} testidPrefix="opt-history-sort" />
+              <SortHeader col={{ key: "trials", label: "Trials", align: "right" }} sort={sort} onSort={onSort} testidPrefix="opt-history-sort" />
+              <SortHeader col={{ key: "best", label: "Best", align: "right" }} sort={sort} onSort={onSort} testidPrefix="opt-history-sort" />
               <th className="p-2"></th>
             </tr>
           </thead>
@@ -2078,7 +2102,10 @@ function JobHistory({ jobs, onLoad, onClone, onResume, onDelete, onRefresh }) {
             {jobs.length === 0 && (
               <tr><td colSpan="10" className="p-4 text-center text-dimmer">No optimizations yet.</td></tr>
             )}
-            {jobs.map((j, idx) => (
+            {jobs.length > 0 && view.length === 0 && (
+              <tr><td colSpan="10" className="p-4 text-center text-dimmer">No jobs match filter.</td></tr>
+            )}
+            {view.map((j, idx) => (
               <tr key={j.id} className="border-b border-line hover:bg-bg-2 cursor-pointer" onClick={() => onLoad(j.id)} data-testid="opt-history-row">
                 <td className="p-2 font-mono text-dimmer text-right">{idx + 1}</td>
                 <td className="p-2 font-mono text-dim">{isoToFull(j.created_at)}</td>

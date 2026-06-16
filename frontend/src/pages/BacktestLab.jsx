@@ -17,6 +17,7 @@ import { RegimeBadge } from "@/components/RegimeBadge";
 import { SignificanceBadge } from "@/components/SignificanceBadge";
 import { PerformanceOverview } from "@/components/backtest/PerformanceOverview";
 import { BacktestChart } from "@/components/backtest/BacktestChart";
+import { TrustScorecard } from "@/components/TrustScorecard";
 import { useMaximize, MaximizeButton } from "@/components/MaximizeButton";
 import { buildPerformanceSeries } from "@/lib/backtestMetrics";
 import { NumberSliderInput } from "@/components/NumberSliderInput";
@@ -1720,6 +1721,10 @@ function ResultsView({ result, onSaveAsPreset }) {
           testid="result-acct-high"
         />
       </div>
+
+      {/* Trust verdict (Piece 3): advisory option-₹ fragility / ruin / coverage
+          flags. Never blocks; absent for spot-only / clean runs. */}
+      <TrustScorecard quality={result?.quality} />
 
       {/* Performance: rupee-first hero + account/underlying chart + drawdown +
           high-value trade-quality metrics. The decision view, kept scannable. */}
