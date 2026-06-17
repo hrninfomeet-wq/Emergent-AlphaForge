@@ -5,7 +5,6 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 
 import pandas as pd
-import pytest
 from app.indicators import precompute_all_indicators
 from app.regime import classify_regime_series
 from tests._adaptive_testutil import make_sessions
