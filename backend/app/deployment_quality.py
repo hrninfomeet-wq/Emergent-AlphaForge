@@ -446,7 +446,7 @@ def evaluate_source_quality(
                           "missing_entry_candle": cov.get("missing_entry_candle")},
             })
 
-    # 6. Objective misalignment (advisory): the optimizer search maximizes a
+    # 7. Objective misalignment (advisory): the optimizer search maximizes a
     # SPOT proxy while deployment is option-buying rupees. When the option
     # re-rank ran, a low spot<->option correlation means the search may be
     # steering away from option-profitable configs. Advisory only.

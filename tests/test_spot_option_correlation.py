@@ -25,6 +25,11 @@ def test_correlation_negative():
     r = _ranked([(1.0, 30.0), (2.0, 20.0), (3.0, 10.0)])
     assert compute_spot_option_correlation(r) == -1.0
 
+def test_correlation_none_on_non_dict_items():
+    # Non-dict / None items (a malformed ranked list) -> None, never a crash.
+    assert compute_spot_option_correlation([1, 2, 3]) is None
+    assert compute_spot_option_correlation([None, None]) is None
+
 def test_objective_misalignment_warning_fires_below_threshold():
     doc = {"metrics": {"sharpe": 1.2, "trade_count": 60, "win_rate": 0.55,
                        "profit_factor": 1.5, "max_dd_pts": 30, "total_pnl_pts": 400}}
@@ -34,3 +39,6 @@ def test_objective_misalignment_warning_fires_below_threshold():
     assert not any(w["id"] == "objective_misalignment" for w in q_high["warnings"])
     q_none = evaluate_source_quality(doc, evidence={})
     assert not any(w["id"] == "objective_misalignment" for w in q_none["warnings"])
+    # Exact-threshold boundary: strict `<` means soc == 0.3 must NOT fire.
+    q_at = evaluate_source_quality(doc, evidence={"spot_option_correlation": 0.3})
+    assert not any(w["id"] == "objective_misalignment" for w in q_at["warnings"])
