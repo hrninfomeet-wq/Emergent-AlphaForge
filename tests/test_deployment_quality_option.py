@@ -125,3 +125,18 @@ def test_new_thresholds_present_and_overridable():
     assert "min_coverage_ratio" in res["thresholds"]
     th = QualityThresholds.from_overrides(ruin_floor=-5000.0, min_coverage_ratio=0.5)
     assert th.ruin_floor == -5000.0 and th.min_coverage_ratio == 0.5
+
+
+def test_selection_bias_fires_only_with_n_trials_evidence():
+    from app.deployment_quality import evaluate_source_quality
+    doc = {
+        "metrics": {"sharpe": 0.30, "trade_count": 40, "win_rate": 0.5,
+                    "profit_factor": 1.1, "max_dd_pts": 50, "total_pnl_pts": 200},
+    }
+    # No evidence -> selection_bias cannot fire.
+    q0 = evaluate_source_quality(doc)
+    assert not any(w["id"] == "selection_bias" for w in q0["warnings"])
+    # With n_trials evidence -> deflated Sharpe <= 0 -> selection_bias warns.
+    q1 = evaluate_source_quality(doc, evidence={"n_trials": 200})
+    assert any(w["id"] == "selection_bias" for w in q1["warnings"])
+    assert q1["metrics_snapshot"]["n_trials"] == 200

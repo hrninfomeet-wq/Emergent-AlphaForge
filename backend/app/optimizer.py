@@ -444,7 +444,7 @@ def _rebuild_study(method: str, space: Dict[str, Dict[str, Any]], trial_history:
     return study
 
 
-async def _save_best_as_backtest(job_id: str, payload: Dict[str, Any], strategy, df_enriched: pd.DataFrame, best_params: Dict[str, Any], instrument: str, costs_enabled: bool, pretrade: Dict[str, Any], run_walkforward: bool = True, option_config: Optional[Dict[str, Any]] = None) -> Optional[str]:
+async def _save_best_as_backtest(job_id: str, payload: Dict[str, Any], strategy, df_enriched: pd.DataFrame, best_params: Dict[str, Any], instrument: str, costs_enabled: bool, pretrade: Dict[str, Any], run_walkforward: bool = True, option_config: Optional[Dict[str, Any]] = None, n_trials: Optional[int] = None) -> Optional[str]:
     """Run a final full backtest with best params and persist as a backtest_run.
     Returns the new backtest_run_id (or None on failure). When run_walkforward
     is False (e.g. on cancellation) the slow multi-fold walk-forward is skipped
@@ -511,6 +511,7 @@ async def _save_best_as_backtest(job_id: str, payload: Dict[str, Any], strategy,
             "signal_funnel": res["signal_funnel"],
             "instrument": instrument,
             "strategy_id": strategy.id,
+            **({"n_trials": int(n_trials)} if n_trials else {}),
             # Fix-A: top-level option result (conditional key -> spot mode byte-identical).
             **({"option_backtest": option_result} if option_config else {}),
         }
@@ -1156,6 +1157,7 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                 option_config={**(option_cfg or {}),
                                "exit_controls": best_so_far.get("exit_controls"),
                                "daily_caps": best_so_far.get("daily_caps")} if evaluation_mode == "option_rerank" else None,
+                n_trials=n_trials,
             )
 
         # Determine final status — cancelled if user cancelled before completion;

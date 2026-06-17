@@ -367,7 +367,9 @@ async def get_backtest_run(run_id: str):
     # needed). Never break the read — omit the scorecard if it can't compute.
     try:
         from app.deployment_quality import evaluate_source_quality
-        doc["quality"] = evaluate_source_quality(doc)
+        _nt = doc.get("n_trials")
+        evidence = {"n_trials": _nt} if _nt else None
+        doc["quality"] = evaluate_source_quality(doc, evidence=evidence)
     except Exception:
         pass
     return serialize_doc(doc)
