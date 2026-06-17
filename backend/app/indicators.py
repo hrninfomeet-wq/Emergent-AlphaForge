@@ -263,12 +263,23 @@ def precompute_all_indicators(df: pd.DataFrame, params: dict | None = None) -> p
     df["chop"] = choppiness_index(df, int(p.get("chop_length", 14)))
     # Session VWAP per day (anchored)
     df["dt"] = pd.to_datetime(df["ts"], unit="ms", utc=True).dt.tz_convert("Asia/Kolkata")
-    df["session_date"] = df["dt"].dt.strftime("%Y-%m-%d")
+    _dt = df["dt"]
+    if _dt.isna().any():
+        # Exact strftime fallback preserves NaT -> NaN behavior byte-for-byte.
+        df["session_date"] = _dt.dt.strftime("%Y-%m-%d")
+        df["ist_time"] = _dt.dt.strftime("%H:%M")
+    else:
+        # Vectorized C-level integer extraction + string concat (no per-element strftime).
+        _d = _dt.dt.normalize()
+        df["session_date"] = (_d.dt.year.astype(str).str.zfill(4) + "-"
+                              + _d.dt.month.astype(str).str.zfill(2) + "-"
+                              + _d.dt.day.astype(str).str.zfill(2))
+        df["ist_time"] = (_dt.dt.hour.astype(str).str.zfill(2) + ":"
+                          + _dt.dt.minute.astype(str).str.zfill(2))
     vwap = pd.Series(index=df.index, dtype="float64")
     for _, group in df.groupby("session_date", sort=False):
         vwap.loc[group.index] = session_vwap(group)
     df["vwap"] = vwap
-    df["ist_time"] = df["dt"].dt.strftime("%H:%M")
     df["atr_avg"] = df["atr"].rolling(100, min_periods=20).mean()
     df["fvg"] = detect_fvg(df)
     df = detect_swing_points(df, lookback=int(p.get("swing_lookback", 5)))

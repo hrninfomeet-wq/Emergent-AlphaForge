@@ -64,3 +64,12 @@ def test_expected_columns_present():
                 "squeeze_on", "supertrend", "st_dir", "tod_tradeable",
                 "cpr_tc", "cpr_bc", "day_type", "nr7", "fvg"):
         assert col in enr.columns, f"missing {col}"
+
+def test_session_date_and_ist_time_match_strftime_reference():
+    df = _fixture_df()
+    enr = precompute_all_indicators(df.copy(), {})
+    dt = pd.to_datetime(df["ts"], unit="ms", utc=True).dt.tz_convert("Asia/Kolkata")
+    expected_date = dt.dt.strftime("%Y-%m-%d")
+    expected_time = dt.dt.strftime("%H:%M")
+    pd.testing.assert_series_equal(enr["session_date"], expected_date, check_names=False)
+    pd.testing.assert_series_equal(enr["ist_time"], expected_time, check_names=False)
