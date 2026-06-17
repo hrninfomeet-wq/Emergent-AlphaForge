@@ -40,6 +40,13 @@ class Trade:
     # tag option trades and analyze where a strategy actually has edge.
     regime: str = ""
     ist_time: str = ""
+    # Per-trade exit overrides + entry bar index. Previously stashed via
+    # __dict__[...] inside the hot loop; promoted to real (optional) fields so
+    # reads/writes are plain attribute access. Defaults preserve prior behavior
+    # (None -> fall back to the run-level default target/stop / current bar).
+    target_pts_override: Optional[float] = None
+    stop_pts_override: Optional[float] = None
+    entry_bar: Optional[int] = None
 
 
 def _in_window(ist: str, start: str, end: str) -> bool:
@@ -87,7 +94,8 @@ def run_backtest(
             "equity_curve": [], "signal_funnel": _empty_funnel()
         }
 
-    df = df.reset_index(drop=True)
+    if not df.index.equals(pd.RangeIndex(len(df))):
+        df = df.reset_index(drop=True)
     # Pre-materialize rows as plain dicts ONCE. Indexing df.iloc[i] inside the
     # hot loop builds a fresh pandas Series every bar (very slow and GIL-heavy);
     # a list of dicts is 5-20x faster and is fully compatible with strategies,
@@ -129,8 +137,12 @@ def run_backtest(
             adv = (entry - low) if open_trade.direction == "CE" else (high - entry)
             open_trade.mfe_pts = max(open_trade.mfe_pts, max(0.0, fav))
             open_trade.mae_pts = max(open_trade.mae_pts, max(0.0, adv))
-            tgt_p = open_trade.__dict__.get("_target_pts", target_pts_default)
-            stp_p = open_trade.__dict__.get("_stop_pts", stop_pts_default)
+            tgt_p = open_trade.target_pts_override
+            if tgt_p is None:
+                tgt_p = target_pts_default
+            stp_p = open_trade.stop_pts_override
+            if stp_p is None:
+                stp_p = stop_pts_default
             stop = entry - stp_p if open_trade.direction == "CE" else entry + stp_p
             target = entry + tgt_p if open_trade.direction == "CE" else entry - tgt_p
             # Shared intrabar exit decision (stop-first, pessimistic). Used by
@@ -146,7 +158,8 @@ def run_backtest(
                 open_trade.exit_price = exit_price
                 open_trade.exit_datetime = str(row.get("datetime", ""))
                 open_trade.exit_reason = exit_reason
-                open_trade.bars_held = i - int(open_trade.__dict__.get("_entry_bar", i))
+                eb = open_trade.entry_bar
+                open_trade.bars_held = i - (i if eb is None else int(eb))
                 gross = (exit_price - entry) if open_trade.direction == "CE" else (entry - exit_price)
                 net = apply_round_trip_cost(gross, instrument, costs_enabled)
                 open_trade.pnl_pts = round(net, 3)
@@ -166,8 +179,12 @@ def run_backtest(
             continue
 
         funnel["evaluated"] += 1
-        ctx_local = {**ctx_global, "i": i}
-        sig: Signal = strategy.evaluate(row, prev, params, ctx_local)
+        # Reuse ctx_global in place instead of rebuilding {**ctx_global, "i": i}
+        # every entry-eval bar. Verified safe: ALL strategies only READ ctx via
+        # ctx.get(...) within evaluate() -- none retain a reference, assign it to
+        # self, or write into it across calls (grep of backend/app/strategies).
+        ctx_global["i"] = i
+        sig: Signal = strategy.evaluate(row, prev, params, ctx_global)
         if sig.direction not in ("CE", "PE"):
             continue
         if sig.blockers:
@@ -192,9 +209,9 @@ def run_backtest(
             regime=str(row.get("regime", "") or ""),
             ist_time=str(ist or ""),
         )
-        open_trade.__dict__["_target_pts"] = sig.spot_target_pts or target_pts_default
-        open_trade.__dict__["_stop_pts"] = sig.spot_stop_pts or stop_pts_default
-        open_trade.__dict__["_entry_bar"] = i
+        open_trade.target_pts_override = sig.spot_target_pts or target_pts_default
+        open_trade.stop_pts_override = sig.spot_stop_pts or stop_pts_default
+        open_trade.entry_bar = i
         last_signal_bar = i
 
     # Close any trailing trade at EOD
@@ -224,6 +241,12 @@ def run_backtest(
 
 def _clean_trade_dict(t: Trade) -> Dict[str, Any]:
     d = asdict(t)
+    # The override/entry-bar fields are loop-internal bookkeeping (formerly
+    # stashed via __dict__, so never serialized). Keep the emitted trade dict
+    # byte-identical to the pre-optimization shape by dropping them here.
+    d.pop("target_pts_override", None)
+    d.pop("stop_pts_override", None)
+    d.pop("entry_bar", None)
     return d
 
 
