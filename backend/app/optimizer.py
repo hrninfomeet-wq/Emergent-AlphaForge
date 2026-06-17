@@ -18,10 +18,13 @@ import asyncio
 import json
 import logging
 import math
+import os
 import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
+
+_OPT_TIMING = os.environ.get("AF_OPT_TIMING") == "1"
 
 import numpy as np
 import optuna
@@ -807,14 +810,21 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
         # silently ignored (indicators were frozen at defaults for every trial).
         raw_df = df
         enriched_cache: Dict[Tuple, pd.DataFrame] = {}
+        _TIMING = {"precompute_s": 0.0, "precompute_n": 0, "backtest_s": 0.0, "backtest_n": 0}
 
         def get_enriched(merged: Dict[str, Any]) -> pd.DataFrame:
             key = _indicator_key(merged)
             cached = enriched_cache.get(key)
             if cached is not None:
                 return cached
+            if _OPT_TIMING:
+                import time as _t
+                _t0 = _t.perf_counter()
             enr = precompute_all_indicators(raw_df, merged)
             enr["regime"] = classify_regime_series(enr)
+            if _OPT_TIMING:
+                _TIMING["precompute_s"] += _t.perf_counter() - _t0
+                _TIMING["precompute_n"] += 1
             if len(enriched_cache) < _MAX_ENRICHED_CACHE:
                 enriched_cache[key] = enr
             return enr
@@ -835,6 +845,13 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
 
         # Guard-aware closures used by every trial / analysis below.
         def evaluate(params: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+            if _OPT_TIMING:
+                import time as _t
+                _t0 = _t.perf_counter()
+                out = _evaluate(get_enriched, strategy, params, instrument, costs, pretrade)
+                _TIMING["backtest_s"] += _t.perf_counter() - _t0
+                _TIMING["backtest_n"] += 1
+                return out
             return _evaluate(get_enriched, strategy, params, instrument, costs, pretrade)
 
         def obj(metrics: Dict[str, Any]) -> float:
@@ -1167,6 +1184,13 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
             "best_exit_controls": best_so_far.get("exit_controls"),
             "best_daily_caps": best_so_far.get("daily_caps"),
             "trial_log": [],
+            "timing": ({
+                "precompute_s": round(_TIMING["precompute_s"], 3),
+                "precompute_n": _TIMING["precompute_n"],
+                "evaluate_s": round(_TIMING["backtest_s"], 3),
+                "evaluate_n": _TIMING["backtest_n"],
+                "bar_loop_s": round(_TIMING["backtest_s"] - _TIMING["precompute_s"], 3),
+            } if _OPT_TIMING else None),
         }
         # Fix-A/Fix-C: read the promoted full-window option net (for Fix-D's deploy gate)
         # and compute the trust verdict, both off the already-saved best run. best_run is
