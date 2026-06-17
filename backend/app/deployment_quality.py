@@ -383,6 +383,7 @@ def evaluate_source_quality(
     om_net = None
     om_min_equity = None
     om_ratio = None
+    om_costs_enabled: Optional[bool] = None   # None for spot-only sources
     if om:
         port = om.get("portfolio") or {}
         cov = om.get("coverage") or {}
@@ -391,6 +392,26 @@ def evaluate_source_quality(
         skipped = cov.get("skipped_by_cap") or 0
         om_net = port.get("net_pnl_value")
         oos_rp = (evidence or {}).get("oos_return_pct")
+
+        # 0. Costs-disabled advisory (Task 10): the option backtest persists its
+        # cost model under option_backtest.cost_config (CostConfig.to_dict() always
+        # emits "enabled"). When that flag is False/absent for a result that HAS
+        # option P&L, the reported rupees are GROSS (no brokerage/STT/charges/spread)
+        # -> optimistic. Advisory only — never gates. Distinct from coverage_attrition
+        # (that flags thin option-DATA pairing; this flags missing cost realism).
+        om_costs_enabled = bool((om.get("cost_config") or {}).get("enabled"))
+        if om_net is not None and not om_costs_enabled:
+            warnings.append({
+                "id": "costs_disabled", "severity": SEVERITY_WARNING,
+                "label": "Option costs were OFF for this result",
+                "detail": (
+                    "This option backtest ran with the rupee cost model DISABLED, so the reported "
+                    "P&L excludes brokerage, STT, exchange/SEBI charges, GST and bid-ask spread. "
+                    "Option-buying nets are highly sensitive to these — the figure is optimistic. "
+                    "Re-run with costs enabled for a deployable estimate."
+                ),
+                "value": {"costs_enabled": om_costs_enabled, "net_pnl_value": om_net},
+            })
 
         # 1. Full-window fragility (gate on paired>0, strict <0; zero-pair routes to coverage)
         if paired > 0 and om_net is not None and om_net < 0:
@@ -486,6 +507,7 @@ def evaluate_source_quality(
         "option_net_pnl_value": om_net,
         "option_min_equity": om_min_equity,
         "option_coverage_ratio": om_ratio,
+        "option_costs_enabled": om_costs_enabled,   # None=spot-only; False=costs OFF (optimistic P&L)
     }
 
     return {
