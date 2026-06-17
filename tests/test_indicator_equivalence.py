@@ -7,19 +7,19 @@ sys.path.insert(0, str(ROOT / "backend"))
 import pandas as pd
 from app.indicators import precompute_all_indicators
 from app.regime import classify_regime_series
+from app.indicator_groups import enrich_with_cache, run_all_groups
 from tests._adaptive_testutil import make_sessions
 
-# The comparison seam. A later phase re-points _enrich_new at the memoized assembly;
-# for now both are the current monolithic precompute, so equality is exact.
+# The comparison seam. `_enrich_ref` is the UNCHANGED golden reference
+# (monolithic precompute + classify_regime_series). `_enrich_new` is now the
+# memoized per-group assembler (cache-miss path) — proven byte-identical below.
 def _enrich_ref(df, params):
     enr = precompute_all_indicators(df, params)
     enr["regime"] = classify_regime_series(enr)
     return enr
 
 def _enrich_new(df, params):
-    enr = precompute_all_indicators(df, params)
-    enr["regime"] = classify_regime_series(enr)
-    return enr
+    return run_all_groups(df, params)
 
 def _fixture_df():
     # 3 sessions x 120 bars of a varied path so every indicator has signal.
@@ -55,6 +55,18 @@ def test_new_matches_reference_across_param_sweep():
         ref = _enrich_ref(df.copy(), params)
         new = _enrich_new(df.copy(), params)
         pd.testing.assert_frame_equal(new, ref, check_dtype=True)
+
+def test_memoized_matches_reference_across_sweep_with_cache_reuse():
+    df = _fixture_df()
+    caches = {}
+    # Run the sweep TWICE through the SAME caches to exercise cache HITS, not just misses.
+    for _round in range(2):
+        for params in _PARAM_SWEEP:
+            ref = _enrich_ref(df.copy(), params)
+            new = enrich_with_cache(df.copy(), params, caches)
+            # check_like=True: column ORDER may differ but values+dtype must match exactly.
+            # Justified: strategies read columns by NAME (df.to_dict('records')), never by position.
+            pd.testing.assert_frame_equal(new, ref, check_like=True, check_dtype=True)
 
 def test_expected_columns_present():
     df = _fixture_df()

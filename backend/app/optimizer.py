@@ -33,6 +33,7 @@ import pandas as pd
 from app.backtest import run_backtest
 from app.db import get_db
 from app.indicators import precompute_all_indicators
+from app.indicator_groups import enrich_with_cache
 from app.regime import classify_regime_series
 from app.strategies.base import get_registry
 from app.warehouse import load_candles_df
@@ -811,7 +812,14 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
         # fixes the long-standing bug where indicator-period params were
         # silently ignored (indicators were frozen at defaults for every trial).
         raw_df = df
+        # Per-group indicator memoization: the top-level `enriched_cache` (keyed
+        # on the full `_indicator_key`) is the assembled-frame memo for full
+        # cache HITS; on a miss we recompute via `enrich_with_cache`, which
+        # recomputes ONLY the indicator groups whose params changed (reusing the
+        # rest from `_group_caches`). Byte-identical — see
+        # tests/test_indicator_equivalence.py.
         enriched_cache: Dict[Tuple, pd.DataFrame] = {}
+        _group_caches: Dict[str, Dict] = {}
         _TIMING = {"precompute_s": 0.0, "precompute_n": 0, "backtest_s": 0.0, "backtest_n": 0}
 
         def get_enriched(merged: Dict[str, Any]) -> pd.DataFrame:
@@ -822,8 +830,7 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
             if _OPT_TIMING:
                 import time as _t
                 _t0 = _t.perf_counter()
-            enr = precompute_all_indicators(raw_df, merged)
-            enr["regime"] = classify_regime_series(enr)
+            enr = enrich_with_cache(raw_df, merged, _group_caches)
             if _OPT_TIMING:
                 _TIMING["precompute_s"] += _t.perf_counter() - _t0
                 _TIMING["precompute_n"] += 1

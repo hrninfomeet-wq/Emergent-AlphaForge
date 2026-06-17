@@ -473,6 +473,7 @@ async def run_wfo(job_id: str, payload: Dict[str, Any], resume: bool = False) ->
         import optuna
         from app.db import get_db
         from app.indicators import precompute_all_indicators
+        from app.indicator_groups import enrich_with_cache
         from app.optimizer import (
             _DEFAULT_LOT_SIZE,
             _DISQUALIFY,
@@ -551,15 +552,19 @@ async def run_wfo(job_id: str, payload: Dict[str, Any], resume: bool = False) ->
         # Indicator enrichment over the FULL frame, cached per indicator-period
         # combo (all indicators are causal — see module docstring).
         raw_df = df
+        # Per-group indicator memoization (mirrors optimizer.py): the top-level
+        # `enriched_cache` is the assembled-frame memo for full cache HITS; on a
+        # miss we recompute via `enrich_with_cache`, which recomputes only the
+        # indicator groups whose params changed. Byte-identical.
         enriched_cache: Dict[Tuple, pd.DataFrame] = {}
+        _group_caches: Dict[str, Dict] = {}
 
         def get_enriched(merged: Dict[str, Any]) -> pd.DataFrame:
             key = _indicator_key(merged)
             cached = enriched_cache.get(key)
             if cached is not None:
                 return cached
-            enr = precompute_all_indicators(raw_df, merged)
-            enr["regime"] = classify_regime_series(enr)
+            enr = enrich_with_cache(raw_df, merged, _group_caches)
             if len(enriched_cache) < _MAX_ENRICHED_CACHE:
                 enriched_cache[key] = enr
             return enr
