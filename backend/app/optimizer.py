@@ -32,9 +32,7 @@ import pandas as pd
 
 from app.backtest import run_backtest
 from app.db import get_db
-from app.indicators import precompute_all_indicators
 from app.indicator_groups import enrich_with_cache
-from app.regime import classify_regime_series
 from app.strategies.base import get_registry
 from app.warehouse import load_candles_df
 from app.option_backtest import simulate_paired_option_trades

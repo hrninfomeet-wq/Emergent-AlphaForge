@@ -472,7 +472,6 @@ async def run_wfo(job_id: str, payload: Dict[str, Any], resume: bool = False) ->
     try:
         import optuna
         from app.db import get_db
-        from app.indicators import precompute_all_indicators
         from app.indicator_groups import enrich_with_cache
         from app.optimizer import (
             _DEFAULT_LOT_SIZE,
@@ -485,7 +484,6 @@ async def run_wfo(job_id: str, payload: Dict[str, Any], resume: bool = False) ->
             _save_best_as_backtest,
             _suggest,
         )
-        from app.regime import classify_regime_series
         from app.strategies.base import get_registry
         from app.warehouse import load_candles_df
 
