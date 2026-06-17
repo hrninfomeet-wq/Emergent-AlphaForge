@@ -1,8 +1,8 @@
 # Handoff
 
-Updated: 2026-06-13
+Updated: 2026-06-17
 
-This is the entry point for the next AI agent or developer. **Read this + `CHANGELOG.md` before editing.** The repository and `tests/` are the source of truth — not any prior chat. `CHANGELOG.md` holds the detailed, versioned history (currently 0.17.x → 0.36.x); this file is the current architectural + state overview.
+This is the entry point for the next AI agent or developer. **Read this + `CHANGELOG.md` before editing.** The repository and `tests/` are the source of truth — not any prior chat. `CHANGELOG.md` holds the detailed, versioned history (currently 0.17.x → 0.45.x); this file is the current architectural + state overview.
 
 ---
 
@@ -10,11 +10,15 @@ This is the entry point for the next AI agent or developer. **Read this + `CHANG
 
 AlphaForge Trading Lab — a local-first research & forward-testing terminal for **Indian index options** (NIFTF/BANKNIFTY/SENSEX). React + FastAPI + MongoDB in Docker, Upstox for data. It does: warehouse 1-minute spot + option candles → backtest/optimize strategies → save as presets → deploy for live **signal generation + auto paper trading**. **No real broker orders, ever** (manual gate is a hard, permanent requirement).
 
-## 2. Status — current state (2026-06-13)
+## 2. Status — current state (2026-06-17)
 
-- **566 backend tests pass.** Frontend builds clean (1 pre-existing BacktestLab exhaustive-deps warning). `optimizer.py` is syntax-checked via `py_compile` only (optuna absent on host).
-- **Unpushed** on `main` (origin at `1c2538c`; earlier chart commits already pushed): this session's **6-slice live-realism/gate-rigor hardening pass** (`4bc7df3` friction, `754ebb2` gate, `24347db` cockpit, `e914de4` exits, `6d4b8d3` manual-safety, `50a0062` chart+rerank) + its doc commits — run `git log --oneline origin/main..HEAD` for the exact list. Push only on the user's explicit "push" (per-changeset approval).
-- Most recent work: a multi-agent **app review** → a **6-slice hardening pass** (CHANGELOG 0.37.x; see it for the per-slice detail and the principle that each fix is a user choice, not a silent change). Before that: Data Warehouse overhaul (0.23–0.30), Backtest results redesign (0.31–0.36), execution-policy extraction (0.27), server.py split (0.28).
+- **724 host tests pass.** Frontend builds clean (2 pre-existing exhaustive-deps warnings). `optimizer.py` is syntax-checked via `py_compile` only (optuna absent on host); it and `runtime.py`/routers are verified in the running stack, not host-imported.
+- **`main` is pushed to origin at `e6febbe` (0.37–0.39.x).** Everything since is a **linear stack of UNMERGED local feature branches** — push/merge ONLY on the user's explicit instruction (per-changeset approval):
+  `main → feat/survivable-optimization (0.40.x) → feat/live-tick-paper-realism (0.41.x) → feat/exit-risk-controls (0.42.x, Piece 2) → feat/adaptive-strategies (0.43.x, 5 strategies) → feat/backtest-exit-controls (0.44.x UI exposure of Piece 2 + 0.45.x Piece 3 merged in local-only) → (feat/integrated-validation-loop now == backtest-exit-controls tip)`.
+- **Read `CHANGELOG.md` 0.40.x → 0.45.x for the per-version detail.** Recent arc: **survivable optimization** (capital-aware survival gate, 0.40) → **live tick-driven paper realism** (0.41) → **exit/risk controls overlay** (Piece 2, 0.42; trailing/breakeven/daily-caps in sim + live + survival search) → **5 adaptive option-buying strategies** SEB/ARS/ORF/GAP/XRS (0.43) → **backtest-page exit/risk panel** + the dead-attribution-read fix + submit-time validation (0.44) → **trustworthy validation loop** (Piece 3, 0.45; the `deployment_quality` trust verdict made correct + surfaced everywhere via a `TrustScorecard`, flag-only).
+- **Key empirical finding (memory `option-buying-edge-hunt-2026`):** a disciplined survival-gated optimizer sweep over confluence_scalper / SEB / ORF × ATM/ITM × multiple 2025-26 NIFTY windows found **NO deployable survivor** — every candidate was *fragile* (OOS-positive but full-window option-₹ negative). ITM made SEB worse ⇒ the bottleneck is **directional signal quality**, not theta/moneyness/sizing. Nothing was deployed. The validation framework worked exactly as intended (refusing to promote a money-loser); Piece 3 turns that manual discipline into automated, surfaced gates.
+- **Roadmap next:** adaptive-strategies **Plan 4** (edge-gate WF ₹-expectancy + edge-proportional sizing) and the integrated optimize-loop UI polish; then a stronger/different signal family before more option-buying hunts. Before any of the stack lands, the user's own browser visual-checks + the merge decisions are pending.
+- Historical context: 6-slice live-realism/gate-rigor hardening (0.37.x), Data Warehouse overhaul (0.23–0.30), Backtest results redesign (0.31–0.36), execution-policy extraction (0.27), server.py split (0.28).
 - **New since the review** (read CHANGELOG 0.37.x before touching these): `app/live_friction.py` (single fill-model, shared by `option_backtest` + the live close path; per-deployment `risk.friction`); `app/rerank_select.py` (pure re-rank shortlist, opt-in `rerank_diversity`); `deployment_quality` now takes `evidence=` (selection-bias deflated-Sharpe + option-rupee-OOS) + `QualityThresholds`; `nse_calendar.market_status`; closed paper trades carry `gross_realized_pnl`/`friction_cost`/`total_charges` + `exit_price_source`/`exit_price_stale`.
 - Untracked local note files exist in the repo root ("Fable reply on progress.md", a docs note) — the user's, leave them.
 

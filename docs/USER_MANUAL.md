@@ -98,6 +98,7 @@ The **Holiday Calendar** button (page header) opens a modal listing NSE/BSE holi
    - **Lots** is ignored while Capital & position sizing is enabled — the sizing panel then controls the lot count (the input is disabled with a note).
    - In premium-at-risk sizing without a premium stop (e.g. exit mode "Mirror spot exit"), the per-trade rupee risk uses the Assumed stop % — an estimate; the panel shows an amber note when this applies.
    - Before running, click **Check option data** (the preflight panel) to see what % of your signals have option candles available. If coverage is below 80%, click **Ingest missing & recheck** (requires Upstox connected) to fetch and store the missing contracts.
+   - **(Optional) Exit / risk controls** — an off-by-default panel (under Option Execution) to backtest with a premium **trailing stop**, **breakeven** lock, and soft **per-day caps** (loss ₹ / target ₹ / max trades). Trailing & breakeven need exit mode "Option premium SL/target" (fractions, e.g. 0.25 = give back 25% of peak); the ₹ caps need costs on; max-trades doesn't. Off ⇒ the run is byte-identical to before. The same overlay the Optimizer can auto-tune and the deploy wizard enforces.
 6. Click Run Backtest.
 
 For paired option backtests, slippage is automatically applied (ATM 0.5pt, OTM1/ITM1 1pt, OTM2+ 2pt, expiry-day 30-min 2x). Override per backtest via the slippage config field.
@@ -107,6 +108,7 @@ Read results carefully:
 - Strong P&L with low trade count is not reliable. Wilson CI and the significance badge highlight this.
 - Walk-forward divergence flag means OOS underperformed IS by more than 30%.
 - Option pairing coverage shows how many index trades had matching option candles.
+- **Trust scorecard** (green/amber, above the performance hero on an option run) — an **advisory** verdict that never blocks. It flags, in plain language: a **fragile** result (positive out-of-sample but **negative full-window** option-₹ — the trap to avoid deploying on the OOS number alone), an **account-ruin / equity-floor breach** (equity went to/below zero), and **low option-data coverage** (too few signals actually paired, excluding intentional cap-skips). The same verdict appears on the Optimizer's promoted best and feeds the deploy wizard's acknowledge-to-deploy gate. Option-₹ headline figures are full-window, not walk-forward validated — the scorecard says so.
 
 ## Optimizer
 
@@ -155,6 +157,7 @@ The Optimizer page runs automated parameter searches to find the best strategy c
 - **Save as Preset stores the execution policy** (moneyness, DTE, exit mode, premium levels, costs) with the params. Loading the preset in Backtest Lab re-applies it; the deployment form prefills from it. The Rocket button on a preset row jumps straight to the deployment form with that preset preselected.
 
 ### After the run
+- **Trust scorecard** — on a completed run the promoted "best" carries the same advisory verdict as the Backtest Lab (see *Backtest Lab → Read results carefully*): it flags a **fragile** survivor (positive out-of-sample but negative full-window option-₹), a ruin/equity-floor breach, and low coverage. The optimizer now also runs the promoted config's **full-window option backtest** and stores it on the saved best, so the deploy wizard's quality gate reads the *honest exact-params* option-₹ number (not a base-config approximation). Advisory only — nothing is blocked.
 - **View Best in Lab** — opens the saved best-result full backtest (with trades, equity curve, walk-forward) in the Backtest Lab.
 - **Save as Preset** — saves the best params as a Preset (available in Backtest Lab and deployments). Works for completed, cancelled, paused, and interrupted jobs.
 - **Clone config** — the copy icon on any Job History row repopulates the Setup panel with that job's configuration for re-running with tweaks.

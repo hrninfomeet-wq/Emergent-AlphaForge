@@ -2,6 +2,76 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.45.x] — Trustworthy validation loop (Piece 3) (2026-06-17)
+
+724 host tests pass (was 708; +16). On branch `feat/integrated-validation-loop` (merged
+local-only into `feat/backtest-exit-controls`). Makes the existing `deployment_quality`
+trust verdict **correct** and **omnipresent** — fragile / account-ruining configs are now
+flagged at every surface (backtest results, optimizer promotion, deploy), **advisory and
+never blocking**. Built spec → plan → TDD, hardened by **three adversarial multi-agent
+audit passes** (44 findings incl. 6 blockers — e.g. Fix-A would 400→spot-only on overlay
+survivors; the deploy gate read the wrong number; `_save_best_as_backtest` had a 2nd
+caller in `wfo.py`). Origin: a survival-gated hunt kept producing *fragile* survivors
+(OOS-positive but full-window option-₹ negative), and the manual cross-check that caught
+them was not in the pipeline.
+
+- **Fix-A (optimizer):** `_save_best_as_backtest` now replays the **promoted** config
+  (params + chosen exit-controls) through `_run_paired_option_backtest(validate=False,
+  auto_fetch=False)` and stores the full-window option result on the saved best run; finalize
+  attaches `best_quality` + `best_option_pnl_value`. `validate=False` is load-bearing — the
+  grid-derived `spot_exit`+`exit_controls` overlay would otherwise 400 and silently fall
+  back to spot-only. Conditional doc key ⇒ spot mode byte-identical.
+- **Fix-B (`app/deployment_quality.py`):** three self-contained option-₹ checks read from
+  `source_doc.option_backtest` — `option_full_window_negative` (with a "fragile: OOS-positive
+  but full-window-negative" escalation), `ruin_floor_breach` (equity ≤ floor / negative /
+  DD≥100%), `coverage_attrition` (over the cap-excluded addressable denominator). A dedup
+  suppresses the legacy evidence-driven `option_oos_negative` when a self-contained result is
+  present; 2 new tunable thresholds (`ruin_floor`, `min_coverage_ratio`). 12 TDD tests.
+- **Fix-C:** `GET /backtest/runs/{id}` attaches `quality` (compute-on-read; retroactive); a
+  reusable `TrustScorecard` (green/amber) renders on the backtest results page + the optimizer
+  promotion panel.
+- **Fix-D (`deployments._gather_deployment_evidence`):** the deploy gate now reads the
+  **promoted survivor's** full-window net (`job.best_option_pnl_value`, + a projection fix) —
+  not `rerank.ranked[0]` (the base-config, non-survivor candidate).
+- **Runtime:** added `validate: bool = True` to `_run_paired_option_backtest` (default keeps
+  existing callers identical; the optimizer passes `False` for trusted internal replays).
+- **Finding (recorded in memory `option-buying-edge-hunt-2026`):** across confluence_scalper /
+  SEB / ORF × ATM/ITM × multiple 2025-26 NIFTY windows, the survival-gated optimizer produced
+  **no deployable survivor** — every candidate was fragile (OOS+ / full-window−). ITM made SEB
+  *worse*, proving the bottleneck is **directional signal quality**, not theta/moneyness/sizing.
+  The gate correctly refused to promote a money-loser. No strategy was deployed.
+
+## [0.44.x] — Backtest-page Exit/Risk panel (UI exposure of Piece 2) (2026-06-16)
+
+On branch `feat/backtest-exit-controls`. Exposes the Piece-2 exit/risk overlay (premium
+trailing-stop, breakeven, per-day loss/target/max-trades caps) as an **optional, off-by-default**
+panel in the Backtest Lab, so a strategy can be backtested with controlled exits and the effect
+seen trade-by-trade — threaded through all six config/save/prefill paths (defaults, panel,
+`buildPayload`, `buildExecutionFromConfig`/`FromRun`, apply-preset + clone-run prefills). Off ⇒
+byte-identical (gated emission; never an empty `{}`). Hardened by a 14-finding spec audit. Two
+integration fixes shipped with it: **(a)** `PerformanceOverview` read exit-control attribution
+from the spot metrics (`result.metrics`) instead of the option metrics
+(`result.option_backtest.metrics`) — the block had been silently dead since Piece-2 Task 12;
+**(b)** the async `POST /backtest/start` path now validates the overlay at submit (clean 400)
+instead of failing the run in the worker (`.model_dump()` the pydantic sub-models; gate on
+`option_backtest.enabled`).
+
+## [0.43.x] — Adaptive regime strategies (SEB / ARS / ORF / GAP / XRS) (2026-06-16)
+
+On branch `feat/adaptive-strategies`. Five regime-adaptive intraday option-**buying** strategies
+for **NIFTY + SENSEX** on a "measured-edge" framework (Movement × Direction × Speed; edge-decay
+exits; ATR/σ/percentile-relative thresholds for SENSEX-portability): **SEB** (squeeze→expansion),
+**ARS** (variance-ratio soft-blend regime switch, flagship), **ORF** (opening-range fade/break),
+**GAP** (gap-fade), **XRS** (NIFTY↔SENSEX cross-index lead/lag). Shipped MODULAR: drop-in single
+`.py` files in `builtin/` (auto-discovered, plugins-compatible) over a shared causal-indicator
+toolkit — new pure indicators (velocity/accel, variance_ratio, Bollinger/Keltner/squeeze,
+supertrend, price-based VWAP σ-bands, NR7) + `cpr.py` (CPR + day-type) + `vol_seasonality.py`
+(causal intraday time-gate) wired into `precompute_all_indicators`; `AdaptiveStrategyBase`
+(time-gate + mode-aware speed-confirm + ATR exits). XRS uses an "extra columns only"
+`attach_companion_rs` so `run_backtest` stays untouched. Built spec → 4-plan decomposition →
+subagent-driven TDD; docker-smoked on real NIFTY+SENSEX frames (scale-free confirmed). All 5 live
+in `/api/strategies`. (Plan 4 — edge-gate WF ₹-expectancy + edge-proportional sizing — deferred.)
+
 ## [0.42.x] — Exit/Risk Controls (Piece 2) — Commit 1: enforce + evaluate (2026-06-16)
 
 654 host tests pass (was 612; +42). On branch `feat/exit-risk-controls` (stacked on
