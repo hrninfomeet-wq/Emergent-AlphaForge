@@ -55,6 +55,7 @@ MAX_DRAWDOWN_RATIO = 0.15            # |max_dd| / total_pnl > this -> warning
 SELECTION_BIAS_MIN_TRIALS = 50       # only assess once the search is this wide
 MIN_DEFLATED_SHARPE = 0.0            # deflated SR at/below this -> warn
 WF_EFFICIENCY_MIN = 0.5              # honest-WFO efficiency >= this = strong OOS
+MIN_SPOT_OPTION_CORRELATION = 0.3    # spot-objective vs option-rupee Pearson below this -> misalignment warning
 
 ANNUALIZATION = 252                  # matches backtest.py Sharpe annualization
 EULER_GAMMA = 0.5772156649015329     # Euler-Mascheroni, for the expected-max term
@@ -73,6 +74,7 @@ class QualityThresholds:
     wf_efficiency_min: float = WF_EFFICIENCY_MIN
     ruin_floor: float = 0.0            # equity-floor for ruin breach (rupees)
     min_coverage_ratio: float = 0.70   # paired / addressable below this -> coverage warning
+    min_spot_option_correlation: float = MIN_SPOT_OPTION_CORRELATION
 
     @classmethod
     def from_overrides(cls, **kw: Any) -> "QualityThresholds":
@@ -146,6 +148,28 @@ def deflated_sharpe(sharpe: Any, n_trials: Any, n_obs: Any, *, annualization: in
     <= 0 means the observed Sharpe is within what searching N configs could
     produce on this sample by chance alone."""
     return round(_safe_float(sharpe) - expected_max_sharpe(n_trials, n_obs, annualization=annualization), 3)
+
+
+def compute_spot_option_correlation(ranked: Any) -> Optional[float]:
+    """Pearson correlation between each reranked candidate's spot objective and
+    its option net-rupee. Returns None when fewer than 2 candidates or either
+    series has zero variance. Pure; no side effects."""
+    try:
+        xs = [_safe_float(r.get("spot_objective")) for r in (ranked or [])]
+        ys = [_safe_float(r.get("option_pnl_value")) for r in (ranked or [])]
+    except AttributeError:
+        return None
+    n = len(xs)
+    if n < 2:
+        return None
+    mx = sum(xs) / n
+    my = sum(ys) / n
+    sxx = sum((x - mx) ** 2 for x in xs)
+    syy = sum((y - my) ** 2 for y in ys)
+    if sxx <= 0 or syy <= 0:
+        return None
+    sxy = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+    return round(sxy / math.sqrt(sxx * syy), 4)
 
 
 def _metrics(source_doc: Dict[str, Any]) -> Dict[str, Any]:
@@ -422,6 +446,28 @@ def evaluate_source_quality(
                           "missing_entry_candle": cov.get("missing_entry_candle")},
             })
 
+    # 6. Objective misalignment (advisory): the optimizer search maximizes a
+    # SPOT proxy while deployment is option-buying rupees. When the option
+    # re-rank ran, a low spot<->option correlation means the search may be
+    # steering away from option-profitable configs. Advisory only.
+    # Use the (evidence or {}) pattern — robust whether evidence is None or {}.
+    soc = (evidence or {}).get("spot_option_correlation")
+    if soc is not None and _safe_float(soc, 1.0) < th.min_spot_option_correlation:
+        warnings.append({
+            "id": "objective_misalignment",
+            "severity": SEVERITY_WARNING,
+            "label": "Spot objective weakly predicts option P&L",
+            "detail": (
+                f"Across the re-ranked candidates, the correlation between the spot search "
+                f"objective and option net-rupee is {_safe_float(soc):.2f} (below "
+                f"{th.min_spot_option_correlation}). The optimizer maximizes a SPOT proxy, so it "
+                "may be steering away from option-profitable configurations. Treat the option "
+                "re-rank table — not the spot ranking — as the source of truth here."
+            ),
+            "value": {"spot_option_correlation": _safe_float(soc),
+                      "min_spot_option_correlation": th.min_spot_option_correlation},
+        })
+
     snapshot = {
         "trade_count": trade_count,
         "win_rate": metrics.get("win_rate"),
@@ -433,6 +479,7 @@ def evaluate_source_quality(
         # Evidence-driven (None when no evidence was supplied).
         "deflated_sharpe": dsr,
         "n_trials": n_trials,
+        "spot_option_correlation": soc,
         "option_oos_net": option_oos_net,
         "option_oos_source": option_oos_source,
         # Fix-B self-contained option-rupee snapshot (None for spot-only sources).
@@ -455,6 +502,7 @@ def evaluate_source_quality(
             "wf_efficiency_min": th.wf_efficiency_min,
             "ruin_floor": th.ruin_floor,
             "min_coverage_ratio": th.min_coverage_ratio,
+            "min_spot_option_correlation": th.min_spot_option_correlation,
         },
         "computed_at": datetime.now(timezone.utc).isoformat(),
     }

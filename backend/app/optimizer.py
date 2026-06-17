@@ -38,6 +38,7 @@ from app.strategies.base import get_registry
 from app.warehouse import load_candles_df
 from app.option_backtest import simulate_paired_option_trades
 from app.options_universe import select_contract_for_signal
+from app.deployment_quality import compute_spot_option_correlation
 from app.dte import compute_dte, normalize_dte_filter
 from app.survival import survival_verdict, SurvivalConfig, oos_fold_index_ranges
 
@@ -1018,6 +1019,7 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
         # Two-stage option re-rank: re-score the top-K spot candidates on REAL
         # paired-option net rupee and pick the option-best as the final best.
         rerank_info = None
+        spot_option_corr = None
         survival_summary = None  # defined for all paths (spot mode never enters the block below)
         if evaluation_mode == "option_rerank" and not cancelled_flag and sorted_trials:
             candidates = select_rerank_candidates(
@@ -1120,6 +1122,7 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                 }
                 best_so_far["exit_controls"] = option_cfg.get("exit_controls")
                 best_so_far["daily_caps"] = option_cfg.get("daily_caps")
+            spot_option_corr = compute_spot_option_correlation(ranked)
             rerank_info = {
                 "top_k": rerank_top_k,
                 "diversity": rerank_diversity,
@@ -1128,6 +1131,7 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                 "option_config": option_cfg,
                 "ranked": ranked[:50],
                 "survival_summary": survival_summary,
+                "spot_option_correlation": spot_option_corr,
             }
 
         # Heatmap + robustness — spot-objective analyses; skipped on cancellation
@@ -1202,7 +1206,7 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
             from app.deployment_quality import evaluate_source_quality
             finished["best_option_pnl_value"] = ((best_run.get("option_backtest") or {}).get("portfolio") or {}).get("net_pnl_value")
             _oos = (best_so_far.get("metrics") or {}).get("survival", {}).get("total_return_pct")
-            finished["best_quality"] = evaluate_source_quality(best_run, evidence={"oos_return_pct": _oos, "n_trials": n_trials})
+            finished["best_quality"] = evaluate_source_quality(best_run, evidence={"oos_return_pct": _oos, "n_trials": n_trials, "spot_option_correlation": spot_option_corr})
         await _update_job(job_id, finished)
         log.info(f"Optimization {job_id} {final_status}: best={best_so_far['value']:.4f} run_id={best_backtest_run_id}")
     except Exception as e:
