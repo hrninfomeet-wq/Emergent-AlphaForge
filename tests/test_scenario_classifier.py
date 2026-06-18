@@ -31,3 +31,19 @@ def test_column_swap_guard_keys_off_orb_not_cpr():
 def test_thresholds_overridable():
     assert classify_scenario(regime="MIXED", orb_width_pct=0.5, day_type="RANGE", nr7=False,
                              atr_ratio=1.0, narrow_thr=0.55, wide_thr=0.45) == "VOLATILE_FADE"
+
+def test_thresholds_are_inclusive_at_boundaries():
+    # Pins the >=/<= contract: exactly-at-threshold widths classify, not fall through.
+    # A regression to strict >/< would break these.
+    assert classify_scenario(regime="MIXED", orb_width_pct=0.60, day_type="RANGE",
+                             nr7=False, atr_ratio=1.0) == "VOLATILE_FADE"   # w == wide_thr
+    assert classify_scenario(regime="MIXED", orb_width_pct=0.30, day_type="RANGE",
+                             nr7=False, atr_ratio=1.0) == "TREND_CONTINUATION"  # w == narrow_thr
+
+def test_mid_width_non_chop_non_trend_regime_is_none():
+    # Rule-6 fall-through: width between thresholds AND regime not in the chop family -> NONE.
+    assert classify_scenario(regime="TREND", orb_width_pct=0.45, day_type="TREND",
+                             nr7=False, atr_ratio=1.0) == "NONE"
+
+def test_scenarios_tuple_is_the_full_contract():
+    assert SCENARIOS == ("TREND_CONTINUATION", "VOLATILE_FADE", "CHOP", "NONE")
