@@ -302,6 +302,12 @@ def precompute_all_indicators(df: pd.DataFrame, params: dict | None = None) -> p
         int(p.get("cpr_pctile_window", 20)))
     for c in cpr.columns:
         df[c] = cpr[c]
+    # Opening-range-width feature (causal). Call the SAME group fn the memoized
+    # path uses so output is byte-identical. Lazy import avoids a circular import
+    # (indicator_groups imports from this module at top level).
+    from app.indicator_groups import _compute_orb_width
+    for c, s in _compute_orb_width(df, p).items():
+        df[c] = s
     df["tod_tradeable"] = attach_tod_tradeable(
         df, int(p.get("tod_lookback_sessions", 20)), float(p.get("tod_min_atr_frac", 0.6)))
     return df

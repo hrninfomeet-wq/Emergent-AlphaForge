@@ -198,6 +198,34 @@ def _compute_cpr(df: pd.DataFrame, p: dict) -> Dict[str, pd.Series]:
     return {c: cpr[c] for c in cpr.columns}
 
 
+def _compute_orb_width(df: pd.DataFrame, p: dict) -> Dict[str, pd.Series]:
+    """Opening-range width as % of the prior-day pivot (cpr_p), scale-free.
+    orb_width_pct_partial: current session's 09:15..(09:15+or_minutes) high-low /cpr_p,
+      NaN until or_minutes bars have elapsed (no look-ahead).
+    orb_width_pct_prior: the PRIOR completed session's value (shift across sessions),
+      always available at session start.
+    Reuses session_date + cpr_p (already computed by the time/cpr groups)."""
+    or_minutes = int(p.get("or_minutes", 30))
+    import numpy as np
+    partial = pd.Series(np.nan, index=df.index, dtype="float64")
+    per_session = {}
+    for sdate, g in df.groupby("session_date", sort=False):
+        start = g["dt"].iloc[0]
+        cutoff = start + pd.Timedelta(minutes=or_minutes)
+        win = g[g["dt"] < cutoff]
+        if len(win):
+            hi, lo = float(win["high"].max()), float(win["low"].min())
+            piv = float(g["cpr_p"].iloc[0]) if "cpr_p" in g and len(g) else 0.0
+            w = 100.0 * (hi - lo) / piv if piv else np.nan
+            per_session[sdate] = w
+            # partial known only from the cutoff bar onward (causal)
+            partial.loc[g.index[g["dt"] >= cutoff]] = w
+    order = list(dict.fromkeys(df["session_date"].tolist()))
+    prior_map = {order[i]: per_session.get(order[i-1], np.nan) for i in range(len(order))}
+    prior = df["session_date"].map(lambda s: prior_map.get(s, np.nan)).astype("float64")
+    return {"orb_width_pct_partial": partial, "orb_width_pct_prior": prior}
+
+
 def _compute_tod_tradeable(df: pd.DataFrame, p: dict) -> Dict[str, pd.Series]:
     # Reads global `df['atr']` -> atr_length edge.
     return {"tod_tradeable": attach_tod_tradeable(
@@ -235,6 +263,7 @@ GROUPS = [
     IndicatorGroup("vwap_sigma", (), _compute_vwap_sigma),
     IndicatorGroup("nr7", (), _compute_nr7),
     IndicatorGroup("cpr", ("cpr_narrow_pctile", "cpr_wide_pctile", "cpr_pctile_window"), _compute_cpr),
+    IndicatorGroup("orb_width", ("or_minutes",), _compute_orb_width),
     IndicatorGroup("tod_tradeable", ("tod_lookback_sessions", "tod_min_atr_frac", "atr_length"), _compute_tod_tradeable),
     IndicatorGroup("regime", ("adx_length", "atr_length", "chop_length"), _compute_regime),
 ]

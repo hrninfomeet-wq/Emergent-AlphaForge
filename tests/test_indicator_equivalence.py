@@ -40,6 +40,8 @@ _PARAM_SWEEP = [
     {"st_period": 7, "st_mult": 2.0},
     {"swing_lookback": 3},
     {"tod_lookback_sessions": 10, "tod_min_atr_frac": 0.4},
+    {"or_minutes": 20},                # keyed orb_width group: vary the key
+    {"or_minutes": 45},
 ]
 
 def test_enrichment_is_deterministic():
@@ -74,8 +76,39 @@ def test_expected_columns_present():
     for col in ("ema9", "ema21", "rsi", "macd_hist", "atr", "atr_avg", "adx",
                 "chop", "vwap", "session_date", "ist_time", "regime",
                 "squeeze_on", "supertrend", "st_dir", "tod_tradeable",
-                "cpr_tc", "cpr_bc", "day_type", "nr7", "fvg"):
+                "cpr_tc", "cpr_bc", "day_type", "nr7", "fvg",
+                "orb_width_pct_partial", "orb_width_pct_prior"):
         assert col in enr.columns, f"missing {col}"
+
+
+def test_orb_width_partial_is_causal():
+    # Causality proof: orb_width_pct_partial must be NaN on the first bar of each
+    # session and on every pre-cutoff bar (no look-ahead). or_minutes=30 -> the
+    # 09:15..09:45 window; the fixture is 120 1-min bars/session so bars at
+    # minute-offset >= 30 are at/after the cutoff. The width is normalized by the
+    # prior-day pivot cpr_p, which is NaN for the FIRST session (no prior day) ->
+    # that session's partial is legitimately all-NaN; only assert non-NaN
+    # post-cutoff for sessions that have a valid pivot.
+    df = _fixture_df()
+    or_minutes = 30
+    enr = _enrich_new(df.copy(), {"or_minutes": or_minutes})
+    dt = pd.to_datetime(enr["ts"], unit="ms", utc=True).dt.tz_convert("Asia/Kolkata")
+    saw_populated = False
+    for _sdate, g in enr.groupby("session_date", sort=False):
+        gdt = dt.loc[g.index]
+        cutoff = gdt.iloc[0] + pd.Timedelta(minutes=or_minutes)
+        partial = g["orb_width_pct_partial"]
+        # First bar of the session: opening range not yet known -> NaN (no look-ahead).
+        assert pd.isna(partial.iloc[0]), f"{_sdate}: partial leaks on first bar"
+        # Causality: every pre-cutoff bar is NaN regardless of pivot availability.
+        assert partial[gdt < cutoff].isna().all(), \
+            f"{_sdate}: partial set before cutoff (look-ahead)"
+        # When the prior-day pivot exists, post-cutoff bars are all populated.
+        if pd.notna(g["cpr_p"].iloc[0]):
+            assert partial[gdt >= cutoff].notna().all(), \
+                f"{_sdate}: partial missing after cutoff"
+            saw_populated = True
+    assert saw_populated, "fixture never exercised a populated post-cutoff partial"
 
 def test_session_date_and_ist_time_match_strftime_reference():
     df = _fixture_df()
