@@ -110,6 +110,47 @@ def test_orb_width_partial_is_causal():
             saw_populated = True
     assert saw_populated, "fixture never exercised a populated post-cutoff partial"
 
+def test_orb_width_prior_first_session_is_nan():
+    # Causality proof for the *prior* column: the FIRST session of a window has
+    # NO prior session, so every bar of session 1 must have orb_width_pct_prior
+    # NaN. A regression (Python negative indexing order[-1]) would leak the LAST
+    # session's width back onto bar 0 -> this asserts that cannot happen.
+    or_minutes = 30
+    df = _fixture_df()  # 3 sessions; sessions 2 & 3 have a valid prior-day pivot.
+    enr = _enrich_new(df.copy(), {"or_minutes": or_minutes})
+    dt = pd.to_datetime(enr["ts"], unit="ms", utc=True).dt.tz_convert("Asia/Kolkata")
+    groups = list(enr.groupby("session_date", sort=False))
+    assert len(groups) >= 3, "fixture must have >=3 sessions for a teeth-having test"
+
+    # The LAST session must have a defined partial width (needs a prior-day pivot,
+    # i.e. it is NOT the first session) so the value that WOULD leak back onto
+    # session 1 via order[-1] is genuinely non-NaN -> a regression fails loudly.
+    _last_sdate, last_g = groups[-1]
+    assert last_g["orb_width_pct_partial"].notna().any(), \
+        "last session has no defined partial width -> leak test has no teeth"
+
+    # First session: every bar's prior is NaN (no future-session value leaked back).
+    # NB: session 1 also has NaN cpr_p (no prior-day pivot) so its own partial is
+    # all-NaN; the leak-guard here is independent of that -- a regression would put
+    # the LAST session's (non-NaN) width here, which this would catch.
+    _first_sdate, first_g = groups[0]
+    assert first_g["orb_width_pct_prior"].isna().all(), \
+        "first session orb_width_pct_prior leaks a future-session width onto bar 0"
+
+    # Pin the legitimate shift on the session 2 -> session 3 boundary, where BOTH
+    # values are non-NaN (session 2 has a valid prior-day pivot, so a defined
+    # partial). Session 3's prior must equal session 2's settled partial width.
+    _s2_sdate, second_g = groups[1]
+    _s3_sdate, third_g = groups[2]
+    s2dt = dt.loc[second_g.index]
+    cutoff2 = s2dt.iloc[0] + pd.Timedelta(minutes=or_minutes)
+    s2_partial_post = second_g["orb_width_pct_partial"][s2dt >= cutoff2].dropna().unique()
+    s3_prior = third_g["orb_width_pct_prior"].dropna().unique()
+    assert len(s2_partial_post) == 1, "session 2 should have a single settled partial width"
+    assert len(s3_prior) == 1, "session 3 prior should be a single constant width"
+    assert s3_prior[0] == s2_partial_post[0], \
+        "session 3 prior must equal session 2 partial (legitimate prior shift broken)"
+
 def test_session_date_and_ist_time_match_strftime_reference():
     df = _fixture_df()
     enr = precompute_all_indicators(df.copy(), {})

@@ -221,7 +221,8 @@ def _compute_orb_width(df: pd.DataFrame, p: dict) -> Dict[str, pd.Series]:
             # partial known only from the cutoff bar onward (causal)
             partial.loc[g.index[g["dt"] >= cutoff]] = w
     order = list(dict.fromkeys(df["session_date"].tolist()))
-    prior_map = {order[i]: per_session.get(order[i-1], np.nan) for i in range(len(order))}
+    prior_map = {order[i]: (per_session.get(order[i-1], np.nan) if i > 0 else np.nan)
+                 for i in range(len(order))}
     prior = df["session_date"].map(lambda s: prior_map.get(s, np.nan)).astype("float64")
     return {"orb_width_pct_partial": partial, "orb_width_pct_prior": prior}
 
