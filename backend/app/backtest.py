@@ -147,6 +147,8 @@ def run_backtest(
                 stp_p = stop_pts_default
             stop = entry - stp_p if open_trade.direction == "CE" else entry + stp_p
             target = entry + tgt_p if open_trade.direction == "CE" else entry - tgt_p
+            if open_trade.spot_target_level is not None:
+                target = float(open_trade.spot_target_level)   # absolute level (VOLATILE_FADE)
             # Shared intrabar exit decision (stop-first, pessimistic). Used by
             # both the spot and option engines so the rule never drifts.
             exit_price, exit_reason = intrabar_exit(
