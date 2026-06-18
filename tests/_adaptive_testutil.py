@@ -10,7 +10,11 @@ def make_ohlc(closes, *, start="2025-01-01 09:15", high_pad=0.5, low_pad=0.5, vo
     closes = np.asarray(closes, dtype=float)
     n = len(closes)
     idx = pd.date_range(start=start, periods=n, freq="1min", tz=IST)
-    ts = (idx.asi8 // 1_000_000).astype("int64")  # UTC epoch-ms; asi8 avoids deprecated .view
+    # UTC epoch-ms. as_unit("ms") normalizes the index resolution FIRST, so this stays
+    # correct whether pandas builds date_range at ns (<=2.x) or us (>=3.0) precision;
+    # a raw `asi8 // 1_000_000` silently yields epoch-SECONDS on a us-resolution index,
+    # which collapses every session_date to 1970 downstream.
+    ts = idx.as_unit("ms").asi8.astype("int64")
     return pd.DataFrame({
         "ts": ts,
         "open": closes,
