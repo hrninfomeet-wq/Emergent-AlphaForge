@@ -61,12 +61,17 @@ def _noop(_x: int) -> int:
 
 
 def _worker_evaluate(strategy_id: str, merged: Dict[str, Any], slice_bounds: Optional[Tuple[int, int]],
-                     instrument: str, costs: bool, pretrade: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
-    """Top-level, picklable. Reads _RAW_DF from the (fork-inherited) module global;
-    re-derives the strategy from the fork-inherited registry. Returns (metrics|None, merged).
-    Never raises — a failure returns (None, merged), mirroring study.optimize(catch=Exception)."""
+                     instrument: str, costs: bool, pretrade: Dict[str, Any],
+                     frame: Optional[pd.DataFrame] = None) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
+    """Top-level, picklable. In the FORK-pool path, `frame` is omitted and the
+    worker reads the fork-inherited `_RAW_DF` module global (never pickled). In the
+    SEQUENTIAL in-process path, the parent passes `frame` explicitly (no global, so
+    concurrent jobs can't race). Re-derives the strategy from the registry. Returns
+    (metrics|None, merged). Never raises — failure -> (None, merged), mirroring
+    study.optimize(catch=Exception)."""
     try:
-        frame = _RAW_DF if slice_bounds is None else _RAW_DF.iloc[slice_bounds[0]:slice_bounds[1]]
+        base = frame if frame is not None else _RAW_DF
+        frame = base if slice_bounds is None else base.iloc[slice_bounds[0]:slice_bounds[1]]
         strategy = get_registry().get(strategy_id)
         enr = enrich_with_cache(frame, merged, _WORKER_CACHES)
         res = run_backtest(enr, strategy, merged, instrument=instrument, costs_enabled=costs, pretrade_filters=pretrade)
@@ -111,12 +116,13 @@ def shutdown_pool() -> None:
 
 def parallel_backtest(pool: Optional[ProcessPoolExecutor],
                       param_sets: List[Tuple[str, Dict[str, Any], Optional[Tuple[int, int]]]],
-                      *, instrument: str, costs: bool, pretrade: Dict[str, Any]) -> List[Tuple[Optional[Dict[str, Any]], Dict[str, Any]]]:
+                      *, raw_df: pd.DataFrame, instrument: str, costs: bool, pretrade: Dict[str, Any]) -> List[Tuple[Optional[Dict[str, Any]], Dict[str, Any]]]:
     """Run param_sets [(strategy_id, merged, slice_bounds), …]. Results are returned
-    in SUBMISSION ORDER. When pool is None, runs sequentially in-process (identical
-    to the per-trial path) — the fallback for opt_workers<=1 / fork-unavailable /
-    concurrent-job."""
+    in SUBMISSION ORDER. When pool is None, runs sequentially in-process passing
+    `raw_df` as the frame explicitly (no module global -> concurrent-job safe) — the
+    fallback for opt_workers<=1 / fork-unavailable / concurrent-job. When pool is set,
+    workers read the fork-inherited _RAW_DF global (raw_df is NOT pickled per task)."""
     if pool is None:
-        return [_worker_evaluate(sid, m, sb, instrument, costs, pretrade) for (sid, m, sb) in param_sets]
+        return [_worker_evaluate(sid, m, sb, instrument, costs, pretrade, raw_df) for (sid, m, sb) in param_sets]
     futs = [pool.submit(_worker_evaluate, sid, m, sb, instrument, costs, pretrade) for (sid, m, sb) in param_sets]
     return [f.result() for f in futs]  # iterated in submission order -> order preserved

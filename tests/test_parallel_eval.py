@@ -43,17 +43,20 @@ def test_worker_never_raises_returns_merged():
 
 
 def test_parallel_backtest_sequential_fallback_in_order():
-    # pool=None path: equals direct in-process evaluation, in submission order.
+    # pool=None path: frame passed explicitly via raw_df (no module global). Results
+    # are real backtests in submission order — regression guard for the _RAW_DF bug
+    # the container gate caught (sequential fallback returned all-None sentinels).
     get_registry().auto_discover()
-    pe._RAW_DF = _fixture_df()
+    pe._RAW_DF = None  # prove the sequential path does NOT depend on the global
     pe._WORKER_CACHES = {}
+    df = _fixture_df()
     strat = get_registry().get("confluence_scalper")
     param_sets = [("confluence_scalper", strat.merged_params({}), None),
                   ("confluence_scalper", strat.merged_params({"ema_fast": 5, "ema_slow": 13}), None)]
-    out = pe.parallel_backtest(None, param_sets, instrument="NIFTY", costs=True, pretrade={})
+    out = pe.parallel_backtest(None, param_sets, raw_df=df, instrument="NIFTY", costs=True, pretrade={})
     assert len(out) == 2
     assert out[0][1] == param_sets[0][1] and out[1][1] == param_sets[1][1]  # order + merged preserved
-    assert out[0][0] is not None and "trade_count" in out[0][0]
+    assert out[0][0] is not None and "trade_count" in out[0][0]  # REAL backtest, not a sentinel
 
 
 def test_start_pool_returns_none_without_fork(monkeypatch):

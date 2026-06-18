@@ -1009,7 +1009,7 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                     param_sets = [(strategy.id, strategy.merged_params(p), None) for p in param_list]
                     results = await asyncio.to_thread(
                         parallel_backtest, pool, param_sets,
-                        instrument=instrument, costs=costs, pretrade=pretrade)
+                        raw_df=raw_df, instrument=instrument, costs=costs, pretrade=pretrade)
                     # Atomic flush: tell+append ALL in ask-order, THEN best, THEN checkpoint.
                     for trial, params, (metrics, _m) in zip(trials, param_list, results):
                         if metrics is None:

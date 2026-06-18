@@ -202,6 +202,10 @@ class OptimizerStartReq(BaseModel):
     search_exit_controls: bool = False
     option_config: Optional[Dict[str, Any]] = None
     survival_config: Optional[SurvivalConfigReq] = None
+    # Opt-in multi-core: parallel TPE trial workers. 1 = sequential (default, byte-identical).
+    # Bayesian-only; clamped to cpu-1 and the AF_OPT_WORKERS env cap. Experimental /
+    # non-deterministic (parallel ask/tell diverges the search trajectory ~0.5-2% run-to-run).
+    opt_workers: int = 1
 
 
 class WfoStartReq(BaseModel):
