@@ -40,6 +40,8 @@ class Trade:
     # tag option trades and analyze where a strategy actually has edge.
     regime: str = ""
     ist_time: str = ""
+    scenario: str = ""
+    spot_target_level: Optional[float] = None
     # Per-trade exit overrides + entry bar index. Previously stashed via
     # __dict__[...] inside the hot loop; promoted to real (optional) fields so
     # reads/writes are plain attribute access. Defaults preserve prior behavior
@@ -208,6 +210,8 @@ def run_backtest(
             reasons=sig.reasons,
             regime=str(row.get("regime", "") or ""),
             ist_time=str(ist or ""),
+            scenario=str(getattr(sig, "scenario", "") or ""),
+            spot_target_level=getattr(sig, "spot_target_level", None),
         )
         open_trade.target_pts_override = sig.spot_target_pts or target_pts_default
         open_trade.stop_pts_override = sig.spot_stop_pts or stop_pts_default
@@ -247,6 +251,7 @@ def _clean_trade_dict(t: Trade) -> Dict[str, Any]:
     d.pop("target_pts_override", None)
     d.pop("stop_pts_override", None)
     d.pop("entry_bar", None)
+    d.pop("spot_target_level", None)   # internal bookkeeping; not serialized
     return d
 
 

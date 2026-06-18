@@ -22,6 +22,9 @@ class Signal:
     time_stop_minutes: Optional[int] = None
     spot_target_pts: Optional[float] = None
     spot_stop_pts: Optional[float] = None
+    scenario: Optional[str] = None
+    spot_target_level: Optional[float] = None
+    exit_mode: Optional[str] = None
 
 
 class StrategyBase:

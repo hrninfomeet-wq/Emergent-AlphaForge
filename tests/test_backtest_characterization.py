@@ -102,6 +102,12 @@ def test_confluence_scalper_byte_identical(enriched_df, registry):
         assert got["bars_held"] == bh
         assert got["score"] == sc
 
+    # T9 serialization contract: scenario is emitted (empty for non-routed strategies),
+    # and spot_target_level (internal bookkeeping) never leaks into the serialized dict.
+    for got in trades:
+        assert got["scenario"] == ""
+        assert "spot_target_level" not in got
+
 
 # --- GOLDEN: adaptive_regime_scalper (ctx_local + ATR override + cooldown) ---
 _ADAPTIVE_METRICS = {
@@ -180,3 +186,9 @@ def test_opening_range_breakout_byte_identical(enriched_df, registry):
         assert got["pnl_pts"] == pnl
         assert got["bars_held"] == bh
         assert got["score"] == sc
+
+    # T9 serialization contract: scenario is emitted (empty for non-routed strategies),
+    # and spot_target_level (internal bookkeeping) never leaks into the serialized dict.
+    for got in trades:
+        assert got["scenario"] == ""
+        assert "spot_target_level" not in got
