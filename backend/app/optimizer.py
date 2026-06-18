@@ -33,6 +33,7 @@ import pandas as pd
 from app.backtest import run_backtest
 from app.db import get_db
 from app.indicator_groups import enrich_with_cache
+from app.parallel_eval import effective_workers, start_pool, shutdown_pool, parallel_backtest
 from app.strategies.base import get_registry
 from app.warehouse import load_candles_df
 from app.option_backtest import simulate_paired_option_trades
@@ -782,6 +783,7 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
         # 0 disables the one-sided guard.
         min_direction_share = float(payload.get("min_direction_share", 0.0) or 0.0)
         optimize_indicator_periods = bool(payload.get("optimize_indicator_periods", False))
+        opt_workers = int(payload.get("opt_workers", 1) or 1)  # opt-in multi-core; 1 = sequential (default)
 
         # Two-stage option re-rank (opt-in). "spot" keeps the original behavior.
         evaluation_mode = str(payload.get("evaluation_mode", "spot"))
@@ -903,13 +905,19 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                     "optimize_indicator_periods": optimize_indicator_periods,
                 },
             })
+            _fresh_workers = effective_workers(opt_workers) if method == "bayesian" else 1
+            _sampler = (optuna.samplers.TPESampler(seed=42, n_startup_trials=10, constant_liar=True)
+                        if _fresh_workers > 1 else _make_sampler(method))
             study = optuna.create_study(
-                direction="maximize", sampler=_make_sampler(method),
+                direction="maximize", sampler=_sampler,
                 study_name=f"alphaforge_{job_id}",
             )
             trial_history = []
             best_so_far = {"value": -float("inf"), "params": {}, "metrics": {}, "trial_num": -1}
             completed = 0
+
+        # Opt-in multi-core: bayesian-only; 1 = sequential (unchanged byte-identical path).
+        _workers = effective_workers(opt_workers) if method == "bayesian" else 1
 
         async def _maybe_pause() -> bool:
             """Persist progress and mark paused if the user paused the job.
@@ -944,7 +952,8 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                     })
                 if completed % 50 == 0:
                     await _flush_trial_log(job_id, trial_history, best_so_far, completed)
-        else:
+        elif _workers <= 1:
+            # SEQUENTIAL (workers==1) — UNCHANGED. Do NOT refactor to ask/tell. (spec §4 byte-identical)
             def objective_fn(trial: optuna.Trial) -> float:
                 params = _suggest(trial, space)
                 metrics, merged = evaluate(params)
@@ -982,6 +991,55 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                     })
                 if completed % 50 == 0:
                     await _flush_trial_log(job_id, trial_history, best_so_far, completed)
+        else:
+            # PARALLEL (workers>1) — opt-in batched ask/tell; non-deterministic (spec §4/§8).
+            pool = start_pool(raw_df, _workers)   # None -> concurrent parallel job active -> sequential in-process
+            try:
+                prior = completed
+                while completed < n_trials:
+                    cf, pf = await _job_control(job_id)
+                    if cf:
+                        log.info(f"Job {job_id} cancelled by user at trial {completed}/{n_trials}")
+                        break
+                    if pf and await _maybe_pause():
+                        return
+                    B = min(_workers, n_trials - completed)
+                    trials = [study.ask() for _ in range(B)]
+                    param_list = [_suggest(t, space) for t in trials]
+                    param_sets = [(strategy.id, strategy.merged_params(p), None) for p in param_list]
+                    results = await asyncio.to_thread(
+                        parallel_backtest, pool, param_sets,
+                        instrument=instrument, costs=costs, pretrade=pretrade)
+                    # Atomic flush: tell+append ALL in ask-order, THEN best, THEN checkpoint.
+                    for trial, params, (metrics, _m) in zip(trials, param_list, results):
+                        if metrics is None:
+                            study.tell(trial, None, state=optuna.trial.TrialState.FAIL)
+                        else:
+                            val = obj(metrics)
+                            study.tell(trial, val)
+                            trial_history.append({"params": params, "metrics": metrics, "objective_value": round(val, 4)})
+                    completed += B
+                    try:
+                        study_best_val = study.best_value
+                        study_best_params = dict(study.best_params)
+                    except Exception:
+                        study_best_val = None
+                        study_best_params = {}
+                    if study_best_val is not None and study_best_val > best_so_far["value"]:
+                        best_metrics = next((t["metrics"] for t in reversed(trial_history)
+                                             if t["params"] == study_best_params), best_so_far["metrics"])
+                        best_so_far = {"value": study_best_val, "params": study_best_params,
+                                       "metrics": best_metrics, "trial_num": completed - 1}
+                    if (completed // 5) > (prior // 5) or completed >= n_trials:
+                        await _update_job(job_id, {
+                            "n_trials_completed": completed,
+                            "best_so_far": {"value": round(best_so_far["value"], 4), "params": best_so_far["params"], "metrics": best_so_far["metrics"], "trial_num": best_so_far["trial_num"]},
+                        })
+                    if (completed // 50) > (prior // 50):
+                        await _flush_trial_log(job_id, trial_history, best_so_far, completed)
+                    prior = completed
+            finally:
+                shutdown_pool()
 
         # Final analyses. If the user cancelled, finalize FAST: skip the
         # expensive heatmap + robustness passes (each runs dozens of extra
