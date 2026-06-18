@@ -1,6 +1,6 @@
 # Handoff
 
-Updated: 2026-06-17
+Updated: 2026-06-18
 
 This is the entry point for the next AI agent or developer. **Read this + `CHANGELOG.md` before editing.** The repository and `tests/` are the source of truth — not any prior chat. `CHANGELOG.md` holds the detailed, versioned history (currently 0.17.x → 0.45.x); this file is the current architectural + state overview.
 
@@ -21,6 +21,8 @@ AlphaForge Trading Lab — a local-first research & forward-testing terminal for
 - Historical context: 6-slice live-realism/gate-rigor hardening (0.37.x), Data Warehouse overhaul (0.23–0.30), Backtest results redesign (0.31–0.36), execution-policy extraction (0.27), server.py split (0.28).
 - **New since the review** (read CHANGELOG 0.37.x before touching these): `app/live_friction.py` (single fill-model, shared by `option_backtest` + the live close path; per-deployment `risk.friction`); `app/rerank_select.py` (pure re-rank shortlist, opt-in `rerank_diversity`); `deployment_quality` now takes `evidence=` (selection-bias deflated-Sharpe + option-rupee-OOS) + `QualityThresholds`; `nse_calendar.market_status`; closed paper trades carry `gross_realized_pnl`/`friction_cost`/`total_charges` + `exit_price_source`/`exit_price_stale`.
 - Untracked local note files exist in the repo root ("Fable reply on progress.md", a docs note) — the user's, leave them.
+- **Newest branch `feat/scenario-adaptive-framework`** (2026-06-18, off the stack; CHANGELOG `0.46.x — WIP`): scenario-adaptive option-buying groundwork — causal `orb_width` indicator group (keyed on `or_minutes`, no look-ahead, first-session prior = NaN), a pure opening-range scenario classifier, and an optimizer cache-key fix (`or_minutes` in `INDICATOR_PARAM_KEYS` + an import-time guard that every memoized `indicator_groups.GROUPS` param is registered).
+- **Env note — pandas 3.0.3 now in `.venv`:** `pd.date_range` yields **µs**-resolution indices, so `idx.asi8 // 1_000_000` silently gives epoch-**seconds** not ms. This bit `tests/_adaptive_testutil.make_ohlc` (collapsed all fixture sessions to 1970, failing the `orb_width` causality tests); fixed by pinning the unit first (`idx.as_unit("ms").asi8`). Pin resolution before any epoch-ms conversion (production `yfinance_source.py` already does). Detail in CHANGELOG `0.46.x — WIP`; memory `pandas3-resolution-epoch-trap`.
 
 ## 3. Running the stack
 

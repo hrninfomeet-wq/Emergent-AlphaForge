@@ -2,6 +2,49 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.46.x — WIP] — Scenario-adaptive framework groundwork (2026-06-18)
+
+On branch `feat/scenario-adaptive-framework` (off the unmerged stack; spec + proof-first
+plan committed first). Groundwork for routing option-buying strategies on a market
+**scenario** (opening-range regime). Committed so far:
+
+- **Causal `orb_width` indicator group** (commits 2422609, ebcc04b): a keyed
+  group (`("or_minutes",)`) producing `orb_width_pct_partial` (known only from the
+  `or_minutes` cutoff bar onward — no look-ahead) and `orb_width_pct_prior` (the prior
+  completed session's settled width, shifted across sessions; the **first** session of a
+  window is NaN — guards the `order[-1]` negative-index leak). Golden byte-parity with the
+  monolithic reference held across the param sweep.
+- **Pure market-scenario classifier** (`feat(scenario)` ddcb16e): `app/scenario_classifier.py`.
+- **Optimizer cache-key fix** (`fix(optimizer)` 1c7af80): `or_minutes` added to
+  `INDICATOR_PARAM_KEYS`. Without it, two trials that differ **only** in `or_minutes` collide
+  on one `enriched_cache` key (`_indicator_key`) and the second silently reuses a frame whose
+  `orb_width` columns reflect the wrong `or_minutes` — the "optimizes against frozen
+  indicators" bug class. Hardened beyond the one param with an **import-time guard**: every
+  memoized `indicator_groups.GROUPS` param must appear in `INDICATOR_PARAM_KEYS` or import
+  raises, so future keyed groups can't silently drift. `or_minutes` is deliberately **not** in
+  `INDICATOR_PARAM_CATALOG` (not auto-swept unless that product decision is made). Regression
+  test: `test_optimizer_indicator_keys.py::test_or_minutes_registered_in_keys_tuple`
+  (text-scan, so host tests never import `optuna`).
+
+### Problem found & fixed this session — pandas 3.0 µs-resolution epoch trap
+
+The project `.venv` is now on **pandas 3.0.3 / numpy 2.4.6**, where
+`pd.date_range(freq="1min")` builds a **microsecond**-resolution index (`datetime64[us]`).
+`tests/_adaptive_testutil.py:make_ohlc` computed `ts = idx.asi8 // 1_000_000` assuming
+nanoseconds, so on a `us` index it produced epoch-**seconds** (`1736135100`) instead of ms
+(`1736135100000`). Downstream `pd.to_datetime(ts, unit="ms")` mapped every bar to ~1970 and
+collapsed all three fixture sessions into one — failing the two `orb_width` causality tests
+with `assert 1 >= 3` ("fixture must have >=3 sessions"). **Fix** (commit `3f0ff71`): pin the
+resolution first — `ts = idx.as_unit("ms").asi8` — correct whether pandas builds the index at
+ns (≤2.x) or us (≥3.0). Verified:
+`pytest tests/test_optimizer_indicator_keys.py tests/test_indicator_equivalence.py -q` →
+**9 passed**; all 8 fixture-using test files → **35 passed**. Production
+`app/yfinance_source.py` audited and **safe** (it pins `astype("datetime64[ns, UTC]")` before
+`// 10**6`). Gotcha recorded in agent memory `pandas3-resolution-epoch-trap`.
+
+> Branch has since advanced past this groundwork (per-scenario `exit_plan` dispatcher, Signal/
+> Trade scenario plumbing, scenario-classifier coverage); those land in a later CHANGELOG entry.
+
 ## [0.45.x] — Trustworthy validation loop (Piece 3) (2026-06-17)
 
 724 host tests pass (was 708; +16). On branch `feat/integrated-validation-loop` (merged
