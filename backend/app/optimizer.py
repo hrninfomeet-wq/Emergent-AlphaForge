@@ -62,8 +62,25 @@ INDICATOR_PARAM_KEYS = (
     "bb_len", "bb_mult", "kc_len", "kc_atr_mult", "sqz_mom_len",
     "st_period", "st_mult",
     "cpr_narrow_pctile", "cpr_wide_pctile", "cpr_pctile_window",
+    "or_minutes",
     "tod_lookback_sessions", "tod_min_atr_frac",
 )
+
+# Invariant: every memoized indicator group's tuning params (source of truth:
+# `app.indicator_groups.GROUPS`) MUST appear in INDICATOR_PARAM_KEYS above, or
+# tuning them silently reuses a stale enriched frame. This import-time guard
+# prevents the two lists from drifting as new keyed groups are added.
+from app.indicator_groups import GROUPS as _GROUPS  # noqa: E402
+
+_missing_indicator_keys = {
+    k for grp in _GROUPS for k in grp.param_keys
+} - set(INDICATOR_PARAM_KEYS)
+if _missing_indicator_keys:
+    raise RuntimeError(
+        f"INDICATOR_PARAM_KEYS missing memoized-group params {_missing_indicator_keys}; "
+        "tuning them would reuse a stale enriched frame. Add them to "
+        "INDICATOR_PARAM_KEYS in app/optimizer.py."
+    )
 
 # Catalog of indicator-period params the optimizer can inject into the search
 # space on request (sensible intraday bounds). Only added when the user enables

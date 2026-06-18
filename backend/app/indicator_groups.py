@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from typing import Callable, Dict, Tuple
 
+import numpy as np
 import pandas as pd
 
 from app.indicators import (
@@ -206,7 +207,6 @@ def _compute_orb_width(df: pd.DataFrame, p: dict) -> Dict[str, pd.Series]:
       always available at session start.
     Reuses session_date + cpr_p (already computed by the time/cpr groups)."""
     or_minutes = int(p.get("or_minutes", 30))
-    import numpy as np
     partial = pd.Series(np.nan, index=df.index, dtype="float64")
     per_session = {}
     for sdate, g in df.groupby("session_date", sort=False):
