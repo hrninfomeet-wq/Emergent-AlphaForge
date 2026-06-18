@@ -16,3 +16,12 @@ def test_new_period_params_registered_in_keys_tuple():
     block = _keys_tuple_text()
     for k in NEW:
         assert f'"{k}"' in block, f"{k} not registered in INDICATOR_PARAM_KEYS"
+
+
+def test_or_minutes_registered_in_keys_tuple():
+    """The orb_width indicator group is keyed on `or_minutes`, so the optimizer's
+    enriched-frame cache MUST also key on it -- otherwise tuning `or_minutes`
+    silently reuses a frame whose orb_width columns reflect the wrong value
+    (the "optimizes against frozen indicators" bug). Text-based check so host
+    tests never import optimizer.py (which pulls optuna)."""
+    assert '"or_minutes"' in _keys_tuple_text()
