@@ -151,6 +151,12 @@ def test_adaptive_regime_scalper_byte_identical(enriched_df, registry):
         assert got["bars_held"] == bh, f"trade[{idx}] bars_held"
         assert got["score"] == sc, f"trade[{idx}] score"
 
+    # T9 serialization contract (same as confluence/ORB): scenario emitted empty,
+    # spot_target_level never leaks.
+    for got in trades:
+        assert got["scenario"] == ""
+        assert "spot_target_level" not in got
+
 
 # --- GOLDEN: opening_range_breakout (exercises orb_hi/orb_lo ctx path) ---
 _ORB_METRICS = {
