@@ -64,6 +64,44 @@ def _params(source_type: str, source_doc: Dict[str, Any]) -> Dict[str, Any]:
     return {}
 
 
+def deployment_sizing_from_source(
+    source_type: str, source_doc: Dict[str, Any]
+) -> Optional[Dict[str, Any]]:
+    """Extract the source run's position-sizing policy so a deployment can pin it
+    and replay it live. Returns {"sizing_config", "lots", "source_id"} or None when
+    the source carries no sizing config (→ live falls back to default_lots).
+
+    - backtest_run: the resolved option-sim sizing_config (always present for an
+      option run) + the run's fixed `lots` from its request.
+    - preset: the execution block's sizing_config (present only when the preset was
+      saved with one) + the execution `lots` scalar.
+    """
+    from app.portfolio import SizingConfig
+
+    st = str(source_type or "").lower()
+    if st == "backtest_run":
+        ob = source_doc.get("option_backtest") or {}
+        sizing_config = ob.get("sizing_config")
+        lots = (ob.get("request") or {}).get("lots")
+    elif st == "preset":
+        ex = (source_doc.get("config") or {}).get("execution") or {}
+        sizing_config = ex.get("sizing_config")
+        lots = ex.get("lots")
+    else:
+        return None
+    if not isinstance(sizing_config, dict):
+        return None
+    try:
+        lots_n = int(lots or 1)
+    except (TypeError, ValueError):
+        lots_n = 1  # tolerate a hand-edited/imported preset with non-numeric lots
+    return {
+        "sizing_config": SizingConfig.from_dict(sizing_config).to_dict(),
+        "lots": max(1, lots_n),
+        "source_id": _source_id(st, source_doc),
+    }
+
+
 def build_deployment_doc(
     *,
     source_type: str,
