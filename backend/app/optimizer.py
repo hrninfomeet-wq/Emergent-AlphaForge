@@ -41,6 +41,7 @@ from app.options_universe import select_contract_for_signal
 from app.deployment_quality import compute_spot_option_correlation
 from app.dte import compute_dte, normalize_dte_filter
 from app.survival import survival_verdict, SurvivalConfig, oos_fold_index_ranges
+from app.early_stop import is_significant_improvement, should_early_stop
 
 log = logging.getLogger(__name__)
 optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -787,6 +788,10 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
         method = payload.get("method", "bayesian")  # bayesian | grid | genetic
         objective = payload.get("objective", "risk_adjusted")
         n_trials = int(payload.get("n_trials", 200))
+        early_stop = bool(payload.get("early_stop", True))
+        es_warmup = int(payload.get("early_stop_warmup", 200) or 0)
+        es_patience = int(payload.get("early_stop_patience", 200) or 0)
+        es_min_delta = float(payload.get("early_stop_min_delta", 0.001) or 0.0)
         costs = payload.get("costs_enabled", True)
         pretrade = payload.get("pretrade_filters", {})
         param_overrides = payload.get("param_overrides", {})
@@ -904,6 +909,8 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                 "metrics": bsf.get("metrics") or {},
                 "trial_num": bsf.get("trial_num", -1),
             }
+            anchor_value = best_so_far["value"]
+            last_improve_trial = best_so_far["trial_num"] if best_so_far["trial_num"] >= 0 else 0
             study = _rebuild_study(method, space, trial_history)
             await _update_job(job_id, {
                 "status": "running", "paused": False, "cancelled": False,
@@ -932,6 +939,11 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
             trial_history = []
             best_so_far = {"value": -float("inf"), "params": {}, "metrics": {}, "trial_num": -1}
             completed = 0
+            anchor_value = best_so_far["value"]
+            last_improve_trial = best_so_far["trial_num"] if best_so_far["trial_num"] >= 0 else 0
+
+        # Convergence early-stop flag — visible after the loop. Both branches share this scope.
+        early_stopped = False
 
         # Opt-in multi-core: bayesian-only; 1 = sequential (unchanged byte-identical path).
         _workers = effective_workers(opt_workers) if method == "bayesian" else 1
@@ -962,6 +974,14 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                 if val > best_so_far["value"]:
                     best_so_far = {"value": val, "params": dict(params), "metrics": metrics, "trial_num": completed}
                 completed += 1
+                if early_stop:
+                    if is_significant_improvement(best_so_far["value"], anchor_value, es_min_delta):
+                        anchor_value = best_so_far["value"]
+                        last_improve_trial = completed
+                    if should_early_stop(completed=completed, last_improve_trial=last_improve_trial,
+                                         warmup=es_warmup, patience=es_patience):
+                        early_stopped = True
+                        break
                 if completed % 5 == 0:
                     await _update_job(job_id, {
                         "n_trials_completed": completed,
@@ -1001,6 +1021,14 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                         "metrics": trial_history[-1]["metrics"] if trial_history else {},
                         "trial_num": completed - 1,
                     }
+                if early_stop:
+                    if is_significant_improvement(best_so_far["value"], anchor_value, es_min_delta):
+                        anchor_value = best_so_far["value"]
+                        last_improve_trial = completed
+                    if should_early_stop(completed=completed, last_improve_trial=last_improve_trial,
+                                         warmup=es_warmup, patience=es_patience):
+                        early_stopped = True
+                        break
                 if completed % 5 == 0 or completed == n_trials:
                     await _update_job(job_id, {
                         "n_trials_completed": completed,
@@ -1047,6 +1075,14 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                                              if t["params"] == study_best_params), best_so_far["metrics"])
                         best_so_far = {"value": study_best_val, "params": study_best_params,
                                        "metrics": best_metrics, "trial_num": completed - 1}
+                    if early_stop:
+                        if is_significant_improvement(best_so_far["value"], anchor_value, es_min_delta):
+                            anchor_value = best_so_far["value"]
+                            last_improve_trial = completed
+                        if should_early_stop(completed=completed, last_improve_trial=last_improve_trial,
+                                             warmup=es_warmup, patience=es_patience):
+                            early_stopped = True
+                            break
                     if (completed // 5) > (prior // 5) or completed >= n_trials:
                         await _update_job(job_id, {
                             "n_trials_completed": completed,
@@ -1063,7 +1099,9 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
         # backtests), which otherwise leave the job sitting in "analyzing" for
         # a long time after Stop. Best-so-far + cheap importance are kept.
         cancelled_flag = await _is_cancelled(job_id)
-        await _update_job(job_id, {"status": "analyzing", "n_trials_completed": completed})
+        await _update_job(job_id, {"status": "analyzing", "n_trials_completed": completed,
+                                   "early_stopped": early_stopped, "stopped_at_trial": completed,
+                                   "trials_ceiling": n_trials})
 
         # Top-N alternatives
         sorted_trials = sorted(trial_history, key=lambda t: t["objective_value"], reverse=True)
