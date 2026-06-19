@@ -176,18 +176,24 @@ export default function PaperTrading() {
     [livePos],
   );
 
-  // Per-deployment OPEN count + MTM, derived from the filtered stats set (which
-  // reliably carries deployment_id). Live unrealized_pnl overlays the snapshot
-  // when a matching open position exists, for freshness.
+  // Per-deployment OPEN count + MTM for the control strip. The strip is GLOBAL,
+  // so it must NOT inherit the table's deployment filter — prefer the global live
+  // open-positions feed (carries deployment_id + fresh unrealized_pnl). Fall back
+  // to the (filtered) stats set only until the live feed's first poll lands.
   const perDeployOpen = useMemo(() => {
     const m = {};
+    const add = (k, pnl) => {
+      const key = k || "—";
+      (m[key] = m[key] || { openCount: 0, openMtm: 0 });
+      m[key].openCount += 1; m[key].openMtm += Number(pnl || 0);
+    };
+    const live = livePos.items || [];
+    if (live.length && live.some((p) => p.deployment_id != null)) {
+      for (const p of live) add(p.deployment_id, p.unrealized_pnl);
+      return m;
+    }
     for (const t of statsRows) {
-      if (String(t.status || "").toUpperCase() !== "OPEN") continue;
-      const k = t.deployment_id || "—";
-      const live = (livePos.items || []).find((p) => p.id === t.id);
-      const pnl = live ? Number(live.unrealized_pnl || 0) : Number(t.unrealized_pnl || 0);
-      (m[k] = m[k] || { openCount: 0, openMtm: 0 });
-      m[k].openCount += 1; m[k].openMtm += pnl;
+      if (String(t.status || "").toUpperCase() === "OPEN") add(t.deployment_id, t.unrealized_pnl);
     }
     return m;
   }, [statsRows, livePos]);

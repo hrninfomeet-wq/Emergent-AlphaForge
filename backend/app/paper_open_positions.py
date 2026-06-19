@@ -43,6 +43,7 @@ def build_open_positions(
         items.append({
             "id": t.get("id"),
             "instrument_key": key,
+            "deployment_id": t.get("deployment_id"),
             "deployment_name": t.get("deployment_name"),
             "direction": t.get("direction"),
             "entry_price": entry,
