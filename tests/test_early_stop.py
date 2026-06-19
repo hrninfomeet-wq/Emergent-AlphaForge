@@ -31,3 +31,11 @@ def test_stop_at_patience_boundary():
 
 def test_patience_below_one_never_stops():
     assert should_early_stop(completed=1000, last_improve_trial=0, warmup=10, patience=0) is False
+
+
+def test_optimizer_start_req_early_stop_defaults():
+    from app.schemas import OptimizerStartReq
+    r = OptimizerStartReq(strategy_id="x")
+    assert r.early_stop is True
+    assert r.early_stop_warmup == 200 and r.early_stop_patience == 200
+    assert r.early_stop_min_delta == 0.001
