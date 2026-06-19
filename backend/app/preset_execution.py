@@ -57,4 +57,8 @@ def execution_from_option_config(option_cfg: Optional[Dict[str, Any]]) -> Option
     daily_caps = (option_cfg or {}).get("daily_caps")
     if daily_caps is not None:
         execution["daily_caps"] = daily_caps
+    sizing_config = option_cfg.get("sizing_config")
+    if isinstance(sizing_config, dict):
+        from app.portfolio import SizingConfig
+        execution["sizing_config"] = SizingConfig.from_dict(sizing_config).to_dict()
     return execution
