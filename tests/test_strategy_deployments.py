@@ -187,10 +187,14 @@ def test_build_deployment_pins_sizing_from_source():
     assert doc["risk"]["sizing"]["sizing_config"]["enabled"] is True
     assert doc["risk"]["sizing"]["sizing_config"]["mode"] == "premium_at_risk"
     assert doc["risk"]["sizing"]["lots"] == 2
+    assert doc["risk"]["sizing"]["source_id"] == "run-9"
 
 
 def test_build_deployment_no_sizing_when_source_lacks_it():
     preset = {"name": "old", "config": {"instrument": "NIFTY", "strategy_id": "s",
               "params": {}, "execution": {"lots": 5}}}
-    doc = build_deployment_doc(source_type="preset", source_doc=preset, name="d", mode="paper")
+    doc = build_deployment_doc(source_type="preset", source_doc=preset, name="d", mode="paper",
+                               risk={"stop_price": 80})
     assert "sizing" not in doc["risk"]
+    assert doc["risk"]["stop_price"] == 80      # caller-supplied risk key preserved
+    assert "allow_overnight" in doc["risk"]     # always-present key intact
