@@ -171,3 +171,26 @@ def test_deployment_sizing_tolerates_non_numeric_preset_lots():
     pin = deployment_sizing_from_source("preset", preset)
     assert pin is not None
     assert pin["lots"] == 1
+
+
+def test_build_deployment_pins_sizing_from_source():
+    run = {
+        "id": "run-9", "strategy_id": "s", "instrument": "NIFTY",
+        "config": {"strategy_id": "s", "instrument": "NIFTY", "params": {}},
+        "option_backtest": {
+            "sizing_config": {"enabled": True, "mode": "premium_at_risk",
+                              "capital": 200_000, "risk_per_trade_pct": 1.0, "max_lots": 10},
+            "request": {"lots": 2},
+        },
+    }
+    doc = build_deployment_doc(source_type="backtest_run", source_doc=run, name="d", mode="paper")
+    assert doc["risk"]["sizing"]["sizing_config"]["enabled"] is True
+    assert doc["risk"]["sizing"]["sizing_config"]["mode"] == "premium_at_risk"
+    assert doc["risk"]["sizing"]["lots"] == 2
+
+
+def test_build_deployment_no_sizing_when_source_lacks_it():
+    preset = {"name": "old", "config": {"instrument": "NIFTY", "strategy_id": "s",
+              "params": {}, "execution": {"lots": 5}}}
+    doc = build_deployment_doc(source_type="preset", source_doc=preset, name="d", mode="paper")
+    assert "sizing" not in doc["risk"]

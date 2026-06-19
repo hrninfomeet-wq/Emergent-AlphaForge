@@ -153,6 +153,8 @@ def build_deployment_doc(
         except (TypeError, ValueError):
             continue
 
+    sizing_pin = deployment_sizing_from_source(source_type, source_doc)
+
     return {
         "id": str(uuid.uuid4()),
         "name": str(name or f"{strategy_id} deployment"),
@@ -183,7 +185,11 @@ def build_deployment_doc(
         # signals; signal_only deployments journal only. Kept for doc-shape
         # compat with pre-existing readers.
         "manual_approval_required": False,
-        "risk": {**(risk or {}), "allow_overnight": bool(allow_overnight)},
+        "risk": {
+            **(risk or {}),
+            "allow_overnight": bool(allow_overnight),
+            **({"sizing": sizing_pin} if sizing_pin else {}),
+        },
         "status": "ACTIVE",
         "created_at": timestamp,
         "updated_at": timestamp,
