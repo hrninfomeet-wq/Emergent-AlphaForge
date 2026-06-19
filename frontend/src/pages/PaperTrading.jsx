@@ -9,6 +9,7 @@ import { fmtNum, fmtPct, colorPnL, isoToFull } from "@/lib/fmt";
 import {
   Briefcase, RefreshCw, Download, Trash2, Zap, XCircle,
   ChevronLeft, ChevronRight, CalendarDays,
+  Pause, Play, Square, OctagonX, Activity,
 } from "lucide-react";
 
 /**
@@ -174,6 +175,22 @@ export default function PaperTrading() {
     () => Object.fromEntries((livePos.items || []).map((p) => [p.id, p])),
     [livePos],
   );
+
+  // Per-deployment OPEN count + MTM, derived from the filtered stats set (which
+  // reliably carries deployment_id). Live unrealized_pnl overlays the snapshot
+  // when a matching open position exists, for freshness.
+  const perDeployOpen = useMemo(() => {
+    const m = {};
+    for (const t of statsRows) {
+      if (String(t.status || "").toUpperCase() !== "OPEN") continue;
+      const k = t.deployment_id || "—";
+      const live = (livePos.items || []).find((p) => p.id === t.id);
+      const pnl = live ? Number(live.unrealized_pnl || 0) : Number(t.unrealized_pnl || 0);
+      (m[k] = m[k] || { openCount: 0, openMtm: 0 });
+      m[k].openCount += 1; m[k].openMtm += pnl;
+    }
+    return m;
+  }, [statsRows, livePos]);
 
   const setFilter = (k, v) => { setSkip(0); setSelected(new Set()); setFilters((f) => ({ ...f, [k]: v })); };
 
@@ -371,25 +388,62 @@ export default function PaperTrading() {
   };
 
   const closeAllOpen = async () => {
-    const open = statsRows.filter((t) => String(t.status || "").toUpperCase() === "OPEN");
-    if (open.length === 0) { toast.info("No open trades to close."); return; }
-    if (!window.confirm(`Close all ${open.length} open trade${open.length === 1 ? "" : "s"} at their last mark? Trades with no live mark will be skipped.`)) return;
+    if (summary.openCount === 0) { toast.info("No open trades to close."); return; }
+    const offHours = (livePos.items || []).length === 0; // no live marks → estimated fills
+    const warn = offHours ? "\n\nMarket looks closed — open positions will close at an ESTIMATED price (last mark/entry), not a live fill." : "";
+    if (!window.confirm(`Close all ${summary.openCount} open trade(s)?${warn}`)) return;
     setBusy(true);
-    let done = 0, skipped = 0;
     try {
-      for (const t of open) {
-        if (t.last_price == null) { skipped += 1; continue; }
-        try {
-          await api.closePaperTrade(t.id, { exit_price: Number(t.last_price), reason: "manual_close_all" });
-          done += 1;
-        } catch { skipped += 1; }
-      }
-      toast.success(`Closed ${done} trade${done === 1 ? "" : "s"}${skipped ? ` · ${skipped} skipped (no mark)` : ""}.`);
+      const res = await api.squareOffAll();
+      toast.success(`Squared off ${res.count ?? (res.items?.length ?? 0)} trade(s).`);
       await fetchRows();
-    } finally {
-      setBusy(false);
-    }
+    } catch (e) {
+      toast.error(`Close all failed: ${e.response?.data?.detail || e.message}`);
+    } finally { setBusy(false); }
   };
+
+  // ---- Live deployment controls (pause / resume / stop + master stop-all) ----
+  const refreshAll = async () => {
+    try { const d = await api.listDeployments({ limit: 200 }); setDeployments(d.items || []); } catch { /* keep last */ }
+    await fetchRows();
+  };
+  const doPause = async (dep) => {
+    setBusy(true);
+    try { await api.pauseDeployment(dep.id); toast.success(`Paused "${dep.name || dep.id}"`); await refreshAll(); }
+    catch (e) { toast.error(e.response?.data?.detail || e.message); }
+    finally { setBusy(false); }
+  };
+  const doResume = async (dep) => {
+    setBusy(true);
+    try { await api.resumeDeployment(dep.id); toast.success(`Resumed "${dep.name || dep.id}"`); await refreshAll(); }
+    catch (e) { toast.error(e.response?.data?.detail || e.message); }
+    finally { setBusy(false); }
+  };
+  const doStop = async (dep) => {
+    const oc = perDeployOpen[dep.id]?.openCount || 0;
+    const offHours = (livePos.items || []).length === 0;
+    const warn = (oc > 0 && offHours) ? "\n\nMarket looks closed — its open position(s) will close at an ESTIMATED price." : "";
+    if (!window.confirm(`Stop "${dep.name || dep.id}"? This squares off its ${oc} open position(s) and pauses it (no new entries until Resume).${warn}`)) return;
+    setBusy(true);
+    try { const r = await api.stopDeployment(dep.id); toast.success(`Stopped "${dep.name || dep.id}" · squared off ${r.squared_off_count ?? 0}`); await refreshAll(); }
+    catch (e) { toast.error(e.response?.data?.detail || e.message); }
+    finally { setBusy(false); }
+  };
+  const doStopAll = async () => {
+    const offHours = (livePos.items || []).length === 0;
+    const warn = offHours ? "\n\nMarket looks closed — open positions will close at an ESTIMATED price." : "";
+    if (!window.confirm(`Stop ALL paper trading? Squares off every open position and pauses all active strategies.${warn}`)) return;
+    setBusy(true);
+    try { const r = await api.stopAllPaper(); toast.success(`Stopped all · squared off ${r.squared_off_count ?? 0} · paused ${r.paused_deployment_ids?.length ?? 0}`); await refreshAll(); }
+    catch (e) { toast.error(e.response?.data?.detail || e.message); }
+    finally { setBusy(false); }
+  };
+
+  // Non-archived deployments for the Live Deployments strip.
+  const liveDeployments = useMemo(
+    () => deployments.filter((d) => String(d.status || "").toUpperCase() !== "ARCHIVED"),
+    [deployments],
+  );
 
   // ---- Day-wise grouping of the current page ----
   const groups = useMemo(() => {
@@ -440,6 +494,37 @@ export default function PaperTrading() {
         {showCalendar && (
           <div className="p-3">
             <CalendarHeatGrid dayPnl={dayPnl} />
+          </div>
+        )}
+      </div>
+
+      {/* Live Deployments control strip */}
+      <div className="rounded-lg border border-line bg-bg-1" data-testid="paper-deploy-strip">
+        <div className="px-3 py-2 border-b border-line flex items-center gap-2">
+          <Activity className="w-4 h-4 text-info" />
+          <div className="text-xs font-semibold uppercase tracking-wider text-dim">Live Deployments</div>
+          <span className="text-[11px] text-dimmer">pause / resume / stop · squares off open positions</span>
+          <Button variant="outline" size="sm" disabled={busy || liveDeployments.length === 0} onClick={doStopAll}
+            className="ml-auto h-7 text-xs border-rose-500/40 text-rose-300 hover:text-rose-200" data-testid="paper-stop-all"
+            title="Square off every open position and pause all active strategies">
+            <OctagonX className="w-3.5 h-3.5 mr-1" /> Stop ALL paper trading
+          </Button>
+        </div>
+        {liveDeployments.length === 0 ? (
+          <div className="px-3 py-3 text-[11px] text-dimmer">No active deployments.</div>
+        ) : (
+          <div className="divide-y divide-line">
+            {liveDeployments.map((dep) => (
+              <DeploymentControlRow
+                key={dep.id}
+                dep={dep}
+                open={perDeployOpen[dep.id]}
+                busy={busy}
+                onPause={doPause}
+                onResume={doResume}
+                onStop={doStop}
+              />
+            ))}
           </div>
         )}
       </div>
@@ -693,6 +778,49 @@ function Stat({ label, value, tone = null }) {
     <div className="rounded-md border border-line bg-bg-2 p-2">
       <div className="text-[10px] uppercase tracking-wider text-dimmer">{label}</div>
       <div className={`text-sm font-mono mt-0.5 ${toneClass}`}>{value}</div>
+    </div>
+  );
+}
+
+// One row of the Live Deployments strip: status dot + strategy/name, live open
+// count + MTM, and the Pause/Resume + Stop controls.
+function DeploymentControlRow({ dep, open, busy, onPause, onResume, onStop }) {
+  const status = String(dep.status || "").toUpperCase();
+  const isActive = status === "ACTIVE";
+  const isPaused = status === "PAUSED";
+  const dot = isActive ? "bg-emerald-400" : isPaused ? "bg-amber-400" : "bg-dimmer";
+  const statusText = isActive ? "text-emerald-300" : isPaused ? "text-amber-300" : "text-dimmer";
+  const openCount = open?.openCount || 0;
+  const openMtm = open?.openMtm || 0;
+  return (
+    <div className="px-3 py-2 flex items-center gap-2 flex-wrap" data-testid="paper-deploy-row">
+      <span className={`w-2 h-2 rounded-full shrink-0 ${dot}`} title={status || "—"} />
+      <div className="min-w-0">
+        <div className="font-medium text-xs truncate max-w-[200px]" title={dep.name}>{dep.name || dep.id?.slice(0, 8) || "—"}</div>
+        <div className="text-[10px] text-dimmer truncate max-w-[200px]" title={dep.strategy_id}>{dep.strategy_id || "—"}</div>
+      </div>
+      <span className={`ml-2 text-[11px] uppercase tracking-wider ${statusText}`}>{status || "—"}</span>
+      <span className="ml-3 text-[11px] font-mono text-dim whitespace-nowrap">
+        {openCount} open · MTM <span className={colorPnL(openMtm)}>{inr(openMtm)}</span>
+      </span>
+      <div className="ml-auto flex items-center gap-1.5">
+        {isActive && (
+          <Button variant="ghost" size="sm" disabled={busy} onClick={() => onPause(dep)}
+            className="h-7 text-xs text-amber-300 hover:text-amber-200" data-testid="paper-deploy-pause">
+            <Pause className="w-3 h-3 mr-1" /> Pause
+          </Button>
+        )}
+        {isPaused && (
+          <Button variant="ghost" size="sm" disabled={busy} onClick={() => onResume(dep)}
+            className="h-7 text-xs text-emerald-300 hover:text-emerald-200" data-testid="paper-deploy-resume">
+            <Play className="w-3 h-3 mr-1" /> Resume
+          </Button>
+        )}
+        <Button variant="outline" size="sm" disabled={busy} onClick={() => onStop(dep)}
+          className="h-7 text-xs border-rose-500/40 text-rose-300 hover:text-rose-200" data-testid="paper-deploy-stop">
+          <Square className="w-3 h-3 mr-1" /> Stop
+        </Button>
+      </div>
     </div>
   );
 }
