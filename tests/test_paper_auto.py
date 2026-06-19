@@ -325,6 +325,31 @@ def test_resolve_lots_pin_without_sizing_config_uses_pin_lots():
     assert audit["sizing_mode"] == "fixed_lots"
 
 
+def test_resolve_lots_caps_at_max_lots():
+    # Budget would buy ~44 lots, but max_lots clamps to 2.
+    sizing = {"enabled": True, "mode": "premium_at_risk", "capital": 200_000,
+              "risk_per_trade_pct": 50.0, "max_lots": 2}
+    risk_cfg = {"sizing": {"sizing_config": sizing, "lots": 1}}
+    lots, audit = resolve_deployment_lots(risk_cfg, 100.0, {"lot_size": 75}, 70.0)
+    assert lots == 2
+    assert audit["sizing_mode"] == "premium_at_risk"
+
+
+def test_resolve_lots_premium_at_risk_no_stop_uses_assumed_pct():
+    from app.portfolio import SizingConfig, size_position
+    # No premium stop -> size_position uses assumed_stop_pct_of_premium (default 50%).
+    # entry 100 -> risk/unit 50; budget 200000*10% = 20000; lot 75 -> per-lot 3750 -> 5 lots.
+    sizing = {"enabled": True, "mode": "premium_at_risk", "capital": 200_000,
+              "risk_per_trade_pct": 10.0, "max_lots": 50}
+    risk_cfg = {"sizing": {"sizing_config": sizing, "lots": 1}}
+    lots, audit = resolve_deployment_lots(risk_cfg, 100.0, {"lot_size": 75}, None)
+    expected = size_position(entry_premium=100.0, lot_size=75, stop_level=None,
+                             cfg=SizingConfig.from_dict(sizing))
+    assert lots == 5
+    assert lots == int(expected["lots"])
+    assert audit["sizing_mode"] == "premium_at_risk"
+
+
 # ---------- auto_paper_trade_for_signal -------------------------------------------
 
 @pytest.mark.asyncio
