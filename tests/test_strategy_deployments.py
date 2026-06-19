@@ -95,6 +95,8 @@ def test_backend_exposes_strategy_deployment_routes_and_index():
         '@api.get("/deployments/{deployment_id}")',
         '@api.post("/deployments/{deployment_id}/pause")',
         '@api.post("/deployments/{deployment_id}/resume")',
+        '@api.post("/deployments/{deployment_id}/stop")',
+        '@api.post("/deployments/stop-all")',
         '@api.post("/deployments/{deployment_id}/archive")',
         '@api.get("/deployments/{deployment_id}/signals")',
     ):

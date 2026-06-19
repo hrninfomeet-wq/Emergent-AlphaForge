@@ -22,12 +22,14 @@ from app.forward_metrics import (
 from app.deployment_evaluator import evaluate_active_deployments, evaluate_deployment_on_close
 from app.deployment_preflight import compute_data_realism
 from app.nse_calendar import market_status
+from app.paper_squareoff import square_off_open_paper_trades
 
 from app.runtime import (
     _auto_follow_option_stream,
     _ist_day_bounds_ms_full,
     _load_deployment_source,
     _set_deployment_status,
+    upstox_stream_manager,
 )
 
 from app.schemas import DeploymentCreateReq
@@ -491,6 +493,57 @@ async def resume_deployment(deployment_id: str):
     doc = await _set_deployment_status(deployment_id, "ACTIVE")
     stream = await _auto_follow_option_stream()
     return serialize_doc({**doc, "option_stream": stream})
+
+
+@api.post("/deployments/stop-all")
+async def stop_all_deployments():
+    """Stop ALL paper trading: square off every open position, then pause every
+    ACTIVE deployment (no new entries until each is resumed). Open positions
+    close at the live tick price when the market is open, else at a flagged
+    estimate."""
+    db = get_db()
+    summaries = await square_off_open_paper_trades(
+        db,
+        latest_tick_lookup=upstox_stream_manager.latest_tick_map().get,
+        reason="manual_stop_all",
+    )
+    active = await db.strategy_deployments.find(
+        {"status": "ACTIVE"}, {"_id": 0, "id": 1}
+    ).to_list(length=None)
+    paused_ids = [d["id"] for d in active]
+    if paused_ids:
+        await db.strategy_deployments.update_many(
+            {"id": {"$in": paused_ids}},
+            {"$set": {"status": "PAUSED", "updated_at": datetime.now(timezone.utc).isoformat()}},
+        )
+    return serialize_doc({
+        "squared_off": summaries,
+        "squared_off_count": len(summaries),
+        "paused_deployment_ids": paused_ids,
+    })
+
+
+@api.post("/deployments/{deployment_id}/stop")
+async def stop_deployment(deployment_id: str):
+    """Stop a paper deployment: square off ITS open positions, then pause it
+    (no new entries until resume). Open positions close at the live tick price
+    when the market is open, else at a flagged estimate."""
+    db = get_db()
+    deployment = await db.strategy_deployments.find_one({"id": deployment_id}, {"_id": 0})
+    if not deployment:
+        raise HTTPException(404, "Deployment not found")
+    summaries = await square_off_open_paper_trades(
+        db,
+        deployment_id=deployment_id,
+        latest_tick_lookup=upstox_stream_manager.latest_tick_map().get,
+        reason="manual_stop_square_off",
+    )
+    doc = await _set_deployment_status(deployment_id, "PAUSED")
+    return serialize_doc({
+        **doc,
+        "squared_off": summaries,
+        "squared_off_count": len(summaries),
+    })
 
 
 @api.post("/deployments/{deployment_id}/repin-source")
