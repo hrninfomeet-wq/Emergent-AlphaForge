@@ -276,6 +276,48 @@ async def release_paper_trade_claim(db: Any, signal_id: str) -> None:
     await db.signals.update_one({"id": signal_id}, {"$unset": {"paper_trade_claim": ""}})
 
 
+def resolve_deployment_lots(
+    risk_cfg: Dict[str, Any],
+    fill_entry: float,
+    contract: Dict[str, Any],
+    stop_price: Optional[float],
+) -> Tuple[int, Dict[str, Any]]:
+    """Lots for a live auto-paper trade, replaying the source run's pinned sizing
+    policy (deployment.risk.sizing). Falls back to deployment.risk.default_lots
+    when no policy was pinned (legacy deployments). Returns (lots, audit) where
+    audit carries sizing_mode and, for premium_at_risk, the per-unit risk fields.
+
+    lot_size always comes from the live contract; only the lot COUNT is sized — so
+    SENSEX/BANKNIFTY (different lot_size) adapt automatically while rupee risk is
+    held constant, exactly as the backtest does.
+    """
+    from app.portfolio import SizingConfig, size_position
+
+    lot_size = max(1, int((contract or {}).get("lot_size") or 1))
+    pin = (risk_cfg or {}).get("sizing") or {}
+    sizing_config = pin.get("sizing_config")
+    if isinstance(sizing_config, dict):
+        cfg = SizingConfig.from_dict(sizing_config)
+        if cfg.enabled:
+            sized = size_position(
+                entry_premium=float(fill_entry), lot_size=lot_size,
+                stop_level=stop_price, cfg=cfg,
+            )
+            return int(sized["lots"]), {
+                "sizing_mode": sized.get("sizing_mode"),
+                "risk_per_unit": sized.get("risk_per_unit"),
+                "risk_amount": sized.get("risk_amount"),
+                "risk_exceeded": sized.get("risk_exceeded"),
+            }
+        return max(1, int(pin.get("lots") or 1)), {"sizing_mode": "fixed_lots"}
+    if pin:
+        # Pin present but sizing_config malformed/absent (only possible via DB
+        # corruption — the deriver always co-writes both). Honour the pin's own
+        # lot count rather than silently dropping to the deployment default.
+        return max(1, int(pin.get("lots") or 1)), {"sizing_mode": "fixed_lots"}
+    return max(1, int((risk_cfg or {}).get("default_lots") or 1)), {"sizing_mode": "fixed_lots_legacy"}
+
+
 def build_auto_trade(
     signal_doc: Dict[str, Any],
     deployment: Dict[str, Any],
@@ -286,7 +328,6 @@ def build_auto_trade(
     deployment pct fallback, and spot-mirror levels from the strategy's spot
     hints. The caller stamps deployment_id / source before insert."""
     risk_cfg = deployment.get("risk") or {}
-    lots = max(1, int(risk_cfg.get("default_lots") or 1))
 
     # Live execution-realism (app.live_friction): when the deployment opted in
     # (risk.friction.enabled), slip the ENTRY (BUY) BEFORE levels are computed —
@@ -310,6 +351,7 @@ def build_auto_trade(
     stop_price, target_price = compute_auto_risk_levels(
         fill_entry, signal_doc.get("risk_hints"), risk_cfg,
     )
+    lots, sizing_audit = resolve_deployment_lots(risk_cfg, fill_entry, contract, stop_price)
     trade = paper_trade_from_signal(
         signal_doc,
         lots=lots,
@@ -322,6 +364,9 @@ def build_auto_trade(
     if friction.enabled:
         trade["entry_slippage_pts"] = entry_fill["slippage_pts"]
         trade["entry_spread_pts"] = round(entry_fill["spread_pts"], 4)
+    for _k, _v in sizing_audit.items():
+        if _v is not None:
+            trade[_k] = _v
     spot_exit = compute_spot_exit_levels(signal_doc)
     if spot_exit:
         trade["spot_exit"] = spot_exit
