@@ -206,6 +206,13 @@ class OptimizerStartReq(BaseModel):
     # Bayesian-only; clamped to cpu-1 and the AF_OPT_WORKERS env cap. Experimental /
     # non-deterministic (parallel ask/tell diverges the search trajectory ~0.5-2% run-to-run).
     opt_workers: int = 1
+    # Convergence early-stop: n_trials becomes a CEILING. Default ON. When ON, the
+    # search stops once the best objective hasn't significantly improved for
+    # `early_stop_patience` trials, after `early_stop_warmup` trials. Bayesian/grid.
+    early_stop: bool = True
+    early_stop_warmup: int = 200
+    early_stop_patience: int = 200
+    early_stop_min_delta: float = 0.001
 
 
 class WfoStartReq(BaseModel):
