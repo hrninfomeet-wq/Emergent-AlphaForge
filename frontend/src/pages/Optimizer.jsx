@@ -1181,6 +1181,10 @@ function CurrentJobView({ job, onApply, onStop, onPause, onResume, onOpenBest })
   const hasBest = (bsf.params && Object.keys(bsf.params).length > 0)
     || (isWfo && job.best_params && Object.keys(job.best_params).length > 0);
   const showResults = finished || cancelled || resumable;
+  const isOptionRerank = (job.evaluation_mode || job.config?.evaluation_mode) === "option_rerank";
+  const optionPnl = job.best_option_pnl_value ?? job.best_metrics?.option_pnl_value ?? job.rerank?.ranked?.[0]?.option_pnl_value ?? null;
+  const spotObjective = job.best_value ?? bsf.value;
+  const fmtINR = (v) => (v == null ? "—" : `${v < 0 ? "-" : ""}₹${fmtNum(Math.abs(v), 0)}`);
 
   return (
     <div className="space-y-3" data-testid="opt-current-job">
@@ -1280,7 +1284,25 @@ function CurrentJobView({ job, onApply, onStop, onPause, onResume, onOpenBest })
           <div className="flex items-center gap-2 mb-2">
             <Trophy className="w-4 h-4 text-amber-400" />
             <div className="text-xs font-semibold uppercase tracking-wider text-dim">Best so far</div>
-            <div className="ml-auto font-mono text-base text-foreground">{fmtBest(job.best_value ?? bsf.value)}</div>
+            <div className="ml-auto text-right" data-testid="opt-best-headline">
+              {isOptionRerank ? (
+                optionPnl != null ? (
+                  <>
+                    <div className={`font-mono text-base ${optionPnl >= 0 ? "text-emerald-400" : "text-rose-400"}`} data-testid="opt-headline-value">{fmtINR(optionPnl)}</div>
+                    <div className="text-[10px] text-dimmer">
+                      {job.status === "done_no_survivor" ? "best candidate option ₹ · no survivor" : "best option ₹ (net of costs)"} · spot obj {fmtBest(spotObjective)}
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="font-mono text-base text-foreground" data-testid="opt-headline-value">{fmtBest(spotObjective)}</div>
+                    <div className="text-[10px] text-dimmer">spot objective · option ₹ ranked after the search</div>
+                  </>
+                )
+              ) : (
+                <div className="font-mono text-base text-foreground" data-testid="opt-headline-value">{fmtBest(spotObjective)}</div>
+              )}
+            </div>
           </div>
           <div className="grid grid-cols-2 lg:grid-cols-3 gap-2 mb-3">
             {Object.entries(bsf.params).map(([k, v]) => (
@@ -1290,6 +1312,7 @@ function CurrentJobView({ job, onApply, onStop, onPause, onResume, onOpenBest })
               </div>
             ))}
           </div>
+          {isOptionRerank && <div className="text-[10px] text-dimmer mb-1">spot backtest metrics of the best config (not the option trade)</div>}
           {bsf.metrics && Object.keys(bsf.metrics).length > 0 && (
             <div className="grid grid-cols-3 lg:grid-cols-6 gap-2 text-xs">
               <SmallMetric label="Trades" value={fmtInt(bsf.metrics.trade_count)} />
