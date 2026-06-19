@@ -755,6 +755,9 @@ export default function Optimizer() {
                     <Input type="number" min={1} max={500} value={config.rerank_top_k}
                       onChange={(e) => setConfig({ ...config, rerank_top_k: e.target.value })}
                       className="bg-bg-2 border-line h-8 text-xs font-mono mt-1" data-testid="opt-rerank-k" />
+                    <div className={`text-[10px] mt-1 ${Number(config.rerank_top_k) > 80 ? "text-amber-400" : "text-dimmer"}`} data-testid="opt-rerank-k-hint">
+                      Each candidate is fully option-backtested + survival-checked in Analyzing — higher = slower. ~50 is usually plenty.
+                    </div>
                     <label className="flex items-center gap-1.5 mt-1.5 text-[10px] text-dim"
                       title="Also re-score a spread of lower-spot-ranked configs (same option-eval budget) so an option-best-but-spot-mediocre setup can surface.">
                       <input type="checkbox" checked={Boolean(config.rerank_diversity)}
