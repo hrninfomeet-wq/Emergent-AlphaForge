@@ -1183,7 +1183,9 @@ function CurrentJobView({ job, onApply, onStop, onPause, onResume, onOpenBest })
   const showResults = finished || cancelled || resumable;
   const isOptionRerank = (job.evaluation_mode || job.config?.evaluation_mode) === "option_rerank";
   const optionPnl = job.best_option_pnl_value ?? job.best_metrics?.option_pnl_value ?? job.rerank?.ranked?.[0]?.option_pnl_value ?? null;
-  const spotObjective = job.best_value ?? bsf.value;
+  // The SPOT search objective (the live "best so far" value during the trial loop).
+  // NOT job.best_value, which for a survivor becomes the survival objective (e.g. calmar).
+  const spotObjective = bsf.value;
   const fmtINR = (v) => (v == null ? "—" : `${v < 0 ? "-" : ""}₹${fmtNum(Math.abs(v), 0)}`);
 
   return (
@@ -1290,7 +1292,7 @@ function CurrentJobView({ job, onApply, onStop, onPause, onResume, onOpenBest })
                   <>
                     <div className={`font-mono text-base ${optionPnl >= 0 ? "text-emerald-400" : "text-rose-400"}`} data-testid="opt-headline-value">{fmtINR(optionPnl)}</div>
                     <div className="text-[10px] text-dimmer">
-                      {job.status === "done_no_survivor" ? "best candidate option ₹ · no survivor" : "best option ₹ (net of costs)"} · spot obj {fmtBest(spotObjective)}
+                      {job.status === "done_no_survivor" ? "best candidate option ₹ · no survivor" : "promoted option ₹ (net of costs)"} · spot obj {fmtBest(spotObjective)}
                     </div>
                   </>
                 ) : (
@@ -1300,7 +1302,7 @@ function CurrentJobView({ job, onApply, onStop, onPause, onResume, onOpenBest })
                   </>
                 )
               ) : (
-                <div className="font-mono text-base text-foreground" data-testid="opt-headline-value">{fmtBest(spotObjective)}</div>
+                <div className="font-mono text-base text-foreground" data-testid="opt-headline-value">{fmtBest(job.best_value ?? bsf.value)}</div>
               )}
             </div>
           </div>
