@@ -162,6 +162,8 @@ export const api = {
     apiClient.post(`/paper/trades/${id}/mark`, payload).then((r) => r.data),
   closePaperTrade: (id, payload) =>
     apiClient.post(`/paper/trades/${id}/close`, payload).then((r) => r.data),
+  squareOffAll: () =>
+    apiClient.post("/paper/square-off").then((r) => r.data),
   listDeployments: (params = {}) =>
     apiClient.get("/deployments", { params }).then((r) => r.data),
   deploymentsOverview: () =>
@@ -172,6 +174,10 @@ export const api = {
     apiClient.post(`/deployments/${id}/pause`).then((r) => r.data),
   resumeDeployment: (id) =>
     apiClient.post(`/deployments/${id}/resume`).then((r) => r.data),
+  stopDeployment: (id) =>
+    apiClient.post(`/deployments/${id}/stop`).then((r) => r.data),
+  stopAllPaper: () =>
+    apiClient.post("/deployments/stop-all").then((r) => r.data),
   repinDeploymentSource: (id) =>
     apiClient.post(`/deployments/${id}/repin-source`).then((r) => r.data),
   archiveDeployment: (id, params = {}) =>
