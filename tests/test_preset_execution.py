@@ -82,6 +82,8 @@ def test_execution_carries_sizing_config_when_present():
     assert ex["sizing_config"]["mode"] == "premium_at_risk"
     assert ex["sizing_config"]["capital"] == 200_000
     assert ex["sizing_config"]["max_lots"] == 10
+    assert ex["sizing_config"]["risk_per_trade_pct"] == 1.0
+    assert "assumed_stop_pct_of_premium" in ex["sizing_config"]  # canonical shape: default-filled
 
 
 def test_execution_omits_sizing_config_when_absent():
