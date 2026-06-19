@@ -69,6 +69,11 @@ const DEFAULT_SETUP = {
   method: "bayesian",
   objective: "risk_adjusted",
   n_trials: 150,
+  // Parallel trial workers (bayesian only; backend ignores for grid). 1 = serial
+  // & deterministic; >1 is faster but non-deterministic and uses more RAM.
+  opt_workers: 1,
+  // Auto-stop when the best plateaus — n_trials becomes a ceiling, not a target.
+  early_stop: true,
   // Run type: "single" (one optimization over the whole window) or
   // "walkforward" (re-optimize per train window, stitch OOS — honest result).
   run_kind: "single",
@@ -391,6 +396,10 @@ export default function Optimizer() {
         method: config.method,
         objective: config.objective,
         n_trials: config.n_trials,
+        // Parallel trial workers (bayesian only; backend ignores for grid).
+        opt_workers: Number(config.opt_workers) || 1,
+        // Auto-stop when converged — n_trials becomes a ceiling.
+        early_stop: Boolean(config.early_stop),
         costs_enabled: config.costs_enabled,
         pretrade_filters: config.pretrade_profile && config.pretrade_profile !== "None"
           ? (selectedProfile?.settings || {})
@@ -1003,6 +1012,32 @@ export default function Optimizer() {
                 <div className="text-[10px] text-dimmer -mt-1 leading-snug">
                   Up to 5000. More trials ≠ better — beyond a few hundred the gains flatten for small spaces and overfitting risk rises. Scale the budget to how many params you're searching.
                 </div>
+                <div className="flex items-center gap-2 pt-1">
+                  <Switch
+                    checked={Boolean(config.early_stop)}
+                    onCheckedChange={(v) => setConfig({ ...config, early_stop: v })}
+                    data-testid="opt-early-stop"
+                  />
+                  <span className="text-xs text-dim">Auto-stop when converged</span>
+                </div>
+                <div className="text-[10px] text-dimmer -mt-1 leading-snug">
+                  n_trials becomes a ceiling — stops when the best plateaus.
+                </div>
+                {config.method === "bayesian" && (
+                  <div>
+                    <Label className="text-[11px] text-dim">Parallel workers</Label>
+                    <Input
+                      type="number" min={1} max={15}
+                      value={config.opt_workers}
+                      onChange={(e) => setConfig({ ...config, opt_workers: e.target.value })}
+                      className="bg-bg-2 border-line h-8 text-xs font-mono mt-1"
+                      data-testid="opt-parallel-workers"
+                    />
+                    <div className="text-[10px] text-dimmer mt-1 leading-snug">
+                      experimental · non-deterministic · more RAM
+                    </div>
+                  </div>
+                )}
               </>
             )}
             <div className="flex items-center gap-2 pt-1">
