@@ -418,6 +418,30 @@ async def test_auto_trade_disabled_for_shadow_mode():
     assert res["created"] is False and res["reason"] == "auto_paper_disabled"
 
 
+@pytest.mark.asyncio
+async def test_auto_trade_snapshot_carries_sizing_audit():
+    db = FakeDB()
+    sig = make_confirmed_signal()  # default contract lot_size 75
+    db.signals.rows.append(dict(sig))
+    sizing = {"enabled": True, "mode": "premium_at_risk", "capital": 200_000,
+              "risk_per_trade_pct": 1.0, "max_lots": 10}
+    deployment = make_paper_deployment(sizing={"sizing_config": sizing, "lots": 1})
+
+    res = await auto_paper_trade_for_signal(
+        db, deployment, sig, latest_tick_lookup={KEY: {"last_price": 100.0}}.get)
+
+    assert res["created"] is True
+    trade = db.paper_trades.rows[0]
+    assert trade["sizing_mode"] == "premium_at_risk"
+    # entry 100, no premium stop -> assumed 50% -> risk/unit 50; lot 75 -> per-lot
+    # 3750; budget 2000 -> floor 0 -> 1 lot, risk_exceeded.
+    snap = db.signals.rows[0]["auto_paper"]
+    assert snap["sizing_mode"] == "premium_at_risk"
+    assert snap["risk_exceeded"] is True
+    assert snap["risk_per_unit"] == 50.0
+    assert "risk_amount" in snap
+
+
 # ---------- build_auto_trade sizing integration -----------------------------------
 
 def test_build_auto_trade_replays_premium_at_risk_policy():
