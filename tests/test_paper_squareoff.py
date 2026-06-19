@@ -83,7 +83,12 @@ class FakePaperCollection:
                 if ok:
                     result.append(r)
             return FakeCursor(result)
-        rows = [r for r in self.rows if (q).get("status", r.get("status")) == r.get("status")]
+        rows = [
+            r
+            for r in self.rows
+            if (q).get("status", r.get("status")) == r.get("status")
+            and ("deployment_id" not in q or q.get("deployment_id") == r.get("deployment_id"))
+        ]
         return FakeCursor(rows)
 
     async def replace_one(self, query, doc, upsert=False):
@@ -240,3 +245,51 @@ async def test_square_off_skips_trades_from_allow_overnight_deployments():
     # Confirm the overnight trade is still OPEN in the DB
     overnight_after = next(t for t in db.paper_trades.rows if t.get("id") == overnight["id"])
     assert overnight_after["status"] == "OPEN"
+
+
+@pytest.mark.asyncio
+async def test_square_off_scoped_to_one_deployment_closes_only_that_deployment():
+    """The 'Stop' button squares off ONE deployment: depA's two trades close,
+    depB's trade stays OPEN. deployment_id=None remains the global square-off."""
+    db = FakeDB()
+    a1 = make_open_trade(instrument_key="NSE_FO|A1|CE", entry=100.0, last=120.0)
+    a1["deployment_id"] = "depA"
+    a2 = make_open_trade(instrument_key="NSE_FO|A2|CE", entry=150.0, last=170.0)
+    a2["deployment_id"] = "depA"
+    b1 = make_open_trade(instrument_key="NSE_FO|B1|CE", entry=200.0, last=215.0)
+    b1["deployment_id"] = "depB"
+    db.paper_trades.rows.extend([a1, a2, b1])
+
+    summaries = await square_off_open_paper_trades(db, deployment_id="depA")
+
+    # Only the two depA trades are closed.
+    closed = [s for s in summaries if "exit_price" in s]
+    assert len(closed) == 2
+    closed_keys = {s["instrument_key"] for s in closed}
+    assert closed_keys == {"NSE_FO|A1|CE", "NSE_FO|A2|CE"}
+    a1_after = next(t for t in db.paper_trades.rows if t.get("id") == a1["id"])
+    a2_after = next(t for t in db.paper_trades.rows if t.get("id") == a2["id"])
+    assert a1_after["status"] == "CLOSED"
+    assert a2_after["status"] == "CLOSED"
+    # depB's trade is untouched — still OPEN.
+    b1_after = next(t for t in db.paper_trades.rows if t.get("id") == b1["id"])
+    assert b1_after["status"] == "OPEN"
+
+
+@pytest.mark.asyncio
+async def test_square_off_without_deployment_id_closes_all_deployments():
+    """Regression pin: deployment_id omitted -> global square-off (all 3 close)."""
+    db = FakeDB()
+    a1 = make_open_trade(instrument_key="NSE_FO|A1|CE", entry=100.0, last=120.0)
+    a1["deployment_id"] = "depA"
+    a2 = make_open_trade(instrument_key="NSE_FO|A2|CE", entry=150.0, last=170.0)
+    a2["deployment_id"] = "depA"
+    b1 = make_open_trade(instrument_key="NSE_FO|B1|CE", entry=200.0, last=215.0)
+    b1["deployment_id"] = "depB"
+    db.paper_trades.rows.extend([a1, a2, b1])
+
+    summaries = await square_off_open_paper_trades(db)
+
+    closed = [s for s in summaries if "exit_price" in s]
+    assert len(closed) == 3
+    assert all(t["status"] == "CLOSED" for t in db.paper_trades.rows)

@@ -105,16 +105,24 @@ async def square_off_open_paper_trades(
     latest_tick_lookup: Optional[Callable[[str], Optional[Dict[str, Any]]]] = None,
     reason: str = "auto_square_off_15_00_IST",
     now_ist: Optional[datetime] = None,
+    deployment_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Force-close all OPEN paper trades. Idempotent: closed trades are skipped.
 
     Trades belonging to deployments where `risk.allow_overnight` is True are skipped,
     so users who explicitly opted into overnight positions keep them open.
 
+    When `deployment_id` is given, only that deployment's OPEN trades are squared
+    off (used by the per-deployment "Stop" button); when None (the default), the
+    scope is global — byte-identical to the original behaviour.
+
     Returns a list of summaries with id, exit_price, realized_pnl per closed trade.
     Safe to call multiple times - only OPEN trades are touched.
     """
-    cursor = db.paper_trades.find({"status": "OPEN"}, {"_id": 0})
+    query = {"status": "OPEN"}
+    if deployment_id:
+        query["deployment_id"] = deployment_id
+    cursor = db.paper_trades.find(query, {"_id": 0})
     open_trades = await cursor.to_list(length=None)
     if not open_trades:
         return []
