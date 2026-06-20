@@ -374,8 +374,8 @@ function DeployWizard({ presets, initialPreset, onClose, onCreated }) {
   const sizingSummary = execSizing?.enabled
     ? `premium-at-risk · ${execSizing.risk_per_trade_pct ?? 1}% · ₹${fmtNum(execSizing.capital ?? 200000, 0)} · max ${execSizing.max_lots ?? 10}`
     : execSizing
-      ? `fixed ${preset?.config?.execution?.lots ?? form.default_lots} lots`
-      : `fixed ${form.default_lots} lots`;
+      ? `fixed ${preset?.config?.execution?.lots || form.default_lots} lot(s)`
+      : `fixed ${form.default_lots} lot(s)`;
 
   // Data-realism preflight for the chosen preset's instrument (informational,
   // never blocks). Re-runs when the instrument changes.
@@ -605,15 +605,15 @@ function DeployWizard({ presets, initialPreset, onClose, onCreated }) {
                 </label>
                 <label className="block text-[11px] text-dim">
                   Sizing
-                  <div className="mt-1 h-8 flex items-center overflow-hidden whitespace-nowrap rounded-md border border-line bg-bg-2 px-2 text-[11px] text-dim"
+                  <div className="mt-1 h-8 flex items-center overflow-hidden text-ellipsis whitespace-nowrap rounded-md border border-line bg-bg-2 px-2 text-[11px] text-dim"
                     title="Lots replay the source run's sizing policy; the capital shown is the backtest notional used for comparability, not a live balance. Lot size comes from the option contract.">
                     {sizingSummary}
                   </div>
                 </label>
               </div>
-              {!execSizing && (
+              {form.source_id && !execSizing && (
                 <div className="mt-1 text-[10px] leading-snug text-dimmer">
-                  Fixed {form.default_lots} lots — this source predates sizing-policy capture; re-save the preset
+                  Fixed {form.default_lots} lot(s) — this source predates sizing-policy capture; re-save the preset
                   (or deploy from the backtest run) to inherit premium-at-risk sizing.
                 </div>
               )}
@@ -929,7 +929,7 @@ function DeployWizard({ presets, initialPreset, onClose, onCreated }) {
               <div className="text-[10px] text-dimmer leading-snug">
                 Summary: <b className="text-dim">{form.source_id || "?"}</b> on <b className="text-dim">{instrument || "?"}</b> ·
                 {form.mode === "paper" ? " paper auto-trade" : " signal only"} · {String(form.option_moneyness).toUpperCase()} ·
-                DTE {form.dte_filter.length ? form.dte_filter.join(",") : "all"} · {form.default_lots} lot(s).
+                DTE {form.dte_filter.length ? form.dte_filter.join(",") : "all"} · {sizingSummary}.
                 Evaluation runs every market minute (09:15–15:30 IST, signal window 09:25–14:50); square-off 15:00 IST.
               </div>
             </>
