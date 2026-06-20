@@ -31,10 +31,14 @@ def test_worker_evaluate_wfo_matches_evaluate_slice():
     strat = get_registry().get("confluence_scalper")
     merged = strat.merged_params({})
     enr_full = enrich_with_cache(raw_df, merged, {})
-    a, b = len(enr_full) // 3, len(enr_full)  # a > 0 -> window starts mid-frame
+    a, b = 30, len(enr_full)  # a > 0 -> window starts mid-frame, with warmup from rows 0:30
     assert a > 0 and b > a
 
     ref_metrics, ref_trades = _evaluate_slice(enr_full, a, b, strat, merged, "NIFTY", True, {})
+    # Self-guard: the parity window must exercise >=1 real trade, otherwise the
+    # equality below degrades to a trivial 0-trade-vs-0-trade match that would hide
+    # a transcription bug (wrong arg order, missing reset_index, mis-folded ce/pe).
+    assert ref_metrics["trade_count"] > 0
 
     pe._RAW_DF = raw_df
     pe._WORKER_CACHES = {}
@@ -54,9 +58,9 @@ def test_worker_evaluate_wfo_preserves_warmup_vs_slice_then_enrich():
     strat = get_registry().get("confluence_scalper")
     merged = strat.merged_params({})
     enr_full = enrich_with_cache(raw_df, merged, {})
-    # Start deep in the frame so the slice's first bars carry meaningful warmup that
-    # the slice-then-enrich path cannot reproduce.
-    a, b = len(enr_full) // 3, len(enr_full)
+    # Start past the frame's first bars so the slice's first bars carry meaningful
+    # warmup that the slice-then-enrich path cannot reproduce.
+    a, b = 30, len(enr_full)
     assert a > 0 and b > a
 
     pe._RAW_DF = raw_df
@@ -68,6 +72,9 @@ def test_worker_evaluate_wfo_preserves_warmup_vs_slice_then_enrich():
     m_wrong, _ = pe._worker_evaluate("confluence_scalper", merged, (a, b), "NIFTY", True, {})
 
     assert m_correct is not None and m_wrong is not None
+    # Anchor the proof on a real trade: the correct (warmup-preserving) path trades at
+    # this window; the wrong path diverges. A 0-vs-0 match must never be what passes.
+    assert m_correct["trade_count"] > 0
     assert m_correct != m_wrong  # warmup preserved only by the enrich-full-then-slice path
 
 
@@ -91,14 +98,14 @@ def test_parallel_backtest_uses_worker_param():
     pe._WORKER_CACHES = {}
     raw_df = _fixture_df()
     strat = get_registry().get("confluence_scalper")
-    a, b = len(raw_df) // 3, len(raw_df)
+    a, b = 30, len(raw_df)
     param_sets = [("confluence_scalper", strat.merged_params({}), (a, b)),
                   ("confluence_scalper", strat.merged_params({"ema_fast": 5, "ema_slow": 13}), (a, b))]
     out = pe.parallel_backtest(None, param_sets, raw_df=raw_df, instrument="NIFTY",
                                costs=True, pretrade={}, worker=pe._worker_evaluate_wfo)
     assert len(out) == 2
     assert out[0][1] == param_sets[0][1] and out[1][1] == param_sets[1][1]  # order + merged preserved
-    assert out[0][0] is not None and "trade_count" in out[0][0]  # REAL backtest, not a sentinel
+    assert out[0][0] is not None and out[0][0]["trade_count"] > 0  # REAL backtest with a trade, not a sentinel
 
     # Element 0 equals a direct worker call with the frame passed explicitly.
     pe._WORKER_CACHES = {}
