@@ -245,6 +245,10 @@ class WfoStartReq(BaseModel):
     wf_mode: str = "rolling"  # rolling | anchored
     n_trials_per_window: int = 40
     max_windows: int = 12
+    # Opt-in parallel trial workers for the per-window Bayesian search (mirrors the
+    # single-run opt_workers). 1 = sequential (default) -> byte-identical, reproducible.
+    # >1 parallelizes the in-window trial search (non-deterministic OOS, more RAM).
+    opt_workers: int = 1
     # Option-aware OOS (WFO v2): after stitching, pair the OOS spot trades with
     # real option candles ONCE and report net rupee + per-window rupee
     # consistency alongside the spot stitch. option_config mirrors the
