@@ -38,17 +38,18 @@ governance + live ETA already exist to bound it.
 
 ## 5. Architecture
 
-### 5.1 One-time option-data load (refactor, no behavior change)
+### 5.1 One-time option-data load (ADDITIVE — the existing re-rank is NOT touched)
 
-The contract + option-candle load currently lives inside `_option_rerank`
-([optimizer.py] ~705-757: contract query, candle query capped at 4M rows,
-`build_candles_by_key`). Extract it into a reusable async loader
-`load_option_pairing_context(db, instrument, spot_trades_union, option_cfg)` →
-returns `(contracts, candles_df, candles_by_key, expiry_resolver)`. `_option_rerank`
-is refactored to call it (byte-identical — pure extraction, covered by the existing
-re-rank behavior on a stack run). The option-aware trial loop calls it **once**
-before the search, over the union of trades from a warm-up evaluation (or over all
-contracts in the window — see 5.4).
+The option-aware trial loop needs contracts + option candles loaded once before the
+search. To honor the do-not-disturb constraint, this is **purely additive**: add a
+SEPARATE loader `load_option_pairing_context(db, instrument, spot_trades_union,
+option_cfg)` → `(contracts, candles_df, candles_by_key, expiry_resolver)`, used
+**only** by the option-aware branch. `_option_rerank` is **NOT refactored** — it
+keeps its own inline load verbatim. The new loader calls the same low-level helpers
+(`build_candles_by_key`, the contract/candle queries, `select_contract_for_signal`)
+but modifies no existing function. (Minor duplication is accepted as the price of
+leaving the proven re-rank path literally unchanged.) The option-aware loop calls it
+**once** before the search (over the warm-up trade union — see 5.4).
 
 ### 5.2 Per-trial option scorer
 
@@ -130,10 +131,14 @@ option_aware uses an option-metrics-carrying candidate list straight into surviv
 
 ## 7. Invariants / acceptance
 
-1. **Byte-identical default.** `evaluation_mode != "option_aware"` → spot &
-   option_rerank results, persistence, and timings are exactly as today. Proven by:
-   the new branch is never entered; the `load_option_pairing_context` extraction is
-   verified byte-identical on a stack re-rank run.
+1. **Byte-identical default + ZERO edits to existing paths.** The ONLY edits to
+   existing code are (a) a guarded `if evaluation_mode == "option_aware": <new branch>`
+   dispatch that leaves the else-path untouched, and (b) the frontend selector gaining
+   one new option. No existing function (`_evaluate`, the spot trial loop,
+   `_option_rerank`, `simulate_paired_option_trades`, the survival gate) is modified.
+   `evaluation_mode != "option_aware"` → spot & option_rerank results, persistence, and
+   timings are exactly as today (inertness invariant, same discipline as the
+   analyze-budget work).
 2. **Objective parity (host test).** `_option_objective_value` on a synthetic option
    sim result returns the expected score per objective (esp. net_pnl_inr = option ₹,
    not ×lot²); guards disqualify correctly on option trades.
