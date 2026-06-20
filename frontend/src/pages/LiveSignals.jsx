@@ -370,6 +370,12 @@ function DeployWizard({ presets, initialPreset, onClose, onCreated }) {
 
   const preset = presets.find((p) => p.name === form.source_id);
   const instrument = (preset?.config?.instrument || "").toUpperCase();
+  const execSizing = preset?.config?.execution?.sizing_config;
+  const sizingSummary = execSizing?.enabled
+    ? `premium-at-risk · ${execSizing.risk_per_trade_pct ?? 1}% · ₹${fmtNum(execSizing.capital ?? 200000, 0)} · max ${execSizing.max_lots ?? 10}`
+    : execSizing
+      ? `fixed ${preset?.config?.execution?.lots ?? form.default_lots} lots`
+      : `fixed ${form.default_lots} lots`;
 
   // Data-realism preflight for the chosen preset's instrument (informational,
   // never blocks). Re-runs when the instrument changes.
@@ -598,12 +604,19 @@ function DeployWizard({ presets, initialPreset, onClose, onCreated }) {
                   </select>
                 </label>
                 <label className="block text-[11px] text-dim">
-                  Lots per trade
-                  <Input type="number" min="1" step="1" value={form.default_lots}
-                    onChange={(e) => set("default_lots", e.target.value)} className="mt-1 bg-bg-2 border-line h-8"
-                    title="Lot size always comes from the option contract (Upstox)." />
+                  Sizing
+                  <div className="mt-1 h-8 flex items-center overflow-hidden whitespace-nowrap rounded-md border border-line bg-bg-2 px-2 text-[11px] text-dim"
+                    title="Lots replay the source run's sizing policy; the capital shown is the backtest notional used for comparability, not a live balance. Lot size comes from the option contract.">
+                    {sizingSummary}
+                  </div>
                 </label>
               </div>
+              {!execSizing && (
+                <div className="mt-1 text-[10px] leading-snug text-dimmer">
+                  Fixed {form.default_lots} lots — this source predates sizing-policy capture; re-save the preset
+                  (or deploy from the backtest run) to inherit premium-at-risk sizing.
+                </div>
+              )}
 
               <div>
                 <div className="text-[11px] text-dim mb-1">DTE filter (days to expiry — none selected = all)</div>
