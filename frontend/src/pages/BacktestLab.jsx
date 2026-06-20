@@ -456,6 +456,10 @@ export default function BacktestLab() {
       defaults[k] = def.default;
     }
     setConfig((c) => ({ ...c, params: defaults }));
+    // Intentionally keyed only on the strategy id: reset params once per strategy
+    // transition, not on every `strategies` refresh (which re-creates the memoized
+    // selectedStrategy object and would wipe edited params).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedStrategy?.id]);
 
   const setParam = (k, v) => setConfig((c) => ({ ...c, params: { ...c.params, [k]: v } }));

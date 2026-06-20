@@ -264,6 +264,10 @@ export function BacktestChart({ result }) {
       }
       if (f.exit_price != null) priceLinesRef.current.push(mk(Number(f.exit_price), "#5AA9FF", "Exit"));
     }
+    // focusOption is an inline fn closing over optionLevelsRun + optionByEntryTs,
+    // both already listed below. Adding focusOption itself would change identity
+    // every render → new `load` identity → the load() effect refetches in a loop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [trades, focusIdx, tgtPts, stpPts, optionLevelsRun, optionByEntryTs]);
 
   const load = useCallback(async () => {
