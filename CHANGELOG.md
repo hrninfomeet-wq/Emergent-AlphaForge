@@ -45,6 +45,14 @@ ns (≤2.x) or us (≥3.0). Verified:
 > Branch has since advanced past this groundwork (per-scenario `exit_plan` dispatcher, Signal/
 > Trade scenario plumbing, scenario-classifier coverage); those land in a later CHANGELOG entry.
 
+- **Paper-deployment sizing replay** (`feat/paper-sizing-replay`): paper deployments now
+  replay the source run's sizing policy instead of a fixed `default_lots`: the run's
+  `sizing_config` + `lots` are pinned (immutable) on `deployment.risk.sizing` at create, and
+  `build_auto_trade` recomputes lots per signal via `size_position()` (premium-at-risk →
+  lots scale with capital/risk%/the option stop; `lot_size` from the live contract so
+  SENSEX/BANKNIFTY adapt). Legacy deployments and pre-capture presets fall back to
+  `default_lots`, shown explicitly in the deploy wizard's read-only sizing summary.
+
 ## [0.45.x] — Trustworthy validation loop (Piece 3) (2026-06-17)
 
 724 host tests pass (was 708; +16). On branch `feat/integrated-validation-loop` (merged
