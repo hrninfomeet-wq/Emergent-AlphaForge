@@ -99,6 +99,9 @@ const DEFAULT_SETUP = {
   evaluation_mode: "spot",
   rerank_top_k: 50,
   rerank_diversity: false,
+  // Analyzing budget (minutes). Caps the option re-rank / survival-check phase;
+  // on hit the backend returns the best evaluated so far. 0 = unlimited.
+  analyze_budget_min: 30,
   option_moneyness: "atm",
   option_dte_filter: [], // multi-select ints; empty = all
   option_lots: 1,
@@ -152,6 +155,13 @@ function loadSetup() {
 // The optimizer scores guard-failing / zero-trade trials with a large negative
 // sentinel (~ -1e9). Render that as "—" instead of a meaningless huge number.
 const fmtBest = (v) => (v == null || v <= -1e8) ? "—" : Number(v).toFixed(3);
+
+// Format an ETA in seconds as "Xh Ym" / "Ym Ss" / "Ss", or "—" when null/unknown.
+const fmtEta = (s) => {
+  if (s == null) return "—";
+  s = Math.round(s); const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60;
+  return h > 0 ? `${h}h ${m}m` : m > 0 ? `${m}m ${ss}s` : `${ss}s`;
+};
 
 // Auto run-name = descriptive (strategy · instrument · objective) + a timestamp,
 // so a forgotten default never collides and runs are identifiable in Job History.
@@ -417,6 +427,9 @@ export default function Optimizer() {
         evaluation_mode: config.evaluation_mode,
         rerank_top_k: Math.max(1, Math.min(500, Number(config.rerank_top_k) || 50)),
         rerank_diversity: Boolean(config.rerank_diversity),
+        // Analyzing budget in seconds (0 = unlimited). On hit the backend returns
+        // the best evaluated so far and sets analyze_budget_hit on the result.
+        analyze_budget_sec: Math.max(0, Number(config.analyze_budget_min ?? 30)) * 60,
         option_config: optionConfig,
         survival_config: optionRerank ? {
           enabled: Boolean(config.survival_config?.enabled),
@@ -563,6 +576,7 @@ export default function Optimizer() {
       evaluation_mode: c.evaluation_mode || "spot",
       rerank_top_k: c.rerank_top_k ?? 50,
       rerank_diversity: c.rerank_diversity ?? false,
+      analyze_budget_min: c.analyze_budget_sec != null ? Math.round(Number(c.analyze_budget_sec) / 60) : prev.analyze_budget_min,
       option_moneyness: c.option_config?.moneyness ?? prev.option_moneyness,
       option_dte_filter: parseDteFilter(c.option_config?.dte_filter),
       option_lots: c.option_config?.lots ?? prev.option_lots,
@@ -765,6 +779,17 @@ export default function Optimizer() {
                         className="h-3 w-3 rounded border-line" data-testid="opt-rerank-diversity" />
                       Diversity shortlist
                     </label>
+                  </div>
+                  )}
+                  {config.run_kind !== "walkforward" && (
+                  <div>
+                    <Label className="text-[11px] text-dim">Analyzing budget (min)</Label>
+                    <Input type="number" min={0} max={240} value={config.analyze_budget_min}
+                      onChange={(e) => setConfig({ ...config, analyze_budget_min: e.target.value })}
+                      className="bg-bg-2 border-line h-8 text-xs font-mono mt-1" data-testid="opt-analyze-budget" />
+                    <div className="text-[10px] text-dimmer mt-1 leading-snug">
+                      0 = unlimited. On hit, returns the best evaluated so far.
+                    </div>
                   </div>
                   )}
                   <div>
@@ -1306,6 +1331,16 @@ function CurrentJobView({ job, onApply, onStop, onPause, onResume, onOpenBest })
         )}
         {interrupted && (
           <div className="text-xs text-orange-300 mt-2">Interrupted by a restart at trial {job.n_trials_completed}/{job.n_trials_total}. Click Resume to continue.</div>
+        )}
+        {status === "analyzing" && job.rerank_progress && (
+          <div className="text-[11px] font-mono text-amber-300 mt-2" data-testid="opt-analyze-eta">
+            Analyzing {job.rerank_progress?.stage}: {job.rerank_progress?.done ?? 0}/{job.rerank_progress?.total ?? 0} · ETA {fmtEta(job.rerank_progress?.eta_sec)}
+          </div>
+        )}
+        {finished && job.analyze_budget_hit && (
+          <div className="text-xs text-amber-300 mt-2 leading-snug" data-testid="opt-analyze-budget-hit">
+            Analyzing budget hit — evaluated {job.analyzed_candidates ?? "?"} candidate(s). Raise the budget or lower Re-rank top-K for full coverage.
+          </div>
         )}
       </div>
 
