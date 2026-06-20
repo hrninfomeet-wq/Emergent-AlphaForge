@@ -42,6 +42,7 @@ from app.deployment_quality import compute_spot_option_correlation
 from app.dte import compute_dte, normalize_dte_filter
 from app.survival import survival_verdict, SurvivalConfig, oos_fold_index_ranges
 from app.early_stop import is_significant_improvement, should_early_stop
+from app.analyze_budget import over_budget, ewma, eta_seconds
 
 log = logging.getLogger(__name__)
 optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -649,7 +650,8 @@ async def _survival_eval_oos(
 async def _option_rerank(
     db, strategy, get_enriched, candidates: List[Dict[str, Any]],
     instrument: str, costs: bool, pretrade: Dict[str, Any], option_cfg: Dict[str, Any],
-) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Any]:  # (ranked, contracts, candles_df)
+    *, analyze_t0: Optional[float] = None, analyze_budget_sec: int = 0, progress_cb=None,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Any, bool]:  # (ranked, contracts, candles_df, budget_hit)
     """Stage 2: re-score the top-K spot candidates on REAL paired-option net
     rupee. Option contracts + candles are loaded from the DB ONCE (over the
     union of all candidates' needed strikes), then each candidate is simulated
@@ -685,7 +687,7 @@ async def _option_rerank(
         return ([{"params": c["params"], "spot_objective": c["objective_value"],
                   "spot_metrics": c["metrics"], "option_pnl_value": 0.0, "option_pnl_pts": 0.0,
                   "option_win_rate": 0.0, "paired_trade_count": 0, "spot_trade_count": 0,
-                  "coverage": {}} for c in candidates], [], pd.DataFrame())
+                  "coverage": {}} for c in candidates], [], pd.DataFrame(), False)
 
     # 2. Load contracts once (windowed by the candidates' trade span + margin).
     contract_query: Dict[str, Any] = {"underlying": instrument}
@@ -748,7 +750,10 @@ async def _option_rerank(
 
     # 5. Simulate each candidate in-memory and collect option metrics.
     ranked: List[Dict[str, Any]] = []
+    budget_hit = False
+    _per_item: Optional[float] = None
     for cand, pc in zip(candidates, per_cand):
+        _c_t = time.monotonic()
         sim = await asyncio.to_thread(
             simulate_paired_option_trades,
             spot_trades=pc["trades"], contracts=contracts, option_candles=candles_df,
@@ -773,11 +778,20 @@ async def _option_rerank(
             "spot_trade_count": len(pc["trades"]),
             "coverage": cov,
         })
+        _per_item = ewma(_per_item, time.monotonic() - _c_t)
+        if len(ranked) % 10 == 0:
+            log.info("rerank %d/%d", len(ranked), len(candidates))
+        if progress_cb is not None:
+            await progress_cb("option_rerank", len(ranked), len(candidates), _per_item)
+        if analyze_t0 is not None and over_budget(
+                elapsed=time.monotonic() - analyze_t0, budget_sec=analyze_budget_sec):
+            budget_hit = True
+            break
     # Rank by option net rupee; candidates with no paired trades sink to the bottom.
     ranked.sort(key=lambda r: (r["paired_trade_count"] > 0, r["option_pnl_value"]), reverse=True)
     # Also return the loaded contracts + candle frame so the survival evaluator can
     # reuse the single (multi-million-row) option-candle load instead of re-querying.
-    return ranked, contracts, candles_df
+    return ranked, contracts, candles_df, budget_hit
 
 
 async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = False) -> None:
@@ -1103,6 +1117,28 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                                    "early_stopped": early_stopped, "stopped_at_trial": completed,
                                    "trials_ceiling": n_trials})
 
+        # Analyzing-stage governance: a wall-clock budget + live per-candidate
+        # progress/ETA + graceful partial results. INVARIANT: when the budget is
+        # 0 (or never hit) the only added behaviour is `rerank_progress` writes —
+        # no `break` fires, so the ranking/survival results are byte-identical.
+        analyze_budget_sec = int(payload.get("analyze_budget_sec", 1800) or 0)
+        _an_t0 = time.monotonic()
+        analyze_budget_hit = False
+        analyzed_candidates = None
+        _last_progress = [0.0]
+
+        async def _an_progress(stage, done, total, per_item):
+            now = time.monotonic()
+            if now - _last_progress[0] < 1.0 and done < total:   # throttle ~1/sec
+                return
+            _last_progress[0] = now
+            upd = {"rerank_progress": {
+                "stage": stage, "done": done, "total": total,
+                "elapsed_sec": round(now - _an_t0, 1),
+                "per_item_sec": (round(per_item, 2) if per_item else None),
+                "eta_sec": eta_seconds(done=done, total=total, per_item_sec=per_item)}}
+            await _update_job(job_id, upd)
+
         # Top-N alternatives
         sorted_trials = sorted(trial_history, key=lambda t: t["objective_value"], reverse=True)
         top_n = sorted_trials[:10]
@@ -1148,9 +1184,12 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
             if candidates:
                 await _update_job(job_id, {"rerank_progress": {"stage": "option_rerank", "candidates": len(candidates)}})
                 try:
-                    ranked, rerank_contracts, rerank_candles = await _option_rerank(
+                    ranked, rerank_contracts, rerank_candles, _rr_hit = await _option_rerank(
                         get_db(), strategy, get_enriched, candidates,
-                        instrument, costs, pretrade, option_cfg)
+                        instrument, costs, pretrade, option_cfg,
+                        analyze_t0=_an_t0, analyze_budget_sec=analyze_budget_sec,
+                        progress_cb=_an_progress)
+                    analyze_budget_hit = analyze_budget_hit or _rr_hit
                 except Exception as e:
                     log.warning(f"option re-rank failed: {e}")
                     ranked = []
@@ -1159,7 +1198,9 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                 # keep PROFITABLE survivors, rank by the chosen objective. Reuses the
                 # contracts + candles already loaded by _option_rerank.
                 await _update_job(job_id, {"rerank_progress": {"stage": "survival", "candidates": len(ranked)}})
-                for r in ranked:
+                _per_item_surv: Optional[float] = None
+                for i, r in enumerate(ranked):
+                    _s_t = time.monotonic()
                     try:
                         merged = strategy.merged_params(r["params"])
                         df_enr = get_enriched(merged)
@@ -1169,6 +1210,13 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                     except Exception as e:
                         log.warning(f"survival eval failed: {e}")
                         r["survival"] = {"survived": False, "reason": "eval_error"}
+                    _per_item_surv = ewma(_per_item_surv, time.monotonic() - _s_t)
+                    if (i + 1) % 10 == 0:
+                        log.info("rerank %d/%d", i + 1, len(ranked))
+                    await _an_progress("survival", i + 1, len(ranked), _per_item_surv)
+                    if over_budget(elapsed=time.monotonic() - _an_t0, budget_sec=analyze_budget_sec):
+                        analyze_budget_hit = True
+                        break
                 survivors = [r for r in ranked if r.get("survival", {}).get("survived")
                              and (r["survival"].get("total_return_pct") or 0) > 0]
                 if payload.get("search_exit_controls"):
@@ -1241,6 +1289,7 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                 best_so_far["exit_controls"] = option_cfg.get("exit_controls")
                 best_so_far["daily_caps"] = option_cfg.get("daily_caps")
             spot_option_corr = compute_spot_option_correlation(ranked)
+            analyzed_candidates = f"{len(ranked)}"
             rerank_info = {
                 "top_k": rerank_top_k,
                 "diversity": rerank_diversity,
@@ -1254,9 +1303,12 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
 
         # Heatmap + robustness — spot-objective analyses; skipped on cancellation
         # and in option re-rank mode (the re-rank table is the relevant analysis).
+        # Also skipped once the analyzing budget is spent (the cheap-but-not-free
+        # tail): partial results are still finalized below.
         heatmap = None
         robustness = None
-        if not cancelled_flag and evaluation_mode == "spot":
+        if not cancelled_flag and evaluation_mode == "spot" and not over_budget(
+                elapsed=time.monotonic() - _an_t0, budget_sec=analyze_budget_sec):
             try:
                 heatmap = await asyncio.to_thread(_heatmap, evaluate, obj, best_so_far["params"], importance, space)
             except Exception as e:
@@ -1265,6 +1317,8 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                 robustness = await asyncio.to_thread(_robustness_score, evaluate, obj, best_so_far["params"], space)
             except Exception as e:
                 log.warning(f"robustness failed: {e}")
+        elif over_budget(elapsed=time.monotonic() - _an_t0, budget_sec=analyze_budget_sec):
+            analyze_budget_hit = True
 
         # Persist final best as a full backtest_run with trades + equity + walkforward.
         # Re-enrich for the BEST indicator periods so the saved run matches what
@@ -1307,6 +1361,8 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
             "survival_summary": survival_summary,
             "best_exit_controls": best_so_far.get("exit_controls"),
             "best_daily_caps": best_so_far.get("daily_caps"),
+            "analyze_budget_hit": analyze_budget_hit,
+            "analyzed_candidates": analyzed_candidates,
             "trial_log": [],
             "timing": ({
                 "precompute_s": round(_TIMING["precompute_s"], 3),
