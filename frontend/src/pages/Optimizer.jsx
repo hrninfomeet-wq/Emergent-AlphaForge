@@ -387,6 +387,8 @@ export default function Optimizer() {
           wf_mode: config.wf_mode,
           n_trials_per_window: Number(config.wf_trials_per_window) || 40,
           max_windows: Number(config.wf_max_windows) || 12,
+          // Opt-in parallel trial workers (per-window Bayesian search). 1 = sequential & reproducible.
+          opt_workers: Number(config.opt_workers) || 1,
           option_aware: Boolean(config.wfo_option_aware),
           option_config: config.wfo_option_aware ? buildOptionConfig() : null,
         };
@@ -566,6 +568,7 @@ export default function Optimizer() {
       method: c.method ?? prev.method,
       objective: c.objective ?? prev.objective,
       n_trials: c.n_trials ?? prev.n_trials,
+      opt_workers: c.opt_workers ?? prev.opt_workers,
       costs_enabled: c.costs_enabled ?? prev.costs_enabled,
       optimize_indicator_periods: !!c.optimize_indicator_periods,
       param_overrides: c.param_overrides || {},
@@ -725,6 +728,25 @@ export default function Optimizer() {
                 </div>
                 <div className="text-[10px] text-dimmer leading-snug">
                   Days are trading days actually present in the data (holiday-aware). With more windows than Max, the oldest are dropped — deployable params always come from the most recent train window. Window re-optimization runs on spot evaluation.
+                </div>
+                <div className="pt-1 border-t border-emerald-500/20">
+                  <Label className="text-[11px] text-dim">Parallel workers</Label>
+                  <Input
+                    type="number" min={1} max={15}
+                    value={config.opt_workers}
+                    onChange={(e) => setConfig({ ...config, opt_workers: e.target.value })}
+                    className="bg-bg-2 border-line h-8 text-xs font-mono mt-1 w-24"
+                    data-testid="opt-wf-parallel-workers"
+                  />
+                  {Number(config.opt_workers) > 1 ? (
+                    <div className="text-[10px] text-warning mt-1 leading-snug" data-testid="opt-wf-workers-warning">
+                      experimental · non-deterministic · more RAM. With parallel workers the OOS result and deployable params can vary run-to-run — walk-forward is your honest-OOS validation; use 1 worker for a reproducible deploy decision.
+                    </div>
+                  ) : (
+                    <div className="text-[10px] text-dimmer mt-1 leading-snug">
+                      Speeds the per-window Bayesian search. 1 = sequential &amp; reproducible (recommended for the deploy decision).
+                    </div>
+                  )}
                 </div>
                 <div className="flex items-center gap-2 pt-1 border-t border-emerald-500/20">
                   <Switch
