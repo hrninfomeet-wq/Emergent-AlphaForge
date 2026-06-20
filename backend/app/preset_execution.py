@@ -57,4 +57,11 @@ def execution_from_option_config(option_cfg: Optional[Dict[str, Any]]) -> Option
     daily_caps = (option_cfg or {}).get("daily_caps")
     if daily_caps is not None:
         execution["daily_caps"] = daily_caps
+    # Normalize to the canonical full SizingConfig shape (defaults filled) so the
+    # deployment pin + live replay (deployment_sizing_from_source / resolve_deployment_lots)
+    # always reconstruct the exact policy — intentionally NOT a compact pass-through.
+    sizing_config = (option_cfg or {}).get("sizing_config")
+    if isinstance(sizing_config, dict):
+        from app.portfolio import SizingConfig
+        execution["sizing_config"] = SizingConfig.from_dict(sizing_config).to_dict()
     return execution

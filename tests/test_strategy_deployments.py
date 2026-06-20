@@ -5,7 +5,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 
-from app.strategy_deployments import build_deployment_doc  # noqa: E402
+from app.strategy_deployments import build_deployment_doc, deployment_sizing_from_source  # noqa: E402
 from tests.contract_corpus import backend_api_text
 
 
@@ -114,3 +114,87 @@ def test_frontend_exposes_strategy_deployment_panel():
     for needle in ("deployments-page", "deployment-card", "open-deploy-wizard",
                    "wizard-preset-select", "wizard-mode-select", "undeploy-button"):
         assert needle in live
+
+
+def test_deployment_sizing_from_backtest_run_extracts_policy():
+    run = {
+        "id": "run-1",
+        "option_backtest": {
+            "sizing_config": {"enabled": True, "mode": "premium_at_risk",
+                              "capital": 200_000, "risk_per_trade_pct": 1.0, "max_lots": 10},
+            "request": {"lots": 2},
+        },
+    }
+    pin = deployment_sizing_from_source("backtest_run", run)
+    assert pin is not None
+    assert pin["sizing_config"]["enabled"] is True
+    assert pin["sizing_config"]["mode"] == "premium_at_risk"
+    assert pin["sizing_config"]["capital"] == 200_000
+    assert pin["lots"] == 2
+    assert pin["source_id"] == "run-1"
+
+
+def test_deployment_sizing_from_preset_extracts_policy():
+    preset = {"name": "p1", "config": {"execution": {
+        "lots": 3,
+        "sizing_config": {"enabled": False, "mode": "fixed_lots", "fixed_lots": 3, "max_lots": 10},
+    }}}
+    pin = deployment_sizing_from_source("preset", preset)
+    assert pin is not None
+    assert pin["sizing_config"]["enabled"] is False
+    assert pin["lots"] == 3
+    assert pin["source_id"] == "p1"
+
+
+def test_deployment_sizing_none_when_preset_has_no_sizing_config():
+    preset = {"name": "old", "config": {"execution": {"lots": 5}}}  # legacy preset
+    assert deployment_sizing_from_source("preset", preset) is None
+
+
+def test_deployment_sizing_none_for_spot_only_or_unknown():
+    assert deployment_sizing_from_source("backtest_run", {"id": "r"}) is None
+    assert deployment_sizing_from_source("weird", {}) is None
+
+
+def test_deployment_sizing_defaults_lots_to_one_when_absent():
+    run = {"id": "r2", "option_backtest": {
+        "sizing_config": {"enabled": True, "mode": "premium_at_risk"}}}  # no request
+    pin = deployment_sizing_from_source("backtest_run", run)
+    assert pin is not None
+    assert pin["lots"] == 1
+
+
+def test_deployment_sizing_tolerates_non_numeric_preset_lots():
+    preset = {"name": "p", "config": {"execution": {
+        "lots": "abc",  # corrupted/hand-edited
+        "sizing_config": {"enabled": False, "mode": "fixed_lots"}}}}
+    pin = deployment_sizing_from_source("preset", preset)
+    assert pin is not None
+    assert pin["lots"] == 1
+
+
+def test_build_deployment_pins_sizing_from_source():
+    run = {
+        "id": "run-9", "strategy_id": "s", "instrument": "NIFTY",
+        "config": {"strategy_id": "s", "instrument": "NIFTY", "params": {}},
+        "option_backtest": {
+            "sizing_config": {"enabled": True, "mode": "premium_at_risk",
+                              "capital": 200_000, "risk_per_trade_pct": 1.0, "max_lots": 10},
+            "request": {"lots": 2},
+        },
+    }
+    doc = build_deployment_doc(source_type="backtest_run", source_doc=run, name="d", mode="paper")
+    assert doc["risk"]["sizing"]["sizing_config"]["enabled"] is True
+    assert doc["risk"]["sizing"]["sizing_config"]["mode"] == "premium_at_risk"
+    assert doc["risk"]["sizing"]["lots"] == 2
+    assert doc["risk"]["sizing"]["source_id"] == "run-9"
+
+
+def test_build_deployment_no_sizing_when_source_lacks_it():
+    preset = {"name": "old", "config": {"instrument": "NIFTY", "strategy_id": "s",
+              "params": {}, "execution": {"lots": 5}}}
+    doc = build_deployment_doc(source_type="preset", source_doc=preset, name="d", mode="paper",
+                               risk={"stop_price": 80})
+    assert "sizing" not in doc["risk"]
+    assert doc["risk"]["stop_price"] == 80      # caller-supplied risk key preserved
+    assert "allow_overnight" in doc["risk"]     # always-present key intact

@@ -70,3 +70,22 @@ def test_zero_and_garbage_levels_are_dropped():
     })
     for key in ("option_target_pts", "option_stop_pts", "option_target_pct", "option_stop_pct"):
         assert key not in ex
+
+
+def test_execution_carries_sizing_config_when_present():
+    ex = execution_from_option_config({
+        "moneyness": "atm", "exit_mode": "spot_exit", "lots": 1,
+        "sizing_config": {"enabled": True, "mode": "premium_at_risk",
+                          "capital": 200_000, "risk_per_trade_pct": 1.0, "max_lots": 10},
+    })
+    assert ex["sizing_config"]["enabled"] is True
+    assert ex["sizing_config"]["mode"] == "premium_at_risk"
+    assert ex["sizing_config"]["capital"] == 200_000
+    assert ex["sizing_config"]["max_lots"] == 10
+    assert ex["sizing_config"]["risk_per_trade_pct"] == 1.0
+    assert "assumed_stop_pct_of_premium" in ex["sizing_config"]  # canonical shape: default-filled
+
+
+def test_execution_omits_sizing_config_when_absent():
+    ex = execution_from_option_config({"moneyness": "atm", "exit_mode": "spot_exit", "lots": 1})
+    assert "sizing_config" not in ex

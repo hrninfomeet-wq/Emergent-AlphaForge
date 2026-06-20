@@ -25,8 +25,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 from app.paper_auto import (  # noqa: E402
     auto_paper_enabled,
     auto_paper_trade_for_signal,
+    build_auto_trade,
     compute_auto_risk_levels,
     mark_open_deployment_trades,
+    resolve_deployment_lots,
     resolve_option_entry_price,
 )
 from app.signal_lifecycle import create_signal_doc, transition_signal  # noqa: E402
@@ -268,6 +270,86 @@ def test_auto_paper_only_for_opted_in_paper_mode():
     assert auto_paper_enabled({"mode": "paper"}) is False
 
 
+# ---------- resolve_deployment_lots -----------------------------------------------
+
+def test_resolve_lots_premium_at_risk_matches_size_position():
+    from app.portfolio import SizingConfig, size_position
+    sizing = {"enabled": True, "mode": "premium_at_risk", "capital": 200_000,
+              "risk_per_trade_pct": 5.0, "max_lots": 10}
+    risk_cfg = {"sizing": {"sizing_config": sizing, "lots": 1}}
+    # budget 200000*5% = 10000; entry 100, stop 70 -> risk/unit 30;
+    # lot_size 75 -> per-lot 2250 -> floor(10000/2250) = 4 lots.
+    lots, audit = resolve_deployment_lots(risk_cfg, 100.0, {"lot_size": 75}, 70.0)
+    expected = size_position(entry_premium=100.0, lot_size=75, stop_level=70.0,
+                             cfg=SizingConfig.from_dict(sizing))
+    assert lots == 4
+    assert lots == int(expected["lots"])
+    assert audit["sizing_mode"] == "premium_at_risk"
+    assert audit["risk_exceeded"] is False
+
+
+def test_resolve_lots_adapts_to_contract_lot_size():
+    sizing = {"enabled": True, "mode": "premium_at_risk", "capital": 200_000,
+              "risk_per_trade_pct": 1.0, "max_lots": 50}
+    risk_cfg = {"sizing": {"sizing_config": sizing, "lots": 1}}
+    # budget 2000; risk/unit 30.
+    # NIFTY lot 75 -> per-lot 2250 -> floor 0 -> min 1 lot (risk_exceeded).
+    nifty_lots, nifty_audit = resolve_deployment_lots(risk_cfg, 100.0, {"lot_size": 75}, 70.0)
+    # BANKNIFTY lot 15 -> per-lot 450 -> floor(2000/450) = 4 lots.
+    bn_lots, _ = resolve_deployment_lots(risk_cfg, 100.0, {"lot_size": 15}, 70.0)
+    assert nifty_lots == 1
+    assert nifty_audit["risk_exceeded"] is True
+    assert bn_lots == 4
+
+
+def test_resolve_lots_fixed_lots_pin():
+    risk_cfg = {"sizing": {"sizing_config": {"enabled": False, "mode": "fixed_lots"}, "lots": 3}}
+    lots, audit = resolve_deployment_lots(risk_cfg, 100.0, {"lot_size": 75}, None)
+    assert lots == 3
+    assert audit["sizing_mode"] == "fixed_lots"
+
+
+def test_resolve_lots_legacy_fallback_to_default_lots():
+    risk_cfg = {"default_lots": 2}
+    lots, audit = resolve_deployment_lots(risk_cfg, 100.0, {"lot_size": 75}, None)
+    assert lots == 2
+    assert audit["sizing_mode"] == "fixed_lots_legacy"
+
+
+def test_resolve_lots_pin_without_sizing_config_uses_pin_lots():
+    # A malformed pin (sizing present but sizing_config dropped) must honour the
+    # pin's own lots, not silently fall back to default_lots.
+    risk_cfg = {"sizing": {"lots": 2}}
+    lots, audit = resolve_deployment_lots(risk_cfg, 100.0, {"lot_size": 75}, None)
+    assert lots == 2
+    assert audit["sizing_mode"] == "fixed_lots"
+
+
+def test_resolve_lots_caps_at_max_lots():
+    # Budget would buy ~44 lots, but max_lots clamps to 2.
+    sizing = {"enabled": True, "mode": "premium_at_risk", "capital": 200_000,
+              "risk_per_trade_pct": 50.0, "max_lots": 2}
+    risk_cfg = {"sizing": {"sizing_config": sizing, "lots": 1}}
+    lots, audit = resolve_deployment_lots(risk_cfg, 100.0, {"lot_size": 75}, 70.0)
+    assert lots == 2
+    assert audit["sizing_mode"] == "premium_at_risk"
+
+
+def test_resolve_lots_premium_at_risk_no_stop_uses_assumed_pct():
+    from app.portfolio import SizingConfig, size_position
+    # No premium stop -> size_position uses assumed_stop_pct_of_premium (default 50%).
+    # entry 100 -> risk/unit 50; budget 200000*10% = 20000; lot 75 -> per-lot 3750 -> 5 lots.
+    sizing = {"enabled": True, "mode": "premium_at_risk", "capital": 200_000,
+              "risk_per_trade_pct": 10.0, "max_lots": 50}
+    risk_cfg = {"sizing": {"sizing_config": sizing, "lots": 1}}
+    lots, audit = resolve_deployment_lots(risk_cfg, 100.0, {"lot_size": 75}, None)
+    expected = size_position(entry_premium=100.0, lot_size=75, stop_level=None,
+                             cfg=SizingConfig.from_dict(sizing))
+    assert lots == 5
+    assert lots == int(expected["lots"])
+    assert audit["sizing_mode"] == "premium_at_risk"
+
+
 # ---------- auto_paper_trade_for_signal -------------------------------------------
 
 @pytest.mark.asyncio
@@ -334,6 +416,71 @@ async def test_auto_trade_disabled_for_shadow_mode():
     res = await auto_paper_trade_for_signal(
         db, {"id": "dep-1", "mode": "shadow", "risk": {"auto_paper": True}}, sig)
     assert res["created"] is False and res["reason"] == "auto_paper_disabled"
+
+
+@pytest.mark.asyncio
+async def test_auto_trade_snapshot_carries_sizing_audit():
+    db = FakeDB()
+    sig = make_confirmed_signal()  # default contract lot_size 75
+    db.signals.rows.append(dict(sig))
+    sizing = {"enabled": True, "mode": "premium_at_risk", "capital": 200_000,
+              "risk_per_trade_pct": 1.0, "max_lots": 10}
+    deployment = make_paper_deployment(sizing={"sizing_config": sizing, "lots": 1})
+
+    res = await auto_paper_trade_for_signal(
+        db, deployment, sig, latest_tick_lookup={KEY: {"last_price": 100.0}}.get)
+
+    assert res["created"] is True
+    trade = db.paper_trades.rows[0]
+    assert trade["sizing_mode"] == "premium_at_risk"
+    # entry 100, no premium stop -> assumed 50% -> risk/unit 50; lot 75 -> per-lot
+    # 3750; budget 2000 -> floor 0 -> 1 lot, risk_exceeded.
+    snap = db.signals.rows[0]["auto_paper"]
+    assert snap["sizing_mode"] == "premium_at_risk"
+    assert snap["risk_exceeded"] is True
+    assert snap["risk_per_unit"] == 50.0
+    assert "risk_amount" in snap
+
+
+# ---------- build_auto_trade sizing integration -----------------------------------
+
+def test_build_auto_trade_replays_premium_at_risk_policy():
+    sig = make_confirmed_signal(lot_size=15)  # BANKNIFTY-like contract lot
+    sizing = {"enabled": True, "mode": "premium_at_risk", "capital": 200_000,
+              "risk_per_trade_pct": 1.0, "max_lots": 50}
+    deployment = make_paper_deployment(
+        sizing={"sizing_config": sizing, "lots": 1},
+        auto_paper_stop_pct=30,  # premium stop 30% below entry -> stop 70 on entry 100
+    )
+    trade = build_auto_trade(sig, deployment, entry_price=100.0)
+    # entry 100, stop 70 -> risk/unit 30; budget 2000; per-lot 30*15=450 -> 4 lots
+    assert trade["lots"] == 4
+    assert trade["quantity"] == 4 * 15
+    assert trade["sizing_mode"] == "premium_at_risk"
+    assert trade["risk"]["stop_price"] == 70.0
+
+
+def test_build_auto_trade_legacy_uses_default_lots():
+    sig = make_confirmed_signal(lot_size=75)
+    deployment = make_paper_deployment(default_lots=2)  # no risk.sizing pinned
+    trade = build_auto_trade(sig, deployment, entry_price=120.0)
+    assert trade["lots"] == 2
+    assert trade["sizing_mode"] == "fixed_lots_legacy"
+
+
+def test_build_auto_trade_tags_risk_exceeded_on_trade_doc():
+    # Spec edge case: when one lot exceeds the risk budget, still trade one lot
+    # and tag risk_exceeded=True ON THE TRADE DOC (not just the helper audit).
+    sig = make_confirmed_signal(lot_size=75)  # NIFTY lot — one lot blows the budget
+    sizing = {"enabled": True, "mode": "premium_at_risk", "capital": 200_000,
+              "risk_per_trade_pct": 1.0, "max_lots": 50}
+    deployment = make_paper_deployment(
+        sizing={"sizing_config": sizing, "lots": 1}, auto_paper_stop_pct=30)
+    trade = build_auto_trade(sig, deployment, entry_price=100.0)
+    # budget 2000; risk/unit 30; per-lot 30*75=2250 -> floor 0 -> 1 lot, exceeded
+    assert trade["lots"] == 1
+    assert trade["risk_exceeded"] is True
+    assert trade["sizing_mode"] == "premium_at_risk"
 
 
 # ---------- mark_open_deployment_trades -------------------------------------------
