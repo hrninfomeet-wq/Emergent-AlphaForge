@@ -39,3 +39,9 @@ def test_optimizer_start_req_early_stop_defaults():
     assert r.early_stop is True
     assert r.early_stop_warmup == 200 and r.early_stop_patience == 200
     assert r.early_stop_min_delta == 0.001
+
+
+def test_optimizer_start_req_analyze_budget_default():
+    from app.schemas import OptimizerStartReq
+    r = OptimizerStartReq(strategy_id="x")
+    assert r.analyze_budget_sec == 1800

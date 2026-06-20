@@ -213,6 +213,10 @@ class OptimizerStartReq(BaseModel):
     early_stop_warmup: int = 200
     early_stop_patience: int = 200
     early_stop_min_delta: float = 0.001
+    # Analyzing-stage wall-clock budget (option re-rank + survival + heatmap). 30 min
+    # default; 0 = unlimited. On hit, the stage stops and returns the best of the
+    # candidates evaluated so far (flagged), instead of silently grinding for hours.
+    analyze_budget_sec: int = 1800
 
 
 class WfoStartReq(BaseModel):
