@@ -104,6 +104,73 @@ def _resolve_option_levels(
     return {"target_level": target_level, "stop_level": stop_level}
 
 
+def _walk_window_arrays(
+    rows: pd.DataFrame,
+    *,
+    entry_ts: int,
+    backstop_ts: int,
+    entry_price: float,
+):
+    """Extract the (entry_ts, backstop_ts] window as numpy ohlc arrays.
+
+    The contract slice handed to ``_walk_option_exit`` is already sorted by ``ts``
+    (built once in ``simulate_paired_option_trades``), so we locate the window with
+    ``np.searchsorted`` instead of a boolean filter + ``.sort_values``. Returns
+    ``(ts, open_, high, low, close, n)`` where the arrays are float64 (open_ may
+    hold NaN where the column is absent). ``n == 0`` => empty window.
+
+    Column fallbacks mirror the legacy per-bar reads: high/low/close fall back to
+    close-then-entry_price; the per-bar walk read ``bar.get("close", last_close)``
+    but ``last_close`` only changes across bars, so close missing on bar 0 ==
+    entry_price and on bar i == prior close — i.e. forward-fill from entry_price,
+    which is what a missing OHLC frame would never actually exercise (real candles
+    always carry close). open_ has no fallback (used only for gap-fill, which reads
+    ``bar.get("open")`` => None when absent)."""
+    if rows is None or rows.empty or "ts" not in rows.columns:
+        empty = np.empty(0, dtype=float)
+        return empty, empty, empty, empty, empty, 0
+    ts_all = rows["ts"].to_numpy()
+    # Window is (entry_ts, backstop_ts]. ``simulate_paired_option_trades`` hands a
+    # ts-sorted slice (the fast path), but the parity unit-tests pass unsorted
+    # rows and the frozen ref ``.sort_values("ts")`` first -- so re-sort when not
+    # already monotonic (a no-op cost on the already-sorted production path).
+    order = None
+    if ts_all.shape[0] > 1 and not np.all(ts_all[:-1] <= ts_all[1:]):
+        order = np.argsort(ts_all, kind="stable")
+        rows = rows.iloc[order]
+        ts_all = ts_all[order]
+    lo = int(np.searchsorted(ts_all, entry_ts, side="right"))
+    hi = int(np.searchsorted(ts_all, backstop_ts, side="right"))
+    if hi <= lo:
+        empty = np.empty(0, dtype=float)
+        return empty, empty, empty, empty, empty, 0
+    sl = slice(lo, hi)
+    ts = ts_all[sl].astype(np.int64)
+    # close: forward-fill from entry_price for any missing values (matches the
+    # legacy ``last_close`` carry; real candles never trigger this).
+    if "close" in rows.columns:
+        close = pd.to_numeric(rows["close"].iloc[sl], errors="coerce").to_numpy(dtype=float)
+        if np.isnan(close).any():
+            cf = pd.Series(close).ffill().to_numpy()
+            close = np.where(np.isnan(cf), float(entry_price), cf)
+    else:
+        close = np.full(hi - lo, float(entry_price), dtype=float)
+    # high/low fall back to close, then entry_price.
+    def _hl(col: str) -> np.ndarray:
+        if col in rows.columns:
+            arr = pd.to_numeric(rows[col].iloc[sl], errors="coerce").to_numpy(dtype=float)
+            arr = np.where(np.isnan(arr), close, arr)
+            return np.where(np.isnan(arr), float(entry_price), arr)
+        return close.copy()
+    high = _hl("high")
+    low = _hl("low")
+    if "open" in rows.columns:
+        open_ = pd.to_numeric(rows["open"].iloc[sl], errors="coerce").to_numpy(dtype=float)
+    else:
+        open_ = np.full(hi - lo, np.nan, dtype=float)
+    return ts, open_, high, low, close, hi - lo
+
+
 def _walk_option_exit(
     rows: pd.DataFrame,
     *,
@@ -117,39 +184,118 @@ def _walk_option_exit(
     """Walk option candles forward to the first premium-level exit. With exit_cfg
     enabled, the stop is ratcheted per bar via effective_premium_stop using the
     running-max premium THROUGH the prior bar (look-ahead safe), and a long stop
-    that gaps below fills at the bar open."""
-    forward = rows[(rows["ts"] > entry_ts) & (rows["ts"] <= backstop_ts)].sort_values("ts")
-    last_close = entry_price
-    last_ts = entry_ts
-    running_max = float(entry_price)
+    that gaps below fills at the bar open.
+
+    Vectorized (Task 6, analyzing-governed-fast): the window is sliced via
+    ``np.searchsorted`` and the first-crossing is found with numpy. The SAME
+    deciders (``effective_premium_stop`` / ``stop_fill_price`` / ``intrabar_exit``
+    semantics / ``_breakeven_binding``) drive every branch, so the result is
+    byte-identical to the prior iterrows loop (frozen by
+    tests/test_walk_option_exit_parity.py)."""
     use_overlay = exit_cfg is not None and exit_cfg.enabled
-    for _, bar in forward.iterrows():
-        bar_ts = int(bar["ts"])
-        high = float(bar.get("high", bar.get("close", entry_price)))
-        low = float(bar.get("low", bar.get("close", entry_price)))
-        bar_open = bar.get("open")
-        last_close = float(bar.get("close", last_close))
-        last_ts = bar_ts
-        eff_stop = (effective_premium_stop(entry=entry_price, running_max=running_max,
-                                           base_stop=stop_level, cfg=exit_cfg)
-                    if use_overlay else stop_level)
-        level, reason = intrabar_exit(
-            high=high, low=low, stop=eff_stop, target=target_level, is_long=True,
-        )
-        if level is not None:
-            if reason == "STOP":
-                fill = stop_fill_price(level, reason, bar_open) if use_overlay else level
-                exit_reason = "OPTION_STOP"
-                if use_overlay and stop_level is not None and eff_stop is not None and eff_stop > float(stop_level):
-                    exit_reason = (EXIT_BREAKEVEN_STOP
-                                   if _breakeven_binding(entry_price, running_max, eff_stop, exit_cfg)
-                                   else EXIT_TRAIL_STOP)
-                elif use_overlay and stop_level is None and eff_stop is not None:
-                    exit_reason = EXIT_TRAIL_STOP
-                return {"exit_ts": bar_ts, "exit_price": fill, "exit_reason": exit_reason}
-            return {"exit_ts": bar_ts, "exit_price": level, "exit_reason": "OPTION_TARGET"}
-        running_max = max(running_max, high)
+    ts, open_, high, low, close, n = _walk_window_arrays(
+        rows, entry_ts=entry_ts, backstop_ts=backstop_ts, entry_price=entry_price,
+    )
+    if n == 0:
+        # Empty window -> the same fall-through as the loop never running.
+        return {"exit_ts": entry_ts, "exit_price": entry_price, "exit_reason": "OPTION_SIGNAL_EXIT"}
+
+    last_ts = int(ts[-1])
+    last_close = float(close[-1])
+
+    if not use_overlay:
+        # ---- Overlay OFF: fixed stop/target, fully vectorized first-crossing ----
+        # intrabar_exit(is_long=True, stop_first=True): stop hits when low<=stop,
+        # target when high>=target; on a same-bar tie, STOP wins.
+        hit_stop = (low <= stop_level) if stop_level is not None else np.zeros(n, dtype=bool)
+        hit_target = (high >= target_level) if target_level is not None else np.zeros(n, dtype=bool)
+        hit_any = hit_stop | hit_target
+        idxs = np.flatnonzero(hit_any)
+        if idxs.size:
+            i = int(idxs[0])
+            if hit_stop[i]:  # stop wins ties (stop_first=True)
+                return {"exit_ts": int(ts[i]), "exit_price": float(stop_level),
+                        "exit_reason": "OPTION_STOP"}
+            return {"exit_ts": int(ts[i]), "exit_price": float(target_level),
+                    "exit_reason": "OPTION_TARGET"}
+        return {"exit_ts": last_ts, "exit_price": last_close, "exit_reason": "OPTION_SIGNAL_EXIT"}
+
+    # ---- Overlay ON: per-bar ratcheted stop via effective_premium_stop ----
+    # running_max_prev[i] = peak high THROUGH bar i-1, seeded with entry_price
+    # (look-ahead safe: the bar that prints the peak is not self-stopped).
+    cummax = np.maximum.accumulate(high)
+    running_max_prev = np.empty(n, dtype=float)
+    running_max_prev[0] = float(entry_price)
+    if n > 1:
+        running_max_prev[1:] = np.maximum(float(entry_price), cummax[:-1])
+    eff_stop = _vec_effective_premium_stop(
+        entry=float(entry_price), running_max=running_max_prev,
+        base_stop=stop_level, cfg=exit_cfg,
+    )
+    has_stop = ~np.isnan(eff_stop)
+    hit_stop = has_stop & (low <= eff_stop)
+    hit_target = (high >= target_level) if target_level is not None else np.zeros(n, dtype=bool)
+    hit_any = hit_stop | hit_target
+    idxs = np.flatnonzero(hit_any)
+    if idxs.size:
+        i = int(idxs[0])
+        if hit_stop[i]:  # stop wins ties (stop_first=True)
+            es = float(eff_stop[i])
+            rm = float(running_max_prev[i])
+            bar_open = None if np.isnan(open_[i]) else float(open_[i])
+            fill = stop_fill_price(es, "STOP", bar_open)
+            exit_reason = "OPTION_STOP"
+            if stop_level is not None and es > float(stop_level):
+                exit_reason = (EXIT_BREAKEVEN_STOP
+                               if _breakeven_binding(entry_price, rm, es, exit_cfg)
+                               else EXIT_TRAIL_STOP)
+            elif stop_level is None:
+                exit_reason = EXIT_TRAIL_STOP
+            return {"exit_ts": int(ts[i]), "exit_price": fill, "exit_reason": exit_reason}
+        return {"exit_ts": int(ts[i]), "exit_price": float(target_level),
+                "exit_reason": "OPTION_TARGET"}
     return {"exit_ts": last_ts, "exit_price": last_close, "exit_reason": "OPTION_SIGNAL_EXIT"}
+
+
+def _vec_effective_premium_stop(*, entry: float, running_max: np.ndarray,
+                                base_stop: Optional[float],
+                                cfg: ExitControlsConfig) -> np.ndarray:
+    """Vectorized twin of ``effective_premium_stop`` over a running_max array.
+
+    Byte-identical to calling ``effective_premium_stop`` per element: the
+    ratcheted LONG stop = max(base, breakeven?, trailing?), with the SAME
+    pts/pct branch and the SAME activation/trigger gating. Returns a float64
+    array; NaN where no candidate applies (== ``None`` from the scalar fn)."""
+    e = float(entry)
+    rm = running_max
+    n = rm.shape[0]
+    # Stack candidates as columns; NaN means "candidate absent for this bar".
+    cands = np.full((n, 3), np.nan, dtype=float)
+    if base_stop is not None:
+        cands[:, 0] = float(base_stop)
+    if cfg.enabled:
+        if cfg.be_trigger and cfg.be_trigger > 0:
+            if cfg.unit == "pts":
+                trigger_level = e + cfg.be_trigger
+                lock_level = e + (cfg.be_lock or 0.0)
+            else:
+                trigger_level = e * (1.0 + cfg.be_trigger)
+                lock_level = e * (1.0 + (cfg.be_lock or 0.0))
+            cands[:, 1] = np.where(rm >= trigger_level, lock_level, np.nan)
+        if cfg.trail_distance and cfg.trail_distance > 0:
+            if cfg.unit == "pts":
+                activation_level = e + (cfg.trail_activation or 0.0)
+                trail_level = rm - cfg.trail_distance
+            else:
+                activation_level = e * (1.0 + (cfg.trail_activation or 0.0))
+                trail_level = rm * (1.0 - cfg.trail_distance)
+            cands[:, 2] = np.where(rm >= activation_level, trail_level, np.nan)
+    # max over candidates ignoring NaN; all-NaN rows -> NaN (== None).
+    all_nan = np.isnan(cands).all(axis=1)
+    out = np.full(n, np.nan, dtype=float)
+    if not all_nan.all():
+        out[~all_nan] = np.nanmax(cands[~all_nan], axis=1)
+    return out
 
 
 def _breakeven_binding(entry, running_max, eff_stop, cfg) -> bool:
@@ -257,6 +403,30 @@ def build_option_equity_curve(trades: List[Dict[str, Any]]) -> List[Dict[str, An
     return curve
 
 
+def build_candles_by_key(option_candles: Optional[pd.DataFrame]) -> Dict[str, pd.DataFrame]:
+    """Group an option-candle frame into per-(canonical)-instrument_key sorted slices.
+
+    This is the SINGLE definition of the grouping that ``simulate_paired_option_trades``
+    consumes; the optimizer calls it ONCE per re-rank and passes the result into
+    every per-candidate sim (which would otherwise re-group the identical frame
+    ~150x). Output is byte-identical to the inlined groupby it replaced: ts cast
+    to int, sorted by (instrument_key, ts), canonical-keyed, concatenated +
+    ts-sorted on key collision. Returns {} for an empty/None frame."""
+    from app.instruments import canonical_instrument_key
+    candles = option_candles.copy() if option_candles is not None else pd.DataFrame()
+    if candles.empty:
+        return {}
+    candles["ts"] = candles["ts"].astype(int)
+    candles = candles.sort_values(["instrument_key", "ts"]).reset_index(drop=True)
+    grouped: Dict[str, List[pd.DataFrame]] = {}
+    for k, g in candles.groupby("instrument_key", sort=False):
+        grouped.setdefault(canonical_instrument_key(str(k)), []).append(g)
+    return {
+        key: (frames[0] if len(frames) == 1 else pd.concat(frames).sort_values("ts"))
+        for key, frames in grouped.items()
+    }
+
+
 def simulate_paired_option_trades(
     *,
     spot_trades: Iterable[Dict[str, Any]],
@@ -279,6 +449,7 @@ def simulate_paired_option_trades(
     sizing_config: Optional[Dict[str, Any]] = None,
     exit_controls: Optional[Dict[str, Any]] = None,
     daily_caps: Optional[Dict[str, Any]] = None,  # wired in the next task (daily governor)
+    candles_by_key: Optional[Dict[str, pd.DataFrame]] = None,
 ) -> Dict[str, Any]:
     """Map each spot signal trade to a long CE/PE option premium trade.
 
@@ -303,16 +474,13 @@ def simulate_paired_option_trades(
     )
     contract_list = list(contracts or [])
     spot_trade_list = list(spot_trades or [])
-    candles = option_candles.copy() if option_candles is not None else pd.DataFrame()
     slippage_cfg = SlippageConfig.from_dict(slippage_config)
     cost_cfg = CostConfig.from_dict(cost_config)
     sizing_cfg = SizingConfig.from_dict(sizing_config)
     exit_cfg = ExitControlsConfig.from_dict(exit_controls)
     caps_cfg = DailyCapsConfig.from_dict(daily_caps)
     session_ledger: Dict[str, Dict[str, float]] = {}
-    if not candles.empty:
-        candles["ts"] = candles["ts"].astype(int)
-        candles = candles.sort_values(["instrument_key", "ts"]).reset_index(drop=True)
+    from app.instruments import canonical_instrument_key
     # Pre-group candles by instrument_key ONCE. The pairing loop below looks up
     # the candles for a contract on every trade; scanning the full frame per
     # trade is O(trades x candles) and becomes the bottleneck when the optimizer
@@ -320,16 +488,13 @@ def simulate_paired_option_trades(
     # Keys are CANONICALIZED (2-part broker form): the same contract can be
     # selected via a plain-keyed (current-sync) or dated-keyed (expired-sync)
     # metadata doc, and candles must pair either way (root cause #3, 2026-06-12).
-    from app.instruments import canonical_instrument_key
-    candles_by_key: Dict[str, pd.DataFrame] = {}
-    if not candles.empty:
-        grouped: Dict[str, List[pd.DataFrame]] = {}
-        for k, g in candles.groupby("instrument_key", sort=False):
-            grouped.setdefault(canonical_instrument_key(str(k)), []).append(g)
-        candles_by_key = {
-            key: (frames[0] if len(frames) == 1 else pd.concat(frames).sort_values("ts"))
-            for key, frames in grouped.items()
-        }
+    #
+    # When the caller already grouped the SAME candle frame (optimizer re-rank
+    # sims the same candles_df across ~150 candidates), it passes candles_by_key
+    # so we skip the redundant re-group. Default None => build it here (today's
+    # behaviour, byte-identical). The two paths share build_candles_by_key.
+    if candles_by_key is None:
+        candles_by_key = build_candles_by_key(option_candles)
 
     coverage = _coverage()
     coverage["spot_trade_count"] = len(spot_trade_list)

@@ -36,7 +36,7 @@ from app.indicator_groups import enrich_with_cache
 from app.parallel_eval import effective_workers, start_pool, shutdown_pool, parallel_backtest
 from app.strategies.base import get_registry
 from app.warehouse import load_candles_df
-from app.option_backtest import simulate_paired_option_trades
+from app.option_backtest import simulate_paired_option_trades, build_candles_by_key
 from app.options_universe import select_contract_for_signal
 from app.deployment_quality import compute_spot_option_correlation
 from app.dte import compute_dte, normalize_dte_filter
@@ -749,6 +749,12 @@ async def _option_rerank(
             candles_df = pd.DataFrame(rows)
 
     # 5. Simulate each candidate in-memory and collect option metrics.
+    # Pre-group the (single, shared) candle frame ONCE here instead of letting
+    # each of the ~150 per-candidate sims re-group the identical frame internally
+    # (the groupby was O(candidates x candles)). simulate_paired_option_trades
+    # consumes candles_by_key verbatim; build_candles_by_key IS its internal
+    # grouping, so behaviour is byte-identical.
+    candles_by_key = build_candles_by_key(candles_df)
     ranked: List[Dict[str, Any]] = []
     budget_hit = False
     _per_item: Optional[float] = None
@@ -764,6 +770,7 @@ async def _option_rerank(
             option_target_pct=opt_tpct, option_stop_pct=opt_spct,
             cost_config=cost_config, sizing_config=sizing_config,
             exit_controls=exit_controls, daily_caps=daily_caps,
+            candles_by_key=candles_by_key,
         )
         m = sim.get("metrics", {})
         cov = sim.get("coverage", {})
