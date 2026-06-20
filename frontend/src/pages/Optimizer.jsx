@@ -19,8 +19,30 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
   Gauge, Play, RefreshCw, Sparkles, Trash2, ChevronDown, ChevronRight,
   Save, Activity, Trophy, StopCircle, Download, FileJson, FileText, FolderOpen,
-  ExternalLink, Copy, PauseCircle, PlayCircle, Rocket, Pencil, Search, X,
+  ExternalLink, Copy, PauseCircle, PlayCircle, Rocket, Pencil, Search, X, HelpCircle,
 } from "lucide-react";
+import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "@/components/ui/tooltip";
+
+// Small inline "?" help affordance: a focusable icon that reveals a styled tooltip
+// on hover/focus (self-contained provider so it works wherever it's dropped).
+const Hint = ({ children, label = "help" }) => (
+  <TooltipProvider delayDuration={150}>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          aria-label={label}
+          className="ml-1 inline-flex align-middle text-dimmer hover:text-dim focus:outline-none focus-visible:text-dim"
+        >
+          <HelpCircle className="h-3 w-3" />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-xs text-[11px] leading-snug">
+        {children}
+      </TooltipContent>
+    </Tooltip>
+  </TooltipProvider>
+);
 
 const INSTRUMENTS = ["NIFTY", "BANKNIFTY", "SENSEX"];
 const OPT_MONEYNESS = ["atm", "otm1", "otm2", "itm1", "itm2"];
@@ -683,28 +705,49 @@ export default function Optimizer() {
 
             {config.run_kind === "walkforward" && (
               <div className="rounded-md border border-emerald-500/30 bg-emerald-500/5 p-2 space-y-2" data-testid="opt-wf-config">
-                <div className="text-[10px] uppercase tracking-wider text-emerald-400">Walk-forward windows (trading days)</div>
+                <div className="text-[10px] uppercase tracking-wider text-emerald-400">
+                  Walk-forward windows (trading days)
+                  <Hint label="What is walk-forward">
+                    Re-optimizes the strategy on each <b>Train</b> window, scores those settings on the next <b>unseen Test</b> window, and stitches all Test results into one honest out-of-sample record. Answers: <i>would these params have worked on data they weren't fitted to?</i> All days below are trading days actually present in your data (holiday-aware). With more windows than Max, the oldest are dropped — deployable params come from the most recent train window. Window re-optimization runs on spot evaluation.
+                  </Hint>
+                </div>
                 <div className="grid grid-cols-2 gap-2">
                   <div>
-                    <Label className="text-[11px] text-dim">Train days</Label>
+                    <Label className="text-[11px] text-dim">Train days
+                      <Hint label="Train days">
+                        In-sample window the optimizer fits on. Bigger = steadier fit but fewer windows and slower to adapt. <b>Suggested: 40–60</b> (≈2–3 months) for intraday NIFTY.
+                      </Hint>
+                    </Label>
                     <Input type="number" min={20} max={250} value={config.wf_train_days}
                       onChange={(e) => setConfig({ ...config, wf_train_days: e.target.value })}
                       className="bg-bg-2 border-line h-8 text-xs font-mono mt-1" data-testid="opt-wf-train-days" />
                   </div>
                   <div>
-                    <Label className="text-[11px] text-dim">Test days</Label>
+                    <Label className="text-[11px] text-dim">Test days
+                      <Hint label="Test days">
+                        Unseen window each fit is scored on. Long enough for meaningful trades, short enough to stay recent — about ¼–⅓ of Train. <b>Suggested: 15–20.</b>
+                      </Hint>
+                    </Label>
                     <Input type="number" min={5} max={60} value={config.wf_test_days}
                       onChange={(e) => setConfig({ ...config, wf_test_days: e.target.value })}
                       className="bg-bg-2 border-line h-8 text-xs font-mono mt-1" data-testid="opt-wf-test-days" />
                   </div>
                   <div>
-                    <Label className="text-[11px] text-dim">Step (blank = test days)</Label>
+                    <Label className="text-[11px] text-dim">Step (blank = test days)
+                      <Hint label="Step">
+                        How far the window slides each cycle. <b>Leave blank</b> to step by Test days → back-to-back, non-overlapping tests (standard). Smaller = overlapping windows (more, but correlated). <b>Suggested: blank.</b>
+                      </Hint>
+                    </Label>
                     <Input type="number" min={1} max={60} value={config.wf_step_days} placeholder={String(config.wf_test_days)}
                       onChange={(e) => setConfig({ ...config, wf_step_days: e.target.value })}
                       className="bg-bg-2 border-line h-8 text-xs font-mono mt-1" data-testid="opt-wf-step-days" />
                   </div>
                   <div>
-                    <Label className="text-[11px] text-dim">Window mode</Label>
+                    <Label className="text-[11px] text-dim">Window mode
+                      <Hint label="Window mode">
+                        <b>Rolling</b>: Train is a fixed size that slides forward (adapts to the latest regime). <b>Anchored</b>: Train grows from day one (more data, but old regimes dilute it). <b>Suggested: Rolling.</b>
+                      </Hint>
+                    </Label>
                     <Select value={config.wf_mode} onValueChange={(v) => setConfig({ ...config, wf_mode: v })}>
                       <SelectTrigger className="bg-bg-2 border-line h-8 mt-1" data-testid="opt-wf-mode"><SelectValue /></SelectTrigger>
                       <SelectContent>
@@ -714,23 +757,32 @@ export default function Optimizer() {
                     </Select>
                   </div>
                   <div>
-                    <Label className="text-[11px] text-dim">Trials per window</Label>
+                    <Label className="text-[11px] text-dim">Trials per window
+                      <Hint label="Trials per window">
+                        Bayesian search trials per Train window. Too few underfits the search; too many overfits the train window and is slow. <b>Suggested: 40–80</b> (toward 80+ when tuning many params).
+                      </Hint>
+                    </Label>
                     <Input type="number" min={10} max={500} value={config.wf_trials_per_window}
                       onChange={(e) => setConfig({ ...config, wf_trials_per_window: e.target.value })}
                       className="bg-bg-2 border-line h-8 text-xs font-mono mt-1" data-testid="opt-wf-trials" />
                   </div>
                   <div>
-                    <Label className="text-[11px] text-dim">Max windows</Label>
+                    <Label className="text-[11px] text-dim">Max windows
+                      <Hint label="Max windows">
+                        Caps the window count; if more fit, the oldest are dropped (recent data matters most; deployable params come from the last window). Your data + the suggested sizes give ~6–8 windows. <b>Suggested: 8–12</b> to keep them all.
+                      </Hint>
+                    </Label>
                     <Input type="number" min={2} max={36} value={config.wf_max_windows}
                       onChange={(e) => setConfig({ ...config, wf_max_windows: e.target.value })}
                       className="bg-bg-2 border-line h-8 text-xs font-mono mt-1" data-testid="opt-wf-max-windows" />
                   </div>
                 </div>
-                <div className="text-[10px] text-dimmer leading-snug">
-                  Days are trading days actually present in the data (holiday-aware). With more windows than Max, the oldest are dropped — deployable params always come from the most recent train window. Window re-optimization runs on spot evaluation.
-                </div>
                 <div className="pt-1 border-t border-emerald-500/20">
-                  <Label className="text-[11px] text-dim">Parallel workers</Label>
+                  <Label className="text-[11px] text-dim">Parallel workers
+                    <Hint label="Parallel workers">
+                      Runs several trial backtests at once to speed each window's search. <b>1 = sequential and reproducible</b> (best for the deploy decision); more than 1 is faster but makes the OOS result vary run-to-run. <b>Suggested: 1</b> (4–8 only for quick exploration).
+                    </Hint>
+                  </Label>
                   <Input
                     type="number" min={1} max={15}
                     value={config.opt_workers}
@@ -738,13 +790,9 @@ export default function Optimizer() {
                     className="bg-bg-2 border-line h-8 text-xs font-mono mt-1 w-24"
                     data-testid="opt-wf-parallel-workers"
                   />
-                  {Number(config.opt_workers) > 1 ? (
+                  {Number(config.opt_workers) > 1 && (
                     <div className="text-[10px] text-warning mt-1 leading-snug" data-testid="opt-wf-workers-warning">
                       experimental · non-deterministic · more RAM. With parallel workers the OOS result and deployable params can vary run-to-run — walk-forward is your honest-OOS validation; use 1 worker for a reproducible deploy decision.
-                    </div>
-                  ) : (
-                    <div className="text-[10px] text-dimmer mt-1 leading-snug">
-                      Speeds the per-window Bayesian search. 1 = sequential &amp; reproducible (recommended for the deploy decision).
                     </div>
                   )}
                 </div>
