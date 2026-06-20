@@ -484,6 +484,10 @@ async def run_wfo(job_id: str, payload: Dict[str, Any], resume: bool = False) ->
             _save_best_as_backtest,
             _suggest,
         )
+        from app.parallel_eval import (
+            effective_workers, start_pool, shutdown_pool, parallel_backtest,
+            _worker_evaluate_wfo,
+        )
         from app.strategies.base import get_registry
         from app.warehouse import load_candles_df
 
@@ -498,6 +502,9 @@ async def run_wfo(job_id: str, payload: Dict[str, Any], resume: bool = False) ->
         method = payload.get("method", "bayesian")
         if method == "grid":
             method = "bayesian"  # grid per window is not supported; TPE is
+
+        opt_workers = int(payload.get("opt_workers", 1) or 1)
+        _workers = effective_workers(opt_workers) if method == "bayesian" else 1
 
         min_trades = int(payload.get("min_trades", 10) or 0)
         min_direction_share = float(payload.get("min_direction_share", 0.0) or 0.0)
@@ -611,83 +618,132 @@ async def run_wfo(job_id: str, payload: Dict[str, Any], resume: bool = False) ->
                        "optimize_indicator_periods": optimize_indicator_periods},
         })
 
+        pool = start_pool(df, _workers) if _workers > 1 else None
+        use_parallel = pool is not None
+        await _update_job(job_id, {"opt_workers_effective": _workers if use_parallel else 1})
+
         cancelled = False
-        for w in windows[len(completed_windows):]:
-            tr_a, tr_b = row_range(w["train_start"], w["train_end"])
-            te_a, te_b = row_range(w["test_start"], w["test_end"])
+        try:
+            for w in windows[len(completed_windows):]:
+                tr_a, tr_b = row_range(w["train_start"], w["train_end"])
+                te_a, te_b = row_range(w["test_start"], w["test_end"])
 
-            study = optuna.create_study(direction="maximize", sampler=_make_sampler(method))
-            window_best = {"value": -float("inf"), "params": {}, "metrics": {}}
+                _wf_sampler = (optuna.samplers.TPESampler(seed=42, n_startup_trials=10,
+                                                          constant_liar=True)
+                               if use_parallel else _make_sampler(method))
+                study = optuna.create_study(direction="maximize", sampler=_wf_sampler)
+                window_best = {"value": -float("inf"), "params": {}, "metrics": {}}
 
-            def objective_fn(trial: optuna.Trial) -> float:
-                params = _suggest(trial, space)
-                merged = strategy.merged_params(params)
-                enr = get_enriched(merged)
-                metrics, _ = _evaluate_slice(enr, tr_a, tr_b, strategy, merged,
-                                             instrument, costs, pretrade)
-                val = obj(metrics)
-                if val > window_best["value"]:
-                    window_best.update({"value": val, "params": dict(params), "metrics": metrics})
-                return val
+                def objective_fn(trial: optuna.Trial) -> float:
+                    params = _suggest(trial, space)
+                    merged = strategy.merged_params(params)
+                    enr = get_enriched(merged)
+                    metrics, _ = _evaluate_slice(enr, tr_a, tr_b, strategy, merged,
+                                                 instrument, costs, pretrade)
+                    val = obj(metrics)
+                    if val > window_best["value"]:
+                        window_best.update({"value": val, "params": dict(params), "metrics": metrics})
+                    return val
 
-            paused = False
-            for i in range(n_trials_per_window):
-                cf, pf = await _job_control(job_id)
-                if cf:
-                    cancelled = True
-                    break
-                if pf:
-                    paused = True
-                    break
-                await asyncio.to_thread(study.optimize, objective_fn, n_trials=1, catch=(Exception,))
-                if (i + 1) % 5 == 0 or i == n_trials_per_window - 1:
+                paused = False
+                if not use_parallel:
+                    # SEQUENTIAL — UNCHANGED (byte-identical / deterministic default path).
+                    for i in range(n_trials_per_window):
+                        cf, pf = await _job_control(job_id)
+                        if cf:
+                            cancelled = True
+                            break
+                        if pf:
+                            paused = True
+                            break
+                        await asyncio.to_thread(study.optimize, objective_fn, n_trials=1, catch=(Exception,))
+                        if (i + 1) % 5 == 0 or i == n_trials_per_window - 1:
+                            await _update_job(job_id, {
+                                "wfo_progress": {"window": w["index"] + 1, "window_count": len(windows),
+                                                 "trial": i + 1, "trials_per_window": n_trials_per_window},
+                                "n_trials_completed": w["index"] * n_trials_per_window + i + 1,
+                            })
+                else:
+                    # PARALLEL — opt-in batched ask/tell; non-deterministic. window_best is
+                    # updated explicitly from results (the objective_fn closure is bypassed here).
+                    done = 0
+                    while done < n_trials_per_window:
+                        cf, pf = await _job_control(job_id)
+                        if cf:
+                            cancelled = True
+                            break
+                        if pf:
+                            paused = True
+                            break
+                        B = min(_workers, n_trials_per_window - done)
+                        trials = [study.ask() for _ in range(B)]
+                        param_list = [_suggest(t, space) for t in trials]
+                        param_sets = [(strategy.id, strategy.merged_params(p), (tr_a, tr_b))
+                                      for p in param_list]
+                        results = await asyncio.to_thread(
+                            parallel_backtest, pool, param_sets, raw_df=df, instrument=instrument,
+                            costs=costs, pretrade=pretrade, worker=_worker_evaluate_wfo)
+                        for trial, params, (metrics, _m) in zip(trials, param_list, results):
+                            if metrics is None:
+                                study.tell(trial, None, state=optuna.trial.TrialState.FAIL)
+                            else:
+                                val = obj(metrics)
+                                study.tell(trial, val)
+                                if val > window_best["value"]:
+                                    window_best.update({"value": val, "params": dict(params),
+                                                        "metrics": metrics})
+                        prev = done
+                        done += B
+                        if (done // 5) > (prev // 5) or done >= n_trials_per_window:
+                            await _update_job(job_id, {
+                                "wfo_progress": {"window": w["index"] + 1, "window_count": len(windows),
+                                                 "trial": done, "trials_per_window": n_trials_per_window},
+                                "n_trials_completed": w["index"] * n_trials_per_window + done,
+                            })
+
+                if paused:
                     await _update_job(job_id, {
-                        "wfo_progress": {"window": w["index"] + 1, "window_count": len(windows),
-                                         "trial": i + 1, "trials_per_window": n_trials_per_window},
-                        "n_trials_completed": w["index"] * n_trials_per_window + i + 1,
+                        "status": "paused", "paused": False,
+                        "paused_at": datetime.now(timezone.utc).isoformat(),
+                        "wfo_windows": completed_windows, "wfo_oos_trades": oos_trades_all,
                     })
+                    log.info(f"WFO {job_id} paused at window {w['index'] + 1}/{len(windows)}")
+                    return
+                if cancelled:
+                    log.info(f"WFO {job_id} cancelled at window {w['index'] + 1}/{len(windows)}")
+                    break
 
-            if paused:
-                await _update_job(job_id, {
-                    "status": "paused", "paused": False,
-                    "paused_at": datetime.now(timezone.utc).isoformat(),
-                    "wfo_windows": completed_windows, "wfo_oos_trades": oos_trades_all,
-                })
-                log.info(f"WFO {job_id} paused at window {w['index'] + 1}/{len(windows)}")
-                return
-            if cancelled:
-                log.info(f"WFO {job_id} cancelled at window {w['index'] + 1}/{len(windows)}")
-                break
-
-            if window_best["value"] <= _DISQUALIFY or not window_best["params"]:
-                # No qualifying trial in this train window — record it honestly
-                # as a no-trade window (an OOS gap, not a silent skip).
-                completed_windows.append({
-                    **{k: w[k] for k in ("index", "train_start", "train_end", "test_start",
-                                         "test_end", "train_day_count", "test_day_count")},
-                    "no_qualifying_params": True,
-                    "best_params": None, "is_objective": None,
-                    "is_metrics": {}, "oos_metrics": {}, "oos_trade_count": 0,
-                })
-            else:
-                merged_best = strategy.merged_params(window_best["params"])
-                enr_best = get_enriched(merged_best)
-                oos_metrics, oos_trades = await asyncio.to_thread(
-                    _evaluate_slice, enr_best, te_a, te_b, strategy, merged_best,
-                    instrument, costs, pretrade)
-                oos_trades_all.extend(oos_trades)
-                completed_windows.append({
-                    **{k: w[k] for k in ("index", "train_start", "train_end", "test_start",
-                                         "test_end", "train_day_count", "test_day_count")},
-                    "no_qualifying_params": False,
-                    "best_params": window_best["params"],
-                    "is_objective": round(float(window_best["value"]), 4),
-                    "is_metrics": _compact_metrics(window_best["metrics"]),
-                    "oos_metrics": _compact_metrics(oos_metrics),
-                    "oos_trade_count": len(oos_trades),
-                })
-            await _update_job(job_id, {"wfo_windows": completed_windows,
-                                       "wfo_oos_trades": oos_trades_all})
+                if window_best["value"] <= _DISQUALIFY or not window_best["params"]:
+                    # No qualifying trial in this train window — record it honestly
+                    # as a no-trade window (an OOS gap, not a silent skip).
+                    completed_windows.append({
+                        **{k: w[k] for k in ("index", "train_start", "train_end", "test_start",
+                                             "test_end", "train_day_count", "test_day_count")},
+                        "no_qualifying_params": True,
+                        "best_params": None, "is_objective": None,
+                        "is_metrics": {}, "oos_metrics": {}, "oos_trade_count": 0,
+                    })
+                else:
+                    merged_best = strategy.merged_params(window_best["params"])
+                    enr_best = get_enriched(merged_best)
+                    oos_metrics, oos_trades = await asyncio.to_thread(
+                        _evaluate_slice, enr_best, te_a, te_b, strategy, merged_best,
+                        instrument, costs, pretrade)
+                    oos_trades_all.extend(oos_trades)
+                    completed_windows.append({
+                        **{k: w[k] for k in ("index", "train_start", "train_end", "test_start",
+                                             "test_end", "train_day_count", "test_day_count")},
+                        "no_qualifying_params": False,
+                        "best_params": window_best["params"],
+                        "is_objective": round(float(window_best["value"]), 4),
+                        "is_metrics": _compact_metrics(window_best["metrics"]),
+                        "oos_metrics": _compact_metrics(oos_metrics),
+                        "oos_trade_count": len(oos_trades),
+                    })
+                await _update_job(job_id, {"wfo_windows": completed_windows,
+                                           "wfo_oos_trades": oos_trades_all})
+        finally:
+            shutdown_pool()
 
         # ---- Final analysis over completed windows ----
         await _update_job(job_id, {"status": "analyzing"})
