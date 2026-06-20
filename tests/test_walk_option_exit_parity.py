@@ -55,7 +55,13 @@ def _ref(
     stop_level: Optional[float],
     exit_cfg: Optional[ExitControlsConfig] = None,
 ) -> Dict[str, Any]:
-    forward = rows[(rows["ts"] > entry_ts) & (rows["ts"] <= backstop_ts)].sort_values("ts")
+    # stable sort: the oracle now pins the DETERMINISTIC stable ordering on dup-ts
+    # (pandas' default quicksort was non-deterministic on ties, so the prior _ref had
+    # no well-defined dup-ts behaviour to preserve). For unique-ts windows -- every
+    # existing case in this battery -- mergesort == quicksort, so this is identical and
+    # the 33 pre-existing cases are unaffected; it only makes _ref agree with the
+    # production stable walk on a window containing duplicate timestamps.
+    forward = rows[(rows["ts"] > entry_ts) & (rows["ts"] <= backstop_ts)].sort_values("ts", kind="mergesort")
     last_close = entry_price
     last_ts = entry_ts
     running_max = float(entry_price)
@@ -255,6 +261,39 @@ def test_unsorted_rows_are_sorted_before_walk_overlay_off():
     out = _assert_parity(rows, entry_ts=0, backstop_ts=2, entry_price=100.0,
                          target_level=120.0, stop_level=None)
     assert out == {"exit_ts": 1, "exit_price": 120.0, "exit_reason": "OPTION_TARGET"}
+
+
+def test_duplicate_ts_first_input_row_wins_deterministically_overlay_off():
+    # REGRESSION (fuzz-audit b359f34): a window with DUPLICATE ts where the two tied
+    # bars resolve to DIFFERENT exits -- the first (TARGET) and the second (STOP).
+    # The stable sort (np.argsort kind="stable" in production; mergesort in _ref)
+    # preserves INPUT order within the tie group, so the FIRST tied bar wins and the
+    # result is deterministically OPTION_TARGET. pandas' default quicksort was NOT
+    # stable, so it could reorder the tie group and silently flip win<->loss (the
+    # ~3.14% divergence the auditor found). This pins the deterministic resolution.
+    rows = _mk([
+        {"ts": 1, "open": 100, "high": 130, "low": 85, "close": 122},  # FIRST: target 120 hit, no stop
+        {"ts": 1, "open": 100, "high": 100, "low": 70, "close": 78},    # SECOND (same ts): stop 80 hit
+    ])
+    out = _assert_parity(rows, entry_ts=0, backstop_ts=2, entry_price=100.0,
+                         target_level=120.0, stop_level=80.0)
+    # First tied bar in input order wins -> TARGET (would be STOP@80 if the tie were reordered).
+    assert out == {"exit_ts": 1, "exit_price": 120.0, "exit_reason": "OPTION_TARGET"}
+
+
+def test_duplicate_ts_auditor_minimal_reproducer_overlay_off():
+    # The auditor's exact minimal reproducer (unsorted + dup-ts). Pre-fix, prod (stable)
+    # and _ref (quicksort) could diverge here; post-fix both pin the input-order tie.
+    rows = _mk([
+        {"ts": 2, "open": 105, "high": 130, "low": 95, "close": 120},
+        {"ts": 2, "open": 105, "high": 130, "low": 95, "close": 120},
+        {"ts": 0, "open": 160, "high": 182, "low": 156, "close": 159},
+        {"ts": 0, "open": 45, "high": 95, "low": 45, "close": 63},
+    ])
+    # entry_ts=-3, backstop_ts=9 -> ts0 bars (the two ts==0 rows) are IN-window first.
+    # First ts0 bar in input order: high 182 >= target 100 (TARGET) AND low 156 > stop 50.
+    _assert_parity(rows, entry_ts=-3, backstop_ts=9, entry_price=80.0,
+                   target_level=100.0, stop_level=50.0)
 
 
 def test_no_levels_at_all_overlay_off_signal_exit():

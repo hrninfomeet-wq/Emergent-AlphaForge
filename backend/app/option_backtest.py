@@ -125,7 +125,15 @@ def _walk_window_arrays(
     entry_price and on bar i == prior close — i.e. forward-fill from entry_price,
     which is what a missing OHLC frame would never actually exercise (real candles
     always carry close). open_ has no fallback (used only for gap-fill, which reads
-    ``bar.get("open")`` => None when absent)."""
+    ``bar.get("open")`` => None when absent).
+
+    NaN/None scope: this vectorized path COERCES non-finite / None OHLC values
+    (NaN high/low -> close -> entry_price; NaN close -> ffill -> entry_price; a
+    None open_ -> NaN -> no gap-fill), a deliberate hardening over the legacy
+    per-bar ``.get()`` reads (which passed NaN straight into the comparisons and
+    raised on a None open). Byte-identity with the legacy walk is guaranteed only
+    for FINITE, well-formed OHLC — which every production option candle is. We do
+    NOT re-introduce the legacy NaN-passthrough / None-raises fragility."""
     if rows is None or rows.empty or "ts" not in rows.columns:
         empty = np.empty(0, dtype=float)
         return empty, empty, empty, empty, empty, 0
@@ -134,6 +142,9 @@ def _walk_window_arrays(
     # ts-sorted slice (the fast path), but the parity unit-tests pass unsorted
     # rows and the frozen ref ``.sort_values("ts")`` first -- so re-sort when not
     # already monotonic (a no-op cost on the already-sorted production path).
+    # stable sort: deterministic order on duplicate ts (default quicksort was non-deterministic on ties).
+    # When the slice is already monotonic non-decreasing we skip the sort entirely, so input order is
+    # preserved as a no-op; when we do sort, kind="stable" keeps input order within a dup-ts tie group.
     order = None
     if ts_all.shape[0] > 1 and not np.all(ts_all[:-1] <= ts_all[1:]):
         order = np.argsort(ts_all, kind="stable")
@@ -417,12 +428,14 @@ def build_candles_by_key(option_candles: Optional[pd.DataFrame]) -> Dict[str, pd
     if candles.empty:
         return {}
     candles["ts"] = candles["ts"].astype(int)
-    candles = candles.sort_values(["instrument_key", "ts"]).reset_index(drop=True)
+    # stable sort: deterministic order on duplicate ts (default quicksort was non-deterministic on ties)
+    candles = candles.sort_values(["instrument_key", "ts"], kind="mergesort").reset_index(drop=True)
     grouped: Dict[str, List[pd.DataFrame]] = {}
     for k, g in candles.groupby("instrument_key", sort=False):
         grouped.setdefault(canonical_instrument_key(str(k)), []).append(g)
     return {
-        key: (frames[0] if len(frames) == 1 else pd.concat(frames).sort_values("ts"))
+        # stable sort: deterministic order on duplicate ts (default quicksort was non-deterministic on ties)
+        key: (frames[0] if len(frames) == 1 else pd.concat(frames).sort_values("ts", kind="mergesort"))
         for key, frames in grouped.items()
     }
 
