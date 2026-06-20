@@ -85,6 +85,33 @@ def _worker_evaluate(strategy_id: str, merged: Dict[str, Any], slice_bounds: Opt
         return (None, merged)
 
 
+def _worker_evaluate_wfo(strategy_id: str, merged: Dict[str, Any], slice_bounds: Tuple[int, int],
+                         instrument: str, costs: bool, pretrade: Dict[str, Any],
+                         frame: Optional[pd.DataFrame] = None) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
+    """WFO worker: enrich the FULL frame, THEN slice to the window, preserving
+    indicator warmup — mirrors wfo._evaluate_slice (enrich-once-then-slice). The
+    single-run _worker_evaluate slices RAW then enriches, which strips warmup at
+    window starts, so WFO needs this distinct path. slice_bounds is REQUIRED.
+    Reads fork-inherited _RAW_DF (or `frame` in the sequential fallback). Returns
+    (metrics|None, merged); never raises."""
+    try:
+        base = frame if frame is not None else _RAW_DF
+        enr = enrich_with_cache(base, merged, _WORKER_CACHES)
+        a, b = slice_bounds
+        df_slice = enr.iloc[a:b].reset_index(drop=True)
+        strategy = get_registry().get(strategy_id)
+        res = run_backtest(df_slice, strategy, merged, instrument=instrument,
+                           costs_enabled=costs, pretrade_filters=pretrade)
+        metrics = dict(res["metrics"])
+        trades = res.get("trades", []) or []
+        ce = sum(1 for t in trades if str(t.get("direction", "")).upper() == "CE")
+        metrics["ce_count"] = int(ce)
+        metrics["pe_count"] = int(len(trades) - ce)
+        return (metrics, merged)
+    except Exception:
+        return (None, merged)
+
+
 def start_pool(raw_df: pd.DataFrame, workers: int) -> Optional[ProcessPoolExecutor]:
     """Create the fork pool with raw_df COW-shared. Returns the pool, or None if a
     parallel job is already active OR workers<=1 OR fork is unavailable (caller then
@@ -116,13 +143,16 @@ def shutdown_pool() -> None:
 
 def parallel_backtest(pool: Optional[ProcessPoolExecutor],
                       param_sets: List[Tuple[str, Dict[str, Any], Optional[Tuple[int, int]]]],
-                      *, raw_df: pd.DataFrame, instrument: str, costs: bool, pretrade: Dict[str, Any]) -> List[Tuple[Optional[Dict[str, Any]], Dict[str, Any]]]:
+                      *, raw_df: pd.DataFrame, instrument: str, costs: bool, pretrade: Dict[str, Any],
+                      worker=_worker_evaluate) -> List[Tuple[Optional[Dict[str, Any]], Dict[str, Any]]]:
     """Run param_sets [(strategy_id, merged, slice_bounds), …]. Results are returned
-    in SUBMISSION ORDER. When pool is None, runs sequentially in-process passing
-    `raw_df` as the frame explicitly (no module global -> concurrent-job safe) — the
-    fallback for opt_workers<=1 / fork-unavailable / concurrent-job. When pool is set,
-    workers read the fork-inherited _RAW_DF global (raw_df is NOT pickled per task)."""
+    in SUBMISSION ORDER. `worker` selects the evaluation function — defaults to the
+    single-run _worker_evaluate (slice-raw-then-enrich); pass _worker_evaluate_wfo for
+    WFO (enrich-full-then-slice, warmup-preserving). When pool is None, runs sequentially
+    in-process passing `raw_df` as the frame explicitly (no module global -> concurrent-job
+    safe) — the fallback for opt_workers<=1 / fork-unavailable / concurrent-job. When pool
+    is set, workers read the fork-inherited _RAW_DF global (raw_df is NOT pickled per task)."""
     if pool is None:
-        return [_worker_evaluate(sid, m, sb, instrument, costs, pretrade, raw_df) for (sid, m, sb) in param_sets]
-    futs = [pool.submit(_worker_evaluate, sid, m, sb, instrument, costs, pretrade) for (sid, m, sb) in param_sets]
+        return [worker(sid, m, sb, instrument, costs, pretrade, raw_df) for (sid, m, sb) in param_sets]
+    futs = [pool.submit(worker, sid, m, sb, instrument, costs, pretrade) for (sid, m, sb) in param_sets]
     return [f.result() for f in futs]  # iterated in submission order -> order preserved
