@@ -743,7 +743,12 @@ async def run_wfo(job_id: str, payload: Dict[str, Any], resume: bool = False) ->
                 await _update_job(job_id, {"wfo_windows": completed_windows,
                                            "wfo_oos_trades": oos_trades_all})
         finally:
-            shutdown_pool()
+            # Only tear down a pool THIS job started. shutdown_pool() acts on the
+            # module-global pool, so an unconditional call from a sequential job
+            # (pool=None) would kill a CONCURRENT parallel job's pool — mirrors the
+            # single-run optimizer which shuts down only inside its parallel branch.
+            if use_parallel:
+                shutdown_pool()
 
         # ---- Final analysis over completed windows ----
         await _update_job(job_id, {"status": "analyzing"})
