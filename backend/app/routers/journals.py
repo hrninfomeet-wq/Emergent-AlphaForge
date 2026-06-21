@@ -104,7 +104,8 @@ async def paper_strategy_stats():
     db = get_db()
     rows = await db.paper_trades.find(
         {}, {"_id": 0, "strategy_id": 1, "deployment_id": 1, "status": 1,
-             "realized_pnl": 1, "unrealized_pnl": 1, "created_at": 1, "closed_at": 1},
+             "realized_pnl": 1, "unrealized_pnl": 1, "created_at": 1, "closed_at": 1,
+             "exit_reason": 1, "risk_amount": 1},
     ).to_list(length=100000)
     dep_ids = sorted({str(r.get("deployment_id")) for r in rows if r.get("deployment_id")})
     names = {}
