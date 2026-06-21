@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel
 
 from app.db import get_db, serialize_doc
 from app.strategies.base import get_registry
@@ -31,6 +32,45 @@ from app.schemas import PaperCloseReq, PaperMarkReq, SignalsPurgeReq, TradesPurg
 from app.paper_open_positions import build_open_positions
 
 api = APIRouter()
+
+
+# ---------------------------------------------------------------------------
+# Account config (starting capital)
+# ---------------------------------------------------------------------------
+
+_DEFAULT_STARTING_CAPITAL = 200_000.0
+
+
+async def _get_starting_capital(db) -> float:
+    doc = await db.app_settings.find_one({"key": "paper_account"}, {"_id": 0})
+    if doc and doc.get("starting_capital") is not None:
+        try:
+            return float(doc["starting_capital"])
+        except (TypeError, ValueError):
+            pass
+    return _DEFAULT_STARTING_CAPITAL
+
+
+class AccountConfigReq(BaseModel):
+    starting_capital: float
+
+
+@api.get("/paper/account-config")
+async def get_paper_account_config():
+    return {"starting_capital": await _get_starting_capital(get_db())}
+
+
+@api.put("/paper/account-config")
+async def set_paper_account_config(req: AccountConfigReq):
+    if req.starting_capital <= 0:
+        raise HTTPException(400, "starting_capital must be > 0")
+    db = get_db()
+    await db.app_settings.update_one(
+        {"key": "paper_account"},
+        {"$set": {"key": "paper_account", "starting_capital": float(req.starting_capital)}},
+        upsert=True,
+    )
+    return {"starting_capital": float(req.starting_capital)}
 
 
 # ---------------------------------------------------------------------------
