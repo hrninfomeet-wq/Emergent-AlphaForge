@@ -258,3 +258,56 @@ def build_account_analytics(closed_trades: List[Dict[str, Any]],
         "period_pnl": period_pnl(closed_trades, now_ms=now_ms),
         "exposure": exp,
     }
+
+
+# ---------------------------------------------------------------------------
+# Task 3: per-strategy attribution + contribution
+# ---------------------------------------------------------------------------
+
+def per_strategy_stats(trades: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    groups: Dict[str, Dict[str, Any]] = {}
+    for t in trades:
+        sid = str(t.get("strategy_id") or "—")
+        g = groups.setdefault(sid, {
+            "strategy_id": sid, "deployment_id": t.get("deployment_id"),
+            "net_pnl": 0.0, "closed_trades": 0, "open_count": 0, "open_mtm": 0.0,
+            "_wins": 0, "_losses": 0, "_gw": 0.0, "_gl": 0.0, "_hold_s": 0.0,
+        })
+        status = str(t.get("status") or "").upper()
+        if status == "OPEN":
+            g["open_count"] += 1
+            g["open_mtm"] += _f(t.get("unrealized_pnl"))
+        elif status == "CLOSED":
+            pnl = _f(t.get("realized_pnl"))
+            g["net_pnl"] += pnl
+            g["closed_trades"] += 1
+            if pnl > 0:
+                g["_wins"] += 1
+                g["_gw"] += pnl
+            elif pnl < 0:
+                g["_losses"] += 1
+                g["_gl"] += abs(pnl)
+            start = _to_ms(t.get("created_at"))
+            end = _to_ms(t.get("closed_at"))
+            if start is not None and end is not None:
+                g["_hold_s"] += max(0, (end - start) / 1000)
+    total_net = sum(g["net_pnl"] for g in groups.values()) or 0.0
+    out: List[Dict[str, Any]] = []
+    for g in groups.values():
+        decided = g["_wins"] + g["_losses"]
+        net = round(g["net_pnl"], 2)
+        out.append({
+            "strategy_id": g["strategy_id"],
+            "deployment_id": g["deployment_id"],
+            "net_pnl": net,
+            "closed_trades": g["closed_trades"],
+            "open_count": g["open_count"],
+            "open_mtm": round(g["open_mtm"], 2),
+            "win_rate": round(g["_wins"] / decided * 100, 1) if decided else None,
+            "profit_factor": (round(g["_gw"] / g["_gl"], 2) if g["_gl"] > 0
+                              else (None if g["_gw"] == 0 else float("inf"))),
+            "expectancy": round(net / g["closed_trades"], 2) if g["closed_trades"] else None,
+            "avg_hold_s": int(g["_hold_s"] / g["closed_trades"]) if g["closed_trades"] else None,
+            "contribution_pct": round(net / total_net * 100, 1) if total_net else None,
+        })
+    return sorted(out, key=lambda s: s["net_pnl"], reverse=True)

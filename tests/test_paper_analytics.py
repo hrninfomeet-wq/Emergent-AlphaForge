@@ -137,3 +137,31 @@ def test_build_account_analytics_combines_realized_and_mtm():
     assert a["account_value_mtm"] == 201_300.0
     assert a["deployed_capital"] == 7500.0
     assert "equity_curve" in a and "period_pnl" in a and "exposure" in a
+
+
+# ---------------------------------------------------------------------------
+# Task 3: per-strategy attribution + contribution
+# ---------------------------------------------------------------------------
+from app.paper_analytics import per_strategy_stats  # noqa: E402
+
+
+def test_per_strategy_stats_attribution_and_contribution():
+    rows = [
+        {"strategy_id": "orr", "deployment_id": "d1", "status": "CLOSED",
+         "realized_pnl": 1000.0, "created_at": "2026-06-20T04:00:00+00:00",
+         "closed_at": "2026-06-20T04:30:00+00:00"},
+        {"strategy_id": "orr", "deployment_id": "d1", "status": "CLOSED",
+         "realized_pnl": -200.0, "created_at": "2026-06-20T05:00:00+00:00",
+         "closed_at": "2026-06-20T05:20:00+00:00"},
+        {"strategy_id": "scalp", "deployment_id": "d2", "status": "OPEN",
+         "unrealized_pnl": 300.0},
+    ]
+    stats = per_strategy_stats(rows)
+    by = {s["strategy_id"]: s for s in stats}
+    assert by["orr"]["net_pnl"] == 800.0
+    assert by["orr"]["closed_trades"] == 2
+    assert by["orr"]["win_rate"] == 50.0
+    assert by["orr"]["profit_factor"] == 5.0
+    assert by["scalp"]["open_count"] == 1
+    assert by["scalp"]["open_mtm"] == 300.0
+    assert by["orr"]["contribution_pct"] == 100.0
