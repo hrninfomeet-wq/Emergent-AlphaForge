@@ -331,3 +331,136 @@ def test_strprc_integer_string_matches():
     rows = [make_scrip(strprc="25000")]
     result = resolve(make_contract(strike=25000.0), search_fn=fake_search(rows))
     assert result["tsym"] == "NIFTY25JUN2025C25000"
+
+
+# ---------------------------------------------------------------------------
+# HOLE-1 — lot truncation: non-integer / non-positive ls must be rejected
+# ---------------------------------------------------------------------------
+
+def test_hole1_fractional_lot_raises():
+    """ls="65.7" must raise SymbolResolutionError, NOT silently truncate to 65."""
+    import pytest
+    rows = [make_scrip(ls="65.7")]
+    with pytest.raises(SymbolResolutionError):
+        resolve(make_contract(lot_size=65), search_fn=fake_search(rows))
+
+
+def test_hole1_negative_lot_raises():
+    """ls="-65" (negative) must raise SymbolResolutionError."""
+    import pytest
+    rows = [make_scrip(ls="-65")]
+    with pytest.raises(SymbolResolutionError):
+        resolve(make_contract(lot_size=65), search_fn=fake_search(rows))
+
+
+# ---------------------------------------------------------------------------
+# HOLE-2 — non-finite strike: nan / inf must raise SymbolResolutionError
+# ---------------------------------------------------------------------------
+
+def test_hole2_nan_strike_in_contract_raises():
+    """contract strike=nan must raise SymbolResolutionError (not bubble a bare error)."""
+    import math
+    import pytest
+    rows = [make_scrip()]
+    with pytest.raises(SymbolResolutionError):
+        resolve(make_contract(strike=float("nan")), search_fn=fake_search(rows))
+
+
+def test_hole2_inf_strike_in_contract_raises():
+    """contract strike=inf must raise SymbolResolutionError."""
+    import pytest
+    rows = [make_scrip()]
+    with pytest.raises(SymbolResolutionError):
+        resolve(make_contract(strike=float("inf")), search_fn=fake_search(rows))
+
+
+# ---------------------------------------------------------------------------
+# HOLE-3 — unknown underlying: must raise, not default to NFO / skip lot gate
+# ---------------------------------------------------------------------------
+
+def test_hole3_finnifty_raises():
+    """underlying='FINNIFTY' is not in the allow-list and must raise SymbolResolutionError."""
+    import pytest
+    rows = [make_scrip()]
+    with pytest.raises(SymbolResolutionError):
+        resolve(make_contract(underlying="FINNIFTY"), search_fn=fake_search(rows))
+
+
+def test_hole3_bankex_raises():
+    """underlying='BANKEX' is not in the allow-list and must raise SymbolResolutionError."""
+    import pytest
+    rows = [make_scrip()]
+    with pytest.raises(SymbolResolutionError):
+        resolve(make_contract(underlying="BANKEX"), search_fn=fake_search(rows))
+
+
+def test_hole3_known_underlyings_still_resolve():
+    """NIFTY, BANKNIFTY, SENSEX must all still resolve correctly after the allow-list is added."""
+    # NIFTY → NFO
+    rows_nifty = [make_scrip()]
+    result = resolve(make_contract(underlying="NIFTY"), search_fn=fake_search(rows_nifty))
+    assert result["exch"] == "NFO"
+
+    # BANKNIFTY → NFO
+    rows_bnf = [make_scrip(
+        tsym="BANKNIFTY52000CE25JUN", token="55001", ls="30",
+        strprc="52000.00", optt="CE", exd="26-Jun-2025",
+    )]
+    result = resolve(
+        make_contract(underlying="BANKNIFTY", strike=52000.0, side="CE", lot_size=30),
+        search_fn=fake_search(rows_bnf),
+    )
+    assert result["exch"] == "NFO"
+
+    # SENSEX → BFO
+    rows_sx = [make_scrip(
+        tsym="SENSEX72000CE25JUN", token="99001", ls="20",
+        strprc="72000.00", optt="CE", exd="26-Jun-2025",
+    )]
+    result = resolve(
+        make_contract(underlying="SENSEX", strike=72000.0, side="CE", lot_size=20),
+        search_fn=fake_search(rows_sx),
+    )
+    assert result["exch"] == "BFO"
+
+
+# ---------------------------------------------------------------------------
+# HOLE-4 — blank tsym / token in scrip row must raise SymbolResolutionError
+# ---------------------------------------------------------------------------
+
+def test_hole4_whitespace_tsym_raises():
+    """tsym='   ' (whitespace-only) must raise SymbolResolutionError after strip."""
+    import pytest
+    rows = [make_scrip(tsym="   ")]
+    with pytest.raises(SymbolResolutionError):
+        resolve(make_contract(), search_fn=fake_search(rows))
+
+
+def test_hole4_whitespace_token_raises():
+    """token='   ' (whitespace-only) must raise SymbolResolutionError after strip."""
+    import pytest
+    rows = [make_scrip(token="   ")]
+    with pytest.raises(SymbolResolutionError):
+        resolve(make_contract(), search_fn=fake_search(rows))
+
+
+# ---------------------------------------------------------------------------
+# NOTE — robustness: non-dict scrip row and raising search_fn
+# ---------------------------------------------------------------------------
+
+def test_note_non_dict_scrip_raises_symbol_resolution_error():
+    """A non-dict entry in search_fn results must surface as SymbolResolutionError."""
+    import pytest
+    with pytest.raises(SymbolResolutionError):
+        resolve(make_contract(), search_fn=fake_search(["not-a-dict"]))
+
+
+def test_note_raising_search_fn_raises_symbol_resolution_error():
+    """A search_fn that raises must be wrapped as SymbolResolutionError, not re-raised raw."""
+    import pytest
+
+    def bad_search(exch, text):
+        raise RuntimeError("network down")
+
+    with pytest.raises(SymbolResolutionError):
+        resolve(make_contract(), search_fn=bad_search)

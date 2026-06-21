@@ -40,20 +40,27 @@ Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec.
 from __future__ import annotations
 
 import datetime
-from typing import Any, Callable, Dict, List
+import math
+from typing import Any, Callable, Dict, List, Tuple
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
-LOT_SIZE_EXPECTED: Dict[str, int] = {
-    "NIFTY": 65,
-    "SENSEX": 20,
-    # NOTE: BANKNIFTY lot size changed 30->35; verify live before deploying.
-    # The warehouse records 30; the current NSE spec says 35 for some series.
-    # Until confirmed, 30 is the expected value — mismatch will raise.
-    "BANKNIFTY": 30,
+# Explicit allow-list: underlying -> (exchange, expected_lot_size)
+# Any underlying NOT in this map is rejected with SymbolResolutionError.
+#
+# NOTE: BANKNIFTY lot size changed 30->35; verify live before deploying.
+# The warehouse records 30; the current NSE spec says 35 for some series.
+# Until confirmed, 30 is the expected value — mismatch will raise.
+UNDERLYING_SPEC: Dict[str, Tuple[str, int]] = {
+    "NIFTY":     ("NFO", 65),
+    "BANKNIFTY": ("NFO", 30),
+    "SENSEX":    ("BFO", 20),
 }
+
+# Derived for backward compatibility with callers that import LOT_SIZE_EXPECTED.
+LOT_SIZE_EXPECTED: Dict[str, int] = {u: spec[1] for u, spec in UNDERLYING_SPEC.items()}
 
 _MONTH_ABBR = {
     "Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4, "May": 5, "Jun": 6,
@@ -91,19 +98,40 @@ def _parse_noren_expiry(exd: str) -> str:
 
 
 def _normalise_strike(value: Any) -> float:
-    """Return float strike; raise SymbolResolutionError on conversion failure."""
+    """Return float strike; raise SymbolResolutionError on conversion failure or non-finite value."""
     try:
-        return float(value)
+        result = float(value)
     except (TypeError, ValueError) as exc:
         raise SymbolResolutionError(f"cannot parse strike {value!r}: {exc}") from exc
+    # HOLE-2 fix: reject nan / inf / -inf
+    if not math.isfinite(result):
+        raise SymbolResolutionError(
+            f"strike must be a finite number, got {result!r} (from {value!r})"
+        )
+    return result
 
 
 def _normalise_lot_size(value: Any) -> int:
-    """Return int lot size from a scrip row's ``ls`` field."""
+    """Return int lot size from a scrip row's ``ls`` field.
+
+    HOLE-1 fix: require the value to represent an exact integer (no fractional
+    lots) AND be strictly positive.  Raises SymbolResolutionError otherwise.
+    """
     try:
-        return int(float(value))
+        fval = float(value)
     except (TypeError, ValueError) as exc:
         raise SymbolResolutionError(f"cannot parse lot size {value!r}: {exc}") from exc
+    if not fval.is_integer():
+        raise SymbolResolutionError(
+            f"lot size {value!r} is not a whole number (got {fval}); "
+            "non-integer lot sizes are not allowed"
+        )
+    ival = int(fval)
+    if ival <= 0:
+        raise SymbolResolutionError(
+            f"lot size must be positive, got {ival} (from {value!r})"
+        )
+    return ival
 
 
 # ---------------------------------------------------------------------------
@@ -143,7 +171,17 @@ def resolve(
     if not underlying:
         raise SymbolResolutionError("contract missing 'underlying'")
 
+    # HOLE-3 fix: explicit allow-list; unknown underlyings are rejected immediately.
+    if underlying not in UNDERLYING_SPEC:
+        raise SymbolResolutionError(
+            f"unknown underlying {underlying!r}; supported underlyings: "
+            f"{sorted(UNDERLYING_SPEC)}"
+        )
+    exch, expected_lot = UNDERLYING_SPEC[underlying]
+
+    # HOLE-2 fix: _normalise_strike now rejects non-finite values.
     contract_strike = _normalise_strike(contract.get("strike"))
+
     contract_side = str(contract.get("side") or "").strip().upper()
     if contract_side not in ("CE", "PE"):
         raise SymbolResolutionError(f"contract 'side' must be CE or PE, got {contract_side!r}")
@@ -157,19 +195,34 @@ def resolve(
         raise SymbolResolutionError("contract missing 'lot_size'")
     contract_lot = int(contract_lot)
 
-    # Exchange routing: SENSEX trades on BFO; all others on NFO.
-    exch = "BFO" if underlying == "SENSEX" else "NFO"
-
-    # Build a search query: "<UNDERLYING> <strike>" — simple but enough for SearchScrip.
+    # Build a search query: "<UNDERLYING> <strike>"
     query = f"{underlying} {int(contract_strike) if contract_strike == int(contract_strike) else contract_strike}"
-    rows = search_fn(exch, query)
+
+    # NOTE (robustness): wrap search_fn call so a raising search_fn never leaks
+    # a raw non-SymbolResolutionError to the caller.
+    try:
+        rows = search_fn(exch, query)
+    except SymbolResolutionError:
+        raise
+    except Exception as exc:
+        raise SymbolResolutionError(
+            f"search_fn raised an unexpected error for {underlying} {exch}: {exc}"
+        ) from exc
 
     # Filter rows: strike + option type + expiry must all match exactly.
     matches: List[Dict[str, Any]] = []
     for row in rows:
+        # NOTE (robustness): non-dict rows must surface as SymbolResolutionError.
+        try:
+            row_strprc = row.get("strprc")
+        except AttributeError as exc:
+            raise SymbolResolutionError(
+                f"search_fn returned a non-dict row ({type(row).__name__!r}): {row!r}"
+            ) from exc
+
         # Strike match
         try:
-            row_strike = _normalise_strike(row.get("strprc"))
+            row_strike = _normalise_strike(row_strprc)
         except SymbolResolutionError:
             continue
         if row_strike != contract_strike:
@@ -204,25 +257,27 @@ def resolve(
 
     row = matches[0]
 
-    # Lot-size cross-check: scrip ls vs contract lot_size vs LOT_SIZE_EXPECTED
+    # HOLE-1 fix: _normalise_lot_size now rejects fractional and non-positive values.
     row_lot = _normalise_lot_size(row.get("ls"))
+
     if row_lot != contract_lot:
         raise SymbolResolutionError(
             f"lot size mismatch: scrip ls={row_lot} vs contract lot_size={contract_lot} "
             f"for {underlying} {contract_strike} {contract_side}"
         )
-    expected_lot = LOT_SIZE_EXPECTED.get(underlying)
-    if expected_lot is not None and row_lot != expected_lot:
+    # HOLE-3 fix: expected_lot is ALWAYS applied (never skipped — no .get() guard).
+    if row_lot != expected_lot:
         raise SymbolResolutionError(
             f"lot size mismatch: scrip ls={row_lot} vs expected {underlying} lot "
-            f"{expected_lot} (LOT_SIZE_EXPECTED). Verify live lot size before deploying."
+            f"{expected_lot} (UNDERLYING_SPEC). Verify live lot size before deploying."
         )
 
-    tsym = str(row.get("tsym") or "")
-    token = str(row.get("token") or "")
+    # HOLE-4 fix: strip tsym/token and reject blank after stripping.
+    tsym = str(row.get("tsym") or "").strip()
+    token = str(row.get("token") or "").strip()
     if not tsym or not token:
         raise SymbolResolutionError(
-            f"matched scrip row is missing tsym or token: {row!r}"
+            f"matched scrip row is missing or blank tsym/token: {row!r}"
         )
 
     return {
