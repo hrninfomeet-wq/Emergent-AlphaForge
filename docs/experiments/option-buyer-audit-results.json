@@ -1,0 +1,137 @@
+[
+  {
+    "strategy": "opening_range_breakout",
+    "index": "NIFTY",
+    "rung": "L1",
+    "job_id": "3de337eb-41e5-488b-9303-a0bcad6e3732",
+    "status": "done",
+    "screen_best_opt_Rs": 2553.78,
+    "opt_positive": 2,
+    "opt_count": 40,
+    "opt_max": 2553.78,
+    "opt_median": -32907.52,
+    "opt_min": -114654.72,
+    "best_params": {
+      "range_minutes": 49,
+      "buffer_pts": 17.71566911066751,
+      "signal_threshold": 65,
+      "spot_target_pts": 86.18635308106022,
+      "spot_stop_pts": 87.82565426894828
+    },
+    "elapsed_min": 1.7,
+    "advance_L2": false,
+    "verdict_L1": "RETIRE",
+    "recorded_at": "2026-06-21T09:42:02.404305+00:00"
+  },
+  {
+    "strategy": "fibonacci_pullback",
+    "index": "NIFTY",
+    "rung": "L1",
+    "job_id": "6d78de00-6895-4780-9da7-560e9f9a8451",
+    "status": "done",
+    "screen_best_opt_Rs": -27565.36,
+    "opt_positive": 0,
+    "opt_count": 40,
+    "opt_max": -27565.36,
+    "opt_median": -101645.53,
+    "opt_min": -212250.6,
+    "best_params": {
+      "swing_lookback": 52,
+      "fib_entry_low": 0.4489076012994081,
+      "fib_entry_high": 0.5611069377514849,
+      "signal_threshold": 51,
+      "cooldown_bars": 27,
+      "spot_target_pts": 149.11371196068524,
+      "spot_stop_pts": 23.944234815228057
+    },
+    "elapsed_min": 6.5,
+    "advance_L2": false,
+    "verdict_L1": "RETIRE",
+    "recorded_at": "2026-06-21T09:48:31.433996+00:00"
+  },
+  {
+    "strategy": "smc_liquidity_sweep_fvg",
+    "index": "NIFTY",
+    "rung": "L1",
+    "job_id": "df0515d3-7e9d-4d90-b2a8-5f47f0632f13",
+    "status": "done",
+    "screen_best_opt_Rs": 50996.38,
+    "opt_positive": 18,
+    "opt_count": 40,
+    "opt_max": 50996.38,
+    "opt_median": -2481.12,
+    "opt_min": -192205.75,
+    "best_params": {
+      "sweep_lookback": 17,
+      "min_displacement_atr": 0.4474905877510372,
+      "fvg_lookback_bars": 5,
+      "require_fvg": true,
+      "signal_threshold": 37,
+      "cooldown_bars": 27,
+      "spot_target_pts": 192.90734887343157,
+      "spot_stop_pts": 30.528989957575266
+    },
+    "elapsed_min": 7.4,
+    "advance_L2": true,
+    "verdict_L1": "ADVANCE",
+    "recorded_at": "2026-06-21T09:55:53.426560+00:00"
+  },
+  {
+    "strategy": "smc_liquidity_sweep_fvg",
+    "index": "NIFTY",
+    "rung": "L3_WFO",
+    "job_id": "abbd9ae1-35cc-4f87-a14a-6738c2907aef",
+    "status": "done",
+    "option_oos_net": -114303.97,
+    "positive_windows": 0,
+    "windows_with_trades": 6,
+    "spot_oos_pts": -1090.74,
+    "efficiency": -0.618,
+    "per_window": [
+      {
+        "index": 0,
+        "test_start": "2025-11-27",
+        "test_end": "2025-12-24",
+        "pnl_value": -27347.69,
+        "paired_trade_count": 52
+      },
+      {
+        "index": 1,
+        "test_start": "2025-12-26",
+        "test_end": "2026-01-23",
+        "pnl_value": -15309.29,
+        "paired_trade_count": 56
+      },
+      {
+        "index": 2,
+        "test_start": "2026-01-27",
+        "test_end": "2026-02-20",
+        "pnl_value": -8046.02,
+        "paired_trade_count": 12
+      },
+      {
+        "index": 3,
+        "test_start": "2026-02-23",
+        "test_end": "2026-03-23",
+        "pnl_value": -22995.23,
+        "paired_trade_count": 42
+      },
+      {
+        "index": 4,
+        "test_start": "2026-03-24",
+        "test_end": "2026-04-24",
+        "pnl_value": -38829.63,
+        "paired_trade_count": 147
+      },
+      {
+        "index": 5,
+        "test_start": "2026-04-27",
+        "test_end": "2026-05-25",
+        "pnl_value": -1776.11,
+        "paired_trade_count": 4
+      }
+    ],
+    "verdict_L3": "RETIRE",
+    "recorded_at": "2026-06-21T11:22:15.400643+00:00"
+  }
+]
