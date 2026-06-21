@@ -104,7 +104,8 @@ async def paper_strategy_stats():
     db = get_db()
     rows = await db.paper_trades.find(
         {}, {"_id": 0, "strategy_id": 1, "deployment_id": 1, "status": 1,
-             "realized_pnl": 1, "unrealized_pnl": 1, "created_at": 1, "closed_at": 1},
+             "realized_pnl": 1, "unrealized_pnl": 1, "created_at": 1, "closed_at": 1,
+             "exit_reason": 1, "risk_amount": 1},
     ).to_list(length=100000)
     dep_ids = sorted({str(r.get("deployment_id")) for r in rows if r.get("deployment_id")})
     names = {}
@@ -114,6 +115,41 @@ async def paper_strategy_stats():
     stats = paper_analytics.per_strategy_stats(rows)
     for s in stats:
         s["deployment_name"] = names.get(str(s.get("deployment_id") or ""), "")
+
+    # --- drift enrichment (lazy imports to avoid module-load ordering issues) ---
+    from app.forward_metrics import compute_forward_metrics_for_deployment  # noqa: PLC0415
+    from app.routers.deployments import _gather_deployment_evidence  # noqa: PLC0415
+
+    for s in stats:
+        dep_id = s.get("deployment_id")
+        if not dep_id:
+            s["drift"] = {"state": "no_baseline"}
+            continue
+        dep = await db.strategy_deployments.find_one({"id": dep_id}, {"_id": 0})
+        if not dep:
+            s["drift"] = {"state": "no_baseline"}
+            continue
+        try:
+            fm = await compute_forward_metrics_for_deployment(db, dep)
+            live = {"win_rate": fm.get("win_rate"), "avg": fm.get("avg_pnl"),
+                    "visible": bool((fm.get("library_gate") or {}).get("visible"))}
+            cfg = dep.get("config") or {}
+            evidence = await _gather_deployment_evidence(
+                db,
+                strategy_id=cfg.get("strategy_id") or dep.get("strategy_id") or "",
+                instrument=cfg.get("instrument") or dep.get("instrument") or "",
+                params=cfg.get("params") or dep.get("params") or {},
+                source_doc=dep,
+            )
+            oe = evidence.get("option_evidence") or {}
+            paired = oe.get("paired_trade_count")
+            base_avg = (oe.get("net_pnl_value") / paired) if paired else None
+            baseline = {"win_rate": oe.get("win_rate"), "avg": base_avg,
+                        "params_match": bool(oe.get("params_match"))}
+            s["drift"] = paper_analytics.drift_compare(live, baseline)
+        except Exception:
+            s["drift"] = {"state": "no_baseline"}
+
     return serialize_doc({"items": stats, "count": len(stats)})
 
 
