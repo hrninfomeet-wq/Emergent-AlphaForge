@@ -7,6 +7,7 @@ window only. Built on AdaptiveStrategyBase.
 from __future__ import annotations
 import pandas as pd
 from app.strategies.adaptive_base import AdaptiveStrategyBase
+from app.strategies.session_features import opening_range_by_session
 
 
 class OpeningRangeAdaptive(AdaptiveStrategyBase):
@@ -52,13 +53,36 @@ class OpeningRangeAdaptive(AdaptiveStrategyBase):
                 return ("CE", 60, ["failed down-break -> fade"], [], "reversion")
         return ("NONE", 0, [], ["no OR setup"], "momentum")
 
+    def session_precompute(self, df, params):
+        # Per-session opening range + "ready" gate, computed once so the hot
+        # per-bar loop looks them up O(1) instead of re-deriving per bar.
+        return opening_range_by_session(df, int(params["or_minutes"]))
+
     @staticmethod
     def _opening_range(row, ctx, or_minutes):
-        hist = ctx.get("history_df") if ctx else None
-        i = ctx.get("i") if ctx else None
-        if hist is None or i is None or "session_date" not in getattr(hist, "columns", []):
+        if not ctx:
             return None
         sess = row.get("session_date")
+        # Fast path: per-session range precomputed by run_backtest (O(1)). The
+        # range is only valid once the session has accumulated more than
+        # or_minutes bars; or_ready_idx holds that threshold global bar index.
+        hi_map = ctx.get("or_hi")
+        lo_map = ctx.get("or_lo")
+        ready = ctx.get("or_ready_idx")
+        if hi_map is not None and lo_map is not None and ready is not None:
+            i = ctx.get("i")
+            r = ready.get(sess)
+            if r is None or i is None or int(i) < int(r):
+                return None  # still forming the OR (or never forms this session)
+            hi = hi_map.get(sess)
+            lo = lo_map.get(sess)
+            return (hi, lo) if (hi is not None and lo is not None) else None
+        # Fallback: derive per bar (callers that don't precompute, e.g. live
+        # single-bar evaluation). Byte-identical to the fast path.
+        hist = ctx.get("history_df")
+        i = ctx.get("i")
+        if hist is None or i is None or "session_date" not in getattr(hist, "columns", []):
+            return None
         upto = hist.iloc[: int(i) + 1]
         sess_bars = upto[upto["session_date"] == sess]
         if len(sess_bars) <= or_minutes:

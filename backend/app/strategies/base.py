@@ -55,6 +55,15 @@ class StrategyBase:
                     out[k] = v
         return out
 
+    def session_precompute(self, df: pd.DataFrame, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Optional: return per-session-date constants to merge into the per-bar
+        ctx, so evaluate() can look them up O(1) instead of re-deriving them per
+        bar (which is O(N) per bar -> O(N^2) per backtest). run_backtest calls
+        this once before the loop and merges the result into ctx. Default: none.
+        See app.strategies.session_features for reusable helpers (opening range,
+        gap, ...)."""
+        return {}
+
     def evaluate(self, row: pd.Series, prev: pd.Series, params: Dict[str, Any], ctx: Dict[str, Any]) -> Signal:
         """Override this. Return a Signal (direction='NONE' if no setup)."""
         raise NotImplementedError

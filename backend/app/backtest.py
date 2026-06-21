@@ -55,18 +55,6 @@ def _in_window(ist: str, start: str, end: str) -> bool:
     return start <= ist < end
 
 
-def _compute_orb_for_session(df: pd.DataFrame, range_minutes: int = 15) -> Dict[str, Dict]:
-    """Compute opening range (first N minutes) high/low for each session_date."""
-    orb_hi: Dict[str, float] = {}
-    orb_lo: Dict[str, float] = {}
-    for date, grp in df.groupby("session_date"):
-        first_bars = grp.head(range_minutes)
-        if len(first_bars) > 0:
-            orb_hi[date] = float(first_bars["high"].max())
-            orb_lo[date] = float(first_bars["low"].min())
-    return {"orb_hi": orb_hi, "orb_lo": orb_lo}
-
-
 def _apply_pretrade_filter(signal: Signal, row: pd.Series, filters: Dict[str, Any]) -> Tuple[bool, str]:
     """Return (passes, blocker_reason). Returns blocker_reason='' on pass."""
     if not filters:
@@ -117,11 +105,12 @@ def run_backtest(
               "blocked_by_pretrade": 0, "in_cooldown": 0, "out_of_window": 0,
               "position_open": 0, "signals_fired": 0}
 
-    # Strategy-level context
+    # Strategy-level context. Strategies that need per-session-date constants
+    # (opening range, gap, session VWAP anchor, ...) precompute them ONCE here
+    # via session_precompute() so the hot per-bar loop looks them up O(1) instead
+    # of re-deriving them per bar (which is O(N) per bar -> O(N^2) per backtest).
     ctx_global: Dict[str, Any] = {"history_df": df, "instrument": instrument}
-    if strategy.id == "opening_range_breakout":
-        rng = int(params.get("range_minutes", 15))
-        ctx_global.update(_compute_orb_for_session(df, range_minutes=rng))
+    ctx_global.update(strategy.session_precompute(df, params))
 
     for i in range(1, len(df)):
         row = records[i]

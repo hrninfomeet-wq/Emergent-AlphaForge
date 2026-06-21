@@ -9,6 +9,7 @@ close from ctx history (self-contained, no toolkit change).
 from __future__ import annotations
 import pandas as pd
 from app.strategies.adaptive_base import AdaptiveStrategyBase
+from app.strategies.session_features import gap_by_session
 
 
 class GapFade(AdaptiveStrategyBase):
@@ -53,13 +54,29 @@ class GapFade(AdaptiveStrategyBase):
             return ("CE", 60, [f"fade gap-down {gap_atr:.1f}ATR rsi{rsi:.0f}"], [], "reversion")
         return ("NONE", 0, [], ["no gap-fade setup"], "reversion")
 
+    def session_precompute(self, df, params):
+        # Per-session day-open + prior-session close, computed once so the hot
+        # per-bar loop looks them up O(1) instead of re-deriving per bar.
+        return gap_by_session(df)
+
     @staticmethod
     def _gap(row, ctx):
-        hist = ctx.get("history_df") if ctx else None
-        i = ctx.get("i") if ctx else None
-        if hist is None or i is None or "session_date" not in getattr(hist, "columns", []):
+        if not ctx:
             return None
         sess = row.get("session_date")
+        # Fast path: per-session constants precomputed by run_backtest (O(1)).
+        do_map = ctx.get("day_open")
+        pc_map = ctx.get("prev_close")
+        if do_map is not None and pc_map is not None:
+            do = do_map.get(sess)
+            pc = pc_map.get(sess)
+            return (do, pc) if (do is not None and pc is not None) else None
+        # Fallback: derive per bar (callers that don't precompute, e.g. live
+        # single-bar evaluation). Byte-identical to the fast path.
+        hist = ctx.get("history_df")
+        i = ctx.get("i")
+        if hist is None or i is None or "session_date" not in getattr(hist, "columns", []):
+            return None
         upto = hist.iloc[: int(i) + 1]
         cur = upto[upto["session_date"] == sess]
         prior = upto[upto["session_date"] != sess]

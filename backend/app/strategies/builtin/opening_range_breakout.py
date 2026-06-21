@@ -4,6 +4,7 @@ Classic + robust strategy.
 from __future__ import annotations
 import pandas as pd
 from app.strategies.base import StrategyBase, Signal
+from app.strategies.session_features import orb_range_by_session
 
 
 class OpeningRangeBreakout(StrategyBase):
@@ -20,6 +21,11 @@ class OpeningRangeBreakout(StrategyBase):
         "spot_target_pts": {"type": "float", "min": 10, "max": 200, "default": 40},
         "spot_stop_pts": {"type": "float", "min": 5, "max": 100, "default": 18},
     }
+
+    def session_precompute(self, df, params):
+        # Per-session opening range, computed once so evaluate() looks it up O(1).
+        rng = int(params.get("range_minutes", 15))
+        return orb_range_by_session(df, range_minutes=rng)
 
     def evaluate(self, row, prev, params, ctx) -> Signal:
         # ORB is special: it needs the SESSION'S opening range, computed in ctx
