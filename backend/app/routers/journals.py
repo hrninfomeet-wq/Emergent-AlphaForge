@@ -306,6 +306,7 @@ async def list_paper_trades(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, le=500),
     format: Optional[str] = Query(None, description="csv to download"),
+    include_analytics: bool = Query(False),
 ):
     """Paper-trade journal with server-side filter / sort / pagination / CSV.
     Each row carries the deployment name so the journal reads by strategy."""
@@ -334,7 +335,8 @@ async def list_paper_trades(
         field, direction = "updated_at", -1
 
     total = await db.paper_trades.count_documents(q)
-    rows = await db.paper_trades.find(q, {"_id": 0, "events": 0}).sort(field, direction).skip(skip).limit(limit).to_list(length=limit)
+    proj = {"_id": 0} if include_analytics else {"_id": 0, "events": 0}
+    rows = await db.paper_trades.find(q, proj).sort(field, direction).skip(skip).limit(limit).to_list(length=limit)
 
     dep_ids = sorted({str(r.get("deployment_id")) for r in rows if r.get("deployment_id")})
     dep_names: Dict[str, str] = {}
@@ -343,6 +345,11 @@ async def list_paper_trades(
             dep_names[str(d.get("id"))] = str(d.get("name") or "")
     for r in rows:
         r["deployment_name"] = dep_names.get(str(r.get("deployment_id") or ""), "")
+
+    if include_analytics:
+        for r in rows:
+            r["analytics"] = paper_analytics.per_trade_analytics(r)
+            r.pop("events", None)
 
     if (format or "").lower() == "csv":
         return _csv_response(rows, _TRADES_CSV_COLUMNS, "paper_trades.csv")
