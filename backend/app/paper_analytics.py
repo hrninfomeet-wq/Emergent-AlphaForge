@@ -44,6 +44,22 @@ def _f(value: Any, default: float = 0.0) -> float:
         return default
 
 
+_EXIT_BUCKETS = ("target", "stop", "eod", "manual", "other")
+
+
+def normalize_exit_reason(reason: Any) -> str:
+    r = str(reason or "").lower()
+    if "target" in r:
+        return "target"
+    if "stop" in r:
+        return "stop"
+    if "eod" in r or "square" in r or "expiry" in r:
+        return "eod"
+    if "manual" in r:
+        return "manual"
+    return "other"
+
+
 def _r_multiple(trade: Dict[str, Any], running_pnl: float) -> Optional[float]:
     """Realized/unrealized P&L as a multiple of the trade's initial ₹ risk.
     None when risk wasn't recorded (fixed-lots / legacy trades)."""
@@ -285,6 +301,7 @@ def per_strategy_stats(trades: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "strategy_id": sid, "deployment_id": t.get("deployment_id"),
             "net_pnl": 0.0, "closed_trades": 0, "open_count": 0, "open_mtm": 0.0,
             "_wins": 0, "_losses": 0, "_gw": 0.0, "_gl": 0.0, "_hold_s": 0.0,
+            "_r_sum": 0.0, "_r_n": 0, "_exit": {b: 0 for b in _EXIT_BUCKETS}, "_exit_n": 0,
         })
         status = str(t.get("status") or "").upper()
         if status == "OPEN":
@@ -304,6 +321,15 @@ def per_strategy_stats(trades: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             end = _to_ms(t.get("closed_at"))
             if start is not None and end is not None:
                 g["_hold_s"] += max(0, (end - start) / 1000)
+            try:
+                ra = float(t.get("risk_amount"))
+            except (TypeError, ValueError):
+                ra = 0.0
+            if ra > 0:
+                g["_r_sum"] += pnl / ra
+                g["_r_n"] += 1
+            g["_exit"][normalize_exit_reason(t.get("exit_reason"))] += 1
+            g["_exit_n"] += 1
     total_net = sum(g["net_pnl"] for g in groups.values()) or 0.0
     out: List[Dict[str, Any]] = []
     for g in groups.values():
@@ -322,5 +348,8 @@ def per_strategy_stats(trades: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "expectancy": round(net / g["closed_trades"], 2) if g["closed_trades"] else None,
             "avg_hold_s": int(g["_hold_s"] / g["closed_trades"]) if g["closed_trades"] else None,
             "contribution_pct": round(net / total_net * 100, 1) if total_net else None,
+            "avg_r": round(g["_r_sum"] / g["_r_n"], 2) if g["_r_n"] else None,
+            "exit_mix": ({b: round(g["_exit"][b] / g["_exit_n"] * 100) for b in _EXIT_BUCKETS}
+                         if g["_exit_n"] else {b: 0 for b in _EXIT_BUCKETS}),
         })
     return sorted(out, key=lambda s: s["net_pnl"], reverse=True)

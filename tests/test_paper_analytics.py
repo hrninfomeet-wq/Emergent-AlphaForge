@@ -187,3 +187,39 @@ def test_r_multiple_none_when_zero_risk():
     t = _trade([], status="CLOSED", realized_pnl=500.0, risk_amount=0.0,
                closed_at="2026-06-20T05:00:00+00:00")
     assert per_trade_analytics(t)["r_multiple"] is None
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 Task 2: per-strategy avg_r + exit_mix
+# ---------------------------------------------------------------------------
+from app.paper_analytics import normalize_exit_reason  # noqa: E402
+
+
+def test_normalize_exit_reason_buckets():
+    assert normalize_exit_reason("target_hit") == "target"
+    assert normalize_exit_reason("premium_stop") == "stop"
+    assert normalize_exit_reason("eod_square_off") == "eod"
+    assert normalize_exit_reason("manual_close_at_market") == "manual"
+    assert normalize_exit_reason("") == "other"
+
+
+def test_per_strategy_stats_avg_r_and_exit_mix():
+    rows = [
+        {"strategy_id": "orr", "deployment_id": "d1", "status": "CLOSED",
+         "realized_pnl": 2000.0, "risk_amount": 1000.0, "exit_reason": "target_hit",
+         "created_at": "2026-06-20T04:00:00+00:00", "closed_at": "2026-06-20T04:30:00+00:00"},
+        {"strategy_id": "orr", "deployment_id": "d1", "status": "CLOSED",
+         "realized_pnl": -500.0, "risk_amount": 1000.0, "exit_reason": "premium_stop",
+         "created_at": "2026-06-20T05:00:00+00:00", "closed_at": "2026-06-20T05:20:00+00:00"},
+    ]
+    s = per_strategy_stats(rows)[0]
+    assert s["avg_r"] == 0.75            # mean of (2.0, -0.5)
+    assert s["exit_mix"]["target"] == 50
+    assert s["exit_mix"]["stop"] == 50
+
+
+def test_per_strategy_avg_r_none_without_risk():
+    rows = [{"strategy_id": "x", "status": "CLOSED", "realized_pnl": 100.0,
+             "exit_reason": "target", "created_at": "2026-06-20T04:00:00+00:00",
+             "closed_at": "2026-06-20T04:10:00+00:00"}]
+    assert per_strategy_stats(rows)[0]["avg_r"] is None
