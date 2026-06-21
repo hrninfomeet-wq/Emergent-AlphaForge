@@ -44,6 +44,18 @@ def _f(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _r_multiple(trade: Dict[str, Any], running_pnl: float) -> Optional[float]:
+    """Realized/unrealized P&L as a multiple of the trade's initial ₹ risk.
+    None when risk wasn't recorded (fixed-lots / legacy trades)."""
+    try:
+        ra = float(trade.get("risk_amount"))
+    except (TypeError, ValueError):
+        return None
+    if ra <= 0:
+        return None
+    return round(running_pnl / ra, 2)
+
+
 def pnl_series(trade: Dict[str, Any]) -> List[Dict[str, Any]]:
     """[{t (ms), pnl}] over the trade's life from events[]. OPEN=0, MARK=
     unrealized_pnl, CLOSE=realized_pnl. Falls back to entry->now/exit when no
@@ -128,6 +140,7 @@ def per_trade_analytics(trade: Dict[str, Any], *, now_ms: Optional[int] = None,
         "mfe_value": round(mfe_value, 2),
         "mae_value": round(mae_value, 2),
         "running_pnl": round(running, 2),
+        "r_multiple": _r_multiple(trade, running),
         "spark": downsample(series, spark_points),
         "duration_s": duration_s,
         "sl": risk.get("stop_price"),

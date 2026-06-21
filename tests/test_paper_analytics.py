@@ -165,3 +165,25 @@ def test_per_strategy_stats_attribution_and_contribution():
     assert by["scalp"]["open_count"] == 1
     assert by["scalp"]["open_mtm"] == 300.0
     assert by["orr"]["contribution_pct"] == 100.0
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 Task 1: per-trade R-multiple
+# ---------------------------------------------------------------------------
+
+def test_r_multiple_present_when_risk_amount():
+    t = _trade([], status="CLOSED", realized_pnl=1800.0, risk_amount=1000.0,
+               closed_at="2026-06-20T05:00:00+00:00")
+    assert per_trade_analytics(t)["r_multiple"] == 1.8
+
+
+def test_r_multiple_none_without_risk_amount():
+    t = _trade([], status="CLOSED", realized_pnl=1800.0,
+               closed_at="2026-06-20T05:00:00+00:00")
+    assert per_trade_analytics(t)["r_multiple"] is None
+
+
+def test_r_multiple_none_when_zero_risk():
+    t = _trade([], status="CLOSED", realized_pnl=500.0, risk_amount=0.0,
+               closed_at="2026-06-20T05:00:00+00:00")
+    assert per_trade_analytics(t)["r_multiple"] is None
