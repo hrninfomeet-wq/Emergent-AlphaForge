@@ -7,6 +7,7 @@ import { fmtInt, fmtNum, fmtPct, fmtPnL, colorPnL, isoToFull } from "@/lib/fmt";
 import { SignificanceBadge } from "@/components/SignificanceBadge";
 import RunComparison from "@/components/RunComparison";
 import { Trash2, RefreshCw, BookOpen, Play, Search, X, ChevronDown, ChevronRight, GitCompare } from "lucide-react";
+import { useTableSort, SortHeader } from "@/components/SortHeader";
 
 /**
  * Backtest Run Journal — the saved-run history table.
@@ -23,6 +24,7 @@ export default function BacktestRunJournal({ onLoadRun, refreshKey = 0, defaultO
   const [open, setOpen] = useState(defaultOpen);
   const [comparison, setComparison] = useState(null); // { a, b } full run docs
   const [comparing, setComparing] = useState(false);
+  const { sort, onSort, sortRows } = useTableSort();
 
   const refresh = async () => {
     setLoading(true);
@@ -98,6 +100,15 @@ export default function BacktestRunJournal({ onLoadRun, refreshKey = 0, defaultO
     );
   });
 
+  const sortValue = (r, key) => ({
+    created: r.created_at, name: r.name, instrument: r.instrument,
+    strategy: r.strategy_id, mode: r.config?.mode,
+    trades: r.metrics?.trade_count, winrate: r.metrics?.win_rate,
+    pf: r.metrics?.profit_factor, netpts: r.metrics?.total_pnl_pts,
+    maxdd: r.metrics?.max_dd_pts,
+  }[key]);
+  const sortedVisible = sortRows(visible, sortValue);
+
   return (
     <div className="rounded-lg border border-line bg-bg-1" data-testid="backtest-run-journal">
       <div className="px-3 py-2 border-b border-line flex items-center gap-2 flex-wrap">
@@ -156,16 +167,16 @@ export default function BacktestRunJournal({ onLoadRun, refreshKey = 0, defaultO
                 <tr className="text-dim border-b border-line">
                   <th className="p-2 w-8"></th>
                   <th className="text-right p-2 w-10">#</th>
-                  <th className="text-left p-2">Created</th>
-                  <th className="text-left p-2">Name</th>
-                  <th className="text-left p-2">Instr.</th>
-                  <th className="text-left p-2">Strategy</th>
-                  <th className="text-left p-2">Mode</th>
-                  <th className="text-right p-2">Trades</th>
-                  <th className="text-right p-2">WinRate</th>
-                  <th className="text-right p-2">PF</th>
-                  <th className="text-right p-2">Net Pts</th>
-                  <th className="text-right p-2">MaxDD</th>
+                  <SortHeader col={{ key: "created", label: "Created", align: "left" }} sort={sort} onSort={onSort} testidPrefix="journal-sort" />
+                  <SortHeader col={{ key: "name", label: "Name", align: "left" }} sort={sort} onSort={onSort} testidPrefix="journal-sort" />
+                  <SortHeader col={{ key: "instrument", label: "Instr.", align: "left" }} sort={sort} onSort={onSort} testidPrefix="journal-sort" />
+                  <SortHeader col={{ key: "strategy", label: "Strategy", align: "left" }} sort={sort} onSort={onSort} testidPrefix="journal-sort" />
+                  <SortHeader col={{ key: "mode", label: "Mode", align: "left" }} sort={sort} onSort={onSort} testidPrefix="journal-sort" />
+                  <SortHeader col={{ key: "trades", label: "Trades", align: "right" }} sort={sort} onSort={onSort} testidPrefix="journal-sort" />
+                  <SortHeader col={{ key: "winrate", label: "WinRate", align: "right" }} sort={sort} onSort={onSort} testidPrefix="journal-sort" />
+                  <SortHeader col={{ key: "pf", label: "PF", align: "right" }} sort={sort} onSort={onSort} testidPrefix="journal-sort" />
+                  <SortHeader col={{ key: "netpts", label: "Net Pts", align: "right" }} sort={sort} onSort={onSort} testidPrefix="journal-sort" />
+                  <SortHeader col={{ key: "maxdd", label: "MaxDD", align: "right" }} sort={sort} onSort={onSort} testidPrefix="journal-sort" />
                   <th className="text-left p-2">Significance</th>
                   <th className="p-2 w-24"></th>
                 </tr>
@@ -179,7 +190,7 @@ export default function BacktestRunJournal({ onLoadRun, refreshKey = 0, defaultO
                     {runs.length === 0 ? "No backtest runs yet. Run one above." : "No runs match filter."}
                   </td></tr>
                 )}
-                {!loading && visible.map((r, idx) => (
+                {!loading && sortedVisible.map((r, idx) => (
                   <tr
                     key={r.id}
                     className={`border-b border-line hover:bg-bg-2 cursor-pointer ${selected.has(r.id) ? "bg-bg-2" : ""}`}
