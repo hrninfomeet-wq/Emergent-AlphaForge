@@ -166,7 +166,14 @@ def test_backend_exposes_signal_and_paper_routes():
 def test_frontend_exposes_live_and_paper_operational_views():
     api = (ROOT / "frontend" / "src" / "lib" / "api.js").read_text(encoding="utf-8")
     live = (ROOT / "frontend" / "src" / "pages" / "LiveSignals.jsx").read_text(encoding="utf-8")
-    paper = (ROOT / "frontend" / "src" / "pages" / "PaperTrading.jsx").read_text(encoding="utf-8")
+    # The 2026-06-21 Paper redesign extracted the page into child components
+    # under components/paper/, so the operational testids now live across the
+    # whole feature tree rather than inline in the page file.
+    paper_files = [
+        ROOT / "frontend" / "src" / "pages" / "PaperTrading.jsx",
+        *sorted((ROOT / "frontend" / "src" / "components" / "paper").glob("*.jsx")),
+    ]
+    paper = "\n".join(p.read_text(encoding="utf-8") for p in paper_files)
     ledger = (ROOT / "frontend" / "src" / "pages" / "SignalJournal.jsx").read_text(encoding="utf-8")
 
     for needle in ("listSignals", "listSignalsEnriched", "purgeSignals", "deploymentsOverview",
@@ -175,15 +182,20 @@ def test_frontend_exposes_live_and_paper_operational_views():
     # The Deployments command center (rebuilt Live page, 2026-06-12).
     for needle in ("deployments-page", "deployment-card", "open-deploy-wizard", "undeploy-button"):
         assert needle in live
-    for needle in ("paper-trading-journal", "paper-trade-table", "mark-paper-trade", "close-paper-trade", "risk-badge"):
+    # Core trade-journal contract: the blotter table renders and a per-trade
+    # close-at-market control exists. (The legacy "paper-trading-journal"
+    # container is now "paper-trade-blotter"; manual "mark-paper-trade" and the
+    # "risk-badge" were dropped by the 2026-06-21 redesign — marks are now
+    # applied automatically by the evaluator.)
+    for needle in ("paper-trade-blotter", "paper-trade-table", "close-paper-trade"):
         assert needle in paper
     # The Paper Trading journal (rebuilt /paper page, forward-surfaces R4,
-    # 2026-06-12): strategy-named journal on the upgraded /paper/trades, with
-    # day-wise grouping, a summary strip + equity sparkline, server-side
-    # filter/sort/paginate/CSV, one-click close-at-market + close-all, and the
-    # CLOSED-only purge toolkit.
+    # 2026-06-12; analytics redesign 2026-06-21): strategy-named journal on the
+    # upgraded /paper/trades, with day-wise grouping, an account hero + equity
+    # curve, server-side filter/sort/paginate/CSV, one-click close-at-market +
+    # close-all, and the CLOSED-only purge toolkit.
     for needle in ("paper-trading-page", "paper-trade-row", "paper-deployment-filter",
-                   "paper-status-filter", "paper-summary-strip", "paper-equity-sparkline",
+                   "paper-status-filter", "paper-account-hero", "paper-equity-curve",
                    "paper-close-all", "paper-export-csv", "paper-delete-selected",
                    "paper-delete-older", "paper-purge-deployment", "paper-next-page"):
         assert needle in paper
