@@ -30,6 +30,7 @@ from app.runtime import (
 
 from app.schemas import PaperCloseReq, PaperMarkReq, SignalsPurgeReq, TradesPurgeReq
 from app.paper_open_positions import build_open_positions
+from app import paper_analytics
 
 api = APIRouter()
 
@@ -71,6 +72,49 @@ async def set_paper_account_config(req: AccountConfigReq):
         upsert=True,
     )
     return {"starting_capital": float(req.starting_capital)}
+
+
+# ---------------------------------------------------------------------------
+# Account analytics + strategy stats
+# ---------------------------------------------------------------------------
+
+@api.get("/paper/analytics")
+async def paper_account_analytics():
+    db = get_db()
+    starting = await _get_starting_capital(db)
+    closed = await db.paper_trades.find(
+        {"status": "CLOSED"},
+        {"_id": 0, "realized_pnl": 1, "closed_at": 1, "updated_at": 1,
+         "instrument": 1, "entry_price": 1, "quantity": 1, "status": 1},
+    ).to_list(length=100000)
+    open_rows = await db.paper_trades.find({"status": "OPEN"}, {"_id": 0, "events": 0}).to_list(length=500)
+    from app.runtime import upstox_stream_manager
+    live = build_open_positions(open_rows, latest_tick_lookup=upstox_stream_manager.latest_tick_map().get)
+    live_by_id = {p["id"]: p for p in live["items"]}
+    for r in open_rows:
+        lp = live_by_id.get(r.get("id"))
+        if lp is not None:
+            r["unrealized_pnl"] = lp["unrealized_pnl"]
+    out = paper_analytics.build_account_analytics(closed, open_rows, starting_capital=starting)
+    return serialize_doc(out)
+
+
+@api.get("/paper/strategy-stats")
+async def paper_strategy_stats():
+    db = get_db()
+    rows = await db.paper_trades.find(
+        {}, {"_id": 0, "strategy_id": 1, "deployment_id": 1, "status": 1,
+             "realized_pnl": 1, "unrealized_pnl": 1, "created_at": 1, "closed_at": 1},
+    ).to_list(length=100000)
+    dep_ids = sorted({str(r.get("deployment_id")) for r in rows if r.get("deployment_id")})
+    names = {}
+    if dep_ids:
+        for d in await db.strategy_deployments.find({"id": {"$in": dep_ids}}, {"_id": 0, "id": 1, "name": 1}).to_list(length=len(dep_ids)):
+            names[str(d["id"])] = str(d.get("name") or "")
+    stats = paper_analytics.per_strategy_stats(rows)
+    for s in stats:
+        s["deployment_name"] = names.get(str(s.get("deployment_id") or ""), "")
+    return serialize_doc({"items": stats, "count": len(stats)})
 
 
 # ---------------------------------------------------------------------------
