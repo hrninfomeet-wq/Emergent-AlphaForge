@@ -18,6 +18,7 @@ import pandas as pd
 
 from app.strategies.builtin.gap_fade import GapFade
 from app.strategies.builtin.opening_range_adaptive import OpeningRangeAdaptive
+from app.strategies.scenario_routing_base import ScenarioRoutedStrategyBase
 from app.strategies.session_features import gap_by_session, opening_range_by_session
 
 
@@ -62,6 +63,15 @@ def _ref_opening_range(row, hist, i, or_minutes):
     return float(or_bars["high"].max()), float(or_bars["low"].min())
 
 
+def _ref_session_open(row, hist, i):
+    """Frozen reference: the ORIGINAL ScenarioRoutedStrategyBase._session_open
+    per-bar derivation (session's first-bar open from history up to bar i)."""
+    sess = row.get("session_date")
+    cur = hist.iloc[: int(i) + 1]
+    cur = cur[cur["session_date"] == sess]
+    return float(cur["open"].iloc[0]) if len(cur) else None
+
+
 def test_gap_fast_path_matches_per_bar_reference():
     df = _multi_session_df()
     pre = gap_by_session(df)
@@ -85,6 +95,51 @@ def test_opening_range_fast_path_matches_per_bar_reference():
                     "or_ready_idx": pre["or_ready_idx"]}
         assert OpeningRangeAdaptive._opening_range(row, fast_ctx, M) == \
             _ref_opening_range(row, df, i, M), f"OR mismatch at bar {i}"
+
+
+def test_session_open_fast_path_matches_per_bar_reference():
+    """ScenarioRoutedStrategyBase._session_open via the precomputed day_open map
+    is byte-identical to the original per-bar derivation at EVERY bar (incl. the
+    first bar of every session)."""
+    df = _multi_session_df()
+    pre = gap_by_session(df)
+    assert "day_open" in pre
+    for i in range(len(df)):
+        row = df.iloc[i]
+        # fast ctx deliberately omits history_df: the ONLY way to answer is via
+        # the precomputed day_open map, so this fails until the base reads it.
+        fast_ctx = {"i": i, "day_open": pre["day_open"]}
+        assert ScenarioRoutedStrategyBase._session_open(row, fast_ctx) == \
+            _ref_session_open(row, df, i), f"session_open mismatch at bar {i}"
+
+
+def test_session_open_fast_path_missing_session_returns_none():
+    """A row whose session_date is absent from the precomputed map -> None,
+    matching the reference (that session has no bars in history)."""
+    df = _multi_session_df()
+    pre = gap_by_session(df)
+    row = pd.Series({"session_date": "2099-12-31", "open": 999.0})
+    fast_ctx = {"i": len(df) - 1, "day_open": pre["day_open"]}
+    assert ScenarioRoutedStrategyBase._session_open(row, fast_ctx) is None
+    assert _ref_session_open(row, df, len(df) - 1) is None
+
+
+def test_session_open_fallback_matches_reference():
+    """With no precomputed map, the preserved per-bar fallback (for live/direct
+    single-bar callers) stays byte-identical to the original at every bar."""
+    df = _multi_session_df()
+    for i in range(len(df)):
+        row = df.iloc[i]
+        fb_ctx = {"i": i, "history_df": df}
+        assert ScenarioRoutedStrategyBase._session_open(row, fb_ctx) == \
+            _ref_session_open(row, df, i), f"fallback mismatch at bar {i}"
+
+
+def test_session_open_empty_or_missing_ctx_returns_none():
+    """No ctx (or an empty ctx) -> None, matching the original guard."""
+    row = pd.Series({"session_date": "2025-01-02", "open": 100.0})
+    assert ScenarioRoutedStrategyBase._session_open(row, None) is None
+    assert ScenarioRoutedStrategyBase._session_open(row, {}) is None
 
 
 def test_opening_range_param_flows_through():

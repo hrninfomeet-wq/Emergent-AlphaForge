@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Tuple
 import pandas as pd
 from app.strategies.base import StrategyBase, Signal
+from app.strategies.session_features import gap_by_session
 from app.scenario_classifier import classify_scenario, SCENARIOS
 from app.scenarios import exit_plan
 
@@ -49,15 +50,28 @@ class ScenarioRoutedStrategyBase(StrategyBase):
             pass
         return 1.0
 
+    def session_precompute(self, df, params):
+        # Per-session day-open (+ prior-session close), computed once so the hot
+        # per-bar loop looks the session open up O(1) instead of re-deriving it
+        # per bar -- same pattern as gap_fade.
+        return gap_by_session(df)
+
     @staticmethod
     def _session_open(row, ctx):
-        """Session OPEN price (first bar's open of the current session), derived
-        causally from history up to the current bar -- same pattern as gap_fade."""
-        hist = ctx.get("history_df") if ctx else None
-        i = ctx.get("i") if ctx else None
-        if hist is None or i is None or "session_date" not in getattr(hist, "columns", []):
+        """Session OPEN price (first bar's open of the current session)."""
+        if not ctx:
             return None
         sess = row.get("session_date")
+        # Fast path: per-session day-open precomputed by run_backtest (O(1)).
+        do_map = ctx.get("day_open")
+        if do_map is not None:
+            return do_map.get(sess)
+        # Fallback: derive per bar (callers that don't precompute, e.g. live
+        # single-bar evaluation). Byte-identical to the fast path.
+        hist = ctx.get("history_df")
+        i = ctx.get("i")
+        if hist is None or i is None or "session_date" not in getattr(hist, "columns", []):
+            return None
         cur = hist.iloc[: int(i) + 1]
         cur = cur[cur["session_date"] == sess]
         return float(cur["open"].iloc[0]) if len(cur) else None
