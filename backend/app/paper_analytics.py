@@ -353,3 +353,29 @@ def per_strategy_stats(trades: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                          if g["_exit_n"] else {b: 0 for b in _EXIT_BUCKETS}),
         })
     return sorted(out, key=lambda s: s["net_pnl"], reverse=True)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 Task 3: forward-vs-backtest drift combiner
+# ---------------------------------------------------------------------------
+
+def drift_compare(live: Optional[Dict[str, Any]],
+                  baseline: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Forward-vs-backtest drift state. live={win_rate,avg,visible} (session-gated
+    forward metrics); baseline={win_rate,avg,params_match} (pinned option-₹ evidence)."""
+    if not baseline or not baseline.get("params_match") or baseline.get("win_rate") is None:
+        return {"state": "no_baseline"}
+    if not live or not live.get("visible"):
+        return {"state": "insufficient_sample",
+                "base_win_rate": baseline.get("win_rate"),
+                "base_avg": (round(float(baseline["avg"]), 2) if baseline.get("avg") is not None else None)}
+    lw, bw = live.get("win_rate"), baseline.get("win_rate")
+    la, ba = live.get("avg"), baseline.get("avg")
+    return {
+        "state": "ok",
+        "live_win_rate": lw, "base_win_rate": bw,
+        "win_rate_delta": round(lw - bw, 1) if lw is not None and bw is not None else None,
+        "live_avg": round(la, 2) if la is not None else None,
+        "base_avg": round(ba, 2) if ba is not None else None,
+        "avg_delta": round(la - ba, 2) if la is not None and ba is not None else None,
+    }

@@ -223,3 +223,30 @@ def test_per_strategy_avg_r_none_without_risk():
              "exit_reason": "target", "created_at": "2026-06-20T04:00:00+00:00",
              "closed_at": "2026-06-20T04:10:00+00:00"}]
     assert per_strategy_stats(rows)[0]["avg_r"] is None
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 Task 3: drift_compare pure combiner
+# ---------------------------------------------------------------------------
+from app.paper_analytics import drift_compare  # noqa: E402
+
+
+def test_drift_no_baseline_when_params_mismatch():
+    out = drift_compare({"win_rate": 55, "avg": 100, "visible": True},
+                        {"win_rate": 60, "avg": 120, "params_match": False})
+    assert out["state"] == "no_baseline"
+
+
+def test_drift_insufficient_sample_when_not_visible():
+    out = drift_compare({"win_rate": 55, "avg": 100, "visible": False},
+                        {"win_rate": 60, "avg": 120, "params_match": True})
+    assert out["state"] == "insufficient_sample"
+    assert out["base_win_rate"] == 60
+
+
+def test_drift_ok_with_deltas():
+    out = drift_compare({"win_rate": 54, "avg": 90, "visible": True},
+                        {"win_rate": 60, "avg": 120, "params_match": True})
+    assert out["state"] == "ok"
+    assert out["win_rate_delta"] == -6.0
+    assert out["avg_delta"] == -30.0
