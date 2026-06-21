@@ -1,0 +1,233 @@
+"""Upstox -> Noren symbol resolver (Tier-0, fail-closed).
+
+Converts an option_contract dict (Upstox/warehouse shape) into the Noren trading
+symbol + token needed to place an order via FlattradeClient.
+
+Design
+------
+- PURE: no network; ``search_fn`` is injected (sync or async) so the host tests
+  can use a fake; the real wiring happens in L0.4 (FlattradeClient).
+- FAIL-CLOSED: any ambiguity (no match, multi-match, wrong lot size) raises
+  ``SymbolResolutionError`` — we NEVER return a best-guess.
+
+``option_contract`` shape (from live_option_universe.py / option_contracts collection)
+---------------------------------------------------------------------------------------
+    {
+        "underlying":     str,   # "NIFTY", "BANKNIFTY", "SENSEX"
+        "strike":         float, # e.g. 25000.0
+        "side":           str,   # "CE" or "PE"
+        "expiry_date":    str,   # ISO date "YYYY-MM-DD"
+        "lot_size":       int,   # e.g. 65
+        "trading_symbol": str,   # Upstox symbol (not the Noren tsym)
+        "instrument_key": str,   # Upstox instrument key
+    }
+
+``search_fn(exch, query) -> list[dict]`` return shape (Noren SearchScrip rows)
+-------------------------------------------------------------------------------
+The resolver assumes these field names in each returned scrip dict:
+
+    tsym     str    Noren trading symbol          e.g. "NIFTY25JUN2025C25000"
+    token    str    Noren instrument token        e.g. "43215"
+    ls       str    Lot size                      e.g. "65"
+    strprc   str    Strike price                  e.g. "25000.00"
+    optt     str    Option type                   "CE" or "PE"
+    exd      str    Expiry date in Noren format   "DD-Mon-YYYY" e.g. "26-Jun-2025"
+
+The ``_parse_noren_expiry`` helper normalises ``exd`` → ISO "YYYY-MM-DD" for
+comparison with ``contract["expiry_date"]``.  Month abbreviations used by Noren:
+Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec.
+"""
+from __future__ import annotations
+
+import datetime
+from typing import Any, Callable, Dict, List
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+LOT_SIZE_EXPECTED: Dict[str, int] = {
+    "NIFTY": 65,
+    "SENSEX": 20,
+    # NOTE: BANKNIFTY lot size changed 30->35; verify live before deploying.
+    # The warehouse records 30; the current NSE spec says 35 for some series.
+    # Until confirmed, 30 is the expected value — mismatch will raise.
+    "BANKNIFTY": 30,
+}
+
+_MONTH_ABBR = {
+    "Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4, "May": 5, "Jun": 6,
+    "Jul": 7, "Aug": 8, "Sep": 9, "Oct": 10, "Nov": 11, "Dec": 12,
+}
+
+
+# ---------------------------------------------------------------------------
+# Error
+# ---------------------------------------------------------------------------
+
+class SymbolResolutionError(Exception):
+    """Raised when the resolver cannot unambiguously map a contract to a Noren scrip."""
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+def _parse_noren_expiry(exd: str) -> str:
+    """Convert Noren expiry string ``DD-Mon-YYYY`` to ISO ``YYYY-MM-DD``.
+
+    Raises SymbolResolutionError on any parse failure (fail-closed).
+    """
+    try:
+        parts = exd.strip().split("-")
+        if len(parts) != 3:
+            raise ValueError(f"expected DD-Mon-YYYY, got {exd!r}")
+        day = int(parts[0])
+        month = _MONTH_ABBR[parts[1]]
+        year = int(parts[2])
+        return datetime.date(year, month, day).isoformat()
+    except (KeyError, ValueError, TypeError) as exc:
+        raise SymbolResolutionError(f"cannot parse Noren expiry {exd!r}: {exc}") from exc
+
+
+def _normalise_strike(value: Any) -> float:
+    """Return float strike; raise SymbolResolutionError on conversion failure."""
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise SymbolResolutionError(f"cannot parse strike {value!r}: {exc}") from exc
+
+
+def _normalise_lot_size(value: Any) -> int:
+    """Return int lot size from a scrip row's ``ls`` field."""
+    try:
+        return int(float(value))
+    except (TypeError, ValueError) as exc:
+        raise SymbolResolutionError(f"cannot parse lot size {value!r}: {exc}") from exc
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def resolve(
+    contract: Dict[str, Any],
+    *,
+    search_fn: Callable[[str, str], List[Dict[str, Any]]],
+) -> Dict[str, Any]:
+    """Resolve an option_contract dict to a Noren trading symbol + metadata.
+
+    Parameters
+    ----------
+    contract:
+        option_contract dict with keys ``underlying``, ``strike``, ``side``,
+        ``expiry_date`` (ISO YYYY-MM-DD), ``lot_size``.
+    search_fn:
+        Callable(exch: str, query: str) -> list[scrip_dict].
+        Each scrip_dict must contain: ``tsym``, ``token``, ``ls``, ``strprc``,
+        ``optt``, ``exd`` (see module docstring for the field spec).
+        May be sync or async — the caller must handle the async case; this
+        function calls it synchronously (L0.4 will wrap it accordingly).
+
+    Returns
+    -------
+    dict with keys: ``tsym``, ``token``, ``exch``, ``lot_size`` (int).
+
+    Raises
+    ------
+    SymbolResolutionError
+        On ANY ambiguity: no match, multiple matches, lot-size mismatch, or
+        parse failure.  Never returns a best-guess.
+    """
+    underlying = str(contract.get("underlying") or "").strip().upper()
+    if not underlying:
+        raise SymbolResolutionError("contract missing 'underlying'")
+
+    contract_strike = _normalise_strike(contract.get("strike"))
+    contract_side = str(contract.get("side") or "").strip().upper()
+    if contract_side not in ("CE", "PE"):
+        raise SymbolResolutionError(f"contract 'side' must be CE or PE, got {contract_side!r}")
+
+    contract_expiry = str(contract.get("expiry_date") or "").strip()
+    if not contract_expiry:
+        raise SymbolResolutionError("contract missing 'expiry_date'")
+
+    contract_lot = contract.get("lot_size")
+    if contract_lot is None:
+        raise SymbolResolutionError("contract missing 'lot_size'")
+    contract_lot = int(contract_lot)
+
+    # Exchange routing: SENSEX trades on BFO; all others on NFO.
+    exch = "BFO" if underlying == "SENSEX" else "NFO"
+
+    # Build a search query: "<UNDERLYING> <strike>" — simple but enough for SearchScrip.
+    query = f"{underlying} {int(contract_strike) if contract_strike == int(contract_strike) else contract_strike}"
+    rows = search_fn(exch, query)
+
+    # Filter rows: strike + option type + expiry must all match exactly.
+    matches: List[Dict[str, Any]] = []
+    for row in rows:
+        # Strike match
+        try:
+            row_strike = _normalise_strike(row.get("strprc"))
+        except SymbolResolutionError:
+            continue
+        if row_strike != contract_strike:
+            continue
+
+        # Option type match (CE/PE)
+        row_optt = str(row.get("optt") or "").strip().upper()
+        if row_optt != contract_side:
+            continue
+
+        # Expiry match: parse Noren exd -> ISO and compare
+        try:
+            row_expiry_iso = _parse_noren_expiry(str(row.get("exd") or ""))
+        except SymbolResolutionError:
+            continue
+        if row_expiry_iso != contract_expiry:
+            continue
+
+        matches.append(row)
+
+    if len(matches) == 0:
+        raise SymbolResolutionError(
+            f"no Noren scrip found for {underlying} {contract_strike} {contract_side} "
+            f"expiry={contract_expiry} on {exch}"
+        )
+    if len(matches) > 1:
+        tsyms = [r.get("tsym") for r in matches]
+        raise SymbolResolutionError(
+            f"ambiguous: {len(matches)} rows matched {underlying} {contract_strike} "
+            f"{contract_side} expiry={contract_expiry}: {tsyms}"
+        )
+
+    row = matches[0]
+
+    # Lot-size cross-check: scrip ls vs contract lot_size vs LOT_SIZE_EXPECTED
+    row_lot = _normalise_lot_size(row.get("ls"))
+    if row_lot != contract_lot:
+        raise SymbolResolutionError(
+            f"lot size mismatch: scrip ls={row_lot} vs contract lot_size={contract_lot} "
+            f"for {underlying} {contract_strike} {contract_side}"
+        )
+    expected_lot = LOT_SIZE_EXPECTED.get(underlying)
+    if expected_lot is not None and row_lot != expected_lot:
+        raise SymbolResolutionError(
+            f"lot size mismatch: scrip ls={row_lot} vs expected {underlying} lot "
+            f"{expected_lot} (LOT_SIZE_EXPECTED). Verify live lot size before deploying."
+        )
+
+    tsym = str(row.get("tsym") or "")
+    token = str(row.get("token") or "")
+    if not tsym or not token:
+        raise SymbolResolutionError(
+            f"matched scrip row is missing tsym or token: {row!r}"
+        )
+
+    return {
+        "tsym": tsym,
+        "token": token,
+        "exch": exch,
+        "lot_size": row_lot,
+    }
