@@ -52,6 +52,19 @@ set). No new architecture — backend computes, frontend renders.
   `eod`/`square_off`, `manual_*`). Normalize to {target, stop, eod, manual, other}.
 - **Monthly P&L:** aggregate the Phase-1 equity-curve / closed trades by IST month.
 
+## 4a. Refinement (post-component-read)
+
+The page already fetches a **filtered `statsRows`** set (≤500, the P&L calendar's
+source). So the two *filter-respecting, page-global* aggregations are computed
+**client-side** from `statsRows` (no new/unfiltered endpoint, and they inherit the
+deployment/instrument/date filters + the calendar's 500 cap):
+- **Global exit-reason breakdown** → client helper over `statsRows` (closed).
+- **Monthly P&L bars** → derived client-side inside `PnlCalendar` from the
+  `dayPnl` Map it already receives (group days → IST months).
+
+Stay **server-side** (per strategy/trade, not page-filtered): per-trade
+`r_multiple`, and per-strategy `avg_r` + `exit_mix` + `drift`.
+
 ## 5. Backend changes
 
 ### 5.1 `app/paper_analytics.py` (pure, TDD)
