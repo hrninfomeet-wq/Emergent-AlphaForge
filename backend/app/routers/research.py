@@ -478,7 +478,7 @@ async def optimize_start(req: OptimizerStartReq):
 
 
 @api.get("/optimize/jobs")
-async def list_opt_jobs(limit: int = Query(50, le=200)):
+async def list_opt_jobs(limit: int = Query(50, le=1000)):
     db = get_db()
     cur = db.optimization_jobs.find(
         {},

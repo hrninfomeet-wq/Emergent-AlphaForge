@@ -237,7 +237,7 @@ export default function Optimizer() {
 
   useEffect(() => {
     api.listStrategies().then((d) => setStrategies(d.items || []));
-    api.listOptJobs(30).then((d) => setJobs(d.items || []));
+    api.listOptJobs(1000).then((d) => setJobs(d.items || []));
     api.listPresets().then((d) => setPresets(d.items || []));
     api.listProfiles().then((d) => setProfiles(d.items || []));
   }, []);
@@ -252,7 +252,7 @@ export default function Optimizer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [config.strategy_id, config.instrument, config.objective]);
 
-  const refreshJobs = () => api.listOptJobs(30).then((d) => setJobs(d.items || []));
+  const refreshJobs = () => api.listOptJobs(1000).then((d) => setJobs(d.items || []));
   const refreshPresets = () => api.listPresets().then((d) => setPresets(d.items || []));
 
   const selectedProfile = profiles.find((p) => p.name === config.pretrade_profile);
