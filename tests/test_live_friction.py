@@ -2,7 +2,9 @@
 the SAME model the option backtest uses (app.live_friction).
 
 Trading-critical invariants:
-- fill_premium slips BUY up / SELL down by point-slippage + half the %-spread;
+- fill_premium slips BUY up / SELL down by EITHER the half %-spread (when the
+  cost model configures one) OR the point-slippage proxy — never both, since both
+  model the same bid-ask cost;
 - a disabled friction config leaves the live close GROSS (legacy behavior);
 - an enabled config makes the live NET P&L equal the backtest's net P&L for
   identical inputs (slippage + bid-ask spread + statutory charges) — so a
@@ -29,6 +31,11 @@ from app.paper_trading import close_trade, paper_trade_from_signal  # noqa: E402
 # so the expiry-tail multiplier never applies (keeps the arithmetic deterministic).
 TS = 1748332200000
 NO_TAIL_EXPIRY = None
+
+# A ts INSIDE the expiry-day tail window (16:50 IST on 2025-05-27), used to verify
+# the %-spread inherits the slippage model's expiry-tail widening multiplier.
+TAIL_TS = 1748344800000
+TAIL_EXPIRY = "2025-05-27"
 
 
 def _friction(enabled=True, **over):
@@ -57,13 +64,29 @@ def test_fill_premium_buy_pays_more_sell_receives_less():
     assert buy["bucket"] == "atm" and buy["spread_pts"] == 0.0  # costs disabled → no spread
 
 
-def test_fill_premium_layers_half_spread_when_costs_enabled():
+def test_fill_premium_spread_replaces_slippage_when_costs_enabled():
+    # EITHER/OR: when the %-spread cost model is active it REPLACES the
+    # point-slippage proxy (both model the same bid-ask cost — no double-count).
     f = _friction()  # costs enabled, 1% spread, atm 0.5 slippage
     buy = fill_premium(raw_premium=100.0, side="BUY", moneyness="atm", ts_ms=TS,
                        expiry_iso=NO_TAIL_EXPIRY, slippage_cfg=f.slippage, cost_cfg=f.costs)
-    # 1% of 100 = 1.0 full spread → 0.5 half-spread per side, plus 0.5 slippage.
+    # 1% of 100 = 1.0 full spread → 0.5 half-spread per side; point-slippage dropped.
     assert buy["spread_pts"] == 0.5
-    assert buy["price"] == 101.0  # 100 + 0.5 slippage + 0.5 half-spread
+    assert buy["slippage_pts"] == 0.0
+    assert buy["price"] == 100.5  # 100 + 0.5 half-spread only (no 0.5 slippage on top)
+
+
+def test_fill_premium_spread_inherits_expiry_tail_multiplier():
+    # On expiry day in the tail window the %-spread inherits the slippage model's
+    # 2x expiry-tail multiplier, so the expiry-day spread blow-out is not lost
+    # when the spread model replaces point-slippage.
+    f = _friction(expiry_iso=TAIL_EXPIRY)
+    buy = fill_premium(raw_premium=100.0, side="BUY", moneyness="atm", ts_ms=TAIL_TS,
+                       expiry_iso=TAIL_EXPIRY, slippage_cfg=f.slippage, cost_cfg=f.costs)
+    assert buy["tail"] is True
+    assert buy["slippage_pts"] == 0.0
+    assert buy["spread_pts"] == 1.0   # 0.5 half-spread x 2 expiry-tail multiplier
+    assert buy["price"] == 101.0      # 100 + 1.0 widened half-spread
 
 
 # --------------------------------------------------------------------------- #
@@ -101,7 +124,11 @@ def test_close_economics_enabled_nets_below_gross_with_charges():
     assert econ["realized_pnl"] < econ["gross_realized_pnl"]             # friction eats into it
     assert econ["friction_cost"] == round(econ["gross_realized_pnl"] - econ["realized_pnl"], 2)
     assert econ["total_charges"] > 0.0 and econ["charges"] is not None
-    assert econ["exit_slippage_pts"] == 0.5
+    # Spread model is active here, so it replaces point-slippage: the friction is
+    # carried by the half-spread, not the slippage bucket. The half-spread is
+    # premium-relative — 1% of the 120 exit premium / 2 = 0.6.
+    assert econ["exit_slippage_pts"] == 0.0
+    assert econ["exit_spread_pts"] == 0.6
 
 
 # --------------------------------------------------------------------------- #

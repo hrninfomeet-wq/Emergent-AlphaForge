@@ -466,9 +466,11 @@ def simulate_paired_option_trades(
 ) -> Dict[str, Any]:
     """Map each spot signal trade to a long CE/PE option premium trade.
 
-    Slippage: applies per-side option-point slippage at entry (BUY) and exit (SELL)
-    via app.slippage.estimate_slippage_per_side. Pass slippage_config={...} to override
-    defaults; pass {"atm_pts": 0} etc. to disable a bucket.
+    Execution friction (via app.live_friction.fill_premium): EITHER the
+    %-of-premium bid-ask spread (when the cost model configures one) OR per-side
+    point slippage (app.slippage) — never both, since both model the same bid-ask
+    cost. Pass slippage_config={...} to tune the point model (used only when no
+    spread is configured); pass {"atm_pts": 0} etc. to disable a bucket.
 
     Exit modes:
       - "spot_exit" (default): the option is sold when the spot trade exits
@@ -621,12 +623,12 @@ def simulate_paired_option_trades(
             continue
 
         raw_entry_price = float(entry["close"])
-        # Apply entry slippage first so option target/stop levels are measured
-        # against the actual (slipped) fill, matching how a real buyer manages.
-        # fill_premium (app.live_friction) is the SHARED fill model: point
-        # slippage + half the %-of-premium spread. The live paper path books
-        # entry/exit fills through the exact same function, so sim and live can
-        # never disagree about the fill price (see tests/test_live_friction.py).
+        # Apply entry friction first so option target/stop levels are measured
+        # against the actual (filled) price, matching how a real buyer manages.
+        # fill_premium (app.live_friction) is the SHARED fill model: EITHER the
+        # half %-of-premium spread OR point slippage (never both). The live paper
+        # path books entry/exit fills through the exact same function, so sim and
+        # live can never disagree about the fill price (see tests/test_live_friction.py).
         entry_fill = fill_premium(
             raw_premium=raw_entry_price, side="BUY",
             moneyness=moneyness, ts_ms=int(entry["ts"]),

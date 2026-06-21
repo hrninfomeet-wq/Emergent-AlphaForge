@@ -42,15 +42,21 @@ def fill_premium(
     slippage_cfg: SlippageConfig,
     cost_cfg: CostConfig,
 ) -> Dict[str, Any]:
-    """Apply per-side point slippage + half the %-of-premium spread to a raw fill.
+    """Apply per-side execution friction to a raw fill: EITHER the half
+    %-of-premium spread OR the point-slippage proxy — never both.
 
-    This is byte-for-byte the computation `option_backtest` performs inline at
-    entry/exit (slippage always-on by bucket; half-spread layered only when the
-    cost model is enabled). Returns the adjusted fill price plus the components,
+    The point-slippage model (`app.slippage`) is a points stand-in for the
+    unmeasured bid-ask spread; the %-of-premium spread (`app.option_costs`) is the
+    refined, premium-relative model of that SAME cost. Applying both double-counts
+    the spread, so per the `app.option_costs` design the spread model REPLACES
+    point-slippage when it is configured. The expiry-tail widening multiplier is
+    carried over onto the spread, so the expiry-day blow-out the point model
+    captured is not lost. When no spread is configured, point-slippage stands in
+    (legacy behavior, unchanged). Returns the adjusted fill price plus components,
     so callers can store an auditable breakdown.
 
-      BUY  -> raw + (slippage_pts + half_spread)   (you pay more than mid)
-      SELL -> raw - (slippage_pts + half_spread)   (you receive less than mid)
+      BUY  -> raw + friction_pts   (you pay more than mid)
+      SELL -> raw - friction_pts   (you receive less than mid)
     """
     slip = estimate_slippage_per_side(
         moneyness=moneyness,
@@ -58,15 +64,27 @@ def fill_premium(
         expiry_iso=expiry_iso,
         cfg=slippage_cfg,
     )
-    half_spread = spread_pts_for_premium(float(raw_premium), cost_cfg) / 2.0
-    total_pts = slip["pts"] + half_spread
+    tail = bool(slip.get("tail_multiplier_applied"))
+    raw_half_spread = spread_pts_for_premium(float(raw_premium), cost_cfg) / 2.0
+    if raw_half_spread > 0.0:
+        # Spread model active: it replaces point-slippage (EITHER/OR). Preserve the
+        # expiry-tail widening by applying the slippage model's multiplier to it.
+        tail_mult = slippage_cfg.expiry_tail_multiplier if tail else 1.0
+        half_spread = round(raw_half_spread * tail_mult, 4)
+        slippage_pts = 0.0
+        total_pts = half_spread
+    else:
+        # No spread configured -> fall back to the point-slippage proxy (legacy).
+        half_spread = 0.0
+        slippage_pts = slip["pts"]
+        total_pts = slippage_pts
     price = apply_slippage(fill_price=float(raw_premium), side=side, pts=total_pts)
     return {
         "price": price,
-        "slippage_pts": slip["pts"],
+        "slippage_pts": slippage_pts,
         "spread_pts": half_spread,
         "bucket": slip["bucket"],
-        "tail": bool(slip.get("tail_multiplier_applied")),
+        "tail": tail,
     }
 
 
