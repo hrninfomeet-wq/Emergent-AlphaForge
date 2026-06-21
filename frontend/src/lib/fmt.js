@@ -61,3 +61,38 @@ export const isoToFull = (iso) => {
   const d = new Date(iso);
   return tsToFull(d.getTime());
 };
+
+// Indian lakh/crore grouping (last 3 digits, then groups of 2). No locale API.
+const groupIndian = (intStr) => {
+  if (intStr.length <= 3) return intStr;
+  const head = intStr.slice(0, intStr.length - 3);
+  const tail = intStr.slice(-3);
+  return head.replace(/\B(?=(\d{2})+(?!\d))/g, ",") + "," + tail;
+};
+
+export const fmtINR = (n, decimals = 0) => {
+  if (n === null || n === undefined || Number.isNaN(Number(n))) return "–";
+  const v = Number(n);
+  const fixed = Math.abs(v).toFixed(decimals);
+  const [int, dec] = fixed.split(".");
+  const body = groupIndian(int) + (dec ? "." + dec : "");
+  return `${v < 0 ? "−" : ""}₹${body}`;
+};
+
+export const fmtINRSigned = (n, decimals = 0) => {
+  if (n === null || n === undefined || Number.isNaN(Number(n))) return "–";
+  const v = Number(n);
+  const fixed = Math.abs(v).toFixed(decimals);
+  const [int, dec] = fixed.split(".");
+  const body = groupIndian(int) + (dec ? "." + dec : "");
+  return `${v < 0 ? "−" : "+"}₹${body}`;
+};
+
+export const fmtDuration = (seconds) => {
+  const s = Math.max(0, Math.round(Number(seconds) || 0));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${String(m % 60).padStart(2, "0")}m`;
+};

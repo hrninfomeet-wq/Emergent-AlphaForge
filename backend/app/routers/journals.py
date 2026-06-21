@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel
 
 from app.db import get_db, serialize_doc
 from app.strategies.base import get_registry
@@ -29,8 +30,91 @@ from app.runtime import (
 
 from app.schemas import PaperCloseReq, PaperMarkReq, SignalsPurgeReq, TradesPurgeReq
 from app.paper_open_positions import build_open_positions
+from app import paper_analytics
 
 api = APIRouter()
+
+
+# ---------------------------------------------------------------------------
+# Account config (starting capital)
+# ---------------------------------------------------------------------------
+
+_DEFAULT_STARTING_CAPITAL = 200_000.0
+
+
+async def _get_starting_capital(db) -> float:
+    doc = await db.app_settings.find_one({"key": "paper_account"}, {"_id": 0})
+    if doc and doc.get("starting_capital") is not None:
+        try:
+            return float(doc["starting_capital"])
+        except (TypeError, ValueError):
+            pass
+    return _DEFAULT_STARTING_CAPITAL
+
+
+class AccountConfigReq(BaseModel):
+    starting_capital: float
+
+
+@api.get("/paper/account-config")
+async def get_paper_account_config():
+    return {"starting_capital": await _get_starting_capital(get_db())}
+
+
+@api.put("/paper/account-config")
+async def set_paper_account_config(req: AccountConfigReq):
+    if req.starting_capital <= 0:
+        raise HTTPException(400, "starting_capital must be > 0")
+    db = get_db()
+    await db.app_settings.update_one(
+        {"key": "paper_account"},
+        {"$set": {"key": "paper_account", "starting_capital": float(req.starting_capital)}},
+        upsert=True,
+    )
+    return {"starting_capital": float(req.starting_capital)}
+
+
+# ---------------------------------------------------------------------------
+# Account analytics + strategy stats
+# ---------------------------------------------------------------------------
+
+@api.get("/paper/analytics")
+async def paper_account_analytics():
+    db = get_db()
+    starting = await _get_starting_capital(db)
+    closed = await db.paper_trades.find(
+        {"status": "CLOSED"},
+        {"_id": 0, "realized_pnl": 1, "closed_at": 1, "updated_at": 1,
+         "instrument": 1, "entry_price": 1, "quantity": 1, "status": 1},
+    ).to_list(length=100000)
+    open_rows = await db.paper_trades.find({"status": "OPEN"}, {"_id": 0, "events": 0}).to_list(length=500)
+    from app.runtime import upstox_stream_manager
+    live = build_open_positions(open_rows, latest_tick_lookup=upstox_stream_manager.latest_tick_map().get)
+    live_by_id = {p["id"]: p for p in live["items"]}
+    for r in open_rows:
+        lp = live_by_id.get(r.get("id"))
+        if lp is not None:
+            r["unrealized_pnl"] = lp["unrealized_pnl"]
+    out = paper_analytics.build_account_analytics(closed, open_rows, starting_capital=starting)
+    return serialize_doc(out)
+
+
+@api.get("/paper/strategy-stats")
+async def paper_strategy_stats():
+    db = get_db()
+    rows = await db.paper_trades.find(
+        {}, {"_id": 0, "strategy_id": 1, "deployment_id": 1, "status": 1,
+             "realized_pnl": 1, "unrealized_pnl": 1, "created_at": 1, "closed_at": 1},
+    ).to_list(length=100000)
+    dep_ids = sorted({str(r.get("deployment_id")) for r in rows if r.get("deployment_id")})
+    names = {}
+    if dep_ids:
+        for d in await db.strategy_deployments.find({"id": {"$in": dep_ids}}, {"_id": 0, "id": 1, "name": 1}).to_list(length=len(dep_ids)):
+            names[str(d["id"])] = str(d.get("name") or "")
+    stats = paper_analytics.per_strategy_stats(rows)
+    for s in stats:
+        s["deployment_name"] = names.get(str(s.get("deployment_id") or ""), "")
+    return serialize_doc({"items": stats, "count": len(stats)})
 
 
 # ---------------------------------------------------------------------------
@@ -222,6 +306,7 @@ async def list_paper_trades(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, le=500),
     format: Optional[str] = Query(None, description="csv to download"),
+    include_analytics: bool = Query(False),
 ):
     """Paper-trade journal with server-side filter / sort / pagination / CSV.
     Each row carries the deployment name so the journal reads by strategy."""
@@ -250,7 +335,8 @@ async def list_paper_trades(
         field, direction = "updated_at", -1
 
     total = await db.paper_trades.count_documents(q)
-    rows = await db.paper_trades.find(q, {"_id": 0, "events": 0}).sort(field, direction).skip(skip).limit(limit).to_list(length=limit)
+    proj = {"_id": 0} if include_analytics else {"_id": 0, "events": 0}
+    rows = await db.paper_trades.find(q, proj).sort(field, direction).skip(skip).limit(limit).to_list(length=limit)
 
     dep_ids = sorted({str(r.get("deployment_id")) for r in rows if r.get("deployment_id")})
     dep_names: Dict[str, str] = {}
@@ -259,6 +345,11 @@ async def list_paper_trades(
             dep_names[str(d.get("id"))] = str(d.get("name") or "")
     for r in rows:
         r["deployment_name"] = dep_names.get(str(r.get("deployment_id") or ""), "")
+
+    if include_analytics:
+        for r in rows:
+            r["analytics"] = paper_analytics.per_trade_analytics(r)
+            r.pop("events", None)
 
     if (format or "").lower() == "csv":
         return _csv_response(rows, _TRADES_CSV_COLUMNS, "paper_trades.csv")

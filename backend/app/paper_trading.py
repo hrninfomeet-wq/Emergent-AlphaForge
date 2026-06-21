@@ -142,6 +142,10 @@ def _mark_open_trade(trade: Dict[str, Any], *, last_price: Any, at: Optional[str
     timestamp = at or _now_iso()
     updated["last_price"] = price
     updated["unrealized_pnl"] = round((price - entry) * quantity, 2)
+    prev_mfe = updated.get("mfe_value")
+    prev_mae = updated.get("mae_value")
+    updated["mfe_value"] = round(max(updated["unrealized_pnl"], prev_mfe if prev_mfe is not None else updated["unrealized_pnl"]), 2)
+    updated["mae_value"] = round(min(updated["unrealized_pnl"], prev_mae if prev_mae is not None else updated["unrealized_pnl"]), 2)
     updated["updated_at"] = timestamp
     events = list(updated.get("events") or [])
     events.append({"type": "MARK", "at": timestamp, "price": price, "unrealized_pnl": updated["unrealized_pnl"]})
@@ -234,6 +238,11 @@ def close_trade(
     })
     if econ.get("charges"):
         updated["charges"] = econ["charges"]
+    rp = updated.get("realized_pnl") or 0.0
+    if updated.get("mfe_value") is None:
+        updated["mfe_value"] = round(rp, 2)
+    if updated.get("mae_value") is None:
+        updated["mae_value"] = round(rp, 2)
     events = list(updated.get("events") or [])
     events.append({"type": "CLOSE", "at": timestamp, "price": fill_price,
                    "realized_pnl": realized, "reason": reason})

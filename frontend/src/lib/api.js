@@ -164,6 +164,11 @@ export const api = {
     apiClient.post(`/paper/trades/${id}/close`, payload).then((r) => r.data),
   squareOffAll: () =>
     apiClient.post("/paper/square-off").then((r) => r.data),
+  paperAnalytics: () => apiClient.get("/paper/analytics").then((r) => r.data),
+  paperStrategyStats: () => apiClient.get("/paper/strategy-stats").then((r) => r.data),
+  getPaperAccountConfig: () => apiClient.get("/paper/account-config").then((r) => r.data),
+  setPaperAccountConfig: (starting_capital) =>
+    apiClient.put("/paper/account-config", { starting_capital }).then((r) => r.data),
   listDeployments: (params = {}) =>
     apiClient.get("/deployments", { params }).then((r) => r.data),
   deploymentsOverview: () =>
