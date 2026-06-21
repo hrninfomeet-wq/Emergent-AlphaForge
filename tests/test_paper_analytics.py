@@ -77,3 +77,63 @@ def test_downsample_keeps_endpoints_and_extremes():
 def test_downsample_passthrough_when_small():
     pts = [{"t": 0, "pnl": 1}, {"t": 1, "pnl": 2}]
     assert downsample(pts, n=30) == pts
+
+
+# ---------------------------------------------------------------------------
+# Task 2: period P&L, equity curve, exposure, account roll-up
+# ---------------------------------------------------------------------------
+from app.paper_analytics import (  # noqa: E402
+    period_pnl, build_equity_curve, exposure, build_account_analytics,
+)
+from datetime import datetime, timezone  # noqa: E402
+
+_DAY = 86_400_000
+_BASE = 1_750_000_000_000  # fixed ms; tests are deterministic
+
+
+def _closed(pnl, closed_ms, instrument="NIFTY", entry=100.0, qty=75):
+    return {"status": "CLOSED", "realized_pnl": pnl,
+            "closed_at": datetime.fromtimestamp(closed_ms / 1000, tz=timezone.utc).isoformat(),
+            "instrument": instrument, "entry_price": entry, "quantity": qty}
+
+
+def test_period_pnl_buckets_today_and_lifetime():
+    now = _BASE
+    rows = [_closed(1000, now - 1000), _closed(-200, now - _DAY * 3), _closed(500, now - _DAY * 40)]
+    p = period_pnl(rows, now_ms=now)
+    assert p["today"] == 1000.0
+    assert p["lifetime"] == 1300.0
+    assert p["win_rate"] == round(2 / 3 * 100, 1)
+    assert p["profit_factor"] == round(1500 / 200, 2)
+
+
+def test_build_equity_curve_from_capital():
+    rows = [_closed(1000, _BASE - _DAY * 2), _closed(-500, _BASE - _DAY), _closed(2000, _BASE)]
+    c = build_equity_curve(rows, starting_capital=200_000)
+    assert c["starting_capital"] == 200_000
+    assert c["account_value_realized"] == 202_500.0
+    assert c["max_drawdown_value"] <= 0
+    assert c["curve"][-1]["equity_value"] == 202_500.0
+
+
+def test_exposure_pct_and_by_instrument():
+    open_trades = [
+        {"entry_price": 100.0, "quantity": 75, "instrument": "NIFTY"},
+        {"entry_price": 50.0, "quantity": 30, "instrument": "BANKNIFTY"},
+    ]
+    e = exposure(open_trades, starting_capital=200_000)
+    assert e["deployed_capital"] == 9000.0
+    assert e["deployed_pct"] == round(9000 / 200_000 * 100, 2)
+    assert e["by_instrument"]["NIFTY"] == 7500.0
+
+
+def test_build_account_analytics_combines_realized_and_mtm():
+    rows = [_closed(1000, _BASE)]
+    open_trades = [{"entry_price": 100.0, "quantity": 75, "instrument": "NIFTY",
+                    "unrealized_pnl": 300.0}]
+    a = build_account_analytics(rows, open_trades, starting_capital=200_000, now_ms=_BASE)
+    assert a["account_value_realized"] == 201_000.0
+    assert a["open_pnl"] == 300.0
+    assert a["account_value_mtm"] == 201_300.0
+    assert a["deployed_capital"] == 7500.0
+    assert "equity_curve" in a and "period_pnl" in a and "exposure" in a

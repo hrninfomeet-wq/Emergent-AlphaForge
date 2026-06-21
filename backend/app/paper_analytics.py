@@ -133,3 +133,128 @@ def per_trade_analytics(trade: Dict[str, Any], *, now_ms: Optional[int] = None,
         "sl": risk.get("stop_price"),
         "tp": risk.get("target_price"),
     }
+
+
+# ---------------------------------------------------------------------------
+# Task 2: period P&L, equity curve, exposure, account roll-up
+# ---------------------------------------------------------------------------
+
+def _now_ms() -> int:
+    return int(datetime.now(timezone.utc).timestamp() * 1000)
+
+
+def period_pnl(closed_trades: List[Dict[str, Any]], *, now_ms: Optional[int] = None) -> Dict[str, Any]:
+    now_ms = now_ms if now_ms is not None else _now_ms()
+    today = _ist_day(now_ms)
+    now_dt = datetime.fromtimestamp(now_ms / 1000, tz=timezone.utc) + IST_OFFSET
+    week_start = (now_dt - timedelta(days=now_dt.weekday())).strftime("%Y-%m-%d")
+    month_start = now_dt.strftime("%Y-%m-01")
+    out = {"today": 0.0, "week": 0.0, "month": 0.0, "lifetime": 0.0}
+    wins = losses = 0
+    gross_win = gross_loss = 0.0
+    for t in closed_trades:
+        if str(t.get("status") or "").upper() != "CLOSED":
+            continue
+        pnl = _f(t.get("realized_pnl"))
+        day = _ist_day(t.get("closed_at") or t.get("updated_at"))
+        if day is None:
+            continue
+        out["lifetime"] += pnl
+        if day == today:
+            out["today"] += pnl
+        if day >= week_start:
+            out["week"] += pnl
+        if day >= month_start:
+            out["month"] += pnl
+        if pnl > 0:
+            wins += 1
+            gross_win += pnl
+        elif pnl < 0:
+            losses += 1
+            gross_loss += abs(pnl)
+    decided = wins + losses
+    out = {k: round(v, 2) for k, v in out.items()}
+    out["win_rate"] = round(wins / decided * 100, 1) if decided else None
+    out["profit_factor"] = (round(gross_win / gross_loss, 2) if gross_loss > 0
+                            else (None if gross_win == 0 else float("inf")))
+    out["closed_count"] = decided
+    return out
+
+
+def build_equity_curve(closed_trades: List[Dict[str, Any]],
+                       starting_capital: float = DEFAULT_CAPITAL) -> Dict[str, Any]:
+    """Realized rupee equity stepped per IST close-day. Mirrors
+    portfolio.build_rupee_equity_curve but keyed on realized_pnl/closed_at."""
+    daily: Dict[str, float] = {}
+    for t in closed_trades:
+        if str(t.get("status") or "").upper() != "CLOSED":
+            continue
+        day = _ist_day(t.get("closed_at") or t.get("updated_at"))
+        if day is None:
+            continue
+        daily[day] = daily.get(day, 0.0) + _f(t.get("realized_pnl"))
+    equity = float(starting_capital)
+    peak = float(starting_capital)
+    max_dd = 0.0
+    max_dd_pct = 0.0
+    curve: List[Dict[str, Any]] = []
+    for day in sorted(daily.keys()):
+        equity += daily[day]
+        peak = max(peak, equity)
+        dd = equity - peak
+        max_dd = min(max_dd, dd)
+        if peak > 0:
+            max_dd_pct = min(max_dd_pct, dd / peak * 100.0)
+        curve.append({"day": day, "equity_value": round(equity, 2),
+                      "pnl_value": round(daily[day], 2),
+                      "drawdown_value": round(dd, 2)})
+    net = round(equity - starting_capital, 2)
+    return {
+        "starting_capital": round(float(starting_capital), 2),
+        "account_value_realized": round(equity, 2),
+        "net_pnl": net,
+        "total_return_pct": round(net / starting_capital * 100, 3) if starting_capital > 0 else 0.0,
+        "max_drawdown_value": round(max_dd, 2),
+        "max_drawdown_pct": round(max_dd_pct, 3),
+        "curve": curve,
+    }
+
+
+def exposure(open_trades: List[Dict[str, Any]],
+             starting_capital: float = DEFAULT_CAPITAL) -> Dict[str, Any]:
+    by_instr: Dict[str, float] = {}
+    deployed = 0.0
+    for t in open_trades:
+        cost = _f(t.get("entry_price")) * _f(t.get("quantity"))
+        deployed += cost
+        key = str(t.get("instrument") or "—")
+        by_instr[key] = round(by_instr.get(key, 0.0) + cost, 2)
+    return {
+        "deployed_capital": round(deployed, 2),
+        "deployed_pct": round(deployed / starting_capital * 100, 2) if starting_capital > 0 else 0.0,
+        "by_instrument": by_instr,
+    }
+
+
+def build_account_analytics(closed_trades: List[Dict[str, Any]],
+                            open_trades: List[Dict[str, Any]],
+                            *, starting_capital: float = DEFAULT_CAPITAL,
+                            now_ms: Optional[int] = None) -> Dict[str, Any]:
+    eq = build_equity_curve(closed_trades, starting_capital)
+    open_pnl = round(sum(_f(t.get("unrealized_pnl")) for t in open_trades), 2)
+    exp = exposure(open_trades, starting_capital)
+    return {
+        "starting_capital": eq["starting_capital"],
+        "account_value_realized": eq["account_value_realized"],
+        "account_value_mtm": round(eq["account_value_realized"] + open_pnl, 2),
+        "open_pnl": open_pnl,
+        "open_count": len(open_trades),
+        "deployed_capital": exp["deployed_capital"],
+        "net_pnl": eq["net_pnl"],
+        "total_return_pct": eq["total_return_pct"],
+        "max_drawdown_value": eq["max_drawdown_value"],
+        "max_drawdown_pct": eq["max_drawdown_pct"],
+        "equity_curve": eq["curve"],
+        "period_pnl": period_pnl(closed_trades, now_ms=now_ms),
+        "exposure": exp,
+    }
