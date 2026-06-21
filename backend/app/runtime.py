@@ -894,7 +894,7 @@ async def _set_deployment_status(deployment_id: str, status: str) -> Dict[str, A
 # readable through GET /signals and /signals/enriched.
 
 
-_TRADES_SORT_FIELDS = {"updated_at", "created_at", "closed_at", "realized_pnl", "entry_price"}
+_TRADES_SORT_FIELDS = {"updated_at", "created_at", "closed_at", "realized_pnl", "entry_price", "mfe_value", "mae_value"}
 
 
 _TRADES_CSV_COLUMNS = [
