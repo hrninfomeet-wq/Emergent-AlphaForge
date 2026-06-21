@@ -1,5 +1,5 @@
 import { Fragment, useState } from "react";
-import { fmtINR, fmtINRSigned, fmtNum, fmtPct, fmtDuration, colorPnL } from "@/lib/fmt";
+import { fmtINR, fmtINRSigned, fmtNum, fmtPct, fmtDuration, fmtSigned, colorPnL } from "@/lib/fmt";
 import TradeSparkline from "./TradeSparkline";
 import TradeDetailDrawer from "./TradeDetailDrawer";
 import { Zap } from "lucide-react";
@@ -13,7 +13,7 @@ const istParts = (iso) => {
            time: `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}` };
 };
 
-export default function TradeBlotter({ rows, sort, onToggleSort, onCloseAtMarket, busy }) {
+export default function TradeBlotter({ rows, sort, onToggleSort, onCloseAtMarket, busy, selected, onToggleRow, onToggleAll, allClosedSelected }) {
   const [open, setOpen] = useState(() => new Set());
   const toggle = (id) => setOpen((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const mark = (col) => (sort === col ? " ▲" : sort === `-${col}` ? " ▼" : null);
@@ -26,6 +26,9 @@ export default function TradeBlotter({ rows, sort, onToggleSort, onCloseAtMarket
       <table className="w-full text-xs" data-testid="paper-trade-table">
         <thead className="sticky top-0 bg-bg-2 z-10">
           <tr className="text-dim border-b border-line">
+            <th className="p-2 w-8 text-center">
+              <input type="checkbox" checked={!!allClosedSelected} onChange={onToggleAll} data-testid="paper-select-all" title="Select closed trades on this page" />
+            </th>
             <H col="created_at">Date / time</H>
             <H>Strategy / contract</H>
             <H right>Side</H>
@@ -35,6 +38,7 @@ export default function TradeBlotter({ rows, sort, onToggleSort, onCloseAtMarket
             <H col="mfe_value" right>Max</H>
             <H col="mae_value" right>Min</H>
             <H right>Now</H>
+            <H right>R</H>
             <H right>P&amp;L curve</H>
             <H col="realized_pnl" right>Net P&amp;L</H>
             <H right>P&amp;L%</H>
@@ -44,7 +48,7 @@ export default function TradeBlotter({ rows, sort, onToggleSort, onCloseAtMarket
         </thead>
         <tbody>
           {rows.length === 0 && (
-            <tr><td colSpan="14" className="p-6 text-center text-dimmer">No paper trades match these filters.</td></tr>
+            <tr><td colSpan="16" className="p-6 text-center text-dimmer">No paper trades match these filters.</td></tr>
           )}
           {rows.map((t) => {
             const isOpen = String(t.status || "").toUpperCase() === "OPEN";
@@ -57,6 +61,11 @@ export default function TradeBlotter({ rows, sort, onToggleSort, onCloseAtMarket
             return (
               <Fragment key={t.id}>
                 <tr className="border-b border-line hover:bg-bg-2 cursor-pointer" onClick={() => toggle(t.id)} data-testid="paper-trade-row">
+                  <td className="p-2 text-center" onClick={(e) => e.stopPropagation()}>
+                    {!isOpen && (
+                      <input type="checkbox" checked={selected?.has(t.id) || false} onChange={() => onToggleRow?.(t.id)} data-testid="paper-row-select" />
+                    )}
+                  </td>
                   <td className="p-2 font-mono whitespace-nowrap">{entry ? entry.day : "—"}<div className="text-dimmer">{entry ? entry.time : ""}</div></td>
                   <td className="p-2"><div className="font-medium truncate max-w-[150px]" title={t.deployment_name}>{t.deployment_name || t.strategy_id}</div><div className="text-dimmer font-mono truncate max-w-[150px]">{t.trading_symbol || t.instrument}</div></td>
                   <td className="p-2 text-right"><span className={`font-mono ${t.direction === "CE" ? "text-emerald-400" : t.direction === "PE" ? "text-red-400" : "text-dim"}`}>{t.direction || "—"}</span></td>
@@ -66,6 +75,7 @@ export default function TradeBlotter({ rows, sort, onToggleSort, onCloseAtMarket
                   <td className="p-2 text-right font-mono text-success">{fmtINRSigned(a.mfe_value)}</td>
                   <td className="p-2 text-right font-mono text-danger">{fmtINRSigned(a.mae_value)}</td>
                   <td className={`p-2 text-right font-mono ${colorPnL(a.running_pnl)}`}>{fmtINRSigned(a.running_pnl)}</td>
+                  <td className={`p-2 text-right font-mono ${colorPnL(a.r_multiple)}`}>{a.r_multiple == null ? "—" : fmtSigned(a.r_multiple, 2)}</td>
                   <td className="p-2 text-right"><div className="flex justify-end"><TradeSparkline points={a.spark} /></div></td>
                   <td className={`p-2 text-right font-mono ${colorPnL(net)}`}>{fmtINRSigned(net)}</td>
                   <td className={`p-2 text-right font-mono ${colorPnL(pct)}`}>{pct == null ? "—" : fmtPct(pct, 1)}</td>
@@ -79,7 +89,7 @@ export default function TradeBlotter({ rows, sort, onToggleSort, onCloseAtMarket
                   </td>
                 </tr>
                 {open.has(t.id) && (
-                  <tr><td colSpan="14" className="p-0"><TradeDetailDrawer trade={t} /></td></tr>
+                  <tr><td colSpan="16" className="p-0"><TradeDetailDrawer trade={t} /></td></tr>
                 )}
               </Fragment>
             );
