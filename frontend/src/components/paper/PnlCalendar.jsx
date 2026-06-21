@@ -87,10 +87,37 @@ function CalendarHeatGrid({ dayPnl }) {
   );
 }
 
+function MonthlyBars({ dayPnl }) {
+  const months = new Map(); // 'YYYY-MM' -> pnl
+  for (const [day, info] of dayPnl.entries()) {
+    const m = day.slice(0, 7);
+    months.set(m, (months.get(m) || 0) + Number(info.pnl || 0));
+  }
+  const entries = [...months.entries()].sort().slice(-6);
+  if (entries.length === 0) return null;
+  const maxAbs = Math.max(1, ...entries.map(([, v]) => Math.abs(v)));
+  return (
+    <div className="mt-3 pt-3 border-t border-line" data-testid="paper-monthly-bars">
+      <div className="text-[10px] uppercase tracking-wider text-dimmer mb-2">Monthly P&amp;L</div>
+      <div className="flex items-end gap-3 h-20">
+        {entries.map(([m, v]) => {
+          const h = Math.round((Math.abs(v) / maxAbs) * 56) + 2;
+          const pos = v >= 0;
+          return (
+            <div key={m} className="flex flex-col items-center justify-end gap-1" title={`${m}: ₹${fmtNum(v, 0)}`}>
+              {pos && <div className="text-[9px] font-mono text-success">{fmtNum(v, 0)}</div>}
+              <div style={{ height: `${h}px`, backgroundColor: pos ? "var(--color-success)" : "var(--color-danger)" }} className="w-7 rounded-sm" />
+              {!pos && <div className="text-[9px] font-mono text-danger">{fmtNum(v, 0)}</div>}
+              <div className="text-[9px] font-mono text-dimmer">{m.slice(5)}</div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // P&L calendar card: per-day realized ₹ heat-grid with an internal Hide/Show toggle.
-// NOTE (deferred, Phase 2): the optional monthly P&L recharts bar chart from the
-// plan is intentionally NOT added here — it requires a monthly-aggregated series
-// and adds surface area for no Phase-1 requirement. Tracked for a follow-up.
 export default function PnlCalendar({ dayPnl }) {
   const [showCalendar, setShowCalendar] = useState(true);
   return (
@@ -106,6 +133,7 @@ export default function PnlCalendar({ dayPnl }) {
       {showCalendar && (
         <div className="p-3">
           <CalendarHeatGrid dayPnl={dayPnl} />
+          <MonthlyBars dayPnl={dayPnl} />
         </div>
       )}
     </div>
