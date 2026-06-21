@@ -14,7 +14,9 @@ import PeriodPnlCards from "@/components/paper/PeriodPnlCards";
 import StrategyStatsTable from "@/components/paper/StrategyStatsTable";
 import DeploymentControlStrip from "@/components/paper/DeploymentControlStrip";
 import PnlCalendar from "@/components/paper/PnlCalendar";
+import ExitReasonBreakdown from "@/components/paper/ExitReasonBreakdown";
 import TradeBlotter from "@/components/paper/TradeBlotter";
+import { exitReasonBreakdown } from "@/lib/paperAgg";
 
 /**
  * Paper Trading dashboard (route /paper, redesigned 2026-06-21).
@@ -75,6 +77,7 @@ export default function PaperTrading() {
   const [sort, setSort] = useState("-created_at");
   const [skip, setSkip] = useState(0);
   const [olderDays, setOlderDays] = useState("30");
+  const [selected, setSelected] = useState(() => new Set());
 
   // Server params for the paginated table (per-trade analytics included).
   const params = useMemo(() => {
@@ -191,7 +194,7 @@ export default function PaperTrading() {
     return { live: true, label: "Live" };
   }, [livePos]);
 
-  const setFilter = (k, v) => { setSkip(0); setFilters((f) => ({ ...f, [k]: v })); };
+  const setFilter = (k, v) => { setSkip(0); setSelected(new Set()); setFilters((f) => ({ ...f, [k]: v })); };
 
   // Keep ?deployment= in sync for links + reloads.
   useEffect(() => {
@@ -204,6 +207,14 @@ export default function PaperTrading() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filters.deployment_id]);
+
+  const closedVisibleIds = useMemo(
+    () => data.items.filter((t) => String(t.status || "").toUpperCase() === "CLOSED").map((t) => t.id),
+    [data.items],
+  );
+  const allClosedSelected = closedVisibleIds.length > 0 && closedVisibleIds.every((id) => selected.has(id));
+  const toggleRow = (id) => setSelected((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const toggleAll = () => setSelected(() => (allClosedSelected ? new Set() : new Set(closedVisibleIds)));
 
   // TradeBlotter passes the raw sort field (e.g. "created_at"); toggle asc/desc/-.
   const toggleSort = (field) => {
@@ -236,9 +247,10 @@ export default function PaperTrading() {
     return map;
   }, [statsRows]);
 
-  // ---- Purge (CLOSED only). Phase-2 (deferred): the "Delete selected" + per-row
-  // checkbox flow was dropped — the redesigned blotter has no selection column.
-  // Only the selection-free variants remain (older-than-N-days + this-deployment).
+  const exitBreakdown = useMemo(() => exitReasonBreakdown(statsRows), [statsRows]);
+
+  // ---- Purge (CLOSED only). Phase-2: "Delete selected" is restored via per-row
+  // checkboxes in the blotter. OPEN trades are never deletable (trading-domain rule).
   const purge = async (payload, confirmMsg) => {
     if (!window.confirm(confirmMsg)) return;
     setBusy(true);
@@ -246,12 +258,17 @@ export default function PaperTrading() {
       const res = await api.purgePaperTrades(payload);
       toast.success(`Deleted ${res.deleted} closed trade${res.deleted === 1 ? "" : "s"}.`);
       setSkip(0);
+      setSelected(new Set());
       await fetchRows();
     } catch (e) {
       toast.error(`Delete failed: ${e.response?.data?.detail || e.message}`);
     } finally {
       setBusy(false);
     }
+  };
+  const deleteSelected = () => {
+    if (selected.size === 0) return;
+    purge({ ids: [...selected] }, `Delete ${selected.size} selected CLOSED trade${selected.size === 1 ? "" : "s"}? OPEN trades are never deleted. This cannot be undone.`);
   };
   const deleteOlder = () => {
     const n = parseInt(olderDays, 10);
@@ -434,8 +451,11 @@ export default function PaperTrading() {
         onStopAll={doStopAll}
       />
 
-      {/* P&L calendar heat-grid (per-day realized ₹, filtered set) */}
-      <PnlCalendar dayPnl={dayPnl} />
+      {/* P&L calendar heat-grid (per-day realized ₹, filtered set) + global exit-reason card */}
+      <div className="grid lg:grid-cols-[2fr_1fr] gap-3">
+        <PnlCalendar dayPnl={dayPnl} />
+        <ExitReasonBreakdown breakdown={exitBreakdown} variant="full" />
+      </div>
 
       {/* Filters + actions */}
       <div className="rounded-lg border border-line bg-bg-1">
@@ -494,10 +514,14 @@ export default function PaperTrading() {
           </Button>
         </div>
 
-        {/* Deletion toolkit (CLOSED only). Phase-2 deferred: "Delete selected" + checkboxes. */}
+        {/* Deletion toolkit (CLOSED only). Phase-2: "Delete selected" restored via blotter checkboxes. */}
         <div className="px-3 py-1.5 flex items-center gap-2 flex-wrap text-[11px] text-dimmer">
           <Trash2 className="w-3.5 h-3.5" />
           <span>Cleanup (closed only):</span>
+          <Button variant="outline" size="sm" disabled={busy || selected.size === 0} onClick={deleteSelected}
+            className="h-6 text-[11px] border-rose-500/40 text-rose-300 hover:text-rose-200" data-testid="paper-delete-selected">
+            Delete selected ({selected.size})
+          </Button>
           <span className="ml-2">Older than</span>
           <Input value={olderDays} onChange={(e) => setOlderDays(e.target.value)} type="number" min={1}
             className="bg-bg-2 border-line h-6 text-[11px] w-16" data-testid="paper-delete-older-days" />
@@ -515,7 +539,8 @@ export default function PaperTrading() {
       </div>
 
       {/* Redesigned flat sortable blotter (per-trade analytics) */}
-      <TradeBlotter rows={data.items} sort={sort} onToggleSort={toggleSort} onCloseAtMarket={closeAtMarket} busy={busy} />
+      <TradeBlotter rows={data.items} sort={sort} onToggleSort={toggleSort} onCloseAtMarket={closeAtMarket} busy={busy}
+        selected={selected} onToggleRow={toggleRow} onToggleAll={toggleAll} allClosedSelected={allClosedSelected} />
 
       {/* Pagination */}
       <div className="rounded-lg border border-line bg-bg-1 px-3 py-2 flex items-center gap-2 text-[11px] text-dimmer">
