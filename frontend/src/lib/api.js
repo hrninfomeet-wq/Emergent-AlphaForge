@@ -232,6 +232,21 @@ export const api = {
   liveBrokerOrders: () => apiClient.get("/live-broker/orders").then((r) => r.data),
   liveBrokerReconcile: () => apiClient.get("/live-broker/reconcile").then((r) => r.data),
 
+  // Live broker mode + L3 order management
+  getLiveMode: () => apiClient.get("/live-broker/mode").then((r) => r.data),
+  setLiveMode: (mode, confirm) =>
+    apiClient.put("/live-broker/mode", { mode, confirm }).then((r) => r.data),
+  dryRunLiveOrder: (payload) =>
+    apiClient.post("/live-broker/order/dry-run", payload).then((r) => r.data),
+  placeLiveTestOrder: (payload) =>
+    apiClient.post("/live-broker/order/place", payload).then((r) => r.data),
+  squareLivePosition: () =>
+    apiClient.post("/live-broker/order/square", {}).then((r) => r.data),
+  getLiveTestSession: () =>
+    apiClient.get("/live-broker/test-session").then((r) => r.data),
+  liveKillSwitch: () =>
+    apiClient.post("/live-broker/kill-switch").then((r) => r.data),
+
   // Presets
   listPresets: () => apiClient.get("/presets").then((r) => r.data),
   savePreset: (name, config) =>

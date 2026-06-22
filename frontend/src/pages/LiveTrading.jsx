@@ -1,15 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { CheckCircle, AlertTriangle, ShieldAlert } from "lucide-react";
+import { CheckCircle, AlertTriangle } from "lucide-react";
 import { api } from "@/lib/api";
 import { fmtINR, colorPnL } from "@/lib/fmt";
 import LiveBanner from "@/components/live/LiveBanner";
 import AccountStrip from "@/components/live/AccountStrip";
+import LiveTestPanel from "@/components/live/LiveTestPanel";
 
 /**
- * Live Trading page — display-only read surface (L0).
+ * Live Trading page — real-money broker state + L3 Live-Test order panel.
  *
- * Shows real-money broker state (Flattrade / Noren) in read-only mode.
- * No order placement, no kill switch, no config editing — those come in L1+.
+ * Shows real-money broker state (Flattrade / Noren) in read-only mode (L0)
+ * plus the L3 execution controls: mode switch, dry-run order ticket,
+ * 1-lot place (LIVE_TEST only), and a position monitor with countdown.
  *
  * Polls:
  *   flattradeStatus     — connection / session health  → LiveBanner
@@ -298,17 +300,8 @@ export default function LiveTrading() {
         <OrdersBlotter orders={orders} />
       </SectionCard>
 
-      {/* Safety controls placeholder */}
-      <div className="rounded-lg border border-line border-dashed bg-bg-1/50 px-4 py-6 flex items-center gap-3 text-dim">
-        <ShieldAlert className="w-5 h-5 text-dimmer shrink-0" />
-        <div>
-          <div className="text-sm font-semibold text-dim">Safety controls &mdash; coming in L1</div>
-          <div className="text-xs text-dimmer mt-0.5">
-            Kill switch, position square-off, and emergency halt will appear here once L1 execution is wired.
-            This page is intentionally read-only (L0).
-          </div>
-        </div>
-      </div>
+      {/* L3 Live-Test panel — mode switch, order ticket, position monitor */}
+      <LiveTestPanel />
     </div>
   );
 }

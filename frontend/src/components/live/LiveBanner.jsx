@@ -39,8 +39,8 @@ export default function LiveBanner({ status, onRefresh }) {
         <span className="text-base font-bold tracking-widest uppercase text-danger">
           Live Trading &middot; Real Money &middot; Flattrade
         </span>
-        <span className="ml-auto text-xs font-mono px-2 py-1 rounded border border-amber-500/40 bg-amber-500/10 text-amber-300">
-          Read-only &mdash; order execution not enabled yet (L0)
+        <span className="ml-auto text-xs font-mono px-2 py-1 rounded border border-danger/40 bg-danger/10 text-danger font-semibold">
+          L3 &mdash; Live-Test execution enabled
         </span>
       </div>
 
