@@ -312,3 +312,40 @@ def test_sell_entry_price_below_ref():
     expected_prc = round(_REF_LTP * (1.0 - eff / 100.0), 2)
     assert intent.prc == expected_prc
     assert intent.trantype == "S"
+
+
+# ---------------------------------------------------------------------------
+# Test 10 — ref_ltp=None → fails closed, no crash (L2.2 in-process caller safety)
+# ---------------------------------------------------------------------------
+
+def test_ref_ltp_none_fails_closed():
+    """ref_ltp=None must return (None, verdicts) with a failed verdict, not crash."""
+    intent, verdicts = _build(ref_ltp=None)
+
+    assert intent is None, f"expected None intent for ref_ltp=None, got {intent!r}"
+    assert isinstance(verdicts, list) and len(verdicts) > 0, "expected non-empty verdicts list"
+    # At least one verdict must be failed and name 'ref_ltp' or 'price'
+    failed = [v for v in verdicts if not v["ok"]]
+    assert failed, "expected at least one failed verdict"
+    assert any(
+        "ref_ltp" in v["check"] or "price" in v["check"]
+        for v in failed
+    ), f"expected a 'ref_ltp' or 'price' failed verdict; got: {[v['check'] for v in failed]}"
+
+
+# ---------------------------------------------------------------------------
+# Test 11 — ref_ltp="abc" (string) → fails closed, no crash (type-safety guard)
+# ---------------------------------------------------------------------------
+
+def test_ref_ltp_string_fails_closed():
+    """ref_ltp='abc' (wrong type) must return (None, verdicts) with a failed verdict, not crash."""
+    intent, verdicts = _build(ref_ltp="abc")
+
+    assert intent is None, f"expected None intent for ref_ltp='abc', got {intent!r}"
+    assert isinstance(verdicts, list) and len(verdicts) > 0, "expected non-empty verdicts list"
+    failed = [v for v in verdicts if not v["ok"]]
+    assert failed, "expected at least one failed verdict"
+    assert any(
+        "ref_ltp" in v["check"] or "price" in v["check"]
+        for v in failed
+    ), f"expected a 'ref_ltp' or 'price' failed verdict; got: {[v['check'] for v in failed]}"

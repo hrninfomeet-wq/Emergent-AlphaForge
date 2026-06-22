@@ -125,6 +125,23 @@ def build_intent(
     qty = lots * lot_size
 
     # ------------------------------------------------------------------
+    # Step 1b — validate ref_ltp before any price arithmetic
+    # ------------------------------------------------------------------
+    # L2.2 panic_squareoff calls build_intent in-process (no Pydantic gate),
+    # so we must guard against None/str/nan/inf explicitly — fail CLOSED.
+    if not (
+        isinstance(ref_ltp, (int, float))
+        and not isinstance(ref_ltp, bool)
+        and math.isfinite(ref_ltp)
+        and ref_ltp > 0
+    ):
+        return _fail(
+            verdicts,
+            "ref_ltp",
+            f"ref_ltp={ref_ltp!r} is not a finite positive number",
+        )
+
+    # ------------------------------------------------------------------
     # Step 2 — compute price
     # ------------------------------------------------------------------
     # Clamp buffer so it can NEVER exceed the band (guarantees price_band passes
