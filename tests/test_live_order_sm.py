@@ -590,3 +590,270 @@ def test_all_order_states_have_rank():
     from app.live.broker_protocol import ORDER_STATES
     for s in ORDER_STATES:
         assert s in STATE_RANK, f"Missing STATE_RANK entry for {s!r}"
+
+
+# ===========================================================================
+# 13. AUDIT FIXES — M1 through C8
+# ===========================================================================
+
+class TestM1NonStringStatus:
+    """M1 — map_status must not crash on non-string status values."""
+
+    def test_integer_status_no_crash(self):
+        doc = make_doc(state="OPEN")
+        result = apply_om(doc, {"status": 123, "fillshares": "0", "qty": "65"})
+        assert result["state"] == "OPEN"  # preserved, no exception
+
+    def test_float_status_no_crash(self):
+        doc = make_doc(state="ACKED")
+        result = apply_om(doc, {"status": 3.14, "fillshares": "0", "qty": "65"})
+        assert result["state"] == "ACKED"
+
+    def test_list_status_no_crash(self):
+        doc = make_doc(state="SUBMITTED")
+        result = apply_om(doc, {"status": ["x"], "fillshares": "0", "qty": "65"})
+        assert result["state"] == "SUBMITTED"
+
+    def test_map_status_int_directly(self):
+        # map_status itself must not raise AttributeError
+        result = map_status({"status": 123}, current_state="OPEN")
+        assert result == "OPEN"
+
+    def test_map_status_list_directly(self):
+        result = map_status({"status": ["x"]}, current_state="ACKED")
+        assert result == "ACKED"
+
+
+class TestM2PostTerminalFillInjection:
+    """M2 — post-terminal fill injection must not silently merge into CANCELED/REJECTED."""
+
+    def test_canceled_doc_late_complete_fill_not_merged(self):
+        """The dangerous case: CANCELED doc + late COMPLETE → state stays CANCELED,
+        fillshares stays 0, post_terminal_fillshares flagged."""
+        doc = make_doc(state="CANCELED", fillshares=0)
+        om = make_om("COMPLETE", fillshares=65, avgprc=150.0)
+        result = apply_om(doc, om)
+        assert result["state"] == "CANCELED"
+        assert result["fillshares"] == 0
+        assert result.get("post_terminal_fillshares") == 65
+        assert result.get("reconcile_required") is True
+
+    def test_rejected_doc_late_complete_fill_not_merged(self):
+        doc = make_doc(state="REJECTED", fillshares=0)
+        om = make_om("COMPLETE", fillshares=65, avgprc=150.0)
+        result = apply_om(doc, om)
+        assert result["state"] == "REJECTED"
+        assert result["fillshares"] == 0
+        assert result.get("post_terminal_fillshares") == 65
+        assert result.get("reconcile_required") is True
+
+    def test_canceled_doc_late_fill_same_as_existing_no_flag(self):
+        """If the late fill == existing (already 0), nothing to flag."""
+        doc = make_doc(state="CANCELED", fillshares=0)
+        om = make_om("COMPLETE", fillshares=0, avgprc=150.0)
+        result = apply_om(doc, om)
+        assert result["state"] == "CANCELED"
+        assert result.get("post_terminal_fillshares") is None
+        assert result.get("reconcile_required") is not True
+
+    def test_complete_doc_still_accepts_higher_cumulative(self):
+        """COMPLETE is special: still allow monotonic fill updates (existing behavior)."""
+        doc = make_doc(state="COMPLETE", fillshares=60, avgprc=150.0)
+        om = make_om("COMPLETE", fillshares=65, avgprc=151.0)
+        result = apply_om(doc, om)
+        assert result["state"] == "COMPLETE"
+        assert result["fillshares"] == 65
+        assert result.get("post_terminal_fillshares") is None
+
+
+class TestM3ClassifyRejectWordBoundary:
+    """M3 — substring false-positives must be eliminated; terminal wins on mixed reasons."""
+
+    def test_moderate_does_not_match_rate(self):
+        """'moderate' contains 'rate' — must NOT be transient."""
+        assert classify_reject("Price moderate band breach") == "terminal"
+
+    def test_inaccurate_does_not_match_rate(self):
+        assert classify_reject("inaccurate price") == "terminal"
+
+    def test_rms_session_mixed_terminal_wins(self):
+        """RMS (terminal marker) + session (transient) → terminal wins."""
+        assert classify_reject("RMS rejected: session") == "terminal"
+
+    def test_session_expired_still_transient(self):
+        assert classify_reject("Session Expired") == "transient"
+
+    def test_throttle_try_again_transient(self):
+        assert classify_reject("Order throttled, try again") == "transient"
+
+    def test_non_string_rejreason_is_terminal(self):
+        """Non-string (list) → terminal (fail-safe)."""
+        assert classify_reject(["session"]) == "terminal"
+
+    def test_timed_out_is_transient(self):
+        assert classify_reject("Request timed out") == "transient"
+
+    def test_rate_limit_is_transient(self):
+        assert classify_reject("rate limit exceeded, retry") == "transient"
+
+    def test_margin_is_terminal(self):
+        assert classify_reject("Margin not sufficient") == "terminal"
+
+    def test_rms_alone_is_terminal(self):
+        assert classify_reject("RMS:check failed") == "terminal"
+
+
+class TestM4OverFill:
+    """M4 — over-fill (fillshares > qty) must be clamped + flagged."""
+
+    def test_overfill_clamped_and_flagged(self):
+        doc = make_doc(state="OPEN", qty=65, fillshares=0)
+        om = make_om("COMPLETE", fillshares=200, avgprc=150.0, qty=65)
+        result = apply_om(doc, om)
+        assert result["fillshares"] == 65        # clamped to qty
+        assert result.get("overfill") is True
+        assert result.get("reconcile_required") is True
+
+    def test_exact_fill_no_overfill_flag(self):
+        doc = make_doc(state="OPEN", qty=65, fillshares=0)
+        om = make_om("COMPLETE", fillshares=65, avgprc=150.0, qty=65)
+        result = apply_om(doc, om)
+        assert result["fillshares"] == 65
+        assert result.get("overfill") is not True
+
+    def test_partial_fill_within_qty_no_flag(self):
+        doc = make_doc(state="OPEN", qty=65, fillshares=0)
+        om = make_om("OPEN", fillshares=25, avgprc=148.0, qty=65)
+        result = apply_om(doc, om)
+        assert result["fillshares"] == 25
+        assert result.get("overfill") is not True
+
+
+class TestM5AvgPrcValidation:
+    """M5 — NaN, inf, negative, zero avgprc must NOT be stored."""
+
+    def test_nan_string_not_stored(self):
+        doc = make_doc(state="OPEN", fillshares=0, avgprc=149.0)
+        om = {"status": "COMPLETE", "fillshares": "65", "avgprc": "nan", "qty": "65",
+              "norenordno": "ORD001"}
+        result = apply_om(doc, om)
+        assert result.get("avgprc") == 149.0  # prior preserved
+
+    def test_inf_string_not_stored(self):
+        doc = make_doc(state="OPEN", fillshares=0, avgprc=149.0)
+        om = {"status": "COMPLETE", "fillshares": "65", "avgprc": "inf", "qty": "65",
+              "norenordno": "ORD001"}
+        result = apply_om(doc, om)
+        assert result.get("avgprc") == 149.0
+
+    def test_negative_avgprc_not_stored(self):
+        doc = make_doc(state="OPEN", fillshares=0, avgprc=149.0)
+        om = {"status": "COMPLETE", "fillshares": "65", "avgprc": "-150", "qty": "65",
+              "norenordno": "ORD001"}
+        result = apply_om(doc, om)
+        assert result.get("avgprc") == 149.0
+
+    def test_zero_avgprc_not_stored(self):
+        doc = make_doc(state="OPEN", fillshares=0, avgprc=149.0)
+        om = {"status": "COMPLETE", "fillshares": "65", "avgprc": "0", "qty": "65",
+              "norenordno": "ORD001"}
+        result = apply_om(doc, om)
+        assert result.get("avgprc") == 149.0
+
+    def test_valid_avgprc_still_stored(self):
+        doc = make_doc(state="OPEN", fillshares=0)
+        om = make_om("COMPLETE", fillshares=65, avgprc=150.25)
+        result = apply_om(doc, om)
+        assert result.get("avgprc") == 150.25
+
+
+class TestS6DeepCopyPurity:
+    """S6 — apply_om must deep-copy; mutating a nested field of the result
+    must not affect the input."""
+
+    def test_nested_mutation_does_not_affect_input(self):
+        doc = make_doc(state="OPEN")
+        doc["nested"] = {"key": "original"}
+        result = apply_om(doc, make_om("COMPLETE", fillshares=65, avgprc=150.0))
+        result["nested"]["key"] = "mutated"
+        assert doc["nested"]["key"] == "original"  # input untouched
+
+    def test_list_mutation_does_not_affect_input(self):
+        doc = make_doc(state="OPEN")
+        doc["tags"] = ["a", "b"]
+        result = apply_om(doc, make_om("COMPLETE", fillshares=65, avgprc=150.0))
+        result["tags"].append("c")
+        assert doc["tags"] == ["a", "b"]
+
+
+class TestS7AvgPrcTornRead:
+    """S7 — complete fill with no valid avgprc must flag reconcile_required."""
+
+    def test_complete_fill_no_avgprc_flags_reconcile(self):
+        doc = make_doc(state="OPEN", fillshares=0)
+        # COMPLETE, fills increase 0→65, but no avgprc supplied
+        om = {"status": "COMPLETE", "fillshares": "65", "qty": "65",
+              "norenordno": "ORD001"}
+        result = apply_om(doc, om)
+        assert result["state"] == "COMPLETE"
+        assert result["fillshares"] == 65
+        assert result.get("reconcile_required") is True
+
+    def test_partial_fill_no_avgprc_does_not_flag(self):
+        """Non-complete state: missing avgprc on a partial fill is tolerable."""
+        doc = make_doc(state="OPEN", fillshares=0)
+        om = {"status": "OPEN", "fillshares": "25", "qty": "65",
+              "norenordno": "ORD001"}
+        result = apply_om(doc, om)
+        # reconcile_required should NOT be set just for a partial with missing avgprc
+        assert result.get("reconcile_required") is not True
+
+    def test_fill_chain_complete_no_avgprc(self):
+        """25→65 with avgprc omitted on the COMPLETE event → reconcile."""
+        doc = make_doc(state="PARTIAL", fillshares=25, avgprc=148.0)
+        om = {"status": "COMPLETE", "fillshares": "65", "qty": "65",
+              "norenordno": "ORD001"}
+        result = apply_om(doc, om)
+        assert result["fillshares"] == 65
+        assert result.get("reconcile_required") is True
+
+
+class TestC8NorenordnoMismatch:
+    """C8 — if both doc and om have non-empty norenordno that differ,
+    return doc unchanged except reconcile_required=True."""
+
+    def test_mismatched_norenordno_blocks_fill(self):
+        doc = make_doc(state="OPEN", fillshares=0, norenordno="ORD-AAA")
+        om = make_om("COMPLETE", fillshares=65, avgprc=150.0, norenordno="ORD-BBB")
+        result = apply_om(doc, om)
+        assert result["state"] == "OPEN"       # unchanged
+        assert result["fillshares"] == 0       # unchanged
+        assert result.get("reconcile_required") is True
+
+    def test_mismatched_norenordno_no_state_change(self):
+        doc = make_doc(state="ACKED", norenordno="ORD-AAA")
+        om = make_om("COMPLETE", fillshares=65, avgprc=150.0, norenordno="ORD-BBB")
+        result = apply_om(doc, om)
+        assert result["state"] == "ACKED"
+        assert result.get("reconcile_required") is True
+
+    def test_matching_norenordno_proceeds_normally(self):
+        doc = make_doc(state="OPEN", fillshares=0, norenordno="ORD-AAA")
+        om = make_om("COMPLETE", fillshares=65, avgprc=150.0, norenordno="ORD-AAA")
+        result = apply_om(doc, om)
+        assert result["state"] == "COMPLETE"
+        assert result["fillshares"] == 65
+
+    def test_doc_has_no_norenordno_proceeds(self):
+        """doc norenordno is empty/None → no mismatch guard, proceeds normally."""
+        doc = make_doc(state="OPEN", fillshares=0, norenordno=None)
+        om = make_om("COMPLETE", fillshares=65, avgprc=150.0, norenordno="ORD-BBB")
+        result = apply_om(doc, om)
+        assert result["state"] == "COMPLETE"
+
+    def test_om_has_no_norenordno_proceeds(self):
+        """om norenordno is empty → no mismatch guard, proceeds normally."""
+        doc = make_doc(state="OPEN", fillshares=0, norenordno="ORD-AAA")
+        om = {"status": "COMPLETE", "fillshares": "65", "avgprc": "150.0", "qty": "65"}
+        result = apply_om(doc, om)
+        assert result["state"] == "COMPLETE"
