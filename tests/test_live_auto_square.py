@@ -75,6 +75,7 @@ from app.live.auto_square import (
     build_sl_backstop_intent,
     square_position,
 )
+from app.live.order_builder import round_to_tick
 from app.live.idempotency import new_client_order_id
 
 
@@ -716,3 +717,67 @@ class TestSquarePositionResultStructure:
         pos = _position(netqty=65, lp=200.0)
         result = run(square_position(client, pos, reason="test"))
         assert self._required_keys().issubset(result.keys())
+
+
+# ---------------------------------------------------------------------------
+# build_sl_backstop_intent — tick alignment (new)
+# ---------------------------------------------------------------------------
+
+class TestBuildSlBackstopIntentTickAlignment:
+    """build_sl_backstop_intent must produce tick-aligned prices."""
+
+    def _make(self, stop_trigger, tick=0.05, **kw):
+        defaults = dict(
+            exch="NFO",
+            tsym="NIFTY2662221000CE",
+            qty=65,
+            stop_trigger=stop_trigger,
+            client_order_id=new_client_order_id(),
+            tick=tick,
+        )
+        defaults.update(kw)
+        return build_sl_backstop_intent(**defaults)
+
+    def test_trgprc_is_005_multiple(self):
+        """trgprc must be a 0.05 multiple (nearest rounding)."""
+        intent = self._make(100.03)  # raw not on tick
+        assert intent is not None
+        assert abs(round(intent.trgprc / 0.05) * 0.05 - intent.trgprc) < 1e-9, (
+            f"trgprc={intent.trgprc!r} is not a 0.05 multiple"
+        )
+
+    def test_prc_is_005_multiple(self):
+        """prc must be a 0.05 multiple (down rounding)."""
+        intent = self._make(100.03)
+        assert intent is not None
+        assert abs(round(intent.prc / 0.05) * 0.05 - intent.prc) < 1e-9, (
+            f"prc={intent.prc!r} is not a 0.05 multiple"
+        )
+
+    def test_protective_invariant_prc_le_trgprc(self):
+        """prc <= trgprc must hold after tick rounding."""
+        for trigger in [0.10, 1.0, 84.0, 100.03, 250.07, 9999.01]:
+            intent = self._make(trigger)
+            if intent is not None:
+                assert intent.prc <= intent.trgprc, (
+                    f"prc={intent.prc!r} > trgprc={intent.trgprc!r} for trigger={trigger!r}"
+                )
+
+    def test_prc_gt_zero(self):
+        """prc must always be > 0."""
+        intent = self._make(100.0)
+        assert intent is not None
+        assert intent.prc > 0
+
+    def test_default_tick_005_when_not_supplied(self):
+        """Calling without tick kwarg (old callers) still works — defaults to 0.05."""
+        # Call without tick= kwarg to verify backward compat
+        intent = build_sl_backstop_intent(
+            exch="NFO",
+            tsym="NIFTY2662221000CE",
+            qty=65,
+            stop_trigger=100.03,
+            client_order_id=new_client_order_id(),
+        )
+        assert intent is not None
+        assert abs(round(intent.trgprc / 0.05) * 0.05 - intent.trgprc) < 1e-9

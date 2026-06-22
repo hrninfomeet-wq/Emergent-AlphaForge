@@ -56,6 +56,8 @@ import math
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
 
+from app.live.order_builder import round_to_tick
+
 from app.live.broker_protocol import OrderIntent
 from app.live.idempotency import new_client_order_id
 from app.live.kill_switch import _parse_netqty
@@ -181,6 +183,7 @@ def build_sl_backstop_intent(
     qty: int,
     stop_trigger: Any,
     client_order_id: str,
+    tick: float = 0.05,
 ) -> Optional[OrderIntent]:
     """Build a protective SL-LMT intent for a LONG option leg, or None if invalid.
 
@@ -237,9 +240,13 @@ def build_sl_backstop_intent(
     if trig <= 0.05:
         return None  # at or below tick floor → can't build protective stop
 
-    trgprc = trig
-    prc = max(0.05, round(trig - 0.05, 2))
-    # Structural guarantee: since trig > 0.05, prc <= trgprc holds always.
+    # Round trgprc to nearest tick, prc to a tick multiple below trgprc (down).
+    effective_tick = tick if tick > 0 else 0.05
+    trgprc = round_to_tick(trig, effective_tick, mode="nearest")
+    prc = round_to_tick(max(0.05, round(trgprc - effective_tick, 2)), effective_tick, mode="down")
+    prc = max(0.05, prc)
+    # Structural guarantee: since trig > 0.05 and trgprc is tick-aligned near trig,
+    # prc = trgprc - tick (down), so prc <= trgprc always holds.
 
     return OrderIntent(
         client_order_id=client_order_id,

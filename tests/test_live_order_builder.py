@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 
 import pytest
-from app.live.order_builder import build_intent
+from app.live.order_builder import build_intent, round_to_tick
 from app.execution_policy import resolve_premium_levels
 
 # ---------------------------------------------------------------------------
@@ -29,6 +29,7 @@ _NIFTY_SCRIP = {
     "optt": "CE",
     "exd": "26-JUN-2026",
     "dname": "NIFTY 26JUN26 25000 CE",
+    "ti": "0.05",  # tick size — index options are 0.05
 }
 
 _CONTRACT = {
@@ -354,3 +355,126 @@ def test_ref_ltp_string_fails_closed():
         "ref_ltp" in v["check"] or "price" in v["check"]
         for v in failed
     ), f"expected a 'ref_ltp' or 'price' failed verdict; got: {[v['check'] for v in failed]}"
+
+
+# ---------------------------------------------------------------------------
+# round_to_tick helper unit tests
+# ---------------------------------------------------------------------------
+
+def test_round_to_tick_nearest():
+    """0.05 tick: nearest mode rounds to nearest multiple."""
+    assert round_to_tick(65.325, 0.05, mode="nearest") == 65.35
+    assert round_to_tick(65.32, 0.05, mode="nearest") == 65.30
+    assert round_to_tick(65.30, 0.05, mode="nearest") == 65.30
+
+
+def test_round_to_tick_up():
+    """mode='up' always rounds UP to the tick multiple (for BUY marketable)."""
+    assert round_to_tick(65.325, 0.05, mode="up") == 65.35
+    assert round_to_tick(65.30, 0.05, mode="up") == 65.30  # already exact
+    assert round_to_tick(65.31, 0.05, mode="up") == 65.35
+
+
+def test_round_to_tick_down():
+    """mode='down' always rounds DOWN to the tick multiple (for SELL marketable)."""
+    assert round_to_tick(65.325, 0.05, mode="down") == 65.30
+    assert round_to_tick(65.30, 0.05, mode="down") == 65.30  # already exact
+    assert round_to_tick(65.34, 0.05, mode="down") == 65.30
+
+
+def test_round_to_tick_zero_or_negative_tick_falls_back():
+    """tick <= 0 → fall back to round(price, 2) — no tick constraint applied."""
+    # round(65.325, 2) == 65.33 in CPython (65.325 is stored slightly above)
+    result_zero = round_to_tick(65.325, 0.0)
+    result_neg = round_to_tick(65.325, -0.05)
+    assert result_zero == round(65.325, 2)
+    assert result_neg == round(65.325, 2)
+
+
+def test_round_to_tick_result_is_exact_multiple():
+    """Result must be an exact multiple (no float artifacts)."""
+    for raw in [65.325, 65.31, 65.33, 100.03, 200.01]:
+        result = round_to_tick(raw, 0.05, mode="up")
+        # Check it's a multiple of 0.05 within float precision
+        assert abs(round(result / 0.05) * 0.05 - result) < 1e-9, (
+            f"round_to_tick({raw!r}, 0.05, up) = {result!r} is not a 0.05 multiple"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Test 12 — tick rounding: BUY price is exact 0.05 multiple, rounds UP
+# ---------------------------------------------------------------------------
+
+def test_buy_entry_price_is_tick_aligned():
+    """ref_ltp=65, band=3, BUY: the raw pre-tick prc=65.325 → tick-up to 65.35 (0.05 multiple)."""
+    ref_ltp = 65.0
+    band_pct = 3.0
+    intent, verdicts, resolved_lot_size = _build(
+        ref_ltp=ref_ltp,
+        band_pct=band_pct,
+        buffer_pct=0.5,
+        side="B",
+        order_kind="entry",
+    )
+    assert intent is not None, f"expected intent, got None. verdicts={verdicts}"
+    prc = intent.prc
+    # Must be an exact 0.05 multiple
+    assert abs(round(prc / 0.05) * 0.05 - prc) < 1e-9, (
+        f"BUY entry prc={prc!r} is not a 0.05 multiple (tick violation)"
+    )
+    # Must be >= raw price (rounds UP for BUY marketable)
+    raw_prc = round(ref_ltp * (1 + 0.5 / 100), 2)
+    assert prc >= raw_prc, f"BUY tick-rounded prc={prc!r} is below raw {raw_prc!r}"
+    # Must be within band
+    deviation_pct = abs(prc - ref_ltp) / ref_ltp * 100
+    assert deviation_pct <= band_pct, (
+        f"prc={prc!r} is {deviation_pct:.4f}% from ref={ref_ltp}, band={band_pct}%"
+    )
+    bad = [v for v in verdicts if not v["ok"]]
+    assert not bad, f"unexpected failed verdicts: {bad}"
+
+
+def test_sell_exit_price_is_tick_aligned_rounds_down():
+    """ref_ltp=65, SELL: tick-rounds DOWN to a 0.05 multiple."""
+    ref_ltp = 65.0
+    band_pct = 3.0
+    intent, verdicts, resolved_lot_size = _build(
+        ref_ltp=ref_ltp,
+        band_pct=band_pct,
+        buffer_pct=0.5,
+        side="S",
+        order_kind="exit",
+    )
+    assert intent is not None, f"expected intent, got None. verdicts={verdicts}"
+    prc = intent.prc
+    # Must be an exact 0.05 multiple
+    assert abs(round(prc / 0.05) * 0.05 - prc) < 1e-9, (
+        f"SELL exit prc={prc!r} is not a 0.05 multiple (tick violation)"
+    )
+    # Must be <= raw price (rounds DOWN for SELL)
+    raw_prc = round(ref_ltp * (1 - 0.5 / 100), 2)
+    assert prc <= raw_prc, f"SELL tick-rounded prc={prc!r} is above raw {raw_prc!r}"
+
+
+def test_stop_trgprc_is_tick_aligned():
+    """stop order: trgprc (nearest) and prc (down) are both 0.05 multiples."""
+    ref_ltp = 200.0
+    stop_pct = 30.0
+    intent, verdicts, resolved_lot_size = _build(
+        side="S",
+        order_kind="stop",
+        ref_ltp=ref_ltp,
+        levels={"stop_pct": stop_pct},
+        band_pct=50.0,
+    )
+    assert intent is not None, f"expected intent, got None. verdicts={verdicts}"
+    # trgprc is a 0.05 multiple
+    assert abs(round(intent.trgprc / 0.05) * 0.05 - intent.trgprc) < 1e-9, (
+        f"trgprc={intent.trgprc!r} is not a 0.05 multiple"
+    )
+    # prc is a 0.05 multiple
+    assert abs(round(intent.prc / 0.05) * 0.05 - intent.prc) < 1e-9, (
+        f"stop prc={intent.prc!r} is not a 0.05 multiple"
+    )
+    # protective invariant: prc <= trgprc
+    assert intent.prc <= intent.trgprc

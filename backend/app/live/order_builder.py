@@ -23,7 +23,8 @@ Returns
 from __future__ import annotations
 
 import math
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from decimal import Decimal, ROUND_HALF_UP, ROUND_UP, ROUND_DOWN
+from typing import Any, Callable, Dict, List, Optional, Tuple, Literal
 
 from app.live.broker_protocol import OrderIntent
 from app.live.flattrade_symbol import SymbolResolutionError, resolve
@@ -43,6 +44,63 @@ Verdict = Dict[str, Any]  # {"check": str, "ok": bool, "detail": str}
 _DEFAULT_BUFFER_PCT = 0.5   # default marketable cross buffer
 _STOP_FLOOR = 0.05          # exchange floor for option premium
 _STOP_NDIGITS = 2           # rounding for stop/trigger prices
+
+
+# ---------------------------------------------------------------------------
+# Tick-size rounding
+# ---------------------------------------------------------------------------
+
+def round_to_tick(
+    price: float,
+    tick: float,
+    *,
+    mode: Literal["nearest", "up", "down"] = "nearest",
+) -> float:
+    """Round ``price`` to the nearest multiple of ``tick``.
+
+    Uses ``decimal.Decimal`` arithmetic (via ``str()`` coercion) to avoid
+    floating-point precision artifacts such as ``math.floor(65.3 / 0.05)``
+    yielding 1305 instead of 1306 due to IEEE-754 rounding.
+
+    Parameters
+    ----------
+    price:
+        The raw price to round.
+    tick:
+        The tick size (e.g. 0.05 for NIFTY options).  Must be > 0.
+        If tick <= 0, falls back to ``round(price, 2)`` (no-op guard).
+    mode:
+        ``"nearest"`` (default) — round to nearest tick (ROUND_HALF_UP).
+        ``"up"``     — ceiling to next tick multiple (keeps BUY marketable).
+        ``"down"``   — floor  to prev tick multiple (keeps SELL marketable).
+
+    Returns
+    -------
+    float
+        Price rounded to exactly ``ndigits=2`` decimal places so there are
+        no float-representation artifacts (e.g. 65.35000000001).
+
+    Examples
+    --------
+    >>> round_to_tick(65.325, 0.05, mode="up")
+    65.35
+    >>> round_to_tick(65.325, 0.05, mode="down")
+    65.3
+    >>> round_to_tick(65.325, 0.05, mode="nearest")
+    65.35
+    """
+    if tick <= 0:
+        return round(price, 2)
+    d_price = Decimal(str(price))
+    d_tick = Decimal(str(tick))
+    if mode == "up":
+        rounding = ROUND_UP
+    elif mode == "down":
+        rounding = ROUND_DOWN
+    else:  # "nearest"
+        rounding = ROUND_HALF_UP
+    multiplier = (d_price / d_tick).quantize(Decimal("1"), rounding=rounding)
+    return round(float(multiplier * d_tick), 2)
 
 
 def _v(check: str, ok: bool, detail: str) -> Verdict:
@@ -126,6 +184,7 @@ def build_intent(
 
     verdicts.append(_v("symbol", True, f"resolved {resolved['tsym']} on {resolved['exch']}"))
     lot_size: int = resolved["lot_size"]
+    tick: float = resolved.get("tick", 0.05)
     qty = lots * lot_size
 
     # ------------------------------------------------------------------
@@ -153,11 +212,15 @@ def build_intent(
     eff = min(abs(buf), abs(band_pct))
 
     if order_kind in ("entry", "exit"):
-        # Marketable LMT: cross slightly above (BUY) or below (SELL) ref_ltp.
+        # Marketable LMT: cross slightly above (BUY) or below (SELL) ref_ltp,
+        # then round DIRECTIONALLY so the price stays marketable and is a valid
+        # tick multiple (broker rejects non-multiples).
         if side == "B":
-            prc = round(ref_ltp * (1.0 + eff / 100.0), 2)
+            raw_prc = round(ref_ltp * (1.0 + eff / 100.0), 2)
+            prc = round_to_tick(raw_prc, tick, mode="up")
         else:
-            prc = round(ref_ltp * (1.0 - eff / 100.0), 2)
+            raw_prc = round(ref_ltp * (1.0 - eff / 100.0), 2)
+            prc = round_to_tick(raw_prc, tick, mode="down")
         prctyp = "LMT"
         trgprc = None
 
@@ -175,9 +238,12 @@ def build_intent(
                 verdicts, "stop",
                 "resolve_premium_levels returned None for stop — check stop_pts/stop_pct in levels"
             )
-        trgprc = stop  # EXACT parity with execution_policy (audit requirement)
+        # trgprc: nearest tick (the stop level is already broker-computed)
+        trgprc = round_to_tick(stop, tick, mode="nearest")
         # Limit price: one tick through the trigger, clamped to exchange floor.
-        prc = max(_STOP_FLOOR, round(stop - 0.05, 2))
+        # Round DOWN (sell-to-close stop sits at/below the trigger).
+        prc = round_to_tick(max(_STOP_FLOOR, round(trgprc - tick, 2)), tick, mode="down")
+        prc = max(_STOP_FLOOR, prc)
         prctyp = "SL-LMT"
 
     else:

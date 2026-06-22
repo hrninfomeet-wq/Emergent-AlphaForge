@@ -29,6 +29,7 @@ from app.live.flattrade_symbol import (
     _parse_exd,
     _strike_from_dname,
     _contract_expiry_iso,
+    _normalise_tick,
 )
 
 
@@ -639,3 +640,78 @@ def test_all_three_underlyings_resolve():
     )
     assert r["exch"] == "BFO"
     assert r["tsym"] == "SENSEX26JUN80000CE"
+
+
+# ---------------------------------------------------------------------------
+# _normalise_tick
+# ---------------------------------------------------------------------------
+
+def test_normalise_tick_standard_005():
+    assert _normalise_tick("0.05") == 0.05
+
+
+def test_normalise_tick_integer_string():
+    assert _normalise_tick("1") == 1.0
+
+
+def test_normalise_tick_float_value():
+    assert _normalise_tick("0.25") == 0.25
+
+
+def test_normalise_tick_missing_defaults_to_005(caplog):
+    import logging
+    with caplog.at_level(logging.WARNING, logger="app.live.flattrade_symbol"):
+        result = _normalise_tick(None)
+    assert result == 0.05
+    assert any("tick" in r.message.lower() or "ti" in r.message.lower() for r in caplog.records)
+
+
+def test_normalise_tick_garbage_defaults_to_005(caplog):
+    import logging
+    with caplog.at_level(logging.WARNING, logger="app.live.flattrade_symbol"):
+        result = _normalise_tick("bad_value")
+    assert result == 0.05
+
+
+def test_normalise_tick_zero_defaults_to_005(caplog):
+    import logging
+    with caplog.at_level(logging.WARNING, logger="app.live.flattrade_symbol"):
+        result = _normalise_tick("0")
+    assert result == 0.05
+
+
+def test_normalise_tick_negative_defaults_to_005(caplog):
+    import logging
+    with caplog.at_level(logging.WARNING, logger="app.live.flattrade_symbol"):
+        result = _normalise_tick("-0.05")
+    assert result == 0.05
+
+
+# ---------------------------------------------------------------------------
+# resolve() returns 'tick' key
+# ---------------------------------------------------------------------------
+
+def test_resolve_returns_tick_key_005():
+    """scrip row with ti='0.05' → resolved dict has tick==0.05"""
+    row = {**make_nifty_scrip(), "ti": "0.05"}
+    result = resolve(make_contract(), search_fn=fake_search([row]))
+    assert "tick" in result, "resolve() must return a 'tick' key"
+    assert result["tick"] == 0.05
+
+
+def test_resolve_missing_ti_defaults_to_005(caplog):
+    """scrip row missing ti → resolved dict has tick==0.05 (with warning)"""
+    import logging
+    row = make_nifty_scrip()  # no 'ti' field
+    with caplog.at_level(logging.WARNING, logger="app.live.flattrade_symbol"):
+        result = resolve(make_contract(), search_fn=fake_search([row]))
+    assert result["tick"] == 0.05
+
+
+def test_resolve_garbage_ti_defaults_to_005(caplog):
+    """scrip row with ti='garbage' → resolved dict has tick==0.05 (with warning)"""
+    import logging
+    row = {**make_nifty_scrip(), "ti": "garbage"}
+    with caplog.at_level(logging.WARNING, logger="app.live.flattrade_symbol"):
+        result = resolve(make_contract(), search_fn=fake_search([row]))
+    assert result["tick"] == 0.05

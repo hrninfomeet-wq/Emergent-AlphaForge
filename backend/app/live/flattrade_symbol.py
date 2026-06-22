@@ -182,6 +182,39 @@ def _normalise_strike(value: Any) -> float:
     return result
 
 
+def _normalise_tick(value: Any) -> float:
+    """Parse the scrip ``ti`` (tick size) field to a positive float.
+
+    If the value is missing (None), unparseable, or <= 0, default to 0.05
+    and emit a log warning.  Index option tick is always 0.05 so this is a
+    safe and informative fallback.
+
+    Examples::
+        "0.05"  -> 0.05
+        "1"     -> 1.0
+        None    -> 0.05  (+ warning)
+        "bad"   -> 0.05  (+ warning)
+        "0"     -> 0.05  (+ warning)
+        "-0.05" -> 0.05  (+ warning)
+    """
+    _DEFAULT_TICK = 0.05
+    try:
+        fval = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        log.warning(
+            "cannot parse scrip ti=%r as a float — defaulting tick to %s (index option standard)",
+            value, _DEFAULT_TICK,
+        )
+        return _DEFAULT_TICK
+    if fval <= 0:
+        log.warning(
+            "scrip ti=%r parses to non-positive value %s — defaulting tick to %s",
+            value, fval, _DEFAULT_TICK,
+        )
+        return _DEFAULT_TICK
+    return fval
+
+
 def _normalise_lot_size(value: Any) -> int:
     """Return int lot size from a scrip row's ``ls`` field.
 
@@ -363,4 +396,5 @@ def resolve(
         "token": token,
         "exch": exch,
         "lot_size": row_lot,
+        "tick": _normalise_tick(row.get("ti")),
     }
