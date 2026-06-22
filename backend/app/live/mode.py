@@ -54,12 +54,16 @@ def is_live_order_allowed(mode_doc: Optional[Dict[str, Any]]) -> bool:
 
     Fail-safe: None / non-dict / missing keys / unknown mode / consumed → False.
     This function must never raise; every unexpected shape must produce False.
+
+    F3 — explicit-False check: ``single_shot_consumed`` must be the literal
+    boolean False.  A missing key (returns None), 0, empty string, or any other
+    falsy non-False value all produce False so a partial/tampered doc fails closed.
     """
     if not isinstance(mode_doc, dict):
         return False
     return (
         mode_doc.get("mode") == "LIVE_TEST"
-        and not bool(mode_doc.get("single_shot_consumed"))
+        and mode_doc.get("single_shot_consumed") is False
     )
 
 
@@ -144,19 +148,23 @@ class ModeStore:
             )
 
         if target == "LIVE_TEST":
-            if not confirm:
+            # F1 — strict confirm: only the literal boolean True is accepted.
+            # Truthy non-True values (1, "yes", [1], …) are rejected so that
+            # callers cannot accidentally coerce a non-boolean into the gate.
+            if confirm is not True:
                 raise ValueError(
-                    "Entering LIVE_TEST requires confirm=True. "
+                    "Entering LIVE_TEST requires confirm=True (literal boolean). "
                     "Pass confirm=True to acknowledge this is a real-order session."
                 )
-            if not connected:
+            # F2 — strict connected / can_trade: same rationale as F1.
+            if connected is not True:
                 raise ValueError(
-                    "Entering LIVE_TEST requires a connected broker websocket "
-                    "(connected=False)."
+                    "Entering LIVE_TEST requires connected=True (literal boolean). "
+                    "A truthy non-True value is not accepted (connected=False or non-bool)."
                 )
-            if not can_trade:
+            if can_trade is not True:
                 raise ValueError(
-                    "Entering LIVE_TEST requires can_trade=True. "
+                    "Entering LIVE_TEST requires can_trade=True (literal boolean). "
                     "The broker engine is currently halted or in a non-trading state."
                 )
 

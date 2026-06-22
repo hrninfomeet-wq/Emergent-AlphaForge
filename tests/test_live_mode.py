@@ -183,13 +183,108 @@ class TestIsLiveOrderAllowed:
         assert is_live_order_allowed({"mode": "PAPER"}) is False
 
     def test_false_for_live_test_missing_consumed_key_defaults_falsy(self):
-        """LIVE_TEST without single_shot_consumed key → .get() returns None → falsy → True.
+        """LIVE_TEST without single_shot_consumed key → .get() returns None.
 
-        This is intentional: a doc with mode LIVE_TEST but no consumed key should
-        be treated as unconsumed (the key defaulting absent = not yet consumed).
+        F3: require explicit False — a missing key is NOT the same as False.
+        A partial/tampered doc with the key absent must be fail-closed (False).
         """
         doc = {"mode": "LIVE_TEST"}
-        # bool(None) is False → not bool(None) is True → allowed
+        # None is not False → blocked (fail-closed)
+        assert is_live_order_allowed(doc) is False
+
+    # ------------------------------------------------------------------
+    # F1 — strict confirm (truthy non-True values must be rejected)
+    # ------------------------------------------------------------------
+
+    def test_f1_confirm_int_1_raises(self):
+        """confirm=1 is truthy but not literal True — must raise ValueError."""
+        store, _ = _store()
+        with pytest.raises(ValueError, match="confirm"):
+            asyncio.run(store.set_mode("LIVE_TEST", confirm=1))  # type: ignore[arg-type]
+
+    def test_f1_confirm_string_yes_raises(self):
+        """confirm='yes' is truthy but not literal True — must raise ValueError."""
+        store, _ = _store()
+        with pytest.raises(ValueError, match="confirm"):
+            asyncio.run(store.set_mode("LIVE_TEST", confirm="yes"))  # type: ignore[arg-type]
+
+    def test_f1_confirm_list_raises(self):
+        """confirm=[1] is truthy but not literal True — must raise ValueError."""
+        store, _ = _store()
+        with pytest.raises(ValueError, match="confirm"):
+            asyncio.run(store.set_mode("LIVE_TEST", confirm=[1]))  # type: ignore[arg-type]
+
+    def test_f1_confirm_literal_true_succeeds(self):
+        """confirm=True (literal) must succeed."""
+        store, _ = _store()
+        result = asyncio.run(
+            store.set_mode("LIVE_TEST", confirm=True, connected=True, can_trade=True)
+        )
+        assert result["mode"] == "LIVE_TEST"
+
+    # ------------------------------------------------------------------
+    # F2 — strict connected / can_trade (truthy non-True values must be rejected)
+    # ------------------------------------------------------------------
+
+    def test_f2_connected_int_1_raises(self):
+        """connected=1 is truthy but not literal True — must raise ValueError."""
+        store, _ = _store()
+        with pytest.raises(ValueError, match="connected"):
+            asyncio.run(store.set_mode("LIVE_TEST", confirm=True, connected=1))  # type: ignore[arg-type]
+
+    def test_f2_can_trade_string_yes_raises(self):
+        """can_trade='yes' is truthy but not literal True — must raise ValueError."""
+        store, _ = _store()
+        with pytest.raises(ValueError, match="can_trade"):
+            asyncio.run(
+                store.set_mode("LIVE_TEST", confirm=True, connected=True, can_trade="yes")  # type: ignore[arg-type]
+            )
+
+    def test_f2_all_literal_true_succeeds(self):
+        """All three literal True must succeed (default call pattern)."""
+        store, _ = _store()
+        result = asyncio.run(
+            store.set_mode("LIVE_TEST", confirm=True, connected=True, can_trade=True)
+        )
+        assert result["mode"] == "LIVE_TEST"
+        assert result["single_shot_consumed"] is False
+
+    # ------------------------------------------------------------------
+    # F3 — explicit-False consumed in is_live_order_allowed
+    # ------------------------------------------------------------------
+
+    def test_f3_consumed_missing_key_blocked(self):
+        """{mode:LIVE_TEST} with no consumed key → False (fail-closed)."""
+        assert is_live_order_allowed({"mode": "LIVE_TEST"}) is False
+
+    def test_f3_consumed_none_blocked(self):
+        """{mode:LIVE_TEST, single_shot_consumed:None} → False."""
+        assert is_live_order_allowed({"mode": "LIVE_TEST", "single_shot_consumed": None}) is False
+
+    def test_f3_consumed_zero_blocked(self):
+        """{mode:LIVE_TEST, single_shot_consumed:0} → False (0 is falsy but not False)."""
+        assert is_live_order_allowed({"mode": "LIVE_TEST", "single_shot_consumed": 0}) is False
+
+    def test_f3_consumed_empty_string_blocked(self):
+        """{mode:LIVE_TEST, single_shot_consumed:''} → False."""
+        assert is_live_order_allowed({"mode": "LIVE_TEST", "single_shot_consumed": ""}) is False
+
+    def test_f3_consumed_explicit_false_allowed(self):
+        """{mode:LIVE_TEST, single_shot_consumed:False} → True (literal False = unconsumed)."""
+        assert is_live_order_allowed({"mode": "LIVE_TEST", "single_shot_consumed": False}) is True
+
+    def test_f3_consumed_true_blocked(self):
+        """{mode:LIVE_TEST, single_shot_consumed:True} → False (already consumed)."""
+        assert is_live_order_allowed({"mode": "LIVE_TEST", "single_shot_consumed": True}) is False
+
+    def test_f3_normal_path_store_doc_still_allowed(self):
+        """set_mode writes literal False — normal-path doc must still allow orders."""
+        store, _ = _store()
+        asyncio.run(
+            store.set_mode("LIVE_TEST", confirm=True, connected=True, can_trade=True)
+        )
+        doc = asyncio.run(store.get())
+        # The store writes single_shot_consumed=False (literal) so this must be True
         assert is_live_order_allowed(doc) is True
 
 
