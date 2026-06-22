@@ -285,12 +285,13 @@ def test_put_mode_live_test_without_confirm_returns_400():
         _stop_patches(tc)
 
 
-def test_put_mode_live_armed_returns_400():
+def test_put_mode_live_armed_returns_422():
+    """LIVE_ARMED → 422 (Literal["PAPER","LIVE_OFFLINE","LIVE_TEST"] rejects it at boundary)."""
     tc = _make_app()
     try:
         r = tc.put("/live-broker/mode", json={"mode": "LIVE_ARMED", "confirm": True})
-        assert r.status_code == 400
-        assert "LIVE_ARMED" in r.json()["detail"] or "L4" in r.json()["detail"] or "not allowed" in r.json()["detail"].lower()
+        # Pydantic Literal rejects LIVE_ARMED with 422 (previously 400 from mode.py logic)
+        assert r.status_code == 422
     finally:
         _stop_patches(tc)
 
@@ -809,3 +810,117 @@ def test_chokepoint_grep_entry_only_via_executor():
 
     # Verify SL backstop is annotated as exit-only
     assert "build_sl_backstop_intent" in source
+
+
+# ===========================================================================
+# FIX 1 — LONG-ONLY GUARD AT THE ROUTE: _PlaceBody.side constrained to
+# Literal["B"]; side="S" must be 422 (Pydantic validation) or blocked by
+# the executor (placed=False, side_must_be_buy).
+# ===========================================================================
+
+def test_place_side_sell_returns_422_or_blocked():
+    """side='S' → either 422 (Pydantic Literal["B"] rejection) or
+    executor blocks with side_must_be_buy (placed=False). Either way,
+    zero broker orders are placed."""
+    ms = _make_mode_store(mode="LIVE_TEST", consumed=False)
+    cl = _make_mock_noren()
+    cl._search_scrip_data = {"NFO": [_NIFTY_SCRIP]}
+    tc = _make_app(mode_store=ms, client=cl)
+    try:
+        body = {**_PLACE_BODY, "side": "S"}
+        r = tc.post("/live-broker/order/place", json=body)
+        # Either Pydantic rejects at the boundary (422) or the executor blocks it
+        assert r.status_code in (422, 200), f"unexpected status: {r.status_code}"
+        if r.status_code == 200:
+            data = r.json()
+            assert data["placed"] is False
+            assert data["reason"] == "side_must_be_buy"
+        # Zero orders placed regardless
+        book = asyncio.run(cl.order_book())
+        assert len(book) == 0, "place_order must not be called for side='S'"
+    finally:
+        _stop_patches(tc)
+
+
+def test_place_side_buy_still_works_after_long_only_fix():
+    """side='B' → happy path not broken by the long-only guard."""
+    ms = _make_mode_store(mode="LIVE_TEST", consumed=False)
+    cl = _make_mock_noren()
+    cl._search_scrip_data = {"NFO": [_NIFTY_SCRIP]}
+    ss = _make_session_store()
+    eng = FakeEngine(can_trade_result=(True, ""))
+    tc = _make_app(mode_store=ms, client=cl, session_store=ss, engine=eng)
+    try:
+        r = tc.post("/live-broker/order/place", json=_PLACE_BODY)
+        assert r.status_code == 200
+        data = r.json()
+        assert data["placed"] is True
+    finally:
+        _stop_patches(tc)
+
+
+# ===========================================================================
+# FIX 2 — STRICT CONFIRM/MODE TYPES AT THE ROUTE
+# _ModePutBody: confirm → StrictBool, mode → Literal["PAPER","LIVE_OFFLINE","LIVE_TEST"]
+# ===========================================================================
+
+def test_put_mode_confirm_string_true_returns_422():
+    """confirm='true' (string coercion) → 422 from StrictBool."""
+    tc = _make_app()
+    try:
+        r = tc.put("/live-broker/mode", json={"mode": "LIVE_TEST", "confirm": "true"})
+        assert r.status_code == 422, (
+            f"Expected 422 for confirm='true' (string), got {r.status_code}: {r.text}"
+        )
+    finally:
+        _stop_patches(tc)
+
+
+def test_put_mode_confirm_int_1_returns_422():
+    """confirm=1 (int coercion) → 422 from StrictBool."""
+    tc = _make_app()
+    try:
+        r = tc.put("/live-broker/mode", json={"mode": "LIVE_TEST", "confirm": 1})
+        assert r.status_code == 422, (
+            f"Expected 422 for confirm=1 (int), got {r.status_code}: {r.text}"
+        )
+    finally:
+        _stop_patches(tc)
+
+
+def test_put_mode_confirm_true_bool_still_works():
+    """confirm=true (real JSON bool) + connected + can_trade → 200 LIVE_TEST."""
+    ms = _make_mode_store(mode="LIVE_OFFLINE")
+    eng = FakeEngine(can_trade_result=(True, ""))
+    tc = _make_app(mode_store=ms, engine=eng)
+    try:
+        r = tc.put("/live-broker/mode", json={"mode": "LIVE_TEST", "confirm": True})
+        assert r.status_code == 200
+        assert r.json()["mode"] == "LIVE_TEST"
+    finally:
+        _stop_patches(tc)
+
+
+def test_put_mode_live_armed_returns_422_not_400():
+    """mode='LIVE_ARMED' → 422 (Literal rejects it at the boundary; not 400 any more)."""
+    tc = _make_app()
+    try:
+        r = tc.put("/live-broker/mode", json={"mode": "LIVE_ARMED", "confirm": True})
+        # With Literal["PAPER","LIVE_OFFLINE","LIVE_TEST"], LIVE_ARMED → 422
+        assert r.status_code == 422, (
+            f"Expected 422 for mode='LIVE_ARMED' (Literal boundary), got {r.status_code}: {r.text}"
+        )
+    finally:
+        _stop_patches(tc)
+
+
+def test_put_mode_junk_returns_422():
+    """mode='JUNK' → 422 from Literal constraint."""
+    tc = _make_app()
+    try:
+        r = tc.put("/live-broker/mode", json={"mode": "JUNK", "confirm": False})
+        assert r.status_code == 422, (
+            f"Expected 422 for mode='JUNK', got {r.status_code}: {r.text}"
+        )
+    finally:
+        _stop_patches(tc)

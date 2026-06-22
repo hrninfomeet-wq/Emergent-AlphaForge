@@ -947,3 +947,37 @@ def test_fat_finger_cap_string_fails_closed_no_typeerror():
     assert ff_v is not None
     assert ff_v["ok"] is False
     assert run(client.order_book()) == []
+
+
+# ===========================================================================
+# FIX 1 — LONG-ONLY GUARD: side != "B" must be blocked at the executor
+# (audit: side="S" opened an unprotected naked short)
+# ===========================================================================
+
+def test_side_sell_blocked_before_place_order():
+    """side='S' → blocked with reason 'side_must_be_buy', ZERO place_order calls."""
+    client = MockNoren(limits_data=_GOOD_LIMITS)
+    result = run(_place(client=client, side="S"))
+    assert result["placed"] is False
+    assert result["reason"] == "side_must_be_buy"
+    assert run(client.order_book()) == [], "place_order must NOT be called for side='S'"
+
+
+def test_side_x_blocked_before_place_order():
+    """side='X' (invalid) → blocked with reason 'side_must_be_buy', ZERO place_order calls."""
+    client = MockNoren(limits_data=_GOOD_LIMITS)
+    result = run(_place(client=client, side="X"))
+    assert result["placed"] is False
+    assert result["reason"] == "side_must_be_buy"
+    assert run(client.order_book()) == []
+
+
+def test_side_buy_still_places():
+    """side='B' → happy path not broken by the long-only guard."""
+    client = MockNoren(limits_data=_GOOD_LIMITS)
+    result = run(_place(client=client, side="B"))
+    assert result["placed"] is True
+    assert result["protected"] is True
+    book = run(client.order_book())
+    assert len(book) == 1
+    assert book[0]["trantype"] == "B"

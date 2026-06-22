@@ -186,6 +186,15 @@ async def place_live_test_order(
     verdicts: List[Dict[str, Any]] = []
 
     # ------------------------------------------------------------------
+    # Gate 0 — long-only: LIVE_TEST entries are option BUYS only.
+    # A sell entry would open an unprotected naked short; the SL backstop
+    # (always a sell-to-close) would then GROW the short instead of closing it.
+    # Reject anything that is not "B" before any broker contact.
+    # ------------------------------------------------------------------
+    if side != "B":
+        return _blocked("side_must_be_buy", verdicts)
+
+    # ------------------------------------------------------------------
     # Gate 1 — mode: must be LIVE_TEST with unconsumed single-shot
     # ------------------------------------------------------------------
     mode = await mode_store.get()

@@ -48,7 +48,8 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import RedirectResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, StrictBool
+from typing import Literal as _Literal
 
 from app.live import flattrade_token
 from app.live.flattrade_token import (
@@ -782,8 +783,8 @@ async def reset_safety_latch():
 # ---------------------------------------------------------------------------
 
 class _ModePutBody(BaseModel):
-    mode: str
-    confirm: bool = False
+    mode: _Literal["PAPER", "LIVE_OFFLINE", "LIVE_TEST"]
+    confirm: StrictBool = False
 
 
 @api.get("/live-broker/mode")
@@ -848,7 +849,7 @@ async def put_mode(body: _ModePutBody):
 
 class _PlaceBody(BaseModel):
     contract: Dict[str, Any]
-    side: str = "B"
+    side: _Literal["B"] = "B"
     ref_ltp: float
     band_pct: float = 5.0
     levels: Dict[str, Any] = {}
