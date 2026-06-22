@@ -48,16 +48,59 @@ _EXIT_BUCKETS = ("target", "stop", "eod", "manual", "other")
 
 
 def normalize_exit_reason(reason: Any) -> str:
+    # Precedence: target > manual > eod > stop(not time_stop) > other.
+    # `manual` is checked BEFORE `eod` because "manual_square_off" contains both
+    # "manual" and "square" and is a user-initiated close, not End-of-day.
+    # "time_stop" is a time exit, not a price stop, so it is carved out of `stop`.
     r = str(reason or "").lower()
     if "target" in r:
         return "target"
-    if "stop" in r:
-        return "stop"
-    if "eod" in r or "square" in r or "expiry" in r:
-        return "eod"
     if "manual" in r:
         return "manual"
+    if "eod" in r or "square" in r or "expiry" in r:
+        return "eod"
+    if "stop" in r and r != "time_stop":
+        return "stop"
     return "other"
+
+
+def exit_reason_query(bucket: str):
+    """Mongo condition selecting CLOSED trades whose exit_reason is in `bucket`.
+
+    Buckets mirror normalize_exit_reason's precedence (target > manual > eod >
+    stop(not time_stop) > other) by excluding every higher-precedence substring,
+    so each raw value matches exactly one bucket query. Returns None for an
+    unknown/empty bucket (interpreted by the caller as "no filter").
+    """
+    def R(pat: str) -> Dict[str, Any]:
+        return {"exit_reason": {"$regex": pat, "$options": "i"}}
+
+    def notR(pat: str) -> Dict[str, Any]:
+        return {"exit_reason": {"$not": {"$regex": pat, "$options": "i"}}}
+
+    target = R("target")
+    manual = {"$and": [R("manual"), notR("target")]}
+    eod = {"$and": [R("eod|square|expiry"), notR("target|manual")]}
+    stop = {"$and": [
+        R("stop"),
+        {"exit_reason": {"$ne": "time_stop"}},
+        notR("target|manual|eod|square|expiry"),
+    ]}
+    other = {"$and": [
+        {"exit_reason": {"$exists": True, "$ne": None}},
+        {"$nor": [target, manual, eod, stop]},
+    ]}
+    return {"target": target, "manual": manual, "eod": eod, "stop": stop, "other": other}.get(bucket)
+
+
+def merge_conditions(q: Dict[str, Any], extra: list) -> Dict[str, Any]:
+    """Append `extra` conditions to q's `$and` list without clobbering top-level
+    keys. No-op when `extra` is empty."""
+    if not extra:
+        return q
+    existing = q.get("$and")
+    q["$and"] = (list(existing) if existing else []) + list(extra)
+    return q
 
 
 def _r_multiple(trade: Dict[str, Any], running_pnl: float) -> Optional[float]:
