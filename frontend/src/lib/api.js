@@ -224,6 +224,14 @@ export const api = {
   applyOptAsPreset: (jobId, name) =>
     apiClient.post(`/optimize/apply-as-preset/${jobId}?name=${encodeURIComponent(name)}`).then((r) => r.data),
 
+  // Live broker (Flattrade) — read-only, display only (L0)
+  flattradeStatus: () => apiClient.get("/flattrade/status").then((r) => r.data),
+  flattradeAuthStart: () => apiClient.get("/flattrade/auth/start").then((r) => r.data),
+  liveBrokerLimits: () => apiClient.get("/live-broker/limits").then((r) => r.data),
+  liveBrokerPositions: () => apiClient.get("/live-broker/positions").then((r) => r.data),
+  liveBrokerOrders: () => apiClient.get("/live-broker/orders").then((r) => r.data),
+  liveBrokerReconcile: () => apiClient.get("/live-broker/reconcile").then((r) => r.data),
+
   // Presets
   listPresets: () => apiClient.get("/presets").then((r) => r.data),
   savePreset: (name, config) =>

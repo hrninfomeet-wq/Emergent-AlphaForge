@@ -15,6 +15,7 @@ import PaperTrading from "@/pages/PaperTrading";
 import Optimizer from "@/pages/Optimizer";
 import SavedPresets from "@/pages/SavedPresets";
 import LiveSignals from "@/pages/LiveSignals";
+import LiveTrading from "@/pages/LiveTrading";
 
 function App() {
   return (
@@ -48,6 +49,7 @@ function AppShell() {
             <Route path="/optimizer" element={<Optimizer />} />
             <Route path="/presets" element={<SavedPresets />} />
             <Route path="/live" element={<LiveSignals />} />
+            <Route path="/live-trading" element={<LiveTrading />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </Layout>

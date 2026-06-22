@@ -35,6 +35,7 @@ const NAV_GROUPS = [
       { to: "/live", label: "Live Signals", icon: Activity, testid: "nav-live", badge: "P4" },
       { to: "/journal", label: "Signal Journal", icon: BookOpen, testid: "nav-journal" },
       { to: "/paper", label: "Paper Trading", icon: Briefcase, testid: "nav-paper" },
+      { to: "/live-trading", label: "Live Trading", icon: Zap, testid: "nav-live-trading", badge: "L0" },
     ],
   },
 ];
@@ -183,6 +184,7 @@ function pageTitle(path) {
     case "/optimizer": return "Auto Optimizer";
     case "/presets": return "Saved Presets";
     case "/live": return "Live Signals";
+    case "/live-trading": return "Live Trading";
     default: return "AlphaForge";
   }
 }
