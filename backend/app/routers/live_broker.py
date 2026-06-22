@@ -83,6 +83,7 @@ from app.live.auto_square import (
 from app.live import executor as _executor_mod
 from app.live.engine import LiveEngine
 from app.live.option_premium import match_contract, resolve_premium
+from app.live.atm_suggest import nearest_expiry, atm_strike as _atm_strike_pure
 
 log = logging.getLogger(__name__)
 
@@ -1335,3 +1336,230 @@ async def get_option_premium(body: _OptionPremiumRequest):
     )
     result["instrument_key"] = instrument_key
     return result
+
+
+# ---------------------------------------------------------------------------
+# ATM-strike suggester — read-only, no order placement
+# ---------------------------------------------------------------------------
+#
+# Same I/O getter pattern as the option-premium route above so that tests can
+# monkeypatch the same three functions.
+#
+# Getters reuse _get_db_for_option_premium, _get_tick_map_for_option_premium,
+# and _now_ts_for_option_premium defined above — no new seams needed.
+#
+# Spot resolution: live Upstox tick → candle_1m fallback (same as
+# live_option_universe._spot_from_latest_tick / _spot_from_latest_candle).
+# ---------------------------------------------------------------------------
+
+def _get_db_for_atm_suggest():
+    """Return the motor DB handle. Tests monkeypatch this."""
+    from app.db import get_db
+    return get_db()
+
+
+def _get_tick_map_for_atm_suggest() -> dict:
+    """Return the live tick map {instrument_key: tick_dict}.
+
+    Wrapped so tests can monkeypatch without touching upstox_stream globally.
+    Returns an empty dict if the stream manager is unavailable.
+    """
+    try:
+        from app.upstox_stream import upstox_stream_manager
+        return upstox_stream_manager.latest_tick_map()
+    except Exception:
+        return {}
+
+
+def _now_ts_for_atm_suggest() -> float:
+    """Return current UTC epoch seconds. Tests monkeypatch this for determinism."""
+    import time
+    return time.time()
+
+
+def _today_utc_iso() -> str:
+    """Return today's date as ISO string (UTC). Tests monkeypatch this."""
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).date().isoformat()
+
+
+def _to_float_or_none(value: Any) -> Optional[float]:
+    """Convert value to float; return None on any failure or non-finite result."""
+    import math as _math
+    try:
+        f = float(value)
+        return f if _math.isfinite(f) else None
+    except (TypeError, ValueError):
+        return None
+
+
+@api.get("/live-broker/atm-suggest")
+async def get_atm_suggest(
+    underlying: str = Query(..., description="Index underlying, e.g. NIFTY, BANKNIFTY, SENSEX"),
+    side: str = Query("CE", description="CE (call) or PE (put)"),
+):
+    """Return the nearest-ATM option strike, front expiry, and its premium.
+
+    Resolution steps:
+      1. Load all option_contracts for *underlying* from Mongo.
+      2. Resolve SPOT: live Upstox WS tick → fallback last candles_1m close.
+         If spot unavailable → return with reason="no_spot".
+      3. Pick nearest expiry >= today (front weekly/monthly).
+         If none found → return with reason="no_expiry".
+      4. Pick the contract whose strike is nearest to spot for the given side.
+         If none found → return with reason="no_atm".
+      5. Fetch premium via live tick → last options_1m close (same as
+         /live-broker/option-premium).
+
+    Always returns 200; never 500.  Read-only — no order is placed.
+
+    Response::
+
+        {
+            "underlying": str,
+            "spot": float | None,
+            "spot_source": "stream_tick" | "candles_1m" | None,
+            "expiry": str | None,
+            "atm_strike": float | None,
+            "side": str,
+            "instrument_key": str | None,
+            "premium": float | None,
+            "premium_source": "live_tick" | "last_candle" | "none",
+            "fresh": bool,
+            "reason": str | None,   # present only when something is missing
+        }
+    """
+    from app.instruments import INSTRUMENT_KEYS
+
+    db = _get_db_for_atm_suggest()
+    tick_map = _get_tick_map_for_atm_suggest()
+    now_ts = _now_ts_for_atm_suggest()
+    today_iso = _today_utc_iso()
+    side_upper = str(side).upper()
+
+    underlying_upper = str(underlying).strip().upper()
+
+    # 1. Load contracts
+    try:
+        contracts = await db.option_contracts.find(
+            {"underlying": underlying_upper}
+        ).to_list(length=5000)
+    except Exception as exc:
+        log.warning("get_atm_suggest: option_contracts fetch failed: %s", exc)
+        contracts = []
+
+    # 2. Resolve SPOT
+    # a) Live Upstox tick for the index instrument key
+    spot: Optional[float] = None
+    spot_source: Optional[str] = None
+
+    index_key = INSTRUMENT_KEYS.get(underlying_upper)
+    if index_key and tick_map:
+        tick_data = tick_map.get(index_key)
+        if tick_data:
+            raw_price = tick_data.get("last_price") or tick_data.get("ltp")
+            spot = _to_float_or_none(raw_price)
+            if spot is not None:
+                spot_source = "stream_tick"
+
+    # b) Candle fallback
+    if spot is None:
+        try:
+            cursor = db.candles_1m.find(
+                {"instrument": underlying_upper},
+                {"_id": 0, "close": 1},
+            ).sort("ts", -1).limit(1)
+            rows = await cursor.to_list(length=1)
+            if rows:
+                spot = _to_float_or_none(rows[0].get("close"))
+                if spot is not None:
+                    spot_source = "candles_1m"
+        except Exception as exc:
+            log.warning("get_atm_suggest: candles_1m fallback failed: %s", exc)
+
+    if spot is None:
+        return {
+            "underlying": underlying_upper,
+            "spot": None,
+            "spot_source": None,
+            "expiry": None,
+            "atm_strike": None,
+            "side": side_upper,
+            "instrument_key": None,
+            "premium": None,
+            "premium_source": "none",
+            "fresh": False,
+            "reason": "no_spot",
+        }
+
+    # 3. Nearest expiry
+    expiry = nearest_expiry(contracts, today_iso=today_iso)
+    if expiry is None:
+        return {
+            "underlying": underlying_upper,
+            "spot": spot,
+            "spot_source": spot_source,
+            "expiry": None,
+            "atm_strike": None,
+            "side": side_upper,
+            "instrument_key": None,
+            "premium": None,
+            "premium_source": "none",
+            "fresh": False,
+            "reason": "no_expiry",
+        }
+
+    # 4. Nearest strike to spot
+    atm_row = _atm_strike_pure(contracts, spot=spot, expiry_date=expiry, side=side_upper)
+    if atm_row is None:
+        return {
+            "underlying": underlying_upper,
+            "spot": spot,
+            "spot_source": spot_source,
+            "expiry": expiry,
+            "atm_strike": None,
+            "side": side_upper,
+            "instrument_key": None,
+            "premium": None,
+            "premium_source": "none",
+            "fresh": False,
+            "reason": "no_atm",
+        }
+
+    instrument_key: str = str(atm_row.get("instrument_key") or "")
+    atm_strike_val = _to_float_or_none(atm_row.get("strike"))
+
+    # 5. Premium: live tick → last options_1m candle
+    option_tick = tick_map.get(instrument_key) if (tick_map and instrument_key) else None
+    candle_close = None
+    if instrument_key:
+        try:
+            candle = await db.options_1m.find_one(
+                {"instrument_key": instrument_key},
+                sort=[("ts", -1)],
+            )
+            if candle:
+                candle_close = candle.get("close")
+        except Exception as exc:
+            log.warning("get_atm_suggest: options_1m fetch failed for %s: %s", instrument_key, exc)
+
+    prem_result = resolve_premium(
+        instrument_key=instrument_key,
+        tick=option_tick,
+        candle_close=candle_close,
+        now_ts=now_ts,
+    )
+
+    return {
+        "underlying": underlying_upper,
+        "spot": spot,
+        "spot_source": spot_source,
+        "expiry": expiry,
+        "atm_strike": atm_strike_val,
+        "side": side_upper,
+        "instrument_key": instrument_key or None,
+        "premium": prem_result["premium"],
+        "premium_source": prem_result["source"],
+        "fresh": prem_result["fresh"],
+        "reason": None,
+    }
