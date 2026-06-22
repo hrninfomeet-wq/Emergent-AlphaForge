@@ -465,3 +465,208 @@ class TestRateThrottle:
         # At t=0.1 → 10*0.1=1 token → one entry allowed
         assert t.allow(is_cancel=False, now=0.1) is True
         assert t.allow(is_cancel=False, now=0.1) is False
+
+
+# ---------------------------------------------------------------------------
+# REGRESSION TESTS — adversarial audit holes H1-H11 + throttle hardening
+# These tests must all FAIL before the safety.py fix and PASS after.
+# ---------------------------------------------------------------------------
+
+class TestH1H2FatFingerNaNType:
+    """H1: NaN lots silently passes every <= comparison → fail-open.
+    H2: string lots/cap crash with TypeError instead of blocking.
+    """
+
+    def test_h1_nan_lots_blocks(self):
+        """H1: NaN lots must be blocked, not allowed (NaN<=cap is False→lots>0 guard also False→wrong path)."""
+        allowed, reason = check_fat_finger(float('nan'), 10)
+        assert not allowed, "NaN lots must be blocked"
+        assert reason
+
+    def test_h2_string_lots_blocks_not_typeerror(self):
+        """H2a: string lots must block cleanly, not raise TypeError."""
+        allowed, reason = check_fat_finger("5", 5)
+        assert not allowed, "string lots must be blocked"
+        assert reason
+
+    def test_h2_string_cap_blocks_not_typeerror(self):
+        """H2b: string cap must block cleanly, not raise TypeError."""
+        allowed, reason = check_fat_finger(5, "5")
+        assert not allowed, "string cap must be blocked"
+        assert reason
+
+    def test_h2_bool_lots_blocks(self):
+        """bool is a subclass of int but must be rejected as a type (True==1 is a footgun)."""
+        allowed, reason = check_fat_finger(True, 10)
+        assert not allowed, "bool lots must be blocked"
+        assert reason
+
+
+class TestH3H7PriceBandNaNInfType:
+    """H3-H7: NaN/inf/string in price, ref_ltp, or pct silently fail-open."""
+
+    def test_h3_nan_ref_ltp_blocks(self):
+        """H3: NaN ref_ltp passes ref_ltp<=0 as False → treated as valid reference → fail-open."""
+        allowed, reason = check_price_band(100.0, float('nan'), 2.0)
+        assert not allowed, "NaN ref_ltp must be blocked"
+        assert reason
+
+    def test_h4_inf_ref_ltp_blocks(self):
+        """H4: inf ref_ltp makes deviation=0% → always passes → fail-open."""
+        allowed, reason = check_price_band(100.0, float('inf'), 2.0)
+        assert not allowed, "inf ref_ltp must be blocked"
+        assert reason
+
+    def test_h5_nan_price_blocks(self):
+        """H5: NaN price passes price<=0 as False → treated as valid price → fail-open."""
+        allowed, reason = check_price_band(float('nan'), 100.0, 2.0)
+        assert not allowed, "NaN price must be blocked"
+        assert reason
+
+    def test_h6_nan_pct_blocks(self):
+        """H6: NaN pct makes deviation>pct always False → all prices pass → fail-open."""
+        allowed, reason = check_price_band(105.0, 100.0, float('nan'))
+        assert not allowed, "NaN pct must be blocked"
+        assert reason
+
+    def test_h6_inf_pct_blocks(self):
+        """H6b: inf pct means any deviation passes → fail-open."""
+        allowed, reason = check_price_band(999999.0, 100.0, float('inf'))
+        assert not allowed, "inf pct must be blocked"
+        assert reason
+
+    def test_h7_string_price_blocks_not_typeerror(self):
+        """H7a: string price must block cleanly, not raise TypeError."""
+        allowed, reason = check_price_band("100", 100.0, 2.0)
+        assert not allowed, "string price must be blocked"
+        assert reason
+
+    def test_h7_string_ref_ltp_blocks_not_typeerror(self):
+        """H7b: string ref_ltp must block cleanly, not raise TypeError."""
+        allowed, reason = check_price_band(100.0, "100", 2.0)
+        assert not allowed, "string ref_ltp must be blocked"
+        assert reason
+
+
+class TestH8H10ValidateJdataNaNTypeLot0:
+    """H8: lot_size=0 → ZeroDivisionError (crash, not block).
+    H9: NaN/inf prc silently passes prc<=0 → fail-open.
+    H10: string qty/prc crash with TypeError instead of blocking.
+    """
+
+    def test_h8_lot_size_zero_blocks_not_zerodivision(self):
+        """H8: lot_size=0 must block with a reason, not raise ZeroDivisionError."""
+        allowed, reason = validate_jdata(_intent(qty=65, prc=150.0), lot_size=0)
+        assert not allowed, "lot_size=0 must be blocked"
+        assert reason and "lot_size" in reason.lower()
+
+    def test_h9_nan_prc_blocks(self):
+        """H9a: NaN prc passes prc<=0 as False → allowed → fail-open."""
+        allowed, reason = validate_jdata(_intent(prc=float('nan')), lot_size=65)
+        assert not allowed, "NaN prc must be blocked"
+        assert reason
+
+    def test_h9_inf_prc_blocks(self):
+        """H9b: inf prc passes prc<=0 as False → allowed → fail-open."""
+        allowed, reason = validate_jdata(_intent(prc=float('inf')), lot_size=65)
+        assert not allowed, "inf prc must be blocked"
+        assert reason
+
+    def test_h10_string_qty_blocks_not_typeerror(self):
+        """H10a: string qty must block cleanly, not raise TypeError."""
+        # Use object() trick to pass a non-int qty via the helper fields
+        intent = _intent()
+        from app.live.broker_protocol import OrderIntent
+        bad_intent = OrderIntent(
+            client_order_id="cid-test",
+            trantype="B",
+            prctyp="LMT",
+            exch="NFO",
+            tsym="NIFTY25000CE",
+            qty="65",  # type: ignore[arg-type]
+            prc=150.0,
+            prd="I",
+            ret="DAY",
+            trgprc=None,
+        )
+        allowed, reason = validate_jdata(bad_intent, lot_size=65)
+        assert not allowed, "string qty must be blocked"
+        assert reason
+
+    def test_h10_string_prc_blocks_not_typeerror(self):
+        """H10b: string prc must block cleanly, not raise TypeError."""
+        from app.live.broker_protocol import OrderIntent
+        bad_intent = OrderIntent(
+            client_order_id="cid-test",
+            trantype="B",
+            prctyp="LMT",
+            exch="NFO",
+            tsym="NIFTY25000CE",
+            qty=65,
+            prc="150",  # type: ignore[arg-type]
+            prd="I",
+            ret="DAY",
+            trgprc=None,
+        )
+        allowed, reason = validate_jdata(bad_intent, lot_size=65)
+        assert not allowed, "string prc must be blocked"
+        assert reason
+
+
+class TestH11SLTriggerValidation:
+    """H11: SL-LMT with trgprc=0, trgprc<0, or trgprc=NaN is not validated — fail-open."""
+
+    def test_h11_sl_lmt_trgprc_zero_blocks(self):
+        """H11a: trgprc=0 for SL-LMT must be blocked (trigger at zero is nonsensical)."""
+        allowed, reason = validate_jdata(
+            _intent(prctyp="SL-LMT", trgprc=0.0, prc=147.0),
+            lot_size=65,
+        )
+        assert not allowed, "SL-LMT with trgprc=0 must be blocked"
+        assert reason
+
+    def test_h11_sl_lmt_trgprc_negative_blocks(self):
+        """H11b: negative trgprc must be blocked."""
+        allowed, reason = validate_jdata(
+            _intent(prctyp="SL-LMT", trgprc=-5.0, prc=147.0),
+            lot_size=65,
+        )
+        assert not allowed, "SL-LMT with negative trgprc must be blocked"
+        assert reason
+
+    def test_h11_sl_lmt_trgprc_nan_blocks(self):
+        """H11c: NaN trgprc passes the None check but is not a valid price → fail-open."""
+        allowed, reason = validate_jdata(
+            _intent(prctyp="SL-LMT", trgprc=float('nan'), prc=147.0),
+            lot_size=65,
+        )
+        assert not allowed, "SL-LMT with NaN trgprc must be blocked"
+        assert reason
+
+
+class TestThrottleHardening:
+    """Throttle edge cases exposed by the audit."""
+
+    def test_nan_now_cancel_still_allowed(self):
+        """Cancels bypass the bucket entirely — even when 'now' is garbage."""
+        t = RateThrottle(max_per_sec=3)
+        # Exhaust bucket first
+        for _ in range(3):
+            t.allow(is_cancel=False, now=0.0)
+        assert t.allow(is_cancel=True, now=float('nan')) is True
+
+    def test_nan_now_entry_denied(self):
+        """Bad clock must not allow an entry — fail-closed on garbage 'now'."""
+        t = RateThrottle(max_per_sec=9)
+        # Bucket is full but now=NaN → must deny entry
+        result = t.allow(is_cancel=False, now=float('nan'))
+        assert result is False, "NaN 'now' on entry must be denied"
+
+    def test_is_cancel_int_1_treated_as_cancel(self):
+        """is_cancel=1 (truthy int) must be treated as a cancel — bool-coerced."""
+        t = RateThrottle(max_per_sec=1)
+        # Exhaust the single token
+        t.allow(is_cancel=False, now=0.0)
+        assert t.allow(is_cancel=False, now=0.0) is False
+        # is_cancel=1 (truthy) should bypass bucket just like True
+        assert t.allow(is_cancel=1, now=0.0) is True  # type: ignore[arg-type]

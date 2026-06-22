@@ -9,6 +9,7 @@ NEVER import DB, network, or I/O modules here.
 """
 from __future__ import annotations
 
+import math
 from typing import Optional, Tuple
 
 from app.live.broker_protocol import ALLOWED_PRCTYP, ALLOWED_PRD, ALLOWED_RET, OrderIntent
@@ -25,18 +26,38 @@ def _block(reason: str) -> CheckResult:
     return (False, reason)
 
 
+def _finite_num(x: object) -> bool:
+    """Return True iff x is a real finite number (int or float, not bool, not NaN, not inf).
+
+    bool is excluded because True==1 and False==0 are footguns in numeric checks —
+    a caller passing `True` as a lot count or price is almost certainly a bug.
+    """
+    return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
+
+
 # ---------------------------------------------------------------------------
 # 1. Fat-finger cap
 # ---------------------------------------------------------------------------
 
 def check_fat_finger(lots: int | float, cap: Optional[int | float]) -> CheckResult:
-    """Block if cap is unconfigured, lots <= 0, or lots > cap.
+    """Block if cap is unconfigured, lots is not a finite positive number, or lots > cap.
 
     DEFAULT-DENY: a missing cap blocks rather than permits. This ensures that
     a misconfigured deployment cannot accidentally send outsized orders.
+
+    Guards (in order):
+    - cap is None                          → block (default-deny)
+    - cap is not a finite number           → block (NaN/inf/string/bool cap)
+    - lots is not a finite number          → block (NaN/inf/string/bool lots)
+    - lots <= 0                            → block
+    - lots > cap                           → block
     """
     if cap is None:
         return _block("no fat-finger cap configured")
+    if not _finite_num(cap):
+        return _block(f"fat-finger cap must be a finite positive number, got {cap!r}")
+    if not _finite_num(lots):
+        return _block(f"lots must be a finite positive number, got {lots!r}")
     if lots <= 0:
         return _block(f"lots must be positive, got {lots}")
     if lots > cap:
@@ -53,13 +74,25 @@ def check_price_band(
     ref_ltp: Optional[float],
     pct: float,
 ) -> CheckResult:
-    """Block if the reference is absent/stale/zero, price is non-positive,
-    or the price deviates more than `pct` percent from ref_ltp.
+    """Block if the reference is absent/stale/zero/non-finite, price is
+    non-positive/non-finite, pct is non-finite/negative, or the price
+    deviates more than `pct` percent from ref_ltp.
+
+    Guards (in order):
+    - ref_ltp is None                      → block (no reference)
+    - ref_ltp is not finite, or <= 0       → block (NaN/inf/string/stale)
+    - price is not finite, or <= 0         → block (NaN/inf/string/negative)
+    - pct is not finite, or < 0            → block (NaN/inf/string/negative)
+    - abs deviation > pct                  → block (out of band)
     """
-    if ref_ltp is None or ref_ltp <= 0:
+    if ref_ltp is None:
         return _block("no/stale price reference")
-    if price <= 0:
-        return _block(f"price must be positive, got {price}")
+    if not _finite_num(ref_ltp) or ref_ltp <= 0:
+        return _block(f"no/stale price reference (got {ref_ltp!r})")
+    if not _finite_num(price) or price <= 0:
+        return _block(f"price must be a finite positive number, got {price!r}")
+    if not _finite_num(pct) or pct < 0:
+        return _block(f"pct band must be a finite non-negative number, got {pct!r}")
     deviation = abs(price - ref_ltp) / ref_ltp * 100
     if deviation > pct:
         return _block(
@@ -77,13 +110,19 @@ def validate_jdata(intent: OrderIntent, *, lot_size: int) -> CheckResult:
     """Validate an OrderIntent before it becomes a broker API call.
 
     Checks (in order, first failure wins):
+    - lot_size must be a positive int (not bool, not zero)  — checked FIRST to
+      prevent ZeroDivisionError when computing qty % lot_size
     - prctyp in ALLOWED_PRCTYP  (blocks market / IOC / CO / BO)
     - prd   in ALLOWED_PRD
     - ret   in ALLOWED_RET
-    - SL-LMT must carry trgprc
-    - qty > 0 and an exact multiple of lot_size
-    - prc > 0
+    - SL-LMT must carry a finite positive trgprc (not just non-None)
+    - qty must be an int > 0 and an exact multiple of lot_size (not string/bool)
+    - prc must be a finite positive number (not NaN/inf/string)
     """
+    # Guard lot_size before any % operation to prevent ZeroDivisionError.
+    if not (isinstance(lot_size, int) and not isinstance(lot_size, bool) and lot_size > 0):
+        return _block(f"invalid lot_size {lot_size!r}: must be a positive integer")
+
     if intent.prctyp not in ALLOWED_PRCTYP:
         return _block(
             f"prctyp '{intent.prctyp}' not allowed; permitted: {ALLOWED_PRCTYP}"
@@ -96,14 +135,22 @@ def validate_jdata(intent: OrderIntent, *, lot_size: int) -> CheckResult:
         return _block(
             f"ret '{intent.ret}' not allowed; permitted: {ALLOWED_RET}"
         )
-    if intent.prctyp == "SL-LMT" and intent.trgprc is None:
-        return _block("SL-LMT order requires trgprc (trigger price)")
-    if intent.qty <= 0 or intent.qty % lot_size != 0:
+    # SL-LMT trigger price: must exist AND be a finite positive number.
+    if intent.prctyp == "SL-LMT":
+        if intent.trgprc is None or not _finite_num(intent.trgprc) or intent.trgprc <= 0:
+            return _block(
+                f"SL-LMT order requires a finite positive trgprc (trigger price), "
+                f"got {intent.trgprc!r}"
+            )
+    # qty: must be a plain positive int, an exact lot multiple — not a string/bool/float.
+    if not (isinstance(intent.qty, int) and not isinstance(intent.qty, bool)
+            and intent.qty > 0 and intent.qty % lot_size == 0):
         return _block(
-            f"qty {intent.qty} must be a positive multiple of lot_size {lot_size}"
+            f"qty {intent.qty!r} must be a positive integer multiple of lot_size {lot_size}"
         )
-    if intent.prc <= 0:
-        return _block(f"prc must be positive, got {intent.prc}")
+    # prc: must be a finite positive number — NaN/inf/string all fail-open without this.
+    if not _finite_num(intent.prc) or intent.prc <= 0:
+        return _block(f"prc must be a finite positive number, got {intent.prc!r}")
     return _ALLOWED
 
 
@@ -127,6 +174,13 @@ class RateThrottle:
     Args:
         max_per_sec: maximum order submissions per second (default 9 to stay
                      under the SEBI hard limit of 10).  Must be >= 1.
+
+    NOTE: This is a leaky-bucket (token-bucket) implementation.  It permits a
+    burst of up to `max_per_sec` orders at the start of a new second window.
+    That means up to ~2×max_per_sec orders could arrive at a broker within a
+    strict 1-second rolling window (last token of second N + first tokens of
+    second N+1).  If the broker enforces a strict rolling-per-second ORL, switch
+    to a sliding-window deque counter rather than a token bucket here.
     """
 
     def __init__(self, max_per_sec: int = _DEFAULT_MAX_PER_SEC) -> None:
@@ -144,10 +198,25 @@ class RateThrottle:
         Cancels always return True.  For entries/modifications, tokens are
         consumed (1 per call).  Tokens refill at `max_per_sec` tokens per
         second based on elapsed wall-clock time (injected via `now`).
+
+        Safety guards:
+        - is_cancel is bool-coerced (1/0/truthy accepted) — callers may pass
+          non-bool truthy values; we normalise rather than crash.
+        - Non-finite `now` (NaN/inf) → fail-closed for entries (return False).
+          Cancels bypass this check because throttling an exit is worse than
+          accepting one with an unreliable clock reading.
         """
+        # Normalise is_cancel so truthy ints (1) work identically to True.
+        is_cancel = bool(is_cancel)
+
         if is_cancel:
             # Cancels/exits bypass the bucket entirely — never throttled.
             return True
+
+        # Fail-closed on a bad clock: a NaN/inf 'now' would corrupt bucket
+        # arithmetic, potentially allowing an unlimited burst.
+        if not _finite_num(now):
+            return False
 
         if self._last_refill is None:
             # First non-cancel call — seed the clock; tokens are already full.
