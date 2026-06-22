@@ -377,13 +377,13 @@ async def list_paper_trades(
     q = paper_analytics.merge_conditions(q, extra)
 
     field = sort.lstrip("-")
-    direction = -1 if sort.startswith("-") else 1
+    sort_direction = -1 if sort.startswith("-") else 1  # distinct from the `direction` (CE/PE) filter param
     if field not in _TRADES_SORT_FIELDS:
-        field, direction = "updated_at", -1
+        field, sort_direction = "updated_at", -1
 
     total = await db.paper_trades.count_documents(q)
     proj = {"_id": 0} if include_analytics else {"_id": 0, "events": 0}
-    rows = await db.paper_trades.find(q, proj).sort(field, direction).skip(skip).limit(limit).to_list(length=limit)
+    rows = await db.paper_trades.find(q, proj).sort(field, sort_direction).skip(skip).limit(limit).to_list(length=limit)
 
     dep_ids = sorted({str(r.get("deployment_id")) for r in rows if r.get("deployment_id")})
     dep_names: Dict[str, str] = {}

@@ -15,10 +15,12 @@ export function classifyExitReason(raw) {
 }
 
 // Ordered options for the Exit Reason header filter (value = backend bucket key).
+// Listed in the same order as the classifier precedence (target > manual > eod >
+// stop > other) so the dropdown matches the documented bucket hierarchy.
 export const EXIT_REASON_OPTIONS = [
   { value: "target", label: "Target achieved" },
-  { value: "stop", label: "Stoploss hit" },
-  { value: "eod", label: "End of day" },
   { value: "manual", label: "Manual" },
+  { value: "eod", label: "End of day" },
+  { value: "stop", label: "Stoploss hit" },
   { value: "other", label: "Others" },
 ];
