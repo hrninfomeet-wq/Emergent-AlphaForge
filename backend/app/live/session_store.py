@@ -32,6 +32,7 @@ _EMPTY: Dict[str, Any] = {
     "deadline": None,
     "status": "none",
     "heartbeat_ts": None,
+    "reject_reason": None,
 }
 
 
@@ -92,11 +93,22 @@ class SessionStore:
         )
         return dict(doc)
 
-    async def update_status(self, status: str) -> None:
-        """Update the session status (e.g. 'squared', 'kill_switch')."""
+    async def update_status(self, status: str, reject_reason: Optional[str] = None) -> None:
+        """Update the session status (e.g. 'squared', 'kill_switch', 'rejected').
+
+        Parameters
+        ----------
+        status : str
+            New status string.
+        reject_reason : str or None
+            Optional broker reject reason string, stored when status='rejected'.
+        """
+        fields: Dict[str, Any] = {"status": status}
+        if reject_reason is not None:
+            fields["reject_reason"] = reject_reason
         await self._c.update_one(
             {"_id": _SINGLETON_ID},
-            {"$set": {"status": status}},
+            {"$set": fields},
             upsert=False,
         )
 

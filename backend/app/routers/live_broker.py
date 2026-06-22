@@ -1108,9 +1108,27 @@ async def _revert_mode() -> None:
 # L3: Test-session route
 # ---------------------------------------------------------------------------
 
+_ACTIVE_SESSION_STATUSES = frozenset({"armed", "filled", "open"})
+_TERMINAL_SESSION_STATUSES = frozenset({"squared", "kill_switch", "rejected", "canceled", "none"})
+
+# Broker order statuses that mean the entry was never (or will never be) a real position.
+_BROKER_REJECT_STATUSES = frozenset({"REJECTED", "CANCELED"})
+# Broker order statuses that confirm a real / working fill — leave session active.
+_BROKER_ACTIVE_STATUSES = frozenset({"COMPLETE", "OPEN", "TRIGGER_PENDING", "PARTIAL"})
+
+
 @api.get("/live-broker/test-session")
 async def live_test_session():
-    """Return the current test-session state (deadline, remaining_secs, heartbeat, status)."""
+    """Return the current test-session state (deadline, remaining_secs, heartbeat, status).
+
+    Auto-detects a rejected/canceled entry order:
+    If the session is active (armed/filled/open) AND the broker order book reports the
+    entry order as REJECTED or CANCELED, the session is automatically transitioned to
+    'rejected', the mode is reverted to LIVE_OFFLINE, and remaining_secs is zeroed.
+
+    Terminal sessions (squared/kill_switch/rejected/canceled/none) always return
+    remaining_secs: 0 — never a positive countdown for a closed session.
+    """
     ss = _session_store()
     now = _utcnow_iso()
 
@@ -1121,8 +1139,49 @@ async def live_test_session():
         pass
 
     sess = await ss.get()
+    status = sess.get("status", "none")
     deadline = sess.get("deadline")
-    remaining = ss.remaining_secs(deadline, now)
+    entry_norenordno = sess.get("entry_norenordno")
+
+    # --- Auto-detect a rejected/canceled entry order ---
+    # Only bother checking when the session appears active and has an entry order.
+    if status in _ACTIVE_SESSION_STATUSES and entry_norenordno:
+        client = _order_client()
+        if client is not None:
+            try:
+                orders = await client.order_book()
+                for order in orders:
+                    nordno = order.get("norenordno") or order.get("norenordno") or ""
+                    if nordno == entry_norenordno:
+                        broker_status = str(order.get("status") or "").upper()
+                        if broker_status in _BROKER_REJECT_STATUSES:
+                            # Entry was rejected/canceled — auto-resolve the session
+                            rejreason = order.get("rejreason") or f"broker_status:{broker_status}"
+                            try:
+                                await ss.update_status("rejected", reject_reason=rejreason)
+                            except Exception as exc:
+                                log.warning("test_session: could not update_status to rejected: %s", exc)
+                            try:
+                                ms = _mode_store()
+                                await ms.revert_to_offline(now_iso=now)
+                            except Exception as exc:
+                                log.warning("test_session: could not revert mode: %s", exc)
+                            # Reload session after update
+                            sess = await ss.get()
+                            status = sess.get("status", "rejected")
+                        break
+            except Exception as exc:
+                # Not connected or order_book failed — leave session unchanged, never 500
+                log.debug("test_session: could not read order_book: %s", exc)
+
+    # Re-read status after potential auto-update
+    status = sess.get("status", "none")
+
+    # Terminal sessions always return remaining_secs: 0 (never a phantom countdown)
+    if status in _TERMINAL_SESSION_STATUSES:
+        remaining: Optional[float] = 0
+    else:
+        remaining = ss.remaining_secs(deadline, now)
 
     return {
         "position": sess.get("entry_norenordno"),
@@ -1130,7 +1189,8 @@ async def live_test_session():
         "remaining_secs": remaining,
         "heartbeat": now,
         "sl_norenordno": sess.get("sl_norenordno"),
-        "status": sess.get("status", "none"),
+        "status": status,
+        "reject_reason": sess.get("reject_reason"),
     }
 
 

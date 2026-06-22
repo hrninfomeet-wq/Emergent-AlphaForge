@@ -1102,3 +1102,201 @@ def test_permissive_engine_never_on_production_path():
     assert "_ClosedEngine" in source, "_ClosedEngine sentinel must exist in the router"
     # The singleton builder must be present
     assert "_build_live_engine_singleton" in source, "Singleton builder must be present"
+
+
+# ===========================================================================
+# FIX 3 — Auto-reject detection in GET /live-broker/test-session
+#
+# When the session is armed but the broker order book shows the entry order
+# as REJECTED/CANCELED, the route must:
+#   (a) mark the session 'rejected' with the broker rejreason,
+#   (b) revert the mode to LIVE_OFFLINE,
+#   (c) return remaining_secs: 0 and status: 'rejected'.
+#
+# Terminal sessions (squared/kill_switch/rejected) must always return
+# remaining_secs: 0 — no phantom countdown.
+#
+# If the order client is unavailable (None) the route must leave the session
+# unchanged and never 500.
+# ===========================================================================
+
+def _make_mock_noren_with_rejected_order(entry_norenordno: str, rejreason: str) -> MockNoren:
+    """Return a MockNoren whose order_book already contains the entry order as REJECTED."""
+    cl = MockNoren()
+    # Inject a pre-existing REJECTED order directly into the internal store
+    cl._orders[entry_norenordno] = {
+        "norenordno": entry_norenordno,
+        "trantype": "B",
+        "status": "REJECTED",
+        "rejreason": rejreason,
+        "fillshares": "0",
+        "avgprc": "0",
+        "qty": "65",
+    }
+    return cl
+
+
+def _make_mock_noren_with_open_order(entry_norenordno: str) -> MockNoren:
+    """Return a MockNoren whose order_book contains the entry order as OPEN."""
+    cl = MockNoren()
+    cl._orders[entry_norenordno] = {
+        "norenordno": entry_norenordno,
+        "trantype": "B",
+        "status": "OPEN",
+        "rejreason": "",
+        "fillshares": "0",
+        "avgprc": "0",
+        "qty": "65",
+    }
+    return cl
+
+
+def test_test_session_armed_rejected_order_auto_resolves():
+    """Armed session + broker shows REJECTED entry → status=rejected, remaining_secs=0, mode reverted.
+
+    This is the primary regression test: Flattrade returns an order number then
+    async-rejects it, leaving the session stuck 'armed'. The /test-session route
+    must detect this and auto-resolve to 'rejected'.
+    """
+    ENTRY_ORD = "MOCK_ENTRY_1"
+    ms = _make_mode_store(mode="LIVE_TEST", consumed=True)
+    cl = _make_mock_noren_with_rejected_order(ENTRY_ORD, "RMS limit exceeded")
+    ss = _make_session_store()
+    # Pre-arm the session with the entry order
+    asyncio.run(ss.arm(
+        entry_norenordno=ENTRY_ORD,
+        deadline="2026-06-22T07:00:00+00:00",
+        now_iso="2026-06-22T06:00:00+00:00",
+    ))
+    tc = _make_app(mode_store=ms, client=cl, session_store=ss)
+    try:
+        r = tc.get("/live-broker/test-session")
+        assert r.status_code == 200
+        data = r.json()
+
+        # Session must be auto-resolved to rejected
+        assert data["status"] == "rejected", f"Expected 'rejected', got {data['status']!r}"
+        # No phantom countdown
+        assert data["remaining_secs"] == 0, (
+            f"Expected remaining_secs=0 for rejected session, got {data['remaining_secs']!r}"
+        )
+        # Reject reason populated
+        assert data["reject_reason"] is not None
+        assert "RMS" in (data["reject_reason"] or ""), (
+            f"Expected reject_reason to contain broker reason, got {data['reject_reason']!r}"
+        )
+        # Mode must be reverted
+        mode_doc = asyncio.run(ms.get())
+        assert mode_doc["mode"] == "LIVE_OFFLINE", (
+            f"Expected mode reverted to LIVE_OFFLINE, got {mode_doc['mode']!r}"
+        )
+        # Session store updated
+        sess = asyncio.run(ss.get())
+        assert sess["status"] == "rejected"
+        assert sess.get("reject_reason") is not None
+    finally:
+        _stop_patches(tc)
+
+
+def test_test_session_armed_open_order_stays_active():
+    """Armed session + broker shows OPEN entry → session stays armed, remaining_secs > 0."""
+    ENTRY_ORD = "MOCK_ENTRY_2"
+    ms = _make_mode_store(mode="LIVE_TEST", consumed=True)
+    cl = _make_mock_noren_with_open_order(ENTRY_ORD)
+    ss = _make_session_store()
+    asyncio.run(ss.arm(
+        entry_norenordno=ENTRY_ORD,
+        deadline="2026-06-22T07:00:00+00:00",  # future relative to patched _utcnow_iso
+        now_iso="2026-06-22T06:00:00+00:00",
+    ))
+    tc = _make_app(mode_store=ms, client=cl, session_store=ss)
+    try:
+        r = tc.get("/live-broker/test-session")
+        assert r.status_code == 200
+        data = r.json()
+
+        # Session stays active — not auto-resolved
+        assert data["status"] == "armed", f"Expected 'armed', got {data['status']!r}"
+        # Countdown must still be positive (deadline is in the future)
+        assert data["remaining_secs"] is not None and data["remaining_secs"] > 0, (
+            f"Expected positive remaining_secs for active session, got {data['remaining_secs']!r}"
+        )
+        # Mode untouched
+        mode_doc = asyncio.run(ms.get())
+        assert mode_doc["mode"] == "LIVE_TEST"
+    finally:
+        _stop_patches(tc)
+
+
+def test_test_session_terminal_squared_returns_zero_remaining():
+    """A terminal (squared) session always returns remaining_secs=0 — no phantom countdown."""
+    ss = _make_session_store()
+    asyncio.run(ss.arm(
+        entry_norenordno="MOCK_ENTRY_3",
+        deadline="2026-06-22T07:00:00+00:00",  # future
+        now_iso="2026-06-22T06:00:00+00:00",
+    ))
+    # Manually transition to squared (e.g. position was closed)
+    asyncio.run(ss.update_status("squared"))
+
+    tc = _make_app(session_store=ss)
+    try:
+        r = tc.get("/live-broker/test-session")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["status"] == "squared"
+        # Must be zero even though deadline is in the future
+        assert data["remaining_secs"] == 0, (
+            f"Expected remaining_secs=0 for squared session, got {data['remaining_secs']!r}"
+        )
+    finally:
+        _stop_patches(tc)
+
+
+def test_test_session_no_client_leaves_session_unchanged():
+    """If _order_client() returns None (not connected), session is left unchanged, no 500."""
+    ss = _make_session_store()
+    asyncio.run(ss.arm(
+        entry_norenordno="MOCK_ENTRY_4",
+        deadline="2026-06-22T07:00:00+00:00",
+        now_iso="2026-06-22T06:00:00+00:00",
+    ))
+    # Build app with _order_client returning None (not connected)
+    app = FastAPI()
+    app.include_router(_routes.api)
+
+    ms = _make_mode_store(mode="LIVE_TEST", consumed=True)
+    patches = {
+        "_mode_store": lambda: ms,
+        "_intent_store": _make_intent_store,
+        "_config_store": _make_config_store,
+        "_session_store": lambda: ss,
+        "_order_client": lambda: None,  # not connected
+        "_l3_engine": lambda: FakeEngine(),
+        "_get_client": AsyncMock(side_effect=Exception("not connected")),
+        "_get_token_doc": AsyncMock(return_value={"jKey": "x", "uid": "u", "actid": "u"}),
+        "_schedule_auto_square": MagicMock(),
+        "_utcnow_iso": lambda: "2026-06-22T06:00:00+00:00",
+    }
+    ctx = []
+    for name, val in patches.items():
+        p = patch.object(_routes, name, val)
+        ctx.append(p)
+        p.start()
+    try:
+        tc = TestClient(app, raise_server_exceptions=True)
+        r = tc.get("/live-broker/test-session")
+        # Must not crash
+        assert r.status_code == 200
+        data = r.json()
+        # Session still armed (unchanged) — no client to check order book
+        assert data["status"] == "armed"
+        # Mode unchanged
+        mode_doc = asyncio.run(ms.get())
+        assert mode_doc["mode"] == "LIVE_TEST"
+    finally:
+        for p in ctx:
+            try:
+                p.stop()
+            except RuntimeError:
+                pass
