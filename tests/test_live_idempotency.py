@@ -21,6 +21,31 @@ Covers:
     - RESTART SIMULATION: record_intent, then construct a NEW IntentStore over
       the SAME fake collection, call resume_unsubmitted → finds the un-sent intent
     - timestamps: now_iso is stored; injected value appears in the doc
+
+  F1 — atomic insert (unique-index race safety):
+    - Two record_intent calls for the same cid against a unique-enforcing fake →
+      exactly ONE doc; second call returns the existing doc, no exception leaks.
+
+  F2 — reject falsy norenordno:
+    - mark_submitted(cid, None) → ValueError before any write
+    - mark_submitted(cid, "   ") → ValueError before any write
+    - mark_submitted(cid, "") → ValueError before any write
+
+  F3 — distinguish not-found from already-submitted:
+    - mark_submitted for a cid that never had record_intent → IntentNotFoundError
+    - mark_submitted for an already-submitted cid (norenordno set) → AlreadySubmittedError
+    - (existing test_mark_unknown_cid_raises updated to expect IntentNotFoundError)
+
+  F4 — idempotent-retry contract:
+    - Second mark_submitted(cid, SAME_X) → no-op success (no exception)
+    - Second mark_submitted(cid, DIFFERENT_Y) → AlreadySubmittedError
+
+  F5 — per-cid submit claim:
+    - claim_for_submit(cid) on INTENT doc → True
+    - second claim_for_submit(cid) on SUBMITTING doc → False
+    - claim_for_submit(cid) on unknown cid → False
+    - resume_unsubmitted includes SUBMITTING docs with norenordno=None
+    - mark_submitted accepts SUBMITTING state (state-agnostic on norenordno gate)
 """
 from __future__ import annotations
 
@@ -37,9 +62,13 @@ sys.path.insert(0, str(ROOT / "backend"))
 from app.live.broker_protocol import OrderIntent
 from app.live.idempotency import (
     AlreadySubmittedError,
+    IntentNotFoundError,
     IntentStore,
     new_client_order_id,
 )
+
+# pymongo DuplicateKeyError — needed for the fake that simulates unique index
+from pymongo.errors import DuplicateKeyError
 
 
 # ---------------------------------------------------------------------------
@@ -67,10 +96,20 @@ class FakeAsyncCollection:
     """In-memory async collection satisfying the IntentStore collection interface.
 
     Stores docs in self.docs (a plain list) so tests can inspect state directly.
+
+    Call ensure_unique(field) to activate duplicate-key enforcement on that field;
+    subsequent insert_one calls that duplicate a value for that field will raise
+    pymongo.errors.DuplicateKeyError — matching production Mongo unique-index behaviour.
     """
 
     def __init__(self) -> None:
         self.docs: List[Dict[str, Any]] = []
+        self._unique_fields: List[str] = []
+
+    def ensure_unique(self, field: str) -> None:
+        """Mark *field* as unique — insert_one will raise DuplicateKeyError on dup."""
+        if field not in self._unique_fields:
+            self._unique_fields.append(field)
 
     async def find_one(
         self,
@@ -85,6 +124,13 @@ class FakeAsyncCollection:
         return None
 
     async def insert_one(self, doc: Dict[str, Any]) -> Any:
+        for field in self._unique_fields:
+            if field in doc:
+                for existing in self.docs:
+                    if existing.get(field) == doc[field]:
+                        raise DuplicateKeyError(
+                            f"E11000 duplicate key error — field: {field}"
+                        )
         self.docs.append(dict(doc))
 
     async def update_one(
@@ -111,6 +157,12 @@ class FakeAsyncCollection:
             if _matches(d, query)
         ]
         return _FakeCursor(results)
+
+    async def create_index(self, field: str, unique: bool = False) -> str:
+        """Simulate index creation; activates unique enforcement when unique=True."""
+        if unique:
+            self.ensure_unique(field)
+        return f"{field}_1"
 
 
 # ---------------------------------------------------------------------------
@@ -210,8 +262,15 @@ class TestRecordIntent:
         assert doc["ts_intent"] == "2026-06-22T09:15:00+00:00"
 
     def test_record_is_idempotent_second_call_returns_existing(self):
-        """Second record_intent with the same cid must NOT overwrite or duplicate."""
-        store, col = _store()
+        """Second record_intent with the same cid must NOT overwrite or duplicate.
+
+        In production the unique index on client_order_id enforces this.  We
+        enable ensure_unique here so the FakeAsyncCollection enforces the same
+        DuplicateKeyError → fallback path that real Mongo would trigger.
+        """
+        col = FakeAsyncCollection()
+        col.ensure_unique("client_order_id")  # simulate production unique index
+        store = IntentStore(col)
         intent = _make_intent("cid-r5")
         doc1 = asyncio.run(
             store.record_intent(intent, mode="mock", now_iso="2026-06-22T09:00:00+00:00")
@@ -284,16 +343,17 @@ class TestMarkSubmitted:
         doc = col.docs[0]
         assert doc["ts_submitted"] == "2026-06-22T09:20:00+00:00"
 
-    def test_second_mark_same_norenordno_raises(self):
-        """Second mark_submitted for an already-submitted cid must raise
-        AlreadySubmittedError regardless of the norenordno value."""
+    def test_second_mark_same_norenordno_is_noop(self):
+        """F4: Second mark_submitted with the SAME norenordno → idempotent no-op.
+        The order was already confirmed delivered — re-confirming the same
+        number is safe and must not raise."""
         store, _ = _store()
         intent = _make_intent("cid-m3")
         asyncio.run(store.record_intent(intent))
         asyncio.run(store.mark_submitted("cid-m3", norenordno="NORD-333"))
 
-        with pytest.raises(AlreadySubmittedError):
-            asyncio.run(store.mark_submitted("cid-m3", norenordno="NORD-333"))
+        # Must NOT raise — same norenordno = idempotent retry
+        asyncio.run(store.mark_submitted("cid-m3", norenordno="NORD-333"))
 
     def test_second_mark_different_norenordno_raises(self):
         """A DIFFERENT norenordno on the second call is the critical hazard —
@@ -306,11 +366,205 @@ class TestMarkSubmitted:
         with pytest.raises(AlreadySubmittedError):
             asyncio.run(store.mark_submitted("cid-m4", norenordno="NORD-444-B"))
 
-    def test_mark_unknown_cid_raises(self):
-        """mark_submitted without a prior record_intent → raises (no doc to match)."""
+    def test_mark_unknown_cid_raises_intent_not_found(self):
+        """F3: mark_submitted without a prior record_intent → IntentNotFoundError
+        (not AlreadySubmittedError — the doc doesn't exist at all)."""
         store, _ = _store()
-        with pytest.raises(AlreadySubmittedError):
+        with pytest.raises(IntentNotFoundError):
             asyncio.run(store.mark_submitted("cid-ghost", norenordno="NORD-000"))
+
+    def test_mark_already_submitted_different_norenordno_raises_already_submitted(self):
+        """F3: doc EXISTS and already has a norenordno → AlreadySubmittedError."""
+        store, _ = _store()
+        intent = _make_intent("cid-m5")
+        asyncio.run(store.record_intent(intent))
+        asyncio.run(store.mark_submitted("cid-m5", norenordno="NORD-555-A"))
+
+        with pytest.raises(AlreadySubmittedError):
+            asyncio.run(store.mark_submitted("cid-m5", norenordno="NORD-555-B"))
+
+
+# ---------------------------------------------------------------------------
+# F2 — reject falsy norenordno
+# ---------------------------------------------------------------------------
+
+class TestFalsyNorenordno:
+    """F2: mark_submitted must reject None/empty/whitespace-only norenordno
+    BEFORE touching the database — the doc must remain in INTENT/None state."""
+
+    def test_none_norenordno_raises_value_error(self):
+        store, col = _store()
+        intent = _make_intent("cid-f2a")
+        asyncio.run(store.record_intent(intent))
+
+        with pytest.raises(ValueError):
+            asyncio.run(store.mark_submitted("cid-f2a", norenordno=None))  # type: ignore[arg-type]
+
+        # Doc must be unchanged — still INTENT with norenordno=None
+        doc = col.docs[0]
+        assert doc["state"] == "INTENT"
+        assert doc["norenordno"] is None
+
+    def test_empty_string_norenordno_raises_value_error(self):
+        store, col = _store()
+        intent = _make_intent("cid-f2b")
+        asyncio.run(store.record_intent(intent))
+
+        with pytest.raises(ValueError):
+            asyncio.run(store.mark_submitted("cid-f2b", norenordno=""))
+
+        doc = col.docs[0]
+        assert doc["state"] == "INTENT"
+        assert doc["norenordno"] is None
+
+    def test_whitespace_only_norenordno_raises_value_error(self):
+        store, col = _store()
+        intent = _make_intent("cid-f2c")
+        asyncio.run(store.record_intent(intent))
+
+        with pytest.raises(ValueError):
+            asyncio.run(store.mark_submitted("cid-f2c", norenordno="   "))
+
+        doc = col.docs[0]
+        assert doc["state"] == "INTENT"
+        assert doc["norenordno"] is None
+
+
+# ---------------------------------------------------------------------------
+# F1 — atomic insert: unique-index race safety
+# ---------------------------------------------------------------------------
+
+class TestAtomicInsert:
+    """F1: record_intent must rely on insert_one + DuplicateKeyError fallback,
+    not find_one-then-insert_one.  When unique enforcement is active on the
+    collection, two concurrent record_intent calls for the same cid must result
+    in exactly ONE doc; the second call returns the existing doc without raising."""
+
+    def test_two_record_intents_same_cid_unique_mode_one_doc(self):
+        col = FakeAsyncCollection()
+        col.ensure_unique("client_order_id")  # simulate production unique index
+        store = IntentStore(col)
+
+        intent = _make_intent("cid-atomic-1")
+        doc1 = asyncio.run(
+            store.record_intent(intent, mode="mock", now_iso="2026-06-22T09:00:00+00:00")
+        )
+        # Second call — different timestamp; in a race this would interleave
+        doc2 = asyncio.run(
+            store.record_intent(intent, mode="live", now_iso="2026-06-22T10:00:00+00:00")
+        )
+
+        # Exactly one doc stored
+        assert len(col.docs) == 1
+        # Both return the original doc (first-writer wins)
+        assert doc1["ts_intent"] == "2026-06-22T09:00:00+00:00"
+        assert doc2["ts_intent"] == "2026-06-22T09:00:00+00:00"
+        assert doc2["mode"] == "mock"
+
+    def test_no_exception_leaks_on_duplicate_key(self):
+        """DuplicateKeyError must be caught inside record_intent — never propagated."""
+        col = FakeAsyncCollection()
+        col.ensure_unique("client_order_id")
+        store = IntentStore(col)
+
+        intent = _make_intent("cid-atomic-2")
+        asyncio.run(store.record_intent(intent))
+
+        # Must not raise anything — not DuplicateKeyError, not anything else
+        try:
+            asyncio.run(store.record_intent(intent))
+        except Exception as exc:
+            pytest.fail(f"record_intent raised unexpectedly: {exc!r}")
+
+
+# ---------------------------------------------------------------------------
+# F5 — per-cid submit claim
+# ---------------------------------------------------------------------------
+
+class TestClaimForSubmit:
+    """F5: claim_for_submit does an atomic INTENT→SUBMITTING transition.
+
+    Contracts:
+      - First claim on an INTENT doc → True; state becomes SUBMITTING
+      - Second claim on the now-SUBMITTING doc → False (not INTENT any more)
+      - Claim on unknown cid → False
+      - resume_unsubmitted includes SUBMITTING docs with norenordno=None
+        (crashed-claim must be resumable)
+      - mark_submitted accepts SUBMITTING state (matches on norenordno=None,
+        not on state) → sets SUBMITTED
+    """
+
+    def test_claim_intent_returns_true(self):
+        store, col = _store()
+        intent = _make_intent("cid-claim-1")
+        asyncio.run(store.record_intent(intent))
+
+        result = asyncio.run(store.claim_for_submit("cid-claim-1"))
+        assert result is True
+        assert col.docs[0]["state"] == "SUBMITTING"
+
+    def test_second_claim_returns_false(self):
+        store, col = _store()
+        intent = _make_intent("cid-claim-2")
+        asyncio.run(store.record_intent(intent))
+        asyncio.run(store.claim_for_submit("cid-claim-2"))  # first → True
+
+        result = asyncio.run(store.claim_for_submit("cid-claim-2"))
+        assert result is False
+
+    def test_claim_unknown_cid_returns_false(self):
+        store, _ = _store()
+        result = asyncio.run(store.claim_for_submit("cid-ghost-claim"))
+        assert result is False
+
+    def test_resume_unsubmitted_includes_submitting_no_norenordno(self):
+        """A crashed claim (SUBMITTING + norenordno=None) must appear in resume."""
+        store, col = _store()
+        intent = _make_intent("cid-claim-3")
+        asyncio.run(store.record_intent(intent))
+        asyncio.run(store.claim_for_submit("cid-claim-3"))  # → SUBMITTING, norenordno=None
+
+        pending = asyncio.run(store.resume_unsubmitted())
+        cids = [d["client_order_id"] for d in pending]
+        assert "cid-claim-3" in cids
+
+    def test_resume_unsubmitted_excludes_submitted_submitting(self):
+        """A SUBMITTING doc that got mark_submitted must NOT appear in resume."""
+        store, _ = _store()
+        intent = _make_intent("cid-claim-4")
+        asyncio.run(store.record_intent(intent))
+        asyncio.run(store.claim_for_submit("cid-claim-4"))
+        asyncio.run(store.mark_submitted("cid-claim-4", norenordno="NORD-CL4"))
+
+        pending = asyncio.run(store.resume_unsubmitted())
+        assert not any(d["client_order_id"] == "cid-claim-4" for d in pending)
+
+    def test_mark_submitted_accepts_submitting_state(self):
+        """mark_submitted must succeed on a SUBMITTING (claimed) doc — the
+        norenordno=None gate is what matters, not the state field."""
+        store, col = _store()
+        intent = _make_intent("cid-claim-5")
+        asyncio.run(store.record_intent(intent))
+        asyncio.run(store.claim_for_submit("cid-claim-5"))
+
+        # Should not raise — SUBMITTING + norenordno=None → valid target
+        asyncio.run(store.mark_submitted("cid-claim-5", norenordno="NORD-CL5"))
+
+        doc = col.docs[0]
+        assert doc["norenordno"] == "NORD-CL5"
+        assert doc["state"] == "SUBMITTED"
+
+    def test_claim_stores_ts_claim(self):
+        """claim_for_submit should record ts_claim on the doc."""
+        store, col = _store()
+        intent = _make_intent("cid-claim-6")
+        asyncio.run(store.record_intent(intent))
+        asyncio.run(
+            store.claim_for_submit("cid-claim-6", now_iso="2026-06-22T09:30:00+00:00")
+        )
+
+        doc = col.docs[0]
+        assert doc.get("ts_claim") == "2026-06-22T09:30:00+00:00"
 
 
 # ---------------------------------------------------------------------------
