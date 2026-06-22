@@ -84,7 +84,7 @@ from app.live.idempotency import new_client_order_id
 
 def run(coro):
     """Run a coroutine synchronously (no event-loop fixture needed)."""
-    return asyncio.get_event_loop().run_until_complete(coro)
+    return asyncio.run(coro)
 
 
 def _position(
