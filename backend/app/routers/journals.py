@@ -336,6 +336,8 @@ async def list_paper_trades(
     deployment_id: Optional[str] = Query(None),
     strategy_id: Optional[str] = Query(None),
     instrument: Optional[str] = Query(None),
+    direction: Optional[str] = Query(None, description="CE or PE"),
+    exit_reason: Optional[str] = Query(None, description="bucket: target|manual|eod|stop|other"),
     date_from: Optional[str] = Query(None, description="YYYY-MM-DD (IST), on entry time"),
     date_to: Optional[str] = Query(None, description="YYYY-MM-DD (IST)"),
     sort: str = Query("-updated_at"),
@@ -364,6 +366,15 @@ async def list_paper_trades(
         if end_ms is not None:
             rng["$lt"] = datetime.fromtimestamp(end_ms / 1000, tz=timezone.utc).isoformat()
         q["created_at"] = rng
+
+    extra: list = []
+    if direction:
+        extra.append({"direction": direction.upper()})
+    if exit_reason:
+        cond = paper_analytics.exit_reason_query(exit_reason)
+        if cond is not None:
+            extra.append(cond)
+    q = paper_analytics.merge_conditions(q, extra)
 
     field = sort.lstrip("-")
     direction = -1 if sort.startswith("-") else 1
