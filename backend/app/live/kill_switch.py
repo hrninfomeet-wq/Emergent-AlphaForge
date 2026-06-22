@@ -42,6 +42,7 @@ from app.live.safety import validate_jdata
 # ---------------------------------------------------------------------------
 
 #: Order statuses that are terminal — no further state changes possible.
+#: Always compared in UPPER case after normalisation (see _normalize_status).
 TERMINAL: frozenset[str] = frozenset({"COMPLETE", "REJECTED", "CANCELED"})
 
 #: Sensible defaults for a single-account retail setup.
@@ -51,6 +52,72 @@ DEFAULT_SAFETY_CONFIG: Dict[str, Any] = {
     "max_open_positions": 5,        # hard cap on concurrent open positions
     "blocked_until_reset": False,   # latch; only explicit reset_latch clears it
 }
+
+#: Keys that PUT /safety-config is allowed to touch.
+#: ``blocked_until_reset`` is deliberately excluded — the latch is controlled
+#: ONLY by the dedicated trip()/reset() methods and the reset-latch route.
+_PUT_CONFIG_WHITELIST: frozenset[str] = frozenset({
+    "daily_loss_limit",
+    "profit_lock_target",
+    "max_open_positions",
+})
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _normalize_status(raw: Any) -> str:
+    """Return the order status as an UPPER-CASE stripped string.
+
+    Noren can return statuses like ``"complete"``, ``"Canceled"``, ``"OPEN"``
+    depending on the API version.  Always compare against ``TERMINAL`` via this
+    helper so case drift is never a silent bug.
+    """
+    return str(raw or "").strip().upper()
+
+
+def _parse_netqty(raw: Any) -> Optional[int]:
+    """Parse a Noren netqty value to int, handling float-form and comma-formatted strings.
+
+    Noren can return netqty as:
+    - ``"100"``      → 100  (normal integer string)
+    - ``"100.0"``    → 100  (float-form string — bare int() would ValueError)
+    - ``"-50.0"``    → -50
+    - ``"1,000"``    → 1000 (comma-formatted number)
+    - ``"99.9"``     → 99   (truncation: int(float(...)); intentional, matches reconcile.py:172)
+    - ``"abc"``      → None (unparseable → caller must surface in unpriced)
+    - ``"nan"``      → None (non-finite → caller must surface in unpriced)
+    - ``"inf"``      → None (non-finite → caller must surface in unpriced)
+    - ``100``        → 100  (already an int)
+    - ``100.0``      → 100  (already a float)
+
+    Returns None if the value cannot be converted to a finite integer.  The
+    caller is responsible for deciding what to do with None — in both
+    plan_squareoff and panic_squareoff, a None result means the position is
+    added to ``unpriced`` and ``total`` is forced to False.  A position is
+    NEVER silently coerced to netqty=0 (flat) when it cannot be parsed.
+
+    The int(float(...)) truncation is intentional and matches the project's
+    established pattern in reconcile.py:172.
+    """
+    try:
+        if isinstance(raw, bool):
+            return None
+        if isinstance(raw, int):
+            return raw
+        if isinstance(raw, float):
+            if not math.isfinite(raw):
+                return None
+            return int(raw)
+        # String path: strip commas and whitespace
+        cleaned = str(raw).replace(",", "").strip()
+        val = float(cleaned)
+        if not math.isfinite(val):
+            return None
+        return int(val)
+    except (TypeError, ValueError):
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -206,24 +273,31 @@ def plan_squareoff(
     """
     eff = abs(band_pct)
 
+    # F2: normalise status to UPPER before TERMINAL membership test so that
+    # "canceled", "Canceled", "complete", etc. are all treated as terminal.
     would_cancel: List[str] = [
         o["norenordno"]
         for o in open_orders
-        if o.get("status") not in TERMINAL
+        if _normalize_status(o.get("status")) not in TERMINAL
     ]
 
     would_flatten: List[Dict[str, Any]] = []
     unpriced: List[Dict[str, Any]] = []
 
     for pos in open_positions:
-        try:
-            netqty = int(pos.get("netqty", 0))
-        except (TypeError, ValueError):
-            netqty = 0
+        tsym = pos.get("tsym", "")
+        raw_netqty = pos.get("netqty", 0)
+        netqty = _parse_netqty(raw_netqty)
+
+        # F1: unparseable netqty → surface in unpriced, never silently skip.
+        if netqty is None:
+            unpriced.append({"tsym": tsym, "netqty": raw_netqty})
+            continue
+
+        # Genuinely flat position — skip (correct behaviour, not a silent drop).
         if netqty == 0:
             continue
 
-        tsym = pos.get("tsym", "")
         exch = pos.get("exch", "NFO")
         ref_raw = pos.get(ref_price_field)
 
@@ -324,9 +398,26 @@ async def panic_squareoff(
         ``cancel_failures``:  list of ``{"norenordno": ..., "reason": ...}``.
         ``flattened``:        number of successfully placed flatten orders.
         ``flatten_failures``: list of ``{"tsym": ..., "netqty": ..., "reason": ...}``.
-        ``unpriced``:         list of ``{"tsym": ..., "netqty": ...}`` (no ref price).
+        ``unpriced``:         list of ``{"tsym": ..., "netqty": ...}`` (bad netqty or
+                              missing ref price).
         ``total``:            True iff cancel_failures, flatten_failures, and
                               unpriced are all empty.
+
+    Caller contracts (L2.3 engine)
+    --------------------------------
+    (F4) 1. ``open_orders`` MUST be the COMPLETE, freshly-fetched working set at
+            the moment of the call.  Passing a stale or partial list means some
+            orders will not be cancelled.
+
+         2. The caller MUST re-fetch the order and position books between
+            successive kills — panic is NOT self-idempotent.  Re-passing a stale
+            open-position list after a first flatten attempt will cause the engine
+            to attempt to double-exit the same position.
+
+    # NOTE: panic_squareoff is the EXECUTOR layer.  It is tested against
+    # MockNoren in L2 and against FlattradeClient in L3.  The kill-switch
+    # ROUTE always calls plan_squareoff (pure — no transmit); only the L2.3
+    # engine (and dedicated panic tests) call this function.
     """
     eff = abs(band_pct)
 
@@ -335,7 +426,9 @@ async def panic_squareoff(
 
     # Step 1 — cancel every working order (bypass throttle entirely).
     for order in open_orders:
-        if order.get("status") in TERMINAL:
+        # F2: normalise status to UPPER so "canceled"/"Canceled"/"complete" etc.
+        # are treated as terminal and NOT re-cancelled.
+        if _normalize_status(order.get("status")) in TERMINAL:
             continue
         norenordno = order.get("norenordno", "")
         try:
@@ -356,14 +449,19 @@ async def panic_squareoff(
     unpriced: List[Dict[str, Any]] = []
 
     for pos in open_positions:
-        try:
-            netqty = int(pos.get("netqty", 0))
-        except (TypeError, ValueError):
-            netqty = 0
+        tsym = pos.get("tsym", "")
+        raw_netqty = pos.get("netqty", 0)
+        netqty = _parse_netqty(raw_netqty)
+
+        # F1: unparseable netqty → surface in unpriced, NEVER silently coerce to 0.
+        if netqty is None:
+            unpriced.append({"tsym": tsym, "netqty": raw_netqty})
+            continue
+
+        # Genuinely flat position — skip (correct, not a silent drop).
         if netqty == 0:
             continue
 
-        tsym = pos.get("tsym", "")
         exch = pos.get("exch", "NFO")
         ref_raw = pos.get(ref_price_field)
 
@@ -444,12 +542,19 @@ class SafetyConfigStore:
 
     Known / whitelisted keys
     ------------------------
-    Only the four keys in ``DEFAULT_SAFETY_CONFIG`` are accepted by
-    ``put_config``; unknown keys are rejected with ``ValueError``.
+    ``put_config`` accepts only the three numeric/threshold keys:
+    ``daily_loss_limit``, ``profit_lock_target``, ``max_open_positions``.
+    ``blocked_until_reset`` is deliberately excluded — the latch is controlled
+    ONLY by ``trip()``/``reset()`` and the dedicated ``POST /safety-config/reset-latch``
+    route.  Passing ``blocked_until_reset`` to ``put_config`` raises ``ValueError``.
     """
 
     _SINGLETON_ID = "singleton"
-    _KNOWN_KEYS = frozenset(DEFAULT_SAFETY_CONFIG)
+    # All keys that exist in the config doc (for get_config merge).
+    _ALL_KEYS = frozenset(DEFAULT_SAFETY_CONFIG)
+    # Keys that PUT /safety-config may write.  blocked_until_reset is excluded —
+    # it is controlled exclusively by trip()/reset() and the reset-latch route.
+    _PUT_KEYS = _PUT_CONFIG_WHITELIST
 
     def __init__(self, collection: Any) -> None:
         self._col = collection
@@ -460,16 +565,25 @@ class SafetyConfigStore:
         doc = await self._col.find_one({"_id": self._SINGLETON_ID})
         merged = dict(DEFAULT_SAFETY_CONFIG)
         if doc:
-            for k in self._KNOWN_KEYS:
+            for k in self._ALL_KEYS:
                 if k in doc:
                     merged[k] = doc[k]
         return merged
 
     async def put_config(self, updates: Dict[str, Any]) -> Dict[str, Any]:
-        """Persist whitelisted key updates.  Raises ValueError on unknown keys."""
-        unknown = set(updates) - self._KNOWN_KEYS
+        """Persist whitelisted threshold-key updates.
+
+        Raises ValueError on unknown keys OR if ``blocked_until_reset`` is
+        included — the latch must only be changed via ``trip()``/``reset()``.
+        """
+        # F3: blocked_until_reset is NOT in _PUT_KEYS so it will be caught here.
+        unknown = set(updates) - self._PUT_KEYS
         if unknown:
-            raise ValueError(f"Unknown safety config keys: {sorted(unknown)}")
+            raise ValueError(
+                f"Unknown safety config keys (or non-whitelisted — "
+                f"blocked_until_reset requires reset() / POST /safety-config/reset-latch): "
+                f"{sorted(unknown)}"
+            )
         await self._col.update_one(
             {"_id": self._SINGLETON_ID},
             {"$set": updates},
@@ -477,13 +591,30 @@ class SafetyConfigStore:
         )
         return await self.get_config()
 
+    async def _write_latch(self, value: bool) -> Dict[str, Any]:
+        """Internal: persist the latch directly, bypassing put_config whitelist."""
+        # F3: coerce to strict bool so 0/""/None can't leak in.
+        await self._col.update_one(
+            {"_id": self._SINGLETON_ID},
+            {"$set": {"blocked_until_reset": bool(value)}},
+            upsert=True,
+        )
+        return await self.get_config()
+
     async def trip(self) -> Dict[str, Any]:
-        """Persist the blocked_until_reset=True latch."""
-        return await self.put_config({"blocked_until_reset": True})
+        """Persist the blocked_until_reset=True latch.
+
+        This is the ONLY authorised way to set the latch to True.
+        """
+        return await self._write_latch(True)
 
     async def reset(self) -> Dict[str, Any]:
-        """Persist the blocked_until_reset=False latch (explicit operator reset)."""
-        return await self.put_config({"blocked_until_reset": False})
+        """Persist the blocked_until_reset=False latch (explicit operator reset).
+
+        This is the ONLY authorised way to clear the latch.  It is also called
+        by ``POST /safety-config/reset-latch``.
+        """
+        return await self._write_latch(False)
 
 
 def default_store() -> "SafetyConfigStore":

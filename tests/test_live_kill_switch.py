@@ -800,3 +800,285 @@ class TestKillSwitchRoute:
         assert len(plan["unpriced"]) == 1
         assert plan["unpriced"][0]["tsym"] == "SYM_NOREF"
         assert plan["would_flatten"] == []
+
+
+# ===========================================================================
+# F1 — float-form netqty (CATASTROPHIC: was silently coerced to 0)
+# ===========================================================================
+
+class TestNetqtyParsing:
+    """F1: _parse_netqty + both squareoff functions must handle float-form strings.
+
+    Before the fix: int("100.0") raised ValueError → except → netqty=0 → position
+    SKIPPED → total=True over a live open position.  Now we use int(float(...))
+    matching reconcile.py:172.
+    """
+
+    # --- _parse_netqty unit tests ---
+
+    def test_parse_integer_string(self):
+        from app.live.kill_switch import _parse_netqty
+        assert _parse_netqty("100") == 100
+
+    def test_parse_float_string_long(self):
+        from app.live.kill_switch import _parse_netqty
+        assert _parse_netqty("100.0") == 100
+
+    def test_parse_negative_float_string(self):
+        from app.live.kill_switch import _parse_netqty
+        assert _parse_netqty("-50.0") == -50
+
+    def test_parse_comma_formatted(self):
+        from app.live.kill_switch import _parse_netqty
+        assert _parse_netqty("1,000") == 1000
+
+    def test_parse_truncation_documented(self):
+        """99.9 → 99 (truncation, not rounding). Matches reconcile.py:172."""
+        from app.live.kill_switch import _parse_netqty
+        assert _parse_netqty("99.9") == 99
+
+    def test_parse_garbage_returns_none(self):
+        from app.live.kill_switch import _parse_netqty
+        assert _parse_netqty("abc") is None
+
+    def test_parse_nan_returns_none(self):
+        from app.live.kill_switch import _parse_netqty
+        assert _parse_netqty("nan") is None
+
+    def test_parse_inf_returns_none(self):
+        from app.live.kill_switch import _parse_netqty
+        assert _parse_netqty("inf") is None
+
+    def test_parse_native_int(self):
+        from app.live.kill_switch import _parse_netqty
+        assert _parse_netqty(100) == 100
+
+    def test_parse_native_float(self):
+        from app.live.kill_switch import _parse_netqty
+        assert _parse_netqty(100.0) == 100
+
+    def test_parse_zero_string(self):
+        from app.live.kill_switch import _parse_netqty
+        assert _parse_netqty("0") == 0
+
+    # --- plan_squareoff: float-form netqty must be flattened, not dropped ---
+
+    def test_plan_float_netqty_long_flattened(self):
+        """'100.0' → qty 100 SELL (not skipped)."""
+        pos = {"tsym": "SYM", "netqty": "100.0", "lp": "200.0", "exch": "NFO"}
+        plan = plan_squareoff([], [pos])
+        assert len(plan["would_flatten"]) == 1
+        jd = plan["would_flatten"][0]
+        assert jd["trantype"] == "S"
+        assert int(jd["qty"]) == 100
+
+    def test_plan_float_netqty_short_flattened(self):
+        """-50.0 → qty 50 BUY."""
+        pos = {"tsym": "SYM", "netqty": "-50.0", "lp": "150.0", "exch": "NFO"}
+        plan = plan_squareoff([], [pos])
+        assert len(plan["would_flatten"]) == 1
+        jd = plan["would_flatten"][0]
+        assert jd["trantype"] == "B"
+        assert int(jd["qty"]) == 50
+
+    def test_plan_comma_netqty_flattened(self):
+        """"1,000" → qty 1000 SELL."""
+        pos = {"tsym": "SYM", "netqty": "1,000", "lp": "100.0", "exch": "NFO"}
+        plan = plan_squareoff([], [pos])
+        assert len(plan["would_flatten"]) == 1
+        assert int(plan["would_flatten"][0]["qty"]) == 1000
+
+    def test_plan_garbage_netqty_goes_to_unpriced_not_dropped(self):
+        """"abc" → in unpriced, NOT silently skipped, total-equivalent unpriced list non-empty."""
+        pos = {"tsym": "SYM", "netqty": "abc", "lp": "200.0", "exch": "NFO"}
+        plan = plan_squareoff([], [pos])
+        assert plan["would_flatten"] == []
+        assert len(plan["unpriced"]) == 1
+        assert plan["unpriced"][0]["tsym"] == "SYM"
+
+    def test_plan_nan_netqty_goes_to_unpriced(self):
+        pos = {"tsym": "SYM", "netqty": "nan", "lp": "200.0", "exch": "NFO"}
+        plan = plan_squareoff([], [pos])
+        assert len(plan["unpriced"]) == 1
+
+    def test_plan_inf_netqty_goes_to_unpriced(self):
+        pos = {"tsym": "SYM", "netqty": "inf", "lp": "200.0", "exch": "NFO"}
+        plan = plan_squareoff([], [pos])
+        assert len(plan["unpriced"]) == 1
+
+    # --- panic_squareoff: float-form netqty must be flattened, not dropped ---
+
+    def test_panic_float_netqty_long_flattened(self):
+        """'100.0' → qty 100 SELL actually placed (not silently skipped)."""
+        client = MockNoren(
+            position_book_data=[
+                {"tsym": "SYM", "netqty": "100.0", "lp": "200.0", "exch": "NFO"},
+            ],
+        )
+        positions = asyncio.run(client.position_book())
+        result = asyncio.run(panic_squareoff(client, [], positions))
+
+        assert result["flattened"] == 1
+        assert result["unpriced"] == []
+        assert result["total"] is True
+
+        placed = asyncio.run(client.order_book())
+        assert len(placed) == 1
+        assert placed[0]["trantype"] == "S"
+        assert int(placed[0]["qty"]) == 100
+
+    def test_panic_float_netqty_short_flattened(self):
+        """-50.0 → qty 50 BUY placed."""
+        client = MockNoren(
+            position_book_data=[
+                {"tsym": "SYM", "netqty": "-50.0", "lp": "150.0", "exch": "NFO"},
+            ],
+        )
+        positions = asyncio.run(client.position_book())
+        result = asyncio.run(panic_squareoff(client, [], positions))
+
+        assert result["flattened"] == 1
+        placed = asyncio.run(client.order_book())
+        assert placed[0]["trantype"] == "B"
+        assert int(placed[0]["qty"]) == 50
+
+    def test_panic_garbage_netqty_in_unpriced_total_false(self):
+        """"abc" netqty → unpriced, total False, NOT silently dropped."""
+        client = MockNoren(
+            position_book_data=[
+                {"tsym": "SYM", "netqty": "abc", "lp": "200.0", "exch": "NFO"},
+            ],
+        )
+        positions = asyncio.run(client.position_book())
+        result = asyncio.run(panic_squareoff(client, [], positions))
+
+        assert result["flattened"] == 0
+        assert len(result["unpriced"]) == 1
+        assert result["unpriced"][0]["tsym"] == "SYM"
+        assert result["total"] is False  # NOT total — a live position was not handled
+
+    def test_panic_nan_netqty_in_unpriced_total_false(self):
+        client = MockNoren(
+            position_book_data=[
+                {"tsym": "SYM", "netqty": "nan", "lp": "200.0", "exch": "NFO"},
+            ],
+        )
+        positions = asyncio.run(client.position_book())
+        result = asyncio.run(panic_squareoff(client, [], positions))
+        assert len(result["unpriced"]) == 1
+        assert result["total"] is False
+
+
+# ===========================================================================
+# F2 — status case drift
+# ===========================================================================
+
+class TestStatusCaseNormalization:
+    """F2: order status must be uppercased before TERMINAL membership check."""
+
+    def test_plan_lowercase_canceled_treated_as_terminal(self):
+        """"canceled" (lowercase) must NOT appear in would_cancel."""
+        orders = [
+            {"norenordno": "ORD_CANCELED_LOWER", "status": "canceled"},
+            {"norenordno": "ORD_OPEN", "status": "OPEN"},
+        ]
+        plan = plan_squareoff(orders, [])
+        assert "ORD_CANCELED_LOWER" not in plan["would_cancel"]
+        assert "ORD_OPEN" in plan["would_cancel"]
+
+    def test_plan_title_case_canceled_treated_as_terminal(self):
+        orders = [{"norenordno": "ORD", "status": "Canceled"}]
+        plan = plan_squareoff(orders, [])
+        assert plan["would_cancel"] == []
+
+    def test_plan_lowercase_complete_treated_as_terminal(self):
+        orders = [{"norenordno": "ORD", "status": "complete"}]
+        plan = plan_squareoff(orders, [])
+        assert plan["would_cancel"] == []
+
+    def test_plan_mixed_case_rejected_treated_as_terminal(self):
+        orders = [{"norenordno": "ORD", "status": "Rejected"}]
+        plan = plan_squareoff(orders, [])
+        assert plan["would_cancel"] == []
+
+    def test_panic_lowercase_canceled_not_re_cancelled(self):
+        """A "canceled" order must be skipped by panic_squareoff (not re-cancelled)."""
+        client = MockNoren()
+        orders = [{"norenordno": "ALREADY_CANCELED", "status": "canceled"}]
+        result = asyncio.run(panic_squareoff(client, orders, []))
+        # No cancel attempt should have been made
+        assert result["canceled"] == 0
+        assert result["cancel_failures"] == []
+        assert result["total"] is True
+
+    def test_panic_title_case_complete_not_re_cancelled(self):
+        client = MockNoren()
+        orders = [{"norenordno": "DONE", "status": "Complete"}]
+        result = asyncio.run(panic_squareoff(client, orders, []))
+        assert result["canceled"] == 0
+        assert result["cancel_failures"] == []
+
+
+# ===========================================================================
+# F3 — latch whitelist / put_config cannot clear the latch
+# ===========================================================================
+
+class TestLatchWhitelist:
+    """F3: put_config must NEVER be able to set or clear blocked_until_reset."""
+
+    def test_put_config_rejects_blocked_until_reset(self):
+        """Sending blocked_until_reset=False via put_config must raise ValueError."""
+        store, col = _fake_store()
+        with pytest.raises(ValueError):
+            asyncio.run(store.put_config({"blocked_until_reset": False}))
+
+    def test_put_config_cannot_set_latch_to_true(self):
+        """Sending blocked_until_reset=True via put_config must raise ValueError."""
+        store, col = _fake_store()
+        with pytest.raises(ValueError):
+            asyncio.run(store.put_config({"blocked_until_reset": True}))
+
+    def test_put_config_does_not_clear_a_tripped_latch(self):
+        """Even if the call somehow went through, the latch must stay True after trip."""
+        store, col = _fake_store()
+        asyncio.run(store.trip())
+        # Attempt to clear via put_config — must be rejected
+        with pytest.raises(ValueError):
+            asyncio.run(store.put_config({"blocked_until_reset": False}))
+        # Latch must still be set
+        cfg = asyncio.run(store.get_config())
+        assert cfg["blocked_until_reset"] is True
+
+    def test_put_config_numeric_threshold_leaves_latch_untouched(self):
+        """A normal put_config(daily_loss_limit=...) must not touch the latch."""
+        store, col = _fake_store()
+        asyncio.run(store.trip())
+        asyncio.run(store.put_config({"daily_loss_limit": 1234}))
+        cfg = asyncio.run(store.get_config())
+        assert cfg["blocked_until_reset"] is True  # latch still set
+        assert cfg["daily_loss_limit"] == 1234
+
+    def test_only_reset_clears_the_latch(self):
+        """Only store.reset() clears blocked_until_reset."""
+        store, col = _fake_store()
+        asyncio.run(store.trip())
+        assert asyncio.run(store.get_config())["blocked_until_reset"] is True
+        asyncio.run(store.reset())
+        assert asyncio.run(store.get_config())["blocked_until_reset"] is False
+
+    def test_trip_coerces_to_strict_bool(self):
+        """trip() must store True (strict bool), not a truthy int or string."""
+        store, col = _fake_store()
+        asyncio.run(store.trip())
+        cfg = asyncio.run(store.get_config())
+        assert cfg["blocked_until_reset"] is True
+        assert type(cfg["blocked_until_reset"]) is bool
+
+    def test_reset_coerces_to_strict_bool(self):
+        """reset() must store False (strict bool)."""
+        store, col = _fake_store()
+        asyncio.run(store.trip())
+        asyncio.run(store.reset())
+        cfg = asyncio.run(store.get_config())
+        assert cfg["blocked_until_reset"] is False
+        assert type(cfg["blocked_until_reset"]) is bool

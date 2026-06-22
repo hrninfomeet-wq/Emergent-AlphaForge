@@ -528,18 +528,21 @@ async def get_safety_config():
 
 
 class _SafetyConfigBody(BaseModel):
+    # F3: blocked_until_reset is intentionally absent from this model.
+    # A generic PUT cannot set/clear the latch — use POST /safety-config/reset-latch.
     daily_loss_limit: Optional[float] = None
     profit_lock_target: Optional[float] = None
     max_open_positions: Optional[int] = None
-    blocked_until_reset: Optional[bool] = None
 
 
 @api.put("/live-broker/safety-config")
 async def put_safety_config(body: _SafetyConfigBody):
-    """Update live-trading safety guardrails.
+    """Update live-trading safety guardrails (numeric thresholds only).
 
     Only non-None fields in the request body are applied.
-    To reset the broker-stop-loss latch send ``{"blocked_until_reset": false}``.
+
+    **The ``blocked_until_reset`` latch cannot be set or cleared through this
+    route.**  To reset the latch use ``POST /live-broker/safety-config/reset-latch``.
 
     Returns the updated config.
     """
@@ -555,3 +558,16 @@ async def put_safety_config(body: _SafetyConfigBody):
         return await store.put_config(updates)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+
+
+@api.post("/live-broker/safety-config/reset-latch")
+async def reset_safety_latch():
+    """Explicitly reset the broker-stop-loss latch (blocked_until_reset → False).
+
+    This is the ONLY route that clears the latch.  It must be called
+    deliberately by an authorised operator after reviewing the loss event.
+
+    Returns the updated safety config.
+    """
+    store = _default_safety_store()
+    return await store.reset()
