@@ -71,6 +71,8 @@ export default function PaperTrading() {
     instrument: "",
     status: "",
     strategy_id: "",
+    direction: "",
+    exit_reason: "",
     date_from: "",
     date_to: "",
   });
@@ -86,6 +88,8 @@ export default function PaperTrading() {
     if (filters.instrument) p.instrument = filters.instrument;
     if (filters.status) p.status = filters.status;
     if (filters.strategy_id) p.strategy_id = filters.strategy_id;
+    if (filters.direction) p.direction = filters.direction;
+    if (filters.exit_reason) p.exit_reason = filters.exit_reason;
     if (filters.date_from) p.date_from = filters.date_from;
     if (filters.date_to) p.date_to = filters.date_to;
     return p;
@@ -102,6 +106,21 @@ export default function PaperTrading() {
     if (filters.date_to) p.date_to = filters.date_to;
     return p;
   }, [filters.deployment_id, filters.instrument, filters.strategy_id, filters.date_from, filters.date_to]);
+
+  // Options for the blotter's Strategy header filter: distinct strategy_id across
+  // non-archived deployments, labelled by deployment name (sets filters.strategy_id).
+  const strategyOptions = useMemo(() => {
+    const seen = new Map();
+    for (const d of deployments) {
+      if (String(d.status || "").toUpperCase() === "ARCHIVED") continue;
+      const sid = d.strategy_id;
+      if (!sid || seen.has(sid)) continue;
+      seen.set(sid, d.name || sid);
+    }
+    return [...seen.entries()]
+      .map(([value, label]) => ({ value, label }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [deployments]);
 
   const fetchRows = useCallback(async () => {
     try {
@@ -490,13 +509,6 @@ export default function PaperTrading() {
             {INSTRUMENTS.map((i) => <option key={i} value={i}>{i}</option>)}
           </select>
 
-          <select value={filters.status} onChange={(e) => setFilter("status", e.target.value)}
-            className="h-7 rounded-md border border-input bg-bg-2 px-2 text-xs text-foreground" data-testid="paper-status-filter">
-            <option value="">All statuses</option>
-            <option value="OPEN">OPEN</option>
-            <option value="CLOSED">CLOSED</option>
-          </select>
-
           <Input type="date" value={filters.date_from} onChange={(e) => setFilter("date_from", e.target.value)}
             className="bg-bg-2 border-line h-7 text-xs w-[150px] pr-1" data-testid="paper-date-from" title="From (IST)" />
           <Input type="date" value={filters.date_to} onChange={(e) => setFilter("date_to", e.target.value)}
@@ -540,7 +552,8 @@ export default function PaperTrading() {
 
       {/* Redesigned flat sortable blotter (per-trade analytics) */}
       <TradeBlotter rows={data.items} sort={sort} onToggleSort={toggleSort} onCloseAtMarket={closeAtMarket} busy={busy}
-        selected={selected} onToggleRow={toggleRow} onToggleAll={toggleAll} allClosedSelected={allClosedSelected} />
+        selected={selected} onToggleRow={toggleRow} onToggleAll={toggleAll} allClosedSelected={allClosedSelected}
+        filters={filters} onSetFilter={setFilter} strategyOptions={strategyOptions} />
 
       {/* Pagination */}
       <div className="rounded-lg border border-line bg-bg-1 px-3 py-2 flex items-center gap-2 text-[11px] text-dimmer">
