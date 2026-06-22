@@ -42,6 +42,11 @@ from app.live.flattrade_token import (
 from app.live.flattrade_client import FlattradeClient
 from app.live.reconcile import reconcile
 from app.live.flattrade_symbol import SymbolResolutionError, resolve
+from app.live.kill_switch import (
+    SafetyConfigStore,
+    default_store as _default_safety_store,
+    plan_squareoff,
+)
 
 log = logging.getLogger(__name__)
 
@@ -457,3 +462,96 @@ async def live_order_dry_run(body: _DryRunBody):
         "verdicts": verdicts,
         "client_order_id": cid,
     }
+
+
+# ---------------------------------------------------------------------------
+# Kill switch + safety config routes (L2.2)
+#
+# INVARIANT: these routes NEVER call client.cancel_order or client.place_order.
+# The kill-switch route returns a PLAN only — what it *would* do.  The executor
+# (panic_squareoff) is tested separately against MockNoren and is NOT wired here.
+# grep-clean guarantee: no .place_order( or .cancel_order( calls below.
+# ---------------------------------------------------------------------------
+
+@api.post("/live-broker/kill-switch")
+async def live_kill_switch():
+    """Return the squareoff PLAN for the current broker state.
+
+    Fetches order_book() + position_book() (read-only methods) and passes them
+    through ``plan_squareoff`` — which computes which orders would be cancelled
+    and which positions would be flattened WITHOUT transmitting anything.
+
+    Returns
+    -------
+    ``plan``:        The squareoff plan (would_cancel / would_flatten / unpriced).
+    ``config``:      Current safety config (including latch state).
+    ``transmitted``: Always False — this route never transmits in the safe core.
+    ``armed``:       Always True — the plan is ready to act on.
+    ``connected``:   Whether the broker client is reachable.
+    """
+    store = _default_safety_store()
+    config = await store.get_config()
+
+    # Try to fetch from the live broker; degrade gracefully if not connected.
+    open_orders: List[Dict[str, Any]] = []
+    open_positions: List[Dict[str, Any]] = []
+    connected = False
+
+    try:
+        client = await _get_client()
+        open_orders = await client.order_book()
+        open_positions = await client.position_book()
+        connected = True
+    except HTTPException:
+        # Not connected — return an empty plan rather than 400; the latch state
+        # and plan structure are still useful even when the broker is offline.
+        pass
+    except Exception as exc:
+        log.warning("kill_switch: broker fetch failed: %s", exc)
+
+    plan = plan_squareoff(open_orders, open_positions)
+
+    return {
+        "plan": plan,
+        "config": config,
+        "transmitted": False,
+        "armed": True,
+        "connected": connected,
+    }
+
+
+@api.get("/live-broker/safety-config")
+async def get_safety_config():
+    """Return the current live-trading safety guardrails config."""
+    store = _default_safety_store()
+    return await store.get_config()
+
+
+class _SafetyConfigBody(BaseModel):
+    daily_loss_limit: Optional[float] = None
+    profit_lock_target: Optional[float] = None
+    max_open_positions: Optional[int] = None
+    blocked_until_reset: Optional[bool] = None
+
+
+@api.put("/live-broker/safety-config")
+async def put_safety_config(body: _SafetyConfigBody):
+    """Update live-trading safety guardrails.
+
+    Only non-None fields in the request body are applied.
+    To reset the broker-stop-loss latch send ``{"blocked_until_reset": false}``.
+
+    Returns the updated config.
+    """
+    store = _default_safety_store()
+    updates: Dict[str, Any] = {
+        k: v
+        for k, v in body.dict().items()
+        if v is not None
+    }
+    if not updates:
+        return await store.get_config()
+    try:
+        return await store.put_config(updates)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
