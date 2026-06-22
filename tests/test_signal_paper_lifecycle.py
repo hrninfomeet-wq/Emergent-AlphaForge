@@ -190,14 +190,19 @@ def test_frontend_exposes_live_and_paper_operational_views():
     for needle in ("paper-trade-blotter", "paper-trade-table", "close-paper-trade"):
         assert needle in paper
     # The Paper Trading journal (rebuilt /paper page, forward-surfaces R4,
-    # 2026-06-12; analytics redesign 2026-06-21): strategy-named journal on the
-    # upgraded /paper/trades, with day-wise grouping, an account hero + equity
-    # curve, server-side filter/sort/paginate/CSV, one-click close-at-market +
-    # close-all, and the CLOSED-only purge toolkit.
+    # 2026-06-12; analytics redesign 2026-06-21; blotter column + per-column-filter
+    # redesign 2026-06-22): account hero + equity curve, server-side
+    # filter/sort/paginate/CSV, close-at-market + close-all, CLOSED-only purge.
+    # The 2026-06-22 redesign moved the status filter out of the top bar into a
+    # per-column header filter row (paper-filter-row) alongside Side / Exit Reason /
+    # Strategy filters, and replaced the Actions column with an Exit Reason column
+    # (paper-exit-reason).
     for needle in ("paper-trading-page", "paper-trade-row", "paper-deployment-filter",
-                   "paper-status-filter", "paper-account-hero", "paper-equity-curve",
-                   "paper-close-all", "paper-export-csv", "paper-delete-selected",
-                   "paper-delete-older", "paper-purge-deployment", "paper-next-page"):
+                   "paper-status-filter", "paper-side-filter", "paper-exit-reason-filter",
+                   "paper-filter-row", "paper-exit-reason", "paper-account-hero",
+                   "paper-equity-curve", "paper-close-all", "paper-export-csv",
+                   "paper-delete-selected", "paper-delete-older", "paper-purge-deployment",
+                   "paper-next-page"):
         assert needle in paper
     # The Signals ledger (rebuilt /journal page, forward-surfaces R3, 2026-06-12).
     # Built on the enriched endpoint, with server-side filter/sort/CSV and the

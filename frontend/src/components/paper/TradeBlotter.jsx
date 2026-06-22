@@ -28,9 +28,9 @@ export default function TradeBlotter({
     <th className={`p-2 ${right ? "text-right" : "text-left"} ${col ? "cursor-pointer hover:text-foreground" : ""}`}
       onClick={col ? () => onToggleSort(col) : undefined}>{children}{col ? mark(col) : null}</th>
   );
-  const FilterSelect = ({ k, title, children }) => (
+  const FilterSelect = ({ k, title, testid, children }) => (
     <select value={filters[k] || ""} onChange={(e) => onSetFilter?.(k, e.target.value)} onClick={(e) => e.stopPropagation()}
-      className="w-full h-6 rounded border border-line bg-bg-2 px-1 text-[10px] text-foreground" title={title}>
+      className="w-full h-6 rounded border border-line bg-bg-2 px-1 text-[10px] text-foreground" title={title} data-testid={testid}>
       {children}
     </select>
   );
@@ -63,13 +63,13 @@ export default function TradeBlotter({
             <td className="p-1" />
             <td className="p-1" />
             <td className="p-1">
-              <FilterSelect k="strategy_id" title="Filter by strategy">
+              <FilterSelect k="strategy_id" title="Filter by strategy" testid="paper-strategy-filter">
                 <option value="">All strategies</option>
                 {strategyOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
               </FilterSelect>
             </td>
             <td className="p-1">
-              <FilterSelect k="direction" title="Filter by side">
+              <FilterSelect k="direction" title="Filter by side" testid="paper-side-filter">
                 <option value="">All</option>
                 <option value="CE">Call (CE)</option>
                 <option value="PE">Put (PE)</option>
@@ -79,14 +79,14 @@ export default function TradeBlotter({
             <td className="p-1" /><td className="p-1" /><td className="p-1" /><td className="p-1" />
             <td className="p-1" /><td className="p-1" /><td className="p-1" />
             <td className="p-1">
-              <FilterSelect k="status" title="Filter by status">
+              <FilterSelect k="status" title="Filter by status" testid="paper-status-filter">
                 <option value="">All</option>
                 <option value="OPEN">Open</option>
                 <option value="CLOSED">Closed</option>
               </FilterSelect>
             </td>
             <td className="p-1">
-              <FilterSelect k="exit_reason" title="Filter by exit reason">
+              <FilterSelect k="exit_reason" title="Filter by exit reason" testid="paper-exit-reason-filter">
                 <option value="">All</option>
                 {EXIT_REASON_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
               </FilterSelect>
