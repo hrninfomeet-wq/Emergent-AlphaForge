@@ -82,6 +82,7 @@ from app.live.auto_square import (
 )
 from app.live import executor as _executor_mod
 from app.live.engine import LiveEngine
+from app.live.option_premium import match_contract, resolve_premium
 
 log = logging.getLogger(__name__)
 
@@ -1212,3 +1213,125 @@ async def live_kill_switch():
         "armed": True,
         "connected": connected,
     }
+
+
+# ---------------------------------------------------------------------------
+# Option-premium resolver — read-only, no order placement
+# ---------------------------------------------------------------------------
+#
+# These three module-level getters are the only I/O seams for this feature.
+# Tests monkeypatch them to inject fakes; production uses the real singletons.
+# ---------------------------------------------------------------------------
+
+def _get_db_for_option_premium():
+    """Return the motor DB handle. Tests monkeypatch this."""
+    from app.db import get_db
+    return get_db()
+
+
+def _get_tick_map_for_option_premium() -> dict:
+    """Return the live tick map {instrument_key: tick_dict}.
+
+    Wrapped so tests can monkeypatch without touching upstox_stream globally.
+    Returns an empty dict if the stream manager is unavailable.
+    """
+    try:
+        from app.upstox_stream import upstox_stream_manager
+        return upstox_stream_manager.latest_tick_map()
+    except Exception:
+        return {}
+
+
+def _now_ts_for_option_premium() -> float:
+    """Return current UTC epoch seconds. Tests monkeypatch this for determinism."""
+    import time
+    return time.time()
+
+
+class _OptionPremiumRequest(BaseModel):
+    underlying: str
+    strike: float
+    expiry_date: str
+    side: str
+
+
+@api.post("/live-broker/option-premium")
+async def get_option_premium(body: _OptionPremiumRequest):
+    """Return the current premium for the requested option contract.
+
+    Resolution order:
+      1. Fresh live Upstox WS tick (within MARK_TICK_MAX_AGE_SECONDS = 120s).
+      2. Last options_1m candle close (no age restriction — best-effort when
+         market is closed).
+      3. No data available → premium None.
+
+    Always returns 200; never 500.  Read-only — no order is placed.
+
+    Response::
+
+        {
+            "instrument_key": str | None,
+            "premium": float | None,
+            "source": "live_tick" | "last_candle" | "none",
+            "fresh": bool,
+            "ts": float | None,
+            # only when contract not found:
+            "reason": "contract_not_found"
+        }
+    """
+    db = _get_db_for_option_premium()
+    tick_map = _get_tick_map_for_option_premium()
+    now_ts = _now_ts_for_option_premium()
+
+    # 1. Resolve contract → instrument_key
+    try:
+        contracts = await db.option_contracts.find(
+            {"underlying": body.underlying}
+        ).to_list(length=5000)
+    except Exception as exc:
+        log.warning("get_option_premium: option_contracts fetch failed: %s", exc)
+        contracts = []
+
+    contract = match_contract(
+        contracts,
+        strike=body.strike,
+        side=body.side,
+        expiry_date=body.expiry_date,
+    )
+
+    if contract is None:
+        return {
+            "instrument_key": None,
+            "premium": None,
+            "source": "none",
+            "fresh": False,
+            "ts": None,
+            "reason": "contract_not_found",
+        }
+
+    instrument_key: str = contract["instrument_key"]
+
+    # 2. Live tick (may be None if not subscribed / stream not running)
+    tick = tick_map.get(instrument_key) if tick_map else None
+
+    # 3. Last options_1m candle close
+    candle_close = None
+    try:
+        candle = await db.options_1m.find_one(
+            {"instrument_key": instrument_key},
+            sort=[("ts", -1)],
+        )
+        if candle:
+            candle_close = candle.get("close")
+    except Exception as exc:
+        log.warning("get_option_premium: options_1m fetch failed for %s: %s", instrument_key, exc)
+
+    # 4. Resolve
+    result = resolve_premium(
+        instrument_key=instrument_key,
+        tick=tick,
+        candle_close=candle_close,
+        now_ts=now_ts,
+    )
+    result["instrument_key"] = instrument_key
+    return result
