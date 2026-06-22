@@ -1,8 +1,7 @@
-"""Read-only Flattrade broker routes + Live-broker data endpoints.
+"""Read-only + L3 live-broker routes.
 
 Mirrors the Upstox auth/status patterns in app/routers/broker.py.
-All routes are READ-ONLY or AUTH-ONLY — no order-placing path exists here.
-Routes must not crash when not connected: return 400/empty, never 500-by-exception.
+READ routes never crash when not connected: return 400/empty, never 500.
 
 Routes
 ------
@@ -17,16 +16,40 @@ GET  /live-broker/trades                — broker trade book (real API)
 GET  /live-broker/limits                — broker account limits / margin (real API)
 GET  /live-broker/reconcile             — reconcile report (broker vs empty internal state)
 GET  /live-broker/symbol/resolve        — preview Noren tsym resolution for a contract
+
+GET  /live-broker/order/dry-run         — build intent + run safety checks WITHOUT placing
+
+GET  /live-broker/safety-config         — get safety guardrails config
+PUT  /live-broker/safety-config         — update numeric thresholds
+POST /live-broker/safety-config/reset-latch — clear the blocked_until_reset latch
+
+L3 routes (new — order entry, mode, test-session, kill)
+---------------------------------------------------------
+GET  /live-broker/mode                  — current mode doc
+PUT  /live-broker/mode                  — transition mode (PAPER/LIVE_OFFLINE/LIVE_TEST)
+POST /live-broker/order/place           — THE ONLY entry route → executor (guarded chokepoint)
+POST /live-broker/order/square          — manual square of the test position (exit-only)
+GET  /live-broker/test-session          — deadline/remaining/heartbeat/status
+POST /live-broker/kill-switch           — EXECUTE panic squareoff + revert mode (L3: transmits)
+
+CHOKEPOINT CLASSIFICATION (grep-verifiable):
+  ENTRY place_order  : executor.place_live_test_order ONLY (via POST /order/place)
+  EXIT  place_order  : auto_square.square_position (square route + kill + timer)
+  EXIT  cancel_order : auto_square.square_position + kill_switch.panic_squareoff
+  SL backstop        : build_sl_backstop_intent → client.place_order inside _make_arm (exit-only sell-to-close)
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import RedirectResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, StrictBool
+from typing import Literal as _Literal
 
 from app.live import flattrade_token
 from app.live.flattrade_token import (
@@ -46,11 +69,82 @@ from app.live.kill_switch import (
     SafetyConfigStore,
     default_store as _default_safety_store,
     plan_squareoff,
+    panic_squareoff,
 )
+from app.live.mode import ModeStore, default_store as _default_mode_store
+from app.live.idempotency import IntentStore, default_store as _default_intent_store
+from app.live.session_store import SessionStore, default_store as _default_session_store
+from app.live import auto_square
+from app.live.auto_square import (
+    build_sl_backstop_intent,
+    deadline_iso,
+    square_position,
+)
+from app.live import executor as _executor_mod
+from app.live.engine import LiveEngine
 
 log = logging.getLogger(__name__)
 
 api = APIRouter()
+
+# ---------------------------------------------------------------------------
+# Module-level LiveEngine singleton
+#
+# The singleton matters because LiveEngine.halted is in-memory: a halt set by
+# the executor's _abort_protect during one request must survive to the next
+# request's can_trade() check.  A fresh engine per request would lose that flag.
+#
+# The config-store latch (blocked_until_reset) persists in Mongo, but the
+# in-memory halted flag does not — hence the singleton.
+#
+# Fail-CLOSED rule: if a real engine cannot be constructed (e.g. DB down at
+# import time), _l3_engine() returns a _ClosedEngine whose can_trade() always
+# returns (False, "engine_unavailable"). NEVER fall back to an always-True
+# permissive engine in production.
+# ---------------------------------------------------------------------------
+
+_live_engine_singleton: Optional["LiveEngine"] = None
+_live_engine_init_error: Optional[str] = None
+
+
+def _build_live_engine_singleton() -> None:
+    """Construct and cache the LiveEngine singleton from the real stores.
+
+    Called once at first use.  On any error the singleton remains None and
+    _live_engine_init_error is set; subsequent calls to _l3_engine() return
+    the fail-closed _ClosedEngine.
+    """
+    global _live_engine_singleton, _live_engine_init_error
+    try:
+        from app.db import get_db
+        db = get_db()
+        _live_engine_singleton = LiveEngine(
+            client=_order_client(),         # may be None if not yet connected
+            orders_collection=db.live_orders,
+            intent_store=_intent_store(),
+            config_store=_config_store(),
+        )
+        log.info("LiveEngine singleton constructed (client=%r)", _order_client())
+    except Exception as exc:
+        _live_engine_init_error = str(exc)
+        log.error("LiveEngine singleton construction FAILED — will fail CLOSED: %s", exc)
+
+
+class _ClosedEngine:
+    """Fail-closed sentinel engine returned when a real engine cannot be built.
+
+    can_trade() always returns (False, "engine_unavailable") so the halt/latch
+    gate is never bypassed. This is the ONLY acceptable fallback; the permissive
+    (always-True) engine must NOT be used in production.
+    """
+    halted: bool = True
+    halt_reason: str = "engine_unavailable"
+
+    async def can_trade(self):
+        return False, "engine_unavailable"
+
+    async def halt(self, reason: str) -> None:
+        log.error("_ClosedEngine.halt called (engine unavailable): %s", reason)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -62,8 +156,7 @@ _FRONTEND_POST_AUTH_URL = lambda: os.environ.get("FRONTEND_POST_AUTH_URL", "/war
 async def _get_client() -> FlattradeClient:
     """Return a FlattradeClient for the default user's stored token.
 
-    Raises HTTPException(400) if no token is stored — never raises 500 from
-    missing auth state.
+    Raises HTTPException(400) if no token is stored.
     """
     doc = await _get_token_doc()
     return FlattradeClient(
@@ -89,6 +182,312 @@ async def _get_token_doc() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Wiring getters — monkeypatched by tests to inject fakes
+#
+# All production instances are created lazily here; tests patch these
+# module-level functions so no real DB / client is touched in tests.
+# ---------------------------------------------------------------------------
+
+def _order_client() -> Optional[FlattradeClient]:
+    """Return the FlattradeClient for ORDER routes (None if not connected).
+
+    Tests monkeypatch this to return a MockNoren. The real version does a
+    synchronous-style best-effort check; ORDER routes that need this must call
+    it and raise 400 on None.
+
+    NOTE: this is intentionally *not* async because the routes call it
+    synchronously before the async broker calls. The actual FlattradeClient
+    object is cheap to create; the network cost is in the individual method calls.
+    """
+    # In production we try to build from the stored token synchronously.
+    # We cannot await here; routes that use _order_client() fetch the token
+    # via _get_client() if they need the actual async-fetched version.
+    # For L3 routes, tests monkeypatch this to a MockNoren so it never runs.
+    return None  # prod routes call _get_client() directly; tests patch this
+
+
+def _l3_engine():
+    """Return the LiveEngine singleton (real or fail-closed).
+
+    Production path:
+      - Builds the singleton on first call (lazy, so DB must be ready).
+      - Subsequent calls return the SAME object (halted flag persists).
+      - If construction fails, returns _ClosedEngine (can_trade → False always).
+
+    Tests monkeypatch this function to inject a FakeEngine. The _PermissiveEngine
+    (always True) must NEVER appear on the production path — only in test helpers.
+    """
+    global _live_engine_singleton
+    if _live_engine_singleton is None and _live_engine_init_error is None:
+        _build_live_engine_singleton()
+    if _live_engine_singleton is not None:
+        return _live_engine_singleton
+    # Construction failed — fail CLOSED
+    return _ClosedEngine()
+
+
+def _mode_store() -> ModeStore:
+    """Return the production ModeStore. Tests monkeypatch to a fake."""
+    return _default_mode_store()
+
+
+def _intent_store() -> IntentStore:
+    """Return the production IntentStore. Tests monkeypatch to a fake."""
+    return _default_intent_store()
+
+
+def _config_store() -> SafetyConfigStore:
+    """Return the production SafetyConfigStore. Tests monkeypatch to a fake."""
+    return _default_safety_store()
+
+
+def _session_store() -> SessionStore:
+    """Return the production SessionStore. Tests monkeypatch to a fake."""
+    return _default_session_store()
+
+
+def _utcnow_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+# ---------------------------------------------------------------------------
+# Arm factory
+#
+# CHOKEPOINT: _make_arm only places EXIT-ONLY orders:
+#   1. The SL backstop is a sell-to-close (trantype='S') protective SL-LMT.
+#   2. The session is recorded without any buy.
+# ---------------------------------------------------------------------------
+
+def _make_arm(
+    client: Any,
+    *,
+    ref_ltp: float,
+    band_pct: float,
+    session_store: SessionStore,
+    uid: str,
+    actid: str,
+) -> Any:
+    """Return an async arm(intent, norenordno) callable for use by the executor.
+
+    The arm callable:
+    1. Builds a protective SL backstop via build_sl_backstop_intent(stop_trigger=ref_ltp*0.7).
+       If the backstop intent is not None it calls client.place_order(sl_intent)
+       (EXIT-ONLY: sell-to-close SL on the long). Records sl_norenordno if placed.
+       A failed SL placement is best-effort: logged but does NOT abort the arm.
+    2. Computes the deadline (fill_time = now; deadline = now + 600s).
+    3. Records the session doc via session_store.arm(...). A failure here RAISES
+       (so the executor's _abort_protect path runs).
+
+    Rationale for raising on session record failure (not on SL place failure):
+    - The SL is supplementary; the time-square is the primary protection.
+    - The session record is mandatory: without it, the server timer cannot fire
+      and the deadline is lost. A failure here means protection is broken.
+    """
+    from app.live.idempotency import new_client_order_id
+
+    async def _arm(intent: Any, norenordno: str) -> None:
+        now = _utcnow_iso()
+        dl = deadline_iso(now)
+
+        # --- SL backstop (best-effort, exit-only sell-to-close) ---
+        stop_trigger = round(ref_ltp * 0.7, 2)
+        sl_cid = new_client_order_id()
+        sl_intent = build_sl_backstop_intent(
+            exch=intent.exch,
+            tsym=intent.tsym,
+            qty=intent.qty,
+            stop_trigger=stop_trigger,
+            client_order_id=sl_cid,
+        )
+        sl_norenordno: Optional[str] = None
+        if sl_intent is not None:
+            try:
+                sl_result = await client.place_order(sl_intent)
+                if sl_result.ok:
+                    sl_norenordno = sl_result.norenordno
+                else:
+                    log.warning(
+                        "arm: SL backstop rejected: %s (continuing without SL)",
+                        sl_result.rejreason,
+                    )
+            except Exception as exc:
+                log.warning("arm: SL backstop place_order raised: %s (continuing without SL)", exc)
+        else:
+            log.warning(
+                "arm: SL backstop not built (stop_trigger=%.2f <= 0.05 or invalid)",
+                stop_trigger,
+            )
+
+        # --- Record session (hard failure raises — executor will abort-protect) ---
+        await session_store.arm(
+            entry_norenordno=norenordno,
+            deadline=dl,
+            sl_norenordno=sl_norenordno,
+            now_iso=now,
+        )
+
+        # --- Start background server-timer task ---
+        _schedule_auto_square(
+            client=client,
+            deadline=dl,
+            band_pct=band_pct,
+            session_store=session_store,
+            uid=uid,
+            actid=actid,
+        )
+
+    return _arm
+
+
+# ---------------------------------------------------------------------------
+# Background server-timer
+#
+# After a successful arm, this thin asyncio task waits until the deadline
+# (checking at regular intervals) and then calls square_position + reverts mode.
+# The logic is delegated to the tested auto_square functions; this is glue only.
+# ---------------------------------------------------------------------------
+
+_TIMER_CHECK_INTERVAL = 15  # seconds between deadline checks
+
+
+def _schedule_auto_square(
+    *,
+    client: Any,
+    deadline: str,
+    band_pct: float,
+    session_store: SessionStore,
+    uid: str,
+    actid: str,
+) -> None:
+    """Schedule the background auto-square task (fire-and-forget asyncio task)."""
+    asyncio.create_task(
+        _auto_square_task(
+            client=client,
+            deadline=deadline,
+            band_pct=band_pct,
+            session_store=session_store,
+            uid=uid,
+            actid=actid,
+        ),
+        name="live_auto_square",
+    )
+
+
+async def _check_and_square_if_due(
+    *,
+    client: Any,
+    deadline: str,
+    band_pct: float,
+    session_store: SessionStore,
+    uid: str,
+    actid: str,
+    now_iso: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Check if the deadline has passed; if so, square the position and revert mode.
+
+    Returns the square result dict if squaring was triggered, else None.
+
+    This helper is called by the background task AND can be called directly in
+    tests with an injected past ``now_iso`` to exercise the timer logic without
+    real time passing.
+    """
+    now = now_iso or _utcnow_iso()
+    if not auto_square.is_due(deadline, now):
+        return None
+
+    # Deadline reached — load session to get position details
+    sess = await session_store.get()
+    status = sess.get("status")
+    if status not in ("armed",):
+        # Already squared or killed — nothing to do
+        return None
+
+    entry_norenordno = sess.get("entry_norenordno")
+    if not entry_norenordno:
+        return None
+
+    # Build a minimal position dict for square_position.
+    # We only have the norenordno and need to cancel any working order.
+    # The actual position (tsym/exch/netqty/lp) must come from the broker.
+    try:
+        positions = await client.position_book()
+    except Exception as exc:
+        log.error("auto_square_task: could not fetch positions: %s", exc)
+        return None
+
+    # Find the position associated with the entry norenordno (heuristic: first open)
+    position = None
+    for pos in positions:
+        nq = pos.get("netqty", 0)
+        try:
+            nq_int = int(float(str(nq).replace(",", "")))
+        except (TypeError, ValueError):
+            nq_int = 0
+        if nq_int != 0:
+            position = dict(pos)
+            position["working_norenordno"] = entry_norenordno
+            break
+
+    if position is None:
+        # No open position found — already flat
+        await session_store.update_status("squared")
+        return {"squared": True, "via": "cancel", "note": "no open position at deadline"}
+
+    result = await square_position(
+        client,
+        position,
+        reason="auto_square_deadline",
+        band_pct=band_pct,
+        uid=uid,
+        actid=actid,
+        now_iso=now,
+    )
+
+    await session_store.update_status("squared")
+
+    # Revert mode to LIVE_OFFLINE
+    try:
+        ms = _mode_store()
+        await ms.revert_to_offline(now_iso=now)
+    except Exception as exc:
+        log.warning("auto_square: could not revert mode: %s", exc)
+
+    return result
+
+
+async def _auto_square_task(
+    *,
+    client: Any,
+    deadline: str,
+    band_pct: float,
+    session_store: SessionStore,
+    uid: str,
+    actid: str,
+) -> None:
+    """Background asyncio task: poll until deadline, then square + revert mode."""
+    while True:
+        await asyncio.sleep(_TIMER_CHECK_INTERVAL)
+        result = await _check_and_square_if_due(
+            client=client,
+            deadline=deadline,
+            band_pct=band_pct,
+            session_store=session_store,
+            uid=uid,
+            actid=actid,
+        )
+        if result is not None:
+            log.info("auto_square_task: deadline reached, square result: %s", result)
+            break
+        # Check if session was squared by another path
+        try:
+            sess = await session_store.get()
+            if sess.get("status") not in ("armed",):
+                break
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
 # Auth / status routes (mirror /upstox/... pattern from broker.py)
 # ---------------------------------------------------------------------------
 
@@ -99,7 +498,6 @@ async def flattrade_status():
         return await get_status(DEFAULT_USER_ID)
     except Exception as exc:
         log.exception("flattrade_status failed")
-        # Return a safe degraded response rather than a 500
         return {
             "connected": False,
             "expired": False,
@@ -134,12 +532,7 @@ async def flattrade_auth_callback(
     code: Optional[str] = None,
     error: Optional[str] = None,
 ):
-    """Browser is redirected here by Flattrade after login.
-
-    Exchange code for token, save it, then redirect to the frontend.
-    Uses ?flattrade_connected=1 / ?flattrade_error=<reason> query params to
-    signal outcome to the frontend (mirrors Upstox's ?upstox_connected=1 pattern).
-    """
+    """Browser is redirected here by Flattrade after login."""
     frontend_url = _FRONTEND_POST_AUTH_URL()
     if error:
         return RedirectResponse(f"{frontend_url}?flattrade_error={error}")
@@ -147,10 +540,9 @@ async def flattrade_auth_callback(
         return RedirectResponse(f"{frontend_url}?flattrade_error=missing_code")
     try:
         payload = await exchange_code_for_token(code)
-        # payload shape: {stat: "Ok", token: <jKey>, uid: <uid>, actid: <actid>, ...}
         jKey = payload.get("token") or payload.get("jKey")
         uid = payload.get("uid", "")
-        actid = payload.get("actid", uid)  # actid defaults to uid for single-account users
+        actid = payload.get("actid", uid)
         if not jKey:
             return RedirectResponse(f"{frontend_url}?flattrade_error=missing_token_in_response")
         await save_token(DEFAULT_USER_ID, jKey=jKey, uid=uid, actid=actid)
@@ -241,15 +633,7 @@ async def live_broker_limits():
 
 @api.get("/live-broker/reconcile")
 async def live_broker_reconcile():
-    """Fetch broker orders+positions and return a reconcile diff report.
-
-    Internal state is empty for now (L0 — no live_orders/live_positions store yet).
-    The report will flag any broker-side open orders/positions as unknown_broker_*
-    mismatches, which is the correct fail-closed behaviour until L2.3 wires the
-    full engine state.
-
-    Returns 400 if not connected.
-    """
+    """Fetch broker orders+positions and return a reconcile diff report."""
     try:
         client = await _get_client()
     except HTTPException:
@@ -263,7 +647,6 @@ async def live_broker_reconcile():
         log.exception("live_broker_reconcile: broker fetch failed")
         raise HTTPException(400, f"Flattrade fetch error: {str(exc)[:300]}") from exc
 
-    # L0: internal state is empty — no live_orders / live_positions yet.
     report = reconcile(
         internal_orders=[],
         internal_positions=[],
@@ -281,15 +664,9 @@ async def live_broker_symbol_resolve(
     expiry: str = Query(..., description="ISO date YYYY-MM-DD"),
     lot_size: Optional[int] = Query(None, description="Expected lot size; auto-filled from spec if omitted"),
 ):
-    """Preview Noren symbol resolution for a given option contract.
-
-    Calls SearchScrip on the real Flattrade API via the stored token and returns
-    {tsym, token, exch, lot_size} or a 400 with the SymbolResolutionError message.
-    Returns 400 if not connected or if the symbol cannot be resolved unambiguously.
-    """
+    """Preview Noren symbol resolution for a given option contract."""
     from app.live.flattrade_symbol import UNDERLYING_SPEC
 
-    # Auto-fill lot_size from the known spec if not provided
     if lot_size is None:
         spec = UNDERLYING_SPEC.get(underlying.strip().upper())
         if spec is None:
@@ -297,7 +674,7 @@ async def live_broker_symbol_resolve(
                 400,
                 f"Unknown underlying {underlying!r}. Supported: {sorted(UNDERLYING_SPEC)}",
             )
-        lot_size = spec[2]  # UNDERLYING_SPEC is (exch, symname, lot_size)
+        lot_size = spec[2]
 
     try:
         client = await _get_client()
@@ -306,7 +683,6 @@ async def live_broker_symbol_resolve(
     except Exception as exc:
         raise HTTPException(400, f"Could not build Flattrade client: {exc}") from exc
 
-    # Build a contract dict matching the flattrade_symbol.resolve() expected shape
     contract = {
         "underlying": underlying,
         "strike": strike,
@@ -315,15 +691,8 @@ async def live_broker_symbol_resolve(
         "lot_size": lot_size,
     }
 
-    # search_scrip is async; resolve() calls search_fn synchronously.
-    # Wrap it so the async call is awaited before returning to the sync resolver.
-    # We pre-fetch the results and provide a sync wrapper over the cached list.
     import asyncio
 
-    async def _async_search(exch: str, query: str):
-        return await client.search_scrip(exch, query)
-
-    # Pre-run the search so resolve() can call a sync wrapper
     try:
         underlying_upper = underlying.strip().upper()
         from app.live.flattrade_symbol import UNDERLYING_SPEC as _SPEC
@@ -342,9 +711,7 @@ async def live_broker_symbol_resolve(
     except Exception as exc:
         raise HTTPException(400, f"SearchScrip error: {str(exc)[:300]}") from exc
 
-    # Now call resolve() with a sync wrapper over the pre-fetched rows
     def _sync_search(exch: str, q: str):
-        # Returns the already-fetched rows (same query)
         return scrip_rows
 
     try:
@@ -358,13 +725,13 @@ async def live_broker_symbol_resolve(
 
 
 # ---------------------------------------------------------------------------
-# Dry-run route (L1.3) — NEVER transmits; no place_order/cancel_order call
+# Dry-run route (L1.3) — NEVER transmits
 # ---------------------------------------------------------------------------
 
 class _DryRunBody(BaseModel):
     contract: Dict[str, Any]
-    side: str                          # "B" or "S"
-    order_kind: str                    # "entry" | "exit" | "stop"
+    side: str
+    order_kind: str
     lots: int
     ref_ltp: float
     band_pct: float
@@ -375,27 +742,14 @@ class _DryRunBody(BaseModel):
 
 @api.post("/live-broker/order/dry-run")
 async def live_order_dry_run(body: _DryRunBody):
-    """Build an OrderIntent and run all safety checks WITHOUT placing any order.
-
-    Returns the jdata dict that WOULD be sent, the per-check verdicts list, and
-    the generated client_order_id.  This route NEVER calls place_order or
-    cancel_order — it is strictly read-and-compute.
-
-    Works even when the broker is not connected: symbol resolution will produce a
-    failed 'symbol' verdict rather than a 500 when no token is stored.
-    """
+    """Build an OrderIntent and run all safety checks WITHOUT placing any order."""
     from app.live.idempotency import new_client_order_id
     from app.live.order_builder import build_intent
     from app.live.flattrade_symbol import UNDERLYING_SPEC
+    from app.live.margin import margin_verdict
 
     cid = new_client_order_id()
 
-    # Build a sync search_fn adapter that calls the live client's async search_scrip.
-    # Mirror the existing /live-broker/symbol/resolve pattern: pre-fetch results via
-    # await, then wrap in a sync closure so order_builder's sync search_fn contract
-    # is satisfied.  If the client cannot be obtained (not connected), we fall back
-    # to a sync fn that always returns [] so that the symbol verdict reports the
-    # failure gracefully rather than raising a 500.
     underlying = str(body.contract.get("underlying") or "").strip().upper()
     strike = body.contract.get("strike")
 
@@ -415,13 +769,11 @@ async def live_order_dry_run(body: _DryRunBody):
             )
             pre_fetched_rows = await client.search_scrip(exch, query)
     except HTTPException:
-        # Not connected — let the symbol verdict report this
         fetch_error = "Flattrade not connected; symbol resolution will fail"
     except Exception as exc:
         fetch_error = f"SearchScrip error: {str(exc)[:200]}"
 
     def _sync_search(exch: str, q: str) -> List[Dict[str, Any]]:
-        # Returns the already-fetched rows (same single-query pattern as symbol/resolve)
         return pre_fetched_rows
 
     intent, verdicts = build_intent(
@@ -438,15 +790,11 @@ async def live_order_dry_run(body: _DryRunBody):
         search_fn=_sync_search,
     )
 
-    # If the broker isn't connected, surface it as a note on the first verdict
     if fetch_error and verdicts and verdicts[0]["check"] == "symbol" and not verdicts[0]["ok"]:
         verdicts[0]["detail"] = f"{fetch_error}; {verdicts[0]['detail']}"
 
-    # Build jdata only when an intent was produced; otherwise would_send is None.
     would_send: Optional[Dict[str, Any]] = None
     if intent is not None:
-        # We need uid/actid for to_jdata; try to get them from the stored token.
-        # Fall back to empty strings — the dry-run is inspection-only, not submission.
         uid = ""
         actid = ""
         try:
@@ -465,71 +813,17 @@ async def live_order_dry_run(body: _DryRunBody):
 
 
 # ---------------------------------------------------------------------------
-# Kill switch + safety config routes (L2.2)
-#
-# INVARIANT: these routes NEVER call client.cancel_order or client.place_order.
-# The kill-switch route returns a PLAN only — what it *would* do.  The executor
-# (panic_squareoff) is tested separately against MockNoren and is NOT wired here.
-# grep-clean guarantee: no .place_order( or .cancel_order( calls below.
+# Safety config routes (L2.2)
 # ---------------------------------------------------------------------------
-
-@api.post("/live-broker/kill-switch")
-async def live_kill_switch():
-    """Return the squareoff PLAN for the current broker state.
-
-    Fetches order_book() + position_book() (read-only methods) and passes them
-    through ``plan_squareoff`` — which computes which orders would be cancelled
-    and which positions would be flattened WITHOUT transmitting anything.
-
-    Returns
-    -------
-    ``plan``:        The squareoff plan (would_cancel / would_flatten / unpriced).
-    ``config``:      Current safety config (including latch state).
-    ``transmitted``: Always False — this route never transmits in the safe core.
-    ``armed``:       Always True — the plan is ready to act on.
-    ``connected``:   Whether the broker client is reachable.
-    """
-    store = _default_safety_store()
-    config = await store.get_config()
-
-    # Try to fetch from the live broker; degrade gracefully if not connected.
-    open_orders: List[Dict[str, Any]] = []
-    open_positions: List[Dict[str, Any]] = []
-    connected = False
-
-    try:
-        client = await _get_client()
-        open_orders = await client.order_book()
-        open_positions = await client.position_book()
-        connected = True
-    except HTTPException:
-        # Not connected — return an empty plan rather than 400; the latch state
-        # and plan structure are still useful even when the broker is offline.
-        pass
-    except Exception as exc:
-        log.warning("kill_switch: broker fetch failed: %s", exc)
-
-    plan = plan_squareoff(open_orders, open_positions)
-
-    return {
-        "plan": plan,
-        "config": config,
-        "transmitted": False,
-        "armed": True,
-        "connected": connected,
-    }
-
 
 @api.get("/live-broker/safety-config")
 async def get_safety_config():
     """Return the current live-trading safety guardrails config."""
-    store = _default_safety_store()
+    store = _config_store()
     return await store.get_config()
 
 
 class _SafetyConfigBody(BaseModel):
-    # F3: blocked_until_reset is intentionally absent from this model.
-    # A generic PUT cannot set/clear the latch — use POST /safety-config/reset-latch.
     daily_loss_limit: Optional[float] = None
     profit_lock_target: Optional[float] = None
     max_open_positions: Optional[int] = None
@@ -537,16 +831,8 @@ class _SafetyConfigBody(BaseModel):
 
 @api.put("/live-broker/safety-config")
 async def put_safety_config(body: _SafetyConfigBody):
-    """Update live-trading safety guardrails (numeric thresholds only).
-
-    Only non-None fields in the request body are applied.
-
-    **The ``blocked_until_reset`` latch cannot be set or cleared through this
-    route.**  To reset the latch use ``POST /live-broker/safety-config/reset-latch``.
-
-    Returns the updated config.
-    """
-    store = _default_safety_store()
+    """Update live-trading safety guardrails (numeric thresholds only)."""
+    store = _config_store()
     updates: Dict[str, Any] = {
         k: v
         for k, v in body.dict().items()
@@ -562,12 +848,367 @@ async def put_safety_config(body: _SafetyConfigBody):
 
 @api.post("/live-broker/safety-config/reset-latch")
 async def reset_safety_latch():
-    """Explicitly reset the broker-stop-loss latch (blocked_until_reset → False).
-
-    This is the ONLY route that clears the latch.  It must be called
-    deliberately by an authorised operator after reviewing the loss event.
-
-    Returns the updated safety config.
-    """
-    store = _default_safety_store()
+    """Explicitly reset the broker-stop-loss latch."""
+    store = _config_store()
     return await store.reset()
+
+
+# ---------------------------------------------------------------------------
+# L3: Mode routes
+# ---------------------------------------------------------------------------
+
+class _ModePutBody(BaseModel):
+    mode: _Literal["PAPER", "LIVE_OFFLINE", "LIVE_TEST"]
+    confirm: StrictBool = False
+
+
+@api.get("/live-broker/mode")
+async def get_mode():
+    """Return the current mode doc (mode, single_shot_consumed, since, ...)."""
+    ms = _mode_store()
+    return await ms.get()
+
+
+@api.put("/live-broker/mode")
+async def put_mode(body: _ModePutBody):
+    """Transition the trading mode.
+
+    Guards:
+    - LIVE_ARMED → 400 (L4 feature, not available in L3)
+    - LIVE_TEST without confirm=True → 400
+    - LIVE_TEST without a connected broker token → 400
+    - LIVE_TEST with engine.can_trade() == False → 400
+    """
+    ms = _mode_store()
+
+    # Determine connected status (True if a token is stored)
+    connected = False
+    try:
+        await _get_token_doc()
+        connected = True
+    except HTTPException:
+        connected = False
+
+    # Determine can_trade (True if engine permits and not halted).
+    # _l3_engine() always returns an engine (real or fail-closed _ClosedEngine);
+    # it never returns None, so no permissive fallback is needed.
+    can_trade = False
+    try:
+        engine = _l3_engine()
+        ok, _ = await engine.can_trade()
+        can_trade = ok
+    except Exception:
+        can_trade = False
+
+    try:
+        result = await ms.set_mode(
+            body.mode,
+            confirm=body.confirm,
+            connected=connected,
+            can_trade=can_trade,
+        )
+        return result
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
+# L3: Order place route — THE ONLY ENTRY CHOKEPOINT
+#
+# ENTRY place_order reachable ONLY through executor.place_live_test_order.
+# All other place_order / cancel_order calls in this file are EXIT-ONLY.
+# ---------------------------------------------------------------------------
+
+class _PlaceBody(BaseModel):
+    contract: Dict[str, Any]
+    side: _Literal["B"] = "B"
+    ref_ltp: float
+    band_pct: float = 5.0
+    levels: Dict[str, Any] = {}
+
+
+@api.post("/live-broker/order/place")
+async def live_order_place(body: _PlaceBody):
+    """Place one real option order through ALL safety gates.
+
+    This is the ONLY route that can cause an ENTRY order to be placed.
+    The executor is the single entry chokepoint — no other code path in
+    this router reaches client.place_order for a buy entry.
+
+    Requires LIVE_TEST mode with an unconsumed single-shot.
+    Returns {placed, protected, norenordno, cid, verdicts} on success.
+    """
+    from app.live.flattrade_symbol import UNDERLYING_SPEC
+
+    # Resolve underlying + lot_size from contract
+    underlying = str(body.contract.get("underlying") or "").strip().upper()
+    spec = UNDERLYING_SPEC.get(underlying)
+    if spec is None:
+        raise HTTPException(400, f"Unknown underlying {underlying!r}. Supported: {sorted(UNDERLYING_SPEC)}")
+    lot_size: int = body.contract.get("lot_size") or spec[2]
+
+    # Get the broker client for order operations
+    try:
+        client = await _get_client()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(400, f"Could not build Flattrade client: {exc}") from exc
+
+    # Get uid/actid for to_jdata calls
+    try:
+        token_doc = await _get_token_doc()
+        uid = token_doc.get("uid", "")
+        actid = token_doc.get("actid", uid)
+    except HTTPException:
+        uid = ""
+        actid = ""
+
+    # Build async→sync search_fn adapter (same pattern as /symbol/resolve)
+    exch = spec[0]
+    strike = body.contract.get("strike")
+    pre_fetched_rows: List[Dict[str, Any]] = []
+    if strike is not None:
+        try:
+            strike_val = float(strike)
+            query = (
+                f"{underlying} {int(strike_val)}"
+                if strike_val == int(strike_val)
+                else f"{underlying} {strike_val}"
+            )
+            pre_fetched_rows = await client.search_scrip(exch, query)
+        except Exception as exc:
+            raise HTTPException(400, f"SearchScrip error: {str(exc)[:300]}") from exc
+
+    def _sync_search(exch_: str, q: str) -> List[Dict[str, Any]]:
+        return pre_fetched_rows
+
+    ms = _mode_store()
+    is_ = _intent_store()
+    engine = _l3_engine()
+    ss = _session_store()
+
+    # Build the arm callable (exit-only: SL backstop + session record)
+    arm = _make_arm(
+        client,
+        ref_ltp=body.ref_ltp,
+        band_pct=body.band_pct,
+        session_store=ss,
+        uid=uid,
+        actid=actid,
+    )
+
+    # _l3_engine() always returns a real engine or _ClosedEngine (fail-closed).
+    # The old _PermissiveEngine fallback (can_trade always True) has been removed —
+    # it would bypass the halt/latch gate in production.
+
+    result = await _executor_mod.place_live_test_order(
+        body.contract,
+        side=body.side,
+        ref_ltp=body.ref_ltp,
+        band_pct=body.band_pct,
+        levels=body.levels,
+        lot_size=lot_size,
+        client=client,
+        mode_store=ms,
+        intent_store=is_,
+        engine=engine,
+        search_fn=_sync_search,
+        arm=arm,
+        fat_finger_cap=1,
+        buffer_pct=0.5,
+        uid=uid,
+        actid=actid,
+    )
+    return result
+
+
+# ---------------------------------------------------------------------------
+# L3: Square route — manual exit (EXIT-ONLY)
+#
+# CHOKEPOINT: calls auto_square.square_position (exit-only, sell-to-close).
+# No entry order is placed here.
+# ---------------------------------------------------------------------------
+
+@api.post("/live-broker/order/square")
+async def live_order_square():
+    """Manually square the open test position (exit-only, no new entries).
+
+    Fetches the current position from the broker, calls square_position, and
+    reverts the mode to LIVE_OFFLINE.
+    """
+    try:
+        client = await _get_client()
+    except HTTPException:
+        raise
+
+    try:
+        token_doc = await _get_token_doc()
+        uid = token_doc.get("uid", "")
+        actid = token_doc.get("actid", uid)
+    except HTTPException:
+        uid = ""
+        actid = ""
+
+    ss = _session_store()
+    sess = await ss.get()
+
+    # Fetch broker positions to build the position dict
+    try:
+        positions = await client.position_book()
+    except Exception as exc:
+        raise HTTPException(400, f"Could not fetch positions: {exc}") from exc
+
+    position: Optional[Dict[str, Any]] = None
+    entry_norenordno = sess.get("entry_norenordno")
+    for pos in positions:
+        nq = pos.get("netqty", 0)
+        try:
+            nq_int = int(float(str(nq).replace(",", "")))
+        except (TypeError, ValueError):
+            nq_int = 0
+        if nq_int != 0:
+            position = dict(pos)
+            position["working_norenordno"] = entry_norenordno
+            break
+
+    if position is None:
+        # No open position — still revert mode
+        await _revert_mode()
+        await ss.update_status("squared")
+        return {"squared": True, "via": "cancel", "note": "no open position found"}
+
+    # EXIT-ONLY: square_position calls place_order with a sell/buy-to-close exit
+    result = await square_position(
+        client,
+        position,
+        reason="manual",
+        band_pct=5.0,
+        uid=uid,
+        actid=actid,
+    )
+
+    await ss.update_status("squared")
+    await _revert_mode()
+    return result
+
+
+async def _revert_mode() -> None:
+    """Revert to LIVE_OFFLINE (best-effort; logs but never raises)."""
+    try:
+        ms = _mode_store()
+        await ms.revert_to_offline()
+    except Exception as exc:
+        log.warning("_revert_mode: failed: %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# L3: Test-session route
+# ---------------------------------------------------------------------------
+
+@api.get("/live-broker/test-session")
+async def live_test_session():
+    """Return the current test-session state (deadline, remaining_secs, heartbeat, status)."""
+    ss = _session_store()
+    now = _utcnow_iso()
+
+    # Bump heartbeat
+    try:
+        await ss.bump_heartbeat(now_iso=now)
+    except Exception:
+        pass
+
+    sess = await ss.get()
+    deadline = sess.get("deadline")
+    remaining = ss.remaining_secs(deadline, now)
+
+    return {
+        "position": sess.get("entry_norenordno"),
+        "deadline": deadline,
+        "remaining_secs": remaining,
+        "heartbeat": now,
+        "sl_norenordno": sess.get("sl_norenordno"),
+        "status": sess.get("status", "none"),
+    }
+
+
+# ---------------------------------------------------------------------------
+# L3: Kill-switch route — EXECUTING (L3 wires real client; exits test position)
+#
+# CHOKEPOINT: calls panic_squareoff (exit-only: cancel + flatten).
+# No entry order is placed here.
+# ---------------------------------------------------------------------------
+
+@api.post("/live-broker/kill-switch")
+async def live_kill_switch():
+    """Execute the squareoff of all open orders and positions (L3: transmits).
+
+    In L3 the kill-switch route EXECUTES the squareoff via panic_squareoff
+    (which calls client.cancel_order and client.place_order for exits only).
+    It then reverts mode to LIVE_OFFLINE and records the session as 'kill_switch'.
+
+    Returns the panic report + config + transmitted=True.
+    """
+    store = _config_store()
+    config = await store.get_config()
+
+    open_orders: List[Dict[str, Any]] = []
+    open_positions: List[Dict[str, Any]] = []
+    connected = False
+    transmitted = False
+    panic_result: Dict[str, Any] = {}
+
+    try:
+        client = await _get_client()
+        open_orders = await client.order_book()
+        open_positions = await client.position_book()
+        connected = True
+    except HTTPException:
+        pass
+    except Exception as exc:
+        log.warning("kill_switch: broker fetch failed: %s", exc)
+
+    # Also get uid/actid for exit intents — best-effort, don't crash on missing token
+    uid = ""
+    actid = ""
+    if connected:
+        try:
+            token_doc = await _get_token_doc()
+            uid = token_doc.get("uid", "")
+            actid = token_doc.get("actid", uid)
+        except Exception:
+            pass
+
+    if connected:
+        # EXIT-ONLY: panic_squareoff calls cancel_order + place_order (sell/buy exits)
+        panic_result = await panic_squareoff(
+            client,
+            open_orders,
+            open_positions,
+            band_pct=1.0,
+            uid=uid,
+            actid=actid,
+        )
+        transmitted = True
+
+        # Revert mode
+        await _revert_mode()
+
+        # Update session status
+        ss = _session_store()
+        try:
+            await ss.update_status("kill_switch")
+        except Exception:
+            pass
+    else:
+        # Not connected — return a plan only (pre-L3 degraded behaviour)
+        panic_result = plan_squareoff(open_orders, open_positions)
+
+    return {
+        "plan": plan_squareoff(open_orders, open_positions),
+        "panic": panic_result,
+        "config": config,
+        "transmitted": transmitted,
+        "armed": True,
+        "connected": connected,
+    }
