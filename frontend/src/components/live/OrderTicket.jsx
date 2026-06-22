@@ -32,6 +32,11 @@ export default function OrderTicket({ mode, disabled }) {
   const [dryRunResult, setDryRunResult] = useState(null); // {would_send, verdicts, client_order_id}
   const [dryRunError, setDryRunError] = useState(null);
 
+  // Fetch-premium state
+  const [fetchBusy, setFetchBusy] = useState(false);
+  const [premiumBadge, setPremiumBadge] = useState(null); // "live" | "last_candle" | null
+  const [premiumNote, setPremiumNote] = useState(null);   // error/info string when premium is null
+
   // Place state
   const [showPlaceConfirm, setShowPlaceConfirm] = useState(false);
   const [placeBusy, setPlaceBusy] = useState(false);
@@ -47,6 +52,43 @@ export default function OrderTicket({ mode, disabled }) {
     expiry_date: expiryDate,
     lot_size: lotSize,
   });
+
+  const canFetchPremium = !!(underlying && strike && expiryDate);
+
+  const handleFetchPremium = async () => {
+    if (!canFetchPremium) return;
+    setFetchBusy(true);
+    setPremiumBadge(null);
+    setPremiumNote(null);
+    try {
+      const res = await api.getOptionPremium({
+        underlying,
+        strike: parseInt(strike, 10),
+        expiry_date: expiryDate,
+        side: optionSide,
+      });
+      if (res.premium != null) {
+        setRefLtp(res.premium.toFixed(2));
+        setPremiumBadge(res.source === "live_tick" ? "live" : "last_candle");
+        setPremiumNote(null);
+        setDryRunResult(null);
+      } else {
+        setPremiumBadge(null);
+        setPremiumNote(
+          res.reason === "contract_not_found"
+            ? "no premium found — contract not found, enter manually"
+            : "no premium found — enter manually"
+        );
+      }
+    } catch (e) {
+      setPremiumBadge(null);
+      setPremiumNote(
+        e?.response?.data?.detail ?? e?.message ?? "fetch failed — enter manually"
+      );
+    } finally {
+      setFetchBusy(false);
+    }
+  };
 
   const canDryRun = strike && expiryDate && refLtp && bandPct;
 
@@ -118,7 +160,7 @@ export default function OrderTicket({ mode, disabled }) {
           </label>
           <select
             value={underlying}
-            onChange={(e) => { setUnderlying(e.target.value); setDryRunResult(null); }}
+            onChange={(e) => { setUnderlying(e.target.value); setDryRunResult(null); setPremiumBadge(null); setPremiumNote(null); }}
             disabled={disabled}
             className="bg-bg-2 border border-line rounded-md px-2 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:ring-1 focus:ring-info/50 disabled:opacity-50"
           >
@@ -136,7 +178,7 @@ export default function OrderTicket({ mode, disabled }) {
           <input
             type="number"
             value={strike}
-            onChange={(e) => { setStrike(e.target.value); setDryRunResult(null); }}
+            onChange={(e) => { setStrike(e.target.value); setDryRunResult(null); setPremiumBadge(null); setPremiumNote(null); }}
             placeholder="e.g. 23000"
             disabled={disabled}
             className="bg-bg-2 border border-line rounded-md px-2 py-1.5 text-xs font-mono text-foreground placeholder:text-dimmer focus:outline-none focus:ring-1 focus:ring-info/50 disabled:opacity-50"
@@ -154,7 +196,7 @@ export default function OrderTicket({ mode, disabled }) {
                 key={s}
                 type="button"
                 disabled={disabled}
-                onClick={() => { setOptionSide(s); setDryRunResult(null); }}
+                onClick={() => { setOptionSide(s); setDryRunResult(null); setPremiumBadge(null); setPremiumNote(null); }}
                 className={`flex-1 py-1.5 text-xs font-mono font-semibold rounded-md border transition-colors disabled:opacity-50 ${
                   optionSide === s
                     ? s === "CE"
@@ -177,7 +219,7 @@ export default function OrderTicket({ mode, disabled }) {
           <input
             type="date"
             value={expiryDate}
-            onChange={(e) => { setExpiryDate(e.target.value); setDryRunResult(null); }}
+            onChange={(e) => { setExpiryDate(e.target.value); setDryRunResult(null); setPremiumBadge(null); setPremiumNote(null); }}
             disabled={disabled}
             className="bg-bg-2 border border-line rounded-md px-2 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:ring-1 focus:ring-info/50 disabled:opacity-50"
           />
@@ -188,15 +230,50 @@ export default function OrderTicket({ mode, disabled }) {
           <label className="text-[10px] uppercase tracking-wider text-dimmer font-semibold">
             Ref LTP (premium ₹)
           </label>
-          <input
-            type="number"
-            step="0.05"
-            value={refLtp}
-            onChange={(e) => { setRefLtp(e.target.value); setDryRunResult(null); }}
-            placeholder="e.g. 85.00"
-            disabled={disabled}
-            className="bg-bg-2 border border-line rounded-md px-2 py-1.5 text-xs font-mono text-foreground placeholder:text-dimmer focus:outline-none focus:ring-1 focus:ring-info/50 disabled:opacity-50"
-          />
+          <div className="flex items-center gap-1.5">
+            <input
+              type="number"
+              step="0.05"
+              value={refLtp}
+              onChange={(e) => {
+                setRefLtp(e.target.value);
+                setDryRunResult(null);
+                setPremiumBadge(null);
+                setPremiumNote(null);
+              }}
+              placeholder="e.g. 85.00"
+              disabled={disabled}
+              className="min-w-0 flex-1 bg-bg-2 border border-line rounded-md px-2 py-1.5 text-xs font-mono text-foreground placeholder:text-dimmer focus:outline-none focus:ring-1 focus:ring-info/50 disabled:opacity-50"
+            />
+            <button
+              type="button"
+              disabled={!canFetchPremium || fetchBusy || disabled}
+              onClick={handleFetchPremium}
+              title="Fetch live or last-close premium from the backend"
+              className="shrink-0 inline-flex items-center gap-1 px-2 py-1.5 rounded-md border border-line bg-bg-3 text-dim text-[10px] font-mono font-semibold hover:bg-bg-2 hover:text-foreground disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              {fetchBusy ? (
+                <Loader2 className="w-3 h-3 animate-spin" />
+              ) : null}
+              {fetchBusy ? "…" : "Fetch ₹"}
+            </button>
+          </div>
+          {/* Source badge */}
+          {premiumBadge === "live" && (
+            <span className="text-[10px] font-mono font-semibold text-emerald-400">
+              ● live tick
+            </span>
+          )}
+          {premiumBadge === "last_candle" && (
+            <span className="text-[10px] font-mono font-semibold text-amber-400">
+              ● last close
+            </span>
+          )}
+          {premiumNote && (
+            <span className="text-[10px] font-mono text-dimmer leading-tight">
+              {premiumNote}
+            </span>
+          )}
         </div>
 
         {/* Band % */}

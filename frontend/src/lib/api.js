@@ -246,6 +246,8 @@ export const api = {
     apiClient.get("/live-broker/test-session").then((r) => r.data),
   liveKillSwitch: () =>
     apiClient.post("/live-broker/kill-switch").then((r) => r.data),
+  getOptionPremium: ({ underlying, strike, expiry_date, side }) =>
+    apiClient.post("/live-broker/option-premium", { underlying, strike, expiry_date, side }).then((r) => r.data),
 
   // Presets
   listPresets: () => apiClient.get("/presets").then((r) => r.data),
