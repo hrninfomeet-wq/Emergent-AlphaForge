@@ -125,10 +125,16 @@ cell and the filter-dropdown option list so they never diverge. First match wins
 in this exact order:
 
 1. matches `/target/i` → bucket `target`, label **Target achieved**
-2. matches `/square|eod|expiry/i` → bucket `eod`, label **End of day**
-3. matches `/manual/i` → bucket `manual`, label **Manual**
+2. matches `/manual/i` → bucket `manual`, label **Manual**
+3. matches `/square|eod|expiry/i` → bucket `eod`, label **End of day**
 4. `reason !== "time_stop"` **and** matches `/stop/i` → bucket `stop`, label **Stoploss hit**
 5. else → bucket `other`, label **Others**
+
+**Order matters — `manual` is checked BEFORE `eod`.** The real raw value
+`manual_square_off` (manual square-off endpoint, `journals.py:328`) contains BOTH
+`manual` and `square`; it must classify as **Manual** (a user-initiated close), not
+End of day. Only the automatic `auto_square_off_15_00_IST` (no `manual` substring) is
+**End of day**.
 
 `time_stop` deliberately falls to **Others** (step 5) — it is a time-based exit,
 not a price stop. The literal-equality carve-out in step 4 (`reason !== "time_stop"`)
@@ -148,26 +154,31 @@ classifier above and the §5.2 Mongo bucket queries to every raw value from §2:
 | `spot_stop_hit` | stop | stop |
 | `time_stop` | other | other |
 
-No raw value matches more than one bucket, so the frontend classifier (used for the
-display label and the breakdown card) and the backend bucket filter agree for every
-value — including the `time_stop` carve-out. Because every raw value is single-match,
-the classifier's *step order* and the Mongo queries' independence are equivalent in
-outcome.
+Two raw values match multiple substrings — `manual_square_off` matches both `manual`
+and `square`, and the `stop` variants must be guarded against `time_stop` — so
+**precedence matters**. The classifier resolves these by step order; the §5.2 Mongo
+bucket queries reproduce that exact precedence with explicit guards (each bucket
+excludes the substrings of every higher-precedence bucket). With those guards every
+raw value matches exactly one bucket query, identical to the classifier.
 
 **Pre-existing analytics normalizers must be aligned.** Two functions already bucket
-exit reasons for the Exit-Reason breakdown card and currently lack the carve-out:
-- `backend/app/paper_analytics.py::normalize_exit_reason` (lines 50–60) checks
-  `if "stop" in r: return "stop"` **before** the `eod`/`manual` checks, so it
-  mis-buckets `time_stop` as `stop`.
-- `frontend/src/lib/paperAgg.js::normalizeExitReason` (lines 6–13) has the same bug.
+exit reasons for the Exit-Reason breakdown card and currently use the order
+`target → stop → eod → manual`, which mis-buckets TWO real values:
+- `manual_square_off` → `eod` (the `square` substring wins before `manual`) — wrong;
+  it is a user-initiated square-off, not End of day.
+- `time_stop` → `stop` (no carve-out) — wrong; it is a time exit, not a price stop.
 
-To keep the new filter and the breakdown card consistent on `time_stop`, both get the
-same carve-out as part of this change:
-- Backend (line 54): `if "stop" in r and r != "time_stop": return "stop"`.
-- Frontend (line 9): `if (r.includes("stop") && r !== "time_stop") return "stop";`.
+Both are reordered to the new classifier precedence
+(`target → manual → eod → stop(¬time_stop) → other`) so the breakdown card and the new
+filter agree on every value:
+- `backend/app/paper_analytics.py::normalize_exit_reason` (lines 50–60): reorder to
+  target, then manual, then eod, then `if "stop" in r and r != "time_stop": return "stop"`, else other.
+- `frontend/src/lib/paperAgg.js::normalizeExitReason` (lines 6–13): the same reorder.
 
-The new `classifyExitReason` and these two normalizers must produce identical buckets
-for all raw values; a shared test asserts this (see §7).
+NOTE — this changes the Exit-Reason breakdown card's bucket counts:
+`manual_square_off` moves End-of-day → Manual, and `time_stop` moves Stop → Other.
+Both are corrections. The new `classifyExitReason` and these two normalizers must
+produce identical buckets for all raw values; a parity test asserts this (§7).
 
 **Exit Reason cell behaviour:** OPEN trade → render the existing "Close @ market"
 button (preserves the close action that lived in the old Actions column). CLOSED
@@ -240,14 +251,21 @@ Add two optional query params to the signature (after `date_to`):
 - `exit_reason: Optional[str] = Query(None)` — a **bucket key**
   (`target|stop|eod|manual|other`), translated to a Mongo condition (regex on the
   stored `exit_reason`), NOT a raw value:
-  - `target`: `{exit_reason: {$regex: "target", $options: "i"}}`
-  - `eod`: `{exit_reason: {$regex: "square|eod|expiry", $options: "i"}}`
-  - `manual`: `{exit_reason: {$regex: "manual", $options: "i"}}`
-  - `stop`: `{$and: [{exit_reason: {$regex: "stop", $options: "i"}}, {exit_reason: {$ne: "time_stop"}}]}`
-  - `other`: `{$and: [{exit_reason: {$exists: true, $ne: null}}, {$nor: [<target>, <eod>, <manual>, <stop>]}]}`
-    where each `<bucket>` inside `$nor` is that bucket's own condition above
-    (the `stop` entry inside `$nor` is the full `$and` form, so a `time_stop` row is
-    NOT excluded by the stop clause and therefore lands in `other`).
+  Each bucket excludes the substrings of every HIGHER-precedence bucket
+  (target > manual > eod > stop), reproducing the classifier precedence exactly. Let
+  `R(p) = {exit_reason: {$regex: p, $options: "i"}}` and
+  `notR(p) = {exit_reason: {$not: {$regex: p, $options: "i"}}}`:
+  - `target`: `R("target")`
+  - `manual`: `{$and: [R("manual"), notR("target")]}`
+  - `eod`: `{$and: [R("eod|square|expiry"), notR("target|manual")]}`
+  - `stop`: `{$and: [R("stop"), {exit_reason: {$ne: "time_stop"}}, notR("target|manual|eod|square|expiry")]}`
+  - `other`: `{$and: [{exit_reason: {$exists: true, $ne: null}}, {$nor: [<target>, <manual>, <eod>, <stop>]}]}`
+    where each `<bucket>` is that bucket's full condition above. A `time_stop` row
+    fails every positive bucket (stop is guarded by `$ne: "time_stop"`), so `$nor`
+    admits it → it lands in `other`.
+  - This builder lives in `backend/app/paper_analytics.py` as
+    `exit_reason_query(bucket) → dict | None` (next to `normalize_exit_reason`), so it
+    is importable and unit-testable without the DB. Unknown bucket → `None` (no filter).
   - The regexes use plain substring matching (no word-boundary anchors). This is
     intentional and matches the frontend classifier and the verified raw values; the
     only literal-equality test in the whole scheme is the `time_stop` carve-out.
@@ -280,12 +298,13 @@ table's default sort stays `-created_at` (frontend); the endpoint's fallback sta
 - `backend/app/routers/journals.py` — new `direction` + `exit_reason` params (lines
   334–346) and the accumulated-`$and` query build (after line 366).
 - `backend/app/runtime.py` — add `exit_price` to `_TRADES_SORT_FIELDS` (line 897).
-- `backend/app/paper_analytics.py` — add the `time_stop` carve-out to
-  `normalize_exit_reason` (line 54) so the breakdown card agrees with the new filter.
+- `backend/app/paper_analytics.py` — reorder `normalize_exit_reason` to
+  target→manual→eod→stop(¬time_stop)→other (fixes `manual_square_off` + `time_stop`);
+  add `exit_reason_query(bucket)`, the precedence-guarded Mongo condition builder.
 - `frontend/src/lib/exitReason.js` — NEW: `classifyExitReason(raw) → {bucket, label}`
   and `EXIT_REASON_OPTIONS` (ordered `[{value,label}]`) for the filter dropdown.
-- `frontend/src/lib/paperAgg.js` — add the matching `time_stop` carve-out to
-  `normalizeExitReason` (line 9).
+- `frontend/src/lib/paperAgg.js` — reorder `normalizeExitReason` to
+  target→manual→eod→stop(¬time_stop)→other (matches the backend + new classifier).
 - `frontend/src/components/paper/TradeBlotter.jsx` — column set/order (17 cols),
   the header filter row, the Exit Reason cell, `colSpan` 16→17 (lines 51, 92), and
   the new `filters`/`onSetFilter`/`strategyOptions` props.
