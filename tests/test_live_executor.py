@@ -538,11 +538,11 @@ def test_arm_failure_cancels_and_halts():
     assert result["placed"] is True
     assert result["protected"] is False
     assert result["halted"] is True
-    assert "arm_failed" in result["reason"]
+    assert "post_place_failed" in result["reason"]
     assert "SL order rejected by broker" in result["reason"]
 
-    # engine.halt must have been called
-    assert "auto_square_arm_failed" in engine.halt_calls
+    # engine.halt must have been called (via _abort_protect)
+    assert "post_place_protection_failed" in engine.halt_calls
 
     # cancel_order must have been called for the norenordno
     book = run(client.order_book())
@@ -730,3 +730,220 @@ def test_fresh_cid_each_call():
     assert r1["cid"] != r2["cid"], "each call must mint a unique client_order_id"
     assert len(seen_cids) == 2
     assert seen_cids[0] != seen_cids[1]
+
+
+# ===========================================================================
+# POST-FILL EXCEPTION-TOTAL (regression: audit holes §12.3)
+# ===========================================================================
+# Every test in this section confirms that the "no unprotected live position"
+# invariant holds even when a post-fill step raises.  In all cases:
+#   - NO exception propagates out of place_live_test_order
+#   - placed=True, protected=False is returned
+#   - square_position ran (cancel order present in book)
+#   - engine.halt was called
+# ===========================================================================
+
+class _RaisingMarkSubmittedIntentStore:
+    """IntentStore stub: record_intent + claim_for_submit succeed; mark_submitted raises."""
+
+    async def record_intent(self, intent, *, mode: str = "live") -> dict:
+        return {}
+
+    async def claim_for_submit(self, cid: str) -> bool:
+        return True
+
+    async def mark_submitted(self, cid: str, norenordno: str) -> None:
+        raise RuntimeError("DB connection lost in mark_submitted")
+
+
+class _RaisingConsumeModStore:
+    """ModeStore stub: get() and record_intent succeed; consume_single_shot raises."""
+
+    async def get(self) -> dict:
+        return {"mode": "LIVE_TEST", "single_shot_consumed": False, "test_session_id": None}
+
+    async def consume_single_shot(self) -> None:
+        raise RuntimeError("consume_single_shot DB write failed")
+
+
+def test_mark_submitted_raises_squares_and_halts_no_propagation():
+    """mark_submitted raises after fill → _abort_protect runs, no propagation.
+
+    Regression for audit hole: only arm() was guarded, mark_submitted was not.
+    """
+    client = MockNoren(limits_data=_GOOD_LIMITS)
+    engine = FakeEngine()
+
+    result = run(_place(
+        client=client,
+        engine=engine,
+        intent_store=_RaisingMarkSubmittedIntentStore(),
+    ))
+
+    # Must return, not raise
+    assert result["placed"] is True
+    assert result["protected"] is False
+    assert result["halted"] is True
+    assert "post_place_failed" in result["reason"]
+    assert "mark_submitted" in result["reason"]
+
+    # engine.halt must have been called
+    assert "post_place_protection_failed" in engine.halt_calls
+
+    # square_position must have run (cancel_order called → CANCELED entry)
+    book = run(client.order_book())
+    assert len(book) >= 1
+    canceled = [o for o in book if o.get("status") == "CANCELED"]
+    assert len(canceled) >= 1, "cancel_order must run even when mark_submitted raises"
+
+
+def test_consume_single_shot_raises_squares_and_halts_no_propagation():
+    """consume_single_shot raises after fill → _abort_protect runs, no propagation.
+
+    Regression for audit hole: consume_single_shot was unguarded post-fill.
+    """
+    client = MockNoren(limits_data=_GOOD_LIMITS)
+    engine = FakeEngine()
+
+    result = run(_place(
+        client=client,
+        engine=engine,
+        mode_store=_RaisingConsumeModStore(),
+    ))
+
+    assert result["placed"] is True
+    assert result["protected"] is False
+    assert result["halted"] is True
+    assert "post_place_failed" in result["reason"]
+    assert "consume_single_shot" in result["reason"]
+
+    assert "post_place_protection_failed" in engine.halt_calls
+
+    book = run(client.order_book())
+    assert len(book) >= 1
+    canceled = [o for o in book if o.get("status") == "CANCELED"]
+    assert len(canceled) >= 1, "cancel_order must run even when consume_single_shot raises"
+
+
+def test_arm_failure_via_abort_protect_squares_and_halts():
+    """arm raises → _abort_protect squares + halts; same invariant as the two above.
+
+    This test confirms arm failure still flows correctly through the new unified
+    _abort_protect path (kept as a passing regression guard).
+    """
+    client = MockNoren(limits_data=_GOOD_LIMITS)
+    engine = FakeEngine()
+
+    async def failing_arm(intent, norenordno):
+        raise RuntimeError("arm SL rejected")
+
+    result = run(_place(
+        client=client,
+        engine=engine,
+        arm=failing_arm,
+    ))
+
+    assert result["placed"] is True
+    assert result["protected"] is False
+    assert result["halted"] is True
+    assert "post_place_failed" in result["reason"]
+    assert "arm SL rejected" in result["reason"]
+    assert "post_place_protection_failed" in engine.halt_calls
+    book = run(client.order_book())
+    canceled = [o for o in book if o.get("status") == "CANCELED"]
+    assert len(canceled) >= 1
+
+
+def test_square_position_raises_inside_abort_still_halts_no_propagation():
+    """square_position itself raises inside _abort_protect → engine.halt still called,
+    square_result carries the error, NO exception propagates.
+    """
+    from unittest.mock import patch, AsyncMock
+
+    client = MockNoren(limits_data=_GOOD_LIMITS)
+    engine = FakeEngine()
+
+    async def failing_arm(intent, norenordno):
+        raise RuntimeError("arm failed, triggering abort")
+
+    # Make square_position raise inside _abort_protect
+    async def _raising_square(*args, **kwargs):
+        raise ConnectionError("broker TCP timeout during square")
+
+    with patch("app.live.executor.square_position", side_effect=_raising_square):
+        result = run(_place(
+            client=client,
+            engine=engine,
+            arm=failing_arm,
+        ))
+
+    # Must return, not raise
+    assert result["placed"] is True
+    assert result["protected"] is False
+    # halt must still have been attempted and succeeded
+    assert result["halted"] is True
+    assert "post_place_protection_failed" in engine.halt_calls
+    # square_result must carry the error so operator can see it
+    sq = result.get("square_result", {})
+    assert sq.get("squared") is False
+    assert "broker TCP timeout" in sq.get("error", "")
+
+
+def test_engine_halt_raises_inside_abort_still_returns_no_propagation():
+    """engine.halt raises inside _abort_protect → executor still returns,
+    halted=False, square ran, NO exception propagates.
+    """
+    client = MockNoren(limits_data=_GOOD_LIMITS)
+
+    class _RaisingHaltEngine(FakeEngine):
+        async def halt(self, reason: str) -> None:
+            raise RuntimeError("engine.halt DB write failed")
+
+    engine = _RaisingHaltEngine()
+
+    async def failing_arm(intent, norenordno):
+        raise RuntimeError("arm failed triggering abort")
+
+    result = run(_place(
+        client=client,
+        engine=engine,
+        arm=failing_arm,
+    ))
+
+    # Must return, not raise
+    assert result["placed"] is True
+    assert result["protected"] is False
+    # halt raised → halted must be False
+    assert result["halted"] is False
+    # square still ran (cancel_order issued)
+    book = run(client.order_book())
+    canceled = [o for o in book if o.get("status") == "CANCELED"]
+    assert len(canceled) >= 1, "square must run even when engine.halt raises"
+
+
+# ===========================================================================
+# FAT FINGER CAP HARDENING (non-numeric cap must not raise TypeError)
+# ===========================================================================
+
+def test_fat_finger_cap_none_fails_closed_no_typeerror():
+    """fat_finger_cap=None → clean dry_run_failed (fat_finger verdict), no TypeError."""
+    client = MockNoren(limits_data=_GOOD_LIMITS)
+    result = run(_place(client=client, fat_finger_cap=None))
+    assert result["placed"] is False
+    assert result["reason"] == "dry_run_failed"
+    ff_v = next((v for v in result["verdicts"] if v["check"] == "fat_finger"), None)
+    assert ff_v is not None, "fat_finger verdict must be present"
+    assert ff_v["ok"] is False
+    assert run(client.order_book()) == []
+
+
+def test_fat_finger_cap_string_fails_closed_no_typeerror():
+    """fat_finger_cap='1' (string) → clean dry_run_failed, no TypeError."""
+    client = MockNoren(limits_data=_GOOD_LIMITS)
+    result = run(_place(client=client, fat_finger_cap="1"))
+    assert result["placed"] is False
+    assert result["reason"] == "dry_run_failed"
+    ff_v = next((v for v in result["verdicts"] if v["check"] == "fat_finger"), None)
+    assert ff_v is not None
+    assert ff_v["ok"] is False
+    assert run(client.order_book()) == []

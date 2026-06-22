@@ -18,15 +18,18 @@ Gate chain (EXACTLY this order):
 Arm-or-abort invariant
 ----------------------
 After a successful fill the position MUST be protected (SL backstop + auto-
-square session armed via the injected ``arm`` callable).  If ``arm`` raises the
-executor immediately cancels/squares the just-filled position and halts the
-engine so no human-unattended open position is ever left unprotected.
+square session armed via the injected ``arm`` callable).  If ANY post-fill step
+raises (mark_submitted, consume_single_shot, arm, or the abort path itself),
+the executor drives a best-effort square + best-effort halt via
+``_abort_protect`` and returns without propagating — no unprotected live
+position can persist, and the engine is halted so a human must review.
 
 Lots hard-pinned to 1
 ---------------------
 The ``lots`` parameter is NOT exposed at all.  The executor always passes
-``lots=1`` and ``fat_finger_cap=min(fat_finger_cap, 1)`` to ``build_intent``.
-There is no way for a caller to inject qty > lot_size through this function.
+``lots=1`` and a clamped fat_finger_cap to ``build_intent``.  Non-numeric
+fat_finger_cap values (None, str, …) are treated as absent → default-deny,
+not a crash.  There is no way for a caller to inject qty > lot_size.
 """
 from __future__ import annotations
 
@@ -49,6 +52,64 @@ def _blocked(reason: str, verdicts: Optional[List[Dict[str, Any]]] = None) -> Di
         "placed": False,
         "reason": reason,
         "verdicts": verdicts or [],
+    }
+
+
+async def _abort_protect(
+    client: Any,
+    engine: Any,
+    intent: Any,
+    norenordno: str,
+    ref_ltp: float,
+    band_pct: float,
+    uid: str,
+    actid: str,
+    *,
+    reason: str,
+) -> Dict[str, Any]:
+    """Best-effort square + best-effort halt.  NEVER raises.
+
+    Called whenever the post-fill sequence (mark_submitted, consume_single_shot,
+    arm, or a previous abort attempt) raises an exception.  Both square and halt
+    are attempted unconditionally and independently; their exceptions are caught
+    and surfaced in the return value so the operator can see what happened.
+
+    Returns a dict with ``placed=True, protected=False`` plus ``halted`` (bool),
+    ``square_result`` (dict), and ``reason`` (str).
+    """
+    square_result: Dict[str, Any] = {}
+    try:
+        square_result = await square_position(
+            client,
+            {
+                "tsym": intent.tsym,
+                "exch": intent.exch,
+                "netqty": 0,
+                "lp": ref_ltp,
+                "working_norenordno": norenordno,
+            },
+            reason="abort",
+            band_pct=band_pct,
+            uid=uid,
+            actid=actid,
+        )
+    except Exception as sq_exc:
+        square_result = {"squared": False, "error": str(sq_exc)}
+
+    halted = False
+    try:
+        await engine.halt("post_place_protection_failed")
+        halted = True
+    except Exception:
+        halted = False
+
+    return {
+        "placed": True,
+        "protected": False,
+        "halted": halted,
+        "norenordno": norenordno,
+        "reason": reason,
+        "square_result": square_result,
     }
 
 
@@ -134,6 +195,13 @@ async def place_live_test_order(
     # ------------------------------------------------------------------
     # Gate 2 — fresh server-side dry-run (lots HARD-PINNED to 1, cap ≤ 1)
     # ------------------------------------------------------------------
+    # Non-numeric fat_finger_cap (None, str, bool …) → treated as absent so
+    # check_fat_finger default-denies with a clean verdict, not a TypeError.
+    capped = (
+        min(fat_finger_cap, 1)
+        if (isinstance(fat_finger_cap, (int, float)) and not isinstance(fat_finger_cap, bool))
+        else None
+    )
     cid = new_client_order_id()
     intent, verdicts = build_intent(
         contract,
@@ -142,7 +210,7 @@ async def place_live_test_order(
         lots=1,                             # hard-pinned — callers cannot change this
         ref_ltp=ref_ltp,
         band_pct=band_pct,
-        fat_finger_cap=min(fat_finger_cap, 1),   # clamped — never > 1
+        fat_finger_cap=capped,              # None → default-deny; numeric → clamped ≤ 1
         levels=levels,
         client_order_id=cid,
         buffer_pct=buffer_pct,
@@ -201,45 +269,26 @@ async def place_live_test_order(
         }
 
     # ------------------------------------------------------------------
-    # Step 10 — fill confirmed: mark submitted + consume single-shot
-    # ------------------------------------------------------------------
-    await intent_store.mark_submitted(cid, result.norenordno)
-    await mode_store.consume_single_shot()
-
-    # ------------------------------------------------------------------
-    # Step 11 — arm-or-abort: position MUST be protected immediately
+    # Steps 10 + 11 — from here the position is LIVE at the broker.
+    # The ENTIRE post-fill block is exception-total: any exception in
+    # mark_submitted, consume_single_shot, or arm drives _abort_protect
+    # (best-effort square + best-effort halt) and returns without
+    # propagating.  No unprotected live position can ever persist.
     # ------------------------------------------------------------------
     try:
+        await intent_store.mark_submitted(cid, result.norenordno)
+        await mode_store.consume_single_shot()
         await arm(intent, result.norenordno)
-    except Exception as exc:
-        # Arm failed — abort: cancel/square the just-placed order then halt
-        await square_position(
-            client,
-            {
-                "tsym": intent.tsym,
-                "exch": intent.exch,
-                "netqty": 0,                         # cancel-only path
-                "lp": ref_ltp,
-                "working_norenordno": result.norenordno,
-            },
-            reason="arm_failed",
-            band_pct=band_pct,
-            uid=uid,
-            actid=actid,
-        )
-        await engine.halt("auto_square_arm_failed")
         return {
             "placed": True,
-            "protected": False,
-            "halted": True,
+            "protected": True,
             "norenordno": result.norenordno,
-            "reason": f"arm_failed:{exc}",
+            "cid": cid,
+            "verdicts": verdicts,
         }
-
-    return {
-        "placed": True,
-        "protected": True,
-        "norenordno": result.norenordno,
-        "cid": cid,
-        "verdicts": verdicts,
-    }
+    except Exception as exc:
+        return await _abort_protect(
+            client, engine, intent, result.norenordno,
+            ref_ltp, band_pct, uid, actid,
+            reason=f"post_place_failed:{exc}",
+        )
