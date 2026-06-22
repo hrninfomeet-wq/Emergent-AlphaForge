@@ -3,12 +3,16 @@
 
 export const EXIT_BUCKETS = ["target", "stop", "eod", "manual", "other"];
 
+// Precedence: target > manual > eod > stop(not time_stop) > other. `manual` is
+// checked before `eod` so "manual_square_off" (a user square-off) is Manual, not
+// End-of-day; "time_stop" is a time exit, not a price stop. Mirrors the backend
+// normalize_exit_reason and lib/exitReason.classifyExitReason — keep in lockstep.
 export const normalizeExitReason = (reason) => {
   const r = String(reason || "").toLowerCase();
   if (r.includes("target")) return "target";
-  if (r.includes("stop")) return "stop";
-  if (r.includes("eod") || r.includes("square") || r.includes("expiry")) return "eod";
   if (r.includes("manual")) return "manual";
+  if (r.includes("eod") || r.includes("square") || r.includes("expiry")) return "eod";
+  if (r.includes("stop") && r !== "time_stop") return "stop";
   return "other";
 };
 
