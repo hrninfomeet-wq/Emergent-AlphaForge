@@ -7,6 +7,9 @@ deadline_iso:
   - horizon clamped to 600 if a larger value is passed (e.g. 3600)
   - horizon < 600 respected (e.g. 300 s → 5 min)
   - timezone-aware fill time handled correctly
+  - [FIX1] deadline_iso always emits a UTC-aware (+00:00) ISO string
+  - [FIX1] IST-aware fill → UTC-normalized deadline (catastrophic pairing test)
+  - [FIX1] is_due correctly orders aware-IST now vs UTC-aware deadline
 
 is_due:
   - now before deadline → False
@@ -15,6 +18,10 @@ is_due:
   - unparseable deadline string → True (fail-safe square-now)
   - unparseable now string → True (fail-safe square-now)
   - both unparseable → True (fail-safe)
+  - [FIX1] aware-UTC deadline vs aware-IST now that is genuinely past → True
+  - [FIX1] aware-UTC deadline vs aware-IST now that is genuinely before → False
+  - [FIX1] naive vs naive still compares correctly (back-compat)
+  - [FIX1] aware now 30 min after deadline (both aware) → True
 
 build_sl_backstop_intent:
   - trgprc == stop_trigger
@@ -24,6 +31,13 @@ build_sl_backstop_intent:
   - prctyp == "SL-LMT"
   - trantype == "S" (SELL — long option exit)
   - stop_trigger near 0.05 → prc clamped to 0.05, still <= trgprc
+  - [FIX2] stop_trigger == 0.05 → returns None (at tick floor, can't build protective stop)
+  - [FIX2] stop_trigger < 0.05 (e.g. 0.04, 0.0, negative) → returns None
+  - [FIX2] stop_trigger nan/inf → returns None
+  - [FIX2] stop_trigger None → returns None (no raise)
+  - [FIX2] stop_trigger "abc" (non-numeric string) → returns None (no raise)
+  - [FIX2] stop_trigger 84.0 (120*0.7) → valid intent (trgprc 84.0, prc 83.95)
+  - [FIX2] stop_trigger 0.10 → valid intent (prc 0.05)
 
 square_position (MockNoren, injected time):
   - long netqty 65 → SELL 65 marketable-limit (correct direction)
@@ -55,6 +69,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 from app.live.mock_noren import MockNoren
 from app.live.auto_square import (
     SQUARE_HORIZON_SEC,
+    _to_utc,
     deadline_iso,
     is_due,
     build_sl_backstop_intent,
@@ -124,6 +139,39 @@ class TestDeadlineIso:
     def test_square_horizon_sec_constant_is_600(self):
         assert SQUARE_HORIZON_SEC == 600
 
+    # --- FIX 1 new tests ---
+
+    def test_deadline_iso_always_emits_utc_aware_string(self):
+        """[FIX1] deadline_iso must always return a UTC-aware (+00:00) ISO string,
+        even when given a naive input."""
+        dl = deadline_iso("2026-06-22T10:00:00")  # naive
+        # Must be parseable and have tz offset
+        from datetime import datetime
+        dt = datetime.fromisoformat(dl)
+        assert dt.tzinfo is not None, "deadline_iso returned a naive datetime string"
+        from datetime import timezone as tz
+        import datetime as _dt
+        # Offset must be UTC (0)
+        assert dt.utcoffset() == _dt.timedelta(0), (
+            f"Expected UTC (+00:00) offset, got {dt.utcoffset()}"
+        )
+
+    def test_deadline_iso_ist_fill_normalizes_to_utc(self):
+        """[FIX1] Catastrophic pairing: IST-aware fill → deadline must be UTC-normalized.
+        Deadline from 10:00 IST (+05:30) = 04:30 UTC + 10min = 04:40 UTC."""
+        dl = deadline_iso("2026-06-22T10:00:00+05:30", horizon_sec=600)
+        from datetime import datetime, timezone
+        dt = datetime.fromisoformat(dl)
+        # Must be UTC-aware
+        assert dt.tzinfo is not None
+        assert dt.utcoffset().total_seconds() == 0, (
+            f"Expected UTC offset, got {dt.utcoffset()}"
+        )
+        # 10:00 IST = 04:30 UTC; + 10 min = 04:40 UTC
+        assert dt.hour == 4 and dt.minute == 40, (
+            f"Expected 04:40 UTC, got {dt.isoformat()}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # is_due
@@ -158,6 +206,49 @@ class TestIsDue:
 
     def test_one_second_after_deadline_is_true(self):
         assert is_due("2026-06-22T10:10:00", "2026-06-22T10:10:01") is True
+
+    # --- FIX 1 new tests: tz-aware vs tz-aware correct ordering ---
+
+    def test_aware_ist_now_past_utc_deadline_returns_true(self):
+        """[FIX1] Catastrophic pairing: UTC-aware deadline vs IST-aware now that IS past it.
+
+        Deadline: 2026-06-22T04:40:00+00:00 (04:40 UTC)
+        Now:      2026-06-22T10:15:00+05:30 (= 04:45 UTC — 5 min past deadline)
+        Expected: True (position IS past deadline)
+        """
+        deadline = "2026-06-22T04:40:00+00:00"
+        now_ist = "2026-06-22T10:15:00+05:30"   # 04:45 UTC — past deadline
+        assert is_due(deadline, now_ist) is True, (
+            "is_due returned False for an IST now that is genuinely past the UTC deadline"
+        )
+
+    def test_aware_ist_now_before_utc_deadline_returns_false(self):
+        """[FIX1] IST-aware now that is genuinely BEFORE UTC deadline → False.
+
+        Deadline: 2026-06-22T04:40:00+00:00 (04:40 UTC)
+        Now:      2026-06-22T10:05:00+05:30 (= 04:35 UTC — 5 min before deadline)
+        Expected: False
+        """
+        deadline = "2026-06-22T04:40:00+00:00"
+        now_ist = "2026-06-22T10:05:00+05:30"   # 04:35 UTC — before deadline
+        assert is_due(deadline, now_ist) is False, (
+            "is_due returned True for an IST now that is genuinely before the UTC deadline"
+        )
+
+    def test_naive_vs_naive_ordering_preserved(self):
+        """[FIX1] Naive-vs-naive still compares correctly (back-compat).
+        Both assumed UTC → ordering is identical to before."""
+        # Before deadline (same as existing test_before_deadline_returns_false but explicit)
+        assert is_due("2026-06-22T10:10:00", "2026-06-22T10:09:00") is False
+        assert is_due("2026-06-22T10:10:00", "2026-06-22T10:11:00") is True
+
+    def test_aware_now_30min_after_aware_deadline_is_true(self):
+        """[FIX1] Deadline 20min after an aware fill, now 30min after fill (both aware UTC) → True."""
+        # Fill at 09:00 UTC; deadline = 09:10 UTC; now = 09:30 UTC → past deadline
+        fill = "2026-06-22T09:00:00+00:00"
+        dl = deadline_iso(fill, horizon_sec=600)  # 09:10 UTC
+        now = "2026-06-22T09:30:00+00:00"         # 30 min after fill = past deadline
+        assert is_due(dl, now) is True
 
 
 # ---------------------------------------------------------------------------
@@ -203,29 +294,34 @@ class TestBuildSlBackstopIntent:
         intent = self._make(100.0)
         assert intent.trantype == "S"
 
-    def test_near_zero_stop_trigger_clamps_prc_to_0_05(self):
-        """stop_trigger=0.05 → prc = max(0.05, 0.00) = 0.05"""
-        intent = self._make(0.05)
-        assert intent.prc == 0.05
-        # Protective invariant still holds
-        assert intent.prc <= intent.trgprc
-        assert intent.prc > 0
+    def test_near_zero_stop_trigger_at_tick_floor_returns_none(self):
+        """stop_trigger=0.05 (at the tick floor) → None.
+
+        [FIX2] A stop_trigger AT 0.05 cannot build a protective stop because
+        prc = max(0.05, 0.00) = 0.05 == trgprc (no headroom).  The function
+        now returns None instead of asserting, so the caller falls back to the
+        time-square hard cap.
+        """
+        result = self._make(0.05)
+        assert result is None, (
+            "Expected None for stop_trigger=0.05 (tick floor), but got an intent"
+        )
 
     def test_very_small_stop_trigger_clamps_prc(self):
         """stop_trigger=0.10 → prc = max(0.05, 0.05) = 0.05; still <= trgprc.
 
-        Note: a stop_trigger below 0.05 (the Flattrade minimum tick) is pathological
-        and violates the protective invariant (prc > trgprc) — the assertion in
-        build_sl_backstop_intent correctly rejects it.  The floor only applies for
-        triggers that are >= 0.05 (where prc == 0.05 <= trgprc holds).
+        stop_trigger=0.10 is > 0.05 (valid), so an intent IS returned.
         """
         intent = self._make(0.10)
+        assert intent is not None, "Expected a valid intent for stop_trigger=0.10"
         assert intent.prc == 0.05  # max(0.05, round(0.10-0.05,2)) = 0.05
         assert intent.prc <= intent.trgprc  # 0.05 <= 0.10 ✓
 
     def test_protective_invariant_holds_across_range(self):
-        for trigger in [0.05, 0.10, 1.0, 50.0, 500.0, 9999.0]:
+        # 0.05 now returns None (at tick floor); start range from 0.10
+        for trigger in [0.10, 1.0, 50.0, 500.0, 9999.0]:
             intent = self._make(trigger)
+            assert intent is not None, f"Expected intent for trigger={trigger}"
             assert intent.prc <= intent.trgprc, f"failed at trigger={trigger}"
             assert intent.prc > 0, f"failed at trigger={trigger}"
 
@@ -236,6 +332,69 @@ class TestBuildSlBackstopIntent:
     def test_ret_is_day(self):
         intent = self._make(100.0)
         assert intent.ret == "DAY"
+
+    # --- FIX 2 new tests: fail-soft on invalid stop_trigger ---
+
+    def test_stop_trigger_at_tick_floor_returns_none(self):
+        """[FIX2] stop_trigger == 0.05 → None (can't build a stop AT the tick floor)."""
+        result = self._make(0.05)
+        assert result is None, (
+            f"Expected None for stop_trigger=0.05 (at tick floor), got {result}"
+        )
+
+    def test_stop_trigger_below_tick_floor_returns_none(self):
+        """[FIX2] stop_trigger == 0.04 → None (deep-OTM real market data, not a bug)."""
+        result = self._make(0.04)
+        assert result is None
+
+    def test_stop_trigger_zero_returns_none(self):
+        """[FIX2] stop_trigger == 0.0 → None (no raise)."""
+        result = self._make(0.0)
+        assert result is None
+
+    def test_stop_trigger_negative_returns_none(self):
+        """[FIX2] stop_trigger < 0 → None (no raise)."""
+        result = self._make(-5.0)
+        assert result is None
+
+    def test_stop_trigger_nan_returns_none(self):
+        """[FIX2] stop_trigger = NaN → None (no raise, no AssertionError)."""
+        import math
+        result = self._make(math.nan)
+        assert result is None
+
+    def test_stop_trigger_inf_returns_none(self):
+        """[FIX2] stop_trigger = inf → None (no raise, no garbage intent)."""
+        import math
+        result = self._make(math.inf)
+        assert result is None
+
+    def test_stop_trigger_none_returns_none(self):
+        """[FIX2] stop_trigger = None → None (no raise, no TypeError)."""
+        result = self._make(None)
+        assert result is None
+
+    def test_stop_trigger_nonnumeric_string_returns_none(self):
+        """[FIX2] stop_trigger = 'abc' → None (non-numeric string, no raise)."""
+        result = self._make("abc")
+        assert result is None
+
+    def test_stop_trigger_84_returns_valid_intent(self):
+        """[FIX2] stop_trigger = 120*0.7 = 84.0 → valid SL-LMT (trgprc=84.0, prc=83.95)."""
+        intent = self._make(84.0)
+        assert intent is not None, "Expected a valid OrderIntent for stop_trigger=84.0"
+        assert intent.trgprc == 84.0
+        assert intent.prc == 83.95
+        assert intent.prctyp == "SL-LMT"
+        assert intent.trantype == "S"
+
+    def test_stop_trigger_010_returns_valid_intent(self):
+        """[FIX2] stop_trigger = 0.10 → valid intent (prc = 0.05 <= trgprc = 0.10)."""
+        intent = self._make(0.10)
+        assert intent is not None, "Expected a valid OrderIntent for stop_trigger=0.10"
+        assert intent.trgprc == 0.10
+        assert intent.prc == 0.05
+        assert intent.prc <= intent.trgprc
 
 
 # ---------------------------------------------------------------------------

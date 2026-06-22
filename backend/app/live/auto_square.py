@@ -7,14 +7,28 @@ Architecture
 * Time is INJECTED everywhere as ISO strings — NO wall-clock calls inside logic.
   This makes the module fully deterministic under test.
 
+* All timestamps are normalized to UTC before any arithmetic or comparison.
+  Callers SHOULD pass UTC (the engine uses a UTC-aware now).  Naive timestamps
+  are assumed UTC.  This prevents tz-aware vs tz-naive mismatches from silently
+  mis-ordering the deadline comparison (the audit hole: IST-aware now compared
+  against a naive/mismatched deadline could return False up to 5 h 30 m past the
+  real deadline).
+
+* ``_to_utc`` is the single normalization helper: naive → UTC-aware via replace();
+  aware → UTC via astimezone().
+
 * ``deadline_iso`` computes fill_time + horizon (clamped to SQUARE_HORIZON_SEC).
+  It ALWAYS emits a UTC-aware ISO string (+00:00) regardless of input timezone.
 
 * ``is_due`` is fail-safe: if either timestamp cannot be parsed it returns True
   ("if we can't tell the time, square NOW rather than risk holding past the cap").
+  Both sides are normalized to UTC before comparison.
 
 * ``build_sl_backstop_intent`` creates a protective SL-LMT exit for a LONG option.
-  Asserts prc <= trgprc and prc > 0 — a violated assert is a programming error, not
-  a runtime condition.
+  Returns None for any invalid/sub-tick stop_trigger instead of asserting/raising —
+  a sub-0.05 premium is real deep-OTM market data, not a programming error.
+  The time-square hard cap remains the primary protection; the SL backstop is
+  supplementary.
 
 * ``square_position`` is the executor:
   - Cancels any unfilled/partial entry remainder first (working_norenordno).
@@ -26,6 +40,8 @@ Architecture
   - On two consecutive rejects → {squared: False, failures: [...]}. NO raise.
   - NEVER applies fat-finger or throttle guards to an exit intent.
   - NEVER raises; always returns a dict.
+  - NOT self-idempotent — the caller MUST NOT call it twice on the same position
+    (matches panic_squareoff's contract in kill_switch.py).
 
 Key safety properties (mirrors kill_switch.py's language):
 - Fat-finger/throttle NEVER applied to exit intents.
@@ -58,13 +74,47 @@ SQUARE_HORIZON_SEC: int = 600
 # 1. Time helpers — fully injected, no wall-clock
 # ---------------------------------------------------------------------------
 
+def _to_utc(iso: str) -> datetime:
+    """Parse an ISO 8601 string and return a UTC-aware datetime.
+
+    All timestamps are normalized to UTC; callers SHOULD pass UTC (the engine
+    uses a UTC-aware now).  Naive timestamps are assumed UTC.
+
+    Parameters
+    ----------
+    iso:
+        An ISO 8601 datetime string, with or without a timezone offset.
+
+    Returns
+    -------
+    A timezone-aware ``datetime`` in UTC.
+
+    Raises
+    ------
+    ValueError / TypeError — if ``iso`` cannot be parsed.  Callers that must
+    not raise should wrap in try/except (e.g. ``is_due``).
+    """
+    dt = datetime.fromisoformat(iso)
+    if dt.tzinfo is None:
+        # Naive input — assumed UTC (engine always passes UTC-aware strings;
+        # naive is legacy / test convenience and is treated as UTC).
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+    return dt
+
+
 def deadline_iso(fill_time_iso: str, *, horizon_sec: int = SQUARE_HORIZON_SEC) -> str:
-    """Return fill_time + horizon as an ISO 8601 string (UTC).
+    """Return fill_time + horizon as a UTC-aware ISO 8601 string.
+
+    All timestamps are normalized to UTC; callers SHOULD pass UTC (the engine
+    uses a UTC-aware now).  Naive is assumed UTC.
 
     Parameters
     ----------
     fill_time_iso:
         The time the entry fill was confirmed, as an ISO 8601 string.
+        May be naive (assumed UTC) or timezone-aware (any zone; converted to UTC).
     horizon_sec:
         How many seconds from fill_time before the position must be squared.
         Clamped to ``SQUARE_HORIZON_SEC`` (600 s) — callers MUST NOT rely on
@@ -74,7 +124,9 @@ def deadline_iso(fill_time_iso: str, *, horizon_sec: int = SQUARE_HORIZON_SEC) -
 
     Returns
     -------
-    ISO 8601 string of fill_time + min(horizon_sec, 600) seconds.
+    UTC-aware ISO 8601 string of fill_time + min(horizon_sec, 600) seconds.
+    The result ALWAYS carries a ``+00:00`` offset so ``is_due`` comparisons
+    are unambiguous regardless of the caller's local timezone.
 
     Clamp rationale
     ---------------
@@ -83,16 +135,16 @@ def deadline_iso(fill_time_iso: str, *, horizon_sec: int = SQUARE_HORIZON_SEC) -
     is enforced here, not left to the caller.
     """
     effective_horizon = min(int(horizon_sec), SQUARE_HORIZON_SEC)
-    dt = datetime.fromisoformat(fill_time_iso)
-    # Ensure timezone-awareness; if naive, treat as UTC.
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    result = dt + timedelta(seconds=effective_horizon)
+    dt_utc = _to_utc(fill_time_iso)
+    result = dt_utc + timedelta(seconds=effective_horizon)
     return result.isoformat()
 
 
 def is_due(deadline: str, now: str) -> bool:
     """Return True iff now >= deadline (position must be squared immediately).
+
+    All timestamps are normalized to UTC before comparison; callers SHOULD pass
+    UTC (the engine uses a UTC-aware now).  Naive is assumed UTC.
 
     Fail-safe: if EITHER string cannot be parsed as ISO 8601, return True.
     Rationale: if we cannot determine the time relationship, the safe action is
@@ -101,7 +153,7 @@ def is_due(deadline: str, now: str) -> bool:
     Parameters
     ----------
     deadline:
-        ISO 8601 deadline string (from ``deadline_iso``).
+        ISO 8601 deadline string (from ``deadline_iso``).  Should be UTC-aware.
     now:
         Current time as ISO 8601 string (injected by the engine — never
         derived from wall-clock inside this function).
@@ -112,14 +164,7 @@ def is_due(deadline: str, now: str) -> bool:
     False — position is still within its window.
     """
     try:
-        dt_deadline = datetime.fromisoformat(deadline)
-        dt_now = datetime.fromisoformat(now)
-        # Normalise timezone-awareness so comparison never raises TypeError.
-        if dt_deadline.tzinfo is None:
-            dt_deadline = dt_deadline.replace(tzinfo=timezone.utc)
-        if dt_now.tzinfo is None:
-            dt_now = dt_now.replace(tzinfo=timezone.utc)
-        return dt_now >= dt_deadline
+        return _to_utc(now) >= _to_utc(deadline)
     except Exception:
         # Any parse failure → fail-safe: square now.
         return True
@@ -134,10 +179,13 @@ def build_sl_backstop_intent(
     exch: str,
     tsym: str,
     qty: int,
-    stop_trigger: float,
+    stop_trigger: Any,
     client_order_id: str,
-) -> OrderIntent:
-    """Build a protective SL-LMT intent for a LONG option leg.
+) -> Optional[OrderIntent]:
+    """Build a protective SL-LMT intent for a LONG option leg, or None if invalid.
+
+    All timestamps are normalized to UTC; callers SHOULD pass UTC (the engine
+    uses a UTC-aware now).  Naive is assumed UTC.
 
     The order sells (trantype='S') qty lots at a trigger of stop_trigger with
     the limit price set slightly below the trigger so the order becomes marketable
@@ -148,40 +196,50 @@ def build_sl_backstop_intent(
     exch:             Exchange, e.g. "NFO" or "BFO".
     tsym:             Trading symbol.
     qty:              Number of units to sell (positive integer).
-    stop_trigger:     Trigger price (trgprc) in ₹.  Must be > 0.
+    stop_trigger:     Trigger price (trgprc) in ₹.  Must be a finite positive
+                      number strictly greater than 0.05 (the exchange tick floor).
+                      A sub-0.05 value is plausible real deep-OTM market data —
+                      the function returns None rather than raising so the caller
+                      can fall back to the time-square hard cap.
     client_order_id:  Caller-supplied idempotency key.
 
     Returns
     -------
-    An ``OrderIntent`` with prctyp="SL-LMT", trantype="S".
+    An ``OrderIntent`` with prctyp="SL-LMT", trantype="S" when stop_trigger
+    is a finite number > 0.05, otherwise ``None``.
 
-    Raises
-    ------
-    AssertionError — if the resulting prc violates the protective-price invariant
-        (prc <= trgprc and prc > 0).  This is a programming-error guard, not a
-        runtime condition; the caller must supply a valid stop_trigger > 0.
+    Returns None (never raises) when:
+    - stop_trigger is not numeric (None, str that can't be parsed as float, etc.)
+    - stop_trigger is NaN or ±Inf
+    - stop_trigger <= 0.05 (at or below the exchange tick floor; a protective
+      stop cannot be built because prc would equal or exceed trgprc)
+
+    The caller's primary protection is the time-square hard cap; the SL backstop
+    is supplementary and its absence is not an error.
 
     Price formula
     -------------
     trgprc = stop_trigger
     prc    = max(0.05, round(stop_trigger - 0.05, 2))
 
-    The 0.05 floor ensures prc > 0 even for near-zero triggers.  The limit price
-    is always <= the trigger price (protective invariant), so the order will be
-    filled at trigger or worse — never above trigger (which would be buying, not
-    protecting).
+    Since stop_trigger > 0.05 is required, prc <= trgprc always holds naturally
+    (the protective invariant is structurally guaranteed, not asserted).
     """
-    trgprc = stop_trigger
-    prc = max(0.05, round(stop_trigger - 0.05, 2))
+    # Validate: coerce to float and check finite + above tick floor.
+    try:
+        trig = float(stop_trigger)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None  # non-numeric (None, "abc", etc.) — fail-soft
 
-    # Protective invariant — a wrong direction here could grow the position.
-    assert prc <= trgprc, (
-        f"build_sl_backstop_intent: prc ({prc}) > trgprc ({trgprc}). "
-        "The limit price must be ≤ trigger for a protective SL-LMT."
-    )
-    assert prc > 0, (
-        f"build_sl_backstop_intent: prc ({prc}) must be > 0."
-    )
+    if not math.isfinite(trig):
+        return None  # NaN or ±Inf → fail-soft
+
+    if trig <= 0.05:
+        return None  # at or below tick floor → can't build protective stop
+
+    trgprc = trig
+    prc = max(0.05, round(trig - 0.05, 2))
+    # Structural guarantee: since trig > 0.05, prc <= trgprc holds always.
 
     return OrderIntent(
         client_order_id=client_order_id,
@@ -233,6 +291,9 @@ async def square_position(
     This is the executor layer — it calls ``client.cancel_order`` and
     ``client.place_order`` directly, bypassing ALL throttle and fat-finger
     checks.  The engine MUST always be able to exit a position it holds.
+
+    NOT self-idempotent — the caller MUST NOT call it twice on the same position
+    (matches panic_squareoff's contract in kill_switch.py).
 
     NEVER raises.  Returns a dict describing the outcome.
 
