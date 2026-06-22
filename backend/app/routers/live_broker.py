@@ -22,10 +22,11 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import RedirectResponse
+from pydantic import BaseModel
 
 from app.live import flattrade_token
 from app.live.flattrade_token import (
@@ -349,3 +350,110 @@ async def live_broker_symbol_resolve(
     except Exception as exc:
         log.exception("symbol resolve unexpected error")
         raise HTTPException(400, f"Symbol resolution error: {str(exc)[:300]}") from exc
+
+
+# ---------------------------------------------------------------------------
+# Dry-run route (L1.3) — NEVER transmits; no place_order/cancel_order call
+# ---------------------------------------------------------------------------
+
+class _DryRunBody(BaseModel):
+    contract: Dict[str, Any]
+    side: str                          # "B" or "S"
+    order_kind: str                    # "entry" | "exit" | "stop"
+    lots: int
+    ref_ltp: float
+    band_pct: float
+    fat_finger_cap: int
+    levels: Dict[str, Any] = {}
+    buffer_pct: Optional[float] = None
+
+
+@api.post("/live-broker/order/dry-run")
+async def live_order_dry_run(body: _DryRunBody):
+    """Build an OrderIntent and run all safety checks WITHOUT placing any order.
+
+    Returns the jdata dict that WOULD be sent, the per-check verdicts list, and
+    the generated client_order_id.  This route NEVER calls place_order or
+    cancel_order — it is strictly read-and-compute.
+
+    Works even when the broker is not connected: symbol resolution will produce a
+    failed 'symbol' verdict rather than a 500 when no token is stored.
+    """
+    from app.live.idempotency import new_client_order_id
+    from app.live.order_builder import build_intent
+    from app.live.flattrade_symbol import UNDERLYING_SPEC
+
+    cid = new_client_order_id()
+
+    # Build a sync search_fn adapter that calls the live client's async search_scrip.
+    # Mirror the existing /live-broker/symbol/resolve pattern: pre-fetch results via
+    # await, then wrap in a sync closure so order_builder's sync search_fn contract
+    # is satisfied.  If the client cannot be obtained (not connected), we fall back
+    # to a sync fn that always returns [] so that the symbol verdict reports the
+    # failure gracefully rather than raising a 500.
+    underlying = str(body.contract.get("underlying") or "").strip().upper()
+    strike = body.contract.get("strike")
+
+    pre_fetched_rows: List[Dict[str, Any]] = []
+    fetch_error: Optional[str] = None
+
+    try:
+        client = await _get_client()
+        spec = UNDERLYING_SPEC.get(underlying)
+        if spec is not None and strike is not None:
+            exch = spec[0]
+            strike_val = float(strike)
+            query = (
+                f"{underlying} {int(strike_val)}"
+                if strike_val == int(strike_val)
+                else f"{underlying} {strike_val}"
+            )
+            pre_fetched_rows = await client.search_scrip(exch, query)
+    except HTTPException:
+        # Not connected — let the symbol verdict report this
+        fetch_error = "Flattrade not connected; symbol resolution will fail"
+    except Exception as exc:
+        fetch_error = f"SearchScrip error: {str(exc)[:200]}"
+
+    def _sync_search(exch: str, q: str) -> List[Dict[str, Any]]:
+        # Returns the already-fetched rows (same single-query pattern as symbol/resolve)
+        return pre_fetched_rows
+
+    intent, verdicts = build_intent(
+        body.contract,
+        side=body.side,
+        order_kind=body.order_kind,
+        lots=body.lots,
+        ref_ltp=body.ref_ltp,
+        band_pct=body.band_pct,
+        fat_finger_cap=body.fat_finger_cap,
+        levels=body.levels,
+        client_order_id=cid,
+        buffer_pct=body.buffer_pct,
+        search_fn=_sync_search,
+    )
+
+    # If the broker isn't connected, surface it as a note on the first verdict
+    if fetch_error and verdicts and verdicts[0]["check"] == "symbol" and not verdicts[0]["ok"]:
+        verdicts[0]["detail"] = f"{fetch_error}; {verdicts[0]['detail']}"
+
+    # Build jdata only when an intent was produced; otherwise would_send is None.
+    would_send: Optional[Dict[str, Any]] = None
+    if intent is not None:
+        # We need uid/actid for to_jdata; try to get them from the stored token.
+        # Fall back to empty strings — the dry-run is inspection-only, not submission.
+        uid = ""
+        actid = ""
+        try:
+            doc = await _get_token_doc()
+            uid = doc.get("uid", "")
+            actid = doc.get("actid", uid)
+        except HTTPException:
+            pass
+        would_send = intent.to_jdata(uid=uid, actid=actid)
+
+    return {
+        "would_send": would_send,
+        "verdicts": verdicts,
+        "client_order_id": cid,
+    }
