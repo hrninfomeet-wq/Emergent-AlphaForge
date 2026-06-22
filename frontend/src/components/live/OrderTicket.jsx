@@ -16,7 +16,7 @@ import { fmtINR } from "@/lib/fmt";
 const UNDERLYINGS = ["NIFTY", "BANKNIFTY", "SENSEX"];
 const OPTION_SIDES = ["CE", "PE"];
 
-const LOT_SIZES = { NIFTY: 75, BANKNIFTY: 30, SENSEX: 20 };
+const LOT_SIZES = { NIFTY: 65, BANKNIFTY: 30, SENSEX: 20 };
 
 export default function OrderTicket({ mode, disabled }) {
   // Form state
@@ -47,7 +47,11 @@ export default function OrderTicket({ mode, disabled }) {
   const [placeResult, setPlaceResult] = useState(null);
   const [placeError, setPlaceError] = useState(null);
 
-  const lotSize = LOT_SIZES[underlying] ?? 1;
+  // Broker-resolved lot size returned by dry-run (authoritative; clears when contract fields change)
+  const [resolvedLot, setResolvedLot] = useState(null);
+
+  // Display lot: prefer broker-resolved value, fall back to local constant
+  const lotSize = resolvedLot ?? LOT_SIZES[underlying] ?? 1;
 
   const buildContract = () => ({
     underlying,
@@ -100,6 +104,7 @@ export default function OrderTicket({ mode, disabled }) {
     setPremiumBadge(null);
     setPremiumNote(null);
     setDryRunResult(null);
+    setResolvedLot(null);
     try {
       const res = await api.getAtmSuggest({ underlying, side: optionSide });
       if (res.atm_strike != null) {
@@ -152,6 +157,9 @@ export default function OrderTicket({ mode, disabled }) {
         levels: {},
       });
       setDryRunResult(res);
+      if (res.lot_size != null && Number.isFinite(Number(res.lot_size))) {
+        setResolvedLot(Number(res.lot_size));
+      }
     } catch (e) {
       setDryRunError(e?.response?.data?.detail ?? e?.message ?? "Dry-run failed");
     } finally {
@@ -200,7 +208,7 @@ export default function OrderTicket({ mode, disabled }) {
           </label>
           <select
             value={underlying}
-            onChange={(e) => { setUnderlying(e.target.value); setDryRunResult(null); setPremiumBadge(null); setPremiumNote(null); setAtmNote(null); }}
+            onChange={(e) => { setUnderlying(e.target.value); setDryRunResult(null); setResolvedLot(null); setPremiumBadge(null); setPremiumNote(null); setAtmNote(null); }}
             disabled={disabled}
             className="bg-bg-2 border border-line rounded-md px-2 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:ring-1 focus:ring-info/50 disabled:opacity-50"
           >
@@ -219,7 +227,7 @@ export default function OrderTicket({ mode, disabled }) {
             <input
               type="number"
               value={strike}
-              onChange={(e) => { setStrike(e.target.value); setDryRunResult(null); setPremiumBadge(null); setPremiumNote(null); setAtmNote(null); }}
+              onChange={(e) => { setStrike(e.target.value); setDryRunResult(null); setResolvedLot(null); setPremiumBadge(null); setPremiumNote(null); setAtmNote(null); }}
               placeholder="e.g. 23000"
               disabled={disabled}
               className="min-w-0 flex-1 bg-bg-2 border border-line rounded-md px-2 py-1.5 text-xs font-mono text-foreground placeholder:text-dimmer focus:outline-none focus:ring-1 focus:ring-info/50 disabled:opacity-50"
@@ -256,7 +264,7 @@ export default function OrderTicket({ mode, disabled }) {
                 key={s}
                 type="button"
                 disabled={disabled}
-                onClick={() => { setOptionSide(s); setDryRunResult(null); setPremiumBadge(null); setPremiumNote(null); setAtmNote(null); }}
+                onClick={() => { setOptionSide(s); setDryRunResult(null); setResolvedLot(null); setPremiumBadge(null); setPremiumNote(null); setAtmNote(null); }}
                 className={`flex-1 py-1.5 text-xs font-mono font-semibold rounded-md border transition-colors disabled:opacity-50 ${
                   optionSide === s
                     ? s === "CE"
@@ -279,7 +287,7 @@ export default function OrderTicket({ mode, disabled }) {
           <input
             type="date"
             value={expiryDate}
-            onChange={(e) => { setExpiryDate(e.target.value); setDryRunResult(null); setPremiumBadge(null); setPremiumNote(null); setAtmNote(null); }}
+            onChange={(e) => { setExpiryDate(e.target.value); setDryRunResult(null); setResolvedLot(null); setPremiumBadge(null); setPremiumNote(null); setAtmNote(null); }}
             disabled={disabled}
             className="bg-bg-2 border border-line rounded-md px-2 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:ring-1 focus:ring-info/50 disabled:opacity-50"
           />
@@ -363,6 +371,11 @@ export default function OrderTicket({ mode, disabled }) {
         <span className="text-dimmer">
           = {lotSize} qty @ {refLtp ? fmtINR(parseFloat(refLtp) * lotSize) : "–"} premium
         </span>
+        {resolvedLot != null && (
+          <span className="text-[10px] font-mono text-emerald-400/80" title="Lot size confirmed by broker dry-run">
+            ✓ broker lot
+          </span>
+        )}
       </div>
 
       {/* Dry-run button */}
