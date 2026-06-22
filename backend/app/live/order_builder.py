@@ -15,8 +15,10 @@ trading.  It:
 
 Returns
 -------
-(intent | None, verdicts)
+(intent | None, verdicts, resolved_lot_size | None)
     intent is None if any check failed; verdicts always has one entry per check.
+    resolved_lot_size is the broker-authoritative lot size (from the scrip ls field) on
+    success, or None on any failure (including symbol resolution failure).
 """
 from __future__ import annotations
 
@@ -47,9 +49,9 @@ def _v(check: str, ok: bool, detail: str) -> Verdict:
     return {"check": check, "ok": ok, "detail": detail}
 
 
-def _fail(verdicts: List[Verdict], check: str, detail: str) -> Tuple[None, List[Verdict]]:
+def _fail(verdicts: List[Verdict], check: str, detail: str) -> Tuple[None, List[Verdict], None]:
     verdicts.append(_v(check, False, detail))
-    return None, verdicts
+    return None, verdicts, None
 
 
 # ---------------------------------------------------------------------------
@@ -69,7 +71,7 @@ def build_intent(
     client_order_id: str,
     buffer_pct: Optional[float] = None,
     search_fn: Callable[[str, str], List[Dict[str, Any]]],
-) -> Tuple[Optional[OrderIntent], List[Verdict]]:
+) -> Tuple[Optional[OrderIntent], List[Verdict], Optional[int]]:
     """Build and safety-check a live OrderIntent.
 
     Parameters
@@ -103,9 +105,11 @@ def build_intent(
 
     Returns
     -------
-    (intent | None, verdicts)
+    (intent | None, verdicts, resolved_lot_size | None)
         intent is None if any check fails.  verdicts always contains one entry
         per check run so the dry-run route can surface full reasoning.
+        resolved_lot_size is the broker-authoritative lot (scrip ls) on success,
+        None on any failure.
     """
     verdicts: List[Verdict] = []
     buf = buffer_pct if buffer_pct is not None else _DEFAULT_BUFFER_PCT
@@ -208,18 +212,18 @@ def build_intent(
     pb_ok, pb_reason = check_price_band(prc, ref_ltp, band_pct)
     verdicts.append(_v("price_band", pb_ok, pb_reason or f"prc={prc} within {band_pct}% of ref={ref_ltp}"))
     if not pb_ok:
-        return None, verdicts
+        return None, verdicts, None
 
     # 4c. fat-finger cap
     ff_ok, ff_reason = check_fat_finger(lots, fat_finger_cap)
     verdicts.append(_v("fat_finger", ff_ok, ff_reason or f"lots={lots} <= cap={fat_finger_cap}"))
     if not ff_ok:
-        return None, verdicts
+        return None, verdicts, None
 
     # 4d. validate_jdata (prctyp/prd/ret/qty/prc/trgprc for SL-LMT)
     jd_ok, jd_reason = validate_jdata(intent, lot_size=lot_size)
     verdicts.append(_v("jdata", jd_ok, jd_reason or "OrderIntent fields valid"))
     if not jd_ok:
-        return None, verdicts
+        return None, verdicts, None
 
-    return intent, verdicts
+    return intent, verdicts, lot_size

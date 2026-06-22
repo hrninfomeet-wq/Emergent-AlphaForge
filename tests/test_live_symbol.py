@@ -416,36 +416,59 @@ def test_multiple_matching_rows_raises():
 
 
 # ---------------------------------------------------------------------------
-# Lot-size cross-check
+# Lot-size: broker scrip ls is authoritative — stale/absent contract value must NOT block
 # ---------------------------------------------------------------------------
 
-def test_lot_size_mismatch_between_scrip_and_contract_raises():
-    """scrip ls=65 but contract says lot_size=30."""
-    row = make_nifty_scrip(ls="65")   # NIFTY expected 65
-    with pytest.raises(SymbolResolutionError, match="lot size mismatch"):
-        resolve(make_contract(lot_size=30), search_fn=fake_search([row]))
+def test_stale_contract_lot_size_does_not_block():
+    """The user's real bug: scrip ls=65 but contract says lot_size=75 (stale).
+
+    The old code raised; the new code returns lot_size=65 (broker authoritative).
+    """
+    row = make_nifty_scrip(ls="65")   # broker authoritative
+    result = resolve(make_contract(lot_size=75), search_fn=fake_search([row]))
+    assert result["lot_size"] == 65, (
+        f"expected broker ls=65 to be used; got {result['lot_size']}"
+    )
 
 
-def test_lot_size_mismatch_against_underlying_spec_raises():
-    """Contract and scrip agree on 30, but UNDERLYING_SPEC says NIFTY=65."""
+def test_absent_contract_lot_size_resolves_fine():
+    """Contract with no lot_size key (None) resolves successfully using broker ls."""
+    contract = make_contract(lot_size=65)
+    contract.pop("lot_size")          # simulate absent field
+    row = make_nifty_scrip(ls="65")
+    result = resolve(contract, search_fn=fake_search([row]))
+    assert result["lot_size"] == 65
+
+
+def test_spec_mismatch_warns_not_raises(caplog):
+    """scrip ls differs from UNDERLYING_SPEC — logs a warning but returns broker ls, no raise."""
+    import logging
+    # NIFTY UNDERLYING_SPEC says 65; scrip ls="30" triggers the mismatch path
     row = make_nifty_scrip(ls="30")
-    with pytest.raises(SymbolResolutionError, match="lot size mismatch"):
-        resolve(make_contract(underlying="NIFTY", lot_size=30), search_fn=fake_search([row]))
-
-
-def test_banknifty_lot_35_raises():
-    """BANKNIFTY scrip with ls=35 raises — UNDERLYING_SPEC expects 30."""
-    row = {**REAL_BANKNIFTY_CE_52000, "ls": "35"}
-    with pytest.raises(SymbolResolutionError, match="lot size mismatch"):
-        resolve(
-            make_contract(underlying="BANKNIFTY", strike=52000.0, side="CE",
-                          expiry_date="2026-06-30", lot_size=35),
+    with caplog.at_level(logging.WARNING, logger="app.live.flattrade_symbol"):
+        result = resolve(
+            make_contract(underlying="NIFTY", lot_size=30),
             search_fn=fake_search([row]),
         )
+    assert result["lot_size"] == 30, "broker ls must be returned even when it differs from UNDERLYING_SPEC"
+    assert any("authoritative" in r.message or "differs from" in r.message for r in caplog.records), (
+        "expected a warning about spec mismatch"
+    )
+
+
+def test_banknifty_lot_35_resolves_to_broker_ls():
+    """BANKNIFTY scrip with ls=35 now resolves to 35 (broker authoritative); no raise."""
+    row = {**REAL_BANKNIFTY_CE_52000, "ls": "35"}
+    result = resolve(
+        make_contract(underlying="BANKNIFTY", strike=52000.0, side="CE",
+                      expiry_date="2026-06-30", lot_size=35),
+        search_fn=fake_search([row]),
+    )
+    assert result["lot_size"] == 35
 
 
 def test_sensex_lot_size_20_correct():
-    """SENSEX lot_size=20 matches both scrip ls and UNDERLYING_SPEC."""
+    """SENSEX lot_size=20 matches scrip ls and resolves correctly."""
     result = resolve(
         make_contract(underlying="SENSEX", strike=80000.0, side="CE",
                       expiry_date="2026-06-25", lot_size=20),

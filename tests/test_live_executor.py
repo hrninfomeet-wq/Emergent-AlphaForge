@@ -249,7 +249,6 @@ def _kwargs(**overrides) -> Dict[str, Any]:
         ref_ltp=_REF_LTP,
         band_pct=_BAND_PCT,
         levels={},
-        lot_size=_LOT_SIZE,
         search_fn=_fake_search,
         fat_finger_cap=1,
         buffer_pct=0.5,
@@ -613,24 +612,23 @@ def test_cannot_inject_qty_greater_than_one_lot():
 
 
 def test_qty_not_one_lot_blocks_as_not_one_lot():
-    """Gate 5 defense-in-depth: if intent.qty != lot_size, blocked with 'not_one_lot'.
+    """Gate 5 defense-in-depth: if intent.qty != resolved_lot_size, blocked with 'not_one_lot'.
 
-    The real symbol resolver enforces lot-size consistency (NIFTY always 65),
-    so we patch executor.build_intent to return a synthetic intent whose qty
-    disagrees with the executor's lot_size parameter.  Gate 5 checks
-    intent.qty != lot_size → not_one_lot, and ZERO orders are placed.
+    We patch executor.build_intent to return a synthetic intent whose qty
+    disagrees with the resolved_lot_size in the 3-tuple.  Gate 5 checks
+    intent.qty != resolved_lot_size → not_one_lot, and ZERO orders are placed.
     """
     from unittest.mock import patch
     from app.live.broker_protocol import OrderIntent
 
-    # Synthesise an intent with qty=130 (2 lots) — bypasses real resolver
+    # Synthesise an intent with qty=130 (2 lots) — but resolved_lot_size=65
     fake_intent = OrderIntent(
         client_order_id="fake-cid",
         trantype="B",
         prctyp="LMT",
         exch="NFO",
         tsym="NIFTY26JUN26C25000",
-        qty=130,   # 2 × 65 — disagrees with lot_size=65 below
+        qty=130,   # 2 × 65 — disagrees with resolved_lot_size=65
         prc=201.0,
         prd="I",
         ret="DAY",
@@ -645,15 +643,49 @@ def test_qty_not_one_lot_blocks_as_not_one_lot():
         {"check": "fat_finger", "ok": True, "detail": "ok"},
         {"check": "jdata", "ok": True, "detail": "ok"},
     ]
+    # 3-tuple: intent, verdicts, resolved_lot_size=65 (but qty=130 → mismatch)
+    mock_return = (fake_intent, all_pass_verdicts, 65)
 
     client = MockNoren(limits_data=_GOOD_LIMITS)
 
-    with patch("app.live.executor.build_intent", return_value=(fake_intent, all_pass_verdicts)):
-        result = run(_place(client=client, lot_size=65))
+    with patch("app.live.executor.build_intent", return_value=mock_return):
+        result = run(_place(client=client))
 
     assert result["placed"] is False
     assert result["reason"] == "not_one_lot"
     assert run(client.order_book()) == []
+
+
+def test_stale_contract_lot_size_does_not_block():
+    """The bug: contract says lot_size=75 (stale) but broker scrip ls=65.
+
+    The executor must now use the broker-resolved lot (65) for gate 5 and margin,
+    not the stale contract value.  Order must be placed (placed=True).
+    """
+    # Contract carries a stale lot_size=75 — the scrip always returns ls=65
+    stale_contract = {**_CONTRACT, "lot_size": 75}  # stale
+    client = MockNoren(limits_data=_GOOD_LIMITS)
+    result = run(_place(client=client, contract=stale_contract))
+    assert result["placed"] is True, (
+        f"stale contract lot_size=75 must NOT block when broker scrip ls=65; "
+        f"got placed=False, reason={result.get('reason')}, verdicts={result.get('verdicts')}"
+    )
+    book = run(client.order_book())
+    assert len(book) == 1
+    assert book[0]["qty"] == 65  # broker ls, not stale 75
+
+
+def test_absent_contract_lot_size_does_not_block():
+    """Contract with no lot_size key at all still resolves and places successfully."""
+    no_lot_contract = {k: v for k, v in _CONTRACT.items() if k != "lot_size"}
+    client = MockNoren(limits_data=_GOOD_LIMITS)
+    result = run(_place(client=client, contract=no_lot_contract))
+    assert result["placed"] is True, (
+        f"absent contract lot_size must NOT block; "
+        f"reason={result.get('reason')}, verdicts={result.get('verdicts')}"
+    )
+    book = run(client.order_book())
+    assert book[0]["qty"] == 65
 
 
 # ===========================================================================

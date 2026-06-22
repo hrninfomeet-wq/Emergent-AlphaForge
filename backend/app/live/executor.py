@@ -124,7 +124,6 @@ async def place_live_test_order(
     ref_ltp: float,
     band_pct: float,
     levels: Dict[str, Any],
-    lot_size: int,
     client: Any,
     mode_store: Any,
     intent_store: Any,
@@ -150,8 +149,6 @@ async def place_live_test_order(
         Max % price deviation from ref_ltp.
     levels:
         stop_pts / stop_pct / target_pts / target_pct for order_builder.
-    lot_size:
-        Expected lot size; the intent's qty MUST equal this exactly.
     client:
         BrokerClient instance (MockNoren in tests, FlattradeClient in prod).
     mode_store:
@@ -212,7 +209,7 @@ async def place_live_test_order(
         else None
     )
     cid = new_client_order_id()
-    intent, verdicts = build_intent(
+    intent, verdicts, resolved_lot_size = build_intent(
         contract,
         side=side,
         order_kind="entry",
@@ -227,10 +224,13 @@ async def place_live_test_order(
     )
 
     # ------------------------------------------------------------------
-    # Gate 3 (margin) — append to verdicts before checking
+    # Gate 3 (margin) — use the broker-resolved lot size, not a stale constant.
+    # Only append the margin verdict when resolution succeeded (resolved_lot_size
+    # is not None); if resolution failed the symbol verdict already blocked.
     # ------------------------------------------------------------------
     limits = await client.limits()
-    verdicts.append(margin_verdict(limits, ref_ltp=ref_ltp, lot_size=lot_size))
+    if resolved_lot_size is not None:
+        verdicts.append(margin_verdict(limits, ref_ltp=ref_ltp, lot_size=resolved_lot_size))
 
     # ------------------------------------------------------------------
     # Gate 4 — all verdicts must pass (intent must be non-None)
@@ -239,9 +239,9 @@ async def place_live_test_order(
         return _blocked("dry_run_failed", verdicts)
 
     # ------------------------------------------------------------------
-    # Gate 5 — defense-in-depth: qty must equal exactly one lot
+    # Gate 5 — defense-in-depth: qty must equal exactly one resolved lot
     # ------------------------------------------------------------------
-    if intent.qty != lot_size:
+    if resolved_lot_size is None or intent.qty != resolved_lot_size:
         return _blocked("not_one_lot", verdicts)
 
     # ------------------------------------------------------------------

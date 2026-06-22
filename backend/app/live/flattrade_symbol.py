@@ -41,8 +41,11 @@ formats). SENSEX ``symname`` is ``BSXOPT`` (not ``SENSEX``).
 from __future__ import annotations
 
 import datetime
+import logging
 import math
 from typing import Any, Callable, Dict, List, Tuple
+
+log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -261,10 +264,9 @@ def resolve(
     # Normalize expiry to ISO string (fails closed on blank/bad format).
     contract_expiry = _contract_expiry_iso(contract.get("expiry_date"))
 
-    contract_lot = contract.get("lot_size")
-    if contract_lot is None:
-        raise SymbolResolutionError("contract missing 'lot_size'")
-    contract_lot = int(contract_lot)
+    # contract lot_size is ADVISORY — the broker scrip ls is authoritative.
+    # May be None; that is fine; we never hard-fail on a missing or stale value.
+    contract_lot = contract.get("lot_size")  # may be None
 
     # Build search query: "<UNDERLYING> <strike_int>", e.g. "NIFTY 25000"
     strike_int = int(contract_strike) if contract_strike == int(contract_strike) else contract_strike
@@ -332,18 +334,20 @@ def resolve(
 
     row = matches[0]
 
-    # Cross-check lot size: scrip ls must match both the contract and UNDERLYING_SPEC.
+    # Broker scrip ls is the authoritative lot size.
+    # The 4-way match (symname/optt/exd/strike) already guarantees the right contract;
+    # the positive-integer sanity check stays (a zero/negative/fractional ls is always wrong).
     row_lot = _normalise_lot_size(row.get("ls"))
 
-    if row_lot != contract_lot:
-        raise SymbolResolutionError(
-            f"lot size mismatch: scrip ls={row_lot} vs contract lot_size={contract_lot} "
-            f"for {underlying} {contract_strike} {contract_side}"
-        )
+    # contract lot_size is advisory — a stale or absent value must NEVER block.
+    # (No cross-check against contract_lot.)
+
+    # UNDERLYING_SPEC mismatch: warn, do NOT raise.  The broker ls is still used.
     if row_lot != expected_lot:
-        raise SymbolResolutionError(
-            f"lot size mismatch: scrip ls={row_lot} vs expected {underlying} lot "
-            f"{expected_lot} (UNDERLYING_SPEC). Verify live lot size before deploying."
+        log.warning(
+            "lot size: broker ls=%s differs from UNDERLYING_SPEC %s=%s "
+            "— using broker ls (authoritative); update the spec",
+            row_lot, underlying, expected_lot,
         )
 
     # Strip tsym/token and reject blank after stripping.

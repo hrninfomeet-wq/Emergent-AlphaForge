@@ -778,7 +778,7 @@ async def live_order_dry_run(body: _DryRunBody):
     def _sync_search(exch: str, q: str) -> List[Dict[str, Any]]:
         return pre_fetched_rows
 
-    intent, verdicts = build_intent(
+    intent, verdicts, resolved_lot = build_intent(
         body.contract,
         side=body.side,
         order_kind=body.order_kind,
@@ -811,6 +811,7 @@ async def live_order_dry_run(body: _DryRunBody):
         "would_send": would_send,
         "verdicts": verdicts,
         "client_order_id": cid,
+        "lot_size": resolved_lot,  # authoritative broker lot size (None if resolution failed)
     }
 
 
@@ -942,12 +943,12 @@ async def live_order_place(body: _PlaceBody):
     """
     from app.live.flattrade_symbol import UNDERLYING_SPEC
 
-    # Resolve underlying + lot_size from contract
+    # Validate the underlying is in our allow-list (the executor no longer needs lot_size;
+    # it comes from the resolved broker scrip ls via build_intent).
     underlying = str(body.contract.get("underlying") or "").strip().upper()
     spec = UNDERLYING_SPEC.get(underlying)
     if spec is None:
         raise HTTPException(400, f"Unknown underlying {underlying!r}. Supported: {sorted(UNDERLYING_SPEC)}")
-    lot_size: int = body.contract.get("lot_size") or spec[2]
 
     # Get the broker client for order operations
     try:
@@ -1010,7 +1011,6 @@ async def live_order_place(body: _PlaceBody):
         ref_ltp=body.ref_ltp,
         band_pct=body.band_pct,
         levels=body.levels,
-        lot_size=lot_size,
         client=client,
         mode_store=ms,
         intent_store=is_,

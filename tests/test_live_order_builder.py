@@ -74,7 +74,7 @@ def _build(**kwargs):
 
 def test_valid_entry_buy():
     """Happy-path BUY entry: intent not None, correct fields, all verdicts ok."""
-    intent, verdicts = _build(side="B", order_kind="entry", lots=2, buffer_pct=0.5)
+    intent, verdicts, resolved_lot_size = _build(side="B", order_kind="entry", lots=2, buffer_pct=0.5)
 
     assert intent is not None, f"expected intent, got None. verdicts={verdicts}"
     assert intent.prctyp == "LMT"
@@ -94,6 +94,9 @@ def test_valid_entry_buy():
     # trgprc must be None for LMT
     assert intent.trgprc is None
 
+    # resolved_lot_size must equal the broker scrip ls (65)
+    assert resolved_lot_size == 65, f"expected broker ls=65, got {resolved_lot_size}"
+
     # All verdicts must be ok
     bad = [v for v in verdicts if not v["ok"]]
     assert not bad, f"unexpected failed verdicts: {bad}"
@@ -107,7 +110,7 @@ def test_clamp_wins():
     """buffer_pct=10 is clamped to band_pct=2; price stays within 2%, intent passes."""
     buffer_pct = 10.0
     band_pct = 2.0
-    intent, verdicts = _build(
+    intent, verdicts, resolved_lot_size = _build(
         side="B",
         order_kind="entry",
         buffer_pct=buffer_pct,
@@ -184,7 +187,7 @@ def test_out_of_band_returns_none():
 
     ref_ltp = 200.001  # tiny sub-cent offset
     band_pct = 0.0     # zero tolerance
-    intent, verdicts = _build(
+    intent, verdicts, resolved_lot_size = _build(
         ref_ltp=ref_ltp,
         band_pct=band_pct,
         buffer_pct=0.0,
@@ -207,12 +210,13 @@ def test_out_of_band_returns_none():
 
 def test_fat_finger_blocks():
     """lots > fat_finger_cap → fat_finger verdict ok=False, intent None."""
-    intent, verdicts = _build(lots=20, fat_finger_cap=5)
+    intent, verdicts, resolved_lot_size = _build(lots=20, fat_finger_cap=5)
 
     ff_verdict = next((v for v in verdicts if v["check"] == "fat_finger"), None)
     assert ff_verdict is not None, "no fat_finger verdict in list"
     assert not ff_verdict["ok"], f"expected fat_finger to block; ok=True"
     assert intent is None
+    assert resolved_lot_size is None, "resolved_lot_size must be None when fat_finger blocks"
 
 
 # ---------------------------------------------------------------------------
@@ -224,7 +228,7 @@ def test_stop_parity():
     ref_ltp = 200.0
     stop_pct = 30.0
 
-    intent, verdicts = _build(
+    intent, verdicts, resolved_lot_size = _build(
         side="S",
         order_kind="stop",
         ref_ltp=ref_ltp,
@@ -260,12 +264,13 @@ def test_unknown_underlying_no_crash():
     """An unknown underlying raises SymbolResolutionError internally; symbol verdict fails gracefully."""
     bad_contract = dict(_CONTRACT, underlying="FAKEXYZ")
 
-    intent, verdicts = _build(contract=bad_contract)
+    intent, verdicts, resolved_lot_size = _build(contract=bad_contract)
 
     sym_verdict = next((v for v in verdicts if v["check"] == "symbol"), None)
     assert sym_verdict is not None, "no symbol verdict returned"
     assert not sym_verdict["ok"], "expected symbol verdict to fail"
     assert intent is None
+    assert resolved_lot_size is None, "resolved_lot_size must be None on symbol failure"
     # Must not have raised — reached here, so no crash
 
 
@@ -276,7 +281,7 @@ def test_unknown_underlying_no_crash():
 def test_remarks_equals_cid():
     """remarks field on the intent must equal the client_order_id passed in."""
     cid = "unique-order-id-xyz987"
-    intent, _ = _build(client_order_id=cid)
+    intent, _, resolved_lot_size = _build(client_order_id=cid)
 
     assert intent is not None
     assert intent.remarks == cid, f"remarks {intent.remarks!r} != cid {cid!r}"
@@ -288,7 +293,7 @@ def test_remarks_equals_cid():
 
 def test_verdicts_structure_on_failure():
     """Even when intent is None, verdicts is a non-empty list of dicts."""
-    intent, verdicts = _build(lots=999, fat_finger_cap=1)
+    intent, verdicts, resolved_lot_size = _build(lots=999, fat_finger_cap=1)
 
     assert intent is None
     assert isinstance(verdicts, list)
@@ -305,7 +310,7 @@ def test_verdicts_structure_on_failure():
 
 def test_sell_entry_price_below_ref():
     """SELL entry: prc should be ref_ltp * (1 - eff/100), i.e. below the reference."""
-    intent, verdicts = _build(side="S", order_kind="exit", buffer_pct=0.5, band_pct=5.0)
+    intent, verdicts, resolved_lot_size = _build(side="S", order_kind="exit", buffer_pct=0.5, band_pct=5.0)
 
     assert intent is not None, f"verdicts={verdicts}"
     eff = min(0.5, 5.0)
@@ -319,8 +324,8 @@ def test_sell_entry_price_below_ref():
 # ---------------------------------------------------------------------------
 
 def test_ref_ltp_none_fails_closed():
-    """ref_ltp=None must return (None, verdicts) with a failed verdict, not crash."""
-    intent, verdicts = _build(ref_ltp=None)
+    """ref_ltp=None must return (None, verdicts, None) with a failed verdict, not crash."""
+    intent, verdicts, resolved_lot_size = _build(ref_ltp=None)
 
     assert intent is None, f"expected None intent for ref_ltp=None, got {intent!r}"
     assert isinstance(verdicts, list) and len(verdicts) > 0, "expected non-empty verdicts list"
@@ -338,8 +343,8 @@ def test_ref_ltp_none_fails_closed():
 # ---------------------------------------------------------------------------
 
 def test_ref_ltp_string_fails_closed():
-    """ref_ltp='abc' (wrong type) must return (None, verdicts) with a failed verdict, not crash."""
-    intent, verdicts = _build(ref_ltp="abc")
+    """ref_ltp='abc' (wrong type) must return (None, verdicts, None) with a failed verdict, not crash."""
+    intent, verdicts, resolved_lot_size = _build(ref_ltp="abc")
 
     assert intent is None, f"expected None intent for ref_ltp='abc', got {intent!r}"
     assert isinstance(verdicts, list) and len(verdicts) > 0, "expected non-empty verdicts list"
