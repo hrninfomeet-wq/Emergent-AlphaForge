@@ -20,10 +20,12 @@ from __future__ import annotations
 
 import json
 import logging
+import socket
 from typing import Any, Callable, Dict, List, Optional
 
 import httpx
 
+from app.live._net import force_ipv4, ipv4_transport
 from app.live.broker_protocol import OrderIntent, OrderResult
 
 log = logging.getLogger(__name__)
@@ -72,7 +74,7 @@ class FlattradeClient:
         body = self._make_body(jdata)
         headers = {"Content-Type": "application/x-www-form-urlencoded"}
 
-        async with httpx.AsyncClient(timeout=20.0) as client:
+        async with httpx.AsyncClient(timeout=20.0, transport=ipv4_transport()) as client:
             resp = await client.post(url, content=body, headers=headers)
 
         if resp.status_code != 200:
@@ -280,7 +282,12 @@ class FlattradeClient:
             "source": "API",
         })
 
-        async with websockets.connect(_PICONNECT_WS) as ws:
+        # Force IPv4: Flattrade whitelists a static IPv4 address; a dual-stack
+        # host may resolve the hostname to an AAAA record and egress over IPv6,
+        # causing 'Invalid Input : INVALID_IP'.  Passing family=AF_INET
+        # restricts DNS resolution + socket creation to IPv4 only.
+        ws_kwargs = {"family": socket.AF_INET} if force_ipv4() else {}
+        async with websockets.connect(_PICONNECT_WS, **ws_kwargs) as ws:
             await ws.send(auth_packet)
             async for raw in ws:
                 try:

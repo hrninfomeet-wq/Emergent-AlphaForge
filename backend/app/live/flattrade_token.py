@@ -26,6 +26,7 @@ from typing import Any, Dict, Optional
 import httpx
 
 from app.db import get_db
+from app.live._net import ipv4_transport
 
 log = logging.getLogger(__name__)
 
@@ -108,7 +109,7 @@ async def exchange_code_for_token(code: str) -> Dict[str, Any]:
         "api_secret": security_hash,
     }
 
-    async with httpx.AsyncClient(timeout=20.0) as client:
+    async with httpx.AsyncClient(timeout=20.0, transport=ipv4_transport()) as client:
         resp = await client.post(
             "https://authapi.flattrade.in/trade/apitoken",
             json=payload,
