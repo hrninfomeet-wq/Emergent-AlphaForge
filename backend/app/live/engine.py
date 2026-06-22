@@ -82,8 +82,19 @@ class LiveEngine:
         self.internal_positions: List[Dict[str, Any]] = []
 
     # ------------------------------------------------------------------
-    # Halt helper
+    # Halt helpers
     # ------------------------------------------------------------------
+
+    async def halt(self, reason: str) -> None:
+        """Public async halt entrypoint — thin wrapper over ``_halt``.
+
+        Called by the executor's ``_abort_protect`` after a post-fill failure
+        so the engine is halted by an external caller without knowing about
+        the internal ``_halt`` method.
+
+        Idempotent: subsequent calls keep the FIRST reason and append alerts.
+        """
+        self._halt(reason, {"caller": "executor"})
 
     def _halt(self, reason: str, detail: Any) -> None:
         """Record a halt event.  Sets halted=True and halt_reason on first call;
