@@ -1505,14 +1505,14 @@ function PreflightPanel({ preflight, preflighting, onCheck, onIngest }) {
   );
 }
 
-function Panel({ title, children, right, testid, rootRef, className = "" }) {
+function Panel({ title, children, right, testid, rootRef, className = "", bodyClassName = "p-3", bodyStyle }) {
   return (
     <div ref={rootRef} className={`rounded-lg border border-line bg-bg-1 ${className}`} data-testid={testid}>
-      <div className="px-3 py-2 border-b border-line flex items-center">
+      <div className="px-3 py-2 border-b border-line flex items-center shrink-0">
         <div className="text-[11px] font-semibold uppercase tracking-wider text-dim">{title}</div>
         {right && <div className="ml-auto">{right}</div>}
       </div>
-      <div className="p-3">{children}</div>
+      <div className={bodyClassName} style={bodyStyle}>{children}</div>
     </div>
   );
 }
@@ -2504,7 +2504,9 @@ function TradesTable({ trades, optionBacktest }) {
   return (
     <Panel
       rootRef={panelRef}
-      className="overflow-auto"
+      className={maximized ? "flex flex-col overflow-hidden" : "overflow-auto"}
+      bodyClassName={maximized ? "p-3 flex flex-col flex-1" : "p-3"}
+      bodyStyle={maximized ? { minHeight: 0 } : undefined}
       title={`Trades (${sorted.length}${sorted.length !== indexed.length ? ` of ${indexed.length}` : ""})`}
       testid="trades-panel"
       right={
@@ -2533,7 +2535,10 @@ function TradesTable({ trades, optionBacktest }) {
           Spot signal paired with the option leg. "Opt Leg" is the contract chosen for the signal; Opt Entry/Exit are premium fills (after slippage).
         </div>
       )}
-      <div className="overflow-x-auto max-h-[400px]">
+      <div
+        className={maximized ? "overflow-auto flex-1" : "overflow-x-auto max-h-[400px]"}
+        style={maximized ? { minHeight: 0 } : undefined}
+      >
         <table className="w-full text-xs" data-testid="trades-table">
           <thead className="sticky top-0 bg-bg-2 z-10">
             <tr className="text-dim">
