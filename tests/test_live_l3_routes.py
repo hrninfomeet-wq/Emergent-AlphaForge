@@ -924,3 +924,181 @@ def test_put_mode_junk_returns_422():
         )
     finally:
         _stop_patches(tc)
+
+
+# ===========================================================================
+# SINGLETON + FAIL-CLOSED GATE (TDD for the real _l3_engine() wiring)
+# ===========================================================================
+
+def _reset_engine_singleton():
+    """Reset module-level singleton state so tests don't bleed into each other."""
+    import app.routers.live_broker as _r
+    _r._live_engine_singleton = None
+    _r._live_engine_init_error = None
+
+
+def test_production_l3_engine_is_real_live_engine_not_permissive():
+    """Unpatched _l3_engine() (with fake DB injected) returns a real LiveEngine,
+    NOT a _PermissiveEngine or _ClosedEngine."""
+    import app.routers.live_broker as _r
+    from app.live.engine import LiveEngine
+
+    _reset_engine_singleton()
+
+    fake_db = MagicMock()
+    fake_db.live_orders = FakeAsyncCollection()
+
+    with patch("app.routers.live_broker._order_client", return_value=None), \
+         patch("app.routers.live_broker._intent_store", return_value=_make_intent_store()), \
+         patch("app.routers.live_broker._config_store", return_value=_make_config_store()), \
+         patch("app.db.get_db", return_value=fake_db):
+        engine = _r._l3_engine()
+
+    assert isinstance(engine, LiveEngine), (
+        f"Expected LiveEngine, got {type(engine).__name__}"
+    )
+    # Clean up
+    _reset_engine_singleton()
+
+
+def test_production_l3_engine_is_singleton_halt_persists():
+    """Two calls to _l3_engine() return the SAME object; a halt on it persists."""
+    import app.routers.live_broker as _r
+    from app.live.engine import LiveEngine
+
+    _reset_engine_singleton()
+
+    fake_db = MagicMock()
+    fake_db.live_orders = FakeAsyncCollection()
+
+    with patch("app.routers.live_broker._order_client", return_value=None), \
+         patch("app.routers.live_broker._intent_store", return_value=_make_intent_store()), \
+         patch("app.routers.live_broker._config_store", return_value=_make_config_store()), \
+         patch("app.db.get_db", return_value=fake_db):
+        eng1 = _r._l3_engine()
+        eng2 = _r._l3_engine()
+
+    assert eng1 is eng2, "Two calls must return the same singleton object"
+
+    # Halt the engine via the public async path
+    asyncio.run(eng1.halt("test_reason"))
+    assert eng2.halted is True, "halt on eng1 must be visible on eng2 (same object)"
+    assert eng2.halt_reason == "test_reason"
+
+    _reset_engine_singleton()
+
+
+def test_latched_config_blocks_place_order():
+    """A config_store with blocked_until_reset=True makes can_trade() return False,
+    and POST /order/place in LIVE_TEST returns placed=False with 'cannot_trade'."""
+    # Build a config store pre-latched
+    latched_col = FakeAsyncCollection()
+    latched_col.docs.append({
+        "_id": "singleton",
+        "blocked_until_reset": True,
+        "daily_loss_limit": -50000.0,
+        "profit_lock_target": 20000.0,
+        "max_open_positions": 3,
+    })
+    cs = SafetyConfigStore(latched_col)
+
+    ms = _make_mode_store(mode="LIVE_TEST", consumed=False)
+    cl = _make_mock_noren()
+    cl._search_scrip_data = {"NFO": [_NIFTY_SCRIP]}
+
+    # Build a real LiveEngine with the latched config store
+    from app.live.engine import LiveEngine
+    real_engine = LiveEngine(
+        client=None,
+        orders_collection=FakeAsyncCollection(),
+        intent_store=_make_intent_store(),
+        config_store=cs,
+    )
+    # Confirm can_trade is blocked
+    ok, reason = asyncio.run(real_engine.can_trade())
+    assert ok is False
+    assert "blocked" in reason
+
+    # Wire it into the route via monkeypatch
+    tc = _make_app(mode_store=ms, client=cl, engine=real_engine)
+    try:
+        r = tc.post("/live-broker/order/place", json=_PLACE_BODY)
+        assert r.status_code == 200
+        data = r.json()
+        assert data["placed"] is False
+        assert "cannot_trade" in data["reason"]
+        book = asyncio.run(cl.order_book())
+        assert len(book) == 0, "latched gate must block place_order"
+    finally:
+        _stop_patches(tc)
+
+
+def test_engine_unavailable_fails_closed():
+    """If get_db raises during singleton construction, _l3_engine() returns
+    _ClosedEngine whose can_trade() is (False, 'engine_unavailable'), and
+    POST /order/place is blocked (placed=False), never permissive-allow."""
+    import app.routers.live_broker as _r
+
+    _reset_engine_singleton()
+
+    # Simulate DB failure during engine construction
+    with patch("app.db.get_db", side_effect=RuntimeError("DB unavailable")), \
+         patch("app.routers.live_broker._order_client", return_value=None), \
+         patch("app.routers.live_broker._intent_store", return_value=_make_intent_store()), \
+         patch("app.routers.live_broker._config_store", return_value=_make_config_store()):
+        engine = _r._l3_engine()
+
+    from app.live.engine import LiveEngine
+    assert not isinstance(engine, LiveEngine), (
+        "After DB failure, must return _ClosedEngine, not a real LiveEngine"
+    )
+    ok, reason = asyncio.run(engine.can_trade())
+    assert ok is False
+    assert "engine_unavailable" in reason
+
+    _reset_engine_singleton()
+
+
+def test_engine_unavailable_blocks_place_order_route():
+    """End-to-end: _ClosedEngine injected via _l3_engine patch blocks place_order."""
+    import app.routers.live_broker as _r
+
+    ms = _make_mode_store(mode="LIVE_TEST", consumed=False)
+    cl = _make_mock_noren()
+    cl._search_scrip_data = {"NFO": [_NIFTY_SCRIP]}
+
+    closed_engine = _r._ClosedEngine()
+    tc = _make_app(mode_store=ms, client=cl, engine=closed_engine)
+    try:
+        r = tc.post("/live-broker/order/place", json=_PLACE_BODY)
+        assert r.status_code == 200
+        data = r.json()
+        assert data["placed"] is False
+        # Must be blocked by the gate, not by mode
+        assert data["reason"] != "mode_not_live_test"
+        book = asyncio.run(cl.order_book())
+        assert len(book) == 0, "_ClosedEngine must block all place_order calls"
+    finally:
+        _stop_patches(tc)
+
+
+def test_permissive_engine_never_on_production_path():
+    """Structural test: after the fix, the production _l3_engine() code path
+    must NOT contain an always-True fallback engine (the old _PermissiveEngine).
+
+    We verify by inspecting the source of live_broker.py:
+      - No class named _PermissiveEngine should appear INSIDE the /order/place
+        route body (it was the inline stub).
+      - The old 'if engine is None: class _PermissiveEngine' block must be gone.
+    """
+    router_path = ROOT / "backend" / "app" / "routers" / "live_broker.py"
+    source = router_path.read_text()
+
+    # The inline permissive stub that bypassed the gate must be gone
+    assert "if engine is None:" not in source or "_PermissiveEngine" not in source, (
+        "Found 'if engine is None:' + '_PermissiveEngine' — the fail-open stub was not removed"
+    )
+    # The fail-closed class must be present
+    assert "_ClosedEngine" in source, "_ClosedEngine sentinel must exist in the router"
+    # The singleton builder must be present
+    assert "_build_live_engine_singleton" in source, "Singleton builder must be present"

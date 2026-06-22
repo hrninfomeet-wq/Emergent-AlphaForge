@@ -81,10 +81,70 @@ from app.live.auto_square import (
     square_position,
 )
 from app.live import executor as _executor_mod
+from app.live.engine import LiveEngine
 
 log = logging.getLogger(__name__)
 
 api = APIRouter()
+
+# ---------------------------------------------------------------------------
+# Module-level LiveEngine singleton
+#
+# The singleton matters because LiveEngine.halted is in-memory: a halt set by
+# the executor's _abort_protect during one request must survive to the next
+# request's can_trade() check.  A fresh engine per request would lose that flag.
+#
+# The config-store latch (blocked_until_reset) persists in Mongo, but the
+# in-memory halted flag does not — hence the singleton.
+#
+# Fail-CLOSED rule: if a real engine cannot be constructed (e.g. DB down at
+# import time), _l3_engine() returns a _ClosedEngine whose can_trade() always
+# returns (False, "engine_unavailable"). NEVER fall back to an always-True
+# permissive engine in production.
+# ---------------------------------------------------------------------------
+
+_live_engine_singleton: Optional["LiveEngine"] = None
+_live_engine_init_error: Optional[str] = None
+
+
+def _build_live_engine_singleton() -> None:
+    """Construct and cache the LiveEngine singleton from the real stores.
+
+    Called once at first use.  On any error the singleton remains None and
+    _live_engine_init_error is set; subsequent calls to _l3_engine() return
+    the fail-closed _ClosedEngine.
+    """
+    global _live_engine_singleton, _live_engine_init_error
+    try:
+        from app.db import get_db
+        db = get_db()
+        _live_engine_singleton = LiveEngine(
+            client=_order_client(),         # may be None if not yet connected
+            orders_collection=db.live_orders,
+            intent_store=_intent_store(),
+            config_store=_config_store(),
+        )
+        log.info("LiveEngine singleton constructed (client=%r)", _order_client())
+    except Exception as exc:
+        _live_engine_init_error = str(exc)
+        log.error("LiveEngine singleton construction FAILED — will fail CLOSED: %s", exc)
+
+
+class _ClosedEngine:
+    """Fail-closed sentinel engine returned when a real engine cannot be built.
+
+    can_trade() always returns (False, "engine_unavailable") so the halt/latch
+    gate is never bypassed. This is the ONLY acceptable fallback; the permissive
+    (always-True) engine must NOT be used in production.
+    """
+    halted: bool = True
+    halt_reason: str = "engine_unavailable"
+
+    async def can_trade(self):
+        return False, "engine_unavailable"
+
+    async def halt(self, reason: str) -> None:
+        log.error("_ClosedEngine.halt called (engine unavailable): %s", reason)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -147,8 +207,23 @@ def _order_client() -> Optional[FlattradeClient]:
 
 
 def _l3_engine():
-    """Return the LiveEngine instance (default: None — routes check for None)."""
-    return None
+    """Return the LiveEngine singleton (real or fail-closed).
+
+    Production path:
+      - Builds the singleton on first call (lazy, so DB must be ready).
+      - Subsequent calls return the SAME object (halted flag persists).
+      - If construction fails, returns _ClosedEngine (can_trade → False always).
+
+    Tests monkeypatch this function to inject a FakeEngine. The _PermissiveEngine
+    (always True) must NEVER appear on the production path — only in test helpers.
+    """
+    global _live_engine_singleton
+    if _live_engine_singleton is None and _live_engine_init_error is None:
+        _build_live_engine_singleton()
+    if _live_engine_singleton is not None:
+        return _live_engine_singleton
+    # Construction failed — fail CLOSED
+    return _ClosedEngine()
 
 
 def _mode_store() -> ModeStore:
@@ -814,17 +889,14 @@ async def put_mode(body: _ModePutBody):
     except HTTPException:
         connected = False
 
-    # Determine can_trade (True if engine permits and not halted)
+    # Determine can_trade (True if engine permits and not halted).
+    # _l3_engine() always returns an engine (real or fail-closed _ClosedEngine);
+    # it never returns None, so no permissive fallback is needed.
     can_trade = False
     try:
         engine = _l3_engine()
-        if engine is not None:
-            ok, _ = await engine.can_trade()
-            can_trade = ok
-        else:
-            # No engine wired — default to True for PAPER/LIVE_OFFLINE transitions;
-            # LIVE_TEST will still be blocked by connected/confirm guards if needed.
-            can_trade = True
+        ok, _ = await engine.can_trade()
+        can_trade = ok
     except Exception:
         can_trade = False
 
@@ -926,14 +998,9 @@ async def live_order_place(body: _PlaceBody):
         actid=actid,
     )
 
-    # Engine stub: if no engine wired, create a permissive one
-    if engine is None:
-        class _PermissiveEngine:
-            async def can_trade(self):
-                return True, ""
-            async def halt(self, reason: str) -> None:
-                log.warning("halt called (no engine): %s", reason)
-        engine = _PermissiveEngine()
+    # _l3_engine() always returns a real engine or _ClosedEngine (fail-closed).
+    # The old _PermissiveEngine fallback (can_trade always True) has been removed —
+    # it would bypass the halt/latch gate in production.
 
     result = await _executor_mod.place_live_test_order(
         body.contract,
