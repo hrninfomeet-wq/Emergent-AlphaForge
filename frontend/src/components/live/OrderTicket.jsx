@@ -32,6 +32,10 @@ export default function OrderTicket({ mode, disabled }) {
   const [dryRunResult, setDryRunResult] = useState(null); // {would_send, verdicts, client_order_id}
   const [dryRunError, setDryRunError] = useState(null);
 
+  // ATM-suggest state
+  const [atmBusy, setAtmBusy] = useState(false);
+  const [atmNote, setAtmNote] = useState(null); // "ATM @ spot 24987" | error reason
+
   // Fetch-premium state
   const [fetchBusy, setFetchBusy] = useState(false);
   const [premiumBadge, setPremiumBadge] = useState(null); // "live" | "last_candle" | null
@@ -87,6 +91,42 @@ export default function OrderTicket({ mode, disabled }) {
       );
     } finally {
       setFetchBusy(false);
+    }
+  };
+
+  const handleAtmSuggest = async () => {
+    setAtmBusy(true);
+    setAtmNote(null);
+    setPremiumBadge(null);
+    setPremiumNote(null);
+    setDryRunResult(null);
+    try {
+      const res = await api.getAtmSuggest({ underlying, side: optionSide });
+      if (res.atm_strike != null) {
+        setStrike(String(res.atm_strike));
+        if (res.expiry) setExpiryDate(res.expiry);
+        if (res.premium != null) {
+          setRefLtp(res.premium.toFixed(2));
+          setPremiumBadge(res.premium_source === "live_tick" ? "live" : "last_candle");
+        }
+        const spotStr = res.spot != null ? ` @ spot ${Math.round(res.spot)}` : "";
+        setAtmNote(`ATM${spotStr}`);
+      } else {
+        const reason = res.reason ?? "no market data";
+        setAtmNote(
+          reason === "no_spot"
+            ? "no spot / market data unavailable — pick a strike manually"
+            : reason === "no_contracts"
+            ? "no contracts found — pick a strike manually"
+            : `${reason} — pick a strike manually`
+        );
+      }
+    } catch (e) {
+      setAtmNote(
+        e?.response?.data?.detail ?? e?.message ?? "ATM lookup failed — enter manually"
+      );
+    } finally {
+      setAtmBusy(false);
     }
   };
 
@@ -160,7 +200,7 @@ export default function OrderTicket({ mode, disabled }) {
           </label>
           <select
             value={underlying}
-            onChange={(e) => { setUnderlying(e.target.value); setDryRunResult(null); setPremiumBadge(null); setPremiumNote(null); }}
+            onChange={(e) => { setUnderlying(e.target.value); setDryRunResult(null); setPremiumBadge(null); setPremiumNote(null); setAtmNote(null); }}
             disabled={disabled}
             className="bg-bg-2 border border-line rounded-md px-2 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:ring-1 focus:ring-info/50 disabled:opacity-50"
           >
@@ -170,19 +210,39 @@ export default function OrderTicket({ mode, disabled }) {
           </select>
         </div>
 
-        {/* Strike */}
+        {/* Strike + ATM button */}
         <div className="flex flex-col gap-1">
           <label className="text-[10px] uppercase tracking-wider text-dimmer font-semibold">
             Strike
           </label>
-          <input
-            type="number"
-            value={strike}
-            onChange={(e) => { setStrike(e.target.value); setDryRunResult(null); setPremiumBadge(null); setPremiumNote(null); }}
-            placeholder="e.g. 23000"
-            disabled={disabled}
-            className="bg-bg-2 border border-line rounded-md px-2 py-1.5 text-xs font-mono text-foreground placeholder:text-dimmer focus:outline-none focus:ring-1 focus:ring-info/50 disabled:opacity-50"
-          />
+          <div className="flex items-center gap-1.5">
+            <input
+              type="number"
+              value={strike}
+              onChange={(e) => { setStrike(e.target.value); setDryRunResult(null); setPremiumBadge(null); setPremiumNote(null); setAtmNote(null); }}
+              placeholder="e.g. 23000"
+              disabled={disabled}
+              className="min-w-0 flex-1 bg-bg-2 border border-line rounded-md px-2 py-1.5 text-xs font-mono text-foreground placeholder:text-dimmer focus:outline-none focus:ring-1 focus:ring-info/50 disabled:opacity-50"
+            />
+            <button
+              type="button"
+              disabled={atmBusy || disabled}
+              onClick={handleAtmSuggest}
+              title="Resolve nearest ATM strike, front expiry, and premium"
+              className="shrink-0 inline-flex items-center gap-1 px-2 py-1.5 rounded-md border border-info/40 bg-info/10 text-info text-[10px] font-mono font-semibold hover:bg-info/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              {atmBusy ? (
+                <Loader2 className="w-3 h-3 animate-spin" />
+              ) : null}
+              {atmBusy ? "…" : "ATM"}
+            </button>
+          </div>
+          {/* ATM note: resolved spot or error reason */}
+          {atmNote && (
+            <span className={`text-[10px] font-mono leading-tight ${atmNote.startsWith("ATM") ? "text-info/80" : "text-dimmer"}`}>
+              {atmNote}
+            </span>
+          )}
         </div>
 
         {/* CE / PE */}
@@ -196,7 +256,7 @@ export default function OrderTicket({ mode, disabled }) {
                 key={s}
                 type="button"
                 disabled={disabled}
-                onClick={() => { setOptionSide(s); setDryRunResult(null); setPremiumBadge(null); setPremiumNote(null); }}
+                onClick={() => { setOptionSide(s); setDryRunResult(null); setPremiumBadge(null); setPremiumNote(null); setAtmNote(null); }}
                 className={`flex-1 py-1.5 text-xs font-mono font-semibold rounded-md border transition-colors disabled:opacity-50 ${
                   optionSide === s
                     ? s === "CE"
@@ -219,7 +279,7 @@ export default function OrderTicket({ mode, disabled }) {
           <input
             type="date"
             value={expiryDate}
-            onChange={(e) => { setExpiryDate(e.target.value); setDryRunResult(null); setPremiumBadge(null); setPremiumNote(null); }}
+            onChange={(e) => { setExpiryDate(e.target.value); setDryRunResult(null); setPremiumBadge(null); setPremiumNote(null); setAtmNote(null); }}
             disabled={disabled}
             className="bg-bg-2 border border-line rounded-md px-2 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:ring-1 focus:ring-info/50 disabled:opacity-50"
           />
@@ -240,6 +300,7 @@ export default function OrderTicket({ mode, disabled }) {
                 setDryRunResult(null);
                 setPremiumBadge(null);
                 setPremiumNote(null);
+                setAtmNote(null);
               }}
               placeholder="e.g. 85.00"
               disabled={disabled}
