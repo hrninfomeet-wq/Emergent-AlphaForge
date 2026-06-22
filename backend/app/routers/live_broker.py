@@ -291,7 +291,7 @@ async def live_broker_symbol_resolve(
                 400,
                 f"Unknown underlying {underlying!r}. Supported: {sorted(UNDERLYING_SPEC)}",
             )
-        lot_size = spec[1]
+        lot_size = spec[2]  # UNDERLYING_SPEC is (exch, symname, lot_size)
 
     try:
         client = await _get_client()
