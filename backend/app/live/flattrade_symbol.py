@@ -43,7 +43,7 @@ from __future__ import annotations
 import datetime
 import logging
 import math
-from typing import Any, Callable, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 log = logging.getLogger(__name__)
 
@@ -67,6 +67,76 @@ UNDERLYING_SPEC: Dict[str, Tuple[str, str, int]] = {
 
 # Derived for backward compatibility with callers that import LOT_SIZE_EXPECTED.
 LOT_SIZE_EXPECTED: Dict[str, int] = {u: spec[2] for u, spec in UNDERLYING_SPEC.items()}
+
+
+# ---------------------------------------------------------------------------
+# Exchange rules engine — the single source of truth for what order types /
+# products each exchange allows + the per-exchange constants. Drives both the
+# order ticket (enable/disable controls) and the order choke-point (server-side
+# re-validation). Exchange is DERIVED from the underlying, never user-picked.
+#
+# v1 deliberately ships CO/BO OFF (BSE/BFO blocks them entirely, and our
+# software-monitored exits supersede their use) and SL-MKT OFF (RMS-blocked for
+# index options on both exchanges — steer to SL-LMT).
+#
+# NOTE: lot_size + freeze_qty are exchange figures that change periodically —
+# re-verify against the live broker before relying on them (lot sizes have moved
+# NIFTY 75->65, BANKNIFTY 30<->35; freeze quantities are revised by NSE/BSE).
+# ---------------------------------------------------------------------------
+EXCHANGE_RULES: Dict[str, Dict[str, Any]] = {
+    "NIFTY": {
+        "exch": "NFO", "lot_size": 65, "freeze_qty": 1800, "tick": 0.05,
+        "products": ["NRML", "MIS"], "price_types": ["LIMIT", "MARKET", "SL-LMT"],
+        "expiry_cadence": "weekly_tue",
+    },
+    "BANKNIFTY": {
+        "exch": "NFO", "lot_size": 30, "freeze_qty": 600, "tick": 0.05,
+        "products": ["NRML", "MIS"], "price_types": ["LIMIT", "MARKET", "SL-LMT"],
+        "expiry_cadence": "monthly_last_tue",
+    },
+    "SENSEX": {
+        "exch": "BFO", "lot_size": 20, "freeze_qty": 1000, "tick": 0.05,
+        "products": ["NRML", "MIS"], "price_types": ["LIMIT", "MARKET", "SL-LMT"],
+        "expiry_cadence": "weekly_thu",
+    },
+}
+
+
+def rules_for(underlying: Any) -> Optional[Dict[str, Any]]:
+    """Return a COPY of the exchange rules for ``underlying`` (uppercased), or None.
+
+    The copy (including its nested lists) is independent of EXCHANGE_RULES so a
+    caller can never mutate the shared table.
+    """
+    if not isinstance(underlying, str):
+        return None
+    rules = EXCHANGE_RULES.get(underlying.strip().upper())
+    if rules is None:
+        return None
+    out = dict(rules)
+    out["products"] = list(rules["products"])
+    out["price_types"] = list(rules["price_types"])
+    return out
+
+
+def market_allowed(
+    rules: Optional[Dict[str, Any]],
+    *,
+    expiry_date: Any = None,
+    strike: Any = None,
+    moneyness: Any = None,
+) -> bool:
+    """Whether a MARKET order is permitted for this contract.
+
+    Phase 1: returns True when MARKET is in the exchange's price_types (the order
+    ticket still defaults to LIMIT). The strict liquidity predicate — restrict
+    MARKET to the near weekly/monthly expiries and liquid (high-OI, non-deep-ITM)
+    strikes — is a Phase-3 refinement; the ``expiry_date``/``strike``/``moneyness``
+    parameters are accepted now so callers don't change later.
+    """
+    if not rules:
+        return False
+    return "MARKET" in rules.get("price_types", [])
 
 # Uppercase month abbreviations as used by Flattrade exd field (DD-MON-YYYY).
 _MONTH_ABBR_UPPER = {
