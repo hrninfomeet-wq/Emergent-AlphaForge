@@ -902,3 +902,200 @@ class TestSquarePositionTickAlignment:
             assert _is_tick_aligned(prc), (
                 f"ref={ref}: square_position BUY prc {prc} is not a 0.05 multiple"
             )
+
+
+# ---------------------------------------------------------------------------
+# P1.4 — margin-safe square-off: cancel ALL working orders for the scrip
+# (incl. a resting SL discovered in the book) + confirm terminal before exit.
+# ---------------------------------------------------------------------------
+
+from app.live.broker_protocol import OrderIntent as _OI  # noqa: E402
+from app.live.kill_switch import TERMINAL as _TERMINAL  # noqa: E402
+
+
+class MarginAwareMockNoren(MockNoren):
+    """A MockNoren that rejects a SELL when another working SELL exists for the
+    same tsym — simulating the broker's naked-short margin reject. This is the
+    exact failure mode of the ₹2.16L bug: a resting SL sell + a square-off sell.
+    """
+
+    async def place_order(self, intent):
+        if intent.trantype == "S":
+            for o in self._orders.values():
+                if (
+                    str(o.get("tsym")) == str(intent.tsym)
+                    and o.get("trantype") == "S"
+                    and str(o.get("status", "")).strip().upper() not in _TERMINAL
+                ):
+                    from app.live.broker_protocol import OrderResult
+                    return OrderResult(
+                        ok=False,
+                        rejreason="Margin shortfall: naked short — cancel resting SL first",
+                    )
+        return await super().place_order(intent)
+
+
+def _place_open(client, *, trantype, tsym="NIFTY2662221000CE", qty=65, prc=200.0,
+                prctyp="LMT", trgprc=None):
+    """Place an OPEN order in the mock book and return its norenordno."""
+    res = run(client.place_order(_OI(
+        client_order_id=f"seed-{trantype}-{prc}",
+        trantype=trantype, prctyp=prctyp, exch="NFO", tsym=tsym,
+        qty=qty, prc=prc, trgprc=trgprc,
+    )))
+    return res.norenordno
+
+
+class TestSquarePositionMarginSafe:
+    def test_cancels_resting_sl_before_exit_no_margin_reject(self):
+        """THE ₹2.16L BUG: a resting SL sell must be cancelled BEFORE the exit
+        sell, or the broker rejects it as a naked short. square_position must
+        discover + cancel the resting SL, then place the exit successfully."""
+        client = MarginAwareMockNoren()
+        sl_id = _place_open(client, trantype="S", prctyp="SL-LMT", prc=150.0, trgprc=155.0)
+        pos = _position(netqty=65, lp=200.0)  # long 65, no working id passed
+        result = run(square_position(client, pos, reason="kill"))
+        # resting SL was cancelled
+        assert client._orders[sl_id]["status"] == "CANCELED"
+        # exit succeeded (would have been margin-rejected if the SL were still working)
+        assert result["squared"] is True
+        assert result["via"] == "exit_order"
+        # exactly one new working SELL exit exists
+        new_sells = [o for n, o in client._orders.items()
+                     if n != sl_id and o["trantype"] == "S"
+                     and str(o["status"]).upper() not in _TERMINAL]
+        assert len(new_sells) == 1
+        assert new_sells[0]["qty"] == 65
+
+    def test_discovers_all_working_orders_for_scrip(self):
+        """An entry remainder AND a resting SL — both for the scrip — are
+        cancelled even though only one id is passed."""
+        client = MockNoren()
+        entry_id = _place_open(client, trantype="B", prc=200.0)
+        sl_id = _place_open(client, trantype="S", prctyp="SL-LMT", prc=150.0, trgprc=155.0)
+        pos = _position(netqty=65, lp=200.0, working_norenordno=entry_id)
+        result = run(square_position(client, pos, reason="kill"))
+        assert client._orders[entry_id]["status"] == "CANCELED"
+        assert client._orders[sl_id]["status"] == "CANCELED"
+        assert result["squared"] is True
+
+    def test_working_norenordnos_list_is_honored(self):
+        """The position may carry an explicit list of resting orders to cancel."""
+        client = MockNoren()
+        a = _place_open(client, trantype="B", prc=200.0)
+        b = _place_open(client, trantype="S", prctyp="SL-LMT", prc=150.0, trgprc=155.0)
+        pos = _position(netqty=65, lp=200.0)
+        pos["working_norenordnos"] = [a, b]
+        result = run(square_position(client, pos, reason="kill"))
+        assert client._orders[a]["status"] == "CANCELED"
+        assert client._orders[b]["status"] == "CANCELED"
+        assert result["squared"] is True
+
+    def test_does_not_strip_protection_when_unpriced(self):
+        """If lp is unpriced we CANNOT place an exit — so we must NOT cancel the
+        protective SL (don't leave the position naked AND unexited)."""
+        client = MockNoren()
+        sl_id = _place_open(client, trantype="S", prctyp="SL-LMT", prc=150.0, trgprc=155.0)
+        pos = _position(netqty=65, lp=None)  # unpriced
+        result = run(square_position(client, pos, reason="kill"))
+        assert result["squared"] is False
+        assert result["reason"] == "unpriced"
+        # SL must still be working — protection preserved
+        assert client._orders[sl_id]["status"] == "OPEN"
+
+
+class StubbornCancelClient:
+    """cancel_order returns ok but NEVER actually clears the order (the broker
+    keeps it working). order_book keeps reporting it non-terminal. Models a
+    cancel that won't take — square_position must refuse to place the exit."""
+
+    def __init__(self, tsym):
+        from app.live.broker_protocol import OrderResult  # noqa
+        self._tsym = tsym
+        self._book = [{"norenordno": "STUCK1", "tsym": tsym, "status": "OPEN",
+                       "trantype": "S"}]
+        self.placed = []
+
+    async def cancel_order(self, norenordno):
+        from app.live.broker_protocol import OrderResult
+        return OrderResult(ok=True, norenordno=norenordno)  # ack but never clears
+
+    async def order_book(self):
+        return list(self._book)
+
+    async def place_order(self, intent):
+        from app.live.broker_protocol import OrderResult
+        self.placed.append(intent)
+        return OrderResult(ok=True, norenordno="EXIT1")
+
+
+class TestSquarePositionCancelUnconfirmed:
+    def test_unconfirmed_cancel_refuses_to_place_exit(self):
+        """A working order that survives all cancel passes → squared=False,
+        reason 'cancel_unconfirmed', and NO exit order placed (margin-safe)."""
+        tsym = "NIFTY2662221000CE"
+        client = StubbornCancelClient(tsym)
+        pos = _position(netqty=65, lp=200.0, tsym=tsym)
+        result = run(square_position(client, pos, reason="kill"))
+        assert result["squared"] is False
+        assert result["reason"] == "cancel_unconfirmed"
+        assert "STUCK1" in result["failures"]
+        # CRITICAL: no exit order was placed into a guaranteed margin reject
+        assert client.placed == []
+
+    def test_unconfirmed_cancel_on_unfilled_entry(self):
+        """netqty==0 path: an un-cancellable working entry also surfaces
+        cancel_unconfirmed rather than falsely reporting squared via cancel."""
+        tsym = "NIFTY2662221000CE"
+        client = StubbornCancelClient(tsym)
+        pos = _position(netqty=0, lp=200.0, tsym=tsym)
+        result = run(square_position(client, pos, reason="kill"))
+        assert result["squared"] is False
+        assert result["reason"] == "cancel_unconfirmed"
+
+
+class LaggyCancelClient(MockNoren):
+    """A MockNoren whose cancel only takes effect on the 2nd attempt per order —
+    models broker eventual consistency. square_position's 2-pass confirm loop
+    must absorb this and still clear the book before placing the exit."""
+
+    def __init__(self):
+        super().__init__()
+        self._cancel_attempts = {}
+
+    async def cancel_order(self, norenordno):
+        from app.live.broker_protocol import OrderResult
+        n = self._cancel_attempts.get(norenordno, 0) + 1
+        self._cancel_attempts[norenordno] = n
+        if n >= 2 and norenordno in self._orders:
+            self._orders[norenordno]["status"] = "CANCELED"
+            return OrderResult(ok=True, norenordno=norenordno)
+        return OrderResult(ok=True, norenordno=norenordno)  # ack but not yet cleared
+
+
+class TestSquarePositionDiscoveryScoping:
+    def test_does_not_cancel_other_scrips_working_orders(self):
+        """Discovery is scoped to the position's tsym — a working order for a
+        DIFFERENT scrip must be left untouched."""
+        client = MockNoren()
+        mine = _place_open(client, trantype="S", tsym="NIFTY2662221000CE",
+                           prctyp="SL-LMT", prc=150.0, trgprc=155.0)
+        other = _place_open(client, trantype="S", tsym="BANKNIFTY2662250000CE",
+                            prctyp="SL-LMT", prc=150.0, trgprc=155.0)
+        pos = _position(netqty=65, lp=200.0, tsym="NIFTY2662221000CE")
+        result = run(square_position(client, pos, reason="kill"))
+        assert result["squared"] is True
+        assert client._orders[mine]["status"] == "CANCELED"
+        # the unrelated scrip's resting order is NOT cancelled
+        assert client._orders[other]["status"] == "OPEN"
+
+    def test_lagging_cancel_clears_on_second_pass(self):
+        """A cancel that only takes effect on retry is absorbed by the 2-pass
+        confirm loop; the exit is still placed after the book is clear."""
+        client = LaggyCancelClient()
+        sl = _place_open(client, trantype="S", prctyp="SL-LMT", prc=150.0, trgprc=155.0)
+        pos = _position(netqty=65, lp=200.0)
+        result = run(square_position(client, pos, reason="kill"))
+        assert client._orders[sl]["status"] == "CANCELED"
+        assert result["squared"] is True
+        assert result["via"] == "exit_order"
