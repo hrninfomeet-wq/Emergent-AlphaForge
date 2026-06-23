@@ -29,4 +29,4 @@ def test_doc_template_sets_is_builtin_false():
 
 def test_doc_documents_session_precompute():
     text = DOC.read_text(encoding="utf-8")
-    assert "session_precompute" in text
+    assert "session_precompute" in text, "doc missing session_precompute"

@@ -170,7 +170,7 @@ These columns power the adaptive and scenario-routed strategies and are availabl
 |---|---|
 | `vel_z` | Price velocity z-score (normalised rate of change) |
 | `accel_z` | Price acceleration z-score (second derivative) |
-| `vr` | Volume ratio (current volume vs rolling mean) |
+| `vr` | Lo-MacKinlay variance ratio (>1 trending, <1 mean-reverting, ~1 random walk) |
 | `squeeze_on` | True when Bollinger Bands are inside Keltner Channels (squeeze) |
 | `squeeze_fire` | True on the bar the squeeze releases |
 | `sqz_mom` | Squeeze momentum oscillator value |
