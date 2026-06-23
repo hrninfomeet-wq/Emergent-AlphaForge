@@ -11,6 +11,11 @@ import pandas as pd
 log = logging.getLogger(__name__)
 
 
+def _origin_from_module(module_name: str) -> str:
+    """'custom' if the class/package lives under app.strategies.plugins, else 'builtin'."""
+    return "custom" if module_name.startswith("app.strategies.plugins") else "builtin"
+
+
 @dataclass
 class Signal:
     direction: str  # "CE", "PE", or "NONE"
@@ -79,8 +84,7 @@ class StrategyBase:
             "supported_timeframes": self.supported_timeframes,
             "parameter_schema": self.parameter_schema,
             "is_builtin": self.is_builtin,
-            "origin": ("custom" if type(self).__module__.startswith("app.strategies.plugins")
-                       else "builtin"),
+            "origin": _origin_from_module(type(self).__module__),
         }
 
 
@@ -108,7 +112,7 @@ class StrategyRegistry:
                 "id": plug_id, "name": plug_id, "version": "?", "description": "",
                 "supported_instruments": [], "supported_modes": [], "supported_timeframes": [],
                 "parameter_schema": {}, "is_builtin": False,
-                "origin": ("custom" if pkg.endswith("plugins") else "builtin"),
+                "origin": _origin_from_module(pkg),
                 "is_loaded": False, "error": err,
             })
         return items
@@ -119,14 +123,14 @@ class StrategyRegistry:
     def origin_of(self, strategy_id: str) -> Optional[str]:
         s = self._strategies.get(strategy_id)
         if s is not None:
-            return ("custom" if type(s).__module__.startswith("app.strategies.plugins")
-                    else "builtin")
+            return _origin_from_module(type(s).__module__)
         pkg = self._error_pkgs.get(strategy_id)
         if pkg is not None:
-            return "custom" if pkg.endswith("plugins") else "builtin"
+            return _origin_from_module(pkg)
         return None
 
     def reload(self) -> None:
+        self._strategies.clear()
         self._errors.clear()
         self._error_pkgs.clear()
         self.auto_discover()
