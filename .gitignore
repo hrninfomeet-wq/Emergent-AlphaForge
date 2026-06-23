@@ -79,3 +79,6 @@ ltm/snapshots/*
 # Local-only memory and credential scratch (never commit)
 memory/
 *credentials*
+
+# Brainstorming visual-companion mockups
+.superpowers/
