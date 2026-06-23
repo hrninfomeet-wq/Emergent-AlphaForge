@@ -248,6 +248,21 @@ def _session_store() -> SessionStore:
     return _default_session_store()
 
 
+# Process-singleton approval queue for the live order page (P1.6/P1.7). It is
+# in-memory by design — a pending approval should NOT survive a restart (a stale
+# approval must never fire against a stale price). Tests monkeypatch _approval_store.
+_APPROVAL_STORE_SINGLETON: Optional["ApprovalStore"] = None
+
+
+def _approval_store() -> "ApprovalStore":
+    """Return the process-wide ApprovalStore singleton (lazily constructed)."""
+    global _APPROVAL_STORE_SINGLETON
+    if _APPROVAL_STORE_SINGLETON is None:
+        from app.live.approval_store import ApprovalStore
+        _APPROVAL_STORE_SINGLETON = ApprovalStore()
+    return _APPROVAL_STORE_SINGLETON
+
+
 def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -821,6 +836,237 @@ async def live_order_dry_run(body: _DryRunBody):
         "client_order_id": cid,
         "lot_size": resolved_lot,  # authoritative broker lot size (None if resolution failed)
     }
+
+
+# ---------------------------------------------------------------------------
+# Live order page routes (P1.7) — exchange-aware preview + approval-gated place
+#
+# These expose the choke-point (order_builder.validate_and_build) and the
+# per-trade approval queue (approval_store) to the UI. The ACTUAL real-order
+# placement still flows through the SINGLE executor chokepoint (live_order_place
+# → executor.place_live_test_order); the one-shot approval token is an added gate
+# in FRONT of it, not a second entry path.
+# ---------------------------------------------------------------------------
+
+class _OrderTicketBody(BaseModel):
+    underlying: str
+    strike: float
+    option_type: str = "CE"          # CE / PE
+    side: str = "B"                  # B / S (Noren trantype)
+    expiry_date: str                 # ISO YYYY-MM-DD
+    lots: int = 1
+    order_type: str = "LIMIT"        # LIMIT / MARKET / SL-LMT
+    product: str = "MIS"             # MIS / NRML
+    ref_ltp: Optional[float] = None
+    band_pct: float = 5.0
+    fat_finger_cap: int = 1
+    levels: Dict[str, Any] = {}
+    buffer_pct: Optional[float] = None
+
+
+async def _validate_order_ticket(body: "_OrderTicketBody") -> Dict[str, Any]:
+    """Pre-fetch scrip rows then run validate_and_build (the choke-point).
+
+    Mirrors the dry-run route's async→sync search adapter. Returns the built
+    children (OrderIntent objects or None), the verdicts, the JSON-safe jdata
+    preview, and the minted client_order_id.
+    """
+    from app.live.order_builder import validate_and_build
+    from app.live.flattrade_symbol import UNDERLYING_SPEC
+    from app.live.idempotency import new_client_order_id
+
+    cid = new_client_order_id()
+    underlying = str(body.underlying or "").strip().upper()
+    strike = body.strike
+
+    pre_fetched_rows: List[Dict[str, Any]] = []
+    fetch_error: Optional[str] = None
+    try:
+        client = await _get_client()
+        spec = UNDERLYING_SPEC.get(underlying)
+        if spec is not None and strike is not None:
+            exch = spec[0]
+            sv = float(strike)
+            query = f"{underlying} {int(sv)}" if sv == int(sv) else f"{underlying} {sv}"
+            pre_fetched_rows = await client.search_scrip(exch, query)
+    except HTTPException:
+        fetch_error = "Flattrade not connected; symbol resolution will fail"
+    except Exception as exc:
+        fetch_error = f"SearchScrip error: {str(exc)[:200]}"
+
+    def _sync_search(exch_: str, q: str) -> List[Dict[str, Any]]:
+        return pre_fetched_rows
+
+    ticket = {
+        "underlying": underlying,
+        "strike": strike,
+        "option_type": body.option_type,
+        "side": body.side,
+        "expiry_date": body.expiry_date,
+        "lots": body.lots,
+        "order_type": body.order_type,
+        "product": body.product,
+        "ref_ltp": body.ref_ltp,
+        "band_pct": body.band_pct,
+        "fat_finger_cap": body.fat_finger_cap,
+        "levels": body.levels,
+        "client_order_id": cid,
+        "buffer_pct": body.buffer_pct,
+        "search_fn": _sync_search,
+    }
+    children, verdicts = validate_and_build(ticket)
+
+    if fetch_error and children is None:
+        for v in verdicts:
+            if v.get("check") == "symbol" and not v.get("ok"):
+                v["detail"] = f"{fetch_error}; {v['detail']}"
+
+    uid = actid = ""
+    try:
+        doc = await _get_token_doc()
+        uid = doc.get("uid", "")
+        actid = doc.get("actid", uid)
+    except HTTPException:
+        pass
+    would_send = [c.to_jdata(uid=uid, actid=actid) for c in (children or [])]
+
+    return {"children": children, "verdicts": verdicts, "would_send": would_send, "cid": cid}
+
+
+@api.get("/live-broker/order-rules/{underlying}")
+async def live_order_rules(underlying: str):
+    """Exchange rules for the UI (products/order-types/freeze/tick/lot/expiry)."""
+    from app.live.flattrade_symbol import rules_for
+
+    rules = rules_for(underlying)
+    if rules is None:
+        raise HTTPException(404, f"Unknown underlying {underlying!r}")
+    return rules
+
+
+@api.post("/live-broker/order/preview")
+async def live_order_preview(body: _OrderTicketBody):
+    """Run the choke-point as a DRY-RUN — exchange/tick/freeze/order-type checks
+    with NO placement. Returns the would-send child jdata + full verdicts."""
+    res = await _validate_order_ticket(body)
+    return {
+        "ok": res["children"] is not None,
+        "children": res["would_send"],
+        "verdicts": res["verdicts"],
+        "client_order_id": res["cid"],
+    }
+
+
+@api.post("/live-broker/order/approvals")
+async def live_order_create_approval(body: _OrderTicketBody):
+    """Validate the ticket and, if it passes, QUEUE it for explicit approval.
+
+    Returns the one-shot token (surfaced once) so the operator can redeem it via
+    the approve route. A ticket that fails validation is NOT queued."""
+    res = await _validate_order_ticket(body)
+    if res["children"] is None:
+        return {"ok": False, "verdicts": res["verdicts"]}
+
+    summary = {
+        "underlying": str(body.underlying).upper(),
+        "strike": body.strike,
+        "option_type": body.option_type,
+        "side": body.side,
+        "order_type": body.order_type,
+        "product": body.product,
+        "lots": body.lots,
+        "ref_ltp": body.ref_ltp,
+        "child_count": len(res["would_send"]),
+        "would_send": res["would_send"],
+    }
+    payload = {"ticket": body.dict(), "would_send": res["would_send"]}
+    rec = _approval_store().create(payload=payload, summary=summary, now_iso=_utcnow_iso())
+    return {
+        "ok": True,
+        "approval_id": rec["approval_id"],
+        "token": rec["token"],
+        "summary": rec["summary"],
+        "verdicts": res["verdicts"],
+    }
+
+
+@api.get("/live-broker/order/approvals")
+async def live_order_list_approvals():
+    """List currently-pending approvals (JSON-safe; never exposes the token)."""
+    pending = _approval_store().list_pending(_utcnow_iso())
+    return {
+        "pending": [
+            {
+                "approval_id": p["approval_id"],
+                "status": p["status"],
+                "summary": p["summary"],
+                "created_at": p["created_at"],
+            }
+            for p in pending
+        ]
+    }
+
+
+class _ApproveBody(BaseModel):
+    token: str
+
+
+@api.post("/live-broker/order/approvals/{approval_id}/approve")
+async def live_order_approve(approval_id: str, body: _ApproveBody):
+    """Redeem the one-shot token and place the approved entry.
+
+    The token gate sits in FRONT of the existing single executor chokepoint
+    (live_order_place → executor.place_live_test_order): a bad/expired/replayed
+    token NEVER reaches the executor. On a successful place the approval is marked
+    consumed; if placement is blocked (mode not armed / not connected) the approval
+    stays approved-but-unconsumed and the operator re-initiates."""
+    store = _approval_store()
+    now = _utcnow_iso()
+    res = store.approve(approval_id, body.token, now)
+    if not res["ok"]:
+        # bad_token / expired / not pending / not_found → executor is NOT called.
+        return {"placed": False, "approval_id": approval_id, "reason": res["reason"]}
+
+    ticket = (res.get("payload") or {}).get("ticket") or {}
+    # The supervised executor places a 1-lot LONG entry; SELL/multi-lot/MARKET are
+    # preview-only for now (the approval still validated the full exchange rules).
+    if str(ticket.get("side")) != "B":
+        return {
+            "placed": False,
+            "approval_id": approval_id,
+            "reason": "approved; automated placement supports BUY entries only — "
+                      "place SELL/exit manually via the square route",
+        }
+
+    contract = {
+        "underlying": ticket.get("underlying"),
+        "strike": ticket.get("strike"),
+        "side": ticket.get("option_type"),   # CE/PE leg for resolution
+        "expiry_date": ticket.get("expiry_date"),
+    }
+    place_body = _PlaceBody(
+        contract=contract,
+        side="B",
+        ref_ltp=float(ticket.get("ref_ltp") or 0.0),
+        band_pct=float(ticket.get("band_pct") or 5.0),
+        levels=ticket.get("levels") or {},
+    )
+    try:
+        result = await live_order_place(place_body)
+    except HTTPException as exc:
+        return {"placed": False, "approval_id": approval_id,
+                "reason": f"placement blocked: {exc.detail}"}
+
+    if isinstance(result, dict) and result.get("placed"):
+        store.mark_consumed(approval_id, now)
+    return {"approval_id": approval_id, **(result if isinstance(result, dict) else {"result": result})}
+
+
+@api.post("/live-broker/order/approvals/{approval_id}/reject")
+async def live_order_reject(approval_id: str):
+    """Operator declines a pending approval (it can never be placed afterwards)."""
+    res = _approval_store().reject(approval_id, _utcnow_iso())
+    return {"ok": res["ok"], "approval_id": approval_id, "reason": res.get("reason")}
 
 
 # ---------------------------------------------------------------------------
