@@ -532,9 +532,17 @@ async def flattrade_auth_start():
 @api.get("/flattrade/auth/callback")
 async def flattrade_auth_callback(
     code: Optional[str] = None,
+    client: Optional[str] = None,
     error: Optional[str] = None,
 ):
-    """Browser is redirected here by Flattrade after login."""
+    """Browser is redirected here by Flattrade after login.
+
+    Flattrade appends the account id as ``&client=<UID>`` to the redirect; the
+    /trade/apitoken response itself carries no uid. Resolve the uid from the
+    token payload, then the ``client`` query param, then FLATTRADE_USER_ID — so
+    the saved token never has a blank uid (which fails SearchScrip with
+    "Invalid User Id").
+    """
     frontend_url = _FRONTEND_POST_AUTH_URL()
     if error:
         return RedirectResponse(f"{frontend_url}?flattrade_error={error}")
@@ -543,8 +551,8 @@ async def flattrade_auth_callback(
     try:
         payload = await exchange_code_for_token(code)
         jKey = payload.get("token") or payload.get("jKey")
-        uid = payload.get("uid", "")
-        actid = payload.get("actid", uid)
+        uid = payload.get("uid") or client or os.environ.get("FLATTRADE_USER_ID", "")
+        actid = payload.get("actid") or uid
         if not jKey:
             return RedirectResponse(f"{frontend_url}?flattrade_error=missing_token_in_response")
         await save_token(DEFAULT_USER_ID, jKey=jKey, uid=uid, actid=actid)
