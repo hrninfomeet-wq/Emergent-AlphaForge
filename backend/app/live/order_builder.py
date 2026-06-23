@@ -103,6 +103,35 @@ def round_to_tick(
     return round(float(multiplier * d_tick), 2)
 
 
+def slice_to_freeze(qty: int, freeze_qty: int) -> List[int]:
+    """Split ``qty`` into child orders each no larger than the exchange freeze qty.
+
+    The exchange/broker rejects any single order whose quantity exceeds the
+    instrument's freeze quantity, so a large order MUST be sent as multiple child
+    orders — the API does NOT auto-slice. The children sum to ``qty``; each is
+    ``<= freeze_qty`` (the last carries the remainder).
+
+    Hard-rejects ``qty > 10 * freeze_qty`` (a sanity cap — that many lots is a
+    fat-finger, not a real order). ``qty <= 0`` returns ``[]``.
+
+    Raises ValueError on a non-positive-int freeze_qty / non-int qty / the cap.
+    """
+    if not isinstance(qty, int) or isinstance(qty, bool):
+        raise ValueError(f"qty must be an int, got {qty!r}")
+    if not isinstance(freeze_qty, int) or isinstance(freeze_qty, bool) or freeze_qty <= 0:
+        raise ValueError(f"freeze_qty must be a positive int, got {freeze_qty!r}")
+    if qty <= 0:
+        return []
+    if qty > 10 * freeze_qty:
+        raise ValueError(
+            f"qty {qty} exceeds 10x the freeze quantity ({freeze_qty}) — rejected as a fat-finger"
+        )
+    n = math.ceil(qty / freeze_qty)
+    children = [freeze_qty] * (n - 1)
+    children.append(qty - freeze_qty * (n - 1))
+    return children
+
+
 def _v(check: str, ok: bool, detail: str) -> Verdict:
     return {"check": check, "ok": ok, "detail": detail}
 
