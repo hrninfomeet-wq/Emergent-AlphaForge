@@ -247,6 +247,7 @@ export default function LiveTrading() {
   const [positions, setPositions] = useState(null);
   const [orders, setOrders] = useState(null);
   const [reconcile, setReconcile] = useState(null);
+  const [authMsg, setAuthMsg] = useState(null);
 
   const timerRef = useRef(null);
 
@@ -264,6 +265,22 @@ export default function LiveTrading() {
     return () => clearInterval(timerRef.current);
   }, [fetchAll]);
 
+  // OAuth post-redirect handling: Flattrade bounces back to
+  // /live-trading?flattrade_connected=1 (or ?flattrade_error=...). Surface it,
+  // refresh status, then strip the param from the URL.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.has("flattrade_connected")) {
+      setAuthMsg({ ok: true, text: "Flattrade login successful — connected." });
+      fetchAll();
+    } else if (params.has("flattrade_error")) {
+      setAuthMsg({ ok: false, text: `Flattrade login failed: ${params.get("flattrade_error")}` });
+    }
+    if (params.has("flattrade_connected") || params.has("flattrade_error")) {
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+  }, [fetchAll]);
+
   // Derive counts defensively for AccountStrip
   const positionCount = positions != null
     ? (Array.isArray(positions) ? positions : (positions.data ?? positions.positions ?? [])).length
@@ -275,8 +292,20 @@ export default function LiveTrading() {
 
   return (
     <div className="space-y-4">
-      {/* Bold live banner — connection state + re-login button */}
+      {/* Bold live banner — connection state + Login / Logout buttons */}
       <LiveBanner status={status} onRefresh={fetchAll} />
+
+      {authMsg && (
+        <div
+          className={`text-sm font-mono px-3 py-2 rounded border ${
+            authMsg.ok
+              ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
+              : "border-danger/40 bg-danger/10 text-danger"
+          }`}
+        >
+          {authMsg.text}
+        </div>
+      )}
 
       {/* Account metrics strip */}
       <SectionCard

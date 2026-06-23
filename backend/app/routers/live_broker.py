@@ -152,7 +152,7 @@ class _ClosedEngine:
 # Helpers
 # ---------------------------------------------------------------------------
 
-_FRONTEND_POST_AUTH_URL = lambda: os.environ.get("FRONTEND_POST_AUTH_URL", "/warehouse")
+_FRONTEND_POST_AUTH_URL = lambda: os.environ.get("FRONTEND_POST_AUTH_URL", "http://localhost:3000/live-trading")
 
 
 async def _get_client() -> FlattradeClient:

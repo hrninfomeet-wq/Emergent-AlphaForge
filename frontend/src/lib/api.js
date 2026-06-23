@@ -227,6 +227,7 @@ export const api = {
   // Live broker (Flattrade) — read-only, display only (L0)
   flattradeStatus: () => apiClient.get("/flattrade/status").then((r) => r.data),
   flattradeAuthStart: () => apiClient.get("/flattrade/auth/start").then((r) => r.data),
+  disconnectFlattrade: () => apiClient.post("/flattrade/disconnect").then((r) => r.data),
   liveBrokerLimits: () => apiClient.get("/live-broker/limits").then((r) => r.data),
   liveBrokerPositions: () => apiClient.get("/live-broker/positions").then((r) => r.data),
   liveBrokerOrders: () => apiClient.get("/live-broker/orders").then((r) => r.data),
