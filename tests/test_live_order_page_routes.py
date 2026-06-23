@@ -27,6 +27,24 @@ from app.live.mock_noren import MockNoren
 import app.routers.live_broker as _routes
 
 
+class _FakeCol:
+    """Minimal async Mongo-ish collection (find_one / update_one upsert) for the
+    OverallSettingsStore, mirroring the FakeAsyncCollection used in the L3 tests."""
+
+    def __init__(self):
+        self._docs = {}
+
+    async def find_one(self, query):
+        return self._docs.get(query.get("_id"))
+
+    async def update_one(self, query, update, upsert=False):
+        _id = query.get("_id")
+        doc = self._docs.get(_id, {"_id": _id})
+        doc.update(update.get("$set", {}))
+        self._docs[_id] = doc
+        return type("R", (), {"matched_count": 1})()
+
+
 _NIFTY_SCRIP = {
     "tsym": "NIFTY26JUN26C25000",
     "token": "1",
@@ -60,10 +78,16 @@ def _make_app(*, approval_store=None, place_mock=None):
     cl = MockNoren(search_scrip_data={"NFO": [_NIFTY_SCRIP]})
     store = approval_store if approval_store is not None else ApprovalStore()
 
+    from app.live.overall_settings_store import OverallSettingsStore
+    overall_stores = {
+        "overall": OverallSettingsStore(_FakeCol(), scope="overall"),
+        "broker_level": OverallSettingsStore(_FakeCol(), scope="broker_level"),
+    }
     patches = {
         "_get_client": AsyncMock(return_value=cl),
         "_get_token_doc": AsyncMock(return_value={"jKey": "k", "uid": "TESTUID", "actid": "TESTUID"}),
         "_approval_store": lambda: store,
+        "_overall_store": lambda scope="overall": overall_stores.get(scope, overall_stores["overall"]),
     }
     if place_mock is not None:
         patches["live_order_place"] = place_mock
@@ -286,5 +310,106 @@ class TestApproveGate:
             assert tc.get("/live-broker/order/approvals").json()["pending"] == []
             again = tc.post(f"/live-broker/order/approvals/{aid}/approve", json={"token": tok}).json()
             assert again["placed"] is False
+        finally:
+            _stop(tc)
+
+
+# ---------------------------------------------------------------------------
+# Overall-controls settings (Phase 2)
+# ---------------------------------------------------------------------------
+class TestOverallSettings:
+    def test_get_returns_disabled_default(self):
+        tc = _make_app()
+        try:
+            d = tc.get("/live-broker/overall-settings").json()
+            assert d["sl"]["enabled"] is False
+            assert d["trailing"]["mode"] == "none"
+            assert d["reentry"]["enabled"] is False
+        finally:
+            _stop(tc)
+
+    def test_put_then_get_roundtrip(self):
+        tc = _make_app()
+        try:
+            cfg = {
+                "sl": {"enabled": True, "mode": "mtm", "value": 5000},
+                "trailing": {"mode": "lock_trail", "unit": "mtm", "lock_at": 2000,
+                             "lock_floor": 1000, "trail_per": 500, "trail_by": 300, "base_sl": 0},
+            }
+            put = tc.put("/live-broker/overall-settings", json={"config": cfg}).json()
+            assert put["sl"]["enabled"] is True
+            got = tc.get("/live-broker/overall-settings").json()
+            assert got["sl"]["value"] == 5000
+            assert got["trailing"]["mode"] == "lock_trail"
+        finally:
+            _stop(tc)
+
+    def test_put_invalid_config_400(self):
+        tc = _make_app()
+        try:
+            bad = {"trailing": {"mode": "rocket"}}
+            r = tc.put("/live-broker/overall-settings", json={"config": bad})
+            assert r.status_code == 400
+        finally:
+            _stop(tc)
+
+    def test_scopes_are_independent(self):
+        tc = _make_app()
+        try:
+            tc.put("/live-broker/overall-settings?scope=overall",
+                   json={"config": {"sl": {"enabled": True, "mode": "mtm", "value": 111}}})
+            tc.put("/live-broker/overall-settings?scope=broker_level",
+                   json={"config": {"sl": {"enabled": True, "mode": "mtm", "value": 222}}})
+            o = tc.get("/live-broker/overall-settings?scope=overall").json()
+            b = tc.get("/live-broker/overall-settings?scope=broker_level").json()
+            assert o["sl"]["value"] == 111
+            assert b["sl"]["value"] == 222
+        finally:
+            _stop(tc)
+
+
+# ---------------------------------------------------------------------------
+# GTT / OCO backstop routes (Phase 3, builder-backed, transport not-yet-wired)
+# ---------------------------------------------------------------------------
+class TestGtt:
+    def test_list_gtt_empty_when_not_wired(self):
+        tc = _make_app()
+        try:
+            d = tc.get("/live-broker/gtt").json()
+            assert d["gtt"] == []
+            assert "note" in d
+        finally:
+            _stop(tc)
+
+    def test_place_gtt_builds_nrml_intent(self):
+        tc = _make_app()
+        try:
+            body = {"exch": "NFO", "tsym": "NIFTY26JUN26C25000", "qty": 65,
+                    "trantype": "S", "trigger_price": 98.02, "limit_price": 97.93, "prd": "M"}
+            d = tc.post("/live-broker/gtt", json=body).json()
+            assert d["placed"] is False
+            assert d["intent"] is not None
+            # tick-rounded
+            prc = float(d["intent"]["limit_price"])
+            assert round(round(prc / 0.05) * 0.05, 2) == round(prc, 2)
+        finally:
+            _stop(tc)
+
+    def test_place_gtt_mis_rejected(self):
+        tc = _make_app()
+        try:
+            body = {"exch": "NFO", "tsym": "X", "qty": 65, "trantype": "S",
+                    "trigger_price": 98.0, "limit_price": 97.9, "prd": "I"}  # MIS
+            r = tc.post("/live-broker/gtt", json=body)
+            assert r.status_code == 400
+        finally:
+            _stop(tc)
+
+    def test_cancel_gtt(self):
+        tc = _make_app()
+        try:
+            d = tc.delete("/live-broker/gtt/AL123").json()
+            assert d["canceled"] is False
+            assert d["payload"]["al_id"] == "AL123"
         finally:
             _stop(tc)

@@ -84,6 +84,11 @@ from app.live import executor as _executor_mod
 from app.live.engine import LiveEngine
 from app.live.option_premium import match_contract, resolve_premium
 from app.live.atm_suggest import nearest_expiry, atm_strike as _atm_strike_pure
+from app.live.overall_settings_store import (
+    OverallSettingsStore,
+    default_store as _default_overall_store,
+)
+from app.live import gtt as _gtt_mod
 
 log = logging.getLogger(__name__)
 
@@ -261,6 +266,14 @@ def _approval_store() -> "ApprovalStore":
         from app.live.approval_store import ApprovalStore
         _APPROVAL_STORE_SINGLETON = ApprovalStore()
     return _APPROVAL_STORE_SINGLETON
+
+
+_OVERALL_SCOPES = ("overall", "broker_level")
+
+
+def _overall_store(scope: str = "overall") -> "OverallSettingsStore":
+    """Return the OverallSettingsStore for a scope. Tests monkeypatch this."""
+    return _default_overall_store(scope if scope in _OVERALL_SCOPES else "overall")
 
 
 def _utcnow_iso() -> str:
@@ -1082,6 +1095,117 @@ async def live_order_reject(approval_id: str):
     """Operator declines a pending approval (it can never be placed afterwards)."""
     res = _approval_store().reject(approval_id, _utcnow_iso())
     return {"ok": res["ok"], "approval_id": approval_id, "reason": res.get("reason")}
+
+
+# ---------------------------------------------------------------------------
+# Overall / broker-level controls (Phase 2) — config persistence for the
+# basket-level SL / target / trailing / re-entry engine (overall_controls.py).
+# scope = "overall" (per-deployment defaults) | "broker_level" (across all live,
+# re-armed daily). The evaluation runs in the exit engine; these routes are CRUD.
+# ---------------------------------------------------------------------------
+
+def _norm_scope(scope: Optional[str]) -> str:
+    s = str(scope or "overall").strip().lower()
+    return s if s in _OVERALL_SCOPES else "overall"
+
+
+@api.get("/live-broker/overall-settings")
+async def get_overall_settings(scope: str = Query("overall")):
+    """Return the overall-controls config for a scope (merged with defaults)."""
+    try:
+        return await _overall_store(_norm_scope(scope)).get_config()
+    except Exception as exc:
+        log.warning("get_overall_settings failed: %s", exc)
+        from app.live.overall_settings_store import DEFAULT_OVERALL_CONFIG
+        return dict(DEFAULT_OVERALL_CONFIG)
+
+
+class _OverallSettingsBody(BaseModel):
+    config: Dict[str, Any]
+
+
+@api.put("/live-broker/overall-settings")
+async def put_overall_settings(body: _OverallSettingsBody, scope: str = Query("overall")):
+    """Persist a validated overall-controls config. Fail-closed: a config that
+    the store rejects (bad mode / unknown key / reentry.max>5) returns 400."""
+    try:
+        return await _overall_store(_norm_scope(scope)).put_config(body.config or {})
+    except ValueError as exc:
+        raise HTTPException(400, f"invalid overall-controls config: {exc}") from exc
+    except Exception as exc:
+        log.exception("put_overall_settings failed")
+        raise HTTPException(400, f"could not save overall settings: {str(exc)[:200]}") from exc
+
+
+# ---------------------------------------------------------------------------
+# GTT / OCO disaster-backstop (Phase 3, builder-backed). NRML-only PC-died net.
+# NOTE: Flattrade's GTT/OCO REST endpoint is UNCONFIRMED (spec §11 open item) —
+# the pure intent builders (gtt.py) are ready + tested, but the transport is not
+# yet wired. These routes validate/build and report status honestly; the place
+# path is gated until the endpoint is confirmed with one live test.
+# ---------------------------------------------------------------------------
+
+@api.get("/live-broker/gtt")
+async def list_gtt():
+    """List the broker GTT/OCO book (best-effort). Returns an empty list until
+    the Flattrade GTT read endpoint is confirmed + wired."""
+    gtts: List[Dict[str, Any]] = []
+    note = None
+    try:
+        client = await _get_client()
+        getter = getattr(client, "gtt_book", None)
+        if callable(getter):
+            raw = await getter()
+            gtts = raw if isinstance(raw, list) else (raw.get("gtt", []) if isinstance(raw, dict) else [])
+        else:
+            note = "GTT read not yet wired to Flattrade (pending endpoint confirmation)"
+    except HTTPException:
+        note = "not connected"
+    except Exception as exc:
+        note = f"gtt read error: {str(exc)[:160]}"
+    return {"gtt": gtts, "note": note}
+
+
+class _GttBody(BaseModel):
+    exch: str
+    tsym: str
+    qty: int
+    trantype: str = "S"
+    trigger_price: float
+    limit_price: float
+    prd: str = "M"            # NRML only
+    remarks: Optional[str] = None
+
+
+@api.post("/live-broker/gtt")
+async def place_gtt(body: _GttBody):
+    """Build a GTT intent (NRML-only, tick-rounded) and — once the endpoint is
+    confirmed — transmit it. Today it returns the built intent + a not-wired flag
+    so the UI can preview without a real transmit."""
+    intent = _gtt_mod.build_gtt_intent(
+        exch=body.exch, tsym=body.tsym, qty=body.qty, trantype=body.trantype,
+        trigger_price=body.trigger_price, limit_price=body.limit_price,
+        prd=body.prd, remarks=body.remarks,
+    )
+    if intent is None:
+        raise HTTPException(400, "invalid GTT (NRML/prd=M only, tick-valid prices, qty>0)")
+    return {
+        "placed": False,
+        "intent": intent,
+        "reason": "GTT transport not yet wired — Flattrade OCO endpoint pending "
+                  "confirmation (spec §11). Intent built + validated.",
+    }
+
+
+@api.delete("/live-broker/gtt/{al_id}")
+async def cancel_gtt(al_id: str):
+    """Cancel a GTT/OCO by alert id (best-effort; not-wired until confirmed)."""
+    try:
+        payload = _gtt_mod.cancel_gtt_jdata(al_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"canceled": False, "payload": payload,
+            "reason": "GTT cancel transport not yet wired (pending endpoint confirmation)"}
 
 
 # ---------------------------------------------------------------------------
