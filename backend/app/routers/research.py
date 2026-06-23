@@ -50,23 +50,6 @@ log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Strategies
-# ---------------------------------------------------------------------------
-
-@api.get("/strategies")
-async def list_strategies():
-    return {"items": get_registry().list_all()}
-
-
-@api.get("/strategies/{strategy_id}")
-async def get_strategy(strategy_id: str):
-    s = get_registry().get(strategy_id)
-    if not s:
-        raise HTTPException(404, f"Strategy {strategy_id} not found")
-    return s.meta()
-
-
-# ---------------------------------------------------------------------------
 # Pre-trade profiles
 # ---------------------------------------------------------------------------
 
