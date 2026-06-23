@@ -1414,8 +1414,19 @@ async def live_test_session():
 
     # --- Auto-detect a rejected/canceled entry order ---
     # Only bother checking when the session appears active and has an entry order.
+    # MUST use the async _get_client() (the real broker client) — NOT _order_client(),
+    # which returns None in production (only tests patch it), so the detection was
+    # silently dead live: a broker-rejected entry kept the session 'armed' with a
+    # phantom countdown. _get_client() raises HTTPException when not connected.
     if status in _ACTIVE_SESSION_STATUSES and entry_norenordno:
-        client = _order_client()
+        client = None
+        try:
+            client = await _get_client()
+        except HTTPException:
+            client = None
+        except Exception as exc:
+            log.debug("test_session: could not build client: %s", exc)
+            client = None
         if client is not None:
             try:
                 orders = await client.order_book()

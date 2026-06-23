@@ -1198,6 +1198,38 @@ def test_test_session_armed_rejected_order_auto_resolves():
         _stop_patches(tc)
 
 
+def test_test_session_rejection_detected_through_prod_client_path():
+    """REGRESSION (live bug 2026-06-23): the rejection auto-detect must run through
+    the REAL async client (_get_client) — NOT the _order_client() stub, which
+    returns None in production (only tests patch it). With _order_client forced to
+    its production None, the detection must STILL fire (it would NOT on the old
+    code, which gated on _order_client() and so was silently dead live).
+    """
+    ENTRY_ORD = "MOCK_ENTRY_PROD"
+    ms = _make_mode_store(mode="LIVE_TEST", consumed=True)
+    cl = _make_mock_noren_with_rejected_order(ENTRY_ORD, "MIS orders disallowed after square off")
+    ss = _make_session_store()
+    asyncio.run(ss.arm(
+        entry_norenordno=ENTRY_ORD,
+        deadline="2026-06-22T07:00:00+00:00",
+        now_iso="2026-06-22T06:00:00+00:00",
+    ))
+    tc = _make_app(mode_store=ms, client=cl, session_store=ss)
+    # Override _order_client to the PRODUCTION behavior (returns None) for the
+    # duration of the request — proving the route does NOT depend on it.
+    with patch.object(_routes, "_order_client", lambda: None):
+        try:
+            data = tc.get("/live-broker/test-session").json()
+            assert data["status"] == "rejected", (
+                f"phantom not cleared — got {data['status']!r} (the detection is "
+                f"dead unless it uses _get_client, not _order_client)"
+            )
+            assert data["remaining_secs"] == 0
+            assert "MIS" in (data["reject_reason"] or "")
+        finally:
+            _stop_patches(tc)
+
+
 def test_test_session_armed_open_order_stays_active():
     """Armed session + broker shows OPEN entry → session stays armed, remaining_secs > 0."""
     ENTRY_ORD = "MOCK_ENTRY_2"
