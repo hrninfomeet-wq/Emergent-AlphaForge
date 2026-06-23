@@ -137,8 +137,31 @@ class ApprovalStore:
             return {"ok": False, "reason": "bad_token"}
         rec["status"] = STATUS_APPROVED
         rec["decided_at"] = now_iso
-        rec["token"] = None  # one-shot: spent so it can never be redeemed again
+        # One-shot is enforced by the STATUS gate (a replay sees status != pending),
+        # NOT by destroying the token — so revert_to_pending() can return a stranded
+        # approval to the queue with its original token still valid for one retry.
         return {"ok": True, "approval_id": approval_id, "payload": rec["payload"]}
+
+    def revert_to_pending(self, approval_id: str, now_iso: str) -> Dict[str, Any]:
+        """Return an APPROVED-but-not-placed approval to pending so it stays in the
+        queue and can be retried (or rejected) with its original token.
+
+        Called by the route when a redeemed approval is NOT actually placed (mode
+        not armed, BUY-only, broker reject, …). Without this the record would be
+        stuck 'approved' — un-placeable (approve() needs pending) AND un-rejectable
+        (reject() needs pending) — and would silently vanish from list_pending.
+        Only an 'approved' record can be reverted; a 'consumed' (actually-placed)
+        one cannot (so a placed order can never be re-placed).
+        """
+        rec = self._q.get(approval_id)
+        if rec is None:
+            return {"ok": False, "reason": "not_found"}
+        if rec["status"] != STATUS_APPROVED:
+            return {"ok": False, "reason": f"not approved ({rec['status']})"}
+        rec["status"] = STATUS_PENDING
+        rec["decided_at"] = None
+        rec["reason"] = None
+        return {"ok": True, "approval_id": approval_id}
 
     def mark_consumed(self, approval_id: str, now_iso: str) -> Dict[str, Any]:
         """Record that an APPROVED order was actually placed. Only an approved

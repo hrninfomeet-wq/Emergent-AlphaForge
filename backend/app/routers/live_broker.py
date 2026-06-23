@@ -1018,25 +1018,36 @@ async def live_order_approve(approval_id: str, body: _ApproveBody):
     The token gate sits in FRONT of the existing single executor chokepoint
     (live_order_place → executor.place_live_test_order): a bad/expired/replayed
     token NEVER reaches the executor. On a successful place the approval is marked
-    consumed; if placement is blocked (mode not armed / not connected) the approval
-    stays approved-but-unconsumed and the operator re-initiates."""
+    CONSUMED (terminal — it can never be re-placed). On ANY non-placement after the
+    token is redeemed (BUY-only, mode not armed, broker reject), the approval is
+    REVERTED to pending so it stays in the queue and the operator can fix the cause
+    and retry (or reject) with the same token — never a stranded, vanished order."""
     store = _approval_store()
     now = _utcnow_iso()
     res = store.approve(approval_id, body.token, now)
     if not res["ok"]:
-        # bad_token / expired / not pending / not_found → executor is NOT called.
+        # bad_token / expired / not pending / not_found → record unchanged
+        # (bad_token leaves it pending; expired/not-pending are already terminal).
+        # The executor is NOT called and nothing is stranded.
         return {"placed": False, "approval_id": approval_id, "reason": res["reason"]}
+
+    # Token is now redeemed (status=approved). EVERY path below that does not end in
+    # a confirmed placement MUST revert to pending so the approval is never stranded.
+    def _not_placed(reason: str, extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        store.revert_to_pending(approval_id, now)
+        out = {"placed": False, "approval_id": approval_id, "reason": reason, "retryable": True}
+        if extra:
+            out.update(extra)
+        return out
 
     ticket = (res.get("payload") or {}).get("ticket") or {}
     # The supervised executor places a 1-lot LONG entry; SELL/multi-lot/MARKET are
     # preview-only for now (the approval still validated the full exchange rules).
     if str(ticket.get("side")) != "B":
-        return {
-            "placed": False,
-            "approval_id": approval_id,
-            "reason": "approved; automated placement supports BUY entries only — "
-                      "place SELL/exit manually via the square route",
-        }
+        return _not_placed(
+            "automated placement supports BUY entries only — Reject this order and "
+            "place a SELL/exit manually via the square route"
+        )
 
     contract = {
         "underlying": ticket.get("underlying"),
@@ -1054,12 +1065,16 @@ async def live_order_approve(approval_id: str, body: _ApproveBody):
     try:
         result = await live_order_place(place_body)
     except HTTPException as exc:
-        return {"placed": False, "approval_id": approval_id,
-                "reason": f"placement blocked: {exc.detail}"}
+        return _not_placed(f"placement blocked: {exc.detail}")
 
     if isinstance(result, dict) and result.get("placed"):
         store.mark_consumed(approval_id, now)
-    return {"approval_id": approval_id, **(result if isinstance(result, dict) else {"result": result})}
+        return {"approval_id": approval_id, **result}
+    # Executor returned without placing (halt / margin / broker reject) → revert so
+    # the operator can retry; preserve the executor's reason/verdicts for the UI.
+    extra = result if isinstance(result, dict) else {"result": result}
+    reason = (extra.get("reason") if isinstance(result, dict) else None) or "not placed"
+    return _not_placed(reason, extra={k: v for k, v in extra.items() if k != "placed"})
 
 
 @api.post("/live-broker/order/approvals/{approval_id}/reject")
