@@ -4,7 +4,7 @@ import { api } from "@/lib/api";
 import { fmtINR, colorPnL } from "@/lib/fmt";
 import LiveBanner from "@/components/live/LiveBanner";
 import AccountStrip from "@/components/live/AccountStrip";
-import LiveTestPanel from "@/components/live/LiveTestPanel";
+import LiveOrderPanel from "@/components/live/LiveOrderPanel";
 
 /**
  * Live Trading page — real-money broker state + L3 Live-Test order panel.
@@ -329,8 +329,8 @@ export default function LiveTrading() {
         <OrdersBlotter orders={orders} />
       </SectionCard>
 
-      {/* L3 Live-Test panel — mode switch, order ticket, position monitor */}
-      <LiveTestPanel />
+      {/* Live order panel — mode switch, position monitor, order ticket, approval queue */}
+      <LiveOrderPanel />
     </div>
   );
 }

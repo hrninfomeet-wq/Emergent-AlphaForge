@@ -241,7 +241,7 @@ class TestApproveGate:
         finally:
             _stop(tc)
 
-    def test_sell_ticket_not_auto_placed(self):
+    def test_sell_ticket_not_auto_placed_but_reverts_to_pending(self):
         place = AsyncMock(return_value={"placed": True})
         tc = _make_app(place_mock=place)
         try:
@@ -250,6 +250,41 @@ class TestApproveGate:
             r = tc.post(f"/live-broker/order/approvals/{aid}/approve", json={"token": tok}).json()
             assert r["placed"] is False
             assert "BUY" in r["reason"]
+            assert r["retryable"] is True
             assert place.await_count == 0
+            # NOT stranded: the approval is reverted to pending and stays in the queue
+            # so the operator can Reject it.
+            pend = tc.get("/live-broker/order/approvals").json()["pending"]
+            assert any(p["approval_id"] == aid for p in pend)
+            rj = tc.post(f"/live-broker/order/approvals/{aid}/reject").json()
+            assert rj["ok"] is True
+        finally:
+            _stop(tc)
+
+    def test_blocked_placement_reverts_and_is_retryable(self):
+        """If the executor blocks (HTTPException), the redeemed approval reverts to
+        pending so the operator can arm LIVE_TEST and retry with the SAME token —
+        it must NOT vanish stranded."""
+        from fastapi import HTTPException as _HTTPExc
+        place = AsyncMock(side_effect=_HTTPExc(400, "mode_not_live_test"))
+        tc = _make_app(place_mock=place)
+        try:
+            created = tc.post("/live-broker/order/approvals", json=_TICKET).json()
+            aid, tok = created["approval_id"], created["token"]
+            r = tc.post(f"/live-broker/order/approvals/{aid}/approve", json={"token": tok}).json()
+            assert r["placed"] is False
+            assert "placement blocked" in r["reason"]
+            assert r["retryable"] is True
+            # still pending → retry with the same token now succeeds
+            pend = tc.get("/live-broker/order/approvals").json()["pending"]
+            assert any(p["approval_id"] == aid for p in pend)
+            place.side_effect = None
+            place.return_value = {"placed": True, "norenordno": "MOCK9"}
+            retry = tc.post(f"/live-broker/order/approvals/{aid}/approve", json={"token": tok}).json()
+            assert retry["placed"] is True
+            # now consumed → gone from pending, cannot be re-placed
+            assert tc.get("/live-broker/order/approvals").json()["pending"] == []
+            again = tc.post(f"/live-broker/order/approvals/{aid}/approve", json={"token": tok}).json()
+            assert again["placed"] is False
         finally:
             _stop(tc)

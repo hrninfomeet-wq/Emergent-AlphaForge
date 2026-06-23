@@ -252,6 +252,20 @@ export const api = {
   getAtmSuggest: ({ underlying, side }) =>
     apiClient.get("/live-broker/atm-suggest", { params: { underlying, side } }).then((r) => r.data),
 
+  // Live order page (P1.7) — choke-point preview + approval queue
+  getOrderRules: (underlying) =>
+    apiClient.get(`/live-broker/order-rules/${underlying}`).then((r) => r.data),
+  previewLiveOrder: (payload) =>
+    apiClient.post("/live-broker/order/preview", payload).then((r) => r.data),
+  createOrderApproval: (payload) =>
+    apiClient.post("/live-broker/order/approvals", payload).then((r) => r.data),
+  listOrderApprovals: () =>
+    apiClient.get("/live-broker/order/approvals").then((r) => r.data),
+  approveOrder: (approvalId, token) =>
+    apiClient.post(`/live-broker/order/approvals/${approvalId}/approve`, { token }).then((r) => r.data),
+  rejectOrder: (approvalId) =>
+    apiClient.post(`/live-broker/order/approvals/${approvalId}/reject`, {}).then((r) => r.data),
+
   // Presets
   listPresets: () => apiClient.get("/presets").then((r) => r.data),
   savePreset: (name, config) =>

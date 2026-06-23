@@ -188,3 +188,70 @@ class TestListPendingScoping:
         pend = s.list_pending(_T0)
         ids = [p["approval_id"] for p in pend]
         assert ids == [c["approval_id"]]
+
+
+class TestRevertToPending:
+    """revert_to_pending un-strands an approved-but-not-placed approval so it can
+    be retried/rejected — without weakening the no-double-place guarantee."""
+
+    def test_revert_returns_to_pending(self):
+        s = _store()
+        rec = s.create(payload=_PAYLOAD, summary=_SUMMARY, now_iso=_T0)
+        s.approve(rec["approval_id"], rec["token"], _T0)
+        res = s.revert_to_pending(rec["approval_id"], _T0)
+        assert res["ok"] is True
+        assert s.get(rec["approval_id"])["status"] == STATUS_PENDING
+        # re-appears in the pending list
+        assert s.list_pending(_T0)[0]["approval_id"] == rec["approval_id"]
+
+    def test_original_token_still_works_after_revert(self):
+        s = _store()
+        rec = s.create(payload=_PAYLOAD, summary=_SUMMARY, now_iso=_T0)
+        s.approve(rec["approval_id"], rec["token"], _T0)
+        s.revert_to_pending(rec["approval_id"], _T0)
+        # the SAME token re-approves (no token rotation needed on the client)
+        again = s.approve(rec["approval_id"], rec["token"], _T0)
+        assert again["ok"] is True
+        assert again["payload"] == _PAYLOAD
+
+    def test_reverted_can_be_rejected(self):
+        s = _store()
+        rec = s.create(payload=_PAYLOAD, summary=_SUMMARY, now_iso=_T0)
+        s.approve(rec["approval_id"], rec["token"], _T0)
+        s.revert_to_pending(rec["approval_id"], _T0)
+        assert s.reject(rec["approval_id"], _T0)["ok"] is True
+
+    def test_cannot_revert_consumed(self):
+        """A PLACED (consumed) order must never be reverted/re-placed."""
+        s = _store()
+        rec = s.create(payload=_PAYLOAD, summary=_SUMMARY, now_iso=_T0)
+        s.approve(rec["approval_id"], rec["token"], _T0)
+        s.mark_consumed(rec["approval_id"], _T0)
+        res = s.revert_to_pending(rec["approval_id"], _T0)
+        assert res["ok"] is False
+        assert s.get(rec["approval_id"])["status"] == STATUS_CONSUMED
+
+    def test_cannot_revert_pending_or_rejected(self):
+        s = _store()
+        rec = s.create(payload=_PAYLOAD, summary=_SUMMARY, now_iso=_T0)
+        assert s.revert_to_pending(rec["approval_id"], _T0)["ok"] is False  # still pending
+        s.reject(rec["approval_id"], _T0)
+        assert s.revert_to_pending(rec["approval_id"], _T0)["ok"] is False  # rejected
+
+    def test_revert_unknown(self):
+        s = _store()
+        assert s.revert_to_pending("nope", _T0)["ok"] is False
+
+    def test_no_double_place_across_revert_cycle(self):
+        """approve→revert→approve→consume must allow EXACTLY one consume."""
+        s = _store()
+        rec = s.create(payload=_PAYLOAD, summary=_SUMMARY, now_iso=_T0)
+        aid, tok = rec["approval_id"], rec["token"]
+        s.approve(aid, tok, _T0)
+        s.revert_to_pending(aid, _T0)          # first placement failed
+        s.approve(aid, tok, _T0)               # retry
+        assert s.mark_consumed(aid, _T0)["ok"] is True   # placed
+        # any further attempt is blocked (consumed is terminal)
+        assert s.approve(aid, tok, _T0)["ok"] is False
+        assert s.revert_to_pending(aid, _T0)["ok"] is False
+        assert s.mark_consumed(aid, _T0)["ok"] is False
