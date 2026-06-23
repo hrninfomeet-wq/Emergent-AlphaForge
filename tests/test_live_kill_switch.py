@@ -417,20 +417,30 @@ class TestPlanSquareoff:
         assert plan == {"would_cancel": [], "would_flatten": [], "unpriced": []}
 
     def test_sell_price_below_lp(self):
-        """SELL flatten price = lp * (1 - band_pct/100)."""
+        """SELL flatten price = tick-aligned(lp * (1 - band_pct/100), mode=down)."""
+        from app.live.order_builder import round_to_tick
         positions = [_long_pos("SYM", 65, lp=200.0)]
         plan = plan_squareoff([], positions, band_pct=1.0)
         jd = plan["would_flatten"][0]
-        expected_prc = round(200.0 * (1 - 1.0 / 100), 2)
+        expected_prc = round_to_tick(200.0 * (1 - 1.0 / 100), 0.05, mode="down")
         assert float(jd["prc"]) == pytest.approx(expected_prc)
+        # Must be an exact 0.05 multiple
+        assert round(expected_prc / 0.05) * 0.05 == pytest.approx(expected_prc)
+        # Must be marketable (≤ lp)
+        assert expected_prc <= 200.0
 
     def test_buy_price_above_lp(self):
-        """BUY flatten price = lp * (1 + band_pct/100)."""
+        """BUY flatten price = tick-aligned(lp * (1 + band_pct/100), mode=up)."""
+        from app.live.order_builder import round_to_tick
         positions = [_short_pos("SYM", -30, lp=150.0)]
         plan = plan_squareoff([], positions, band_pct=1.0)
         jd = plan["would_flatten"][0]
-        expected_prc = round(150.0 * (1 + 1.0 / 100), 2)
+        expected_prc = round_to_tick(150.0 * (1 + 1.0 / 100), 0.05, mode="up")
         assert float(jd["prc"]) == pytest.approx(expected_prc)
+        # Must be an exact 0.05 multiple
+        assert round(expected_prc / 0.05) * 0.05 == pytest.approx(expected_prc)
+        # Must be marketable (≥ lp)
+        assert expected_prc >= 150.0
 
     def test_plan_makes_no_client_call(self):
         """plan_squareoff has no client parameter — it is purely pure."""
@@ -1082,3 +1092,142 @@ class TestLatchWhitelist:
         cfg = asyncio.run(store.get_config())
         assert cfg["blocked_until_reset"] is False
         assert type(cfg["blocked_until_reset"]) is bool
+
+
+# ===========================================================================
+# TICK ROUNDING — exit prices must be exact 0.05 multiples (critical safety)
+# ===========================================================================
+# Regression test for: kill switch / auto-square built exit prices with
+# round(ref*(1±eff/100), 2) — NOT tick-aligned — so the broker rejected them
+# ("Price 53.61 is not a multiple of tick size 0.05") and the position was
+# left OPEN.  These tests document the exact failure mode and verify the fix.
+# ===========================================================================
+
+class TestTickRoundingPlanSquareoff:
+    """plan_squareoff exit prices must be exact 0.05 multiples."""
+
+    def _is_tick_aligned(self, prc: float, tick: float = 0.05) -> bool:
+        """Return True iff prc is an exact multiple of tick."""
+        # Use Decimal to avoid floating-point precision noise
+        from decimal import Decimal
+        d = Decimal(str(prc))
+        t = Decimal(str(tick))
+        return (d % t) == 0
+
+    def test_sell_exit_53_90_is_tick_aligned(self):
+        """Reproduction: ref=53.90, SELL exit → prc is exact 0.05 multiple and ≤ ref.
+
+        The bug: round(53.90 * (1 - 0.01), 2) = 53.36 (already aligned here, but
+        53.90 * 0.99 can yield non-multiples for other values, e.g. ref=53.61 → 53.07).
+        The exact live failure: ref_ltp 53.61 → 53.07 is NOT 0.05-aligned? Actually
+        the key is that for prices like 53.61 itself coming in as a raw ref, the tick
+        rejection occurs.  This test uses a value that would produce a non-aligned
+        intermediate and confirms the fix produces a tick-aligned result.
+        """
+        # ref=53.90, band_pct=1.0 → raw = 53.90 * 0.99 = 53.3610 → round(,2)=53.36
+        # 53.36 / 0.05 = 1067.2 → NOT aligned (was the old bug for some values)
+        # With tick rounding mode=down: floor(53.3610 / 0.05)*0.05 = 53.35
+        pos = _long_pos("NIFTY2562521000CE", 65, lp=53.90)
+        plan = plan_squareoff([], [pos], band_pct=1.0)
+        jd = plan["would_flatten"][0]
+        prc = float(jd["prc"])
+        assert jd["trantype"] == "S"
+        assert self._is_tick_aligned(prc), f"SELL exit prc {prc} is not a 0.05 multiple"
+        assert prc <= 53.90, f"SELL exit prc {prc} is NOT marketable (> ref 53.90)"
+
+    def test_buy_exit_53_90_is_tick_aligned(self):
+        """BUY-to-close exit → exact 0.05 multiple and ≥ ref."""
+        pos = _short_pos("NIFTY2562521000PE", -65, lp=53.90)
+        plan = plan_squareoff([], [pos], band_pct=1.0)
+        jd = plan["would_flatten"][0]
+        prc = float(jd["prc"])
+        assert jd["trantype"] == "B"
+        assert self._is_tick_aligned(prc), f"BUY exit prc {prc} is not a 0.05 multiple"
+        assert prc >= 53.90, f"BUY exit prc {prc} is NOT marketable (< ref 53.90)"
+
+    def test_sell_exit_several_refs_all_tick_aligned(self):
+        """SELL exit is tick-aligned for a range of ref prices (regression sweep)."""
+        refs = [53.61, 53.90, 100.33, 200.77, 75.12, 120.48, 1.03, 9999.97]
+        for ref in refs:
+            pos = _long_pos("SYM", 65, lp=ref)
+            plan = plan_squareoff([], [pos], band_pct=1.0)
+            prc = float(plan["would_flatten"][0]["prc"])
+            assert self._is_tick_aligned(prc), (
+                f"ref={ref}: SELL exit prc {prc} is not a 0.05 multiple"
+            )
+            assert prc <= ref, f"ref={ref}: SELL exit prc {prc} > ref (not marketable)"
+
+    def test_buy_exit_several_refs_all_tick_aligned(self):
+        """BUY exit is tick-aligned for a range of ref prices."""
+        refs = [53.61, 53.90, 100.33, 200.77, 75.12, 120.48, 1.03, 9999.97]
+        for ref in refs:
+            pos = _short_pos("SYM", -65, lp=ref)
+            plan = plan_squareoff([], [pos], band_pct=1.0)
+            prc = float(plan["would_flatten"][0]["prc"])
+            assert self._is_tick_aligned(prc), (
+                f"ref={ref}: BUY exit prc {prc} is not a 0.05 multiple"
+            )
+            assert prc >= ref, f"ref={ref}: BUY exit prc {prc} < ref (not marketable)"
+
+
+class TestTickRoundingPanicSquareoff:
+    """panic_squareoff exit prices must be exact 0.05 multiples (live executor path)."""
+
+    def _is_tick_aligned(self, prc: float, tick: float = 0.05) -> bool:
+        from decimal import Decimal
+        d = Decimal(str(prc))
+        t = Decimal(str(tick))
+        return (d % t) == 0
+
+    def test_panic_sell_exit_53_90_tick_aligned(self):
+        """Exact reproduction of the live failure: kill switch fires, SELL exit placed.
+
+        The broker rejected "Price 53.61 not a multiple of tick size 0.05".
+        After the fix, the exit price must be a 0.05 multiple.
+        """
+        client = MockNoren(
+            position_book_data=[_long_pos("NIFTY2562521000CE", 65, lp=53.90)],
+        )
+        positions = asyncio.run(client.position_book())
+        asyncio.run(panic_squareoff(client, [], positions))
+
+        placed = asyncio.run(client.order_book())
+        assert len(placed) == 1
+        prc = float(placed[0]["prc"])
+        assert placed[0]["trantype"] == "S"
+        assert self._is_tick_aligned(prc), (
+            f"CRITICAL: SELL exit prc {prc} is not a 0.05 multiple — broker will reject!"
+        )
+        assert prc <= 53.90, f"SELL exit prc {prc} is not marketable (> ref)"
+
+    def test_panic_buy_exit_tick_aligned(self):
+        """BUY-to-close from panic_squareoff is also tick-aligned."""
+        client = MockNoren(
+            position_book_data=[_short_pos("NIFTY2562521000PE", -65, lp=53.90)],
+        )
+        positions = asyncio.run(client.position_book())
+        asyncio.run(panic_squareoff(client, [], positions))
+
+        placed = asyncio.run(client.order_book())
+        assert len(placed) == 1
+        prc = float(placed[0]["prc"])
+        assert placed[0]["trantype"] == "B"
+        assert self._is_tick_aligned(prc), (
+            f"CRITICAL: BUY exit prc {prc} is not a 0.05 multiple — broker will reject!"
+        )
+        assert prc >= 53.90, f"BUY exit prc {prc} is not marketable (< ref)"
+
+    def test_panic_sell_exit_various_refs_tick_aligned(self):
+        """Sweep: SELL exit is tick-aligned for various ref prices via panic_squareoff."""
+        refs = [53.61, 53.90, 100.33, 200.77, 75.12]
+        for ref in refs:
+            client = MockNoren(
+                position_book_data=[_long_pos("SYM", 65, lp=ref)],
+            )
+            positions = asyncio.run(client.position_book())
+            asyncio.run(panic_squareoff(client, [], positions))
+            placed = asyncio.run(client.order_book())
+            prc = float(placed[0]["prc"])
+            assert self._is_tick_aligned(prc), (
+                f"ref={ref}: panic SELL exit prc {prc} is not a 0.05 multiple"
+            )

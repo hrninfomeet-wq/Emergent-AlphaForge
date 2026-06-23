@@ -267,20 +267,26 @@ def build_sl_backstop_intent(
 # 3. square_position — executor (MockNoren in tests, FlattradeClient in L3)
 # ---------------------------------------------------------------------------
 
-def _marketable_prc(ref: float, trantype: str, band_pct: float) -> float:
-    """Compute a marketable-limit exit price using the clamped formula from kill_switch.
+def _marketable_prc(ref: float, trantype: str, band_pct: float, tick: float = 0.05) -> float:
+    """Compute a marketable-limit exit price rounded to the exchange tick.
 
-    SELL (long exit): ref * (1 - eff/100)
-    BUY  (short exit): ref * (1 + eff/100)
+    SELL (long exit): round_to_tick(ref * (1 - eff/100), tick, mode="down")
+    BUY  (short exit): round_to_tick(ref * (1 + eff/100), tick, mode="up")
     eff = abs(band_pct)
 
-    Rounds to 2 decimal places, matching kill_switch.plan_squareoff.
+    Directional rounding keeps the price marketable (SELL stays <= ref,
+    BUY stays >= ref after rounding) while satisfying the broker's tick constraint.
+    Broker rejects prices that are not exact multiples of the tick size.
+
+    tick defaults to 0.05 (NIFTY/BANKNIFTY/SENSEX index options).
+    If tick <= 0 falls back to 0.05.
     """
     eff = abs(band_pct)
+    _tick = tick if tick > 0 else 0.05
     if trantype == "S":
-        return round(ref * (1.0 - eff / 100.0), 2)
+        return round_to_tick(ref * (1.0 - eff / 100.0), _tick, mode="down")
     else:  # "B"
-        return round(ref * (1.0 + eff / 100.0), 2)
+        return round_to_tick(ref * (1.0 + eff / 100.0), _tick, mode="up")
 
 
 async def square_position(

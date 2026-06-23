@@ -35,6 +35,7 @@ from typing import Any, Dict, List, Optional
 
 from app.live.broker_protocol import OrderIntent
 from app.live.idempotency import new_client_order_id
+from app.live.order_builder import round_to_tick
 from app.live.safety import validate_jdata
 
 # ---------------------------------------------------------------------------
@@ -233,6 +234,7 @@ def plan_squareoff(
     *,
     band_pct: float = 1.0,
     ref_price_field: str = "lp",
+    tick: float = 0.05,
 ) -> Dict[str, Any]:
     """Compute the squareoff plan without transmitting anything to the broker.
 
@@ -272,6 +274,7 @@ def plan_squareoff(
       ``unpriced`` — it is NOT silently skipped.
     """
     eff = abs(band_pct)
+    _tick = tick if tick > 0 else 0.05  # guard invalid tick
 
     # F2: normalise status to UPPER before TERMINAL membership test so that
     # "canceled", "Canceled", "complete", etc. are all treated as terminal.
@@ -314,12 +317,15 @@ def plan_squareoff(
             continue
 
         # Flatten direction: long → SELL, short → BUY
+        # Round to exchange tick (0.05 for index options) SELL down / BUY up to
+        # stay marketable.  round(ref*(1±eff/100), 2) alone is NOT tick-aligned
+        # and the broker will reject the order ("Price X is not a multiple of 0.05").
         if netqty > 0:
             trantype = "S"
-            prc = round(ref * (1.0 - eff / 100.0), 2)
+            prc = round_to_tick(ref * (1.0 - eff / 100.0), _tick, mode="down")
         else:
             trantype = "B"
-            prc = round(ref * (1.0 + eff / 100.0), 2)
+            prc = round_to_tick(ref * (1.0 + eff / 100.0), _tick, mode="up")
 
         qty = abs(netqty)
         cid = new_client_order_id()
@@ -365,6 +371,7 @@ async def panic_squareoff(
     *,
     band_pct: float = 1.0,
     ref_price_field: str = "lp",
+    tick: float = 0.05,
     uid: str = "",
     actid: str = "",
 ) -> Dict[str, Any]:
@@ -420,6 +427,7 @@ async def panic_squareoff(
     # engine (and dedicated panic tests) call this function.
     """
     eff = abs(band_pct)
+    _tick = tick if tick > 0 else 0.05  # guard invalid tick
 
     canceled = 0
     cancel_failures: List[Dict[str, Any]] = []
@@ -477,13 +485,14 @@ async def panic_squareoff(
             unpriced.append({"tsym": tsym, "netqty": netqty})
             continue
 
-        # Flatten direction
+        # Flatten direction: long → SELL, short → BUY.
+        # Round to exchange tick (SELL down / BUY up to stay marketable).
         if netqty > 0:
             trantype = "S"
-            prc = round(ref * (1.0 - eff / 100.0), 2)
+            prc = round_to_tick(ref * (1.0 - eff / 100.0), _tick, mode="down")
         else:
             trantype = "B"
-            prc = round(ref * (1.0 + eff / 100.0), 2)
+            prc = round_to_tick(ref * (1.0 + eff / 100.0), _tick, mode="up")
 
         qty = abs(netqty)
         cid = new_client_order_id()

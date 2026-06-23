@@ -428,26 +428,30 @@ class TestSquarePositionDirectionAndPrice:
         assert orders[0]["qty"] == 65
 
     def test_sell_price_formula(self):
-        """SELL price = lp * (1 - band_pct/100) rounded to 2 dp."""
+        """SELL price = tick-aligned(lp * (1 - band_pct/100), mode=down)."""
         client = MockNoren()
         lp = 200.0
         band = 1.0
-        expected_prc = round(lp * (1 - band / 100), 2)
+        expected_prc = round_to_tick(lp * (1 - band / 100), 0.05, mode="down")
         pos = _position(netqty=65, lp=lp)
         run(square_position(client, pos, reason="test", band_pct=band))
         orders = list(client._orders.values())
         assert orders[0]["prc"] == expected_prc
+        # Must be an exact 0.05 multiple
+        assert round(expected_prc / 0.05) * 0.05 == pytest.approx(expected_prc)
 
     def test_buy_price_formula(self):
-        """BUY price = lp * (1 + band_pct/100) rounded to 2 dp."""
+        """BUY price = tick-aligned(lp * (1 + band_pct/100), mode=up)."""
         client = MockNoren()
         lp = 200.0
         band = 1.0
-        expected_prc = round(lp * (1 + band / 100), 2)
+        expected_prc = round_to_tick(lp * (1 + band / 100), 0.05, mode="up")
         pos = _position(netqty=-65, lp=lp)
         run(square_position(client, pos, reason="test", band_pct=band))
         orders = list(client._orders.values())
         assert orders[0]["prc"] == expected_prc
+        # Must be an exact 0.05 multiple
+        assert round(expected_prc / 0.05) * 0.05 == pytest.approx(expected_prc)
 
     def test_long_never_produces_buy(self):
         """Critical: a LONG position MUST NEVER produce a BUY intent (that grows the position)."""
@@ -781,3 +785,120 @@ class TestBuildSlBackstopIntentTickAlignment:
         )
         assert intent is not None
         assert abs(round(intent.trgprc / 0.05) * 0.05 - intent.trgprc) < 1e-9
+
+
+# ---------------------------------------------------------------------------
+# TICK ROUNDING — _marketable_prc + square_position exit prices (critical safety)
+# ---------------------------------------------------------------------------
+# Regression tests for: auto_square._marketable_prc used round(ref*(1±eff/100), 2)
+# NOT tick-aligned, so the broker rejected exit orders with
+# "Price 53.61 is not a multiple of tick size 0.05" and the position stayed open.
+# ---------------------------------------------------------------------------
+
+from app.live.auto_square import _marketable_prc
+
+
+def _is_tick_aligned(prc: float, tick: float = 0.05) -> bool:
+    from decimal import Decimal
+    return (Decimal(str(prc)) % Decimal(str(tick))) == 0
+
+
+class TestMarketablePrcTickAlignment:
+    """_marketable_prc must return exact 0.05 multiples."""
+
+    def test_sell_ref_53_90_is_tick_aligned(self):
+        """Reproduction: ref=53.90, SELL → prc is 0.05 multiple and <= ref."""
+        prc = _marketable_prc(53.90, "S", 1.0)
+        assert _is_tick_aligned(prc), f"SELL prc {prc} is not a 0.05 multiple"
+        assert prc <= 53.90, f"SELL prc {prc} > ref 53.90 (not marketable)"
+
+    def test_buy_ref_53_90_is_tick_aligned(self):
+        """BUY exit → prc is 0.05 multiple and >= ref."""
+        prc = _marketable_prc(53.90, "B", 1.0)
+        assert _is_tick_aligned(prc), f"BUY prc {prc} is not a 0.05 multiple"
+        assert prc >= 53.90, f"BUY prc {prc} < ref 53.90 (not marketable)"
+
+    def test_sell_various_refs_all_tick_aligned(self):
+        """Sweep: SELL exit is tick-aligned for a range of ref prices."""
+        refs = [53.61, 53.90, 100.33, 200.77, 75.12, 120.48, 1.03, 9999.97]
+        for ref in refs:
+            prc = _marketable_prc(ref, "S", 1.0)
+            assert _is_tick_aligned(prc), (
+                f"ref={ref}: SELL prc {prc} is not a 0.05 multiple"
+            )
+            assert prc <= ref, f"ref={ref}: SELL prc {prc} > ref (not marketable)"
+
+    def test_buy_various_refs_all_tick_aligned(self):
+        """Sweep: BUY exit is tick-aligned for a range of ref prices."""
+        refs = [53.61, 53.90, 100.33, 200.77, 75.12, 120.48, 1.03, 9999.97]
+        for ref in refs:
+            prc = _marketable_prc(ref, "B", 1.0)
+            assert _is_tick_aligned(prc), (
+                f"ref={ref}: BUY prc {prc} is not a 0.05 multiple"
+            )
+            assert prc >= ref, f"ref={ref}: BUY prc {prc} < ref (not marketable)"
+
+    def test_invalid_tick_falls_back_to_005(self):
+        """tick <= 0 is guarded and falls back to 0.05."""
+        prc = _marketable_prc(100.33, "S", 1.0, tick=0.0)
+        assert _is_tick_aligned(prc, 0.05), (
+            f"Fallback tick=0.0: SELL prc {prc} is not a 0.05 multiple"
+        )
+
+
+class TestSquarePositionTickAlignment:
+    """square_position placed exit prices must be 0.05-aligned (live executor path)."""
+
+    def test_sell_exit_53_90_tick_aligned(self):
+        """Live-failure reproduction: ref=53.90, SELL exit → placed prc is 0.05 multiple.
+
+        The broker rejected the order when prc was not a tick multiple.
+        After the fix, the placed order price must satisfy: round(prc/0.05)*0.05 == prc.
+        """
+        client = MockNoren()
+        pos = _position(netqty=65, lp=53.90)
+        run(square_position(client, pos, reason="deadline", band_pct=1.0))
+        orders = list(client._orders.values())
+        assert len(orders) == 1
+        prc = orders[0]["prc"]
+        assert _is_tick_aligned(prc), (
+            f"CRITICAL: SELL exit prc {prc} is not a 0.05 multiple — broker rejects!"
+        )
+        assert prc <= 53.90, f"SELL exit prc {prc} > ref 53.90 (not marketable)"
+
+    def test_buy_exit_53_90_tick_aligned(self):
+        """BUY-to-close exit → placed prc is 0.05 multiple and >= ref."""
+        client = MockNoren()
+        pos = _position(netqty=-65, lp=53.90)
+        run(square_position(client, pos, reason="deadline", band_pct=1.0))
+        orders = list(client._orders.values())
+        assert len(orders) == 1
+        prc = orders[0]["prc"]
+        assert _is_tick_aligned(prc), (
+            f"CRITICAL: BUY exit prc {prc} is not a 0.05 multiple — broker rejects!"
+        )
+        assert prc >= 53.90, f"BUY exit prc {prc} < ref 53.90 (not marketable)"
+
+    def test_sell_exit_various_refs_tick_aligned(self):
+        """Sweep: square_position SELL exit is tick-aligned for various refs."""
+        refs = [53.61, 53.90, 100.33, 200.77, 75.12]
+        for ref in refs:
+            client = MockNoren()
+            pos = _position(netqty=65, lp=ref)
+            run(square_position(client, pos, reason="test"))
+            prc = list(client._orders.values())[0]["prc"]
+            assert _is_tick_aligned(prc), (
+                f"ref={ref}: square_position SELL prc {prc} is not a 0.05 multiple"
+            )
+
+    def test_buy_exit_various_refs_tick_aligned(self):
+        """Sweep: square_position BUY exit is tick-aligned for various refs."""
+        refs = [53.61, 53.90, 100.33, 200.77, 75.12]
+        for ref in refs:
+            client = MockNoren()
+            pos = _position(netqty=-65, lp=ref)
+            run(square_position(client, pos, reason="test"))
+            prc = list(client._orders.values())[0]["prc"]
+            assert _is_tick_aligned(prc), (
+                f"ref={ref}: square_position BUY prc {prc} is not a 0.05 multiple"
+            )
