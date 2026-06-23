@@ -31,8 +31,18 @@ Architecture
   supplementary.
 
 * ``square_position`` is the executor:
-  - Cancels any unfilled/partial entry remainder first (working_norenordno).
-  - Parses filled netqty; if 0 (entry never filled) reports squared=True via cancel.
+  - Parses filled netqty; if 0 (entry never filled) cancels the working
+    remainder and reports squared=True via cancel.
+  - MARGIN-SAFE EXIT (P1.4): before placing the exit it cancels ALL working
+    orders for the scrip — the caller's known ids (``working_norenordno`` or the
+    ``working_norenordnos`` list) PLUS any resting order discovered in the order
+    book (e.g. a protective SL) — and CONFIRMS they are terminal via a re-fetch.
+    A resting SL sell left working while a square-off sell is placed makes the
+    broker see a naked short → margin reject (the ₹2.16L failure). If the working
+    set cannot be confirmed clear, it returns squared=False, reason
+    'cancel_unconfirmed' (NEVER places the doomed exit).
+  - Validates lp BEFORE cancelling: an unpriced position keeps its protection
+    (we never strip an SL we cannot replace with a priced exit).
   - Builds a marketable-limit exit in the CORRECT direction (long→SELL, short→BUY).
   - If lp is missing/non-finite/≤0 → returns {squared: False, reason: 'unpriced'}.
     The caller (engine) MUST halt on squared=False — it NEVER silently skips.
@@ -60,7 +70,11 @@ from app.live.order_builder import round_to_tick
 
 from app.live.broker_protocol import OrderIntent
 from app.live.idempotency import new_client_order_id
-from app.live.kill_switch import _parse_netqty
+from app.live.kill_switch import TERMINAL, _normalize_status, _parse_netqty
+
+#: Max cancel+confirm passes before an exit is placed. A working order that
+#: survives this many passes is treated as un-cancellable (margin-unsafe to exit).
+_MAX_CANCEL_PASSES: int = 2
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -289,6 +303,78 @@ def _marketable_prc(ref: float, trantype: str, band_pct: float, tick: float = 0.
         return round_to_tick(ref * (1.0 + eff / 100.0), _tick, mode="up")
 
 
+async def _cancel_all_working_for_scrip(
+    client: Any, tsym: str, seed_ids: List[str]
+) -> Dict[str, Any]:
+    """Cancel EVERY working order for ``tsym`` and confirm they go terminal.
+
+    This is the margin-safety core (P1.4). A resting SL sell left working while
+    we place a square-off sell makes the broker see a naked short → margin reject
+    (the observed ₹2.16L failure: "cancel the stop-loss first, then square off").
+    So we discover ALL working orders for the scrip — the caller's known ids PLUS
+    anything still working in the order book (e.g. a resting SL the caller didn't
+    track) — cancel them, and CONFIRM via a re-fetch that none remain non-terminal
+    before the exit is placed.
+
+    Up to ``_MAX_CANCEL_PASSES`` cancel+confirm passes absorb a transient
+    not-yet-processed cancel. If the client exposes no ``order_book`` (a minimal
+    legacy stub), discovery/confirmation are skipped and the seed ids are
+    cancelled best-effort (cleared=True is reported — we cannot do better).
+
+    Returns ``{"cleared": bool, "remaining": [norenordno, ...]}``. ``cleared`` is
+    True iff, after cancelling, no non-terminal order for the scrip remains.
+    """
+    ids = {x for x in seed_ids if x}
+    has_book = hasattr(client, "order_book")
+
+    # Discover any additional working orders for this scrip from the book.
+    if has_book:
+        try:
+            book = await client.order_book()
+            for o in (book or []):
+                if _normalize_status(o.get("status")) in TERMINAL:
+                    continue
+                if str(o.get("tsym", "")) != str(tsym):
+                    continue
+                non = o.get("norenordno")
+                if non:
+                    ids.add(non)
+        except Exception:
+            pass  # discovery is best-effort — fall back to the seed ids
+
+    if not ids:
+        return {"cleared": True, "remaining": []}
+
+    for _ in range(_MAX_CANCEL_PASSES):
+        for non in list(ids):
+            try:
+                await client.cancel_order(non)
+            except Exception:
+                pass  # a cancel raising is non-fatal; the confirm re-fetch decides
+
+        if not has_book:
+            # Cannot confirm against a book — trust the cancels (legacy clients).
+            return {"cleared": True, "remaining": []}
+
+        try:
+            book = await client.order_book()
+        except Exception:
+            return {"cleared": True, "remaining": []}  # trust cancels if book unavailable
+
+        remaining = [
+            o.get("norenordno")
+            for o in (book or [])
+            if _normalize_status(o.get("status")) not in TERMINAL
+            and str(o.get("tsym", "")) == str(tsym)
+            and o.get("norenordno")
+        ]
+        ids = set(remaining)
+        if not ids:
+            return {"cleared": True, "remaining": []}
+
+    return {"cleared": False, "remaining": sorted(ids)}
+
+
 async def square_position(
     client: Any,
     position: Dict[str, Any],
@@ -370,22 +456,21 @@ async def square_position(
       both reject reasons in `failures`.  No further retries; no raise.
     """
     failures: List[str] = []
-    working_norenordno: Optional[str] = position.get("working_norenordno")
+    tsym = position.get("tsym", "")
+    exch = position.get("exch", "NFO")
+
+    # Seed ids: the legacy single working_norenordno PLUS an optional list of all
+    # resting orders for the scrip (entry remainder + any protective SL).
+    seed_ids: List[str] = []
+    w1 = position.get("working_norenordno")
+    if w1:
+        seed_ids.append(w1)
+    for x in (position.get("working_norenordnos") or []):
+        if x:
+            seed_ids.append(x)
 
     # ------------------------------------------------------------------
-    # Step 1 — cancel any unfilled/partial entry remainder
-    # ------------------------------------------------------------------
-    if working_norenordno:
-        try:
-            await client.cancel_order(working_norenordno)
-            # We proceed regardless of cancel result — the position (filled
-            # portion) still needs to be exited.  A cancel failure is
-            # non-fatal here; the important exit is the flat order below.
-        except Exception:
-            pass  # never raise; proceed to exit
-
-    # ------------------------------------------------------------------
-    # Step 2 — parse filled netqty
+    # Step 1 — parse filled netqty (cheap, no side effects)
     # ------------------------------------------------------------------
     raw_netqty = position.get("netqty", 0)
     netqty = _parse_netqty(raw_netqty)
@@ -401,8 +486,20 @@ async def square_position(
             "failures": [],
         }
 
+    # ------------------------------------------------------------------
+    # Step 2 — entry never filled: cancel the working remainder, no exit needed.
+    # ------------------------------------------------------------------
     if netqty == 0:
-        # Entry was never filled; the cancel in step 1 handled it.
+        state = await _cancel_all_working_for_scrip(client, tsym, seed_ids)
+        if not state["cleared"]:
+            return {
+                "squared": False,
+                "via": None,
+                "norenordno": None,
+                "reason": "cancel_unconfirmed",
+                "note": "could not cancel the unfilled entry order(s) for the scrip",
+                "failures": state["remaining"],
+            }
         return {
             "squared": True,
             "via": "cancel",
@@ -413,10 +510,9 @@ async def square_position(
         }
 
     # ------------------------------------------------------------------
-    # Step 3 — validate ref price (lp)
+    # Step 3 — validate ref price (lp) BEFORE touching working orders.
+    # If we cannot price the exit, do NOT cancel a protective SL we can't replace.
     # ------------------------------------------------------------------
-    tsym = position.get("tsym", "")
-    exch = position.get("exch", "NFO")
     ref_raw = position.get("lp")
 
     try:
@@ -428,6 +524,7 @@ async def square_position(
 
     if not ref_ok:
         # Bad ref price — NEVER silently skip; the engine must be alerted.
+        # No cancel: an unpriced position keeps whatever protection it has.
         return {
             "squared": False,
             "via": None,
@@ -438,7 +535,27 @@ async def square_position(
         }
 
     # ------------------------------------------------------------------
-    # Step 4 — build and place a marketable-limit exit
+    # Step 4 — MARGIN-SAFE cancel: clear ALL working orders for the scrip and
+    # confirm they are terminal BEFORE placing the exit.  A resting SL left
+    # working would make the exit a naked short → margin reject (₹2.16L bug).
+    # ------------------------------------------------------------------
+    state = await _cancel_all_working_for_scrip(client, tsym, seed_ids)
+    if not state["cleared"]:
+        return {
+            "squared": False,
+            "via": None,
+            "norenordno": None,
+            "reason": "cancel_unconfirmed",
+            "note": (
+                "working orders remain for the scrip after cancel; refusing to "
+                "place the exit to avoid a naked-short margin reject — operator "
+                "must clear them"
+            ),
+            "failures": state["remaining"],
+        }
+
+    # ------------------------------------------------------------------
+    # Step 5 — build and place a marketable-limit exit
     # Direction MUST be correct:
     #   long  (netqty > 0) → SELL
     #   short (netqty < 0) → BUY

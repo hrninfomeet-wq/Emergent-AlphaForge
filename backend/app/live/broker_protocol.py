@@ -8,6 +8,12 @@ from typing import Any, Dict, List, Optional, Protocol
 ORDER_STATES = ("INTENT", "SUBMITTED", "ACKED", "OPEN", "TRIGGER_PENDING",
                 "PARTIAL", "COMPLETE", "REJECTED", "CANCELED")
 ALLOWED_PRCTYP = ("LMT", "SL-LMT")     # Flattrade API: market/CO/BO/IOC blocked
+# NOTE: MKT is INTENTIONALLY excluded here. This is the strict L1/L2 broker-submission
+# gate (validate_jdata) — no L1/L2 producer ever builds a MKT intent, and keeping it strict
+# preserves defense-in-depth. The NEW exchange-aware choke-point (order_builder.
+# validate_and_build) supports MARKET (prc=0) via its own _CHOKE_PRCTYP allow-list; the
+# live-order-page executor trusts the choke-point's validated children rather than re-running
+# this legacy gate.
 ALLOWED_PRD = ("I", "M")
 ALLOWED_RET = ("DAY",)
 
