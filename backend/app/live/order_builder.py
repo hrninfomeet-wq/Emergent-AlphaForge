@@ -26,8 +26,12 @@ import math
 from decimal import Decimal, ROUND_HALF_UP, ROUND_UP, ROUND_DOWN
 from typing import Any, Callable, Dict, List, Optional, Tuple, Literal
 
-from app.live.broker_protocol import OrderIntent
-from app.live.flattrade_symbol import SymbolResolutionError, resolve
+from app.live.broker_protocol import (
+    ALLOWED_PRD,
+    ALLOWED_RET,
+    OrderIntent,
+)
+from app.live.flattrade_symbol import SymbolResolutionError, resolve, rules_for
 from app.execution_policy import resolve_premium_levels
 from app.live.safety import check_fat_finger, check_price_band, validate_jdata
 
@@ -322,3 +326,308 @@ def build_intent(
         return None, verdicts, None
 
     return intent, verdicts, lot_size
+
+
+# ---------------------------------------------------------------------------
+# Choke-point: validate_and_build (P1.3)
+# ---------------------------------------------------------------------------
+# Every live order — direct ticket OR strategy-deployed — flows through
+# validate_and_build so that exchange rules, tick-rounding, freeze-qty splitting
+# and product-pinning can NEVER be bypassed. It generalises build_intent for
+# multi-child orders + exchange-aware order types (LIMIT/MARKET/SL-LMT).
+
+# Exchange-neutral ticket order_type -> Noren prctyp.
+_ORDER_TYPE_TO_PRCTYP = {"LIMIT": "LMT", "MARKET": "MKT", "SL-LMT": "SL-LMT"}
+# Ticket product -> Noren prd code (MIS=intraday I, NRML=carryforward M).
+_PRODUCT_TO_PRD = {"MIS": "I", "NRML": "M"}
+# The choke-point's OWN prctyp allow-list. Distinct from broker_protocol.ALLOWED_PRCTYP
+# (the strict L1/L2 gate, which excludes MKT): the live-order-page deliberately supports
+# MARKET orders, so MKT is permitted here and carries prc=0 (validated below).
+_CHOKE_PRCTYP = ("LMT", "SL-LMT", "MKT")
+
+
+def _fail2(verdicts: List[Verdict], check: str, detail: str) -> Tuple[None, List[Verdict]]:
+    """Append a failing verdict and return the (None, verdicts) 2-tuple."""
+    verdicts.append(_v(check, False, detail))
+    return None, verdicts
+
+
+def _validate_child_intent(
+    intent: OrderIntent, *, freeze_qty: int, is_market: bool
+) -> Tuple[bool, Optional[str]]:
+    """Field-level validation for one freeze child.
+
+    Unlike validate_jdata, a freeze child qty is NOT required to be a lot
+    multiple — 1800 units of a 65-lot instrument is a valid child carved out of
+    a lot-multiple parent. The PARENT qty carries the lot-multiple invariant
+    (checked once in validate_and_build); each CHILD must only be a positive int
+    no larger than the freeze cap, with valid prctyp/prd/ret, a finite positive
+    trigger for SL-LMT, and a price that is exactly 0 for MARKET or finite
+    positive otherwise.
+    """
+    if not (
+        isinstance(intent.qty, int)
+        and not isinstance(intent.qty, bool)
+        and 0 < intent.qty <= freeze_qty
+    ):
+        return False, f"child qty {intent.qty!r} must be a positive int <= freeze {freeze_qty}"
+    if intent.prctyp not in _CHOKE_PRCTYP:
+        return False, f"prctyp {intent.prctyp!r} not allowed; permitted {_CHOKE_PRCTYP}"
+    if intent.prd not in ALLOWED_PRD:
+        return False, f"prd {intent.prd!r} not allowed; permitted {ALLOWED_PRD}"
+    if intent.ret not in ALLOWED_RET:
+        return False, f"ret {intent.ret!r} not allowed; permitted {ALLOWED_RET}"
+    if intent.prctyp == "SL-LMT":
+        if not (
+            isinstance(intent.trgprc, (int, float))
+            and not isinstance(intent.trgprc, bool)
+            and math.isfinite(intent.trgprc)
+            and intent.trgprc > 0
+        ):
+            return False, f"SL-LMT requires a finite positive trgprc, got {intent.trgprc!r}"
+    if is_market:
+        # MARKET carries prc=0 (no limit price). Reject anything else.
+        if intent.prc not in (0, 0.0):
+            return False, f"MARKET order must carry prc=0, got {intent.prc!r}"
+    else:
+        if not (
+            isinstance(intent.prc, (int, float))
+            and not isinstance(intent.prc, bool)
+            and math.isfinite(intent.prc)
+            and intent.prc > 0
+        ):
+            return False, f"prc must be finite positive, got {intent.prc!r}"
+    return True, None
+
+
+def validate_and_build(
+    ticket: Dict[str, Any]
+) -> Tuple[Optional[List[OrderIntent]], List[Verdict]]:
+    """The single order CHOKE-POINT: validate a ticket and build child OrderIntents.
+
+    Returns (child_intents, verdicts) on success or (None, verdicts) on the first
+    failing check. ``verdicts`` always carries one entry per check run so the
+    dry-run UI can surface full reasoning.
+
+    ticket keys
+    -----------
+    underlying, strike, option_type ("CE"/"PE"), side ("B"/"S"), expiry_date,
+    lots (int), order_type ("LIMIT"/"MARKET"/"SL-LMT"), product ("MIS"/"NRML"),
+    ref_ltp, band_pct, fat_finger_cap, levels (dict, SL-LMT stop), client_order_id,
+    buffer_pct, search_fn.
+
+    Guarantees on a successful return
+    ---------------------------------
+    - order_type and product are PERMITTED on the instrument's exchange
+      (CO/BO blocked everywhere, SL-MKT blocked, CO/BO especially on BFO/SENSEX).
+    - every non-MARKET child price (and any SL-LMT trigger) is an exact multiple
+      of the broker-authoritative tick.
+    - parent qty is a positive-int multiple of the resolved lot size; it is split
+      into children each <= the exchange freeze quantity.
+    - prd is PINNED from the validated product on every child (never defaulted).
+    """
+    verdicts: List[Verdict] = []
+
+    underlying = ticket.get("underlying")
+    rules = rules_for(underlying)
+    if rules is None:
+        return _fail2(verdicts, "underlying", f"unknown underlying {underlying!r}")
+
+    order_type = str(ticket.get("order_type") or "").strip().upper()
+    product = str(ticket.get("product") or "").strip().upper()
+
+    # ------------------------------------------------------------------
+    # Exchange rules — order_type + product must be permitted on this exchange.
+    # ------------------------------------------------------------------
+    if order_type not in rules["price_types"]:
+        return _fail2(
+            verdicts, "exchange_order_type",
+            f"order_type {order_type!r} not permitted for {underlying} on "
+            f"{rules['exch']}; allowed: {rules['price_types']}",
+        )
+    if product not in rules["products"]:
+        return _fail2(
+            verdicts, "exchange_product",
+            f"product {product!r} not permitted for {underlying} on "
+            f"{rules['exch']}; allowed: {rules['products']}",
+        )
+    prctyp = _ORDER_TYPE_TO_PRCTYP[order_type]
+    prd = _PRODUCT_TO_PRD[product]
+    is_market = prctyp == "MKT"
+    verdicts.append(_v("exchange", True, f"{order_type}/{product} permitted on {rules['exch']}"))
+
+    # ------------------------------------------------------------------
+    # Direction — trantype must be B or S (resolve() validates CE/PE separately).
+    # ------------------------------------------------------------------
+    side = str(ticket.get("side") or "").strip().upper()
+    if side not in ("B", "S"):
+        return _fail2(verdicts, "side", f"side must be 'B' or 'S', got {side!r}")
+
+    # ------------------------------------------------------------------
+    # Resolve symbol — authoritative tick + lot_size + tsym + exch.
+    # ------------------------------------------------------------------
+    option_type = str(ticket.get("option_type") or "").strip().upper()
+    contract = {
+        "underlying": underlying,
+        "strike": ticket.get("strike"),
+        "side": option_type,            # resolve() uses 'side' for the CE/PE leg
+        "expiry_date": ticket.get("expiry_date"),
+        "lot_size": rules["lot_size"],  # advisory; broker scrip ls wins
+    }
+    try:
+        resolved = resolve(contract, search_fn=ticket.get("search_fn"))
+    except SymbolResolutionError as exc:
+        return _fail2(verdicts, "symbol", str(exc))
+    except Exception as exc:  # never leak a raw error out of the choke-point
+        return _fail2(verdicts, "symbol", f"unexpected resolution error: {exc}")
+    verdicts.append(_v("symbol", True, f"resolved {resolved['tsym']} on {resolved['exch']}"))
+
+    lot_size: int = resolved["lot_size"]
+    tick: float = resolved.get("tick", 0.05)
+    exch: str = resolved["exch"]
+    tsym: str = resolved["tsym"]
+
+    # ------------------------------------------------------------------
+    # Quantity — PARENT qty is the lot-multiple invariant; children are split.
+    # ------------------------------------------------------------------
+    lots = ticket.get("lots")
+    if not (isinstance(lots, int) and not isinstance(lots, bool) and lots > 0):
+        return _fail2(verdicts, "qty", f"lots must be a positive int, got {lots!r}")
+
+    # fat-finger on PARENT lots runs BEFORE the freeze split so an oversized order
+    # gets a clean fat_finger rejection rather than the slice's internal 10x cap.
+    ff_ok, ff_reason = check_fat_finger(lots, ticket.get("fat_finger_cap"))
+    verdicts.append(_v("fat_finger", ff_ok, ff_reason or f"lots={lots} <= cap={ticket.get('fat_finger_cap')}"))
+    if not ff_ok:
+        return None, verdicts
+
+    qty = lots * lot_size
+    if qty % lot_size != 0:  # invariant guard (always true by construction)
+        return _fail2(verdicts, "qty", f"parent qty {qty} is not a multiple of lot_size {lot_size}")
+    try:
+        child_qtys = slice_to_freeze(qty, rules["freeze_qty"])
+    except ValueError as exc:
+        return _fail2(verdicts, "qty", str(exc))
+    if not child_qtys:
+        return _fail2(verdicts, "qty", f"qty {qty} produced no child orders")
+    verdicts.append(_v(
+        "qty", True,
+        f"{lots} lot(s) x {lot_size} = {qty}; split into {len(child_qtys)} child "
+        f"order(s) <= freeze {rules['freeze_qty']}: {child_qtys}",
+    ))
+
+    # ------------------------------------------------------------------
+    # Price — identical across children; only qty differs.
+    # ------------------------------------------------------------------
+    ref_ltp = ticket.get("ref_ltp")
+    band_pct = ticket.get("band_pct")
+    buf = ticket.get("buffer_pct")
+    buf = buf if buf is not None else _DEFAULT_BUFFER_PCT
+    levels = ticket.get("levels") or {}
+    trgprc: Optional[float] = None
+
+    def _ref_ok() -> bool:
+        return (
+            isinstance(ref_ltp, (int, float))
+            and not isinstance(ref_ltp, bool)
+            and math.isfinite(ref_ltp)
+            and ref_ltp > 0
+        )
+
+    if is_market:
+        prc = 0.0
+    elif prctyp == "LMT":
+        if not _ref_ok():
+            return _fail2(verdicts, "price_finite", f"ref_ltp={ref_ltp!r} is not a finite positive number")
+        band_ok = (
+            isinstance(band_pct, (int, float)) and not isinstance(band_pct, bool)
+            and math.isfinite(band_pct)
+        )
+        # Clamp the marketable buffer by the band so it can NEVER breach the guard.
+        eff = min(abs(buf), abs(band_pct)) if band_ok else abs(buf)
+        if side == "B":
+            prc = round_to_tick(round(ref_ltp * (1.0 + eff / 100.0), 2), tick, mode="up")
+        else:
+            prc = round_to_tick(round(ref_ltp * (1.0 - eff / 100.0), 2), tick, mode="down")
+    else:  # SL-LMT
+        if not _ref_ok():
+            return _fail2(verdicts, "price_finite", f"ref_ltp={ref_ltp!r} is not a finite positive number")
+        stop, _target = resolve_premium_levels(
+            ref_ltp,
+            stop_pts=levels.get("stop_pts"),
+            stop_pct=levels.get("stop_pct"),
+            stop_floor=_STOP_FLOOR,
+            ndigits=_STOP_NDIGITS,
+        )
+        if stop is None:
+            return _fail2(
+                verdicts, "stop",
+                "resolve_premium_levels returned None for stop — check stop_pts/stop_pct in levels",
+            )
+        trgprc = round_to_tick(stop, tick, mode="nearest")
+        if side == "S":  # protective sell-stop: limit one tick below trigger, floored
+            prc = round_to_tick(max(_STOP_FLOOR, round(trgprc - tick, 2)), tick, mode="down")
+            prc = max(_STOP_FLOOR, prc)
+        else:            # buy stop-entry: limit one tick above trigger
+            prc = round_to_tick(round(trgprc + tick, 2), tick, mode="up")
+
+    # ------------------------------------------------------------------
+    # price_finite + price_band verdicts.
+    #   MARKET  → both skipped (prc=0 is valid, has no limit to band-check).
+    #   SL-LMT  → finite check runs; band SKIPPED (the trigger is off-market by
+    #             design — a band check would reject legitimate stops; the stop
+    #             level is derived from ref_ltp so it cannot be fat-fingered).
+    #   LIMIT   → both run.
+    # ------------------------------------------------------------------
+    if is_market:
+        verdicts.append(_v("price_finite", True, "MARKET — prc=0 (finite/band not applicable)"))
+        verdicts.append(_v("price_band", True, "MARKET — price-band not applicable"))
+    else:
+        if not (math.isfinite(prc) and prc > 0):
+            return _fail2(verdicts, "price_finite", f"computed prc={prc!r} is not finite/positive")
+        verdicts.append(_v(
+            "price_finite", True,
+            f"prc={prc}" + (f", trgprc={trgprc}" if trgprc is not None else ""),
+        ))
+        if prctyp == "LMT":
+            pb_ok, pb_reason = check_price_band(prc, ref_ltp, band_pct)
+            verdicts.append(_v("price_band", pb_ok, pb_reason or f"prc={prc} within {band_pct}% of ref={ref_ltp}"))
+            if not pb_ok:
+                return None, verdicts
+        else:  # SL-LMT
+            verdicts.append(_v("price_band", True, "SL-LMT — trigger off-market by design; band skipped"))
+
+    # ------------------------------------------------------------------
+    # Build one OrderIntent per freeze child (prd PINNED; cid suffixed per child).
+    # ------------------------------------------------------------------
+    cid = str(ticket.get("client_order_id") or "")
+    children: List[OrderIntent] = []
+    for i, child_qty in enumerate(child_qtys):
+        child_cid = f"{cid}-{i}" if cid else f"child-{i}"
+        children.append(OrderIntent(
+            client_order_id=child_cid,
+            trantype=side,
+            prctyp=prctyp,
+            exch=exch,
+            tsym=tsym,
+            qty=child_qty,
+            prc=prc,
+            prd=prd,            # PINNED from the validated product — never defaulted
+            ret="DAY",
+            trgprc=trgprc,
+            remarks=child_cid,
+        ))
+
+    # ------------------------------------------------------------------
+    # jdata — field-validate EACH child (qty<=freeze, prctyp/prd/ret, trigger, prc).
+    # Parent lot-multiple was already enforced; children need not be lot multiples.
+    # ------------------------------------------------------------------
+    for i, intent in enumerate(children):
+        jd_ok, jd_reason = _validate_child_intent(
+            intent, freeze_qty=rules["freeze_qty"], is_market=is_market
+        )
+        if not jd_ok:
+            return _fail2(verdicts, "jdata", f"child {i} ({intent.tsym} qty={intent.qty}): {jd_reason}")
+    verdicts.append(_v("jdata", True, f"{len(children)} child intent(s) valid"))
+
+    return children, verdicts
