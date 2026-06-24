@@ -32,13 +32,19 @@ def complete_structured(
     import anthropic  # lazy
 
     client = anthropic.Anthropic()
-    resp = client.messages.parse(
-        model=model,
-        max_tokens=max_tokens,
-        system=system,
-        messages=[{"role": "user", "content": user}],
-        output_format=output_model,
-    )
+    try:
+        resp = client.messages.parse(
+            model=model,
+            max_tokens=max_tokens,
+            system=system,
+            messages=[{"role": "user", "content": user}],
+            output_format=output_model,
+        )
+    except anthropic.APIError as e:
+        # Surface billing / rate-limit / request errors as a clean RuntimeError so
+        # callers return a readable message (e.g. "credit balance too low") instead
+        # of a 500. `.message` exists on APIStatusError subclasses; fall back to str.
+        raise RuntimeError(f"Anthropic API error: {getattr(e, 'message', None) or str(e)}")
     if resp.parsed_output is None:
         raise RuntimeError("AI returned no parseable output (possibly a refusal)")
     return resp.parsed_output
