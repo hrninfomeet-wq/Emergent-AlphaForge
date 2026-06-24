@@ -94,19 +94,20 @@ export default function StrategyLibrary() {
   };
 
   const visible = strategies.filter(matchesQuery).filter(matchesFilter);
-  const retired = strategies.filter(matchesQuery).filter((s) => s.is_retired);
+  const retiredVisible = strategies.filter(matchesQuery).filter((s) => s.is_retired);
   const activeCount = strategies.filter((s) => !s.is_retired).length;
+  const retiredCount = strategies.filter((s) => s.is_retired).length;
 
   return (
     <div className="space-y-3" data-testid="strategy-library-page">
       <div className="flex items-center gap-2 flex-wrap">
-        <div className="text-sm text-dim">{activeCount} active · {retired.length} retired</div>
+        <div className="text-sm text-dim">{activeCount} active · {retiredCount} retired</div>
         <div className="flex-1" />
         <div className="relative">
           <Search className="w-3.5 h-3.5 text-dimmer absolute left-2 top-1/2 -translate-y-1/2" />
           <input
             value={query} onChange={(e) => setQuery(e.target.value)} placeholder="search…"
-            className="text-xs pl-7 pr-2 py-1.5 rounded-md bg-bg-2 border border-line text-foreground"
+            className="text-xs pl-7 pr-2 py-1.5 rounded-md bg-bg-2 border border-line text-foreground focus:outline-none focus:ring-1 focus:ring-info"
             data-testid="strategy-search"
           />
         </div>
@@ -131,11 +132,11 @@ export default function StrategyLibrary() {
         ))}
       </div>
 
-      {filter !== "Retired" && retired.length > 0 && (
+      {filter !== "Retired" && retiredVisible.length > 0 && (
         <details className="rounded-lg border border-dashed border-line bg-bg-1/50 p-3">
-          <summary className="text-xs text-dim cursor-pointer">Retired ({retired.length}) — hidden from pickers, deployments paused</summary>
+          <summary className="text-xs text-dim cursor-pointer">Retired ({retiredVisible.length}) — hidden from pickers, deployments paused</summary>
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 mt-3">
-            {retired.map((s) => (
+            {retiredVisible.map((s) => (
               <StrategyCard key={s.id} s={s} metrics={metricsByStrategy[s.id] || []}
                 onRetire={onRetire} onUnretire={onUnretire} onDelete={onDelete} />
             ))}
