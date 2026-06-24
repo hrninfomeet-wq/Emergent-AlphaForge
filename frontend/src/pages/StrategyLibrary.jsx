@@ -1,45 +1,77 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { api } from "@/lib/api";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
-import { Library, CheckCircle2, AlertCircle, TrendingUp } from "lucide-react";
+import {
+  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
+  DropdownMenuSeparator,
+} from "@/components/ui/dropdown-menu";
+import { toast } from "sonner";
+import {
+  Library, CheckCircle2, AlertCircle, TrendingUp, MoreVertical,
+  PauseCircle, PlayCircle, Trash2, Search,
+} from "lucide-react";
+
+const FILTERS = ["All", "Built-in", "Custom", "Failed", "Retired"];
 
 export default function StrategyLibrary() {
   const [strategies, setStrategies] = useState([]);
   const [metricsByStrategy, setMetricsByStrategy] = useState({});
   const [loading, setLoading] = useState(true);
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState("All");
 
-  useEffect(() => {
-    let cancelled = false;
-    async function load() {
+  const load = useCallback(async () => {
+    try {
+      const strategyData = await api.listStrategies();
+      setStrategies(strategyData.items || []);
       try {
-        const strategyData = await api.listStrategies();
-        if (cancelled) return;
-        setStrategies(strategyData.items || []);
-        try {
-          // include_ineligible: low-sample deployments are shown with a warning
-          // badge instead of being hidden until 10 complete sessions (user
-          // decision 2026-06-10 — the PC rarely runs full sessions, so the old
-          // gate hid all forward evidence indefinitely).
-          const metricData = await api.listDeploymentMetrics({ include_ineligible: 1 });
-          if (cancelled) return;
-          const grouped = {};
-          for (const item of metricData.items || []) {
-            if (!(item.closed_trade_count > 0)) continue; // nothing to show yet
-            const key = item.strategy_id || "";
-            grouped[key] = [...(grouped[key] || []), item];
-          }
-          setMetricsByStrategy(grouped);
-        } catch {
-          setMetricsByStrategy({});
+        const metricData = await api.listDeploymentMetrics({ include_ineligible: 1 });
+        const grouped = {};
+        for (const item of metricData.items || []) {
+          if (!(item.closed_trade_count > 0)) continue;
+          const key = item.strategy_id || "";
+          grouped[key] = [...(grouped[key] || []), item];
         }
-      } finally {
-        if (!cancelled) setLoading(false);
+        setMetricsByStrategy(grouped);
+      } catch {
+        setMetricsByStrategy({});
       }
+    } finally {
+      setLoading(false);
     }
-    load();
-    return () => { cancelled = true; };
   }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function onRetire(s) {
+    try {
+      const res = await api.retireStrategy(s.id);
+      toast.success(`Retired ${s.name}${res.squared_off_count ? ` · squared off ${res.squared_off_count} trade(s)` : ""}.`);
+      load();
+    } catch (e) {
+      toast.error(`Retire failed: ${e.response?.data?.detail || e.message}`);
+    }
+  }
+  async function onUnretire(s) {
+    try {
+      await api.unretireStrategy(s.id);
+      toast.success(`Un-retired ${s.name}.`);
+      load();
+    } catch (e) {
+      toast.error(`Un-retire failed: ${e.response?.data?.detail || e.message}`);
+    }
+  }
+  async function onDelete(s) {
+    if (!window.confirm(`Delete the file for "${s.name}" permanently? This cannot be undone.`)) return;
+    try {
+      await api.deleteStrategy(s.id);
+      toast.success(`Deleted ${s.name}.`);
+      load();
+    } catch (e) {
+      toast.error(`Delete failed: ${e.response?.data?.detail || e.message}`);
+    }
+  }
 
   if (loading) {
     return (
@@ -49,25 +81,76 @@ export default function StrategyLibrary() {
     );
   }
 
+  const q = query.trim().toLowerCase();
+  const matchesQuery = (s) =>
+    !q || (s.name || "").toLowerCase().includes(q) || (s.id || "").toLowerCase().includes(q);
+  const matchesFilter = (s) => {
+    if (filter === "Retired") return s.is_retired;
+    if (s.is_retired) return false;
+    if (filter === "Built-in") return s.origin === "builtin";
+    if (filter === "Custom") return s.origin === "custom";
+    if (filter === "Failed") return s.is_loaded === false;
+    return true;
+  };
+
+  const visible = strategies.filter(matchesQuery).filter(matchesFilter);
+  const retired = strategies.filter(matchesQuery).filter((s) => s.is_retired);
+  const activeCount = strategies.filter((s) => !s.is_retired).length;
+
   return (
     <div className="space-y-3" data-testid="strategy-library-page">
-      <div className="flex items-center gap-2">
-        <div className="text-sm text-dim">{strategies.length} strategies discovered.</div>
-        <div className="text-xs text-dimmer">Custom plugins: drop a .py file into <code className="font-mono">backend/app/strategies/plugins/</code> and restart backend.</div>
+      <div className="flex items-center gap-2 flex-wrap">
+        <div className="text-sm text-dim">{activeCount} active · {retired.length} retired</div>
+        <div className="flex-1" />
+        <div className="relative">
+          <Search className="w-3.5 h-3.5 text-dimmer absolute left-2 top-1/2 -translate-y-1/2" />
+          <input
+            value={query} onChange={(e) => setQuery(e.target.value)} placeholder="search…"
+            className="text-xs pl-7 pr-2 py-1.5 rounded-md bg-bg-2 border border-line text-foreground"
+            data-testid="strategy-search"
+          />
+        </div>
       </div>
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-        {strategies.map((s) => (
-          <StrategyCard key={s.id} s={s} metrics={metricsByStrategy[s.id] || []} />
+
+      <div className="flex gap-1.5 flex-wrap">
+        {FILTERS.map((f) => (
+          <button
+            key={f} onClick={() => setFilter(f)}
+            className={`text-[11px] px-2.5 py-1 rounded-full border ${
+              filter === f ? "bg-info/15 border-info/50 text-foreground" : "bg-bg-1 border-line text-dim"
+            }`}
+            data-testid={`strategy-filter-${f}`}
+          >{f}</button>
         ))}
       </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+        {visible.map((s) => (
+          <StrategyCard key={s.id} s={s} metrics={metricsByStrategy[s.id] || []}
+            onRetire={onRetire} onUnretire={onUnretire} onDelete={onDelete} />
+        ))}
+      </div>
+
+      {filter !== "Retired" && retired.length > 0 && (
+        <details className="rounded-lg border border-dashed border-line bg-bg-1/50 p-3">
+          <summary className="text-xs text-dim cursor-pointer">Retired ({retired.length}) — hidden from pickers, deployments paused</summary>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 mt-3">
+            {retired.map((s) => (
+              <StrategyCard key={s.id} s={s} metrics={metricsByStrategy[s.id] || []}
+                onRetire={onRetire} onUnretire={onUnretire} onDelete={onDelete} />
+            ))}
+          </div>
+        </details>
+      )}
     </div>
   );
 }
 
-function StrategyCard({ s, metrics }) {
+function StrategyCard({ s, metrics, onRetire, onUnretire, onDelete }) {
   const loaded = s.is_loaded !== false;
+  const isCustom = s.origin === "custom";
   return (
-    <div className="rounded-lg border border-line bg-bg-1 p-3" data-testid={`strategy-card-${s.id}`}>
+    <div className={`rounded-lg border border-line bg-bg-1 p-3 ${s.is_retired ? "opacity-60" : ""}`} data-testid={`strategy-card-${s.id}`}>
       <div className="flex items-start gap-3 mb-2">
         <div className="w-9 h-9 rounded-md bg-bg-3 border border-line-strong flex items-center justify-center shrink-0">
           <Library className="w-4 h-4 text-info" />
@@ -81,10 +164,16 @@ function StrategyCard({ s, metrics }) {
             ) : (
               <Badge className="bg-rose-950 text-rose-200 border-rose-900"><AlertCircle className="w-3 h-3 mr-1" />failed</Badge>
             )}
-            {s.is_builtin && <Badge className="bg-bg-3 text-dim border-line">builtin</Badge>}
+            {isCustom ? (
+              <Badge className="bg-sky-950 text-sky-200 border-sky-900">custom</Badge>
+            ) : (
+              <Badge className="bg-bg-3 text-dim border-line">built-in</Badge>
+            )}
+            {s.is_retired && <Badge className="bg-amber-950 text-amber-200 border-amber-900">retired</Badge>}
           </div>
           <div className="text-[11px] font-mono text-dimmer mt-0.5">{s.id}</div>
         </div>
+        <StrategyMenu s={s} isCustom={isCustom} onRetire={onRetire} onUnretire={onUnretire} onDelete={onDelete} />
       </div>
       <div className="text-xs text-dim leading-snug mb-3">{s.description}</div>
       <ForwardMetricsBlock metrics={metrics} />
@@ -111,6 +200,34 @@ function StrategyCard({ s, metrics }) {
         </div>
       )}
     </div>
+  );
+}
+
+function StrategyMenu({ s, isCustom, onRetire, onUnretire, onDelete }) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button className="p-1 rounded hover:bg-bg-2 text-dimmer shrink-0" data-testid={`strategy-menu-${s.id}`} aria-label="Strategy actions">
+          <MoreVertical className="w-4 h-4" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-48">
+        {s.is_retired ? (
+          <DropdownMenuItem onClick={() => onUnretire(s)}><PlayCircle className="w-3.5 h-3.5 mr-2" />Un-retire</DropdownMenuItem>
+        ) : (
+          <DropdownMenuItem onClick={() => onRetire(s)}><PauseCircle className="w-3.5 h-3.5 mr-2" />Retire</DropdownMenuItem>
+        )}
+        <DropdownMenuSeparator />
+        <DropdownMenuItem
+          disabled={!isCustom}
+          onClick={() => isCustom && onDelete(s)}
+          className={isCustom ? "text-rose-300" : "opacity-40"}
+          title={isCustom ? "" : "Built-in strategies can only be retired"}
+        >
+          <Trash2 className="w-3.5 h-3.5 mr-2" />Delete file
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
