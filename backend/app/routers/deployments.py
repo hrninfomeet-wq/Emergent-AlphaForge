@@ -212,6 +212,10 @@ async def create_deployment(req: DeploymentCreateReq):
     strategy_id = str(source.get("strategy_id") or (source.get("config") or {}).get("strategy_id") or "")
     strategy_obj = get_registry().get(strategy_id) if strategy_id else None
     pinned_source_sha = hash_strategy_source(strategy_obj) if strategy_obj else None
+    if strategy_id:
+        from app.routers.strategies_admin import is_retired
+        if await is_retired(strategy_id):
+            raise HTTPException(400, f"Strategy {strategy_id} is retired — un-retire it before deploying")
     # Merge explicit kill-switch fields into the risk dict (only when provided).
     kill_switch_cfg = {
         k: v for k, v in {
