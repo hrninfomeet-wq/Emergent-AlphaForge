@@ -419,11 +419,12 @@ class TestGtt:
                     "trantype": "S", "d_trigger": 98.0, "prc_limit": 97.9, "prd": "M"}
             r = tc.post("/live-broker/gtt", json=body)
             assert r.status_code == 400
-            # with ai_t it previews fine
-            body["ai_t"] = "LTP_B"
+            # with ai_t it previews fine (LTP_B_O = confirmed below-trigger type)
+            body["ai_t"] = "LTP_B_O"
             d = tc.post("/live-broker/gtt", json=body).json()
-            assert d["intent"]["ai_t"] == "LTP_B"
+            assert d["intent"]["ai_t"] == "LTP_B_O"
             assert d["intent"]["validity"] == "GTT"
+            assert d["intent"]["place_order_params"]["prc"]  # wrapped order block
         finally:
             _stop(tc)
 

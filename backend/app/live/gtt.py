@@ -73,14 +73,18 @@ _RET_TYPES = ("DAY", "EOS", "IOC")
 
 # DOCUMENTED OCO alert type (PiConnect docs ch.1.18 PlaceOCOOrder example,
 # verbatim: "ai_t": "LMT_BOS_O").  One bracket pair; first leg to trigger
-# cancels the other.
+# cancels the other.  NOTE: still docs-only — confirm by reading a real OCO back
+# via GetPendingGTTOrder (no live OCO observed yet, unlike the single GTT below).
 AI_T_OCO = "LMT_BOS_O"
 
-# Single-GTT / alert base type LTP with the (inferred, confirm-by-readback)
-# direction suffix.  Exposed so callers choose direction EXPLICITLY rather than
-# the builder guessing it.
-LTP_ABOVE = "LTP_A"   # fire when LTP rises to/above d  (e.g. a take-profit)
-LTP_BELOW = "LTP_B"   # fire when LTP falls to/below d  (e.g. a stop-loss)
+# Single-GTT LTP alert type with its direction suffix.
+# CONFIRMED 2026-06-25 by a LIVE readback: a "<" (below-trigger) GTT placed in the
+# Flattrade web app was recorded by the broker as ai_t == "LTP_B_O" — so the
+# pattern is LTP_<DIR>_O, _B == below, trailing _O == the order-on-trigger type
+# (same family as the OCO's LMT_BOS_O).  _A (above) is inferred by symmetry and
+# still needs one above-trigger readback to confirm.
+LTP_ABOVE = "LTP_A_O"   # fire when LTP rises to/above d  (e.g. a take-profit)  [INFERRED]
+LTP_BELOW = "LTP_B_O"   # fire when LTP falls to/below d  (e.g. a stop-loss)    [CONFIRMED]
 
 
 # ---------------------------------------------------------------------------
@@ -144,27 +148,30 @@ def build_gtt_intent(
     prc_limit: float,
     prd: str,
     ret: str = "DAY",
+    ordersource: str = "API",
     tick: float = 0.05,
-    dscqty: int = 0,
     remarks: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Build the jdata for a single-trigger GTT (a resting stop/target on a position).
 
-    Maps to the documented PlaceGTTOrder schema. ``d_trigger`` -> ``d`` (the
-    price compared with LTP) and ``prc_limit`` -> ``prc`` (the resulting order's
-    limit price).  Identity (uid/actid) is NOT included here — the client injects
-    it at transmit time.
+    Structure CONFIRMED by a live GetPendingGTTOrder readback (2026-06-25): a
+    single GTT is the WRAPPED form — top-level ``ai_t``/``validity``/``tsym``/
+    ``exch``/``d`` plus a one-entry ``oivariable`` (var_name "x") and a nested
+    ``place_order_params`` block carrying the order to fire — NOT the flat fields
+    in the docs' (carelessly copied) curl example.  ``d_trigger`` -> top-level
+    ``d`` AND ``oivariable[0].d`` (the price compared with LTP); ``prc_limit`` ->
+    ``place_order_params.prc`` (the resulting order's limit).  Identity
+    (uid/actid) is injected by the client at transmit time.
 
     NRML-ONLY: returns None for any ``prd`` != "M".
 
     ``ai_t`` is REQUIRED (no guessed default): pass LTP_BELOW for a protective
-    stop on a long option, LTP_ABOVE for a target.  Confirm the direction by
-    reading one GTT back via GetPendingGTTOrder before depending on it.
+    stop on a long option, LTP_ABOVE for a target.
 
     Validates fail-closed:
     - prd must be exactly "M"
     - exch / tsym / ai_t must be non-empty strings
-    - qty must be a positive int; dscqty a non-negative int
+    - qty must be a positive int
     - trantype must be "B" or "S"; ret one of DAY/EOS/IOC
     - d_trigger / prc_limit must be finite positive numbers; each is then
       tick-rounded to the nearest valid tick multiple (sub-tick is rounded, NOT
@@ -177,8 +184,6 @@ def build_gtt_intent(
     if not _str_field_ok(exch) or not _str_field_ok(tsym) or not _str_field_ok(ai_t):
         return None
     if not _is_pos_int(qty):
-        return None
-    if not (isinstance(dscqty, int) and not isinstance(dscqty, bool) and dscqty >= 0):
         return None
     if trantype not in _TRANTYPES:
         return None
@@ -195,15 +200,13 @@ def build_gtt_intent(
         "validity": "GTT",      # rests at broker; blocks no margin
         "exch": exch,
         "tsym": tsym,
-        "d": d,                 # price compared with LTP (the trigger)
-        "trantype": trantype,
-        "prctyp": "LMT",
-        "prd": _NRML_PRD,       # PINNED — never anything but NRML
-        "ret": ret,
-        "qty": str(qty),
-        "prc": prc,             # resulting order's limit price
-        "dscqty": str(dscqty),
+        "d": d,                 # top-level trigger (mirrors the readback)
         "remarks": remarks or "",
+        "oivariable": [{"var_name": "x", "d": d}],
+        "place_order_params": _oco_leg(
+            exch=exch, tsym=tsym, trantype=trantype, prc=prc, qty=qty,
+            ret=ret, ordersource=ordersource, remarks=remarks,
+        ),
     }
 
 

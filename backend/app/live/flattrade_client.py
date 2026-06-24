@@ -263,28 +263,36 @@ class FlattradeClient:
     # "Oi created"/"OI created" success stats rather than "Ok").
     # ------------------------------------------------------------------
 
-    async def place_gtt(self, intent: Dict[str, Any]) -> Dict[str, Any]:
-        """Transmit a single-leg GTT (built by gtt.build_gtt_intent).
+    def _inject_identity(self, intent: Dict[str, Any]) -> Dict[str, Any]:
+        """Inject uid/actid at the top level AND into every place_order_params*
+        leg block, working on a copy so the caller's intent is not mutated.
 
-        Injects uid/actid, POSTs PlaceGTTOrder, returns the parsed alert result
-        {ok, al_id, stat, emsg, raw}.
+        Both the single GTT and the OCO are the WRAPPED form (place_order_params
+        carries the order to fire), so the order identity must live inside each
+        leg as well as at the top level.
         """
-        jdata = {**intent, "uid": self._uid, "actid": self._actid}
-        return await self._post_alert("PlaceGTTOrder", jdata)
-
-    async def place_oco(self, intent: Dict[str, Any]) -> Dict[str, Any]:
-        """Transmit a two-leg OCO (built by gtt.build_oco_intent).
-
-        Injects uid at top level AND uid/actid into BOTH leg param blocks. Works
-        on a deep-enough copy so the caller's intent is not mutated. POSTs
-        PlaceOCOOrder, returns the parsed alert result.
-        """
-        jdata: Dict[str, Any] = {**intent, "uid": self._uid}
+        jdata: Dict[str, Any] = {**intent, "uid": self._uid, "actid": self._actid}
         for leg_key in ("place_order_params", "place_order_params_leg2"):
             leg = jdata.get(leg_key)
             if isinstance(leg, dict):
                 jdata[leg_key] = {**leg, "uid": self._uid, "actid": self._actid}
-        return await self._post_alert("PlaceOCOOrder", jdata)
+        return jdata
+
+    async def place_gtt(self, intent: Dict[str, Any]) -> Dict[str, Any]:
+        """Transmit a single-leg GTT (built by gtt.build_gtt_intent).
+
+        Injects identity, POSTs PlaceGTTOrder, returns the parsed alert result
+        {ok, al_id, stat, emsg, raw}.
+        """
+        return await self._post_alert("PlaceGTTOrder", self._inject_identity(intent))
+
+    async def place_oco(self, intent: Dict[str, Any]) -> Dict[str, Any]:
+        """Transmit a two-leg OCO (built by gtt.build_oco_intent).
+
+        Injects identity into the top level + both leg blocks, POSTs
+        PlaceOCOOrder, returns the parsed alert result.
+        """
+        return await self._post_alert("PlaceOCOOrder", self._inject_identity(intent))
 
     async def cancel_gtt(self, al_id: Any) -> Dict[str, Any]:
         """Cancel a single-leg GTT by alert id (POST CancelGTTOrder)."""

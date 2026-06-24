@@ -68,10 +68,12 @@ async def test_place_gtt_posts_to_right_route_with_identity():
     res = await c.place_gtt(_gtt_intent())
     route, jdata = c._calls[-1]
     assert route == "PlaceGTTOrder"
-    # identity injected by the client (not present in the pure intent)
+    # identity injected by the client at top level AND inside place_order_params
     assert jdata["uid"] == "FZ001"
     assert jdata["actid"] == "FZ001"
-    assert jdata["ai_t"] == "LTP_B"
+    assert jdata["place_order_params"]["uid"] == "FZ001"
+    assert jdata["place_order_params"]["actid"] == "FZ001"
+    assert jdata["ai_t"] == "LTP_B_O"          # confirmed below-trigger alert type
     assert jdata["validity"] == "GTT"
     assert res["ok"] is True
     assert res["al_id"] == "25062500000010"
