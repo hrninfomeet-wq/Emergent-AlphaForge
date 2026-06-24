@@ -1,0 +1,477 @@
+import { useEffect, useState } from "react";
+import { api } from "@/lib/api";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { toast } from "sonner";
+import { Plus, X } from "lucide-react";
+
+const ID_RE = /^[a-z][a-z0-9_]*$/;
+
+// Exit fields we render as number inputs. Anything else from the catalog is
+// ignored here (v1 only supports these scalar point/percent/minute exits).
+const EXIT_FIELDS = [
+  { key: "spot_target_pts", label: "Target (spot pts)" },
+  { key: "spot_stop_pts", label: "Stop (spot pts)" },
+  { key: "time_stop_minutes", label: "Time stop (minutes)" },
+  { key: "target_pct", label: "Target %" },
+  { key: "stop_pct", label: "Stop %" },
+];
+
+const emptyParam = () => ({ name: "", type: "float", min: "", max: "", default: "" });
+const emptyCond = () => ({ left: "", op: "", right: "", label: "" });
+
+// Coerce a `right`/value field: a finite number string -> Number; else the raw
+// trimmed string (so "ema9" / "param:rsi_thr" pass through unchanged).
+function coerceValue(v) {
+  const s = String(v ?? "").trim();
+  if (s !== "" && !Number.isNaN(Number(s)) && Number.isFinite(Number(s))) return Number(s);
+  return s;
+}
+
+const inputCls =
+  "text-xs px-2 py-1.5 rounded-md bg-bg-2 border border-line text-foreground focus:outline-none focus:ring-1 focus:ring-info w-full";
+const labelCls = "text-[10px] uppercase tracking-wider text-dimmer mb-1 block";
+const sectionCls = "rounded-lg border border-line bg-bg-1 p-3 space-y-2";
+
+export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
+  const [catalog, setCatalog] = useState(null);
+  const [catalogError, setCatalogError] = useState(null);
+
+  // Identity
+  const [id, setId] = useState("");
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+
+  // Parameters / conditions
+  const [params, setParams] = useState([]);
+  const [entryCe, setEntryCe] = useState([emptyCond()]);
+  const [entryPe, setEntryPe] = useState([]);
+
+  // Gates
+  const [skipRegimes, setSkipRegimes] = useState([]);
+  const [cooldownBars, setCooldownBars] = useState("");
+
+  // Exits
+  const [exits, setExits] = useState({});
+
+  // Footer state
+  const [preview, setPreview] = useState(null); // { ok, code, errors }
+  const [busy, setBusy] = useState(false);
+  const [overwritePending, setOverwritePending] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await api.getStrategyCatalog();
+        if (!cancelled) {
+          setCatalog(res);
+          setCatalogError(null);
+        }
+      } catch (e) {
+        if (!cancelled) setCatalogError(e?.response?.data?.detail || e?.message || "Failed to load catalog");
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [open]);
+
+  const columns = catalog?.columns || [];
+  const ops = catalog?.ops || [];
+  const regimes = catalog?.regimes || [];
+  const paramTypes = catalog?.param_types || ["int", "float", "bool"];
+
+  const idValid = id === "" || ID_RE.test(id);
+
+  function buildSpec() {
+    const cleanParams = params
+      .filter((p) => String(p.name).trim() !== "")
+      .map((p) => {
+        const row = { name: String(p.name).trim(), type: p.type };
+        if (p.type === "bool") {
+          row.default = !!p.default;
+        } else {
+          if (String(p.min).trim() !== "") row.min = Number(p.min);
+          if (String(p.max).trim() !== "") row.max = Number(p.max);
+          if (String(p.default).trim() !== "") row.default = Number(p.default);
+        }
+        return row;
+      });
+
+    const cleanConds = (list) =>
+      list
+        .filter((c) => !(String(c.left).trim() === "" && String(c.op).trim() === "" && String(c.right).trim() === ""))
+        .map((c) => {
+          const cond = { left: c.left, op: c.op, right: coerceValue(c.right) };
+          if (String(c.label).trim() !== "") cond.label = String(c.label).trim();
+          return cond;
+        });
+
+    const exitsOut = {};
+    for (const f of EXIT_FIELDS) {
+      const raw = exits[f.key];
+      if (raw !== undefined && String(raw).trim() !== "") exitsOut[f.key] = Number(raw);
+    }
+
+    const spec = {
+      id: id.trim(),
+      name: name.trim(),
+      version: "1.0.0",
+      description: description.trim(),
+      params: cleanParams,
+      entry_ce: cleanConds(entryCe),
+      entry_pe: cleanConds(entryPe),
+      gate_skip_regimes: skipRegimes,
+      exits: exitsOut,
+    };
+    if (String(cooldownBars).trim() !== "") spec.cooldown_bars = Number(cooldownBars);
+    return spec;
+  }
+
+  async function onPreview() {
+    setBusy(true);
+    setOverwritePending(false);
+    try {
+      const res = await api.authorCompile(buildSpec());
+      setPreview(res);
+    } catch (e) {
+      setPreview({ ok: false, errors: [e?.response?.data?.detail || e?.message || "Compile failed"], code: null });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function doInstall(overwrite) {
+    setBusy(true);
+    try {
+      const res = await api.authorInstall(buildSpec(), overwrite);
+      toast.success("Installed " + res.strategy_id);
+      onInstalled?.();
+      onOpenChange(false);
+    } catch (e) {
+      const detail = e?.response?.data?.detail || e?.message || "unknown error";
+      toast.error("Install failed: " + detail);
+      if (/already exists/i.test(String(detail))) setOverwritePending(true);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // ---- Parameter row helpers ----
+  const addParam = () => setParams((p) => [...p, emptyParam()]);
+  const removeParam = (i) => setParams((p) => p.filter((_, idx) => idx !== i));
+  const setParamField = (i, field, value) =>
+    setParams((p) => p.map((row, idx) => (idx === i ? { ...row, [field]: value } : row)));
+
+  // ---- Condition row helpers (shared by CE/PE) ----
+  const condOps = (list, setList) => ({
+    add: () => setList([...list, emptyCond()]),
+    remove: (i) => setList(list.filter((_, idx) => idx !== i)),
+    set: (i, field, value) => setList(list.map((row, idx) => (idx === i ? { ...row, [field]: value } : row))),
+  });
+  const ceOps = condOps(entryCe, setEntryCe);
+  const peOps = condOps(entryPe, setEntryPe);
+
+  const toggleRegime = (r) =>
+    setSkipRegimes((cur) => (cur.includes(r) ? cur.filter((x) => x !== r) : [...cur, r]));
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent
+        className="max-w-3xl max-h-[85vh] overflow-y-auto bg-bg-1 border-line"
+        data-testid="authoring-wizard"
+      >
+        <DialogHeader>
+          <DialogTitle className="text-sm font-semibold uppercase tracking-wider text-dim">
+            New Strategy
+          </DialogTitle>
+        </DialogHeader>
+
+        {catalogError && (
+          <div className="text-[11px] text-rose-300 bg-rose-950/50 border border-rose-900 rounded-md p-2">
+            Could not load the authoring catalog: {catalogError}. Dropdowns may be empty.
+          </div>
+        )}
+
+        {/* a. Identity */}
+        <div className={sectionCls}>
+          <div className="text-[10px] uppercase tracking-wider text-dim">Identity</div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <div>
+              <label className={labelCls}>ID (slug)</label>
+              <input
+                value={id}
+                onChange={(e) => setId(e.target.value)}
+                placeholder="ema_rsi_demo"
+                className={inputCls}
+                data-testid="author-id"
+              />
+              {!idValid && (
+                <div className="text-[10px] text-rose-300 mt-1">
+                  must match ^[a-z][a-z0-9_]* (lowercase, start with a letter)
+                </div>
+              )}
+            </div>
+            <div>
+              <label className={labelCls}>Name</label>
+              <input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="EMA RSI Demo"
+                className={inputCls}
+                data-testid="author-name"
+              />
+            </div>
+          </div>
+          <div>
+            <label className={labelCls}>Description</label>
+            <textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              rows={2}
+              placeholder="What this strategy does…"
+              className={inputCls}
+              data-testid="author-description"
+            />
+          </div>
+        </div>
+
+        {/* b. Parameters */}
+        <div className={sectionCls}>
+          <div className="flex items-center justify-between">
+            <div className="text-[10px] uppercase tracking-wider text-dim">Parameters</div>
+            <button onClick={addParam} className="text-[11px] text-info flex items-center gap-1" data-testid="author-add-param">
+              <Plus className="w-3 h-3" /> Add parameter
+            </button>
+          </div>
+          {params.length === 0 && <div className="text-[11px] text-dimmer">No parameters.</div>}
+          {params.map((p, i) => (
+            <div key={i} className="flex items-end gap-2" data-testid={`author-param-${i}`}>
+              <div className="flex-1">
+                <label className={labelCls}>name</label>
+                <input value={p.name} onChange={(e) => setParamField(i, "name", e.target.value)} className={inputCls} />
+              </div>
+              <div className="w-24">
+                <label className={labelCls}>type</label>
+                <select value={p.type} onChange={(e) => setParamField(i, "type", e.target.value)} className={inputCls}>
+                  {paramTypes.map((t) => <option key={t} value={t}>{t}</option>)}
+                </select>
+              </div>
+              {p.type === "bool" ? (
+                <div className="flex items-center h-[30px] px-1">
+                  <label className="flex items-center gap-1 text-[11px] text-dim">
+                    <input
+                      type="checkbox"
+                      checked={!!p.default}
+                      onChange={(e) => setParamField(i, "default", e.target.checked)}
+                    />
+                    default
+                  </label>
+                </div>
+              ) : (
+                <>
+                  <div className="w-20">
+                    <label className={labelCls}>min</label>
+                    <input type="number" value={p.min} onChange={(e) => setParamField(i, "min", e.target.value)} className={inputCls} />
+                  </div>
+                  <div className="w-20">
+                    <label className={labelCls}>max</label>
+                    <input type="number" value={p.max} onChange={(e) => setParamField(i, "max", e.target.value)} className={inputCls} />
+                  </div>
+                  <div className="w-20">
+                    <label className={labelCls}>default</label>
+                    <input type="number" value={p.default} onChange={(e) => setParamField(i, "default", e.target.value)} className={inputCls} />
+                  </div>
+                </>
+              )}
+              <button onClick={() => removeParam(i)} className="text-dimmer hover:text-rose-300 h-[30px] px-1" aria-label="Remove parameter">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          ))}
+        </div>
+
+        {/* c. Entry CE */}
+        <ConditionSection
+          title="Entry — Calls (CE)"
+          testid="ce"
+          list={entryCe}
+          ops={ceOps}
+          columns={columns}
+          opsList={ops}
+        />
+
+        {/* d. Entry PE */}
+        <ConditionSection
+          title="Entry — Puts (PE)"
+          testid="pe"
+          list={entryPe}
+          ops={peOps}
+          columns={columns}
+          opsList={ops}
+        />
+
+        {/* e. Gates */}
+        <div className={sectionCls}>
+          <div className="text-[10px] uppercase tracking-wider text-dim">Gates</div>
+          <div>
+            <label className={labelCls}>Skip these regimes</label>
+            <div className="flex flex-wrap gap-1.5">
+              {regimes.length === 0 && <span className="text-[11px] text-dimmer">No regimes in catalog.</span>}
+              {regimes.map((r) => {
+                const on = skipRegimes.includes(r);
+                return (
+                  <button
+                    key={r}
+                    onClick={() => toggleRegime(r)}
+                    className={`text-[11px] px-2.5 py-1 rounded-full border ${
+                      on ? "bg-info/15 border-info/50 text-foreground" : "bg-bg-2 border-line text-dim"
+                    }`}
+                    data-testid={`author-regime-${r}`}
+                  >
+                    {r}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          <div className="w-40">
+            <label className={labelCls}>Cooldown bars</label>
+            <input
+              type="number"
+              value={cooldownBars}
+              onChange={(e) => setCooldownBars(e.target.value)}
+              className={inputCls}
+              data-testid="author-cooldown"
+            />
+          </div>
+        </div>
+
+        {/* f. Exits */}
+        <div className={sectionCls}>
+          <div className="text-[10px] uppercase tracking-wider text-dim">Exits</div>
+          <div className="text-[10px] text-dimmer">Only filled fields are sent.</div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+            {EXIT_FIELDS.map((f) => (
+              <div key={f.key}>
+                <label className={labelCls}>{f.label}</label>
+                <input
+                  type="number"
+                  value={exits[f.key] ?? ""}
+                  onChange={(e) => setExits((cur) => ({ ...cur, [f.key]: e.target.value }))}
+                  className={inputCls}
+                  data-testid={`author-exit-${f.key}`}
+                />
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Preview panel */}
+        {preview && (
+          <div className={sectionCls}>
+            <div className="text-[10px] uppercase tracking-wider text-dim">Compile preview</div>
+            {preview.ok ? (
+              <pre
+                className="text-[11px] font-mono bg-bg-0 border border-line rounded-md p-2 overflow-auto max-h-72 text-foreground"
+                data-testid="author-preview-code"
+              >
+                {preview.code}
+              </pre>
+            ) : (
+              <ul className="text-[11px] text-rose-300 list-disc pl-4 space-y-0.5" data-testid="author-preview-errors">
+                {(preview.errors || ["Unknown compile error"]).map((err, i) => (
+                  <li key={i}>{err}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+
+        {/* Footer */}
+        <div className="flex items-center justify-end gap-2 pt-1">
+          <button
+            onClick={onPreview}
+            disabled={busy}
+            className="text-xs font-medium px-3 py-1.5 rounded-md bg-bg-2 border border-line text-foreground disabled:opacity-50"
+            data-testid="author-preview-btn"
+          >
+            Preview code
+          </button>
+          {overwritePending ? (
+            <button
+              onClick={() => doInstall(true)}
+              disabled={busy}
+              className="text-xs font-semibold px-3 py-1.5 rounded-md bg-amber-500/15 border border-amber-500/50 text-foreground disabled:opacity-50"
+              data-testid="author-overwrite-btn"
+            >
+              Overwrite existing?
+            </button>
+          ) : (
+            <button
+              onClick={() => doInstall(false)}
+              disabled={busy}
+              className="text-xs font-semibold px-3 py-1.5 rounded-md bg-info/15 border border-info/50 text-foreground disabled:opacity-50"
+              data-testid="author-install-btn"
+            >
+              Install
+            </button>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function ConditionSection({ title, testid, list, ops, columns, opsList }) {
+  return (
+    <div className={sectionCls}>
+      <div className="flex items-center justify-between">
+        <div className="text-[10px] uppercase tracking-wider text-dim">{title}</div>
+        <button onClick={ops.add} className="text-[11px] text-info flex items-center gap-1" data-testid={`author-add-${testid}`}>
+          <Plus className="w-3 h-3" /> Add condition
+        </button>
+      </div>
+      {list.length === 0 && <div className="text-[11px] text-dimmer">No conditions.</div>}
+      {list.map((c, i) => (
+        <div key={i} className="flex items-end gap-2" data-testid={`author-cond-${testid}-${i}`}>
+          <div className="flex-1">
+            <label className={labelCls}>left</label>
+            <select value={c.left} onChange={(e) => ops.set(i, "left", e.target.value)} className={inputCls}>
+              <option value="">—</option>
+              {columns.map((col) => <option key={col} value={col}>{col}</option>)}
+            </select>
+          </div>
+          <div className="w-24">
+            <label className={labelCls}>op</label>
+            <select value={c.op} onChange={(e) => ops.set(i, "op", e.target.value)} className={inputCls}>
+              <option value="">—</option>
+              {opsList.map((op) => <option key={op} value={op}>{op}</option>)}
+            </select>
+          </div>
+          <div className="flex-1">
+            <label className={labelCls}>right</label>
+            <input
+              value={c.right}
+              onChange={(e) => ops.set(i, "right", e.target.value)}
+              placeholder="ema9 / 55 / param:rsi_thr"
+              className={inputCls}
+            />
+            <div className="text-[9px] text-dimmer mt-0.5">a number, a column name, or param:NAME</div>
+          </div>
+          <div className="flex-1">
+            <label className={labelCls}>label</label>
+            <input value={c.label} onChange={(e) => ops.set(i, "label", e.target.value)} className={inputCls} />
+          </div>
+          <button onClick={() => ops.remove(i)} className="text-dimmer hover:text-rose-300 h-[30px] px-1" aria-label="Remove condition">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}

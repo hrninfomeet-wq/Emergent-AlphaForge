@@ -7,9 +7,10 @@ import {
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
 import { toast } from "sonner";
+import AuthoringWizard from "@/components/strategy/AuthoringWizard";
 import {
   Library, CheckCircle2, AlertCircle, TrendingUp, MoreVertical,
-  PauseCircle, PlayCircle, Trash2, Search,
+  PauseCircle, PlayCircle, Trash2, Search, Plus,
 } from "lucide-react";
 
 const FILTERS = ["All", "Built-in", "Custom", "Failed", "Retired"];
@@ -20,6 +21,7 @@ export default function StrategyLibrary() {
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("All");
+  const [authorOpen, setAuthorOpen] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -103,6 +105,13 @@ export default function StrategyLibrary() {
       <div className="flex items-center gap-2 flex-wrap">
         <div className="text-sm text-dim">{activeCount} active · {retiredCount} retired</div>
         <div className="flex-1" />
+        <button
+          onClick={() => setAuthorOpen(true)}
+          className="text-xs font-semibold px-3 py-1.5 rounded-md bg-info/15 border border-info/50 text-foreground flex items-center gap-1"
+          data-testid="new-strategy-button"
+        >
+          <Plus className="w-3.5 h-3.5" /> New strategy
+        </button>
         <div className="relative">
           <Search className="w-3.5 h-3.5 text-dimmer absolute left-2 top-1/2 -translate-y-1/2" />
           <input
@@ -143,6 +152,8 @@ export default function StrategyLibrary() {
           </div>
         </details>
       )}
+
+      <AuthoringWizard open={authorOpen} onOpenChange={setAuthorOpen} onInstalled={load} />
     </div>
   );
 }
