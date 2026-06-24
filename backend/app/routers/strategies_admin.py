@@ -130,6 +130,10 @@ async def delete_strategy(strategy_id: str):
     blocking = [d for d in deps if d.get("status") != "ARCHIVED"]
     if blocking:
         raise HTTPException(409, f"{len(blocking)} deployment(s) still reference this strategy; archive them first")
+    # Order matters: _delete_plugin_file resolves the file path via the registry
+    # (get_registry().get), so it MUST run before unregister() clears the entry.
+    # NOTE: these 3 teardown steps are not atomic — a mid-step failure can leave
+    # file/registry/lifecycle partially removed. Acceptable for V1 (single-user, rare op).
     _delete_plugin_file(strategy_id)
     reg.unregister(strategy_id)
     await db.strategy_lifecycle.delete_one({"strategy_id": strategy_id})

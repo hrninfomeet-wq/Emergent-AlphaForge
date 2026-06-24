@@ -181,6 +181,7 @@ def test_delete_not_retired_409():
     try:
         r = tc.delete("/strategies/foo")
         assert r.status_code == 409
+        assert "retire" in r.json()["detail"].lower()
     finally:
         _stop(tc)
 
@@ -191,6 +192,7 @@ def test_delete_with_live_deployment_409():
     try:
         r = tc.delete("/strategies/foo")
         assert r.status_code == 409
+        assert "deployment" in r.json()["detail"].lower()
     finally:
         _stop(tc)
 
@@ -199,9 +201,11 @@ def test_delete_success_removes_file_and_lifecycle():
     tc, db = _delete_app("custom", retired=True,
                          deployments=[{"id": "d1", "strategy_id": "foo", "status": "ARCHIVED"}])
     try:
-        with patch.object(sa, "_delete_plugin_file", Mock(return_value=True)):
+        with patch.object(sa, "_delete_plugin_file", Mock(return_value=True)) as mock_dpf:
             r = tc.delete("/strategies/foo")
             assert r.status_code == 200 and r.json()["deleted"] is True
             assert db.strategy_lifecycle.docs == []
+            mock_dpf.assert_called_once_with("foo")
+            sa.get_registry().unregister.assert_called_once_with("foo")
     finally:
         _stop(tc)
