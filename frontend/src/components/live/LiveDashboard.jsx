@@ -13,10 +13,8 @@ import { api } from "@/lib/api";
 import { fmtINR } from "@/lib/fmt";
 
 import LiveBanner from "@/components/live/LiveBanner";
-import ModeSwitch from "@/components/live/ModeSwitch";
 import PositionMonitor from "@/components/live/PositionMonitor";
 import LiveOrderTicket from "@/components/live/LiveOrderTicket";
-import ApprovalQueue from "@/components/live/ApprovalQueue";
 import OverallSettingsPanel from "@/components/live/OverallSettingsPanel";
 import GttBook from "@/components/live/GttBook";
 import GuardPanel from "@/components/live/GuardPanel";
@@ -338,9 +336,8 @@ export default function LiveDashboard() {
   const [reconcile, setReconcile] = useState(null);
   const [authMsg, setAuthMsg] = useState(null);
 
-  // ── Execution mode + approval tokens ──────────────────────────────────────
+  // ── Execution mode (for the hero tile; the order ticket auto-arms on Place) ──
   const [mode, setMode] = useState(null); // null = loading
-  const [tokens, setTokens] = useState({}); // { [approval_id]: token }
 
   // ── Hero guard summary (GuardPanel polls its own copy; this is just the tile) ─
   const [guard, setGuard] = useState(null);
@@ -355,6 +352,9 @@ export default function LiveDashboard() {
     api.liveBrokerOrders().then(setOrders).catch(() => null);
     api.liveBrokerReconcile().then(setReconcile).catch(() => null);
     api.getGuardStatus().then(setGuard).catch(() => null);
+    // Poll mode too so the hero tile reflects the auto-arm/revert (LIVE_TEST is
+    // single-shot — armed on Place, reverted after the order).
+    api.getLiveMode().then((d) => setMode(d?.mode ?? null)).catch(() => null);
   }, []);
 
   useEffect(() => {
@@ -399,19 +399,6 @@ export default function LiveDashboard() {
       window.history.replaceState({}, "", window.location.pathname);
     }
   }, [fetchAll]);
-
-  // ── Approval-token plumbing (lifted from LiveOrderPanel) ──────────────────
-  const handleQueued = useCallback((res) => {
-    setTokens((prev) => ({ ...prev, [res.approval_id]: res.token }));
-  }, []);
-
-  const handleConsumed = useCallback((id) => {
-    setTokens((prev) => {
-      const next = { ...prev };
-      delete next[id];
-      return next;
-    });
-  }, []);
 
   // ── Derived hero values ───────────────────────────────────────────────────
   const positionRows = asPositionRows(positions);
@@ -507,40 +494,18 @@ export default function LiveDashboard() {
 
       {/* ── 3. Two-column working grid ──────────────────────────────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {/* LEFT column — execution mode · order ticket · approval queue */}
+        {/* LEFT column — the direct order ticket (one-click place; the
+            mode-switch + approval-queue steps are folded into the Place button) */}
         <div className="space-y-4">
           <SectionCard
-            title="Execution Mode"
-            badge={
-              isLiveTest ? (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-danger/60 bg-danger/15 text-danger text-[10px] font-mono font-bold uppercase tracking-wider">
-                  <Zap className="w-3 h-3" />
-                  LIVE TEST
-                </span>
-              ) : (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-line bg-bg-3 text-dimmer text-[10px] font-mono uppercase tracking-wider">
-                  <Shield className="w-3 h-3" />
-                  {mode ?? "loading…"}
-                </span>
-              )
-            }
-          >
-            <ModeSwitch mode={mode} onModeChange={(m) => setMode(m)} />
-          </SectionCard>
-
-          <SectionCard
-            title="Order Ticket — Approval Gated"
+            title="Order Ticket"
             badge={
               <span className="text-[10px] font-mono text-danger px-2 py-0.5 rounded-full border border-danger/40 bg-danger/10 uppercase tracking-wider font-bold">
-                REAL MONEY
+                REAL MONEY · 1-CLICK
               </span>
             }
           >
-            <LiveOrderTicket mode={mode} disabled={false} onQueued={handleQueued} />
-          </SectionCard>
-
-          <SectionCard title="Approval Queue">
-            <ApprovalQueue tokens={tokens} mode={mode} onConsumed={handleConsumed} />
+            <LiveOrderTicket mode={mode} disabled={false} />
           </SectionCard>
         </div>
 
