@@ -76,3 +76,4 @@ async def ensure_indexes() -> None:
     await db.presets.create_index([("name", 1)], unique=True)
     await db.pretrade_profiles.create_index([("name", 1)], unique=True)
     await db.optimization_jobs.create_index([("created_at", -1)])
+    await db.strategy_lifecycle.create_index("strategy_id", unique=True)
