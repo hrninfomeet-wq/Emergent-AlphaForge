@@ -14,7 +14,7 @@ from typing import Any, Dict, List
 from fastapi import APIRouter, HTTPException
 
 from app.strategies.base import get_registry
-from app.schemas import StrategyAuthorReq
+from app.schemas import StrategyAuthorReq, StrategyFromSourceReq
 
 api = APIRouter()
 log = logging.getLogger(__name__)
@@ -239,3 +239,24 @@ async def author_install(req: StrategyAuthorReq):
         upsert=True,
     )
     return {"strategy_id": spec.id, "installed": True, "code_sha": code_sha}
+
+
+# ---------------------------------------------------------------------------
+# AI spec-mapper — text -> StrategySpec + fidelity (Phase 2B)
+# ---------------------------------------------------------------------------
+
+@api.post("/strategies/author/from-source")
+async def author_from_source(req: StrategyFromSourceReq):
+    """Map pasted strategy text to a constrained StrategySpec + a fidelity readback
+    via Sonnet. The grounding catalog + validate_spec keep the AI honest (it can
+    only use real columns; bad specs come back as `errors`)."""
+    from app.ai import llm_client
+    from app.ai.strategy_author import map_source_to_spec
+    if not llm_client.is_configured():
+        raise HTTPException(503, "AI authoring is not configured — set ANTHROPIC_API_KEY in backend/.env")
+    if not (req.source or "").strip():
+        raise HTTPException(400, "source text is empty")
+    try:
+        return map_source_to_spec(req.source)
+    except RuntimeError as e:
+        raise HTTPException(502, f"AI mapping failed: {e}")

@@ -413,3 +413,7 @@ class VixIngestReq(BaseModel):
 class StrategyAuthorReq(BaseModel):
     spec: Dict[str, Any]          # raw StrategySpec JSON (validated by the compiler)
     overwrite: bool = False
+
+
+class StrategyFromSourceReq(BaseModel):
+    source: str   # pasted text/transcript (URL ingestion is a later slice)
