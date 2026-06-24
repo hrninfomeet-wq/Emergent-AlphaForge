@@ -209,3 +209,25 @@ def test_delete_success_removes_file_and_lifecycle():
             sa.get_registry().unregister.assert_called_once_with("foo")
     finally:
         _stop(tc)
+
+
+def test_reload_returns_count():
+    tc = _make_app()
+    try:
+        with patch.object(sa, "get_registry") as gr:
+            gr.return_value.reload.return_value = None
+            gr.return_value.list_all.return_value = [{"id": "a"}, {"id": "b"}]
+            r = tc.post("/strategies/reload")
+            assert r.status_code == 200 and r.json()["count"] == 2
+            gr.return_value.reload.assert_called_once()
+    finally:
+        _stop(tc)
+
+
+def test_is_retired_helper():
+    import asyncio
+    db = FakeDB()
+    db.strategy_lifecycle.docs.append({"strategy_id": "foo", "retired": True})
+    with patch.object(sa, "_db", lambda: db):
+        assert asyncio.run(sa.is_retired("foo")) is True
+        assert asyncio.run(sa.is_retired("bar")) is False

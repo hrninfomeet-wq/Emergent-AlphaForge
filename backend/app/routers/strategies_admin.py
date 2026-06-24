@@ -138,3 +138,15 @@ async def delete_strategy(strategy_id: str):
     reg.unregister(strategy_id)
     await db.strategy_lifecycle.delete_one({"strategy_id": strategy_id})
     return {"strategy_id": strategy_id, "deleted": True}
+
+
+@api.post("/strategies/reload")
+async def reload_strategies():
+    reg = get_registry()
+    reg.reload()
+    return {"count": len(reg.list_all())}
+
+
+async def is_retired(strategy_id: str) -> bool:
+    life = await _db().strategy_lifecycle.find_one({"strategy_id": strategy_id}, {"_id": 0})
+    return bool(life and life.get("retired"))
