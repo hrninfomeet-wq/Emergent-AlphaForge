@@ -89,6 +89,8 @@ from app.live.overall_settings_store import (
     default_store as _default_overall_store,
 )
 from app.live import gtt as _gtt_mod
+from app.live.live_position_guard import get_registry as _get_live_registry
+from app.live.live_sl_monitor import build_monitor_state
 
 log = logging.getLogger(__name__)
 
@@ -288,6 +290,13 @@ def _utcnow_iso() -> str:
 #   2. The session is recorded without any buy.
 # ---------------------------------------------------------------------------
 
+#: Default software-guard stop (% premium below entry) when the order carries no
+#: explicit stop. A DEEP disaster stop — manual Square + the 10-min cap are the
+#: primary near-term protection; the software guard is the catastrophe net that the
+#: resting broker SL could never be (it always margin-rejected for an option buyer).
+_GUARD_DEFAULT_STOP_PCT = 50.0
+
+
 def _make_arm(
     client: Any,
     *,
@@ -296,67 +305,66 @@ def _make_arm(
     session_store: SessionStore,
     uid: str,
     actid: str,
+    levels: Optional[Dict[str, Any]] = None,
 ) -> Any:
     """Return an async arm(intent, norenordno) callable for use by the executor.
 
-    The arm callable:
-    1. Builds a protective SL backstop via build_sl_backstop_intent(stop_trigger=ref_ltp*0.7).
-       If the backstop intent is not None it calls client.place_order(sl_intent)
-       (EXIT-ONLY: sell-to-close SL on the long). Records sl_norenordno if placed.
-       A failed SL placement is best-effort: logged but does NOT abort the arm.
+    The arm callable (software-monitored exits — no resting broker SL):
+    1. REGISTERS the position with the live software guard (build_monitor_state from
+       the order's stop/target/trailing, or a deep default stop). The guard watches
+       the live premium and squares through the margin-safe cancel-all-then-close —
+       there is NO resting SELL SL (which always margin-rejected for an option-buyer
+       account: a resting sell-stop needs full naked-short SPAN margin).
     2. Computes the deadline (fill_time = now; deadline = now + 600s).
     3. Records the session doc via session_store.arm(...). A failure here RAISES
        (so the executor's _abort_protect path runs).
+    4. Schedules the 10-minute auto-square (the ultimate backstop).
 
-    Rationale for raising on session record failure (not on SL place failure):
-    - The SL is supplementary; the time-square is the primary protection.
-    - The session record is mandatory: without it, the server timer cannot fire
-      and the deadline is lost. A failure here means protection is broken.
+    Registration is best-effort (a registry failure is logged, never aborts the arm
+    — the time-square cap still protects). The session record is mandatory.
     """
-    from app.live.idempotency import new_client_order_id
+    levels = levels or {}
 
     async def _arm(intent: Any, norenordno: str) -> None:
         now = _utcnow_iso()
         dl = deadline_iso(now)
 
-        # --- SL backstop (best-effort, exit-only sell-to-close) ---
-        stop_trigger = round(ref_ltp * 0.7, 2)
-        sl_cid = new_client_order_id()
-        sl_intent = build_sl_backstop_intent(
-            exch=intent.exch,
-            tsym=intent.tsym,
-            qty=intent.qty,
-            stop_trigger=stop_trigger,
-            client_order_id=sl_cid,
-        )
-        sl_norenordno: Optional[str] = None
-        if sl_intent is not None:
-            try:
-                sl_result = await client.place_order(sl_intent)
-                if sl_result.ok:
-                    sl_norenordno = sl_result.norenordno
-                else:
-                    log.warning(
-                        "arm: SL backstop rejected: %s (continuing without SL)",
-                        sl_result.rejreason,
-                    )
-            except Exception as exc:
-                log.warning("arm: SL backstop place_order raised: %s (continuing without SL)", exc)
-        else:
-            log.warning(
-                "arm: SL backstop not built (stop_trigger=%.2f <= 0.05 or invalid)",
-                stop_trigger,
+        # --- Register with the software guard (replaces the doomed resting SL) ---
+        try:
+            stop_pct = levels.get("stop_pct")
+            if stop_pct is None and levels.get("stop_pts") is None:
+                stop_pct = _GUARD_DEFAULT_STOP_PCT
+            state = build_monitor_state(
+                float(ref_ltp),
+                stop_pct=stop_pct,
+                stop_pts=levels.get("stop_pts"),
+                target_pct=levels.get("target_pct"),
+                target_pts=levels.get("target_pts"),
+                trail=levels.get("trail"),
             )
+            _get_live_registry().register(
+                key=norenordno,
+                tsym=intent.tsym,
+                exch=intent.exch,
+                qty=intent.qty,
+                prd=intent.prd,
+                entry_price=float(ref_ltp),
+                state=state,
+            )
+            log.info("arm: registered %s with software guard (stop_pct=%s)", intent.tsym, stop_pct)
+        except Exception as exc:
+            log.warning("arm: software-guard registration failed: %s (time-cap still protects)", exc)
 
-        # --- Record session (hard failure raises — executor will abort-protect) ---
+        # --- Record session (hard failure raises — executor will abort-protect).
+        # sl_norenordno is None: no resting broker SL is placed anymore. ---
         await session_store.arm(
             entry_norenordno=norenordno,
             deadline=dl,
-            sl_norenordno=sl_norenordno,
+            sl_norenordno=None,
             now_iso=now,
         )
 
-        # --- Start background server-timer task ---
+        # --- Start background server-timer task (the 10-min backstop) ---
         _schedule_auto_square(
             client=client,
             deadline=dl,
@@ -1209,6 +1217,38 @@ async def cancel_gtt(al_id: str):
 
 
 # ---------------------------------------------------------------------------
+# Software exit-guard status — what the LivePositionGuard is watching + whether
+# it's armed (offline-first: dry-run logs intended squares until LIVE_GUARD_ARMED=1).
+# ---------------------------------------------------------------------------
+
+@api.get("/live-broker/guard-status")
+async def guard_status():
+    """Report the software exit guard's state: armed/dry-run + each guarded
+    position's entry, stop/target levels, peak, and fill status."""
+    import os
+    reg = _get_live_registry()
+    armed = os.environ.get("LIVE_GUARD_ARMED", "0").strip().lower() in ("1", "true", "yes", "on")
+    guarded = []
+    for e in reg.snapshot():
+        st = e.get("state") or {}
+        guarded.append({
+            "tsym": e.get("tsym"),
+            "qty": e.get("qty"),
+            "entry_price": e.get("entry_price"),
+            "stop_level": st.get("stop_level"),
+            "target_level": st.get("target_level"),
+            "peak": st.get("peak"),
+            "seen_filled": e.get("seen_filled"),
+        })
+    return {
+        "armed": armed,
+        "mode": "ARMED — transmits real squares" if armed else "dry-run — logs intended squares, no transmit",
+        "count": len(reg),
+        "guarded": guarded,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Safety config routes (L2.2)
 # ---------------------------------------------------------------------------
 
@@ -1392,6 +1432,7 @@ async def live_order_place(body: _PlaceBody):
         session_store=ss,
         uid=uid,
         actid=actid,
+        levels=body.levels,  # software-guard stop/target/trailing (falls back to a deep default)
     )
 
     # _l3_engine() always returns a real engine or _ClosedEngine (fail-closed).
