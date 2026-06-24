@@ -1146,27 +1146,29 @@ async def put_overall_settings(body: _OverallSettingsBody, scope: str = Query("o
 
 
 # ---------------------------------------------------------------------------
-# GTT / OCO disaster-backstop (Phase 3, builder-backed). NRML-only PC-died net.
-# NOTE: Flattrade's GTT/OCO REST endpoint is UNCONFIRMED (spec §11 open item) —
-# the pure intent builders (gtt.py) are ready + tested, but the transport is not
-# yet wired. These routes validate/build and report status honestly; the place
-# path is gated until the endpoint is confirmed with one live test.
+# GTT / OCO disaster-backstop (Phase 3). NRML-only PC-died net.
+#
+# Schema CONFIRMED against the Flattrade PiConnect PDF (ch.1.13–1.20, 2026-06-25)
+# and wired through FlattradeClient.{gtt_book,place_gtt,place_oco,cancel_gtt,
+# cancel_oco}. Two shapes:
+#   kind="oco"  → bracket (SL leg + TP leg); ai_t is the DOCUMENTED "LMT_BOS_O".
+#   kind="gtt"  → single leg; ai_t (direction) is REQUIRED from the caller — the
+#                 PDF does not document the LTP_A/LTP_B direction suffix, so the
+#                 UI must choose it explicitly and confirm by reading one back.
+# place is gated behind an explicit transmit=true (preview otherwise); cancel +
+# read are always live (they can only remove a resting order / read the book).
 # ---------------------------------------------------------------------------
 
 @api.get("/live-broker/gtt")
 async def list_gtt():
-    """List the broker GTT/OCO book (best-effort). Returns an empty list until
-    the Flattrade GTT read endpoint is confirmed + wired."""
+    """List the broker GTT/OCO book (GetPendingGTTOrder). Best-effort: returns an
+    empty list + a human note if not connected."""
     gtts: List[Dict[str, Any]] = []
     note = None
     try:
         client = await _get_client()
-        getter = getattr(client, "gtt_book", None)
-        if callable(getter):
-            raw = await getter()
-            gtts = raw if isinstance(raw, list) else (raw.get("gtt", []) if isinstance(raw, dict) else [])
-        else:
-            note = "GTT read not yet wired to Flattrade (pending endpoint confirmation)"
+        raw = await client.gtt_book()
+        gtts = raw if isinstance(raw, list) else []
     except HTTPException:
         note = "not connected"
     except Exception as exc:
@@ -1175,45 +1177,93 @@ async def list_gtt():
 
 
 class _GttBody(BaseModel):
+    kind: str = "oco"                       # "oco" (SL+TP bracket) | "gtt" (single)
     exch: str
     tsym: str
     qty: int
-    trantype: str = "S"
-    trigger_price: float
-    limit_price: float
-    prd: str = "M"            # NRML only
+    prd: str = "M"                          # NRML only
     remarks: Optional[str] = None
+    transmit: bool = False                  # preview unless explicitly transmitted
+    # --- OCO bracket fields ---
+    sl_trigger: Optional[float] = None
+    sl_limit: Optional[float] = None
+    tp_trigger: Optional[float] = None
+    tp_limit: Optional[float] = None
+    # --- single-GTT fields ---
+    trantype: str = "S"
+    ai_t: Optional[str] = None              # REQUIRED for kind="gtt" (direction)
+    d_trigger: Optional[float] = None
+    prc_limit: Optional[float] = None
+
+
+def _build_gtt_or_oco(body: "_GttBody") -> tuple[str, Optional[Dict[str, Any]]]:
+    """Return (kind, intent) from a _GttBody, building via the right gtt.py builder.
+    intent is None when the builder rejects (NRML/tick/qty/ai_t validation)."""
+    kind = (body.kind or "oco").strip().lower()
+    if kind == "oco":
+        return kind, _gtt_mod.build_oco_intent(
+            exch=body.exch, tsym=body.tsym, qty=body.qty, prd=body.prd,
+            sl_trigger=body.sl_trigger, sl_limit=body.sl_limit,
+            tp_trigger=body.tp_trigger, tp_limit=body.tp_limit,
+            trantype=body.trantype, remarks=body.remarks,
+        )
+    if kind == "gtt":
+        if not (isinstance(body.ai_t, str) and body.ai_t.strip()):
+            return kind, None
+        return kind, _gtt_mod.build_gtt_intent(
+            exch=body.exch, tsym=body.tsym, qty=body.qty, trantype=body.trantype,
+            ai_t=body.ai_t, d_trigger=body.d_trigger, prc_limit=body.prc_limit,
+            prd=body.prd, remarks=body.remarks,
+        )
+    return kind, None
 
 
 @api.post("/live-broker/gtt")
 async def place_gtt(body: _GttBody):
-    """Build a GTT intent (NRML-only, tick-rounded) and — once the endpoint is
-    confirmed — transmit it. Today it returns the built intent + a not-wired flag
-    so the UI can preview without a real transmit."""
-    intent = _gtt_mod.build_gtt_intent(
-        exch=body.exch, tsym=body.tsym, qty=body.qty, trantype=body.trantype,
-        trigger_price=body.trigger_price, limit_price=body.limit_price,
-        prd=body.prd, remarks=body.remarks,
-    )
+    """Build (and, when transmit=true, transmit) a GTT/OCO backstop.
+
+    NRML-only, tick-rounded, fail-closed. With transmit=false (default) it
+    returns the built intent for preview WITHOUT any broker call. With
+    transmit=true it sends it via the confirmed PiConnect endpoint and returns
+    the broker's alert id."""
+    kind, intent = _build_gtt_or_oco(body)
+    if kind not in ("oco", "gtt"):
+        raise HTTPException(400, f"unknown GTT kind {kind!r} (use 'oco' or 'gtt')")
     if intent is None:
-        raise HTTPException(400, "invalid GTT (NRML/prd=M only, tick-valid prices, qty>0)")
-    return {
-        "placed": False,
-        "intent": intent,
-        "reason": "GTT transport not yet wired — Flattrade OCO endpoint pending "
-                  "confirmation (spec §11). Intent built + validated.",
-    }
+        detail = ("invalid GTT (NRML/prd=M only, tick-valid prices, qty>0"
+                  + (", ai_t required for single GTT" if kind == "gtt" else "") + ")")
+        raise HTTPException(400, detail)
+
+    if not body.transmit:
+        return {
+            "placed": False,
+            "preview": True,
+            "kind": kind,
+            "intent": intent,
+            "note": "preview only — set transmit=true to send this to the broker",
+        }
+
+    # Real transmit (explicit). NRML resting backstop blocks no margin.
+    try:
+        client = await _get_client()
+    except HTTPException:
+        raise
+    res = await (client.place_oco(intent) if kind == "oco" else client.place_gtt(intent))
+    return {"placed": bool(res.get("ok")), "kind": kind, "intent": intent, "result": res}
 
 
 @api.delete("/live-broker/gtt/{al_id}")
-async def cancel_gtt(al_id: str):
-    """Cancel a GTT/OCO by alert id (best-effort; not-wired until confirmed)."""
+async def cancel_gtt(al_id: str, kind: str = "gtt"):
+    """Cancel a GTT/OCO by alert id (live — only removes a resting order).
+    kind query param routes to CancelGTTOrder ('gtt') or CancelOCOOrder ('oco')."""
     try:
-        payload = _gtt_mod.cancel_gtt_jdata(al_id)
+        _gtt_mod.cancel_gtt_jdata(al_id)   # validate id fail-closed before any call
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
-    return {"canceled": False, "payload": payload,
-            "reason": "GTT cancel transport not yet wired (pending endpoint confirmation)"}
+    client = await _get_client()
+    res = await (client.cancel_oco(al_id) if kind.strip().lower() == "oco"
+                 else client.cancel_gtt(al_id))
+    return {"canceled": bool(res.get("ok")), "kind": kind, "result": res}
 
 
 # ---------------------------------------------------------------------------

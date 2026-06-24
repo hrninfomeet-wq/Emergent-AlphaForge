@@ -369,47 +369,97 @@ class TestOverallSettings:
 
 
 # ---------------------------------------------------------------------------
-# GTT / OCO backstop routes (Phase 3, builder-backed, transport not-yet-wired)
+# GTT / OCO backstop routes (Phase 3, wired to the confirmed PiConnect schema)
 # ---------------------------------------------------------------------------
 class TestGtt:
-    def test_list_gtt_empty_when_not_wired(self):
+    def test_list_gtt_reads_book(self):
         tc = _make_app()
         try:
+            # MockNoren.gtt_book() defaults to [] → empty book + null note
             d = tc.get("/live-broker/gtt").json()
             assert d["gtt"] == []
             assert "note" in d
         finally:
             _stop(tc)
 
-    def test_place_gtt_builds_nrml_intent(self):
+    def test_place_oco_preview_does_not_transmit(self):
         tc = _make_app()
         try:
-            body = {"exch": "NFO", "tsym": "NIFTY26JUN26C25000", "qty": 65,
-                    "trantype": "S", "trigger_price": 98.02, "limit_price": 97.93, "prd": "M"}
+            body = {"kind": "oco", "exch": "NFO", "tsym": "NIFTY26JUN26C25000",
+                    "qty": 65, "prd": "M", "sl_trigger": 98.02, "sl_limit": 97.93,
+                    "tp_trigger": 150.02, "tp_limit": 149.97}
             d = tc.post("/live-broker/gtt", json=body).json()
             assert d["placed"] is False
-            assert d["intent"] is not None
-            # tick-rounded
-            prc = float(d["intent"]["limit_price"])
-            assert round(round(prc / 0.05) * 0.05, 2) == round(prc, 2)
+            assert d["preview"] is True
+            assert d["kind"] == "oco"
+            # documented OCO alert type + two-leg structure, tick-rounded
+            assert d["intent"]["ai_t"] == "LMT_BOS_O"
+            assert float(d["intent"]["place_order_params"]["prc"]) == 97.95
+            assert float(d["intent"]["place_order_params_leg2"]["prc"]) == 149.95
+        finally:
+            _stop(tc)
+
+    def test_place_oco_transmit_returns_alert_id(self):
+        tc = _make_app()
+        try:
+            body = {"kind": "oco", "exch": "NFO", "tsym": "NIFTY26JUN26C25000",
+                    "qty": 65, "prd": "M", "sl_trigger": 98.0, "sl_limit": 97.9,
+                    "tp_trigger": 150.0, "tp_limit": 149.9, "transmit": True}
+            d = tc.post("/live-broker/gtt", json=body).json()
+            assert d["placed"] is True
+            assert d["result"]["al_id"].startswith("MOCKAL")
+        finally:
+            _stop(tc)
+
+    def test_place_single_gtt_requires_ai_t(self):
+        tc = _make_app()
+        try:
+            # single GTT with no ai_t → 400 (direction must be explicit)
+            body = {"kind": "gtt", "exch": "NFO", "tsym": "X", "qty": 65,
+                    "trantype": "S", "d_trigger": 98.0, "prc_limit": 97.9, "prd": "M"}
+            r = tc.post("/live-broker/gtt", json=body)
+            assert r.status_code == 400
+            # with ai_t it previews fine
+            body["ai_t"] = "LTP_B"
+            d = tc.post("/live-broker/gtt", json=body).json()
+            assert d["intent"]["ai_t"] == "LTP_B"
+            assert d["intent"]["validity"] == "GTT"
         finally:
             _stop(tc)
 
     def test_place_gtt_mis_rejected(self):
         tc = _make_app()
         try:
-            body = {"exch": "NFO", "tsym": "X", "qty": 65, "trantype": "S",
-                    "trigger_price": 98.0, "limit_price": 97.9, "prd": "I"}  # MIS
+            body = {"kind": "oco", "exch": "NFO", "tsym": "X", "qty": 65, "prd": "I",
+                    "sl_trigger": 98.0, "sl_limit": 97.9, "tp_trigger": 150.0,
+                    "tp_limit": 149.9}  # MIS → rejected
             r = tc.post("/live-broker/gtt", json=body)
             assert r.status_code == 400
         finally:
             _stop(tc)
 
-    def test_cancel_gtt(self):
+    def test_cancel_gtt_transmits(self):
         tc = _make_app()
         try:
             d = tc.delete("/live-broker/gtt/AL123").json()
-            assert d["canceled"] is False
-            assert d["payload"]["al_id"] == "AL123"
+            assert d["canceled"] is True
+            assert d["result"]["al_id"] == "AL123"
+        finally:
+            _stop(tc)
+
+    def test_cancel_oco_routes_to_oco(self):
+        tc = _make_app()
+        try:
+            d = tc.delete("/live-broker/gtt/AL999?kind=oco").json()
+            assert d["canceled"] is True
+            assert d["kind"] == "oco"
+        finally:
+            _stop(tc)
+
+    def test_cancel_gtt_rejects_blank_id(self):
+        tc = _make_app()
+        try:
+            r = tc.delete("/live-broker/gtt/%20")  # blank → 400
+            assert r.status_code == 400
         finally:
             _stop(tc)

@@ -255,6 +255,89 @@ class FlattradeClient:
         )
 
     # ------------------------------------------------------------------
+    # GTT / OCO (the NRML PC-died disaster backstop)
+    #
+    # Schema confirmed against the PiConnect PDF (ch.1.13–1.20). The pure jdata
+    # is built by app.live.gtt; this layer injects identity (uid/actid) and
+    # parses the broker's response quirks (list-or-dict, Al_id/al_id casing,
+    # "Oi created"/"OI created" success stats rather than "Ok").
+    # ------------------------------------------------------------------
+
+    async def place_gtt(self, intent: Dict[str, Any]) -> Dict[str, Any]:
+        """Transmit a single-leg GTT (built by gtt.build_gtt_intent).
+
+        Injects uid/actid, POSTs PlaceGTTOrder, returns the parsed alert result
+        {ok, al_id, stat, emsg, raw}.
+        """
+        jdata = {**intent, "uid": self._uid, "actid": self._actid}
+        return await self._post_alert("PlaceGTTOrder", jdata)
+
+    async def place_oco(self, intent: Dict[str, Any]) -> Dict[str, Any]:
+        """Transmit a two-leg OCO (built by gtt.build_oco_intent).
+
+        Injects uid at top level AND uid/actid into BOTH leg param blocks. Works
+        on a deep-enough copy so the caller's intent is not mutated. POSTs
+        PlaceOCOOrder, returns the parsed alert result.
+        """
+        jdata: Dict[str, Any] = {**intent, "uid": self._uid}
+        for leg_key in ("place_order_params", "place_order_params_leg2"):
+            leg = jdata.get(leg_key)
+            if isinstance(leg, dict):
+                jdata[leg_key] = {**leg, "uid": self._uid, "actid": self._actid}
+        return await self._post_alert("PlaceOCOOrder", jdata)
+
+    async def cancel_gtt(self, al_id: Any) -> Dict[str, Any]:
+        """Cancel a single-leg GTT by alert id (POST CancelGTTOrder)."""
+        from app.live.gtt import cancel_gtt_jdata  # local import to avoid cycle
+        jdata = {"uid": self._uid, **cancel_gtt_jdata(al_id)}
+        return await self._post_alert("CancelGTTOrder", jdata)
+
+    async def cancel_oco(self, al_id: Any) -> Dict[str, Any]:
+        """Cancel a two-leg OCO by alert id (POST CancelOCOOrder)."""
+        from app.live.gtt import cancel_gtt_jdata  # local import to avoid cycle
+        jdata = {"uid": self._uid, **cancel_gtt_jdata(al_id)}
+        return await self._post_alert("CancelOCOOrder", jdata)
+
+    async def gtt_book(self) -> List[Dict[str, Any]]:
+        """Return the pending GTT/OCO book (POST GetPendingGTTOrder).
+
+        Returns a list of GTT rows on success, or an empty list on stat != Ok /
+        any non-list payload.
+        """
+        data = await self._post("GetPendingGTTOrder", {"uid": self._uid})
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict) and data.get("stat") == "Ok":
+            return [data]
+        return []
+
+    async def enabled_gtts(self) -> List[str]:
+        """Return the alert types this account supports (POST GetEnabledGTTs)."""
+        data = await self._post("GetEnabledGTTs", {"uid": self._uid})
+        if isinstance(data, dict) and data.get("stat") == "Ok":
+            return [
+                row.get("ai_t")
+                for row in data.get("ai_ts", [])
+                if isinstance(row, dict) and row.get("ai_t")
+            ]
+        return []
+
+    async def _post_alert(self, route: str, jdata: Dict[str, Any]) -> Dict[str, Any]:
+        """POST a GTT/OCO place/cancel and parse the alert response.
+
+        Handles the documented response quirks: success may be a single-element
+        LIST or a DICT; the alert id is keyed ``al_id`` OR ``Al_id``; the success
+        ``stat`` is "Oi created"/"OI created"/"Oi delete success" (NOT "Ok").
+        Returns {ok, al_id, stat, emsg, raw}. ``ok`` requires a non-empty al_id
+        and a stat that is not "Not_Ok".
+        """
+        try:
+            data = await self._post(route, jdata)
+        except RuntimeError as exc:
+            return {"ok": False, "al_id": None, "stat": None, "emsg": str(exc), "raw": {}}
+        return _parse_alert_response(data)
+
+    # ------------------------------------------------------------------
     # WebSocket: order management stream
     # ------------------------------------------------------------------
 
@@ -296,6 +379,33 @@ class FlattradeClient:
                     log.warning(f"Flattrade WS: non-JSON message: {raw[:100]}")
                     continue
                 _dispatch(msg, on_om=on_om, on_tick=on_tick)
+
+
+# ---------------------------------------------------------------------------
+# Pure GTT/OCO response parser — host-testable, no network
+# ---------------------------------------------------------------------------
+
+def _parse_alert_response(data: Any) -> Dict[str, Any]:
+    """Normalize a Noren GTT/OCO place/cancel response to a flat result dict.
+
+    Accepts the documented shapes:
+      success LIST: [{"stat":"Oi created","Al_id":"…"}]
+      success DICT: {"stat":"OI created","al_id":"…"}
+      failure DICT: {"stat":"Not_Ok","emsg":"…"}
+
+    Returns {ok, al_id, stat, emsg, raw}. ``ok`` is True iff a non-empty alert id
+    is present AND stat is not "Not_Ok".
+    """
+    rec = data[0] if isinstance(data, list) and data else data
+    if not isinstance(rec, dict):
+        return {"ok": False, "al_id": None, "stat": None,
+                "emsg": "unexpected GTT response", "raw": data}
+    stat = rec.get("stat") or rec.get("Stat")
+    raw_alid = rec.get("al_id") or rec.get("Al_id") or rec.get("AL_id")
+    al_id = str(raw_alid).strip() if raw_alid not in (None, "") else None
+    emsg = rec.get("emsg")
+    ok = al_id is not None and str(stat).strip().lower() != "not_ok"
+    return {"ok": ok, "al_id": al_id, "stat": stat, "emsg": emsg, "raw": data}
 
 
 # ---------------------------------------------------------------------------

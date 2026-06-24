@@ -21,23 +21,35 @@ auto-squared by the exchange at close, so a resting GTT for it is both
 unnecessary and dangerous (it could fire next session against a flat book).
 Every builder below FAILS CLOSED (returns None) for any prd != "M".
 
-PURE BUILDERS — NO WIRE CALL
-----------------------------
-Flattrade's exact GTT/OCO REST endpoint is UNCONFIRMED at build time: the public
-PiConnect docs describe a direct ``/PlaceGTTOrder`` / ``/PlaceOCOOrder`` family,
-but the pip-installed Noren/PiConnect wheel currently in this repo lacks GTT
-routes.  So this module builds ONLY the pure ``jdata`` dicts and documents the
-endpoint as a TODO.  It deliberately does NOT hardcode a transport.
+SCHEMA SOURCE — Flattrade PiConnect API docs (verified 2026-06-25)
+------------------------------------------------------------------
+The exact request schema is now CONFIRMED against the official PDF documentation
+(``docs/Resources/pi _ API Documentation ...pdf``, chapters 1.13–1.20):
 
-TODO(endpoint): once confirmed against the live Flattrade/PiConnect account,
-wire these jdata dicts to the real GTT endpoints.  Candidates per PiConnect docs:
-    POST {host}/PlaceGTTOrder   (single trigger)
-    POST {host}/PlaceOCOOrder   (two-leg OCO)
-    POST {host}/CancelGTTOrder  (cancel by al_id)
-The field names below (ai_t / validity / al_id) mirror the documented Noren GTT
-schema so the wire mapping is a thin rename, not a redesign, when confirmed.
+  POST {host}/PlaceGTTOrder    single-leg GTT
+      jdata: uid, actid, exch, tsym, ai_t, validity(GTT), d(trigger vs LTP),
+             trantype(B/S), prctyp(LMT), prd(C/M/H), ret, qty, prc, dscqty, remarks
+  POST {host}/PlaceOCOOrder    two-leg OCO (one-cancels-other)
+      jdata: uid, ai_t(LMT_BOS_O), validity(GTT), exch, tsym, remarks,
+             oivariable[{d,var_name:x},{d,var_name:y}],
+             place_order_params(leg1), place_order_params_leg2(leg2)
+  POST {host}/CancelGTTOrder / CancelOCOOrder    {uid, al_id}
+  POST {host}/GetPendingGTTOrder                 {uid} -> list (the GTT book)
 
-All builders are PURE and STATELESS: no time.time(), no I/O, no network.
+``ai_t`` DIRECTION — confirm-by-readback (real-money critical)
+-------------------------------------------------------------
+The docs enumerate the *base* alert types (LTP / ATP / Perc. Change via
+GetEnabledAlertTypes) and show ``LMT_BOS_O`` verbatim for OCO, but they do NOT
+document the direction suffix (``LTP_A`` "above" vs ``LTP_B`` "below") nor the
+x/y -> leg pairing.  Therefore:
+
+  * OCO ``ai_t`` defaults to the DOCUMENTED literal ``LMT_BOS_O`` (not a guess).
+  * Single-GTT ``ai_t`` is a REQUIRED caller argument — no guessed default. Use
+    the LTP_ABOVE / LTP_BELOW constants and CONFIRM the mapping by reading one
+    real GTT back via GetPendingGTTOrder before depending on it.
+
+All builders are PURE and STATELESS: no time.time(), no I/O, no network. The
+client (FlattradeClient) injects identity (uid/actid) at transmit time.
 """
 from __future__ import annotations
 
@@ -56,9 +68,19 @@ _NRML_PRD = "M"
 # Valid trade directions (Noren trantype).
 _TRANTYPES = ("B", "S")
 
-# Single-trigger alert type for a resting limit-on-trigger order.
-# (Noren GTT alert-type taxonomy: *_BOS_O = "Buy/Sell Order on trigger".)
-_AI_T_SINGLE = "LMT_BOS_O"
+# Retention types accepted by the GTT/OCO order params (docs: DAY / EOS / IOC).
+_RET_TYPES = ("DAY", "EOS", "IOC")
+
+# DOCUMENTED OCO alert type (PiConnect docs ch.1.18 PlaceOCOOrder example,
+# verbatim: "ai_t": "LMT_BOS_O").  One bracket pair; first leg to trigger
+# cancels the other.
+AI_T_OCO = "LMT_BOS_O"
+
+# Single-GTT / alert base type LTP with the (inferred, confirm-by-readback)
+# direction suffix.  Exposed so callers choose direction EXPLICITLY rather than
+# the builder guessing it.
+LTP_ABOVE = "LTP_A"   # fire when LTP rises to/above d  (e.g. a take-profit)
+LTP_BELOW = "LTP_B"   # fire when LTP falls to/below d  (e.g. a stop-loss)
 
 
 # ---------------------------------------------------------------------------
@@ -86,28 +108,29 @@ def _nrml_ok(prd: Any) -> bool:
 
 
 def _str_field_ok(x: Any) -> bool:
-    """A required string field (exch/tsym): must be a non-empty string."""
+    """A required string field (exch/tsym/ai_t): must be a non-empty string."""
     return isinstance(x, str) and x.strip() != ""
 
 
-def _round_tick_pos(price: Any, tick: float) -> Optional[float]:
-    """Tick-round a price, failing CLOSED.
+def _fmt_price(price: Any, tick: float) -> Optional[str]:
+    """Tick-round a price and format it as a Noren jdata string, failing CLOSED.
 
-    Returns the nearest-tick-rounded price (a valid tick multiple), or None if
-    the input is not a finite positive number OR if rounding collapses it to a
-    non-positive value.  Sub-tick prices are ROUNDED (not rejected); garbage
-    (NaN/inf/<=0/str/None/bool) is rejected.
+    Returns the nearest-tick-rounded price formatted to 2 decimals (Noren jdata
+    fields are strings, e.g. "40.05"), or None if the input is not a finite
+    positive number OR if rounding collapses it to a non-positive value.
+    Sub-tick prices are ROUNDED (not rejected); garbage (NaN/inf/<=0/str/None/
+    bool) is rejected.
     """
     if not _is_finite_pos_number(price):
         return None
     rounded = round_to_tick(float(price), tick, mode="nearest")
     if not (math.isfinite(rounded) and rounded > 0):
         return None
-    return rounded
+    return f"{rounded:.2f}"
 
 
 # ---------------------------------------------------------------------------
-# 1. Single-trigger GTT — a resting SL (or BOS) on a position
+# 1. Single-trigger GTT — a resting SL (or TP) on a position
 # ---------------------------------------------------------------------------
 
 def build_gtt_intent(
@@ -116,23 +139,34 @@ def build_gtt_intent(
     tsym: str,
     qty: int,
     trantype: str,
-    trigger_price: float,
-    limit_price: float,
+    ai_t: str,
+    d_trigger: float,
+    prc_limit: float,
     prd: str,
+    ret: str = "DAY",
     tick: float = 0.05,
+    dscqty: int = 0,
     remarks: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Build the jdata for a single-trigger GTT (a resting stop on a position).
+    """Build the jdata for a single-trigger GTT (a resting stop/target on a position).
 
-    NRML-ONLY: returns None for any ``prd`` != "M" (GTT is the carry-forward
-    disaster backstop; MIS must NOT get one).
+    Maps to the documented PlaceGTTOrder schema. ``d_trigger`` -> ``d`` (the
+    price compared with LTP) and ``prc_limit`` -> ``prc`` (the resulting order's
+    limit price).  Identity (uid/actid) is NOT included here — the client injects
+    it at transmit time.
+
+    NRML-ONLY: returns None for any ``prd`` != "M".
+
+    ``ai_t`` is REQUIRED (no guessed default): pass LTP_BELOW for a protective
+    stop on a long option, LTP_ABOVE for a target.  Confirm the direction by
+    reading one GTT back via GetPendingGTTOrder before depending on it.
 
     Validates fail-closed:
     - prd must be exactly "M"
-    - exch / tsym must be non-empty strings
-    - qty must be a positive int
-    - trantype must be "B" or "S"
-    - trigger_price / limit_price must be finite positive numbers; each is then
+    - exch / tsym / ai_t must be non-empty strings
+    - qty must be a positive int; dscqty a non-negative int
+    - trantype must be "B" or "S"; ret one of DAY/EOS/IOC
+    - d_trigger / prc_limit must be finite positive numbers; each is then
       tick-rounded to the nearest valid tick multiple (sub-tick is rounded, NOT
       rejected; NaN/inf/<=0/str/None/bool are rejected)
 
@@ -140,36 +174,63 @@ def build_gtt_intent(
     """
     if not _nrml_ok(prd):
         return None
-    if not _str_field_ok(exch) or not _str_field_ok(tsym):
+    if not _str_field_ok(exch) or not _str_field_ok(tsym) or not _str_field_ok(ai_t):
         return None
     if not _is_pos_int(qty):
         return None
+    if not (isinstance(dscqty, int) and not isinstance(dscqty, bool) and dscqty >= 0):
+        return None
     if trantype not in _TRANTYPES:
         return None
+    if ret not in _RET_TYPES:
+        return None
 
-    trig = _round_tick_pos(trigger_price, tick)
-    lim = _round_tick_pos(limit_price, tick)
-    if trig is None or lim is None:
+    d = _fmt_price(d_trigger, tick)
+    prc = _fmt_price(prc_limit, tick)
+    if d is None or prc is None:
         return None
 
     return {
-        "ai_t": _AI_T_SINGLE,   # single-trigger alert type
+        "ai_t": ai_t,           # alert type (direction) — caller-chosen
         "validity": "GTT",      # rests at broker; blocks no margin
         "exch": exch,
         "tsym": tsym,
+        "d": d,                 # price compared with LTP (the trigger)
         "trantype": trantype,
-        "prd": _NRML_PRD,       # PINNED — never anything but NRML
-        "qty": str(qty),
         "prctyp": "LMT",
-        "trigger_price": trig,
-        "limit_price": lim,
-        "remarks": remarks,
+        "prd": _NRML_PRD,       # PINNED — never anything but NRML
+        "ret": ret,
+        "qty": str(qty),
+        "prc": prc,             # resulting order's limit price
+        "dscqty": str(dscqty),
+        "remarks": remarks or "",
     }
 
 
 # ---------------------------------------------------------------------------
 # 2. OCO-GTT — two-leg (stop-loss + target); first to trigger cancels the other
 # ---------------------------------------------------------------------------
+
+def _oco_leg(
+    *, exch: str, tsym: str, trantype: str, prc: str, qty: int, ret: str,
+    ordersource: str, remarks: Optional[str],
+) -> Dict[str, Any]:
+    """Build one place_order_params leg for an OCO (identity injected by client)."""
+    leg: Dict[str, Any] = {
+        "tsym": tsym,
+        "exch": exch,
+        "trantype": trantype,
+        "prctyp": "LMT",
+        "prd": _NRML_PRD,
+        "ret": ret,
+        "ordersource": ordersource,
+        "qty": str(qty),
+        "prc": prc,
+    }
+    if remarks:
+        leg["remarks"] = remarks
+    return leg
+
 
 def build_oco_intent(
     *,
@@ -181,66 +242,67 @@ def build_oco_intent(
     sl_limit: float,
     tp_trigger: float,
     tp_limit: float,
+    trantype: str = "S",
+    ai_t: str = AI_T_OCO,
+    ret: str = "DAY",
+    ordersource: str = "API",
     tick: float = 0.05,
     remarks: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Build the jdata for a two-leg OCO-GTT (stop-loss leg + target leg).
 
+    Maps to the documented PlaceOCOOrder schema:
+        oivariable = [{d: sl_trigger, var_name: "x"}, {d: tp_trigger, var_name: "y"}]
+        place_order_params       = leg1 (the SL leg, paired with x)
+        place_order_params_leg2  = leg2 (the TP leg, paired with y)
+
     Both legs rest at the broker; the FIRST to trigger cancels the other.  This
     is the full PC-DIED net for a long NRML option: it stops the loss AND books
-    the target without any local process alive.
-
-    Both legs are SELL legs (protective exit on a long option) — the trantype is
-    fixed to "S" on each leg.  (A short-option OCO is not built here: a resting
-    BUY-to-cover GTT is fine margin-wise, but this backstop targets the
-    option-BUYER long book, which is the only book AlphaForge carries overnight.)
+    the target without any local process alive.  Both legs are SELL legs by
+    default (protective exit on a long option).  Identity (uid/actid) is injected
+    by the client at transmit time.
 
     NRML-ONLY: returns None for any ``prd`` != "M".
 
-    Validates fail-closed (same rules as build_gtt_intent), applied to BOTH legs:
-    any garbage price on EITHER leg rejects the WHOLE OCO (returns None).
+    Validates fail-closed (same price rules as build_gtt_intent), applied to ALL
+    FOUR prices: any garbage on ANY leg rejects the WHOLE OCO (returns None).
     """
     if not _nrml_ok(prd):
         return None
-    if not _str_field_ok(exch) or not _str_field_ok(tsym):
+    if not _str_field_ok(exch) or not _str_field_ok(tsym) or not _str_field_ok(ai_t):
         return None
     if not _is_pos_int(qty):
         return None
+    if trantype not in _TRANTYPES:
+        return None
+    if ret not in _RET_TYPES:
+        return None
 
-    sl_trig = _round_tick_pos(sl_trigger, tick)
-    sl_lim = _round_tick_pos(sl_limit, tick)
-    tp_trig = _round_tick_pos(tp_trigger, tick)
-    tp_lim = _round_tick_pos(tp_limit, tick)
+    sl_trig = _fmt_price(sl_trigger, tick)
+    sl_lim = _fmt_price(sl_limit, tick)
+    tp_trig = _fmt_price(tp_trigger, tick)
+    tp_lim = _fmt_price(tp_limit, tick)
     if sl_trig is None or sl_lim is None or tp_trig is None or tp_lim is None:
         return None
 
-    legs = [
-        {
-            "kind": "stoploss",
-            "ai_t": _AI_T_SINGLE,
-            "trantype": "S",
-            "prctyp": "LMT",
-            "trigger_price": sl_trig,
-            "limit_price": sl_lim,
-        },
-        {
-            "kind": "target",
-            "ai_t": _AI_T_SINGLE,
-            "trantype": "S",
-            "prctyp": "LMT",
-            "trigger_price": tp_trig,
-            "limit_price": tp_lim,
-        },
-    ]
-
     return {
-        "validity": "OCO",      # one-cancels-other; rests at broker, no margin
+        "ai_t": ai_t,           # DOCUMENTED OCO bracket type (LMT_BOS_O)
+        "validity": "GTT",      # OCO rests at broker as a GTT pair; no margin
         "exch": exch,
         "tsym": tsym,
-        "prd": _NRML_PRD,       # PINNED — never anything but NRML
-        "qty": str(qty),
-        "legs": legs,
-        "remarks": remarks,
+        "remarks": remarks or "",
+        "oivariable": [
+            {"d": sl_trig, "var_name": "x"},   # x -> leg1 (stop-loss trigger)
+            {"d": tp_trig, "var_name": "y"},   # y -> leg2 (target trigger)
+        ],
+        "place_order_params": _oco_leg(
+            exch=exch, tsym=tsym, trantype=trantype, prc=sl_lim, qty=qty,
+            ret=ret, ordersource=ordersource, remarks=remarks,
+        ),
+        "place_order_params_leg2": _oco_leg(
+            exch=exch, tsym=tsym, trantype=trantype, prc=tp_lim, qty=qty,
+            ret=ret, ordersource=ordersource, remarks=remarks,
+        ),
     }
 
 
@@ -252,10 +314,10 @@ def cancel_gtt_jdata(al_id: Any) -> Dict[str, Any]:
     """Build the cancel payload for a GTT/OCO identified by its broker alert id.
 
     The alert id (``al_id``) is the handle the broker returns when a GTT/OCO is
-    placed.  Coerces an int id to its string form (Noren jdata fields are
-    strings).  Fails CLOSED: an empty / None / blank id raises ValueError rather
-    than emit a payload that would cancel "nothing" (or, worse, be misinterpreted
-    broker-side).
+    placed (CancelGTTOrder / CancelOCOOrder both take ``{uid, al_id}``; the uid is
+    injected by the client).  Coerces an int id to its string form (Noren jdata
+    fields are strings).  Fails CLOSED: an empty / None / blank id raises
+    ValueError rather than emit a payload that would cancel "nothing".
     """
     if al_id is None:
         raise ValueError("al_id is required to cancel a GTT/OCO")

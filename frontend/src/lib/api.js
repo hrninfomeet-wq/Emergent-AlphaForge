@@ -279,8 +279,10 @@ export const api = {
     apiClient.get("/live-broker/gtt").then((r) => r.data),
   placeGtt: (payload) =>
     apiClient.post("/live-broker/gtt", payload).then((r) => r.data),
-  cancelGtt: (alId) =>
-    apiClient.delete(`/live-broker/gtt/${alId}`).then((r) => r.data),
+  cancelGtt: (alId, kind = "gtt") =>
+    apiClient
+      .delete(`/live-broker/gtt/${alId}`, { params: { kind } })
+      .then((r) => r.data),
   getGuardStatus: () =>
     apiClient.get("/live-broker/guard-status").then((r) => r.data),
 

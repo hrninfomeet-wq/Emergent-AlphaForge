@@ -17,25 +17,29 @@ import { fmtNum } from "@/lib/fmt";
  *
  * Props: {} (none) — self-contained; polls the backend on its own.
  *
- * Backend contract (defensive — tolerate {gtt:[]} / empty / undefined):
+ * Backend contract = the Flattrade GetPendingGTTOrder row (schema confirmed
+ * against the PiConnect PDF ch.1.16). Field casing varies (Al_id/al_id, Qty/qty,
+ * Prc/prc) so every accessor below is tolerant:
  *   api.listGtt() → { gtt: [ {
- *     al_id,          string — the alert/GTT id (passed to cancelGtt)
+ *     al_id | Al_id,  string — the alert id (passed to cancelGtt)
+ *     ai_t,           string — alert type, e.g. "LTP_A"/"LTP_B"/"LMT_BOS_O".
+ *                             This is the real-money DIRECTION field — read it
+ *                             back to confirm a stop fires the right way.
  *     tsym,           string — trading symbol
  *     exch,           string — exchange (NFO/BFO/…)
  *     trantype,       "B" | "S"
- *     qty,            number
- *     trigger_price,  number — single-leg trigger (GTT)
- *     limit_price,    number — single-leg limit (GTT)
- *     status,         string — broker status text
- *     type,           "GTT" | "OCO"
- *     created_at,     ISO string | epoch ms
- *     // OCO two-leg fields (optional; present when type === "OCO"):
- *     stoploss_trigger_price, stoploss_limit_price,
- *     target_trigger_price,   target_limit_price,
+ *     qty | Qty,      number
+ *     d,              string — single-leg trigger (price compared with LTP)
+ *     prc | Prc,      string — single-leg limit price of the resulting order
+ *     validity,       "GTT" | "DAY"
+ *     prd,            "C" | "M" | "H"
+ *     remarks | Remarks,
+ *     oivariable,     [ {var_name:"x"|"y", d:string} ] — length ≥ 2 ⇒ OCO; the
+ *                             two d's are the SL (x) and TP (y) triggers.
  *   } ] }
  *
- *   api.cancelGtt(al_id) → { ok?: boolean, reason?: string, ... }
- *     ok === false (or a thrown error) surfaces `reason` on the row.
+ *   api.cancelGtt(al_id, kind) → { canceled?: boolean, result?: {...} }
+ *     canceled === false (or a thrown error) surfaces a reason on the row.
  */
 
 const POLL_MS = 6_000;
@@ -47,26 +51,6 @@ const TRAN_CLASS = {
   S: "border-danger/60 bg-danger/15 text-danger",
   s: "border-danger/60 bg-danger/15 text-danger",
 };
-
-/** Short relative time for created_at; tolerates ISO strings + epoch ms. */
-function shortAgo(ts) {
-  if (ts == null || ts === "") return "";
-  const t =
-    typeof ts === "number" ? ts : Number.isFinite(Number(ts)) && String(ts).length >= 10 && !String(ts).includes("-")
-      ? Number(ts)
-      : new Date(ts).getTime();
-  if (!Number.isFinite(t)) return String(ts);
-  const diffMs = Date.now() - t;
-  if (diffMs < 0) return "just now";
-  const secs = Math.round(diffMs / 1000);
-  if (secs < 60) return `${secs}s ago`;
-  const mins = Math.round(secs / 60);
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.round(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  const days = Math.round(hrs / 24);
-  return `${days}d ago`;
-}
 
 /** Format a price defensively (null/blank → em dash). */
 function price(p) {
@@ -94,22 +78,36 @@ function GttRow({ row, onCancelled }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
 
-  const alId = row?.al_id;
+  // Tolerate the Noren response casing (Al_id/al_id, Qty/qty, Prc/prc, …).
+  const alId = row?.al_id ?? row?.Al_id ?? row?.AL_id;
+  const qty = row?.qty ?? row?.Qty;
+  const prc = row?.prc ?? row?.Prc;
+  const remarks = row?.remarks ?? row?.Remarks;
+  const aiT = row?.ai_t ?? "";
   const tranRaw = row?.trantype ?? "";
   const tranLabel = TRAN_LABEL[tranRaw] ?? (tranRaw || "–");
   const tranClass = TRAN_CLASS[tranRaw] ?? "border-line bg-bg-3 text-dimmer";
-  const isOco = String(row?.type ?? "").toUpperCase() === "OCO";
+
+  // OCO = two oivariable legs (x = SL trigger, y = TP trigger). Single GTT has
+  // its trigger in `d`. Fall back to ai_t containing "BOS" (OCO bracket type).
+  const oiv = Array.isArray(row?.oivariable) ? row.oivariable : [];
+  const isOco = oiv.length >= 2 || /BOS/i.test(aiT);
+  const oivByName = (n) => oiv.find((v) => String(v?.var_name).toLowerCase() === n)?.d;
+  const slTrigger = oivByName("x") ?? oiv[0]?.d;
+  const tpTrigger = oivByName("y") ?? oiv[1]?.d;
 
   const handleCancel = async () => {
     if (!alId || busy) return;
     setBusy(true);
     setError(null);
     try {
-      const res = await api.cancelGtt(alId);
-      // Treat an explicit ok:false as a failure and surface the reason; otherwise
-      // assume success and let the parent refetch reconcile with broker truth.
-      if (res && res.ok === false) {
-        setError(`Cancel failed: ${res.reason ?? res.detail ?? "rejected by broker"}`);
+      const res = await api.cancelGtt(alId, isOco ? "oco" : "gtt");
+      // Treat an explicit canceled:false as a failure; otherwise assume success
+      // and let the parent refetch reconcile with broker truth.
+      if (res && res.canceled === false) {
+        const reason =
+          res?.result?.emsg ?? res?.reason ?? res?.detail ?? "rejected by broker";
+        setError(`Cancel failed: ${reason}`);
       } else {
         onCancelled?.();
       }
@@ -144,14 +142,26 @@ function GttRow({ row, onCancelled }) {
         >
           {isOco ? "OCO" : "GTT"}
         </span>
-        {row?.status && (
-          <span className="text-[10px] font-mono text-dimmer">[{row.status}]</span>
+        {/* ai_t — the alert-type/direction string the broker recorded. Surfaced
+            so the user can read back the EXACT value (e.g. LTP_B vs LTP_A). */}
+        {aiT && (
+          <span
+            className="text-[10px] font-mono text-info/90 px-1.5 py-0.5 rounded border border-info/30 bg-info/10"
+            title="Alert type (direction) recorded by the broker"
+          >
+            {aiT}
+          </span>
+        )}
+        {remarks && (
+          <span className="text-[10px] font-mono text-dimmer truncate max-w-[120px]">
+            {remarks}
+          </span>
         )}
         <span
           className="ml-auto text-[10px] font-mono text-dimmer"
-          title={row?.created_at != null ? String(row.created_at) : ""}
+          title={row?.validity != null ? String(row.validity) : ""}
         >
-          {shortAgo(row?.created_at)}
+          {row?.validity ?? ""}
         </span>
       </div>
 
@@ -163,7 +173,7 @@ function GttRow({ row, onCancelled }) {
               Qty
             </span>
             <span className="text-xs font-mono text-foreground tabular-nums">
-              {row?.qty != null ? row.qty : "–"}
+              {qty != null ? qty : "–"}
             </span>
           </div>
 
@@ -171,21 +181,15 @@ function GttRow({ row, onCancelled }) {
             <>
               <div className="flex flex-col gap-0.5">
                 <span className="text-[10px] uppercase tracking-wider text-dimmer font-semibold">
-                  Stop leg
+                  Stop trigger (x)
                 </span>
-                <Leg
-                  trigger={row?.stoploss_trigger_price ?? row?.trigger_price}
-                  limit={row?.stoploss_limit_price ?? row?.limit_price}
-                />
+                <Leg trigger={slTrigger} limit={prc} />
               </div>
               <div className="flex flex-col gap-0.5">
                 <span className="text-[10px] uppercase tracking-wider text-dimmer font-semibold">
-                  Target leg
+                  Target trigger (y)
                 </span>
-                <Leg
-                  trigger={row?.target_trigger_price}
-                  limit={row?.target_limit_price}
-                />
+                <Leg trigger={tpTrigger} limit={prc} />
               </div>
             </>
           ) : (
@@ -193,7 +197,7 @@ function GttRow({ row, onCancelled }) {
               <span className="text-[10px] uppercase tracking-wider text-dimmer font-semibold">
                 Trigger → Limit
               </span>
-              <Leg trigger={row?.trigger_price} limit={row?.limit_price} />
+              <Leg trigger={row?.d} limit={prc} />
             </div>
           )}
         </div>
@@ -317,7 +321,7 @@ export default function GttBook() {
           without an id still renders (it just can't be cancelled). */}
       {gtt.map((row, i) => (
         <GttRow
-          key={row?.al_id ?? `gtt-${i}`}
+          key={row?.al_id ?? row?.Al_id ?? `gtt-${i}`}
           row={row}
           onCancelled={fetchGtt}
         />

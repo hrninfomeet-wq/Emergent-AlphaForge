@@ -71,11 +71,21 @@ class MockNoren:
         position_book_data: Optional[List[Dict[str, Any]]] = None,
         limits_data: Optional[Dict[str, Any]] = None,
         search_scrip_data: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+        gtt_book_data: Optional[List[Dict[str, Any]]] = None,
+        enabled_gtts_data: Optional[List[str]] = None,
         om_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> None:
         # Internal order store: norenordno -> order dict
         self._orders: Dict[str, Dict[str, Any]] = {}
         self._order_counter: int = 0
+
+        # GTT/OCO store: al_id -> {intent, kind, canceled}
+        self._gtts: Dict[str, Dict[str, Any]] = {}
+        self._gtt_counter: int = 0
+        self._gtt_book_data: List[Dict[str, Any]] = gtt_book_data or []
+        self._enabled_gtts_data: List[str] = enabled_gtts_data or ["ATP", "LTP"]
+        # Scripted next-reject for the next place_gtt/place_oco call.
+        self._next_gtt_reject_reason: Optional[str] = None
 
         # Scripted next-reject: if set, the next place_order returns ok=False
         self._next_reject_reason: Optional[str] = None
@@ -193,6 +203,56 @@ class MockNoren:
         if exch in self._search_scrip_data:
             return list(self._search_scrip_data[exch])
         return []
+
+    # ------------------------------------------------------------------
+    # GTT / OCO (mirrors FlattradeClient's GTT surface for route tests)
+    # ------------------------------------------------------------------
+
+    def script_gtt_reject(self, reason: str) -> None:
+        """Make the next place_gtt/place_oco return ok=False with this reason."""
+        self._next_gtt_reject_reason = reason
+
+    def set_gtt_book(self, rows: List[Dict[str, Any]]) -> None:
+        self._gtt_book_data = rows
+
+    async def _place_alert(self, intent: Dict[str, Any], kind: str) -> Dict[str, Any]:
+        if self._next_gtt_reject_reason is not None:
+            reason = self._next_gtt_reject_reason
+            self._next_gtt_reject_reason = None
+            return {"ok": False, "al_id": None, "stat": "Not_Ok", "emsg": reason, "raw": {}}
+        self._gtt_counter += 1
+        al_id = f"MOCKAL{self._gtt_counter}"
+        self._gtts[al_id] = {"intent": intent, "kind": kind, "canceled": False}
+        return {"ok": True, "al_id": al_id, "stat": "Oi created", "emsg": None,
+                "raw": [{"stat": "Oi created", "Al_id": al_id}]}
+
+    async def place_gtt(self, intent: Dict[str, Any]) -> Dict[str, Any]:
+        return await self._place_alert(intent, "gtt")
+
+    async def place_oco(self, intent: Dict[str, Any]) -> Dict[str, Any]:
+        return await self._place_alert(intent, "oco")
+
+    async def _cancel_alert(self, al_id: Any) -> Dict[str, Any]:
+        s = str(al_id).strip()
+        if s == "":
+            return {"ok": False, "al_id": None, "stat": "Not_Ok",
+                    "emsg": "empty al_id", "raw": {}}
+        if s in self._gtts:
+            self._gtts[s]["canceled"] = True
+        return {"ok": True, "al_id": s, "stat": "Oi delete success", "emsg": None,
+                "raw": [{"stat": "Oi delete success", "Al_id": s}]}
+
+    async def cancel_gtt(self, al_id: Any) -> Dict[str, Any]:
+        return await self._cancel_alert(al_id)
+
+    async def cancel_oco(self, al_id: Any) -> Dict[str, Any]:
+        return await self._cancel_alert(al_id)
+
+    async def gtt_book(self) -> List[Dict[str, Any]]:
+        return list(self._gtt_book_data)
+
+    async def enabled_gtts(self) -> List[str]:
+        return list(self._enabled_gtts_data)
 
     # ------------------------------------------------------------------
     # om stream helper
