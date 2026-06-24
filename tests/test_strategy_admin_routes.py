@@ -146,3 +146,62 @@ def test_retire_uses_origin_of_when_get_is_none():
             assert db.strategy_lifecycle.docs[0]["strategy_id"] == "variant"
     finally:
         _stop(tc)
+
+
+def _delete_app(origin, *, retired=False, deployments=None):
+    db = FakeDB()
+    if retired:
+        db.strategy_lifecycle.docs.append({"strategy_id": "foo", "retired": True})
+    for dep in (deployments or []):
+        db.strategy_deployments.docs.append(dep)
+    tc = _make_app(db=db, registry_items=[{"id": "foo", "origin": origin}], origin_map={"foo": origin})
+    return tc, db
+
+
+def test_delete_unknown_404():
+    tc = _make_app(registry_items=[], origin_map={})
+    try:
+        r = tc.delete("/strategies/foo")
+        assert r.status_code == 404
+    finally:
+        _stop(tc)
+
+
+def test_delete_builtin_403():
+    tc, _ = _delete_app("builtin", retired=True)
+    try:
+        r = tc.delete("/strategies/foo")
+        assert r.status_code == 403
+    finally:
+        _stop(tc)
+
+
+def test_delete_not_retired_409():
+    tc, _ = _delete_app("custom", retired=False)
+    try:
+        r = tc.delete("/strategies/foo")
+        assert r.status_code == 409
+    finally:
+        _stop(tc)
+
+
+def test_delete_with_live_deployment_409():
+    tc, _ = _delete_app("custom", retired=True,
+                        deployments=[{"id": "d1", "strategy_id": "foo", "status": "ACTIVE"}])
+    try:
+        r = tc.delete("/strategies/foo")
+        assert r.status_code == 409
+    finally:
+        _stop(tc)
+
+
+def test_delete_success_removes_file_and_lifecycle():
+    tc, db = _delete_app("custom", retired=True,
+                         deployments=[{"id": "d1", "strategy_id": "foo", "status": "ARCHIVED"}])
+    try:
+        with patch.object(sa, "_delete_plugin_file", Mock(return_value=True)):
+            r = tc.delete("/strategies/foo")
+            assert r.status_code == 200 and r.json()["deleted"] is True
+            assert db.strategy_lifecycle.docs == []
+    finally:
+        _stop(tc)

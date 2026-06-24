@@ -112,3 +112,25 @@ async def unretire_strategy(strategy_id: str):
         upsert=True,
     )
     return {"strategy_id": strategy_id, "retired": False}
+
+
+@api.delete("/strategies/{strategy_id}")
+async def delete_strategy(strategy_id: str):
+    reg = get_registry()
+    origin = reg.origin_of(strategy_id)
+    if origin is None:
+        raise HTTPException(404, f"Strategy {strategy_id} not found")
+    if origin != "custom":
+        raise HTTPException(403, "Built-in strategies cannot be deleted — retire them instead")
+    db = _db()
+    life = await db.strategy_lifecycle.find_one({"strategy_id": strategy_id}, {"_id": 0})
+    if not (life and life.get("retired")):
+        raise HTTPException(409, "Retire the strategy before deleting its file")
+    deps = await db.strategy_deployments.find({"strategy_id": strategy_id}, {"_id": 0}).to_list(length=None)
+    blocking = [d for d in deps if d.get("status") != "ARCHIVED"]
+    if blocking:
+        raise HTTPException(409, f"{len(blocking)} deployment(s) still reference this strategy; archive them first")
+    _delete_plugin_file(strategy_id)
+    reg.unregister(strategy_id)
+    await db.strategy_lifecycle.delete_one({"strategy_id": strategy_id})
+    return {"strategy_id": strategy_id, "deleted": True}
