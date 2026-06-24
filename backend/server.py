@@ -42,6 +42,7 @@ from app.runtime import (
     _trigger_autoupdate,
     live_candle_roller,
     live_exit_monitor,
+    live_position_guard,
     upstox_stream_manager,
 )
 
@@ -127,6 +128,16 @@ async def startup() -> None:
     except Exception as exc:
         log.warning(f"Upstox WS auto-start skipped: {exc}")
 
+    # Live software exit guard — starts unconditionally (reads the BROKER position
+    # book, not the Upstox stream). It no-ops when the guard registry is empty /
+    # outside market hours, and only TRANSMITS a square when LIVE_GUARD_ARMED=1.
+    try:
+        await live_position_guard.start()
+        log.info("Live position guard started (offline-first; armed=%s)",
+                 __import__("os").environ.get("LIVE_GUARD_ARMED", "0"))
+    except Exception as exc:
+        log.warning(f"Live position guard start skipped: {exc}")
+
     # Background scheduler: evaluate ACTIVE deployments ~10s after each 1-minute bar closes.
     asyncio.create_task(_deployment_evaluator_loop(), name="deployment-evaluator")
     log.info("Deployment evaluator scheduler started")
@@ -163,6 +174,10 @@ async def shutdown() -> None:
         await live_exit_monitor.stop()
     except Exception as exc:
         log.warning("live_exit_monitor.stop() failed: %s", exc)
+    try:
+        await live_position_guard.stop()
+    except Exception as exc:
+        log.warning("live_position_guard.stop() failed: %s", exc)
     from app.db import get_client
     get_client().close()
 

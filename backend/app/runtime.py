@@ -34,6 +34,10 @@ from app.upstox_index_ingest import persist_index_candles_bulk, run_upstox_index
 from app.upstox_stream import DEFAULT_STREAM_MODE, UpstoxMarketStreamManager
 from app.live_candle_roller import LiveCandleRoller
 from app.live_exit_monitor import LiveExitMonitor
+from app.live.live_position_guard import (
+    LivePositionGuard,
+    get_registry as get_live_monitor_registry,
+)
 from app.live_option_universe import build_live_option_universe, radius_for_deployments
 from app.deployment_evaluator import evaluate_active_deployments
 from app.data_hygiene import (
@@ -77,6 +81,70 @@ live_exit_monitor = LiveExitMonitor(
     db_factory=get_db,
     tick_lookup_factory=lambda: upstox_stream_manager.latest_tick_map().get,
     mark_fn=mark_open_deployment_trades,
+)
+
+
+# ---------------------------------------------------------------------------
+# Live software exit guard (margin-free SL/TP/trailing) — replaces the always-
+# margin-rejected resting broker SL. OFFLINE-FIRST: the guard runs + detects +
+# LOGS breaches, but only TRANSMITS a real square when LIVE_GUARD_ARMED=1, so the
+# operator can validate it tracks correctly before arming real auto-exits.
+# ---------------------------------------------------------------------------
+
+def _live_guard_armed() -> bool:
+    import os
+    return os.environ.get("LIVE_GUARD_ARMED", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+async def _live_token_doc() -> Optional[Dict[str, Any]]:
+    try:
+        from app.live.flattrade_token import DEFAULT_USER_ID
+        doc = await get_db().live_broker_tokens.find_one(
+            {"user": DEFAULT_USER_ID, "broker": "flattrade"}
+        )
+        return doc or None
+    except Exception:
+        return None
+
+
+async def _live_guard_client_factory():
+    """Build a FlattradeClient from the stored token, or None if not connected."""
+    doc = await _live_token_doc()
+    if not doc or not doc.get("jKey"):
+        return None
+    try:
+        from app.live.flattrade_client import FlattradeClient
+        return FlattradeClient(jKey=doc["jKey"], uid=doc.get("uid", ""), actid=doc.get("actid", doc.get("uid", "")))
+    except Exception as exc:  # pragma: no cover
+        logging.getLogger(__name__).warning("guard client build failed: %s", exc)
+        return None
+
+
+async def _live_guard_square_fn(client, position, *, reason):
+    """Margin-safe square via auto_square.square_position — GATED by LIVE_GUARD_ARMED.
+
+    When NOT armed (default), it logs the intended square and returns a dry-run
+    result WITHOUT transmitting, so the operator can confirm the guard would have
+    squared the right position at the right level before enabling real auto-exits.
+    """
+    if not _live_guard_armed():
+        logging.getLogger(__name__).warning(
+            "LIVE GUARD (dry-run): WOULD square %s reason=%s netqty=%s lp=%s "
+            "— set LIVE_GUARD_ARMED=1 to transmit",
+            position.get("tsym"), reason, position.get("netqty"), position.get("lp"),
+        )
+        return {"squared": False, "dry_run": True, "reason": reason, "would_square": True}
+    from app.live.auto_square import square_position
+    doc = await _live_token_doc()
+    uid = (doc or {}).get("uid", "")
+    actid = (doc or {}).get("actid", uid)
+    return await square_position(client, position, reason=reason, band_pct=1.0, uid=uid, actid=actid)
+
+
+live_position_guard = LivePositionGuard(
+    registry=get_live_monitor_registry(),
+    client_factory=_live_guard_client_factory,
+    square_fn=_live_guard_square_fn,
 )
 
 
