@@ -14,6 +14,7 @@ from typing import Any, Dict, List
 from fastapi import APIRouter, HTTPException
 
 from app.strategies.base import get_registry
+from app.schemas import StrategyAuthorReq
 
 api = APIRouter()
 log = logging.getLogger(__name__)
@@ -150,3 +151,76 @@ async def reload_strategies():
 async def is_retired(strategy_id: str) -> bool:
     life = await _db().strategy_lifecycle.find_one({"strategy_id": strategy_id}, {"_id": 0})
     return bool(life and life.get("retired"))
+
+
+# ---------------------------------------------------------------------------
+# Strategy Authoring — patchable seams (Phase 2A)
+# ---------------------------------------------------------------------------
+
+def _plugins_dir() -> str:
+    """Absolute path to backend/app/strategies/plugins (where custom plugins live)."""
+    import app.strategies.plugins as _pkg
+    return os.path.dirname(_pkg.__file__)
+
+
+def _write_plugin_file(strategy_id: str, code: str) -> str:
+    """Write <strategy_id>.py into the plugins dir; return the path."""
+    path = os.path.join(_plugins_dir(), f"{strategy_id}.py")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(code)
+    return path
+
+
+# ---------------------------------------------------------------------------
+# Strategy Authoring — endpoints (Phase 2A)
+# ---------------------------------------------------------------------------
+
+@api.post("/strategies/author/compile")
+async def author_compile(req: StrategyAuthorReq):
+    """Validate + compile a spec to source WITHOUT installing. Returns errors (if any)
+    so the wizard can show them; never raises on a bad spec."""
+    from app.ai.spec_schema import StrategySpec
+    from app.ai.compiler import validate_spec, compile_spec
+    try:
+        spec = StrategySpec(**req.spec)
+    except Exception as e:
+        return {"ok": False, "errors": [f"spec parse error: {e}"], "code": None}
+    errors = validate_spec(spec)
+    if errors:
+        return {"ok": False, "errors": errors, "code": None}
+    code = compile_spec(spec)
+    return {"ok": True, "errors": [], "code": code, "strategy_id": spec.id}
+
+
+@api.post("/strategies/author/install")
+async def author_install(req: StrategyAuthorReq):
+    """Validate + compile + write the plugin file + reload registry + store provenance.
+    409 if the id already exists (unless overwrite=True). 400 on invalid spec."""
+    import hashlib
+    from datetime import datetime, timezone
+    from app.ai.spec_schema import StrategySpec
+    from app.ai.compiler import validate_spec, compile_spec
+    try:
+        spec = StrategySpec(**req.spec)
+    except Exception as e:
+        raise HTTPException(400, f"spec parse error: {e}")
+    errors = validate_spec(spec)
+    if errors:
+        raise HTTPException(400, "; ".join(errors))
+    reg = get_registry()
+    if reg.get(spec.id) is not None and not req.overwrite:
+        raise HTTPException(409, f"Strategy id '{spec.id}' already exists — choose another id or set overwrite")
+    code = compile_spec(spec)
+    _write_plugin_file(spec.id, code)
+    reg.reload()
+    if reg.get(spec.id) is None:
+        raise HTTPException(500, f"Strategy '{spec.id}' failed to load after install — check the generated code")
+    now = datetime.now(timezone.utc).isoformat()
+    code_sha = hashlib.sha256(code.encode("utf-8")).hexdigest()[:16]
+    await _db().generated_strategies.update_one(
+        {"strategy_id": spec.id},
+        {"$set": {"strategy_id": spec.id, "spec": req.spec, "code_sha": code_sha,
+                  "source": "spec", "created_at": now}},
+        upsert=True,
+    )
+    return {"strategy_id": spec.id, "installed": True, "code_sha": code_sha}

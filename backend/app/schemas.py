@@ -404,3 +404,12 @@ class VixIngestReq(BaseModel):
     from_date: str
     to_date: str
     chunk_days: int = 7
+
+
+# ---------------------------------------------------------------------------
+# Strategy Authoring (AI compiler, Phase 2A)
+# ---------------------------------------------------------------------------
+
+class StrategyAuthorReq(BaseModel):
+    spec: Dict[str, Any]          # raw StrategySpec JSON (validated by the compiler)
+    overwrite: bool = False
