@@ -80,3 +80,33 @@ async def get_strategy(strategy_id: str):
     life = await _db().strategy_lifecycle.find_one({"strategy_id": strategy_id}, {"_id": 0})
     meta["is_retired"] = bool(life and life.get("retired"))
     return meta
+
+
+def _exists(strategy_id: str) -> bool:
+    reg = get_registry()
+    return reg.get(strategy_id) is not None or reg.origin_of(strategy_id) is not None
+
+
+@api.post("/strategies/{strategy_id}/retire")
+async def retire_strategy(strategy_id: str):
+    if not _exists(strategy_id):
+        raise HTTPException(404, f"Strategy {strategy_id} not found")
+    summaries = await _square_off_strategy_deployments(strategy_id)
+    now = datetime.now(timezone.utc).isoformat()
+    await _db().strategy_lifecycle.update_one(
+        {"strategy_id": strategy_id},
+        {"$set": {"strategy_id": strategy_id, "retired": True, "retired_at": now}},
+        upsert=True,
+    )
+    return {"strategy_id": strategy_id, "retired": True,
+            "squared_off": summaries, "squared_off_count": len(summaries)}
+
+
+@api.post("/strategies/{strategy_id}/un-retire")
+async def unretire_strategy(strategy_id: str):
+    await _db().strategy_lifecycle.update_one(
+        {"strategy_id": strategy_id},
+        {"$set": {"strategy_id": strategy_id, "retired": False, "retired_at": None}},
+        upsert=True,
+    )
+    return {"strategy_id": strategy_id, "retired": False}

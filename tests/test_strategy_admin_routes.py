@@ -89,3 +89,43 @@ def test_get_single_404():
             assert r.status_code == 404
     finally:
         _stop(tc)
+
+
+def test_retire_sets_flag_and_squares_off():
+    db = FakeDB()
+    tc = _make_app(db=db, registry_items=[{"id": "foo", "origin": "custom"}], origin_map={"foo": "custom"})
+    try:
+        with patch.object(sa, "_square_off_strategy_deployments",
+                          AsyncMock(return_value=[{"id": "t1"}, {"id": "t2"}])):
+            r = tc.post("/strategies/foo/retire")
+            assert r.status_code == 200
+            body = r.json()
+            assert body["retired"] is True and body["squared_off_count"] == 2
+            life = db.strategy_lifecycle.docs[0]
+            assert life["strategy_id"] == "foo" and life["retired"] is True
+    finally:
+        _stop(tc)
+
+
+def test_retire_unknown_404():
+    tc = _make_app(registry_items=[], origin_map={})
+    try:
+        with patch.object(sa, "get_registry") as gr:
+            gr.return_value.get.return_value = None
+            gr.return_value.origin_of.return_value = None
+            r = tc.post("/strategies/nope/retire")
+            assert r.status_code == 404
+    finally:
+        _stop(tc)
+
+
+def test_unretire_clears_flag():
+    db = FakeDB()
+    db.strategy_lifecycle.docs.append({"strategy_id": "foo", "retired": True})
+    tc = _make_app(db=db, registry_items=[{"id": "foo", "origin": "custom"}], origin_map={"foo": "custom"})
+    try:
+        r = tc.post("/strategies/foo/un-retire")
+        assert r.status_code == 200 and r.json()["retired"] is False
+        assert db.strategy_lifecycle.docs[0]["retired"] is False
+    finally:
+        _stop(tc)
