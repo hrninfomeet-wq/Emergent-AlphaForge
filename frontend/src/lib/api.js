@@ -25,6 +25,10 @@ export const api = {
   // Strategies
   listStrategies: () => apiClient.get("/strategies").then((r) => r.data),
   getStrategy: (id) => apiClient.get(`/strategies/${id}`).then((r) => r.data),
+  retireStrategy: (id) => apiClient.post(`/strategies/${id}/retire`).then((r) => r.data),
+  unretireStrategy: (id) => apiClient.post(`/strategies/${id}/un-retire`).then((r) => r.data),
+  deleteStrategy: (id) => apiClient.delete(`/strategies/${id}`).then((r) => r.data),
+  reloadStrategies: () => apiClient.post("/strategies/reload").then((r) => r.data),
 
   // Warehouse
   ingest: (instrument, days = 7) =>
