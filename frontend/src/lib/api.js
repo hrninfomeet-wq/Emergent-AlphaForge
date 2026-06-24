@@ -277,6 +277,8 @@ export const api = {
     apiClient.post("/live-broker/gtt", payload).then((r) => r.data),
   cancelGtt: (alId) =>
     apiClient.delete(`/live-broker/gtt/${alId}`).then((r) => r.data),
+  getGuardStatus: () =>
+    apiClient.get("/live-broker/guard-status").then((r) => r.data),
 
   // Presets
   listPresets: () => apiClient.get("/presets").then((r) => r.data),

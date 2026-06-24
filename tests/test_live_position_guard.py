@@ -257,3 +257,86 @@ class TestGuardCycle:
         exits = run(g._cycle())  # must not raise
         assert len(r) == 0          # still removed (no re-square attempt next cycle)
         assert exits[0]["result"]["squared"] is False
+
+
+# ---------------------------------------------------------------------------
+# Basket-level overall controls (overall SL / target / trailing → square ALL)
+# ---------------------------------------------------------------------------
+class TestOverallBasket:
+    def _mk(self, overall_cfg):
+        r = LiveMonitorRegistry()
+        for i, ts in enumerate(["AAA", "BBB"]):
+            st = build_monitor_state(250.0, stop_pct=90)  # wide per-position stop
+            r.register(key=f"P{i}", tsym=ts, exch="BFO", qty=20, prd="I",
+                       entry_price=250.0, state=st)
+        rec = _Recorder()
+        cl = _FakeClient([])
+
+        async def prov(_c=overall_cfg):
+            return _c
+
+        g = LivePositionGuard(registry=r, client_factory=lambda: _aw(cl),
+                              square_fn=rec.square_fn, overall_provider=prov)
+        return r, cl, rec, g
+
+    def _pos(self, ts, urmtom, lp=235):
+        return {"tsym": ts, "exch": "BFO", "netqty": "20", "lp": str(lp), "urmtom": str(urmtom)}
+
+    def test_overall_sl_squares_whole_basket(self):
+        cfg = {"sl": {"enabled": True, "mode": "mtm", "value": 500},
+               "target": {"enabled": False, "mode": "mtm", "value": 0},
+               "trailing": {"mode": "none"}, "reentry": {"enabled": False}}
+        r, cl, rec, g = self._mk(cfg)
+        cl.set([self._pos("AAA", -300), self._pos("BBB", -300)])  # basket -600 <= -500
+        run(g._cycle())
+        assert len(rec.squared) == 2
+        assert all(s[1] == "software_overall_sl" for s in rec.squared)
+        assert len(r) == 0
+
+    def test_overall_target_squares_basket(self):
+        cfg = {"sl": {"enabled": False, "mode": "mtm", "value": 0},
+               "target": {"enabled": True, "mode": "mtm", "value": 1000},
+               "trailing": {"mode": "none"}, "reentry": {"enabled": False}}
+        r, cl, rec, g = self._mk(cfg)
+        cl.set([self._pos("AAA", 600, lp=280), self._pos("BBB", 600, lp=280)])  # +1200 >= 1000
+        run(g._cycle())
+        assert len(rec.squared) == 2
+        assert all(s[1] == "software_overall_target" for s in rec.squared)
+
+    def test_within_overall_no_square(self):
+        cfg = {"sl": {"enabled": True, "mode": "mtm", "value": 500},
+               "target": {"enabled": False, "mode": "mtm", "value": 0},
+               "trailing": {"mode": "none"}, "reentry": {"enabled": False}}
+        r, cl, rec, g = self._mk(cfg)
+        cl.set([self._pos("AAA", -100, lp=245), self._pos("BBB", -100, lp=245)])  # -200 > -500
+        run(g._cycle())
+        assert rec.squared == []
+        assert len(r) == 2
+
+    def test_disabled_overall_is_noop(self):
+        cfg = {"sl": {"enabled": False, "mode": "mtm", "value": 0},
+               "target": {"enabled": False, "mode": "mtm", "value": 0},
+               "trailing": {"mode": "none"}, "reentry": {"enabled": False}}  # nothing enabled
+        r, cl, rec, g = self._mk(cfg)
+        cl.set([self._pos("AAA", -5000, lp=100), self._pos("BBB", -5000, lp=100)])
+        run(g._cycle())
+        assert rec.squared == []  # no overall controls configured → no basket square
+        assert len(r) == 2
+
+    def test_overall_trailing_persists_then_fires(self):
+        cfg = {"sl": {"enabled": False, "mode": "mtm", "value": 0},
+               "target": {"enabled": False, "mode": "mtm", "value": 0},
+               "trailing": {"mode": "lock", "unit": "mtm", "lock_at": 1000, "lock_floor": 600,
+                            "trail_per": 0, "trail_by": 0, "base_sl": 0},
+               "reentry": {"enabled": False}}
+        r, cl, rec, g = self._mk(cfg)
+        # basket reaches +1200 → lock floor at 600
+        cl.set([self._pos("AAA", 600, lp=280), self._pos("BBB", 600, lp=280)])
+        run(g._cycle())
+        assert rec.squared == []
+        assert g._overall_state["floor"] == 600.0
+        # basket falls to +500 (< floor 600) → overall trailing exit, square all
+        cl.set([self._pos("AAA", 250, lp=255), self._pos("BBB", 250, lp=255)])
+        run(g._cycle())
+        assert len(rec.squared) == 2
+        assert all(s[1] == "software_overall_trailing" for s in rec.squared)
