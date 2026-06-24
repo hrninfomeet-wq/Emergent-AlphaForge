@@ -130,6 +130,10 @@ class StrategyRegistry:
         return None
 
     def reload(self) -> None:
+        # Re-sync the registry with what's on disk: picks up newly added plugin
+        # files and drops deleted ones. NOTE: importlib.import_module is a no-op for
+        # already-imported modules, so an EDITED existing plugin won't pick up its
+        # changes here — the Phase 2 authoring/edit flow must add importlib.reload.
         self._strategies.clear()
         self._errors.clear()
         self._error_pkgs.clear()

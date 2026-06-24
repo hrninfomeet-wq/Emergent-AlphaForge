@@ -231,3 +231,32 @@ def test_is_retired_helper():
     with patch.object(sa, "_db", lambda: db):
         assert asyncio.run(sa.is_retired("foo")) is True
         assert asyncio.run(sa.is_retired("bar")) is False
+
+
+def test_delete_plugin_file_removes_file_under_plugins(tmp_path):
+    plug = tmp_path / "strategies" / "plugins"
+    plug.mkdir(parents=True)
+    f = plug / "my_plugin.py"
+    f.write_text("x = 1")
+    with patch.object(sa, "get_registry") as gr, \
+         patch("app.strategy_source_hash.strategy_file_path", return_value=f):
+        gr.return_value.get.return_value = object()
+        assert sa._delete_plugin_file("my_plugin") is True
+        assert not f.exists()
+
+
+def test_delete_plugin_file_refuses_outside_plugins(tmp_path):
+    f = tmp_path / "elsewhere" / "x.py"
+    f.parent.mkdir(parents=True)
+    f.write_text("x = 1")
+    with patch.object(sa, "get_registry") as gr, \
+         patch("app.strategy_source_hash.strategy_file_path", return_value=f):
+        gr.return_value.get.return_value = object()
+        assert sa._delete_plugin_file("x") is False
+        assert f.exists()
+
+
+def test_delete_plugin_file_none_when_unregistered():
+    with patch.object(sa, "get_registry") as gr:
+        gr.return_value.get.return_value = None
+        assert sa._delete_plugin_file("nope") is False

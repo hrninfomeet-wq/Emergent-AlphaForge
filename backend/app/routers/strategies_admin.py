@@ -33,7 +33,7 @@ def _delete_plugin_file(strategy_id: str) -> bool:
         return False
     path = strategy_file_path(s)
     plugins_marker = os.path.join("strategies", "plugins")
-    if path and os.path.isfile(path) and plugins_marker in path:
+    if path and os.path.isfile(path) and plugins_marker in str(path):
         os.remove(path)
         return True
     return False
