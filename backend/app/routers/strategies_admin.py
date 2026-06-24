@@ -72,6 +72,21 @@ async def list_strategies():
     return {"items": items}
 
 
+@api.get("/strategies/catalog")
+async def author_catalog():
+    """Vocabulary for the authoring wizard: valid columns/ops/regimes/exit fields.
+    Pure + host-safe (no DB). Lazy-imports the catalog helpers."""
+    from app.ai.compiler import allowed_columns
+    from app.ai.spec_schema import CMP_OPS
+    return {
+        "columns": sorted(allowed_columns()),
+        "ops": list(CMP_OPS),
+        "regimes": ["TREND", "TREND_EXPANDING", "CHOP", "VOLATILE_CHOP", "MIXED", "UNKNOWN"],
+        "exit_fields": ["spot_target_pts", "spot_stop_pts", "target_pct", "stop_pct", "time_stop_minutes"],
+        "param_types": ["int", "float", "bool"],
+    }
+
+
 @api.get("/strategies/{strategy_id}")
 async def get_strategy(strategy_id: str):
     s = get_registry().get(strategy_id)

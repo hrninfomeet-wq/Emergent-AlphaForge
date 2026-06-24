@@ -249,3 +249,22 @@ def test_install_invalid_spec_400():
         assert r.json()["detail"]  # non-empty error message
     finally:
         _stop(tc)
+
+
+# ---------------------------------------------------------------------------
+# 6. Catalog — returns vocabulary (columns / ops / regimes / exit_fields / param_types)
+# ---------------------------------------------------------------------------
+
+def test_catalog_returns_vocabulary():
+    tc = _make_app()
+    try:
+        r = tc.get("/strategies/catalog")
+        assert r.status_code == 200, r.text
+        d = r.json()
+        assert ">" in d["ops"] and "cross_above" in d["ops"]
+        assert "close" in d["columns"] and "ema9" in d["columns"] and "regime" in d["columns"]
+        assert "CHOP" in d["regimes"]
+        assert "spot_target_pts" in d["exit_fields"]
+        assert d["param_types"] == ["int", "float", "bool"]
+    finally:
+        _stop(tc)

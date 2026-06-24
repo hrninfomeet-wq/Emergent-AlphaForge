@@ -29,6 +29,10 @@ export const api = {
   unretireStrategy: (id) => apiClient.post(`/strategies/${id}/un-retire`).then((r) => r.data),
   deleteStrategy: (id) => apiClient.delete(`/strategies/${id}`).then((r) => r.data),
   reloadStrategies: () => apiClient.post("/strategies/reload").then((r) => r.data),
+  getStrategyCatalog: () => apiClient.get("/strategies/catalog").then((r) => r.data),
+  authorCompile: (spec) => apiClient.post("/strategies/author/compile", { spec }).then((r) => r.data),
+  authorInstall: (spec, overwrite = false) =>
+    apiClient.post("/strategies/author/install", { spec, overwrite }).then((r) => r.data),
 
   // Warehouse
   ingest: (instrument, days = 7) =>
