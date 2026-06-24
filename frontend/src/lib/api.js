@@ -266,6 +266,18 @@ export const api = {
   rejectOrder: (approvalId) =>
     apiClient.post(`/live-broker/order/approvals/${approvalId}/reject`, {}).then((r) => r.data),
 
+  // Live order page (Phase 2/3) — overall controls + GTT backstop
+  getOverallSettings: (scope = "overall") =>
+    apiClient.get("/live-broker/overall-settings", { params: { scope } }).then((r) => r.data),
+  putOverallSettings: (scope, config) =>
+    apiClient.put("/live-broker/overall-settings", { config }, { params: { scope: scope || "overall" } }).then((r) => r.data),
+  listGtt: () =>
+    apiClient.get("/live-broker/gtt").then((r) => r.data),
+  placeGtt: (payload) =>
+    apiClient.post("/live-broker/gtt", payload).then((r) => r.data),
+  cancelGtt: (alId) =>
+    apiClient.delete(`/live-broker/gtt/${alId}`).then((r) => r.data),
+
   // Presets
   listPresets: () => apiClient.get("/presets").then((r) => r.data),
   savePreset: (name, config) =>

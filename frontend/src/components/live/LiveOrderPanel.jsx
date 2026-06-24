@@ -5,6 +5,8 @@ import ModeSwitch from "./ModeSwitch";
 import PositionMonitor from "./PositionMonitor";
 import LiveOrderTicket from "./LiveOrderTicket";
 import ApprovalQueue from "./ApprovalQueue";
+import OverallSettingsPanel from "./OverallSettingsPanel";
+import GttBook from "./GttBook";
 
 /**
  * LiveOrderPanel — the primary order experience: ModeSwitch + PositionMonitor +
@@ -104,6 +106,30 @@ export default function LiveOrderPanel() {
       {/* Approval queue — approve (places real order) or reject */}
       <SectionCard title="Approval Queue">
         <ApprovalQueue tokens={tokens} mode={mode} onConsumed={handleConsumed} />
+      </SectionCard>
+
+      {/* Overall controls — basket SL / target / trailing / re-entry (AlgoTest parity) */}
+      <SectionCard
+        title="Overall Controls"
+        badge={
+          <span className="text-[10px] font-mono text-dimmer px-2 py-0.5 rounded-full border border-line bg-bg-3 uppercase tracking-wider">
+            basket SL / target / trailing
+          </span>
+        }
+      >
+        <OverallSettingsPanel scope="overall" />
+      </SectionCard>
+
+      {/* GTT / OCO disaster backstop (NRML-only) */}
+      <SectionCard
+        title="GTT / OCO Backstop"
+        badge={
+          <span className="text-[10px] font-mono text-dimmer px-2 py-0.5 rounded-full border border-line bg-bg-3 uppercase tracking-wider">
+            NRML PC-died net
+          </span>
+        }
+      >
+        <GttBook />
       </SectionCard>
     </div>
   );
