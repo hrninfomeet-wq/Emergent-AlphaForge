@@ -1,0 +1,72 @@
+{
+  "name": "Funds Payout Request",
+  "category": "Funds",
+  "kind": "REST",
+  "method": "POST",
+  "path": "/FundsPayOutReq",
+  "url": "https://piconnect.flattrade.in/PiConnectAPI/FundsPayOutReq",
+  "summary": "Submits a funds payout (withdrawal) request for a logged-in user's account. POST to /FundsPayOutReq with a jData JSON body (uid, actid, payout, optional remarks) plus the session jKey; returns the transaction status, request time, and transaction id.",
+  "request_params": [
+    {
+      "name": "jData",
+      "description": "Should send json object with fields in below list.",
+      "required": true,
+      "possible_values": ""
+    },
+    {
+      "name": "jKey",
+      "description": "Key Obtained on login success.",
+      "required": true,
+      "possible_values": ""
+    }
+  ],
+  "json_fields": [
+    {
+      "name": "uid",
+      "description": "User id of the logged in user.",
+      "required": true,
+      "possible_values": ""
+    },
+    {
+      "name": "actid",
+      "description": "Login users account ID.",
+      "required": true,
+      "possible_values": ""
+    },
+    {
+      "name": "payout",
+      "description": "Payout amount.",
+      "required": true,
+      "possible_values": ""
+    },
+    {
+      "name": "remarks",
+      "description": "Any message Entered during order entry.",
+      "required": false,
+      "possible_values": ""
+    }
+  ],
+  "response_fields": [
+    {
+      "name": "stat",
+      "description": "Tran status (transaction status).",
+      "possible_values": ""
+    },
+    {
+      "name": "request_time",
+      "description": "This will be present only in a successful response.",
+      "possible_values": ""
+    },
+    {
+      "name": "trn_id",
+      "description": "Tran id (transaction id). The response table row for this field is garbled in the source; the success sample uses the key trn_id.",
+      "possible_values": ""
+    }
+  ],
+  "sample_request": "curl --location 'https://BaseURL/FundsPayOutReq' \\\n--header 'Content-Type: application/json' \\\n--data 'jData={    \n    \"actid\": \"FZ00000\", \n    \"actid\": \"FZ00000\",\n    \"payout\": \"\"\n}&jKey=GHUDWU53H32MTHPA536Q32WR'",
+  "sample_success_response": "{\n\"request_time\":\"15:52:27 10-05-2021\",\n\"trn_id\":\"20211300000030\",\n\"stat\":\"W\"\n}",
+  "sample_failure_response": "{\n\"stat\":\"Not_Ok\",\n\"emsg\":\"Session Expired : Invalid Session Key\"\n}",
+  "notes": "- The curl sample uses placeholder 'https://BaseURL/'; the real base URL is https://piconnect.flattrade.in/PiConnectAPI (full endpoint https://piconnect.flattrade.in/PiConnectAPI/FundsPayOutReq).\n- jData and jKey are passed as URL-encoded form data joined by '&' in the --data body (jData={...}&jKey=...), not as separate query string params.\n- The curl sample's jData is malformed in the source PDF: it lists \"actid\" twice and omits both uid (a mandatory field per the table) and remarks; payout is shown empty. Treat it as illustrative only — per the field table the body should contain uid, actid, payout (all mandatory) and optional remarks.\n- Response-field naming is inconsistent: the source response table calls the id row \"Tran id\" while the success JSON uses the key \"trn_id\". The table prose says request_time is present only in a successful response.\n- stat value in the success sample is \"W\" (likely a pending/withdrawal-requested state); failure responses carry stat:\"Not_Ok\" plus an \"emsg\" error message (emsg is not documented in the response table).\n- All \"Possible value\" cells in the request/json/response tables are blank in the source (no enums provided).",
+  "confidence": "high",
+  "issues": "The response table row for the transaction-id field is garbled in the cleaned text (\"Tran status\" / \"Tran id\" appear as stray lines after request_time); the page image confirms the response fields are stat, request_time, and a transaction-id field, and the success sample disambiguates the JSON key as \"trn_id\". The curl jData body is itself buggy in the source PDF (duplicate actid, missing uid/remarks, empty payout) — reproduced verbatim as required."
+}

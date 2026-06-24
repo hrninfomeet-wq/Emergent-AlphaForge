@@ -1,0 +1,187 @@
+{
+  "name": "Trade Book",
+  "category": "Orders & Trades",
+  "kind": "REST",
+  "method": "POST",
+  "path": "/TradeBook",
+  "url": "https://piconnect.flattrade.in/PiConnectAPI/TradeBook",
+  "summary": "Retrieves the user's Trade Book via a POST call. The request sends a jData JSON object (uid, actid) plus the jKey login token; on success the response is a JSON array of trade/order objects (one per fill).",
+  "request_params": [
+    {
+      "name": "jData",
+      "required": true,
+      "description": "Should send json object with fields in below list.",
+      "possible_values": ""
+    },
+    {
+      "name": "jKey",
+      "required": true,
+      "description": "Key Obtained on login success.",
+      "possible_values": ""
+    }
+  ],
+  "json_fields": [
+    {
+      "name": "uid",
+      "required": true,
+      "description": "Logged in User Id",
+      "possible_values": ""
+    },
+    {
+      "name": "actid",
+      "required": true,
+      "description": "Account Id of logged in user",
+      "possible_values": ""
+    }
+  ],
+  "response_fields": [
+    {
+      "name": "stat",
+      "possible_values": "Ok or Not_Ok",
+      "description": "Order book success or failure indication."
+    },
+    {
+      "name": "exch",
+      "possible_values": "",
+      "description": "Exchange Segment"
+    },
+    {
+      "name": "tsym",
+      "possible_values": "",
+      "description": "Trading symbol / contract on which order is placed."
+    },
+    {
+      "name": "norenordno",
+      "possible_values": "",
+      "description": "Noren Order Number"
+    },
+    {
+      "name": "qty",
+      "possible_values": "",
+      "description": "Order Quantity [If qty is junk value other than numbers]."
+    },
+    {
+      "name": "prd",
+      "possible_values": "",
+      "description": "Display product alias name, using prarr returned in user details."
+    },
+    {
+      "name": "trantype",
+      "possible_values": "B / S",
+      "description": "B -> BUY, S -> SELL [transtype should be 'B' or 'S' else reject]."
+    },
+    {
+      "name": "prctyp",
+      "possible_values": "LMT",
+      "description": "Price type"
+    },
+    {
+      "name": "fillshares",
+      "possible_values": "",
+      "description": "Total Traded Quantity of this order"
+    },
+    {
+      "name": "avgprc",
+      "possible_values": "",
+      "description": "Average trade price of total traded quantity"
+    },
+    {
+      "name": "exchordid",
+      "possible_values": "",
+      "description": "Exchange Order Number"
+    },
+    {
+      "name": "remarks",
+      "possible_values": "",
+      "description": "Any message Entered during order entry."
+    },
+    {
+      "name": "ret",
+      "possible_values": "DAY / EOS / IOC",
+      "description": "Order validity [ret should be DAY / EOS / IOC else reject]"
+    },
+    {
+      "name": "uid",
+      "possible_values": "",
+      "description": ""
+    },
+    {
+      "name": "actid",
+      "possible_values": "",
+      "description": ""
+    },
+    {
+      "name": "pp",
+      "possible_values": "",
+      "description": "Price precision"
+    },
+    {
+      "name": "ti",
+      "possible_values": "",
+      "description": "Tick size"
+    },
+    {
+      "name": "ls",
+      "possible_values": "",
+      "description": "Lot size"
+    },
+    {
+      "name": "cstFrm",
+      "possible_values": "",
+      "description": "Custom Firm"
+    },
+    {
+      "name": "fltm",
+      "possible_values": "",
+      "description": "Fill Time"
+    },
+    {
+      "name": "flid",
+      "possible_values": "",
+      "description": "Fill ID"
+    },
+    {
+      "name": "flqty",
+      "possible_values": "",
+      "description": "Fill Qty"
+    },
+    {
+      "name": "flprc",
+      "possible_values": "",
+      "description": "Fill Price"
+    },
+    {
+      "name": "ordersource",
+      "possible_values": "",
+      "description": "Order Source"
+    },
+    {
+      "name": "token",
+      "possible_values": "",
+      "description": "Token"
+    }
+  ],
+  "failure_response_fields": [
+    {
+      "name": "stat",
+      "possible_values": "Not_Ok",
+      "description": "Order book failure indication."
+    },
+    {
+      "name": "request_time",
+      "possible_values": "",
+      "description": "Response received time."
+    },
+    {
+      "name": "emsg",
+      "possible_values": "",
+      "description": "Error message"
+    }
+  ],
+  "sample_request": "curl --location 'https://BaseURL/TradeBook' \\\n--header 'Content-Type: application/json' \\\n--data 'jData={\n    \"uid\": \"FZ00000\",\n    \"actid\": \"FZ00000\",\n}&jKey=GHUDWU53H32MTHPA536Q32WR'",
+  "sample_success_response": "[\n{\n\"stat\": \"Ok\",\n\"norenordno\": \"20121300065715\",\n\"uid\": \"GURURAJ\",\n\"actid\": \"GURURAJ\",\n\"exch\": \"NSE\",\n\"prctyp\": \"LMT\",\n\"ret\": \"DAY\",\n\"prd\": \"M\",\n\"flid\": \"102\",\n\"fltm\": \"01-01-1980 00:00:00\",\n\"trantype\": \"S\",\n\"tsym\": \"ACCELYA-EQ\",\n\"qty\": \"180\",\n\"token\": \"7053\",\n\"fillshares\": \"180\",\n\"flqty\": \"180\",\n\"pp\": \"2\",\n\"ls\": \"1\",\n\"ti\": \"0.05\",\n\"prc\": \"800.00\",\n\"flprc\": \"800.00\",\n\"norentm\": \"19:59:32 13-12-2020\",\n\"exch_tm\": \"00:00:00 01-01-1980\",\n\"remarks\": \"WC TEST Order\",\n\"exchordid\": \"6857\"\n},\n{\n\"stat\": \"Ok\",\n\"norenordno\": \"20121300065716\",\n\"uid\": \"GURURAJ\",\n\"actid\": \"GURURAJ\",\n\"exch\": \"NSE\",\n\"prctyp\": \"LMT\",\n\"ret\": \"DAY\",\n\"prd\": \"M\",\n\"flid\": \"101\",\n\"fltm\": \"01-01-1980 00:00:00\",\n\"trantype\": \"B\",\n\"tsym\": \"ACCELYA-EQ\",\n\"qty\": \"180\",\n\"token\": \"7053\",\n\"fillshares\": \"180\",\n\"flqty\": \"180\",\n\"pp\": \"2\",\n\"ls\": \"1\",\n\"ti\": \"0.05\",\n\"prc\": \"800.00\",\n\"flprc\": \"800.00\",\n\"norentm\": \"19:59:32 13-12-2020\",\n\"exch_tm\": \"00:00:00 01-01-1980\",\n\"remarks\": \"WC TEST Order\",\n\"exchordid\": \"6858\"\n}\n]",
+  "sample_failure_response": "{\n\"stat\": \"Not_Ok\",\n\"request_time\": \"Response received time.\",\n\"emsg\": \"Error message\"\n}",
+  "notes": "- Base URL is https://piconnect.flattrade.in/PiConnectAPI ; the curl sample uses the placeholder 'https://BaseURL/TradeBook'.\n- Request body is form-style: jData={...JSON...}&jKey=... with Content-Type application/json (as shown verbatim in the doc).\n- The sample request's jData has a trailing comma after the \"actid\" line (invalid strict JSON) - reproduced verbatim from the doc.\n- Success response is a JSON ARRAY of trade objects (one per fill/order); each object's 'stat' is 'Ok'. Failure response is a single JSON object with stat='Not_Ok'.\n- The failure JSON block is NOT printed literally in the source; it is reconstructed from the documented failure-fields table (stat/request_time/emsg). Values shown are the doc's description placeholders, not real data.\n- In the response field table the cells for 'uid' and 'actid' are BLANK (no possible-value or description) in the Trade Book section - kept blank to stay faithful to the source (the order-entry / Positions Book 'User Id' / 'Account Id' wording is NOT carried over here).\n- In the response field table, 'qty', 'trantype', and 'ret' carry a trailing '*' in the image. The '*' is a required-input marker carried over from the order-entry field table; in this response context it is informational only.\n- The sample success objects include keys not present in the documented response field table: prc, norentm, exch_tm (present in the JSON, undocumented in the field list).\n- Possible-value cells bound from the page image: stat=Ok or Not_Ok, trantype=B / S, prctyp=LMT, ret=DAY / EOS / IOC.\n- Page 27 begins the next section (POSITIONS BOOK); the Trade Book content itself spans pages 25-26. (Note: page 25 top also carries the tail of the previous Order Book section's failure-field table.)",
+  "confidence": "high",
+  "issues": "The failure-response JSON is not printed verbatim in the source (only the field table is shown), so sample_failure_response is reconstructed from that table with the doc's placeholder text. The page-26 response table lists 'uid' and 'actid' rows with blank possible-value/description cells; these are kept blank rather than inferred from the Positions Book table. The 'qty', 'trantype', and 'ret' rows carry a '*' in the response table that is a carried-over required-input marker, not a response requirement."
+}

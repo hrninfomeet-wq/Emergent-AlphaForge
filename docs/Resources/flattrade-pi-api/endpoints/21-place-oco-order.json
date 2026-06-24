@@ -1,0 +1,197 @@
+{
+  "name": "Place OCO Order",
+  "category": "Orders & Trades",
+  "kind": "REST",
+  "method": "POST",
+  "path": "/PlaceOCOOrder",
+  "url": "https://piconnect.flattrade.in/PiConnectAPI/PlaceOCOOrder",
+  "summary": "Places a One-Cancels-the-Other (OCO) order by POSTing a jData JSON object (plus the login jKey) to the PlaceOCOOrder endpoint. The OCO order ties two full order legs (place_order_params and place_order_params_leg2) together with an oivariable array whose values are compared against the LTP; on success the response returns the created alert/OI id (al_id).",
+  "request_params": [
+    {
+      "name": "jData",
+      "description": "Should send json object with fields in below list.",
+      "possible_values": "",
+      "required": true
+    },
+    {
+      "name": "jKey",
+      "description": "Key Obtained on login success.",
+      "possible_values": "",
+      "required": true
+    }
+  ],
+  "json_fields": [
+    {
+      "name": "uid",
+      "description": "User id of the logged in user.",
+      "possible_values": "",
+      "required": true
+    },
+    {
+      "name": "tsym",
+      "description": "Unique id of contract on which order to be placed. (use url encoding to avoid special char error for symbols like M&M)",
+      "possible_values": "",
+      "required": true
+    },
+    {
+      "name": "exch",
+      "description": "Exchange",
+      "possible_values": "",
+      "required": true
+    },
+    {
+      "name": "validity",
+      "description": "Validity",
+      "possible_values": "DAY or GTT",
+      "required": true
+    },
+    {
+      "name": "ai_t",
+      "description": "Alert type",
+      "possible_values": "",
+      "required": true
+    },
+    {
+      "name": "exchsym",
+      "description": "Exchange symbol",
+      "possible_values": "",
+      "required": false
+    },
+    {
+      "name": "oivariable",
+      "description": "Array Object, details given below (see OIVARIABLE FORMAT).",
+      "possible_values": "",
+      "required": false
+    },
+    {
+      "name": "place_order_params",
+      "description": "List of place order Params fields (the first / leg-1 order parameters; see PLACE_ORDER_PARAMS FORMAT).",
+      "possible_values": "",
+      "required": true
+    },
+    {
+      "name": "place_order_params_leg2",
+      "description": "List of Place order params fields for leg2 (the second order parameters; see PLACE_ORDER_PARAMS FORMAT).",
+      "possible_values": "",
+      "required": true
+    },
+    {
+      "name": "oivariable.d",
+      "description": "OIVARIABLE FORMAT field: Data to be compared with LTP.",
+      "possible_values": "",
+      "required": true
+    },
+    {
+      "name": "oivariable.var_name",
+      "description": "OIVARIABLE FORMAT field: Variable Name.",
+      "possible_values": "x or y",
+      "required": true
+    },
+    {
+      "name": "place_order_params.tsym",
+      "description": "PLACE_ORDER_PARAMS field: Trading symbol of the scrip (contract).",
+      "possible_values": "",
+      "required": true
+    },
+    {
+      "name": "place_order_params.exch",
+      "description": "PLACE_ORDER_PARAMS field: Exchange.",
+      "possible_values": "",
+      "required": true
+    },
+    {
+      "name": "place_order_params.trantype",
+      "description": "PLACE_ORDER_PARAMS field: B -> BUY, S -> SELL [transtype should be 'B' or 'S' else reject].",
+      "possible_values": "B / S",
+      "required": true
+    },
+    {
+      "name": "place_order_params.prctyp",
+      "description": "PLACE_ORDER_PARAMS field: Price Type.",
+      "possible_values": "",
+      "required": true
+    },
+    {
+      "name": "place_order_params.prd",
+      "description": "PLACE_ORDER_PARAMS field: Product.",
+      "possible_values": "",
+      "required": true
+    },
+    {
+      "name": "place_order_params.ret",
+      "description": "PLACE_ORDER_PARAMS field: Retention type [ret should be DAY / EOS / IOC else reject].",
+      "possible_values": "DAY / EOS / IOC",
+      "required": true
+    },
+    {
+      "name": "place_order_params.actid",
+      "description": "PLACE_ORDER_PARAMS field: Acct Id.",
+      "possible_values": "",
+      "required": true
+    },
+    {
+      "name": "place_order_params.uid",
+      "description": "PLACE_ORDER_PARAMS field: User Id.",
+      "possible_values": "",
+      "required": true
+    },
+    {
+      "name": "place_order_params.ordersource",
+      "description": "PLACE_ORDER_PARAMS field: Used to generate exchange info fields.",
+      "possible_values": "MOB / WEB / TT",
+      "required": false
+    },
+    {
+      "name": "place_order_params.remarks",
+      "description": "PLACE_ORDER_PARAMS field: Any tag by user to mark order.",
+      "possible_values": "",
+      "required": false
+    },
+    {
+      "name": "place_order_params.qty",
+      "description": "PLACE_ORDER_PARAMS field: Order Quantity [If qty is junk value other than numbers].",
+      "possible_values": "",
+      "required": true
+    },
+    {
+      "name": "place_order_params.prc",
+      "description": "PLACE_ORDER_PARAMS field: Order Price [If prc is junk value other than numbers] \"Order price cannot be zero\".",
+      "possible_values": "",
+      "required": true
+    },
+    {
+      "name": "place_order_params.trgprc",
+      "description": "PLACE_ORDER_PARAMS field: New trigger price in case of SL-LMT.",
+      "possible_values": "",
+      "required": false
+    }
+  ],
+  "response_fields": [
+    {
+      "name": "stat",
+      "description": "OCO orders success or failure indication.",
+      "possible_values": "OI created / Not_Ok"
+    },
+    {
+      "name": "request_time",
+      "description": "This will be present only in a successful response.",
+      "possible_values": ""
+    },
+    {
+      "name": "al_id",
+      "description": "Alert Id.",
+      "possible_values": ""
+    },
+    {
+      "name": "emsg",
+      "description": "This will be present only in case of errors. That is: 1) Invalid Input 2) Session Expired.",
+      "possible_values": ""
+    }
+  ],
+  "sample_request": "curl --location 'https://BaseURL/PlaceOCOOrder' \\\n--header 'Content-Type: application/json' \\\n--data 'jData={\n    \"uid\": \"FZ00000\",\n    \"ai_t\": \"LMT_BOS_O\",\n    \"remarks\": \"admn\",\n    \"validity\": \"GTT\",\n    \"tsym\": \"ACC-EQ\",\n    \"exch\": \"NSE\",\n    \"oivariable\": [\n        {\n            \"d\": \"20000\",\n            \"var_name\": \"x\"\n        },\n        {\n            \"d\": \"30000\",\n            \"var_name\": \"y\"\n        }\n    ],\n    \"place_order_params\": {\n        \"tsym\": \"ACC-EQ\",\n        \"exch\": \"NSE\",\n        \"trantype\": \"B\",\n        \"prctyp\": \"LMT\",\n        \"prd\": \"C\",\n        \"ret\": \"DAY\",\n        \"actid\": \"FZ00000\",\n        \"uid\": \"FZ00000\",\n        \"ordersource\": \"WEB\",\n        \"qty\": \"1\",\n        \"prc\": \"200\"\n    },\n    \"place_order_params_leg2\": {\n        \"tsym\": \"ACC-EQ\",\n        \"exch\": \"NSE\",\n        \"trantype\": \"S\",\n        \"prctyp\": \"LMT\",\n        \"prd\": \"C\",\n        \"ret\": \"DAY\",\n        \"actid\": \"FZ00000\",\n        \"uid\": \"FZ00000\",\n        \"ordersource\": \"WEB\",\n        \"qty\": \"1\",\n        \"prc\": \"200\"\n    }\n}&jKey=652c99c82d7edcd4f472869786074c90bd27dfd0c68635c2e53db0ed08cbea0f'",
+  "sample_success_response": "{\n\"request_time\":\"18:56:26 08-10-2021\",\n\"stat\":\"OI created\",\n\"al_id\":\"21100800000009\"\n}",
+  "sample_failure_response": "{\n\"stat\":\"Not_Ok\",\n\"emsg\":\"Session Expired : Invalid Session Key\"\n}",
+  "confidence": "high",
+  "issues": "The curl request body spans two pages: the right-column code on page 36 holds the jData JSON up to leg2's \"prc\": \"200\", and page 37's right column carries the closing braces (}}) plus the &jKey=... tail of the SAME curl block (page-37 lines 104-105). The assembled sample_request is faithful. Required flags were re-checked against the trailing '*' in the images: required = uid, tsym, exch, validity, ai_t, place_order_params, place_order_params_leg2 (and inside the leg objects: tsym, exch, trantype, prctyp, prd, ret, actid, uid, qty, prc; plus oivariable.d and oivariable.var_name); NOT required = exchsym, oivariable, place_order_params.ordersource, place_order_params.remarks, place_order_params.trgprc. Corrected against the draft: the 'Possible value' column for oivariable, place_order_params and place_order_params_leg2 is BLANK in the doc (the phrases 'Array Object' / 'List of ...' live in the Description column), so their possible_values were cleared (draft wrongly had 'Array Object' / 'Object'); and ai_t's possible_values/description were trimmed to the doc's literal 'Alert type'. Value bindings verified: validity=DAY or GTT, oivariable.var_name=x or y, trantype=B / S, ret=DAY / EOS / IOC, ordersource=MOB / WEB / TT. prctyp and prd have no possible-value enum cell (blank). The sample JSON includes a top-level \"remarks\" key that is not in the top-level jData table (remarks is documented under PLACE_ORDER_PARAMS).",
+  "notes": "- BaseURL in the curl resolves to https://piconnect.flattrade.in/PiConnectAPI, so the full URL is https://piconnect.flattrade.in/PiConnectAPI/PlaceOCOOrder.\n- jData and jKey are sent as a url-encoded form body (jData={...}&jKey=...), not raw JSON, despite the Content-Type: application/json header.\n- tsym: use URL encoding to avoid special-char errors for symbols like M&M.\n- An OCO order requires BOTH legs: place_order_params (leg 1) and place_order_params_leg2 (leg 2), each a full PLACE_ORDER_PARAMS object.\n- oivariable is an array of {d, var_name} where var_name is x or y and d is the value compared against LTP (the alert trigger boundaries).\n- trantype must be exactly 'B' or 'S' else reject; ret must be DAY / EOS / IOC else reject.\n- prc (order price) cannot be zero; qty/prc are rejected if junk (non-numeric) values.\n- trgprc is the new trigger price, used in case of SL-LMT price type.\n- On success stat is \"OI created\" and al_id is the created alert/OI id; request_time appears only on success. On failure stat is \"Not_Ok\" and emsg carries the reason (Invalid Input or Session Expired).\n- The very next section (Modify OCO Order, POST /PiConnectAPI/ModifyOCOOrder) begins on page 38 and is out of scope for this extraction."
+}

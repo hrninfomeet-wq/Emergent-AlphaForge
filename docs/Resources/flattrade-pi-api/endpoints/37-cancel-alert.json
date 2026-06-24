@@ -1,0 +1,63 @@
+{
+  "name": "Cancel Alert",
+  "category": "Alerts",
+  "kind": "REST",
+  "method": "POST",
+  "path": "/CancelAlert",
+  "url": "https://piconnect.flattrade.in/PiConnectAPI/CancelAlert",
+  "summary": "Cancels a previously placed price alert. Send a POST request with a jData JSON object identifying the alert (al_id) plus the jKey session token; a successful response returns the alert id and a cancel/delete status indication.",
+  "request_params": [
+    {
+      "name": "jData*",
+      "description": "Should send json object with fields in below list",
+      "required": true
+    },
+    {
+      "name": "jKey*",
+      "description": "Key Obtained on login success.",
+      "required": true
+    }
+  ],
+  "json_fields": [
+    {
+      "name": "uid",
+      "description": "User id of the logged in user.",
+      "required": false,
+      "possible_values": ""
+    },
+    {
+      "name": "al_id*",
+      "description": "Alert Id",
+      "required": true,
+      "possible_values": ""
+    }
+  ],
+  "response_fields": [
+    {
+      "name": "stat",
+      "description": "alert success or failure indication.",
+      "possible_values": ""
+    },
+    {
+      "name": "request_time",
+      "description": "This will be present only in a successful response.",
+      "possible_values": ""
+    },
+    {
+      "name": "al_id",
+      "description": "Alert Id",
+      "possible_values": ""
+    },
+    {
+      "name": "emsg",
+      "description": "This will be present only in case of errors. That is : 1) Invalid Input 2) Session Expired",
+      "possible_values": ""
+    }
+  ],
+  "sample_request": "curl --location 'https://BaseURL/CancelAlert' \\\n--header 'Content-Type: application/json' \\\n--data 'jData={\n    \"uid\": \"FZ00000\", \n    \"actid\": \"FZ00000\"\n}&jKey=GHUDWU53H32MTHPA536Q32WR'",
+  "sample_success_response": "[\n{\n\"request_time\":\"15:03:33 08-04-2021\",\n\"stat\":\"Oi delete success\",\n\"al_id\":\"21040800000008\"\n}\n]",
+  "sample_failure_response": "{\n\"stat\":\"Not_Ok\",\n\"emsg\":\"Session Expired : Invalid Session Key\"\n}",
+  "notes": "The curl example uses a placeholder BaseURL; the real base is https://piconnect.flattrade.in/PiConnectAPI (full endpoint .../CancelAlert). Request is form-style: jData is a JSON object and jKey is appended as a separate body/query parameter (jData={...}&jKey=...). DOC INCONSISTENCY: the documented jData fields are uid (optional) and al_id* (mandatory), but the sample curl --data body instead contains \"uid\" and \"actid\" and does NOT include al_id — a copy-paste artifact from another endpoint; to cancel an alert you must supply al_id. request_time format is HH:MM:SS DD-MM-YYYY. In the PDF the al_id key/value renders with curly/smart quotes (“ ”) — a PDF artifact; real responses use standard JSON double quotes (transcribed here as straight quotes).",
+  "confidence": "high",
+  "issues": "The Cancel Alert success-response sample is split across the page boundary: page-60's right column shows the CancelAlert curl followed by a 'Sample Success Response :' block cut off at '[ {', which continues at the TOP of page-61's right column as request_time 15:03:33 / \"Oi delete success\" / al_id 21040800000008. The draft mis-bound the earlier '11:22:26 / Oi created / 21040800000004' block (that is the tail of the Place Alert response on page 60) to Cancel Alert; corrected here. The curl body's uid/actid fields are a doc error (do not match the documented al_id field), so the exact runtime accepted field name for the alert id cannot be confirmed from the curl alone — al_id* per the jData field table (page 61) is authoritative."
+}

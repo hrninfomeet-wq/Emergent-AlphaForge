@@ -1,0 +1,65 @@
+{
+  "name": "Cancel Order",
+  "category": "Orders & Trades",
+  "kind": "REST",
+  "method": "POST",
+  "path": "/CancelOrder",
+  "url": "https://piconnect.flattrade.in/PiConnectAPI/CancelOrder",
+  "summary": "Cancels a previously placed (open/pending) order. Make a POST call to the CancelOrder endpoint with the Noren order number; the response indicates success/failure and returns the order number of the cancelled order.",
+  "request_params": [
+    {
+      "name": "jData*",
+      "description": "Should send json object with fields in below list (the jData JSON body containing norenordno and uid).",
+      "required": true,
+      "possible_values": ""
+    },
+    {
+      "name": "jKey*",
+      "description": "Key Obtained on login success.",
+      "required": true,
+      "possible_values": ""
+    }
+  ],
+  "json_fields": [
+    {
+      "name": "norenordno*",
+      "description": "Noren order number, which needs to be modified. (Doc text reuses the 'which needs to be modified' phrasing from the Modify section; for this endpoint it identifies the order to be cancelled.)",
+      "required": true,
+      "possible_values": ""
+    },
+    {
+      "name": "uid*",
+      "description": "User id of the logged in user.",
+      "required": true,
+      "possible_values": ""
+    }
+  ],
+  "response_fields": [
+    {
+      "name": "stat",
+      "possible_values": "Ok or Not_Ok",
+      "description": "Cancel order success or failure indication."
+    },
+    {
+      "name": "result",
+      "possible_values": "",
+      "description": "Noren Order number of the canceled order."
+    },
+    {
+      "name": "request_time",
+      "possible_values": "",
+      "description": "Response received time."
+    },
+    {
+      "name": "emsg",
+      "possible_values": "",
+      "description": "This will be present only if Order cancelation fails."
+    }
+  ],
+  "sample_request": "curl --location 'https://BaseURL/CancelOrder' \\\n--header 'Content-Type: application/json' \\\n--data 'jData={\n         \"uid\": \"FZ00000\",\n         \"norenordno\": \"123456789\"\n     }&jKey=GHUDWU53H32MTHPA536Q32WR'",
+  "sample_success_response": "{\n\"request_time\":\"14:14:10 26-05-2020\",\n\"stat\":\"Ok\",\n\"result\":\"20052600000103\"\n}",
+  "sample_failure_response": "{\n\"request_time\":\"16:01:48 28-05-2020\",\n\"stat\":\"Not_Ok\",\n\"emsg\":\"Rejected : ORA:Order not found to Cancel\"\n}",
+  "notes": "- The curl sample uses 'https://BaseURL/CancelOrder' as a placeholder; the real base URL is https://piconnect.flattrade.in/PiConnectAPI (so the full endpoint is https://piconnect.flattrade.in/PiConnectAPI/CancelOrder).\n- The request payload is sent as a URL-encoded form body of the shape jData={...json...}&jKey=... with Content-Type application/json (per the doc's curl), not as a pure JSON body.\n- Only two jData fields exist for Cancel Order: norenordno* and uid*, both mandatory. The jData table has no 'Possible value' entries for either field.\n- In the doc's curl the uid field appears before norenordno inside the jData object.\n- request_time values are local timestamps in 'HH:MM:SS DD-MM-YYYY' format (e.g. '14:14:10 26-05-2020'), not epoch.\n- The description for norenordno in the doc literally says 'which needs to be modified' (carried over from the Modify section); for this endpoint it identifies the order to cancel.",
+  "confidence": "high",
+  "issues": "The Cancel Order section spans the page-11/page-12 boundary. The jData parameter table (norenordno*, uid*) appears at the top of page 12 (confirmed in the page-12 image). The sample success response is on page 11; the sample failure response is on page 12. The page-12 image confirms the next ALL-CAPS section is 'EXIT SNO ORDER', so the prd* field with possible value 'H / B' belongs to Exit SNO Order, NOT Cancel Order, and was correctly excluded. No unreadable content."
+}

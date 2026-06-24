@@ -1,0 +1,210 @@
+{
+  "name": "Single Order History",
+  "category": "Orders & Trades",
+  "kind": "REST",
+  "method": "POST",
+  "path": "/SingleOrdHist",
+  "url": "https://piconnect.flattrade.in/PiConnectAPI/SingleOrdHist",
+  "summary": "Retrieves the full status history (every report/event) of a single order identified by its Noren order number. Returns a JSON array of objects, one per order state transition (e.g. PendingNew, NewAck, OPEN, COMPLETE).",
+  "request_params": [
+    {
+      "name": "jData",
+      "description": "Should send json object with fields in below list (the json_fields). URL-encoded JSON payload.",
+      "required": true,
+      "possible_values": ""
+    },
+    {
+      "name": "jKey",
+      "description": "Key Obtained on login success.",
+      "required": true,
+      "possible_values": ""
+    }
+  ],
+  "json_fields": [
+    {
+      "name": "uid",
+      "description": "Logged in User Id.",
+      "required": true,
+      "possible_values": ""
+    },
+    {
+      "name": "norenordno",
+      "description": "Noren Order Number.",
+      "required": true,
+      "possible_values": ""
+    }
+  ],
+  "response_fields": [
+    {
+      "name": "stat",
+      "possible_values": "Ok or Not_Ok",
+      "description": "Order book success or failure indication."
+    },
+    {
+      "name": "exch",
+      "possible_values": "",
+      "description": "Exchange Segment."
+    },
+    {
+      "name": "tsym",
+      "possible_values": "",
+      "description": "Trading symbol / contract on which order is placed."
+    },
+    {
+      "name": "norenordno",
+      "possible_values": "",
+      "description": "Noren Order Number."
+    },
+    {
+      "name": "prc",
+      "possible_values": "",
+      "description": "Order Price [If prc is junk value other than numbers] \"Order price cannot be zero\". (marked prc* in doc)"
+    },
+    {
+      "name": "qty",
+      "possible_values": "",
+      "description": "Order Quantity [If qty is junk value other than numbers]. (marked qty* in doc)"
+    },
+    {
+      "name": "prd",
+      "possible_values": "",
+      "description": "Display product alias name, using prarr returned in user details."
+    },
+    {
+      "name": "status",
+      "possible_values": "",
+      "description": "Order status."
+    },
+    {
+      "name": "rpt",
+      "possible_values": "",
+      "description": "Report Type (fill/complete etc)."
+    },
+    {
+      "name": "trantype",
+      "possible_values": "B / S",
+      "description": "B -> BUY, S -> SELL [transtype should be 'B' or 'S' else reject]. (marked trantype* in doc)"
+    },
+    {
+      "name": "prctyp",
+      "possible_values": "LMT",
+      "description": "Price type."
+    },
+    {
+      "name": "fillshares",
+      "possible_values": "",
+      "description": "Total Traded Quantity of this order."
+    },
+    {
+      "name": "avgprc",
+      "possible_values": "",
+      "description": "Average trade price of total traded quantity."
+    },
+    {
+      "name": "rejreason",
+      "possible_values": "",
+      "description": "If order is rejected, reason in text form."
+    },
+    {
+      "name": "exchordid",
+      "possible_values": "",
+      "description": "Exchange Order Number."
+    },
+    {
+      "name": "cancelqty",
+      "possible_values": "",
+      "description": "Canceled quantity for order which is in status cancelled."
+    },
+    {
+      "name": "remarks",
+      "possible_values": "",
+      "description": "Any message Entered during order entry."
+    },
+    {
+      "name": "dscqty",
+      "possible_values": "",
+      "description": "Order disclosed quantity [If dscqty is junk value other than numbers]. (marked dscqty* in doc)"
+    },
+    {
+      "name": "trgprc",
+      "possible_values": "",
+      "description": "Order trigger price."
+    },
+    {
+      "name": "ret",
+      "possible_values": "DAY / EOS / IOC",
+      "description": "Order validity [ret should be DAY / EOS / IOC else reject]. (marked ret* in doc)"
+    },
+    {
+      "name": "uid",
+      "possible_values": "",
+      "description": "(User Id; Description cell blank in doc.)"
+    },
+    {
+      "name": "actid",
+      "possible_values": "",
+      "description": "(Account Id; Description cell blank in doc.)"
+    },
+    {
+      "name": "bpprc",
+      "possible_values": "",
+      "description": "Book Profit Price applicable only if product is selected as B (Bracket order)."
+    },
+    {
+      "name": "blprc",
+      "possible_values": "",
+      "description": "Book loss Price applicable only if product is selected as H and B (High Leverage and Bracket order)."
+    },
+    {
+      "name": "trailprc",
+      "possible_values": "",
+      "description": "Trailing Price applicable only if product is selected as H and B (High Leverage and Bracket order)."
+    },
+    {
+      "name": "amo",
+      "possible_values": "Yes",
+      "description": "The message \"Invalid AMO\" will be displayed if the \"amo\" field is not sent with a \"Yes\" value. If amo is not required, do not send this field. (marked amo* in doc)"
+    },
+    {
+      "name": "pp",
+      "possible_values": "",
+      "description": "Price precision."
+    },
+    {
+      "name": "ti",
+      "possible_values": "",
+      "description": "Tick size."
+    },
+    {
+      "name": "ls",
+      "possible_values": "",
+      "description": "Lot size."
+    },
+    {
+      "name": "token",
+      "possible_values": "",
+      "description": "Contract Token."
+    },
+    {
+      "name": "orddttm",
+      "possible_values": "",
+      "description": "(Order date-time; Description cell blank in doc.)"
+    },
+    {
+      "name": "ordenttm",
+      "possible_values": "",
+      "description": "(Order entry time; Description cell blank in doc.)"
+    },
+    {
+      "name": "extm",
+      "possible_values": "",
+      "description": "(Exchange time; Description cell blank in doc.)"
+    }
+  ],
+  "sample_request": "curl --location 'https://BaseURL/SingleOrdHist' \\\n--header 'Content-Type: application/json' \\\n--data 'jData={\"uid\":\"FZ00000\", \n\"norenordno\":\"20121300065716\"}&jKey=GHUDWU53H32MTHPA536Q32WR'",
+  "sample_success_response": "[\n{\n\"stat\": \"Ok\",\"norenordno\": \"20121300065716\",\n\"uid\": \"DEMO1\",\n\"actid\": \"DEMO1\",\n\"exch\": \"NSE\",\n\"tsym\": \"ACCELYA-EQ\",\n\"qty\": \"180\",\n\"trantype\": \"B\",\n\"prctyp\": \"LMT\",\n\"ret\": \"DAY\",\n\"token\": \"7053\",\n\"pp\": \"2\",\n\"ls\": \"1\",\n\"ti\": \"0.05\",\n\"prc\": \"800.00\",\n\"avgprc\": \"800.00\",\n\"dscqty\": \"0\",\n\"prd\": \"M\",\n\"status\": \"COMPLETE\",\n\"rpt\": \"Fill\",\n\"fillshares\": \"180\",\n\"norentm\": \"19:59:32 13-12-2020\",\n\"exch_tm\": \"00:00:00 01-01-1980\",\n\"remarks\": \"WC TEST Order\",\n\"exchordid\": \"6858\"\n},\n{\n\"stat\": \"Ok\",\n\"norenordno\": \"20121300065716\",\n\"uid\": \"DEMO1\",\n\"actid\": \"DEMO1\",\n\"exch\": \"NSE\",\n\"tsym\": \"ACCELYA-EQ\",\n\"qty\": \"180\",\n\"trantype\": \"B\",\n\"prctyp\": \"LMT\",\n\"ret\": \"DAY\",\n\"token\": \"7053\",\n\"pp\": \"2\",\n\"ls\": \"1\",\n\"ti\": \"0.05\",\n\"prc\": \"800.00\",\n\"dscqty\": \"0\",\n\"prd\": \"M\",\n\"status\": \"OPEN\",\n\"rpt\": \"New\",\n\"norentm\": \"19:59:32 13-12-2020\",\n\"exch_tm\": \"00:00:00 01-01-1980\",\n\"remarks\": \"WC TEST Order\",\n\"exchordid\": \"6858\"\n},\n{\n\"stat\": \"Ok\",\n\"norenordno\": \"20121300065716\",\n\"uid\": \"DEMO1\",\n\"actid\": \"DEMO1\",\n\"exch\": \"NSE\",\n\"tsym\": \"ACCELYA-EQ\",\n\"qty\": \"180\",\n\"trantype\": \"B\",\n\"prctyp\": \"LMT\",\n\"ret\": \"DAY\",\n\"token\": \"7053\",\n\"pp\": \"2\",\n\"ls\": \"1\",\n\"ti\": \"0.05\",\n\"prc\": \"800.00\",\n\"dscqty\": \"0\",\n\"prd\": \"M\",\n\"status\": \"PENDING\",\n\"rpt\": \"PendingNew\",\n\"norentm\": \"19:59:32 13-12-2020\",\n\"remarks\": \"WC TEST Order\"\n},\n{\n\"stat\": \"Ok\",\n\"norenordno\": \"20121300065716\",\n\"uid\": \"DEMO1\",\n\"actid\": \"DEMO1\",\n\"exch\": \"NSE\",\n\"tsym\": \"ACCELYA-EQ\",\n\"qty\": \"180\",\n\"trantype\": \"B\",\n\"prctyp\": \"LMT\",\n\"ret\": \"DAY\",\n\"token\": \"7053\",\n\"pp\": \"2\",\n\"ls\": \"1\",\n\"ti\": \"0.05\",\n\"prc\": \"800.00\",\n\"prd\": \"M\",\n\"status\": \"PENDING\",\n\"rpt\": \"NewAck\",\n\"norentm\": \"19:59:32 13-12-2020\",\n\"remarks\": \"WC TEST Order\"\n}\n]",
+  "sample_failure_response": "{\n\"stat\": \"Not_Ok\",\n\"request_time\": <Response received time>,\n\"emsg\": <Error message>\n}",
+  "notes": "Returns a JSON ARRAY (not a single object) — one element per order-history report/event for the given norenordno. The sample shows the lifecycle most-recent-first: COMPLETE/Fill, OPEN/New, PENDING/PendingNew, PENDING/NewAck. Request jData fields (uid, norenordno) are both mandatory.\n\nDoc inconsistency: in the response field tables, the trailing '*' required markers appear on prc, qty, trantype, dscqty, ret and amo — these markers are carried over verbatim from the order-placement request schema and are NOT meaningful for a read-only history response (every object returned simply contains whatever fields apply). They are recorded here as documented but should not be treated as 'required to send'.\n\nConditional response fields: bpprc only when product=B (Bracket); blprc and trailprc only when product=H and B (High Leverage and Bracket); amo only echoed when sent as 'Yes'.\n\nAnother doc inconsistency: the response-field TABLE lists orddttm / ordenttm / extm (Description cells blank), but the JSON SAMPLE instead carries norentm and exch_tm (and never shows orddttm/ordenttm/extm). The five fields uid, actid, orddttm, ordenttm, extm have blank Description cells in the source.\n\nFAILURE response is a JSON object (not an array): stat='Not_Ok', request_time (Response received time), emsg (Error message). No literal failure JSON block is printed in the source; sample_failure_response is reconstructed from the failure field table (angle-bracket placeholders preserved). 'https://BaseURL/' in the curl is the doc's placeholder for the real base host https://piconnect.flattrade.in/PiConnectAPI.",
+  "confidence": "high",
+  "issues": "The section's failure-response field table (stat/request_time/emsg) physically appears at the TOP of page 25, before the 'TRADE BOOK' title; it belongs to Single Order History (the 'in case of failure' lead-in is at the bottom of page 24). The field tables on the upper part of page 22 (amo, pp, ti, ls, tsym2/trantype2/qty2/prc2, tsym3/trantype3/qty3/prc3, fillshares2/3, avgprc2/3, plus a failure table) belong to the PRECEDING multi-leg/place-order section, NOT to Single Order History — only the 'SINGLE ORDER HISTORY' title sits at the very bottom of page 22, so the real section content begins on page 23. No literal failure JSON sample exists in the source; sample_failure_response is reconstructed from the field table. Verified against the page-23 and page-24 images: possible-value bindings prctyp=LMT, trantype=B/S, ret=DAY/EOS/IOC, amo=Yes, stat='Ok or Not_Ok' are correct; response-field count and ordering match the source (32 fields). The curl and the success-array JSON are verbatim from the cleaned page text (page-23/page-24), including the trailing space after \"FZ00000\", and the missing comma is not present (well-formed)."
+}

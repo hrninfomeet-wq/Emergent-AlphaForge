@@ -1,0 +1,75 @@
+{
+  "name": "Get Top List Names",
+  "category": "Market Info",
+  "kind": "REST",
+  "method": "POST",
+  "path": "/TopListName",
+  "url": "https://piconnect.flattrade.in/PiConnectAPI/TopListName",
+  "summary": "Returns the list of available Top List basket/criteria pairs (e.g. NSEBL/VOLUME, NSEEQ/LTP, NSEALL/VALUE) for a given exchange. The returned bskt + crt pairs are the inputs to the Get Top List (TopList) request.",
+  "request_params": [
+    {
+      "name": "jData",
+      "description": "Should send json object with fields in below list (the uid/exch JSON body, url-style appended before jKey).",
+      "possible_values": "",
+      "required": true
+    },
+    {
+      "name": "jKey",
+      "description": "Key Obtained on login success.",
+      "possible_values": "",
+      "required": true
+    }
+  ],
+  "json_fields": [
+    {
+      "name": "uid",
+      "description": "Logged in User Id",
+      "possible_values": "",
+      "required": true
+    },
+    {
+      "name": "exch",
+      "description": "Exchange",
+      "possible_values": "",
+      "required": true
+    }
+  ],
+  "response_fields": [
+    {
+      "name": "stat",
+      "description": "TopListNames success or failure indication.",
+      "possible_values": "Ok or Not_Ok"
+    },
+    {
+      "name": "values",
+      "description": "Array Of Basket, Criteria pair.",
+      "possible_values": ""
+    },
+    {
+      "name": "request_time",
+      "description": "This will be present only in a successful response.",
+      "possible_values": ""
+    },
+    {
+      "name": "emsg",
+      "description": "This will be present only in case of errors.",
+      "possible_values": ""
+    },
+    {
+      "name": "bskt",
+      "description": "Basket name (field inside each Basket, Criteria pair object in the values array).",
+      "possible_values": ""
+    },
+    {
+      "name": "crt",
+      "description": "criteria (field inside each Basket, Criteria pair object in the values array).",
+      "possible_values": ""
+    }
+  ],
+  "sample_request": "curl --location 'https://BaseURL/TopListName' \\\n--header 'Content-Type: application/json' \\\n--data 'jData={\n    \"uid\": \"FZ00000\",    \n    \"exch\": \"NSE\"\n}&jKey=GHUDWU53H32MTHPA536Q32WR'",
+  "sample_success_response": "{\n\"request_time\":\"13:08:22 03-06-2020\",\n\"values\":[\n{\n\"bskt\":\"NSEBL\",\n\"crt\":\"VOLUME\"\n},\n{\n\"bskt\":\"NSEBL\",\n\"crt\":\"LTP\"\n},\n{\n\"bskt\":\"NSEBL\",\n\"crt\":\"VALUE\"\n},\n{\n\"bskt\":\"NSEEQ\",\n\"crt\":\"VOLUME\"\n},\n{\n\"bskt\":\"NSEEQ\",\n\"crt\":\"LTP\"\n},\n{\n\"bskt\":\"NSEEQ\",\n\"crt\":\"VALUE”\n},\n{\n\"bskt\":\"NSEALL\",\n\"crt\":\"VOLUME\"\n},\n{\n\"bskt\":\"NSEALL\",\n\"crt\":\"LTP\"\n},\n{\n\"bskt\":\"NSEALL\",\n\"crt\":\"VALUE\"\n}\n]\n}",
+  "sample_failure_response": "{\n\"stat\":\"Not_Ok\",\n\"emsg\":\"Session Expired : Invalid Session Key\"\n}",
+  "notes": "- The jData JSON is url-style appended to jKey in the request body: jData={...}&jKey=...; Content-Type is application/json.\n- The curl example uses a placeholder host 'https://BaseURL/TopListName'; the real base URL is https://piconnect.flattrade.in/PiConnectAPI (so the full endpoint is .../PiConnectAPI/TopListName).\n- Each element of the values array is a \"Basket, Criteria pair object\" with fields bskt (basket name) and crt (criteria). These pairs are the inputs to the Get Top List (TopList) endpoint.\n- request_time format is HH:MM:SS DD-MM-YYYY (e.g. 13:08:22 03-06-2020).\n- Source artifact: in the success response one crt value is shown with a curly closing quote (\"VALUE”) instead of a straight quote — preserved verbatim; the intended value is \"VALUE\".\n- Source layout note: page 48's GET TOP LIST NAMES title begins at the bottom of the page, and the Sample Output block above it (idxname/token pairs, e.g. Nifty 50/26000) belongs to the neighbouring Get Index List response, NOT this endpoint. Page 49 is authoritative for this section's response shape (bskt/crt fields + labelled Sample Success/Failure Response blocks).",
+  "confidence": "high",
+  "issues": "The authoritative endpoint, query parameters, jData fields (uid*, exch*), response fields, curl block, and sample success/failure responses are all clearly shown on page 49 (the TopListName page). Page 48's right-column 'Sample Output' (idxname/token pairs) sits under the GET TOP LIST NAMES title that begins at the bottom of page 48 but uses idxname/token fields rather than the bskt/crt fields documented on page 49's body — it is a leftover from a neighbouring Get Index List style response; page 49 is treated as authoritative for this section's response shape since it carries the matching bskt/crt field tables and labelled Sample Success/Failure Response blocks. The straight-quote vs curly-quote artifact on the 'VALUE”' entry is the only character ambiguity, preserved verbatim and noted."
+}

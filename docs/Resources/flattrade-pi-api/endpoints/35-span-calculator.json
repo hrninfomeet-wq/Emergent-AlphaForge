@@ -1,0 +1,118 @@
+{
+  "name": "Span Calculator",
+  "category": "Market Info",
+  "kind": "REST",
+  "method": "POST",
+  "path": "/SpanCalc",
+  "url": "https://piconnect.flattrade.in/PiConnectAPI/SpanCalc",
+  "summary": "Span Calculator computes the span and exposure margin for a basket of derivative positions. You POST a jData JSON object containing an account id and an array of position objects (each describing exchange/instrument/symbol/expiry/option-type/strike and buy/sell/net quantities); the response returns span and exposure margin values, plus variants that ignore the buyqty/sellqty open quantities.",
+  "request_params": [
+    {
+      "name": "jData",
+      "description": "Should send json object with fields in below list (actid, pos[]).",
+      "required": true,
+      "possible_values": ""
+    }
+  ],
+  "json_fields": [
+    {
+      "name": "actid",
+      "description": "Any Account id, preferably actual account id if sending from post login screen.",
+      "required": true,
+      "possible_values": ""
+    },
+    {
+      "name": "pos",
+      "description": "Array of json objects. (object fields given in below table.) Each object describes one position; object fields are exch, instname, symname, expd, optt, strprc, buyqty, sellqty, netqty.",
+      "required": true,
+      "possible_values": "Array of json objects"
+    },
+    {
+      "name": "exch",
+      "description": "Exchange (field of each object in the pos array).",
+      "required": false,
+      "possible_values": "NFO, CDS, MCX ..."
+    },
+    {
+      "name": "instname",
+      "description": "Instrument name (field of each object in the pos array).",
+      "required": false,
+      "possible_values": "FUTSTK, FUTIDX, OPTSTK, FUTCUR..."
+    },
+    {
+      "name": "symname",
+      "description": "Symbol name (field of each object in the pos array).",
+      "required": false,
+      "possible_values": "USDINR, ACC, ABB, NIFTY.."
+    },
+    {
+      "name": "expd",
+      "description": "Expiry date in YYYY-MM-DD format (field of each object in the pos array).",
+      "required": false,
+      "possible_values": "2020-10-29"
+    },
+    {
+      "name": "optt",
+      "description": "Option Type (field of each object in the pos array).",
+      "required": false,
+      "possible_values": "CE, PE"
+    },
+    {
+      "name": "strprc",
+      "description": "Strike price (field of each object in the pos array).",
+      "required": false,
+      "possible_values": "11900.00, 71.0025"
+    },
+    {
+      "name": "buyqty",
+      "description": "Buy Open Quantity (field of each object in the pos array).",
+      "required": false,
+      "possible_values": ""
+    },
+    {
+      "name": "sellqty",
+      "description": "Sell Open Quantity (field of each object in the pos array).",
+      "required": false,
+      "possible_values": ""
+    },
+    {
+      "name": "netqty",
+      "description": "Net traded quantity (field of each object in the pos array).",
+      "required": false,
+      "possible_values": ""
+    }
+  ],
+  "response_fields": [
+    {
+      "name": "stat",
+      "description": "Market watch success or failure indication.",
+      "possible_values": "Ok or Not_Ok"
+    },
+    {
+      "name": "span",
+      "description": "Span value.",
+      "possible_values": "Span value"
+    },
+    {
+      "name": "expo",
+      "description": "Exposure margin.",
+      "possible_values": "Exposure margin"
+    },
+    {
+      "name": "span_trade",
+      "description": "Span value ignoring input fields buyqty, sellqty.",
+      "possible_values": "Span value ignoring input fields buyqty, sellqty"
+    },
+    {
+      "name": "expo_trade",
+      "description": "Exposure margin ignoring input fields buyqty, sellqty.",
+      "possible_values": "Exposure margin ignoring input fields buyqty, sellqty"
+    }
+  ],
+  "sample_request": "curl --location 'https://BaseURL/SpanCalc' \\\n--header 'Content-Type: application/json' \\\n--data 'jData={\n    \"actid\": \"FZ00000\", \n    \"pos\": [\n        {\n            \"exch\": \"NFO\",\n            \"instname\": \"OPTSTK\",\n            \"symname\": \"ACC\",\n            \"expd\": \"2020-10-29\",\n            \"optt\": \"CE\",\n            \"strprc\": \"11900.00\",\n            \"buyqty\": \"0\",\n            \"sellqty\": \"0\",\n            \"netqty\": \"100\"\n        }\n    ]       \n}&jKey=GHUDWU53H32MTHPA536Q32WR'",
+  "sample_success_response": "",
+  "sample_failure_response": "",
+  "notes": "The documented URL is https://piconnect.flattrade.in/PiConnectAPI/SpanCalc; the sample curl uses a placeholder host 'https://BaseURL/SpanCalc'. The request is sent as a form-encoded body 'jData={...}&jKey=...' with Content-Type: application/json (per the doc's curl). jKey is the session/API key appended to the request body in the sample but is NOT a documented query parameter (the only documented query parameter is jData*). actid and pos are the only asterisked (mandatory) jData fields; the per-position object sub-fields (exch, instname, symname, expd, optt, strprc, buyqty, sellqty, netqty) carry no asterisk. The section spans two pages: title, URL, query params, actid/pos, and the first pos sub-field (exch) are on page 58; the remaining pos sub-fields and the response details are on page 59. No dedicated sample success/failure JSON response is provided for SpanCalc; the JSON visible in the page-58 right column ({\"stat\":\"Ok\",\"norentm\":\"02-05-1975 08:48:52\",\"msgtyp\":\"Admin Message\",\"dmsg\":\"Test Msg All Message Recovery2\"}) belongs to the preceding section and was excluded.",
+  "confidence": "high",
+  "issues": "No sample success/failure response JSON exists for SpanCalc in the source, so those fields are empty. The draft's invented 'jKey' query parameter was dropped (jKey is only a body-appended auth token, not a documented query-parameter row in the image). All json_fields, response_fields, and the verbatim curl were confirmed against the page-58/59 images."
+}

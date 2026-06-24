@@ -1,0 +1,75 @@
+{
+  "name": "Get Index List",
+  "category": "Market Info",
+  "kind": "REST",
+  "method": "POST",
+  "path": "/GetIndexList",
+  "url": "https://piconnect.flattrade.in/PiConnectAPI/GetIndexList",
+  "summary": "Retrieves the list of indices for a given exchange. A POST call returns an array of \"Basket, Criteria pair\" objects, each containing the index name (idxname) and the token used to subscribe to it.",
+  "request_params": [
+    {
+      "name": "jData",
+      "description": "Should send json object with fields in below list",
+      "required": true,
+      "possible_values": ""
+    },
+    {
+      "name": "jKey",
+      "description": "Key Obtained on login success.",
+      "required": true,
+      "possible_values": ""
+    }
+  ],
+  "json_fields": [
+    {
+      "name": "uid",
+      "description": "Logged in User Id",
+      "required": true,
+      "possible_values": ""
+    },
+    {
+      "name": "exch",
+      "description": "Exchange",
+      "required": true,
+      "possible_values": ""
+    }
+  ],
+  "response_fields": [
+    {
+      "name": "stat",
+      "description": "Limits request success or failure indication.",
+      "possible_values": "Ok or Not_Ok"
+    },
+    {
+      "name": "values",
+      "description": "Array of Basket, Criteria pair objects (each with idxname and token).",
+      "possible_values": "Array Of Basket, Criteria pair."
+    },
+    {
+      "name": "request_time",
+      "description": "This will be present only in a successful response.",
+      "possible_values": ""
+    },
+    {
+      "name": "emsg",
+      "description": "This will be present only in case of errors.",
+      "possible_values": ""
+    },
+    {
+      "name": "idxname",
+      "description": "Basket, Criteria pair object field: Index Name",
+      "possible_values": ""
+    },
+    {
+      "name": "token",
+      "description": "Basket, Criteria pair object field: Index token used to subscribe",
+      "possible_values": ""
+    }
+  ],
+  "sample_request": "curl --location 'https://BaseURL/GetIndexList' \\\n--header 'Content-Type: application/json' \\\n--data 'jData={\n    \"uid\": \"FZ00000\",    \n    \"exch\": \"NSE\"\n}&jKey=GHUDWU53H32MTHPA536Q32WR'",
+  "sample_success_response": "{\n\"request_time\": \"20:12:29 13-12-2020\",\n\"values\": [\n{\n\"idxname\": \"HangSeng BeES-NAV\",\n\"token\": \"26016\"\n},\n{\n\"idxname\": \"India VIX\",\n\"token\": \"26017\"\n},\n{\n\"idxname\": \"Nifty 50\",\n\"token\": \"26000\"\n},\n{\n\"idxname\": \"Nifty IT\",\n\"token\": \"26008\"\n},\n{\n\"idxname\": \"Nifty Next 50\",\n\"token\": \"26013\"\n},\n{\n\"idxname\": \"Nifty Bank\",\n\"token\": \"26009\"\n},\n{\n\"idxname\": \"Nifty 500\",\n\"token\": \"26004\"\n},\n{\n\"idxname\": \"Nifty 100\",\n\"token\": \"26012\"\n},\n{\n\"idxname\": \"Nifty Midcap 50\",\n\"token\": \"26014\"\n},\n{\n\"idxname\": \"Nifty Realty\",\n\"token\": \"26018\"\n},\n]\n}",
+  "sample_failure_response": "",
+  "notes": "The \"values\" response field is an array of \"Basket, Criteria pair\" objects; each object has two fields: idxname (Index Name) and token (Index token used to subscribe). The curl example in the source uses a placeholder host 'https://BaseURL/GetIndexList', but the documented real endpoint is https://piconnect.flattrade.in/PiConnectAPI/GetIndexList. Request payload is sent as form-style data: jData={json}&jKey={token}. A successful response includes request_time (format \"HH:MM:SS DD-MM-YYYY\", e.g. \"20:12:29 13-12-2020\"); emsg appears only on errors. The sample success JSON in the source (titled \"Sample Output:\") shows only the values array and request_time (no top-level stat field) and ends with a trailing comma after the last array element — preserved verbatim.",
+  "confidence": "high",
+  "issues": "No standalone sample failure response is shown for this endpoint (only the general note that emsg appears on error and stat may be Not_Ok). The curl example uses a placeholder 'BaseURL' rather than the literal host. The sample success JSON contains a trailing comma before the closing bracket (preserved verbatim) and omits the top-level stat field. No \"Possible value\" cells are populated for jData/jKey/uid/exch/request_time/emsg/idxname/token in the source tables (those cells are blank); only stat (\"Ok or Not_Ok\") and values (\"Array Of Basket, Criteria pair.\") have possible-value entries."
+}

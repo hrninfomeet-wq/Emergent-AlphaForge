@@ -1,0 +1,70 @@
+{
+  "name": "Get Exchange Msg",
+  "category": "Market Info",
+  "kind": "REST",
+  "method": "POST",
+  "path": "/ExchMsg",
+  "url": "https://piconnect.flattrade.in/PiConnectAPI/ExchMsg",
+  "summary": "Retrieves the exchange message for a given exchange. Send a POST call with a jData JSON object (uid, exch) and the jKey session key obtained on login success.",
+  "request_params": [
+    {
+      "name": "jData",
+      "required": true,
+      "description": "Should send json object with fields in below list.",
+      "possible_values": ""
+    },
+    {
+      "name": "jKey",
+      "required": true,
+      "description": "Key Obtained on login success.",
+      "possible_values": ""
+    }
+  ],
+  "json_fields": [
+    {
+      "name": "uid",
+      "required": true,
+      "description": "Logged in User Id",
+      "possible_values": ""
+    },
+    {
+      "name": "exch",
+      "required": false,
+      "description": "Exchange (Select from 'exarr' Array provided in User Details response)",
+      "possible_values": ""
+    }
+  ],
+  "response_fields": [
+    {
+      "name": "stat",
+      "possible_values": "Ok (success) / Not_Ok (failure)",
+      "description": "On success: \"Whi Exch Msg success or failure indication.\" (value 'Ok'). On failure: \"Order book failure indication.\" (value 'Not_Ok')."
+    },
+    {
+      "name": "exchmsg",
+      "possible_values": "",
+      "description": "It will be present only in a successful response."
+    },
+    {
+      "name": "exchtm",
+      "possible_values": "",
+      "description": "Exchange Time"
+    },
+    {
+      "name": "request_time",
+      "possible_values": "",
+      "description": "Response received time. (present in a failure response)"
+    },
+    {
+      "name": "emsg",
+      "possible_values": "",
+      "description": "Error message (present in a failure response)."
+    }
+  ],
+  "sample_request": "curl --location 'https://BaseURL/ExchMsg' \\\n--header 'Content-Type: application/json' \\\n--data 'jData={\"uid\":\"FZ00000\",\"exch\":\"NSE\"}&jKey=GHUDWU53H32MTHPA536Q32WR'",
+  "sample_success_response": "",
+  "sample_failure_response": "{\n\"stat\":\"Not_Ok\",\n\"emsg\":\"Invalid Input : jData is Missing.\"\n}",
+  "notes": "Title appears as \"EXCH MSG\" in the doc (this is the \"Get Exchange Msg\" endpoint). The section spans the bottom of page 56 (title, URL, query params, curl example, Sample Failure Response) and the top of page 57 (jData fields table + success/failure response-detail tables); it ends where \"GET BROKER MSG\" begins. The 'cal_price/put_price/...' table at the top of page 56 belongs to the PRECEDING Option Greek section, not this one. In the live curl the host 'BaseURL' is a placeholder for the real base host piconnect.flattrade.in. The request body is sent as a url-encoded query string of the form jData={...}&jKey=... rather than a raw JSON body. The 'exch' field is NOT marked required (no trailing '*' in the source) and its value must be one of the exchanges listed in the 'exarr' array returned by the User Details response; only 'uid' is required. The source splits the response into two tables: a success table (stat='Ok', exchmsg, exchtm) and a failure table (stat='Not_Ok', request_time, emsg). The success-response 'stat' description reads verbatim \"Whi Exch Msg success or failure indication.\" (apparent typo for \"Which/Whether\"); the failure-response 'stat' description reuses generic order-book wording (\"Order book failure indication.\"). No explicit Sample Success Response JSON is shown for this section in the source (the page-57 Sample Success block belongs to the following GET BROKER MSG section).",
+  "confidence": "high",
+  "issues": "No Sample Success Response JSON block is provided for this endpoint in the source. The success-response 'stat' description contains a source typo (\"Whi Exch Msg...\") and the failure-response 'stat' description appears copy-pasted from an order-book endpoint (\"Order book failure indication.\"). Possible-value cells for jData fields (uid, exch) and for exchmsg/exchtm/request_time/emsg are blank in the source tables."
+}

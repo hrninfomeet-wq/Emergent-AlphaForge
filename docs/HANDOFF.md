@@ -4,6 +4,10 @@ Updated: 2026-06-18
 
 This is the entry point for the next AI agent or developer. **Read this + `CHANGELOG.md` before editing.** The repository and `tests/` are the source of truth — not any prior chat. `CHANGELOG.md` holds the detailed, versioned history (currently 0.17.x → 0.45.x); this file is the current architectural + state overview.
 
+> **Reference assets / capabilities** (see `CLAUDE.md` for the always-loaded version):
+> - **Flattrade *pi* API reference** — the broker API docs are decoded into `docs/Resources/flattrade-pi-api/` (`INDEX.md` + machine-readable `catalog.json` + 58 vision-verified per-endpoint md/json). Use these instead of the raw PDF.
+> - **PDF reading** — reusable PDF→Markdown tool at `docs/Resources/flattrade-pi-api/_tooling/extract_pdf.py` (libs `pymupdf4llm`/`pdfplumber` installed). Decodes any PDF; details in that folder's `_tooling/README.md`.
+
 ---
 
 ## 1. What this is

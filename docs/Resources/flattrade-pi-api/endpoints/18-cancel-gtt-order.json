@@ -1,0 +1,65 @@
+{
+  "name": "Cancel GTT Order",
+  "category": "Orders & Trades",
+  "kind": "REST",
+  "method": "POST",
+  "path": "/CancelGTTOrder",
+  "url": "https://piconnect.flattrade.in/PiConnectAPI/CancelGTTOrder",
+  "summary": "Cancels an existing GTT (Good Till Triggered) alert/order via a POST call. The request supplies the user id (uid) and the alert id (al_id) of the GTT order to cancel; a successful response echoes the al_id with a request_time and a delete-success status.",
+  "request_params": [
+    {
+      "name": "jData",
+      "required": true,
+      "description": "Should send json object with fields in below list.",
+      "possible_values": ""
+    },
+    {
+      "name": "jKey",
+      "required": true,
+      "description": "Key Obtained on login success.",
+      "possible_values": ""
+    }
+  ],
+  "json_fields": [
+    {
+      "name": "uid",
+      "required": false,
+      "description": "User id of the logged in user",
+      "possible_values": ""
+    },
+    {
+      "name": "al_id",
+      "required": false,
+      "description": "Alert Id",
+      "possible_values": ""
+    }
+  ],
+  "response_fields": [
+    {
+      "name": "stat",
+      "description": "GTT order success or failure indication. On success the sample shows the value \"Oi delete success\"; on failure \"Not_Ok\".",
+      "possible_values": ""
+    },
+    {
+      "name": "request_time",
+      "description": "This will be present only in a successful response.",
+      "possible_values": ""
+    },
+    {
+      "name": "al_id",
+      "description": "Alert Id (echoed back; the success sample JSON key is \"Al_id\").",
+      "possible_values": ""
+    },
+    {
+      "name": "emsg",
+      "description": "This will be present only in case of errors. That is : 1) Invalid Input  2) Session Expired",
+      "possible_values": ""
+    }
+  ],
+  "sample_request": "curl --location 'https://BaseURL/CancelGTTOrder' \\\n--header 'Content-Type: application/json' \\\n--data 'jData={\n    \"uid\": \"FZ00000\",    \n    \"al_id\": \"21041500000013\"   \n}&jKey=GHUDWU53H32MTHPA536Q32WR'",
+  "sample_success_response": "[\n{\n\"request_time\":\"12:20:01 15-04-2021\",\n\"stat\":\"Oi delete success\",\n\"Al_id\":\"21041500000013\"\n}\n]",
+  "sample_failure_response": "{\n\"stat\":\"Not_Ok\",\n\"emsg\":\"Session Expired : Invalid Session Key\"\n}",
+  "notes": "- Real base URL is https://piconnect.flattrade.in/PiConnectAPI ; the curl sample uses a placeholder 'https://BaseURL/CancelGTTOrder'.\n- The POST body is form-style: jData={...JSON...} and jKey=... joined with '&' (not a pure JSON body), despite the Content-Type: application/json header in the curl sample.\n- Neither uid nor al_id is marked mandatory in the doc (no trailing '*'); only the jData and jKey request parameters are starred. In practice al_id identifies which GTT order to cancel, so it is effectively required.\n- Success response is a JSON array; failure response is a JSON object.\n- Response key casing differs from the field table: the success sample uses \"Al_id\" (capital A) while the doc field list calls it al_id.\n- emsg appears only on error and conveys either 1) Invalid Input or 2) Session Expired.",
+  "confidence": "high",
+  "issues": "The Possible value column for both jData json fields (uid, al_id) and for all response fields is blank in the source table - confirmed empty via the page-33 image, not a misalignment. No possible-value enums exist for this section. The response field al_id is rendered as \"Al_id\" (capital A) in the success sample JSON, a casing inconsistency in the source doc."
+}

@@ -1,0 +1,58 @@
+{
+  "name": "Login Flow & Session Token",
+  "category": "Setup",
+  "kind": "Info",
+  "method": "POST",
+  "path": "/trade/apitoken",
+  "url": "https://authapi.flattrade.in/trade/apitoken",
+  "summary": "Explains how to obtain the session access token (jKey/token) used by all trading APIs. APIKey + APISecret are exchanged via a browser-based authentication flow: open the Authorization URL https://auth.flattrade.in/?app_key=APIKEY, log in with Client ID (UCC)/password/PAN-DOB, receive a one-time request_code on the registered redirect URL, then POST api_key/request_code/api_secret to https://authapi.flattrade.in/trade/apitoken to validate the code and receive the token.",
+  "request_params": [],
+  "json_fields": [
+    {
+      "name": "api_key",
+      "required": false,
+      "possible_values": "",
+      "description": "The public API key (APIKey) allocated to you. Example value in doc: \"xcvvwegfhgh4454646\"."
+    },
+    {
+      "name": "request_code",
+      "required": false,
+      "possible_values": "",
+      "description": "A one-time code obtained during the login flow (returned to the registered redirect URL as request_code). Its lifetime is only a few minutes and it is meant to be exchanged for a token immediately after obtaining. Example value in doc: \"xxdfddfdfdsfdsf84okkdlfelfdfdfd345fsf\"."
+    },
+    {
+      "name": "api_secret",
+      "required": false,
+      "possible_values": "",
+      "description": "SHA-256 hash of (api_key + request_token + api_secret) per the doc's note. Example value in doc: \"sdfdsfsdfdsfXXXXXXX\"."
+    }
+  ],
+  "response_fields": [
+    {
+      "name": "token",
+      "possible_values": "",
+      "description": "The session access token (used as jKey in subsequent API calls). Example: \"dsfdsf84okkdlfelfdfdfd3454545454ssdfsf\". Valid for 24 hours; tokens are cleared between 5-6 AM, regenerate after 6 AM."
+    },
+    {
+      "name": "client",
+      "possible_values": "",
+      "description": "The client/account code (UCC). Example: \"CCODE123\"."
+    },
+    {
+      "name": "status",
+      "possible_values": "Ok",
+      "description": "Request status. Example success value: \"Ok\"."
+    },
+    {
+      "name": "emsg",
+      "possible_values": "",
+      "description": "Error message; empty string on success."
+    }
+  ],
+  "sample_request": "Call to https://authapi.flattrade.in/trade/apitoken in POST method to validate request_code and get the token\n\n{\n\"api_key\":\"xcvvwegfhgh4454646\",\n\"request_code\":\"xxdfddfdfdsfdsf84okkdlfelfdfdfd345fsf\",\n\"api_secret\":\"sdfdsfsdfdsfXXXXXXX\"\n}",
+  "sample_success_response": "{\n\"token\":\"dsfdsf84okkdlfelfdfdfd3454545454ssdfsf\",\n\"client\":\"CCODE123\",\n\"status\":\"Ok\",\n\"emsg\":\"\"\n}",
+  "sample_failure_response": "",
+  "notes": "Token Generation Steps: (1) Open the Authorization URL https://auth.flattrade.in/?app_key=APIKEY in a browser, replacing APIKEY with the Apikey allocated to you (from the earlier API-key generation step 4). (2) Enter your Client id (UCC), Password, PAN/DOB and submit. (3) After you are authorized in the authentication portal, the screen redirects to your URL with request_token in the form https://yourRedirectURL.com/?request_code=requestCodeValue. (4) Call POST https://authapi.flattrade.in/trade/apitoken with api_key/request_code/api_secret to validate the code and get the token. (5) Use the returned token in appropriate end points to get more details of the user. CAVEATS: Redirect URL is pre-registered with Flattrade against each API Key; if you have different redirect URLs for PROD and TESTING, each environment should use a different registered API Key. request_code is a one-time code whose lifetime is only a few minutes and must be exchanged for a token immediately. api_secret is the SHA-256 hash of (api_key + request_token + api_secret) per the doc's NOTE. The token will be returned ONLY if the request originates from the registered private static IP for the API key. The browser-based authentication step is always required (even for GUI or console programs) to create the access token. Access token has 24-hour validity (generate once per day); tokens are cleared between 5-6 AM each morning so regenerate after 6 AM; once generated the token can be stored to bypass authentication for subsequent connects. The base sample (from the page's right-column code block) is: BaseUrl - https://piconnect.flattrade.in/PiConnectAPI ; ClientId - FT0000 ; jKey - GHUDWU53H32MTHPA536Q32WR (jKey is the generated token; the PiConnect base URL is distinct from the authapi host used to mint the token). The doc's NOTE also references a separate document for a detailed walkthrough on handling the security key parameter.",
+  "confidence": "high",
+  "issues": "The api_secret description in the doc is self-referential/likely an erratum: \"api_secret: SHA-256 hash of (api_key + request_token + api_secret)\" — the third operand should almost certainly be the raw API secret, and request_token corresponds to the request_code returned on the redirect. The three POST-body fields (api_key, request_code, api_secret) are a plain JSON body sent to the auth host (https://authapi.flattrade.in), NOT a PiConnect jData-wrapped call, so there are no query parameters and no jData wrapper; none of the fields carry a trailing '*' in the source, so required is recorded as false for all, though in practice all three are needed to obtain a token. No failure-response sample is provided in the doc (only an 'On Success' example). The section heading in the PDF is rendered as \"LOGIN FLOW\" (the focal-section name \"Login Flow & Session Token\" is the assigned label); the source spells it \"APISecert\" and \"JKey\" (typos in the original)."
+}

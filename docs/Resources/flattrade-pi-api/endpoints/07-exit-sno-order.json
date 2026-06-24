@@ -1,0 +1,71 @@
+{
+  "name": "Exit SNO Order",
+  "category": "Orders & Trades",
+  "kind": "REST",
+  "method": "POST",
+  "path": "/ExitSNOOrder",
+  "url": "https://piconnect.flattrade.in/PiConnectAPI/ExitSNOOrder",
+  "summary": "Exits an SNO (special / second-leg) order via a POST call. Applicable only to Cover Order (H) and Bracket Order (B) products, identified by the user id, product type and Noren order number.",
+  "request_params": [
+    {
+      "name": "jData",
+      "required": true,
+      "description": "Should send json object with fields in below list (the Exit SNO Order json body).",
+      "possible_values": ""
+    },
+    {
+      "name": "jKey",
+      "required": true,
+      "description": "Key Obtained on login success.",
+      "possible_values": ""
+    }
+  ],
+  "json_fields": [
+    {
+      "name": "norenordno",
+      "required": true,
+      "description": "Noren order number, which needs to be modified.",
+      "possible_values": ""
+    },
+    {
+      "name": "prd",
+      "required": true,
+      "description": "Allowed for only H and B products (Cover order and bracket order).",
+      "possible_values": "H / B"
+    },
+    {
+      "name": "uid",
+      "required": true,
+      "description": "User id of the logged in user.",
+      "possible_values": ""
+    }
+  ],
+  "response_fields": [
+    {
+      "name": "stat",
+      "description": "Cancel order success or failure indication.",
+      "possible_values": "Ok or Not_Ok"
+    },
+    {
+      "name": "dmsg",
+      "description": "Display message, (will be present only in case of success).",
+      "possible_values": ""
+    },
+    {
+      "name": "request_time",
+      "description": "Response received time",
+      "possible_values": ""
+    },
+    {
+      "name": "emsg",
+      "description": "This will be present only if Order cancelation fails",
+      "possible_values": ""
+    }
+  ],
+  "sample_request": "curl --location 'https://BaseURL/ExitSNOOrder' \\\n--header 'Content-Type: application/json' \\\n--data 'jData={\n    \"uid\": \"FZ00000\",    \n    \"prd\": \"H\",\n    \"norenordno\": \"123456789\"\n}&jKey=GHUDWU53H32MTHPA536Q32WR'",
+  "sample_success_response": null,
+  "sample_failure_response": null,
+  "notes": "The jData body is sent as a query/form parameter alongside jKey (jData={...}&jKey=...), with Content-Type: application/json. The 'prd' field is restricted to H (Cover Order) and B (Bracket Order) products only. The 'BaseURL' in the curl example corresponds to the documented base host https://piconnect.flattrade.in/PiConnectAPI. The doc shows NO JSON sample response for this endpoint (success or failure). The response fields use 'dmsg' (display message on success) rather than the 'result' field that the preceding Cancel-order section uses.",
+  "confidence": "high",
+  "issues": "No sample response JSON (success or failure) is provided in the doc for Exit SNO Order. The Not_Ok / 'Order not found to Cancel' JSON in the top-right of page 12 belongs to the PRECEDING Cancel-order section (it is vertically aligned with that section's RESPONSE DETAILS, which lists a 'result' field), NOT to Exit SNO Order, whose response fields list 'dmsg' instead of 'result'. The 'norenordno', 'uid' (and the param/response no-value cells) have blank Possible-value cells, confirmed against the page image. Field description for norenordno says 'needs to be modified' (verbatim from doc) though this is an exit endpoint — likely doc copy-paste from ModifyOrder, kept verbatim."
+}

@@ -1,0 +1,317 @@
+{
+  "name": "WebSocket Position Update (Subscribe/Updates/Unsubscribe)",
+  "category": "WebSocket",
+  "kind": "WebSocket",
+  "url": "wss://piconnect.flattrade.in/PiConnectWSAPI/",
+  "path": "/PiConnectWSAPI/",
+  "method": "WebSocket",
+  "summary": "WebSocket message frames to subscribe to, receive, and unsubscribe from position updates over the Flattrade pi WebSocket (wss://piconnect.flattrade.in/PiConnectWSAPI/). The client sends a subscribe frame (t=p), receives an acknowledgement (t=pk) plus a stream of position-update frames (t=pm) that each carry the full position fields including a child_orders array, and later sends an unsubscribe frame (t=up) which is acknowledged with t=upk.",
+  "request_params": [],
+  "json_fields": [
+    {
+      "name": "t",
+      "description": "Subscribe Position Update REQUEST frame task type. 'p' represents position subscription.",
+      "possible_values": "p",
+      "required": false
+    },
+    {
+      "name": "uid",
+      "description": "Subscribe Position Update REQUEST: User id. (Note: the verbatim subscribe curl sample uses the key \"actid\" with value \"FZ00000\" rather than \"uid\".)",
+      "possible_values": "",
+      "required": false
+    }
+  ],
+  "response_fields": [
+    {
+      "name": "t (subscribe ack)",
+      "possible_values": "pk",
+      "description": "Subscribe Position Update RESPONSE: 'pk' represents position subscription (acknowledgement). On successful connection establishment, position updates will be received if it is made available in the startup (-position_update)."
+    },
+    {
+      "name": "uid (subscribe ack)",
+      "possible_values": "",
+      "description": "Subscribe Position Update RESPONSE: User id."
+    },
+    {
+      "name": "t (position update)",
+      "possible_values": "pm",
+      "description": "POSITION UPDATE SUBSCRIPTION UPDATES frame: 'pm' represents position update."
+    },
+    {
+      "name": "exch",
+      "possible_values": "",
+      "description": "Exchange segment."
+    },
+    {
+      "name": "token",
+      "possible_values": "",
+      "description": "Contract token."
+    },
+    {
+      "name": "uid",
+      "possible_values": "",
+      "description": "User id."
+    },
+    {
+      "name": "actid",
+      "possible_values": "",
+      "description": "Account id."
+    },
+    {
+      "name": "prd",
+      "possible_values": "",
+      "description": "Product name to be shown."
+    },
+    {
+      "name": "daybuyqty",
+      "possible_values": "",
+      "description": "Day Buy Quantity."
+    },
+    {
+      "name": "daysellqty",
+      "possible_values": "",
+      "description": "Day Sell Quantity."
+    },
+    {
+      "name": "daybuyamt",
+      "possible_values": "",
+      "description": "Day Buy Amount."
+    },
+    {
+      "name": "daysellamt",
+      "possible_values": "",
+      "description": "Day Sell Amount."
+    },
+    {
+      "name": "cfbuyqty",
+      "possible_values": "",
+      "description": "Carry Forward Buy Quantity."
+    },
+    {
+      "name": "cfsellqty",
+      "possible_values": "",
+      "description": "Carry Forward Sell Quantity."
+    },
+    {
+      "name": "cfbuyamt",
+      "possible_values": "",
+      "description": "Carry Forward Buy Amount."
+    },
+    {
+      "name": "cfsellamt",
+      "possible_values": "",
+      "description": "Carry Forward Sell Amount."
+    },
+    {
+      "name": "openbuyqty",
+      "possible_values": "",
+      "description": "Open Buy Quantity."
+    },
+    {
+      "name": "opensellqty",
+      "possible_values": "",
+      "description": "Open Sell Quantity."
+    },
+    {
+      "name": "openbuyamt",
+      "possible_values": "",
+      "description": "Open Buy Amount."
+    },
+    {
+      "name": "opensellamt",
+      "possible_values": "",
+      "description": "Open Sell Amount."
+    },
+    {
+      "name": "instname",
+      "possible_values": "",
+      "description": "Instrument Name."
+    },
+    {
+      "name": "upload_prc",
+      "possible_values": "",
+      "description": "Upload Price."
+    },
+    {
+      "name": "buyavgprc",
+      "possible_values": "",
+      "description": "Buy Average Price [(daybuyamt + cfbuyamt) / (daybuyqty + cfbuyqty)]."
+    },
+    {
+      "name": "sellavgprc",
+      "possible_values": "",
+      "description": "Sell Average Price [(daysellamt + cfsellamt) / (daysellqty + cfsellqty)]."
+    },
+    {
+      "name": "rpnl",
+      "possible_values": "",
+      "description": "Realized Panel (Realized P&L)."
+    },
+    {
+      "name": "netqty",
+      "possible_values": "",
+      "description": "Net Quantity [daybuyqty + cfbuyqty - daysellqty - cfsellqty]."
+    },
+    {
+      "name": "totbuyamt",
+      "possible_values": "",
+      "description": "Total Buy Amount."
+    },
+    {
+      "name": "totsellamt",
+      "possible_values": "",
+      "description": "Total Sell Amount."
+    },
+    {
+      "name": "totbuyavgprc",
+      "possible_values": "",
+      "description": "Total Buy Avg Price."
+    },
+    {
+      "name": "totsellavgprc",
+      "possible_values": "",
+      "description": "Total Sell Avg Price."
+    },
+    {
+      "name": "child_orders",
+      "possible_values": "",
+      "description": "Array Object, details given below (see CHILD_ORDERS FORMAT)."
+    },
+    {
+      "name": "child_orders[].exch",
+      "possible_values": "",
+      "description": "CHILD_ORDERS FORMAT: Exchange segment."
+    },
+    {
+      "name": "child_orders[].token",
+      "possible_values": "",
+      "description": "CHILD_ORDERS FORMAT: Contract token."
+    },
+    {
+      "name": "child_orders[].tsym",
+      "possible_values": "",
+      "description": "CHILD_ORDERS FORMAT: Trading symbol/contract."
+    },
+    {
+      "name": "child_orders[].daybuyqty",
+      "possible_values": "",
+      "description": "CHILD_ORDERS FORMAT: Day Buy Quantity."
+    },
+    {
+      "name": "child_orders[].daysellqty",
+      "possible_values": "",
+      "description": "CHILD_ORDERS FORMAT: Day Sell Quantity."
+    },
+    {
+      "name": "child_orders[].daybuyamt",
+      "possible_values": "",
+      "description": "CHILD_ORDERS FORMAT: Day Buy Amount."
+    },
+    {
+      "name": "child_orders[].daysellamt",
+      "possible_values": "",
+      "description": "CHILD_ORDERS FORMAT: Day Sell Amount."
+    },
+    {
+      "name": "child_orders[].cfbuyqty",
+      "possible_values": "",
+      "description": "CHILD_ORDERS FORMAT: CF Buy Quantity."
+    },
+    {
+      "name": "child_orders[].cfsellqty",
+      "possible_values": "",
+      "description": "CHILD_ORDERS FORMAT: CF Sell Quantity."
+    },
+    {
+      "name": "child_orders[].cfbuyamt",
+      "possible_values": "",
+      "description": "CHILD_ORDERS FORMAT: CF Buy Amount."
+    },
+    {
+      "name": "child_orders[].cfsellamt",
+      "possible_values": "",
+      "description": "CHILD_ORDERS FORMAT: CF Sell Amount."
+    },
+    {
+      "name": "child_orders[].openbuyqty",
+      "possible_values": "",
+      "description": "CHILD_ORDERS FORMAT: Open Buy Quantity."
+    },
+    {
+      "name": "child_orders[].opensellqty",
+      "possible_values": "",
+      "description": "CHILD_ORDERS FORMAT: Open Sell Quantity."
+    },
+    {
+      "name": "child_orders[].openbuyamt",
+      "possible_values": "",
+      "description": "CHILD_ORDERS FORMAT: Open Buy Amount."
+    },
+    {
+      "name": "child_orders[].opensellamt",
+      "possible_values": "",
+      "description": "CHILD_ORDERS FORMAT: Open Sell Amount."
+    },
+    {
+      "name": "child_orders[].rpnl",
+      "possible_values": "",
+      "description": "CHILD_ORDERS FORMAT: Realized Panel (Realized P&L)."
+    },
+    {
+      "name": "child_orders[].netqty",
+      "possible_values": "",
+      "description": "CHILD_ORDERS FORMAT: Net Quantity [daybuyqty + cfbuyqty - daysellqty - cfsellqty]."
+    },
+    {
+      "name": "child_orders[].upload_prc",
+      "possible_values": "",
+      "description": "CHILD_ORDERS FORMAT: Upload Price."
+    },
+    {
+      "name": "child_orders[].totbuyamt",
+      "possible_values": "",
+      "description": "CHILD_ORDERS FORMAT: Total Buy Amount."
+    },
+    {
+      "name": "child_orders[].totsellamt",
+      "possible_values": "",
+      "description": "CHILD_ORDERS FORMAT: Total Sell Amount."
+    },
+    {
+      "name": "child_orders[].totbuyavgprc",
+      "possible_values": "",
+      "description": "CHILD_ORDERS FORMAT: Total Buy Avg Price."
+    },
+    {
+      "name": "child_orders[].totsellavgprc",
+      "possible_values": "",
+      "description": "CHILD_ORDERS FORMAT: Total Sell Avg Price."
+    },
+    {
+      "name": "child_orders[].buyavgprc",
+      "possible_values": "",
+      "description": "CHILD_ORDERS FORMAT: Buy Average Price."
+    },
+    {
+      "name": "child_orders[].sellavgprc",
+      "possible_values": "",
+      "description": "CHILD_ORDERS FORMAT: Sell Average Price."
+    },
+    {
+      "name": "t (unsubscribe req)",
+      "possible_values": "up",
+      "description": "Unsubscribe Position Update REQUEST: 'up' represents Unsubscribe Position update."
+    },
+    {
+      "name": "t (unsubscribe ack)",
+      "possible_values": "upk",
+      "description": "Unsubscribe Position Update RESPONSE: 'upk' represents Unsubscribe Position update acknowledgement."
+    }
+  ],
+  "sample_request": "curl --location 'wss://piconnect.flattrade.in/PiConnectWSAPI/' \n--data '{\n    \"t\": \"p\",  \n    \"actid\": \"FZ00000\"\n}'",
+  "sample_success_response": "",
+  "sample_failure_response": "",
+  "notes": "This is a WebSocket message-frame flow, not a REST endpoint; all frames use the same socket wss://piconnect.flattrade.in/PiConnectWSAPI/. The 'curl' examples in the doc are illustrative only (the JSON frame is what is sent over the open WebSocket). FLOW: (1) Subscribe REQUEST frame {\"t\":\"p\", uid} -> (2) ack frame {\"t\":\"pk\", uid} -> (3) stream of position-update frames {\"t\":\"pm\", ...full position fields...} where child_orders is an array of per-contract objects (CHILD_ORDERS FORMAT). UNSUBSCRIBE: send {\"t\":\"up\"} -> ack {\"t\":\"upk\"}. The Unsubscribe REQUEST curl sample sends {\"t\": \"up\"} only. Note: position updates are received on connection establishment only if made available in the startup with the -position_update flag. INCONSISTENCY: the Subscribe field table lists 'uid' (User id) but the verbatim subscribe curl sample uses the key \"actid\":\"FZ00000\" instead of \"uid\". Field-name quirks in the doc: 'rpnl' is described verbatim as 'Realized Panel' (i.e. Realized P&L). The HEARTBEAT (t=h / t=hk) and USER DETAILS (POST to /PiConnectAPI/UserDetails) sections that begin on page 83 are SEPARATE sections and are NOT part of this Position Update section; the page-83 Sample Success Response belongs to USER DETAILS, not to Position Update.",
+  "confidence": "high",
+  "issues": "No sample success/failure JSON response is shown for the Position Update frames (the page-83 Sample Success Response belongs to the separate USER DETAILS section, not to Position Update). The subscribe field table shows 'uid' but the curl sample uses 'actid' — documentation inconsistency, reported in notes. No fields carry a trailing '*' in the doc, so none are marked mandatory (required=false for all). The 'Possible value' column is blank for all fields except the 't' task discriminators (p/pk/pm/up/upk)."
+}

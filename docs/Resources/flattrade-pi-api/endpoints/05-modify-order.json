@@ -1,0 +1,125 @@
+{
+  "name": "Modify Order",
+  "category": "Orders & Trades",
+  "kind": "REST",
+  "method": "POST",
+  "path": "/ModifyOrder",
+  "url": "https://piconnect.flattrade.in/PiConnectAPI/ModifyOrder",
+  "summary": "Modifies an existing (open/pending) order placed via the Flattrade Noren OMS. A POST call carries a jData JSON object (identifying the order by norenordno and tsym) plus the jKey session token, and can change price type, price, quantity, retention, trigger price, and bracket/high-leverage prices.",
+  "request_params": [
+    {
+      "name": "jData",
+      "description": "Should send json object with fields in below list.",
+      "possible_values": "",
+      "required": true
+    },
+    {
+      "name": "jKey",
+      "description": "Key Obtained on login success.",
+      "possible_values": "",
+      "required": true
+    }
+  ],
+  "json_fields": [
+    {
+      "name": "exch",
+      "description": "Exchange",
+      "possible_values": "",
+      "required": true
+    },
+    {
+      "name": "norenordno",
+      "description": "Noren order number, which needs to be modified",
+      "possible_values": "",
+      "required": true
+    },
+    {
+      "name": "prctyp",
+      "description": "This can be modified",
+      "possible_values": "LMT / SL-LMT",
+      "required": false
+    },
+    {
+      "name": "prc",
+      "description": "Modified / New price [If prc is junk value other than numbers] \"Order price cannot be zero\".",
+      "possible_values": "",
+      "required": true
+    },
+    {
+      "name": "qty",
+      "description": "Modified / New Quantity. Quantity to Fill / Order Qty - This is the total qty to be filled for the order. Its Open Qty/Pending Qty plus Filled Shares (cumulative for the order) for the order. * Please do not send only the pending qty in this field [If qty is junk value other than numbers].",
+      "possible_values": "",
+      "required": true
+    },
+    {
+      "name": "tsym",
+      "description": "Unque id of contract on which order was placed. Can't be modified, must be the same as that of original order. (use url encoding to avoid special char error for symbols like M&M)",
+      "possible_values": "",
+      "required": true
+    },
+    {
+      "name": "ret",
+      "description": "Retention type [ret should be DAY / EOS / IOC else reject]",
+      "possible_values": "DAY / EOS / IOC",
+      "required": true
+    },
+    {
+      "name": "trgprc",
+      "description": "New trigger price in case of SL-LMT",
+      "possible_values": "",
+      "required": false
+    },
+    {
+      "name": "uid",
+      "description": "User id of the logged in user.",
+      "possible_values": "",
+      "required": true
+    },
+    {
+      "name": "bpprc",
+      "description": "Book Profit Price applicable only if product is selected as B (Bracket order )",
+      "possible_values": "",
+      "required": false
+    },
+    {
+      "name": "blprc",
+      "description": "Book loss Price applicable only if product is selected as H and B (High Leverage and Bracket order )",
+      "possible_values": "",
+      "required": false
+    },
+    {
+      "name": "trailprc",
+      "description": "Trailing Price applicable only if product is selected as H and B (High Leverage and Bracket order )",
+      "possible_values": "",
+      "required": false
+    }
+  ],
+  "response_fields": [
+    {
+      "name": "stat",
+      "description": "Modify order success or failure indication.",
+      "possible_values": "Ok or Not_Ok"
+    },
+    {
+      "name": "result",
+      "description": "Noren Order number of the order modified.",
+      "possible_values": ""
+    },
+    {
+      "name": "request_time",
+      "description": "Response received time",
+      "possible_values": ""
+    },
+    {
+      "name": "emsg",
+      "description": "This will be present only if Order modification fails",
+      "possible_values": ""
+    }
+  ],
+  "sample_request": "curl --location 'https://BaseURL/ModifyOrder' \\\n--header 'Content-Type: application/json' \\\n--data 'jData={\n         \"uid\": \"FZ00000\",\n         \"actid\": \"FZ00000\",\n         \"exch\": \"NSE\",\n         \"tsym\": \"ACC-EQ\",\n         \"qty\": \"50\",\n         \"prc\": \"1400\",         \n         \"prctyp\": \"LMT\",\n         \"ret\": \"DAY\", \n         \"norenordno\": \"123456789\"\n     }&jKey=GHUDWU53H32MTHPA536Q32WR'",
+  "sample_success_response": "{\n\"request_time\":\"14:14:08 26-05-2020\",\n\"stat\":\"Ok\",\n\"result\":\"20052600000103\"\n}",
+  "sample_failure_response": "{\n\"request_time\":\"16:03:29 28-05-2020\",\n\"stat\":\"Not_Ok\",\n\"emsg\":\"Rejected : ORA:Order not found\"\n}",
+  "notes": "- Base URL in the live endpoint is https://piconnect.flattrade.in/PiConnectAPI ; the curl sample uses a placeholder 'https://BaseURL/ModifyOrder'. Substitute the real base URL.\n- jData is sent as a URL-style parameter: --data 'jData={...}&jKey=...' (jData and jKey concatenated with '&'), Content-Type application/json.\n- tsym (contract id) CANNOT be modified and must exactly match the original order; URL-encode symbols containing special characters (e.g. M&M) to avoid special-char errors.\n- qty must be the TOTAL order quantity (Open/Pending Qty + Filled Shares, cumulative), NOT just the pending qty.\n- prc cannot be zero; prc and qty junk (non-numeric) values are rejected.\n- ret must be one of DAY / EOS / IOC or the order is rejected.\n- prctyp can be modified to LMT or SL-LMT; trgprc is only relevant for SL-LMT price type.\n- bpprc applies only when product = B (Bracket); blprc and trailprc apply only when product = H or B (High Leverage / Bracket).\n- request_time timestamps are in HH:MM:SS DD-MM-YYYY format (IST).\n- The curl sample additionally includes an 'actid' (account id) field not listed in the Json Fields table.",
+  "confidence": "high",
+  "issues": "The 'actid' field appears in the curl sample request but is not documented in the Json Fields table, so its mandatory status/possible values are unspecified. Required flags were determined from the trailing '*' marker on each field name in the page images: exch, norenordno, prc, qty, tsym, ret, uid (and jData, jKey) are starred (required); prctyp, trgprc, bpprc, blprc, trailprc have no star (optional). Verbatim source typo preserved ('Unque id'); several source descriptions have no terminal period and are reproduced as-is."
+}

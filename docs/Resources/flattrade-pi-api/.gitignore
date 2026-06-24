@@ -1,0 +1,5 @@
+# _build/ holds regenerable intermediates (page renders ~25 MB, cleaned per-page text,
+# block geometry, extracted screenshots). All reproducible from the source PDF via
+# _tooling/extract_pdf.py, so it is not committed. The curated deliverables (endpoints/,
+# catalog.json, INDEX.md, reference/full-text.md) are kept.
+_build/

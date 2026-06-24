@@ -1,0 +1,197 @@
+{
+  "name": "Modify OCO Order",
+  "category": "Orders & Trades",
+  "kind": "REST",
+  "method": "POST",
+  "path": "/ModifyOCOOrder",
+  "url": "https://piconnect.flattrade.in/PiConnectAPI/ModifyOCOOrder",
+  "summary": "Modifies an existing OCO (One-Cancels-the-Other) / alert order. A POST call to /ModifyOCOOrder with jData (a JSON object containing the order/alert fields plus nested oivariable and place_order_params arrays) and jKey returns \"OI replaced\" with the alert id on success.",
+  "request_params": [
+    {
+      "name": "jData",
+      "description": "Should send json object with fields in below list.",
+      "required": true,
+      "possible_values": ""
+    },
+    {
+      "name": "jKey",
+      "description": "Key Obtained on login success.",
+      "required": true,
+      "possible_values": ""
+    }
+  ],
+  "json_fields": [
+    {
+      "name": "uid",
+      "description": "User id of the logged in user.",
+      "required": true,
+      "possible_values": ""
+    },
+    {
+      "name": "tsym",
+      "description": "Unique id of contract on which order to be placed. (use url encoding to avoid special char error for symbols like M&M)",
+      "required": true,
+      "possible_values": ""
+    },
+    {
+      "name": "exch",
+      "description": "Exchange",
+      "required": true,
+      "possible_values": ""
+    },
+    {
+      "name": "validity",
+      "description": "Validity",
+      "required": true,
+      "possible_values": "DAY or GTT"
+    },
+    {
+      "name": "ai_t",
+      "description": "Alert type. (Doc text and page image read 'ai_t*'; likely a typo for 'al_t', the alert-type counterpart to 'al_id'.)",
+      "required": true,
+      "possible_values": ""
+    },
+    {
+      "name": "al_id",
+      "description": "Alert id",
+      "required": true,
+      "possible_values": ""
+    },
+    {
+      "name": "exchsym",
+      "description": "Exchange symbol",
+      "required": false,
+      "possible_values": ""
+    },
+    {
+      "name": "oivariable",
+      "description": "Array Object, details given below (see OIVARIABLE FORMAT).",
+      "required": false,
+      "possible_values": ""
+    },
+    {
+      "name": "place_order_params",
+      "description": "Array Object, details given below (see PLACE_ORDER_PARAMS FORMAT).",
+      "required": false,
+      "possible_values": ""
+    },
+    {
+      "name": "oivariable.d",
+      "description": "OIVARIABLE FORMAT field: Data to be compared with LTP.",
+      "required": true,
+      "possible_values": ""
+    },
+    {
+      "name": "oivariable.var_name",
+      "description": "OIVARIABLE FORMAT field: Variable Name.",
+      "required": true,
+      "possible_values": "x or y"
+    },
+    {
+      "name": "place_order_params.tsym",
+      "description": "PLACE_ORDER_PARAMS FORMAT field: Trading symbol of the scrip (contract).",
+      "required": true,
+      "possible_values": ""
+    },
+    {
+      "name": "place_order_params.exch",
+      "description": "PLACE_ORDER_PARAMS FORMAT field: Exchange.",
+      "required": true,
+      "possible_values": ""
+    },
+    {
+      "name": "place_order_params.trantype",
+      "description": "PLACE_ORDER_PARAMS FORMAT field: B -> BUY, S -> SELL [transtype should be 'B' or 'S' else reject].",
+      "required": true,
+      "possible_values": "B / S"
+    },
+    {
+      "name": "place_order_params.prctyp",
+      "description": "PLACE_ORDER_PARAMS FORMAT field: Price Type.",
+      "required": true,
+      "possible_values": ""
+    },
+    {
+      "name": "place_order_params.prd",
+      "description": "PLACE_ORDER_PARAMS FORMAT field: Product.",
+      "required": true,
+      "possible_values": ""
+    },
+    {
+      "name": "place_order_params.ret",
+      "description": "PLACE_ORDER_PARAMS FORMAT field: Retention type [ret should be DAY / EOS / IOC else reject].",
+      "required": true,
+      "possible_values": "DAY / EOS / IOC"
+    },
+    {
+      "name": "place_order_params.actid",
+      "description": "PLACE_ORDER_PARAMS FORMAT field: Acct Id.",
+      "required": true,
+      "possible_values": ""
+    },
+    {
+      "name": "place_order_params.uid",
+      "description": "PLACE_ORDER_PARAMS FORMAT field: User Id.",
+      "required": true,
+      "possible_values": ""
+    },
+    {
+      "name": "place_order_params.ordersource",
+      "description": "PLACE_ORDER_PARAMS FORMAT field: Used to generate exchange info fields.",
+      "required": false,
+      "possible_values": "MOB / WEB / TT"
+    },
+    {
+      "name": "place_order_params.remarks",
+      "description": "PLACE_ORDER_PARAMS FORMAT field: Any tag by user to mark order.",
+      "required": false,
+      "possible_values": ""
+    },
+    {
+      "name": "place_order_params.qty",
+      "description": "PLACE_ORDER_PARAMS FORMAT field: Order Quantity [If qty is junk value other than numbers].",
+      "required": true,
+      "possible_values": ""
+    },
+    {
+      "name": "place_order_params.prc",
+      "description": "PLACE_ORDER_PARAMS FORMAT field: Order Price [If prc is junk value other than numbers] \"Order price cannot be zero\".",
+      "required": true,
+      "possible_values": ""
+    },
+    {
+      "name": "place_order_params.trgprc",
+      "description": "PLACE_ORDER_PARAMS FORMAT field: New trigger price in case of SL-LMT.",
+      "required": false,
+      "possible_values": ""
+    }
+  ],
+  "response_fields": [
+    {
+      "name": "stat",
+      "description": "OCO order success or failure indication. i. \"stat\":\"OI replaced\" - incase of success ii. \"stat\":\"Invalid Oi\" - incase of failure.",
+      "possible_values": "OI replaced / Invalid Oi"
+    },
+    {
+      "name": "request_time",
+      "description": "This will be present only in a successful response.",
+      "possible_values": ""
+    },
+    {
+      "name": "al_id",
+      "description": "Alert Id",
+      "possible_values": ""
+    },
+    {
+      "name": "emsg",
+      "description": "This will be present only in case of errors. That is: 1) Invalid Input 2) Session Expired.",
+      "possible_values": ""
+    }
+  ],
+  "sample_request": "curl --location 'https://BaseURL/ModifyOCOOrder' \\\n--header 'Content-Type: application/json' \\\n--data 'jData={\n    \"uid\": \"FZ00000\",    \n    \"exch\": \"NSE\",\n    \"tsym\": \"ACC-EQ\",\n    \"validity\": \"DAY\"\n}&jKey=GHUDWU53H32MTHPA536Q32WR'",
+  "sample_success_response": "{\n\"request_time\":\"11:14:52 11-10-2021\",\n\"stat\":\"OI replaced\",\n\"al_id\":\"21101100000001\"\n}",
+  "sample_failure_response": "{\n\"stat\":\"Not_Ok\",\n\"emsg\":\"Session Expired : Invalid Session Key\"\n}",
+  "notes": "REST POST. Authoritative URL: https://piconnect.flattrade.in/PiConnectAPI/ModifyOCOOrder. The jData schema is hierarchical: oivariable and place_order_params are nested array objects whose sub-fields are documented in the OIVARIABLE FORMAT (page 38) and PLACE_ORDER_PARAMS FORMAT (page 39) tables; here flattened with oivariable./place_order_params. prefixes to disambiguate. The field 'ai_t*' is recorded verbatim from the page image/text but is almost certainly a typo for 'al_t' (alert type), the counterpart to 'al_id'. The failure-response stat value in the sample ('Not_Ok') differs from the documented failure indicator ('Invalid Oi'); both come straight from the source page.",
+  "confidence": "high",
+  "issues": "The field listed as 'ai_t*' in the cleaned text and page image is recorded verbatim but appears to be a typo for 'al_t' (alert type), the counterpart to 'al_id' (alert id). The 'validity' possible value is 'DAY or GTT' per the page-38 image (distinct from the place_order_params 'ret' retention which is DAY/EOS/IOC). Some jData fields (exchsym, oivariable, place_order_params) lack a trailing '*' in the doc, so marked required=false. Nested-array sub-fields are prefixed (oivariable./place_order_params.) to disambiguate within the flat field list. The sample failure-response stat ('Not_Ok') differs from the documented failure value ('Invalid Oi') — both are reproduced from the source."
+}

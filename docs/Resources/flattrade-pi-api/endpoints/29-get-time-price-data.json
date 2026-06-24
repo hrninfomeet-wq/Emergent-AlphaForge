@@ -1,0 +1,129 @@
+{
+  "name": "Get Time Price Data (Chart Data)",
+  "category": "Market Info",
+  "kind": "REST",
+  "method": "POST",
+  "path": "/TPSeries",
+  "url": "https://piconnect.flattrade.in/PiConnectAPI/TPSeries",
+  "summary": "Returns time-price (intraday chart) candle series for a token over a time window. POST to /TPSeries with a jData JSON object (uid, exch, token, st, et, intrv) plus the jKey session key; the response is a JSON array of per-interval OHLC/vwap/volume/OI records, newest interval first.",
+  "request_params": [
+    {
+      "name": "jData",
+      "description": "Should send json object with fields in below list",
+      "possible_values": "",
+      "required": true
+    },
+    {
+      "name": "jKey",
+      "description": "Key Obtained on login success.",
+      "possible_values": "",
+      "required": true
+    }
+  ],
+  "json_fields": [
+    {
+      "name": "uid",
+      "description": "Logged in User Id",
+      "possible_values": "",
+      "required": true
+    },
+    {
+      "name": "exch",
+      "description": "Exchange",
+      "possible_values": "",
+      "required": true
+    },
+    {
+      "name": "token",
+      "description": "",
+      "possible_values": "",
+      "required": true
+    },
+    {
+      "name": "st",
+      "description": "Start time (seconds since 1 jan 1970)",
+      "possible_values": "",
+      "required": false
+    },
+    {
+      "name": "et",
+      "description": "End Time (seconds since 1 jan 1970)",
+      "possible_values": "",
+      "required": false
+    },
+    {
+      "name": "intrv",
+      "description": "chart intervals",
+      "possible_values": "1 / 3 / 5 / 10 / 15 / 30 / 60 / 120",
+      "required": false
+    }
+  ],
+  "response_fields": [
+    {
+      "name": "stat",
+      "description": "TPData success indication (in the success object) / TPData failure indication (in the failure object).",
+      "possible_values": "Ok / Not_Ok"
+    },
+    {
+      "name": "time",
+      "description": "Timestamp of the interval.",
+      "possible_values": "DD/MM/CCYY hh:mm:ss"
+    },
+    {
+      "name": "into",
+      "description": "Interval open",
+      "possible_values": ""
+    },
+    {
+      "name": "inth",
+      "description": "Interval high",
+      "possible_values": ""
+    },
+    {
+      "name": "intl",
+      "description": "Interval low",
+      "possible_values": ""
+    },
+    {
+      "name": "intc",
+      "description": "Interval close",
+      "possible_values": ""
+    },
+    {
+      "name": "intvwap",
+      "description": "Interval vwap",
+      "possible_values": ""
+    },
+    {
+      "name": "intv",
+      "description": "Interval volume",
+      "possible_values": ""
+    },
+    {
+      "name": "v",
+      "description": "volume",
+      "possible_values": ""
+    },
+    {
+      "name": "intoi",
+      "description": "Interval io change",
+      "possible_values": ""
+    },
+    {
+      "name": "oi",
+      "description": "oi",
+      "possible_values": ""
+    },
+    {
+      "name": "emsg",
+      "description": "This will be present only in case of errors.",
+      "possible_values": ""
+    }
+  ],
+  "sample_request": "curl --location 'https://BaseURL/TPSeries' \\\n--header 'Content-Type: application/json' \\\n--data 'jData={\n    \"uid\": \"FZ00000\",    \n    \"exch\": \"NSE\", \n    \"token\": \"23456\", \n    \"st\": \"12315\", \n    \"et\": \"4874564\", \n    \"intrv\": \"1\"\n}&jKey=GHUDWU53H32MTHPA536Q32WR'",
+  "sample_success_response": "[\n{\n\"stat\":\"Ok\",\n\"time\":\"02-06-2020 15:46:23\",\n\"into\":\"0.00\",\n\"inth\":\"0.00\",\n\"intl\":\"0.00\",\n\"intc\":\"0.00\",\n\"intvwap\":\"0.00\",\n\"intv\":\"0\",\n\"intoi\":\"0\",\n\"v\":\"980515\",\n\"oi\":\"128702\"\n},\n{\n\"stat\":\"Ok\",\n\"time\":\"02-06-2020 15:45:23\",\n\"into\":\"0.00\",\n\"inth\":\"0.00\",\n\"intl\":\"0.00\",\n\"intc\":\"0.00\",\n\"intvwap\":\"0.00\",\n\"intv\":\"0\",\n\"intoi\":\"0\",\n\"v\":\"980515\",\n\"oi\":\"128702\"\n},\n{\n\"stat\":\"Ok\",\n\"time\":\"02-06-2020 15:44:23\",\n\"into\":\"0.00\",\n\"inth\":\"0.00\",\n\"intl\":\"0.00\",\n\"intc\":\"0.00\",\n\"intvwap\":\"0.00\",\n\"intv\":\"0\",\n\"intoi\":\"0\",\n\"v\":\"980515\",\n\"oi\":\"128702\"\n},\n{\n\"stat\":\"Ok\",\n\"time\":\"02-06-2020 15:43:23\",\n\"into\":\"1287.00\",\n\"inth\":\"1287.00\",\n\"intl\":\"0.00\",\n\"intc\":\"1287.00\",\n\"intvwap\":\"128702.00\",\n\"intv\":\"4\",\n\"intoi\":\"128702\",\n\"v\":\"980515\",\n\"oi\":\"128702\"\n},\n{\n\"stat\":\"Ok\",\n\"time\":\"02-06-2020 15:42:23\",\n\"into\":\"0.00\",\n\"inth\":\"0.00\",\n\"intl\":\"0.00\",\n\"intc\":\"0.00\",\n\"intvwap\":\"0.00\",\n\"intv\":\"0\",\n\"intoi\":\"0\",\n\"v\":\"980511\",\n\"oi\":\"128702\"\n}\n]",
+  "sample_failure_response": "{\n\"stat\":\"Not_Ok\",\n\"emsg\":\"Session Expired : Invalid Session Key\"\n}",
+  "notes": "- URL in the doc is https://piconnect.flattrade.in/PiConnectAPI/TPSeries; the curl example uses a 'https://BaseURL/TPSeries' placeholder.\n- Request is sent as form/query-style data: 'jData={...}&jKey=...' in the POST body (Content-Type: application/json header per the curl, but jData and jKey are concatenated as a query string, not a pure JSON body).\n- st (start time) and et (end time) are epoch seconds (seconds since 1 Jan 1970).\n- intrv (chart interval) accepts only the discrete values 1 / 3 / 5 / 10 / 15 / 30 / 60 / 120 (minutes).\n- Response is a JSON ARRAY of per-interval objects, newest interval first (descending time).\n- Per-record field order in the success sample is stat, time, into, inth, intl, intc, intvwap, intv, intoi, v, oi (note intv/intoi come before v/oi).\n- Success records carry stat:'Ok'; failure returns a single object stat:'Not_Ok' with emsg.\n- The page-51 top fragment shows a different failure string 'Invalid Input : Missing uid or exch or bskt or tb or crt'; its field list (bskt/tb/crt) is copy-paste leftover from another endpoint and is NOT accurate for TPSeries. The canonical TPSeries failure example is the page-52 'Session Expired : Invalid Session Key'.\n- jData fields marked '*' in the doc (uid, exch, token) are mandatory; st, et, intrv are shown without '*' (optional in the table). The token description cell is blank in the doc.",
+  "confidence": "high",
+  "issues": "The jData 'token' field description cell is blank in the doc image (only the field name token* is shown as mandatory); left blank here rather than inferred. The response 'stat' row appears twice in the doc (once in the failure table with Not_Ok, once in the success table with Ok); these are consolidated into a single stat response field with possible_values 'Ok / Not_Ok'. The 'time' possible-value is documented as 'DD/MM/CCYY hh:mm:ss' but the actual samples use 'DD-MM-YYYY hh:mm:ss'. Possible-value cells for the OHLC/vwap/volume/OI fields are blank in the doc (descriptions only)."
+}

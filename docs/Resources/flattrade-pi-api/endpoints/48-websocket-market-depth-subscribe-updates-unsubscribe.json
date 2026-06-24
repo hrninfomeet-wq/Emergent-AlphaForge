@@ -1,0 +1,317 @@
+{
+  "name": "WebSocket Market Depth (Subscribe/Updates/Unsubscribe)",
+  "category": "WebSocket",
+  "kind": "WebSocket",
+  "method": "WebSocket",
+  "path": "/PiConnectWSAPI/",
+  "url": "wss://piconnect.flattrade.in/PiConnectWSAPI/",
+  "summary": "WebSocket message frames for the Flattrade Pi market-depth feed: send a 'd' (Subscribe Depth) frame to subscribe to one or more scrips, receive a 'dk' acknowledgement followed by 'df' depth-feed updates (full 5-level order book — best buy/sell prices, quantities and orders, plus OHLC, circuit limits, OI and feed time), and send a 'ud' (Unsubscribe Depth) frame, which is acknowledged with a 'udk' frame.",
+  "request_params": [],
+  "json_fields": [
+    {
+      "name": "t",
+      "required": false,
+      "possible_values": "d / ud",
+      "description": "Message-type / task field. For the Subscribe-Depth request frame t='d' ('d' represents depth subscription). The Unsubscribe-Depth request frame carries t='ud' ('ud' represents Unsubscribe depth)."
+    },
+    {
+      "name": "k",
+      "required": false,
+      "possible_values": "NSE|22#BSE|508123 (scrip list, '#'-delimited 'EXCHANGE|TOKEN')",
+      "description": "One or more scrip list for subscription (Subscribe Depth t='d') or unsubscription (Unsubscribe Depth t='ud'). Example: NSE|22#BSE|508123. Each scrip is 'EXCHANGE|TOKEN', multiple scrips joined with '#'."
+    }
+  ],
+  "response_fields": [
+    {
+      "name": "t",
+      "possible_values": "dk / df / udk",
+      "description": "Acknowledgement / feed type: 'dk' = depth subscription acknowledgement; 'df' = depth feed (subscription update); 'udk' = unsubscribe depth acknowledgement."
+    },
+    {
+      "name": "e",
+      "possible_values": "NSE, BSE, NFO",
+      "description": "Exchange name."
+    },
+    {
+      "name": "tk",
+      "possible_values": "22",
+      "description": "Scrip Token."
+    },
+    {
+      "name": "lp",
+      "possible_values": "LTP",
+      "description": "LTP (Last Traded Price)."
+    },
+    {
+      "name": "pc",
+      "possible_values": "",
+      "description": "Percentage change."
+    },
+    {
+      "name": "v",
+      "possible_values": "volume",
+      "description": "volume."
+    },
+    {
+      "name": "o",
+      "possible_values": "",
+      "description": "Open price."
+    },
+    {
+      "name": "h",
+      "possible_values": "",
+      "description": "High price."
+    },
+    {
+      "name": "l",
+      "possible_values": "",
+      "description": "Low price."
+    },
+    {
+      "name": "c",
+      "possible_values": "",
+      "description": "Previous Close price."
+    },
+    {
+      "name": "cp",
+      "possible_values": "",
+      "description": "Close price."
+    },
+    {
+      "name": "ap",
+      "possible_values": "",
+      "description": "Average trade price."
+    },
+    {
+      "name": "ltt",
+      "possible_values": "",
+      "description": "Last trade time."
+    },
+    {
+      "name": "ltq",
+      "possible_values": "",
+      "description": "Last trade quantity."
+    },
+    {
+      "name": "tbq",
+      "possible_values": "",
+      "description": "Total Buy Quantity."
+    },
+    {
+      "name": "tsq",
+      "possible_values": "",
+      "description": "Total Sell Quantity."
+    },
+    {
+      "name": "bq1",
+      "possible_values": "",
+      "description": "Best Buy Quantity 1."
+    },
+    {
+      "name": "bq2",
+      "possible_values": "",
+      "description": "Best Buy Quantity 2."
+    },
+    {
+      "name": "bq3",
+      "possible_values": "",
+      "description": "Best Buy Quantity 3."
+    },
+    {
+      "name": "bq4",
+      "possible_values": "",
+      "description": "Best Buy Quantity 4."
+    },
+    {
+      "name": "bq5",
+      "possible_values": "",
+      "description": "Best Buy Quantity 5."
+    },
+    {
+      "name": "bp1",
+      "possible_values": "",
+      "description": "Best Buy Price 1."
+    },
+    {
+      "name": "bp2",
+      "possible_values": "",
+      "description": "Best Buy Price 2."
+    },
+    {
+      "name": "bp3",
+      "possible_values": "",
+      "description": "Best Buy Price 3."
+    },
+    {
+      "name": "bp4",
+      "possible_values": "",
+      "description": "Best Buy Price 4."
+    },
+    {
+      "name": "bp5",
+      "possible_values": "",
+      "description": "Best Buy Price 5."
+    },
+    {
+      "name": "bo1",
+      "possible_values": "",
+      "description": "Best Buy Orders 1."
+    },
+    {
+      "name": "bo2",
+      "possible_values": "",
+      "description": "Best Buy Orders 2."
+    },
+    {
+      "name": "bo3",
+      "possible_values": "",
+      "description": "Best Buy Orders 3."
+    },
+    {
+      "name": "bo4",
+      "possible_values": "",
+      "description": "Best Buy Orders 4."
+    },
+    {
+      "name": "bo5",
+      "possible_values": "",
+      "description": "Best Buy Orders 5."
+    },
+    {
+      "name": "sq1",
+      "possible_values": "",
+      "description": "Best Sell Quantity 1."
+    },
+    {
+      "name": "sq2",
+      "possible_values": "",
+      "description": "Best Sell Quantity 2."
+    },
+    {
+      "name": "sq3",
+      "possible_values": "",
+      "description": "Best Sell Quantity 3."
+    },
+    {
+      "name": "sq4",
+      "possible_values": "",
+      "description": "Best Sell Quantity 4."
+    },
+    {
+      "name": "sq5",
+      "possible_values": "",
+      "description": "Best Sell Quantity 5."
+    },
+    {
+      "name": "sp1",
+      "possible_values": "",
+      "description": "Best Sell Price 1."
+    },
+    {
+      "name": "sp2",
+      "possible_values": "",
+      "description": "Best Sell Price 2."
+    },
+    {
+      "name": "sp3",
+      "possible_values": "",
+      "description": "Best Sell Price 3."
+    },
+    {
+      "name": "sp4",
+      "possible_values": "",
+      "description": "Best Sell Price 4."
+    },
+    {
+      "name": "sp5",
+      "possible_values": "",
+      "description": "Best Sell Price 5."
+    },
+    {
+      "name": "so1",
+      "possible_values": "",
+      "description": "Best Sell Orders 1."
+    },
+    {
+      "name": "so2",
+      "possible_values": "",
+      "description": "Best Sell Orders 2."
+    },
+    {
+      "name": "so3",
+      "possible_values": "",
+      "description": "Best Sell Orders 3."
+    },
+    {
+      "name": "so4",
+      "possible_values": "",
+      "description": "Best Sell Orders 4."
+    },
+    {
+      "name": "so5",
+      "possible_values": "",
+      "description": "Best Sell Orders 5."
+    },
+    {
+      "name": "lc",
+      "possible_values": "",
+      "description": "Lower Circuit Limit."
+    },
+    {
+      "name": "uc",
+      "possible_values": "",
+      "description": "Upper Circuit Limit."
+    },
+    {
+      "name": "52h",
+      "possible_values": "",
+      "description": "52 week high low in other exchanges, Life time high low in mcx."
+    },
+    {
+      "name": "52l",
+      "possible_values": "",
+      "description": "52 week high low in other exchanges, Life time high low in mcx."
+    },
+    {
+      "name": "oi",
+      "possible_values": "",
+      "description": "Open interest."
+    },
+    {
+      "name": "poi",
+      "possible_values": "",
+      "description": "Previous day closing Open Interest."
+    },
+    {
+      "name": "toi",
+      "possible_values": "",
+      "description": "Total open interest for underlying."
+    },
+    {
+      "name": "ft",
+      "possible_values": "",
+      "description": "Feed time."
+    },
+    {
+      "name": "ue",
+      "possible_values": "",
+      "description": "(LPP) Exchange high range. Appears only in the depth-feed update (df) field list, not the acknowledgement list."
+    },
+    {
+      "name": "le",
+      "possible_values": "",
+      "description": "(LPP) Exchange Low range. Appears only in the depth-feed update (df) field list, not the acknowledgement list."
+    },
+    {
+      "name": "k",
+      "possible_values": "NSE|22#BSE|508123",
+      "description": "Echoed scrip list in the 'udk' unsubscribe acknowledgement (one or more scrips for unsubscription, e.g. NSE|22#BSE|508123)."
+    }
+  ],
+  "sample_request": "# Subscribe Depth:\ncurl --location 'wss://piconnect.flattrade.in/PiConnectWSAPI/' \n--data '{\n    \"t\": \"d\",  \n    \"k\": \"NSE|22#BSE|508123#NSE|10#BSE|2879\"\n}'\n\n# Unsubscribe Depth:\ncurl --location 'wss://piconnect.flattrade.in/PiConnectWSAPI/' \n--data '{\n    \"t\": \"ud\",  \n    \"k\": \"NSE|22#BSE|508123#NSE|10#BSE|2879\"\n}'",
+  "sample_success_response": "Sample Message :\n{\n\"t\": \"df\",\n\"e\": \"NSE\",\n\"tk\": \"22\",\n\"o\": \"1166.00\",\n\"h\": \"1179.00\",\n\"l\": \"1145.35\",\n\"c\": \"1152.65\",\n\"ap\": \"1159.74\",\n\"v\": \"819881\",\n\"tbq\": \"120952\",\n\"tsq\": \"131730\",\n\"bp1\": \"1156.00\",\n\"sp1\": \"1156.50\",\n\"bp2\": \"1155.80\",\n\"sp2\": \"1156.55\",\n\"bp3\": \"1155.75\",\n\"sp3\": \"1156.65\",\n\"bp4\": \"1155.70\",\n\"sp4\": \"1156.70\",\n\"bp5\": \"1155.65\",\n\"sp5\": \"1156.75\",\n\"bq1\": \"4\",\n\"sq1\": \"10\",\n\"bq2\": \"67\",\n\"sq2\": \"63\",\n\"bq3\": \"83\",\n\"sq3\": \"1\",\n\"bq4\": \"139\",\n\"sq4\": \"53\",\n\"bq5\": \"393\",\n\"sq5\": \"94\"\n}",
+  "sample_failure_response": "",
+  "notes": "- This is a WebSocket endpoint (wss://), not REST. The curl examples use --location with the wss:// URL and a JSON --data frame purely to illustrate the message payload sent over the socket; the connection must be a live authenticated WebSocket session (see the WebSocket connect/authentication section). A valid touchline/connect handshake must precede these frames.\n- Scrip list format in k: 'EXCHANGE|TOKEN', multiple scrips joined with '#', e.g. NSE|22#BSE|508123#NSE|10#BSE|2879. Exchange values seen include NSE, BSE, NFO.\n- Acknowledgement count: the number of acknowledgements for a single subscription equals the number of scrips listed in the key (k) field (one 'dk' per scrip).\n- Message-type contract: send t='d' to subscribe -> receive t='dk' acknowledgement -> then receive a stream of t='df' depth-feed updates; send t='ud' to unsubscribe -> receive t='udk' acknowledgement.\n- The SUBSCRIPTION DEPTH ACKNOWLEDGEMENT field list (pages 72-74, t='dk') and the DEPTH SUBSCRIPTION UPDATES field list (pages 74-76, t='df') carry the same field set EXCEPT that ue/le ('(LPP) Exchange high/low range') appear ONLY in the depth-feed-update (df) list on page 76, not in the acknowledgement list (which ends at ft).\n- Depth feed provides 5 levels each side: best buy price/quantity/orders bp1-bp5 / bq1-bq5 / bo1-bo5 and best sell price/quantity/orders sp1-sp5 / sq1-sq5 / so1-so5.\n- 52h / 52l field meaning is exchange-dependent: '52 week high/low' on most exchanges, but 'Life time high/low' on MCX.\n- Updates are sparse/delta: a given 'df' frame may carry only the fields that changed (the sample message omits several documented fields such as ltt, ltq, lc, uc, oi, ft).\n- No explicit mandatory '*' markers appear on any request field in this section, so t and k are recorded as required=false; in practice both are needed for a valid subscribe/unsubscribe frame.\n- No failure/error response sample is shown for this section.",
+  "confidence": "high",
+  "issues": "- The cleaned text for the acknowledgement field list (pages 72-74) contains OCR duplications/typos that were corrected against the page images: 'bp3 Best Buy Price 2' then 'bp3 Best Buy Price 3' (duplicate bp3, the first mislabelled '2'), 'bo2 Best Buy Orders 2' twice, and 'sq2/sp2 Best Sell ... 2' twice. The canonical, de-duplicated field list (bp1-bp5, bo1-bo5, sq1-sq5, sp1-sp5, so1-so5) is confirmed by the cleaner DEPTH SUBSCRIPTION UPDATES list on pages 74-76 and by the page images. No data lost; only the redundant OCR rows were dropped.\n- No explicit mandatory '*' markers appear on any field in this section, so all request fields are recorded as required=false; in practice t and k are both needed for a valid subscribe/unsubscribe frame.\n- No failure/error response sample is shown for this section.\n- The acknowledgement (t='dk') field set on pages 72-74 does NOT list ue/le; those two appear only in the depth-feed-update list on page 76. Both have been merged into response_fields and flagged as df-only.\n- Page 72 opens mid-table with a stray 'k' row belonging to the PRECEDING section's unsubscribe acknowledgement; it is not part of this section's Subscribe-Depth request and was excluded."
+}

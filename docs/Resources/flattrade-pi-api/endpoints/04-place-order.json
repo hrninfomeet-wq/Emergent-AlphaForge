@@ -1,0 +1,204 @@
+{
+  "name": "Place Order",
+  "category": "Orders & Trades",
+  "kind": "REST",
+  "method": "POST",
+  "path": "/PlaceOrder",
+  "url": "https://piconnect.flattrade.in/PiConnectAPI/PlaceOrder",
+  "summary": "Places a new order to the OMS via a POST call. The request carries a jData JSON object (order details) plus the session jKey; on success it returns the assigned Noren order number (norenordno).",
+  "request_params": [
+    {
+      "name": "jData",
+      "required": true,
+      "description": "Should send json object with fields in the json_fields list below.",
+      "possible_values": ""
+    },
+    {
+      "name": "jKey",
+      "required": true,
+      "description": "Key obtained on login success.",
+      "possible_values": ""
+    }
+  ],
+  "json_fields": [
+    {
+      "name": "uid",
+      "required": true,
+      "description": "Logged in User Id.",
+      "possible_values": ""
+    },
+    {
+      "name": "actid",
+      "required": true,
+      "description": "Login users account ID.",
+      "possible_values": ""
+    },
+    {
+      "name": "exch",
+      "required": true,
+      "description": "Exchange (Select from 'exarr' Array provided in User Details response).",
+      "possible_values": "NSE / NFO / BSE / MCX"
+    },
+    {
+      "name": "tsym",
+      "required": true,
+      "description": "Unique id of contract on which order to be placed. (use url encoding to avoid special char error for symbols like M&M)",
+      "possible_values": ""
+    },
+    {
+      "name": "qty",
+      "required": true,
+      "description": "Order Quantity [If qty is junk value other than numbers].",
+      "possible_values": ""
+    },
+    {
+      "name": "prc",
+      "required": true,
+      "description": "Order Price [If prc is junk value other than numbers] \"Order price cannot be zero\".",
+      "possible_values": ""
+    },
+    {
+      "name": "trgprc",
+      "required": false,
+      "description": "Only to be sent in case of SL / SL-M order.",
+      "possible_values": ""
+    },
+    {
+      "name": "dscqty",
+      "required": true,
+      "description": "Disclosed quantity (Max 10% for NSE, and 50% for MCX) [If dscqty is junk value other than numbers].",
+      "possible_values": ""
+    },
+    {
+      "name": "prd",
+      "required": true,
+      "description": "Product name (Select from 'prarr' Array provided in User Details response, and if same is allowed for selected, exchange. Show product display name, for user to select, and send corresponding prd in API call).",
+      "possible_values": "C - CNC / M - NRML / H - CO / B - BO / I - MIS / F - MTF"
+    },
+    {
+      "name": "trantype",
+      "required": true,
+      "description": "B -> BUY, S -> SELL [transtype should be 'B' or 'S' else reject].",
+      "possible_values": "B / S"
+    },
+    {
+      "name": "prctyp",
+      "required": true,
+      "description": "Price type.",
+      "possible_values": "LMT / SL-LMT"
+    },
+    {
+      "name": "ret",
+      "required": true,
+      "description": "Retention type [ret should be DAY / EOS / IOC else reject].",
+      "possible_values": "DAY / EOS / IOC"
+    },
+    {
+      "name": "remarks",
+      "required": false,
+      "description": "Any tag by user to mark order.",
+      "possible_values": ""
+    },
+    {
+      "name": "ordersource",
+      "required": false,
+      "description": "Used to generate exchange info fields.",
+      "possible_values": "API"
+    },
+    {
+      "name": "bpprc",
+      "required": false,
+      "description": "Book Profit Price applicable only if product is selected as B (Bracket order).",
+      "possible_values": ""
+    },
+    {
+      "name": "blprc",
+      "required": false,
+      "description": "Book loss Price applicable only if product is selected as H and B (High Leverage and Bracket order).",
+      "possible_values": ""
+    },
+    {
+      "name": "trailprc",
+      "required": false,
+      "description": "Trailing Price applicable only if product is selected as H and B (High Leverage and Bracket order).",
+      "possible_values": ""
+    },
+    {
+      "name": "amo",
+      "required": true,
+      "description": "The message \"Invalid AMO\" will be displayed if the \"amo\" field is not sent with a \"Yes\" value. If amo is not required, do not send this field.",
+      "possible_values": "Yes"
+    },
+    {
+      "name": "tsym2",
+      "required": false,
+      "description": "Trading symbol of second leg, mandatory for price type 2L and 3L (use url encoding to avoid special char error for symbols like M&M).",
+      "possible_values": ""
+    },
+    {
+      "name": "trantype2",
+      "required": false,
+      "description": "Transaction type of second leg, mandatory for price type 2L and 3L.",
+      "possible_values": ""
+    },
+    {
+      "name": "qty2",
+      "required": false,
+      "description": "Quantity for second leg, mandatory for price type 2L and 3L.",
+      "possible_values": ""
+    },
+    {
+      "name": "prc2",
+      "required": false,
+      "description": "Price for second leg, mandatory for price type 2L and 3L.",
+      "possible_values": ""
+    },
+    {
+      "name": "tsym3",
+      "required": false,
+      "description": "Trading symbol of third leg, mandatory for price type 3L (use url encoding to avoid special char error for symbols like M&M).",
+      "possible_values": ""
+    },
+    {
+      "name": "trantype3",
+      "required": false,
+      "description": "Transaction type of third leg, mandatory for price type 3L.",
+      "possible_values": ""
+    },
+    {
+      "name": "qty3",
+      "required": false,
+      "description": "Quantity for third leg, mandatory for price type 3L.",
+      "possible_values": ""
+    },
+    {
+      "name": "prc3",
+      "required": false,
+      "description": "Price for third leg, mandatory for price type 3L.",
+      "possible_values": ""
+    }
+  ],
+  "response_fields": [
+    {
+      "name": "stat",
+      "possible_values": "Ok or Not_Ok",
+      "description": "Place order success or failure indication."
+    },
+    {
+      "name": "request_time",
+      "possible_values": "",
+      "description": "Response received time."
+    },
+    {
+      "name": "norenordno",
+      "possible_values": "",
+      "description": "It will be present only on successful Order placement to OMS."
+    }
+  ],
+  "sample_request": "curl --location 'https://BaseURL/PlaceOrder' \\\n--header 'Content-Type: application/json' \\\n--data 'jData={\n    \"uid\": \"FZ00000\",\n    \"actid\": \"FZ00000\",\n    \"exch\": \"NSE\",\n    \"tsym\": \"ACC-EQ\",\n    \"qty\": \"50\",\n    \"prc\": \"1400\",\n    \"prd\": \"H\",\n    \"trantype\": \"B\",\n    \"prctyp\": \"LMT\",\n    \"ret\": \"DAY\"\n}&jKey=GHUDWU53H32MTHPA536Q32WR'",
+  "sample_success_response": "{\n\"request_time\": \"10:48:03 20-05-2020\",\n\"stat\": \"Ok\",\n\"norenordno\": \"20052000000017\"\n}",
+  "sample_failure_response": "{\n\"stat\": \"Not_Ok\",\n\"request_time\": \"20:40:01 19-05-2020\",\n\"emsg\": \"Error Occurred : 2 \\\"invalid input\\\"\"\n}",
+  "confidence": "high",
+  "issues": "Removed an 'emsg' RESPONSE field that was in the draft but is NOT in the RESPONSE DETAILS table on page 9 (which lists only stat / request_time / norenordno); emsg appears only in the sample failure response, not as a documented response field. The cleaned text flattens the table and splits multi-line possible-value cells (e.g. prd's 'C - CNC / M - NRML / H - CO / B - BO / I - MIS / F - MTF' and exch's 'NSE / NFO / BSE / MCX') across several lines; these were rebound to the correct fields using the page images. ordersource carries possible value 'API' but has no trailing '*', so it is recorded as optional. Apparent source inconsistency: amo carries a trailing '*' (marked mandatory) yet its own description and the sample curl say not to send it when not an AMO, and the curl omits it.",
+  "notes": "- BaseUrl in samples = https://piconnect.flattrade.in/PiConnectAPI ; ClientId example FT0000 ; jKey example GHUDWU53H32MTHPA536Q32WR. The curl uses a placeholder 'https://BaseURL/PlaceOrder'.\n- Request is form/query style: jData (the JSON order object) and jKey are joined with '&' in the body/query, not a pure JSON body.\n- URL-encode trading symbols containing special characters (e.g. M&M) in tsym/tsym2/tsym3 to avoid errors.\n- trgprc only to be sent for SL / SL-M orders.\n- dscqty (disclosed qty) max is 10% of qty for NSE and 50% for MCX.\n- prd values map: C=CNC, M=NRML, H=CO (Cover Order / High Leverage), B=BO (Bracket Order), I=MIS, F=MTF. Select valid prd from the 'prarr' array in User Details for the chosen exchange.\n- exch must be chosen from the 'exarr' array in the User Details response.\n- Bracket/Cover-order extras: bpprc (Book Profit) for product B; blprc (Book Loss) and trailprc (Trailing) for products H and B.\n- amo: send \"amo\":\"Yes\" for after-market orders; if not an AMO, omit the field entirely (sending it wrong yields \"Invalid AMO\").\n- Multi-leg legs (tsym2/trantype2/qty2/prc2 and tsym3/trantype3/qty3/prc3) are mandatory for price types 2L and 3L respectively.\n- request_time in responses is a formatted timestamp string \"HH:MM:SS DD-MM-YYYY\" (e.g. 10:48:03 20-05-2020), not epoch.\n- ordersource should be set to API to generate exchange info fields.\n- The RESPONSE DETAILS table documents only stat, request_time and norenordno; emsg is returned on failure (see sample failure response) but is not listed in that table."
+}

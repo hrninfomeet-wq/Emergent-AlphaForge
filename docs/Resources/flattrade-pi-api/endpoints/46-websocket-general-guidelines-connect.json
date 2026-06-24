@@ -1,0 +1,65 @@
+{
+  "name": "WebSocket General Guidelines & Connect",
+  "category": "WebSocket",
+  "kind": "WebSocket",
+  "method": "WebSocket",
+  "path": "/PiConnectWSAPI/",
+  "url": "wss://piconnect.flattrade.in/PiConnectWSAPI/",
+  "summary": "Flattrade's WebSocket API endpoint (wss://piconnect.flattrade.in/PiConnectWSAPI/) for streaming data. As soon as the socket connection is established, the client must send a CONNECT frame (t=\"a\") carrying the User id, account id and login session token to authenticate the stream; the server replies with a connect acknowledgement frame (t=\"ak\") whose s field is Ok on success or Not_Ok on an invalid user id or session id.",
+  "request_params": [],
+  "json_fields": [
+    {
+      "name": "t",
+      "description": "'a' represents connect task.",
+      "possible_values": "a",
+      "required": false
+    },
+    {
+      "name": "uid",
+      "description": "User ID.",
+      "possible_values": "",
+      "required": false
+    },
+    {
+      "name": "actid",
+      "description": "Account id.",
+      "possible_values": "",
+      "required": false
+    },
+    {
+      "name": "source",
+      "description": "Source should be same as login request.",
+      "possible_values": "API",
+      "required": false
+    },
+    {
+      "name": "accesstoken",
+      "description": "User Session Token.",
+      "possible_values": "",
+      "required": false
+    }
+  ],
+  "response_fields": [
+    {
+      "name": "t",
+      "description": "'ak' represents connect acknowledgement.",
+      "possible_values": "ak"
+    },
+    {
+      "name": "uid",
+      "description": "User ID.",
+      "possible_values": ""
+    },
+    {
+      "name": "s",
+      "description": "Connection status. Ok or Not_Ok (in case of invalid user id or session id).",
+      "possible_values": "Ok or Not_Ok (in case of invalid user id or session id)"
+    }
+  ],
+  "sample_request": "curl --location 'wss://piconnect.flattrade.in/PiConnectWSAPI/' \n--data '\n\n{\n    \"t\": \"a\",\n    \"uid\": \"FZ00000\",\n    \"actid\": \"FZ00000\",\n    \"source\": \"API\", \n    \"accesstoken\": \"GHUDWU53H32MTHPA536Q32WR\"\n}\n'",
+  "sample_success_response": "",
+  "sample_failure_response": "",
+  "notes": "- This is the WebSocket entry point. Connect to wss://piconnect.flattrade.in/PiConnectWSAPI/ over a WebSocket (not plain HTTP, despite the doc showing a curl example).\n- GENERAL GUIDELINES (verbatim from page 68): (1) As soon as connection is done, a connection request should be sent with User id and login session id. (2) All input and output messages will be in json format.\n- The CONNECT request frame uses t=\"a\" (connect task); the acknowledgement frame uses t=\"ak\". A successful connection returns s=\"Ok\"; an invalid user id or session id returns s=\"Not_Ok\".\n- 'source' should be the same value used in the login request (shown as \"API\").\n- 'accesstoken' is the User Session Token obtained from login.\n- No field in the CONNECT request table is marked with a trailing '*', so per the doc's asterisk convention none are flagged mandatory (uid/actid/source/accesstoken are nonetheless required in practice to authenticate the stream).\n- No dedicated success/failure JSON sample is shown for the CONNECT frame itself (only the curl request block and the field-level acknowledgement table). The sample JSON in page 68's right column ( \"actid\":\"GURURAJ\",\"tran_status\":\"88\" and the \"Not_Ok\" / \"-103 ... is Already Canceled\" failure) belongs to the PRECEDING section (its Json Fields table has actid*/uid*/trans_ref_num* and a RESPONSE DETAILS table with tran_status/request_time), NOT to CONNECT, so it is omitted here.\n- The CONNECT section spans the bottom of page 68 (heading, guidelines, t field) and the top of page 69 (uid/actid/source/accesstoken request fields + the RESPONSE table). It is immediately followed by SUBSCRIBE TOUCHLINE (t=\"t\") on page 69, which is a separate section.",
+  "confidence": "high",
+  "issues": "The CONNECT request-field table lists field names (uid, actid, source, accesstoken) WITHOUT trailing asterisks, so per the asterisk rule all are recorded required=false even though logically they are needed to authenticate; the doc simply does not mark mandatory fields for the WebSocket CONNECT frame. No dedicated success/failure JSON sample is provided for CONNECT (only the curl request block and the field-level acknowledgement description). The sample JSON blocks in the page-68 right column belong to the previous (non-WebSocket) section and were intentionally excluded."
+}

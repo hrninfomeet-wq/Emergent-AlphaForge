@@ -1,0 +1,96 @@
+{
+  "name": "Search Scrips",
+  "category": "Account & Reference",
+  "kind": "REST",
+  "method": "POST",
+  "path": "/SearchScrip",
+  "url": "https://piconnect.flattrade.in/PiConnectAPI/SearchScrip",
+  "summary": "Search Scrips returns a list of matching scrips (contracts) for a given search text, optionally scoped to a chosen exchange. It is a POST call whose jData JSON body carries the logged-in user id, the search text and an optional exchange, returning each match's exchange, trading symbol, token, and contract precision/tick/lot details.",
+  "request_params": [
+    {
+      "name": "jData",
+      "description": "Should send json object with fields in below list (the JSON body containing uid, stext, exch).",
+      "required": true,
+      "possible_values": ""
+    },
+    {
+      "name": "jKey",
+      "description": "Key Obtained on login success.",
+      "required": true,
+      "possible_values": ""
+    }
+  ],
+  "json_fields": [
+    {
+      "name": "uid",
+      "description": "Logged in User Id",
+      "required": true,
+      "possible_values": ""
+    },
+    {
+      "name": "stext",
+      "description": "Search Text",
+      "required": true,
+      "possible_values": ""
+    },
+    {
+      "name": "exch",
+      "description": "Exchange (Select from 'exarr' Array provided in User Details response)",
+      "required": false,
+      "possible_values": ""
+    }
+  ],
+  "response_fields": [
+    {
+      "name": "stat",
+      "possible_values": "Ok or Not_Ok",
+      "description": "Market watch success or failure indication."
+    },
+    {
+      "name": "values",
+      "possible_values": "",
+      "description": "Array of json objects. (object fields given in below table)"
+    },
+    {
+      "name": "emsg",
+      "possible_values": "",
+      "description": "This will be present only in case of errors. That is : 1) Invalid Input 2) Session Expired"
+    },
+    {
+      "name": "exch",
+      "possible_values": "NSE, BSE, NFO ...",
+      "description": "Exchange (field within each object of the 'values' array)"
+    },
+    {
+      "name": "tsym",
+      "possible_values": "",
+      "description": "Trading symbol of the scrip (contract) (field within each object of the 'values' array)"
+    },
+    {
+      "name": "token",
+      "possible_values": "",
+      "description": "Token of the scrip (contract) (field within each object of the 'values' array)"
+    },
+    {
+      "name": "pp",
+      "possible_values": "",
+      "description": "Price precision (field within each object of the 'values' array)"
+    },
+    {
+      "name": "ti",
+      "possible_values": "",
+      "description": "Tick size (field within each object of the 'values' array)"
+    },
+    {
+      "name": "ls",
+      "possible_values": "",
+      "description": "Lot size (field within each object of the 'values' array)"
+    }
+  ],
+  "sample_request": "curl --location 'https://BaseURL/SearchScrip' \\\n--header 'Content-Type: application/json' \\\n--data 'jData={    \n    \"uid\": \"FZ00000\", \n    \"stext\": \"NIFTY\", \n    \"exch\": \"NSE\"\n}&jKey=GHUDWU53H32MTHPA536Q32WR'",
+  "sample_success_response": "{\n\"stat\": \"Ok\",\n\"values\": [\n{\n\"exch\": \"NSE\",\n\"token\": \"18069\",\n\"tsym\": \"REL100NAV-EQ\"\n},\n{\n\"exch\": \"NSE\",\n\"token\": \"24225\",\n\"tsym\": \"RELAXO-EQ\"\n},\n{\n\"exch\": \"NSE\",\n\"token\": \"4327\",\n\"tsym\": \"RELAXOFOOT-EQ\"\n},\n{\n\"exch\": \"NSE\",\n\"token\": \"18068\",\n\"tsym\": \"RELBANKNAV-EQ\"\n},\n{\n\"exch\": \"NSE\",\n\"token\": \"2882\",\n\"tsym\": \"RELCAPITAL-EQ\"\n},\n{\n\"exch\": \"NSE\",\n\"token\": \"18070\",\n\"tsym\": \"RELCONSNAV-EQ\"\n},\n{\n\"exch\": \"NSE\",\n\"token\": \"18071\",\n\"tsym\": \"RELDIVNAV-EQ\"\n},\n{\n\"exch\": \"NSE\",\n\"token\": \"18072\",\n\"tsym\": \"RELGOLDNAV-EQ\"\n},\n{\n\"exch\": \"NSE\",\n\"token\": \"2885\",\n\"tsym\": \"RELIANCE-EQ\"\n},\n{\n\"exch\": \"NSE\",\n\"token\": \"15068\",\n\"tsym\": \"RELIGARE-EQ\"\n},\n{\n\"exch\": \"NSE\",\n\"token\": \"553\",\n\"tsym\": \"RELINFRA-EQ\"\n},\n{\n\"exch\": \"NSE\",\n\"token\": \"18074\",\n\"tsym\": \"RELNV20NAV-EQ\"\n}\n]\n}",
+  "sample_failure_response": "{\n\"stat\":\"Not_Ok\",\n\"emsg\":\"No Data : \"\n}",
+  "notes": "- The documented production base URL is https://piconnect.flattrade.in/PiConnectAPI/SearchScrip ; the curl sample uses the placeholder 'https://BaseURL/SearchScrip' which must be substituted with the real base URL.\n- Request is form-style: jData carries the JSON object and jKey is appended in the same body separated by '&' (jData={...}&jKey=...). Content-Type is application/json per the sample.\n- The exch field in jData is optional; when provided it must be selected from the 'exarr' array in the User Details response.\n- In the success response, each element of the 'values' array shown in the sample contains exch, token and tsym; the response-field table also documents pp (price precision), ti (tick size) and ls (lot size) as object fields, though these do not appear in the provided sample objects.\n- emsg appears only on errors (e.g. Invalid Input or Session Expired); the failure sample returns stat=Not_Ok with emsg 'No Data : '.\n- The cleaned source text misspells the jData field-group header as 'feilds' (page 85); this is a typo in the source PDF, not an actual field name.",
+  "confidence": "high",
+  "issues": "The cleaned text misspells the body field-group header as 'feilds' (page 85 line 51); this is a typo in the source doc/extraction, not an actual field name. The pp/ti/ls object fields are documented in the response table but are absent from the sample success response objects (which only show exch/token/tsym)."
+}

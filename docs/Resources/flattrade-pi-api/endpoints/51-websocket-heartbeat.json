@@ -1,0 +1,36 @@
+{
+  "name": "WebSocket Heartbeat",
+  "category": "WebSocket",
+  "kind": "WebSocket",
+  "method": "WebSocket",
+  "path": "/PiConnectWSAPI/",
+  "url": "wss://piconnect.flattrade.in/PiConnectWSAPI/",
+  "summary": "Heartbeat message frame used to keep the WebSocket connection alive. The client sends a frame with t=\"h\" every 30 seconds and the server replies with a heartbeat acknowledgment frame (t=\"hk\") that also carries a timestamp in seconds.",
+  "request_params": [],
+  "json_fields": [
+    {
+      "name": "t",
+      "description": "Task type for the WebSocket request frame. 'h' represents the Heartbeat task. Sent by the client to keep the connection alive.",
+      "possible_values": "h",
+      "required": false
+    }
+  ],
+  "response_fields": [
+    {
+      "name": "t",
+      "description": "Task type of the response frame. 'hk' represents Heartbeat acknowledgment.",
+      "possible_values": "hk"
+    },
+    {
+      "name": "hk",
+      "description": "Timestamp in seconds (heartbeat acknowledgment timestamp). [Source prints the typo 'timmstamps in seconds'.]",
+      "possible_values": ""
+    }
+  ],
+  "sample_request": "curl --location 'wss://piconnect.flattrade.in/PiConnectWSAPI/' \n--data '{\n    \"t\": \"h\"\n}'",
+  "sample_success_response": "",
+  "sample_failure_response": "",
+  "notes": "This is a WebSocket message frame, not a REST endpoint: the connection is over wss:// (not https://), and the documented \"curl\" example is illustrative of the JSON frame payload rather than a literal runnable HTTP call. The heartbeat frame {\"t\":\"h\"} must be sent every 30 seconds to keep the connection alive; the server acknowledges with a frame whose t=\"hk\". The RESPONSE table has two rows: t (Possible value 'hk') and hk (a timestamp in seconds). On the page the 'timmstamps in seconds' text sits in the Description column of the hk row, and that row's Possible-value cell is EMPTY (the draft incorrectly placed the timestamp text as the hk field's possible_value). The source contains typos: 'actknowledgment' (acknowledgment) and 'timmstamps' (timestamp). No query parameters (no jData/jKey) - heartbeat is a pure WebSocket frame. The page does NOT print any verbatim success-response or failure-response JSON block for the heartbeat acknowledgment, so sample_success_response and sample_failure_response are left empty rather than reconstructed. Page note: page 83 opens with the tail of the preceding 'Unsubscribe Position update' section (t=upk, excluded) and ends by starting the next 'USER DETAILS' section (also excluded).",
+  "confidence": "high",
+  "issues": "No verbatim success or failure JSON response block is printed in the source for the heartbeat acknowledgment; the success-response object is intentionally left empty (the prior draft reconstructed {\"t\":\"hk\"}, which is not verbatim). The RESPONSE 'hk' field's possible-value cell is empty in the image - the 'timmstamps in seconds' text belongs to the Description column, not the Possible-value column. Source typos: 'timmstamps', 'actknowledgment'. The curl example uses wss:// with --data, which is not literal curl-runnable syntax but conveys the frame payload."
+}

@@ -1,0 +1,81 @@
+{
+  "name": "Get Payout Report",
+  "category": "Funds",
+  "kind": "REST",
+  "method": "POST",
+  "path": "/GetPayoutReport",
+  "url": "https://piconnect.flattrade.in/PiConnectAPI/GetPayoutReport",
+  "summary": "Retrieves the Funds Payout (withdrawal) report for a user's account over a date range. POST call returning a JSON array of payout transaction records, each with a transaction status and a (negative) amount.",
+  "request_params": [
+    {
+      "name": "jData",
+      "description": "Should send json object with fields in below list.",
+      "required": true,
+      "possible_values": ""
+    },
+    {
+      "name": "jKey",
+      "description": "Key Obtained on login success.",
+      "required": true,
+      "possible_values": ""
+    }
+  ],
+  "json_fields": [
+    {
+      "name": "actid",
+      "description": "Login users account ID",
+      "required": true,
+      "possible_values": ""
+    },
+    {
+      "name": "from_date",
+      "description": "From date",
+      "required": true,
+      "possible_values": ""
+    },
+    {
+      "name": "to_date",
+      "description": "To date",
+      "required": true,
+      "possible_values": ""
+    }
+  ],
+  "response_fields": [
+    {
+      "name": "stat",
+      "description": "success or failure indication.",
+      "possible_values": ""
+    },
+    {
+      "name": "actid",
+      "description": "This will be present only in a successful response.",
+      "possible_values": ""
+    },
+    {
+      "name": "trans_ref_num",
+      "description": "transaction reference number (number which defines each transaction)",
+      "possible_values": ""
+    },
+    {
+      "name": "tran_status",
+      "description": "This is used to indicate the status of transaction",
+      "possible_values": "WITHDRAW_ST_COMPLETE_STR"
+    },
+    {
+      "name": "amt",
+      "description": "Amount",
+      "possible_values": ""
+    },
+    {
+      "name": "emsg",
+      "description": "Error message; present in a failure response (e.g. 'Session Expired : Invalid Session Key'). Not listed in the response-details table but appears in the sample failure response.",
+      "possible_values": ""
+    }
+  ],
+  "sample_request": "curl --location 'https://BaseURL/GetPayoutReport' \\\n--header 'Content-Type: application/json' \\\n--data 'jData={    \n    \"actid\": \"FZ00000\",\n    \"from_date\": \"\",\n    \"to_date\": \"\"    \n}&jKey=GHUDWU53H32MTHPA536Q32WR'",
+  "sample_success_response": "[\n{\n\"stat\":\"Ok\",\n\"actid\":\"GURURAJ\",\n\"trans_ref_num\":\"20211270000002\",\n\"tran_status\":\"Complete\",\n\"amt\":\"-1000.00\"\n},\n{\n\"stat\":\"Ok\",\n\"actid\":\"GURURAJ\",\n\"trans_ref_num\":\"20211270000003\",\n\"tran_status\":\"Complete\",\n\"amt\":\"-100.00\"\n},\n{\n\"stat\":\"Ok\",\n\"actid\":\"GURURAJ\",\n\"trans_ref_num\":\"20211270000004\",\n\"tran_status\":\"Complete\",\n\"amt\":\"-1000.00\"\n},\n{\n\"stat\":\"Ok\",\n\"actid\":\"GURURAJ\",\n\"trans_ref_num\":\"20211270000005\",\n\"tran_status\":\"Complete\",\n\"amt\":\"-100.00\"\n}\n]",
+  "sample_failure_response": "{\n\"stat\":\"Not_Ok\",\n\"emsg\":\"Session Expired : Invalid Session Key\"\n}",
+  "notes": "- Documented BaseURL is https://piconnect.flattrade.in/PiConnectAPI ; the curl example uses a placeholder 'https://BaseURL/GetPayoutReport'.\n- Request is sent as a combined data string of two params: jData (the JSON object, with from_date/to_date allowed to be empty strings as shown) and jKey appended after the jData JSON, separated by '&' — exactly as in the curl --data string. Content-Type in the curl example is 'application/json'.\n- The success response is a JSON ARRAY of payout transaction objects (not a single object).\n- A payout is a withdrawal, so the sample amounts are NEGATIVE numeric strings (e.g. '-1000.00', '-100.00'); the trans_ref_num values are in the 20211270000xxx series.\n- In the sample success response the tran_status value is the literal string 'Complete', while the response-details table lists the enum-like possible value 'WITHDRAW_ST_COMPLETE_STR' (documentation-only).\n- Page-split caveat: the GetPayoutReport success array opens with '[' at the bottom of the page-66 right column and continues into the page-67 right column. The first array element (trans_ref_num 20211270000001) falls in the page-66 right-column gap and is not legibly captured in the source text; the verbatim sample above reproduces the array as captured (elements 20211270000002–20211270000005).",
+  "confidence": "high",
+  "issues": "Two material corrections vs the draft, both rooted in a two-column page-split between Get Payin Report (ends top of page 66) and Get Payout Report (heading mid-page-66, continues onto page 67):\n1) tran_status possible value: the draft bound 'ADD_FUND_ST_COMPLETE_STR' from the RESPONSE DETAILS table at the TOP of page 66 — but that table sits ABOVE the 'GET PAYOUT REPORT' heading and belongs to GET PAYIN REPORT. Get Payout Report's own RESPONSE DETAILS table is at the top of page 67 and lists tran_status = 'WITHDRAW_ST_COMPLETE_STR'. Corrected to 'WITHDRAW_ST_COMPLETE_STR' (also semantically consistent: a payout is a withdrawal).\n2) sample_success_response: the draft used the positive-amount array (10000.00, trans_ref 20211250000xxx) from the page-66 right column — but that is GET PAYIN REPORT's sample. Get Payout Report's actual success sample is the NEGATIVE-amount array (trans_ref 20211270000xxx, amt '-1000.00'/'-100.00') that follows the GetPayoutReport curl, spanning page 66 -> page 67. Replaced accordingly.\nMinor: request-param descriptions trimmed to the exact page wording ('Should send json object with fields in below list.'). The actid in samples ('GURURAJ') differs from the request actid ('FZ00000') — as printed in the source."
+}

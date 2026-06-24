@@ -1,0 +1,118 @@
+{
+  "name": "Get Top List",
+  "category": "Market Info",
+  "kind": "REST",
+  "method": "POST",
+  "path": "/TopList",
+  "url": "https://piconnect.flattrade.in/PiConnectAPI/TopList",
+  "summary": "Returns the top or bottom contracts for a given exchange and basket, ranked by a chosen criteria. A POST call carrying jData (JSON request fields) and jKey (session token) as URL-form data, responding with an array containing a status object whose 'values' is the list of top/bottom contract objects.",
+  "request_params": [
+    {
+      "name": "jData",
+      "description": "Should send json object with fields in below list.",
+      "required": true,
+      "possible_values": ""
+    },
+    {
+      "name": "jKey",
+      "description": "Key Obtained on login success.",
+      "required": true,
+      "possible_values": ""
+    }
+  ],
+  "json_fields": [
+    {
+      "name": "uid",
+      "description": "Logged in User Id",
+      "required": true,
+      "possible_values": ""
+    },
+    {
+      "name": "exch",
+      "description": "Exchange",
+      "required": true,
+      "possible_values": ""
+    },
+    {
+      "name": "tb",
+      "description": "Top or Bottom",
+      "required": true,
+      "possible_values": "T or B"
+    },
+    {
+      "name": "bskt",
+      "description": "",
+      "required": true,
+      "possible_values": "bskt"
+    },
+    {
+      "name": "crt",
+      "description": "",
+      "required": true,
+      "possible_values": "criteria"
+    }
+  ],
+  "response_fields": [
+    {
+      "name": "stat",
+      "description": "TopList success or failure indication.",
+      "possible_values": "Ok or Not_Ok"
+    },
+    {
+      "name": "values",
+      "description": "Array of top / bottom contracts object",
+      "possible_values": ""
+    },
+    {
+      "name": "request_time",
+      "description": "This will be present only in a successful response.",
+      "possible_values": ""
+    },
+    {
+      "name": "emsg",
+      "description": "This will be present only in case of errors.",
+      "possible_values": ""
+    },
+    {
+      "name": "tsym",
+      "description": "Trading symbol (field within each top/bottom contracts object in the values array).",
+      "possible_values": ""
+    },
+    {
+      "name": "lp",
+      "description": "LTP (within each contracts object).",
+      "possible_values": ""
+    },
+    {
+      "name": "c",
+      "description": "Previous Close price (within each contracts object).",
+      "possible_values": ""
+    },
+    {
+      "name": "v",
+      "description": "volume (within each contracts object).",
+      "possible_values": ""
+    },
+    {
+      "name": "value",
+      "description": "Total traded value (within each contracts object).",
+      "possible_values": ""
+    },
+    {
+      "name": "oi",
+      "description": "Open interest (within each contracts object).",
+      "possible_values": ""
+    },
+    {
+      "name": "pc",
+      "description": "LTP percentage change (within each contracts object).",
+      "possible_values": ""
+    }
+  ],
+  "sample_request": "curl --location 'https://BaseURL/TopList' \\\n--header 'Content-Type: application/json' \\\n--data 'jData={\n    \"uid\": \"FZ00000\",    \n    \"exch\": \"NSE\", \n    \"tb\": \"T\", \n    \"bskt\": \"NSEALL\", \n    \"crt\": \"LTP\"\n}&jKey=GHUDWU53H32MTHPA536Q32WR'",
+  "sample_success_response": "[\n{\n\"stat\":\"Ok\",\n\"request_time\":\"15:44:45 03-06-2020\",\n\"values\":[\n{\n\"tsym\":\"AIRAN-EQ\",\n\"lp\":\"950.00\",\n\"c\":\"915.00\",\n\"v\":\"42705\",\n\"value\":\"40185405.00\",\n\"oi\":\"0\",\n\"Pc\":\"3.83\"\n},\n{\n\"tsym\":\"SHRENIK-EQ\",\n\"lp\":\"1850.00\",\n\"c\":\"1785.00\",\n\"v\":\"206846\",\n\"value\":\"368806418.00\",\n\"oi\":\"0\",\n\"Pc\":\"3.64”\n},\n{\n\"tsym\":\"REMSONSIND-EQ\",\n\"lp\":\"6000.00\",\n\"c\":\"5795.00\",\n\"v\":\"3948\",\n\"value\":\"22752324.00\",\n\"Oi\":\"0\",\n\"pc\":\"3.54\"\n},\n{\n\"tsym\":\"AXISNIFTY-EQ\",\n\"lp\":\"106700.00\",\n\"c\":\"103301.00\",\n\"v\":\"422\",\n\"value\":\"43825544.00\",\n\"oi\":\"0\",\n\"Pc\":\"3.29\"\n}\n]\n}\n]",
+  "sample_failure_response": "{\n\"stat\":\"Not_Ok\",\n\"emsg\":\"Invalid Input : Missing uid or exch or bskt or tb or crt\"\n}",
+  "notes": "- The curl example uses a placeholder host 'https://BaseURL/TopList'; the real base URL is https://piconnect.flattrade.in/PiConnectAPI/ so the actual endpoint is https://piconnect.flattrade.in/PiConnectAPI/TopList.\n- Both jData and jKey are sent together as a single url-form '--data' payload joined by '&' (jData={...}&jKey=...), not as separate JSON body fields.\n- All five jData fields (uid, exch, tb, bskt, crt) are mandatory (marked '*'); the failure response confirms missing any of them yields 'Invalid Input : Missing uid or exch or bskt or tb or crt'.\n- tb takes 'T' (Top) or 'B' (Bottom). In the sample, bskt='NSEALL' and crt='LTP' are concrete example values from the curl; the doc's 'Possible value' cells for bskt and crt merely repeat 'bskt' and 'criteria' (no enumerated allowed values), and their Description cells are blank in the page-50 image.\n- request_time format is 'HH:MM:SS dd-mm-yyyy' (e.g. '15:44:45 03-06-2020').\n- The success response is a JSON array whose single element is a status object containing stat, request_time, and values; each element of 'values' contains tsym, lp, c, v, value, oi, pc (per the page-51 TOP/BOTTOM CONTRACTS OBJECT field table).\n- VERBATIM-source quirks reproduced (do NOT silently 'correct'): the doc inconsistently capitalizes the field keys in the success JSON ('Pc' vs 'pc' and 'Oi' vs 'oi' appear mixed), and one entry ends with a curly closing quote '3.64”' instead of a straight quote. The canonical field names per the field table are lowercase 'pc' and 'oi'.",
+  "confidence": "high",
+  "issues": "The doc's 'Possible value' cells for bskt and crt are not real enums — they just repeat 'bskt' and 'criteria'; their Description cells are blank in the source image, so concrete allowed values for basket and criteria are not enumerated in this section (only the example values NSEALL and LTP appear in the curl). The success-response JSON in the source has inconsistent key casing (Pc/pc, Oi/oi) and one curly quote (3.64”); these are reproduced verbatim and flagged in notes. Field names tsym/lp/c/v/value/oi/pc were bound to descriptions via the page-51 image table and are unambiguous."
+}

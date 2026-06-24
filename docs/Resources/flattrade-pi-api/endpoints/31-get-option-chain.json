@@ -1,0 +1,118 @@
+{
+  "name": "Get Option Chain",
+  "category": "Market Info",
+  "kind": "REST",
+  "method": "POST",
+  "path": "/GetOptionChain",
+  "url": "https://piconnect.flattrade.in/PiConnectAPI/GetOptionChain",
+  "summary": "Returns the option chain for the underlying of a given option/future trading symbol. You POST a jData JSON object (uid, exch, tsym, strprc, cnt) and a jKey, and receive an array of contract objects spanning cnt strikes on each side of the supplied mid price for both PUT and CALL.",
+  "request_params": [
+    {
+      "name": "jData",
+      "description": "Should send json object with fields in below list",
+      "required": true,
+      "possible_values": ""
+    },
+    {
+      "name": "jKey",
+      "description": "Key Obtained on login success.",
+      "required": true,
+      "possible_values": ""
+    }
+  ],
+  "json_fields": [
+    {
+      "name": "uid",
+      "description": "Logged in User Id",
+      "required": true,
+      "possible_values": ""
+    },
+    {
+      "name": "tsym",
+      "description": "Trading symbol of any of the option or future. Option chain for that underlying will be returned. (use url encoding to avoid special char error for symbols like M&M)",
+      "required": true,
+      "possible_values": ""
+    },
+    {
+      "name": "exch",
+      "description": "Exchange (UI need to check if exchange in NFO / CDS / MCX / or any other exchange which has options, if not don't allow)",
+      "required": true,
+      "possible_values": ""
+    },
+    {
+      "name": "strprc",
+      "description": "Mid price for option chain selection",
+      "required": true,
+      "possible_values": ""
+    },
+    {
+      "name": "cnt",
+      "description": "Number of strike to return on one side of the mid price for PUT and CALL. (example cnt is 4, total 16 contracts will be returned, if cnt is is 5 total 20 contract will be returned)",
+      "required": true,
+      "possible_values": ""
+    }
+  ],
+  "response_fields": [
+    {
+      "name": "stat",
+      "description": "Market watch success or failure indication.",
+      "possible_values": "Ok or Not_Ok"
+    },
+    {
+      "name": "values",
+      "description": "Array of json objects. (object fields given in below table)",
+      "possible_values": ""
+    },
+    {
+      "name": "emsg",
+      "description": "This will be present only in case of errors. That is : 1) Invalid Input 2) Session Expired",
+      "possible_values": ""
+    },
+    {
+      "name": "values[].exch",
+      "description": "Exchange",
+      "possible_values": "NSE, BSE, NFO ..."
+    },
+    {
+      "name": "values[].tsym",
+      "description": "Trading symbol of the scrip (contract)",
+      "possible_values": ""
+    },
+    {
+      "name": "values[].token",
+      "description": "Token of the scrip (contract)",
+      "possible_values": ""
+    },
+    {
+      "name": "values[].optt",
+      "description": "Option Type",
+      "possible_values": ""
+    },
+    {
+      "name": "values[].strprc",
+      "description": "Strike price",
+      "possible_values": ""
+    },
+    {
+      "name": "values[].pp",
+      "description": "Price precision",
+      "possible_values": ""
+    },
+    {
+      "name": "values[].ti",
+      "description": "Tick size",
+      "possible_values": ""
+    },
+    {
+      "name": "values[].ls",
+      "description": "Lot size",
+      "possible_values": ""
+    }
+  ],
+  "sample_request": "curl --location 'https://BaseURL/GetOptionChain' \\\n--header 'Content-Type: application/json' \\\n--data 'jData={\n    \"uid\": \"FZ00000\",    \n    \"exch\": \"NSE\", \n    \"tsym\": \"ACC-EQ\",\n    \"strprc\": \"2567\", \n    \"cnt\": \"5\"    \n}&jKey=GHUDWU53H32MTHPA536Q32WR'",
+  "sample_success_response": "",
+  "sample_failure_response": "",
+  "notes": "- The response is a top-level object with stat, values (array of contract objects), and emsg. The per-contract fields (exch, tsym, token, optt, strprc, pp, ti, ls) live inside each object of the values array (\"Json Fields of object in values Array\" table on page 55).\n- cnt is per-side AND applied to both PUT and CALL: cnt=4 returns 16 contracts total; cnt=5 returns 20 contracts total.\n- URL-encode tsym to avoid special-char errors for symbols like M&M.\n- exch must be an exchange that has options (NFO / CDS / MCX, etc.); the doc says the UI should reject exchanges without options.\n- strprc supplies the mid price around which the chain is centered.\n- emsg is present only on errors: 1) Invalid Input, 2) Session Expired.\n- The doc shows no Sample Success Response / Sample Failure Response block for this endpoint (the JSON below the curl on the next page belongs to the following section, Get Option Greek). Only the curl request is provided.\n- 'https://BaseURL/GetOptionChain' in the curl is a placeholder; the real base URL is https://piconnect.flattrade.in/PiConnectAPI.",
+  "confidence": "high",
+  "issues": "No sample success or failure JSON response is shown for Get Option Chain in the source PDF — only the curl request block. The JSON immediately following on page 55 (\"request_time\"/\"cal_price\"/etc.) is the Get Option Greek success response, not this endpoint's, so sample_success_response and sample_failure_response are intentionally left empty. The response_fields entries for the per-contract object are prefixed \"values[].\" to disambiguate them from the top-level stat/values/emsg fields."
+}

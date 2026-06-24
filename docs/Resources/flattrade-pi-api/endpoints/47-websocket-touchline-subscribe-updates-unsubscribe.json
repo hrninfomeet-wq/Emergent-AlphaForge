@@ -1,0 +1,162 @@
+{
+  "name": "WebSocket Touchline (Subscribe/Updates/Unsubscribe)",
+  "category": "WebSocket",
+  "kind": "WebSocket",
+  "method": "WebSocket",
+  "path": "/PiConnectWSAPI/",
+  "url": "wss://piconnect.flattrade.in/PiConnectWSAPI/",
+  "summary": "WebSocket message frames for Touchline market-data streaming over the Flattrade Pi connect socket. The client sends a Subscribe Touchline frame (t=t) or Unsubscribe Touchline frame (t=u) with a '#'-delimited scrip list in the k field; the server replies with a touchline acknowledgement (t=tk) per scrip, then pushes touchline feed updates (t=tf) as ticks arrive, and an unsubscribe acknowledgement (t=uk) on unsubscription.",
+  "request_params": [],
+  "json_fields": [
+    {
+      "name": "t",
+      "description": "Touchline request task type. Set to 't' to subscribe to touchline ('t' represents touchline task). For unsubscription this same field is set to 'u' ('u' represents Unsubscribe Touchline).",
+      "required": false,
+      "possible_values": "t (subscribe) / u (unsubscribe)"
+    },
+    {
+      "name": "k",
+      "description": "One or more scriplist for subscription/unsubscription, '#'-delimited as Exchange|Token. Subscribe example: NSE|22#BSE|508123#NSE|NIFTY. Unsubscribe example: NSE|22#BSE|508123.",
+      "required": false,
+      "possible_values": "e.g. NSE|22#BSE|508123#NSE|NIFTY"
+    }
+  ],
+  "response_fields": [
+    {
+      "name": "t",
+      "possible_values": "tk",
+      "description": "Touchline subscription acknowledgement frame. 'tk' represents touchline acknowledgement. The number of acknowledgement frames for a single subscription equals the number of scrips listed in the k field."
+    },
+    {
+      "name": "e",
+      "possible_values": "NSE, BSE, NFO ..",
+      "description": "Exchange name"
+    },
+    {
+      "name": "tk",
+      "possible_values": "22",
+      "description": "Scrip Token"
+    },
+    {
+      "name": "pp",
+      "possible_values": "2 for NSE, BSE / 4 for CDS USDINR",
+      "description": "Price precision"
+    },
+    {
+      "name": "ts",
+      "possible_values": "",
+      "description": "Trading Symbol"
+    },
+    {
+      "name": "ti",
+      "possible_values": "",
+      "description": "Tick size"
+    },
+    {
+      "name": "ls",
+      "possible_values": "",
+      "description": "Lot size"
+    },
+    {
+      "name": "lp",
+      "possible_values": "",
+      "description": "LTP (Last Traded Price)"
+    },
+    {
+      "name": "pc",
+      "possible_values": "",
+      "description": "Percentage change"
+    },
+    {
+      "name": "v",
+      "possible_values": "",
+      "description": "volume"
+    },
+    {
+      "name": "o",
+      "possible_values": "",
+      "description": "Open price"
+    },
+    {
+      "name": "h",
+      "possible_values": "",
+      "description": "High price"
+    },
+    {
+      "name": "l",
+      "possible_values": "",
+      "description": "Low price"
+    },
+    {
+      "name": "c",
+      "possible_values": "",
+      "description": "Close price"
+    },
+    {
+      "name": "ap",
+      "possible_values": "",
+      "description": "Average trade price"
+    },
+    {
+      "name": "oi",
+      "possible_values": "",
+      "description": "Open interest"
+    },
+    {
+      "name": "poi",
+      "possible_values": "",
+      "description": "Previous day closing Open Interest"
+    },
+    {
+      "name": "toi",
+      "possible_values": "",
+      "description": "Total open interest for underlying"
+    },
+    {
+      "name": "bq1",
+      "possible_values": "",
+      "description": "Best Buy Quantity 1"
+    },
+    {
+      "name": "bp1",
+      "possible_values": "",
+      "description": "Best Buy Price 1"
+    },
+    {
+      "name": "sq1",
+      "possible_values": "",
+      "description": "Best Sell Quantity 1"
+    },
+    {
+      "name": "sp1",
+      "possible_values": "",
+      "description": "Best Sell Price 1"
+    },
+    {
+      "name": "ft",
+      "possible_values": "",
+      "description": "Feed time"
+    },
+    {
+      "name": "ord_msg",
+      "possible_values": "",
+      "description": "Order message. Appears in the Subscribe Touchline acknowledgement frame; NOT part of the touchline feed-update field set."
+    },
+    {
+      "name": "t (feed update)",
+      "possible_values": "tf",
+      "description": "Touchline subscription update / feed frame. 'tf' represents touchline feed. Per the doc: 'Accept [Except] for t, e, and tk other fields may / may not be present' — only changed fields are sent. The update field set is: e, tk, lp, pc, v, o, h, l, c, ap, oi, poi, toi, bq1, bp1, sq1, sp1, ft."
+    },
+    {
+      "name": "t (unsubscribe ack)",
+      "possible_values": "uk",
+      "description": "Unsubscribe Touchline response frame. 'uk' represents Unsubscribe Touchline acknowledgement. The unsubscribe response also echoes the k field (one or more scriplist for unsubscription, e.g. NSE|22#BSE|508123)."
+    }
+  ],
+  "sample_request": "curl --location 'wss://piconnect.flattrade.in/PiConnectWSAPI/' \n--data '{\n    \"t\": \"t\",\n    \"k\": \"NSE|22#BSE|508123#NSE|10#BSE|2879\"\n}'\n\n# Unsubscribe (verbatim from page 71 — the doc places the ack value 'uk', not 'u', in this request body):\ncurl --location 'wss://piconnect.flattrade.in/PiConnectWSAPI/' \n--data '{\n    \"t\": \"uk\",\n    \"k\": \"NSE|22#BSE|508123#NSE|10#BSE|2879\"\n}'",
+  "sample_success_response": "",
+  "sample_failure_response": "",
+  "notes": "This is a WebSocket message-frame API, not a REST call; the endpoint is wss://piconnect.flattrade.in/PiConnectWSAPI/ and the doc illustrates each frame with a curl --location example whose --data payload is the JSON frame to send. A connect/auth frame must already be established before subscribing — the connect ack (t=ak with uid and s=Ok or Not_Ok) and its request fields (uid/actid/source/accesstoken) belong to the preceding CONNECT section at the top of page 69, not to Touchline. The k field is a '#'-delimited list of Exchange|Token entries; the number of acknowledgement frames returned equals the number of scrips listed in k. Touchline feed/update frames (t=tf) are partial: only t, e, and tk are guaranteed present; all other fields (lp, pc, v, o, h, l, c, ap, oi, poi, toi, bq1, bp1, sq1, sp1, ft) may or may not appear depending on what changed (the doc wording is 'Accept for t, e, and tk other fields may / may not be present' — 'Accept' is the doc's rendering of 'Except'). Unsubscribe uses the same socket with t=u (request) and yields t=uk (response), echoing the k scriplist; note the doc's verbatim unsubscribe curl on page 71 actually shows \"t\": \"uk\" in the request body (the ack value, not u). pp (price precision) = 2 for NSE/BSE and 4 for CDS USDINR. The Subscribe Touchline acknowledgement carries one extra field (ord_msg, Order message) that is NOT listed in the touchline feed-update field set. The only full sample JSON message on these pages (the 'df' depth message on page 72) belongs to SUBSCRIBE DEPTH (out of scope) and is deliberately excluded here.",
+  "confidence": "high",
+  "issues": "No verbatim success-response JSON is provided for the Touchline frames in this section (only the curl request examples for subscribe/unsubscribe, plus the t=ak connect-ack table at the top of page 69 which belongs to the preceding CONNECT section). The only full sample JSON on these pages (the 'df' depth message on page 72) belongs to SUBSCRIBE DEPTH, not Touchline, so it was excluded. Field tables for the acknowledgement and update frames span page boundaries (69/70 and 70/71); all bindings were confirmed against the page images. The t/k REQUEST table renders both fields without a trailing asterisk in the doc, so required=false was used for both though both are functionally needed. The doc's unsubscribe curl example uses 't':'uk' (ack value) rather than 'u' in the request — reproduced verbatim."
+}

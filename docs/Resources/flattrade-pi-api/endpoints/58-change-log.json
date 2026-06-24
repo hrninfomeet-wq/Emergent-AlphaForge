@@ -1,0 +1,18 @@
+{
+  "name": "Change Log",
+  "category": "Account & Reference",
+  "kind": "Info",
+  "method": "",
+  "path": "",
+  "url": "",
+  "summary": "Change Log for the \"API & WebSocket Configuration Update\" release, which introduces breaking changes to the Flattrade pi REST and WebSocket endpoints: the REST Base URL, the WebSocket URL, and the socket-connection initialization payload were all updated. Clients must update their configuration.",
+  "request_params": [],
+  "json_fields": [],
+  "response_fields": [],
+  "sample_request": "",
+  "sample_success_response": "Previous Payload:\n{\n  \"t\": \"c\",\n  \"uid\": \"FZ00000\",\n  \"actid\": \"FZ00000\",\n  \"source\": \"API\",\n  \"susertoken\": \"GHUDWU53H32MTHPA536Q32WR\"\n}\n\nUpdated Payload:\n{\n  \"t\": \"a\",\n  \"uid\": \"FZ00000\",\n  \"actid\": \"FZ00000\",\n  \"source\": \"API\",\n  \"accesstoken\": \"GHUDWU53H32MTHPA536Q32WR\"\n}",
+  "sample_failure_response": "",
+  "confidence": "high",
+  "notes": "Info-type section (change log / migration notice), not a callable endpoint — no request query params, no jData JSON body fields, no response fields. Title \"CHANGE LOG\" + subtitle \"API & WEBSOCKET CONFIGURATION UPDATE\" appear at the bottom of page 92; all detail is on page 93 (final page, 93 of 93).\n\nBREAKING CHANGES (3):\n1. BASE URL ENDPOINT CHANGE — REST API base path changed from \"PiConnectTP\" to \"PiConnectAPI\". OLD: https://piconnect.flattrade.in/PiConnectTP/ ; NEW: https://piconnect.flattrade.in/PiConnectAPI/ . All existing REST endpoints (Holdings, Orders, Positions, etc.) must now use the updated Base URL.\n2. WEBSOCKET URL ENDPOINT CHANGE — WebSocket connection URL changed from \"PiConnectWSTp\" to \"PiConnectWSAPI\". OLD: wss://piconnect.flattrade.in/PiConnectWSTp/ ; NEW: wss://piconnect.flattrade.in/PiConnectWSAPI/ . Connections made to the old WebSocket URL will be rejected.\n3. SOCKET CONNECTION PAYLOAD CHANGE — connection-type field value changed: \"t\": \"c\" -> \"t\": \"a\"; auth token field renamed: \"susertoken\" -> \"accesstoken\" (token value unchanged).\n\nSUMMARY OF CHANGES table (Item / Change / Description):\n- Base URL | Endpoint | REST API base endpoint updated\n- WebSocket URL | Endpoint | WebSocket endpoint updated\n- Payload Field | \"t\": \"c\" -> \"t\": \"a\" | Socket connection type updated\n- Auth Field | \"susertoken\" -> \"accesstoken\" | Authentication token field renamed\n\nACTION REQUIRED: Update Base URL configuration in the application; Update WebSocket connection URL; Use the updated socket connection payload.\n\nThis Change Log appears immediately after the ORDER API RATE LIMIT (Per Second 10 / Per Minute 40) and the API RATE LIMIT (Per Second 40 / Per Minute 200) sections, and a Scrip Groups master-download list (NSE Equity / Equity Derivatives / Index Derivatives / Currency Derivatives, MCX Commodity, BSE Equity / Index Derivatives / Equity Derivatives) on page 92 — those belong to neighbouring sections and are excluded here.",
+  "issues": "No real request/response pairs exist for a change log (Info section), so param/field/response arrays are intentionally empty. The two JSON blocks (Previous Payload / Updated Payload) are stored in sample_success_response because they are the only verbatim JSON samples on the page; they are illustrative socket-init payloads, not an HTTP response. Everything in the section was legible across both page images and the cleaned text; no unreadable content. Verified against page images: all URLs, endpoint-path renames (PiConnectTP->PiConnectAPI, PiConnectWSTp->PiConnectWSAPI), the t and token field changes, the 4-row Summary of Changes table, and both JSON payloads match exactly."
+}

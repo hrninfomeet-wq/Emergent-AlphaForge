@@ -1,0 +1,59 @@
+{
+  "name": "Get Broker Msg",
+  "category": "Market Info",
+  "kind": "REST",
+  "method": "POST",
+  "path": "/GetBrokerMsg",
+  "url": "https://piconnect.flattrade.in/PiConnectAPI/GetBrokerMsg",
+  "summary": "Retrieves broker/admin (Noren) messages for the logged-in user via a POST call. On success the response is a JSON array of message objects, each carrying a status, Noren time, message type, and the message body.",
+  "request_params": [
+    {
+      "name": "jData",
+      "description": "URL-encoded JSON object containing the request body fields listed in the jData JSON fields table.",
+      "required": true,
+      "possible_values": "Should send json object with fields in below list"
+    },
+    {
+      "name": "jKey",
+      "description": "Session key obtained on login success.",
+      "required": true,
+      "possible_values": "Key Obtained on login success."
+    }
+  ],
+  "json_fields": [
+    {
+      "name": "uid",
+      "description": "Logged in User Id",
+      "required": true,
+      "possible_values": ""
+    }
+  ],
+  "response_fields": [
+    {
+      "name": "stat",
+      "description": "Broker Msg success or failure indication.",
+      "possible_values": "Ok"
+    },
+    {
+      "name": "dmsg",
+      "description": "This will be present only in case of success. Number of days to expiry will be present in same. (Boilerplate carried over; in this endpoint dmsg holds the broker/admin message body.)",
+      "possible_values": ""
+    },
+    {
+      "name": "norentm",
+      "description": "Noren Time",
+      "possible_values": ""
+    },
+    {
+      "name": "msgtyp",
+      "description": "Message type. Not listed in the doc's success field table; appears only in the sample response objects.",
+      "possible_values": "Admin Message"
+    }
+  ],
+  "sample_request": "curl --location 'https://BaseURL/GetBrokerMsg' \\\n--header 'Content-Type: application/json' \\\n--data 'jData={\n    \"uid\": \"FZ00000\"      \n}&jKey=GHUDWU53H32MTHPA536Q32WR'",
+  "sample_success_response": "[\n{\n\"stat\": \"Ok\",\n\"norentm\": \"02-05-1975 08:48:52\",\n\"msgtyp\": \"Admin Message\",\n\"dmsg\": \"Test Msg All Message Recovery2\"\n},\n{\n\"stat\": \"Ok\",\n\"norentm\": \"02-05-1975 08:48:52\",\n\"msgtyp\": \"Admin Message\",\n\"dmsg\": \"Test Msg All Message Recovery2\"\n}\n]",
+  "sample_failure_response": "",
+  "notes": "- Despite \"get\" in the name, this is a POST call. Parameters are passed as jData (URL-encoded JSON) plus jKey in the request body, using the same jData=...&jKey=... convention as other Flattrade pi endpoints.\n- In the curl example the URL is shown as the placeholder 'https://BaseURL/GetBrokerMsg'; the actual base URL is https://piconnect.flattrade.in/PiConnectAPI.\n- The jData JSON fields table for this endpoint (page 58) lists exactly one field, uid*. The exch field visible on page 57 belongs to the PREVIOUS endpoint (Exchange Message), not Get Broker Msg.\n- The success response is a JSON ARRAY of message objects (not a single object); each object carries stat/norentm/msgtyp/dmsg. The sample spans pages 57-58 with two such objects.\n- The doc's success response-details table lists only stat, dmsg, and norentm; msgtyp is not in that table but appears in every sample response object.\n- The dmsg description (\"Number of days to expiry will be present in same.\") reads as boilerplate carried over from another section; for this endpoint dmsg holds the broker/admin message body.\n- No explicit failure-response sample or failure field table is shown for this endpoint in the source pages.",
+  "confidence": "high",
+  "issues": "The jData success response table on page 58 lists only stat/dmsg/norentm, but every sample response object also includes msgtyp; msgtyp is documented only via the sample, not the field table. The dmsg description (\"Number of days to expiry will be present in same.\") reads as boilerplate carried over from another endpoint and likely does not literally describe this endpoint's dmsg. No failure-response sample or failure field table is provided in the source pages."
+}

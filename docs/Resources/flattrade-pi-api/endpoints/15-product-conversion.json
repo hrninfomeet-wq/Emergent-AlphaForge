@@ -1,0 +1,103 @@
+{
+  "name": "Product Conversion",
+  "category": "Orders & Trades",
+  "kind": "REST",
+  "method": "POST",
+  "path": "/ProductConversion",
+  "url": "https://piconnect.flattrade.in/PiConnectAPI/ProductConversion",
+  "summary": "Converts an existing position from one product type to another (e.g. intraday to delivery / carry-forward, or vice versa) via a POST call. Returns a simple Ok / Not_Ok status indicating conversion success or failure.",
+  "request_params": [
+    {
+      "name": "jData*",
+      "description": "Should send json object with fields in below list.",
+      "required": true,
+      "possible_values": ""
+    },
+    {
+      "name": "jKey*",
+      "description": "Key Obtained on login success.",
+      "required": true,
+      "possible_values": ""
+    }
+  ],
+  "json_fields": [
+    {
+      "name": "exch",
+      "description": "Exchange",
+      "required": true,
+      "possible_values": ""
+    },
+    {
+      "name": "tsym",
+      "description": "Unique id of contract on which order was placed. Can't be modified, must be the same as that of original order. (use url encoding to avoid special char error for symbols like M&M)",
+      "required": true,
+      "possible_values": ""
+    },
+    {
+      "name": "qty",
+      "description": "Quantity to be converted [If qty is junk value other than numbers].",
+      "required": true,
+      "possible_values": ""
+    },
+    {
+      "name": "uid",
+      "description": "User id of the logged in user.",
+      "required": true,
+      "possible_values": ""
+    },
+    {
+      "name": "actid",
+      "description": "Account id",
+      "required": true,
+      "possible_values": ""
+    },
+    {
+      "name": "prd",
+      "description": "Product to which the user wants to convert position.",
+      "required": true,
+      "possible_values": ""
+    },
+    {
+      "name": "prevprd",
+      "description": "Original product of the position.",
+      "required": true,
+      "possible_values": ""
+    },
+    {
+      "name": "trantype",
+      "description": "B -> BUY, S -> SELL [transtype should be 'B' or 'S' else reject].",
+      "required": true,
+      "possible_values": "B / S"
+    },
+    {
+      "name": "postype",
+      "description": "Converting Day or Carry forward position",
+      "required": true,
+      "possible_values": "Day / CF"
+    },
+    {
+      "name": "ordersource",
+      "description": "For Logging",
+      "required": false,
+      "possible_values": "API"
+    }
+  ],
+  "response_fields": [
+    {
+      "name": "stat",
+      "description": "Position conversion success or failure indication.",
+      "possible_values": "Ok or Not_Ok"
+    },
+    {
+      "name": "emsg",
+      "description": "This will be present only if Position conversion fails.",
+      "possible_values": ""
+    }
+  ],
+  "sample_request": "curl --location 'https://BaseURL/ProductConversion' \\\n--header 'Content-Type: application/json' \\\n--data 'jData={\n    \"uid\": \"FZ00000\",\n    \"actid\": \"FZ00000\",\n    \"exch\": \"NSE\",\n    \"tsym\": \"ACC-EQ\",\n    \"qty\": \"50\",\n    \"prc\": \"1400\",\n    \"prd\": \"H\",\n    \"trantype\": \"B\",\n    \"prctyp\": \"LMT\",\n    \"prevprd\": \"C\", \n    \"postype\": \"Day\"\n}&jKey=GHUDWU53H32MTHPA536Q32WR'",
+  "sample_success_response": "{\n\"request_time\":\"10:52:12 02-06-2020\",\n\"stat\":\"Ok\"\n}",
+  "sample_failure_response": "{\n\"stat\":\"Not_Ok\",\n\"emsg\":\"Invalid Input :  Invalid Position Type\"\n}",
+  "notes": "Section spans PDF pages 29-30; ends where \"PLACE GTT ORDER\" begins. The documented jData-field table lists exch, tsym, qty, uid, actid, prd, prevprd, trantype, postype, ordersource — it does NOT list prc or prctyp, even though both appear in the curl example; those two extra example fields are not part of the field spec. The prd and prevprd \"Possible value\" cells are blank in the doc (free-text product codes such as H/C/I are implied by the example but not enumerated). Only ordersource is optional (no trailing *); all other jData fields are required.",
+  "confidence": "high",
+  "issues": "The documented jData-field table (exch, tsym, qty, uid, actid, prd, prevprd, trantype, postype, ordersource) does not list \"prc\"/\"prctyp\" even though they appear in the curl example, so those two extra example fields are recorded only in notes, not as json_fields. prd and prevprd possible-value cells are blank in the doc (free-text product codes such as H/C/I implied by the example but not enumerated in the table)."
+}

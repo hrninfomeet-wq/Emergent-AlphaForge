@@ -1,0 +1,89 @@
+{
+  "name": "Get Pending Alert",
+  "category": "Alerts",
+  "kind": "REST",
+  "method": "POST",
+  "path": "/GetPendingAlert",
+  "url": "https://piconnect.flattrade.in/PiConnectAPI/GetPendingAlert",
+  "summary": "Retrieves the list of pending (active) price alerts for the logged-in user via a POST call. Each returned alert contains its type, id, trading symbol, exchange, token, remarks, validity, and the data value compared against the LTP.",
+  "request_params": [
+    {
+      "name": "jData",
+      "description": "Should send json object with fields in below list",
+      "possible_values": "",
+      "required": true
+    },
+    {
+      "name": "jKey",
+      "description": "Key Obtained on login success.",
+      "possible_values": "",
+      "required": true
+    }
+  ],
+  "json_fields": [
+    {
+      "name": "uid",
+      "description": "User id of the logged in user.",
+      "possible_values": "",
+      "required": true
+    }
+  ],
+  "response_fields": [
+    {
+      "name": "stat",
+      "description": "alert success or failure indication.",
+      "possible_values": ""
+    },
+    {
+      "name": "ai_t",
+      "description": "Alert type",
+      "possible_values": ""
+    },
+    {
+      "name": "al_id",
+      "description": "Alert Id",
+      "possible_values": ""
+    },
+    {
+      "name": "tsym",
+      "description": "Trading symbol",
+      "possible_values": ""
+    },
+    {
+      "name": "exch",
+      "description": "Exchange Segment",
+      "possible_values": ""
+    },
+    {
+      "name": "token",
+      "description": "Contract token",
+      "possible_values": ""
+    },
+    {
+      "name": "remarks",
+      "description": "Any message Entered during order entry.",
+      "possible_values": ""
+    },
+    {
+      "name": "validity",
+      "description": "Validity",
+      "possible_values": "DAY or GTT"
+    },
+    {
+      "name": "d",
+      "description": "Data to be compared with LTP",
+      "possible_values": ""
+    },
+    {
+      "name": "emsg",
+      "description": "This will be present only in case of errors. That is : 1) Invalid Input 2) Session Expired",
+      "possible_values": ""
+    }
+  ],
+  "sample_request": "curl --location 'https://BaseURL/GetPendingAlert' \\\n--header 'Content-Type: application/json' \\\n--data 'jData={\n    \"uid\": \"FZ00000\"   \n}&jKey=GHUDWU53H32MTHPA536Q32WR'",
+  "sample_success_response": "[\n{\n\"Stat\":\"ok\",\n“ai_t”:”LTP_A”,\n“al_id”:”21040800000008”,\n“tsym”:”ACC-EQ”,\n“exch”:”NSE”\n“token”:”22”,\n“remarks”:”test”,\n“validity”:”DAY”,\n“d”:”95000.00”\n}\n]",
+  "sample_failure_response": "{\n\"stat\":\"Not_Ok\",\n\"emsg\":\"Session Expired : Invalid Session Key\"\n}",
+  "notes": "Per the doc table, the success response is a JSON ARRAY (list) of alert objects, while the failure response is a single object. The curl example uses a placeholder host 'https://BaseURL/GetPendingAlert' — the real base URL is https://piconnect.flattrade.in/PiConnectAPI. The request body is x-www-form-urlencoded style: jData (the JSON object) and jKey joined with '&'. The success-response JSON is reproduced verbatim with the source's defects: smart/curly quotes (e.g. “ai_t”), the first key is \"Stat\" (capital S) although the field table documents it as \"stat\", and the \"exch\":\"NSE\" line is missing its trailing comma. Response field 'ai_t' is the alert type; 'd' is the data/price value compared against LTP.",
+  "confidence": "high",
+  "issues": "The cleaned-text success-response JSON contains smart quotes and defects (key \"Stat\" capital S vs documented \"stat\"; missing comma after \"exch\":\"NSE\") — reproduced verbatim as in the source. The jData object documents only 'uid'; no other request body fields are specified. The success-response 'stat' example shows lowercase \"ok\" while the failure response shows \"Not_Ok\"."
+}

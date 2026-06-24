@@ -1,0 +1,54 @@
+{
+  "name": "Get Enabled Alert Types",
+  "category": "Alerts",
+  "kind": "REST",
+  "method": "POST",
+  "path": "/GetEnabledAlertTypes",
+  "url": "https://piconnect.flattrade.in/PiConnectAPI/GetEnabledAlertTypes",
+  "summary": "Returns the list of alert types (e.g. ATP, LTP, Perc. Change) that are enabled for the logged-in user. POST call requiring jData (a JSON object whose only field is uid) and jKey as request parameters.",
+  "request_params": [
+    {
+      "name": "jData",
+      "required": true,
+      "description": "Should send json object with fields in below list",
+      "possible_values": ""
+    },
+    {
+      "name": "jKey",
+      "required": true,
+      "description": "Key Obtained on login success.",
+      "possible_values": ""
+    }
+  ],
+  "json_fields": [
+    {
+      "name": "uid",
+      "required": true,
+      "description": "User id of the logged in user.",
+      "possible_values": ""
+    }
+  ],
+  "response_fields": [
+    {
+      "name": "stat",
+      "possible_values": "",
+      "description": "alert success or failure indication."
+    },
+    {
+      "name": "request_time",
+      "possible_values": "",
+      "description": "This will be present only in a successful response."
+    },
+    {
+      "name": "ai_ts",
+      "possible_values": "",
+      "description": "Array of alert types"
+    }
+  ],
+  "sample_request": "curl --location 'https://BaseURL/GetEnabledAlertTypes' \\\n--header 'Content-Type: application/json' \\\n--data 'jData={\n    \"uid\": \"FZ00000\"   \n}&jKey=GHUDWU53H32MTHPA536Q32WR'",
+  "sample_success_response": "{\n\"stat\":\"Ok\",\n\"request_time\":\"04062021121503\",\n\"ai_ts\":\n[\n{\"ai_t\":\"ATP\"},\n{\"ai_t\":\"LTP\"},\n{\"ai_t\":\"Perc. Change\"}\n]\n}",
+  "sample_failure_response": "{\n\"stat\":\"Not_Ok\",\n\"emsg\":\"Session Expired : Invalid Session Key\"\n}",
+  "notes": "The documented full URL host is piconnect.flattrade.in (the curl example uses a 'BaseURL' placeholder which resolves to https://piconnect.flattrade.in/PiConnectAPI). The request body is sent as form data: jData (a JSON object, the only field being uid) plus jKey, joined with '&'. The ai_ts response is an array of objects each containing an 'ai_t' field (the alert type code, e.g. ATP / LTP / Perc. Change); the response-fields table lists ai_ts as 'Array of alert types' but the actual element key is 'ai_t' as seen in the success sample. request_time is only present on success. On failure 'stat' is 'Not_Ok' and an 'emsg' field carries the error reason. The 'Possible value' column is blank for every request parameter, jData field, and response field in the source tables.",
+  "confidence": "high",
+  "issues": "None significant. The request-side jData/json tables on page 63 have no 'Possible value' entries (blank cells), confirmed via the page image. The response-fields table appears at the top of page 64 (continuation), then the FUNDS / Get Max Payout Amount section begins. The success sample's element key 'ai_t' is documented only implicitly in the sample, not in the response-fields table; captured in notes."
+}

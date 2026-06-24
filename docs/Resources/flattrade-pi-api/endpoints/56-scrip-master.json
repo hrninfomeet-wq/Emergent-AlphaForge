@@ -1,0 +1,18 @@
+{
+  "name": "Scrip Master",
+  "category": "Account & Reference",
+  "kind": "Info",
+  "method": null,
+  "path": null,
+  "url": null,
+  "summary": "Scrip Master is a reference resource providing downloadable scrip (symbol) master files for each exchange segment. Each \"Scrip Group\" row offers a DOWNLOAD link to fetch the full symbol list for that segment, which is used to map tradingsymbols/tokens for order placement and market-data subscriptions.",
+  "request_params": [],
+  "json_fields": [],
+  "response_fields": [],
+  "sample_request": null,
+  "sample_success_response": null,
+  "sample_failure_response": null,
+  "notes": "This is an informational/reference section, not a REST or WebSocket endpoint — there is no request/response body, jData/jKey params, or JSON sample. It presents a static list of \"Scrip Groups\", each with a \"DOWNLOAD\" button/link to retrieve that segment's scrip master file.\n\nThe available Scrip Groups (segments), in the order shown on the page image, each with its own DOWNLOAD link:\n1. NSE - Equity\n2. NSE - Equity Derivatives\n3. NSE - Index Derivatives\n4. NSE - Currency Derivatives\n5. MCX - Commodity\n6. BSE - Equity\n7. BSE - Index Derivatives\n8. BSE - Equity Derivatives\n\nText-ordering caveat: the cleaned page-92 text flattens the table and lists the BSE rows slightly out of order (a stray \"DOWNLOAD\" line appears before \"BSE - Equity\", and the DOWNLOAD lines for \"BSE - Index Derivatives\" / \"BSE - Equity Derivatives\" appear transposed). The page IMAGE is authoritative and shows the eight segments in the order above, each with its own DOWNLOAD link.\n\nThe section title \"SCRIP MASTER\" appears at the bottom of page 91; the actual content (Scrip Groups table) is on page 92. The section ends where \"ORDER API RATE LIMIT\" begins (also page 92). No actual download URLs, file format (CSV/TXT/ZIP), update frequency, or column schemas for the downloaded scrip files are documented in this section.",
+  "confidence": "high",
+  "issues": "No actual download URLs, file format (CSV/TXT/ZIP), or scrip-file column definitions are shown — only segment names with DOWNLOAD links. The cleaned page-92 text has the BSE rows mis-ordered/misaligned versus the image; resolved using the authoritative page image. No request/response data exists for this Info section, so all param/field arrays are intentionally empty."
+}

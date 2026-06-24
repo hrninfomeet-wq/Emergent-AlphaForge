@@ -1,0 +1,18 @@
+{
+  "name": "Postman Collections",
+  "category": "Setup",
+  "kind": "Info",
+  "method": null,
+  "path": "/",
+  "url": "https://piconnect.flattrade.in/PiConnectAPI",
+  "summary": "Informational setup note pointing users to a downloadable Postman collection for testing the Flattrade pi APIs. To test an API in Postman you must first define the required variable fields - the base URL, clientid, and jKey - on the API specification.",
+  "request_params": [],
+  "json_fields": [],
+  "response_fields": [],
+  "sample_request": "Sample:\n BaseUrl - https://piconnect.flattrade.in/PiConnectAPI\n ClientId - FT0000\n jKey - GHUDWU53H32MTHPA536Q32WR",
+  "sample_success_response": null,
+  "sample_failure_response": null,
+  "notes": "- This is an informational / setup section only; it defines no request method, path, query parameter, jData field, or response payload.\n- The page shows a download affordance - a download icon next to the link text \"To Download the Postman Collections\". The actual download URL is not present in the rendered/decoded text (only the icon is shown).\n- Verbatim page instruction: \"To test the API in Postman, you need to define the required variable fields such as the base URL, clientid, jkey on the API specification.\" (The body text writes the key as lowercase \"jkey\"; the Sample block on the right of the page writes it as \"jKey\".)\n- The right-hand Sample block lists example values bound to this note: BaseUrl https://piconnect.flattrade.in/PiConnectAPI, ClientId FT0000, jKey GHUDWU53H32MTHPA536Q32WR. ClientId FT0000 and the jKey value are placeholders/examples, not real credentials.\n- Inferred (not stated in this note itself): the jKey is the session token obtained from the auth/apitoken flow described in the preceding section (steps 4-5 on this same page); that token is returned only if the request originates from the registered private static IP for the API key.",
+  "confidence": "high",
+  "issues": "Section is purely informational (a setup/testing aid), so there are no request params, jData body fields, or response fields to extract. The Postman collection download URL is represented only by a download icon in the rendered page and is not present in the decoded text. The Sample block (BaseUrl/ClientId/jKey) appears in the right-hand column and is bound to this note as the closest verbatim block. The body text spells the key lowercase 'jkey' while the Sample block uses 'jKey' - both spellings preserved verbatim."
+}

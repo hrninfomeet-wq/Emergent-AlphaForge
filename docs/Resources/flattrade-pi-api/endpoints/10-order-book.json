@@ -1,0 +1,250 @@
+{
+  "name": "Order Book",
+  "category": "Orders & Trades",
+  "kind": "REST",
+  "method": "POST",
+  "path": "/OrderBook",
+  "url": "https://piconnect.flattrade.in/PiConnectAPI/OrderBook",
+  "summary": "Retrieves the user's order book (all orders placed for the trading day) via a POST call. The request sends a jData JSON object (uid required, optional prd) plus the login jKey, and on success returns a JSON array of order objects with full per-order detail (symbol, price, qty, status, validity, etc.).",
+  "request_params": [
+    {
+      "name": "jData*",
+      "description": "Should send json object with fields in below list.",
+      "possible_values": "",
+      "required": true
+    },
+    {
+      "name": "jKey*",
+      "description": "Key Obtained on login success.",
+      "possible_values": "",
+      "required": true
+    }
+  ],
+  "json_fields": [
+    {
+      "name": "uid*",
+      "description": "Logged in User Id.",
+      "possible_values": "",
+      "required": true
+    },
+    {
+      "name": "prd",
+      "description": "Product name.",
+      "possible_values": "H / M / ...",
+      "required": false
+    }
+  ],
+  "response_fields": [
+    {
+      "name": "stat",
+      "possible_values": "Ok or Not_Ok",
+      "description": "Order book success or failure indication."
+    },
+    {
+      "name": "exch",
+      "possible_values": "",
+      "description": "Exchange Segment."
+    },
+    {
+      "name": "tsym",
+      "possible_values": "",
+      "description": "Trading symbol / contract on which order is placed."
+    },
+    {
+      "name": "norenordno",
+      "possible_values": "",
+      "description": "Noren Order Number."
+    },
+    {
+      "name": "prc*",
+      "possible_values": "",
+      "description": "Order Price [If prc is junk value other than numbers] \"Order price cannot be zero\"."
+    },
+    {
+      "name": "qty*",
+      "possible_values": "",
+      "description": "Order Quantity [If qty is junk value other than numbers]."
+    },
+    {
+      "name": "prd",
+      "possible_values": "",
+      "description": "Display product alias name, using prarr returned in user details."
+    },
+    {
+      "name": "status",
+      "possible_values": "",
+      "description": "Order status."
+    },
+    {
+      "name": "trantype*",
+      "possible_values": "B / S",
+      "description": "B -> BUY, S -> SELL [transtype should be 'B' or 'S' else reject]."
+    },
+    {
+      "name": "prctyp",
+      "possible_values": "LMT",
+      "description": "Price type."
+    },
+    {
+      "name": "fillshares",
+      "possible_values": "",
+      "description": "Total Traded Quantity of this order."
+    },
+    {
+      "name": "avgprc",
+      "possible_values": "",
+      "description": "Average trade price of total traded quantity."
+    },
+    {
+      "name": "rejreason",
+      "possible_values": "",
+      "description": "If order is rejected, reason in text form."
+    },
+    {
+      "name": "exchordid",
+      "possible_values": "",
+      "description": "Exchange Order Number."
+    },
+    {
+      "name": "cancelqty",
+      "possible_values": "",
+      "description": "Canceled quantity for order which is in status cancelled."
+    },
+    {
+      "name": "remarks",
+      "possible_values": "",
+      "description": "Any message Entered during order entry."
+    },
+    {
+      "name": "dscqty*",
+      "possible_values": "",
+      "description": "Order disclosed quantity [If dscqty is junk value other than numbers]."
+    },
+    {
+      "name": "trgprc",
+      "possible_values": "",
+      "description": "Order trigger price."
+    },
+    {
+      "name": "ret*",
+      "possible_values": "DAY / EOS / IOC",
+      "description": "Order validity [ret should be DAY / EOS / IOC else reject]."
+    },
+    {
+      "name": "uid",
+      "possible_values": "",
+      "description": ""
+    },
+    {
+      "name": "actid",
+      "possible_values": "",
+      "description": ""
+    },
+    {
+      "name": "bpprc",
+      "possible_values": "",
+      "description": "Book Profit Price applicable only if product is selected as B (Bracket order)."
+    },
+    {
+      "name": "blprc",
+      "possible_values": "",
+      "description": "Book loss Price applicable only if product is selected as H and B (High Leverage and Bracket order)."
+    },
+    {
+      "name": "trailprc",
+      "possible_values": "",
+      "description": "Trailing Price applicable only if product is selected as H and B (High Leverage and Bracket order)."
+    },
+    {
+      "name": "amo*",
+      "possible_values": "Yes",
+      "description": "The message \"Invalid AMO\" will be displayed if the \"amo\" field is not sent with a \"Yes\" value. If amo is not required, do not send this field."
+    },
+    {
+      "name": "pp",
+      "possible_values": "",
+      "description": "Price precision."
+    },
+    {
+      "name": "ti",
+      "possible_values": "",
+      "description": "Tick size."
+    },
+    {
+      "name": "ls",
+      "possible_values": "",
+      "description": "Lot size."
+    },
+    {
+      "name": "token",
+      "possible_values": "",
+      "description": "Contract Token."
+    },
+    {
+      "name": "orddttm",
+      "possible_values": "",
+      "description": ""
+    },
+    {
+      "name": "ordenttm",
+      "possible_values": "",
+      "description": ""
+    },
+    {
+      "name": "extm",
+      "possible_values": "",
+      "description": ""
+    },
+    {
+      "name": "snoordt",
+      "possible_values": "",
+      "description": "0 for profit leg and 1 for stoploss leg."
+    },
+    {
+      "name": "snonum",
+      "possible_values": "",
+      "description": "This field will be present for product H and B; and only if it is profit/sl order."
+    },
+    {
+      "name": "dname",
+      "possible_values": "",
+      "description": "Broker specific contract display name."
+    },
+    {
+      "name": "rorgqty",
+      "possible_values": "",
+      "description": "To be used in get margin from modify window."
+    },
+    {
+      "name": "rorgprc",
+      "possible_values": "",
+      "description": "To be used in get margin from modify window."
+    },
+    {
+      "name": "orgtrgprc",
+      "possible_values": "",
+      "description": "To be used in get margin from modify window, for H/B products only."
+    },
+    {
+      "name": "orgblprc",
+      "possible_values": "",
+      "description": "To be used in get margin from modify window, for H/B products only."
+    },
+    {
+      "name": "algo_name",
+      "possible_values": "",
+      "description": "Algo Name."
+    },
+    {
+      "name": "C",
+      "possible_values": "CUST_FIRM_C",
+      "description": ""
+    }
+  ],
+  "sample_request": "curl --location 'https://BaseURL/OrderBook' \\\n--header 'Content-Type: application/json' \\\n--data 'jData={\n    \"uid\": \"FZ00000\"\n}“&jKey=GHUDWU53H32MTHPA536Q32WR'",
+  "sample_success_response": "[\n{\n“stat” : “Ok”,\n“exch” : “NSE” ,\n“tsym” : “ACC-EQ” ,\n“norenordno” : “20062500000001223”,\n“prc” : “127230”,\n“qty” : “100”,\n“prd” : “C”,\n“status”: “Open”,\n“trantype” : “B”,\n“prctyp” : ”LMT”,\n“fillshares” : “0”,\n“avgprc” : “0”,\n“exchordid” : “250620000000343421”,\n“uid” : “VIDYA”,\n“actid” : “CLIENT1”,\n“ret” : “DAY”,\n“amo” : “Yes”\n},\n{\n“stat” : “Ok”,\n“exch” : “NSE” ,\n“tsym” : “ABB-EQ” ,\n“norenordno” : “20062500000002543”,\n“prc” : “127830”,\n“qty” : “50”,\n“prd” : “C”,\n“status”: “REJECT”,\n“trantype” : “B”,\n“prctyp” : ”LMT”,\n“fillshares” : “0”,\n“avgprc” : “0”,\n“rejreason” : “Insufficient funds”\n“uid” : “VIDYA”,\n“actid” : “CLIENT1”,\n“ret” : “DAY”,\n“amo” : “No”\n}\n]",
+  "sample_failure_response": "{\n\"stat\":\"Not_Ok\",\n\"emsg\":\"Session Expired : Invalid Session Key\"\n}",
+  "notes": "Two response shapes documented: on success the body is a JSON ARRAY of order objects (not a single object); on failure it is a single JSON object with stat=Not_Ok plus request_time and emsg (Error message). The curl example uses a placeholder host 'https://BaseURL/OrderBook'; the real production URL is https://piconnect.flattrade.in/PiConnectAPI/OrderBook. The source curl has a stray smart-quote typo: }“&jKey= — the } should be followed by a normal straight-quote ' closing the --data string before &jKey (reproduced verbatim above). The request body has only two fields: uid (mandatory, shown as uid*) and prd (optional, possible values H / M / ...). Several response fields' mandatory asterisks (prc*, qty*, trantype*, dscqty*, ret*, amo*) are carried over from the order-placement field table; in this read-only order-book response they indicate fields normally present rather than caller-supplied requirements. Conditional response fields: bpprc only when product=B (Bracket); blprc/trailprc only when product=H or B (High Leverage / Bracket); snonum and orgtrgprc/orgblprc only for H/B products. amo: an \"Invalid AMO\" message results if 'Yes' is not sent — omit the field entirely when AMO is not required. The trailing row 'C / CUST_FIRM_C' at the top of page 20 is an isolated key/value pair with no description; its role (a literal field named 'C') is ambiguous but transcribed as shown. The sample success JSON uses curly/smart quotes (“ ”) rather than straight ASCII quotes, and the second object is missing a comma after the rejreason line (both reproduced verbatim from the source).",
+  "confidence": "high",
+  "issues": "The success sample (page 18) and the response-field continuation (pages 19-20) reuse the same generic 'Possible value / Json Fields / Description' three-column layout used by the preceding Single Order / Place Order tables, so a few possible-value cells (e.g. prctyp 'LMT', trantype 'B / S', ret 'DAY / EOS / IOC', amo 'Yes') are inherited enum hints rather than exhaustive lists. The fields uid, actid, orddttm, ordenttm and extm appear in the response table with a name but no description cell. The trailing 'C / CUST_FIRM_C' row is an isolated key/value pair with no description. The mandatory asterisks on response fields are unusual for a read-only book response and are reproduced from the image."
+}

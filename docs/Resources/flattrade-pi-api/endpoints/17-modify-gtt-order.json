@@ -1,0 +1,149 @@
+{
+  "name": "Modify GTT Order",
+  "category": "Orders & Trades",
+  "kind": "REST",
+  "method": "POST",
+  "path": "/ModifyGTTOrder",
+  "url": "https://piconnect.flattrade.in/PiConnectAPI/ModifyGTTOrder",
+  "summary": "Modifies an existing GTT (Good Till Triggered) alert/order. Make a POST call to https://piconnect.flattrade.in/PiConnectAPI/ModifyGTTOrder with a jData JSON body (and jKey from login) to update the order parameters the alert will fire. On success it returns a JSON array with the alert id and a replacement status; on error it returns a JSON object with stat and emsg.",
+  "request_params": [
+    {
+      "name": "jData",
+      "description": "Should send json object with fields in the jData list below (the modify request payload). Note: the Modify GTT Order section does not print an explicit REQUEST DETAILS parameter table; jData and jKey are shown only via the curl example body (jData={...}&jKey=...).",
+      "possible_values": "",
+      "required": true
+    },
+    {
+      "name": "jKey",
+      "description": "Key obtained on login success.",
+      "possible_values": "",
+      "required": true
+    }
+  ],
+  "json_fields": [
+    {
+      "name": "uid",
+      "description": "User id of the logged in user.",
+      "possible_values": "",
+      "required": true
+    },
+    {
+      "name": "tsym",
+      "description": "Trading symbol.",
+      "possible_values": "",
+      "required": true
+    },
+    {
+      "name": "exch",
+      "description": "Exchange Segment.",
+      "possible_values": "",
+      "required": true
+    },
+    {
+      "name": "ai_t",
+      "description": "Alert Type, should be original alert type, can't be modified.",
+      "possible_values": "",
+      "required": true
+    },
+    {
+      "name": "al_id",
+      "description": "Alert Id.",
+      "possible_values": "",
+      "required": false
+    },
+    {
+      "name": "validity",
+      "description": "Validity.",
+      "possible_values": "DAY or GTT",
+      "required": true
+    },
+    {
+      "name": "d",
+      "description": "Data to be compared with LTP.",
+      "possible_values": "",
+      "required": false
+    },
+    {
+      "name": "remarks",
+      "description": "Any message Entered during order entry.",
+      "possible_values": "",
+      "required": true
+    },
+    {
+      "name": "trantype",
+      "description": "B -> BUY, S -> SELL [transtype should be 'B' or 'S' else reject].",
+      "possible_values": "B / S",
+      "required": true
+    },
+    {
+      "name": "prctyp",
+      "description": "Price type / order type. (Doc has only a possible-value cell for this field; no description text.)",
+      "possible_values": "LMT / SL-LMT / DS / 2L / 3L",
+      "required": true
+    },
+    {
+      "name": "prd",
+      "description": "Product name.",
+      "possible_values": "C / M / H",
+      "required": true
+    },
+    {
+      "name": "ret",
+      "description": "Retention type [ret should be DAY / EOS / IOC else reject].",
+      "possible_values": "DAY / EOS / IOC",
+      "required": true
+    },
+    {
+      "name": "actid",
+      "description": "Login users account ID.",
+      "possible_values": "",
+      "required": true
+    },
+    {
+      "name": "qty",
+      "description": "Order Quantity [If qty is junk value other than numbers].",
+      "possible_values": "",
+      "required": true
+    },
+    {
+      "name": "prc",
+      "description": "Order Price [If prc is junk value other than numbers] \"Order price cannot be zero\".",
+      "possible_values": "",
+      "required": true
+    },
+    {
+      "name": "dscqty",
+      "description": "Disclosed quantity (Max 10% for NSE, and 50% for MCX) [If dscqty is junk value other than numbers].",
+      "possible_values": "",
+      "required": true
+    }
+  ],
+  "response_fields": [
+    {
+      "name": "stat",
+      "description": "GTT order success or failure indication. (Success sample shows \"Oi Replacedt\"; failure sample shows \"Not_Ok\".)",
+      "possible_values": ""
+    },
+    {
+      "name": "request_time",
+      "description": "This will be present only in a successful response.",
+      "possible_values": ""
+    },
+    {
+      "name": "al_id",
+      "description": "Alert Id. (Returned in the sample JSON as \"Al_id\".)",
+      "possible_values": ""
+    },
+    {
+      "name": "emsg",
+      "description": "This will be present only in case of errors. That is : 1) Invalid Input 2) Session Expired.",
+      "possible_values": ""
+    }
+  ],
+  "sample_request": "curl --location 'https://BaseURL/ModifyGTTOrder' \\\n--header 'Content-Type: application/json' \\\n--data 'jData={\n    \"uid\": \"FZ00000\",    \n    \"actid\": \"FZ00000\",    \n    \"exch\": \"NSE\",\n    \"tsym\": \"ACC-EQ\",\n    \"validity\": \"DAY\", \n    \"qty\": \"50\",\n    \"prc\": \"1400\",\n    \"prd\": \"H\",\n    \"trantype\": \"B\",\n    \"prctyp\": \"LMT\",\n    \"prevprd\": \"C\", \n    \"ret\": \"DAY\", \n    \"dscqty\": \"10\"\n}&jKey=GHUDWU53H32MTHPA536Q32WR'",
+  "sample_success_response": "[\n{\n\"request_time\":\"12:15:18 15-04-2021\",\n\"stat\":\"Oi Replacedt\",\n\"Al_id\":\"21041500000008\"\n}\n]",
+  "sample_failure_response": "{\n\"stat\":\"Not_Ok\",\n\"emsg\":\"Session Expired : Invalid Session Key\"\n}",
+  "confidence": "high",
+  "issues": "The Modify GTT Order section (pages 31-33) does NOT print an explicit REQUEST DETAILS (jData/jKey) parameter table - unlike the sibling Cancel GTT Order section on page 33. jData/jKey are recorded as request_params but flagged as derived from the curl example body only. In the jData field table (page 32, verified against a zoomed crop) every field carries a trailing '*' (mandatory) EXCEPT al_id and d, which appear WITHOUT a '*' and are recorded required=false; al_id being optional is slightly surprising for a modify call. prctyp has only a possible-value cell (LMT / SL-LMT / DS / 2L / 3L) and no description text in the doc; the description supplied is a gloss, not verbatim. The success-response stat value reads \"Oi Replacedt\" verbatim (apparent typo for \"Oi Replaced\"). The response field is documented as al_id but appears as \"Al_id\" (capitalized) in the sample JSON. The curl --data body contains a \"prevprd\":\"C\" key that is NOT in the jData field table, and omits several documented fields (ai_t, al_id, remarks, d) - left verbatim. The page-31 right-column sample tail (\"Al_id\":\"21041500000010\") belongs to the PRECEDING Place GTT Order section, not Modify; Modify's own success Al_id is 21041500000008 (page 32). The curl uses placeholder host 'https://BaseURL/ModifyGTTOrder'; the real endpoint is https://piconnect.flattrade.in/PiConnectAPI/ModifyGTTOrder.",
+  "notes": "Mandatory fields are marked with a trailing '*' in the doc; in the jData table all fields except al_id and d carry the asterisk. ai_t must be the ORIGINAL alert type and cannot be modified. trantype rejects anything other than 'B' or 'S'; ret rejects anything other than DAY/EOS/IOC. prc cannot be zero. dscqty (disclosed qty) max is 10% for NSE and 50% for MCX. jKey is the session key obtained on login. Success response is a JSON array; failure response is a JSON object. The section spans pages 31-33: page 31 left column carries the tail of the preceding Place GTT Order field/response table then the MODIFY GTT ORDER title + endpoint URL, while its right column carries the tail of the preceding sample (\"Al_id\":\"21041500000010\") + a failure response + the curl opening line; page 32 carries the full jData field table + RESPONSE DETAILS (left) and the curl --data body + both sample responses (right); page 33 carries only the tail of the emsg description (\"2) Session Expired\") before the next section (Cancel GTT Order). The PDF does not print a dedicated REQUEST DETAILS param table for Modify GTT Order."
+}

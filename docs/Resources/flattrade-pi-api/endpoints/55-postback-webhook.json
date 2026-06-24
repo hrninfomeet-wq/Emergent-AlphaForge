@@ -1,0 +1,199 @@
+{
+  "name": "Postback / Webhook",
+  "category": "Account & Reference",
+  "kind": "Info",
+  "method": "POST (push from Flattrade to your endpoint)",
+  "path": "(user-configured postback/webhook URL endpoint)",
+  "url": "(your registered postback URL endpoint)",
+  "summary": "Describes the order-update postback (webhook) that Flattrade pushes to your configured endpoint: you receive order updates for orders placed through the API. Each update is delivered as a JSON payload describing the current state/event of the order (new, fill, rejected, cancelled, etc.), including a SHA256 checksum so you can verify the message is genuinely from Flattrade and not a third party.",
+  "request_params": [],
+  "json_fields": [],
+  "response_fields": [
+    {
+      "name": "norenordno",
+      "possible_values": "",
+      "description": "Noren Order Number"
+    },
+    {
+      "name": "uid",
+      "possible_values": "",
+      "description": "User Id"
+    },
+    {
+      "name": "actid",
+      "possible_values": "",
+      "description": "Account ID"
+    },
+    {
+      "name": "exch",
+      "possible_values": "",
+      "description": "Exchange"
+    },
+    {
+      "name": "tsym",
+      "possible_values": "",
+      "description": "Trading symbol"
+    },
+    {
+      "name": "qty*",
+      "possible_values": "",
+      "description": "Order Quantity [If qty is junk value other than numbers]. (required field)"
+    },
+    {
+      "name": "prc*",
+      "possible_values": "",
+      "description": "Order Price [If prc is junk value other than numbers] \"Order price cannot be zero\". (required field)"
+    },
+    {
+      "name": "prd",
+      "possible_values": "",
+      "description": "Product"
+    },
+    {
+      "name": "status",
+      "possible_values": "",
+      "description": "Order status (New, Replaced, Complete, Rejected etc)"
+    },
+    {
+      "name": "reporttype",
+      "possible_values": "",
+      "description": "Order event for which this message is sent out. (Fill, Rejected, Canceled)"
+    },
+    {
+      "name": "trantype*",
+      "possible_values": "B / S",
+      "description": "B -> BUY, S -> SELL [transtype should be 'B' or 'S' else reject]. (required field)"
+    },
+    {
+      "name": "prctyp",
+      "possible_values": "",
+      "description": "Order price type (LMT, SL-LMT)"
+    },
+    {
+      "name": "ret*",
+      "possible_values": "DAY / EOS / IOC",
+      "description": "Order Retention type [ret should be DAY / EOS / IOC else reject]. (required field)"
+    },
+    {
+      "name": "fillshares",
+      "possible_values": "",
+      "description": "Total Filled shares for this order"
+    },
+    {
+      "name": "avgprc",
+      "possible_values": "",
+      "description": "Average fill price"
+    },
+    {
+      "name": "fltm",
+      "possible_values": "",
+      "description": "Fill Time (present only when reporttype is Fill)"
+    },
+    {
+      "name": "flid",
+      "possible_values": "",
+      "description": "Fill ID (present only when reporttype is Fill)"
+    },
+    {
+      "name": "flqty",
+      "possible_values": "",
+      "description": "Fill Qty (present only when reporttype is Fill)"
+    },
+    {
+      "name": "flprc",
+      "possible_values": "",
+      "description": "Fill Price (present only when reporttype is Fill)"
+    },
+    {
+      "name": "rejreason",
+      "possible_values": "",
+      "description": "Order rejection reason, if rejected"
+    },
+    {
+      "name": "exchordid",
+      "possible_values": "",
+      "description": "Exchange Order ID"
+    },
+    {
+      "name": "cancelqty",
+      "possible_values": "",
+      "description": "Canceled quantity, in case of canceled order"
+    },
+    {
+      "name": "remarks",
+      "possible_values": "",
+      "description": "User added tag, while placing order"
+    },
+    {
+      "name": "dscqty*",
+      "possible_values": "",
+      "description": "Disclosed quantity [If dscqty is junk value other than numbers]. (required field)"
+    },
+    {
+      "name": "trgprc",
+      "possible_values": "",
+      "description": "Trigger price for SL orders"
+    },
+    {
+      "name": "snonum",
+      "possible_values": "",
+      "description": "This will be present for child orders in case of cover and bracket orders, if present needs to be sent during exit"
+    },
+    {
+      "name": "snoordt",
+      "possible_values": "",
+      "description": "This will be present for child orders in case of cover and bracket orders, it will indicate whether the order is profit or stoploss"
+    },
+    {
+      "name": "blprc",
+      "possible_values": "",
+      "description": "This will be present for cover and bracket parent order. This is the differential stop loss trigger price to be entered."
+    },
+    {
+      "name": "bpprc",
+      "possible_values": "",
+      "description": "This will be present for bracket parent order. This is the differential profit price to be entered."
+    },
+    {
+      "name": "trailprc",
+      "possible_values": "",
+      "description": "This will be present for cover and bracket parent order. This is required if trailing ticks is to be enabled."
+    },
+    {
+      "name": "exch_tm",
+      "possible_values": "",
+      "description": "This will have the exchange update time. Format: dd-mm-YYYY hh:MM:SS"
+    },
+    {
+      "name": "amo*",
+      "possible_values": "Yes",
+      "description": "The message \"Invalid AMO\" will be displayed if the \"amo\" field is not sent with a \"Yes\" value. If amo is not required, do not send this field. (required field)"
+    },
+    {
+      "name": "tm",
+      "possible_values": "",
+      "description": "TimeStamp"
+    },
+    {
+      "name": "kidid",
+      "possible_values": "",
+      "description": "Kid Id"
+    },
+    {
+      "name": "sno_fillid",
+      "possible_values": "",
+      "description": "BO Sequence Id"
+    },
+    {
+      "name": "checksum",
+      "possible_values": "",
+      "description": "sha256 [ noren_order_num + noren_time_stamp + vendor_key ] CheckSum. (Make sure checksum matches to avoid any third party sending false order updates to your url endpoint)"
+    }
+  ],
+  "sample_request": "",
+  "sample_success_response": "{\n    \"norenordno\":\"23010500000376\",\n    \"kidid\":\"1\",\n    \"uid\":\"ASHWATHINV123\",\n    \"actid\":\"ASHWATHINV\",\n    \"exch\":\"NSE\",\"tsym\":\"ACC-EQ\",\n    \"qty\":\"1\",\n    \"rorgqty\":\"0\",\n    \"ipaddr\":\"117.248.82.174\",\n    \"ordenttm\":\"1672921211\",\n    \"sno_fillid\":\"\",\n    \"trantype\":\"B\",\n    \"prctyp\":\"LMT\",\n    \"ret\":\"DAY\",\n    \"amo\":\"Yes\",\n    \"token\":\"22\",\n    \"prc\":\"2500.00\",\n    \"pcode\":\"C\",\n    \"remarks\":\"\",\n    \"status\":\"OPEN\",\n    \"rpt\":\"New\",\n    \"ls\":\"1\",\n    \"ti\":\"0.05\",\n    \"rprc\":\"2500.00\",\n    \"dscqty\":\"0\",\n    \"norentm\":\"17:50:11 05-01-2023\",\n    \"checksum\":\"619521a541ff3e634ecb02147f0cb77e822ea415c9b79259cd5e40592a73b810\"\n  }",
+  "sample_failure_response": "",
+  "confidence": "high",
+  "issues": "No explicit failure/error JSON sample is given for the postback (this is a push notification, not a request/response endpoint). The HTTP method and exact URL are not stated in the doc — Flattrade POSTs the JSON payload to the user-registered postback URL endpoint (method/url inferred, not literally printed on the page). Only three fields have a discrete dedicated \"Possible value\" column cell in the page image: trantype* (B / S), ret* (DAY / EOS / IOC), and amo* (Yes). The draft had additionally populated possible_values for status, reporttype, and prctyp from inline description prose — these were cleared because they have no dedicated Possible-value cell (their enums live only in the Description column).",
+  "notes": "- This is an Info section: it documents an inbound webhook/postback, not a callable REST endpoint. Flattrade sends order updates to your endpoint for orders placed through the API.\n- The sample payload contains extra fields not in the field table (rorgqty, ipaddr, ordenttm \"1672921211\" = epoch seconds, token, pcode, rpt \"New\", ls = lot size, ti = tick size, rprc, norentm \"17:50:11 05-01-2023\"). ordenttm is a Unix epoch timestamp in seconds.\n- Required fields (trailing '*'): qty*, prc*, trantype*, ret*, dscqty*, amo*.\n- Validation/reject rules embedded in field descriptions: qty/prc/dscqty must be numeric (junk non-number values are flagged); prc cannot be zero; trantype must be 'B' or 'S' else reject; ret must be DAY/EOS/IOC else reject; amo must be sent with value 'Yes' (omit the field entirely if AMO not required, else \"Invalid AMO\").\n- SECURITY: verify each postback with the checksum = sha256 of (noren_order_num + noren_time_stamp + vendor_key). The doc explicitly warns to confirm the checksum matches to avoid third parties sending false order updates to your URL endpoint.\n- Fill-only fields (present only when reporttype is Fill): fltm, flid, flqty, flprc.\n- Cover/Bracket order fields: snonum, snoordt (child orders); blprc (differential stop-loss trigger, CO/BO parent), bpprc (differential profit price, BO parent), trailprc (trailing ticks, CO/BO parent). snonum if present must be sent during exit.\n- exch_tm format: dd-mm-YYYY hh:MM:SS.\n- Only trantype*, ret*, and amo* have a dedicated \"Possible value\" column cell; status/reporttype/prctyp enums appear only inline in their Description.\n- Section spans PDF pages 89-91; page 89 also continues a preceding section's field table (bo2..e_date — NOT part of Postback/Webhook), and page 91 ends where the next section SCRIP MASTER begins."
+}

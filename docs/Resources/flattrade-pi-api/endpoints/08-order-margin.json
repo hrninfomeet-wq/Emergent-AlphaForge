@@ -1,0 +1,165 @@
+{
+  "name": "Order Margin",
+  "category": "Orders & Trades",
+  "kind": "REST",
+  "method": "POST",
+  "path": "/GetOrderMargin",
+  "url": "https://piconnect.flattrade.in/PiConnectAPI/GetOrderMargin",
+  "summary": "Calculates the margin required for a single order before placement. A POST call sends a jData JSON object (order details: user, account, exchange, symbol, qty, price, trigger price, product, transaction type, price type, and optional modify/bracket fields) plus the login jKey, and returns the cash available and margin used for the order.",
+  "request_params": [
+    {
+      "name": "jData*",
+      "description": "Should send json object with fields in below list.",
+      "possible_values": "",
+      "required": true
+    },
+    {
+      "name": "jKey*",
+      "description": "Key Obtained on login success.",
+      "possible_values": "",
+      "required": true
+    }
+  ],
+  "json_fields": [
+    {
+      "name": "uid",
+      "description": "Logged in User Id",
+      "possible_values": "",
+      "required": true
+    },
+    {
+      "name": "actid",
+      "description": "Login users account ID",
+      "possible_values": "",
+      "required": true
+    },
+    {
+      "name": "exch",
+      "description": "Exchange (Select from 'exarr' Array provided in User Details response)",
+      "possible_values": "NSE / NFO / BSE / MCX",
+      "required": true
+    },
+    {
+      "name": "tsym",
+      "description": "Unique id of contract on which order to be placed. (use url encoding to avoid special char error for symbols like M&M)",
+      "possible_values": "",
+      "required": true
+    },
+    {
+      "name": "qty",
+      "description": "Order Quantity [If qty is junk value other than numbers].",
+      "possible_values": "",
+      "required": true
+    },
+    {
+      "name": "prc",
+      "description": "Order Price [If prc is junk value other than numbers] \"Order price cannot be zero\".",
+      "possible_values": "",
+      "required": true
+    },
+    {
+      "name": "trgprc",
+      "description": "Only to be sent in case of SL / SL-M order.",
+      "possible_values": "",
+      "required": false
+    },
+    {
+      "name": "prd",
+      "description": "Product name (Select from 'prarr' Array provided in User Details response, and if same is allowed for selected, exchange. Show product display name, for user to select, and send corresponding prd in API call)",
+      "possible_values": "C / M / H",
+      "required": true
+    },
+    {
+      "name": "trantype",
+      "description": "B -> BUY, S -> SELL [transtype should be 'B' or 'S' else reject].",
+      "possible_values": "B / S",
+      "required": true
+    },
+    {
+      "name": "prctyp",
+      "description": "",
+      "possible_values": "LMT / SL-LMT",
+      "required": true
+    },
+    {
+      "name": "blprc",
+      "description": "Book loss Price applicable only if product is selected as H and B (High Leverage and Bracket order )",
+      "possible_values": "",
+      "required": false
+    },
+    {
+      "name": "rorgqty",
+      "description": "Optional field. Application only for modify order, open order quantity",
+      "possible_values": "",
+      "required": false
+    },
+    {
+      "name": "fillshares",
+      "description": "Optional field. Application only for modify order, quantity already filled.",
+      "possible_values": "",
+      "required": false
+    },
+    {
+      "name": "rorgprc",
+      "description": "Optional field. Application only for modify order, open order price",
+      "possible_values": "",
+      "required": false
+    },
+    {
+      "name": "orgtrgprc",
+      "description": "Optional field. Application only for modify order, open order trigger price",
+      "possible_values": "",
+      "required": false
+    },
+    {
+      "name": "norenordno",
+      "description": "Optional field. Application only for H or B order modification",
+      "possible_values": "",
+      "required": false
+    },
+    {
+      "name": "snonum",
+      "description": "Optional field. Application only for H or B order modification",
+      "possible_values": "",
+      "required": false
+    }
+  ],
+  "response_fields": [
+    {
+      "name": "stat",
+      "description": "Place order success or failure indication.",
+      "possible_values": "Ok or Not_Ok"
+    },
+    {
+      "name": "request_time",
+      "description": "Response received time",
+      "possible_values": ""
+    },
+    {
+      "name": "remarks",
+      "description": "This field will be available only on success.",
+      "possible_values": ""
+    },
+    {
+      "name": "cash",
+      "description": "Total credits available for order",
+      "possible_values": ""
+    },
+    {
+      "name": "marginused",
+      "description": "Total margin used.",
+      "possible_values": ""
+    },
+    {
+      "name": "emsg",
+      "description": "This will be present only if Order placement fails",
+      "possible_values": ""
+    }
+  ],
+  "sample_request": "curl --location 'https://BaseURL/GetOrderMargin' \\\n--header 'Content-Type: application/json' \\\n--data 'jData={\n    \"uid\": \"FZ00000\",\n    \"actid\": \"FZ00000\",\n    \"exch\": \"NSE\",\n    \"tsym\": \"ACC-EQ\",\n    \"qty\": \"50\",\n    \"prc\": \"1400\",\n    \"prd\": \"H\",\n    \"trantype\": \"B\",\n    \"prctyp\": \"LMT\",\n    \"norenordno\": \"123456789\"\n}&jKey=GHUDWU53H32MTHPA536Q32WR'",
+  "sample_success_response": "",
+  "sample_failure_response": "",
+  "notes": "- Request is sent form-style: jData and jKey are concatenated in the body (jData={...}&jKey=...), as shown in the curl example, with Content-Type: application/json header. The curl uses a placeholder host 'https://BaseURL/GetOrderMargin'; the real base URL is https://piconnect.flattrade.in/PiConnectAPI.\n- jKey is the token obtained on login success.\n- tsym must be URL-encoded to avoid special-character errors for symbols like M&M.\n- exch must be one of the values in the 'exarr' array from the User Details response (NSE / NFO / BSE / MCX listed).\n- prd must be picked from the 'prarr' array from User Details (only products allowed for the selected exchange); displayed values shown are C / M / H.\n- trantype must be exactly 'B' or 'S' else the request is rejected.\n- prc cannot be zero ('Order price cannot be zero').\n- trgprc is only sent for SL / SL-M orders.\n- The source gives no description text for prctyp, only the enum LMT / SL-LMT.\n- blprc applies only when product = H and B (High Leverage and Bracket order).\n- rorgqty, fillshares, rorgprc, orgtrgprc apply only to modify-order scenarios; norenordno and snonum apply only to H or B order modification.\n- The sample curl includes norenordno but omits trgprc/blprc and the other modify-only fields.",
+  "confidence": "high",
+  "issues": "- No sample success or failure JSON response body is provided in the source (only the response-field table is documented), so sample_success_response and sample_failure_response are empty.\n- The source provides NO description text for prctyp beyond the enum 'LMT / SL-LMT'; the draft's generic 'Price type of the order' was a fabrication and has been removed (description left empty to stay faithful to source).\n- Field names in the doc carry a trailing '*' to denote mandatory; the name field stores the clean field name and the required flag captures the asterisk (mandatory: uid, actid, exch, tsym, qty, prc, prd, trantype, prctyp).\n- All 17 json fields, 2 request params, and 6 response fields match the page-13/14/15 images; none missing or hallucinated."
+}
