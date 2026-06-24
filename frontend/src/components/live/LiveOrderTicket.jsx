@@ -67,7 +67,10 @@ export default function LiveOrderTicket({ mode, disabled, onQueued }) {
   const [lots, setLots] = useState("1");
   const [refLtp, setRefLtp] = useState("");
   const [bandPct, setBandPct] = useState("3");
-  const [stopPct, setStopPct] = useState(""); // only used for SL-LMT
+  // Protective stop % (software guard + the SL-LMT trigger). Defaults to 50% so a
+  // filled position is never left unguarded.
+  const [stopPct, setStopPct] = useState("50");
+  const [targetPct, setTargetPct] = useState(""); // optional guard target %
 
   // ── Exchange rules ──────────────────────────────────────────────────────
   const [rules, setRules] = useState(() => defaultRulesFor("NIFTY"));
@@ -88,11 +91,13 @@ export default function LiveOrderTicket({ mode, disabled, onQueued }) {
   const [previewResult, setPreviewResult] = useState(null); // { ok, children, verdicts, client_order_id }
   const [previewError, setPreviewError] = useState(null);
 
-  // ── Queue state ─────────────────────────────────────────────────────────
-  const [queueBusy, setQueueBusy] = useState(false);
-  const [queueResult, setQueueResult] = useState(null); // { ok:false, verdicts } when a re-check fails
+  // ── Place state (direct one-click place) ──────────────────────────────────
+  const [queueBusy, setQueueBusy] = useState(false);  // "placing…" busy flag
+  const [queueResult, setQueueResult] = useState(null); // { ok:false, verdicts } re-check failure
   const [queueError, setQueueError] = useState(null);
   const [queuedConfirm, setQueuedConfirm] = useState(false);
+  const [showPlaceConfirm, setShowPlaceConfirm] = useState(false);
+  const [placeResult, setPlaceResult] = useState(null); // executor result {placed, norenordno, reason, ...}
 
   // Any form change invalidates a prior preview/queue result so a stale green
   // preview can never be queued.
@@ -102,6 +107,8 @@ export default function LiveOrderTicket({ mode, disabled, onQueued }) {
     setQueueResult(null);
     setQueueError(null);
     setQueuedConfirm(false);
+    setShowPlaceConfirm(false);
+    setPlaceResult(null);
   }, []);
 
   // ── Load exchange rules on mount + whenever underlying changes ───────────
@@ -237,7 +244,18 @@ export default function LiveOrderTicket({ mode, disabled, onQueued }) {
     }
   };
 
-  // ── Payload builder (shared by preview + queue) ─────────────────────────
+  // ── Payload builder (shared by preview + place) ─────────────────────────
+  // levels carry BOTH the SL-LMT order trigger (validate_and_build) AND the
+  // software guard's protective stop/target (_make_arm → build_monitor_state).
+  // stop_pct defaults to the guard default (50%) so a position is never unguarded.
+  const buildLevels = () => {
+    const sp = parseFloat(stopPct);
+    const tp = parseFloat(targetPct);
+    const levels = { stop_pct: Number.isFinite(sp) && sp > 0 ? sp : 50 };
+    if (Number.isFinite(tp) && tp > 0) levels.target_pct = tp;
+    return levels;
+  };
+
   const buildPayload = () => ({
     underlying,
     strike: parseInt(strike, 10),
@@ -250,7 +268,7 @@ export default function LiveOrderTicket({ mode, disabled, onQueued }) {
     ref_ltp: isMarket ? null : parseFloat(refLtp),
     band_pct: parseFloat(bandPct),
     fat_finger_cap: FAT_FINGER_CAP,
-    levels: isSlLmt && stopPct ? { stop_pct: parseFloat(stopPct) } : {},
+    levels: buildLevels(),
     buffer_pct: BUFFER_PCT,
   });
 
@@ -282,35 +300,47 @@ export default function LiveOrderTicket({ mode, disabled, onQueued }) {
     }
   };
 
-  // Queue is only enabled after a preview that returned ok === true.
-  const canQueue =
+  // Place is only enabled after a preview that returned ok === true.
+  const canPlace =
     previewResult != null && previewResult.ok === true && !queueBusy && !disabled;
 
-  const handleQueue = async () => {
-    if (!canQueue) return;
+  // DIRECT PLACE (no separate approval-queue / mode-switch step): on confirm we
+  // auto-arm LIVE_TEST, then create + redeem a one-shot approval in one shot. The
+  // backend safety chain (choke-point validation, margin, fat-finger, the single
+  // executor chokepoint, software-guard registration) is unchanged — only the UI
+  // friction (manual mode switch + a separate approval queue) is removed. The
+  // REAL-MONEY confirm dialog is the per-trade gate.
+  const handlePlaceConfirmed = async () => {
     setQueueBusy(true);
     setQueueResult(null);
     setQueueError(null);
     setQueuedConfirm(false);
     try {
-      const res = await api.createOrderApproval(buildPayload());
-      if (res?.ok) {
-        if (typeof onQueued === "function") {
-          onQueued({
-            approval_id: res.approval_id,
-            token: res.token,
-            summary: res.summary,
-          });
-        }
-        setQueuedConfirm(true);
-        // Clear the green preview so the same ticket can't be queued twice.
-        setPreviewResult(null);
-      } else {
-        // Not queued — surface the failing verdicts.
-        setQueueResult(res ?? { ok: false, verdicts: [] });
+      // 1. arm LIVE_TEST (single-shot; reverts after the order)
+      try {
+        await api.setLiveMode("LIVE_TEST", true);
+      } catch (e) {
+        setQueueError(
+          `Could not arm LIVE_TEST: ${e?.response?.data?.detail ?? e?.message ?? "mode error"}`
+        );
+        setShowPlaceConfirm(false);
+        return;
       }
+      // 2. create the approval (re-validates server-side)
+      const created = await api.createOrderApproval(buildPayload());
+      if (!created?.ok) {
+        setQueueResult(created ?? { ok: false, verdicts: [] });
+        setShowPlaceConfirm(false);
+        return;
+      }
+      // 3. redeem the one-shot token → place via the executor chokepoint
+      const placed = await api.approveOrder(created.approval_id, created.token);
+      setPlaceResult(placed);
+      setShowPlaceConfirm(false);
+      if (placed?.placed) setPreviewResult(null); // clear so it can't double-fire
     } catch (e) {
-      setQueueError(e?.response?.data?.detail ?? e?.message ?? "Queue failed");
+      setQueueError(e?.response?.data?.detail ?? e?.message ?? "Place failed");
+      setShowPlaceConfirm(false);
     } finally {
       setQueueBusy(false);
     }
@@ -615,25 +645,43 @@ export default function LiveOrderTicket({ mode, disabled, onQueued }) {
           />
         </div>
 
-        {/* Stop % — only for SL-LMT */}
-        {isSlLmt && (
-          <div className="flex flex-col gap-1">
-            <label className={labelCls}>Stop %</label>
-            <input
-              type="number"
-              step="0.5"
-              min="0"
-              value={stopPct}
-              onChange={(e) => {
-                setStopPct(e.target.value);
-                resetTransient();
-              }}
-              placeholder="e.g. 10"
-              disabled={disabled}
-              className={inputCls}
-            />
-          </div>
-        )}
+        {/* Protective Stop % — the software guard's stop (+ the SL-LMT trigger) */}
+        <div className="flex flex-col gap-1">
+          <label className={labelCls}>
+            Stop %{isSlLmt ? " (SL trigger + guard)" : " (guard)"}
+          </label>
+          <input
+            type="number"
+            step="0.5"
+            min="0"
+            value={stopPct}
+            onChange={(e) => {
+              setStopPct(e.target.value);
+              resetTransient();
+            }}
+            placeholder="e.g. 50"
+            disabled={disabled}
+            className={inputCls}
+          />
+        </div>
+
+        {/* Optional guard Target % */}
+        <div className="flex flex-col gap-1">
+          <label className={labelCls}>Target % (optional)</label>
+          <input
+            type="number"
+            step="0.5"
+            min="0"
+            value={targetPct}
+            onChange={(e) => {
+              setTargetPct(e.target.value);
+              resetTransient();
+            }}
+            placeholder="none"
+            disabled={disabled}
+            className={inputCls}
+          />
+        </div>
       </div>
 
       {/* ── Qty line ───────────────────────────────────────────────────── */}
@@ -773,36 +821,81 @@ export default function LiveOrderTicket({ mode, disabled, onQueued }) {
         </div>
       )}
 
-      {/* ── Queue for approval ─────────────────────────────────────────── */}
-      {previewResult && (
+      {/* ── Place (direct, one-click) ──────────────────────────────────── */}
+      {previewResult && !showPlaceConfirm && (
         <div className="space-y-2">
           {previewResult.ok !== true && (
             <div className="flex items-center gap-1.5 text-xs text-dimmer font-mono">
               <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-              Preview must pass all checks before this order can be queued.
+              Preview must pass all checks before this order can be placed.
             </div>
           )}
           <button
             type="button"
-            disabled={!canQueue}
-            onClick={handleQueue}
+            disabled={!canPlace}
+            onClick={() => { setShowPlaceConfirm(true); setPlaceResult(null); setQueueError(null); setQueueResult(null); }}
             className="inline-flex items-center gap-1.5 px-5 py-2 rounded-md border-2 border-danger/70 bg-danger text-white text-sm font-mono font-bold hover:bg-danger/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
-            {queueBusy ? (
-              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-            ) : (
-              <Send className="w-3.5 h-3.5" />
-            )}
-            {queueBusy ? "Queueing…" : "Queue for approval"}
+            <Send className="w-3.5 h-3.5" />
+            Place order — REAL MONEY
           </button>
         </div>
       )}
 
-      {/* Queued confirmation */}
-      {queuedConfirm && (
-        <div className="rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 py-2.5 text-xs font-mono text-emerald-300 flex items-center gap-2">
-          <CheckCircle className="w-3.5 h-3.5 shrink-0" />
-          Queued — see Approval Queue below.
+      {/* Second confirm — placing a REAL order */}
+      {showPlaceConfirm && (
+        <div className="rounded-lg border-2 border-danger bg-danger/10 px-4 py-3 space-y-3">
+          <div className="text-sm font-bold text-danger flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 shrink-0" />
+            Final confirm — placing a REAL order
+          </div>
+          <div className="text-xs text-danger/80 font-mono space-y-0.5">
+            <div>
+              {side === "B" ? "Buy" : "Sell"} <span className="font-bold">{lots}</span> lot(s){" "}
+              <span className="font-bold">{underlying} {strike} {optionSide}</span> · {orderType} · {product}
+            </div>
+            <div>
+              {qty} qty {!isMarket && refLtp ? `@ ~${fmtINR(parseFloat(refLtp))} ±${bandPct}%` : "@ MARKET"}{" "}
+              · guard stop {stopPct || 50}%{targetPct ? ` · target ${targetPct}%` : ""}
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              disabled={queueBusy}
+              onClick={handlePlaceConfirmed}
+              className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-md border border-danger/60 bg-danger text-white text-xs font-mono font-bold hover:bg-danger/90 disabled:opacity-50 transition-colors"
+            >
+              {queueBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
+              {queueBusy ? "Placing…" : "Confirm — Place Order"}
+            </button>
+            <button
+              type="button"
+              disabled={queueBusy}
+              onClick={() => setShowPlaceConfirm(false)}
+              className="px-3 py-1.5 rounded-md border border-line bg-bg-2 text-dim text-xs font-mono hover:bg-bg-3 transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Place result */}
+      {placeResult && (
+        <div
+          className={`rounded-lg border px-3 py-2.5 text-xs font-mono space-y-1 ${
+            placeResult.placed
+              ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
+              : "border-danger/40 bg-danger/10 text-danger"
+          }`}
+        >
+          <div className="font-bold flex items-center gap-1.5">
+            {placeResult.placed ? <CheckCircle className="w-3.5 h-3.5 shrink-0" /> : <XCircle className="w-3.5 h-3.5 shrink-0" />}
+            {placeResult.placed ? "Order placed" : "Not placed"}
+          </div>
+          {placeResult.norenordno && <div>Order ID: {placeResult.norenordno}</div>}
+          {placeResult.reason && <div className="text-dimmer">Reason: {placeResult.reason}</div>}
         </div>
       )}
 
