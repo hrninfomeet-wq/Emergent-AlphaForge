@@ -115,6 +115,7 @@ def test_retire_unknown_404():
             gr.return_value.origin_of.return_value = None
             r = tc.post("/strategies/nope/retire")
             assert r.status_code == 404
+            assert "not found" in r.json()["detail"].lower()
     finally:
         _stop(tc)
 
@@ -127,5 +128,21 @@ def test_unretire_clears_flag():
         r = tc.post("/strategies/foo/un-retire")
         assert r.status_code == 200 and r.json()["retired"] is False
         assert db.strategy_lifecycle.docs[0]["retired"] is False
+    finally:
+        _stop(tc)
+
+
+def test_retire_uses_origin_of_when_get_is_none():
+    """A failed/origin-only plugin (reg.get is None but origin_of is set) is still retirable."""
+    db = FakeDB()
+    tc = _make_app(db=db)  # real registry; we patch it below
+    try:
+        with patch.object(sa, "get_registry") as gr, \
+             patch.object(sa, "_square_off_strategy_deployments", AsyncMock(return_value=[])):
+            gr.return_value.get.return_value = None
+            gr.return_value.origin_of.return_value = "custom"
+            r = tc.post("/strategies/variant/retire")
+            assert r.status_code == 200 and r.json()["retired"] is True
+            assert db.strategy_lifecycle.docs[0]["strategy_id"] == "variant"
     finally:
         _stop(tc)

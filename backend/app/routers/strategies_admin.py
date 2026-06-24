@@ -104,6 +104,8 @@ async def retire_strategy(strategy_id: str):
 
 @api.post("/strategies/{strategy_id}/un-retire")
 async def unretire_strategy(strategy_id: str):
+    if not _exists(strategy_id):
+        raise HTTPException(404, f"Strategy {strategy_id} not found")
     await _db().strategy_lifecycle.update_one(
         {"strategy_id": strategy_id},
         {"$set": {"strategy_id": strategy_id, "retired": False, "retired_at": None}},
