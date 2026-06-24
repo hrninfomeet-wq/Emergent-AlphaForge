@@ -424,7 +424,7 @@ class TestGtt:
             d = tc.post("/live-broker/gtt", json=body).json()
             assert d["intent"]["ai_t"] == "LTP_B_O"
             assert d["intent"]["validity"] == "GTT"
-            assert d["intent"]["place_order_params"]["prc"]  # wrapped order block
+            assert d["intent"]["prc"]                # flat documented form (catalog #16)
         finally:
             _stop(tc)
 

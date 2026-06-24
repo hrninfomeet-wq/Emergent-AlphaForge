@@ -148,30 +148,34 @@ def build_gtt_intent(
     prc_limit: float,
     prd: str,
     ret: str = "DAY",
-    ordersource: str = "API",
     tick: float = 0.05,
+    dscqty: int = 0,
     remarks: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Build the jdata for a single-trigger GTT (a resting stop/target on a position).
 
-    Structure CONFIRMED by a live GetPendingGTTOrder readback (2026-06-25): a
-    single GTT is the WRAPPED form — top-level ``ai_t``/``validity``/``tsym``/
-    ``exch``/``d`` plus a one-entry ``oivariable`` (var_name "x") and a nested
-    ``place_order_params`` block carrying the order to fire — NOT the flat fields
-    in the docs' (carelessly copied) curl example.  ``d_trigger`` -> top-level
-    ``d`` AND ``oivariable[0].d`` (the price compared with LTP); ``prc_limit`` ->
-    ``place_order_params.prc`` (the resulting order's limit).  Identity
-    (uid/actid) is injected by the client at transmit time.
+    REQUEST shape is the documented FLAT form — vision-verified PiConnect catalog
+    endpoint #16 (PlaceGTTOrder): top-level ``ai_t``/``validity``/``exch``/
+    ``tsym``/``d``/``remarks``/``trantype``/``prctyp``/``prd``/``ret``/``qty``/
+    ``prc``/``dscqty`` (+ uid/actid injected by the client).  ``d_trigger`` ->
+    ``d`` (price compared with LTP), ``prc_limit`` -> ``prc`` (order limit).
+
+    NOTE — flat REQUEST vs wrapped RESPONSE: GetPendingGTTOrder *returns* a stored
+    GTT wrapped (a derived ``oivariable`` + ``place_order_params``), but the
+    PlaceGTTOrder *request* contract is this flat form.  Don't confuse the read
+    representation with the write contract.  (The OCO endpoint #21 is genuinely
+    wrapped — see build_oco_intent.)
 
     NRML-ONLY: returns None for any ``prd`` != "M".
 
-    ``ai_t`` is REQUIRED (no guessed default): pass LTP_BELOW for a protective
-    stop on a long option, LTP_ABOVE for a target.
+    ``ai_t`` is REQUIRED (no guessed default): pass LTP_BELOW ("LTP_B_O",
+    confirmed by readback) for a protective stop on a long option, LTP_ABOVE for
+    a target.
 
     Validates fail-closed:
     - prd must be exactly "M"
     - exch / tsym / ai_t must be non-empty strings
-    - qty must be a positive int
+    - qty must be a positive int; dscqty a non-negative int
     - trantype must be "B" or "S"; ret one of DAY/EOS/IOC
     - d_trigger / prc_limit must be finite positive numbers; each is then
       tick-rounded to the nearest valid tick multiple (sub-tick is rounded, NOT
@@ -184,6 +188,8 @@ def build_gtt_intent(
     if not _str_field_ok(exch) or not _str_field_ok(tsym) or not _str_field_ok(ai_t):
         return None
     if not _is_pos_int(qty):
+        return None
+    if not (isinstance(dscqty, int) and not isinstance(dscqty, bool) and dscqty >= 0):
         return None
     if trantype not in _TRANTYPES:
         return None
@@ -200,13 +206,15 @@ def build_gtt_intent(
         "validity": "GTT",      # rests at broker; blocks no margin
         "exch": exch,
         "tsym": tsym,
-        "d": d,                 # top-level trigger (mirrors the readback)
+        "d": d,                 # price compared with LTP (the trigger)
         "remarks": remarks or "",
-        "oivariable": [{"var_name": "x", "d": d}],
-        "place_order_params": _oco_leg(
-            exch=exch, tsym=tsym, trantype=trantype, prc=prc, qty=qty,
-            ret=ret, ordersource=ordersource, remarks=remarks,
-        ),
+        "trantype": trantype,
+        "prctyp": "LMT",
+        "prd": _NRML_PRD,       # PINNED — never anything but NRML
+        "ret": ret,
+        "qty": str(qty),
+        "prc": prc,             # resulting order's limit price
+        "dscqty": str(dscqty),
     }
 
 

@@ -85,36 +85,35 @@ def test_gtt_builds_for_nrml():
 
 def test_gtt_tick_rounds_prices():
     g = build_gtt_intent(**_gtt_kwargs())
-    leg = g["place_order_params"]
     # d 40.07 → 40.05 (trigger), prc 39.93 → 39.95 (order limit) at tick 0.05
     assert float(g["d"]) == 40.05
-    assert float(g["oivariable"][0]["d"]) == 40.05
-    assert float(leg["prc"]) == 39.95
+    assert float(g["prc"]) == 39.95
 
 
-def test_gtt_wrapped_oivariable_and_place_order_params():
-    # CONFIRMED structure: top-level trigger d + a one-entry oivariable (var x) +
-    # a place_order_params block carrying the order to fire.
+def test_gtt_is_flat_documented_form():
+    # REQUEST is the FLAT documented form (vision-verified catalog #16) — NOT the
+    # wrapped oivariable/place_order_params shape that GetPendingGTTOrder RETURNS.
     g = build_gtt_intent(**_gtt_kwargs())
-    assert g["oivariable"] == [{"var_name": "x", "d": "40.05"}]
-    leg = g["place_order_params"]
-    assert leg["trantype"] == "S"
-    assert leg["prd"] == "M"
-    assert leg["prctyp"] == "LMT"
-    assert int(leg["qty"]) == 65
+    assert "oivariable" not in g
+    assert "place_order_params" not in g
+    assert g["trantype"] == "S"
+    assert g["prctyp"] == "LMT"
+    assert g["prd"] == "M"
+    assert int(g["qty"]) == 65
+    assert g["dscqty"] == "0"
 
 
 def test_gtt_prices_are_strings():
     # Noren jdata fields are strings.
     g = build_gtt_intent(**_gtt_kwargs())
     assert isinstance(g["d"], str)
-    assert isinstance(g["place_order_params"]["prc"], str)
-    assert isinstance(g["place_order_params"]["qty"], str)
+    assert isinstance(g["prc"], str)
+    assert isinstance(g["qty"], str)
 
 
 def test_gtt_rounded_prices_are_tick_multiples():
     g = build_gtt_intent(**_gtt_kwargs(d_trigger=40.123, prc_limit=39.871))
-    for val in (g["d"], g["place_order_params"]["prc"]):
+    for val in (g["d"], g["prc"]):
         assert round(float(val) * 100) % 5 == 0
 
 
@@ -123,10 +122,9 @@ def test_gtt_carries_core_fields():
     assert g["exch"] == "NFO"
     assert g["tsym"] == "NIFTY26JUN26C25000"
     assert g["validity"] == "GTT"
+    assert g["ret"] == "DAY"
     assert g["remarks"] == "cid-abc-123"
-    leg = g["place_order_params"]
-    assert leg["ret"] == "DAY"
-    assert int(leg["qty"]) == 65
+    assert int(g["qty"]) == 65
 
 
 def test_gtt_ai_t_below_is_confirmed_value():
@@ -147,8 +145,6 @@ def test_gtt_does_not_embed_identity():
     g = build_gtt_intent(**_gtt_kwargs())
     assert "uid" not in g
     assert "actid" not in g
-    assert "uid" not in g["place_order_params"]
-    assert "actid" not in g["place_order_params"]
 
 
 # --- NRML-only guard: MIS is REJECTED ---------------------------------------
