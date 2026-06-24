@@ -11,6 +11,11 @@ import pandas as pd
 log = logging.getLogger(__name__)
 
 
+def _origin_from_module(module_name: str) -> str:
+    """'custom' if the class/package lives under app.strategies.plugins, else 'builtin'."""
+    return "custom" if module_name.startswith("app.strategies.plugins") else "builtin"
+
+
 @dataclass
 class Signal:
     direction: str  # "CE", "PE", or "NONE"
@@ -79,6 +84,7 @@ class StrategyBase:
             "supported_timeframes": self.supported_timeframes,
             "parameter_schema": self.parameter_schema,
             "is_builtin": self.is_builtin,
+            "origin": _origin_from_module(type(self).__module__),
         }
 
 
@@ -86,6 +92,7 @@ class StrategyRegistry:
     def __init__(self):
         self._strategies: Dict[str, StrategyBase] = {}
         self._errors: Dict[str, str] = {}
+        self._error_pkgs: Dict[str, str] = {}
 
     def register(self, strategy: StrategyBase) -> None:
         if not strategy.id:
@@ -100,20 +107,37 @@ class StrategyRegistry:
         items = [s.meta() for s in self._strategies.values()]
         # Add failed plugins as metadata-only entries
         for plug_id, err in self._errors.items():
+            pkg = self._error_pkgs.get(plug_id, "")
             items.append({
-                "id": plug_id,
-                "name": plug_id,
-                "version": "?",
-                "description": "",
-                "supported_instruments": [],
-                "supported_modes": [],
-                "supported_timeframes": [],
-                "parameter_schema": {},
-                "is_builtin": False,
-                "is_loaded": False,
-                "error": err,
+                "id": plug_id, "name": plug_id, "version": "?", "description": "",
+                "supported_instruments": [], "supported_modes": [], "supported_timeframes": [],
+                "parameter_schema": {}, "is_builtin": False,
+                "origin": _origin_from_module(pkg),
+                "is_loaded": False, "error": err,
             })
         return items
+
+    def unregister(self, strategy_id: str) -> bool:
+        return self._strategies.pop(strategy_id, None) is not None
+
+    def origin_of(self, strategy_id: str) -> Optional[str]:
+        s = self._strategies.get(strategy_id)
+        if s is not None:
+            return _origin_from_module(type(s).__module__)
+        pkg = self._error_pkgs.get(strategy_id)
+        if pkg is not None:
+            return _origin_from_module(pkg)
+        return None
+
+    def reload(self) -> None:
+        # Re-sync the registry with what's on disk: picks up newly added plugin
+        # files and drops deleted ones. NOTE: importlib.import_module is a no-op for
+        # already-imported modules, so an EDITED existing plugin won't pick up its
+        # changes here — the Phase 2 authoring/edit flow must add importlib.reload.
+        self._strategies.clear()
+        self._errors.clear()
+        self._error_pkgs.clear()
+        self.auto_discover()
 
     def auto_discover(self) -> None:
         """Import all modules under app.strategies.builtin and app.strategies.plugins, instantiate StrategyBase subclasses."""
@@ -128,6 +152,7 @@ class StrategyRegistry:
                     mod = importlib.import_module(full)
                 except Exception as e:
                     self._errors[modname] = f"import failed: {e}"
+                    self._error_pkgs[modname] = pkg_name
                     log.exception(f"Failed to import strategy {full}")
                     continue
                 for _, cls in inspect.getmembers(mod, inspect.isclass):
@@ -140,6 +165,7 @@ class StrategyRegistry:
                                 self.register(inst)
                         except Exception as e:
                             self._errors[cls.__name__] = f"instantiation failed: {e}"
+                            self._error_pkgs[cls.__name__] = pkg_name
                             log.exception(f"Failed to instantiate {cls.__name__}")
 
 

@@ -780,7 +780,7 @@ export default function BacktestLab() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {strategies.filter((s) => s.is_loaded !== false).map((s) => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)}
+                  {strategies.filter((s) => s.is_loaded !== false && !s.is_retired).map((s) => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)}
                 </SelectContent>
               </Select>
             </Row>

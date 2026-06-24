@@ -212,6 +212,11 @@ async def create_deployment(req: DeploymentCreateReq):
     strategy_id = str(source.get("strategy_id") or (source.get("config") or {}).get("strategy_id") or "")
     strategy_obj = get_registry().get(strategy_id) if strategy_id else None
     pinned_source_sha = hash_strategy_source(strategy_obj) if strategy_obj else None
+    if strategy_id:
+        # local import avoids a circular dependency between the two routers
+        from app.routers.strategies_admin import is_retired
+        if await is_retired(strategy_id):
+            raise HTTPException(409, f"Strategy {strategy_id} is retired — un-retire it before deploying")
     # Merge explicit kill-switch fields into the risk dict (only when provided).
     kill_switch_cfg = {
         k: v for k, v in {
@@ -490,6 +495,15 @@ async def pause_deployment(deployment_id: str):
 
 @api.post("/deployments/{deployment_id}/resume")
 async def resume_deployment(deployment_id: str):
+    db = get_db()
+    deployment = await db.strategy_deployments.find_one({"id": deployment_id}, {"_id": 0})
+    if not deployment:
+        raise HTTPException(404, "Deployment not found")
+    sid = str(deployment.get("strategy_id") or "")
+    # local import avoids a circular dependency between the two routers
+    from app.routers.strategies_admin import is_retired
+    if sid and await is_retired(sid):
+        raise HTTPException(409, f"Strategy {sid} is retired — un-retire it before resuming")
     doc = await _set_deployment_status(deployment_id, "ACTIVE")
     stream = await _auto_follow_option_stream()
     return serialize_doc({**doc, "option_stream": stream})
@@ -563,6 +577,10 @@ async def repin_deployment_source(deployment_id: str):
     strategy_obj = get_registry().get(strategy_id) if strategy_id else None
     if strategy_obj is None:
         raise HTTPException(409, f"Strategy '{strategy_id}' is not loaded — cannot re-pin its source.")
+    # local import avoids a circular dependency between the two routers
+    from app.routers.strategies_admin import is_retired
+    if await is_retired(strategy_id):
+        raise HTTPException(409, f"Strategy {strategy_id} is retired — un-retire it before re-pinning/resuming its deployment")
     current_sha = hash_strategy_source(strategy_obj)
     if not current_sha:
         raise HTTPException(409, "Could not resolve the strategy's source file to re-pin.")

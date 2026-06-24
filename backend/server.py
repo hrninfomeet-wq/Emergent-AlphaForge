@@ -192,9 +192,10 @@ async def health():
 # the Slice C first-match probe), so matching behavior is unchanged.
 # ---------------------------------------------------------------------------
 
-from app.routers import broker, deployments, journals, live_broker, research, warehouse  # noqa: E402
+from app.routers import broker, deployments, journals, live_broker, research, strategies_admin, warehouse  # noqa: E402
 
 api.include_router(research.api)
+api.include_router(strategies_admin.api)
 api.include_router(warehouse.api)
 api.include_router(journals.api)
 api.include_router(deployments.api)
