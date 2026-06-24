@@ -268,3 +268,75 @@ def test_catalog_returns_vocabulary():
         assert d["param_types"] == ["int", "float", "bool"]
     finally:
         _stop(tc)
+
+
+# ---------------------------------------------------------------------------
+# 7. from-source — YouTube ingestion path (Phase 2B.2)
+# ---------------------------------------------------------------------------
+
+def test_from_source_youtube_ingestion():
+    """POST /strategies/author/from-source with a YouTube URL: ingestion seam is
+    called, transcript text is forwarded to map_source_to_spec, and source_kind is
+    returned in the response body."""
+    import app.routers.strategies_admin as _sa
+    tc = _make_app()
+    try:
+        canned_ingest = {
+            "text": "enter long when rsi above 60",
+            "kind": "youtube",
+            "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        }
+        canned_spec = {
+            "spec": VALID_SPEC,
+            "fidelity": {"captured": ["enter long when rsi above 60"], "couldnt_map": [], "ambiguous": []},
+            "errors": [],
+        }
+        with patch("app.ai.llm_client.is_configured", return_value=True), \
+             patch("app.ai.source_ingest.ingest_source", return_value=canned_ingest) as mock_ingest, \
+             patch("app.ai.strategy_author.map_source_to_spec", return_value=canned_spec) as mock_map:
+            r = tc.post(
+                "/strategies/author/from-source",
+                json={"source": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"},
+            )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["source_kind"] == "youtube"
+        assert body["errors"] == []
+        # ingest_source was called with the raw URL
+        mock_ingest.assert_called_once_with("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+        # map_source_to_spec was called with the transcript text (not the URL)
+        mock_map.assert_called_once_with("enter long when rsi above 60")
+    finally:
+        _stop(tc)
+
+
+def test_from_source_non_youtube_url_400():
+    """A non-YouTube URL is rejected at ingestion with 400 (ValueError → HTTPException)."""
+    tc = _make_app()
+    try:
+        with patch("app.ai.llm_client.is_configured", return_value=True):
+            r = tc.post(
+                "/strategies/author/from-source",
+                json={"source": "https://example.com/some-blog"},
+            )
+        assert r.status_code == 400, r.text
+        assert "youtube" in r.json()["detail"].lower() or "supported" in r.json()["detail"].lower()
+    finally:
+        _stop(tc)
+
+
+def test_from_source_transcript_fetch_failure_502():
+    """A RuntimeError from ingest_source (e.g. no captions) surfaces as 502."""
+    tc = _make_app()
+    try:
+        with patch("app.ai.llm_client.is_configured", return_value=True), \
+             patch("app.ai.source_ingest.ingest_source",
+                   side_effect=RuntimeError("could not fetch transcript for this video")):
+            r = tc.post(
+                "/strategies/author/from-source",
+                json={"source": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"},
+            )
+        assert r.status_code == 502, r.text
+        assert "transcript" in r.json()["detail"].lower()
+    finally:
+        _stop(tc)

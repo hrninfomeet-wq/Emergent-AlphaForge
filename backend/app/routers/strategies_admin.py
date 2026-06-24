@@ -247,16 +247,25 @@ async def author_install(req: StrategyAuthorReq):
 
 @api.post("/strategies/author/from-source")
 async def author_from_source(req: StrategyFromSourceReq):
-    """Map pasted strategy text to a constrained StrategySpec + a fidelity readback
-    via Sonnet. The grounding catalog + validate_spec keep the AI honest (it can
-    only use real columns; bad specs come back as `errors`)."""
+    """Ingest pasted text or a YouTube link, then map to a constrained StrategySpec
+    + fidelity readback via Sonnet. Grounding catalog + validate_spec keep the AI
+    honest (only real columns; bad specs come back as `errors`)."""
     from app.ai import llm_client
+    from app.ai.source_ingest import ingest_source
     from app.ai.strategy_author import map_source_to_spec
     if not llm_client.is_configured():
         raise HTTPException(503, "AI authoring is not configured — set ANTHROPIC_API_KEY in backend/.env")
     if not (req.source or "").strip():
-        raise HTTPException(400, "source text is empty")
+        raise HTTPException(400, "source is empty")
     try:
-        return map_source_to_spec(req.source)
+        ing = ingest_source(req.source)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except RuntimeError as e:
+        raise HTTPException(502, f"Transcript fetch failed: {e}")
+    try:
+        out = map_source_to_spec(ing["text"])
     except RuntimeError as e:
         raise HTTPException(502, f"AI mapping failed: {e}")
+    out["source_kind"] = ing["kind"]
+    return out
