@@ -19,7 +19,7 @@ const COLSPAN = 17;
 // Proportional column widths (%) so the table auto-fits the pane via `table-fixed`
 // — no horizontal scroll. Sum = 100. Numeric columns are sized for real ₹ values;
 // only the long Strategy/Contract text truncates (with a hover tooltip).
-const COLW = [3, 7, 9, 3, 5, 5, 7, 4, 7, 8, 6, 6, 5, 6, 5, 6, 8];
+const COLW = [3, 7, 8, 3, 5, 5, 7, 4, 7, 8, 6, 6, 5, 6, 5, 5, 10];
 
 export default function TradeBlotter({
   rows, sort, onToggleSort, onCloseAtMarket, busy,
