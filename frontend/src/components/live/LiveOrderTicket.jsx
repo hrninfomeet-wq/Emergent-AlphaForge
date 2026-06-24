@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { CheckCircle, XCircle, Loader2, AlertTriangle, Send } from "lucide-react";
 import { api } from "@/lib/api";
 import { fmtINR } from "@/lib/fmt";
+import PayoffChart from "./PayoffChart";
 
 /**
  * LiveOrderTicket — exchange-aware order ticket that builds a multi-lot option
@@ -653,6 +654,21 @@ export default function LiveOrderTicket({ mode, disabled, onQueued }) {
           </span>
         )}
       </div>
+
+      {/* ── Payoff-at-expiry chart ─────────────────────────────────────── */}
+      {!isMarket && (
+        <div className="rounded-lg border border-line bg-bg-2/40 px-3 py-2">
+          <PayoffChart
+            underlying={underlying}
+            strike={strike}
+            premium={refLtp}
+            optionType={optionSide}
+            side={side}
+            lotSize={lotSize}
+            lots={lots}
+          />
+        </div>
+      )}
 
       {/* ── Preview button ─────────────────────────────────────────────── */}
       <div className="flex items-center gap-2 flex-wrap">

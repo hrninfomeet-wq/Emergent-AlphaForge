@@ -45,6 +45,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from app.live.kill_switch import _parse_netqty
 from app.live.live_sl_monitor import evaluate_exit
+from app.live.overall_controls import build_overall_state, evaluate_overall
 
 log = logging.getLogger(__name__)
 
@@ -68,6 +69,15 @@ def _finite_pos(x: Any) -> Optional[float]:
     if not math.isfinite(v) or v <= 0:
         return None
     return v
+
+
+def _finite_num(x: Any) -> Optional[float]:
+    """Return x as a finite float (any sign — MTM can be negative), else None."""
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return None
+    return v if math.isfinite(v) else None
 
 
 # ---------------------------------------------------------------------------
@@ -167,11 +177,19 @@ class LivePositionGuard:
         square_fn: Callable[..., Awaitable[Dict[str, Any]]],
         poll_seconds: float = POLL_SECONDS,
         max_pending_misses: int = 40,
+        overall_provider: Optional[Callable[[], Awaitable[Optional[Dict[str, Any]]]]] = None,
     ) -> None:
         self._registry = registry
         self._client_factory = client_factory
         self._square_fn = square_fn
         self._poll_seconds = float(poll_seconds)
+        # Optional basket-level overall controls: async () -> config dict | None.
+        # The guard evaluates the AGGREGATE basket MTM each cycle and squares ALL
+        # guarded positions on an overall SL / target / trailing breach. The
+        # overall_state (monotonic trailing floor) persists across cycles and is
+        # reset whenever the guarded set empties.
+        self._overall_provider = overall_provider
+        self._overall_state: Optional[Dict[str, Any]] = None
         # consecutive not-yet-filled cycles before a never-filling entry is dropped
         # (40 × ~1.5s ≈ 60s — well past a marketable fill, short enough to clean up
         # a rejected/canceled entry).
@@ -250,6 +268,9 @@ class LivePositionGuard:
                     exits.append({"id": entry["id"], "tsym": entry["tsym"],
                                   "reason": verdict["reason"], "result": result})
 
+            # ── Basket-level overall controls (overall SL / target / trailing) ──
+            await self._evaluate_overall_basket(client, by_tsym, exits)
+
             self._stats["cycles"] += 1
             self._stats["last_run_at"] = datetime.now(timezone.utc).isoformat()
             self._stats["last_error"] = None
@@ -257,6 +278,71 @@ class LivePositionGuard:
             self._stats["last_error"] = str(exc)[:240]
             log.exception("live position guard cycle failed: %s", exc)
         return exits
+
+    async def _evaluate_overall_basket(
+        self, client: Any, by_tsym: Dict[str, Dict[str, Any]], exits: List[Dict[str, Any]]
+    ) -> None:
+        """Evaluate the AGGREGATE basket MTM against the overall controls and, on
+        an overall SL / target / trailing breach, square ALL remaining guarded
+        positions (via the same dry-run-gated margin-safe square_fn). The trailing
+        floor (self._overall_state) persists across cycles; it resets when the
+        guarded set empties. A config with nothing enabled is a no-op."""
+        remaining = self._registry.snapshot()
+        if not remaining or self._overall_provider is None:
+            self._overall_state = None  # no basket → reset trailing
+            return
+
+        basket_mtm = 0.0
+        basket_premium = 0.0
+        have_mtm = False
+        for entry in remaining:
+            pos = by_tsym.get(entry["tsym"])
+            if pos is None:
+                continue
+            u = _finite_num(pos.get("urmtom"))
+            if u is not None:
+                basket_mtm += u
+                have_mtm = True
+            try:
+                basket_premium += float(entry["entry_price"]) * int(entry["qty"])
+            except (TypeError, ValueError):
+                pass
+        if not have_mtm:
+            return
+
+        # (Re)build the overall state for a fresh basket. Nothing enabled → ValueError → skip.
+        if self._overall_state is None:
+            try:
+                cfg = await self._overall_provider()
+            except Exception:
+                cfg = None
+            if not cfg:
+                return
+            try:
+                self._overall_state = build_overall_state(cfg, basket_premium)
+            except ValueError:
+                self._overall_state = None
+                return
+
+        ov = evaluate_overall(self._overall_state, basket_mtm)
+        self._overall_state = ov["state"]
+        if not ov["exit"]:
+            return
+
+        # Overall breach → square EVERY remaining guarded position.
+        for entry in self._registry.snapshot():
+            self._registry.remove(entry["id"])
+            try:
+                result = await self._square_fn(
+                    client, entry["position"], reason=f"software_{ov['reason']}"
+                )
+            except Exception as exc:
+                log.exception("guard overall-square failed for %s: %s", entry["tsym"], exc)
+                result = {"squared": False, "error": str(exc)[:200]}
+            self._stats["exits"] += 1
+            exits.append({"id": entry["id"], "tsym": entry["tsym"],
+                          "reason": ov["reason"], "result": result})
+        self._overall_state = None  # basket squared → reset
 
     async def _run(self) -> None:
         self._stats["running"] = True

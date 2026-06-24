@@ -141,10 +141,21 @@ async def _live_guard_square_fn(client, position, *, reason):
     return await square_position(client, position, reason=reason, band_pct=1.0, uid=uid, actid=actid)
 
 
+async def _live_guard_overall_provider():
+    """Return the saved overall-controls config (basket SL/target/trailing) for the
+    guard's basket evaluation, or None if unavailable."""
+    try:
+        from app.live.overall_settings_store import default_store
+        return await default_store("overall").get_config()
+    except Exception:
+        return None
+
+
 live_position_guard = LivePositionGuard(
     registry=get_live_monitor_registry(),
     client_factory=_live_guard_client_factory,
     square_fn=_live_guard_square_fn,
+    overall_provider=_live_guard_overall_provider,
 )
 
 

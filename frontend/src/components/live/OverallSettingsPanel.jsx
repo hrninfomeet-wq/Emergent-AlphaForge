@@ -583,6 +583,19 @@ export default function OverallSettingsPanel({ scope = "overall" }) {
                 />
               )}
             </div>
+
+            {/* Inverted lock config — floor at/above trigger would exit instantly */}
+            {showLockParams &&
+              num(trailing.lock_floor) >= num(trailing.lock_at) && (
+                <div className="flex items-start gap-1.5 text-[11px] font-mono text-amber-400">
+                  <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-px" />
+                  <span>
+                    Lock floor ({num(trailing.lock_floor)}) should be BELOW the
+                    lock trigger ({num(trailing.lock_at)}) — as set it would exit
+                    immediately.
+                  </span>
+                </div>
+              )}
           </>
         )}
       </SubSection>
