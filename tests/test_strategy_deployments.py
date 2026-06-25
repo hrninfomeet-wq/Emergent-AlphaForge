@@ -99,9 +99,21 @@ def test_backend_exposes_strategy_deployment_routes_and_index():
         '@api.post("/deployments/stop-all")',
         '@api.post("/deployments/{deployment_id}/archive")',
         '@api.get("/deployments/{deployment_id}/signals")',
+        # Live control surface (strategy-deploy-to-live)
+        '@api.post("/deployments/{deployment_id}/live/arm")',
+        '@api.post("/deployments/{deployment_id}/live/disarm")',
+        '@api.post("/deployments/{deployment_id}/live/stop")',
+        '@api.get("/deployments/{deployment_id}/live/status")',
     ):
         assert needle in server
     assert "strategy_deployments.create_index" in db
+
+
+def test_safety_config_body_exposes_max_lots_per_order():
+    """The live safety-config PUT body carries the account lot-ceiling field
+    (it flows through SafetyConfigStore.put_config, which validates it)."""
+    server = backend_api_text()
+    assert "max_lots_per_order" in server
 
 
 def test_frontend_exposes_strategy_deployment_panel():

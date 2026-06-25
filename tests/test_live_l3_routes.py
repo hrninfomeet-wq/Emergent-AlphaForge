@@ -1332,3 +1332,34 @@ def test_test_session_no_client_leaves_session_unchanged():
                 p.stop()
             except RuntimeError:
                 pass
+
+
+# ===========================================================================
+# Safety-config PUT — max_lots_per_order (account lot ceiling) flows through
+# ===========================================================================
+
+def test_put_safety_config_persists_max_lots_per_order():
+    """PUT /live-broker/safety-config accepts max_lots_per_order and it round-trips
+    through the store (the body field exists and put_config validates/persists it)."""
+    cs = _make_config_store()
+    tc = _make_app(config_store=cs)
+    try:
+        r = tc.put("/live-broker/safety-config", json={"max_lots_per_order": 7})
+        assert r.status_code == 200
+        assert r.json()["max_lots_per_order"] == 7
+        # round-trips via GET
+        got = tc.get("/live-broker/safety-config").json()
+        assert got["max_lots_per_order"] == 7
+    finally:
+        _stop_patches(tc)
+
+
+def test_put_safety_config_rejects_zero_max_lots_per_order():
+    """A non-positive max_lots_per_order is rejected by the store → 400."""
+    cs = _make_config_store()
+    tc = _make_app(config_store=cs)
+    try:
+        r = tc.put("/live-broker/safety-config", json={"max_lots_per_order": 0})
+        assert r.status_code == 400
+    finally:
+        _stop_patches(tc)

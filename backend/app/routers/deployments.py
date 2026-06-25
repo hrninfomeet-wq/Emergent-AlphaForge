@@ -4,10 +4,12 @@ Moved verbatim from backend/server.py (quality-hardening Slice C).
 """
 from __future__ import annotations
 
+import os
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel, StrictBool
 
 from app.db import get_db, serialize_doc
 from app.strategies.base import get_registry
@@ -35,6 +37,127 @@ from app.runtime import (
 from app.schemas import DeploymentCreateReq
 
 api = APIRouter()
+
+
+# ---------------------------------------------------------------------------
+# Live deployment control surface (strategy-deploy-to-live)
+#
+# arm/disarm/stop/status for a deployment's REAL-money auto-placing. These are
+# the only routes that flip a deployment into the armed (live-allowed) state.
+#
+# The seams below are module-level so tests can monkeypatch them with fakes
+# (no real broker / Mongo / engine touched host-side), matching the pattern in
+# routers/live_broker.py. Production wires them lazily to the real singletons.
+# ---------------------------------------------------------------------------
+
+async def _live_get_token_doc():
+    """Return the stored Flattrade token doc (raises HTTPException 400 if absent).
+
+    Imported lazily from live_broker so this router never hard-depends on it at
+    import time; tests monkeypatch this seam directly."""
+    from app.routers.live_broker import _get_token_doc
+    return await _get_token_doc()
+
+
+def _live_l3_engine():
+    """Return the LiveEngine singleton (real or fail-closed). Tests patch this."""
+    from app.routers.live_broker import _l3_engine
+    return _l3_engine()
+
+
+def _live_registry():
+    """Return the process-wide LiveMonitorRegistry. Tests patch this."""
+    from app.live.live_position_guard import get_registry
+    return get_registry()
+
+
+async def _live_square_position(client, position, *, reason, **kw):
+    """Square one live position via the SAME margin-safe exit path used by the
+    manual square / kill switch (auto_square.square_position). Tests patch this."""
+    from app.live.auto_square import square_position
+    return await square_position(client, position, reason=reason, **kw)
+
+
+def _live_autoplace_armed() -> bool:
+    """True iff LIVE_AUTOPLACE_ARMED is set affirmative (the executor transmit gate)."""
+    return os.environ.get("LIVE_AUTOPLACE_ARMED", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _live_guard_armed() -> bool:
+    """True iff LIVE_GUARD_ARMED is set affirmative (the software-guard transmit gate)."""
+    return os.environ.get("LIVE_GUARD_ARMED", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+async def _broker_connected() -> bool:
+    """True iff a Flattrade token is stored (the broker is connected)."""
+    try:
+        await _live_get_token_doc()
+        return True
+    except HTTPException:
+        return False
+    except Exception:
+        return False
+
+
+def _is_drift_paused(deployment: Dict[str, Any]) -> bool:
+    """True iff the deployment carries the source-drift pause marker."""
+    return str(deployment.get("drift_reason") or "") == "strategy_source_drift"
+
+
+async def _square_live_positions_for_deployment(
+    deployment_id: str, *, reason: str
+) -> List[str]:
+    """Flatten THIS deployment's registered live positions via the margin-safe
+    square path, removing each from the guard registry first (so a slow square is
+    never re-issued). Returns the list of squared tsyms. Best-effort: a per-
+    position square failure is swallowed (the registry entry is still removed)."""
+    reg = _live_registry()
+    targets = [e for e in reg.snapshot() if str(e.get("deployment_id") or "") == str(deployment_id)]
+    if not targets:
+        return []
+    # Resolve a broker client + uid/actid (best-effort — the actual transmit is
+    # gated by LIVE_GUARD_ARMED inside square_position; an offline/dry-run square
+    # still clears the registry and reports the intent).
+    client = None
+    uid = actid = ""
+    try:
+        from app.routers.live_broker import _get_client
+        client = await _get_client()
+        token = await _live_get_token_doc()
+        uid = token.get("uid", "")
+        actid = token.get("actid", uid)
+    except Exception:
+        client = client  # leave as-is; square_position tolerates a None/limited client
+    squared: List[str] = []
+    for entry in targets:
+        reg.remove(entry["id"])
+        position = dict(entry.get("position") or {})
+        position.setdefault("tsym", entry.get("tsym"))
+        try:
+            await _live_square_position(client, position, reason=reason, uid=uid, actid=actid)
+        except Exception:
+            pass
+        squared.append(entry.get("tsym"))
+    return squared
+
+
+def _live_today_counters(rows: List[Dict[str, Any]], now_utc: datetime) -> Dict[str, Any]:
+    """Today-IST order count, lots, and realized P&L for a deployment's live_trades."""
+    from app.deployment_kill_switch import IST, _float, _ist_date, daily_realized_summary
+    today = now_utc.astimezone(IST).date().isoformat()
+    todays = [r for r in rows if _ist_date(r.get("created_at")) == today]
+    orders = len(todays)
+    lots = sum(int(_float(r.get("lots"))) for r in todays)
+    realized = daily_realized_summary(rows, today)["net"]
+    return {"orders": orders, "lots": lots, "realized_pnl": realized}
+
+
+class _LiveArmBody(BaseModel):
+    lots: int
+    max_lots_per_day: int
+    max_concurrent: int
+    daily_loss_cap: Optional[float] = None
+    confirm: StrictBool = False
 
 
 async def _gather_deployment_evidence(
@@ -511,8 +634,8 @@ async def resume_deployment(deployment_id: str):
 
 @api.post("/deployments/stop-all")
 async def stop_all_deployments():
-    """Stop ALL paper trading: square off every open position, then pause every
-    ACTIVE deployment (no new entries until each is resumed). Open positions
+    """Stop ALL trading: square off every open paper position, pause every ACTIVE
+    deployment, AND disarm + flatten every armed live deployment. Open positions
     close at the live tick price when the market is open, else at a flagged
     estimate."""
     db = get_db()
@@ -521,6 +644,26 @@ async def stop_all_deployments():
         latest_tick_lookup=upstox_stream_manager.latest_tick_map().get,
         reason="manual_stop_all",
     )
+    # --- Disarm + flatten every armed live deployment (new) ---
+    armed = await db.strategy_deployments.find(
+        {"risk.live.armed": True}, {"_id": 0}
+    ).to_list(length=None)
+    disarmed_live_ids: list = []
+    for d in armed:
+        dep_id = d["id"]
+        await _square_live_positions_for_deployment(dep_id, reason="manual_stop_all")
+        risk = dict(d.get("risk") or {})
+        live = dict(risk.get("live") or {})
+        live["armed"] = False
+        live["disarmed_reason"] = "manual_stop_all"
+        live["disarmed_at"] = datetime.now(timezone.utc).isoformat()
+        risk["live"] = live
+        await db.strategy_deployments.update_one(
+            {"id": dep_id},
+            {"$set": {"risk": risk, "updated_at": datetime.now(timezone.utc).isoformat()}},
+        )
+        disarmed_live_ids.append(dep_id)
+
     active = await db.strategy_deployments.find(
         {"status": "ACTIVE"}, {"_id": 0, "id": 1}
     ).to_list(length=None)
@@ -534,6 +677,7 @@ async def stop_all_deployments():
         "squared_off": summaries,
         "squared_off_count": len(summaries),
         "paused_deployment_ids": paused_ids,
+        "disarmed_live_deployment_ids": disarmed_live_ids,
     })
 
 
@@ -557,6 +701,172 @@ async def stop_deployment(deployment_id: str):
         **doc,
         "squared_off": summaries,
         "squared_off_count": len(summaries),
+    })
+
+
+@api.post("/deployments/{deployment_id}/live/arm")
+async def arm_deployment_live(deployment_id: str, body: _LiveArmBody):
+    """Authorize REAL-money live auto-placing for this deployment until EOD IST.
+
+    Guards (all must pass, else HTTPException 400/404):
+      - deployment exists (404);
+      - status == "ACTIVE";
+      - strategy not retired;
+      - not source-drift-paused;
+      - broker connected (a Flattrade token is stored);
+      - the LiveEngine.can_trade() is True (not halted / latched);
+      - confirm is the literal boolean True (StrictBool — truthy-non-True rejected).
+
+    On pass, writes risk.live = {armed, armed_at, armed_until (15:00 IST cutoff),
+    lots, max_lots_per_day, max_concurrent, daily_loss_cap, armed_by, disarmed_reason}.
+    The user's lots value is stored verbatim — the executor clamps it to the
+    account ceiling at place time. Response carries `autoplace_armed` (the env
+    transmit gate) plus a human `note` when it is False (backend dry-run-logs).
+    """
+    if body.confirm is not True:
+        raise HTTPException(400, "Arming live auto-placing requires confirm=True (literal boolean).")
+    db = get_db()
+    deployment = await db.strategy_deployments.find_one({"id": deployment_id}, {"_id": 0})
+    if not deployment:
+        raise HTTPException(404, "Deployment not found")
+    if str(deployment.get("status") or "").upper() != "ACTIVE":
+        raise HTTPException(400, "Deployment must be ACTIVE to arm live auto-placing.")
+    sid = str(deployment.get("strategy_id") or "")
+    # local import avoids a circular dependency between the two routers
+    from app.routers.strategies_admin import is_retired
+    if sid and await is_retired(sid):
+        raise HTTPException(409, f"Strategy {sid} is retired — un-retire it before arming live.")
+    if _is_drift_paused(deployment):
+        raise HTTPException(400, "Deployment is paused for strategy source drift — re-pin it before arming.")
+    if not await _broker_connected():
+        raise HTTPException(400, "Flattrade not connected — complete OAuth before arming live.")
+    try:
+        ok, reason = await _live_l3_engine().can_trade()
+    except Exception:
+        ok, reason = False, "engine_unavailable"
+    if ok is not True:
+        raise HTTPException(400, f"Live engine cannot trade ({reason}) — clear the halt/latch before arming.")
+
+    from app.live.mode import armed_until_today_ist
+    now = datetime.now(timezone.utc)
+    live = {
+        "armed": True,
+        "armed_at": now.isoformat(),
+        "armed_until": armed_until_today_ist(now),
+        "lots": int(body.lots),
+        "max_lots_per_day": int(body.max_lots_per_day),
+        "max_concurrent": int(body.max_concurrent),
+        "daily_loss_cap": (float(body.daily_loss_cap) if body.daily_loss_cap is not None else None),
+        "armed_by": "user",
+        "disarmed_reason": None,
+    }
+    # Read-modify-write of the whole risk dict: set risk.live without clobbering
+    # risk.sizing / risk.exit_controls / etc. (the FakeDB test harness applies a
+    # single-level $set; production Mongo handles a full-risk $set the same way).
+    risk = dict(deployment.get("risk") or {})
+    risk["live"] = live
+    await db.strategy_deployments.update_one(
+        {"id": deployment_id},
+        {"$set": {"risk": risk, "updated_at": now.isoformat()}},
+    )
+    autoplace = _live_autoplace_armed()
+    out = {**live, "autoplace_armed": autoplace}
+    if not autoplace:
+        out["note"] = "backend will dry-run-log, not transmit real orders (LIVE_AUTOPLACE_ARMED is off)"
+    return serialize_doc(out)
+
+
+@api.post("/deployments/{deployment_id}/live/disarm")
+async def disarm_deployment_live(deployment_id: str):
+    """Disarm a deployment's live auto-placing (does NOT flatten open positions)."""
+    db = get_db()
+    deployment = await db.strategy_deployments.find_one({"id": deployment_id}, {"_id": 0})
+    if not deployment:
+        raise HTTPException(404, "Deployment not found")
+    risk = dict(deployment.get("risk") or {})
+    live = dict(risk.get("live") or {})
+    live["armed"] = False
+    live["disarmed_reason"] = "manual"
+    live["disarmed_at"] = datetime.now(timezone.utc).isoformat()
+    risk["live"] = live
+    await db.strategy_deployments.update_one(
+        {"id": deployment_id},
+        {"$set": {"risk": risk, "updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return serialize_doc(live)
+
+
+@api.post("/deployments/{deployment_id}/live/stop")
+async def stop_deployment_live(deployment_id: str):
+    """Flatten THIS deployment's open live positions, then disarm.
+
+    The flatten reuses the existing margin-safe exit machinery
+    (auto_square.square_position) scoped to this deployment's guard-registry
+    entries — it does NOT open a new place_order path. Actual transmit is gated
+    by LIVE_GUARD_ARMED inside the square machinery (unchanged)."""
+    db = get_db()
+    deployment = await db.strategy_deployments.find_one({"id": deployment_id}, {"_id": 0})
+    if not deployment:
+        raise HTTPException(404, "Deployment not found")
+    squared = await _square_live_positions_for_deployment(deployment_id, reason="manual_stop")
+    risk = dict(deployment.get("risk") or {})
+    live = dict(risk.get("live") or {})
+    live["armed"] = False
+    live["disarmed_reason"] = "manual_stop"
+    live["disarmed_at"] = datetime.now(timezone.utc).isoformat()
+    risk["live"] = live
+    await db.strategy_deployments.update_one(
+        {"id": deployment_id},
+        {"$set": {"risk": risk, "updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return serialize_doc({
+        "deployment_id": deployment_id,
+        "squared_tsyms": squared,
+        "squared_count": len(squared),
+        "disarmed": True,
+        "live": live,
+    })
+
+
+@api.get("/deployments/{deployment_id}/live/status")
+async def deployment_live_status(deployment_id: str):
+    """Report a deployment's live arm state, caps, today's counters, open live
+    positions (filtered to this deployment), and the two transmit gates."""
+    db = get_db()
+    deployment = await db.strategy_deployments.find_one({"id": deployment_id}, {"_id": 0})
+    if not deployment:
+        raise HTTPException(404, "Deployment not found")
+    live = dict((deployment.get("risk") or {}).get("live") or {})
+    rows = await db.live_trades.find({"deployment_id": deployment_id}).to_list(length=None)
+    today = _live_today_counters(rows, datetime.now(timezone.utc))
+    reg = _live_registry()
+    open_positions = []
+    for e in reg.snapshot():
+        if str(e.get("deployment_id") or "") != str(deployment_id):
+            continue
+        st = e.get("state") or {}
+        open_positions.append({
+            "id": e.get("id"),
+            "tsym": e.get("tsym"),
+            "qty": e.get("qty"),
+            "entry_price": e.get("entry_price"),
+            "stop_level": st.get("stop_level"),
+            "target_level": st.get("target_level"),
+            "seen_filled": e.get("seen_filled"),
+        })
+    return serialize_doc({
+        "armed": bool(live.get("armed")),
+        "armed_until": live.get("armed_until"),
+        "caps": {
+            "lots": live.get("lots"),
+            "max_lots_per_day": live.get("max_lots_per_day"),
+            "max_concurrent": live.get("max_concurrent"),
+            "daily_loss_cap": live.get("daily_loss_cap"),
+        },
+        "today": today,
+        "open_positions": open_positions,
+        "autoplace_armed": _live_autoplace_armed(),
+        "guard_armed": _live_guard_armed(),
     })
 
 

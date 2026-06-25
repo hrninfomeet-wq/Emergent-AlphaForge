@@ -1313,6 +1313,9 @@ class _SafetyConfigBody(BaseModel):
     daily_loss_limit: Optional[float] = None
     profit_lock_target: Optional[float] = None
     max_open_positions: Optional[int] = None
+    # Account-level per-order lot ceiling (default 20 in SafetyConfigStore). The
+    # store validates it (positive int, bool rejected); put_config flows it through.
+    max_lots_per_order: Optional[int] = None
 
 
 @api.put("/live-broker/safety-config")
