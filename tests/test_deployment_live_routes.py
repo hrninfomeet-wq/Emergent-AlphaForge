@@ -191,6 +191,11 @@ def _install(monkeypatch, db, *, connected=True, can_trade=True, registry=None,
     else:
         monkeypatch.delenv("LIVE_GUARD_ARMED", raising=False)
 
+    # Pin 'now' to a deterministic MARKET-HOURS instant (11:30 IST = 06:00 UTC) so the
+    # arm-window guard (reject after 15:00 IST) is not subject to the test wall clock.
+    monkeypatch.setattr(dep, "_utcnow",
+                        lambda: datetime(2026, 6, 25, 6, 0, tzinfo=timezone.utc), raising=False)
+
     return reg, squared
 
 
@@ -260,6 +265,25 @@ class TestArm:
         with pytest.raises(HTTPException) as ei:
             asyncio.run(dep.arm_deployment_live("dep-1", _arm_body()))
         assert ei.value.status_code == 400
+
+    def test_arm_rejected_after_1500_ist_cutoff(self, monkeypatch):
+        """Arming after 15:00 IST (the session is over) must be rejected, not silently
+        write a born-expired arm. Nothing is persisted."""
+        from fastapi import HTTPException
+        db = FakeDB()
+        db.strategy_deployments.rows.append(_deployment())
+        _install(monkeypatch, db)
+        # Override the pinned clock to an EVENING instant: 18:30 IST = 13:00 UTC, past
+        # today's 15:00 IST cutoff.
+        monkeypatch.setattr(dep, "_utcnow",
+                            lambda: datetime(2026, 6, 25, 13, 0, tzinfo=timezone.utc), raising=False)
+        with pytest.raises(HTTPException) as ei:
+            asyncio.run(dep.arm_deployment_live("dep-1", _arm_body()))
+        assert ei.value.status_code == 400
+        assert "15:00 IST" in str(ei.value.detail)
+        # nothing was written — the deployment is NOT armed
+        row = db.strategy_deployments.rows[0]
+        assert not ((row.get("risk") or {}).get("live") or {}).get("armed")
 
     def test_arm_rejects_retired_strategy(self, monkeypatch):
         from fastapi import HTTPException

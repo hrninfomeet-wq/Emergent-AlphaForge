@@ -104,6 +104,11 @@ def _is_drift_paused(deployment: Dict[str, Any]) -> bool:
     return str(deployment.get("drift_reason") or "") == "strategy_source_drift"
 
 
+def _utcnow() -> datetime:
+    """Current UTC time. A seam so tests can pin 'now' for the arm-window check."""
+    return datetime.now(timezone.utc)
+
+
 async def _square_live_positions_for_deployment(
     deployment_id: str, *, reason: str
 ) -> List[str]:
@@ -752,11 +757,23 @@ async def arm_deployment_live(deployment_id: str, body: _LiveArmBody):
         raise HTTPException(400, f"Live engine cannot trade ({reason}) — clear the halt/latch before arming.")
 
     from app.live.mode import armed_until_today_ist
-    now = datetime.now(timezone.utc)
+    now = _utcnow()
+    armed_until = armed_until_today_ist(now)
+    # Reject a born-expired arm: a live arm covers the CURRENT session and expires at
+    # 15:00 IST. Arming past that cutoff (e.g. an evening session) would write an arm
+    # that is already expired and would never place — fail loudly, don't silently no-op.
+    if now >= datetime.fromisoformat(armed_until):
+        ist_now = (now + timedelta(hours=5, minutes=30)).strftime("%H:%M")
+        raise HTTPException(
+            400,
+            f"Cannot arm after 15:00 IST — a live arm covers the current session and "
+            f"expires at 15:00 IST, but it is now {ist_now} IST. Arm during market hours "
+            f"(09:25–14:50 IST).",
+        )
     live = {
         "armed": True,
         "armed_at": now.isoformat(),
-        "armed_until": armed_until_today_ist(now),
+        "armed_until": armed_until,
         "lots": int(body.lots),
         "max_lots_per_day": int(body.max_lots_per_day),
         "max_concurrent": int(body.max_concurrent),
