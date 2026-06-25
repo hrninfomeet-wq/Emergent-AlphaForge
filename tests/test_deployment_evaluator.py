@@ -181,6 +181,7 @@ class FakeDB:
         self.strategy_deployments = FakeCollection()
         self.pretrade_profiles = FakeCollection()
         self.paper_trades = FakeCollection()
+        self.live_trades = FakeCollection()
 
 
 def seed_db(
@@ -824,3 +825,207 @@ async def test_kill_switch_blocks_signal_on_max_open_without_pausing():
     assert any("max_open_paper_trades" in b for b in res.get("blockers", []))
     # Still ACTIVE — soft block only.
     assert db.strategy_deployments.rows[0]["status"] == "ACTIVE"
+
+
+# ---------- continuous live tee (armed -> live replace, else paper) ----------
+#
+# An ARMED deployment routes its confirmed signal to auto_live AND suppresses
+# the paper path (if/elif). A non-armed paper deployment still papers, unchanged.
+# When no live context is available (broker not connected) the armed deployment
+# falls through to auto_paper (or nothing).
+
+# armed_until 15:00 IST. The clean signal's bar is anchored at the make_candles
+# default (last bar ~12:49 IST on 2026-05-27). We force `now` inside the window.
+_TEE_NOW = datetime(2026, 5, 27, 6, 0, tzinfo=timezone.utc)              # ~11:30 IST
+_TEE_ARMED_UNTIL = "2026-05-27T09:30:00+00:00"                          # 15:00 IST
+
+
+def _fresh_tick(price: float) -> Dict[str, Any]:
+    return {"last_price": price, "ts": _TEE_NOW.timestamp()}
+
+
+def _armed_live_deployment(*, lots: int = 2) -> Dict[str, Any]:
+    """A paper-mode deployment ARMED for live within the window, with auto_paper
+    also on. When connected, the live sink wins and SUPPRESSES paper (the if/elif).
+    When NOT connected, auto_live is disabled and it falls through to auto_paper —
+    which requires mode=="paper", so the fall-through path is exercisable here."""
+    dep = make_deployment()
+    dep["mode"] = "paper"
+    dep["risk"] = {
+        "auto_paper": True,                      # would paper if live did not win
+        "default_lots": 1,
+        "live": {"armed": True, "armed_until": _TEE_ARMED_UNTIL, "lots": lots},
+    }
+    return dep
+
+
+_LIVE_SUCCESS = {"placed": True, "protected": True, "norenordno": "ZZZ",
+                 "cid": "c9", "verdicts": []}
+
+
+def _make_place_fn(result: Dict[str, Any], calls: List[Dict[str, Any]]):
+    async def _place(contract, **kwargs):
+        calls.append({"contract": contract, **kwargs})
+        return dict(result)
+    return _place
+
+
+def _fake_arm_for(plan, signal_doc, ref_ltp):
+    return MagicMock(name="arm_callable")
+
+
+def _live_ctx(*, place_fn, connected: bool = True) -> Dict[str, Any]:
+    """An injectable live context for the tee (no real broker)."""
+    return {
+        "connected": connected,
+        "place_fn": place_fn,
+        "arm_for": _fake_arm_for,
+        "client": MagicMock(name="client"),
+        "intent_store": MagicMock(name="intent_store"),
+        "engine": MagicMock(name="engine"),
+        "search_fn": (lambda exch, q: []),
+        "throttle": MagicMock(name="throttle"),
+        "account_max": 20,
+        "band_pct": 5.0,
+        "uid": "U1",
+        "actid": "A1",
+    }
+
+
+@pytest.mark.asyncio
+async def test_tee_armed_deployment_routes_to_live_and_suppresses_paper():
+    db = FakeDB()
+    deployment = _armed_live_deployment(lots=2)
+    key = _seed_clean_signal_setup(db, deployment)
+    StubStrategy.set_next(Signal(direction="CE", score=80, reasons=["ok"],
+                                 target_pct=40, stop_pct=30))
+    calls: List[Dict[str, Any]] = []
+
+    results = await evaluate_active_deployments(
+        db,
+        latest_tick_lookup={key: _fresh_tick(150.0)}.get,
+        live_ctx=_live_ctx(place_fn=_make_place_fn(_LIVE_SUCCESS, calls)),
+        now_utc=_TEE_NOW,
+    )
+
+    assert results[0]["outcome"] == "clean"
+    # LIVE ran ...
+    assert results[0]["auto_live"]["created"] is True
+    assert results[0]["auto_live"]["norenordno"] == "ZZZ"
+    assert len(db.live_trades.rows) == 1
+    assert len(calls) == 1                       # the executor place_fn was called
+    # ... and PAPER was SUPPRESSED for this signal.
+    assert "auto_paper" not in results[0]
+    assert len(db.paper_trades.rows) == 0
+    # signal advanced to ACTIVE via the live path, linked to the live trade.
+    sig = db.signals.rows[0]
+    assert sig["state"] == "ACTIVE"
+    assert sig["live_trade_id"] == db.live_trades.rows[0]["id"]
+
+
+@pytest.mark.asyncio
+async def test_tee_non_armed_paper_deployment_still_papers():
+    db = FakeDB()
+    deployment = make_deployment()
+    deployment["mode"] = "paper"
+    deployment["risk"] = {"auto_paper": True, "default_lots": 1}   # no risk.live
+    key = _seed_clean_signal_setup(db, deployment)
+    StubStrategy.set_next(Signal(direction="CE", score=80, reasons=["ok"]))
+    calls: List[Dict[str, Any]] = []
+
+    results = await evaluate_active_deployments(
+        db,
+        latest_tick_lookup={key: {"last_price": 150.0}}.get,
+        live_ctx=_live_ctx(place_fn=_make_place_fn(_LIVE_SUCCESS, calls)),
+        now_utc=_TEE_NOW,
+    )
+
+    assert results[0]["outcome"] == "clean"
+    assert "auto_live" not in results[0]
+    assert results[0]["auto_paper"]["created"] is True
+    assert len(db.paper_trades.rows) == 1
+    assert len(db.live_trades.rows) == 0
+    assert len(calls) == 0                       # live place_fn never called
+
+
+@pytest.mark.asyncio
+async def test_tee_armed_but_not_connected_falls_through_to_paper():
+    """When live_ctx says connected=False, the armed deployment does NOT live-trade;
+    with auto_paper on it falls through and papers instead."""
+    db = FakeDB()
+    deployment = _armed_live_deployment(lots=2)
+    key = _seed_clean_signal_setup(db, deployment)
+    StubStrategy.set_next(Signal(direction="CE", score=80, reasons=["ok"]))
+    calls: List[Dict[str, Any]] = []
+
+    results = await evaluate_active_deployments(
+        db,
+        latest_tick_lookup={key: {"last_price": 150.0}}.get,
+        live_ctx=_live_ctx(place_fn=_make_place_fn(_LIVE_SUCCESS, calls),
+                           connected=False),
+        now_utc=_TEE_NOW,
+    )
+
+    assert results[0]["outcome"] == "clean"
+    assert "auto_live" not in results[0]
+    assert results[0]["auto_paper"]["created"] is True
+    assert len(db.live_trades.rows) == 0
+    assert len(calls) == 0
+
+
+@pytest.mark.asyncio
+async def test_tee_no_live_ctx_does_not_crash_and_papers(monkeypatch):
+    """live_ctx=None (production lazy-build) → build_live_deploy_context returns
+    None when the broker is unconfigured; the armed deployment must not crash and
+    falls through to auto_paper. We patch the builder to return None (exactly what
+    it does unconnected) so the test never touches the real broker/DB."""
+    import app.live_deploy_context as _ldc
+
+    async def _none(_db):
+        return None
+    monkeypatch.setattr(_ldc, "build_live_deploy_context", _none)
+
+    db = FakeDB()
+    deployment = _armed_live_deployment(lots=2)
+    key = _seed_clean_signal_setup(db, deployment)
+    StubStrategy.set_next(Signal(direction="CE", score=80, reasons=["ok"]))
+
+    # No live_ctx injected → the lazy builder runs (patched to None). Must not raise.
+    results = await evaluate_active_deployments(
+        db,
+        latest_tick_lookup={key: {"last_price": 150.0}}.get,
+        now_utc=_TEE_NOW,
+    )
+
+    assert results[0]["outcome"] == "clean"
+    assert "auto_live" not in results[0]
+    assert results[0]["auto_paper"]["created"] is True
+    assert len(db.live_trades.rows) == 0
+
+
+@pytest.mark.asyncio
+async def test_tee_blocked_signal_takes_neither_path():
+    """A blocked (non-CONFIRMED) signal must trigger neither live nor paper."""
+    db = FakeDB()
+    deployment = _armed_live_deployment(lots=2)
+    # Seed candles/contracts but NO recent option data → option_no_data block.
+    candles = make_candles(n=80)
+    seed_db(db, candles=candles, deployment=deployment,
+            contracts=make_contracts(), profiles=[make_profile(min_score=50)],
+            option_candles=[])
+    StubStrategy.set_next(Signal(direction="CE", score=80, reasons=["ok"]))
+    calls: List[Dict[str, Any]] = []
+
+    results = await evaluate_active_deployments(
+        db,
+        latest_tick_lookup={"NSE_FO|TEST|23950CE": {"last_price": 150.0}}.get,
+        live_ctx=_live_ctx(place_fn=_make_place_fn(_LIVE_SUCCESS, calls)),
+        now_utc=_TEE_NOW,
+    )
+
+    assert results[0]["outcome"] == "blocked"
+    assert "auto_live" not in results[0]
+    assert "auto_paper" not in results[0]
+    assert len(db.live_trades.rows) == 0
+    assert len(db.paper_trades.rows) == 0
+    assert len(calls) == 0

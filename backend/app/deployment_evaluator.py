@@ -554,6 +554,8 @@ async def evaluate_active_deployments(
     db: Any,
     *,
     latest_tick_lookup: Optional[Any] = None,
+    live_ctx: Optional[Dict[str, Any]] = None,
+    now_utc: Optional[datetime] = None,
 ) -> List[Dict[str, Any]]:
     """Evaluate all ACTIVE deployments — each one independently.
 
@@ -564,8 +566,20 @@ async def evaluate_active_deployments(
     `concurrency_lower_score` was removed; per-deployment exposure is governed
     by the `max_open_paper_trades` kill switch.)
 
-    Deployments with mode="paper" and risk.auto_paper open a paper trade for
-    every clean signal automatically (no manual approval).
+    Sink routing per clean signal (the continuous tee):
+      - An ARMED deployment (risk.live armed within its window, broker connected)
+        routes its confirmed signal to ``auto_live`` (a REAL order) AND SUPPRESSES
+        the paper path for that signal (if/elif — never both; the shared
+        ``paper_trade_claim`` also enforces one trade per signal).
+      - Otherwise a paper deployment with risk.auto_paper opens a paper trade for
+        the signal automatically (unchanged behavior).
+
+    ``live_ctx`` injects the live collaborators for tests; when None (production)
+    it is lazily built via ``build_live_deploy_context(db)``. If that returns None
+    (broker not connected / not configured) live is treated as DISABLED and the
+    flow falls through to auto_paper. Backward compatible: existing callers that
+    pass only ``db`` + ``latest_tick_lookup`` keep working (live_ctx defaults None
+    and the lazy builder never raises when the broker is unconfigured).
     """
     cursor = db.strategy_deployments.find({"status": "ACTIVE"}, {"_id": 0})
     deployments = await cursor.to_list(length=None)
@@ -578,25 +592,59 @@ async def evaluate_active_deployments(
             log.exception("evaluator failed for deployment %s", deployment.get("id"))
             results.append({"deployment_id": deployment.get("id"), "outcome": "error", "reason": str(exc)})
 
-    # Auto paper trading (opted-in paper deployments only).
+    # Resolve the live-deploy context once for this pass. Tests inject it; in
+    # production it is lazily built (None when the broker is not connected). The
+    # builder NEVER raises when the broker is unconfigured. We only bother building
+    # it when there is at least one clean signal to route.
+    if live_ctx is None and any(r.get("outcome") == "clean" and r.get("signal_id") for r in results):
+        try:
+            from app.live_deploy_context import build_live_deploy_context
+            live_ctx = await build_live_deploy_context(db)
+        except Exception as exc:
+            log.warning("build_live_deploy_context failed (%s) — live disabled this pass", exc)
+            live_ctx = None
+    live_connected = bool(live_ctx and live_ctx.get("connected"))
+    live_kwargs: Dict[str, Any] = {}
+    if live_ctx:
+        for k in ("place_fn", "arm_for", "client", "intent_store", "engine",
+                  "search_fn", "throttle", "account_max", "connected",
+                  "band_pct", "uid", "actid", "allow_fn"):
+            if k in live_ctx:
+                live_kwargs[k] = live_ctx[k]
+    now = now_utc or datetime.now(timezone.utc)
+
+    # Sink routing for clean signals.
     from app.paper_auto import auto_paper_enabled, auto_paper_trade_for_signal
+    from app.auto_live import auto_live_enabled, auto_live_trade_for_signal
     dep_by_id = {str(d.get("id") or ""): d for d in deployments}
     for r in results:
         if r.get("outcome") != "clean" or not r.get("signal_id"):
             continue
         deployment = dep_by_id.get(str(r.get("deployment_id") or ""))
-        if not deployment or not auto_paper_enabled(deployment):
+        if not deployment:
             continue
         try:
             # Re-read the signal state: it must still be a clean CONFIRMED
-            # signal (guards against concurrent manual mutations).
+            # signal (guards against concurrent manual mutations). This race
+            # guard precedes BOTH sinks.
             sig = await db.signals.find_one({"id": r["signal_id"]}, {"_id": 0})
             if not sig or str(sig.get("state") or "").upper() != "CONFIRMED" or sig.get("blocked"):
                 continue
-            r["auto_paper"] = await auto_paper_trade_for_signal(
-                db, deployment, sig, latest_tick_lookup=latest_tick_lookup,
-            )
+            if auto_live_enabled(deployment, now, connected=live_connected):
+                # ARMED → real order; PAPER is suppressed for this signal (if/elif).
+                r["auto_live"] = await auto_live_trade_for_signal(
+                    db, deployment, sig, latest_tick_lookup=latest_tick_lookup,
+                    now_utc=now, **live_kwargs,
+                )
+            elif auto_paper_enabled(deployment):
+                r["auto_paper"] = await auto_paper_trade_for_signal(
+                    db, deployment, sig, latest_tick_lookup=latest_tick_lookup,
+                )
         except Exception as exc:
-            log.exception("auto-paper hook failed for signal %s", r.get("signal_id"))
-            r["auto_paper"] = {"created": False, "error": str(exc)}
+            log.exception("sink hook failed for signal %s", r.get("signal_id"))
+            # Attribute the error to whichever sink was selected for this signal.
+            if auto_live_enabled(deployment, now, connected=live_connected):
+                r["auto_live"] = {"created": False, "error": str(exc)}
+            else:
+                r["auto_paper"] = {"created": False, "error": str(exc)}
     return results
