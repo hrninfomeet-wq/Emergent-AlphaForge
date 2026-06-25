@@ -15,6 +15,7 @@ import { fmtINR } from "@/lib/fmt";
 import LiveBanner from "@/components/live/LiveBanner";
 import ExecutionStateStrip from "@/components/live/ExecutionStateStrip";
 import LiveDeploymentStrip from "@/components/live/LiveDeploymentStrip";
+import LiveBlotter from "@/components/live/LiveBlotter";
 import PositionMonitor from "@/components/live/PositionMonitor";
 import LiveOrderTicket from "@/components/live/LiveOrderTicket";
 import OverallSettingsPanel from "@/components/live/OverallSettingsPanel";
@@ -349,6 +350,9 @@ export default function LiveDashboard() {
   // Stand-down (revert manual mode → LIVE_OFFLINE) in-flight flag.
   const [standDownBusy, setStandDownBusy] = useState(false);
 
+  // ── Deployment-attributed live blotter ({rows, count} | null) ─────────────
+  const [blotter, setBlotter] = useState(null);
+
   // ── Deployments for the Live Deployment strip ─────────────────────────────
   const [deployments, setDeployments] = useState([]);
   const [armedSummary, setArmedSummary] = useState({ armedCount: 0, autoplaceArmed: null });
@@ -364,6 +368,7 @@ export default function LiveDashboard() {
     api.liveBrokerReconcile().then(setReconcile).catch(() => null);
     api.getGuardStatus().then(setGuard).catch(() => null);
     api.getArmState().then(setArmState).catch(() => null);
+    api.getLiveBlotter().then(setBlotter).catch(() => null);
     // Poll mode too so the hero tile reflects the auto-arm/revert (LIVE_TEST is
     // single-shot — armed on Place, reverted after the order).
     api.getLiveMode().then((d) => setMode(d?.mode ?? null)).catch(() => null);
@@ -520,6 +525,18 @@ export default function LiveDashboard() {
 
       {/* ── 1b. Live Deployment strip ───────────────────────────────────── */}
       <LiveDeploymentStrip deployments={deployments} onRefresh={fetchAll} onArmedSummaryChange={setArmedSummary} />
+
+      {/* ── 1c. Deployment-attributed live blotter (auto-placed orders) ──── */}
+      <SectionCard
+        title="Live Deployment Blotter"
+        badge={
+          <span className="text-[10px] font-mono text-dimmer px-2 py-0.5 rounded-full border border-line bg-bg-3 uppercase tracking-wider">
+            auto-placed · attributed · P&amp;L from broker
+          </span>
+        }
+      >
+        <LiveBlotter rows={blotter?.rows} />
+      </SectionCard>
 
       {/* ── 2. Hero metric strip ────────────────────────────────────────── */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">

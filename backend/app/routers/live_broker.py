@@ -731,6 +731,54 @@ async def live_broker_reconcile():
     return report
 
 
+@api.get("/live-broker/blotter")
+async def live_broker_blotter(limit: int = Query(100, ge=1, le=500)):
+    """Deployment-attributed live blotter.
+
+    Joins the ``live_trades`` journal (attribution: deployment / strategy /
+    signal / entry / lots) against the live broker position book (the P&L source
+    of truth — Noren ``urmtom``/``rpnl``/``lp``). The raw position/order tables
+    show what the broker holds; this adds WHICH deployed strategy opened it and
+    how that strategy is doing. Read-only; degrades gracefully (attribution still
+    shown with null P&L when the broker is unreachable)."""
+    from app.db import get_db
+    from app.live.live_blotter import build_live_blotter
+
+    db = get_db()
+    trades: List[Dict[str, Any]] = []
+    try:
+        trades = await (
+            db.live_trades.find({}, {"_id": 0}).sort("created_at", -1).to_list(length=limit)
+        )
+    except Exception as exc:
+        log.debug("blotter: live_trades fetch failed: %s", exc)
+
+    # Broker position book = P&L truth. Best-effort: a disconnected broker still
+    # yields attributed rows (all FLAT, null P&L) rather than a 4xx.
+    broker_positions: List[Dict[str, Any]] = []
+    try:
+        client = await _get_client()
+        broker_positions = await client.position_book()
+    except Exception as exc:
+        log.debug("blotter: position book unavailable: %s", exc)
+
+    # Resolve deployment display names for attribution.
+    dep_ids = sorted({str(t.get("deployment_id") or "") for t in trades if t.get("deployment_id")})
+    deployments_by_id: Dict[str, Dict[str, Any]] = {}
+    if dep_ids:
+        try:
+            deps = await db.strategy_deployments.find(
+                {"id": {"$in": dep_ids}},
+                {"_id": 0, "id": 1, "name": 1, "strategy_id": 1, "instrument": 1},
+            ).to_list(length=None)
+            deployments_by_id = {str(d.get("id")): d for d in deps}
+        except Exception as exc:
+            log.debug("blotter: deployment name lookup failed: %s", exc)
+
+    rows = build_live_blotter(trades, broker_positions, deployments_by_id)
+    return {"rows": rows, "count": len(rows)}
+
+
 @api.get("/live-broker/symbol/resolve")
 async def live_broker_symbol_resolve(
     underlying: str = Query(..., description="e.g. NIFTY, BANKNIFTY, SENSEX"),

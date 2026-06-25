@@ -240,6 +240,8 @@ export const api = {
   liveBrokerPositions: () => apiClient.get("/live-broker/positions").then((r) => r.data),
   liveBrokerOrders: () => apiClient.get("/live-broker/orders").then((r) => r.data),
   liveBrokerReconcile: () => apiClient.get("/live-broker/reconcile").then((r) => r.data),
+  getLiveBlotter: (limit = 100) =>
+    apiClient.get("/live-broker/blotter", { params: { limit } }).then((r) => r.data),
 
   // Live broker mode + L3 order management
   getArmState: () => apiClient.get("/live-broker/arm-state").then((r) => r.data),
