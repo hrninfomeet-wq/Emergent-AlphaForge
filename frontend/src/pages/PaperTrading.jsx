@@ -412,7 +412,7 @@ export default function PaperTrading() {
     const warn = offHours ? "\n\nMarket looks closed — open positions will close at an ESTIMATED price." : "";
     if (!window.confirm(`Stop ALL paper trading? Squares off every open position and pauses all active strategies.${warn}`)) return;
     setBusy(true);
-    try { const r = await api.stopAllPaper(); toast.success(`Stopped all · squared off ${r.squared_off_count ?? 0} · paused ${r.paused_deployment_ids?.length ?? 0}`); await refreshAll(); }
+    try { const r = await api.stopAllDeployments(); toast.success(`Stopped all · squared off ${r.squared_off_count ?? 0} · paused ${r.paused_deployment_ids?.length ?? 0}`); await refreshAll(); }
     catch (e) { toast.error(e.response?.data?.detail || e.message); }
     finally { setBusy(false); }
   };

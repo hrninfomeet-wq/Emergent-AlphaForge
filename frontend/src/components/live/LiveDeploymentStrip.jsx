@@ -219,7 +219,7 @@ export default function LiveDeploymentStrip({ deployments, onRefresh, onArmedSum
     if (!window.confirm("Stop ALL live trading? This disarms and squares off every live deployment.")) return;
     setBusy(true);
     try {
-      await api.stopAllPaper(); // reuses the existing stop-all endpoint
+      await api.stopAllDeployments(); // POST /deployments/stop-all (squares + pauses every live/paper deployment)
       toast.success("Stopped all live deployments");
       await refreshAll();
     } catch (e) {
