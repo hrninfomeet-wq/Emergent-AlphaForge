@@ -45,7 +45,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from app.execution_policy import spot_mirror_exit_reason
 from app.live.kill_switch import _parse_netqty
-from app.live.live_sl_monitor import evaluate_exit
+from app.live.live_sl_monitor import build_monitor_state, evaluate_exit
 from app.live.overall_controls import build_overall_state, evaluate_overall
 
 log = logging.getLogger(__name__)
@@ -550,6 +550,63 @@ class LivePositionGuard:
             raise
         finally:
             self._stats["running"] = False
+
+    async def rehydrate_from_broker(self, *, default_stop_pct: float = 50.0) -> int:
+        """Re-attach the software guard to open broker positions after a restart.
+
+        The registry is an in-memory singleton (EMPTY on boot), so any position
+        opened before a backend/PC restart would be left UNWATCHED — no software
+        stop/target/EOD square — while the UI still believed it was guarded. This
+        reads the broker position book and re-registers every open (netqty != 0)
+        position the registry isn't already tracking, with a DEEP-DEFAULT premium
+        catastrophe stop (the original per-position levels are lost on restart) and
+        ``source="rehydrated"`` so the UI can flag "levels reset to default". A fresh
+        arm that already registered a tsym is never clobbered.
+
+        Best-effort: returns the count rehydrated; never raises out (a broker/feed
+        error logs and returns 0). Call ONCE at startup, around guard start.
+        """
+        try:
+            client = await self._client_factory()
+            if client is None:
+                return 0
+            book = await client.position_book()
+        except Exception as exc:
+            log.warning("guard rehydrate: could not read broker position book: %s", exc)
+            return 0
+        # Already-watched set keyed by TSYM (registry entries are keyed by
+        # norenordno, but the guard matches positions to entries by tsym — so a
+        # fresh arm for this tsym must NOT be double-watched/clobbered).
+        watched_tsyms = {str(e.get("tsym") or "") for e in self._registry.snapshot()}
+        rehydrated = 0
+        for pos in (book or []):
+            try:
+                netqty = _parse_netqty(pos.get("netqty"))
+                if netqty is None or netqty == 0:
+                    continue  # flat — nothing to guard
+                tsym = str(pos.get("tsym", ""))
+                if not tsym or tsym in watched_tsyms:
+                    continue  # already watched (e.g. a fresh arm) — don't clobber
+                # Entry mark: prefer the live lp, else the net/buy average price.
+                entry = (_finite_pos(pos.get("lp")) or _finite_pos(pos.get("netavgprc"))
+                         or _finite_pos(pos.get("daybuyavgprc")))
+                if entry is None:
+                    continue
+                state = build_monitor_state(float(entry), stop_pct=default_stop_pct)
+                self._registry.register(
+                    key=tsym, tsym=tsym, exch=str(pos.get("exch", "NFO")),
+                    qty=abs(int(netqty)), prd=str(pos.get("prd", "I")),
+                    entry_price=float(entry), state=state, source="rehydrated",
+                )
+                watched_tsyms.add(tsym)  # guard against duplicate tsyms in the book
+                rehydrated += 1
+                log.warning(
+                    "guard rehydrate: re-attached %s (netqty=%s) at default %.0f%% stop "
+                    "— original levels lost on restart", tsym, netqty, default_stop_pct,
+                )
+            except Exception as exc:
+                log.warning("guard rehydrate: register failed for %s: %s", pos.get("tsym"), exc)
+        return rehydrated
 
     async def start(self) -> None:
         if self._task and not self._task.done():

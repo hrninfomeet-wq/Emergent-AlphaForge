@@ -614,3 +614,60 @@ class TestEodSquare:
         run(g._cycle())
         assert rec.squared == []
         assert len(r) == 1
+
+
+class TestRehydrateFromBroker:
+    """rehydrate_from_broker re-attaches the guard to open broker positions after a
+    restart (the in-memory registry is empty on boot)."""
+
+    def test_rehydrates_open_position_with_default_stop_and_source(self):
+        reg = LiveMonitorRegistry()
+        client = _FakeClient([_pos(netqty=20, lp=250.0, tsym=_TSYM)])
+        n = run(_guard(reg, client, _Recorder()).rehydrate_from_broker())
+        assert n == 1
+        item = reg.get(_TSYM)
+        assert item is not None
+        assert item["source"] == "rehydrated"
+        assert item["qty"] == 20
+        # deep-default 50% stop on a 250 entry → stop_level 125.
+        assert item["state"]["stop_level"] == 125.0
+
+    def test_skips_flat_positions(self):
+        reg = LiveMonitorRegistry()
+        client = _FakeClient([_pos(netqty=0, lp=250.0, tsym=_TSYM)])
+        n = run(_guard(reg, client, _Recorder()).rehydrate_from_broker())
+        assert n == 0 and len(reg) == 0
+
+    def test_does_not_clobber_an_already_registered_tsym(self):
+        reg = LiveMonitorRegistry()
+        reg.register(key="N1", tsym=_TSYM, exch="BFO", qty=20, prd="I", entry_price=300.0,
+                     state=build_monitor_state(300.0, stop_pct=30), source="auto_live")
+        client = _FakeClient([_pos(netqty=20, lp=250.0, tsym=_TSYM)])
+        n = run(_guard(reg, client, _Recorder()).rehydrate_from_broker())
+        assert n == 0
+        assert len(reg) == 1  # no duplicate entry added for the same tsym
+        item = reg.get("N1")  # original arm (keyed by norenordno) survives untouched
+        assert item["source"] == "auto_live" and item["entry_price"] == 300.0
+
+    def test_not_connected_returns_zero(self):
+        reg = LiveMonitorRegistry()
+        g = LivePositionGuard(registry=reg, client_factory=lambda: _aw(None),
+                              square_fn=_Recorder().square_fn)
+        assert run(g.rehydrate_from_broker()) == 0 and len(reg) == 0
+
+    def test_position_book_error_returns_zero(self):
+        reg = LiveMonitorRegistry()
+
+        class _Boom:
+            async def position_book(self):
+                raise RuntimeError("broker down")
+
+        g = LivePositionGuard(registry=reg, client_factory=lambda: _aw(_Boom()),
+                              square_fn=_Recorder().square_fn)
+        assert run(g.rehydrate_from_broker()) == 0 and len(reg) == 0
+
+    def test_skips_position_without_a_price(self):
+        reg = LiveMonitorRegistry()
+        client = _FakeClient([{"tsym": _TSYM, "exch": "BFO", "netqty": "20"}])  # no lp/avg
+        n = run(_guard(reg, client, _Recorder()).rehydrate_from_broker())
+        assert n == 0 and len(reg) == 0

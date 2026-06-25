@@ -174,6 +174,53 @@ live_position_guard = LivePositionGuard(
 )
 
 
+async def live_startup_recovery() -> None:
+    """One-shot startup recovery for the live execution path (best-effort, non-blocking).
+
+    Closes the two restart-orphan holes the in-memory live state otherwise leaves:
+      1. resume_pending — adopt any orphaned SUBMITTING-but-unACKed order by matching
+         the broker order book on remarks==client_order_id (the order builder pins
+         remarks=cid), closing the crash-between-POST-and-ACK duplicate-order gap.
+      2. guard rehydrate — re-attach the software exit guard to open broker positions
+         (the guard registry is empty on boot), so a position opened before the
+         restart is never left unwatched (no software stop/target/EOD square).
+
+    Skips silently when the broker isn't connected. Never raises out.
+    """
+    _log = logging.getLogger(__name__)
+    client = await _live_guard_client_factory()
+    if client is None:
+        _log.info("live startup recovery: broker not connected — skipping resume_pending + guard rehydrate")
+        return
+    # 1. resume_pending — adopt orphaned orders (build a real-client engine; the
+    #    live_broker singleton is built with a None client, so use a local one).
+    try:
+        from app.live.engine import LiveEngine
+        from app.live.idempotency import default_store as _intent_store
+        from app.live.kill_switch import default_store as _safety_store
+        eng = LiveEngine(
+            client=client,
+            orders_collection=get_db().live_orders,
+            intent_store=_intent_store(),
+            config_store=_safety_store(),
+        )
+        res = await eng.resume_pending()
+        _log.info("live startup recovery: resume_pending adopted=%s needs_submit=%s",
+                  res.get("adopted"), res.get("needs_submit"))
+    except Exception as exc:
+        _log.warning("live startup recovery: resume_pending failed: %s", exc)
+    # 2. guard rehydrate — re-attach to open positions.
+    try:
+        n = await live_position_guard.rehydrate_from_broker()
+        if n:
+            _log.warning("live startup recovery: guard re-attached to %s open position(s) "
+                         "at the default catastrophe stop (original levels lost on restart)", n)
+        else:
+            _log.info("live startup recovery: no open broker positions to rehydrate")
+    except Exception as exc:
+        _log.warning("live startup recovery: guard rehydrate failed: %s", exc)
+
+
 # ---------------------------------------------------------------------------
 # Startup: discover plugins + ensure indexes + seed pretrade profiles
 # ---------------------------------------------------------------------------
