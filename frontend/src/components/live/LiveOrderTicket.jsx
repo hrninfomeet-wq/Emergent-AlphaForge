@@ -168,7 +168,7 @@ export default function LiveOrderTicket({ mode, disabled, onQueued }) {
   const isMarket = orderType === "MARKET";
   const isSlLmt = orderType === "SL-LMT";
 
-  // ── ATM suggest (same behaviour as OrderTicket) ─────────────────────────
+  // ── ATM suggest ─────────────────────────────────────────────────────────
   const handleAtmSuggest = async () => {
     if (disabled) return;
     setAtmBusy(true);
@@ -206,7 +206,7 @@ export default function LiveOrderTicket({ mode, disabled, onQueued }) {
     }
   };
 
-  // ── Fetch premium (same behaviour as OrderTicket) ───────────────────────
+  // ── Fetch premium ───────────────────────────────────────────────────────
   const canFetchPremium = !!(underlying && strike && expiryDate);
 
   const handleFetchPremium = async () => {

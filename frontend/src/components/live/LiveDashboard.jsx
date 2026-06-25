@@ -33,7 +33,7 @@ import MetricCard from "@/components/live/MetricCard";
  *   1. Connection banner (+ auth message banner)
  *   2. Hero metric strip (cash / day P&L / positions / orders / mode / guard)
  *   3. Two-column working grid
- *        LEFT  — execution mode · order ticket · approval queue
+ *        LEFT  — order ticket (1-click place through the backend choke-point)
  *        RIGHT — position monitor · positions blotter · orders blotter · guard
  *   4. Config row — overall controls · GTT / OCO backstop
  *
@@ -282,7 +282,7 @@ function ReconcileChip({ reconcile }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Section card wrapper (identical to LiveOrderPanel's local SectionCard)
+// Section card wrapper
 // ─────────────────────────────────────────────────────────────────────────────
 function SectionCard({ title, badge, children }) {
   return (
@@ -320,7 +320,7 @@ function deriveDayPnl(positions) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Available cash — defensive across Noren limits field names (mirrors AccountStrip)
+// Available cash — defensive across Noren limits field names
 // ─────────────────────────────────────────────────────────────────────────────
 function deriveCash(limits) {
   const v = limits?.cash ?? limits?.net ?? limits?.marginusedtoday ?? null;
@@ -579,8 +579,8 @@ export default function LiveDashboard() {
 
       {/* ── 3. Two-column working grid ──────────────────────────────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {/* LEFT column — the direct order ticket (one-click place; the
-            mode-switch + approval-queue steps are folded into the Place button) */}
+        {/* LEFT column — the direct order ticket (one-click place; the manual
+            mode-arming + separate approve step are folded into the Place button) */}
         <div className="space-y-4">
           <SectionCard
             title="Order Ticket"
