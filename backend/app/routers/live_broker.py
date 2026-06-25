@@ -1343,6 +1343,56 @@ async def reset_safety_latch():
 
 
 # ---------------------------------------------------------------------------
+# Unified arm-state — the single "will a signal place a REAL order right now?"
+# verdict, collapsing mode / per-deployment arm / the two env gates / connectivity.
+# ---------------------------------------------------------------------------
+
+@api.get("/live-broker/arm-state")
+async def get_arm_state():
+    """Return the one execution-state verdict the UI renders unambiguously.
+
+    Read-only; never raises (every input is best-effort with a safe fallback)."""
+    import os
+    from app.live.arm_state import compute_arm_state
+    from app.live.mode import is_deployment_live_allowed
+
+    # mode singleton
+    try:
+        mode_doc = await _mode_store().get()
+    except Exception:
+        mode_doc = None
+    # broker connectivity (a token is stored)
+    connected = False
+    try:
+        await _get_token_doc()
+        connected = True
+    except Exception:
+        connected = False
+    # offline-first env gates
+    def _env(name: str) -> bool:
+        return os.environ.get(name, "0").strip().lower() in ("1", "true", "yes", "on")
+    autoplace_armed = _env("LIVE_AUTOPLACE_ARMED")
+    guard_armed = _env("LIVE_GUARD_ARMED")
+    # deployments armed-and-in-window for live
+    armed_n = 0
+    try:
+        from app.db import get_db
+        now = datetime.now(timezone.utc)
+        cur = get_db().strategy_deployments.find({"risk.live.armed": True}, {"_id": 0, "id": 1, "risk": 1})
+        for dep in await cur.to_list(length=500):
+            ok, _reason = is_deployment_live_allowed(dep, now, connected=connected)
+            if ok:
+                armed_n += 1
+    except Exception as exc:
+        log.debug("arm-state: deployment scan failed: %s", exc)
+    return compute_arm_state(
+        mode_doc=mode_doc, connected=connected,
+        autoplace_armed=autoplace_armed, guard_armed=guard_armed,
+        armed_deployment_count=armed_n,
+    )
+
+
+# ---------------------------------------------------------------------------
 # L3: Mode routes
 # ---------------------------------------------------------------------------
 

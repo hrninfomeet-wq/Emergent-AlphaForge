@@ -13,6 +13,7 @@ import { api } from "@/lib/api";
 import { fmtINR } from "@/lib/fmt";
 
 import LiveBanner from "@/components/live/LiveBanner";
+import ExecutionStateStrip from "@/components/live/ExecutionStateStrip";
 import LiveDeploymentStrip from "@/components/live/LiveDeploymentStrip";
 import PositionMonitor from "@/components/live/PositionMonitor";
 import LiveOrderTicket from "@/components/live/LiveOrderTicket";
@@ -343,6 +344,9 @@ export default function LiveDashboard() {
   // ── Hero guard summary (GuardPanel polls its own copy; this is just the tile) ─
   const [guard, setGuard] = useState(null);
 
+  // ── Unified execution arm-state (the single "will a signal transmit?" verdict) ─
+  const [armState, setArmState] = useState(null);
+
   // ── Deployments for the Live Deployment strip ─────────────────────────────
   const [deployments, setDeployments] = useState([]);
   const [armedSummary, setArmedSummary] = useState({ armedCount: 0, autoplaceArmed: null });
@@ -357,6 +361,7 @@ export default function LiveDashboard() {
     api.liveBrokerOrders().then(setOrders).catch(() => null);
     api.liveBrokerReconcile().then(setReconcile).catch(() => null);
     api.getGuardStatus().then(setGuard).catch(() => null);
+    api.getArmState().then(setArmState).catch(() => null);
     // Poll mode too so the hero tile reflects the auto-arm/revert (LIVE_TEST is
     // single-shot — armed on Place, reverted after the order).
     api.getLiveMode().then((d) => setMode(d?.mode ?? null)).catch(() => null);
@@ -451,6 +456,9 @@ export default function LiveDashboard() {
     <div className="space-y-4">
       {/* ── 1. Connection banner + auth message ─────────────────────────── */}
       <LiveBanner status={status} onRefresh={fetchAll} armedCount={armedCount} autoplaceArmed={autoplaceArmed} />
+
+      {/* Single execution-state verdict (replaces the old hardcoded "L3" chip) */}
+      <ExecutionStateStrip armState={armState} />
 
       {authMsg && (
         <div

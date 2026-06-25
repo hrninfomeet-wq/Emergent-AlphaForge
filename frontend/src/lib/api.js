@@ -242,6 +242,7 @@ export const api = {
   liveBrokerReconcile: () => apiClient.get("/live-broker/reconcile").then((r) => r.data),
 
   // Live broker mode + L3 order management
+  getArmState: () => apiClient.get("/live-broker/arm-state").then((r) => r.data),
   getLiveMode: () => apiClient.get("/live-broker/mode").then((r) => r.data),
   setLiveMode: (mode, confirm) =>
     apiClient.put("/live-broker/mode", { mode, confirm }).then((r) => r.data),

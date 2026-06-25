@@ -70,9 +70,8 @@ export default function LiveBanner({ status, onRefresh, armedCount = 0, autoplac
             DRY-RUN — set LIVE_AUTOPLACE_ARMED=1 for real orders
           </span>
         )}
-        <span className="ml-auto text-xs font-mono px-2 py-1 rounded border border-danger/40 bg-danger/10 text-danger font-semibold">
-          L3 &mdash; Live-Test execution enabled
-        </span>
+        {/* The real execution-state verdict lives in <ExecutionStateStrip/> below,
+            data-bound to /live-broker/arm-state — replacing the old hardcoded chip. */}
       </div>
 
       {/* Connection status row */}
