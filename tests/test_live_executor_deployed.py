@@ -274,7 +274,10 @@ def test_deployed_margin_full_size_blocks():
 # --- Gate 8: throttle -------------------------------------------------------
 
 def test_deployed_throttle_blocks(monkeypatch):
-    """throttle.allow(...) returns False → rate_throttled, no claim/place."""
+    """throttle.allow(...) returns False + LIVE_AUTOPLACE_ARMED=1 → rate_throttled, no claim/place."""
+    # Gate 8 only runs on the armed (real-transmit) path.  Without setting
+    # LIVE_AUTOPLACE_ARMED the function would return dry_run=True before ever
+    # consulting the throttle; set it so the gate is reachable.
     monkeypatch.setenv("LIVE_AUTOPLACE_ARMED", "1")
     client = MockNoren(limits_data={"cash": "99999999"})
     intent_store = _ClaimFalseIntentStore()  # would block at claim — must NOT be reached
@@ -291,6 +294,18 @@ def test_deployed_throttle_blocks(monkeypatch):
     assert throttle.calls[0]["is_cancel"] is False
     assert intent_store.claims == 0, "no claim before the throttle gate passes"
     assert _book(client) == []
+
+
+def test_deployed_dry_run_ignores_deny_throttle(monkeypatch):
+    """A deny throttle must NOT be consulted when LIVE_AUTOPLACE_ARMED is unset (dry-run path)."""
+    monkeypatch.delenv("LIVE_AUTOPLACE_ARMED", raising=False)
+    client = MockNoren(limits_data={"cash": "99999999"})
+    throttle = _AlwaysDenyThrottle()
+    result = _run(_place_deployed(client=client, capped_lots=2, throttle=throttle))
+    # The function must return a dry-run response — throttle must not have been consulted
+    assert result["placed"] is False
+    assert result.get("dry_run") is True, "expected dry_run=True, throttle must not have blocked"
+    assert len(throttle.calls) == 0, "throttle.allow() must NOT be called on the dry-run path"
 
 
 # --- Idempotency: one winner ------------------------------------------------

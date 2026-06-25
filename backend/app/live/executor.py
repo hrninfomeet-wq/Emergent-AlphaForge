@@ -461,16 +461,10 @@ async def place_deployed_order(
         return _blocked(f"cannot_trade:{why}", verdicts)
 
     # ------------------------------------------------------------------
-    # Gate 8 — rate throttle.  is_cancel=False (this is an entry); inject `now`
-    # for the token bucket.  NO place / NO claim happens here — the claim lives
-    # inside _transmit_and_arm past the transmit boundary.
-    # ------------------------------------------------------------------
-    if throttle is not None and not throttle.allow(is_cancel=False, now=time.time()):
-        return _blocked("rate_throttled", verdicts)
-
-    # ------------------------------------------------------------------
     # Transmit boundary — offline-first.  Unless explicitly armed (env or arg),
     # return the validated dry-run preview and transmit NOTHING.
+    # The rate-throttle (Gate 8) is placed AFTER this boundary so that a
+    # dry-run never consumes a SEBI rate token.
     # ------------------------------------------------------------------
     armed = _autoplace_armed() if autoplace_armed is None else bool(autoplace_armed)
     if not armed:
@@ -480,6 +474,14 @@ async def place_deployed_order(
             "would_send": _would_send(intent, uid, actid),
             "verdicts": verdicts,
         }
+
+    # ------------------------------------------------------------------
+    # Gate 8 — rate throttle (real-transmit path only).  is_cancel=False (this
+    # is an entry); inject `now` for the token bucket.  NO place / NO claim
+    # happens here — the claim lives inside _transmit_and_arm.
+    # ------------------------------------------------------------------
+    if throttle is not None and not throttle.allow(is_cancel=False, now=time.time()):
+        return _blocked("rate_throttled", verdicts)
 
     return await _transmit_and_arm(
         client=client,
