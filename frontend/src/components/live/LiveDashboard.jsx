@@ -339,9 +339,6 @@ export default function LiveDashboard() {
   const [reconcile, setReconcile] = useState(null);
   const [authMsg, setAuthMsg] = useState(null);
 
-  // ── Execution mode (for the hero tile; the order ticket auto-arms on Place) ──
-  const [mode, setMode] = useState(null); // null = loading
-
   // ── Hero guard summary (GuardPanel polls its own copy; this is just the tile) ─
   const [guard, setGuard] = useState(null);
 
@@ -367,11 +364,10 @@ export default function LiveDashboard() {
     api.liveBrokerOrders().then(setOrders).catch(() => null);
     api.liveBrokerReconcile().then(setReconcile).catch(() => null);
     api.getGuardStatus().then(setGuard).catch(() => null);
+    // arm-state carries `mode` verbatim (same ModeStore singleton), so the hero
+    // Mode tile derives from armState — no separate GET /live-broker/mode poll.
     api.getArmState().then(setArmState).catch(() => null);
     api.getLiveBlotter().then(setBlotter).catch(() => null);
-    // Poll mode too so the hero tile reflects the auto-arm/revert (LIVE_TEST is
-    // single-shot — armed on Place, reverted after the order).
-    api.getLiveMode().then((d) => setMode(d?.mode ?? null)).catch(() => null);
     // Deployments — for the Live Deployment strip.
     api.listDeployments({ limit: 200 })
       .then((d) => setDeployments((d.items || []).filter((dep) => String(dep.status || "").toUpperCase() !== "ARCHIVED")))
@@ -405,22 +401,6 @@ export default function LiveDashboard() {
     }
   }, [fetchAll]);
 
-  // ── Execution mode (load once; ModeSwitch updates it on change) ───────────
-  useEffect(() => {
-    let cancelled = false;
-    api
-      .getLiveMode()
-      .then((data) => {
-        if (!cancelled) setMode(data?.mode ?? null);
-      })
-      .catch(() => {
-        /* backend not wired yet — stay null */
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
   // ── OAuth post-redirect handling ──────────────────────────────────────────
   // Flattrade bounces back to /live-trading?flattrade_connected=1 (or
   // ?flattrade_error=...). Surface it, refresh status, then strip the param.
@@ -449,6 +429,10 @@ export default function LiveDashboard() {
   const dayPnl = deriveDayPnl(positions);
   const cash = deriveCash(limits);
 
+  // Single source of truth for execution mode: the arm-state poll (same
+  // ModeStore singleton GET /live-broker/mode read, minus a duplicate request).
+  // null while arm-state is still loading.
+  const mode = armState?.mode ?? null;
   const isLiveTest = mode === "LIVE_TEST";
 
   // Armed-live deployment count + autoplace state for the banner.
