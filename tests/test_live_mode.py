@@ -602,6 +602,16 @@ def test_live_fail_closed_on_malformed():
     assert is_deployment_live_allowed({"risk": {"live": {"armed": True}}}, now, connected=True)[0] is False
 
 
+def test_live_blocked_when_armed_is_truthy_not_true():
+    """armed=1 is truthy but not the literal True — must be rejected (fail-closed)."""
+    now = datetime(2026, 6, 25, 6, 0, tzinfo=timezone.utc)
+    assert is_deployment_live_allowed(
+        {"risk": {"live": {"armed": 1, "armed_until": "2026-06-25T09:30:00+00:00"}}},
+        now,
+        connected=True,
+    ) == (False, "not_armed")
+
+
 def test_armed_until_today_ist_is_1500_ist_in_utc():
     now = datetime(2026, 6, 25, 4, 0, tzinfo=timezone.utc)  # 09:30 IST
     assert armed_until_today_ist(now) == "2026-06-25T09:30:00+00:00"

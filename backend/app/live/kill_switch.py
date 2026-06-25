@@ -51,7 +51,7 @@ DEFAULT_SAFETY_CONFIG: Dict[str, Any] = {
     "daily_loss_limit": 5000,       # ₹ — broker-stop-loss when MTM ≤ −5000
     "profit_lock_target": 10000,    # ₹ — lock profits when MTM ≥ 10000
     "max_open_positions": 5,        # hard cap on concurrent open positions
-    "max_lots_per_order": 20,       # account-level lot ceiling per single order
+    "max_lots_per_order": 20,       # account-level ceiling on lots per order
     "blocked_until_reset": False,   # latch; only explicit reset_latch clears it
 }
 

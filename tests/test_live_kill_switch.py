@@ -1270,3 +1270,9 @@ class TestMaxLotsPerOrder:
         store, col = _fake_store()
         with pytest.raises(ValueError):
             asyncio.run(store.put_config({"max_lots_per_order": -1}))
+
+    def test_put_config_rejects_bool_true(self):
+        """max_lots_per_order=True must raise ValueError (bool is int subclass but must be rejected)."""
+        store, col = _fake_store()
+        with pytest.raises(ValueError):
+            asyncio.run(store.put_config({"max_lots_per_order": True}))

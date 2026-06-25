@@ -24,7 +24,7 @@ without importing the DB anywhere else in this file.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -251,7 +251,7 @@ def _utcnow_iso() -> str:
 # Per-deployment live-arm predicate (L4 / strategy-deploy-to-live)
 # ---------------------------------------------------------------------------
 
-def armed_until_today_ist(now_utc):
+def armed_until_today_ist(now_utc: "datetime") -> str:
     """ISO-UTC timestamp for 15:00 IST on now_utc's IST date (the EOD square cutoff)."""
     from datetime import timezone, timedelta
     ist = now_utc.astimezone(timezone.utc) + timedelta(hours=5, minutes=30)
@@ -259,7 +259,7 @@ def armed_until_today_ist(now_utc):
     return (cutoff_ist - timedelta(hours=5, minutes=30)).replace(tzinfo=timezone.utc).isoformat()
 
 
-def is_deployment_live_allowed(deployment, now_utc, *, connected):
+def is_deployment_live_allowed(deployment: "Dict[str, Any]", now_utc: "datetime", *, connected: bool) -> "Tuple[bool, str]":
     """(ok, reason) — True iff risk.live armed, now_utc < armed_until, and connected.
     Fail-closed: any missing/malformed field or expired arm -> (False, reason)."""
     from datetime import datetime, timezone
