@@ -153,7 +153,7 @@ function UnarmedRow({ dep, busy, onArmed }) {
 }
 
 // ── Main strip ─────────────────────────────────────────────────────────────
-export default function LiveDeploymentStrip({ deployments, onRefresh }) {
+export default function LiveDeploymentStrip({ deployments, onRefresh, onArmedSummaryChange }) {
   // Map of deployment_id -> live status (null = not armed / error)
   const [liveStatuses, setLiveStatuses] = useState({});
   const [busy, setBusy] = useState(false);
@@ -233,6 +233,24 @@ export default function LiveDeploymentStrip({ deployments, onRefresh }) {
     (d) => !(liveStatuses[d.id] && liveStatuses[d.id].armed_until),
   );
   const hasArmed = armedDeps.length > 0;
+
+  // Lift armed summary to parent (for LiveBanner).
+  // autoplace_armed is a backend env flag shared across all deployments —
+  // take it from any armed status that has the field set.
+  useEffect(() => {
+    if (!onArmedSummaryChange) return;
+    const armedCount = armedDeps.length;
+    let autoplaceArmed = null;
+    for (const dep of armedDeps) {
+      const st = liveStatuses[dep.id];
+      if (st && "autoplace_armed" in st) {
+        autoplaceArmed = st.autoplace_armed;
+        break;
+      }
+    }
+    onArmedSummaryChange({ armedCount, autoplaceArmed });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [armedDeps.length, liveStatuses, onArmedSummaryChange]);
 
   if (!deployments || deployments.length === 0) return null;
 

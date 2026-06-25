@@ -345,6 +345,7 @@ export default function LiveDashboard() {
 
   // ── Deployments for the Live Deployment strip ─────────────────────────────
   const [deployments, setDeployments] = useState([]);
+  const [armedSummary, setArmedSummary] = useState({ armedCount: 0, autoplaceArmed: null });
 
   const timerRef = useRef(null);
 
@@ -419,10 +420,9 @@ export default function LiveDashboard() {
 
   const isLiveTest = mode === "LIVE_TEST";
 
-  // Armed-live deployment count for the banner.
-  // (LiveDeploymentStrip polls individual /live/status — here we just count
-  // deployments; the strip itself tracks which are actually armed.)
-  const armedCount = 0; // placeholder — the strip owns the real armed state
+  // Armed-live deployment count + autoplace state for the banner.
+  // Lifted up from LiveDeploymentStrip via onArmedSummaryChange callback.
+  const { armedCount, autoplaceArmed } = armedSummary;
 
   // Guard tile: ARMED (danger) vs DRY-RUN (warn) + guarded count.
   const guardArmed = !!guard?.armed;
@@ -436,7 +436,7 @@ export default function LiveDashboard() {
   return (
     <div className="space-y-4">
       {/* ── 1. Connection banner + auth message ─────────────────────────── */}
-      <LiveBanner status={status} onRefresh={fetchAll} armedCount={armedCount} />
+      <LiveBanner status={status} onRefresh={fetchAll} armedCount={armedCount} autoplaceArmed={autoplaceArmed} />
 
       {authMsg && (
         <div
@@ -451,7 +451,7 @@ export default function LiveDashboard() {
       )}
 
       {/* ── 1b. Live Deployment strip ───────────────────────────────────── */}
-      <LiveDeploymentStrip deployments={deployments} onRefresh={fetchAll} />
+      <LiveDeploymentStrip deployments={deployments} onRefresh={fetchAll} onArmedSummaryChange={setArmedSummary} />
 
       {/* ── 2. Hero metric strip ────────────────────────────────────────── */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
