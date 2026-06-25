@@ -373,12 +373,54 @@ def test_exit_plan_deep_default_stop_when_nothing_configured():
     assert plan["spot_exit"] is None
 
 
-def test_exit_plan_no_deep_default_when_spot_stop_present():
-    sig = make_confirmed_signal(risk_hints={"spot_stop_pts": 20.0})
-    dep = make_live_deployment()  # no premium stop, but a spot stop exists
+def test_exit_plan_spot_only_stop_still_seeds_premium_floor():
+    """A spot-only-stop signal (spot_stop_pts/spot_target_pts, no premium stop/target,
+    no exit_controls) MUST still get the 50% premium catastrophe stop — build_monitor_state
+    needs a premium input to register the position, and every live position needs a
+    premium downside net. The spot-mirror exit remains ADDITIVE on top."""
+    sig = make_confirmed_signal(risk_hints={"spot_stop_pts": 20.0, "spot_target_pts": 40.0})
+    dep = make_live_deployment()  # no auto_paper_*; no exit_controls
     plan = resolve_live_exit_plan(sig, dep)
-    assert plan["levels"]["stop_pct"] is None  # protected by spot stop, no floor
+    assert plan["levels"]["stop_pct"] == _GUARD_DEFAULT_STOP_PCT  # seeded floor
+    assert plan["spot_exit"] is not None                          # spot-mirror additive
+
+
+def test_exit_plan_spot_only_stop_carries_time_stop_when_present():
+    sig = make_confirmed_signal(risk_hints={
+        "spot_stop_pts": 20.0, "spot_target_pts": 40.0, "time_stop_minutes": 45,
+    })
+    dep = make_live_deployment()
+    plan = resolve_live_exit_plan(sig, dep)
+    assert plan["levels"]["stop_pct"] == _GUARD_DEFAULT_STOP_PCT
     assert plan["spot_exit"] is not None
+    assert plan["time_stop_minutes"] == 45
+
+
+def test_exit_plan_time_stop_only_seeds_premium_floor():
+    """A time-stop-only signal (no premium stop/target, no spot stop) gets the floor."""
+    sig = make_confirmed_signal(risk_hints={"time_stop_minutes": 30})
+    dep = make_live_deployment()
+    plan = resolve_live_exit_plan(sig, dep)
+    assert plan["levels"]["stop_pct"] == _GUARD_DEFAULT_STOP_PCT
+    assert plan["time_stop_minutes"] == 30
+
+
+def test_exit_plan_premium_target_but_no_stop_seeds_floor():
+    """A premium-target-but-no-stop signal still gets the 50% stop seeded; the
+    target is preserved untouched."""
+    sig = make_confirmed_signal(risk_hints={"target_pct": 0.8})
+    dep = make_live_deployment()  # no premium/spot stop
+    plan = resolve_live_exit_plan(sig, dep)
+    assert plan["levels"]["stop_pct"] == _GUARD_DEFAULT_STOP_PCT  # stop seeded
+    assert plan["levels"]["target_pct"] == 0.8                    # target preserved
+
+
+def test_exit_plan_no_override_when_premium_stop_present():
+    """Existing behavior unchanged: a real premium stop is NOT replaced by the floor."""
+    sig = make_confirmed_signal(risk_hints={"stop_pct": 0.4})
+    dep = make_live_deployment()
+    plan = resolve_live_exit_plan(sig, dep)
+    assert plan["levels"]["stop_pct"] == 0.4  # no 50% override
 
 
 # ====================== orchestrator ===========================================

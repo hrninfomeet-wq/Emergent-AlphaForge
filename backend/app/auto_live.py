@@ -185,8 +185,10 @@ def resolve_live_exit_plan(signal_doc: Dict[str, Any], deployment: Dict[str, Any
     strategy hint.
 
     DEEP-DEFAULT FLOOR: if there is NO premium stop (stop_pct and stop_pts both
-    None) AND no spot stop (no ``risk_hints.spot_stop_pts``), set
-    ``levels["stop_pct"] = 50.0`` — a deployed position is NEVER unprotected."""
+    None), set ``levels["stop_pct"] = 50.0`` — independent of any spot stop. The
+    premium stop is what lets the software guard register the position
+    (``build_monitor_state`` requires a premium input); the spot-mirror/time-stop
+    exits are additive. A deployed position is NEVER left unprotected."""
     risk = deployment.get("risk") or {}
     hints = signal_doc.get("risk_hints") or {}
 
@@ -229,10 +231,13 @@ def resolve_live_exit_plan(signal_doc: Dict[str, Any], deployment: Dict[str, Any
         "time_stop_minutes": hints.get("time_stop_minutes"),
     }
 
-    # DEEP-DEFAULT FLOOR — never leave a deployed position unprotected.
+    # DEEP-DEFAULT FLOOR — never leave a deployed position unprotected. A premium
+    # stop is ALWAYS seeded when none is configured, INDEPENDENT of any spot stop:
+    # build_monitor_state needs a premium input to register the position at all, and
+    # every live position must carry a premium catastrophe stop as the ultimate
+    # downside net. The spot-mirror + time-stop exits remain additive on top.
     has_premium_stop = levels["stop_pct"] is not None or levels["stop_pts"] is not None
-    has_spot_stop = _num(hints.get("spot_stop_pts")) is not None
-    if not has_premium_stop and not has_spot_stop:
+    if not has_premium_stop:
         levels["stop_pct"] = _GUARD_DEFAULT_STOP_PCT
 
     return plan

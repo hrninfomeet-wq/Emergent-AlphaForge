@@ -74,45 +74,50 @@ def arm_for(
 
     It does NOT build a SessionStore arm and does NOT schedule a 10-minute
     auto-square — those are the manual single-shot's concern. Registration is
-    best-effort (log on failure; never crash the fill), mirroring ``_make_arm``.
+    MANDATORY: a deployed fill has NO 10-minute auto-square backstop, so the
+    software guard IS its protection. If ``build_monitor_state`` or ``register``
+    fails, the exception PROPAGATES so the executor's ``_abort_protect`` squares the
+    fill and halts — a deployed position is never left live-and-unguarded.
     """
     levels = plan.get("levels") or {}
     deployment_id = signal_doc.get("deployment_id")
 
     async def _arm(intent: Any, norenordno: str) -> None:
-        try:
-            stop_pct = levels.get("stop_pct")
-            # Defend in depth: a position with neither a premium nor a spot stop is
-            # never left unmonitorable (auto_live already seeds this in the plan).
-            if stop_pct is None and levels.get("stop_pts") is None and not plan.get("spot_exit"):
-                stop_pct = _GUARD_DEFAULT_STOP_PCT
-            state = build_monitor_state(
-                float(ref_ltp),
-                stop_pct=stop_pct,
-                stop_pts=levels.get("stop_pts"),
-                target_pct=levels.get("target_pct"),
-                target_pts=levels.get("target_pts"),
-                trail=levels.get("trail"),
-            )
-            get_registry().register(
-                key=norenordno,
-                tsym=intent.tsym,
-                exch=intent.exch,
-                qty=intent.qty,
-                prd=intent.prd,
-                entry_price=float(ref_ltp),
-                state=state,
-                spot_exit=plan.get("spot_exit"),
-                time_stop_minutes=plan.get("time_stop_minutes"),
-                entry_ts=_now_iso(),
-                source="auto_live",
-                deployment_id=deployment_id,
-            )
-            log.info("auto_live arm: registered %s with software guard (deployment=%s, stop_pct=%s)",
-                     getattr(intent, "tsym", "?"), deployment_id, stop_pct)
-        except Exception as exc:  # best-effort — never crash the fill
-            log.warning("auto_live arm: software-guard registration failed: %s "
-                        "(EOD square + 10-min cap still protect)", exc)
+        # Registration is MANDATORY (no 10-min backstop for a deployed position): any
+        # failure here propagates to the executor, whose _abort_protect squares + halts
+        # rather than leaving an unguarded live position. Do NOT swallow.
+        stop_pct = levels.get("stop_pct")
+        # Defense-in-depth: a position with no premium stop is never unmonitorable —
+        # seed the 50% catastrophe floor INDEPENDENT of any spot stop (auto_live's
+        # resolve_live_exit_plan already does this; this is belt-and-suspenders so a
+        # hand-built plan can never produce an all-None monitor state that fails to
+        # register). The spot-mirror exit remains additive.
+        if stop_pct is None and levels.get("stop_pts") is None:
+            stop_pct = _GUARD_DEFAULT_STOP_PCT
+        state = build_monitor_state(
+            float(ref_ltp),
+            stop_pct=stop_pct,
+            stop_pts=levels.get("stop_pts"),
+            target_pct=levels.get("target_pct"),
+            target_pts=levels.get("target_pts"),
+            trail=levels.get("trail"),
+        )
+        get_registry().register(
+            key=norenordno,
+            tsym=intent.tsym,
+            exch=intent.exch,
+            qty=intent.qty,
+            prd=intent.prd,
+            entry_price=float(ref_ltp),
+            state=state,
+            spot_exit=plan.get("spot_exit"),
+            time_stop_minutes=plan.get("time_stop_minutes"),
+            entry_ts=_now_iso(),
+            source="auto_live",
+            deployment_id=deployment_id,
+        )
+        log.info("auto_live arm: registered %s with software guard (deployment=%s, stop_pct=%s)",
+                 getattr(intent, "tsym", "?"), deployment_id, stop_pct)
 
     return _arm
 

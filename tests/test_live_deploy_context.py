@@ -131,17 +131,39 @@ async def test_arm_for_uses_deep_default_stop_when_levels_have_stop(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_arm_for_registration_failure_does_not_raise(monkeypatch):
-    """Registration is best-effort (mirrors _make_arm): a registry error is logged,
-    the arm must NOT crash the fill."""
+async def test_arm_for_registration_failure_raises_for_abort_protect(monkeypatch):
+    """Registration is MANDATORY for a deployed position (no 10-min backstop): a
+    registry failure must PROPAGATE so the executor's _abort_protect squares + halts
+    — a deployed fill is never left live-and-unguarded."""
     class Boom:
         def register(self, **kwargs):
             raise RuntimeError("registry down")
     monkeypatch.setattr(ldc, "get_registry", lambda: Boom())
 
     arm = ldc.arm_for(_plan(), _signal(), ref_ltp=100.0)
-    # Must not raise.
-    await arm(FakeIntent(), "N4")
+    with pytest.raises(RuntimeError, match="registry down"):
+        await arm(FakeIntent(), "N4")
+
+
+@pytest.mark.asyncio
+async def test_arm_for_spot_only_plan_still_registers_with_premium_floor(monkeypatch):
+    """REGRESSION: a spot-only-stop plan (levels carry no premium stop/target/trail
+    but spot_exit is set) MUST still register — build_monitor_state needs a premium
+    input, so arm_for seeds the 50% catastrophe floor. Previously this silently
+    failed to register (build_monitor_state raised, swallowed) → unguarded position."""
+    reg = FakeRegistry()
+    monkeypatch.setattr(ldc, "get_registry", lambda: reg)
+
+    plan = _plan(levels={"stop_pct": None, "target_pct": None,
+                         "stop_pts": None, "target_pts": None, "trail": None})
+    arm = ldc.arm_for(plan, _signal("dep-9"), ref_ltp=100.0)
+    await arm(FakeIntent(), "N6")
+
+    assert len(reg.calls) == 1                       # registered, not silently dropped
+    call = reg.calls[0]
+    assert call["spot_exit"] is not None             # spot-mirror still carried (additive)
+    # 50% catastrophe floor seeded → a valid monitor state with a downside stop.
+    assert call["state"]["stop_level"] == 50.0       # 100 - 50%
 
 
 @pytest.mark.asyncio
