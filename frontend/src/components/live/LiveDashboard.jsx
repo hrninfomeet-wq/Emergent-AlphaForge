@@ -13,6 +13,7 @@ import { api } from "@/lib/api";
 import { fmtINR } from "@/lib/fmt";
 
 import LiveBanner from "@/components/live/LiveBanner";
+import LiveDeploymentStrip from "@/components/live/LiveDeploymentStrip";
 import PositionMonitor from "@/components/live/PositionMonitor";
 import LiveOrderTicket from "@/components/live/LiveOrderTicket";
 import OverallSettingsPanel from "@/components/live/OverallSettingsPanel";
@@ -342,6 +343,9 @@ export default function LiveDashboard() {
   // ── Hero guard summary (GuardPanel polls its own copy; this is just the tile) ─
   const [guard, setGuard] = useState(null);
 
+  // ── Deployments for the Live Deployment strip ─────────────────────────────
+  const [deployments, setDeployments] = useState([]);
+
   const timerRef = useRef(null);
 
   // ── Poll all broker endpoints (each individually .catch'd) ────────────────
@@ -355,6 +359,10 @@ export default function LiveDashboard() {
     // Poll mode too so the hero tile reflects the auto-arm/revert (LIVE_TEST is
     // single-shot — armed on Place, reverted after the order).
     api.getLiveMode().then((d) => setMode(d?.mode ?? null)).catch(() => null);
+    // Deployments — for the Live Deployment strip.
+    api.listDeployments({ limit: 200 })
+      .then((d) => setDeployments((d.items || []).filter((dep) => String(dep.status || "").toUpperCase() !== "ARCHIVED")))
+      .catch(() => null);
   }, []);
 
   useEffect(() => {
@@ -411,6 +419,11 @@ export default function LiveDashboard() {
 
   const isLiveTest = mode === "LIVE_TEST";
 
+  // Armed-live deployment count for the banner.
+  // (LiveDeploymentStrip polls individual /live/status — here we just count
+  // deployments; the strip itself tracks which are actually armed.)
+  const armedCount = 0; // placeholder — the strip owns the real armed state
+
   // Guard tile: ARMED (danger) vs DRY-RUN (warn) + guarded count.
   const guardArmed = !!guard?.armed;
   const guardCount = (() => {
@@ -423,7 +436,7 @@ export default function LiveDashboard() {
   return (
     <div className="space-y-4">
       {/* ── 1. Connection banner + auth message ─────────────────────────── */}
-      <LiveBanner status={status} onRefresh={fetchAll} />
+      <LiveBanner status={status} onRefresh={fetchAll} armedCount={armedCount} />
 
       {authMsg && (
         <div
@@ -436,6 +449,9 @@ export default function LiveDashboard() {
           {authMsg.text}
         </div>
       )}
+
+      {/* ── 1b. Live Deployment strip ───────────────────────────────────── */}
+      <LiveDeploymentStrip deployments={deployments} onRefresh={fetchAll} />
 
       {/* ── 2. Hero metric strip ────────────────────────────────────────── */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">

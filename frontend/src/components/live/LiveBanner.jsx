@@ -1,12 +1,13 @@
 import { useState } from "react";
-import { AlertTriangle, Loader2, LogIn, LogOut, Zap } from "lucide-react";
+import { AlertTriangle, Loader2, LogIn, LogOut, Shield, Zap } from "lucide-react";
 import { api } from "@/lib/api";
 
 /**
  * Bold top-of-page banner for the Live Trading page (L0).
  * Shows: LIVE / read-only notice / Flattrade connection chip / Login + Logout.
+ * Also reflects armed live deployments count and autoplace_armed guard state.
  */
-export default function LiveBanner({ status, onRefresh }) {
+export default function LiveBanner({ status, onRefresh, armedCount = 0, autoplaceArmed = null }) {
   const [busy, setBusy] = useState(false);
 
   const connected = status?.connected;
@@ -57,6 +58,18 @@ export default function LiveBanner({ status, onRefresh }) {
         <span className="text-base font-bold tracking-widest uppercase text-danger">
           Live Trading &middot; Real Money &middot; Flattrade
         </span>
+        {armedCount > 0 && (
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-danger bg-danger/20 text-danger text-xs font-mono font-bold animate-pulse">
+            <Zap className="w-3 h-3" />
+            {armedCount} deployment{armedCount !== 1 ? "s" : ""} ARMED live
+          </span>
+        )}
+        {armedCount > 0 && autoplaceArmed === false && (
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-amber-500/60 bg-amber-500/10 text-amber-300 text-xs font-mono">
+            <Shield className="w-3 h-3" />
+            DRY-RUN — set LIVE_AUTOPLACE_ARMED=1 for real orders
+          </span>
+        )}
         <span className="ml-auto text-xs font-mono px-2 py-1 rounded border border-danger/40 bg-danger/10 text-danger font-semibold">
           L3 &mdash; Live-Test execution enabled
         </span>

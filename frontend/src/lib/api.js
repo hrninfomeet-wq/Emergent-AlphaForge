@@ -274,6 +274,17 @@ export const api = {
   rejectOrder: (approvalId) =>
     apiClient.post(`/live-broker/order/approvals/${approvalId}/reject`, {}).then((r) => r.data),
 
+  // Deploy-to-Live: arm/disarm/stop/status per deployment + account safety config
+  getSafetyConfig: () => apiClient.get("/live-broker/safety-config").then((r) => r.data),
+  liveArm: (id, body) =>
+    apiClient.post(`/deployments/${id}/live/arm`, body).then((r) => r.data),
+  liveDisarm: (id) =>
+    apiClient.post(`/deployments/${id}/live/disarm`).then((r) => r.data),
+  liveStop: (id) =>
+    apiClient.post(`/deployments/${id}/live/stop`).then((r) => r.data),
+  liveStatus: (id) =>
+    apiClient.get(`/deployments/${id}/live/status`).then((r) => r.data),
+
   // Live order page (Phase 2/3) — overall controls + GTT backstop
   getOverallSettings: (scope = "overall") =>
     apiClient.get("/live-broker/overall-settings", { params: { scope } }).then((r) => r.data),
