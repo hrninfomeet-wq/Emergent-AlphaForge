@@ -65,10 +65,14 @@ function Countdown({ until }) {
 
 // ── One armed-deployment row ───────────────────────────────────────────────
 function ArmedRow({ dep, liveStatus, busy, onDisarm, onStop }) {
-  const todayOrders = liveStatus?.today_orders ?? 0;
-  const todayLots = liveStatus?.today_lots ?? 0;
-  const todayRealised = liveStatus?.today_realised_pnl ?? null;
-  const openPositions = liveStatus?.open_positions ?? 0;
+  // Status payload shape: { today: {orders, lots, realized_pnl}, open_positions: [...] }
+  const today = liveStatus?.today || {};
+  const todayOrders = today.orders ?? 0;
+  const todayLots = today.lots ?? 0;
+  const todayRealised = today.realized_pnl ?? null;
+  const openPositions = Array.isArray(liveStatus?.open_positions)
+    ? liveStatus.open_positions.length
+    : (liveStatus?.open_positions ?? 0);
 
   return (
     <div className="px-3 py-2 flex items-center gap-2 flex-wrap" data-testid="live-deploy-row">
@@ -225,12 +229,16 @@ export default function LiveDeploymentStrip({ deployments, onRefresh, onArmedSum
     }
   };
 
-  // Partition: armed = liveStatus exists + has armed_until; unarmed = rest.
+  // Partition on the LIVE `armed` flag from the status payload — NOT `armed_until`.
+  // armed_until persists in the doc after a disarm/stop (it's the last cutoff), so
+  // keying off it left disarmed rows stuck in the armed section (and the banner kept
+  // counting them). `armed` flips to false on disarm / stop / next-day, so the row
+  // moves to "unarmed" and the banner updates as soon as the next poll lands.
   const armedDeps = (deployments || []).filter(
-    (d) => liveStatuses[d.id] && liveStatuses[d.id].armed_until,
+    (d) => liveStatuses[d.id] && liveStatuses[d.id].armed === true,
   );
   const unarmedDeps = (deployments || []).filter(
-    (d) => !(liveStatuses[d.id] && liveStatuses[d.id].armed_until),
+    (d) => !(liveStatuses[d.id] && liveStatuses[d.id].armed === true),
   );
   const hasArmed = armedDeps.length > 0;
 
