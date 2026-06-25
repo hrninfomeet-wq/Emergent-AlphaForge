@@ -467,6 +467,57 @@ class TestStatus:
 
 
 # ===========================================================================
+# status — batched (?ids=)
+# ===========================================================================
+
+class TestStatusBatch:
+    def _two_deployments(self):
+        db = FakeDB()
+        a = _deployment(dep_id="dep-1")
+        a["risk"]["live"] = {"armed": True, "armed_until": "2099-01-01T09:30:00+00:00",
+                             "lots": 3, "max_lots_per_day": 20, "max_concurrent": 2,
+                             "daily_loss_cap": 5000.0}
+        b = _deployment(dep_id="dep-2")  # no risk.live → unarmed defaults
+        db.strategy_deployments.rows.extend([a, b])
+        return db
+
+    def test_batch_returns_payloads_keyed_by_id(self, monkeypatch):
+        db = self._two_deployments()
+        _install(monkeypatch, db)
+        out = asyncio.run(dep.deployments_live_status_batch(ids="dep-1,dep-2"))
+        assert set(out.keys()) == {"dep-1", "dep-2"}
+        assert out["dep-1"]["armed"] is True
+        assert out["dep-1"]["caps"]["lots"] == 3
+        assert out["dep-2"]["armed"] is False
+
+    def test_batch_omits_unknown_ids_without_failing(self, monkeypatch):
+        db = self._two_deployments()
+        _install(monkeypatch, db)
+        out = asyncio.run(dep.deployments_live_status_batch(ids="dep-1,ghost"))
+        assert "dep-1" in out
+        assert "ghost" not in out          # unknown id omitted, batch still succeeds
+
+    def test_batch_payload_byte_identical_to_per_id_route(self, monkeypatch):
+        db = self._two_deployments()
+        _install(monkeypatch, db)
+        per_id = asyncio.run(dep.deployment_live_status("dep-1"))
+        batched = asyncio.run(dep.deployments_live_status_batch(ids="dep-1"))
+        assert batched["dep-1"] == per_id   # same shared helper → identical shape
+
+    def test_batch_dedups_and_strips_whitespace(self, monkeypatch):
+        db = self._two_deployments()
+        _install(monkeypatch, db)
+        out = asyncio.run(dep.deployments_live_status_batch(ids=" dep-1 , dep-1 ,"))
+        assert list(out.keys()) == ["dep-1"]   # deduped, whitespace stripped, empty dropped
+
+    def test_batch_empty_ids_returns_empty_map(self, monkeypatch):
+        db = self._two_deployments()
+        _install(monkeypatch, db)
+        out = asyncio.run(dep.deployments_live_status_batch(ids=""))
+        assert out == {}
+
+
+# ===========================================================================
 # stop-all (extended: paper stop-all + disarm/flatten armed live)
 # ===========================================================================
 
@@ -515,5 +566,6 @@ def test_backend_exposes_live_deploy_routes():
         '@api.post("/deployments/{deployment_id}/live/disarm")',
         '@api.post("/deployments/{deployment_id}/live/stop")',
         '@api.get("/deployments/{deployment_id}/live/status")',
+        '@api.get("/deployments/live/status")',
     ):
         assert needle in server

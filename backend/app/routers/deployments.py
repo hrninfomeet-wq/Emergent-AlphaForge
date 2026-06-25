@@ -851,14 +851,15 @@ async def stop_deployment_live(deployment_id: str):
     })
 
 
-@api.get("/deployments/{deployment_id}/live/status")
-async def deployment_live_status(deployment_id: str):
-    """Report a deployment's live arm state, caps, today's counters, open live
-    positions (filtered to this deployment), and the two transmit gates."""
-    db = get_db()
+async def _live_status_payload(db: Any, deployment_id: str) -> Optional[Dict[str, Any]]:
+    """Build one deployment's live-status dict, or None if the deployment is absent.
+
+    Shared by the per-id route and the batched ?ids= route so both emit the
+    identical shape. Returns the UN-serialized dict; callers ``serialize_doc`` it.
+    """
     deployment = await db.strategy_deployments.find_one({"id": deployment_id}, {"_id": 0})
     if not deployment:
-        raise HTTPException(404, "Deployment not found")
+        return None
     live = dict((deployment.get("risk") or {}).get("live") or {})
     rows = await db.live_trades.find({"deployment_id": deployment_id}).to_list(length=None)
     today = _live_today_counters(rows, datetime.now(timezone.utc))
@@ -877,7 +878,7 @@ async def deployment_live_status(deployment_id: str):
             "target_level": st.get("target_level"),
             "seen_filled": e.get("seen_filled"),
         })
-    return serialize_doc({
+    return {
         "armed": bool(live.get("armed")),
         "armed_until": live.get("armed_until"),
         "caps": {
@@ -890,7 +891,46 @@ async def deployment_live_status(deployment_id: str):
         "open_positions": open_positions,
         "autoplace_armed": _live_autoplace_armed(),
         "guard_armed": _live_guard_armed(),
-    })
+    }
+
+
+# NOTE: this static 3-segment path is declared BEFORE the parametrised
+# /deployments/{deployment_id}/live/status (4-seg) route. They have different
+# segment counts so they cannot collide, but keeping the static one first is the
+# defensive convention.
+@api.get("/deployments/live/status")
+async def deployments_live_status_batch(
+    ids: str = Query(..., description="comma-separated deployment ids"),
+):
+    """Batched live status: returns ``{deployment_id: <per-id payload>}`` for many
+    deployments in ONE request, so the Live Deployment strip makes a single call
+    per cycle instead of one per deployment. Unknown ids are OMITTED (never 404
+    the whole batch); the caller treats a missing key the same as null."""
+    db = get_db()
+    seen: set = set()
+    id_list: List[str] = []
+    for raw in ids.split(","):
+        i = raw.strip()
+        if i and i not in seen:
+            seen.add(i)
+            id_list.append(i)
+    id_list = id_list[:200]  # bound the batch size
+    out: Dict[str, Any] = {}
+    for i in id_list:
+        payload = await _live_status_payload(db, i)
+        if payload is not None:
+            out[i] = serialize_doc(payload)
+    return out
+
+
+@api.get("/deployments/{deployment_id}/live/status")
+async def deployment_live_status(deployment_id: str):
+    """Report a deployment's live arm state, caps, today's counters, open live
+    positions (filtered to this deployment), and the two transmit gates."""
+    payload = await _live_status_payload(get_db(), deployment_id)
+    if payload is None:
+        raise HTTPException(404, "Deployment not found")
+    return serialize_doc(payload)
 
 
 @api.post("/deployments/{deployment_id}/repin-source")

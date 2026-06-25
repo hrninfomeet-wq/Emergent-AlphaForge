@@ -163,17 +163,24 @@ export default function LiveDeploymentStrip({ deployments, onRefresh, onArmedSum
   const [busy, setBusy] = useState(false);
   const timerRef = useRef(null);
 
-  // Poll live/status for all deployments
+  // Poll live/status for all deployments in ONE batched request (was one
+  // request per deployment — N→1). The backend omits unknown ids, so we
+  // explicitly null any polled id absent from the response, matching the old
+  // per-id catch→null behavior (disarmed/removed rows clear).
   const pollStatuses = useCallback(() => {
-    if (!deployments || deployments.length === 0) return;
-    deployments.forEach((dep) => {
-      api.liveStatus(dep.id)
-        .then((d) => setLiveStatuses((prev) => ({ ...prev, [dep.id]: d })))
-        .catch(() => {
-          // 404 / not-armed → null status
-          setLiveStatuses((prev) => ({ ...prev, [dep.id]: null }));
+    const ids = (deployments || []).map((dep) => dep.id).filter(Boolean);
+    if (ids.length === 0) return;
+    api.liveStatusBatch(ids)
+      .then((byId) => {
+        setLiveStatuses((prev) => {
+          const next = { ...prev };
+          for (const id of ids) next[id] = byId?.[id] ?? null;
+          return next;
         });
-    });
+      })
+      .catch(() => {
+        // hard error (e.g. network) → leave prior statuses untouched
+      });
   }, [deployments]);
 
   useEffect(() => {

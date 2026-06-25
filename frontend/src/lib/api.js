@@ -287,6 +287,11 @@ export const api = {
     apiClient.post(`/deployments/${id}/live/stop`).then((r) => r.data),
   liveStatus: (id) =>
     apiClient.get(`/deployments/${id}/live/status`).then((r) => r.data),
+  // Batched: one request for many deployments → { id: <same per-id payload> }.
+  liveStatusBatch: (ids) =>
+    apiClient
+      .get("/deployments/live/status", { params: { ids: (ids || []).join(",") } })
+      .then((r) => r.data),
 
   // Live order page (Phase 2/3) — overall controls + GTT backstop
   getOverallSettings: (scope = "overall") =>
