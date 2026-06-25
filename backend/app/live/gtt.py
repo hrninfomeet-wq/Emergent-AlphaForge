@@ -71,10 +71,12 @@ _TRANTYPES = ("B", "S")
 # Retention types accepted by the GTT/OCO order params (docs: DAY / EOS / IOC).
 _RET_TYPES = ("DAY", "EOS", "IOC")
 
-# DOCUMENTED OCO alert type (PiConnect docs ch.1.18 PlaceOCOOrder example,
-# verbatim: "ai_t": "LMT_BOS_O").  One bracket pair; first leg to trigger
-# cancels the other.  NOTE: still docs-only — confirm by reading a real OCO back
-# via GetPendingGTTOrder (no live OCO observed yet, unlike the single GTT below).
+# OCO alert type — CONFIRMED 2026-06-25 by a live GetPendingGTTOrder readback of
+# a real resting OCO (ai_t "LMT_BOS_O") AND by two fired-leg OrderBook remarks
+# ("LMT_BOS_O: : Ltp 99.55 is below 100.00", "...is above 300.00").  oivariable
+# var "x" pairs positionally with place_order_params (leg1) and "y" with
+# place_order_params_leg2 (leg2); the broker infers above/below from each
+# trigger value vs the LTP — so leg direction is value-driven, not x/y-labelled.
 AI_T_OCO = "LMT_BOS_O"
 
 # Single-GTT LTP alert type with its direction suffix.
