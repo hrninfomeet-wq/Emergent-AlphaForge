@@ -115,9 +115,13 @@ async def _square_live_positions_for_deployment(
     targets = [e for e in reg.snapshot() if str(e.get("deployment_id") or "") == str(deployment_id)]
     if not targets:
         return []
-    # Resolve a broker client + uid/actid (best-effort — the actual transmit is
-    # gated by LIVE_GUARD_ARMED inside square_position; an offline/dry-run square
-    # still clears the registry and reports the intent).
+    # Resolve a broker client + uid/actid (best-effort). This is a USER-INITIATED
+    # flatten over the SAME margin-safe exit path as the manual square / kill switch,
+    # so it transmits the exit directly — it is NOT auto-place-env-gated (the user is
+    # explicitly squaring their own positions, exactly like the manual square button).
+    # In offline-first / dry-run mode nothing was ever auto-placed, so the registry is
+    # empty and there is nothing to square. A per-position square failure is swallowed
+    # but the registry entry is still removed.
     client = None
     uid = actid = ""
     try:
@@ -127,7 +131,7 @@ async def _square_live_positions_for_deployment(
         uid = token.get("uid", "")
         actid = token.get("actid", uid)
     except Exception:
-        client = client  # leave as-is; square_position tolerates a None/limited client
+        pass  # square_position tolerates a None/limited client
     squared: List[str] = []
     for entry in targets:
         reg.remove(entry["id"])
@@ -802,8 +806,10 @@ async def stop_deployment_live(deployment_id: str):
 
     The flatten reuses the existing margin-safe exit machinery
     (auto_square.square_position) scoped to this deployment's guard-registry
-    entries — it does NOT open a new place_order path. Actual transmit is gated
-    by LIVE_GUARD_ARMED inside the square machinery (unchanged)."""
+    entries — it does NOT open a new place_order path. As a USER-INITIATED exit it
+    transmits directly (like the manual square / kill switch); it is not gated by the
+    auto-place env flag. In dry-run mode nothing was auto-placed, so there is nothing
+    to square."""
     db = get_db()
     deployment = await db.strategy_deployments.find_one({"id": deployment_id}, {"_id": 0})
     if not deployment:
