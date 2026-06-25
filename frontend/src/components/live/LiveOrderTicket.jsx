@@ -315,33 +315,47 @@ export default function LiveOrderTicket({ mode, disabled, onQueued }) {
     setQueueResult(null);
     setQueueError(null);
     setQueuedConfirm(false);
+    // Track whether we armed LIVE_TEST and whether a real order actually placed, so
+    // the `finally` can STAND DOWN (revert to LIVE_OFFLINE) when we armed but the
+    // order did NOT place — otherwise a network failure between arm and place would
+    // leave the system armed with no UI to disarm. A SUCCESSFUL place self-reverts
+    // (the executor consumes the single-shot), so we only revert on non-placement.
+    let armed = false;
+    let placedOk = false;
     try {
-      // 1. arm LIVE_TEST (single-shot; reverts after the order)
+      // 1. arm LIVE_TEST (single-shot)
       try {
         await api.setLiveMode("LIVE_TEST", true);
+        armed = true;
       } catch (e) {
         setQueueError(
           `Could not arm LIVE_TEST: ${e?.response?.data?.detail ?? e?.message ?? "mode error"}`
         );
-        setShowPlaceConfirm(false);
         return;
       }
       // 2. create the approval (re-validates server-side)
       const created = await api.createOrderApproval(buildPayload());
       if (!created?.ok) {
         setQueueResult(created ?? { ok: false, verdicts: [] });
-        setShowPlaceConfirm(false);
         return;
       }
       // 3. redeem the one-shot token → place via the executor chokepoint
       const placed = await api.approveOrder(created.approval_id, created.token);
       setPlaceResult(placed);
-      setShowPlaceConfirm(false);
-      if (placed?.placed) setPreviewResult(null); // clear so it can't double-fire
+      placedOk = !!placed?.placed;
+      if (placedOk) setPreviewResult(null); // clear so it can't double-fire
     } catch (e) {
       setQueueError(e?.response?.data?.detail ?? e?.message ?? "Place failed");
-      setShowPlaceConfirm(false);
     } finally {
+      setShowPlaceConfirm(false);
+      // Stand down: armed but nothing placed → revert to a safe mode (best-effort).
+      if (armed && !placedOk) {
+        try {
+          await api.setLiveMode("LIVE_OFFLINE");
+        } catch {
+          /* best-effort stand-down; the hero Mode tile will still reflect reality on the next poll */
+        }
+      }
       setQueueBusy(false);
     }
   };

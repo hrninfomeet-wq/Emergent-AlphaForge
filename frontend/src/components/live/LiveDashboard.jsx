@@ -433,6 +433,20 @@ export default function LiveDashboard() {
     return Array.isArray(guard?.guarded) ? guard.guarded.length : 0;
   })();
 
+  // UNGUARDED detection — open BROKER positions (netqty != 0) whose tsym is NOT in
+  // the software guard's registry → nothing is watching their software stop /
+  // target / EOD square. The guard re-attaches open positions on startup, so a
+  // persistent entry here is a real "exposed but unwatched" alert (e.g. a position
+  // opened outside the app, or a rehydration that couldn't reach the broker).
+  const guardedTsyms = new Set((guard?.guarded ?? []).map((g) => String(g?.tsym ?? "")));
+  const unguardedPositions =
+    positionRows == null
+      ? []
+      : positionRows.filter(isOpenPosition).filter((p) => {
+          const t = String(p?.tsym ?? p?.tradingsymbol ?? "");
+          return t && !guardedTsyms.has(t);
+        });
+
   return (
     <div className="space-y-4">
       {/* ── 1. Connection banner + auth message ─────────────────────────── */}
@@ -447,6 +461,31 @@ export default function LiveDashboard() {
           }`}
         >
           {authMsg.text}
+        </div>
+      )}
+
+      {/* ── 1a. UNGUARDED-position alert (exposed but not watched by the guard) ── */}
+      {unguardedPositions.length > 0 && (
+        <div
+          className="text-sm font-mono px-3 py-2.5 rounded-lg border-2 border-danger bg-danger/15 text-danger flex items-start gap-2"
+          data-testid="unguarded-positions-banner"
+        >
+          <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+          <span>
+            <span className="font-bold">
+              {unguardedPositions.length} broker position
+              {unguardedPositions.length !== 1 ? "s" : ""} NOT under the software guard
+            </span>{" "}
+            — no software stop / target / 15:00 square is watching{" "}
+            {unguardedPositions
+              .map((p) => p.tsym ?? p.tradingsymbol)
+              .filter(Boolean)
+              .slice(0, 4)
+              .join(", ")}
+            {unguardedPositions.length > 4 ? "…" : ""}. The guard re-attaches open
+            positions on startup; if this persists, square manually or check the broker
+            connection.
+          </span>
         </div>
       )}
 
