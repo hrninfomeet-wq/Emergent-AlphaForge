@@ -77,3 +77,16 @@ async def ensure_indexes() -> None:
     await db.pretrade_profiles.create_index([("name", 1)], unique=True)
     await db.optimization_jobs.create_index([("created_at", -1)])
     await db.strategy_lifecycle.create_index("strategy_id", unique=True)
+    # Live execution: the unique index on live_orders.client_order_id is the REAL
+    # dup-order race guard (idempotency.record_intent's DuplicateKeyError fallback
+    # depends on it). Without it a crashed-then-resumed same-cid submit could reach
+    # the broker twice. Declared in app.live.idempotency; imported lazily to avoid
+    # any import-order coupling from db.py.
+    from app.live.idempotency import ensure_indexes as _ensure_live_order_indexes
+    await _ensure_live_order_indexes(db.live_orders)
+    # live_trades (auto-live deployment trades): index per-deployment so the
+    # live-cap governor + /live/status counters do an index scan, not a full
+    # ~all-history collection scan on every poll. Mirrors the paper_trades indexes.
+    await db.live_trades.create_index([("created_at", -1)])
+    await db.live_trades.create_index([("deployment_id", 1), ("created_at", -1)])
+    await db.live_trades.create_index([("deployment_id", 1), ("status", 1), ("closed_at", -1)])
