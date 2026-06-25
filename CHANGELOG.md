@@ -2,6 +2,56 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.48.x] — Strategy → Deploy to Live: armed auto-place within caps (2026-06-25, BUILD COMPLETE; live readback pending)
+
+Lets a **deployed backtest strategy** route its **continuous live signals** through the existing
+Live order choke-point + software guard to place **real Flattrade orders** under hard per-deployment
++ account caps — instead of only auto-paper-trading. Built brainstorm → spec → plan → subagent-driven
+TDD (per-task spec+quality review + a final holistic review). **2370 host tests pass; FE build clean.**
+On branch `feat/strategy-deploy-to-live` (NOT merged/pushed). Spec/plan in
+`docs/superpowers/{specs,plans}/2026-06-25-strategy-deploy-to-live*.md`; agent memory
+`strategy-deploy-to-live-2026`.
+
+- **User-authorized rule change:** the prior "user does every Place click" rule is replaced (the
+  user's explicit decision) by **per-deployment ARM** — the human arms a deployment with caps and the
+  backend then auto-places within that envelope. The assistant still never personally transmits.
+- **Authorization** (`mode.is_deployment_live_allowed` + `deployment.risk.live`): per-deployment arm
+  (armed / armed_until / lots / max_lots_per_day / max_concurrent / daily_loss_cap), **daily
+  auto-disarm** at 15:00 IST / token expiry. Routes `POST /deployments/{id}/live/{arm|disarm|stop}`
+  (typed-confirm arm; stop flattens this deployment's live positions + disarms), `GET …/live/status`,
+  and `/deployments/stop-all` extended to disarm+flatten live. Account ceiling `max_lots_per_order`
+  (default 20) added to the safety-config.
+- **Entry** (`executor.place_deployed_order`, a sibling of `place_live_test_order` sharing the single
+  `client.place_order` via the extracted `_transmit_and_arm`): gate chain = long-only (BUY) →
+  per-deployment arm → fresh dry-run (`lots=capped`, `fat_finger_cap=account ceiling`) → full-size
+  margin → all-verdicts → `qty==capped×lot` ceiling re-check → `can_trade` → RateThrottle (real
+  transmits only) → **offline-first transmit boundary** (dry-run-logs unless `LIVE_AUTOPLACE_ARMED=1`)
+  → arm-or-abort. Per-deployment lots are the USER's value (not strategy sizing), clamped to the
+  ceiling.
+- **Continuous routing** (`auto_live.py` + the `evaluate_active_deployments` tee): an armed deployment
+  routes its CONFIRMED signal to `auto_live_trade_for_signal` (a clone of `paper_auto`) and
+  **suppresses paper** (replace; the SAME atomic `paper_trade_claim` → one trade per signal). Entry
+  uses a **FRESH** option-premium tick only (refuses a stale candle; never spot). `live_deploy_governor`
+  enforces max_concurrent / max_lots_per_day / daily_loss_cap (a loss breach pauses ONLY that
+  deployment). New `live_trades` collection.
+- **Full exit parity** (`live_position_guard` extended): the guard now also reads the live spot tick
+  and enforces **spot-mirror + time-stop** exits (matching the paper marker) plus a **15:00 IST EOD
+  square** for deployed (MIS) positions, on top of premium SL/TP/trailing. Manual LIVE_TEST positions
+  are untouched (keep their 10-min cap). **A deployed position is never unprotected:** a 50% premium
+  catastrophe stop is always seeded when the strategy configures no premium stop, and guard
+  registration is mandatory (failure → executor abort-protect: square + halt).
+- **Frontend** (`components/live/DeployToLivePanel.jsx` + `LiveDeploymentStrip.jsx` + `LiveBanner`):
+  caps form clamped to the account ceiling → danger typed-confirm ("type ARM") → arm; a Live
+  Deployments strip (armed_until countdown, today's orders/lots/₹, open positions, Disarm/Stop, master
+  Stop-all-live); banner shows the armed count + a DRY-RUN warning when `LIVE_AUTOPLACE_ARMED` is unset.
+- **Two independent offline-first env kills:** `LIVE_AUTOPLACE_ARMED` (entries) + `LIVE_GUARD_ARMED`
+  (automatic squares). With both unset nothing transmits. Manual square / kill / live-stop are
+  user-initiated exits and transmit directly (like the manual ticket).
+- **Pending (plan Task 16, user-gated):** Docker dry-run verification + a **user-supervised 1-lot live
+  readback**. Known low-severity follow-ups: no explicit short-strategy arm guard (moot — signals are
+  single-leg CE/PE BUY only); `disarmed_reason` not proactively written for eod/token-expiry (the
+  predicate fails closed).
+
 ## [0.47.x] — Live Trading (Flattrade) real execution + GTT/OCO backstop (2026-06-22 → 06-25)
 
 A new **Live Trading page** that places *real* orders via **Flattrade** (Noren/PiConnect OMS;

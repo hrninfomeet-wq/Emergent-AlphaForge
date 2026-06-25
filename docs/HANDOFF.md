@@ -150,13 +150,22 @@ UI smoke: Data Warehouse hero + Sync now + band heatmaps; Backtest results — K
 
 ## 14. What's next (open items)
 
-- **CURRENT NEXT (2026-06-25): strategy-deploy-to-live.** Route a *deployed backtest strategy*'s
-  live signals through the Live Trading order choke-point + software exit guard (so a chosen,
-  deployed strategy can place real broker orders under the same hard gates, instead of only
-  auto-paper-trading). Its own brainstorm → spec → plan → TDD build. The GTT/OCO backstop +
-  software guard + L0–L3 execution path it builds on are **done and confirmed** (see the
-  2026-06-25 block in §2). Lower-priority follow-up: confirm the single-GTT above-trigger
-  `ai_t` (`LTP_A_O`, currently inferred) with one live readback if a target-only GTT is ever needed.
+- **strategy-deploy-to-live — BUILD COMPLETE (2026-06-25), live readback PENDING.** A deployed
+  strategy's continuous signals now route through the executor choke-point + software guard to place
+  **real Flattrade orders under per-deployment ARM + caps** (armed auto-place; the user changed the
+  per-order-click rule). Built brainstorm → spec → plan → subagent-driven TDD; **2370 host tests +
+  clean FE build**, on branch **`feat/strategy-deploy-to-live` (17 commits, NOT merged/pushed)** in
+  worktree `.claude/worktrees/strategy-deploy-to-live`. See CHANGELOG **0.48.x** + agent memory
+  `strategy-deploy-to-live-2026`. Key files: `auto_live.py`, `live_deploy_governor.py`,
+  `live_deploy_context.py`, `executor.place_deployed_order`, the `live_position_guard` spot-mirror/
+  time-stop/EOD additions, and `routers/deployments.py` `live/arm|disarm|stop|status`. Two
+  offline-first env kills: `LIVE_AUTOPLACE_ARMED` (entries) + `LIVE_GUARD_ARMED` (auto squares).
+  **REMAINING = plan Task 16 (user-gated): Docker dry-run (both env unset → no transmit, safe) then a
+  USER-supervised 1-lot live readback — the assistant never arms/places.** A holistic review caught +
+  fixed a real "spot-only-strategy registers unguarded" bug (now: a 50% premium catastrophe stop is
+  always seeded + guard registration is mandatory). Lower-priority follow-up still open from the live
+  page itself: confirm the single-GTT above-trigger `ai_t` (`LTP_A_O`, inferred) if a target-only GTT
+  is ever needed.
 
 - **AGREED ROADMAP (2026-06-15, build in this order across upcoming sessions):**
   **(1) Piece 2 — exit/risk controls** ✓ COMPLETE (Commit 1 enforce+evaluate + Commit 2
