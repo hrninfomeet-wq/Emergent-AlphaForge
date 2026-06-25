@@ -38,10 +38,109 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 
+from datetime import datetime, timedelta, timezone
+
 from app.live.mode import (
     ModeStore,
+    is_deployment_live_allowed,
     is_live_order_allowed,
 )
+
+
+_NOW = datetime(2026, 6, 25, 9, 30, tzinfo=timezone.utc)
+_FUTURE = (_NOW + timedelta(hours=1)).isoformat()
+_PAST = (_NOW - timedelta(hours=1)).isoformat()
+
+
+# ---------------------------------------------------------------------------
+# is_deployment_live_allowed — deployment-facing armed gate (truth table)
+# ---------------------------------------------------------------------------
+
+class TestIsDeploymentLiveAllowed:
+    """Pure predicate — now_utc injected, no I/O, never raises."""
+
+    # --- armed + connected + unexpired → True ---
+
+    def test_armed_connected_future_expiry_allowed(self):
+        doc = {"mode": "LIVE_ARMED", "armed_until": _FUTURE}
+        assert is_deployment_live_allowed(doc, connected=True, now_utc=_NOW) is True
+
+    def test_armed_connected_no_expiry_allowed(self):
+        """Absent armed_until → no expiry → allowed (when armed + connected)."""
+        doc = {"mode": "LIVE_ARMED"}
+        assert is_deployment_live_allowed(doc, connected=True, now_utc=_NOW) is True
+
+    def test_armed_until_z_suffix_parsed(self):
+        doc = {"mode": "LIVE_ARMED", "armed_until": "2026-06-25T10:30:00Z"}
+        assert is_deployment_live_allowed(doc, connected=True, now_utc=_NOW) is True
+
+    # --- expired ---
+
+    def test_expired_arm_blocked(self):
+        doc = {"mode": "LIVE_ARMED", "armed_until": _PAST}
+        assert is_deployment_live_allowed(doc, connected=True, now_utc=_NOW) is False
+
+    def test_expiry_exactly_now_blocked(self):
+        """expiry <= now → blocked (strictly-future required)."""
+        doc = {"mode": "LIVE_ARMED", "armed_until": _NOW.isoformat()}
+        assert is_deployment_live_allowed(doc, connected=True, now_utc=_NOW) is False
+
+    # --- not connected ---
+
+    def test_not_connected_blocked(self):
+        doc = {"mode": "LIVE_ARMED", "armed_until": _FUTURE}
+        assert is_deployment_live_allowed(doc, connected=False, now_utc=_NOW) is False
+
+    def test_connected_truthy_non_true_blocked(self):
+        """connected=1 is truthy but not literal True → fail closed."""
+        doc = {"mode": "LIVE_ARMED", "armed_until": _FUTURE}
+        assert is_deployment_live_allowed(doc, connected=1, now_utc=_NOW) is False  # type: ignore[arg-type]
+
+    # --- wrong / non-armed modes ---
+
+    def test_paper_mode_blocked(self):
+        doc = {"mode": "PAPER", "armed_until": _FUTURE}
+        assert is_deployment_live_allowed(doc, connected=True, now_utc=_NOW) is False
+
+    def test_live_offline_mode_blocked(self):
+        doc = {"mode": "LIVE_OFFLINE", "armed_until": _FUTURE}
+        assert is_deployment_live_allowed(doc, connected=True, now_utc=_NOW) is False
+
+    def test_live_test_mode_blocked(self):
+        """LIVE_TEST is the single-shot session gate, NOT the deployment gate."""
+        doc = {"mode": "LIVE_TEST", "single_shot_consumed": False, "armed_until": _FUTURE}
+        assert is_deployment_live_allowed(doc, connected=True, now_utc=_NOW) is False
+
+    # --- malformed ---
+
+    def test_none_doc_blocked(self):
+        assert is_deployment_live_allowed(None, connected=True, now_utc=_NOW) is False
+
+    def test_non_dict_doc_blocked(self):
+        assert is_deployment_live_allowed("LIVE_ARMED", connected=True, now_utc=_NOW) is False  # type: ignore[arg-type]
+
+    def test_empty_dict_blocked(self):
+        assert is_deployment_live_allowed({}, connected=True, now_utc=_NOW) is False
+
+    def test_malformed_armed_until_fails_closed(self):
+        """A present-but-unparseable armed_until → fail closed (False)."""
+        doc = {"mode": "LIVE_ARMED", "armed_until": "not-a-timestamp"}
+        assert is_deployment_live_allowed(doc, connected=True, now_utc=_NOW) is False
+
+    def test_non_string_armed_until_fails_closed(self):
+        doc = {"mode": "LIVE_ARMED", "armed_until": 12345}
+        assert is_deployment_live_allowed(doc, connected=True, now_utc=_NOW) is False
+
+    def test_naive_now_utc_treated_as_utc(self):
+        """A naive now_utc is treated as UTC rather than raising."""
+        doc = {"mode": "LIVE_ARMED", "armed_until": _FUTURE}
+        naive_now = _NOW.replace(tzinfo=None)
+        assert is_deployment_live_allowed(doc, connected=True, now_utc=naive_now) is True
+
+    def test_default_now_utc_does_not_raise(self):
+        """now_utc omitted → uses real clock; armed with far-future expiry passes."""
+        doc = {"mode": "LIVE_ARMED", "armed_until": "2099-01-01T00:00:00+00:00"}
+        assert is_deployment_live_allowed(doc, connected=True) is True
 
 
 # ---------------------------------------------------------------------------

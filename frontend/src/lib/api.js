@@ -290,6 +290,21 @@ export const api = {
   getGuardStatus: () =>
     apiClient.get("/live-broker/guard-status").then((r) => r.data),
 
+  // Deploy-to-Live (SECTION G) — arm a paper deployment to auto-place REAL orders.
+  // The lots ceiling for the caps form comes from the safety-config
+  // (max_lots_per_order = account ceiling on a single order).
+  getLiveSafetyConfig: () =>
+    apiClient.get("/live-broker/safety-config").then((r) => r.data),
+  // caps = { lots, max_lots_per_day, max_concurrent, daily_loss_cap, confirm }
+  armDeploymentLive: (id, caps) =>
+    apiClient.post(`/deployments/${id}/live/arm`, caps).then((r) => r.data),
+  disarmDeploymentLive: (id) =>
+    apiClient.post(`/deployments/${id}/live/disarm`, {}).then((r) => r.data),
+  getDeploymentLiveStatus: (id) =>
+    apiClient.get(`/deployments/${id}/live/status`).then((r) => r.data),
+  stopAllLive: () =>
+    apiClient.post("/deployments/live/stop-all", {}).then((r) => r.data),
+
   // Presets
   listPresets: () => apiClient.get("/presets").then((r) => r.data),
   savePreset: (name, config) =>

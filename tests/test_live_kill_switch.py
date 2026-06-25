@@ -731,6 +731,63 @@ class TestSafetyConfigStore:
         result = asyncio.run(store.put_config({"daily_loss_limit": 7500}))
         assert result["daily_loss_limit"] == 7500
 
+    # --- max_lots_per_order: account ceiling on a single order ---
+
+    def test_get_config_default_max_lots_per_order(self):
+        store, col = _fake_store()
+        cfg = asyncio.run(store.get_config())
+        assert cfg["max_lots_per_order"] == 20
+
+    def test_default_safety_config_includes_max_lots_per_order(self):
+        assert DEFAULT_SAFETY_CONFIG["max_lots_per_order"] == 20
+
+    def test_put_config_persists_max_lots_per_order(self):
+        store, col = _fake_store()
+        asyncio.run(store.put_config({"max_lots_per_order": 5}))
+        cfg = asyncio.run(store.get_config())
+        assert cfg["max_lots_per_order"] == 5
+
+    def test_put_config_max_lots_minimum_one_allowed(self):
+        store, col = _fake_store()
+        asyncio.run(store.put_config({"max_lots_per_order": 1}))
+        cfg = asyncio.run(store.get_config())
+        assert cfg["max_lots_per_order"] == 1
+
+    def test_put_config_max_lots_zero_rejected(self):
+        store, col = _fake_store()
+        with pytest.raises(ValueError, match="max_lots_per_order"):
+            asyncio.run(store.put_config({"max_lots_per_order": 0}))
+
+    def test_put_config_max_lots_negative_rejected(self):
+        store, col = _fake_store()
+        with pytest.raises(ValueError, match="max_lots_per_order"):
+            asyncio.run(store.put_config({"max_lots_per_order": -3}))
+
+    def test_put_config_max_lots_non_int_rejected(self):
+        store, col = _fake_store()
+        with pytest.raises(ValueError, match="max_lots_per_order"):
+            asyncio.run(store.put_config({"max_lots_per_order": "abc"}))
+
+    def test_put_config_max_lots_float_rejected(self):
+        store, col = _fake_store()
+        with pytest.raises(ValueError, match="max_lots_per_order"):
+            asyncio.run(store.put_config({"max_lots_per_order": 2.5}))
+
+    def test_put_config_max_lots_bool_rejected(self):
+        """True is an int subclass but a bool is never a valid lot count."""
+        store, col = _fake_store()
+        with pytest.raises(ValueError, match="max_lots_per_order"):
+            asyncio.run(store.put_config({"max_lots_per_order": True}))
+
+    def test_put_config_max_lots_rejected_leaves_value_unchanged(self):
+        """A rejected put must not partially persist."""
+        store, col = _fake_store()
+        asyncio.run(store.put_config({"max_lots_per_order": 8}))
+        with pytest.raises(ValueError):
+            asyncio.run(store.put_config({"max_lots_per_order": 0}))
+        cfg = asyncio.run(store.get_config())
+        assert cfg["max_lots_per_order"] == 8
+
 
 # ===========================================================================
 # Route: kill-switch returns plan, never transmits

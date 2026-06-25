@@ -24,6 +24,7 @@ without importing the DB anywhere else in this file.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 # ---------------------------------------------------------------------------
@@ -65,6 +66,84 @@ def is_live_order_allowed(mode_doc: Optional[Dict[str, Any]]) -> bool:
         mode_doc.get("mode") == "LIVE_TEST"
         and mode_doc.get("single_shot_consumed") is False
     )
+
+
+def _parse_iso_utc(raw: Any) -> Optional[datetime]:
+    """Parse an ISO-8601 string to a timezone-aware UTC datetime, else None.
+
+    Fail-safe: anything that is not a parseable ISO string (None, non-string,
+    malformed, naive-with-no-tz handling) returns None.  A naive datetime is
+    treated as UTC.  Never raises.
+    """
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        # Python's fromisoformat accepts the "+00:00" form; tolerate a trailing Z.
+        text = raw.strip()
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        dt = datetime.fromisoformat(text)
+    except (ValueError, TypeError):
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def is_deployment_live_allowed(
+    mode_doc: Optional[Dict[str, Any]],
+    *,
+    connected: Any = True,
+    now_utc: Optional[datetime] = None,
+) -> bool:
+    """Return True iff a deployment may transmit a real (armed) order right now.
+
+    This is the deployment-facing gate, distinct from the single-shot
+    ``is_live_order_allowed`` test session.  A deployment may go live ONLY when
+    ALL of the following hold:
+
+      1. ``mode_doc`` is a dict (malformed / None → False).
+      2. ``mode_doc["mode"]`` is the literal string ``"LIVE_ARMED"``.
+      3. The arm has not expired: if ``mode_doc["armed_until"]`` is present it
+         must parse to an ISO-8601 timestamp that is strictly in the future
+         relative to ``now_utc``.  An absent ``armed_until`` means "no expiry"
+         and passes; a present-but-malformed value fails closed (False).
+      4. The broker is currently connected: ``connected`` must be the literal
+         boolean ``True`` (a truthy non-True value fails closed).
+
+    Fail-safe contract: this function MUST never raise; every unexpected shape
+    resolves to False so a partial / tampered doc fails closed.
+
+    Parameters
+    ----------
+    mode_doc:   The stored mode document (as returned by ``ModeStore.get()``).
+    connected:  Live broker-connection flag; only literal True permits orders.
+    now_utc:    Injected current UTC time (for host-testability).  Defaults to
+                ``datetime.now(timezone.utc)`` when not supplied.
+    """
+    if not isinstance(mode_doc, dict):
+        return False
+    if mode_doc.get("mode") != "LIVE_ARMED":
+        return False
+    # F2 — strict connected: only the literal boolean True is accepted.
+    if connected is not True:
+        return False
+
+    armed_until_raw = mode_doc.get("armed_until")
+    if armed_until_raw is not None:
+        expiry = _parse_iso_utc(armed_until_raw)
+        if expiry is None:
+            # Present but unparseable → fail closed.
+            return False
+        ref = now_utc if isinstance(now_utc, datetime) else datetime.now(timezone.utc)
+        if ref.tzinfo is None:
+            ref = ref.replace(tzinfo=timezone.utc)
+        else:
+            ref = ref.astimezone(timezone.utc)
+        if expiry <= ref:
+            return False
+
+    return True
 
 
 # ---------------------------------------------------------------------------
