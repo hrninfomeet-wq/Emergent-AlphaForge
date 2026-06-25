@@ -10,6 +10,7 @@ import {
   RefreshCw, Download, Trash2, ChevronDown, ChevronRight,
   ChevronLeft, BookOpen,
 } from "lucide-react";
+import JournalLiveLane from "@/components/journal/JournalLiveLane";
 
 /**
  * Signals ledger (route /journal, rebuilt 2026-06-12, forward-surfaces R3).
@@ -60,6 +61,9 @@ const istDateStr = () => new Date(Date.now() + (5 * 60 + 30) * 60 * 1000).toISOS
 
 export default function SignalJournal() {
   const [searchParams, setSearchParams] = useSearchParams();
+
+  // Lane: "paper" (signal⨝paper-trade ledger, default) | "live" (deployment live trades).
+  const [lane, setLane] = useState("paper");
 
   const [data, setData] = useState({ items: [], total: 0 });
   const [deployments, setDeployments] = useState([]);
@@ -222,10 +226,37 @@ export default function SignalJournal() {
   const total = data.total;
   const pageEnd = Math.min(skip + data.items.length, total);
 
-  if (loading) return <Skeleton className="h-96 bg-bg-1" data-testid="signals-ledger-page" />;
-
   return (
     <div className="space-y-3" data-testid="signals-ledger-page">
+      {/* Lane tabs: Paper (signal ⨝ paper-trade ledger) | Live (deployment trades) */}
+      <div className="flex items-center gap-1" data-testid="journal-lane-tabs">
+        {[{ k: "paper", label: "Paper" }, { k: "live", label: "Live" }].map((t) => (
+          <button
+            key={t.k}
+            type="button"
+            onClick={() => setLane(t.k)}
+            className={`px-3 py-1 text-xs font-mono font-semibold rounded-md border transition-colors ${
+              lane === t.k
+                ? "border-info/50 bg-info/10 text-info"
+                : "border-line bg-bg-2 text-dimmer hover:bg-bg-3"
+            }`}
+            data-testid={`journal-lane-${t.k}`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {lane === "live" ? (
+        <JournalLiveLane
+          deployments={deployments}
+          deploymentId={filters.deployment_id}
+          onSelectDeployment={(id) => setFilter("deployment_id", id)}
+        />
+      ) : loading ? (
+        <Skeleton className="h-96 bg-bg-1" />
+      ) : (
+        <>
       {/* Filters + actions */}
       <div className="rounded-lg border border-line bg-bg-1">
         <div className="px-3 py-2 border-b border-line flex items-center gap-2 flex-wrap">
@@ -447,6 +478,8 @@ export default function SignalJournal() {
       <div className="text-[10px] text-dimmer px-1">
         Each row is a deployment's signal joined with its paper trade — the trade recommendation of record. Entries/exits are option premium (₹), never the spot index. Times are IST.
       </div>
+        </>
+      )}
     </div>
   );
 }

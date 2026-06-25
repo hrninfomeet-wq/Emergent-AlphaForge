@@ -1,6 +1,7 @@
 import { useMemo } from "react";
+import { Link } from "react-router-dom";
 import { Layers } from "lucide-react";
-import { fmtINR, fmtINRSigned } from "@/lib/fmt";
+import { fmtINR, fmtINRSigned, colorPnL } from "@/lib/fmt";
 
 /**
  * LiveBlotter — deployment-attributed live trades from GET /live-broker/blotter.
@@ -12,15 +13,8 @@ import { fmtINR, fmtINRSigned } from "@/lib/fmt";
  * as FLAT with no fabricated P&L (the journal has no close-loop yet).
  *
  * Presentational: `rows` are passed from the dashboard poll — no own poller, so
- * the page stays on one cadence.
+ * the page stays on one cadence. P&L color uses the shared @/lib/fmt colorPnL.
  */
-function pnlClass(v) {
-  if (v == null) return "text-dim";
-  const n = Number(v);
-  if (!Number.isFinite(n) || n === 0) return "text-dim";
-  return n > 0 ? "text-success" : "text-danger";
-}
-
 function istTime(iso) {
   if (!iso) return "–";
   const d = new Date(iso);
@@ -77,7 +71,7 @@ export default function LiveBlotter({ rows }) {
         {liveCount > 0 && (
           <span className="ml-auto">
             live P&amp;L:{" "}
-            <b className={pnlClass(livePnl)}>{fmtINRSigned(livePnl)}</b>
+            <b className={colorPnL(livePnl)}>{fmtINRSigned(livePnl)}</b>
           </span>
         )}
       </div>
@@ -110,9 +104,19 @@ export default function LiveBlotter({ rows }) {
                 >
                   <td className="py-2 pr-3 pl-0 text-dim">{istTime(r?.created_at)}</td>
                   <td className="py-2 px-3">
-                    <div className="text-foreground font-semibold truncate max-w-[180px]" title={r?.deployment_name}>
-                      {r?.deployment_name ?? "–"}
-                    </div>
+                    {r?.deployment_id ? (
+                      <Link
+                        to={`/journal?deployment=${encodeURIComponent(r.deployment_id)}`}
+                        className="text-foreground font-semibold truncate max-w-[180px] block hover:text-info hover:underline"
+                        title={`${r?.deployment_name ?? ""} — open in the Signal Journal`}
+                      >
+                        {r?.deployment_name ?? "–"}
+                      </Link>
+                    ) : (
+                      <div className="text-foreground font-semibold truncate max-w-[180px]" title={r?.deployment_name}>
+                        {r?.deployment_name ?? "–"}
+                      </div>
+                    )}
                     <div className="text-dimmer text-[10px]">{r?.strategy_id ?? ""}</div>
                   </td>
                   <td className="py-2 px-3 text-foreground">{r?.trading_symbol || "–"}</td>
@@ -126,7 +130,7 @@ export default function LiveBlotter({ rows }) {
                   <td className="py-2 px-3 text-right text-foreground">
                     {r?.ltp != null ? fmtINR(r.ltp, 2) : "–"}
                   </td>
-                  <td className={`py-2 px-3 text-right font-semibold ${pnlClass(r?.pnl)}`}>
+                  <td className={`py-2 px-3 text-right font-semibold ${colorPnL(r?.pnl)}`}>
                     {r?.pnl != null ? fmtINRSigned(r.pnl) : "–"}
                   </td>
                   <td className="py-2 pl-3 pr-0 text-center">
