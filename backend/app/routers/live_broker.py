@@ -693,9 +693,38 @@ async def live_broker_reconcile():
         log.exception("live_broker_reconcile: broker fetch failed")
         raise HTTPException(400, f"Flattrade fetch error: {str(exc)[:300]}") from exc
 
+    # Feed the app's REAL internal POSITIONS so the diff can actually detect a
+    # divergence. Previously internal_positions was [] → reconcile falsely flagged
+    # EVERY live broker position as `unknown_broker_position` the moment one
+    # existed (and "Reconciled ✓" was a meaningless green when flat).
+    #
+    # internal_positions = the SOFTWARE GUARD registry (the watched set). A broker
+    # position NOT in the registry surfaces as `unknown_broker_position` — the same
+    # "exposed but unwatched" signal as the UNGUARDED banner, so the two agree. A
+    # watched position at the expected qty reconciles cleanly.
+    #
+    # internal_orders stays EMPTY *on purpose*. The `live_orders` store is an
+    # idempotency LEDGER, not an order-lifecycle tracker: no om-feed daemon runs in
+    # this deployment, so a doc written SUBMITTED never advances to COMPLETE.
+    # Feeding those as "working" orders would falsely flag every FILLED order as
+    # `internal_order_not_at_broker`. With [], reconcile only flags a NON-TERMINAL
+    # broker order that has no internal claim — which in the software-guard model
+    # (entries fill to COMPLETE, exits are market squares) is genuinely unexpected
+    # and worth surfacing. (A lifecycle-maintained order reconcile lives in
+    # LiveEngine.reconcile_tick, which halts the engine — not usable for this
+    # read-only dashboard chip.)
+    internal_positions: List[Dict[str, Any]] = []
+    try:
+        internal_positions = [
+            {"tsym": e.get("tsym"), "qty": e.get("qty", 0)}
+            for e in _get_live_registry().snapshot()
+        ]
+    except Exception as exc:
+        log.debug("reconcile: guard registry read failed: %s", exc)
+
     report = reconcile(
         internal_orders=[],
-        internal_positions=[],
+        internal_positions=internal_positions,
         broker_orders=broker_orders,
         broker_positions=broker_positions,
     )
