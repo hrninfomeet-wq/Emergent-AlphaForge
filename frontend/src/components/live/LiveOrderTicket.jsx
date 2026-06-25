@@ -493,27 +493,40 @@ export default function LiveOrderTicket({ mode, disabled, onQueued }) {
             {[
               { v: "B", label: "Buy" },
               { v: "S", label: "Sell" },
-            ].map((s) => (
-              <button
-                key={s.v}
-                type="button"
-                disabled={disabled}
-                onClick={() => {
-                  setSide(s.v);
-                  resetTransient();
-                }}
-                className={`flex-1 py-1.5 text-xs font-mono font-semibold rounded-md border transition-colors disabled:opacity-50 ${
-                  side === s.v
-                    ? s.v === "B"
-                      ? "border-emerald-500/60 bg-emerald-500/15 text-emerald-300"
-                      : "border-danger/60 bg-danger/15 text-danger"
-                    : "border-line bg-bg-2 text-dimmer hover:bg-bg-3"
-                }`}
-              >
-                {s.label}
-              </button>
-            ))}
+            ].map((s) => {
+              // Long-only: live ENTRIES are option BUYS. SELL is disabled here to
+              // match the backend (executor Gate 0 + approve gate both reject
+              // side != "B"); exits go through the separate square/exit route, not
+              // this ticket, so disabling SELL does not touch the exit path.
+              const sellDisabled = s.v === "S";
+              return (
+                <button
+                  key={s.v}
+                  type="button"
+                  disabled={disabled || sellDisabled}
+                  title={
+                    sellDisabled
+                      ? "Long-only: live entries are option BUYS. To exit, use the square / exit route."
+                      : undefined
+                  }
+                  onClick={() => {
+                    setSide(s.v);
+                    resetTransient();
+                  }}
+                  className={`flex-1 py-1.5 text-xs font-mono font-semibold rounded-md border transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+                    side === s.v
+                      ? s.v === "B"
+                        ? "border-emerald-500/60 bg-emerald-500/15 text-emerald-300"
+                        : "border-danger/60 bg-danger/15 text-danger"
+                      : "border-line bg-bg-2 text-dimmer hover:bg-bg-3"
+                  }`}
+                >
+                  {s.label}
+                </button>
+              );
+            })}
           </div>
+          <span className="text-[10px] font-mono text-dimmer">Long-only — entries are option buys; exit via square route</span>
         </div>
 
         {/* Expiry date */}
