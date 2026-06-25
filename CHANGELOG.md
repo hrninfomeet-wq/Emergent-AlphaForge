@@ -2,6 +2,49 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.47.x] — Live Trading (Flattrade) real execution + GTT/OCO backstop (2026-06-22 → 06-25)
+
+A new **Live Trading page** that places *real* orders via **Flattrade** (Noren/PiConnect OMS;
+Upstox stays data-only), built safest-first with adversarial audits. `main == origin/main`
+(pushed); this work plus the Paper-page redesign and Strategy-Library/AI-authoring are unified
+on one `origin/main`. Full state + file map: `docs/HANDOFF.md` §2 (2026-06-25 block) and agent
+memory `live-execution-build-2026`.
+
+- **Execution path** (`backend/app/live/`): thin async `FlattradeClient` (form-encoded
+  `jData=…&jKey=…`, IPv4-forced for the static-IP whitelist), `order_builder` exchange-aware
+  choke-point (tick-rounded, freeze-qty split, LMT/SL-LMT only), and the L1–L3 gate chain
+  (`mode` single-shot LIVE_TEST, `margin` fail-closed, `safety`/`idempotency`, `auto_square`
+  ≤600s cap, `executor` 7-gate arm-or-abort, `reconcile`, `kill_switch`). Frontend
+  `frontend/src/components/live/*` + `pages/LiveTrading.jsx` (`/live-trading`). **Hard invariants
+  in code:** entry only in LIVE_TEST single-shot, ≤1 lot (3 layers), long-only default,
+  arm-or-abort (no orphan), exit-parity reuses `execution_policy`. **The assistant never
+  transmits or squares a real order — the user does the Place click.**
+- **Live-validated** (SENSEX CE/PE 1-lot, squared clean). Fixes from live tests: **tick-rounding**
+  (Decimal-round every prc/trgprc to the scrip `ti`) and a **phantom-timer** (broker returns an
+  order# then async-REJECTS → `/test-session` reads the order book and resolves rejected entries).
+- **Software exit guard** (`live_position_guard.py`, started in `server.py` lifespan) **replaces
+  resting SL-LMT backstops** — a resting SL on a short option margin-rejects (~₹1.8L naked-short
+  SPAN an option-buyer lacks, *proven live*). The guard reads the **broker position book ~1.5s**,
+  evaluates stop/target/trailing + overall-basket (`overall_controls.py`) in software, and squares
+  via cancel-all-then-close. Offline-first: dry-run unless **`LIVE_GUARD_ARMED=1`** (armed);
+  configurable guard stop (default 50%). Execution-mode switch + approval queue retired for
+  one-click direct place.
+- **GTT/OCO backstop (`gtt.py` + `FlattradeClient.{place,cancel}_gtt/oco`, `gtt_book`)** — the NRML
+  "PC-died" net (resting GTT/OCO blocks no margin → immune to the naked-short trap). Schema = the
+  vision-verified PiConnect catalog (`docs/Resources/flattrade-pi-api/`, 58 endpoints +
+  `catalog.json`, decoded from the 93-page PDF with a reusable geometric extractor). **Real-money
+  `ai_t` values CONFIRMED by reading the user's own placed orders back from the live broker:**
+  single GTT below-trigger = **`LTP_B_O`** in the **flat** request form (catalog #16; the wrapped
+  `oivariable`/`place_order_params` shape is only what `GetPendingGTTOrder` *returns*); OCO =
+  **`LMT_BOS_O`** with `oivariable` `x↔leg1`/`y↔leg2` (positional) and direction inferred from
+  trigger-vs-LTP (catalog #21 + fired-leg `remarks` "Ltp X is below/above Y"). Routes: GET
+  `/live-broker/gtt` lists the resting book (single GTTs *and* OCOs), POST builds + transmits on
+  explicit `transmit=true`, DELETE cancels via `?kind=`. `GttBook` panel surfaces the recorded
+  `ai_t` for read-back confirmation. Only `LTP_A_O` (single above-only target) stays inferred.
+- **Other:** configurable basket overall SL/target/trailing/re-entry (`overall_controls.py` +
+  `overall_settings_store.py`, per-deployment + broker-level scopes); `PayoffChart` option payoff;
+  hero metric strip + reconcile panel; `BacktestRunJournal` gains sortable columns.
+
 ## [0.46.x — WIP] — Scenario-adaptive framework groundwork (2026-06-18)
 
 On branch `feat/scenario-adaptive-framework` (off the unmerged stack; spec + proof-first

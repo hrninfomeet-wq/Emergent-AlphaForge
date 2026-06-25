@@ -1,6 +1,6 @@
 # Handoff
 
-Updated: 2026-06-18
+Updated: 2026-06-25
 
 This is the entry point for the next AI agent or developer. **Read this + `CHANGELOG.md` before editing.** The repository and `tests/` are the source of truth — not any prior chat. `CHANGELOG.md` holds the detailed, versioned history (currently 0.17.x → 0.45.x); this file is the current architectural + state overview.
 
@@ -12,9 +12,21 @@ This is the entry point for the next AI agent or developer. **Read this + `CHANG
 
 ## 1. What this is
 
-AlphaForge Trading Lab — a local-first research & forward-testing terminal for **Indian index options** (NIFTF/BANKNIFTY/SENSEX). React + FastAPI + MongoDB in Docker, Upstox for data. It does: warehouse 1-minute spot + option candles → backtest/optimize strategies → save as presets → deploy for live **signal generation + auto paper trading**. **No real broker orders, ever** (manual gate is a hard, permanent requirement).
+AlphaForge Trading Lab — a local-first research & forward-testing terminal for **Indian index options** (NIFTF/BANKNIFTY/SENSEX). React + FastAPI + MongoDB in Docker, Upstox for data. It does: warehouse 1-minute spot + option candles → backtest/optimize strategies → save as presets → deploy for live **signal generation + auto paper trading**. A **Live Trading page (Flattrade)** now adds *real* order execution, but under hard, permanent gates — **the assistant never transmits or squares a real order itself**; real orders require a human Place click, run in a single-shot LIVE_TEST mode, and are capped at 1 lot in code (see the 2026-06-25 block in §2).
 
-## 2. Status — current state (2026-06-17)
+## 2. Status — current state
+
+### 2026-06-25 — Live Trading (Flattrade) execution + GTT/OCO backstop
+
+Since 2026-06-22 the major work has been a **Live Trading page** that executes *real* orders via **Flattrade** (Noren/PiConnect OMS; Upstox stays data-only). `main == origin/main` and is pushed; the live-execution work plus the Paper-page redesign and the Strategy-Library + AI-authoring work are all merged onto one `origin/main`. Key state:
+
+- **Safe Core L0–L2 → L3 real orders → professional dashboard.** Built brainstorm→spec→plan→TDD with adversarial audits. The whole execution path lives in **`backend/app/live/`** (thin async `FlattradeClient`, `order_builder` choke-point, `safety`/`mode`/`margin`/`auto_square`/`executor` gates, `reconcile`, `kill_switch`) and **`frontend/src/components/live/`** (`LiveDashboard`, `LiveOrderTicket`, `GuardPanel`, `GttBook`, `PayoffChart`, `OverallSettingsPanel`). Page = `pages/LiveTrading.jsx` at `/live-trading`. Hard invariants enforced **in code**: entry only in LIVE_TEST single-shot, ≤1 lot (3 layers), arm-or-abort (no orphan), long-only default, exit-parity reuses `execution_policy`. The assistant builds 100% but **never clicks Place/square** — that's the user.
+- **Real fills validated live** (SENSEX CE/PE 1-lot, squared clean). Two bugs found+fixed from live tests: **tick-rounding** (every price Decimal-rounded to the scrip `ti`) and a **phantom-timer** (broker returns an order# then async-REJECTS → `/test-session` now reads the order book and resolves rejected entries).
+- **Software exit guard replaces resting SLs** (`live_position_guard.py`, started unconditionally in `server.py` lifespan). A resting SL-LMT on a short option margin-rejects (~₹1.8L naked-short SPAN an option-buyer lacks — *proven live*), so the guard instead **reads the BROKER position book ~1.5s**, evaluates stop/target/trailing + an overall basket in software (`overall_controls.py`), and squares via the margin-safe cancel-all-then-close. Offline-first: dry-run logs intended squares unless **`LIVE_GUARD_ARMED=1`** (currently armed). Configurable guard stop (default 50%). The Execution-Mode switch + approval queue were retired in favor of one-click direct place.
+- **GTT/OCO backstop — fully wired AND confirmed against the live broker (`gtt.py` + `FlattradeClient`).** The NRML "PC-died" net (a resting GTT/OCO blocks no margin, so it dodges the naked-short trap). Schema is the vision-verified PiConnect catalog (`docs/Resources/flattrade-pi-api/`), and the real-money-critical `ai_t` values were **confirmed by reading the user's own placed orders back**: single GTT below-trigger = **`LTP_B_O`** (flat request form, catalog #16); OCO = **`LMT_BOS_O`** with `oivariable` `x↔leg1`/`y↔leg2` and direction inferred from trigger-vs-LTP (catalog #21 + fired-leg `remarks` "Ltp X is below/above Y"). Routes: GET `/live-broker/gtt` lists the resting book (single GTTs *and* OCOs), POST builds+transmits on explicit `transmit=true`, DELETE cancels via `?kind=`. Only `LTP_A_O` (single above-only target) remains inferred (low-use; OCO covers the above direction). Memory: `live-execution-build-2026`, `flattrade-live-execution-2026`, `flattrade-api-docs-decoded-2026`.
+- **Test count is now ~2200+ host tests** (the 724 below is historical). Frontend builds clean (`CI=true npm run build`). **NEXT: strategy-deploy-to-live** — route a deployed backtest strategy's live signals through the order choke-point + software guard (its own spec→plan→build).
+
+### 2026-06-17 — research stack (historical, see CHANGELOG 0.40.x–0.46.x)
 
 - **724 host tests pass.** Frontend builds clean (2 pre-existing exhaustive-deps warnings). `optimizer.py` is syntax-checked via `py_compile` only (optuna absent on host); it and `runtime.py`/routers are verified in the running stack, not host-imported.
 - **`main` is pushed to origin at `e6febbe` (0.37–0.39.x).** Everything since is a **linear stack of UNMERGED local feature branches** — push/merge ONLY on the user's explicit instruction (per-changeset approval):
@@ -137,6 +149,14 @@ curl -s localhost:8001/api/health  # {"db":"ok"}
 UI smoke: Data Warehouse hero + Sync now + band heatmaps; Backtest results — KPI grid incl. account-value range, the two charts with named axes, monthly calendar, BacktestChart (timeframes, trade focus → #N markers + Entry/Tgt/SL lines, go-to, maximize); no console errors.
 
 ## 14. What's next (open items)
+
+- **CURRENT NEXT (2026-06-25): strategy-deploy-to-live.** Route a *deployed backtest strategy*'s
+  live signals through the Live Trading order choke-point + software exit guard (so a chosen,
+  deployed strategy can place real broker orders under the same hard gates, instead of only
+  auto-paper-trading). Its own brainstorm → spec → plan → TDD build. The GTT/OCO backstop +
+  software guard + L0–L3 execution path it builds on are **done and confirmed** (see the
+  2026-06-25 block in §2). Lower-priority follow-up: confirm the single-GTT above-trigger
+  `ai_t` (`LTP_A_O`, currently inferred) with one live readback if a target-only GTT is ever needed.
 
 - **AGREED ROADMAP (2026-06-15, build in this order across upcoming sessions):**
   **(1) Piece 2 — exit/risk controls** ✓ COMPLETE (Commit 1 enforce+evaluate + Commit 2
