@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid as _uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time as dtime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
@@ -151,11 +151,26 @@ async def _live_guard_overall_provider():
         return None
 
 
+def _live_guard_spot_tick_fn() -> dict:
+    """Return the latest Upstox spot-tick map for the guard's spot-mirror exits.
+
+    Wraps upstox_stream_manager.latest_tick_map() in try/except so a stream
+    outage degrades gracefully to "no spot data" rather than killing the guard
+    cycle — mirrors the same pattern in live_broker._get_tick_map_for_option_premium.
+    """
+    try:
+        return upstox_stream_manager.latest_tick_map()
+    except Exception:
+        return {}
+
+
 live_position_guard = LivePositionGuard(
     registry=get_live_monitor_registry(),
     client_factory=_live_guard_client_factory,
     square_fn=_live_guard_square_fn,
     overall_provider=_live_guard_overall_provider,
+    spot_tick_fn=_live_guard_spot_tick_fn,
+    eod_square_ist=dtime(15, 0),
 )
 
 

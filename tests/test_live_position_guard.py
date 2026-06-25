@@ -546,6 +546,41 @@ class TestSpotMirrorAndTimeStop:
         assert slow.calls == 1
 
 
+# ---------------------------------------------------------------------------
+# Contract: runtime.py wires spot_tick_fn into LivePositionGuard production
+# ---------------------------------------------------------------------------
+
+class TestGuardWiringContract:
+    """Assert that the production LivePositionGuard construction in runtime.py
+    passes spot_tick_fn (the upstox stream tick map) and an explicit eod_square_ist.
+    This is a contract-corpus string assertion — the standard for wiring that
+    can't be unit-imported (server + runtime use motor which is absent on host)."""
+
+    def test_guard_wired_with_spot_tick_fn(self):
+        from tests.contract_corpus import backend_api_text
+        src = backend_api_text()
+        assert "spot_tick_fn=" in src, (
+            "LivePositionGuard in runtime.py must pass spot_tick_fn= so spot-mirror "
+            "exits fire on live positions."
+        )
+
+    def test_guard_wired_with_latest_tick_map(self):
+        from tests.contract_corpus import backend_api_text
+        src = backend_api_text()
+        # Pin that the lambda actually calls upstox_stream_manager.latest_tick_map()
+        assert "latest_tick_map()" in src, (
+            "spot_tick_fn lambda must call upstox_stream_manager.latest_tick_map()"
+        )
+
+    def test_guard_wired_with_eod_square_ist(self):
+        from tests.contract_corpus import backend_api_text
+        src = backend_api_text()
+        assert "eod_square_ist=" in src, (
+            "LivePositionGuard in runtime.py must pass eod_square_ist= explicitly "
+            "for documentation."
+        )
+
+
 class TestEodSquare:
     def _mk(self, *, source, now=_EOD_NOW):
         r = LiveMonitorRegistry()
