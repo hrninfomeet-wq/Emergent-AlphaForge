@@ -396,3 +396,41 @@ async def test_route_contract_not_found_returns_gracefully(monkeypatch):
     assert body["premium"] is None
     assert body["source"] == "none"
     assert body.get("reason") == "contract_not_found"
+
+
+@pytest.mark.asyncio
+async def test_route_queries_active_expiries_without_cap(monkeypatch):
+    """REGRESSION: the route MUST filter option_contracts to active expiries
+    (expiry_date >= today) and NOT cap the result. option_contracts holds ~20k rows
+    per underlying (mostly EXPIRED); the old unfiltered `.to_list(5000)` returned a
+    natural-order slice with ZERO active contracts, so every real strike came back
+    contract_not_found (the live Order-Ticket "Fetch ₹" button never resolved a price)."""
+    import app.routers.live_broker as lb
+
+    fake_db = MagicMock()
+    fake_db.option_contracts.find.return_value.to_list = AsyncMock(return_value=[_contract()])
+    fake_db.options_1m.find_one = AsyncMock(return_value={"close": 88.0})
+
+    monkeypatch.setattr(lb, "_get_db_for_option_premium", lambda: fake_db)
+    monkeypatch.setattr(lb, "_get_tick_map_for_option_premium", lambda: {})
+    monkeypatch.setattr(lb, "_now_ts_for_option_premium", lambda: NOW)
+    monkeypatch.setattr(lb, "_today_utc_iso", lambda: "2026-06-25")
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    app_inst = FastAPI()
+    app_inst.include_router(lb.api, prefix="")
+    with TestClient(app_inst) as client:
+        resp = client.post(
+            "/live-broker/option-premium",
+            json={"underlying": "NIFTY", "strike": 25000.0, "expiry_date": "2026-06-26", "side": "CE"},
+        )
+
+    assert resp.status_code == 200
+    # the contract query MUST scope to active expiries (>= today) ...
+    qarg = fake_db.option_contracts.find.call_args.args[0]
+    assert qarg.get("underlying") == "NIFTY"
+    assert qarg.get("expiry_date") == {"$gte": "2026-06-25"}
+    # ... and MUST NOT cap the result (load all active, like the evaluator).
+    fake_db.option_contracts.find.return_value.to_list.assert_awaited_with(length=None)

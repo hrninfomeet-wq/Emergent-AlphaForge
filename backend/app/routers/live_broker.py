@@ -1842,11 +1842,16 @@ async def get_option_premium(body: _OptionPremiumRequest):
     tick_map = _get_tick_map_for_option_premium()
     now_ts = _now_ts_for_option_premium()
 
-    # 1. Resolve contract → instrument_key
+    # 1. Resolve contract → instrument_key. Filter to ACTIVE expiries (>= today) and
+    #    drop the row cap. option_contracts holds ~20k rows per underlying (mostly
+    #    EXPIRED); the old unfiltered `.to_list(5000)` returned a natural-order slice
+    #    that contained ZERO active contracts → match_contract → contract_not_found
+    #    for every real strike. Mirrors deployment_evaluator._resolve_option_contract.
+    today_iso = _today_utc_iso()
     try:
         contracts = await db.option_contracts.find(
-            {"underlying": body.underlying}
-        ).to_list(length=5000)
+            {"underlying": body.underlying, "expiry_date": {"$gte": today_iso}}
+        ).to_list(length=None)
     except Exception as exc:
         log.warning("get_option_premium: option_contracts fetch failed: %s", exc)
         contracts = []
@@ -1997,11 +2002,14 @@ async def get_atm_suggest(
 
     underlying_upper = str(underlying).strip().upper()
 
-    # 1. Load contracts
+    # 1. Load contracts — ACTIVE expiries only (>= today), no row cap. Without the
+    #    expiry filter an unfiltered `.to_list(5000)` over ~20k rows returned only
+    #    EXPIRED contracts → nearest_expiry found none → "no_expiry". Same root cause
+    #    + fix as the option-premium route above.
     try:
         contracts = await db.option_contracts.find(
-            {"underlying": underlying_upper}
-        ).to_list(length=5000)
+            {"underlying": underlying_upper, "expiry_date": {"$gte": today_iso}}
+        ).to_list(length=None)
     except Exception as exc:
         log.warning("get_atm_suggest: option_contracts fetch failed: %s", exc)
         contracts = []
