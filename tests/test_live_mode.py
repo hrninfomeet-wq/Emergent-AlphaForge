@@ -559,3 +559,49 @@ class TestModeStorePersistence:
         doc = asyncio.run(store2.get())
         assert doc["single_shot_consumed"] is True
         assert is_live_order_allowed(doc) is False
+
+
+# ---------------------------------------------------------------------------
+# is_deployment_live_allowed + armed_until_today_ist — Part A new functions
+# ---------------------------------------------------------------------------
+
+from datetime import datetime, timezone, timedelta
+from app.live.mode import is_deployment_live_allowed, armed_until_today_ist
+
+
+def _dep(**live):
+    base = {"armed": True, "armed_until": "2026-06-25T09:30:00+00:00"}  # 15:00 IST
+    base.update(live)
+    return {"risk": {"live": base}}
+
+
+def test_live_allowed_when_armed_connected_before_until():
+    now = datetime(2026, 6, 25, 6, 0, tzinfo=timezone.utc)
+    assert is_deployment_live_allowed(_dep(), now, connected=True) == (True, "ok")
+
+
+def test_live_blocked_when_not_armed():
+    now = datetime(2026, 6, 25, 6, 0, tzinfo=timezone.utc)
+    assert is_deployment_live_allowed(_dep(armed=False), now, connected=True) == (False, "not_armed")
+
+
+def test_live_blocked_after_armed_until():
+    now = datetime(2026, 6, 25, 10, 0, tzinfo=timezone.utc)  # 15:30 IST
+    assert is_deployment_live_allowed(_dep(), now, connected=True) == (False, "arm_expired")
+
+
+def test_live_blocked_when_not_connected():
+    now = datetime(2026, 6, 25, 6, 0, tzinfo=timezone.utc)
+    assert is_deployment_live_allowed(_dep(), now, connected=False) == (False, "not_connected")
+
+
+def test_live_fail_closed_on_malformed():
+    now = datetime(2026, 6, 25, 6, 0, tzinfo=timezone.utc)
+    assert is_deployment_live_allowed({}, now, connected=True)[0] is False
+    assert is_deployment_live_allowed({"risk": {"live": "x"}}, now, connected=True)[0] is False
+    assert is_deployment_live_allowed({"risk": {"live": {"armed": True}}}, now, connected=True)[0] is False
+
+
+def test_armed_until_today_ist_is_1500_ist_in_utc():
+    now = datetime(2026, 6, 25, 4, 0, tzinfo=timezone.utc)  # 09:30 IST
+    assert armed_until_today_ist(now) == "2026-06-25T09:30:00+00:00"

@@ -248,6 +248,46 @@ def _utcnow_iso() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Per-deployment live-arm predicate (L4 / strategy-deploy-to-live)
+# ---------------------------------------------------------------------------
+
+def armed_until_today_ist(now_utc):
+    """ISO-UTC timestamp for 15:00 IST on now_utc's IST date (the EOD square cutoff)."""
+    from datetime import timezone, timedelta
+    ist = now_utc.astimezone(timezone.utc) + timedelta(hours=5, minutes=30)
+    cutoff_ist = ist.replace(hour=15, minute=0, second=0, microsecond=0)
+    return (cutoff_ist - timedelta(hours=5, minutes=30)).replace(tzinfo=timezone.utc).isoformat()
+
+
+def is_deployment_live_allowed(deployment, now_utc, *, connected):
+    """(ok, reason) — True iff risk.live armed, now_utc < armed_until, and connected.
+    Fail-closed: any missing/malformed field or expired arm -> (False, reason)."""
+    from datetime import datetime, timezone
+    if not isinstance(deployment, dict):
+        return False, "no_deployment"
+    risk = deployment.get("risk")
+    live = risk.get("live") if isinstance(risk, dict) else None
+    if not isinstance(live, dict):
+        return False, "not_armed"
+    if live.get("armed") is not True:
+        return False, "not_armed"
+    raw = live.get("armed_until")
+    if not raw:
+        return False, "arm_expired"
+    try:
+        until = datetime.fromisoformat(str(raw))
+        if until.tzinfo is None:
+            until = until.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return False, "arm_expired"
+    if now_utc >= until:
+        return False, "arm_expired"
+    if connected is not True:
+        return False, "not_connected"
+    return True, "ok"
+
+
+# ---------------------------------------------------------------------------
 # Production helper — NOT imported by the class; only routes use this
 # ---------------------------------------------------------------------------
 
