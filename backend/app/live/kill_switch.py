@@ -51,6 +51,7 @@ DEFAULT_SAFETY_CONFIG: Dict[str, Any] = {
     "daily_loss_limit": 5000,       # ₹ — broker-stop-loss when MTM ≤ −5000
     "profit_lock_target": 10000,    # ₹ — lock profits when MTM ≥ 10000
     "max_open_positions": 5,        # hard cap on concurrent open positions
+    "max_lots_per_order": 20,       # account-level lot ceiling per single order
     "blocked_until_reset": False,   # latch; only explicit reset_latch clears it
 }
 
@@ -61,6 +62,7 @@ _PUT_CONFIG_WHITELIST: frozenset[str] = frozenset({
     "daily_loss_limit",
     "profit_lock_target",
     "max_open_positions",
+    "max_lots_per_order",
 })
 
 
@@ -593,6 +595,13 @@ class SafetyConfigStore:
                 f"blocked_until_reset requires reset() / POST /safety-config/reset-latch): "
                 f"{sorted(unknown)}"
             )
+        # Validate max_lots_per_order: must be a non-bool int >= 1.
+        if "max_lots_per_order" in updates:
+            v = updates["max_lots_per_order"]
+            if isinstance(v, bool) or not isinstance(v, int) or v < 1:
+                raise ValueError(
+                    f"max_lots_per_order must be an int >= 1, got {v!r}"
+                )
         await self._col.update_one(
             {"_id": self._SINGLETON_ID},
             {"$set": updates},

@@ -1231,3 +1231,42 @@ class TestTickRoundingPanicSquareoff:
             assert self._is_tick_aligned(prc), (
                 f"ref={ref}: panic SELL exit prc {prc} is not a 0.05 multiple"
             )
+
+
+# ===========================================================================
+# Part B — max_lots_per_order ceiling in SafetyConfigStore
+# ===========================================================================
+
+class TestMaxLotsPerOrder:
+    """Account-level max_lots_per_order ceiling (default 20) in SafetyConfigStore."""
+
+    def test_default_max_lots_per_order_is_20(self):
+        """get_config on an empty store returns max_lots_per_order=20."""
+        store, col = _fake_store()
+        cfg = asyncio.run(store.get_config())
+        assert cfg["max_lots_per_order"] == 20
+
+    def test_put_config_accepts_positive_int(self):
+        """put_config accepts a positive int for max_lots_per_order."""
+        store, col = _fake_store()
+        result = asyncio.run(store.put_config({"max_lots_per_order": 5}))
+        assert result["max_lots_per_order"] == 5
+
+    def test_put_config_persists_max_lots_per_order(self):
+        """put_config persists the new value so get_config returns it."""
+        store, col = _fake_store()
+        asyncio.run(store.put_config({"max_lots_per_order": 10}))
+        cfg = asyncio.run(store.get_config())
+        assert cfg["max_lots_per_order"] == 10
+
+    def test_put_config_rejects_zero(self):
+        """max_lots_per_order=0 must raise ValueError (must be >= 1)."""
+        store, col = _fake_store()
+        with pytest.raises(ValueError):
+            asyncio.run(store.put_config({"max_lots_per_order": 0}))
+
+    def test_put_config_rejects_negative(self):
+        """max_lots_per_order=-1 must raise ValueError."""
+        store, col = _fake_store()
+        with pytest.raises(ValueError):
+            asyncio.run(store.put_config({"max_lots_per_order": -1}))
