@@ -346,6 +346,8 @@ export default function LiveDashboard() {
 
   // ── Unified execution arm-state (the single "will a signal transmit?" verdict) ─
   const [armState, setArmState] = useState(null);
+  // Stand-down (revert manual mode → LIVE_OFFLINE) in-flight flag.
+  const [standDownBusy, setStandDownBusy] = useState(false);
 
   // ── Deployments for the Live Deployment strip ─────────────────────────────
   const [deployments, setDeployments] = useState([]);
@@ -377,6 +379,25 @@ export default function LiveDashboard() {
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
+  }, [fetchAll]);
+
+  // ── Stand down: revert the MANUAL ticket path to LIVE_OFFLINE ─────────────
+  // PUT mode=LIVE_OFFLINE sets mode→LIVE_OFFLINE AND clears single_shot_consumed
+  // (set_mode always resets the latch), so this one action both neutralizes a
+  // live manual ticket and resets a consumed single-shot. The AUTO (deployment)
+  // path is governed separately by the Live Deployment strip + env gate, so this
+  // intentionally only touches the manual mode. After it lands, re-poll so the
+  // strip flips to SAFE immediately.
+  const handleStandDown = useCallback(async () => {
+    setStandDownBusy(true);
+    try {
+      await api.setLiveMode("LIVE_OFFLINE");
+    } catch {
+      /* surfaced via the unchanged strip state on the next poll */
+    } finally {
+      setStandDownBusy(false);
+      fetchAll();
+    }
   }, [fetchAll]);
 
   // ── Execution mode (load once; ModeSwitch updates it on change) ───────────
@@ -458,7 +479,7 @@ export default function LiveDashboard() {
       <LiveBanner status={status} onRefresh={fetchAll} armedCount={armedCount} autoplaceArmed={autoplaceArmed} />
 
       {/* Single execution-state verdict (replaces the old hardcoded "L3" chip) */}
-      <ExecutionStateStrip armState={armState} />
+      <ExecutionStateStrip armState={armState} onStandDown={handleStandDown} standingDown={standDownBusy} />
 
       {authMsg && (
         <div
