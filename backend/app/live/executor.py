@@ -113,6 +113,48 @@ async def _abort_protect(
     }
 
 
+async def _transmit_and_arm(
+    *,
+    client: Any,
+    intent: Any,
+    cid: str,
+    engine: Any,
+    intent_store: Any,
+    arm: Callable,
+    ref_ltp: float,
+    band_pct: float,
+    uid: str,
+    actid: str,
+    verdicts: List[Dict[str, Any]],
+    post_fill: Optional[Callable] = None,
+    mode: str = "live",
+    deployment_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """The SOLE place_order site + atomic claim + arm-or-abort.  NEVER lets an
+    unprotected fill persist.  post_fill (e.g. consume_single_shot) runs after
+    mark_submitted, before arm — preserving the manual path's step ordering."""
+    # record_intent: forward deployment_id ONLY when set, so older test fakes whose
+    # record_intent signature has no deployment_id keep working.
+    if deployment_id is not None:
+        await intent_store.record_intent(intent, mode=mode, deployment_id=deployment_id)
+    else:
+        await intent_store.record_intent(intent, mode=mode)
+    if not await intent_store.claim_for_submit(cid):
+        return _blocked("already_claimed", verdicts)
+    result = await client.place_order(intent)            # THE ONLY place_order CALL IN THIS MODULE
+    if not result.ok:
+        return {"placed": False, "reason": f"reject:{result.rejreason}", "verdicts": verdicts}
+    try:
+        await intent_store.mark_submitted(cid, result.norenordno)
+        if post_fill is not None:
+            await post_fill()
+        await arm(intent, result.norenordno)
+        return {"placed": True, "protected": True, "norenordno": result.norenordno, "cid": cid, "verdicts": verdicts}
+    except Exception as exc:
+        return await _abort_protect(client, engine, intent, result.norenordno,
+                                    ref_ltp, band_pct, uid, actid, reason=f"post_place_failed:{exc}")
+
+
 # ---------------------------------------------------------------------------
 # Public API — the ONLY permitted entry transmit path
 # ---------------------------------------------------------------------------
@@ -252,52 +294,27 @@ async def place_live_test_order(
         return _blocked(f"cannot_trade:{why}", verdicts)
 
     # ------------------------------------------------------------------
-    # Gate 7 — idempotency claim (atomic; only one call can proceed)
+    # Gates 7+8 + post-fill — record_intent → atomic claim → THE ONLY
+    # place_order call → mark_submitted → consume_single_shot → arm-or-abort.
     #
-    # record_intent MUST be called first to create the INTENT-state doc;
-    # claim_for_submit is an atomic INTENT→SUBMITTING transition that only
-    # one concurrent caller can win.
+    # Delegated to _transmit_and_arm so this entry path shares the SOLE
+    # place_order site with the deployed path.  post_fill=consume_single_shot
+    # runs AFTER mark_submitted and BEFORE arm, preserving the original
+    # step ordering; the broker-reject path returns before single-shot is
+    # consumed; any post-fill exception drives best-effort square + halt.
     # ------------------------------------------------------------------
-    await intent_store.record_intent(intent, mode="live")
-    if not await intent_store.claim_for_submit(cid):
-        return _blocked("already_claimed", verdicts)
-
-    # ------------------------------------------------------------------
-    # Gate 8 — THE ONLY place_order CALL IN THIS MODULE
-    # ------------------------------------------------------------------
-    result = await client.place_order(intent)
-
-    # ------------------------------------------------------------------
-    # Step 9 — broker reject: do NOT consume single-shot, do NOT arm
-    # ------------------------------------------------------------------
-    if not result.ok:
-        return {
-            "placed": False,
-            "reason": f"reject:{result.rejreason}",
-            "verdicts": verdicts,
-        }
-
-    # ------------------------------------------------------------------
-    # Steps 10 + 11 — from here the position is LIVE at the broker.
-    # The ENTIRE post-fill block is exception-total: any exception in
-    # mark_submitted, consume_single_shot, or arm drives _abort_protect
-    # (best-effort square + best-effort halt) and returns without
-    # propagating.  No unprotected live position can ever persist.
-    # ------------------------------------------------------------------
-    try:
-        await intent_store.mark_submitted(cid, result.norenordno)
-        await mode_store.consume_single_shot()
-        await arm(intent, result.norenordno)
-        return {
-            "placed": True,
-            "protected": True,
-            "norenordno": result.norenordno,
-            "cid": cid,
-            "verdicts": verdicts,
-        }
-    except Exception as exc:
-        return await _abort_protect(
-            client, engine, intent, result.norenordno,
-            ref_ltp, band_pct, uid, actid,
-            reason=f"post_place_failed:{exc}",
-        )
+    return await _transmit_and_arm(
+        client=client,
+        intent=intent,
+        cid=cid,
+        engine=engine,
+        intent_store=intent_store,
+        arm=arm,
+        ref_ltp=ref_ltp,
+        band_pct=band_pct,
+        uid=uid,
+        actid=actid,
+        verdicts=verdicts,
+        post_fill=mode_store.consume_single_shot,
+        mode="live",
+    )
