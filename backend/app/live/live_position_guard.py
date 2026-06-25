@@ -43,6 +43,7 @@ import math
 from datetime import datetime, time as dtime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
+from app.execution_policy import spot_mirror_exit_reason
 from app.live.kill_switch import _parse_netqty
 from app.live.live_sl_monitor import evaluate_exit
 from app.live.overall_controls import build_overall_state, evaluate_overall
@@ -51,6 +52,9 @@ log = logging.getLogger(__name__)
 
 POLL_SECONDS = 1.5
 _IST = timedelta(hours=5, minutes=30)
+# A spot tick older than this is treated as absent — the guard never squares on
+# a minutes-old underlying price (mirrors paper_auto.MARK_TICK_MAX_AGE_SECONDS).
+MARK_TICK_MAX_AGE_SECONDS = 120
 
 
 def _in_market_hours(now_utc: Optional[datetime] = None) -> bool:
@@ -80,6 +84,26 @@ def _finite_num(x: Any) -> Optional[float]:
     return v if math.isfinite(v) else None
 
 
+def _to_utc_dt(x: Any) -> Optional[datetime]:
+    """Coerce an entry timestamp to a tz-aware UTC datetime, else None.
+
+    Accepts a datetime (naive → assumed UTC) or an ISO-8601 string. Anything
+    unparseable returns None so a missing/garbage entry_ts simply disables the
+    time-stop rather than raising."""
+    if isinstance(x, datetime):
+        dt = x
+    elif isinstance(x, str) and x:
+        try:
+            dt = datetime.fromisoformat(x)
+        except ValueError:
+            return None
+    else:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 # ---------------------------------------------------------------------------
 # 1. Registry — process-singleton set of positions to guard
 # ---------------------------------------------------------------------------
@@ -101,10 +125,30 @@ class LiveMonitorRegistry:
         prd: str,
         entry_price: float,
         state: Dict[str, Any],
+        spot_exit: Optional[Dict[str, Any]] = None,
+        time_stop_minutes: Any = None,
+        entry_ts: Any = None,
+        source: str = "manual",
+        deployment_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Register (or replace) a position to guard. ``state`` is a monitor state
         from ``live_sl_monitor.build_monitor_state``. ``key`` is the entry
-        norenordno (stable + unique per position)."""
+        norenordno (stable + unique per position).
+
+        Deployed positions get FULL exit parity with the paper/backtest path via
+        the optional keyword-only fields below; the manual single-shot caller
+        (``live_broker._make_arm``) omits them entirely, so its items keep
+        ``source="manual"``, ``spot_exit=None`` etc. — manual behavior unchanged.
+
+        ``spot_exit``: ``{"direction","instrument_key","spot_target","spot_stop"}``
+                       — the live equivalent of the backtest's ``spot_exit`` mode
+                       (close the option when the UNDERLYING hits a level).
+        ``time_stop_minutes``: close after this many minutes from ``entry_ts``.
+        ``entry_ts``: ISO-8601 / datetime entry timestamp (basis for the time-stop).
+        ``source``: ``"manual"`` (LIVE_TEST single-shot, keeps its own 10-min cap +
+                    EOD-exempt) or e.g. ``"auto_live"`` (deployed → EOD-squared).
+        ``deployment_id``: the owning deployment (audit; deployed positions only).
+        """
         item = {
             "id": str(key),
             "tsym": str(tsym),
@@ -113,6 +157,11 @@ class LiveMonitorRegistry:
             "prd": str(prd or "I"),
             "entry_price": float(entry_price),
             "state": state,
+            "spot_exit": spot_exit,
+            "time_stop_minutes": time_stop_minutes,
+            "entry_ts": entry_ts,
+            "source": str(source or "manual"),
+            "deployment_id": deployment_id,
             # Async-fill bookkeeping: a just-armed position may not be in the
             # position book yet. seen_filled flips True once we observe netqty!=0;
             # misses counts consecutive not-yet-filled cycles so a never-filling
@@ -178,11 +227,23 @@ class LivePositionGuard:
         poll_seconds: float = POLL_SECONDS,
         max_pending_misses: int = 40,
         overall_provider: Optional[Callable[[], Awaitable[Optional[Dict[str, Any]]]]] = None,
+        spot_tick_fn: Optional[Callable[[], Dict[str, Any]]] = None,
+        eod_square_ist: dtime = dtime(15, 0),
+        now_fn: Optional[Callable[[], datetime]] = None,
     ) -> None:
         self._registry = registry
         self._client_factory = client_factory
         self._square_fn = square_fn
         self._poll_seconds = float(poll_seconds)
+        # Spot-mirror source: () -> live tick map {instrument_key: {"last_price",
+        # "ts"/"received_ts"}}. None ⇒ spot-mirror is skipped entirely (the manual
+        # path never sets a spot_exit, so this is a no-op for it regardless).
+        self._spot_tick_fn = spot_tick_fn
+        # 15:00 IST EOD square cutoff for DEPLOYED (source != "manual") positions.
+        self._eod_square_ist = eod_square_ist
+        # Injectable clock (time-stop elapsed + EOD + market hours where the cycle
+        # needs "now"). Default → wall-clock UTC.
+        self._now_fn = now_fn or (lambda: datetime.now(timezone.utc))
         # Optional basket-level overall controls: async () -> config dict | None.
         # The guard evaluates the AGGREGATE basket MTM each cycle and squares ALL
         # guarded positions on an overall SL / target / trailing breach. The
@@ -224,6 +285,18 @@ class LivePositionGuard:
             for p in (book or []):
                 by_tsym[str(p.get("tsym", ""))] = p
 
+            now = self._now_fn()
+            # Read the live spot tick map ONCE per cycle (None when no source is
+            # wired ⇒ spot-mirror is skipped). A factory error is non-fatal — the
+            # whole cycle is already wrapped, but degrade to "no spot data" so the
+            # premium/basket paths still run.
+            spot_map: Dict[str, Any] = {}
+            if self._spot_tick_fn is not None:
+                try:
+                    spot_map = self._spot_tick_fn() or {}
+                except Exception:
+                    spot_map = {}
+
             for entry in self._registry.snapshot():
                 pos = by_tsym.get(entry["tsym"])
                 netqty = _parse_netqty(pos.get("netqty")) if pos else None
@@ -255,21 +328,25 @@ class LivePositionGuard:
                 verdict = evaluate_exit(entry["state"], lp)
                 entry["state"] = verdict["state"]
                 if verdict["exit"]:
-                    # Remove BEFORE squaring so a slow square is never re-issued.
-                    self._registry.remove(entry["id"])
-                    try:
-                        result = await self._square_fn(
-                            client, entry["position"], reason=f"software_{verdict['reason']}"
-                        )
-                    except Exception as exc:  # square must never kill the loop
-                        log.exception("guard square failed for %s: %s", entry["tsym"], exc)
-                        result = {"squared": False, "error": str(exc)[:200]}
-                    self._stats["exits"] += 1
-                    exits.append({"id": entry["id"], "tsym": entry["tsym"],
-                                  "reason": verdict["reason"], "result": result})
+                    await self._square_and_record(
+                        client, entry, f"software_{verdict['reason']}",
+                        verdict["reason"], exits)
+                    continue
+
+                # ── Deployed-position exit parity (paper/backtest mirror) ──
+                # Only entries STILL OPEN after the premium evaluate_exit, and only
+                # when the relevant fields are set. Spot-mirror first (it can fire
+                # on the underlying even when the premium leg is quiet), then the
+                # time-stop. Both use the same remove-before-square ordering.
+                if await self._evaluate_spot_mirror(client, entry, spot_map, now, exits):
+                    continue
+                await self._evaluate_time_stop(client, entry, now, exits)
 
             # ── Basket-level overall controls (overall SL / target / trailing) ──
             await self._evaluate_overall_basket(client, by_tsym, exits)
+
+            # ── 15:00 IST EOD square (deployed positions only) ──
+            await self._evaluate_eod_square(client, now, exits)
 
             self._stats["cycles"] += 1
             self._stats["last_run_at"] = datetime.now(timezone.utc).isoformat()
@@ -278,6 +355,122 @@ class LivePositionGuard:
             self._stats["last_error"] = str(exc)[:240]
             log.exception("live position guard cycle failed: %s", exc)
         return exits
+
+    async def _square_and_record(
+        self, client: Any, entry: Dict[str, Any], square_reason: str,
+        exit_reason: str, exits: List[Dict[str, Any]],
+    ) -> None:
+        """Remove-BEFORE-square (so a slow square is never re-issued), square via
+        the injected margin-safe square_fn, record the exit. NEVER raises."""
+        self._registry.remove(entry["id"])
+        try:
+            result = await self._square_fn(
+                client, entry["position"], reason=square_reason)
+        except Exception as exc:  # square must never kill the loop
+            log.exception("guard square failed for %s: %s", entry["tsym"], exc)
+            result = {"squared": False, "error": str(exc)[:200]}
+        self._stats["exits"] += 1
+        exits.append({"id": entry["id"], "tsym": entry["tsym"],
+                      "reason": exit_reason, "result": result})
+
+    def _fresh_spot_price(
+        self, spot_map: Dict[str, Any], instrument_key: str, now: datetime
+    ) -> Optional[float]:
+        """Latest spot price for the underlying key, but ONLY when FRESH — a tick
+        older than MARK_TICK_MAX_AGE_SECONDS (vs ``now``) is treated as absent so
+        the guard never squares on a minutes-old underlying (mirrors paper's
+        staleness bound). Ticks with no timestamp are treated as current. A
+        zero/non-positive/garbage price ⇒ None (held)."""
+        if not instrument_key:
+            return None
+        tick = spot_map.get(instrument_key)
+        if not tick or tick.get("last_price") in (None, ""):
+            return None
+        try:
+            price = float(tick["last_price"])
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(price) or price <= 0:
+            return None
+        age_ref = tick.get("received_ts") or tick.get("ts")
+        if age_ref is not None:
+            try:
+                now_ms = int(now.timestamp() * 1000)
+                if now_ms - int(age_ref) > MARK_TICK_MAX_AGE_SECONDS * 1000:
+                    return None
+            except (TypeError, ValueError, OverflowError, OSError):
+                pass
+        return price
+
+    async def _evaluate_spot_mirror(
+        self, client: Any, entry: Dict[str, Any], spot_map: Dict[str, Any],
+        now: datetime, exits: List[Dict[str, Any]],
+    ) -> bool:
+        """Spot-mirror exit (the backtest's spot_exit mode, live): close the option
+        when the UNDERLYING hits the strategy's direction-aware level. Stop-first
+        (delegates to execution_policy.spot_mirror_exit_reason). Returns True iff
+        the position was squared (so the caller skips the time-stop)."""
+        spot_exit = entry.get("spot_exit")
+        if not spot_exit or self._spot_tick_fn is None:
+            return False
+        instrument_key = str(spot_exit.get("instrument_key") or "")
+        spot_price = self._fresh_spot_price(spot_map, instrument_key, now)
+        if spot_price is None:
+            return False  # stale / zero / absent ⇒ no spot-mirror square (held)
+        reason = spot_mirror_exit_reason(
+            str(spot_exit.get("direction") or ""),
+            spot_price,
+            spot_target=spot_exit.get("spot_target"),
+            spot_stop=spot_exit.get("spot_stop"),
+        )
+        if not reason:
+            return False
+        await self._square_and_record(
+            client, entry, f"software_{reason}", reason, exits)
+        return True
+
+    async def _evaluate_time_stop(
+        self, client: Any, entry: Dict[str, Any], now: datetime,
+        exits: List[Dict[str, Any]],
+    ) -> bool:
+        """Time-stop exit (parity with the backtest's time exit): close when the
+        strategy's time_stop_minutes has elapsed since entry_ts. Returns True iff
+        squared."""
+        tsm = entry.get("time_stop_minutes")
+        entry_ts = _to_utc_dt(entry.get("entry_ts"))
+        if not tsm or entry_ts is None:
+            return False
+        try:
+            minutes = float(tsm)
+        except (TypeError, ValueError):
+            return False
+        if minutes <= 0:
+            return False
+        elapsed_min = (now - entry_ts).total_seconds() / 60.0
+        if elapsed_min < minutes:
+            return False
+        await self._square_and_record(
+            client, entry, "software_time_stop", "time_stop", exits)
+        return True
+
+    async def _evaluate_eod_square(
+        self, client: Any, now: datetime, exits: List[Dict[str, Any]]
+    ) -> None:
+        """15:00 IST EOD square for DEPLOYED positions only (source != "manual").
+
+        Manual LIVE_TEST positions keep their own 10-min single-shot timer and are
+        NEVER touched by EOD. Remove-before-square, reason="eod_square"; the
+        actual transmit is gated by the injected square_fn (LIVE_GUARD_ARMED)."""
+        if len(self._registry) == 0:
+            return
+        ist_now = (now.astimezone(timezone.utc) + _IST).time()
+        if ist_now < self._eod_square_ist:
+            return
+        for entry in self._registry.snapshot():
+            if str(entry.get("source") or "manual") == "manual":
+                continue  # manual positions are EOD-exempt
+            await self._square_and_record(
+                client, entry, "eod_square", "eod_square", exits)
 
     async def _evaluate_overall_basket(
         self, client: Any, by_tsym: Dict[str, Dict[str, Any]], exits: List[Dict[str, Any]]
