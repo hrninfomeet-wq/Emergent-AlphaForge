@@ -33,6 +33,7 @@ not a crash.  There is no way for a caller to inject qty > lot_size.
 """
 from __future__ import annotations
 
+import time
 from typing import Any, Callable, Dict, List, Optional
 
 from app.live.mode import is_live_order_allowed
@@ -317,4 +318,182 @@ async def place_live_test_order(
         verdicts=verdicts,
         post_fill=mode_store.consume_single_shot,
         mode="live",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Offline-first transmit boundary — env arming + dry-run preview
+# ---------------------------------------------------------------------------
+
+def _autoplace_armed() -> bool:
+    """Return True iff LIVE_AUTOPLACE_ARMED is set to an affirmative value.
+
+    Offline-first: unless the operator has explicitly flipped this env switch on
+    the host, an armed deployment still only DRY-RUNS — it builds + validates the
+    full intent but never transmits.  Anything other than 1/true/yes/on (incl.
+    unset) means "do not auto-place".
+    """
+    import os
+    return os.environ.get("LIVE_AUTOPLACE_ARMED", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _would_send(intent: Any, uid: str, actid: str) -> Optional[Dict[str, Any]]:
+    """Return the broker jdata that WOULD be transmitted, for the dry-run preview.
+
+    Never raises: any serialisation failure (or a None intent) returns None so the
+    dry-run response stays well-formed.
+    """
+    try:
+        return intent.to_jdata(uid=uid, actid=actid) if intent is not None else None
+    except Exception:
+        return None
+
+
+async def place_deployed_order(
+    contract: Dict[str, Any],
+    *,
+    side: str,
+    ref_ltp: float,
+    band_pct: float,
+    levels: Dict[str, Any],
+    capped_lots: int,
+    client: Any,
+    intent_store: Any,
+    engine: Any,
+    search_fn: Callable,
+    arm: Callable,
+    allow_fn: Callable,
+    throttle: Any,
+    account_max_lots: Any,
+    deployment_id: str,
+    autoplace_armed: Optional[bool] = None,
+    uid: str = "",
+    actid: str = "",
+    buffer_pct: float = 0.5,
+) -> Dict[str, Any]:
+    """Place a CAPPED-LOTS entry for an armed deployment through all safety gates.
+
+    Sibling of :func:`place_live_test_order` (the manual single-shot path).  The
+    deployed path differs in three ways:
+
+    1. It does NOT read or flip the global mode store / single-shot.  Authorization
+       is delegated to the injected ``allow_fn`` (the deployment-arm gate).
+    2. It builds a MULTI-LOT order (``capped_lots`` lots), with the broker-resolved
+       lot size; ``fat_finger_cap`` is the ACCOUNT CEILING (``account_max_lots``),
+       not 1.  Margin must cover the FULL ``capped_lots * lot_size`` size.
+    3. The transmit boundary is offline-first: unless ``LIVE_AUTOPLACE_ARMED`` is
+       set on the host (or ``autoplace_armed=True`` is passed), an armed deployment
+       still only DRY-RUNS — it returns the full validated ``would_send`` jdata and
+       transmits NOTHING.
+
+    All blocks return via :func:`_blocked` with NO broker contact before the
+    transmit boundary, except the ``client.limits()`` read in Gate 3 (a read,
+    matching the manual path's own margin gate).
+
+    Returns
+    -------
+    dict.  On a gate block: ``{"placed": False, "reason": ..., "verdicts": [...]}``.
+    On a dry-run (not armed): ``{"placed": False, "dry_run": True,
+    "would_send": <jdata|None>, "verdicts": [...]}``.  On an armed transmit it
+    returns whatever :func:`_transmit_and_arm` returns (placed/protected/halted).
+    """
+    # ------------------------------------------------------------------
+    # Gate 0 — long-only: deployed entries are option BUYS only (same rationale
+    # as the manual path: a sell entry would open an unprotected naked short).
+    # ------------------------------------------------------------------
+    if side != "B":
+        return _blocked("side_must_be_buy", [])
+
+    # ------------------------------------------------------------------
+    # Gate 1 — authorization: the deployment-arm gate must permit this entry.
+    # NO consume_single_shot; the global mode store is NOT read or flipped here.
+    # ------------------------------------------------------------------
+    ok, why = allow_fn()
+    if not ok:
+        return _blocked(f"not_armed:{why}", [])
+
+    # ------------------------------------------------------------------
+    # Gate 2 — fresh server-side dry-run.  lots = capped_lots; fat_finger_cap is
+    # the ACCOUNT CEILING (not 1).  A non-numeric ceiling default-denies inside
+    # check_fat_finger rather than crashing.
+    # ------------------------------------------------------------------
+    cid = new_client_order_id()
+    intent, verdicts, resolved_lot = build_intent(
+        contract,
+        side=side,
+        order_kind="entry",
+        lots=capped_lots,
+        ref_ltp=ref_ltp,
+        band_pct=band_pct,
+        fat_finger_cap=account_max_lots,   # ACCOUNT CEILING, not 1
+        levels=levels,
+        client_order_id=cid,
+        buffer_pct=buffer_pct,
+        search_fn=search_fn,
+    )
+
+    # ------------------------------------------------------------------
+    # Gate 3 — margin must cover the FULL capped_lots * lot_size size.
+    # client.limits() is a READ (matches the manual path's margin gate).
+    # ------------------------------------------------------------------
+    limits = await client.limits()
+    if resolved_lot is not None:
+        verdicts.append(margin_verdict(limits, ref_ltp=ref_ltp, lot_size=resolved_lot * capped_lots))
+
+    # ------------------------------------------------------------------
+    # Gate 4 — all verdicts must pass (intent must be non-None).
+    # ------------------------------------------------------------------
+    if intent is None or any(not v["ok"] for v in verdicts):
+        return _blocked("dry_run_failed", verdicts)
+
+    # ------------------------------------------------------------------
+    # Gate 5 — lot-cap defense-in-depth: resolution succeeded, capped_lots is
+    # within the account ceiling, and the built qty is EXACTLY capped_lots lots.
+    # ------------------------------------------------------------------
+    if resolved_lot is None or capped_lots > account_max_lots or intent.qty != capped_lots * resolved_lot:
+        return _blocked("not_within_lot_cap", verdicts)
+
+    # ------------------------------------------------------------------
+    # Gate 6 — engine must permit trading.
+    # ------------------------------------------------------------------
+    ok, why = await engine.can_trade()
+    if not ok:
+        return _blocked(f"cannot_trade:{why}", verdicts)
+
+    # ------------------------------------------------------------------
+    # Gate 8 — rate throttle.  is_cancel=False (this is an entry); inject `now`
+    # for the token bucket.  NO place / NO claim happens here — the claim lives
+    # inside _transmit_and_arm past the transmit boundary.
+    # ------------------------------------------------------------------
+    if throttle is not None and not throttle.allow(is_cancel=False, now=time.time()):
+        return _blocked("rate_throttled", verdicts)
+
+    # ------------------------------------------------------------------
+    # Transmit boundary — offline-first.  Unless explicitly armed (env or arg),
+    # return the validated dry-run preview and transmit NOTHING.
+    # ------------------------------------------------------------------
+    armed = _autoplace_armed() if autoplace_armed is None else bool(autoplace_armed)
+    if not armed:
+        return {
+            "placed": False,
+            "dry_run": True,
+            "would_send": _would_send(intent, uid, actid),
+            "verdicts": verdicts,
+        }
+
+    return await _transmit_and_arm(
+        client=client,
+        intent=intent,
+        cid=cid,
+        engine=engine,
+        intent_store=intent_store,
+        arm=arm,
+        ref_ltp=ref_ltp,
+        band_pct=band_pct,
+        uid=uid,
+        actid=actid,
+        verdicts=verdicts,
+        post_fill=None,
+        mode="live",
+        deployment_id=deployment_id,
     )
