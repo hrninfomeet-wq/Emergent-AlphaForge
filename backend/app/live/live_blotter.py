@@ -154,6 +154,11 @@ def build_live_blotter(
             # externally). We never claim a realized P&L we don't have.
             "status": status,
             "norenordno": t.get("norenordno"),
+            # Resting broker OCO backstop state. When the entry filled but its OCO
+            # failed to place, the journal doc carries oco_error="no_broker_backstop"
+            # → surface it so the operator knows this OPEN position has no PC-down
+            # broker net (only the software guard while the app is alive).
+            "oco_error": t.get("oco_error"),
         })
 
     return rows

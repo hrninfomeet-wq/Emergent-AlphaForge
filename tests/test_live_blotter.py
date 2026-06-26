@@ -123,3 +123,19 @@ def test_malformed_numeric_fields_are_tolerated():
     assert r["at_broker"] is True   # netqty parsed to 150
     assert r["ltp"] is None         # "n/a" → None
     assert r["pnl"] is None         # neither urmtom nor rpnl parse
+
+
+def test_oco_error_passthrough_when_set():
+    # A filled entry whose resting OCO failed to place carries oco_error on the
+    # journal doc → the blotter row surfaces it so the operator knows the position
+    # is software-guard-only (no PC-down broker backstop).
+    rows = build_live_blotter(
+        [_trade(oco_error="no_broker_backstop")], [_pos("NIFTY24JUN24000CE")], DEPS
+    )
+    assert rows[0]["oco_error"] == "no_broker_backstop"
+
+
+def test_oco_error_is_none_when_absent():
+    # No oco_error on the journal doc (OCO placed fine, or field absent) → None.
+    rows = build_live_blotter([_trade()], [_pos("NIFTY24JUN24000CE")], DEPS)
+    assert rows[0]["oco_error"] is None

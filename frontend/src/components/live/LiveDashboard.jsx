@@ -422,6 +422,16 @@ export default function LiveDashboard() {
     .map((m) => ({ tsym: m?.detail?.tsym }))
     .filter((p) => p.tsym);
 
+  // NO-BROKER-BACKSTOP detection — OPEN deployed live positions whose resting OCO
+  // failed to place (live_trade doc carries oco_error). These are software-guard-
+  // only: protected while the app is alive, but with NO PC-down broker net. Derived
+  // from the live-blotter rows (which now passthrough oco_error); count only LIVE
+  // (held-at-broker) rows so a FLAT/CLOSED row never raises a false alert.
+  const noBackstopPositions = (blotter?.rows ?? [])
+    .filter((r) => r?.oco_error && String(r?.status ?? "").toUpperCase() === "LIVE")
+    .map((r) => ({ tsym: r?.trading_symbol }))
+    .filter((p) => p.tsym);
+
   return (
     <div className="space-y-4">
       {/* ── 1. Connection banner + auth message ─────────────────────────── */}
@@ -463,6 +473,33 @@ export default function LiveDashboard() {
             {unguardedPositions.length > 4 ? "…" : ""}. The guard re-attaches open
             positions on startup; if this persists, square manually or check the broker
             connection.
+          </span>
+        </div>
+      )}
+
+      {/* ── 1a-ii. NO-BROKER-BACKSTOP alert (OCO place failed → software-guard-only) ── */}
+      {noBackstopPositions.length > 0 && (
+        <div
+          className="text-sm font-mono px-3 py-2.5 rounded-lg border-2 border-amber-500 bg-amber-500/15 text-amber-300 flex items-start gap-2"
+          data-testid="no-broker-backstop-banner"
+        >
+          <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+          <span>
+            <span className="font-bold">
+              {noBackstopPositions.length} live position
+              {noBackstopPositions.length !== 1 ? "s" : ""} have no broker backstop
+              (software-guard-only)
+            </span>{" "}
+            — the resting broker OCO failed to place for{" "}
+            {noBackstopPositions
+              .map((p) => p.tsym)
+              .filter(Boolean)
+              .slice(0, 4)
+              .join(", ")}
+            {noBackstopPositions.length > 4 ? "…" : ""}. The software guard protects
+            {noBackstopPositions.length !== 1 ? " these" : " this"} while the app is
+            running, but there is NO PC-down net. Square manually or re-place the OCO
+            if the app may go offline.
           </span>
         </div>
       )}

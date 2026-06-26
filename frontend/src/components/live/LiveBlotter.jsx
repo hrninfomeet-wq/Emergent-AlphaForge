@@ -149,8 +149,18 @@ export default function LiveBlotter({ rows }) {
                   </td>
                   <td className="py-2 pl-3 pr-0 text-center">
                     {status === "LIVE" ? (
-                      <span className="inline-block px-1.5 py-0.5 rounded text-[10px] border border-emerald-500/40 bg-emerald-500/10 text-emerald-300">
-                        LIVE
+                      <span className="inline-flex items-center gap-1 justify-center flex-wrap">
+                        <span className="inline-block px-1.5 py-0.5 rounded text-[10px] border border-emerald-500/40 bg-emerald-500/10 text-emerald-300">
+                          LIVE
+                        </span>
+                        {r?.oco_error && (
+                          <span
+                            className="inline-block px-1.5 py-0.5 rounded text-[10px] border border-amber-500/40 bg-amber-500/10 text-amber-300"
+                            title="The resting broker OCO failed to place — this position has NO PC-down broker backstop, only the software guard while the app is running."
+                          >
+                            no broker net
+                          </span>
+                        )}
                       </span>
                     ) : status === "CLOSED" ? (
                       <span
