@@ -517,6 +517,111 @@ class TestSquarePositionExitProduct:
 
 
 # ---------------------------------------------------------------------------
+# square_position — FRESH netqty re-confirm (B4 #2: never square a stale netqty)
+# ---------------------------------------------------------------------------
+# The guard reads the position book once per cycle. If the resting OCO fires
+# between that read and the square, squaring the stale netqty would place a
+# SECOND sell → naked short. So square_position MUST re-confirm the position is
+# still non-flat from a FRESH position_book() read immediately before placing,
+# and abort if flat. An EMPTY book (broker hiccup) is "unknown" — NOT flat — and
+# must fall through to the existing place path unchanged.
+# ---------------------------------------------------------------------------
+
+class TestSquarePositionFreshNetqtyReconfirm:
+    def test_fresh_book_reports_flat_aborts_with_already_flat(self):
+        """A NON-EMPTY fresh book showing this tsym netqty 0 → no order placed,
+        returns via=='already_flat'."""
+        client = MockNoren()
+        # The fresh re-read now reports this exact tsym as FLAT in a non-empty book.
+        client.set_position_book([
+            {"tsym": "NIFTY2662221000CE", "exch": "NFO", "netqty": "0", "lp": "200.0"}
+        ])
+        pos = _position(netqty=65, lp=200.0)  # stale read still says long 65
+        result = run(square_position(client, pos, reason="deadline"))
+        assert result["squared"] is True
+        assert result["via"] == "already_flat"
+        assert result["norenordno"] is None
+        assert result["reason"] == "deadline"
+        assert result["failures"] == []
+        # CRITICAL: NO order was placed (a second sell would be a naked short).
+        assert len(client._orders) == 0
+
+    def test_fresh_book_flat_via_float_form_netqty(self):
+        """netqty '0.0' (float-form string) in a non-empty book also reads as flat."""
+        client = MockNoren()
+        client.set_position_book([
+            {"tsym": "NIFTY2662221000CE", "exch": "NFO", "netqty": "0.0", "lp": "200.0"}
+        ])
+        pos = _position(netqty=65, lp=200.0)
+        result = run(square_position(client, pos, reason="deadline"))
+        assert result["via"] == "already_flat"
+        assert len(client._orders) == 0
+
+    def test_fresh_book_row_missing_netqty_treated_as_flat(self):
+        """A matching row with NO netqty key → absent → treated as flat (no order)."""
+        client = MockNoren()
+        client.set_position_book([
+            {"tsym": "NIFTY2662221000CE", "exch": "NFO", "lp": "200.0"}
+        ])
+        pos = _position(netqty=65, lp=200.0)
+        result = run(square_position(client, pos, reason="deadline"))
+        assert result["via"] == "already_flat"
+        assert len(client._orders) == 0
+
+    def test_fresh_book_still_nonflat_squares_normally(self):
+        """A NON-EMPTY fresh book that STILL shows the tsym non-flat → squares
+        normally (existing behavior: a real exit order is placed)."""
+        client = MockNoren()
+        client.set_position_book([
+            {"tsym": "NIFTY2662221000CE", "exch": "NFO", "netqty": "65", "lp": "200.0"}
+        ])
+        pos = _position(netqty=65, lp=200.0)
+        result = run(square_position(client, pos, reason="deadline"))
+        assert result["squared"] is True
+        assert result["via"] == "exit_order"
+        orders = [o for o in client._orders.values() if o["trantype"] == "S"]
+        assert len(orders) == 1
+        assert orders[0]["qty"] == 65
+
+    def test_fresh_book_empty_is_unknown_not_flat_squares(self):
+        """An EMPTY fresh book (broker Not_Ok / hiccup) is 'unknown', NOT flat —
+        must fall through and square (the default MockNoren has [] book; this is
+        exactly the existing ~87-test path)."""
+        client = MockNoren()  # empty position book
+        pos = _position(netqty=65, lp=200.0)
+        result = run(square_position(client, pos, reason="deadline"))
+        assert result["squared"] is True
+        assert result["via"] == "exit_order"
+        assert len([o for o in client._orders.values() if o["trantype"] == "S"]) == 1
+
+    def test_fresh_book_other_tsym_only_squares_this_one(self):
+        """A non-empty book that contains OTHER scrips but not this tsym → this
+        tsym is absent → treated as flat (no order). (No silent square of a
+        position the broker no longer reports.)"""
+        client = MockNoren()
+        client.set_position_book([
+            {"tsym": "SOMEOTHER25CE", "exch": "NFO", "netqty": "30", "lp": "50.0"}
+        ])
+        pos = _position(netqty=65, lp=200.0)
+        result = run(square_position(client, pos, reason="deadline"))
+        assert result["via"] == "already_flat"
+        assert len(client._orders) == 0
+
+    def test_position_book_raising_is_unknown_falls_through(self):
+        """If position_book() RAISES, treat as 'unknown' and fall through to the
+        existing place path (which itself validates) — never a false already-flat."""
+        class _RaisingBookClient(MockNoren):
+            async def position_book(self):
+                raise RuntimeError("broker book unavailable")
+        client = _RaisingBookClient()
+        pos = _position(netqty=65, lp=200.0)
+        result = run(square_position(client, pos, reason="deadline"))
+        assert result["squared"] is True
+        assert result["via"] == "exit_order"
+        assert len([o for o in client._orders.values() if o["trantype"] == "S"]) == 1
+
+
+# ---------------------------------------------------------------------------
 # square_position — unfilled entry (netqty == 0)
 # ---------------------------------------------------------------------------
 

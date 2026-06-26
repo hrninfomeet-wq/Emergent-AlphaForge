@@ -535,6 +535,42 @@ async def square_position(
         }
 
     # ------------------------------------------------------------------
+    # Step 3.5 — FRESH netqty re-confirm (NEVER square a stale netqty).
+    # The guard reads the position book once per cycle. If the resting OCO fired
+    # between that read and this square, squaring the stale (passed) netqty would
+    # place a SECOND sell → naked short. cancel_oco cannot stop an already-
+    # triggered OCO. So we re-read the book immediately before placing and abort
+    # if THIS tsym is now flat.
+    #   * A NON-EMPTY book whose row for this tsym has netqty 0/absent → flat:
+    #     return already_flat, place NO order.
+    #   * An EMPTY book ([], a broker Not_Ok/hiccup) or a raising book → "unknown":
+    #     do NOT treat as flat — fall through to the existing path unchanged
+    #     ("unknown" must never trigger a false already-flat).
+    # ------------------------------------------------------------------
+    try:
+        fresh_book = await client.position_book()
+    except Exception:
+        fresh_book = None  # unknown — fall through (the place path validates)
+
+    if isinstance(fresh_book, list) and fresh_book:
+        fresh_netqty: Optional[int] = None
+        for row in fresh_book:
+            if str(row.get("tsym", "")) == str(tsym):
+                fresh_netqty = _parse_netqty(row.get("netqty", 0))
+                break
+        # Row absent OR netqty 0/absent → flat (a non-empty book that no longer
+        # carries a non-flat row for this tsym means the position is gone).
+        if not fresh_netqty:
+            return {
+                "squared": True,
+                "via": "already_flat",
+                "norenordno": None,
+                "reason": reason,
+                "note": "position already flat (no order placed)",
+                "failures": [],
+            }
+
+    # ------------------------------------------------------------------
     # Step 4 — MARGIN-SAFE cancel: clear ALL working orders for the scrip and
     # confirm they are terminal BEFORE placing the exit.  A resting SL left
     # working would make the exit a naked short → margin reject (₹2.16L bug).

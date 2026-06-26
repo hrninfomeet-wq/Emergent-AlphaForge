@@ -743,3 +743,142 @@ class TestOnCloseHook:
         assert len(calls) == 1
         assert calls[0]["reason"] == "eod_square"
         assert calls[0]["source"] == "auto_live"
+
+
+# ---------------------------------------------------------------------------
+# OCO cancel-after-real-fill (B4 #3): cancel the resting OCO ONLY after a
+# CONFIRMED REAL square fill. A dry-run square (LIVE_GUARD_ARMED=0, the default
+# while validating) must NOT cancel the OCO — doing so would strip the broker
+# net WITHOUT squaring → position fully unprotected. cancel only when the
+# square is real (squared and not dry_run). Cancel AFTER the square, never before.
+# ---------------------------------------------------------------------------
+class _OcoClient(_FakeClient):
+    """A position-book fake that ALSO records cancel_oco calls."""
+
+    def __init__(self, positions):
+        super().__init__(positions)
+        self.cancel_oco_calls = []
+
+    async def cancel_oco(self, al_id):
+        self.cancel_oco_calls.append(al_id)
+        return {"ok": True, "al_id": str(al_id)}
+
+
+class _ScriptedSquare:
+    """square_fn returning a scripted result; records the ORDER of square vs cancel."""
+
+    def __init__(self, result, *, client=None):
+        self._result = result
+        self._client = client          # to inspect cancel-state AT square time
+        self.squared = []
+        self.cancel_count_at_square = None
+
+    async def square_fn(self, client, position, *, reason):
+        self.squared.append((position["tsym"], reason))
+        # Snapshot how many cancel_oco calls happened BEFORE the square ran —
+        # proves the cancel is issued AFTER (never before) the square.
+        tgt = self._client if self._client is not None else client
+        self.cancel_count_at_square = len(getattr(tgt, "cancel_oco_calls", []))
+        return dict(self._result)
+
+
+def _registered_with_oco(registry, *, oco_al_id="OCO1", entry=250.0, stop_pct=30):
+    state = build_monitor_state(entry, stop_pct=stop_pct)
+    registry.register(key="ORD1", tsym=_TSYM, exch="BFO", qty=20, prd="I",
+                      entry_price=entry, state=state, oco_al_id=oco_al_id)
+    return registry
+
+
+class TestOcoCancelAfterRealFill:
+    def test_real_fill_cancels_oco_after_square(self):
+        """square_fn returns a REAL fill ({"squared":True}) → cancel_oco("OCO1")
+        IS called, and AFTER the square (not before)."""
+        reg = LiveMonitorRegistry()
+        _registered_with_oco(reg, oco_al_id="OCO1")
+        client = _OcoClient([_pos(netqty=20, lp=170.0)])     # below stop → breach
+        sq = _ScriptedSquare({"squared": True}, client=client)
+        guard = LivePositionGuard(registry=reg, client_factory=lambda: _aw(client),
+                                  square_fn=sq.square_fn)
+        run(guard._cycle())
+        assert sq.squared and sq.squared[0][0] == _TSYM       # square ran
+        assert client.cancel_oco_calls == ["OCO1"]            # OCO cancelled
+        assert sq.cancel_count_at_square == 0                 # cancel was AFTER square
+
+    def test_dry_run_square_does_not_cancel_oco(self):
+        """square_fn returns a dry-run ({"squared":False,"dry_run":True}) →
+        cancel_oco is NOT called (cancelling would strip the broker net while the
+        position is still open → unprotected)."""
+        reg = LiveMonitorRegistry()
+        _registered_with_oco(reg, oco_al_id="OCO1")
+        client = _OcoClient([_pos(netqty=20, lp=170.0)])
+        sq = _ScriptedSquare({"squared": False, "dry_run": True}, client=client)
+        guard = LivePositionGuard(registry=reg, client_factory=lambda: _aw(client),
+                                  square_fn=sq.square_fn)
+        run(guard._cycle())
+        assert sq.squared                                     # square (dry-run) ran
+        assert client.cancel_oco_calls == []                  # OCO NOT cancelled
+
+    def test_real_dry_run_field_present_but_false_cancels(self):
+        """A real fill carrying an explicit dry_run=False still cancels."""
+        reg = LiveMonitorRegistry()
+        _registered_with_oco(reg, oco_al_id="OCO1")
+        client = _OcoClient([_pos(netqty=20, lp=170.0)])
+        sq = _ScriptedSquare({"squared": True, "dry_run": False}, client=client)
+        guard = LivePositionGuard(registry=reg, client_factory=lambda: _aw(client),
+                                  square_fn=sq.square_fn)
+        run(guard._cycle())
+        assert client.cancel_oco_calls == ["OCO1"]
+
+    def test_failed_square_does_not_cancel_oco(self):
+        """A failed (not dry-run) square ({"squared":False}) → cancel_oco NOT
+        called (the position is NOT closed; keep its OCO protection)."""
+        reg = LiveMonitorRegistry()
+        _registered_with_oco(reg, oco_al_id="OCO1")
+        client = _OcoClient([_pos(netqty=20, lp=170.0)])
+        sq = _ScriptedSquare({"squared": False, "failures": ["rejected twice"]},
+                             client=client)
+        guard = LivePositionGuard(registry=reg, client_factory=lambda: _aw(client),
+                                  square_fn=sq.square_fn)
+        run(guard._cycle())
+        assert client.cancel_oco_calls == []
+
+    def test_no_oco_al_id_never_calls_cancel_oco(self):
+        """An entry with NO oco_al_id → cancel_oco is never called even on a real
+        fill (existing position_book-only fakes without oco_al_id stay green)."""
+        reg = LiveMonitorRegistry()
+        _registered(reg, entry=250.0, stop_pct=30)            # no oco_al_id
+        client = _OcoClient([_pos(netqty=20, lp=170.0)])
+        sq = _ScriptedSquare({"squared": True}, client=client)
+        guard = LivePositionGuard(registry=reg, client_factory=lambda: _aw(client),
+                                  square_fn=sq.square_fn)
+        run(guard._cycle())
+        assert sq.squared                                     # square ran
+        assert client.cancel_oco_calls == []                  # nothing to cancel
+
+    def test_client_without_cancel_oco_real_fill_does_not_raise(self):
+        """A client lacking cancel_oco (the legacy _FakeClient) + a real fill on an
+        oco_al_id entry → the cycle must NOT raise (hasattr guard)."""
+        reg = LiveMonitorRegistry()
+        _registered_with_oco(reg, oco_al_id="OCO1")
+        client = _FakeClient([_pos(netqty=20, lp=170.0)])     # no cancel_oco attr
+        sq = _ScriptedSquare({"squared": True})
+        guard = LivePositionGuard(registry=reg, client_factory=lambda: _aw(client),
+                                  square_fn=sq.square_fn)
+        exits = run(guard._cycle())                           # must not raise
+        assert sq.squared and len(exits) == 1
+
+    def test_cancel_oco_raising_does_not_break_cycle(self):
+        """A cancel_oco that RAISES is logged but never breaks the guard cycle."""
+        class _RaisingOco(_OcoClient):
+            async def cancel_oco(self, al_id):
+                self.cancel_oco_calls.append(al_id)
+                raise RuntimeError("cancel rejected")
+        reg = LiveMonitorRegistry()
+        _registered_with_oco(reg, oco_al_id="OCO1")
+        client = _RaisingOco([_pos(netqty=20, lp=170.0)])
+        sq = _ScriptedSquare({"squared": True}, client=client)
+        guard = LivePositionGuard(registry=reg, client_factory=lambda: _aw(client),
+                                  square_fn=sq.square_fn)
+        exits = run(guard._cycle())                           # must not raise
+        assert client.cancel_oco_calls == ["OCO1"]            # attempted
+        assert len(exits) == 1                                # exit still recorded

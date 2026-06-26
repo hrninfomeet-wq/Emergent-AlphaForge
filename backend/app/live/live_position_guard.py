@@ -382,6 +382,23 @@ class LivePositionGuard:
         except Exception as exc:  # square must never kill the loop
             log.exception("guard square failed for %s: %s", entry["tsym"], exc)
             result = {"squared": False, "error": str(exc)[:200]}
+        # Cancel the resting OCO ONLY AFTER a CONFIRMED REAL square fill (never
+        # before — cancel_oco cannot stop an already-triggered OCO; and never on
+        # a dry-run/failed square — stripping the broker net without squaring
+        # would leave the position fully UNPROTECTED). Gate on all of:
+        #   oco_al_id present AND client.cancel_oco exists AND squared AND not dry_run.
+        if (
+            entry.get("oco_al_id")
+            and hasattr(client, "cancel_oco")
+            and result.get("squared")
+            and not result.get("dry_run")
+        ):
+            try:
+                await client.cancel_oco(entry["oco_al_id"])
+            except Exception as exc:  # a cancel failure logs, never breaks the cycle
+                log.exception(
+                    "guard cancel_oco failed for %s (al_id=%s): %s",
+                    entry["tsym"], entry.get("oco_al_id"), exc)
         self._stats["exits"] += 1
         exits.append({"id": entry["id"], "tsym": entry["tsym"],
                       "reason": exit_reason, "result": result})
