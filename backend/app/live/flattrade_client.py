@@ -178,6 +178,42 @@ class FlattradeClient:
             return data
         return []
 
+    async def order_margin(
+        self,
+        *,
+        exch: str,
+        tsym: str,
+        qty: Any,
+        prc: Any,
+        prd: str,
+        trantype: str,
+        prctyp: str,
+        trgprc: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """GetOrderMargin (#8): broker margin pre-check for a prospective order.
+
+        Returns the RAW response dict (including ``stat:"Not_Ok"``) so the caller
+        can fail-CLOSED on a broker reject — we deliberately do NOT swallow a
+        reject into {}.
+        """
+        jdata: Dict[str, Any] = {
+            "uid": self._uid, "actid": self._actid, "exch": exch, "tsym": tsym,
+            "qty": str(int(qty)), "prc": f"{float(prc):.2f}", "prd": prd,
+            "trantype": trantype, "prctyp": prctyp,
+        }
+        if trgprc is not None:
+            jdata["trgprc"] = f"{float(trgprc):.2f}"
+        data = await self._post("GetOrderMargin", jdata)
+        return data if isinstance(data, dict) else {}
+
+    async def get_quotes(self, exch: str, token: Any) -> Dict[str, Any]:
+        """GetQuotes (#54): fresh LTP + depth read (uid mandatory).
+
+        Pure price read → returns {} on a non-Ok response.
+        """
+        data = await self._post("GetQuotes", {"uid": self._uid, "exch": exch, "token": str(token)})
+        return data if isinstance(data, dict) and data.get("stat") == "Ok" else {}
+
     # ------------------------------------------------------------------
     # Order methods (Protocol-required; host-tested on request/response only)
     # ------------------------------------------------------------------

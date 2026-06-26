@@ -73,6 +73,8 @@ class MockNoren:
         search_scrip_data: Optional[Dict[str, List[Dict[str, Any]]]] = None,
         gtt_book_data: Optional[List[Dict[str, Any]]] = None,
         enabled_gtts_data: Optional[List[str]] = None,
+        order_margin_data: Optional[Dict[str, Any]] = None,
+        quotes_data: Optional[Dict[str, Any]] = None,
         om_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> None:
         # Internal order store: norenordno -> order dict
@@ -93,6 +95,8 @@ class MockNoren:
         # Injected fixture data
         self._position_book_data: List[Dict[str, Any]] = position_book_data or []
         self._limits_data: Dict[str, Any] = limits_data or {}
+        self._order_margin_data: Dict[str, Any] = order_margin_data or {}
+        self._quotes_data: Dict[str, Any] = quotes_data or {}
         # search_scrip_data keyed by (exch, text) or just exch; we support both
         self._search_scrip_data: Dict[str, List[Dict[str, Any]]] = search_scrip_data or {}
 
@@ -113,6 +117,12 @@ class MockNoren:
 
     def set_limits(self, data: Dict[str, Any]) -> None:
         self._limits_data = data
+
+    def set_order_margin(self, data: Dict[str, Any]) -> None:
+        self._order_margin_data = data
+
+    def set_quotes(self, data: Dict[str, Any]) -> None:
+        self._quotes_data = data
 
     def set_search_scrip(self, exch: str, rows: List[Dict[str, Any]]) -> None:
         """Set the rows returned by search_scrip for a given exchange."""
@@ -189,6 +199,14 @@ class MockNoren:
     async def limits(self) -> Dict[str, Any]:
         """Return injected limits fixture."""
         return dict(self._limits_data)
+
+    async def order_margin(self, **kw: Any) -> Dict[str, Any]:
+        """Return injected GetOrderMargin fixture (raw, incl. any stat:Not_Ok)."""
+        return dict(self._order_margin_data)
+
+    async def get_quotes(self, exch: str, token: Any) -> Dict[str, Any]:
+        """Return injected GetQuotes fixture."""
+        return dict(self._quotes_data)
 
     async def search_scrip(self, exch: str, text: str) -> List[Dict[str, Any]]:
         """Return injected scrip rows for the given exchange.
