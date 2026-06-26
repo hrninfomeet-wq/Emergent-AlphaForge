@@ -1,6 +1,9 @@
 # PC-Down OCO Backstop + Execution-Quality Wins — Design
 
-> **Status:** approved design (brainstorm 2026-06-26). Next step: writing-plans → implementation.
+> **Status:** built + adversarially audited (Phases A–C) on branch `feat/pc-down-oco-backstop`
+> (off `main` @ `6caa10d`); host suite green; broker-side readback pending (Monday). Phase D
+> deferred. This doc was updated post-implementation to match what shipped (notably: OCO is
+> placed **once**, with **no auto-retry** — see Phase B.4).
 > **Anchor:** closes the real-money gap surfaced by the live-page safety audit — *a deployed
 > live position has NO broker-resting protection if the PC/backend goes down* (the software
 > guard is an in-process loop that dies with the process; no OCO/GTT is auto-placed on entry).
@@ -132,19 +135,35 @@ in `docs/Resources/flattrade-pi-api/`).
    Also: **exit product must match the open position** — `square_position` exits with the position's
    own `prd` (NRML for deployed, MIS for manual), not a hardcoded MIS, or an NRML position would not
    net.
-4. **OCO-place failure (after the entry filled).** Keep the position **software-guard-only**,
-   raise a loud **"no broker backstop on this position"** alert (a new live-page banner, sibling to
-   the UNGUARDED banner; also stamp `oco_error` on the `live_trade`), and **retry placement on the
-   next guard cycle** (best-effort). **Never** auto-square the filled entry.
+4. **OCO-place failure (after the entry filled).** The OCO is placed **exactly once**, at arm,
+   off the hot poll path, and **best-effort** (the placement is attempted only *after* the
+   mandatory software-guard register succeeds, and it never re-raises — a failed OCO never unwinds
+   a filled, registered entry). On failure, keep the position **software-guard-only** and raise a
+   loud **"no broker backstop on this position"** alert (a live-page banner sibling to the UNGUARDED
+   banner; also stamp `oco_error` on the `live_trade`). **There is deliberately NO auto-retry inside
+   the guard loop** — the guard stays a pure software *exit* loop and never gains an order-*placing*
+   transmit path (a retry on the ~1.5s poll could double-place an OCO on a transient broker error,
+   or place one on a since-squared position). Re-protection is an explicit operator action (re-arm)
+   or the reboot-reconciliation re-link (Phase C). **Never** auto-square the filled entry.
 
 ### Phase C — reboot reconciliation + depth-aware square
 
 1. **Reboot reconciliation** (extend `runtime.live_startup_recovery`, after
-   `rehydrate_from_broker`): for each `live_trades` doc still `OPEN` whose tsym is **flat/absent**
-   in the broker position book → look it up in the **trade book** (`#13`, by `norenordno`/tsym);
-   if a sell-to-close fill exists, **journal the close** via `close_live_trade` using the **true
-   fill price** (`flprc`/`avgprc`). And **cancel any orphan OCO** (`GetPendingGTTOrder` whose
-   underlying position no longer exists) so it can't fire on a later unrelated position.
+   `rehydrate_from_broker`): if the broker position book is **empty/unreadable the whole routine is
+   a no-op** — an empty book is treated as **UNKNOWN, never as "all flat"**, so a transient read can
+   never trigger a false close or a wrongful sweep. Otherwise: **(a) Close-journal** — for each
+   `live_trades` doc still `OPEN` whose tsym is **flat/absent** in the position book → look it up in
+   the **trade book** (`#13`, by `norenordno`/tsym); if a sell-to-close fill exists, **journal the
+   close** via `close_live_trade` using the **true fill price** (`flprc`/`avgprc`). **(b) Re-link**
+   — for a position that is **still held** at the broker (a rehydrated registry entry has no handle
+   to the OCO placed before the restart), find a still-resting OCO with the same tsym and store its
+   `al_id` back onto the rehydrated guard-registry entry, so the guard can later cancel it. Without
+   the re-link the resting OCO is orphaned the instant the guard next squares — free to fire on an
+   unrelated re-entry on the same strike. A held position left with **no resting OCO** after the
+   re-link is counted + logged as a **"software-guard-only"** operator signal. **(c) Orphan sweep**
+   — **cancel any orphan OCO** (`GetPendingGTTOrder` whose underlying position no longer exists) so
+   it can't fire on a later unrelated position. Ordering: re-link (b) runs **before** the sweep (c),
+   and the sweep is **flat/closed-only**, so a re-linked *held* OCO is never a sweep candidate.
 2. **Depth-aware square price.** Add `flattrade_client.get_quotes(exch, token)` → `#54 GetQuotes`;
    in `auto_square.square_position`, price the marketable-limit exit off a **fresh LTP + depth**
    (with `uc`/`lc` sanity) instead of `band_pct` on a possibly-stale `lp`. Store the contract
@@ -180,10 +199,16 @@ Deployed `live_trades` doc gains: `prd` (= "M"), `oco_al_id` (str|None), `oco_er
 
 ## Error handling & edge cases
 
-- **Double-sell / naked short** — prevented by the catastrophe band (OCO wider than the guard) +
-  cancel-OCO-before-square + the guard's `netqty==0` drop. (If the OCO fired first, the guard sees
-  flat and does not square.)
-- **OCO place fails post-fill** — software-guard-only + loud alert + retry; never auto-square.
+- **Double-sell / naked short** — prevented by three invariants together: the **derived** band
+  (OCO always wider than the guard) + **netqty re-confirm from a fresh non-empty book before every
+  square** (abort if flat) + **cancel-OCO only after a confirmed real square fill**, plus the
+  guard's `netqty==0` drop. (If the OCO fired first, the re-confirm sees flat and does not square.)
+- **Exit product mismatch** — every flatten path (`square_position` **and** the kill-switch's
+  `panic_squareoff`) exits in the **position's own product** (`prd` from the broker row → NRML for
+  deployed, MIS for manual); a hardcoded MIS would fail to net an NRML position or open a naked
+  intraday short.
+- **OCO place fails post-fill** — software-guard-only + loud `oco_error` alert; **no auto-retry**
+  in the guard loop (Phase B.4); never auto-square.
 - **OCO fired while PC down** — caught on reboot (Phase C) and journaled with the true fill.
 - **Orphan OCO** (position closed but OCO still resting) — cancelled by the close paths + the
   reboot sweep.
@@ -196,6 +221,12 @@ Deployed `live_trades` doc gains: `prd` (= "M"), `oco_al_id` (str|None), `oco_er
 - **Cancel fails** — log + the next reconciliation sweep catches the orphan.
 - **Rate limit** (10/s order API) — OCO place/cancel are per-entry/per-exit events, off the hot
   poll path; the reboot sweep is one-shot.
+- **Freeze quantity** (known limitation) — Flattrade rejects a single order above the exchange
+  freeze limit. The OCO is placed as **one order at the full position qty**; within the **20-lot
+  account ceiling** all three indices (NIFTY/SENSEX/BANKNIFTY) sit at/under their per-order freeze
+  limits, so a single OCO covers any position this build can open. A position above freeze qty (not
+  reachable under the current ceiling) would need the OCO **split across multiple orders** — **not
+  handled**; revisit if the lot ceiling is ever raised past a single index's freeze limit.
 
 ## Testing strategy
 
