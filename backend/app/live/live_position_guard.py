@@ -230,10 +230,19 @@ class LivePositionGuard:
         spot_tick_fn: Optional[Callable[[], Dict[str, Any]]] = None,
         eod_square_ist: dtime = dtime(15, 0),
         now_fn: Optional[Callable[[], datetime]] = None,
+        on_close: Optional[Callable[..., Awaitable[None]]] = None,
     ) -> None:
         self._registry = registry
         self._client_factory = client_factory
         self._square_fn = square_fn
+        # Optional close-loop hook fired after EVERY guard square (the single
+        # _square_and_record choke-point). Signature:
+        #   async on_close(entry, exit_price, exit_reason, result) -> None
+        # The production impl (runtime._live_guard_on_close) journals realized P&L
+        # to live_trades, but ONLY for a real fill — it inspects `result` and
+        # no-ops on a dry-run/failed square. Default None ⇒ no-op (host tests stay
+        # db-free). A close-loop failure NEVER kills the guard cycle.
+        self._on_close = on_close
         self._poll_seconds = float(poll_seconds)
         # Spot-mirror source: () -> live tick map {instrument_key: {"last_price",
         # "ts"/"received_ts"}}. None ⇒ spot-mirror is skipped entirely (the manual
@@ -372,6 +381,16 @@ class LivePositionGuard:
         self._stats["exits"] += 1
         exits.append({"id": entry["id"], "tsym": entry["tsym"],
                       "reason": exit_reason, "result": result})
+        # Close-loop: journal realized P&L back to live_trades (real fills only;
+        # the production hook no-ops on a dry-run/failed square). exit_price is the
+        # broker last-price refreshed onto the entry this cycle (an exit MARK, not
+        # a confirmed fill). NEVER let a close-loop failure kill the guard.
+        if self._on_close is not None:
+            try:
+                await self._on_close(
+                    entry, entry["position"].get("lp"), exit_reason, result)
+            except Exception as exc:
+                log.exception("guard on_close failed for %s: %s", entry["tsym"], exc)
 
     def _fresh_spot_price(
         self, spot_map: Dict[str, Any], instrument_key: str, now: datetime
@@ -522,19 +541,12 @@ class LivePositionGuard:
         if not ov["exit"]:
             return
 
-        # Overall breach → square EVERY remaining guarded position.
+        # Overall breach → square EVERY remaining guarded position through the
+        # single _square_and_record choke-point (remove-before-square + exit
+        # record + close-loop on_close — identical to the per-position exits).
         for entry in self._registry.snapshot():
-            self._registry.remove(entry["id"])
-            try:
-                result = await self._square_fn(
-                    client, entry["position"], reason=f"software_{ov['reason']}"
-                )
-            except Exception as exc:
-                log.exception("guard overall-square failed for %s: %s", entry["tsym"], exc)
-                result = {"squared": False, "error": str(exc)[:200]}
-            self._stats["exits"] += 1
-            exits.append({"id": entry["id"], "tsym": entry["tsym"],
-                          "reason": ov["reason"], "result": result})
+            await self._square_and_record(
+                client, entry, f"software_{ov['reason']}", ov["reason"], exits)
         self._overall_state = None  # basket squared → reset
 
     async def _run(self) -> None:

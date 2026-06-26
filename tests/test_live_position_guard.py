@@ -671,3 +671,57 @@ class TestRehydrateFromBroker:
         client = _FakeClient([{"tsym": _TSYM, "exch": "BFO", "netqty": "20"}])  # no lp/avg
         n = run(_guard(reg, client, _Recorder()).rehydrate_from_broker())
         assert n == 0 and len(reg) == 0
+
+
+# ---------------------------------------------------------------------------
+# Close-loop on_close hook (slice: live_trades realized-P&L close-loop)
+# ---------------------------------------------------------------------------
+class TestOnCloseHook:
+    def _guard_with_close(self, reg, client, rec, calls, *, now_fn=None, raise_in_close=False):
+        async def on_close(entry, exit_price, reason, result):
+            calls.append({"tsym": entry["tsym"], "exit_price": exit_price,
+                          "reason": reason, "result": result, "source": entry.get("source")})
+            if raise_in_close:
+                raise RuntimeError("boom")  # must NOT kill the cycle
+        return LivePositionGuard(
+            registry=reg, client_factory=lambda: _aw(client),
+            square_fn=rec.square_fn, on_close=on_close, now_fn=now_fn)
+
+    def test_on_close_fires_on_premium_stop_with_exit_mark_and_result(self):
+        reg = LiveMonitorRegistry()
+        _registered(reg, entry=250.0, stop_pct=30)            # stop at 175
+        client = _FakeClient([_pos(netqty=20, lp=170.0)])     # below stop → exit
+        rec, calls = _Recorder(), []
+        guard = self._guard_with_close(reg, client, rec, calls)
+        run(guard._cycle())
+        assert len(calls) == 1
+        assert calls[0]["exit_price"] == 170.0                # the broker last-price mark
+        assert calls[0]["reason"] == "stop"
+        assert calls[0]["result"]["squared"] is True
+        assert len(reg) == 0                                  # removed-before-square
+
+    def test_on_close_exception_does_not_kill_the_cycle(self):
+        reg = LiveMonitorRegistry()
+        _registered(reg, entry=250.0, stop_pct=30)
+        client = _FakeClient([_pos(netqty=20, lp=170.0)])
+        rec, calls = _Recorder(), []
+        guard = self._guard_with_close(reg, client, rec, calls, raise_in_close=True)
+        exits = run(guard._cycle())                            # must not raise
+        assert len(calls) == 1                                 # hook fired
+        assert rec.squared and rec.squared[0][0] == _TSYM      # square still happened
+        assert len(exits) == 1                                 # exit still recorded
+
+    def test_on_close_fires_for_eod_square_of_deployed_position(self):
+        reg = LiveMonitorRegistry()
+        state = build_monitor_state(250.0, stop_pct=30)
+        reg.register(key="ORDX", tsym=_TSYM, exch="BFO", qty=20, prd="I",
+                     entry_price=250.0, state=state, source="auto_live", deployment_id="dep-1")
+        client = _FakeClient([_pos(netqty=20, lp=250.0)])      # no premium breach
+        rec, calls = _Recorder(), []
+        # 15:30 IST = 10:00 UTC → past the 15:00 EOD cutoff
+        now_fn = lambda: datetime(2026, 6, 26, 10, 0, tzinfo=timezone.utc)
+        guard = self._guard_with_close(reg, client, rec, calls, now_fn=now_fn)
+        run(guard._cycle())
+        assert len(calls) == 1
+        assert calls[0]["reason"] == "eod_square"
+        assert calls[0]["source"] == "auto_live"

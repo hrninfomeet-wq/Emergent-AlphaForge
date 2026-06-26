@@ -7,21 +7,22 @@ deployment / strategy / signal / entry / lots) against the live broker position
 book (the P&L source of truth — Noren's own ``urmtom``/``rpnl``/``lp``), so the
 operator sees per-deployment live trades with real P&L.
 
-Why the broker is the P&L truth, not the journal: ``live_trades`` docs are
-inserted ``OPEN`` on entry but nothing closes them yet (the software guard squares
-the position but does not write back a realized P&L / CLOSED status — there is no
-close-loop). So ``realized_pnl`` is always None and ``status`` is always OPEN in
-the doc. Reading P&L from the journal would therefore be a lie; reading it from
-the broker position book is correct and matches the dashboard's day-P&L tile.
+P&L source by row state:
+  * OPEN  → the BROKER position book (Noren ``urmtom``/``rpnl``/``lp``) — the
+    live truth, matching the dashboard's day-P&L tile. (Reading a live position's
+    P&L from the journal would be wrong; the journal only knows the entry price.)
+  * CLOSED → the journal's ``realized_pnl`` + ``exit_price``, written by the
+    close-loop (``app.live.close_loop``) when the guard / a user stop squares the
+    position. The broker drops a flat position from its book, so the journal is
+    the only lasting record of a squared trade's result.
 
 Multiple OPEN journal rows can share one trading symbol (a tsym traded, squared,
-and re-entered all stay OPEN with no close-loop), but the broker aggregates to a
-single position row per tsym. To keep the P&L column sum-correct (it must equal
-the dashboard day-P&L), the live broker P&L for a tsym is attributed to AT MOST
-ONE journal row — the most recent by ``created_at``. Older same-tsym rows are
-marked not-at-broker (status FLAT). For max_concurrent>1 on the SAME tsym this is
-an attribution heuristic (the broker can't split aggregated MTM per entry); the
-TOTAL is always exact.
+and re-entered), but the broker aggregates to a single position row per tsym. To
+keep the live-P&L column sum-correct, the live broker P&L for a tsym is attributed
+to AT MOST ONE journal row — the most recent by ``created_at``. Older same-tsym
+rows are marked not-at-broker (CLOSED if the close-loop journaled them, else
+FLAT). For max_concurrent>1 on the SAME tsym this is an attribution heuristic (the
+broker can't split aggregated MTM per entry); the TOTAL is always exact.
 """
 from __future__ import annotations
 
@@ -115,9 +116,22 @@ def build_live_blotter(
         ltp: Optional[float] = None
         pnl: Optional[float] = None
         if held:
+            # LIVE: still open at the broker → show its live MTM (the truth).
             claimed_tsyms.add(tsym)
             ltp = _to_float(pos.get("lp"))
             pnl = _position_pnl(pos)
+            status = "LIVE"
+        elif str(t.get("status") or "").upper() == "CLOSED":
+            # CLOSED: the close-loop journaled this squared trade — surface its
+            # persisted realized P&L + exit mark (the broker book drops a flat
+            # position, so the journal is the only lasting record of the result).
+            status = "CLOSED"
+            pnl = _to_float(t.get("realized_pnl"))
+            ltp = _to_float(t.get("exit_price"))
+        else:
+            # FLAT: unfilled, superseded same-tsym, or externally closed with no
+            # close-loop data — never claim a realized P&L we don't have.
+            status = "FLAT"
 
         rows.append({
             "id": t.get("id"),
@@ -134,11 +148,11 @@ def build_live_blotter(
             "ltp": ltp,
             "pnl": pnl,
             "at_broker": held,
-            # Honest status: LIVE = held at broker now; FLAT = no live broker
-            # position for this row (squared, unfilled, or superseded by a newer
-            # entry on the same tsym). The journal has no close-loop, so we never
-            # claim a realized P&L we don't have.
-            "status": "LIVE" if held else "FLAT",
+            # Honest status: LIVE = held at broker now (live MTM); CLOSED = the
+            # close-loop journaled a realized P&L for a squared trade; FLAT = no
+            # live position and no close-loop data (unfilled / superseded / closed
+            # externally). We never claim a realized P&L we don't have.
+            "status": status,
             "norenordno": t.get("norenordno"),
         })
 

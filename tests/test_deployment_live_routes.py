@@ -378,6 +378,33 @@ class TestStop:
         assert reg.get("o2") is not None
         assert reg.get("o1") is None                     # this one removed after square
 
+    def test_stop_closes_loop_journals_realized_pnl(self, monkeypatch):
+        """A user stop of a deployment with an OPEN live_trades doc closes the
+        loop: status→CLOSED + realized_pnl from the entry's last broker mark,
+        linked by norenordno."""
+        db = FakeDB()
+        d = _deployment()
+        d["risk"]["live"] = {"armed": True, "lots": 3}
+        db.strategy_deployments.rows.append(d)
+        # OPEN live_trades doc for this deployment, keyed by norenordno "o1".
+        db.live_trades.rows.append({
+            "id": "lt-1", "norenordno": "o1", "deployment_id": "dep-1",
+            "trading_symbol": "NIFTY25000CE", "entry_price": 100.0, "quantity": 65,
+            "status": "OPEN", "realized_pnl": None,
+        })
+        reg = LiveMonitorRegistry()
+        reg.register(key="o1", tsym="NIFTY25000CE", exch="NFO", qty=65, prd="I",
+                     entry_price=100.0, state=build_monitor_state(100.0, stop_pct=50),
+                     source="auto_live", deployment_id="dep-1")
+        reg.get("o1")["position"]["lp"] = 130.0   # last broker mark → exit estimate
+        _install(monkeypatch, db, registry=reg)
+        out = asyncio.run(dep.stop_deployment_live("dep-1"))
+        assert "NIFTY25000CE" in out["squared_tsyms"]
+        row = db.live_trades.rows[0]
+        assert row["status"] == "CLOSED"
+        assert row["exit_reason"] == "manual_stop"
+        assert row["realized_pnl"] == (130.0 - 100.0) * 65   # +1950 long-only buy
+
     def test_stop_no_positions_still_disarms(self, monkeypatch):
         db = FakeDB()
         d = _deployment()

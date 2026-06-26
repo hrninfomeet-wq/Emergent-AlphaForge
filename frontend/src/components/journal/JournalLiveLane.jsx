@@ -87,9 +87,10 @@ export default function JournalLiveLane({ deployments = [], deploymentId = "", o
       </div>
 
       <div className="px-3 pb-3 -mt-1 text-[10px] text-dimmer">
-        Live trades have no close-loop — P&amp;L is the broker's live MTM (urmtom + rpnl);
-        squared, unfilled, or superseded rows show FLAT with no realized P&amp;L. Source:
-        the deployment&apos;s auto-placed live orders, attributed by strategy.
+        LIVE rows show the broker&apos;s live MTM (urmtom + rpnl); CLOSED rows show the
+        realized P&amp;L journaled by the software-guard / stop close-loop (exit price is
+        the guard&apos;s last broker mark, an estimate — not a confirmed fill). Source: the
+        deployment&apos;s auto-placed live orders, attributed by strategy.
       </div>
     </div>
   );

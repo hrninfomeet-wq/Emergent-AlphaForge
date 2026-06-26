@@ -137,16 +137,31 @@ async def _square_live_positions_for_deployment(
         actid = token.get("actid", uid)
     except Exception:
         pass  # square_position tolerates a None/limited client
+    from app.live.close_loop import should_journal_close, close_live_trade
     squared: List[str] = []
     for entry in targets:
         reg.remove(entry["id"])
         position = dict(entry.get("position") or {})
         position.setdefault("tsym", entry.get("tsym"))
+        result: Dict[str, Any] = {"squared": False}
         try:
-            await _live_square_position(client, position, reason=reason, uid=uid, actid=actid)
+            result = await _live_square_position(
+                client, position, reason=reason, uid=uid, actid=actid) or {"squared": False}
         except Exception:
             pass
         squared.append(entry.get("tsym"))
+        # Close-loop: journal realized P&L for this deployment position, but ONLY
+        # on a real fill (should_journal_close skips a failed/dry-run square and
+        # manual-source entries). Linked by the entry norenordno; never raises.
+        try:
+            if should_journal_close(entry, result):
+                await close_live_trade(
+                    get_db(), norenordno=entry.get("id"),
+                    exit_price=position.get("lp"), exit_reason=reason)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception(
+                "deployment-stop close-loop failed for %s", entry.get("tsym"))
     return squared
 
 

@@ -73,6 +73,27 @@ def test_pnl_attributed_to_newest_row_only_for_same_tsym():
     assert total == 2250.0  # exactly the broker total, not doubled
 
 
+def test_closed_trade_surfaces_journaled_realized_pnl():
+    # Close-loop journaled a squared trade (no longer at broker) → CLOSED with the
+    # persisted realized P&L + exit mark (not FLAT/null).
+    closed = _trade(status="CLOSED", realized_pnl=1950.0, exit_price=133.0)
+    rows = build_live_blotter([closed], [], DEPS)
+    r = rows[0]
+    assert r["status"] == "CLOSED"
+    assert r["at_broker"] is False
+    assert r["pnl"] == 1950.0   # journaled realized P&L
+    assert r["ltp"] == 133.0    # journaled exit mark
+
+
+def test_closed_journal_row_still_open_at_broker_prefers_live_mtm():
+    # Race: journal says CLOSED but the broker still reports the position → the
+    # live broker MTM wins (the truth), not the stale journal close.
+    closed = _trade(status="CLOSED", realized_pnl=1950.0, exit_price=133.0)
+    rows = build_live_blotter([closed], [_pos("NIFTY24JUN24000CE")], DEPS)
+    assert rows[0]["status"] == "LIVE"
+    assert rows[0]["pnl"] == 2250.0   # broker urmtom+rpnl, not the journal number
+
+
 def test_rows_sorted_newest_first():
     a = _trade(id="a", created_at="2026-06-25T01:00:00+00:00", trading_symbol="X")
     b = _trade(id="b", created_at="2026-06-25T09:00:00+00:00", trading_symbol="Y")

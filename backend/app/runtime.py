@@ -164,6 +164,29 @@ def _live_guard_spot_tick_fn() -> dict:
         return {}
 
 
+async def _live_guard_on_close(entry, exit_price, reason, result) -> None:
+    """Close-loop: journal realized P&L back to the live_trades doc when the guard
+    squares a DEPLOYED position. Fired from the guard's single _square_and_record
+    choke-point for every exit (premium stop/target/trail, spot-mirror, time-stop,
+    EOD, overall-basket).
+
+    Safety (both adversarially verified): only journals on a REAL fill —
+    ``should_journal_close`` skips a dry-run (LIVE_GUARD_ARMED off → squared=False)
+    or failed square, and skips ``source=="manual"`` single-shots (no live_trades
+    doc). Links by the entry norenordno (== entry["id"] for an auto_live entry;
+    a rehydrated entry is keyed by tsym and has no doc, so the update no-ops).
+    Idempotent (status != CLOSED). NEVER raises (the guard wraps this call)."""
+    from app.live.close_loop import should_journal_close, close_live_trade
+    if not should_journal_close(entry, result):
+        return
+    await close_live_trade(
+        get_db(),
+        norenordno=(entry or {}).get("id"),
+        exit_price=exit_price,
+        exit_reason=reason,
+    )
+
+
 live_position_guard = LivePositionGuard(
     registry=get_live_monitor_registry(),
     client_factory=_live_guard_client_factory,
@@ -171,6 +194,7 @@ live_position_guard = LivePositionGuard(
     overall_provider=_live_guard_overall_provider,
     spot_tick_fn=_live_guard_spot_tick_fn,
     eod_square_ist=dtime(15, 0),
+    on_close=_live_guard_on_close,
 )
 
 

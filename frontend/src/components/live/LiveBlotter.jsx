@@ -7,10 +7,10 @@ import { fmtINR, fmtINRSigned, colorPnL } from "@/lib/fmt";
  * LiveBlotter — deployment-attributed live trades from GET /live-broker/blotter.
  *
  * The raw position/order tables show what the BROKER holds; this answers WHICH
- * deployed strategy opened each live trade and how it's doing. P&L comes from the
- * live broker position book (the source of truth), joined to the live_trades
- * journal for attribution. Rows whose symbol is no longer held at the broker show
- * as FLAT with no fabricated P&L (the journal has no close-loop yet).
+ * deployed strategy opened each live trade and how it's doing. LIVE rows take P&L
+ * from the broker position book (the live truth); CLOSED rows take the realized
+ * P&L journaled by the close-loop when the guard/stop squared them; FLAT rows
+ * (unfilled / superseded / externally closed) carry no fabricated P&L.
  *
  * Presentational: `rows` are passed from the dashboard poll — no own poller, so
  * the page stays on one cadence. P&L color uses the shared @/lib/fmt colorPnL.
@@ -25,21 +25,23 @@ function istTime(iso) {
 const SIDE_CLASS = { LONG: "text-success", B: "text-success", SHORT: "text-danger", S: "text-danger" };
 
 export default function LiveBlotter({ rows }) {
-  const { liveCount, flatCount, livePnl } = useMemo(() => {
+  const { liveCount, closedCount, flatCount, livePnl, closedPnl } = useMemo(() => {
     const list = Array.isArray(rows) ? rows : [];
-    let lc = 0;
-    let fc = 0;
-    let pnl = 0;
+    let lc = 0, cc = 0, fc = 0, live = 0, closed = 0;
     for (const r of list) {
-      if (r?.at_broker) {
+      const st = String(r?.status ?? (r?.at_broker ? "LIVE" : "FLAT"));
+      const v = Number(r?.pnl);
+      if (st === "LIVE") {
         lc += 1;
-        const v = Number(r?.pnl);
-        if (Number.isFinite(v)) pnl += v;
+        if (Number.isFinite(v)) live += v;
+      } else if (st === "CLOSED") {
+        cc += 1;
+        if (Number.isFinite(v)) closed += v;
       } else {
         fc += 1;
       }
     }
-    return { liveCount: lc, flatCount: fc, livePnl: pnl };
+    return { liveCount: lc, closedCount: cc, flatCount: fc, livePnl: live, closedPnl: closed };
   }, [rows]);
 
   if (rows == null) {
@@ -65,15 +67,26 @@ export default function LiveBlotter({ rows }) {
         <span>
           <b className="text-success">{liveCount}</b> live
         </span>
+        {closedCount > 0 && (
+          <span>
+            <b className="text-sky-300">{closedCount}</b> closed
+          </span>
+        )}
         <span>
           <b className="text-dim">{flatCount}</b> flat
         </span>
-        {liveCount > 0 && (
-          <span className="ml-auto">
-            live P&amp;L:{" "}
-            <b className={colorPnL(livePnl)}>{fmtINRSigned(livePnl)}</b>
-          </span>
-        )}
+        <span className="ml-auto flex items-center gap-3">
+          {liveCount > 0 && (
+            <span>
+              live P&amp;L: <b className={colorPnL(livePnl)}>{fmtINRSigned(livePnl)}</b>
+            </span>
+          )}
+          {closedCount > 0 && (
+            <span>
+              realized: <b className={colorPnL(closedPnl)}>{fmtINRSigned(closedPnl)}</b>
+            </span>
+          )}
+        </span>
       </div>
 
       <div className="overflow-x-auto">
@@ -93,13 +106,14 @@ export default function LiveBlotter({ rows }) {
           </thead>
           <tbody>
             {rows.map((r, i) => {
-              const flat = !r?.at_broker;
+              const status = String(r?.status ?? (r?.at_broker ? "LIVE" : "FLAT"));
+              const isFlat = status === "FLAT";   // truly empty rows dim; CLOSED keeps its P&L visible
               const side = String(r?.direction ?? "");
               return (
                 <tr
                   key={r?.id ?? r?.norenordno ?? i}
                   className={`border-b border-line/50 hover:bg-bg-2/40 transition-colors ${
-                    flat ? "opacity-60" : ""
+                    isFlat ? "opacity-60" : ""
                   }`}
                 >
                   <td className="py-2 pr-3 pl-0 text-dim">{istTime(r?.created_at)}</td>
@@ -134,16 +148,23 @@ export default function LiveBlotter({ rows }) {
                     {r?.pnl != null ? fmtINRSigned(r.pnl) : "–"}
                   </td>
                   <td className="py-2 pl-3 pr-0 text-center">
-                    {flat ? (
-                      <span
-                        className="inline-block px-1.5 py-0.5 rounded text-[10px] border border-line text-dimmer"
-                        title="No live broker position for this row — squared, unfilled, or superseded by a newer entry on the same symbol. Realized P&L is not journaled yet (no close-loop)."
-                      >
-                        FLAT
-                      </span>
-                    ) : (
+                    {status === "LIVE" ? (
                       <span className="inline-block px-1.5 py-0.5 rounded text-[10px] border border-emerald-500/40 bg-emerald-500/10 text-emerald-300">
                         LIVE
+                      </span>
+                    ) : status === "CLOSED" ? (
+                      <span
+                        className="inline-block px-1.5 py-0.5 rounded text-[10px] border border-sky-500/40 bg-sky-500/10 text-sky-300"
+                        title="Squared — realized P&L journaled by the software guard / stop close-loop. The exit price is the guard's last broker mark (an estimate, not a confirmed fill)."
+                      >
+                        CLOSED
+                      </span>
+                    ) : (
+                      <span
+                        className="inline-block px-1.5 py-0.5 rounded text-[10px] border border-line text-dimmer"
+                        title="No live broker position and no journaled close — unfilled, superseded by a newer entry on the same symbol, or closed outside the app."
+                      >
+                        FLAT
                       </span>
                     )}
                   </td>
