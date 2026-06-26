@@ -130,6 +130,8 @@ class LiveMonitorRegistry:
         entry_ts: Any = None,
         source: str = "manual",
         deployment_id: Optional[str] = None,
+        oco_al_id: Optional[str] = None,
+        token: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Register (or replace) a position to guard. ``state`` is a monitor state
         from ``live_sl_monitor.build_monitor_state``. ``key`` is the entry
@@ -162,6 +164,7 @@ class LiveMonitorRegistry:
             "entry_ts": entry_ts,
             "source": str(source or "manual"),
             "deployment_id": deployment_id,
+            "oco_al_id": oco_al_id,
             # Async-fill bookkeeping: a just-armed position may not be in the
             # position book yet. seen_filled flips True once we observe netqty!=0;
             # misses counts consecutive not-yet-filled cycles so a never-filling
@@ -177,6 +180,7 @@ class LiveMonitorRegistry:
                 "netqty": int(qty),
                 "lp": None,
                 "prd": str(prd or "I"),
+                "token": token,
             },
         }
         self._items[str(key)] = item

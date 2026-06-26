@@ -99,6 +99,24 @@ class TestRegistry:
         r.snapshot()[0]["state"]["peak"] = 999
         assert r.get("ORD1")["state"]["peak"] == 999
 
+    def test_register_carries_oco_al_id_and_token(self):
+        # the resting OCO's alert id lives on the entry; the contract token lives
+        # on the nested position dict (so a later task can fetch fresh quotes).
+        r = LiveMonitorRegistry()
+        state = build_monitor_state(250.0, stop_pct=30)
+        r.register(key="ORD1", tsym=_TSYM, exch="BFO", qty=20, prd="I",
+                   entry_price=250.0, state=state, oco_al_id="AL1", token="999")
+        assert r.get("ORD1")["oco_al_id"] == "AL1"
+        assert r.get("ORD1")["position"]["token"] == "999"
+
+    def test_register_oco_al_id_and_token_default_none(self):
+        # callers that omit the new kwargs (manual single-shot + rehydrate) get None
+        r = LiveMonitorRegistry()
+        _registered(r)
+        entry = r.get("ORD1")
+        assert entry["oco_al_id"] is None
+        assert entry["position"]["token"] is None
+
 
 # ---------------------------------------------------------------------------
 # Guard cycle
