@@ -193,6 +193,8 @@ class _LiveArmBody(BaseModel):
     max_lots_per_day: int
     max_concurrent: int
     daily_loss_cap: Optional[float] = None
+    catastrophe_stop_pct: Optional[float] = None
+    catastrophe_target_pct: Optional[float] = None
     confirm: StrictBool = False
 
 
@@ -805,6 +807,8 @@ async def arm_deployment_live(deployment_id: str, body: _LiveArmBody):
         "max_lots_per_day": int(body.max_lots_per_day),
         "max_concurrent": int(body.max_concurrent),
         "daily_loss_cap": (float(body.daily_loss_cap) if body.daily_loss_cap is not None else None),
+        "catastrophe_stop_pct": body.catastrophe_stop_pct,
+        "catastrophe_target_pct": body.catastrophe_target_pct,
         "armed_by": "user",
         "disarmed_reason": None,
     }

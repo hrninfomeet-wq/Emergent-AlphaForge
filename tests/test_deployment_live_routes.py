@@ -199,10 +199,12 @@ def _install(monkeypatch, db, *, connected=True, can_trade=True, registry=None,
     return reg, squared
 
 
-def _arm_body(confirm=True, lots=3, max_lots_per_day=20, max_concurrent=2, daily_loss_cap=5000.0):
+def _arm_body(confirm=True, lots=3, max_lots_per_day=20, max_concurrent=2, daily_loss_cap=5000.0,
+              catastrophe_stop_pct=None, catastrophe_target_pct=None):
     return dep._LiveArmBody(
         lots=lots, max_lots_per_day=max_lots_per_day, max_concurrent=max_concurrent,
         daily_loss_cap=daily_loss_cap, confirm=confirm,
+        catastrophe_stop_pct=catastrophe_stop_pct, catastrophe_target_pct=catastrophe_target_pct,
     )
 
 
@@ -231,6 +233,25 @@ class TestArm:
         assert stored["risk"]["live"]["armed"] is True
         assert stored["risk"]["sizing"] == {"lots": 2}
         assert stored["risk"]["allow_overnight"] is False
+
+    def test_arm_persists_catastrophe_band_config(self, monkeypatch):
+        db = FakeDB()
+        db.strategy_deployments.rows.append(_deployment())
+        _install(monkeypatch, db)
+        asyncio.run(dep.arm_deployment_live(
+            "dep-1", _arm_body(catastrophe_stop_pct=48, catastrophe_target_pct=140)))
+        stored = db.strategy_deployments.rows[0]
+        assert stored["risk"]["live"]["catastrophe_stop_pct"] == 48
+        assert stored["risk"]["live"]["catastrophe_target_pct"] == 140
+
+    def test_arm_without_catastrophe_band_persists_none(self, monkeypatch):
+        db = FakeDB()
+        db.strategy_deployments.rows.append(_deployment())
+        _install(monkeypatch, db)
+        asyncio.run(dep.arm_deployment_live("dep-1", _arm_body()))
+        stored = db.strategy_deployments.rows[0]
+        assert stored["risk"]["live"]["catastrophe_stop_pct"] is None
+        assert stored["risk"]["live"]["catastrophe_target_pct"] is None
 
     def test_arm_autoplace_on_has_no_dry_run_note(self, monkeypatch):
         db = FakeDB()
