@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useState } from "react";
 import {
   AlertTriangle,
   Loader2,
@@ -6,8 +6,8 @@ import {
   ShieldAlert,
   ShieldCheck,
 } from "lucide-react";
-import { api } from "@/lib/api";
 import { fmtINR } from "@/lib/fmt";
+import { useLiveData } from "@/components/live/LiveDataProvider";
 
 /**
  * GuardPanel — read-only status of the SOFTWARE auto-exit guard.
@@ -32,10 +32,8 @@ import { fmtINR } from "@/lib/fmt";
  *
  * Defensive against undefined / partial payloads at every level.
  *
- * Props: none (self-contained).
+ * Props: none (reads guard status from the shared LiveDataProvider context).
  */
-
-const POLL_MS = 3_000;
 
 // ── Safe numeric coercion — non-finite → null (renders as "—") ───────────────
 function fin(v) {
@@ -142,33 +140,25 @@ function GuardRow({ pos }) {
 }
 
 export default function GuardPanel() {
-  const [status, setStatus] = useState(null);
-  const [loading, setLoading] = useState(true);
+  // Guard status comes from the shared LiveDataProvider (single 3s poll); this
+  // panel no longer self-polls (it previously double-polled with the dashboard).
+  const { guard, errors, refetch } = useLiveData();
   const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState(null);
-  const timerRef = useRef(null);
+
+  const status = guard;
+  const loading = status == null && !errors.guard;
+  const error = errors.guard
+    ? (errors.guard?.response?.data?.detail ?? errors.guard?.message ?? "Failed to load guard status")
+    : null;
 
   const fetchStatus = useCallback(async () => {
     setRefreshing(true);
     try {
-      const res = await api.getGuardStatus();
-      setStatus(res ?? null);
-      setError(null);
-    } catch (e) {
-      setError(e?.response?.data?.detail ?? e?.message ?? "Failed to load guard status");
+      await refetch.guard();
     } finally {
-      setLoading(false);
       setRefreshing(false);
     }
-  }, []);
-
-  useEffect(() => {
-    fetchStatus();
-    timerRef.current = setInterval(fetchStatus, POLL_MS);
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-    };
-  }, [fetchStatus]);
+  }, [refetch]);
 
   // ── Defensive derivation ──────────────────────────────────────────────────
   const armed = !!status?.armed;

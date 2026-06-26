@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   AlertTriangle,
   CheckCircle,
@@ -22,6 +22,7 @@ import OverallSettingsPanel from "@/components/live/OverallSettingsPanel";
 import GttBook from "@/components/live/GttBook";
 import GuardPanel from "@/components/live/GuardPanel";
 import MetricCard from "@/components/live/MetricCard";
+import { useLiveData } from "@/components/live/LiveDataProvider";
 
 /**
  * LiveDashboard — the assembled Live Trading terminal.
@@ -52,8 +53,6 @@ import MetricCard from "@/components/live/MetricCard";
  * non-existent import would break the build. A follow-up should add the
  * component (and lift the order-ticket state) before wiring it here.
  */
-
-const POLL_MS = 15_000;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Colour helpers (copied from the old LiveTrading.jsx — identical behaviour)
@@ -331,56 +330,19 @@ function deriveCash(limits) {
 // Main dashboard
 // ─────────────────────────────────────────────────────────────────────────────
 export default function LiveDashboard() {
-  // ── Broker state ──────────────────────────────────────────────────────────
-  const [status, setStatus] = useState(null);
-  const [limits, setLimits] = useState(null);
-  const [positions, setPositions] = useState(null);
-  const [orders, setOrders] = useState(null);
-  const [reconcile, setReconcile] = useState(null);
+  // All polling is owned by <LiveDataProvider> (one fetch per endpoint at its
+  // cadence); this page is a pure consumer. `refetch.all` re-pulls everything
+  // after an imperative action (OAuth redirect, stand-down).
+  const {
+    status, limits, positions, orders, reconcile, armState, blotter, guard, refetch,
+  } = useLiveData();
+  const fetchAll = refetch.all;
+
+  // ── Local UI-only state ────────────────────────────────────────────────────
   const [authMsg, setAuthMsg] = useState(null);
-
-  // ── Hero guard summary (GuardPanel polls its own copy; this is just the tile) ─
-  const [guard, setGuard] = useState(null);
-
-  // ── Unified execution arm-state (the single "will a signal transmit?" verdict) ─
-  const [armState, setArmState] = useState(null);
-  // Stand-down (revert manual mode → LIVE_OFFLINE) in-flight flag.
   const [standDownBusy, setStandDownBusy] = useState(false);
-
-  // ── Deployment-attributed live blotter ({rows, count} | null) ─────────────
-  const [blotter, setBlotter] = useState(null);
-
-  // ── Deployments for the Live Deployment strip ─────────────────────────────
-  const [deployments, setDeployments] = useState([]);
+  // Armed-live summary lifted up from LiveDeploymentStrip (drives the banner).
   const [armedSummary, setArmedSummary] = useState({ armedCount: 0, autoplaceArmed: null });
-
-  const timerRef = useRef(null);
-
-  // ── Poll all broker endpoints (each individually .catch'd) ────────────────
-  const fetchAll = useCallback(() => {
-    api.flattradeStatus().then(setStatus).catch(() => null);
-    api.liveBrokerLimits().then(setLimits).catch(() => null);
-    api.liveBrokerPositions().then(setPositions).catch(() => null);
-    api.liveBrokerOrders().then(setOrders).catch(() => null);
-    api.liveBrokerReconcile().then(setReconcile).catch(() => null);
-    api.getGuardStatus().then(setGuard).catch(() => null);
-    // arm-state carries `mode` verbatim (same ModeStore singleton), so the hero
-    // Mode tile derives from armState — no separate GET /live-broker/mode poll.
-    api.getArmState().then(setArmState).catch(() => null);
-    api.getLiveBlotter().then(setBlotter).catch(() => null);
-    // Deployments — for the Live Deployment strip.
-    api.listDeployments({ limit: 200 })
-      .then((d) => setDeployments((d.items || []).filter((dep) => String(dep.status || "").toUpperCase() !== "ARCHIVED")))
-      .catch(() => null);
-  }, []);
-
-  useEffect(() => {
-    fetchAll();
-    timerRef.current = setInterval(fetchAll, POLL_MS);
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-    };
-  }, [fetchAll]);
 
   // ── Stand down: revert the MANUAL ticket path to LIVE_OFFLINE ─────────────
   // PUT mode=LIVE_OFFLINE sets mode→LIVE_OFFLINE AND clears single_shot_consumed
@@ -448,19 +410,17 @@ export default function LiveDashboard() {
     return Array.isArray(guard?.guarded) ? guard.guarded.length : 0;
   })();
 
-  // UNGUARDED detection — open BROKER positions (netqty != 0) whose tsym is NOT in
-  // the software guard's registry → nothing is watching their software stop /
-  // target / EOD square. The guard re-attaches open positions on startup, so a
-  // persistent entry here is a real "exposed but unwatched" alert (e.g. a position
-  // opened outside the app, or a rehydration that couldn't reach the broker).
-  const guardedTsyms = new Set((guard?.guarded ?? []).map((g) => String(g?.tsym ?? "")));
-  const unguardedPositions =
-    positionRows == null
-      ? []
-      : positionRows.filter(isOpenPosition).filter((p) => {
-          const t = String(p?.tsym ?? p?.tradingsymbol ?? "");
-          return t && !guardedTsyms.has(t);
-        });
+  // UNGUARDED detection — open BROKER positions not watched by the software guard
+  // (nothing watches their software stop / target / EOD square). Derived from the
+  // SERVER's reconcile diff (`unknown_broker_position`), which compares a fresh
+  // broker-book + guard-registry read in ONE call. This avoids the client-side
+  // positions×guard diff, whose two inputs poll at different cadences and would
+  // FLASH a false alert on a square (the guard drops the entry within ~1.5s while
+  // the positions snapshot lags up to 15s).
+  const unguardedPositions = (reconcile?.mismatches ?? [])
+    .filter((m) => m?.type === "unknown_broker_position")
+    .map((m) => ({ tsym: m?.detail?.tsym }))
+    .filter((p) => p.tsym);
 
   return (
     <div className="space-y-4">
@@ -507,8 +467,8 @@ export default function LiveDashboard() {
         </div>
       )}
 
-      {/* ── 1b. Live Deployment strip ───────────────────────────────────── */}
-      <LiveDeploymentStrip deployments={deployments} onRefresh={fetchAll} onArmedSummaryChange={setArmedSummary} />
+      {/* ── 1b. Live Deployment strip (consumes the provider directly) ───── */}
+      <LiveDeploymentStrip onArmedSummaryChange={setArmedSummary} />
 
       {/* ── 1c. Deployment-attributed live blotter (auto-placed orders) ──── */}
       <SectionCard

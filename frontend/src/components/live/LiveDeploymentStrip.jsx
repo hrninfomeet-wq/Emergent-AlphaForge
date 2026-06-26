@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { Activity, Clock, Loader2, OctagonX, ShieldOff, Square } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { fmtINR } from "@/lib/fmt";
 import { Button } from "@/components/ui/button";
 import DeployToLivePanel from "@/components/live/DeployToLivePanel";
+import { useLiveData } from "@/components/live/LiveDataProvider";
 
 /**
  * LiveDeploymentStrip — per-deployment live-arm controls for the Live Trading page.
@@ -25,8 +26,6 @@ import DeployToLivePanel from "@/components/live/DeployToLivePanel";
  *   deployments  – array of deployment objects from /deployments (non-archived)
  *   onRefresh    – called after any arm/disarm/stop to let the parent re-fetch
  */
-
-const POLL_MS = 10_000;
 
 // ── Simple countdown from an ISO datetime ──────────────────────────────────
 function Countdown({ until }) {
@@ -157,42 +156,15 @@ function UnarmedRow({ dep, busy, onArmed }) {
 }
 
 // ── Main strip ─────────────────────────────────────────────────────────────
-export default function LiveDeploymentStrip({ deployments, onRefresh, onArmedSummaryChange }) {
-  // Map of deployment_id -> live status (null = not armed / error)
-  const [liveStatuses, setLiveStatuses] = useState({});
+export default function LiveDeploymentStrip({ onArmedSummaryChange }) {
+  // Deployments + the batched per-deployment live status come from the shared
+  // LiveDataProvider (one 10s batched poll); this strip no longer self-polls.
+  // `liveStatuses` is the provider's deployLive byId map (missing id = not armed).
+  const { deployments, deployLive: liveStatuses, refetch } = useLiveData();
   const [busy, setBusy] = useState(false);
-  const timerRef = useRef(null);
 
-  // Poll live/status for all deployments in ONE batched request (was one
-  // request per deployment — N→1). The backend omits unknown ids, so we
-  // explicitly null any polled id absent from the response, matching the old
-  // per-id catch→null behavior (disarmed/removed rows clear).
-  const pollStatuses = useCallback(() => {
-    const ids = (deployments || []).map((dep) => dep.id).filter(Boolean);
-    if (ids.length === 0) return;
-    api.liveStatusBatch(ids)
-      .then((byId) => {
-        setLiveStatuses((prev) => {
-          const next = { ...prev };
-          for (const id of ids) next[id] = byId?.[id] ?? null;
-          return next;
-        });
-      })
-      .catch(() => {
-        // hard error (e.g. network) → leave prior statuses untouched
-      });
-  }, [deployments]);
-
-  useEffect(() => {
-    pollStatuses();
-    timerRef.current = setInterval(pollStatuses, POLL_MS);
-    return () => { if (timerRef.current) clearInterval(timerRef.current); };
-  }, [pollStatuses]);
-
-  const refreshAll = useCallback(async () => {
-    pollStatuses();
-    onRefresh?.();
-  }, [pollStatuses, onRefresh]);
+  // After any arm/disarm/stop, re-pull everything (statuses + roster + arm-state).
+  const refreshAll = refetch.all;
 
   const doDisarm = async (dep) => {
     if (!window.confirm(`Disarm "${dep.name || dep.id}"? No more live orders will be placed.`)) return;

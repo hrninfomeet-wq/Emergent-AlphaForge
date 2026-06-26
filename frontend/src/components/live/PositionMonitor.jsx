@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { CheckCircle2, Heart, Loader2, ShieldOff, Square, XCircle, XOctagon } from "lucide-react";
 import { api } from "@/lib/api";
 import { fmtINR } from "@/lib/fmt";
+import { useLiveData } from "@/components/live/LiveDataProvider";
 
 /**
  * PositionMonitor — polls getLiveTestSession every 3s.
@@ -13,7 +14,6 @@ import { fmtINR } from "@/lib/fmt";
  *   none                        → nothing rendered
  */
 
-const POLL_MS = 3_000;
 const HEARTBEAT_STALE_MS = 10_000; // amber if heartbeat older than this
 
 /** Statuses that represent a live position that still needs watching. */
@@ -57,38 +57,21 @@ function HeartbeatDot({ heartbeat }) {
 }
 
 export default function PositionMonitor() {
-  const [session, setSession] = useState(null);
-  const [loading, setLoading] = useState(true);
+  // Session comes from the shared LiveDataProvider (single 3s poll); imperative
+  // refetch after a Square/Kill action via refetch.session().
+  const { session, refetch } = useLiveData();
   const [squareBusy, setSquareBusy] = useState(false);
   const [killBusy, setKillBusy] = useState(false);
   const [actionMsg, setActionMsg] = useState(null);
   const [dismissed, setDismissed] = useState(false);
-  const timerRef = useRef(null);
 
-  const fetchSession = useCallback(() => {
-    api
-      .getLiveTestSession()
-      .then((data) => {
-        setSession(data);
-        setLoading(false);
-        // Reset dismissed when a new active session appears
-        if (data && ACTIVE_STATUSES.includes(data.status)) {
-          setDismissed(false);
-        }
-      })
-      .catch(() => {
-        setLoading(false);
-      });
-  }, []);
-
+  // Re-show a previously-dismissed reject/closed card when a NEW active session
+  // appears (preserves the old per-poll setDismissed(false) side-effect).
   useEffect(() => {
-    fetchSession();
-    timerRef.current = setInterval(fetchSession, POLL_MS);
-    return () => clearInterval(timerRef.current);
-  }, [fetchSession]);
+    if (session && ACTIVE_STATUSES.includes(session.status)) setDismissed(false);
+  }, [session]);
 
-  if (loading) return null;
-  if (!session) return null;
+  if (session == null) return null;
 
   const { status } = session;
 
@@ -181,7 +164,7 @@ export default function PositionMonitor() {
     try {
       const res = await api.squareLivePosition();
       setActionMsg({ ok: true, text: res?.message ?? "Square-off sent." });
-      fetchSession();
+      refetch.session();
     } catch (e) {
       setActionMsg({ ok: false, text: e?.response?.data?.detail ?? "Square-off failed." });
     } finally {
@@ -196,7 +179,7 @@ export default function PositionMonitor() {
     try {
       const res = await api.liveKillSwitch();
       setActionMsg({ ok: true, text: res?.message ?? "Kill switch triggered." });
-      fetchSession();
+      refetch.session();
     } catch (e) {
       setActionMsg({ ok: false, text: e?.response?.data?.detail ?? "Kill switch failed." });
     } finally {

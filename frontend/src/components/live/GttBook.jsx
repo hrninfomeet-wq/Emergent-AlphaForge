@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useState } from "react";
 import { Loader2, RefreshCw, ShieldAlert, XCircle } from "lucide-react";
 import { api } from "@/lib/api";
 import { fmtNum } from "@/lib/fmt";
+import { useLiveData } from "@/components/live/LiveDataProvider";
 
 /**
  * GttBook — the OCO-GTT order book for the live page.
@@ -41,8 +42,6 @@ import { fmtNum } from "@/lib/fmt";
  *   api.cancelGtt(al_id, kind) → { canceled?: boolean, result?: {...} }
  *     canceled === false (or a thrown error) surfaces a reason on the row.
  */
-
-const POLL_MS = 6_000;
 
 const TRAN_LABEL = { B: "Buy", S: "Sell", b: "Buy", s: "Sell" };
 const TRAN_CLASS = {
@@ -232,36 +231,25 @@ function GttRow({ row, onCancelled }) {
 }
 
 export default function GttBook() {
-  const [gtt, setGtt] = useState([]);
-  const [loading, setLoading] = useState(true);
+  // GTT/OCO rows come from the shared LiveDataProvider (single 6s poll).
+  const { gtt: gttResp, errors, refetch } = useLiveData();
   const [refreshing, setRefreshing] = useState(false);
-  const [fetchError, setFetchError] = useState(null);
-  const timerRef = useRef(null);
 
+  const gtt = Array.isArray(gttResp?.gtt) ? gttResp.gtt : [];
+  const loading = gttResp == null && !errors.gtt;
+  const fetchError = errors.gtt
+    ? (errors.gtt?.response?.data?.detail ?? errors.gtt?.message ?? "Failed to load GTT orders")
+    : null;
+
+  // Manual refresh + post-cancel re-pull go through the shared poller.
   const fetchGtt = useCallback(async () => {
     setRefreshing(true);
     try {
-      const res = await api.listGtt();
-      const rows = Array.isArray(res?.gtt) ? res.gtt : [];
-      setGtt(rows);
-      setFetchError(null);
-    } catch (e) {
-      setFetchError(
-        e?.response?.data?.detail ?? e?.message ?? "Failed to load GTT orders"
-      );
+      await refetch.gtt();
     } finally {
-      setLoading(false);
       setRefreshing(false);
     }
-  }, []);
-
-  useEffect(() => {
-    fetchGtt();
-    timerRef.current = setInterval(fetchGtt, POLL_MS);
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-    };
-  }, [fetchGtt]);
+  }, [refetch]);
 
   return (
     <div className="space-y-3">
