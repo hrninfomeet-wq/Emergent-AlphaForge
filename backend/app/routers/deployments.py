@@ -141,6 +141,18 @@ async def _square_live_positions_for_deployment(
     squared: List[str] = []
     for entry in targets:
         reg.remove(entry["id"])
+        # Cancel the resting broker OCO for this position. This is a USER-INITIATED
+        # flatten that always transmits, so cancel-then-square is safe (square_position
+        # re-confirms netqty as a backstop). Best-effort: a cancel failure must never
+        # break the stop — log and continue to the square.
+        if entry.get("oco_al_id") and client is not None and hasattr(client, "cancel_oco"):
+            try:
+                await client.cancel_oco(entry["oco_al_id"])
+            except Exception:
+                import logging
+                logging.getLogger(__name__).exception(
+                    "deployment-stop cancel_oco failed for %s (al_id=%s)",
+                    entry.get("tsym"), entry.get("oco_al_id"))
         position = dict(entry.get("position") or {})
         position.setdefault("tsym", entry.get("tsym"))
         result: Dict[str, Any] = {"squared": False}

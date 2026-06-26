@@ -426,6 +426,101 @@ class TestStop:
 
 
 # ===========================================================================
+# stop / stop-all — cancel the resting broker OCO for each flattened position
+# ===========================================================================
+
+class _FakeOcoClient:
+    """A broker client that only exposes async cancel_oco (recording). The
+    _install fake already handles _live_square_position, so this client just
+    needs cancel_oco to satisfy the deployment-stop OCO-cancel path."""
+    def __init__(self):
+        self.cancel_oco_calls: List[str] = []
+
+    async def cancel_oco(self, al_id):
+        self.cancel_oco_calls.append(al_id)
+        return {"ok": True}
+
+
+def _patch_get_client(monkeypatch, client):
+    """Make the DIRECT `from app.routers.live_broker import _get_client` inside
+    _square_live_positions_for_deployment resolve to our fake client. The cancel
+    path imports the function from app.routers.live_broker, so patch THAT module
+    attr (there is no dep._live_get_client seam)."""
+    import app.routers.live_broker as lb
+
+    async def _gc():
+        return client
+    monkeypatch.setattr(lb, "_get_client", _gc, raising=False)
+
+
+class TestStopCancelsOco:
+    def test_stop_cancels_resting_oco_for_flattened_position(self, monkeypatch):
+        """A deployed entry carrying oco_al_id="OCO1" → stopping the deployment
+        cancels the resting broker OCO via client.cancel_oco("OCO1")."""
+        db = FakeDB()
+        d = _deployment()
+        d["risk"]["live"] = {"armed": True, "lots": 3}
+        db.strategy_deployments.rows.append(d)
+        reg = LiveMonitorRegistry()
+        reg.register(key="o1", tsym="NIFTY25000CE", exch="NFO", qty=65, prd="I",
+                     entry_price=100.0, state=build_monitor_state(100.0, stop_pct=50),
+                     deployment_id="dep-1", oco_al_id="OCO1")
+        reg, squared = _install(monkeypatch, db, registry=reg)
+        client = _FakeOcoClient()
+        _patch_get_client(monkeypatch, client)
+        out = asyncio.run(dep.stop_deployment_live("dep-1"))
+        assert squared == ["NIFTY25000CE"]
+        assert client.cancel_oco_calls == ["OCO1"]
+        assert "NIFTY25000CE" in out["squared_tsyms"]
+
+    def test_stop_without_oco_al_id_does_not_cancel(self, monkeypatch):
+        """An entry with NO oco_al_id → cancel_oco is never called."""
+        db = FakeDB()
+        d = _deployment()
+        d["risk"]["live"] = {"armed": True, "lots": 3}
+        db.strategy_deployments.rows.append(d)
+        reg = LiveMonitorRegistry()
+        reg.register(key="o1", tsym="NIFTY25000CE", exch="NFO", qty=65, prd="I",
+                     entry_price=100.0, state=build_monitor_state(100.0, stop_pct=50),
+                     deployment_id="dep-1")          # no oco_al_id
+        reg, squared = _install(monkeypatch, db, registry=reg)
+        client = _FakeOcoClient()
+        _patch_get_client(monkeypatch, client)
+        out = asyncio.run(dep.stop_deployment_live("dep-1"))
+        assert squared == ["NIFTY25000CE"]
+        assert client.cancel_oco_calls == []          # no OCO to cancel
+        assert "NIFTY25000CE" in out["squared_tsyms"]
+
+    def test_stop_all_cancels_resting_oco_for_flattened_position(self, monkeypatch):
+        """stop-all flattens armed live deployments and cancels each resting OCO."""
+        db = FakeDB()
+        armed = _deployment(dep_id="dep-1")
+        armed["risk"]["live"] = {"armed": True, "lots": 3}
+        db.strategy_deployments.rows.append(armed)
+        reg = LiveMonitorRegistry()
+        reg.register(key="o1", tsym="NIFTY25000CE", exch="NFO", qty=65, prd="I",
+                     entry_price=100.0, state=build_monitor_state(100.0, stop_pct=50),
+                     deployment_id="dep-1", oco_al_id="OCO1")
+        reg, squared = _install(monkeypatch, db, registry=reg)
+        client = _FakeOcoClient()
+        _patch_get_client(monkeypatch, client)
+
+        async def _no_paper(db_, **kw):
+            return []
+        monkeypatch.setattr(dep, "square_off_open_paper_trades", _no_paper)
+
+        class _Stream:
+            def latest_tick_map(self):
+                return {}
+        monkeypatch.setattr(dep, "upstox_stream_manager", _Stream())
+
+        out = asyncio.run(dep.stop_all_deployments())
+        assert "dep-1" in out["disarmed_live_deployment_ids"]
+        assert squared == ["NIFTY25000CE"]
+        assert client.cancel_oco_calls == ["OCO1"]
+
+
+# ===========================================================================
 # status
 # ===========================================================================
 
