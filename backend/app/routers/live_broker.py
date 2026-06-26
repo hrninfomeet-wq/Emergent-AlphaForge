@@ -1914,6 +1914,36 @@ async def live_kill_switch():
         )
         transmitted = True
 
+        # Sweep ALL resting GTT/OCO alerts. panic_squareoff cancels working
+        # ORDERS + flattens positions but does NOT touch resting GTT/OCO — those
+        # would survive the panic and could fire later. Best-effort: a sweep
+        # failure must NEVER block the panic flatten.
+        try:
+            for row in (await client.gtt_book() or []):
+                al_id = row.get("al_id") or row.get("Al_id")
+                if not al_id:
+                    continue
+                # Pick cancel_oco vs cancel_gtt from the row's ai_t: an OCO
+                # bracket reads back as the documented "LMT_BOS_O" (see gtt.py
+                # AI_T_OCO); anything else is a single-leg GTT. If ai_t is
+                # missing/ambiguous, try cancel_oco then cancel_gtt (best-effort).
+                ai_t = str(row.get("ai_t") or "").strip().upper()
+                try:
+                    if ai_t == "LMT_BOS_O":
+                        await client.cancel_oco(al_id)
+                    elif ai_t:
+                        await client.cancel_gtt(al_id)
+                    else:
+                        try:
+                            await client.cancel_oco(al_id)
+                        except Exception:
+                            await client.cancel_gtt(al_id)
+                except Exception as exc:
+                    log.warning("kill_switch: gtt/oco cancel failed for %s: %s",
+                                al_id, exc)
+        except Exception as exc:
+            log.warning("kill_switch: gtt/oco sweep failed: %s", exc)
+
         # Revert mode
         await _revert_mode()
 

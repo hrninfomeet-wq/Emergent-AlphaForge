@@ -714,6 +714,185 @@ def test_kill_switch_not_connected_returns_plan_not_transmitted():
                 pass
 
 
+# ---------------------------------------------------------------------------
+# B6 — kill-switch must ALSO sweep every resting GTT/OCO alert.
+#
+# panic_squareoff cancels working ORDERS + flattens positions but does NOT
+# touch resting GTT/OCO alerts — those would survive and fire later. So the
+# kill-switch additionally cancels every row in gtt_book(). It picks cancel_oco
+# vs cancel_gtt from the row's ai_t (OCO bracket = "LMT_BOS_O"), falling back to
+# try-both when ai_t is missing/ambiguous. Best-effort: a sweep failure must
+# NEVER block the panic flatten.
+# ---------------------------------------------------------------------------
+
+
+class _RecordingGttClient(MockNoren):
+    """MockNoren that records every al_id passed to cancel_oco / cancel_gtt.
+
+    The injected gtt_book rows are NOT placed through this client, so the base
+    MockNoren's internal _gtts dict never sees them — we record the calls
+    directly here to assert the sweep cancelled each resting alert.
+    """
+
+    def __init__(self, *args, gtt_raises: bool = False, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.oco_cancels: List[str] = []
+        self.gtt_cancels: List[str] = []
+        self._gtt_raises = gtt_raises
+
+    async def cancel_oco(self, al_id):  # type: ignore[override]
+        self.oco_cancels.append(str(al_id))
+        return await super().cancel_oco(al_id)
+
+    async def cancel_gtt(self, al_id):  # type: ignore[override]
+        self.gtt_cancels.append(str(al_id))
+        return await super().cancel_gtt(al_id)
+
+    async def gtt_book(self):  # type: ignore[override]
+        if self._gtt_raises:
+            raise RuntimeError("gtt_book read failed")
+        return await super().gtt_book()
+
+
+def test_kill_switch_sweeps_all_resting_gtt_oco():
+    """A connected kill-switch cancels EVERY resting GTT/OCO row by al_id."""
+    cl = _RecordingGttClient(
+        limits_data=_GOOD_LIMITS,
+        position_book_data=[{
+            "tsym": "NIFTY26JUN26C25000", "exch": "NFO",
+            "netqty": "65", "lp": "200.0",
+        }],
+        search_scrip_data={"NFO": [_NIFTY_SCRIP]},
+        gtt_book_data=[
+            # OCO bracket (ai_t == LMT_BOS_O) — al_id keyed lowercase
+            {"ai_t": "LMT_BOS_O", "al_id": "AL_OCO_1", "tsym": "NIFTY26JUN26C25000"},
+            # Single GTT (LTP direction) — al_id keyed UPPER-case Al_id
+            {"ai_t": "LTP_B_O", "Al_id": "AL_GTT_2", "tsym": "NIFTY26JUN26P25000"},
+        ],
+    )
+    tc = _make_app(client=cl)
+    try:
+        r = tc.post("/live-broker/kill-switch")
+        assert r.status_code == 200
+        assert r.json()["transmitted"] is True
+        # Every resting alert was cancelled exactly once (by either route).
+        all_cancelled = set(cl.oco_cancels) | set(cl.gtt_cancels)
+        assert all_cancelled == {"AL_OCO_1", "AL_GTT_2"}
+    finally:
+        _stop_patches(tc)
+
+
+def test_kill_switch_picks_oco_vs_gtt_by_ai_t():
+    """OCO row (ai_t LMT_BOS_O) → cancel_oco; single GTT row → cancel_gtt."""
+    cl = _RecordingGttClient(
+        limits_data=_GOOD_LIMITS,
+        position_book_data=[],
+        search_scrip_data={"NFO": [_NIFTY_SCRIP]},
+        gtt_book_data=[
+            {"ai_t": "LMT_BOS_O", "al_id": "OCO_A"},
+            {"ai_t": "LTP_B_O", "al_id": "GTT_B"},
+        ],
+    )
+    tc = _make_app(client=cl)
+    try:
+        r = tc.post("/live-broker/kill-switch")
+        assert r.status_code == 200
+        # The OCO bracket went to cancel_oco; the single GTT went to cancel_gtt.
+        assert "OCO_A" in cl.oco_cancels
+        assert "GTT_B" in cl.gtt_cancels
+        # And NOT cross-wired.
+        assert "GTT_B" not in cl.oco_cancels
+        assert "OCO_A" not in cl.gtt_cancels
+    finally:
+        _stop_patches(tc)
+
+
+def test_kill_switch_sweep_skips_rows_without_al_id():
+    """A gtt row carrying no al_id is skipped, not cancelled with an empty id."""
+    cl = _RecordingGttClient(
+        limits_data=_GOOD_LIMITS,
+        position_book_data=[],
+        search_scrip_data={"NFO": [_NIFTY_SCRIP]},
+        gtt_book_data=[
+            {"ai_t": "LMT_BOS_O"},                       # no al_id → skipped
+            {"ai_t": "LMT_BOS_O", "al_id": "AL_OK"},     # cancelled
+        ],
+    )
+    tc = _make_app(client=cl)
+    try:
+        r = tc.post("/live-broker/kill-switch")
+        assert r.status_code == 200
+        cancelled = set(cl.oco_cancels) | set(cl.gtt_cancels)
+        assert cancelled == {"AL_OK"}
+        assert "" not in cancelled
+    finally:
+        _stop_patches(tc)
+
+
+def test_kill_switch_sweep_is_best_effort_never_blocks_flatten():
+    """A gtt_book read that raises must NOT break the panic flatten/transmit."""
+    cl = _RecordingGttClient(
+        limits_data=_GOOD_LIMITS,
+        position_book_data=[{
+            "tsym": "NIFTY26JUN26C25000", "exch": "NFO",
+            "netqty": "65", "lp": "200.0",
+        }],
+        search_scrip_data={"NFO": [_NIFTY_SCRIP]},
+        gtt_raises=True,  # gtt_book() blows up
+    )
+    tc = _make_app(client=cl)
+    try:
+        r = tc.post("/live-broker/kill-switch")
+        # The panic flatten still ran and the route still returns 200/transmitted.
+        assert r.status_code == 200
+        assert r.json()["transmitted"] is True
+        # The position was still flattened (a SELL exit was placed).
+        book = asyncio.run(cl.order_book())
+        assert any(o.get("trantype") == "S" for o in book)
+    finally:
+        _stop_patches(tc)
+
+
+def test_kill_switch_not_connected_does_not_sweep():
+    """Not-connected kill-switch performs NO sweep and does not crash."""
+    ms = _make_mode_store(mode="LIVE_OFFLINE")
+    cs = _make_config_store()
+    ss = _make_session_store()
+    app = FastAPI()
+    app.include_router(_routes.api)
+
+    patches = {
+        "_mode_store": lambda: ms,
+        "_intent_store": _make_intent_store,
+        "_config_store": lambda: cs,
+        "_session_store": lambda: ss,
+        "_order_client": lambda: None,
+        "_l3_engine": lambda: FakeEngine(),
+        "_get_client": AsyncMock(side_effect=Exception("not connected")),
+        "_get_token_doc": AsyncMock(return_value={"jKey": "x", "uid": "u", "actid": "u"}),
+        "_schedule_auto_square": MagicMock(),
+        "_utcnow_iso": lambda: "2026-06-22T06:00:00+00:00",
+    }
+    ctx = []
+    for name, val in patches.items():
+        p = patch.object(_routes, name, val)
+        ctx.append(p)
+        p.start()
+    try:
+        tc = TestClient(app, raise_server_exceptions=True)
+        r = tc.post("/live-broker/kill-switch")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["connected"] is False
+        assert data["transmitted"] is False
+    finally:
+        for p in ctx:
+            try:
+                p.stop()
+            except RuntimeError:
+                pass
+
+
 # ===========================================================================
 # Background auto-square timer helper (_check_and_square_if_due)
 # ===========================================================================
