@@ -161,6 +161,7 @@ def build_intent(
     levels: Dict[str, Any],
     client_order_id: str,
     buffer_pct: Optional[float] = None,
+    product: str = "MIS",
     search_fn: Callable[[str, str], List[Dict[str, Any]]],
 ) -> Tuple[Optional[OrderIntent], List[Verdict], Optional[int]]:
     """Build and safety-check a live OrderIntent.
@@ -191,6 +192,10 @@ def build_intent(
     buffer_pct:
         Marketable cross buffer (default 0.5%).  CLAMPED by band_pct so it
         can NEVER produce a price outside the band guard.
+    product:
+        "MIS" (intraday, prd="I"; default) or "NRML" (carryforward, prd="M").
+        Deployed entries pass "NRML" so a resting GTT/OCO can attach to a carry
+        position.  An unrecognised value fails CLOSED (verdict check="product").
     search_fn:
         Sync callable(exch, query) -> list[scrip_dict] injected for symbol resolution.
 
@@ -204,6 +209,18 @@ def build_intent(
     """
     verdicts: List[Verdict] = []
     buf = buffer_pct if buffer_pct is not None else _DEFAULT_BUFFER_PCT
+
+    # ------------------------------------------------------------------
+    # Step 0 — validate product → Noren prd code (fail CLOSED on unknown, do
+    # NOT raise a KeyError on the OrderIntent ctor below).  MIS=intraday I,
+    # NRML=carryforward M (a carry product is REQUIRED for a resting GTT/OCO).
+    # ------------------------------------------------------------------
+    if product not in _PRODUCT_TO_PRD:
+        return _fail(
+            verdicts, "product",
+            f"product {product!r} not recognised; expected one of {sorted(_PRODUCT_TO_PRD)}",
+        )
+    prd = _PRODUCT_TO_PRD[product]
 
     # ------------------------------------------------------------------
     # Step 1 — resolve symbol
@@ -293,7 +310,7 @@ def build_intent(
         tsym=resolved["tsym"],
         qty=qty,
         prc=prc,
-        prd="I",
+        prd=prd,
         ret="DAY",
         trgprc=trgprc,
         remarks=client_order_id,  # broker must echo cid for resume-reconcile (L1.2)

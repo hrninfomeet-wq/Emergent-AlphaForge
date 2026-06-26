@@ -429,6 +429,7 @@ async def place_deployed_order(
         levels=levels,
         client_order_id=cid,
         buffer_pct=buffer_pct,
+        product="NRML",   # carry product → a resting GTT/OCO can attach (A3)
         search_fn=search_fn,
     )
 

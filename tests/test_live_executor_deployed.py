@@ -171,6 +171,10 @@ def test_deployed_dry_run_when_autoplace_unset(monkeypatch):
     assert result["would_send"] is not None
     # would_send carries the broker jdata for the FULL 2-lot order
     assert result["would_send"]["qty"] == str(2 * _LOT_SIZE)
+    # Deployed entries must be placed NRML (prd="M") so a resting OCO can attach.
+    assert result["would_send"]["prd"] == "M", (
+        f"deployed entry must be NRML (prd='M'), got {result['would_send'].get('prd')!r}"
+    )
     assert _book(client) == [], "no place_order in dry-run"
 
 
