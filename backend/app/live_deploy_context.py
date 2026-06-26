@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import functools
 import logging
+import math
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
@@ -116,10 +117,6 @@ def arm_for(
         # register). The spot-mirror exit remains additive.
         if stop_pct is None and levels.get("stop_pts") is None:
             stop_pct = _GUARD_DEFAULT_STOP_PCT
-        # The resolved guard stop_pct (post deep-default floor) is the floor the
-        # catastrophe band must sit strictly WIDER than (so the resting OCO never
-        # races the in-process software guard). Capture it for compute_catastrophe_band.
-        guard_stop_pct = stop_pct
         state = build_monitor_state(
             float(ref_ltp),
             stop_pct=stop_pct,
@@ -128,6 +125,24 @@ def arm_for(
             target_pts=levels.get("target_pts"),
             trail=levels.get("trail"),
         )
+        # The catastrophe band must sit strictly WIDER than the guard's ACTUAL
+        # resolved stop level (so the resting OCO never races the in-process software
+        # guard). build_monitor_state["stop_level"] is the ABSOLUTE premium stop the
+        # guard will use — derived from pct OR pts OR the deep-default. Derive
+        # guard_stop_pct as a PERCENT of entry FROM that resolved level so a POINTS
+        # stop (where stop_pct is None) is handled correctly: a None pct would
+        # collapse compute_catastrophe_band to its 50% default, which for a stop
+        # deeper than 50% would land the OCO SL ABOVE the real guard stop and fire
+        # first (the BLOCKER). Fall back to the pct (incl. the deep-default) only when
+        # the level is unusable.
+        sl = state.get("stop_level")
+        try:
+            ref = float(ref_ltp)
+        except (TypeError, ValueError):
+            ref = 0.0
+        guard_stop_pct = stop_pct
+        if sl is not None and math.isfinite(float(sl)) and ref > 0:
+            guard_stop_pct = (1.0 - float(sl) / ref) * 100.0
         get_registry().register(
             key=norenordno,
             tsym=intent.tsym,

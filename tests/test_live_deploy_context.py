@@ -253,6 +253,44 @@ async def test_arm_for_places_resting_oco_with_catastrophe_band(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_arm_for_points_stop_oco_sl_strictly_below_guard(monkeypatch):
+    """BLOCKER REGRESSION: a deployment with a POINTS stop (stop_pts=70, no
+    stop_pct) at ref_ltp=100 has a guard stop LEVEL of 30.0. _arm must derive the
+    catastrophe band from that RESOLVED absolute level (guard_stop_pct=70), NOT
+    from the None pct that previously collapsed to the 50% default — so the placed
+    OCO SL trigger lands STRICTLY BELOW 30.0 and can never fire before the software
+    guard. With the old code the band yielded an SL trigger of 50.0 (>= 30.0),
+    inverting the design."""
+    reg = FakeRegistry()
+    monkeypatch.setattr(ldc, "get_registry", lambda: reg)
+    client = FakeOcoClient({"ok": True, "al_id": "OCO_PTS"})
+
+    ref_ltp = 100.0
+    plan = _plan(levels={"stop_pct": None, "target_pct": None,
+                         "stop_pts": 70.0, "target_pts": None, "trail": None})
+    arm = functools.partial(ldc.arm_for, client=client, uid="U", actid="A")(
+        plan, _signal("dep-pts"), ref_ltp=ref_ltp,
+    )
+    oco_al_id = await arm(FakeIntent(prd="M"), "NPTS")
+
+    # The guard's resolved absolute stop level is 30.0 (100 - 70 pts).
+    guard_stop_level = 30.0
+    # registration captured that resolved level.
+    assert reg.calls[0]["state"]["stop_level"] == pytest.approx(guard_stop_level)
+
+    # The placed OCO SL trigger must be STRICTLY BELOW the guard stop level.
+    assert len(client.oco_calls) == 1
+    sent = client.oco_calls[0]
+    oiv = {row["var_name"]: float(row["d"]) for row in sent["oivariable"]}
+    sl_trigger = oiv["x"]
+    assert sl_trigger < guard_stop_level, (
+        f"pts-stop OCO SL trigger {sl_trigger} NOT strictly below guard "
+        f"stop level {guard_stop_level} — broker OCO would fire before the guard"
+    )
+    assert oco_al_id == "OCO_PTS"
+
+
+@pytest.mark.asyncio
 async def test_arm_for_oco_reject_leaves_no_backstop_but_never_raises(monkeypatch):
     """place_oco → {"ok": False} → registry entry oco_al_id stays None, _arm returns
     None, and NO exception is raised (a transient OCO reject must NEVER unwind an

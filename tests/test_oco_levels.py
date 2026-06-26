@@ -101,3 +101,66 @@ def test_defaults_applied_when_none():
 @pytest.mark.parametrize("bad", [float("nan"), float("inf"), -float("inf"), 0.0, -5.0, None, "x"])
 def test_non_finite_or_nonpositive_entry_returns_none(bad):
     assert compute_catastrophe_band(bad, guard_stop_pct=50) is None
+
+
+# --------------------------------------------------------------------------- #
+# POINTS-derived guard stops (the BLOCKER): when a deployment uses a pts stop the
+# caller derives guard_stop_pct from the guard's resolved ABSOLUTE stop level. A
+# deep pts stop (e.g. stop_pts=70 → guard stop level 30.0 → guard_stop_pct=70)
+# must STILL produce an sl_trigger strictly BELOW the guard level — never the old
+# 50%-default that would land ABOVE a deeper-than-50% guard stop and fire first.
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("guard_stop_pct", [30, 50, 60, 70, 80])
+def test_points_derived_guard_stop_band_strictly_wider(guard_stop_pct):
+    """entry=100, so guard_stop_pct == stop_pts. Whenever a band is returned the
+    sl_trigger must be a STRICTLY lower premium than the guard's own stop level
+    entry*(1 - guard_stop_pct/100). This is the inverted-OCO BLOCKER."""
+    entry = 100.0
+    band = compute_catastrophe_band(entry, guard_stop_pct=guard_stop_pct)
+    guard_level = entry * (1 - guard_stop_pct / 100.0)
+    if band is not None:
+        sl_trigger = band[0]
+        assert sl_trigger < guard_level, (
+            f"guard_stop_pct={guard_stop_pct}: sl_trigger={sl_trigger} "
+            f"NOT strictly below guard_level={guard_level}"
+        )
+
+
+@pytest.mark.parametrize("guard_stop_pct", [81, 85, 90, 95, 120])
+def test_no_safe_gap_returns_none(guard_stop_pct):
+    """When guard_stop_pct + MIN_GAP_PP exceeds the ~95% premium floor there is no
+    room for a safe catastrophe gap below the guard → GRACEFUL DEGRADE to None
+    (the caller then leaves the position software-guard-only). The old silent
+    clamp to 95% would have tied the OCO at-or-above the guard — that must be gone."""
+    assert compute_catastrophe_band(100.0, guard_stop_pct=guard_stop_pct) is None
+
+
+def test_just_within_safe_gap_returns_band():
+    # 80 + 15 = 95 == cap → still room (boundary): a band IS returned, strictly wider.
+    band = compute_catastrophe_band(100.0, guard_stop_pct=80)
+    assert band is not None
+    sl_trigger = band[0]
+    assert sl_trigger < 100.0 * (1 - 80 / 100.0)  # < 20.0
+
+
+@pytest.mark.parametrize("bad_target", [-5.0, 0.0, float("nan"), float("inf")])
+def test_invalid_target_falls_back_to_default(bad_target):
+    """A non-finite or <= 0 target_pct must fall back to DEFAULT_TARGET_PCT (135),
+    never resting a negative/zero broker TP."""
+    band = compute_catastrophe_band(100.0, guard_stop_pct=30, target_pct=bad_target)
+    assert band is not None
+    tp_trigger = band[2]
+    # default 135 → tp_trigger ~= 235.0; and ALWAYS strictly above entry.
+    assert tp_trigger == pytest.approx(235.0)
+    assert tp_trigger > 100.0
+
+
+def test_absurd_target_bounded_not_resting_nonsense():
+    """A mistyped absurd target (e.g. 5000%) must not rest a nonsensical broker TP —
+    it is capped to a sane max (or falls back to the default), never the raw 5000%."""
+    band = compute_catastrophe_band(100.0, guard_stop_pct=30, target_pct=5000)
+    assert band is not None
+    tp_trigger = band[2]
+    raw = 100.0 * (1 + 5000 / 100.0)  # 5100.0 — the nonsensical value
+    assert tp_trigger < raw
