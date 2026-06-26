@@ -262,7 +262,7 @@ export default function DeployToLivePanel({ dep, onArmed }) {
                   step={0.5}
                   value={catStopPct}
                   onChange={(e) => setCatStopPct(e.target.value)}
-                  placeholder="default ~47.5"
+                  placeholder="default ~50"
                   className="bg-bg-2 border-line h-8 text-xs"
                   data-testid="live-caps-cat-stop"
                 />
