@@ -507,7 +507,10 @@ async def panic_squareoff(
             tsym=tsym,
             qty=qty,
             prc=prc,
-            prd="I",
+            # FIX: flatten in the position's OWN product (NRML "M" vs MIS "I").
+            # Deployed entries now use NRML; an MIS sell does NOT net an NRML
+            # long on Noren. The Positions Book row carries `prd` per position.
+            prd=(str(pos.get("prd")) if pos.get("prd") else "I"),
             ret="DAY",
             trgprc=None,
             remarks=cid,

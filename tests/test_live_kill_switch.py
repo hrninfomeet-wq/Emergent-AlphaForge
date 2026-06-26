@@ -1276,3 +1276,102 @@ class TestMaxLotsPerOrder:
         store, col = _fake_store()
         with pytest.raises(ValueError):
             asyncio.run(store.put_config({"max_lots_per_order": True}))
+
+
+# ===========================================================================
+# FIX 2 — kill-switch flattens each position in ITS OWN product (NRML vs MIS)
+# ===========================================================================
+# HIGH real-money defect: panic_squareoff hardcoded prd="I" (MIS) on its exit
+# OrderIntent.  Deployed entries now use NRML (prd="M"); flattening an NRML
+# position with an MIS sell does NOT net it on Noren — it is rejected or opens
+# a NEW intraday naked short while the NRML long stays open.  The exit must
+# carry the position's own product (the Positions Book row's `prd`).
+# ===========================================================================
+
+class TestPanicSquareoffProduct:
+    """panic_squareoff exit must use the position's own product, not hardcoded MIS."""
+
+    def test_nrml_position_flattened_in_nrml(self):
+        """A position with prd='M' (NRML) → the placed exit order carries prd='M'."""
+        client = MockNoren(
+            position_book_data=[
+                {"tsym": "NIFTY25000CE", "netqty": "65", "lp": "200.0",
+                 "exch": "NFO", "prd": "M"},
+            ],
+        )
+        positions = asyncio.run(client.position_book())
+        result = asyncio.run(panic_squareoff(client, [], positions))
+
+        assert result["flattened"] == 1
+        placed = asyncio.run(client.order_book())
+        assert len(placed) == 1
+        assert placed[0]["prd"] == "M", (
+            f"CRITICAL: NRML position flattened with prd={placed[0]['prd']!r} "
+            "instead of 'M' — broker will not net it!"
+        )
+
+    def test_nrml_short_position_flattened_in_nrml(self):
+        """A short NRML position (prd='M', negative netqty) → exit BUY carries prd='M'."""
+        client = MockNoren(
+            position_book_data=[
+                {"tsym": "NIFTY24000PE", "netqty": "-30", "lp": "150.0",
+                 "exch": "NFO", "prd": "M"},
+            ],
+        )
+        positions = asyncio.run(client.position_book())
+        result = asyncio.run(panic_squareoff(client, [], positions))
+
+        assert result["flattened"] == 1
+        placed = asyncio.run(client.order_book())
+        assert placed[0]["trantype"] == "B"
+        assert placed[0]["prd"] == "M"
+
+    def test_missing_prd_defaults_to_mis(self):
+        """A row WITHOUT prd → exit prd 'I' (existing MIS behaviour preserved)."""
+        client = MockNoren(
+            position_book_data=[
+                {"tsym": "NIFTY25000CE", "netqty": "65", "lp": "200.0", "exch": "NFO"},
+            ],
+        )
+        positions = asyncio.run(client.position_book())
+        result = asyncio.run(panic_squareoff(client, [], positions))
+
+        assert result["flattened"] == 1
+        placed = asyncio.run(client.order_book())
+        assert placed[0]["prd"] == "I", (
+            f"missing-prd row should default to 'I', got {placed[0]['prd']!r}"
+        )
+
+    def test_explicit_mis_prd_preserved(self):
+        """A row with prd='I' (MIS) → exit prd 'I'."""
+        client = MockNoren(
+            position_book_data=[
+                {"tsym": "NIFTY25000CE", "netqty": "65", "lp": "200.0",
+                 "exch": "NFO", "prd": "I"},
+            ],
+        )
+        positions = asyncio.run(client.position_book())
+        result = asyncio.run(panic_squareoff(client, [], positions))
+
+        assert result["flattened"] == 1
+        placed = asyncio.run(client.order_book())
+        assert placed[0]["prd"] == "I"
+
+    def test_mixed_products_each_flattened_in_own_product(self):
+        """NRML + MIS positions in one panic → each exit carries its own product."""
+        client = MockNoren(
+            position_book_data=[
+                {"tsym": "NRML_SYM", "netqty": "65", "lp": "200.0",
+                 "exch": "NFO", "prd": "M"},
+                {"tsym": "MIS_SYM", "netqty": "65", "lp": "180.0",
+                 "exch": "NFO", "prd": "I"},
+            ],
+        )
+        positions = asyncio.run(client.position_book())
+        result = asyncio.run(panic_squareoff(client, [], positions))
+
+        assert result["flattened"] == 2
+        placed = asyncio.run(client.order_book())
+        by_sym = {o["tsym"]: o["prd"] for o in placed}
+        assert by_sym["NRML_SYM"] == "M"
+        assert by_sym["MIS_SYM"] == "I"
