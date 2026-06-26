@@ -475,6 +475,48 @@ class TestSquarePositionDirectionAndPrice:
 
 
 # ---------------------------------------------------------------------------
+# square_position — exit product (NRML vs MIS) must MATCH the open position
+# ---------------------------------------------------------------------------
+# Real-money blocker: deployed live ENTRIES move to NRML (prd="M"). The single
+# exit path (square_position) hardcoded prd="I" (MIS). Exiting an NRML long with
+# an MIS sell can be rejected or open a NEW MIS short, leaving the NRML long open.
+# The exit product MUST equal the position's own product.
+# ---------------------------------------------------------------------------
+
+class TestSquarePositionExitProduct:
+    def test_nrml_position_exits_in_nrml(self):
+        """A position carrying prd='M' (NRML) → the placed exit order's prd is 'M'."""
+        client = MockNoren()
+        pos = _position(netqty=65, lp=200.0)
+        pos["prd"] = "M"  # NRML position
+        result = run(square_position(client, pos, reason="deadline"))
+        assert result["squared"] is True
+        assert result["via"] == "exit_order"
+        orders = list(client._orders.values())
+        assert len(orders) == 1
+        assert orders[0]["prd"] == "M", (
+            f"NRML position exited in product {orders[0]['prd']!r}, expected 'M' — "
+            "an MIS sell on an NRML long can be rejected or open a new MIS short"
+        )
+
+    def test_position_without_prd_falls_back_to_mis(self):
+        """A position with NO prd key → the placed exit order's prd is 'I' (MIS fallback).
+
+        Guarantees the existing prd-less _position fixtures stay green.
+        """
+        client = MockNoren()
+        pos = _position(netqty=65, lp=200.0)  # no 'prd' key
+        assert "prd" not in pos
+        result = run(square_position(client, pos, reason="deadline"))
+        assert result["squared"] is True
+        orders = list(client._orders.values())
+        assert len(orders) == 1
+        assert orders[0]["prd"] == "I", (
+            f"prd-less position exited in product {orders[0]['prd']!r}, expected 'I' fallback"
+        )
+
+
+# ---------------------------------------------------------------------------
 # square_position — unfilled entry (netqty == 0)
 # ---------------------------------------------------------------------------
 

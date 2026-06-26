@@ -574,7 +574,7 @@ async def square_position(
             tsym=tsym,
             qty=qty,
             prc=prc,
-            prd="I",
+            prd=(position.get("prd") or "I"),
             ret="DAY",
             trgprc=None,
             remarks=cid,
