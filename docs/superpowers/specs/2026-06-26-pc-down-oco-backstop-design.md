@@ -99,24 +99,39 @@ in `docs/Resources/flattrade-pi-api/`).
    as the entry** (`LIVE_AUTOPLACE_ARMED` + an armed deployment — it is protective, placed only
    when a real entry was). Store the returned `al_id` (handle `Al_id`/`al_id` casing) on the
    `live_trades` doc (`oco_al_id`) **and** the guard registry entry.
-2. **Catastrophe band (the OCO levels).** Premium-based, **wider** than the software guard's
-   stop/target so the guard always fires first while alive:
-   - `catastrophe_stop_pct` — default **50** (range 45–50): SL trigger = `entry × (1 − pct/100)`
-     (≈ entry × 0.50).
-   - `catastrophe_target_pct` — default **135** (range 120–150): TP trigger =
-     `entry × (1 + pct/100)` (≈ entry × 2.35).
-   - **Config:** global defaults (a config module / env) + **per-deployment override** in the
-     live-safety (`risk.live`) config. Leg limit prices are marketable-to-clear (Flattrade is
-     limit-only) — reuse `build_oco_intent`'s existing leg pricing; confirm fired-leg fills in the
-     readback.
-3. **Cancel-on-close (coordination + no double-sell).** Every path that closes a deployed
-   position must `client.cancel_oco(al_id)` for that position: the software guard's
-   `_square_and_record`/close-loop, the manual square route, `_square_live_positions_for_deployment`
-   (deployment stop + stop-all), and the **kill-switch** (which must additionally sweep
-   `GetPendingGTTOrder` → cancel each, since panic-squareoff cancels working orders but not resting
-   GTT/OCO alerts). Ordering: **cancel the OCO before squaring**; the guard's existing
-   `netqty==0 → drop without squaring` check + the catastrophe band (OCO is wider) together make a
-   double-sell/naked-short impossible.
+2. **Catastrophe band (the OCO levels) — DERIVED strictly wider than the guard stop.**
+   Premium-based. The configured `catastrophe_stop_pct` is a **floor**, not the final value: the
+   effective stop is `eff = max(configured_pct, guard_stop_pct + MIN_GAP_PP)` (MIN_GAP_PP = 15),
+   so the OCO SL trigger is **always a lower premium than the software guard's own stop** — for
+   every config path including the deep-default (the guard's default premium stop is **50%**, so a
+   fixed 50% catastrophe would COLLIDE and could fire at the same instant → double-sell; deriving
+   it past the guard removes that race). SL trigger = `entry × (1 − eff/100)`; TP trigger =
+   `entry × (1 + target_pct/100)`. SELL-leg limits are a small `CROSS_PCT` (≈2%) **below** each
+   trigger so the fired leg clears (Flattrade is limit-only).
+   - `catastrophe_stop_pct` — configured floor, default **50** (your range 45–50); effective stop
+     widens past the guard as above (e.g. a no-configured-stop deployment → guard 50% → OCO ≈ 65%).
+   - `catastrophe_target_pct` — default **135** (range 120–150).
+   - **Config:** global defaults (`oco_levels.py`) + **per-deployment override** in `risk.live`,
+     threaded to the OCO placement via the **per-signal** `arm_for(plan, signal_doc, ref_ltp,
+     catastrophe_*_pct=…)` call (NOT via the deployment-agnostic live context).
+3. **Cancel-on-close (coordination + no double-sell — audit-hardened).** **(a)** Before any square,
+   re-confirm `netqty` from a fresh non-empty broker read and **abort if flat** (an already-fired
+   OCO must not be double-sold; `cancel_oco` cannot stop an already-triggered alert). **(b)** Cancel
+   the OCO **only after a confirmed real square fill** (`result["squared"] and not
+   result["dry_run"]`) — cancelling on a dry-run guard breach (`LIVE_GUARD_ARMED=0`, the default
+   while validating) would strip the net without squaring. Paths that close a deployed position
+   then cancel its OCO: the software guard's `_square_and_record` (after-fill), the
+   `_square_live_positions_for_deployment`
+   (deployment stop + stop-all, user-initiated → cancel-then-square is fine), and the
+   **kill-switch** (sweeps `GetPendingGTTOrder` → cancels **all** resting GTT/OCO, since
+   panic-squareoff cancels working orders but not resting alerts). The **manual single-shot square
+   does NOT sweep** (it is MIS and never places an OCO; a tsym-match sweep there could cancel a
+   deployed position's legitimate OCO sharing the strike). The double-sell/naked-short impossibility
+   rests on the three audit-hardened invariants: derived-wider band + netqty-re-confirm-before-square
+   + cancel-after-real-fill.
+   Also: **exit product must match the open position** — `square_position` exits with the position's
+   own `prd` (NRML for deployed, MIS for manual), not a hardcoded MIS, or an NRML position would not
+   net.
 4. **OCO-place failure (after the entry filled).** Keep the position **software-guard-only**,
    raise a loud **"no broker backstop on this position"** alert (a new live-page banner, sibling to
    the UNGUARDED banner; also stamp `oco_error` on the `live_trade`), and **retry placement on the
