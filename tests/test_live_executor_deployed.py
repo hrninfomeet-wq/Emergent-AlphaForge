@@ -275,6 +275,58 @@ def test_deployed_margin_full_size_blocks():
     assert _book(client) == []
 
 
+# --- Gate 3 (broker margin probe): fail-CLOSED on broker reject -------------
+
+def test_deployed_broker_margin_reject_blocks():
+    """GetOrderMargin returns stat=Not_Ok (e.g. NRML not allowed) → blocked with
+    NO place_order, even though local limits + cash are fine.
+
+    Fail-CLOSED: a broker reject of the margin probe means we must not place an
+    entry we can't protect.
+    """
+    client = MockNoren(limits_data={"cash": "99999999"})
+    client.set_order_margin({"stat": "Not_Ok", "emsg": "no"})
+    result = _run(_place_deployed(client=client, capped_lots=2))
+    assert result["placed"] is False
+    assert result["reason"] == "dry_run_failed"
+    bm = next((v for v in result["verdicts"] if v["check"] == "broker_margin"), None)
+    assert bm is not None, "broker_margin verdict must be present"
+    assert bm["ok"] is False
+    assert _book(client) == []
+
+
+def test_deployed_broker_margin_ok_does_not_block(monkeypatch):
+    """GetOrderMargin returns stat=Ok with ample cash → broker_margin passes and
+    the deployed path proceeds (here to the dry-run boundary)."""
+    monkeypatch.delenv("LIVE_AUTOPLACE_ARMED", raising=False)
+    client = MockNoren(limits_data={"cash": "99999999"})
+    client.set_order_margin({"stat": "Ok", "cash": "99999", "marginused": "100"})
+    result = _run(_place_deployed(client=client, capped_lots=2))
+    assert result["placed"] is False
+    assert result.get("dry_run") is True
+    bm = next((v for v in result["verdicts"] if v["check"] == "broker_margin"), None)
+    assert bm is not None, "broker_margin verdict must be present"
+    assert bm["ok"] is True
+    assert _book(client) == [], "dry-run transmits nothing"
+
+
+def test_deployed_broker_margin_unavailable_fail_open(monkeypatch):
+    """No order_margin fixture set → order_margin returns {} → broker_margin
+    fail-OPEN (ok True) so a transient probe hiccup does NOT block all trading.
+
+    This is the default MockNoren path used by all the OTHER deployed tests; it
+    must remain unblocking (the local margin floor still guards affordability).
+    """
+    monkeypatch.delenv("LIVE_AUTOPLACE_ARMED", raising=False)
+    client = MockNoren(limits_data={"cash": "99999999"})  # no set_order_margin → {}
+    result = _run(_place_deployed(client=client, capped_lots=2))
+    assert result["placed"] is False
+    assert result.get("dry_run") is True
+    bm = next((v for v in result["verdicts"] if v["check"] == "broker_margin"), None)
+    assert bm is not None
+    assert bm["ok"] is True
+
+
 # --- Gate 8: throttle -------------------------------------------------------
 
 def test_deployed_throttle_blocks(monkeypatch):

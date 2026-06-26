@@ -38,7 +38,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from app.live.mode import is_live_order_allowed
 from app.live.order_builder import build_intent
-from app.live.margin import margin_verdict
+from app.live.margin import broker_margin_verdict, margin_verdict
 from app.live.idempotency import new_client_order_id
 from app.live.auto_square import square_position
 
@@ -440,6 +440,17 @@ async def place_deployed_order(
     limits = await client.limits()
     if resolved_lot is not None:
         verdicts.append(margin_verdict(limits, ref_ltp=ref_ltp, lot_size=resolved_lot * capped_lots))
+        # Broker GetOrderMargin pre-trade gate (A4): ask the broker its
+        # authoritative margin. intent is guaranteed non-None inside this block.
+        # Fail-CLOSED on a broker REJECT (stat != "Ok"); fail-OPEN on transport
+        # failure ({} via the except) so a transient hiccup doesn't block trading.
+        try:
+            mresp = await client.order_margin(
+                exch=intent.exch, tsym=intent.tsym, qty=intent.qty, prc=intent.prc,
+                prd=intent.prd, trantype=intent.trantype, prctyp=intent.prctyp)
+        except Exception:
+            mresp = {}
+        verdicts.append(broker_margin_verdict(mresp))
 
     # ------------------------------------------------------------------
     # Gate 4 — all verdicts must pass (intent must be non-None).

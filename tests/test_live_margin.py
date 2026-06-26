@@ -40,7 +40,13 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 
 import pytest
-from app.live.margin import check_margin, margin_verdict, parse_cash, required_premium
+from app.live.margin import (
+    broker_margin_verdict,
+    check_margin,
+    margin_verdict,
+    parse_cash,
+    required_premium,
+)
 
 
 # ===========================================================================
@@ -332,4 +338,102 @@ class TestMarginVerdict:
 
     def test_verdict_dict_keys(self):
         v = margin_verdict({"cash": "16552.95"}, ref_ltp=120.0, lot_size=65)
+        assert set(v.keys()) == {"check", "ok", "detail"}
+
+
+# ===========================================================================
+# broker_margin_verdict — broker GetOrderMargin pre-trade gate (A4)
+#
+# Rules:
+#   - {} / empty / non-dict (transport unavailable) → ok True  (FAIL-OPEN)
+#   - stat != "Ok" (broker REJECT, e.g. NRML not allowed) → ok False (FAIL-CLOSED)
+#   - stat == "Ok": parse cash + marginused; ok = cash >= marginused
+#   - stat == "Ok" but un-parseable numbers → ok False (FAIL-CLOSED, conservative)
+# ===========================================================================
+
+class TestBrokerMarginVerdict:
+    def _check_shape(self, v: dict) -> None:
+        assert isinstance(v, dict)
+        assert v["check"] == "broker_margin"
+        assert isinstance(v["ok"], bool)
+        assert isinstance(v["detail"], str) and len(v["detail"]) > 0
+
+    # --- Allow paths: stat Ok + sufficient credits ---
+
+    def test_ok_sufficient_credits(self):
+        v = broker_margin_verdict({"stat": "Ok", "cash": "20000", "marginused": "13000"})
+        self._check_shape(v)
+        assert v["ok"] is True
+
+    def test_ok_exact_boundary_allow(self):
+        v = broker_margin_verdict({"stat": "Ok", "cash": "13000", "marginused": "13000"})
+        self._check_shape(v)
+        assert v["ok"] is True
+
+    def test_ok_numeric_fields(self):
+        # Noren usually sends strings, but numerics should parse too.
+        v = broker_margin_verdict({"stat": "Ok", "cash": 20000.0, "marginused": 13000})
+        self._check_shape(v)
+        assert v["ok"] is True
+
+    # --- Block: stat Ok but insufficient credits ---
+
+    def test_ok_insufficient_credits(self):
+        v = broker_margin_verdict({"stat": "Ok", "cash": "5000", "marginused": "13000"})
+        self._check_shape(v)
+        assert v["ok"] is False
+
+    # --- FAIL-CLOSED: broker rejected the probe ---
+
+    def test_reject_fail_closed(self):
+        v = broker_margin_verdict({"stat": "Not_Ok", "emsg": "product not allowed"})
+        self._check_shape(v)
+        assert v["ok"] is False
+        # detail should surface the broker reason
+        assert "product not allowed" in v["detail"] or "Not_Ok" in v["detail"]
+
+    def test_reject_missing_stat_fail_closed(self):
+        # No stat at all but non-empty dict → not Ok → fail-closed.
+        v = broker_margin_verdict({"emsg": "weird"})
+        self._check_shape(v)
+        assert v["ok"] is False
+
+    # --- FAIL-OPEN: transport unavailable / empty ---
+
+    def test_empty_dict_fail_open(self):
+        v = broker_margin_verdict({})
+        self._check_shape(v)
+        assert v["ok"] is True
+        assert "unavailable" in v["detail"].lower()
+
+    def test_non_dict_fail_open(self):
+        v = broker_margin_verdict(None)
+        self._check_shape(v)
+        assert v["ok"] is True
+        assert "unavailable" in v["detail"].lower()
+
+    # --- FAIL-CLOSED: stat Ok but un-parseable numbers (conservative) ---
+
+    def test_ok_unparseable_cash_fail_closed(self):
+        v = broker_margin_verdict({"stat": "Ok", "cash": "abc", "marginused": "13000"})
+        self._check_shape(v)
+        assert v["ok"] is False
+
+    def test_ok_unparseable_marginused_fail_closed(self):
+        v = broker_margin_verdict({"stat": "Ok", "cash": "20000", "marginused": "xyz"})
+        self._check_shape(v)
+        assert v["ok"] is False
+
+    def test_ok_missing_marginused_fail_closed(self):
+        v = broker_margin_verdict({"stat": "Ok", "cash": "20000"})
+        self._check_shape(v)
+        assert v["ok"] is False
+
+    def test_ok_nan_marginused_fail_closed(self):
+        v = broker_margin_verdict({"stat": "Ok", "cash": "20000", "marginused": "nan"})
+        self._check_shape(v)
+        assert v["ok"] is False
+
+    def test_verdict_dict_keys(self):
+        v = broker_margin_verdict({"stat": "Ok", "cash": "20000", "marginused": "13000"})
         assert set(v.keys()) == {"check", "ok", "detail"}

@@ -168,3 +168,98 @@ def margin_verdict(
 
     ok, detail = check_margin(limits, premium_required=req)
     return {"check": "margin", "ok": ok, "detail": detail}
+
+
+# ---------------------------------------------------------------------------
+# 5. Broker GetOrderMargin pre-trade gate (A4)
+# ---------------------------------------------------------------------------
+
+def _parse_finite_nonneg(raw: object) -> Optional[float]:
+    """Coerce a Noren string/numeric to a finite non-negative float, else None.
+
+    Mirrors parse_cash's tolerance (Noren sends amounts as strings e.g. "13000")
+    but operates on a raw value rather than a dict field.
+    """
+    if raw is None:
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(value):
+        return None
+    if value < 0:
+        return None
+    return value
+
+
+def broker_margin_verdict(resp: Any) -> Dict[str, Any]:
+    """Verdict from the broker's authoritative GetOrderMargin response.
+
+    This is the broker's own pre-trade margin ruling for the order we are about
+    to transmit.  Unlike :func:`margin_verdict` (a LOCAL affordability floor),
+    this asks the broker directly.  ``resp`` is the ALREADY-FETCHED raw
+    GetOrderMargin response dict (this function is pure / no-IO).
+
+    Decision rules
+    --------------
+    - Empty / ``{}`` / non-dict (transport unavailable) → ``ok=True`` **FAIL-OPEN**.
+      The probe is simply unavailable (e.g. a transport error coerced to ``{}``);
+      blocking all trading on a transient hiccup would be worse than relying on
+      the local ``margin_verdict`` floor that still guards affordability.
+    - ``resp["stat"] != "Ok"`` (broker REJECT — e.g. NRML not permitted for the
+      account/exchange) → ``ok=False`` **FAIL-CLOSED**.  If the broker won't even
+      quote the margin, we must not place an entry we can't protect.
+    - ``stat == "Ok"`` → parse ``cash`` (credits available) and ``marginused``
+      (margin this order needs); ``ok = cash >= marginused``.
+    - ``stat == "Ok"`` but either number is unparseable / missing / non-finite →
+      ``ok=False`` **FAIL-CLOSED** (conservative — don't transmit on garbage).
+
+    Returns::
+
+        {"check": "broker_margin", "ok": bool, "detail": str}
+    """
+    # Transport unavailable → fail-OPEN.
+    if not isinstance(resp, dict) or not resp:
+        return {
+            "check": "broker_margin",
+            "ok": True,
+            "detail": (
+                "broker margin probe unavailable (empty/non-dict response); "
+                "fail-open — local margin_verdict floor still guards affordability"
+            ),
+        }
+
+    # Broker rejected the probe → fail-CLOSED.
+    if resp.get("stat") != "Ok":
+        emsg = resp.get("emsg")
+        return {
+            "check": "broker_margin",
+            "ok": False,
+            "detail": (
+                f"broker rejected margin probe (stat={resp.get('stat')!r}, "
+                f"emsg={emsg!r}); blocking entry fail-closed"
+            ),
+        }
+
+    # stat Ok → compare credits available vs margin needed.
+    cash = _parse_finite_nonneg(resp.get("cash"))
+    margin_used = _parse_finite_nonneg(resp.get("marginused"))
+    if cash is None or margin_used is None:
+        return {
+            "check": "broker_margin",
+            "ok": False,
+            "detail": (
+                f"broker margin numbers unreadable (cash={resp.get('cash')!r}, "
+                f"marginused={resp.get('marginused')!r}); blocking entry fail-closed"
+            ),
+        }
+
+    ok = cash >= margin_used
+    if ok:
+        detail = f"broker margin ok: cash ₹{cash:.2f} >= marginused ₹{margin_used:.2f}"
+    else:
+        detail = (
+            f"broker insufficient margin: cash ₹{cash:.2f} < marginused ₹{margin_used:.2f}"
+        )
+    return {"check": "broker_margin", "ok": ok, "detail": detail}
