@@ -336,6 +336,10 @@ class LivePositionGuard:
                     "netqty": netqty,
                     "lp": lp,
                     "exch": pos.get("exch", entry["exch"]),
+                    # Capture the broker book row's contract token (best-effort;
+                    # None if the row has no token). The depth-aware square refreshes
+                    # its exit ref price from a fresh GetQuotes when a token is set.
+                    "token": pos.get("token"),
                 })
 
                 verdict = evaluate_exit(entry["state"], lp)

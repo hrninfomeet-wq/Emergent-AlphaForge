@@ -571,6 +571,31 @@ async def square_position(
             }
 
     # ------------------------------------------------------------------
+    # Step 3.6 — DEPTH-AWARE square price (C3): refresh the reference price from
+    # a FRESH GetQuotes when a contract token is available.  The marketable limit
+    # is priced off `ref`, which defaults to position["lp"] — a possibly-stale
+    # mark.  A fresh quote makes the exit clear instead of resting away from the
+    # real market.  GATED on position.get("token") so the existing token-less
+    # fixtures (and the token-less paper/legacy path) are byte-identical.  Runs
+    # AFTER the B4 netqty re-confirm (the position is confirmed still non-flat /
+    # unknown) and BEFORE the marketable-limit is computed.  Any failure (raise,
+    # empty/Not_Ok payload, or a non-finite/≤0 lp) falls back to position["lp"].
+    # ------------------------------------------------------------------
+    token = position.get("token")
+    if token and hasattr(client, "get_quotes"):
+        try:
+            q = await client.get_quotes(position.get("exch", "NFO"), token)
+        except Exception:
+            q = None  # quotes unavailable — keep the position lp
+        if isinstance(q, dict):
+            try:
+                q_lp = float(q.get("lp"))
+                if math.isfinite(q_lp) and q_lp > 0:
+                    ref = q_lp  # fresh, usable mark → price the exit off it
+            except (TypeError, ValueError):
+                pass  # non-numeric lp → keep the position lp
+
+    # ------------------------------------------------------------------
     # Step 4 — MARGIN-SAFE cancel: clear ALL working orders for the scrip and
     # confirm they are terminal BEFORE placing the exit.  A resting SL left
     # working would make the exit a naked short → margin reject (₹2.16L bug).

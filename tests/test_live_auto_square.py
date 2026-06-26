@@ -1246,3 +1246,124 @@ class TestSquarePositionDiscoveryScoping:
         assert client._orders[sl]["status"] == "CANCELED"
         assert result["squared"] is True
         assert result["via"] == "exit_order"
+
+
+# ---------------------------------------------------------------------------
+# square_position — depth-aware square price via GetQuotes (Task C3)
+# ---------------------------------------------------------------------------
+# The disaster square prices its marketable limit off position["lp"] (a possibly
+# stale mark). When a contract `token` is available, refresh the reference price
+# from a FRESH GetQuotes so the exit actually clears. The refresh is GATED on
+# position.get("token"): token-less positions (the existing ~94 fixtures) are
+# byte-identical. The refresh composes with the B4 netqty re-confirm — it runs
+# AFTER the fresh position_book() re-confirm passes (still non-flat), BEFORE the
+# marketable-limit price is computed.
+# ---------------------------------------------------------------------------
+
+def _position_with_token(netqty, lp, token="999", exch="NFO",
+                         tsym="NIFTY2662221000CE"):
+    return {
+        "tsym": tsym,
+        "exch": exch,
+        "netqty": netqty,
+        "lp": lp,
+        "token": token,
+    }
+
+
+class TestSquarePositionDepthAwarePrice:
+    def test_token_refreshes_ref_price_from_get_quotes(self):
+        """A position carrying a token + a fresh book that STILL shows it non-flat
+        → the placed exit price is computed off the GetQuotes lp (98.5), NOT the
+        stale position lp (100)."""
+        client = MockNoren()
+        client.set_quotes({"stat": "Ok", "lp": "98.5"})
+        # B4 re-confirm: a non-empty book that still shows this tsym non-flat.
+        client.set_position_book([
+            {"tsym": "NIFTY2662221000CE", "exch": "NFO", "netqty": "65", "lp": "100"}
+        ])
+        pos = _position_with_token(netqty="65", lp=100, token="999")
+        result = run(square_position(client, pos, reason="deadline", band_pct=1.0))
+        assert result["squared"] is True
+        assert result["via"] == "exit_order"
+        orders = [o for o in client._orders.values() if o["trantype"] == "S"]
+        assert len(orders) == 1
+        # SELL marketable from fresh ref 98.5, NOT stale 100.
+        expected = round_to_tick(98.5 * (1 - 1.0 / 100), 0.05, mode="down")
+        stale = round_to_tick(100 * (1 - 1.0 / 100), 0.05, mode="down")
+        assert orders[0]["prc"] == expected
+        assert orders[0]["prc"] != stale
+
+    def test_no_token_prices_off_lp_unchanged(self):
+        """A position WITHOUT a token → priced off lp (existing behavior). Even if
+        the client has quotes loaded, no token means no refresh."""
+        client = MockNoren()
+        client.set_quotes({"stat": "Ok", "lp": "98.5"})  # present but must be ignored
+        pos = _position(netqty=65, lp=200.0)  # no token key
+        assert "token" not in pos
+        result = run(square_position(client, pos, reason="deadline", band_pct=1.0))
+        assert result["squared"] is True
+        orders = list(client._orders.values())
+        assert len(orders) == 1
+        # Priced off stale lp 200.0 — the GetQuotes 98.5 was NOT consulted.
+        assert orders[0]["prc"] == round_to_tick(200.0 * (1 - 1.0 / 100), 0.05, mode="down")
+
+    def test_get_quotes_raising_falls_back_to_lp(self):
+        """A token is present but get_quotes RAISES → fall back to position lp."""
+        class _RaisingQuotesClient(MockNoren):
+            async def get_quotes(self, exch, token):
+                raise RuntimeError("quotes unavailable")
+        client = _RaisingQuotesClient()
+        pos = _position_with_token(netqty="65", lp=100, token="999")
+        result = run(square_position(client, pos, reason="deadline", band_pct=1.0))
+        assert result["squared"] is True
+        orders = list(client._orders.values())
+        assert len(orders) == 1
+        assert orders[0]["prc"] == round_to_tick(100 * (1 - 1.0 / 100), 0.05, mode="down")
+
+    def test_get_quotes_empty_falls_back_to_lp(self):
+        """get_quotes returns {} (broker Not_Ok) → no usable lp → fall back."""
+        client = MockNoren()
+        client.set_quotes({})  # empty
+        pos = _position_with_token(netqty="65", lp=100, token="999")
+        result = run(square_position(client, pos, reason="deadline", band_pct=1.0))
+        assert result["squared"] is True
+        orders = list(client._orders.values())
+        assert len(orders) == 1
+        assert orders[0]["prc"] == round_to_tick(100 * (1 - 1.0 / 100), 0.05, mode="down")
+
+    def test_get_quotes_nonpositive_lp_falls_back_to_lp(self):
+        """get_quotes returns a non-positive / non-finite lp → fall back to position lp."""
+        client = MockNoren()
+        client.set_quotes({"stat": "Ok", "lp": "0"})  # zero → unusable
+        pos = _position_with_token(netqty="65", lp=100, token="999")
+        result = run(square_position(client, pos, reason="deadline", band_pct=1.0))
+        assert result["squared"] is True
+        orders = list(client._orders.values())
+        assert orders[0]["prc"] == round_to_tick(100 * (1 - 1.0 / 100), 0.05, mode="down")
+
+    def test_get_quotes_passed_position_exch_and_token(self):
+        """The refresh queries get_quotes with the position's exch + token."""
+        seen = {}
+        class _RecordingClient(MockNoren):
+            async def get_quotes(self, exch, token):
+                seen["exch"] = exch
+                seen["token"] = token
+                return {"stat": "Ok", "lp": "98.5"}
+        client = _RecordingClient()
+        pos = _position_with_token(netqty="65", lp=100, token="T42", exch="BFO")
+        run(square_position(client, pos, reason="deadline"))
+        assert seen == {"exch": "BFO", "token": "T42"}
+
+    def test_token_refresh_skipped_when_already_flat(self):
+        """If the B4 re-confirm reports already-flat, NO order is placed regardless
+        of the token/quotes (the refresh must compose AFTER the re-confirm)."""
+        client = MockNoren()
+        client.set_quotes({"stat": "Ok", "lp": "98.5"})
+        client.set_position_book([
+            {"tsym": "NIFTY2662221000CE", "exch": "NFO", "netqty": "0", "lp": "100"}
+        ])
+        pos = _position_with_token(netqty="65", lp=100, token="999")
+        result = run(square_position(client, pos, reason="deadline"))
+        assert result["via"] == "already_flat"
+        assert len(client._orders) == 0

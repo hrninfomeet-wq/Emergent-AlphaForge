@@ -882,3 +882,37 @@ class TestOcoCancelAfterRealFill:
         exits = run(guard._cycle())                           # must not raise
         assert client.cancel_oco_calls == ["OCO1"]            # attempted
         assert len(exits) == 1                                # exit still recorded
+
+
+# ---------------------------------------------------------------------------
+# Guard cycle — token capture from the broker book row (Task C3)
+# ---------------------------------------------------------------------------
+# The depth-aware square (auto_square C3) refreshes the exit ref price from a
+# fresh GetQuotes when position["token"] is set. The token lives on the broker
+# book row, so the guard's per-cycle position refresh must copy it onto
+# entry["position"] so the square has it.
+# ---------------------------------------------------------------------------
+
+class TestGuardTokenCapture:
+    def test_cycle_captures_token_from_book_row(self):
+        r = LiveMonitorRegistry()
+        _registered(r, entry=250.0, stop_pct=30)  # stop = 175
+        # Live, non-breaching position (lp 240 > stop 175 → no square) whose book
+        # row carries a contract token.
+        row = _pos(netqty=20, lp=240.0)
+        row["token"] = "555"
+        client = _FakeClient([row])
+        rec = _Recorder()
+        run(_guard(r, client, rec)._cycle())
+        # Not squared (above stop), still guarded, and the token was captured.
+        assert rec.squared == []
+        assert len(r) == 1
+        assert r.get("ORD1")["position"]["token"] == "555"
+
+    def test_cycle_token_none_when_book_row_has_no_token(self):
+        r = LiveMonitorRegistry()
+        _registered(r, entry=250.0, stop_pct=30)
+        client = _FakeClient([_pos(netqty=20, lp=240.0)])  # no token on the row
+        rec = _Recorder()
+        run(_guard(r, client, rec)._cycle())
+        assert r.get("ORD1")["position"]["token"] is None
