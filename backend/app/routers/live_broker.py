@@ -677,6 +677,42 @@ async def live_broker_limits():
         raise HTTPException(400, f"Flattrade limits error: {str(exc)[:300]}") from exc
 
 
+@api.get("/live-broker/margin-probe")
+async def live_broker_margin_probe(exch: str, tsym: str, qty: int, prc: float):
+    """Read-only NRML margin readback for a prospective option leg.
+
+    Asks the broker (GetOrderMargin) what NRML (prd="M") margin a 1x BUY LMT of
+    this exact contract would block, so the operator can confirm it before the
+    live readback.
+
+    NRML ONLY: GetOrderMargin's prd enum is C/M/H — there is no MIS "I", so an
+    MIS leg would be rejected and is never probed here. M-vs-MIS parity, if
+    wanted, is read from Limits (/live-broker/limits), not from this route.
+
+    Returns 400 if not connected (mirrors the other read routes)."""
+    try:
+        client = await _get_client()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(400, f"Could not build Flattrade client: {exc}") from exc
+    try:
+        resp = await client.order_margin(
+            exch=exch, tsym=tsym, qty=qty, prc=prc,
+            prd="M", trantype="B", prctyp="LMT",
+        )
+    except Exception as exc:
+        log.exception("live_broker_margin_probe failed")
+        raise HTTPException(400, f"Flattrade order_margin error: {str(exc)[:300]}") from exc
+    return {
+        "prd": "M",
+        "cash": resp.get("cash"),
+        "marginused": resp.get("marginused"),
+        "stat": resp.get("stat"),
+        "emsg": resp.get("emsg"),
+    }
+
+
 @api.get("/live-broker/reconcile")
 async def live_broker_reconcile():
     """Fetch broker orders+positions and return a reconcile diff report."""
