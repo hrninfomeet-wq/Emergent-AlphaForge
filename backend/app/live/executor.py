@@ -149,8 +149,13 @@ async def _transmit_and_arm(
         await intent_store.mark_submitted(cid, result.norenordno)
         if post_fill is not None:
             await post_fill()
-        await arm(intent, result.norenordno)
-        return {"placed": True, "protected": True, "norenordno": result.norenordno, "cid": cid, "verdicts": verdicts}
+        # arm registers the software guard AND (deployed path) best-effort places a
+        # resting broker OCO, returning its al_id (or None). Surface it so auto_live
+        # can journal whether the PC-down broker backstop exists. The manual path's
+        # arm returns None → oco_al_id=None.
+        oco_al_id = await arm(intent, result.norenordno)
+        return {"placed": True, "protected": True, "norenordno": result.norenordno,
+                "cid": cid, "verdicts": verdicts, "oco_al_id": oco_al_id}
     except Exception as exc:
         return await _abort_protect(client, engine, intent, result.norenordno,
                                     ref_ltp, band_pct, uid, actid, reason=f"post_place_failed:{exc}")

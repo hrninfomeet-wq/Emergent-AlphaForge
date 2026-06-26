@@ -408,6 +408,51 @@ def test_deployed_armed_places_once(monkeypatch):
     assert arm_calls[0][1] == "MOCK1"
 
 
+# --- OCO al_id surfaces on the placed+protected result (B3) -----------------
+
+def test_deployed_armed_result_surfaces_oco_al_id(monkeypatch):
+    """When arm returns a broker OCO al_id, the placed+protected result dict carries
+    it as oco_al_id so auto_live can journal the backstop."""
+    monkeypatch.setenv("LIVE_AUTOPLACE_ARMED", "1")
+    client = MockNoren(limits_data={"cash": "99999999"})
+    engine = FakeEngine()
+
+    async def oco_arm(intent, norenordno):
+        return "OCO1"
+
+    result = _run(_place_deployed(
+        client=client,
+        capped_lots=2,
+        engine=engine,
+        arm=oco_arm,
+    ))
+
+    assert result["placed"] is True
+    assert result["protected"] is True
+    assert result["oco_al_id"] == "OCO1"
+
+
+def test_deployed_armed_result_oco_al_id_none_when_no_backstop(monkeypatch):
+    """When arm returns None (no OCO placed), the result carries oco_al_id=None."""
+    monkeypatch.setenv("LIVE_AUTOPLACE_ARMED", "1")
+    client = MockNoren(limits_data={"cash": "99999999"})
+    engine = FakeEngine()
+
+    async def no_oco_arm(intent, norenordno):
+        return None
+
+    result = _run(_place_deployed(
+        client=client,
+        capped_lots=2,
+        engine=engine,
+        arm=no_oco_arm,
+    ))
+
+    assert result["placed"] is True
+    assert result["protected"] is True
+    assert result["oco_al_id"] is None
+
+
 # --- Post-fill raise → abort-protect ---------------------------------------
 
 def test_deployed_arm_raises_aborts(monkeypatch):

@@ -25,13 +25,16 @@ best-effort (a registry failure is logged, never crashes the fill).
 """
 from __future__ import annotations
 
+import functools
 import logging
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
 from app.live.flattrade_token import DEFAULT_USER_ID, get_status
+from app.live.gtt import build_oco_intent
 from app.live.live_position_guard import get_registry
 from app.live.live_sl_monitor import build_monitor_state
+from app.live.oco_levels import compute_catastrophe_band
 
 log = logging.getLogger(__name__)
 
@@ -58,31 +61,50 @@ def arm_for(
     plan: Dict[str, Any],
     signal_doc: Dict[str, Any],
     ref_ltp: float,
+    *,
+    client: Any = None,
+    uid: str = "",
+    actid: str = "",
+    catastrophe_stop_pct: Optional[float] = None,
+    catastrophe_target_pct: Optional[float] = None,
 ) -> Callable[[Any, str], Any]:
     """Return an async ``arm(intent, norenordno)`` callable for the executor.
 
     On a successful fill the executor calls ``arm(intent, norenordno)``. This arm
-    REGISTERS the filled position with the software exit guard, carrying the full
-    exit plan so the deployed position gets paper/backtest exit parity:
-      - premium SL/TP/trailing via ``build_monitor_state`` from ``plan["levels"]``
-        (with a deep-default 50% stop floor if the plan somehow carries none);
-      - ``spot_exit`` (the live ``spot_exit`` mode — close when the underlying hits
-        a level);
-      - ``time_stop_minutes`` (close after N minutes from entry);
-      - ``source="auto_live"`` (so the guard's 15:00 IST EOD square applies — manual
-        single-shots are EOD-exempt) and ``deployment_id`` for audit.
+    does TWO things:
+
+    1. REGISTERS the filled position with the software exit guard (MANDATORY),
+       carrying the full exit plan so the deployed position gets paper/backtest
+       exit parity:
+         - premium SL/TP/trailing via ``build_monitor_state`` from ``plan["levels"]``
+           (with a deep-default 50% stop floor if the plan somehow carries none);
+         - ``spot_exit`` (the live ``spot_exit`` mode — close when the underlying hits
+           a level);
+         - ``time_stop_minutes`` (close after N minutes from entry);
+         - ``source="auto_live"`` (so the guard's 15:00 IST EOD square applies — manual
+           single-shots are EOD-exempt) and ``deployment_id`` for audit.
+
+    2. BEST-EFFORT places a resting broker OCO (stop+target) so a PC-down position
+       still has a broker-side catastrophe net. The OCO levels come from
+       ``compute_catastrophe_band`` (derived strictly wider than the software guard
+       stop). This is best-effort ONLY: a transient OCO reject / exception must NEVER
+       unwind an already-filled+guarded entry, so it runs in a separate try/except
+       that never re-raises. When ``client is None`` no OCO is placed.
 
     It does NOT build a SessionStore arm and does NOT schedule a 10-minute
     auto-square — those are the manual single-shot's concern. Registration is
-    MANDATORY: a deployed fill has NO 10-minute auto-square backstop, so the
-    software guard IS its protection. If ``build_monitor_state`` or ``register``
-    fails, the exception PROPAGATES so the executor's ``_abort_protect`` squares the
-    fill and halts — a deployed position is never left live-and-unguarded.
+    MANDATORY: if ``build_monitor_state`` or ``register`` fails, the exception
+    PROPAGATES so the executor's ``_abort_protect`` squares the fill and halts — a
+    deployed position is never left live-and-unguarded. The OCO block sits AFTER
+    register, so a register failure short-circuits before any OCO is attempted.
+
+    ``_arm`` returns the broker OCO alert id (``oco_al_id``) on a successful OCO
+    placement, else ``None`` (no client / band unavailable / reject / exception).
     """
     levels = plan.get("levels") or {}
     deployment_id = signal_doc.get("deployment_id")
 
-    async def _arm(intent: Any, norenordno: str) -> None:
+    async def _arm(intent: Any, norenordno: str) -> Optional[str]:
         # Registration is MANDATORY (no 10-min backstop for a deployed position): any
         # failure here propagates to the executor, whose _abort_protect squares + halts
         # rather than leaving an unguarded live position. Do NOT swallow.
@@ -94,6 +116,10 @@ def arm_for(
         # register). The spot-mirror exit remains additive.
         if stop_pct is None and levels.get("stop_pts") is None:
             stop_pct = _GUARD_DEFAULT_STOP_PCT
+        # The resolved guard stop_pct (post deep-default floor) is the floor the
+        # catastrophe band must sit strictly WIDER than (so the resting OCO never
+        # races the in-process software guard). Capture it for compute_catastrophe_band.
+        guard_stop_pct = stop_pct
         state = build_monitor_state(
             float(ref_ltp),
             stop_pct=stop_pct,
@@ -118,6 +144,60 @@ def arm_for(
         )
         log.info("auto_live arm: registered %s with software guard (deployment=%s, stop_pct=%s)",
                  getattr(intent, "tsym", "?"), deployment_id, stop_pct)
+
+        # --- BEST-EFFORT resting broker OCO (PC-down catastrophe net) --------------
+        # NEVER re-raises: an already-filled+guarded entry must not be unwound by a
+        # transient OCO reject. Failure → oco_al_id stays None (auto_live journals
+        # "no_broker_backstop"); the software guard remains the live protection.
+        oco_al_id: Optional[str] = None
+        if client is not None:
+            try:
+                band = compute_catastrophe_band(
+                    float(ref_ltp),
+                    guard_stop_pct=guard_stop_pct,
+                    stop_pct=catastrophe_stop_pct,
+                    target_pct=catastrophe_target_pct,
+                )
+                if band:
+                    sl_t, sl_l, tp_t, tp_l = band
+                    oco = build_oco_intent(
+                        exch=intent.exch,
+                        tsym=intent.tsym,
+                        qty=intent.qty,
+                        prd="M",                # OCO is NRML-only (carry-forward backstop)
+                        sl_trigger=sl_t,
+                        sl_limit=sl_l,
+                        tp_trigger=tp_t,
+                        tp_limit=tp_l,
+                        remarks=f"oco:{norenordno}",
+                    )
+                    if oco:
+                        res = await client.place_oco(oco)
+                        if res.get("ok"):
+                            oco_al_id = res.get("al_id")
+                            ent = get_registry().get(norenordno)
+                            if ent is not None:
+                                ent["oco_al_id"] = oco_al_id
+                            log.info("auto_live arm: resting OCO placed for %s (al_id=%s)",
+                                     getattr(intent, "tsym", "?"), oco_al_id)
+                        else:
+                            log.warning("auto_live arm: OCO rejected for %s: %s",
+                                        getattr(intent, "tsym", "?"), res)
+                    else:
+                        log.warning("auto_live arm: build_oco_intent returned None for %s "
+                                    "(NRML-only / bad levels) — no broker backstop",
+                                    getattr(intent, "tsym", "?"))
+                else:
+                    log.warning("auto_live arm: compute_catastrophe_band returned None for %s "
+                                "— no broker backstop", getattr(intent, "tsym", "?"))
+            except Exception as exc:
+                # A filled+guarded entry must NEVER be unwound by an OCO failure.
+                log.warning("auto_live arm: resting OCO place failed for %s (%s) — "
+                            "no broker backstop (software guard still protects)",
+                            getattr(intent, "tsym", "?"), exc)
+                oco_al_id = None
+
+        return oco_al_id
 
     return _arm
 
@@ -181,6 +261,13 @@ async def build_live_deploy_context(db: Any) -> Optional[Dict[str, Any]]:
         log.warning("build_live_deploy_context: collaborator build failed (%s) — live disabled", exc)
         return None
 
+    # Bind ONLY the deployment-INDEPENDENT collaborators (client/uid/actid) into the
+    # arm_for factory here. The per-deployment catastrophe pct is NOT bound — the
+    # context has no deployment; it reaches arm_for via the PER-SIGNAL call in
+    # auto_live (which reads deployment.risk.live). The catastrophe band falls to its
+    # own defaults when the per-signal call passes None.
+    bound_arm_for = functools.partial(arm_for, client=client, uid=uid, actid=actid)
+
     return {
         "client": client,
         "intent_store": intent_store,
@@ -192,7 +279,7 @@ async def build_live_deploy_context(db: Any) -> Optional[Dict[str, Any]]:
         "uid": uid,
         "actid": actid,
         "band_pct": _DEFAULT_BAND_PCT,
-        "arm_for": arm_for,
+        "arm_for": bound_arm_for,
     }
 
 

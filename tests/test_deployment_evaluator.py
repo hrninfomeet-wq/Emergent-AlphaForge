@@ -870,7 +870,9 @@ def _make_place_fn(result: Dict[str, Any], calls: List[Dict[str, Any]]):
     return _place
 
 
-def _fake_arm_for(plan, signal_doc, ref_ltp):
+def _fake_arm_for(plan, signal_doc, ref_ltp, **kwargs):
+    # Mirrors the real arm_for signature: auto_live forwards the per-deployment
+    # catastrophe pct as keyword args (catastrophe_stop_pct/target_pct).
     return MagicMock(name="arm_callable")
 
 

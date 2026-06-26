@@ -353,7 +353,16 @@ async def auto_live_trade_for_signal(
     # (h) authorization callable + arm callable for the executor.
     if allow_fn is None:
         allow_fn = lambda: is_deployment_live_allowed(deployment, now, connected=connected)  # noqa: E731
-    arm = arm_for(plan, signal_doc, ref_ltp) if arm_for is not None else None
+    # The per-deployment catastrophe band reaches arm_for via THIS per-signal call —
+    # the live context (build_live_deploy_context) is deployment-agnostic and binds
+    # only client/uid/actid. Forward risk.live.catastrophe_stop_pct/target_pct so the
+    # resting broker OCO uses the deployment's configured band (None → band defaults).
+    risk_live = (deployment.get("risk") or {}).get("live") or {}
+    arm = arm_for(
+        plan, signal_doc, ref_ltp,
+        catastrophe_stop_pct=risk_live.get("catastrophe_stop_pct"),
+        catastrophe_target_pct=risk_live.get("catastrophe_target_pct"),
+    ) if arm_for is not None else None
 
     # (i) build the option-leg contract the way the manual place route does, then
     #     place through the executor choke-point (side="B" ALWAYS — long-only; the
@@ -456,6 +465,11 @@ async def auto_live_trade_for_signal(
         "entry_price": float(ref_ltp),
         "norenordno": result.get("norenordno"),
         "cid": result.get("cid"),
+        # Resting broker OCO backstop (PC-down catastrophe net). When the executor's
+        # best-effort OCO place succeeded the result carries its al_id; otherwise the
+        # position has NO broker-side backstop (only the software guard while alive).
+        "oco_al_id": result.get("oco_al_id"),
+        "oco_error": None if result.get("oco_al_id") else "no_broker_backstop",
         "deployment_id": dep_id,
         "source": "auto_live_on_signal",
         "risk": risk_field,

@@ -18,6 +18,7 @@ tested here; the connected=None / unconnected fall-through IS.
 """
 from __future__ import annotations
 
+import functools
 import os
 import sys
 from typing import Any, Dict, List, Optional
@@ -28,6 +29,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 
 from app import live_deploy_context as ldc  # noqa: E402
+from app.live.oco_levels import compute_catastrophe_band  # noqa: E402
 
 
 # --------------------------------------------------------------------------- #
@@ -45,14 +47,34 @@ class FakeIntent:
 
 
 class FakeRegistry:
-    """Captures the register() call so the test can assert on its kwargs."""
+    """Captures the register() call so the test can assert on its kwargs, and
+    stores the live entry under its key so a later ``get(key)`` returns the SAME
+    mutable dict the OCO block stamps ``oco_al_id`` onto."""
 
     def __init__(self):
         self.calls: List[Dict[str, Any]] = []
+        self._items: Dict[str, Dict[str, Any]] = {}
 
     def register(self, **kwargs):
         self.calls.append(dict(kwargs))
-        return dict(kwargs)
+        item = dict(kwargs)            # the stored entry (a live reference)
+        self._items[str(kwargs.get("key"))] = item
+        return item
+
+    def get(self, key):
+        return self._items.get(str(key))
+
+
+class FakeOcoClient:
+    """Records place_oco intents; returns a scripted result."""
+
+    def __init__(self, result: Dict[str, Any]):
+        self._result = result
+        self.oco_calls: List[Dict[str, Any]] = []
+
+    async def place_oco(self, intent: Dict[str, Any]) -> Dict[str, Any]:
+        self.oco_calls.append(intent)
+        return dict(self._result)
 
 
 def _signal(deployment_id: str = "dep-7") -> Dict[str, Any]:
@@ -179,6 +201,130 @@ async def test_arm_for_does_not_schedule_session_or_autosquare(monkeypatch):
     arm = ldc.arm_for(_plan(), _signal(), ref_ltp=100.0)
     await arm(FakeIntent(), "N5")
     assert len(reg.calls) == 1
+
+
+# --------------------------------------------------------------------------- #
+# arm_for — resting broker OCO backstop (B3)
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.asyncio
+async def test_arm_for_places_resting_oco_with_catastrophe_band(monkeypatch):
+    """A deployed fill registers the guard AND places a resting broker OCO whose
+    SL/TP triggers equal compute_catastrophe_band(ref_ltp, guard_stop_pct=<resolved>,
+    stop_pct=<catastrophe_stop_pct>, target_pct=<catastrophe_target_pct>); the OCO
+    legs are NRML (prd='M'); the registry entry records the broker al_id; _arm
+    returns the al_id."""
+    reg = FakeRegistry()
+    monkeypatch.setattr(ldc, "get_registry", lambda: reg)
+    client = FakeOcoClient({"ok": True, "al_id": "OCO1"})
+
+    ref_ltp = 100.0
+    # The resolved guard stop_pct is the plan's premium stop (default _plan() = 30.0).
+    arm = functools.partial(ldc.arm_for, client=client, uid="UID1", actid="ACT1")(
+        _plan(), _signal("dep-7"), ref_ltp=ref_ltp,
+        catastrophe_stop_pct=48, catastrophe_target_pct=140,
+    )
+    # FakeIntent must be NRML so build_oco_intent (NRML-only) does not fail closed —
+    # but arm_for hardcodes prd='M' on the OCO regardless of the entry intent's prd.
+    oco_al_id = await arm(FakeIntent(prd="M"), "N1")
+
+    # (a) place_oco was called once with the catastrophe-band triggers + prd='M'.
+    assert len(client.oco_calls) == 1
+    sent = client.oco_calls[0]
+    band = compute_catastrophe_band(ref_ltp, guard_stop_pct=30.0, stop_pct=48, target_pct=140)
+    assert band is not None
+    sl_t, sl_l, tp_t, tp_l = band
+    # The OCO carries the SL trigger as oivariable x and the TP trigger as y.
+    oiv = {row["var_name"]: float(row["d"]) for row in sent["oivariable"]}
+    assert oiv["x"] == pytest.approx(sl_t)
+    assert oiv["y"] == pytest.approx(tp_t)
+    # Both legs are NRML SELL legs.
+    assert sent["place_order_params"]["prd"] == "M"
+    assert sent["place_order_params_leg2"]["prd"] == "M"
+    assert sent["place_order_params"]["trantype"] == "S"
+
+    # (b) the registry entry now records the broker OCO al_id.
+    ent = reg.get("N1")
+    assert ent is not None
+    assert ent["oco_al_id"] == "OCO1"
+
+    # (c) _arm returned the al_id.
+    assert oco_al_id == "OCO1"
+
+
+@pytest.mark.asyncio
+async def test_arm_for_oco_reject_leaves_no_backstop_but_never_raises(monkeypatch):
+    """place_oco → {"ok": False} → registry entry oco_al_id stays None, _arm returns
+    None, and NO exception is raised (a transient OCO reject must NEVER unwind an
+    already-filled+guarded entry)."""
+    reg = FakeRegistry()
+    monkeypatch.setattr(ldc, "get_registry", lambda: reg)
+    client = FakeOcoClient({"ok": False, "al_id": None})
+
+    arm = functools.partial(ldc.arm_for, client=client, uid="U", actid="A")(
+        _plan(), _signal(), ref_ltp=100.0, catastrophe_stop_pct=48,
+    )
+    oco_al_id = await arm(FakeIntent(prd="M"), "N1")
+
+    assert oco_al_id is None
+    ent = reg.get("N1")
+    assert ent is not None                          # entry still registered
+    assert ent.get("oco_al_id") is None             # but no broker backstop
+
+
+@pytest.mark.asyncio
+async def test_arm_for_oco_exception_never_unwinds_filled_entry(monkeypatch):
+    """If place_oco RAISES, the OCO block swallows it: _arm returns None and the
+    entry stays registered — the fill is never unwound."""
+    reg = FakeRegistry()
+    monkeypatch.setattr(ldc, "get_registry", lambda: reg)
+
+    class BoomOco:
+        async def place_oco(self, intent):
+            raise RuntimeError("broker OCO endpoint down")
+
+    arm = functools.partial(ldc.arm_for, client=BoomOco(), uid="U", actid="A")(
+        _plan(), _signal(), ref_ltp=100.0,
+    )
+    oco_al_id = await arm(FakeIntent(prd="M"), "N1")
+
+    assert oco_al_id is None
+    assert reg.get("N1") is not None
+    assert reg.get("N1").get("oco_al_id") is None
+
+
+@pytest.mark.asyncio
+async def test_arm_for_no_client_skips_oco_and_returns_none(monkeypatch):
+    """With no client bound (the manual / context-less default), no OCO is placed,
+    _arm returns None, and the guard registration still happens."""
+    reg = FakeRegistry()
+    monkeypatch.setattr(ldc, "get_registry", lambda: reg)
+
+    arm = ldc.arm_for(_plan(), _signal(), ref_ltp=100.0)   # client defaults to None
+    oco_al_id = await arm(FakeIntent(prd="M"), "N1")
+
+    assert oco_al_id is None
+    assert len(reg.calls) == 1                      # still registered
+    assert reg.get("N1").get("oco_al_id") is None
+
+
+@pytest.mark.asyncio
+async def test_arm_for_register_failure_still_propagates_with_client(monkeypatch):
+    """The MANDATORY register() must still propagate even when a client is bound for
+    the OCO — the OCO best-effort try/except sits AFTER register, so a register
+    failure reaches the executor's _abort_protect, and NO OCO is placed."""
+    class Boom:
+        def register(self, **kwargs):
+            raise RuntimeError("registry down")
+    monkeypatch.setattr(ldc, "get_registry", lambda: Boom())
+    client = FakeOcoClient({"ok": True, "al_id": "OCO1"})
+
+    arm = functools.partial(ldc.arm_for, client=client, uid="U", actid="A")(
+        _plan(), _signal(), ref_ltp=100.0, catastrophe_stop_pct=48,
+    )
+    with pytest.raises(RuntimeError, match="registry down"):
+        await arm(FakeIntent(prd="M"), "N1")
+    assert client.oco_calls == []                   # OCO never reached
 
 
 # --------------------------------------------------------------------------- #

@@ -432,7 +432,9 @@ _THROTTLE = {"placed": False, "reason": "rate_throttled", "verdicts": []}
 
 
 def _arm_for_factory(captured: List[Dict[str, Any]]):
-    def _arm_for(plan, signal_doc, ref_ltp):
+    # Mirrors the real arm_for signature: auto_live always forwards the per-deployment
+    # catastrophe pct as keyword args, so the fake must accept **kwargs.
+    def _arm_for(plan, signal_doc, ref_ltp, **kwargs):
         captured.append({"plan": plan, "signal_doc": signal_doc, "ref_ltp": ref_ltp})
         return MagicMock(name="arm_callable")
     return _arm_for
@@ -493,6 +495,106 @@ async def test_orchestrator_success_inserts_live_trade_and_activates_signal():
     assert len(armed) == 1
     assert armed[0]["ref_ltp"] == 151.5
     assert armed[0]["plan"]["levels"]["stop_pct"] == 0.4
+
+
+# ---- B3: resting OCO backstop journaling + per-deployment band wiring ----------
+
+_SUCCESS_OCO = {"placed": True, "protected": True, "norenordno": "ABC",
+                "cid": "c1", "verdicts": [], "oco_al_id": "OCO1"}
+_SUCCESS_NO_OCO = {"placed": True, "protected": True, "norenordno": "ABC",
+                   "cid": "c1", "verdicts": [], "oco_al_id": None}
+
+
+def _arm_for_factory_capturing_kwargs(captured: List[Dict[str, Any]]):
+    """Like _arm_for_factory but also records the keyword args (catastrophe pct)."""
+    def _arm_for(plan, signal_doc, ref_ltp, **kwargs):
+        captured.append({"plan": plan, "signal_doc": signal_doc,
+                         "ref_ltp": ref_ltp, "kwargs": kwargs})
+        return MagicMock(name="arm_callable")
+    return _arm_for
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_journals_oco_al_id_when_backstop_placed():
+    db = FakeDB()
+    sig = make_confirmed_signal()
+    db.signals.rows.append(dict(sig))
+    out = await auto_live_trade_for_signal(
+        db, make_live_deployment(lots=2), sig,
+        latest_tick_lookup={KEY: _fresh_tick(151.5)}.get,
+        now_utc=NOW,
+        place_fn=make_place_fn(_SUCCESS_OCO, []),
+        arm_for=_arm_for_factory([]),
+        account_max=20,
+    )
+    assert out["created"] is True
+    trade = db.live_trades.rows[0]
+    assert trade["oco_al_id"] == "OCO1"
+    assert trade["oco_error"] is None
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_journals_no_broker_backstop_when_oco_missing():
+    db = FakeDB()
+    sig = make_confirmed_signal()
+    db.signals.rows.append(dict(sig))
+    out = await auto_live_trade_for_signal(
+        db, make_live_deployment(lots=2), sig,
+        latest_tick_lookup={KEY: _fresh_tick(151.5)}.get,
+        now_utc=NOW,
+        place_fn=make_place_fn(_SUCCESS_NO_OCO, []),
+        arm_for=_arm_for_factory([]),
+        account_max=20,
+    )
+    assert out["created"] is True
+    trade = db.live_trades.rows[0]
+    assert trade["oco_al_id"] is None
+    assert trade["oco_error"] == "no_broker_backstop"
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_passes_per_deployment_catastrophe_pct_to_arm_for():
+    """The per-deployment catastrophe band reaches arm_for via the PER-SIGNAL call
+    (the live context is deployment-agnostic): risk.live.catastrophe_stop_pct /
+    catastrophe_target_pct are forwarded as keyword args."""
+    db = FakeDB()
+    sig = make_confirmed_signal()
+    db.signals.rows.append(dict(sig))
+    captured: List[Dict[str, Any]] = []
+    dep = make_live_deployment(lots=2, catastrophe_stop_pct=48, catastrophe_target_pct=140)
+    out = await auto_live_trade_for_signal(
+        db, dep, sig,
+        latest_tick_lookup={KEY: _fresh_tick(151.5)}.get,
+        now_utc=NOW,
+        place_fn=make_place_fn(_SUCCESS_OCO, []),
+        arm_for=_arm_for_factory_capturing_kwargs(captured),
+        account_max=20,
+    )
+    assert out["created"] is True
+    assert len(captured) == 1
+    assert captured[0]["kwargs"]["catastrophe_stop_pct"] == 48
+    assert captured[0]["kwargs"]["catastrophe_target_pct"] == 140
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_catastrophe_pct_default_none_when_unset():
+    """When the deployment has no risk.live catastrophe pct, arm_for is called with
+    catastrophe_stop_pct=None / catastrophe_target_pct=None (band falls to defaults)."""
+    db = FakeDB()
+    sig = make_confirmed_signal()
+    db.signals.rows.append(dict(sig))
+    captured: List[Dict[str, Any]] = []
+    out = await auto_live_trade_for_signal(
+        db, make_live_deployment(lots=2), sig,
+        latest_tick_lookup={KEY: _fresh_tick(151.5)}.get,
+        now_utc=NOW,
+        place_fn=make_place_fn(_SUCCESS_OCO, []),
+        arm_for=_arm_for_factory_capturing_kwargs(captured),
+        account_max=20,
+    )
+    assert out["created"] is True
+    assert captured[0]["kwargs"]["catastrophe_stop_pct"] is None
+    assert captured[0]["kwargs"]["catastrophe_target_pct"] is None
 
 
 @pytest.mark.asyncio
