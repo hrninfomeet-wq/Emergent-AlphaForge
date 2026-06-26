@@ -164,8 +164,76 @@ async def _reconcile_open_flat(
     return summary
 
 
+def _relink_held_ocos(
+    gtt_book: List[Dict[str, Any]], open_tsyms: Dict[str, bool]
+) -> Dict[str, int]:
+    """Phase 2.5 — re-link a still-resting OCO to a HELD rehydrated position.
+
+    After a backend restart, ``LivePositionGuard.rehydrate_from_broker`` re-registers
+    open broker positions keyed by ``tsym`` with ``oco_al_id=None`` — but the OCO
+    placed at the ORIGINAL arm SURVIVES at the broker. Without a handle the guard
+    cannot cancel that OCO when it later squares the rehydrated position → the OCO is
+    orphaned and could misfire (an unintended SELL) on a same-strike re-entry.
+
+    This walks the process-singleton guard registry and, for every entry whose tsym is
+    HELD (in the non-empty position_book) and whose ``oco_al_id`` is falsy, looks for a
+    resting OCO in ``gtt_book`` with the SAME tsym; if found it stores the al_id back
+    onto the LIVE registry entry (``get_registry().get(key)["oco_al_id"] = al_id``).
+    Matching is by tsym because rehydrated entries carry no norenordno and one open
+    position per tsym is the norm.
+
+    Held entries that still have NO oco_al_id after the attempt are counted as
+    ``no_backstop`` (software-guard-only) and each gets a loud WARNING. An entry that
+    already has an oco_al_id is left untouched. Re-link / flag are HELD-only — a flat
+    tsym's entry is left to the orphan-sweep / guard drop.
+
+    NEVER raises. Returns ``{"relinked": int, "no_backstop": int}``.
+    """
+    summary = {"relinked": 0, "no_backstop": 0}
+    try:
+        from app.live.live_position_guard import get_registry
+        registry = get_registry()
+        # tsym -> al_id of the first resting OCO row for that tsym.
+        oco_by_tsym: Dict[str, Any] = {}
+        for row in gtt_book:
+            if not isinstance(row, dict):
+                continue
+            al_id = row.get("al_id") or row.get("Al_id")
+            tsym = row.get("tsym")
+            if al_id and tsym:
+                oco_by_tsym.setdefault(str(tsym), al_id)
+        for entry in registry.snapshot():
+            try:
+                tsym = str(entry.get("tsym") or "")
+                if not tsym or tsym not in open_tsyms:
+                    continue  # HELD-only — flat entries are not re-linked / flagged
+                if entry.get("oco_al_id"):
+                    continue  # already linked — never overwrite
+                al_id = oco_by_tsym.get(tsym)
+                if al_id:
+                    # Live dict — store the handle so the guard can cancel on square.
+                    live = registry.get(entry.get("id"))
+                    target = live if live is not None else entry
+                    target["oco_al_id"] = al_id
+                    summary["relinked"] += 1
+                    log.info("reboot reconcile: re-linked resting OCO %s to held "
+                             "rehydrated position %s", al_id, tsym)
+                else:
+                    summary["no_backstop"] += 1
+                    log.warning(
+                        "reboot reconcile: HELD position %s has NO broker backstop "
+                        "(no resting OCO) — it is SOFTWARE-GUARD-ONLY", tsym)
+            except Exception as exc:  # one bad entry never aborts the rest
+                log.warning("reboot reconcile: re-link of %s failed: %s",
+                            entry.get("tsym"), exc)
+    except Exception as exc:  # registry import / snapshot failure is non-fatal
+        log.warning("reboot reconcile: re-link phase failed: %s", exc)
+    return summary
+
+
 async def _sweep_orphan_ocos(
-    db: Any, client: Any, open_tsyms: Dict[str, bool]
+    db: Any, client: Any, open_tsyms: Dict[str, bool],
+    gtt_book: List[Dict[str, Any]],
 ) -> Dict[str, int]:
     """Phase 3 — cancel resting OCOs whose entry is CONFIRMED gone.
 
@@ -173,16 +241,10 @@ async def _sweep_orphan_ocos(
       * remarks-linked: the entry's ``live_trades`` doc is now CLOSED; OR
       * unlinked (no remarks / no doc): the row's tsym is flat in the NON-EMPTY book
         AND there is no OPEN ``live_trades`` doc for that tsym.
-    Never cancel an OCO whose entry is still OPEN / position still held.
+    Never cancel an OCO whose entry is still OPEN / position still held — so a HELD
+    tsym's OCO (incl. one just re-linked in phase 2.5) is never swept.
     """
     summary = {"cancelled": 0, "kept": 0}
-    try:
-        gtt_book = await client.gtt_book()
-        if not isinstance(gtt_book, list):
-            gtt_book = []
-    except Exception as exc:
-        log.warning("reboot reconcile: gtt_book fetch failed: %s", exc)
-        return summary
     for row in gtt_book:
         try:
             if not isinstance(row, dict):
@@ -251,9 +313,32 @@ async def reconcile_on_startup(db: Any, client: Any) -> Dict[str, Any]:
     except Exception as exc:  # pragma: no cover - defensive (inner already wraps)
         log.warning("reboot reconcile: open-flat phase failed: %s", exc)
 
-    # Phase 3 — orphan-OCO sweep (independent of phase 2 outcome).
+    # Fetch the resting-OCO (gtt) book ONCE — shared by the re-link phase and the
+    # orphan sweep. A failed fetch ⇒ empty list ⇒ both phases no-op safely.
     try:
-        sweep_summary = await _sweep_orphan_ocos(db, client, open_tsyms)
+        gtt_book = await client.gtt_book()
+        if not isinstance(gtt_book, list):
+            gtt_book = []
+    except Exception as exc:
+        log.warning("reboot reconcile: gtt_book fetch failed: %s", exc)
+        gtt_book = []
+
+    # Phase 2.5 — RE-LINK a still-resting OCO to its HELD rehydrated position
+    # (so the guard can cancel it on a later square → no orphan misfire) + flag
+    # HELD positions with no broker backstop. Runs BEFORE the orphan-sweep so a
+    # re-linked HELD OCO is never a sweep candidate (the sweep is flat/closed-only).
+    try:
+        relink_summary = _relink_held_ocos(gtt_book, open_tsyms)
+        summary["relinked"] = relink_summary.get("relinked", 0)
+        summary["no_backstop"] = relink_summary.get("no_backstop", 0)
+        summary["relink_detail"] = relink_summary
+    except Exception as exc:  # pragma: no cover - defensive (inner already wraps)
+        log.warning("reboot reconcile: re-link phase failed: %s", exc)
+
+    # Phase 3 — orphan-OCO sweep (independent of the phases above; flat/closed-only,
+    # so a HELD tsym's OCO — incl. one just re-linked — is never cancelled).
+    try:
+        sweep_summary = await _sweep_orphan_ocos(db, client, open_tsyms, gtt_book)
         summary["cancelled"] = sweep_summary.get("cancelled", 0)
         summary["sweep_detail"] = sweep_summary
     except Exception as exc:  # pragma: no cover - defensive (inner already wraps)

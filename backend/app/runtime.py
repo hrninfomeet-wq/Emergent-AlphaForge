@@ -249,8 +249,10 @@ async def live_startup_recovery() -> None:
     try:
         from app.live.reboot_reconcile import reconcile_on_startup
         res = await reconcile_on_startup(get_db(), client)
-        _log.info("live startup recovery: reboot reconcile closed=%s cancelled=%s status=%s",
-                  res.get("closed"), res.get("cancelled"), res.get("status"))
+        _log.info("live startup recovery: reboot reconcile closed=%s cancelled=%s "
+                  "relinked=%s no_backstop=%s status=%s",
+                  res.get("closed"), res.get("cancelled"),
+                  res.get("relinked"), res.get("no_backstop"), res.get("status"))
     except Exception as exc:
         _log.warning("live startup recovery: reboot reconcile failed: %s", exc)
 

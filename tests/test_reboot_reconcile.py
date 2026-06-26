@@ -32,6 +32,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 
 from app.live.reboot_reconcile import reconcile_on_startup  # noqa: E402
+from app.live.live_position_guard import (  # noqa: E402
+    LiveMonitorRegistry,
+    get_registry,
+)
+from app.live.live_sl_monitor import build_monitor_state  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -372,3 +377,128 @@ def test_closed_doc_is_never_retouched():
     summary = _run(reconcile_on_startup(db, client))
     assert db.live_trades.rows[0]["realized_pnl"] == 42.0  # untouched
     assert summary.get("closed", 0) == 0
+
+
+# ---------------------------------------------------------------------------
+# Re-link phase (Fix 3): on startup, re-attach a still-resting OCO to a
+# rehydrated HELD position so the guard can cancel it on a later square
+# (no orphan misfire) + flag HELD positions with no broker backstop.
+#
+# The guard registry is a PROCESS SINGLETON — these tests clear it first so a
+# prior test's entries never leak in.
+# ---------------------------------------------------------------------------
+
+def _fresh_registry() -> LiveMonitorRegistry:
+    r = get_registry()
+    r.clear()
+    return r
+
+
+def _register_rehydrated(r: LiveMonitorRegistry, *, tsym: str, oco_al_id=None):
+    """A rehydrated entry as guard.rehydrate_from_broker builds it: keyed by tsym,
+    source="rehydrated", default 50% stop, oco_al_id None by default."""
+    state = build_monitor_state(100.0, stop_pct=50.0)
+    return r.register(
+        key=tsym, tsym=tsym, exch="NFO", qty=65, prd="I",
+        entry_price=100.0, state=state, source="rehydrated", oco_al_id=oco_al_id,
+    )
+
+
+def test_relink_resting_oco_to_held_rehydrated_position():
+    """A rehydrated entry (tsym X, oco_al_id None) + non-empty book HOLDING X +
+    a gtt_book OCO for X → the entry's oco_al_id is set to the OCO's al_id;
+    summary relinked >= 1."""
+    r = _fresh_registry()
+    _register_rehydrated(r, tsym="X")
+    db = FakeDB()
+    client = FakeClient(
+        position_book=[{"tsym": "X", "netqty": "65", "lp": "120"}],
+        gtt_book=[{"al_id": "ALrelink", "tsym": "X"}],
+    )
+    summary = _run(reconcile_on_startup(db, client))
+    assert r.get("X")["oco_al_id"] == "ALrelink"
+    assert summary.get("relinked", 0) >= 1
+    # re-linked held OCO must NOT be swept (held, not orphan)
+    assert "ALrelink" not in client.cancelled
+
+
+def test_held_rehydrated_with_no_oco_is_flagged_no_backstop():
+    """A held rehydrated entry (tsym Y) with NO gtt_book OCO for Y → oco_al_id
+    stays None and summary no_backstop >= 1 (software-guard-only signal)."""
+    r = _fresh_registry()
+    _register_rehydrated(r, tsym="Y")
+    db = FakeDB()
+    client = FakeClient(
+        position_book=[{"tsym": "Y", "netqty": "65", "lp": "120"}],
+        gtt_book=[],  # no resting OCO for Y
+    )
+    summary = _run(reconcile_on_startup(db, client))
+    assert r.get("Y")["oco_al_id"] is None
+    assert summary.get("no_backstop", 0) >= 1
+
+
+def test_relink_does_not_overwrite_existing_oco_al_id():
+    """A held entry that ALREADY has an oco_al_id is left unchanged (not
+    overwritten by a same-tsym gtt row) and is NOT counted as no_backstop."""
+    r = _fresh_registry()
+    _register_rehydrated(r, tsym="Z", oco_al_id="ALoriginal")
+    db = FakeDB()
+    client = FakeClient(
+        position_book=[{"tsym": "Z", "netqty": "65", "lp": "120"}],
+        gtt_book=[{"al_id": "ALother", "tsym": "Z"}],
+    )
+    summary = _run(reconcile_on_startup(db, client))
+    assert r.get("Z")["oco_al_id"] == "ALoriginal"  # untouched
+    assert summary.get("no_backstop", 0) == 0
+
+
+def test_relink_only_held_flat_oco_still_orphan_swept():
+    """A FLAT tsym's OCO is still orphan-swept (cancelled) and NOT re-linked;
+    a HELD tsym's OCO is re-linked, never swept."""
+    r = _fresh_registry()
+    _register_rehydrated(r, tsym="HELD")  # held → re-link target
+    db = FakeDB()
+    client = FakeClient(
+        position_book=[{"tsym": "HELD", "netqty": "65"}],  # FLAT tsym absent → flat
+        gtt_book=[
+            {"al_id": "ALheld", "tsym": "HELD"},   # held → re-link, never sweep
+            {"al_id": "ALflat", "tsym": "FLAT"},   # flat + no open trade → orphan
+        ],
+    )
+    summary = _run(reconcile_on_startup(db, client))
+    assert r.get("HELD")["oco_al_id"] == "ALheld"  # re-linked
+    assert summary.get("relinked", 0) >= 1
+    assert "ALheld" not in client.cancelled  # held OCO never swept
+    assert "ALflat" in client.cancelled       # flat OCO orphan-swept
+
+
+def test_relink_empty_book_is_unknown_no_relink():
+    """The transient-empty guard still holds for re-link: an empty position_book
+    → no re-link (oco_al_id stays None), no sweep, no_backstop not reported as a
+    held flag (UNKNOWN short-circuits the whole routine)."""
+    r = _fresh_registry()
+    _register_rehydrated(r, tsym="X")
+    db = FakeDB()
+    client = FakeClient(
+        position_book=[],  # empty == UNKNOWN
+        gtt_book=[{"al_id": "ALx", "tsym": "X"}],
+    )
+    summary = _run(reconcile_on_startup(db, client))
+    assert r.get("X")["oco_al_id"] is None
+    assert client.cancelled == []
+    assert summary.get("relinked", 0) == 0
+
+
+def test_relink_skips_non_held_registry_entry():
+    """A registry entry whose tsym is FLAT (not held) is NOT a re-link target and
+    is NOT flagged no_backstop (re-link/flag are HELD-only)."""
+    r = _fresh_registry()
+    _register_rehydrated(r, tsym="GONE")  # flat at broker
+    db = FakeDB()
+    client = FakeClient(
+        position_book=[{"tsym": "OTHER", "netqty": "30"}],  # GONE absent → flat
+        gtt_book=[{"al_id": "ALgone", "tsym": "GONE"}],
+    )
+    summary = _run(reconcile_on_startup(db, client))
+    assert r.get("GONE")["oco_al_id"] is None
+    assert summary.get("no_backstop", 0) == 0  # not held → not flagged
