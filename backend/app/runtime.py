@@ -243,6 +243,16 @@ async def live_startup_recovery() -> None:
             _log.info("live startup recovery: no open broker positions to rehydrate")
     except Exception as exc:
         _log.warning("live startup recovery: guard rehydrate failed: %s", exc)
+    # 3. transient-safe reboot reconciliation — journal any OCO that fired (or any
+    #    position closed externally) while the PC was down + sweep orphan OCOs.
+    #    Empty position_book == UNKNOWN (no close, no cancel); never raises.
+    try:
+        from app.live.reboot_reconcile import reconcile_on_startup
+        res = await reconcile_on_startup(get_db(), client)
+        _log.info("live startup recovery: reboot reconcile closed=%s cancelled=%s status=%s",
+                  res.get("closed"), res.get("cancelled"), res.get("status"))
+    except Exception as exc:
+        _log.warning("live startup recovery: reboot reconcile failed: %s", exc)
 
 
 # ---------------------------------------------------------------------------
