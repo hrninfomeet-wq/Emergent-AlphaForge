@@ -60,6 +60,7 @@ async def close_live_trade(
     norenordno: Optional[str],
     exit_price: Optional[float],
     exit_reason: str,
+    fill_price: Optional[float] = None,
     now_iso: Optional[str] = None,
 ) -> bool:
     """Idempotently mark the non-CLOSED ``live_trades`` doc for ``norenordno`` CLOSED.
@@ -67,8 +68,15 @@ async def close_live_trade(
     Returns True iff a doc was transitioned to CLOSED. Long-only option BUY, so
     ``realized_pnl = quantity * (exit_price - entry_price)`` (positive = gain).
     ``exit_price`` is the guard's last-seen broker last-price at the exit cycle —
-    an exit *mark*, not a confirmed fill — so realized_pnl is an estimate. If
-    ``exit_price`` is not finite the doc is still CLOSED (with ``closed_at`` +
+    an exit *mark*, not a confirmed fill — so realized_pnl is an estimate.
+
+    ``fill_price``, when finite, is the broker's **true** exit fill price (e.g.
+    from the trade book during reboot reconciliation); it is used as THE exit
+    price — for both the stored ``exit_price`` field and the realized_pnl
+    computation — in preference to the ``exit_price`` estimate. When ``fill_price``
+    is None, behaviour is exactly as before (the ``exit_price`` mark is used).
+
+    If neither price is finite the doc is still CLOSED (with ``closed_at`` +
     ``exit_reason``) but ``realized_pnl`` is left untouched (``None``); we never
     fabricate a number. The ``status != "CLOSED"`` filter makes a repeat call a
     safe no-op.
@@ -86,7 +94,9 @@ async def close_live_trade(
         "closed_at": now_iso,
         "updated_at": now_iso,
     }
-    ep = _finite(exit_price)
+    # broker-true fill_price wins over the guard's exit-mark estimate.
+    fp = _finite(fill_price)
+    ep = fp if fp is not None else _finite(exit_price)
     if ep is not None:
         set_fields["exit_price"] = ep
         qty = _finite(doc.get("quantity"))

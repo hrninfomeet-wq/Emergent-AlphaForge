@@ -150,3 +150,39 @@ def test_same_norenordno_uniquely_targets_its_own_doc():
     by_id = {r["id"]: r for r in db.live_trades.rows}
     assert by_id["b"]["status"] == "CLOSED"
     assert by_id["a"]["status"] == "OPEN"           # the same-tsym sibling untouched
+
+
+# ── close_live_trade: broker-true fill_price (reboot reconciliation) ─────────
+
+def test_fill_price_is_used_as_exit_price_and_for_pnl():
+    # reboot reconciliation: the broker trade book gives the TRUE fill price,
+    # used in preference to any guard exit-mark estimate.
+    db = _DB([_open_doc(quantity=65, entry_price=100.0)])
+    ok = asyncio.run(close_live_trade(db, norenordno="N100", exit_price=None,
+                                      fill_price=132.0, exit_reason="reconciled"))
+    assert ok is True
+    row = db.live_trades.rows[0]
+    assert row["status"] == "CLOSED"
+    assert row["exit_price"] == 132.0
+    assert row["exit_reason"] == "reconciled"
+    assert row["realized_pnl"] == (132.0 - 100.0) * 65   # +2080
+
+
+def test_fill_price_none_falls_back_to_exit_price():
+    # fill_price omitted → behaviour is exactly as today (uses exit_price).
+    db = _DB([_open_doc(quantity=130, entry_price=100.0)])
+    ok = asyncio.run(close_live_trade(db, norenordno="N100", exit_price=130.0,
+                                      fill_price=None, exit_reason="target"))
+    assert ok is True
+    row = db.live_trades.rows[0]
+    assert row["exit_price"] == 130.0
+    assert row["realized_pnl"] == 3900.0
+
+
+def test_fill_price_wins_over_exit_price_when_both_given():
+    db = _DB([_open_doc(quantity=65, entry_price=100.0)])
+    asyncio.run(close_live_trade(db, norenordno="N100", exit_price=130.0,
+                                 fill_price=132.0, exit_reason="reconciled"))
+    row = db.live_trades.rows[0]
+    assert row["exit_price"] == 132.0                    # broker fill wins
+    assert row["realized_pnl"] == (132.0 - 100.0) * 65   # +2080, from fill_price
