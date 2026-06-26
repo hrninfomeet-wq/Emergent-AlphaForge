@@ -37,6 +37,9 @@ export default function DeployToLivePanel({ dep, onArmed }) {
   const [maxDay, setMaxDay] = useState("10");
   const [maxConcurrent, setMaxConcurrent] = useState("2");
   const [dailyLossCap, setDailyLossCap] = useState("");
+  // PC-down OCO backstop (catastrophe band) — optional; blank → backend default.
+  const [catStopPct, setCatStopPct] = useState("");
+  const [catTargetPct, setCatTargetPct] = useState("");
 
   // ── Phase 2: danger typed-confirm ─────────────────────────────────────────
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -67,6 +70,11 @@ export default function DeployToLivePanel({ dep, onArmed }) {
   const maxDayNum = Math.max(1, parseInt(maxDay, 10) || 1);
   const maxConcurrentNum = Math.max(1, parseInt(maxConcurrent, 10) || 1);
   const dailyLossCapNum = dailyLossCap.trim() !== "" ? parseFloat(dailyLossCap) : null;
+  // Catastrophe-band inputs: only forward a finite number; blank/NaN → omit (backend default).
+  const catStopPctNum = catStopPct.trim() !== "" && Number.isFinite(parseFloat(catStopPct))
+    ? parseFloat(catStopPct) : null;
+  const catTargetPctNum = catTargetPct.trim() !== "" && Number.isFinite(parseFloat(catTargetPct))
+    ? parseFloat(catTargetPct) : null;
 
   const lotsError = maxLots != null && lotsNum > maxLots
     ? `Account ceiling is ${maxLots} lot${maxLots === 1 ? "" : "s"}/order`
@@ -98,6 +106,10 @@ export default function DeployToLivePanel({ dep, onArmed }) {
         max_concurrent: maxConcurrentNum,
         confirm: true,
         ...(dailyLossCapNum != null ? { daily_loss_cap: dailyLossCapNum } : {}),
+        // PC-down OCO backstop — only sent when the operator entered a value;
+        // a blank field omits the key so the backend default band applies.
+        ...(catStopPctNum != null ? { catastrophe_stop_pct: catStopPctNum } : {}),
+        ...(catTargetPctNum != null ? { catastrophe_target_pct: catTargetPctNum } : {}),
       };
       const res = await api.liveArm(dep.id, body);
       setConfirmOpen(false);
@@ -231,6 +243,48 @@ export default function DeployToLivePanel({ dep, onArmed }) {
               />
             </div>
 
+            {/* PC-down OCO backstop (catastrophe band) — optional overrides */}
+            <div className="rounded-md border border-line bg-bg-2/40 px-3 py-2 space-y-3">
+              <p className="text-[10px] uppercase tracking-wider text-dimmer">
+                PC-down OCO backstop{" "}
+                <span className="text-dimmer/60 normal-case tracking-normal">
+                  — resting broker OCO if the PC/guard is down (optional)
+                </span>
+              </p>
+              {/* Catastrophe stop % */}
+              <div>
+                <label className="text-[10px] uppercase tracking-wider text-dimmer mb-1 block">
+                  Catastrophe stop % <span className="text-dimmer/60">(blank → default)</span>
+                </label>
+                <Input
+                  type="number"
+                  min={0}
+                  step={0.5}
+                  value={catStopPct}
+                  onChange={(e) => setCatStopPct(e.target.value)}
+                  placeholder="default ~47.5"
+                  className="bg-bg-2 border-line h-8 text-xs"
+                  data-testid="live-caps-cat-stop"
+                />
+              </div>
+              {/* Catastrophe target % */}
+              <div>
+                <label className="text-[10px] uppercase tracking-wider text-dimmer mb-1 block">
+                  Catastrophe target % <span className="text-dimmer/60">(blank → default)</span>
+                </label>
+                <Input
+                  type="number"
+                  min={0}
+                  step={0.5}
+                  value={catTargetPct}
+                  onChange={(e) => setCatTargetPct(e.target.value)}
+                  placeholder="default ~135"
+                  className="bg-bg-2 border-line h-8 text-xs"
+                  data-testid="live-caps-cat-target"
+                />
+              </div>
+            </div>
+
             <div className="flex gap-2 pt-1">
               <Button
                 type="button"
@@ -276,7 +330,16 @@ export default function DeployToLivePanel({ dep, onArmed }) {
               {dailyLossCapNum != null && (
                 <div>Daily loss cap: <span className="text-foreground">₹{dailyLossCapNum.toLocaleString()}</span></div>
               )}
+              {catStopPctNum != null && (
+                <div>Catastrophe stop: <span className="text-foreground">{catStopPctNum}%</span></div>
+              )}
+              {catTargetPctNum != null && (
+                <div>Catastrophe target: <span className="text-foreground">{catTargetPctNum}%</span></div>
+              )}
             </div>
+            <p className="text-dimmer">
+              Deployed entries arm as NRML with a resting OCO backstop; the catastrophe band is auto-widened to stay clear of the software guard stop.
+            </p>
             <p className="text-dimmer">
               Type <strong className="text-danger font-mono">ARM</strong> below to authorize live orders for{" "}
               <em>{depLabel}</em>.
