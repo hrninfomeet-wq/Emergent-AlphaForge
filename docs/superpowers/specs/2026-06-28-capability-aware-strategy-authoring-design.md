@@ -35,7 +35,7 @@ Two root causes, both verified in code:
 - **Out-of-app authoring (Q5 → in-wizard now, export Phase 2):** v1 = a multi-turn collaborative loop inside the New Strategy wizard. The capability-gap report + scaffolded-stub export (paste into Full-Python / edit in Claude Code, re-import via the existing Validate→Install) is Phase 2 — it composes for free on the existing gate.
 
 **Findings folded in as first-class work** (from the adversarial critique):
-- **F1 (latent bug):** the `ctx` passed to `evaluate()` is **inconsistent across the three paths today** — `backtest.py` has no `i`, `deployment_evaluator.py` never calls `session_precompute` (and has no `instrument`/`session_date`), and the smoke driver has neither `history_df` nor `i`. Consequence: existing `session_precompute`-dependent builtins (ORB / gap / scenario-routed) **silently degrade in paper/live today**. **SP-0 fixes this for everyone.**
+- **F1 (ctx contract drift):** the `ctx` passed to `evaluate()` is **inconsistent across the three paths** — backtest sets `i` per-bar (in the loop, `backtest.py:179`) and calls `session_precompute`; **`deployment_evaluator` never calls `session_precompute`** (and lacks `instrument`/`session_date`); the smoke driver has **neither `history_df` nor `i`** and never calls `session_precompute`. The existing `session_precompute` builtins (ORB/gap/scenario-routed) carry a per-bar `history_df` fallback (verified by `test_session_precompute_parity.py::test_session_open_fallback_matches_reference`), so they stay *correct* in live but lose their O(1) fast path (a per-tick perf regression). The real blockers SP-0 closes: **(a)** a NEW structural strategy that computes only in `session_precompute` (no fallback) gets `{}` and degrades live; **(b)** the smoke gate can't validate any structural Full-Python strategy because its ctx has no `history_df`/`i`/`session_precompute` — so the "Full-Python absorbs structure" boundary is currently **unexercised (a hollow gate)**.
 - **F2 (live-correctness landmine):** `deployment_evaluator` recomputes over a fixed **200-bar window (~½ session) that straddles the session boundary**. Any *session-anchored* feature would compute over *yesterday's* bars for the first ~3 hours of a session → **silently wrong live signals**. The feasibility boundary gains a **`session_anchored`** axis; such features are live-correct only with a session-aware loader, else backtest-only.
 
 **Out of scope (this whole project):** deploy-time/runtime sandboxing of installed plugins (unchanged from Part 2); warehouse feature persistence; multi-leg option-spread P&L; ingesting new data classes (OI/IV/greeks history, L2/tape, news). See §12.
@@ -96,7 +96,7 @@ This replaces today's silent `couldnt_map` proxy.
 
 | Path | File | ctx keys today | `session_precompute` called? |
 |---|---|---|---|
-| Backtest | `backtest.py:~112` | `history_df`, `instrument` | **Yes** |
+| Backtest | `backtest.py:~112` + `:179` | `history_df`, `instrument`, `i` (set per-bar at :179) | **Yes** |
 | Paper/Live | `deployment_evaluator.py:~370` | `history_df`, `i` | **No** |
 | Smoke-test | `_py_smoke_driver.py:~56` | `instrument`, `mode`, `session_date` | **No** |
 
@@ -116,10 +116,10 @@ ctx = {
 
 **Changes:**
 1. `backtest.py` — add `"i"` (already has the loop var) + `"session_date"` to `ctx_global`/per-bar ctx. (Already calls `session_precompute`.)
-2. `deployment_evaluator.py` — add `ctx.update(strategy.session_precompute(df_enriched, merged_params))` before `evaluate()`, plus `"instrument"`, `"session_date"`. **This is the F1 fix** — ORB/gap/scenario-routed builtins stop silently degrading in paper/live.
+2. `deployment_evaluator.py` — add `ctx.update(strategy.session_precompute(df_enriched, merged_params))` before `evaluate()`, plus `"instrument"`, `"session_date"`. This **restores the O(1) `session_precompute` fast path** in live for ORB/gap/scenario builtins (today they fall back to a slower per-bar derivation) **and makes structural-only strategies viable live** (they no longer need to carry a fallback).
 3. `_py_smoke_driver.py` — build a real `history_df` (the synthetic frame it already constructs), pass a real `i`, call `session_precompute`, and include `instrument`/`session_date`. So a structural Full-Python strategy that reads `ctx["history_df"]`/`session_precompute` output **actually executes under smoke**.
 
-**Gate (⛯ parity):** a cross-path test asserting that for the **same bar + same strategy**, `backtest` and `deployment_evaluator` produce an **identical `Signal`** for the ORB/gap builtins that already use `session_precompute`. This is the de-risking deliverable: it is independently valuable (fixes a real latent bug) even if nothing structural is ever built.
+**Gate (⛯ parity):** a cross-path test asserting that for the **same bar + same strategy**, the ctx built by the live path (now with `session_precompute` maps merged) yields an **identical `Signal`** to the per-bar `history_df`-fallback ctx, for the ORB/gap/scenario builtins. This is the de-risking deliverable: it is independently valuable (closes the hollow smoke gate for structural Full-Python, restores the live fast path, and guarantees backtest/live ctx parity) even if nothing structural is ever built.
 
 **Note on F2 (live window):** SP-0 unifies the *contract*; it does **not** by itself make session-anchored features live-correct, because the live `history_df` is still the rolling 200-bar window. That correctness boundary is handled by the `session_anchored` registry axis (§6.3) — session-anchored features are declared backtest-only unless/until the live loader is changed to "today's session so far" (Phase A).
 
