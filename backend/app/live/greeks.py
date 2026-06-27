@@ -115,6 +115,11 @@ def implied_vol(premium, spot, strike, t, rate, is_call) -> Tuple[Optional[float
                 hi = mid
 
     vol = min(max(vol, IV_MIN), IV_MAX)
+    # Reject a premium the model can't reproduce within [IV_MIN, IV_MAX] (stale /
+    # crossed / above-no-arb-max quote): a clamped non-solution must NOT be returned
+    # as a confident IV — it would silently corrupt the net Greeks. Skip instead.
+    if abs(bs_price(spot, strike, t, rate, vol, is_call) - premium) > max(1e-2, 1e-3 * premium):
+        return None, "none"
     conf = "low" if bs_vega(spot, strike, t, rate, vol) < _LOW_VEGA else "ok"
     return vol, conf
 

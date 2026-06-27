@@ -80,3 +80,14 @@ def test_deep_itm_low_confidence():
     # deep ITM call: tiny vega → low-confidence but Δ/Θ still returned
     out = g.compute_greeks(200.0, 50.0, 0.05, 150.1, True)
     assert out is None or out["confidence"] in ("low", "ok")
+
+
+def test_premium_above_no_arb_max_is_unsolvable():
+    # A premium above the max achievable price (here even above spot for a call)
+    # has no valid IV; the solver must reject it, not clamp to IV_MAX with conf "ok".
+    iv, conf = g.implied_vol(26000.0, 25000.0, 25000.0, 30 / 365.0, 0.065, True)
+    assert iv is None and conf == "none"
+
+
+def test_garbage_premium_skips_in_compute_greeks():
+    assert g.compute_greeks(25000.0, 25000.0, 30 / 365.0, 26000.0, True) is None
