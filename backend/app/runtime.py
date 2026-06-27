@@ -22,6 +22,7 @@ from app.indicators import precompute_all_indicators
 from app.regime import classify_regime_series
 from app.strategies.base import get_registry
 from app.backtest import run_backtest
+from app.features import materialize_features
 from app.option_backtest import simulate_paired_option_trades
 from app.dte import compute_dte, normalize_dte_filter
 from app.vix import VIX_INSTRUMENT, vix_instrument_key, annotate_trades_with_vix
@@ -814,6 +815,8 @@ async def _option_preflight_report(req: BacktestReq) -> Dict[str, Any]:
     params = strategy.merged_params(req.params)
     df_enriched = precompute_all_indicators(df, params)
     df_enriched["regime"] = classify_regime_series(df_enriched)
+    if strategy.required_features:
+        df_enriched = materialize_features(df_enriched, params, strategy.required_features, {})
     res = run_backtest(
         df_enriched, strategy, params, instrument=underlying,
         costs_enabled=req.costs_enabled, pretrade_filters=req.pretrade_filters,

@@ -28,6 +28,7 @@ from app.indicators import precompute_all_indicators
 from app.instruments import UNDERLYING_META
 from app.options_universe import select_contract_for_signal
 from app.regime import classify_regime_series
+from app.features import materialize_features
 from app.signal_lifecycle import create_signal_doc, transition_signal
 from app.strategies.base import StrategyBase, get_registry, build_live_eval_ctx
 from app.deployment_kill_switch import check_deployment_kill_switches
@@ -342,6 +343,8 @@ async def evaluate_deployment_on_close(
     merged_params = strategy.merged_params(params)
     df_enriched = precompute_all_indicators(df, merged_params)
     df_enriched["regime"] = classify_regime_series(df_enriched)
+    if strategy.required_features:
+        df_enriched = materialize_features(df_enriched, merged_params, strategy.required_features, {})
 
     last_idx = len(df_enriched) - 1
     last_bar = df_enriched.iloc[last_idx]

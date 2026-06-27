@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from app.strategies.base import StrategyBase, Signal, build_eval_ctx
 from app.costs import apply_round_trip_cost
 from app.exit_engine import intrabar_exit
+from app.features import materialize_features
 
 TRADE_WINDOW_START = "09:25"
 # Default session end for entries: 15:00 IST. Combined with the 09:25 start this
@@ -86,6 +87,8 @@ def run_backtest(
 
     if not df.index.equals(pd.RangeIndex(len(df))):
         df = df.reset_index(drop=True)
+    if strategy.required_features:
+        df = materialize_features(df, params, strategy.required_features, {})
     # Pre-materialize rows as plain dicts ONCE. Indexing df.iloc[i] inside the
     # hot loop builds a fresh pandas Series every bar (very slow and GIL-heavy);
     # a list of dicts is 5-20x faster and is fully compatible with strategies,
