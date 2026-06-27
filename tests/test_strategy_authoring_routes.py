@@ -368,3 +368,37 @@ def test_from_source_400_when_named_provider_unconfigured(monkeypatch):
                                  json={"source": "buy calls", "provider": "anthropic"})
     assert r.status_code == 400, r.text
     assert "api key is not set" in r.json()["detail"].lower()
+
+
+def test_from_source_forwards_named_provider(monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from unittest.mock import patch
+    import app.routers.strategies_admin as sa
+    canned = {"spec": {"id": "x"}, "fidelity": {"captured": []}, "errors": []}
+    app = FastAPI(); app.include_router(sa.api)
+    with patch("app.ai.llm_client.any_configured", return_value=True), \
+         patch("app.ai.llm_client.resolve_provider", return_value="gemini"), \
+         patch("app.ai.strategy_author.map_source_to_spec", return_value=canned) as mock_map:
+        r = TestClient(app).post("/strategies/author/from-source",
+                                 json={"source": "buy calls above ema9", "provider": "gemini"})
+    assert r.status_code == 200, r.text
+    _, kwargs = mock_map.call_args
+    assert kwargs.get("provider") == "gemini"   # provider forwarded into the mapper
+
+
+def test_providers_endpoint_real_env(monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    import app.routers.strategies_admin as sa
+    monkeypatch.setenv("GEMINI_API_KEY", "g")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("AI_PROVIDER", "gemini")
+    app = FastAPI(); app.include_router(sa.api)
+    r = TestClient(app).get("/strategies/author/providers")
+    assert r.status_code == 200
+    body = r.json()
+    ids = {p["id"]: p for p in body["providers"]}
+    assert ids["gemini"]["configured"] is True
+    assert ids["anthropic"]["configured"] is False
+    assert body["active"] == "gemini"

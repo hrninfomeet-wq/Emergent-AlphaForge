@@ -265,7 +265,7 @@ async def author_from_source(req: StrategyFromSourceReq):
         raise HTTPException(400, "source is empty")
     if req.provider:
         try:
-            llm_client.resolve_provider(req.provider)   # 400 if named provider lacks a key
+            llm_client.resolve_provider(req.provider)   # 400 if named provider is unknown or lacks a key
         except RuntimeError as e:
             raise HTTPException(400, str(e))
     try:
