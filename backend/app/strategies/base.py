@@ -149,6 +149,24 @@ class StrategyRegistry:
             for _, modname, _ in pkgutil.iter_modules(pkg.__path__):
                 full = f"{pkg_name}.{modname}"
                 try:
+                    # Plugins can be edited/overwritten at runtime (authoring). A bare
+                    # import_module is a no-op for an already-imported module, so drop it
+                    # from sys.modules first to force a clean fresh import. NEVER do this
+                    # for builtins. A failed fresh import is auto-removed by CPython.
+                    # We also invalidate the .pyc bytecache so that a same-second edit
+                    # (mtime unchanged) is not served from __pycache__.
+                    if pkg_name == "app.strategies.plugins":
+                        import sys as _sys
+                        import importlib.util as _ilu
+                        _sys.modules.pop(full, None)
+                        try:
+                            _spec = _ilu.find_spec(full)
+                            if _spec and _spec.origin:
+                                _pyc = importlib.util.cache_from_source(_spec.origin)
+                                import os as _os
+                                _os.unlink(_pyc)
+                        except Exception:
+                            pass  # best-effort; a missing .pyc is fine
                     mod = importlib.import_module(full)
                 except Exception as e:
                     self._errors[modname] = f"import failed: {e}"

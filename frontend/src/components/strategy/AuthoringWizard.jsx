@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import {
   Dialog,
@@ -23,6 +23,11 @@ const EXIT_FIELDS = [
 
 const emptyParam = () => ({ name: "", type: "float", min: "", max: "", default: "" });
 const emptyCond = () => ({ left: "", op: "", right: "", label: "" });
+
+function extractIdFromCode(code) {
+  const m = /id\s*=\s*["']([a-z][a-z0-9_]*)["']/.exec(code || "");
+  return m ? m[1] : "";
+}
 
 // Coerce a `right`/value field: a finite number string -> Number; else the raw
 // trimmed string (so "ema9" / "param:rsi_thr" pass through unchanged).
@@ -70,6 +75,14 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
   const [aiErrors, setAiErrors] = useState([]);
   const [providers, setProviders] = useState([]);          // [{id,label,configured}]
   const [provider, setProvider] = useState("");            // selected id
+
+  // Mode toggle + Full-Python state
+  const [mode, setMode] = useState("spec"); // "spec" | "python"
+  const [pyCode, setPyCode] = useState("");
+  const [pyNotes, setPyNotes] = useState("");
+  const [pyBusy, setPyBusy] = useState(false);
+  const [pyValidation, setPyValidation] = useState(null); // { ok, violations, smoke }
+  const validationTokenRef = useRef(0);
 
   useEffect(() => {
     if (!open) return;
@@ -212,6 +225,52 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
     }
   }
 
+  async function onGeneratePython() {
+    if (!aiSource.trim()) return;
+    setPyBusy(true);
+    try {
+      const res = await api.authorPythonFromSource(aiSource, provider || undefined);
+      setPyCode(res.code || "");
+      setPyNotes(res.notes || "");
+      setFidelity(res.fidelity || null);
+      setPyValidation(null);
+      validationTokenRef.current += 1;
+      toast.success("AI wrote a strategy — review, validate, then install");
+    } catch (e) {
+      toast.error("Generation failed: " + (e?.response?.data?.detail || e?.message || "unknown error"));
+    } finally { setPyBusy(false); }
+  }
+
+  function onPyCodeEdit(v) {
+    setPyCode(v);
+    validationTokenRef.current += 1;
+    setPyValidation(null);
+  }
+
+  async function onValidatePython() {
+    const token = validationTokenRef.current;
+    setPyBusy(true);
+    try {
+      const res = await api.validatePython(pyCode);
+      if (token === validationTokenRef.current) setPyValidation(res);
+    } catch (e) {
+      if (token === validationTokenRef.current)
+        setPyValidation({ ok: false, violations: [e?.response?.data?.detail || e?.message || "validate failed"], smoke: null });
+    } finally { setPyBusy(false); }
+  }
+
+  async function onInstallPython() {
+    setPyBusy(true);
+    try {
+      const id = extractIdFromCode(pyCode);
+      const res = await api.installPython(pyCode, id);
+      toast.success("Installed " + res.strategy_id);
+      onInstalled?.(); onOpenChange(false);
+    } catch (e) {
+      toast.error("Install failed: " + (e?.response?.data?.detail || e?.message || "unknown error"));
+    } finally { setPyBusy(false); }
+  }
+
   async function onPreview() {
     setBusy(true);
     setOverwritePending(false);
@@ -277,6 +336,16 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
           </div>
         )}
 
+        {/* Mode toggle */}
+        <div className="flex gap-2">
+          {[["spec", "Spec (fast)"], ["python", "Full Python (powerful)"]].map(([m, label]) => (
+            <button key={m} type="button" onClick={() => setMode(m)} data-testid={`author-mode-${m}`}
+              className={`text-xs px-3 py-1.5 rounded-md border ${mode === m ? "bg-info/15 border-info/50 text-foreground" : "bg-bg-2 border-line text-dim"}`}>
+              {label}
+            </button>
+          ))}
+        </div>
+
         {/* ✨ Describe with AI */}
         <div className={sectionCls}>
           <div className="text-[10px] uppercase tracking-wider text-dim">✨ Describe with AI</div>
@@ -309,12 +378,12 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
           />
           <div className="flex items-center gap-2">
             <button
-              onClick={onGenerateWithAi}
-              disabled={aiBusy || !aiSource.trim() || !aiReady}
+              onClick={() => (mode === "python" ? onGeneratePython() : onGenerateWithAi())}
+              disabled={aiBusy || pyBusy || !aiSource.trim() || !aiReady}
               className="text-xs font-medium px-3 py-1.5 rounded-md bg-bg-2 border border-line text-foreground disabled:opacity-50"
               data-testid="author-ai-generate-btn"
             >
-              {aiBusy ? "Generating…" : "Generate with AI"}
+              {(aiBusy || pyBusy) ? "Generating…" : "Generate with AI"}
             </button>
           </div>
 
@@ -352,6 +421,8 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
             </div>
           )}
         </div>
+
+        {mode === "spec" && (<>
 
         {/* a. Identity */}
         <div className={sectionCls}>
@@ -578,6 +649,43 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
             </button>
           )}
         </div>
+
+        </>)}
+
+        {/* Full-Python panel */}
+        {mode === "python" && (
+          <div className={sectionCls}>
+            <div className="text-[10px] uppercase tracking-wider text-dim">Generated Python</div>
+            <textarea data-testid="author-py-code" value={pyCode}
+              onChange={(e) => onPyCodeEdit(e.target.value)} rows={16}
+              spellCheck={false}
+              className={inputCls + " font-mono text-[11px]"}
+              placeholder="Generate from a description above, or paste a StrategyBase module here." />
+            {pyNotes ? <div className="text-[11px] text-dim">{pyNotes}</div> : null}
+            {pyValidation && (
+              <div className="text-[11px]" data-testid="author-py-validation">
+                {pyValidation.ok
+                  ? <div className="text-emerald-300">✓ passed validation{pyValidation.smoke?.signal_repr ? ` — ${pyValidation.smoke.signal_repr}` : ""}</div>
+                  : <ul className="text-rose-300 list-disc pl-4">
+                      {(pyValidation.violations?.length ? pyValidation.violations : [pyValidation.smoke?.error || "validation failed"]).map((v, i) => <li key={i}>{v}</li>)}
+                    </ul>}
+              </div>
+            )}
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button type="button" onClick={onValidatePython} disabled={pyBusy || !pyCode.trim()}
+                data-testid="author-py-validate"
+                className="text-xs font-medium px-3 py-1.5 rounded-md bg-bg-2 border border-line text-foreground disabled:opacity-50">
+                Validate
+              </button>
+              <button type="button" onClick={onInstallPython} disabled={!pyValidation?.ok || pyBusy}
+                data-testid="author-py-install"
+                className="text-xs font-semibold px-3 py-1.5 rounded-md bg-info/15 border border-info/50 text-foreground disabled:opacity-50">
+                Install
+              </button>
+            </div>
+          </div>
+        )}
+
       </DialogContent>
     </Dialog>
   );
