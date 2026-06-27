@@ -156,3 +156,27 @@ def test_from_source_502_on_runtime_error():
         r = tc.post("/strategies/author/from-source", json={"source": "buy calls"})
     assert r.status_code == 502, r.text
     assert "ai mapping failed" in r.json()["detail"].lower()
+
+
+# ---------------------------------------------------------------------------
+# 5. any_configured returns True when at least one provider key is set
+# ---------------------------------------------------------------------------
+
+def test_any_configured_true_with_either_key(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("GEMINI_API_KEY", "g")
+    assert llm_client.any_configured() is True
+
+
+# ---------------------------------------------------------------------------
+# 6. map_source_to_spec forwards the optional provider to complete_structured
+# ---------------------------------------------------------------------------
+
+def test_map_source_forwards_provider(monkeypatch):
+    captured = {}
+    def fake(*, tier, system, user, output_model, provider=None, max_tokens=4000):
+        captured.update(tier=tier, provider=provider); return _CANNED
+    monkeypatch.setattr(llm_client, "complete_structured", fake)
+    map_source_to_spec("buy calls above ema9", provider="gemini")
+    assert captured["provider"] == "gemini"
+    assert captured["tier"] == llm_client.FAST

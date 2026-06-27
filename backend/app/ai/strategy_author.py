@@ -98,9 +98,15 @@ faithful subset and be honest about the gaps than to produce a spec that misrepr
 source."""
 
 
-def map_source_to_spec(source_text: str) -> Dict[str, Any]:
+def map_source_to_spec(source_text: str, provider: str | None = None) -> Dict[str, Any]:
     """Sonnet maps the text to {spec, fidelity}. Returns plain dicts. The grounding
-    catalog + validate are derived from live code so the AI can't hallucinate columns."""
+    catalog + validate are derived from live code so the AI can't hallucinate columns.
+
+    Args:
+        source_text: Free-text strategy description to map into a StrategySpec.
+        provider: Optional override for the AI provider (e.g. "anthropic", "gemini").
+                  When set, overrides the AI_PROVIDER env-var / router default.
+    """
     from app.ai.grounding import build_grounding_catalog
     from app.ai.compiler import validate_spec
     from app.ai import llm_client
@@ -111,6 +117,7 @@ def map_source_to_spec(source_text: str) -> Dict[str, Any]:
         system=_system_prompt(catalog),
         user=source_text,
         output_model=MappedSpec,
+        provider=provider,
     )
     errors = validate_spec(mapped.spec)  # catch any column/op the AI got wrong
     return {
