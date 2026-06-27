@@ -75,14 +75,14 @@ def test_map_source_reports_validation_errors_for_bad_ai_spec():
 # 3. complete_structured raises without an API key (no anthropic import path)
 # ---------------------------------------------------------------------------
 
-def test_complete_structured_requires_api_key(monkeypatch):
+def test_complete_structured_raises_when_no_provider(monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    assert llm_client.is_configured() is False
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("AI_PROVIDER", raising=False)
+    assert llm_client.any_configured() is False
     import pytest
     with pytest.raises(RuntimeError):
-        llm_client.complete_structured(
-            model=llm_client.SONNET, system="s", user="u", output_model=MappedSpec
-        )
+        llm_client.complete_structured(tier=llm_client.FAST, system="s", user="u", output_model=MappedSpec)
 
 
 def test_is_configured_true_with_key(monkeypatch):

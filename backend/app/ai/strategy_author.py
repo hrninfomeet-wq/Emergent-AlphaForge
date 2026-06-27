@@ -107,7 +107,7 @@ def map_source_to_spec(source_text: str) -> Dict[str, Any]:
 
     catalog = build_grounding_catalog()
     mapped: MappedSpec = llm_client.complete_structured(
-        model=llm_client.SONNET,
+        tier=llm_client.FAST,
         system=_system_prompt(catalog),
         user=source_text,
         output_model=MappedSpec,
