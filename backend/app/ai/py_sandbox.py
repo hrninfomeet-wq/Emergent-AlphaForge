@@ -8,7 +8,13 @@ escapes. Pure ast — no execution, host-safe. See the design spec for the rules
 from __future__ import annotations
 
 import ast
+import json
+import os
 import re
+import shutil
+import subprocess
+import sys
+import tempfile
 from typing import List, Optional
 
 ALLOWED_IMPORT_ROOTS = {"pandas", "numpy", "math", "typing", "dataclasses", "app", "__future__"}
@@ -165,6 +171,61 @@ def _interpret_smoke_result(*, returncode, stdout, stderr, timed_out, result) ->
     if not result.get("ok"):
         return {"ok": False, "error": result.get("error") or "smoke-test failed", "signal_repr": None}
     return {"ok": True, "error": None, "signal_repr": result.get("signal_repr")}
+
+
+_DRIVER = os.path.join(os.path.dirname(__file__), "_py_smoke_driver.py")
+_RLIMIT_AS_BYTES = 1024 * 1024 * 1024  # 1 GiB
+
+
+def _preexec():  # pragma: no cover - POSIX only, exercised live in the container
+    try:
+        import resource
+        resource.setrlimit(resource.RLIMIT_AS, (_RLIMIT_AS_BYTES, _RLIMIT_AS_BYTES))
+    except Exception:
+        pass
+
+
+def smoke_test(code: str, *, timeout: int = 10) -> dict:
+    """Run the candidate in a fresh subprocess; return {ok, error, signal_repr}.
+    Patchable seam — host tests mock it; the real run happens in the Linux container."""
+    workdir = tempfile.mkdtemp(prefix="smoke_")
+    code_path = os.path.join(workdir, "candidate.py")
+    result_path = os.path.join(workdir, "result.json")
+    with open(code_path, "w", encoding="utf-8") as f:
+        f.write(code)
+    env = {"PATH": os.environ.get("PATH", ""), "PYTHONPATH": "/app",
+           "LANG": os.environ.get("LANG", "C.UTF-8")}
+    posix = os.name == "posix"
+    kwargs = dict(cwd="/app", env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if posix:
+        kwargs["start_new_session"] = True
+        kwargs["preexec_fn"] = _preexec
+    timed_out = False
+    out = err = ""
+    try:
+        proc = subprocess.Popen([sys.executable, _DRIVER, code_path, result_path, str(timeout)], **kwargs)
+        try:
+            out, err = proc.communicate(timeout=timeout + 2)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            if posix:
+                try:
+                    os.killpg(os.getpgid(proc.pid), 9)
+                except Exception:
+                    proc.kill()
+            else:
+                proc.kill()
+            out, err = proc.communicate()
+        result = None
+        try:
+            with open(result_path, encoding="utf-8") as f:
+                result = json.load(f)
+        except Exception:
+            result = None
+        return _interpret_smoke_result(returncode=proc.returncode, stdout=out, stderr=err,
+                                       timed_out=timed_out, result=result)
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
 
 
 def extract_strategy_id(code: str) -> Optional[str]:

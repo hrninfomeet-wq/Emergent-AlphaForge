@@ -209,3 +209,37 @@ def test_smoke_result_ok():
     r = _interpret_smoke_result(returncode=0, stdout="", stderr="", timed_out=False,
                                 result={"ok": True, "signal_repr": "Signal(direction='NONE')"})
     assert r["ok"] is True and "NONE" in r["signal_repr"]
+
+
+def test_smoke_test_reads_result_file(monkeypatch, tmp_path):
+    from app.ai import py_sandbox
+    import json
+
+    class _FakeProc:
+        returncode = 0
+        def communicate(self, timeout=None):
+            return ("", "")
+        def kill(self): pass
+
+    def fake_popen(cmd, **kw):
+        # cmd = [python, driver, code_path, result_path, timeout]; write the result file
+        Path(cmd[3]).write_text(json.dumps({"ok": True, "signal_repr": "Signal(NONE)"}))
+        return _FakeProc()
+
+    monkeypatch.setattr(py_sandbox.subprocess, "Popen", fake_popen)
+    out = py_sandbox.smoke_test("ignored code", timeout=5)
+    assert out["ok"] is True and "NONE" in (out["signal_repr"] or "")
+
+
+def test_smoke_test_missing_result_is_failure(monkeypatch, tmp_path):
+    from app.ai import py_sandbox
+
+    class _FakeProc:
+        returncode = 0
+        def communicate(self, timeout=None):
+            return ("some stdout", "")
+        def kill(self): pass
+
+    monkeypatch.setattr(py_sandbox.subprocess, "Popen", lambda cmd, **kw: _FakeProc())
+    out = py_sandbox.smoke_test("ignored", timeout=5)  # nobody wrote the result file
+    assert out["ok"] is False
