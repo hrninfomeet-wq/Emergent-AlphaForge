@@ -413,3 +413,8 @@ class VixIngestReq(BaseModel):
 class StrategyAuthorReq(BaseModel):
     spec: Dict[str, Any]          # raw StrategySpec JSON (validated by the compiler)
     overwrite: bool = False
+
+
+class StrategyFromSourceReq(BaseModel):
+    source: str                       # pasted text/transcript OR a YouTube URL
+    provider: Optional[str] = None    # "anthropic" | "gemini"; None -> AI_PROVIDER / default

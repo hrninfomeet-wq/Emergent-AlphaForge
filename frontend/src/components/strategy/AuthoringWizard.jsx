@@ -63,6 +63,14 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
   const [busy, setBusy] = useState(false);
   const [overwritePending, setOverwritePending] = useState(false);
 
+  // AI section state
+  const [aiSource, setAiSource] = useState("");
+  const [aiBusy, setAiBusy] = useState(false);
+  const [fidelity, setFidelity] = useState(null); // { captured, couldnt_map, ambiguous }
+  const [aiErrors, setAiErrors] = useState([]);
+  const [providers, setProviders] = useState([]);          // [{id,label,configured}]
+  const [provider, setProvider] = useState("");            // selected id
+
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
@@ -76,6 +84,16 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
       } catch (e) {
         if (!cancelled) setCatalogError(e?.response?.data?.detail || e?.message || "Failed to load catalog");
       }
+      try {
+        const prov = await api.getAuthorProviders();
+        if (!cancelled) {
+          setProviders(prov.providers || []);
+          const firstConfigured = (prov.providers || []).find((p) => p.configured);
+          setProvider(prov.active || (firstConfigured ? firstConfigured.id : ""));
+        }
+      } catch (e) {
+        if (!cancelled) setProviders([]);
+      }
     })();
     return () => { cancelled = true; };
   }, [open]);
@@ -84,6 +102,8 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
   const ops = catalog?.ops || [];
   const regimes = catalog?.regimes || [];
   const paramTypes = catalog?.param_types || ["int", "float", "bool"];
+  const configuredProviders = providers.filter((p) => p.configured);
+  const aiReady = configuredProviders.length > 0;
 
   const idValid = id === "" || ID_RE.test(id);
 
@@ -130,6 +150,66 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
     };
     if (String(cooldownBars).trim() !== "") spec.cooldown_bars = Number(cooldownBars);
     return spec;
+  }
+
+  // Reverse of buildSpec: populate all form state from a StrategySpec dict returned
+  // by the AI endpoint. Stringifies numbers so the inputs stay in their text-state
+  // form exactly as they would be if the user typed them.
+  function loadFromSpec(spec) {
+    if (!spec) return;
+    setId(spec.id ?? "");
+    setName(spec.name ?? "");
+    setDescription(spec.description ?? "");
+
+    setParams(
+      (spec.params || []).map((p) => ({
+        name: p.name ?? "",
+        type: p.type ?? "float",
+        min: p.min != null ? String(p.min) : "",
+        max: p.max != null ? String(p.max) : "",
+        default: p.default != null ? String(p.default) : "",
+      }))
+    );
+
+    const mapConds = (list) =>
+      (list || []).map((c) => ({
+        left: c.left ?? "",
+        op: c.op ?? "",
+        right: c.right != null ? String(c.right) : "",
+        label: c.label ?? "",
+      }));
+    setEntryCe(mapConds(spec.entry_ce).length > 0 ? mapConds(spec.entry_ce) : [emptyCond()]);
+    setEntryPe(mapConds(spec.entry_pe));
+
+    setSkipRegimes(spec.gate_skip_regimes || []);
+    setCooldownBars(spec.cooldown_bars != null ? String(spec.cooldown_bars) : "");
+
+    const exitsIn = spec.exits || {};
+    const newExits = {};
+    for (const f of EXIT_FIELDS) {
+      if (exitsIn[f.key] != null) newExits[f.key] = String(exitsIn[f.key]);
+    }
+    setExits(newExits);
+
+    // Clear any prior compile preview so the user knows the form changed
+    setPreview(null);
+    setOverwritePending(false);
+  }
+
+  async function onGenerateWithAi() {
+    if (!aiSource.trim()) return;
+    setAiBusy(true);
+    try {
+      const res = await api.authorFromSource(aiSource, provider || undefined);
+      loadFromSpec(res.spec);
+      setFidelity(res.fidelity);
+      setAiErrors(res.errors || []);
+      toast.success("AI filled the form — review below");
+    } catch (e) {
+      toast.error("AI generation failed: " + (e?.response?.data?.detail || e?.message || "unknown error"));
+    } finally {
+      setAiBusy(false);
+    }
   }
 
   async function onPreview() {
@@ -196,6 +276,82 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
             Could not load the authoring catalog: {catalogError}. Dropdowns may be empty.
           </div>
         )}
+
+        {/* ✨ Describe with AI */}
+        <div className={sectionCls}>
+          <div className="text-[10px] uppercase tracking-wider text-dim">✨ Describe with AI</div>
+          {aiReady ? (
+            <div className="flex items-center gap-2">
+              <label className={labelCls + " mb-0"}>Provider</label>
+              <select
+                value={provider}
+                onChange={(e) => setProvider(e.target.value)}
+                className={inputCls + " w-44"}
+                data-testid="author-ai-provider"
+              >
+                {configuredProviders.map((p) => (
+                  <option key={p.id} value={p.id}>{p.label}</option>
+                ))}
+              </select>
+            </div>
+          ) : (
+            <div className="text-[11px] text-amber-300">
+              No AI provider configured — set GEMINI_API_KEY or ANTHROPIC_API_KEY in backend/.env.
+            </div>
+          )}
+          <textarea
+            value={aiSource}
+            onChange={(e) => setAiSource(e.target.value)}
+            rows={3}
+            placeholder="Paste the strategy rules / transcript — or a YouTube link — and I'll fill the form below."
+            className={inputCls}
+            data-testid="author-ai-source"
+          />
+          <div className="flex items-center gap-2">
+            <button
+              onClick={onGenerateWithAi}
+              disabled={aiBusy || !aiSource.trim() || !aiReady}
+              className="text-xs font-medium px-3 py-1.5 rounded-md bg-bg-2 border border-line text-foreground disabled:opacity-50"
+              data-testid="author-ai-generate-btn"
+            >
+              {aiBusy ? "Generating…" : "Generate with AI"}
+            </button>
+          </div>
+
+          {/* Fidelity readback */}
+          {fidelity && (
+            <div className="space-y-1.5 mt-1" data-testid="author-ai-fidelity">
+              {(fidelity.captured || []).length > 0 && (
+                <ul className="text-[11px] text-emerald-300 space-y-0.5">
+                  {fidelity.captured.map((item, i) => (
+                    <li key={i}>✓ {item}</li>
+                  ))}
+                </ul>
+              )}
+              {(fidelity.couldnt_map || []).length > 0 && (
+                <ul className="text-[11px] text-amber-300 space-y-0.5">
+                  {fidelity.couldnt_map.map((item, i) => (
+                    <li key={i}>⚠ couldn't map: {item}</li>
+                  ))}
+                </ul>
+              )}
+              {(fidelity.ambiguous || []).length > 0 && (
+                <ul className="text-[11px] text-amber-300 space-y-0.5">
+                  {fidelity.ambiguous.map((item, i) => (
+                    <li key={i}>⚠ ambiguous: {item}</li>
+                  ))}
+                </ul>
+              )}
+              {aiErrors.length > 0 && (
+                <ul className="text-[11px] text-rose-300 space-y-0.5">
+                  {aiErrors.map((err, i) => (
+                    <li key={i}>validation: {err}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+        </div>
 
         {/* a. Identity */}
         <div className={sectionCls}>

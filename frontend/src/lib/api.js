@@ -33,6 +33,9 @@ export const api = {
   authorCompile: (spec) => apiClient.post("/strategies/author/compile", { spec }).then((r) => r.data),
   authorInstall: (spec, overwrite = false) =>
     apiClient.post("/strategies/author/install", { spec, overwrite }).then((r) => r.data),
+  getAuthorProviders: () => apiClient.get("/strategies/author/providers").then((r) => r.data),
+  authorFromSource: (source, provider) =>
+    apiClient.post("/strategies/author/from-source", { source, provider }, { timeout: LONG_TIMEOUT_MS }).then((r) => r.data),
 
   // Warehouse
   ingest: (instrument, days = 7) =>
