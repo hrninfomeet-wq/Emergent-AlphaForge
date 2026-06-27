@@ -44,6 +44,27 @@ def _check_imports(node, errors: List[str]) -> None:
         errors.append(f"import from '{mod}' is not allowed")
     elif root == "app" and mod != "app.strategies.base":
         errors.append(f"the only allowed app import is app.strategies.base (got '{mod}')")
+    if mod == "app.strategies.base":
+        for alias in node.names:
+            if alias.name not in ("StrategyBase", "Signal"):
+                errors.append(f"from app.strategies.base may only import StrategyBase or Signal (got '{alias.name}')")
+
+
+def _is_literal(node) -> bool:
+    """True if an expression is a compile-time literal (no calls/comprehensions/names
+    that would execute at class-definition time)."""
+    if node is None:
+        return True  # bare annotation, no value to execute
+    if isinstance(node, ast.Constant):
+        return True
+    if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        return all(_is_literal(e) for e in node.elts)
+    if isinstance(node, ast.Dict):
+        return all(_is_literal(k) for k in node.keys if k is not None) \
+            and all(_is_literal(v) for v in node.values)
+    if isinstance(node, ast.UnaryOp):
+        return _is_literal(node.operand)
+    return False
 
 
 def _check_class(cls: ast.ClassDef, errors: List[str]) -> None:
@@ -68,6 +89,9 @@ def _check_class(cls: ast.ClassDef, errors: List[str]) -> None:
             targets = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
             if any(isinstance(t, ast.Name) and t.id == "id" for t in targets):
                 has_id = True
+            value = stmt.value if isinstance(stmt, ast.Assign) else stmt.value
+            if not _is_literal(value):
+                errors.append("class variables must be literals (no calls/comprehensions at class-definition time)")
             continue
         errors.append(f"class-level {type(stmt).__name__} is not allowed (only class vars + methods)")
     if not has_evaluate:

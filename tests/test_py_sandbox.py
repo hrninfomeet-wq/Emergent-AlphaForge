@@ -128,3 +128,32 @@ def test_missing_evaluate_rejected():
         return Signal(direction="NONE")
 """, "    pass\n")
     assert _has(static_check(code), "evaluate")
+
+
+def test_class_var_call_rejected():
+    code = VALID.replace('    name = "My Strat"', '    name = pd.Timestamp.now()')
+    assert _has(static_check(code), "literal")
+
+
+def test_class_var_comprehension_rejected():
+    code = VALID.replace('    name = "My Strat"', '    name = [i for i in range(3)]')
+    assert _has(static_check(code), "literal")
+
+
+def test_valid_literals_still_pass():
+    # dict/list literals and negative-number unary ops are fine
+    code = VALID.replace('    name = "My Strat"',
+                         '    name = "My Strat"\n    levels = [-1, 0, 1]\n    cfg = {"a": 1, "b": [2, 3]}')
+    assert static_check(code) == []
+
+
+def test_app_import_extra_name_rejected():
+    code = VALID.replace("from app.strategies.base import StrategyBase, Signal",
+                         "from app.strategies.base import StrategyBase, Signal, get_registry")
+    assert _has(static_check(code), "StrategyBase or Signal")
+
+
+def test_app_import_star_rejected():
+    code = VALID.replace("from app.strategies.base import StrategyBase, Signal",
+                         "from app.strategies.base import *")
+    assert _has(static_check(code), "StrategyBase or Signal") or _has(static_check(code), "*")
