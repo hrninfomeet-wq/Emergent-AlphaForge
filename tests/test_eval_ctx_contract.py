@@ -83,3 +83,26 @@ def test_backtest_passes_canonical_ctx_to_evaluate():
         assert snap["session_date"] == "2025-01-02"
         assert snap["__probe_extra__"] == 7
         assert isinstance(snap["i"], int)
+
+
+from app.ai._py_smoke_driver import run_smoke
+
+
+def test_smoke_driver_provides_history_df_i_and_session_precompute():
+    captured = {}
+
+    class _Structural(StrategyBase):
+        id = "probe_smoke"
+        def session_precompute(self, df, params):
+            return {"__sp__": len(df)}
+        def evaluate(self, row, prev, params, ctx):
+            captured["keys"] = set(ctx.keys())
+            captured["sp"] = ctx.get("__sp__")
+            # a structural strategy indexes the history frame — must not KeyError
+            _ = ctx["history_df"].iloc[ctx["i"]]["close"]
+            return Signal(direction="NONE")
+
+    out = run_smoke(_Structural(), ["open", "high", "low", "close"])
+    assert out["ok"] is True, out
+    assert {"history_df", "i", "instrument", "session_date", "mode"}.issubset(captured["keys"])
+    assert captured["sp"] and captured["sp"] > 0   # session_precompute ran
