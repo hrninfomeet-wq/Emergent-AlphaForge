@@ -34,6 +34,8 @@ FORBIDDEN_CALL_NAMES = {
 FORBIDDEN_ATTR_NAMES = FORBIDDEN_MODULE_ATTRS | {
     "eval", "query",
     "load", "save", "savez", "savez_compressed", "fromfile", "tofile", "frombuffer", "memmap",
+    "loadtxt", "genfromtxt", "savetxt", "fromregex", "fromstring",
+    "ndfromtxt", "mafromtxt", "recfromtxt", "recfromcsv", "DataSource",
     "to_pickle", "to_csv", "to_parquet", "to_json", "to_hdf", "to_feather", "to_sql",
     "to_excel", "to_html", "to_xml", "to_stata", "to_gbq", "to_clipboard", "to_orc",
     "system", "popen", "fork", "spawn", "getoutput", "check_output", "check_call", "run", "Popen",
@@ -178,6 +180,12 @@ def static_check(code: str) -> List[str]:
             errors.append("global/nonlocal is not allowed")
         elif isinstance(node, (ast.Import, ast.ImportFrom)) and id(node) not in top_imports:
             errors.append("imports are only allowed at module top level")
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id in FORBIDDEN_CALL_NAMES:
+            errors.append(f"reference to '{node.id}' is not allowed")
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str) \
+                and (node.value in FORBIDDEN_ATTR_NAMES
+                     or node.value in ("read_csv", "read_pickle", "read_parquet", "read_json", "read_table")):
+            errors.append(f"string literal '{node.value}' (a forbidden method name) is not allowed")
 
     seen, out = set(), []
     for e in errors:

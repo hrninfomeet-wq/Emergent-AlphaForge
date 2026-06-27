@@ -336,3 +336,43 @@ def test_valid_still_passes_after_hardening():
         'return Signal(direction="CE" if c > e else "NONE", spot_target_pts=30, spot_stop_pts=15)',
     ])
     assert static_check(code) == []
+
+
+def test_evasion_np_loadtxt():
+    code = _strat(['x = np.loadtxt("/etc/passwd", dtype=str)', 'return Signal(direction="NONE")'])
+    assert static_check(code) != []
+
+
+def test_evasion_np_genfromtxt_url():
+    code = _strat(['np.genfromtxt("http://a/x", dtype=str)', 'return Signal(direction="NONE")'])
+    assert static_check(code) != []
+
+
+def test_evasion_np_savetxt():
+    code = _strat(['np.savetxt("/etc/cron.d/x", np.array(["bad"]), fmt="%s")', 'return Signal(direction="NONE")'])
+    assert static_check(code) != []
+
+
+def test_evasion_np_fromregex():
+    code = _strat(['np.fromregex("/etc/passwd", r".*", dtype=str)', 'return Signal(direction="NONE")'])
+    assert static_check(code) != []
+
+
+def test_evasion_bare_name_alias_eval():
+    code = _strat(['e = eval', 'e("1")', 'return Signal(direction="NONE")'])
+    assert static_check(code) != []
+
+
+def test_evasion_literal_string_dispatch():
+    # df.agg("to_csv") dispatches to the method via a string literal
+    code = _strat(['row.agg("to_csv")', 'return Signal(direction="NONE")'])
+    assert static_check(code) != []
+
+
+def test_valid_still_passes_round2():
+    code = _strat([
+        'c = float(row["close"]); e = float(row["ema9"])',
+        'm = np.maximum(c, e); s = np.sign(c - e)',
+        'return Signal(direction="CE" if c > e else "NONE", spot_target_pts=30, spot_stop_pts=15)',
+    ])
+    assert static_check(code) == []
