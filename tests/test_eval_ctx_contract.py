@@ -42,3 +42,44 @@ def test_build_live_eval_ctx_calls_session_precompute():
     assert ctx["__seen__"] is True and ctx["n"] == 3       # session_precompute ran + merged
     assert ctx["i"] == 2 and ctx["instrument"] == "BANKNIFTY"
     assert ctx["session_date"] == "d" and ctx["history_df"] is df
+
+
+from app.backtest import run_backtest
+
+
+def _probe_df(n=60):
+    """n in-window bars with the OHLC/ts/ist_time/session_date run_backtest reads."""
+    base_ms = 1_700_000_000_000
+    rows = []
+    for k in range(n):
+        rows.append({
+            "ts": base_ms + k * 60_000,
+            "datetime": f"2025-01-02T11:{k % 60:02d}:00",
+            "ist_time": "11:00",
+            "session_date": "2025-01-02",
+            "open": 100.0 + k * 0.1, "high": 100.6 + k * 0.1,
+            "low": 99.4 + k * 0.1, "close": 100.0 + k * 0.1,
+        })
+    return pd.DataFrame(rows)
+
+
+def test_backtest_passes_canonical_ctx_to_evaluate():
+    seen = []
+
+    class _Probe(StrategyBase):
+        id = "probe_bt"
+        def session_precompute(self, df, params):
+            return {"__probe_extra__": 7}
+        def evaluate(self, row, prev, params, ctx):
+            seen.append(dict(ctx))   # snapshot keys+values at this bar
+            return Signal(direction="NONE")
+
+    run_backtest(_probe_df(), _Probe(), {}, instrument="NIFTY")
+    assert seen, "evaluate was never reached"
+    canonical = set(EVAL_CTX_KEYS) | {"__probe_extra__"}
+    for snap in seen:
+        assert canonical.issubset(snap.keys())
+        assert snap["instrument"] == "NIFTY"
+        assert snap["session_date"] == "2025-01-02"
+        assert snap["__probe_extra__"] == 7
+        assert isinstance(snap["i"], int)

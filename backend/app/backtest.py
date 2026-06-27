@@ -8,7 +8,7 @@ import pandas as pd
 from dataclasses import dataclass, field, asdict
 from typing import Any, Dict, List, Optional, Tuple
 
-from app.strategies.base import StrategyBase, Signal
+from app.strategies.base import StrategyBase, Signal, build_eval_ctx
 from app.costs import apply_round_trip_cost
 from app.exit_engine import intrabar_exit
 
@@ -109,8 +109,11 @@ def run_backtest(
     # (opening range, gap, session VWAP anchor, ...) precompute them ONCE here
     # via session_precompute() so the hot per-bar loop looks them up O(1) instead
     # of re-deriving them per bar (which is O(N) per bar -> O(N^2) per backtest).
-    ctx_global: Dict[str, Any] = {"history_df": df, "instrument": instrument}
-    ctx_global.update(strategy.session_precompute(df, params))
+    _session_extras = strategy.session_precompute(df, params)
+    ctx_global: Dict[str, Any] = build_eval_ctx(
+        history_df=df, i=0, instrument=instrument, session_date=None,
+        mode=str(params.get("mode") or "INTRADAY"), session_extras=_session_extras,
+    )
 
     for i in range(1, len(df)):
         row = records[i]
@@ -177,6 +180,7 @@ def run_backtest(
         # ctx.get(...) within evaluate() -- none retain a reference, assign it to
         # self, or write into it across calls (grep of backend/app/strategies).
         ctx_global["i"] = i
+        ctx_global["session_date"] = row.get("session_date")
         sig: Signal = strategy.evaluate(row, prev, params, ctx_global)
         if sig.direction not in ("CE", "PE"):
             continue
