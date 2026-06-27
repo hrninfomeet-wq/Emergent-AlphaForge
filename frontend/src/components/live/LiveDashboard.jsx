@@ -16,6 +16,7 @@ import LiveBanner from "@/components/live/LiveBanner";
 import ExecutionStateStrip from "@/components/live/ExecutionStateStrip";
 import LiveDeploymentStrip from "@/components/live/LiveDeploymentStrip";
 import LiveBlotter from "@/components/live/LiveBlotter";
+import GreeksCard from "@/components/live/GreeksCard";
 import PositionMonitor from "@/components/live/PositionMonitor";
 import LiveOrderTicket from "@/components/live/LiveOrderTicket";
 import OverallSettingsPanel from "@/components/live/OverallSettingsPanel";
@@ -518,6 +519,9 @@ export default function LiveDashboard() {
       >
         <LiveBlotter rows={blotter?.rows} gtt={gtt} />
       </SectionCard>
+
+      {/* ── 1d. Portfolio Greeks (net Δ / Θ across live positions) ───────── */}
+      <GreeksCard />
 
       {/* ── 2. Hero metric strip ────────────────────────────────────────── */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
