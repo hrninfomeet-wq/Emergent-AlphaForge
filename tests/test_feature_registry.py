@@ -87,3 +87,13 @@ def test_package_exports():
     assert hasattr(feats, "resolve_features")
     assert hasattr(feats, "FEATURE_REGISTRY")
     assert hasattr(feats, "FeatureError")
+
+
+def test_grounding_catalog_has_feature_block():
+    from app.ai.grounding import build_grounding_catalog
+    cat = build_grounding_catalog()
+    assert "feature_columns" in cat
+    assert cat["feature_columns"] == []          # empty in SP-1
+    assert "all_columns_including_features" in cat
+    # with no features, the augmented column set equals the indicator columns
+    assert set(cat["all_columns_including_features"]) == set(cat["indicator_columns"])
