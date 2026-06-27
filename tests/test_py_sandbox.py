@@ -157,3 +157,25 @@ def test_app_import_star_rejected():
     code = VALID.replace("from app.strategies.base import StrategyBase, Signal",
                          "from app.strategies.base import *")
     assert _has(static_check(code), "StrategyBase or Signal") or _has(static_check(code), "*")
+
+
+from app.ai.py_sandbox import extract_strategy_id
+
+
+def test_extract_id_literal():
+    assert extract_strategy_id(VALID) == "my_strat"
+
+
+def test_extract_id_nonliteral_is_none():
+    code = VALID.replace('id = "my_strat"', "id = SLUG")
+    assert extract_strategy_id(code) is None
+
+
+def test_extract_id_missing_is_none():
+    code = VALID.replace('    id = "my_strat"\n', "")
+    assert extract_strategy_id(code) is None
+
+
+def test_extract_id_bad_slug_is_none():
+    code = VALID.replace('id = "my_strat"', 'id = "Bad-ID"')
+    assert extract_strategy_id(code) is None

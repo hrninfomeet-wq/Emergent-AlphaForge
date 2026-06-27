@@ -150,3 +150,25 @@ def static_check(code: str) -> List[str]:
         if e not in seen:
             seen.add(e); out.append(e)
     return out
+
+
+def extract_strategy_id(code: str) -> Optional[str]:
+    """Return the strategy class's literal `id` slug via pure AST (NEVER imports/execs
+    the module — importing unverified AI code would defeat subprocess containment).
+    Returns None if absent or non-literal or not a valid slug."""
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return None
+    classes = [n for n in tree.body if isinstance(n, ast.ClassDef) and _is_strategybase_class(n)]
+    if len(classes) != 1:
+        return None
+    for stmt in classes[0].body:
+        targets = (stmt.targets if isinstance(stmt, ast.Assign)
+                   else [stmt.target] if isinstance(stmt, ast.AnnAssign) else [])
+        if any(isinstance(t, ast.Name) and t.id == "id" for t in targets):
+            val = stmt.value
+            if isinstance(val, ast.Constant) and isinstance(val.value, str) and _SLUG_RE.match(val.value):
+                return val.value
+            return None
+    return None
