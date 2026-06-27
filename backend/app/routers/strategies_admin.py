@@ -354,18 +354,11 @@ async def author_python_install(req: PythonInstallReq):
     if not smoke.get("ok"):
         raise HTTPException(422, f"smoke-test failed: {smoke.get('error')}")
     _write_plugin_file(req.strategy_id, req.code)
-    # Ensure the plugins package __path__ includes wherever _plugins_dir() points
-    # (normally identical; diverges only in tests that monkeypatch _plugins_dir).
-    import importlib as _il
-    import app.strategies.plugins as _plugins_pkg
-    _pd = _plugins_dir()
-    if _pd not in _plugins_pkg.__path__:
-        _plugins_pkg.__path__.insert(0, _pd)
     reg.reload()
     if reg.get(req.strategy_id) is None:
         try:
-            _delete_plugin_file(req.strategy_id)
-        except Exception:
+            os.remove(os.path.join(_plugins_dir(), f"{req.strategy_id}.py"))
+        except OSError:
             pass
         raise HTTPException(500, f"Strategy '{req.strategy_id}' failed to load after install")
     now = datetime.now(timezone.utc).isoformat()

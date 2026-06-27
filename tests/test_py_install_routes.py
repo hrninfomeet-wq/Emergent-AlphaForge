@@ -61,15 +61,20 @@ def test_install_rejects_id_mismatch():
     assert r.status_code == 400
 
 
-def test_install_happy_path(monkeypatch, tmp_path):
-    monkeypatch.setattr(sa, "_plugins_dir", lambda: str(tmp_path))
-    async def _noop(*a, **k): return None
-    with patch("app.ai.py_sandbox.smoke_test", return_value={"ok": True, "error": None, "signal_repr": "S"}), \
-         patch.object(sa, "_db") as db:
-        db.return_value.generated_strategies.update_one = _noop
-        r = _app().post("/strategies/author/python/install", json={"code": VALID, "strategy_id": "py_demo"})
-    assert r.status_code == 200, r.text
-    assert (tmp_path / "py_demo.py").exists()
+def test_install_happy_path():
+    import app.strategies.plugins as _plugins_pkg
+    plugins_dir = Path(_plugins_pkg.__file__).parent
     from app.strategies.base import get_registry
-    get_registry().unregister("py_demo")
-    (tmp_path / "py_demo.py").unlink(missing_ok=True)
+    async def _noop(*a, **k): return None
+    try:
+        with patch("app.ai.py_sandbox.smoke_test", return_value={"ok": True, "error": None, "signal_repr": "S"}), \
+             patch.object(sa, "_db") as db:
+            db.return_value.generated_strategies.update_one = _noop
+            r = _app().post("/strategies/author/python/install", json={"code": VALID, "strategy_id": "py_demo"})
+        assert r.status_code == 200, r.text
+        assert (plugins_dir / "py_demo.py").exists()
+        assert get_registry().get("py_demo") is not None
+    finally:
+        get_registry().unregister("py_demo")
+        (plugins_dir / "py_demo.py").unlink(missing_ok=True)
+        get_registry().reload()
