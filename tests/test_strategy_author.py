@@ -122,7 +122,7 @@ def test_from_source_200(monkeypatch):
         "fidelity": _CANNED.fidelity.model_dump(),
         "errors": [],
     }
-    with patch("app.ai.llm_client.is_configured", return_value=True), \
+    with patch("app.ai.llm_client.any_configured", return_value=True), \
          patch("app.ai.strategy_author.map_source_to_spec", return_value=canned):
         r = tc.post("/strategies/author/from-source", json={"source": "buy calls above ema9"})
     assert r.status_code == 200, r.text
@@ -134,7 +134,7 @@ def test_from_source_200(monkeypatch):
 
 def test_from_source_503_when_not_configured():
     tc = _make_app()
-    with patch("app.ai.llm_client.is_configured", return_value=False):
+    with patch("app.ai.llm_client.any_configured", return_value=False):
         r = tc.post("/strategies/author/from-source", json={"source": "anything"})
     assert r.status_code == 503, r.text
     assert "configured" in r.json()["detail"].lower()
@@ -142,7 +142,7 @@ def test_from_source_503_when_not_configured():
 
 def test_from_source_400_empty_source():
     tc = _make_app()
-    with patch("app.ai.llm_client.is_configured", return_value=True):
+    with patch("app.ai.llm_client.any_configured", return_value=True):
         r = tc.post("/strategies/author/from-source", json={"source": "   "})
     assert r.status_code == 400, r.text
     assert "empty" in r.json()["detail"].lower()
@@ -150,7 +150,7 @@ def test_from_source_400_empty_source():
 
 def test_from_source_502_on_runtime_error():
     tc = _make_app()
-    with patch("app.ai.llm_client.is_configured", return_value=True), \
+    with patch("app.ai.llm_client.any_configured", return_value=True), \
          patch("app.ai.strategy_author.map_source_to_spec",
                side_effect=RuntimeError("AI returned no parseable output")):
         r = tc.post("/strategies/author/from-source", json={"source": "buy calls"})

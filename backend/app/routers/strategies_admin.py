@@ -245,18 +245,29 @@ async def author_install(req: StrategyAuthorReq):
 # AI spec-mapper — text -> StrategySpec + fidelity (Phase 2B)
 # ---------------------------------------------------------------------------
 
+@api.get("/strategies/author/providers")
+async def author_providers():
+    """Configured AI providers + the active default. Host-safe (env only)."""
+    from app.ai import llm_client
+    return llm_client.providers_status()
+
+
 @api.post("/strategies/author/from-source")
 async def author_from_source(req: StrategyFromSourceReq):
-    """Ingest pasted text or a YouTube link, then map to a constrained StrategySpec
-    + fidelity readback via Sonnet. Grounding catalog + validate_spec keep the AI
-    honest (only real columns; bad specs come back as `errors`)."""
+    """Ingest pasted text or a YouTube link, then map to a constrained StrategySpec +
+    fidelity via the FAST tier of the selected provider (or the configured default)."""
     from app.ai import llm_client
     from app.ai.source_ingest import ingest_source
     from app.ai.strategy_author import map_source_to_spec
-    if not llm_client.is_configured():
-        raise HTTPException(503, "AI authoring is not configured — set ANTHROPIC_API_KEY in backend/.env")
+    if not llm_client.any_configured():
+        raise HTTPException(503, "AI authoring is not configured — set GEMINI_API_KEY or ANTHROPIC_API_KEY in backend/.env")
     if not (req.source or "").strip():
         raise HTTPException(400, "source is empty")
+    if req.provider:
+        try:
+            llm_client.resolve_provider(req.provider)   # 400 if named provider lacks a key
+        except RuntimeError as e:
+            raise HTTPException(400, str(e))
     try:
         ing = ingest_source(req.source)
     except ValueError as e:
@@ -264,7 +275,7 @@ async def author_from_source(req: StrategyFromSourceReq):
     except RuntimeError as e:
         raise HTTPException(502, f"Transcript fetch failed: {e}")
     try:
-        out = map_source_to_spec(ing["text"])
+        out = map_source_to_spec(ing["text"], provider=req.provider)
     except RuntimeError as e:
         raise HTTPException(502, f"AI mapping failed: {e}")
     out["source_kind"] = ing["kind"]

@@ -416,4 +416,5 @@ class StrategyAuthorReq(BaseModel):
 
 
 class StrategyFromSourceReq(BaseModel):
-    source: str   # pasted text/transcript (URL ingestion is a later slice)
+    source: str                       # pasted text/transcript OR a YouTube URL
+    provider: Optional[str] = None    # "anthropic" | "gemini"; None -> AI_PROVIDER / default

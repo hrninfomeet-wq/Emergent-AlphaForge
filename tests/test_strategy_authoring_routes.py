@@ -291,7 +291,7 @@ def test_from_source_youtube_ingestion():
             "fidelity": {"captured": ["enter long when rsi above 60"], "couldnt_map": [], "ambiguous": []},
             "errors": [],
         }
-        with patch("app.ai.llm_client.is_configured", return_value=True), \
+        with patch("app.ai.llm_client.any_configured", return_value=True), \
              patch("app.ai.source_ingest.ingest_source", return_value=canned_ingest) as mock_ingest, \
              patch("app.ai.strategy_author.map_source_to_spec", return_value=canned_spec) as mock_map:
             r = tc.post(
@@ -305,7 +305,7 @@ def test_from_source_youtube_ingestion():
         # ingest_source was called with the raw URL
         mock_ingest.assert_called_once_with("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
         # map_source_to_spec was called with the transcript text (not the URL)
-        mock_map.assert_called_once_with("enter long when rsi above 60")
+        mock_map.assert_called_once_with("enter long when rsi above 60", provider=None)
     finally:
         _stop(tc)
 
@@ -314,7 +314,7 @@ def test_from_source_non_youtube_url_400():
     """A non-YouTube URL is rejected at ingestion with 400 (ValueError → HTTPException)."""
     tc = _make_app()
     try:
-        with patch("app.ai.llm_client.is_configured", return_value=True):
+        with patch("app.ai.llm_client.any_configured", return_value=True):
             r = tc.post(
                 "/strategies/author/from-source",
                 json={"source": "https://example.com/some-blog"},
@@ -329,7 +329,7 @@ def test_from_source_transcript_fetch_failure_502():
     """A RuntimeError from ingest_source (e.g. no captions) surfaces as 502."""
     tc = _make_app()
     try:
-        with patch("app.ai.llm_client.is_configured", return_value=True), \
+        with patch("app.ai.llm_client.any_configured", return_value=True), \
              patch("app.ai.source_ingest.ingest_source",
                    side_effect=RuntimeError("could not fetch transcript for this video")):
             r = tc.post(
@@ -340,3 +340,31 @@ def test_from_source_transcript_fetch_failure_502():
         assert "transcript" in r.json()["detail"].lower()
     finally:
         _stop(tc)
+
+
+def test_providers_endpoint_returns_status(monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    import app.routers.strategies_admin as sa
+    from app.ai import llm_client
+    monkeypatch.setattr(llm_client, "providers_status",
+                        lambda: {"providers": [{"id": "gemini", "label": "Google Gemini", "configured": True}],
+                                 "active": "gemini"})
+    app = FastAPI(); app.include_router(sa.api)
+    r = TestClient(app).get("/strategies/author/providers")
+    assert r.status_code == 200
+    assert r.json()["active"] == "gemini"
+
+
+def test_from_source_400_when_named_provider_unconfigured(monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from unittest.mock import patch
+    import app.routers.strategies_admin as sa
+    app = FastAPI(); app.include_router(sa.api)
+    with patch("app.ai.llm_client.any_configured", return_value=True), \
+         patch("app.ai.llm_client.resolve_provider", side_effect=RuntimeError("AI provider 'anthropic' selected but its API key is not set")):
+        r = TestClient(app).post("/strategies/author/from-source",
+                                 json={"source": "buy calls", "provider": "anthropic"})
+    assert r.status_code == 400, r.text
+    assert "api key is not set" in r.json()["detail"].lower()
