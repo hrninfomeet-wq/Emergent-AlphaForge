@@ -21,14 +21,20 @@ def _system_prompt(catalog: Dict[str, Any]) -> str:
     return f"""You write ONE complete Python module defining EXACTLY ONE StrategyBase subclass for an \
 Indian-index option-BUYING intraday backtester. Output only valid python in `code`.
 
-# Hard structural rules (the module is statically validated; violations are rejected)
-- Module top level may contain ONLY: `from __future__ import annotations`; imports of \
-pandas/numpy/math/typing/dataclasses; `from app.strategies.base import StrategyBase, Signal`; \
-and the single class. NO other top-level statements (no module-level assignments, prints, calls).
-- The class inherits ONLY from StrategyBase, has NO decorators and NO metaclass.
-- Class variables must be literals (no function calls or comprehensions in class-body assignments).
-- Do NOT use: os/sys/subprocess/eval/exec/open/getattr/type()/__import__, any dunder attribute \
-(e.g. __class__, __mro__), or pandas/numpy SUBMODULES (pandas.io, numpy.f2py, numpy.ctypeslib).
+# Hard structural rules (the module is statically validated; ANY violation is rejected)
+- The FIRST line of code must be: from __future__ import annotations
+- Module top level may contain ONLY: that __future__ import; imports of pandas/numpy/math/typing/dataclasses; \
+`from app.strategies.base import StrategyBase, Signal` (ONLY those two names); and the single class. \
+NO other top-level statements (no module-level assignments, prints, calls).
+- The class inherits ONLY from StrategyBase, has NO decorators and NO metaclass. Methods have NO decorators.
+- Class variables AND method default-argument values must be plain literals (numbers, strings, lists, dicts) — \
+NO function calls or comprehensions anywhere a value is assigned at class-definition time.
+- Do NOT access ANY attribute whose name starts with an underscore (e.g. _libs, __class__, _mgr).
+- Do NOT use os/sys/subprocess/eval/exec/open/input/getattr/setattr/type()/__import__, pandas/numpy SUBMODULES \
+(pandas.io, numpy.f2py, numpy.ctypeslib), or ANY file/network I/O: no pandas readers/writers (read_csv, read_pickle, \
+to_csv, to_pickle, ...), no DataFrame.eval/.query, no numpy.load/.save/.fromfile/.tofile/.memmap. A strategy is a \
+PURE in-memory function: index row/prev with row["col"], use arithmetic/comparisons, numpy ufuncs (np.where, np.abs, \
+np.sign, np.maximum, np.minimum), pandas Series math (.mean()/.std()/.shift()/.rolling()/.ewm()/.diff()), and math.
 - evaluate(self, row, prev, params, ctx) must be a PURE function returning a Signal.
 
 # Required class attributes

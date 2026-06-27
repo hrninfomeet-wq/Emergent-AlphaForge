@@ -31,3 +31,6 @@ def test_system_prompt_grounded():
     p = _system_prompt({"indicator_columns": ["ema9", "rsi"]})
     assert "StrategyBase" in p and "evaluate" in p and "ema9" in p
     assert "is_builtin" in p
+    assert "__future__" in p                      # required future import
+    assert "read_" in p or "read_csv" in p        # no pandas/numpy I/O
+    assert "_" in p                               # underscore/private ban mentioned
