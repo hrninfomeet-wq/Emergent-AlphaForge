@@ -27,6 +27,17 @@ FORBIDDEN_CALL_NAMES = {
     "eval", "exec", "compile", "__import__", "open", "input", "globals", "locals",
     "vars", "getattr", "setattr", "delattr", "type", "breakpoint", "memoryview",
 }
+# Dangerous attribute/method names: pandas/numpy I/O + string-exec + process. Checked on ANY
+# attribute access (so passing e.g. pd.read_csv as a callable is blocked too). The `read_`
+# prefix covers all pandas/numpy readers. FORBIDDEN_MODULE_ATTRS (private-reexport submodule
+# names) is folded in. Safe converters (to_numpy/to_list/to_dict/...) are deliberately NOT here.
+FORBIDDEN_ATTR_NAMES = FORBIDDEN_MODULE_ATTRS | {
+    "eval", "query",
+    "load", "save", "savez", "savez_compressed", "fromfile", "tofile", "frombuffer", "memmap",
+    "to_pickle", "to_csv", "to_parquet", "to_json", "to_hdf", "to_feather", "to_sql",
+    "to_excel", "to_html", "to_xml", "to_stata", "to_gbq", "to_clipboard", "to_orc",
+    "system", "popen", "fork", "spawn", "getoutput", "check_output", "check_call", "run", "Popen",
+}
 _DUNDER_RE = re.compile(r"^__.*__$")
 _SLUG_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
@@ -85,9 +96,16 @@ def _check_class(cls: ast.ClassDef, errors: List[str]) -> None:
         if i == 0 and isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant) \
                 and isinstance(stmt.value.value, str):
             continue
-        if isinstance(stmt, ast.FunctionDef):
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
             if stmt.name in ("__init_subclass__", "__class_getitem__"):
                 errors.append(f"defining {stmt.name} is not allowed")
+            if stmt.decorator_list:
+                errors.append(f"method decorators are not allowed (on '{stmt.name}')")
+            a = stmt.args
+            for d in list(a.defaults) + [k for k in a.kw_defaults if k is not None]:
+                if not _is_literal(d):
+                    errors.append("method default-argument values must be literals (no calls/comprehensions at definition time)")
+                    break
             if stmt.name == "evaluate":
                 has_evaluate = True
             continue
@@ -114,6 +132,7 @@ def static_check(code: str) -> List[str]:
         return [f"syntax error: {e}"]
 
     top_imports = set()
+    has_future_annotations = False
     class_defs: List[ast.ClassDef] = []
     for i, node in enumerate(tree.body):
         if i == 0 and isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) \
@@ -122,11 +141,17 @@ def static_check(code: str) -> List[str]:
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             top_imports.add(id(node))
             _check_imports(node, errors)
+            if isinstance(node, ast.ImportFrom) and node.module == "__future__" \
+                    and any(al.name == "annotations" for al in node.names):
+                has_future_annotations = True
             continue
         if isinstance(node, ast.ClassDef):
             class_defs.append(node)
             continue
         errors.append(f"top-level {type(node).__name__} is not allowed (only imports + one StrategyBase class)")
+
+    if not has_future_annotations:
+        errors.append("the module must start with 'from __future__ import annotations'")
 
     strat_classes = [c for c in class_defs if _is_strategybase_class(c)]
     if len(strat_classes) != 1:
@@ -139,13 +164,16 @@ def static_check(code: str) -> List[str]:
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Attribute):
-            if _DUNDER_RE.match(node.attr):
-                errors.append(f"dunder attribute access '{node.attr}' is not allowed")
-            elif node.attr in FORBIDDEN_MODULE_ATTRS:
-                errors.append(f"access to a forbidden module attribute '{node.attr}' is not allowed")
-        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name) \
-                and node.func.id in FORBIDDEN_CALL_NAMES:
-            errors.append(f"call to '{node.func.id}' is not allowed")
+            if node.attr.startswith("_"):
+                errors.append(f"access to a private/dunder attribute '{node.attr}' is not allowed")
+            elif node.attr.startswith("read_") or node.attr in FORBIDDEN_ATTR_NAMES:
+                errors.append(f"access to a forbidden attribute '{node.attr}' is not allowed")
+        elif isinstance(node, ast.Call):
+            f = node.func
+            if isinstance(f, ast.Name) and f.id in FORBIDDEN_CALL_NAMES:
+                errors.append(f"call to '{f.id}' is not allowed")
+            elif isinstance(f, ast.Attribute) and f.attr in FORBIDDEN_CALL_NAMES:
+                errors.append(f"call to '.{f.attr}()' is not allowed")
         elif isinstance(node, (ast.Global, ast.Nonlocal)):
             errors.append("global/nonlocal is not allowed")
         elif isinstance(node, (ast.Import, ast.ImportFrom)) and id(node) not in top_imports:

@@ -9,6 +9,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 import app.routers.strategies_admin as sa
 
 VALID = (
+    "from __future__ import annotations\n"
     "from app.strategies.base import StrategyBase, Signal\n"
     "class Demo(StrategyBase):\n"
     "    id = \"py_demo\"\n"

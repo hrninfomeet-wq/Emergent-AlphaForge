@@ -243,3 +243,96 @@ def test_smoke_test_missing_result_is_failure(monkeypatch, tmp_path):
     monkeypatch.setattr(py_sandbox.subprocess, "Popen", lambda cmd, **kw: _FakeProc())
     out = py_sandbox.smoke_test("ignored", timeout=5)  # nobody wrote the result file
     assert out["ok"] is False
+
+
+# --- red-team evasion regression battery (all must be REJECTED) ---
+def _strat(body_lines, *, future=True, sig="self, row, prev, params, ctx"):
+    head = "from __future__ import annotations\n" if future else ""
+    body = "\n".join("        " + l for l in body_lines)
+    return (head +
+            "import pandas as pd\nimport numpy as np\n"
+            "from app.strategies.base import StrategyBase, Signal\n\n\n"
+            "class E(StrategyBase):\n    id = \"e\"\n    is_builtin = False\n"
+            f"    def evaluate({sig}):\n{body}\n")
+
+
+def test_evasion_private_reexport_os():
+    code = _strat(['osmod = pd._testing.threading._os', 'osmod.system("x")', 'return Signal(direction="NONE")'])
+    assert static_check(code) != []
+
+
+def test_evasion_builtins_via_globals():
+    code = _strat(['blt = np._globals.enum.bltns', 'blt.eval("1")', 'return Signal(direction="NONE")'])
+    assert static_check(code) != []
+
+
+def test_evasion_attribute_eval_call():
+    code = _strat(['x = pd.eval("1+1")', 'return Signal(direction="NONE")'])
+    assert static_check(code) != []
+
+
+def test_evasion_df_query():
+    code = _strat(['x = row.query("close > 1")', 'return Signal(direction="NONE")'])
+    assert static_check(code) != []
+
+
+def test_evasion_read_csv_file():
+    code = _strat(['x = pd.read_csv("/etc/passwd")', 'return Signal(direction="NONE")'])
+    assert static_check(code) != []
+
+
+def test_evasion_read_pickle():
+    code = _strat(['x = pd.read_pickle("http://a/p.pkl")', 'return Signal(direction="NONE")'])
+    assert static_check(code) != []
+
+
+def test_evasion_np_load_pickle():
+    code = _strat(['x = np.load("/tmp/x.npy", allow_pickle=True)', 'return Signal(direction="NONE")'])
+    assert static_check(code) != []
+
+
+def test_evasion_np_fromfile():
+    code = _strat(['x = np.fromfile("/etc/passwd")', 'return Signal(direction="NONE")'])
+    assert static_check(code) != []
+
+
+def test_evasion_to_pickle_write():
+    code = _strat(['row.to_pickle("/tmp/owned.pkl")', 'return Signal(direction="NONE")'])
+    assert static_check(code) != []
+
+
+def test_evasion_default_arg_execution():
+    code = _strat(['return Signal(direction="NONE")'], sig='self, row, prev, params, ctx, _x=pd.read_pickle("http://a/p.pkl")')
+    assert static_check(code) != []
+
+
+def test_evasion_kwonly_default_execution():
+    code = _strat(['return Signal(direction="NONE")'], sig='self, row, prev, params, ctx, *, _x=np.load("/tmp/e.npy", allow_pickle=True)')
+    assert static_check(code) != []
+
+
+def test_evasion_eager_annotation_when_no_future():
+    # without __future__ annotations, a param annotation Call executes at def time
+    code = _strat(['return Signal(direction="NONE")'], future=False, sig='self, row, prev=None, params=None, ctx=None, x: pd.read_csv("/etc/passwd")=None')
+    assert static_check(code) != []
+
+
+def test_evasion_missing_future_rejected():
+    code = _strat(['return Signal(direction="NONE")'], future=False)
+    assert static_check(code) != []
+
+
+def test_underscore_attribute_rejected():
+    code = _strat(['x = pd._libs', 'return Signal(direction="NONE")'])
+    assert static_check(code) != []
+
+
+def test_valid_still_passes_after_hardening():
+    # legitimate strategy ops must still pass: arithmetic, np.where, .mean(), .shift(), to_numpy()
+    code = _strat([
+        'c = float(row["close"]); e = float(row["ema9"])',
+        'arr = np.where(c > e, 1, 0)',
+        'm = prev.get("rsi")',
+        'return Signal(direction="CE" if c > e else "NONE", spot_target_pts=30, spot_stop_pts=15)',
+    ])
+    assert static_check(code) == []
