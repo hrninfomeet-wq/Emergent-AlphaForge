@@ -64,7 +64,13 @@ from app.live.flattrade_token import (
 )
 from app.live.flattrade_client import FlattradeClient
 from app.live.reconcile import reconcile
-from app.live.flattrade_symbol import SymbolResolutionError, resolve
+from app.live.flattrade_symbol import (
+    SymbolResolutionError,
+    resolve,
+    _parse_exd,
+    _strike_from_dname,
+)
+from app.live.portfolio_greeks import compute_portfolio_greeks
 from app.live.kill_switch import (
     SafetyConfigStore,
     default_store as _default_safety_store,
@@ -1409,6 +1415,87 @@ async def guard_status():
         "count": len(reg),
         "guarded": guarded,
     }
+
+
+# ---------------------------------------------------------------------------
+# Portfolio Greeks (net Δ / net Θ) — read-only observability
+#
+# Contract metadata is static per tsym — resolve once via SearchScrip, then reuse.
+# ---------------------------------------------------------------------------
+
+_greeks_contract_cache: dict = {}
+
+_GREEKS_EMPTY = {
+    "net_delta_rupees_per_point": 0.0, "net_theta_rupees_per_day": 0.0,
+    "n_computed": 0, "n_skipped": 0, "positions": [],
+}
+
+
+async def _resolve_greeks_client():
+    """Resolve a broker client for the (read-only) Greeks route, fail-soft.
+
+    `_get_client` is async in production (raises HTTPException when not connected)
+    but tests monkeypatch it with a sync lambda returning a MockNoren or None. We
+    support both: call it, await the result if it is awaitable, and treat any
+    error / None as "not connected" (the caller returns zeros — never a 500).
+    """
+    import inspect
+    try:
+        client = _get_client()
+        if inspect.isawaitable(client):
+            client = await client
+        return client
+    except Exception:
+        return None
+
+
+@api.get("/live-broker/greeks")
+async def live_broker_greeks():
+    """Portfolio net-Δ (₹/index point) + net-Θ (₹/day) across live positions.
+
+    Fail-soft: not connected / no positions → zeros. General API (40/s); never on
+    the guard hot path. IV solved from the GetQuotes premium (no market IV exists).
+    """
+    from datetime import date as _date
+
+    client = await _resolve_greeks_client()
+    if client is None:
+        return dict(_GREEKS_EMPTY)
+    positions = _get_live_registry().snapshot()
+    if not positions:
+        return dict(_GREEKS_EMPTY)
+
+    async def _resolve(tsym: str, exch: str):
+        if tsym in _greeks_contract_cache:
+            return _greeks_contract_cache[tsym]
+        try:
+            rows = await client.search_scrip(exch, tsym)
+        except Exception:
+            return None
+        for r in rows or []:
+            if str(r.get("tsym")) == str(tsym):
+                try:
+                    strike = _strike_from_dname(str(r.get("dname", "")))
+                    expiry_iso = _parse_exd(str(r.get("exd", "")))
+                except SymbolResolutionError:
+                    return None
+                token = str(r.get("token") or "")
+                if not token:
+                    return None
+                out = (strike, expiry_iso, str(r.get("optt", "")).upper() == "CE", token)
+                _greeks_contract_cache[tsym] = out
+                return out
+        return None
+
+    try:
+        return await compute_portfolio_greeks(
+            positions,
+            get_quote_fn=client.get_quotes,
+            resolve_contract_fn=_resolve,
+            today=_date.today(),
+        )
+    except Exception:
+        return dict(_GREEKS_EMPTY)
 
 
 # ---------------------------------------------------------------------------
