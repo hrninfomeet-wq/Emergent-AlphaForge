@@ -29,7 +29,7 @@ from app.instruments import UNDERLYING_META
 from app.options_universe import select_contract_for_signal
 from app.regime import classify_regime_series
 from app.signal_lifecycle import create_signal_doc, transition_signal
-from app.strategies.base import StrategyBase, get_registry
+from app.strategies.base import StrategyBase, get_registry, build_live_eval_ctx
 from app.deployment_kill_switch import check_deployment_kill_switches
 
 log = logging.getLogger(__name__)
@@ -367,7 +367,8 @@ async def evaluate_deployment_on_close(
 
     # Strategy evaluate
     try:
-        sig = strategy.evaluate(last_bar, prev_bar, merged_params, {"history_df": df_enriched, "i": last_idx})
+        eval_ctx = build_live_eval_ctx(strategy, df_enriched, last_idx, instrument, merged_params)
+        sig = strategy.evaluate(last_bar, prev_bar, merged_params, eval_ctx)
     except Exception as exc:
         log.exception("strategy %s evaluate() failed for deployment %s", strategy_id, deployment_id)
         await _mark_deployment_evaluated(db, deployment_id, candle_ts)
