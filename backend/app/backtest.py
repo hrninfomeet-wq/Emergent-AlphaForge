@@ -88,6 +88,11 @@ def run_backtest(
     if not df.index.equals(pd.RangeIndex(len(df))):
         df = df.reset_index(drop=True)
     if strategy.required_features:
+        # Structural features are materialized HERE (not in callers) so every
+        # run_backtest caller — the one-shot path AND the optimizer trials — gets
+        # them, computed fresh on THIS enriched frame. Fresh cache per call avoids
+        # a cross-trial staleness bug (features read indicator columns like atr, so
+        # a frame-independent cache would go stale when indicator params change).
         df = materialize_features(df, params, strategy.required_features, {})
     # Pre-materialize rows as plain dicts ONCE. Indexing df.iloc[i] inside the
     # hot loop builds a fresh pandas Series every bar (very slow and GIL-heavy);
