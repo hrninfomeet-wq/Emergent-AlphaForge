@@ -517,7 +517,7 @@ export default function LiveDashboard() {
           </span>
         }
       >
-        <LiveBlotter rows={blotter?.rows} gtt={gtt} />
+        <LiveBlotter rows={blotter?.rows} gtt={gtt?.gtt} />
       </SectionCard>
 
       {/* ── 1d. Portfolio Greeks (net Δ / Θ across live positions) ───────── */}
