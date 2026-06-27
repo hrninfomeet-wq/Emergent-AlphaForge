@@ -50,6 +50,7 @@ export function LiveDataProvider({ children }) {
   const { data: reconcile, error: eReconcile, refetch: rReconcile } = usePoll(() => api.liveBrokerReconcile(), SLOW_MS);
   const { data: armState, error: eArmState, refetch: rArmState } = usePoll(() => api.getArmState(), SLOW_MS);
   const { data: blotter, error: eBlotter, refetch: rBlotter } = usePoll(() => api.getLiveBlotter(), SLOW_MS);
+  const { data: greeks, error: eGreeks, refetch: rGreeks } = usePoll(() => api.getLiveGreeks(), SLOW_MS);
   const { data: deploymentsData, error: eDeployments, refetch: rDeployments } = usePoll(() => api.listDeployments({ limit: 200 }), SLOW_MS);
 
   // ── Fast group (3s) — software guard + the manual 10-min session. ────────────
@@ -84,8 +85,8 @@ export function LiveDataProvider({ children }) {
 
   const refetchSlow = useCallback(() => {
     rStatus(); rLimits(); rPositions(); rOrders();
-    rReconcile(); rArmState(); rBlotter(); rDeployments();
-  }, [rStatus, rLimits, rPositions, rOrders, rReconcile, rArmState, rBlotter, rDeployments]);
+    rReconcile(); rArmState(); rBlotter(); rDeployments(); rGreeks();
+  }, [rStatus, rLimits, rPositions, rOrders, rReconcile, rArmState, rBlotter, rDeployments, rGreeks]);
 
   const refetchAll = useCallback(() => {
     refetchSlow();
@@ -112,21 +113,21 @@ export function LiveDataProvider({ children }) {
     () => ({
       // data (null until the first successful fetch — consumers treat null = loading)
       status, limits, positions, orders, reconcile, armState, blotter, deployments,
-      guard, session, gtt,
+      guard, session, gtt, greeks,
       deployLive: deployLiveData || {},
       // per-slice last error (null when the latest call succeeded)
       errors: {
         status: eStatus, limits: eLimits, positions: ePositions, orders: eOrders,
         reconcile: eReconcile, armState: eArmState, blotter: eBlotter, deployments: eDeployments,
-        guard: eGuard, session: eSession, gtt: eGtt, deployLive: eDeployLive,
+        guard: eGuard, session: eSession, gtt: eGtt, deployLive: eDeployLive, greeks: eGreeks,
       },
       refetch,
     }),
     [
       status, limits, positions, orders, reconcile, armState, blotter, deployments,
-      guard, session, gtt, deployLiveData,
+      guard, session, gtt, greeks, deployLiveData,
       eStatus, eLimits, ePositions, eOrders, eReconcile, eArmState, eBlotter, eDeployments,
-      eGuard, eSession, eGtt, eDeployLive, refetch,
+      eGuard, eSession, eGtt, eDeployLive, eGreeks, refetch,
     ],
   );
 

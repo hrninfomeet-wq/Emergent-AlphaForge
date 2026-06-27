@@ -308,6 +308,8 @@ export const api = {
       .then((r) => r.data),
   getGuardStatus: () =>
     apiClient.get("/live-broker/guard-status").then((r) => r.data),
+  getLiveGreeks: () =>
+    apiClient.get("/live-broker/greeks").then((r) => r.data),
 
   // Presets
   listPresets: () => apiClient.get("/presets").then((r) => r.data),
