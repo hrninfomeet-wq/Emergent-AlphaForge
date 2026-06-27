@@ -193,12 +193,14 @@ if strategy.required_features:                         # empty -> untouched
         df_enriched, merged_params, strategy.required_features, _feature_cache)
 ```
 
-| Site | File | Cache |
+**Refinement discovered during SP-1 implementation:** for the **backtest path**, materialization lives **inside `run_backtest` itself** (right after `df.reset_index`, before the row-dict pre-materialization), with a **fresh `{}` cache per call** — NOT in the callers. This is strictly safer and simpler than the original call-site + shared-cache plan: (a) every `run_backtest` caller (the one-shot `runtime.py` path AND the optimizer trials) gets features automatically with no per-caller wiring and no chance of a caller forgetting; (b) computing features fresh on the exact enriched frame each call **eliminates a cross-trial staleness bug** the shared `_feature_caches` would have risked — structural features read indicator columns (e.g. `displacement` reads `atr`), so a feature cached under `param_keys=()` but reused across trials with different `atr_length` would be silently stale. The cost is per-trial re-materialization in the optimizer; acceptable for v1 (cheap, mostly-vectorized features). If a heavy `session_loop` feature later proves slow under optimization, the fix is to key that feature on its transitive indicator params (mirroring `INDICATOR_PARAM_KEYS`) — deferred until measured. The **live path** (`deployment_evaluator`) does not use `run_backtest`, so it materializes itself before `build_live_eval_ctx`.
+
+| Site | File | Materialization |
 |---|---|---|
-| One-shot backtest | `runtime.py:~815` | fresh `{}` (single pass) |
-| Optimizer | `optimizer.py:~868` `get_enriched` | a **new sibling `_feature_caches` dict**, *separate from* `enriched_cache`. **Features are NOT folded into `_indicator_key`** (critique H2): param-independent ⇒ `param_keys=()` ⇒ the key never needs extending, and keeping features out of `enriched_cache` avoids cross-schema cache poisoning. |
+| Backtest (all callers) | inside `run_backtest` (`backtest.py`) | fresh `{}` per call; every caller incl. the optimizer gets features free — **no caller-side materialize** (so `runtime.py` does NOT materialize; that would double-materialize). |
+| Optimizer | `optimizer.py` `get_enriched` | **no feature wiring needed** — `run_backtest` owns it (SP-2b just confirms parity; revisit per-trial cost only if a heavy feature is measured slow). |
 | Grounding | `grounding.py:~37` | materialize **all** registered features on the sample frame to advertise their columns + metadata (the `couldnt_map` fix — the agent now *sees* `fvg_top`/…). |
-| Paper/Live | `deployment_evaluator.py:~343` | a process-level last-frame cache keyed `(deployment_id, last_closed_bar_ts)`. **Note (critique M3):** the existing idempotency guard already short-circuits a re-tick of the same closed bar, so the effective compute rate is **once per new closed bar per deployment** regardless; the cache only adds value when multiple deployments share an instrument+bar. Do not over-claim it. |
+| Paper/Live | `deployment_evaluator.py:~344` | materialize on the 200-bar frame before `build_live_eval_ctx`; a process-level last-frame cache keyed `(deployment_id, last_closed_bar_ts)` is optional. **Note (critique M3):** the existing idempotency guard already short-circuits a re-tick of the same closed bar, so the effective compute rate is **once per new closed bar per deployment** regardless. |
 
 ### 5.4 Where the code lives
 
