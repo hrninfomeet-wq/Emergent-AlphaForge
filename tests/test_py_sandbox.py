@@ -179,3 +179,33 @@ def test_extract_id_missing_is_none():
 def test_extract_id_bad_slug_is_none():
     code = VALID.replace('id = "my_strat"', 'id = "Bad-ID"')
     assert extract_strategy_id(code) is None
+
+
+from app.ai.py_sandbox import _interpret_smoke_result
+
+
+def test_smoke_result_timeout():
+    r = _interpret_smoke_result(returncode=None, stdout="", stderr="", timed_out=True, result=None)
+    assert r["ok"] is False and "timeout" in r["error"].lower()
+
+
+def test_smoke_result_nonzero_exit():
+    r = _interpret_smoke_result(returncode=1, stdout="", stderr="boom traceback", timed_out=False, result=None)
+    assert r["ok"] is False and "boom" in r["error"]
+
+
+def test_smoke_result_missing_result_file():
+    r = _interpret_smoke_result(returncode=0, stdout="noise", stderr="", timed_out=False, result=None)
+    assert r["ok"] is False and "no result" in r["error"].lower()
+
+
+def test_smoke_result_driver_failed():
+    r = _interpret_smoke_result(returncode=0, stdout="", stderr="", timed_out=False,
+                                result={"ok": False, "error": "evaluate raised: KeyError"})
+    assert r["ok"] is False and "evaluate raised" in r["error"]
+
+
+def test_smoke_result_ok():
+    r = _interpret_smoke_result(returncode=0, stdout="", stderr="", timed_out=False,
+                                result={"ok": True, "signal_repr": "Signal(direction='NONE')"})
+    assert r["ok"] is True and "NONE" in r["signal_repr"]

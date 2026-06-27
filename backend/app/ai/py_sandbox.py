@@ -152,6 +152,21 @@ def static_check(code: str) -> List[str]:
     return out
 
 
+def _interpret_smoke_result(*, returncode, stdout, stderr, timed_out, result) -> dict:
+    """Pure parent-side mapping of a subprocess outcome to {ok, error, signal_repr}.
+    `result` is the parsed result-file dict (or None if missing/unparseable)."""
+    tail = (stderr or stdout or "").strip()[-1500:]
+    if timed_out:
+        return {"ok": False, "error": f"smoke-test timeout; {tail}", "signal_repr": None}
+    if returncode not in (0, None):
+        return {"ok": False, "error": f"smoke-test exited {returncode}: {tail}", "signal_repr": None}
+    if result is None:
+        return {"ok": False, "error": f"smoke-test produced no result: {tail}", "signal_repr": None}
+    if not result.get("ok"):
+        return {"ok": False, "error": result.get("error") or "smoke-test failed", "signal_repr": None}
+    return {"ok": True, "error": None, "signal_repr": result.get("signal_repr")}
+
+
 def extract_strategy_id(code: str) -> Optional[str]:
     """Return the strategy class's literal `id` slug via pure AST (NEVER imports/execs
     the module — importing unverified AI code would defeat subprocess containment).
