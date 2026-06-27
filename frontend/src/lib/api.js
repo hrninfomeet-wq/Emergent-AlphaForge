@@ -36,6 +36,12 @@ export const api = {
   getAuthorProviders: () => apiClient.get("/strategies/author/providers").then((r) => r.data),
   authorFromSource: (source, provider) =>
     apiClient.post("/strategies/author/from-source", { source, provider }, { timeout: LONG_TIMEOUT_MS }).then((r) => r.data),
+  authorPythonFromSource: (source, provider) =>
+    apiClient.post("/strategies/author/python-from-source", { source, provider }, { timeout: LONG_TIMEOUT_MS }).then((r) => r.data),
+  validatePython: (code) =>
+    apiClient.post("/strategies/author/python/validate", { code }, { timeout: LONG_TIMEOUT_MS }).then((r) => r.data),
+  installPython: (code, strategy_id, overwrite = false) =>
+    apiClient.post("/strategies/author/python/install", { code, strategy_id, overwrite }).then((r) => r.data),
 
   // Warehouse
   ingest: (instrument, days = 7) =>
