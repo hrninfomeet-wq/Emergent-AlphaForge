@@ -85,11 +85,6 @@ def test_complete_structured_raises_when_no_provider(monkeypatch):
         llm_client.complete_structured(tier=llm_client.FAST, system="s", user="u", output_model=MappedSpec)
 
 
-def test_is_configured_true_with_key(monkeypatch):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-    assert llm_client.is_configured() is True
-
-
 # ---------------------------------------------------------------------------
 # 4. The system prompt is grounded: it lists real columns + the op vocabulary
 # ---------------------------------------------------------------------------

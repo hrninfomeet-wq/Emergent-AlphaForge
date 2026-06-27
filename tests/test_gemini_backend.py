@@ -12,7 +12,7 @@ class Toy(BaseModel):
     x: int
 
 
-def _install_fake_genai(monkeypatch, *, parsed=None, text=None, raise_api=False, raise_convert=False):
+def _install_fake_genai(monkeypatch, *, parsed=None, text=None, raise_api=False, raise_convert=False, raise_fallback=False):
     google_mod = types.ModuleType("google")
     genai_mod = types.ModuleType("google.genai")
     errors_mod = types.ModuleType("google.genai.errors")
@@ -33,6 +33,8 @@ def _install_fake_genai(monkeypatch, *, parsed=None, text=None, raise_api=False,
                 raise APIError("rate limit exceeded")
             # fallback call (no response_schema) returns text only
             if "response_schema" not in config:
+                if raise_fallback:
+                    raise RuntimeError("transport boom")
                 return _Resp(None, text)
             return _Resp(parsed, text)
 
@@ -77,3 +79,20 @@ def test_gemini_fallback_validation_failure_raises(monkeypatch):
     with pytest.raises(RuntimeError) as ei:
         _gemini.call(model="m", system="s", user="u", output_model=Toy)
     assert "failed validation" in str(ei.value).lower()
+
+
+def test_gemini_primary_text_recovery(monkeypatch):
+    # primary response_schema call returns parsed=None but a usable .text -> validate it (no fallback)
+    _install_fake_genai(monkeypatch, parsed=None, text='{"x": 3}')
+    from app.ai import _gemini
+    out = _gemini.call(model="gemini-2.5-flash", system="s", user="u", output_model=Toy)
+    assert out.x == 3
+
+
+def test_gemini_fallback_non_api_error_becomes_runtimeerror(monkeypatch):
+    # schema path rejected -> fallback call raises a NON-APIError -> must surface as RuntimeError
+    _install_fake_genai(monkeypatch, raise_convert=True, raise_fallback=True)
+    from app.ai import _gemini
+    with pytest.raises(RuntimeError) as ei:
+        _gemini.call(model="m", system="s", user="u", output_model=Toy)
+    assert "fallback request failed" in str(ei.value).lower()

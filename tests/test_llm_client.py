@@ -77,3 +77,17 @@ def test_complete_structured_routes_to_resolved_backend(monkeypatch):
     out = llm_client.complete_structured(tier=llm_client.FAST, system="s", user="u", output_model=str)
     assert out == "OK"
     assert seen["model"] == "gemini-2.5-flash"
+
+
+def test_complete_structured_routes_to_anthropic_backend(monkeypatch):
+    _clear(monkeypatch)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "a")
+    monkeypatch.setenv("AI_PROVIDER", "anthropic")
+    seen = {}
+    from app.ai import _anthropic
+    def fake_call(*, model, system, user, output_model, max_tokens):
+        seen.update(model=model); return "OK"
+    monkeypatch.setattr(_anthropic, "call", fake_call)
+    out = llm_client.complete_structured(tier=llm_client.FAST, system="s", user="u", output_model=str)
+    assert out == "OK"
+    assert seen["model"] == "claude-sonnet-4-6"

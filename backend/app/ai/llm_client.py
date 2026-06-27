@@ -47,11 +47,6 @@ def any_configured() -> bool:
     return any(provider_configured(p) for p in _MODELS)
 
 
-def is_configured() -> bool:
-    """Back-compat alias — True if ANY provider is configured."""
-    return any_configured()
-
-
 def model_for(provider: str, tier: str) -> str:
     if provider not in _MODELS:
         raise RuntimeError(f"unknown AI provider '{provider}'")

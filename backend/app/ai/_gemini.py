@@ -61,6 +61,8 @@ def call(*, model: str, system: str, user: str, output_model: Type[T], max_token
         )
     except genai_errors.APIError as e:
         raise RuntimeError(f"Gemini API error: {getattr(e, 'message', None) or str(e)}")
+    except Exception as e:
+        raise RuntimeError(f"Gemini fallback request failed: {e}")
     text = getattr(resp, "text", None)
     if not text:
         raise RuntimeError("Gemini returned no parseable output (possibly a refusal or token limit)")
