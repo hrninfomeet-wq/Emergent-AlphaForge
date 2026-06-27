@@ -418,3 +418,18 @@ class StrategyAuthorReq(BaseModel):
 class StrategyFromSourceReq(BaseModel):
     source: str                       # pasted text/transcript OR a YouTube URL
     provider: Optional[str] = None    # "anthropic" | "gemini"; None -> AI_PROVIDER / default
+
+
+class PythonFromSourceReq(BaseModel):
+    source: str
+    provider: Optional[str] = None
+
+
+class PythonValidateReq(BaseModel):
+    code: str
+
+
+class PythonInstallReq(BaseModel):
+    code: str
+    strategy_id: str
+    overwrite: bool = False
