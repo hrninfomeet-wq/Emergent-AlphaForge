@@ -76,7 +76,6 @@ def main():
             return _result(result_path, {"ok": False, "error": f"expected exactly one strategy class, found {len(strat_classes)}"})
         inst = strat_classes[0]()
 
-        import pandas as pd  # noqa: F401  (kept if other code in main still needs it)
         cols = sorted(allowed_columns())
         return _result(result_path, run_smoke(inst, cols))
     except Exception:

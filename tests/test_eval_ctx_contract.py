@@ -104,5 +104,41 @@ def test_smoke_driver_provides_history_df_i_and_session_precompute():
 
     out = run_smoke(_Structural(), ["open", "high", "low", "close"])
     assert out["ok"] is True, out
-    assert {"history_df", "i", "instrument", "session_date", "mode"}.issubset(captured["keys"])
+    assert set(EVAL_CTX_KEYS).issubset(captured["keys"])
     assert captured["sp"] and captured["sp"] > 0   # session_precompute ran
+
+
+def test_backtest_reuses_single_ctx_object_in_place():
+    """run_backtest must NOT allocate a new ctx dict per bar (in-place reuse)."""
+    ids = []
+
+    class _Probe(StrategyBase):
+        id = "probe_reuse"
+        def evaluate(self, row, prev, params, ctx):
+            ids.append(id(ctx))
+            return Signal(direction="NONE")
+
+    run_backtest(_probe_df(), _Probe(), {}, instrument="NIFTY")
+    assert ids, "evaluate was never reached"
+    assert len(set(ids)) == 1   # one ctx object reused across all evaluated bars
+
+
+def test_build_live_eval_ctx_defaults_mode_when_params_has_no_mode():
+    class _Probe(StrategyBase):
+        id = "probe_live_default_mode"
+        def session_precompute(self, df, params):
+            return {}
+    df = pd.DataFrame({"close": [1.0, 2.0, 3.0], "session_date": ["d", "d", "d"]})
+    ctx = build_live_eval_ctx(_Probe(), df, last_idx=2, instrument="NIFTY", params={})
+    assert ctx["mode"] == "INTRADAY"
+
+
+def test_build_eval_ctx_canonical_keys_win_over_extras():
+    df = pd.DataFrame({"close": [1.0, 2.0, 3.0]})
+    ctx = build_eval_ctx(
+        history_df=df, i=5, instrument="NIFTY", session_date="d", mode="SCALP",
+        session_extras={"mode": "HACK", "i": 999, "custom": 1},
+    )
+    assert ctx["mode"] == "SCALP"   # canonical wins
+    assert ctx["i"] == 5            # canonical wins
+    assert ctx["custom"] == 1       # non-colliding extras still merge

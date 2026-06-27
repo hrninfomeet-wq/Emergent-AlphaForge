@@ -39,16 +39,16 @@ def build_eval_ctx(*, history_df, i, instrument, session_date, mode="INTRADAY",
                    session_extras=None) -> Dict[str, Any]:
     """Assemble the canonical evaluate() ctx. The SAME builder is used by the
     backtest, paper/live, and smoke paths so the contract can never drift again.
-    `session_extras` (a strategy's session_precompute() output) is merged last."""
-    ctx: Dict[str, Any] = {
+    Canonical keys take precedence over `session_extras` (a strategy's
+    session_precompute output cannot clobber the frame index / instrument / mode)."""
+    ctx: Dict[str, Any] = dict(session_extras) if session_extras else {}
+    ctx.update({
         "history_df": history_df,
         "i": int(i),
         "instrument": instrument,
         "session_date": session_date,
         "mode": mode,
-    }
-    if session_extras:
-        ctx.update(session_extras)
+    })
     return ctx
 
 
