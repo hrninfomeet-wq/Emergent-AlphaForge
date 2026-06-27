@@ -30,11 +30,14 @@ export default function LiveBlotter({ rows, gtt }) {
   const ocoByAlId = useMemo(() => {
     const m = {};
     for (const g of Array.isArray(gtt) ? gtt : []) {
-      const id = g?.al_id ?? g?.Al_id;
+      const id = g?.al_id ?? g?.Al_id ?? g?.AL_id;
       if (!id) continue;
       const legs = Array.isArray(g?.oivariable) ? g.oivariable : [];
-      const sl = legs.find((l) => l?.var_name === "x")?.d;
-      const tp = legs.find((l) => l?.var_name === "y")?.d;
+      // Noren's GTT readback casing isn't guaranteed (GttBook lowercases + falls
+      // back positionally) — mirror that so the SL/TP band still resolves: x=SL, y=TP.
+      const byName = (n) => legs.find((l) => String(l?.var_name).toLowerCase() === n)?.d;
+      const sl = byName("x") ?? legs[0]?.d;
+      const tp = byName("y") ?? legs[1]?.d;
       m[String(id)] = { sl, tp };
     }
     return m;
