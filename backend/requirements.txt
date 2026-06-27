@@ -31,5 +31,5 @@ cmaes==0.13.0
 optuna==4.8.0
 scikit-learn==1.8.0
 anthropic>=0.40
-youtube-transcript-api>=0.6,<1.0
+youtube-transcript-api>=1.1,<2.0
 google-genai>=1.0,<2.0

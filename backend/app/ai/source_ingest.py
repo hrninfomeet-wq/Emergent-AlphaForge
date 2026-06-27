@@ -44,10 +44,13 @@ def fetch_youtube_transcript(video_id: str) -> str:
     except Exception as e:  # pragma: no cover - import guard
         raise RuntimeError(f"transcript library unavailable: {e}")
     try:
-        segments = YouTubeTranscriptApi.get_transcript(video_id)
+        # youtube-transcript-api 1.x: instance .fetch() -> iterable of snippet objects
+        # (each with a `.text`). The 0.x classmethod `get_transcript` is blocked by
+        # YouTube now (returns empty -> "no element found"), so we require >=1.1.
+        fetched = YouTubeTranscriptApi().fetch(video_id)
     except Exception as e:
         raise RuntimeError(f"could not fetch transcript for this video ({e}). Try pasting the text instead.")
-    text = " ".join(seg.get("text", "") for seg in segments).strip()
+    text = " ".join(getattr(seg, "text", "") for seg in fetched).strip()
     if not text:
         raise RuntimeError("the video has no usable transcript — paste the strategy text instead.")
     return text

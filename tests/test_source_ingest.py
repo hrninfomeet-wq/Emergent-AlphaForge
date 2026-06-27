@@ -37,3 +37,40 @@ def test_youtube_ingest_fetches_transcript():
         out = si.ingest_source("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
     m.assert_called_once_with("dQw4w9WgXcQ")
     assert out["kind"] == "youtube" and out["text"] == "enter long when rsi above 60"
+
+
+def _fake_yt_api(monkeypatch, *, snippets=None, raises=None):
+    """Inject a fake youtube_transcript_api (1.x shape) so the real lib/network isn't needed."""
+    import sys, types
+    mod = types.ModuleType("youtube_transcript_api")
+
+    class _Snip:
+        def __init__(self, text): self.text = text
+
+    class YouTubeTranscriptApi:
+        def fetch(self, video_id):
+            if raises is not None:
+                raise raises
+            return [_Snip(t) for t in (snippets or [])]
+
+    mod.YouTubeTranscriptApi = YouTubeTranscriptApi
+    monkeypatch.setitem(sys.modules, "youtube_transcript_api", mod)
+
+
+def test_fetch_youtube_transcript_joins_1x_snippets(monkeypatch):
+    _fake_yt_api(monkeypatch, snippets=["enter long", "when rsi > 60"])
+    assert si.fetch_youtube_transcript("dQw4w9WgXcQ") == "enter long when rsi > 60"
+
+
+def test_fetch_youtube_transcript_wraps_fetch_errors(monkeypatch):
+    _fake_yt_api(monkeypatch, raises=Exception("blocked"))
+    with pytest.raises(RuntimeError) as ei:
+        si.fetch_youtube_transcript("dQw4w9WgXcQ")
+    assert "could not fetch transcript" in str(ei.value)
+
+
+def test_fetch_youtube_transcript_empty_raises(monkeypatch):
+    _fake_yt_api(monkeypatch, snippets=["   "])
+    with pytest.raises(RuntimeError) as ei:
+        si.fetch_youtube_transcript("dQw4w9WgXcQ")
+    assert "no usable transcript" in str(ei.value)
