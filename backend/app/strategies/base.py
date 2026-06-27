@@ -83,6 +83,7 @@ class StrategyBase:
     supported_timeframes: List[str] = ["1m", "3m", "5m"]
     parameter_schema: Dict[str, Any] = {}
     is_builtin: bool = True
+    required_features: List[str] = []
 
     def default_params(self) -> Dict[str, Any]:
         return {k: v.get("default") for k, v in self.parameter_schema.items()}
@@ -119,6 +120,7 @@ class StrategyBase:
             "supported_timeframes": self.supported_timeframes,
             "parameter_schema": self.parameter_schema,
             "is_builtin": self.is_builtin,
+            "required_features": self.required_features,
             "origin": _origin_from_module(type(self).__module__),
         }
 
