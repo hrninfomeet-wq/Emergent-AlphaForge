@@ -73,3 +73,17 @@ def test_materialize_caches_param_independent_group_once(monkeypatch):
     materialize_features(df, {}, ["base"], cache)
     materialize_features(df, {}, ["base"], cache)
     assert calls["n"] == 1            # second call served from cache
+
+
+def test_catalog_entries_shape_empty_in_sp1():
+    from app.features.catalog import feature_catalog_entries
+    entries = feature_catalog_entries()
+    assert entries == []          # no features registered yet
+
+
+def test_package_exports():
+    import app.features as feats
+    assert hasattr(feats, "materialize_features")
+    assert hasattr(feats, "resolve_features")
+    assert hasattr(feats, "FEATURE_REGISTRY")
+    assert hasattr(feats, "FeatureError")
