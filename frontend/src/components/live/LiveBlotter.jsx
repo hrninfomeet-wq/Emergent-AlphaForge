@@ -24,7 +24,22 @@ function istTime(iso) {
 
 const SIDE_CLASS = { LONG: "text-success", B: "text-success", SHORT: "text-danger", S: "text-danger" };
 
-export default function LiveBlotter({ rows }) {
+export default function LiveBlotter({ rows, gtt }) {
+  // al_id → { sl, tp } from the resting GTT/OCO book, so a backed position can
+  // show its catastrophe band. oivariable legs: var_name "x" = SL, "y" = TP.
+  const ocoByAlId = useMemo(() => {
+    const m = {};
+    for (const g of Array.isArray(gtt) ? gtt : []) {
+      const id = g?.al_id ?? g?.Al_id;
+      if (!id) continue;
+      const legs = Array.isArray(g?.oivariable) ? g.oivariable : [];
+      const sl = legs.find((l) => l?.var_name === "x")?.d;
+      const tp = legs.find((l) => l?.var_name === "y")?.d;
+      m[String(id)] = { sl, tp };
+    }
+    return m;
+  }, [gtt]);
+
   const { liveCount, closedCount, flatCount, livePnl, closedPnl } = useMemo(() => {
     const list = Array.isArray(rows) ? rows : [];
     let lc = 0, cc = 0, fc = 0, live = 0, closed = 0;
@@ -153,14 +168,25 @@ export default function LiveBlotter({ rows }) {
                         <span className="inline-block px-1.5 py-0.5 rounded text-[10px] border border-emerald-500/40 bg-emerald-500/10 text-emerald-300">
                           LIVE
                         </span>
-                        {r?.oco_error && (
+                        {r?.oco_error ? (
                           <span
                             className="inline-block px-1.5 py-0.5 rounded text-[10px] border border-amber-500/40 bg-amber-500/10 text-amber-300"
                             title="The resting broker OCO failed to place — this position has NO PC-down broker backstop, only the software guard while the app is running."
                           >
                             no broker net
                           </span>
-                        )}
+                        ) : r?.oco_al_id ? (
+                          <span
+                            className="inline-block px-1.5 py-0.5 rounded text-[10px] border border-emerald-500/50 bg-emerald-500/10 text-emerald-300"
+                            title={
+                              ocoByAlId[String(r.oco_al_id)]?.sl != null
+                                ? `Resting broker OCO backstop — SL ₹${ocoByAlId[String(r.oco_al_id)].sl} · TP ₹${ocoByAlId[String(r.oco_al_id)].tp}`
+                                : "Resting broker OCO backstop (PC-down protected)."
+                            }
+                          >
+                            OCO &#10003;
+                          </span>
+                        ) : null}
                       </span>
                     ) : status === "CLOSED" ? (
                       <span

@@ -334,7 +334,7 @@ export default function LiveDashboard() {
   // cadence); this page is a pure consumer. `refetch.all` re-pulls everything
   // after an imperative action (OAuth redirect, stand-down).
   const {
-    status, limits, positions, orders, reconcile, armState, blotter, guard, refetch,
+    status, limits, positions, orders, reconcile, armState, blotter, guard, gtt, refetch,
   } = useLiveData();
   const fetchAll = refetch.all;
 
@@ -516,7 +516,7 @@ export default function LiveDashboard() {
           </span>
         }
       >
-        <LiveBlotter rows={blotter?.rows} />
+        <LiveBlotter rows={blotter?.rows} gtt={gtt} />
       </SectionCard>
 
       {/* ── 2. Hero metric strip ────────────────────────────────────────── */}
