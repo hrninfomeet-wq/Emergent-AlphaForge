@@ -43,6 +43,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -1468,23 +1469,31 @@ async def live_broker_greeks():
     async def _resolve(tsym: str, exch: str):
         if tsym in _greeks_contract_cache:
             return _greeks_contract_cache[tsym]
-        try:
-            rows = await client.search_scrip(exch, tsym)
-        except Exception:
-            return None
-        for r in rows or []:
-            if str(r.get("tsym")) == str(tsym):
-                try:
-                    strike = _strike_from_dname(str(r.get("dname", "")))
-                    expiry_iso = _parse_exd(str(r.get("exd", "")))
-                except SymbolResolutionError:
-                    return None
-                token = str(r.get("token") or "")
-                if not token:
-                    return None
-                out = (strike, expiry_iso, str(r.get("optt", "")).upper() == "CE", token)
-                _greeks_contract_cache[tsym] = out
-                return out
+        m = re.match(r"[A-Za-z]+", tsym)
+        underlying = m.group(0) if m else tsym
+        # Full tsym first (most specific), then the underlying prefix (broad,
+        # matches the proven SearchScrip query idiom) — exact-tsym-filtered in both,
+        # so we never accept the wrong contract; this only widens query coverage.
+        queries = [tsym] if tsym == underlying else [tsym, underlying]
+        for q in queries:
+            try:
+                rows = await client.search_scrip(exch, q)
+            except Exception:
+                rows = []
+            for r in rows or []:
+                if str(r.get("tsym")) == str(tsym):
+                    try:
+                        strike = _strike_from_dname(str(r.get("dname", "")))
+                        expiry_iso = _parse_exd(str(r.get("exd", "")))
+                    except SymbolResolutionError:
+                        return None
+                    token = str(r.get("token") or "")
+                    if not token:
+                        return None
+                    out = (strike, expiry_iso, str(r.get("optt", "")).upper() == "CE", token)
+                    _greeks_contract_cache[tsym] = out
+                    return out
+        log.info("greeks: could not resolve contract for tsym=%s exch=%s (skipped)", tsym, exch)
         return None
 
     try:
