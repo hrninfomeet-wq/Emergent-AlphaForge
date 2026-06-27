@@ -159,6 +159,10 @@ def build_live_blotter(
             # → surface it so the operator knows this OPEN position has no PC-down
             # broker net (only the software guard while the app is alive).
             "oco_error": t.get("oco_error"),
+            # Resting OCO handle (the live_trades doc carries it when the backstop
+            # was placed). The blotter UI matches this against the GTT/OCO book to
+            # show a positive "OCO ✓" chip with the resting SL/TP band.
+            "oco_al_id": t.get("oco_al_id"),
         })
 
     return rows

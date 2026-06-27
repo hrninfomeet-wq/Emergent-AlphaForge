@@ -139,3 +139,19 @@ def test_oco_error_is_none_when_absent():
     # No oco_error on the journal doc (OCO placed fine, or field absent) → None.
     rows = build_live_blotter([_trade()], [_pos("NIFTY24JUN24000CE")], DEPS)
     assert rows[0]["oco_error"] is None
+
+
+def test_blotter_row_passes_through_oco_al_id():
+    # A position with a resting broker OCO backstop carries oco_al_id on the
+    # journal doc → the blotter row surfaces it so the UI can match it against the
+    # GTT/OCO book and show the positive "OCO ✓" chip with the resting SL/TP band.
+    rows = build_live_blotter(
+        [_trade(oco_al_id="AL-123")], [_pos("NIFTY24JUN24000CE")], DEPS
+    )
+    assert rows[0]["oco_al_id"] == "AL-123"
+
+
+def test_blotter_row_oco_al_id_absent_is_none():
+    # No oco_al_id on the journal doc (no resting OCO, or field absent) → None.
+    rows = build_live_blotter([_trade()], [_pos("NIFTY24JUN24000CE")], DEPS)
+    assert rows[0]["oco_al_id"] is None
