@@ -340,7 +340,7 @@ def plan_squareoff(
             tsym=tsym,
             qty=qty,
             prc=prc,
-            prd="I",
+            prd=(str(pos.get("prd")) if pos.get("prd") else "I"),
             ret="DAY",
             trgprc=None,
             remarks=cid,

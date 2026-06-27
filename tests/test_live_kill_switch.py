@@ -1375,3 +1375,20 @@ class TestPanicSquareoffProduct:
         by_sym = {o["tsym"]: o["prd"] for o in placed}
         assert by_sym["NRML_SYM"] == "M"
         assert by_sym["MIS_SYM"] == "I"
+
+
+class TestPlanSquareoffProduct:
+    @staticmethod
+    def _pos(tsym, netqty, prd, lp=200.0, exch="NFO"):
+        return {"tsym": tsym, "netqty": str(netqty), "lp": str(lp), "exch": exch, "prd": prd}
+
+    def test_plan_preview_carries_nrml_product(self):
+        from app.live.kill_switch import plan_squareoff
+        plan = plan_squareoff([], [self._pos("NIFTY25000CE", 65, "M")])
+        assert len(plan["would_flatten"]) == 1
+        assert plan["would_flatten"][0]["prd"] == "M", plan["would_flatten"][0]
+
+    def test_plan_preview_missing_prd_defaults_to_mis(self):
+        from app.live.kill_switch import plan_squareoff
+        plan = plan_squareoff([], [{"tsym": "NIFTY25000CE", "netqty": "65", "lp": "200.0", "exch": "NFO"}])
+        assert plan["would_flatten"][0]["prd"] == "I"
