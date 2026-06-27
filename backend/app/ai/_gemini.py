@@ -8,9 +8,12 @@ shape. The fallback is provider-internal — the caller's prompt and return type
 from __future__ import annotations
 
 import json
+import logging
 from typing import Type, TypeVar
 
 from pydantic import BaseModel
+
+_log = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -42,8 +45,10 @@ def call(*, model: str, system: str, user: str, output_model: Type[T], max_token
         raise RuntimeError(f"Gemini API error: {getattr(e, 'message', None) or str(e)}")
     except RuntimeError:
         raise
-    except Exception:
-        pass  # schema-converter rejected the model -> JSON-mode fallback below
+    except Exception as e:
+        # schema-converter (or a malformed primary parse) rejected the model -> JSON-mode
+        # fallback below. Log a breadcrumb so a real schema problem is diagnosable in prod.
+        _log.info("Gemini response_schema path failed (%s); falling back to JSON mode", e)
 
     # Fallback: JSON mode, schema described in the prompt, validate with Pydantic.
     schema_hint = (

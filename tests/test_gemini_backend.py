@@ -68,3 +68,12 @@ def test_gemini_schema_convert_failure_falls_back_to_json(monkeypatch):
     from app.ai import _gemini
     out = _gemini.call(model="m", system="s", user="u", output_model=Toy)
     assert out.x == 5
+
+
+def test_gemini_fallback_validation_failure_raises(monkeypatch):
+    # primary schema path rejected -> fallback gets text that fails Pydantic validation
+    _install_fake_genai(monkeypatch, raise_convert=True, text='{"x": "not-an-int"}')
+    from app.ai import _gemini
+    with pytest.raises(RuntimeError) as ei:
+        _gemini.call(model="m", system="s", user="u", output_model=Toy)
+    assert "failed validation" in str(ei.value).lower()
