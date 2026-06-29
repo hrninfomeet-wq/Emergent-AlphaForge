@@ -13,6 +13,7 @@ import AccountHero from "@/components/paper/AccountHero";
 import PeriodPnlCards from "@/components/paper/PeriodPnlCards";
 import StrategyStatsTable from "@/components/paper/StrategyStatsTable";
 import DeploymentControlStrip from "@/components/paper/DeploymentControlStrip";
+import FeedHealthBanner from "@/components/live/FeedHealthBanner";
 import PnlCalendar from "@/components/paper/PnlCalendar";
 import ExitReasonBreakdown from "@/components/paper/ExitReasonBreakdown";
 import TradeBlotter from "@/components/paper/TradeBlotter";
@@ -204,14 +205,27 @@ export default function PaperTrading() {
     return statsRows.filter((t) => String(t.status || "").toUpperCase() === "OPEN").length;
   }, [statsRows, livePos]);
 
-  // Feed-health: green "Live" when we have fresh marks, amber otherwise.
-  const feedHealth = useMemo(() => {
+  // Feed-health chip: green "Live" when we have fresh marks, amber otherwise.
+  const livePosHealth = useMemo(() => {
     const live = livePos.items || [];
     if (live.length === 0) return { live: false, label: "Estimated / stale" };
     const allStale = live.every((p) => p.live_stale);
     if (allStale) return { live: false, label: "Estimated / stale" };
     return { live: true, label: "Live" };
   }, [livePos]);
+
+  // Live-feed health from the backend endpoint (drives the banner + LED truthfulness).
+  const [feedHealth, setFeedHealth] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    const tick = () => api.getLiveFeedHealth().then((h) => { if (alive) setFeedHealth(h); }).catch(() => {});
+    tick();
+    const id = setInterval(tick, 5000);
+    return () => { alive = false; clearInterval(id); };
+  }, []);
+
+  // Active deployment count for the banner (non-archived, ACTIVE status).
+  const activeCount = (deployments || []).filter((d) => String(d.status || "").toUpperCase() === "ACTIVE").length;
 
   const setFilter = (k, v) => { setSkip(0); setSelected(new Set()); setFilters((f) => ({ ...f, [k]: v })); };
 
@@ -436,17 +450,17 @@ export default function PaperTrading() {
         <div className="text-sm font-semibold uppercase tracking-wider text-dim">Paper Trading</div>
         <span
           className={`ml-auto inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full border font-mono ${
-            feedHealth.live
+            livePosHealth.live
               ? "border-emerald-500/40 text-emerald-300 bg-emerald-500/10"
               : "border-amber-500/40 text-amber-300 bg-amber-500/10"
           }`}
           data-testid="paper-feed-health"
-          title={feedHealth.live
+          title={livePosHealth.live
             ? "Live ticks streaming — open P&L is from fresh marks."
             : "No fresh marks — open P&L is estimated from last mark/entry."}
         >
-          {feedHealth.live ? <Wifi className="w-3 h-3" /> : <WifiOff className="w-3 h-3" />}
-          {feedHealth.label}
+          {livePosHealth.live ? <Wifi className="w-3 h-3" /> : <WifiOff className="w-3 h-3" />}
+          {livePosHealth.label}
         </span>
       </div>
 
@@ -459,11 +473,15 @@ export default function PaperTrading() {
       {/* Per-strategy attribution — click a row to filter the blotter */}
       <StrategyStatsTable stats={strategyStats} onFilterStrategy={(sid) => setFilter("strategy_id", sid)} />
 
+      {/* Feed health prompt banner (shown when active deployments exist but feed is offline) */}
+      <FeedHealthBanner feedHealth={feedHealth} activeCount={activeCount} />
+
       {/* Live Deployments control strip */}
       <DeploymentControlStrip
         liveDeployments={liveDeployments}
         perDeployOpen={perDeployOpen}
         busy={busy}
+        feedHealth={feedHealth}
         onPause={doPause}
         onResume={doResume}
         onStop={doStop}
