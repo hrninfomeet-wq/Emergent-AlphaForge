@@ -64,4 +64,4 @@ def test_geometry_emitted_identically_by_both_paths():
     for col in ["body_frac", "upper_wick_frac", "lower_wick_frac", "inside_bar", "close_z"]:
         assert col in mono.columns and col in cached.columns
         pd.testing.assert_series_equal(
-            mono[col], cached[col], check_names=False, check_dtype=False)
+            mono[col], cached[col], check_names=False, check_dtype=True)

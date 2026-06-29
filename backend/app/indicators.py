@@ -259,7 +259,7 @@ def candle_geometry(df: pd.DataFrame, *, z_window: int = 60) -> Dict[str, pd.Ser
     body_frac = (body / safe).fillna(0.0)
     upper_wick_frac = (upper / safe).fillna(0.0)
     lower_wick_frac = (lower / safe).fillna(0.0)
-    inside_bar = ((h < h.shift(1)) & (l > l.shift(1))).fillna(False)
+    inside_bar = ((h < h.shift(1)) & (l > l.shift(1))).fillna(False).astype(bool)
     mean = c.rolling(z_window, min_periods=z_window).mean()
     std = c.rolling(z_window, min_periods=z_window).std(ddof=0)
     close_z = (c - mean) / std.replace(0.0, np.nan)
