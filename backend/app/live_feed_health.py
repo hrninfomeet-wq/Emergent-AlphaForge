@@ -86,7 +86,9 @@ def compute_feed_health(*, now_ist, now_ms: int, is_trading_day: bool,
         if supervisor_last_error:
             msg += f" {supervisor_last_error}"
         return out(DEGRADED, msg)
-    mins = round(age / 60) if age is not None else "?"
+    if age is None:
+        return out(DEGRADED, "No live candles yet — feed stalled.")
+    mins = round(age / 60)
     return out(DEGRADED, f"No live candles for ~{mins} min — feed stalled.")
 
 

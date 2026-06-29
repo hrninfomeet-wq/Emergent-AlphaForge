@@ -24,6 +24,7 @@ from app.runtime import (
     _default_stream_instrument_keys,
     _parse_underlyings_query,
     _trigger_autoupdate,
+    feed_supervisor_state,
     live_candle_roller,
     live_exit_monitor,
     log,
@@ -121,9 +122,6 @@ async def live_feed_health_endpoint():
     from datetime import datetime, timezone, timedelta
     from app.live_feed_health import compute_feed_health
     from app.nse_calendar import is_trading_day
-    from app.runtime import (
-        upstox_stream_manager, live_candle_roller, feed_supervisor_state,
-    )
     db = get_db()
     ist_now = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
     now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)

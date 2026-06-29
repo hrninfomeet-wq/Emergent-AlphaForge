@@ -429,7 +429,7 @@ async def _live_feed_supervisor_loop() -> None:
             today_iso = ist_now.strftime("%Y-%m-%d")
             t = ist_now.time()
             market_open = (
-                ist_now.weekday() < 5 and is_trading_day(today_iso)
+                is_trading_day(today_iso)
                 and _time(9, 15) <= t < _time(15, 30)
             )
             token = await upstox_client.get_connection_status()

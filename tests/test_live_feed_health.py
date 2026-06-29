@@ -92,6 +92,15 @@ def test_degraded_when_running_but_candles_stale():
     assert h["state"] == DEGRADED and "min" in h["reason"]
 
 
+def test_degraded_when_running_past_warmup_but_no_bar_ever():
+    now = _ist(11, 0)
+    h = _health(now_ist=now, now_ms=_ms(now), stream_running=True, roller_running=True,
+                roller_started_ms=_ms(_ist(9, 30)),  # long past grace
+                last_candle_ts=None, supervisor_backoff_active=False)
+    assert h["state"] == DEGRADED
+    assert "feed stalled" in h["reason"] and "?" not in h["reason"]
+
+
 def test_health_never_raises_on_bad_inputs():
     h = compute_feed_health(now_ist=_ist(11, 0), now_ms=_ms(_ist(11, 0)), is_trading_day=True,
                             token=None, stream_running=None, roller_running=None,
