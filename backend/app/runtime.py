@@ -83,6 +83,19 @@ live_exit_monitor = LiveExitMonitor(
     mark_fn=mark_open_deployment_trades,
 )
 
+from app.live_feed_health import supervise_once as _supervise_once, SUPERVISE_POLL_SEC as _SUPERVISE_POLL_SEC
+
+# Auto-reconcile supervisor state (exposed to /live-feed/health). `suppressed` is
+# set True by a manual stop endpoint so the loop won't fight a deliberate Stop.
+_feed_supervisor: Dict[str, Any] = {
+    "suppressed": False, "backoff_active": False, "last_error": None,
+    "last_actions": [], "last_tick_at": None,
+}
+
+
+def feed_supervisor_state() -> Dict[str, Any]:
+    return dict(_feed_supervisor)
+
 
 # ---------------------------------------------------------------------------
 # Live software exit guard (margin-free SL/TP/trailing) — replaces the always-
@@ -399,6 +412,38 @@ async def _deployment_evaluator_loop() -> None:
         except Exception as exc:
             log.exception("Deployment evaluator loop error: %s", exc)
             await asyncio.sleep(15.0)
+
+
+async def _live_feed_supervisor_loop() -> None:
+    """Keep the Upstox stream + candle roller running during market hours whenever
+    the token is valid. Fixes the 'app started before the daily OAuth' gap and
+    self-heals mid-session drops. Never touches credentials — when the token is
+    missing/expired it does nothing (health surfaces NEEDS_LOGIN)."""
+    from datetime import time as _time
+    from app.nse_calendar import is_trading_day
+    log.info("Live-feed supervisor loop initialized")
+    while True:
+        try:
+            await asyncio.sleep(_SUPERVISE_POLL_SEC)
+            ist_now = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+            today_iso = ist_now.strftime("%Y-%m-%d")
+            t = ist_now.time()
+            market_open = (
+                ist_now.weekday() < 5 and is_trading_day(today_iso)
+                and _time(9, 15) <= t < _time(15, 30)
+            )
+            token = await upstox_client.get_connection_status()
+            token_ok = bool(token.get("connected") and not token.get("expired"))
+            keys = _default_stream_instrument_keys()
+            actions = await _supervise_once(
+                market_open=market_open, token_ok=token_ok,
+                stream_manager=upstox_stream_manager, roller=live_candle_roller,
+                instrument_keys=keys, mode=DEFAULT_STREAM_MODE, state=_feed_supervisor,
+            )
+            _feed_supervisor["last_actions"] = actions
+            _feed_supervisor["last_tick_at"] = datetime.now(timezone.utc).isoformat()
+        except Exception as exc:   # noqa: BLE001 - never kill the loop
+            log.exception("live-feed supervisor tick failed: %s", exc)
 
 
 # ---------------------------------------------------------------------------

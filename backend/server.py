@@ -38,6 +38,7 @@ from app.runtime import (
     _autoupdate_execute_plan,
     _default_stream_instrument_keys,
     _deployment_evaluator_loop,
+    _live_feed_supervisor_loop,
     _topup_vix,
     _trigger_autoupdate,
     live_candle_roller,
@@ -147,6 +148,9 @@ async def startup() -> None:
     # Background scheduler: evaluate ACTIVE deployments ~10s after each 1-minute bar closes.
     asyncio.create_task(_deployment_evaluator_loop(), name="deployment-evaluator")
     log.info("Deployment evaluator scheduler started")
+
+    asyncio.create_task(_live_feed_supervisor_loop(), name="live-feed-supervisor")
+    log.info("Live-feed supervisor started")
 
     # Warehouse auto-update: catch up missing data to yesterday's close.
     # Runs once at startup (best-effort, only if Upstox is connected) and then
