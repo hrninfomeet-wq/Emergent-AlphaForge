@@ -114,6 +114,46 @@ async def live_candle_roller_status():
     return serialize_doc(live_candle_roller.status())
 
 
+@api.get("/live-feed/health")
+async def live_feed_health_endpoint():
+    """Truthful live-feed health: is the pipeline (token -> stream -> roller ->
+    fresh candles_1m) actually delivering, or what's blocking it?"""
+    from datetime import datetime, timezone, timedelta
+    from app.live_feed_health import compute_feed_health
+    from app.nse_calendar import is_trading_day
+    from app.runtime import (
+        upstox_stream_manager, live_candle_roller, feed_supervisor_state,
+    )
+    db = get_db()
+    ist_now = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    token = await upstox_client.get_connection_status()
+    roller_status = live_candle_roller.status()
+    roller_started_ms = None
+    started_at = roller_status.get("started_at")
+    if started_at:
+        try:
+            roller_started_ms = int(datetime.fromisoformat(
+                str(started_at).replace("Z", "+00:00")).timestamp() * 1000)
+        except (ValueError, TypeError):
+            roller_started_ms = None
+    latest = await db.candles_1m.find_one({"instrument": "NIFTY"}, {"_id": 0, "ts": 1},
+                                          sort=[("ts", -1)])
+    last_candle_ts = int(latest["ts"]) if latest and latest.get("ts") else None
+    sup = feed_supervisor_state()
+    health = compute_feed_health(
+        now_ist=ist_now, now_ms=now_ms,
+        is_trading_day=is_trading_day(ist_now.strftime("%Y-%m-%d")),
+        token=token,
+        stream_running=bool((upstox_stream_manager.status() or {}).get("running")),
+        roller_running=bool(roller_status.get("running")),
+        roller_started_ms=roller_started_ms, last_candle_ts=last_candle_ts,
+        supervisor_backoff_active=bool(sup.get("backoff_active")),
+        supervisor_last_error=sup.get("last_error"),
+    )
+    return serialize_doc(health)
+
+
 @api.get("/live-exit-monitor/status")
 async def live_exit_monitor_status():
     return serialize_doc(live_exit_monitor.status())
@@ -122,6 +162,8 @@ async def live_exit_monitor_status():
 @api.post("/live-candles/start")
 async def live_candle_roller_start():
     """Manually start the live tick-to-OHLC roller. No-op if already running."""
+    from app.runtime import _feed_supervisor
+    _feed_supervisor["suppressed"] = False
     await live_candle_roller.start()
     return serialize_doc(live_candle_roller.status())
 
@@ -129,6 +171,8 @@ async def live_candle_roller_start():
 @api.post("/live-candles/stop")
 async def live_candle_roller_stop():
     """Stop the roller and flush any in-progress buckets."""
+    from app.runtime import _feed_supervisor
+    _feed_supervisor["suppressed"] = True
     await live_candle_roller.stop()
     return serialize_doc(live_candle_roller.status())
 
@@ -194,6 +238,8 @@ async def upstox_market_quote(instrument: str):
 @api.post("/upstox/stream/start")
 async def upstox_stream_start(req: UpstoxStreamStartReq):
     """Start the read-only Upstox V3 market-data WebSocket stream."""
+    from app.runtime import _feed_supervisor
+    _feed_supervisor["suppressed"] = False
     status = await upstox_client.get_connection_status()
     if not status.get("connected"):
         raise HTTPException(400, "Upstox is not connected. Complete OAuth before starting the stream.")
@@ -215,6 +261,8 @@ async def upstox_stream_start(req: UpstoxStreamStartReq):
 @api.post("/upstox/stream/stop")
 async def upstox_stream_stop():
     """Stop the local read-only Upstox WebSocket stream."""
+    from app.runtime import _feed_supervisor
+    _feed_supervisor["suppressed"] = True
     return serialize_doc(await upstox_stream_manager.stop())
 
 
