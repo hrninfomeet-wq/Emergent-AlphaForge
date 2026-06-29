@@ -39,16 +39,23 @@ _PARAM_PREFIX = "param:"
 _EXIT_REQUIRED_MODES = {"SCALP", "INTRADAY"}
 
 
-def allowed_columns() -> Set[str]:
+def allowed_columns(required_features: "list | tuple" = ()) -> Set[str]:
     """Whitelist of columns a Condition may reference.
 
     = grounding-catalog indicator columns (computed indicators + regime) + raw
-    OHLCV. build_grounding_catalog() is imported lazily so importing this module
-    stays cheap (it builds a sample frame + runs every indicator)."""
+    OHLCV, PLUS the columns of any DECLARED structural features (and their
+    dependency closure). Advertise != allow: a feature column is only allowed
+    once the strategy declares the feature in required_features, so a Spec can't
+    reference fvg_top unless it asked for fvg_zones (which the engine then
+    materializes for it). build_grounding_catalog() is imported lazily."""
     from app.ai.grounding import build_grounding_catalog
 
     cols = set(build_grounding_catalog()["indicator_columns"])
     cols |= _RAW_OHLCV
+    if required_features:
+        from app.features.registry import resolve_features
+        for g in resolve_features(list(required_features)):
+            cols |= set(g.columns)
     return cols
 
 
@@ -59,7 +66,7 @@ def _param_names(spec: StrategySpec) -> Set[str]:
 def validate_spec(spec: StrategySpec) -> List[str]:
     """Return a list of human-readable errors (empty == valid)."""
     errors: List[str] = []
-    cols = allowed_columns()
+    cols = allowed_columns(spec.required_features)
     pnames = _param_names(spec)
 
     # id must be a clean slug (it becomes a Python identifier + a filename).

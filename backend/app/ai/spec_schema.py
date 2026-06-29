@@ -53,3 +53,4 @@ class StrategySpec(BaseModel):
     gate_skip_regimes: List[str] = Field(default_factory=list)  # e.g. ["CHOP","VOLATILE_CHOP"]
     cooldown_bars: int = 0
     exits: ExitSpec = Field(default_factory=ExitSpec)
+    required_features: List[str] = Field(default_factory=list)  # opt-in structural features

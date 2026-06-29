@@ -76,7 +76,7 @@ def main():
             return _result(result_path, {"ok": False, "error": f"expected exactly one strategy class, found {len(strat_classes)}"})
         inst = strat_classes[0]()
 
-        cols = sorted(allowed_columns())
+        cols = sorted(allowed_columns(getattr(inst, "required_features", ())))
         return _result(result_path, run_smoke(inst, cols))
     except Exception:
         return _result(result_path, {"ok": False, "error": "evaluate/import raised:\n" + traceback.format_exc()[-1500:]})
