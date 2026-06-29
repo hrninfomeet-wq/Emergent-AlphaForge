@@ -13,6 +13,7 @@ import { api } from "@/lib/api";
 import { fmtINR } from "@/lib/fmt";
 
 import LiveBanner from "@/components/live/LiveBanner";
+import FeedHealthBanner from "@/components/live/FeedHealthBanner";
 import ExecutionStateStrip from "@/components/live/ExecutionStateStrip";
 import LiveDeploymentStrip from "@/components/live/LiveDeploymentStrip";
 import LiveBlotter from "@/components/live/LiveBlotter";
@@ -336,6 +337,7 @@ export default function LiveDashboard() {
   // after an imperative action (OAuth redirect, stand-down).
   const {
     status, limits, positions, orders, reconcile, armState, blotter, guard, gtt, refetch,
+    feedHealth, deployments,
   } = useLiveData();
   const fetchAll = refetch.all;
 
@@ -401,6 +403,9 @@ export default function LiveDashboard() {
   // Armed-live deployment count + autoplace state for the banner.
   // Lifted up from LiveDeploymentStrip via onArmedSummaryChange callback.
   const { armedCount, autoplaceArmed } = armedSummary;
+
+  // Active deployment count for the FeedHealthBanner (deployments is already non-archived).
+  const activeCount = (deployments || []).filter((d) => String(d?.status || "").toUpperCase() === "ACTIVE").length;
 
   // Guard tile: ARMED (danger) vs DRY-RUN (warn) + guarded count.
   const guardArmed = !!guard?.armed;
@@ -505,7 +510,10 @@ export default function LiveDashboard() {
         </div>
       )}
 
-      {/* ── 1b. Live Deployment strip (consumes the provider directly) ───── */}
+      {/* ── 1b. Feed health banner (active deployments with feed problems) ── */}
+      <FeedHealthBanner feedHealth={feedHealth} activeCount={activeCount} />
+
+      {/* ── 1c. Live Deployment strip (consumes the provider directly) ───── */}
       <LiveDeploymentStrip onArmedSummaryChange={setArmedSummary} />
 
       {/* ── 1c. Deployment-attributed live blotter (auto-placed orders) ──── */}

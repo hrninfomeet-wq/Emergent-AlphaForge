@@ -76,6 +76,9 @@ export function LiveDataProvider({ children }) {
     () => (depIds.length ? api.liveStatusBatch(depIds) : Promise.resolve({})),
     DEPLOY_MS,
   );
+
+  // ── Live-feed health (10s) — Upstox stream → candle roller status. ───────────
+  const { data: feedHealth, error: eFeedHealth, refetch: rFeedHealth } = usePoll(() => api.getLiveFeedHealth(), DEPLOY_MS);
   // Tighten the first-fetch window: refetch the batch the moment the id set changes
   // (mount → deployments load, or a roster change) instead of waiting up to 10s —
   // closes the null window that would otherwise drop the armed-deployment count.
@@ -94,7 +97,8 @@ export function LiveDataProvider({ children }) {
     rSession();
     rGtt();
     rDeployLive();
-  }, [refetchSlow, rGuard, rSession, rGtt, rDeployLive]);
+    rFeedHealth();
+  }, [refetchSlow, rGuard, rSession, rGtt, rDeployLive, rFeedHealth]);
 
   const refetch = useMemo(
     () => ({
@@ -104,30 +108,32 @@ export function LiveDataProvider({ children }) {
       gtt: rGtt,
       deployLive: rDeployLive,
       deployments: rDeployments,
+      feedHealth: rFeedHealth,
       all: refetchAll,
     }),
-    [refetchSlow, rGuard, rSession, rGtt, rDeployLive, rDeployments, refetchAll],
+    [refetchSlow, rGuard, rSession, rGtt, rDeployLive, rDeployments, rFeedHealth, refetchAll],
   );
 
   const value = useMemo(
     () => ({
       // data (null until the first successful fetch — consumers treat null = loading)
       status, limits, positions, orders, reconcile, armState, blotter, deployments,
-      guard, session, gtt, greeks,
+      guard, session, gtt, greeks, feedHealth,
       deployLive: deployLiveData || {},
       // per-slice last error (null when the latest call succeeded)
       errors: {
         status: eStatus, limits: eLimits, positions: ePositions, orders: eOrders,
         reconcile: eReconcile, armState: eArmState, blotter: eBlotter, deployments: eDeployments,
         guard: eGuard, session: eSession, gtt: eGtt, deployLive: eDeployLive, greeks: eGreeks,
+        feedHealth: eFeedHealth,
       },
       refetch,
     }),
     [
       status, limits, positions, orders, reconcile, armState, blotter, deployments,
-      guard, session, gtt, greeks, deployLiveData,
+      guard, session, gtt, greeks, feedHealth, deployLiveData,
       eStatus, eLimits, ePositions, eOrders, eReconcile, eArmState, eBlotter, eDeployments,
-      eGuard, eSession, eGtt, eDeployLive, eGreeks, refetch,
+      eGuard, eSession, eGtt, eDeployLive, eGreeks, eFeedHealth, refetch,
     ],
   );
 
