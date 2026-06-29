@@ -2,7 +2,7 @@
 from __future__ import annotations
 import numpy as np
 import pandas as pd
-from typing import Tuple
+from typing import Dict, Tuple
 from app.cpr import cpr_levels
 from app.vol_seasonality import attach_tod_tradeable
 
@@ -241,6 +241,37 @@ def detect_swing_points(df: pd.DataFrame, lookback: int = 5) -> pd.DataFrame:
     return out
 
 
+def candle_geometry(df: pd.DataFrame, *, z_window: int = 60) -> Dict[str, pd.Series]:
+    """Always-on 1-bar candle geometry (no carry-forward, fully causal).
+
+    body_frac / upper_wick_frac / lower_wick_frac are fractions of the bar range
+    (0 on a zero-range bar). inside_bar is 2-bar range containment. close_z is the
+    trailing rolling z-score of close (NaN until `z_window` bars exist). These are
+    additive columns no existing strategy references, so emitting them keeps both
+    the monolithic and cached enrichment paths byte-identical for existing trades.
+    """
+    o, h, l, c = df["open"], df["high"], df["low"], df["close"]
+    rng = (h - l)
+    safe = rng.where(rng > 0, np.nan)
+    body = (c - o).abs()
+    upper = h - np.maximum(o, c)
+    lower = np.minimum(o, c) - l
+    body_frac = (body / safe).fillna(0.0)
+    upper_wick_frac = (upper / safe).fillna(0.0)
+    lower_wick_frac = (lower / safe).fillna(0.0)
+    inside_bar = ((h < h.shift(1)) & (l > l.shift(1))).fillna(False)
+    mean = c.rolling(z_window, min_periods=z_window).mean()
+    std = c.rolling(z_window, min_periods=z_window).std(ddof=0)
+    close_z = (c - mean) / std.replace(0.0, np.nan)
+    return {
+        "body_frac": body_frac,
+        "upper_wick_frac": upper_wick_frac,
+        "lower_wick_frac": lower_wick_frac,
+        "inside_bar": inside_bar,
+        "close_z": close_z,
+    }
+
+
 def precompute_all_indicators(df: pd.DataFrame, params: dict | None = None) -> pd.DataFrame:
     """Compute all indicators needed by built-in strategies. Returns enriched df."""
     p = params or {}
@@ -310,4 +341,6 @@ def precompute_all_indicators(df: pd.DataFrame, params: dict | None = None) -> p
         df[c] = s
     df["tod_tradeable"] = attach_tod_tradeable(
         df, int(p.get("tod_lookback_sessions", 20)), float(p.get("tod_min_atr_frac", 0.6)))
+    for _gname, _gser in candle_geometry(df).items():
+        df[_gname] = _gser
     return df
