@@ -172,7 +172,7 @@ export default function WarehouseHealthBanner() {
             <Activity className="w-3 h-3" /> Live stream
           </div>
           <div className="flex items-center gap-1.5">
-            <span className={`w-2 h-2 rounded-full ${streamOk ? "bg-emerald-500" : streamRunning ? "bg-amber-500" : "bg-dimmer"}`} />
+            <span className={`w-2 h-2 rounded-full ${streamOk ? "bg-emerald-500" : streamRunning ? "bg-amber-500" : "bg-slate-500"}`} />
             <span className={streamOk ? "text-emerald-300" : streamRunning ? "text-amber-300" : "text-dim"}>
               {!streamRunning ? "stopped" : streamStale ? "stale" : "running"}
             </span>

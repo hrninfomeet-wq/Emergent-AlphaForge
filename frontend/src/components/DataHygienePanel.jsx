@@ -302,7 +302,7 @@ export default function DataHygienePanel({ upstoxConnected }) {
 
         {/* Auto-update status + toggle */}
         <div className="rounded-md border border-line bg-bg-2 p-2.5 flex items-center gap-2 flex-wrap" data-testid="auto-update-row">
-          <span className={`w-2 h-2 rounded-full ${autoUpdate?.enabled ? "bg-emerald-500" : "bg-dimmer"}`} />
+          <span className={`w-2 h-2 rounded-full ${autoUpdate?.enabled ? "bg-emerald-500" : "bg-slate-500"}`} />
           <span className="text-[11px] text-dim">
             Auto-update {autoUpdate?.enabled ? "on" : "off"}
             <span className="text-dimmer"> · runs on connect, on startup, and daily 18:00 IST</span>
@@ -368,7 +368,7 @@ export default function DataHygienePanel({ upstoxConnected }) {
 
         {/* India VIX status + ingest — powers the volatility-context layer. */}
         <div className="rounded-md border border-line bg-bg-2 p-2.5 flex items-center gap-2 flex-wrap" data-testid="vix-row">
-          <span className={`w-2 h-2 rounded-full ${vix?.count > 0 ? "bg-emerald-500" : "bg-dimmer"}`} />
+          <span className={`w-2 h-2 rounded-full ${vix?.count > 0 ? "bg-emerald-500" : "bg-slate-500"}`} />
           <span className="text-[11px] text-dim">
             India VIX {vix?.count > 0 ? `· ${fmtInt(vix.count)} candles` : "· not ingested"}
             <span className="text-dimmer"> · used for volatility-regime context · auto-refreshes with Sync &amp; daily update</span>

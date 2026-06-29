@@ -137,7 +137,7 @@ function ArmedRow({ dep, liveStatus, busy, onDisarm, onStop }) {
 function UnarmedRow({ dep, busy, onArmed }) {
   return (
     <div className="px-3 py-2 flex items-center gap-2 flex-wrap">
-      <span className="w-2 h-2 rounded-full bg-dimmer shrink-0" />
+      <span className="w-2 h-2 rounded-full bg-slate-500 shrink-0" />
       <div className="min-w-0">
         <div className="font-medium text-xs truncate max-w-[180px] text-foreground" title={dep.name}>
           {dep.name || dep.id?.slice(0, 8) || "—"}
