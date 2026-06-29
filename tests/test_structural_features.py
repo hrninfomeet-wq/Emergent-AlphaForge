@@ -249,3 +249,84 @@ def test_fvg_zones_causal_under_truncation():
     a, b = out_full["fvg_top"].iloc[i], out_t["fvg_top"].iloc[i]
     assert (pd.isna(a) and pd.isna(b)) or a == pytest.approx(b)
     assert out_full["fvg_state"].iloc[i] == out_t["fvg_state"].iloc[i]
+
+
+# ---------------------------------------------------------------------------
+# FEATURE 6 — order_block
+# ---------------------------------------------------------------------------
+
+def _ob_reference(df, lookback=10):
+    o = df["open"].reset_index(drop=True).to_numpy()
+    h = df["high"].reset_index(drop=True).to_numpy()
+    l = df["low"].reset_index(drop=True).to_numpy()
+    c = df["close"].reset_index(drop=True).to_numpy()
+    disp = df["displacement"].reset_index(drop=True).to_numpy(dtype=bool)
+    n = len(df)
+    lb = min(int(lookback), 20)
+    top = np.full(n, np.nan); bot = np.full(n, np.nan)
+    direction = np.array([None] * n, dtype=object); active = np.zeros(n, dtype=bool)
+    cur_top = cur_bot = np.nan; cur_dir = None; cur_active = False
+    for i in range(n):
+        if disp[i] and c[i] > o[i]:
+            for j in range(i - 1, max(-1, i - 1 - lb), -1):
+                if c[j] < o[j]:
+                    cur_top, cur_bot, cur_dir, cur_active = h[j], l[j], "bull", True
+                    break
+        elif disp[i] and c[i] < o[i]:
+            for j in range(i - 1, max(-1, i - 1 - lb), -1):
+                if c[j] > o[j]:
+                    cur_top, cur_bot, cur_dir, cur_active = h[j], l[j], "bear", True
+                    break
+        elif cur_active:
+            if cur_dir == "bull" and l[i] <= cur_bot:
+                cur_active = False
+            elif cur_dir == "bear" and h[i] >= cur_top:
+                cur_active = False
+        top[i], bot[i], direction[i], active[i] = cur_top, cur_bot, cur_dir, cur_active
+    return pd.DataFrame({"ob_top": top, "ob_bottom": bot, "ob_dir": direction,
+                         "ob_active": active})
+
+
+def test_order_block_forms_and_mitigates():
+    from app.features.structures import compute_order_block
+    # bar0 down candle (the OB); bar1 bullish displacement; bar4 mitigates (low<=ob_bottom)
+    df = pd.DataFrame({
+        "open":  [100.0, 99.0,  106.0, 106.0, 106.0],
+        "close": [99.0,  106.0, 106.5, 106.5, 97.0],
+        "high":  [100.5, 106.5, 107.0, 107.0, 107.0],
+        "low":   [98.5,  99.0,  105.5, 105.5, 97.0],
+        "displacement": [False, True, False, False, False],
+    })
+    out = compute_order_block(df, {"ob_lookback": 10})
+    assert out["ob_dir"].iloc[1] == "bull"
+    assert out["ob_top"].iloc[1] == 100.5
+    assert out["ob_bottom"].iloc[1] == 98.5
+    assert bool(out["ob_active"].iloc[1]) is True
+    assert bool(out["ob_active"].iloc[4]) is False   # low 97 <= ob_bottom 98.5
+
+
+def test_order_block_matches_reference():
+    params = {"swing_lookback": 5, "ob_lookback": 10}
+    df = _enrich(_ohlcv(seed=21), params)
+    df = _materialize(df, params, ["displacement"])
+    from app.features.structures import compute_order_block
+    out = compute_order_block(df, params)
+    ref = _ob_reference(df, lookback=10)
+    pd.testing.assert_series_equal(
+        pd.Series(out["ob_top"]).reset_index(drop=True), ref["ob_top"], check_names=False)
+    assert list(out["ob_dir"]) == ref["ob_dir"].tolist()
+    assert list(out["ob_active"].astype(bool)) == ref["ob_active"].tolist()
+
+
+def test_order_block_requires_displacement_chain():
+    groups = [g.name for g in resolve_features(["order_block"])]
+    assert groups.index("swing_levels") < groups.index("displacement") < groups.index("order_block")
+
+
+def test_order_block_lookback_hard_capped():
+    params = {"ob_lookback": 999}
+    df = _enrich(_ohlcv(seed=21), params)
+    df = _materialize(df, params, ["displacement"])
+    from app.features.structures import compute_order_block
+    out = compute_order_block(df, params)
+    assert "ob_top" in out

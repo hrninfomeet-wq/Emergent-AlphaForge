@@ -244,3 +244,70 @@ register_feature(
                 "predate the rolling window -> backtest-only in v1.",
     data_requirements=["ohlcv_1m"],
 )
+
+
+# ---------------------------------------------------------------------------
+# FEATURE 6 — order_block
+# ---------------------------------------------------------------------------
+
+def compute_order_block(df: pd.DataFrame, params: dict) -> Dict[str, pd.Series]:
+    lb = min(int(params.get("ob_lookback", 10)), 20)
+    o = df["open"].to_numpy()
+    h = df["high"].to_numpy()
+    l = df["low"].to_numpy()
+    c = df["close"].to_numpy()
+    disp = df["displacement"].to_numpy(dtype=bool)
+    n = len(df)
+    top = np.full(n, np.nan)
+    bot = np.full(n, np.nan)
+    direction = np.empty(n, dtype=object)
+    active = np.zeros(n, dtype=bool)
+    cur_top = cur_bot = np.nan
+    cur_dir = None
+    cur_active = False
+    for i in range(n):
+        if disp[i] and c[i] > o[i]:
+            for j in range(i - 1, max(-1, i - 1 - lb), -1):
+                if c[j] < o[j]:
+                    cur_top, cur_bot, cur_dir, cur_active = h[j], l[j], "bull", True
+                    break
+        elif disp[i] and c[i] < o[i]:
+            for j in range(i - 1, max(-1, i - 1 - lb), -1):
+                if c[j] > o[j]:
+                    cur_top, cur_bot, cur_dir, cur_active = h[j], l[j], "bear", True
+                    break
+        elif cur_active:
+            if cur_dir == "bull" and l[i] <= cur_bot:
+                cur_active = False
+            elif cur_dir == "bear" and h[i] >= cur_top:
+                cur_active = False
+        top[i] = cur_top
+        bot[i] = cur_bot
+        direction[i] = cur_dir
+        active[i] = cur_active
+    idx = df.index
+    return {
+        "ob_top": pd.Series(top, index=idx),
+        "ob_bottom": pd.Series(bot, index=idx),
+        "ob_dir": pd.Series(direction, index=idx, dtype=object),
+        "ob_active": pd.Series(active, index=idx),
+    }
+
+
+register_feature(
+    FeatureGroup(
+        name="order_block",
+        columns=("ob_top", "ob_bottom", "ob_dir", "ob_active"),
+        param_keys=("ob_lookback",),
+        requires=("displacement",),
+        cost_class="session_loop",
+        session_anchored=False,
+        stateful_unbounded=True,
+        min_history_bars=2,
+        compute=compute_order_block,
+    ),
+    description="Order block: the last opposing candle before a displacement (bounded "
+                "lookback <=20), carried until mitigated. Requires displacement; "
+                "stateful -> backtest-only in v1.",
+    data_requirements=["ohlcv_1m"],
+)
