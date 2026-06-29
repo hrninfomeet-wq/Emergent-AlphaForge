@@ -62,6 +62,14 @@ export const api = {
     apiClient.delete(`/warehouse/data/${instrument}?confirm=CLEAR`).then((r) => r.data),
   upstoxStatus: () => apiClient.get("/upstox/status").then((r) => r.data),
   startUpstoxAuth: () => apiClient.get("/upstox/auth/start").then((r) => r.data),
+  upstoxAuthStart: () => apiClient.get("/upstox/auth/start").then((r) => r.data),
+  getLiveFeedHealth: () => apiClient.get("/live-feed/health").then((r) => r.data),
+  restartLiveFeed: async () => {
+    // Best-effort manual bring-up: clears the supervisor's manual-stop suppression
+    // and starts stream + roller. The supervisor keeps them up thereafter.
+    await apiClient.post("/upstox/stream/start", {}).catch(() => {});
+    return apiClient.post("/live-candles/start", {}).then((r) => r.data);
+  },
   disconnectUpstox: () => apiClient.post("/upstox/disconnect").then((r) => r.data),
   marketQuote: (instrument) =>
     apiClient.get(`/upstox/market-quote/${instrument}`).then((r) => r.data),
