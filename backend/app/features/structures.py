@@ -133,3 +133,50 @@ register_feature(
                 "flags (close beyond the last swing level). Requires swing_levels.",
     data_requirements=["ohlcv_1m"],
 )
+
+
+# ---------------------------------------------------------------------------
+# FEATURE 4 — choch (change-of-character)
+# ---------------------------------------------------------------------------
+
+def compute_choch(df: pd.DataFrame, params: dict) -> Dict[str, pd.Series]:
+    bu = df["bos_up"].fillna(False).to_numpy(dtype=bool)
+    bd = df["bos_down"].fillna(False).to_numpy(dtype=bool)
+    n = len(df)
+    up = np.zeros(n, dtype=bool)
+    down = np.zeros(n, dtype=bool)
+    direction = 0
+    for i in range(n):
+        new = direction
+        if bu[i]:
+            new = 1
+        elif bd[i]:
+            new = -1
+        if new == 1 and direction == -1:
+            up[i] = True
+        elif new == -1 and direction == 1:
+            down[i] = True
+        direction = new
+    return {
+        "choch_up": pd.Series(up, index=df.index),
+        "choch_down": pd.Series(down, index=df.index),
+    }
+
+
+register_feature(
+    FeatureGroup(
+        name="choch",
+        columns=("choch_up", "choch_down"),
+        param_keys=(),
+        requires=("displacement",),
+        cost_class="session_loop",
+        session_anchored=False,
+        stateful_unbounded=True,
+        min_history_bars=2,
+        compute=compute_choch,
+    ),
+    description="Change-of-character: the running market-structure direction flips "
+                "(bullish<->bearish) on a counter break of structure. Stateful "
+                "(depends on history before the rolling window) -> backtest-only in v1.",
+    data_requirements=["ohlcv_1m"],
+)

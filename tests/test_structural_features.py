@@ -136,3 +136,37 @@ def test_displacement_true_branch_directly():
     assert bool(out["displacement"].iloc[0]) is False     # 0.5 < 1.5
     assert bool(out["bos_up"].iloc[1]) is True            # close 105 > last_swing_high 104
     assert bool(out["bos_down"].iloc[1]) is False
+
+
+# ---------------------------------------------------------------------------
+# FEATURE 4 — choch
+# ---------------------------------------------------------------------------
+
+def test_choch_flips_on_direction_change():
+    from app.features.structures import compute_choch
+    df = pd.DataFrame({
+        "bos_up":   [False, True, False, False, True, False],
+        "bos_down": [False, False, False, True, False, False],
+    })
+    out = compute_choch(df, {})
+    # bar1 first up -> dir +1, no choch (was 0). bar3 down -> choch_down. bar4 up -> choch_up.
+    assert out["choch_down"].tolist() == [False, False, False, True, False, False]
+    assert out["choch_up"].tolist() == [False, False, False, False, True, False]
+
+
+def test_choch_is_stateful_unbounded_and_backtest_only():
+    from app.features.registry import feature_live_feasible
+    g = FEATURE_REGISTRY["choch"]
+    assert g.stateful_unbounded is True
+    assert feature_live_feasible(g) is False
+
+
+def test_choch_causal_under_truncation():
+    params = {"swing_lookback": 5}
+    df = _enrich(_ohlcv(), params)
+    out_full = _materialize(df, params, ["choch"])
+    i = 200
+    df_t = _enrich(_ohlcv().iloc[: i + 1], params)
+    out_t = _materialize(df_t, params, ["choch"])
+    assert bool(out_full["choch_up"].iloc[i]) == bool(out_t["choch_up"].iloc[i])
+    assert bool(out_full["choch_down"].iloc[i]) == bool(out_t["choch_down"].iloc[i])
