@@ -61,3 +61,39 @@ register_feature(
                 "and order blocks.",
     data_requirements=["ohlcv_1m"],
 )
+
+
+# ---------------------------------------------------------------------------
+# FEATURE 2 — premium_discount
+# ---------------------------------------------------------------------------
+
+def compute_premium_discount(df: pd.DataFrame, params: dict) -> Dict[str, pd.Series]:
+    hi = df["last_swing_high_level"]
+    lo = df["last_swing_low_level"]
+    rng = (hi - lo)
+    pct = 100.0 * (df["close"] - lo) / rng.where(rng > 0, np.nan)
+    state = np.where(pct.isna(), None,
+             np.where(pct > 55.0, "premium",
+              np.where(pct < 45.0, "discount", "equilibrium")))
+    return {
+        "premium_discount_pct": pct,
+        "range_state": pd.Series(state, index=df.index, dtype=object),
+    }
+
+
+register_feature(
+    FeatureGroup(
+        name="premium_discount",
+        columns=("premium_discount_pct", "range_state"),
+        param_keys=(),
+        requires=("swing_levels",),
+        cost_class="vectorized",
+        session_anchored=False,
+        stateful_unbounded=False,
+        min_history_bars=2,
+        compute=compute_premium_discount,
+    ),
+    description="Position of price within the last swing range as a 0-100 percent "
+                "(premium >55, discount <45, equilibrium between). Requires swing_levels.",
+    data_requirements=["ohlcv_1m"],
+)
