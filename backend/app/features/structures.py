@@ -180,3 +180,67 @@ register_feature(
                 "(depends on history before the rolling window) -> backtest-only in v1.",
     data_requirements=["ohlcv_1m"],
 )
+
+
+# ---------------------------------------------------------------------------
+# FEATURE 5 — fvg_zones
+# ---------------------------------------------------------------------------
+
+def compute_fvg_zones(df: pd.DataFrame, params: dict) -> Dict[str, pd.Series]:
+    from app.indicators import detect_fvg
+    fdir = df["fvg"] if "fvg" in df.columns else detect_fvg(df)
+    fdir = fdir.to_numpy(dtype=object)
+    high = df["high"].to_numpy()
+    low = df["low"].to_numpy()
+    n = len(df)
+    top = np.full(n, np.nan)
+    bot = np.full(n, np.nan)
+    ce = np.full(n, np.nan)
+    state = np.empty(n, dtype=object)
+    direction = np.empty(n, dtype=object)
+    cur_top = cur_bot = np.nan
+    cur_dir = None
+    cur_state = "none"
+    for i in range(n):
+        d = fdir[i]
+        if d == "UP" and i >= 2:
+            cur_bot, cur_top, cur_dir, cur_state = high[i - 2], low[i], "UP", "active"
+        elif d == "DOWN" and i >= 2:
+            cur_bot, cur_top, cur_dir, cur_state = high[i], low[i - 2], "DOWN", "active"
+        elif cur_state == "active":
+            if cur_dir == "UP" and low[i] <= cur_bot:
+                cur_state = "filled"
+            elif cur_dir == "DOWN" and high[i] >= cur_top:
+                cur_state = "filled"
+        top[i] = cur_top
+        bot[i] = cur_bot
+        ce[i] = (cur_top + cur_bot) / 2.0 if cur_dir is not None else np.nan
+        direction[i] = cur_dir
+        state[i] = cur_state
+    idx = df.index
+    return {
+        "fvg_top": pd.Series(top, index=idx),
+        "fvg_bottom": pd.Series(bot, index=idx),
+        "fvg_ce": pd.Series(ce, index=idx),
+        "fvg_dir": pd.Series(direction, index=idx, dtype=object),
+        "fvg_state": pd.Series(state, index=idx, dtype=object),
+    }
+
+
+register_feature(
+    FeatureGroup(
+        name="fvg_zones",
+        columns=("fvg_top", "fvg_bottom", "fvg_ce", "fvg_dir", "fvg_state"),
+        param_keys=(),
+        requires=(),
+        cost_class="session_loop",
+        session_anchored=False,
+        stateful_unbounded=True,
+        min_history_bars=3,
+        compute=compute_fvg_zones,
+    ),
+    description="Fair Value Gap zones: the active 3-candle imbalance boundaries "
+                "(top/bottom/midpoint), direction, and fill state. The active gap may "
+                "predate the rolling window -> backtest-only in v1.",
+    data_requirements=["ohlcv_1m"],
+)

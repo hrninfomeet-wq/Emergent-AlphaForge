@@ -170,3 +170,82 @@ def test_choch_causal_under_truncation():
     out_t = _materialize(df_t, params, ["choch"])
     assert bool(out_full["choch_up"].iloc[i]) == bool(out_t["choch_up"].iloc[i])
     assert bool(out_full["choch_down"].iloc[i]) == bool(out_t["choch_down"].iloc[i])
+
+
+# ---------------------------------------------------------------------------
+# FEATURE 5 — fvg_zones
+# ---------------------------------------------------------------------------
+
+def _fvg_reference(df):
+    fdir = df.get("fvg")
+    if fdir is None:
+        from app.indicators import detect_fvg
+        fdir = detect_fvg(df)
+    fdir = fdir.reset_index(drop=True)
+    high = df["high"].reset_index(drop=True).to_numpy()
+    low = df["low"].reset_index(drop=True).to_numpy()
+    n = len(df)
+    top = np.full(n, np.nan); bot = np.full(n, np.nan)
+    state = np.array([None] * n, dtype=object)
+    direction = np.array([None] * n, dtype=object)
+    cur_top = cur_bot = np.nan; cur_dir = None; cur_state = "none"
+    for i in range(n):
+        d = fdir.iloc[i]
+        if d == "UP" and i >= 2:
+            cur_bot, cur_top, cur_dir, cur_state = high[i - 2], low[i], "UP", "active"
+        elif d == "DOWN" and i >= 2:
+            cur_bot, cur_top, cur_dir, cur_state = high[i], low[i - 2], "DOWN", "active"
+        elif cur_state == "active":
+            if cur_dir == "UP" and low[i] <= cur_bot:
+                cur_state = "filled"
+            elif cur_dir == "DOWN" and high[i] >= cur_top:
+                cur_state = "filled"
+        top[i], bot[i], direction[i], state[i] = cur_top, cur_bot, cur_dir, cur_state
+    return pd.DataFrame({"fvg_top": top, "fvg_bottom": bot, "fvg_dir": direction,
+                         "fvg_state": state})
+
+
+def test_fvg_zones_matches_reference():
+    params = {}
+    df = _enrich(_ohlcv(seed=11), params)
+    out = _materialize(df, params, ["fvg_zones"])
+    ref = _fvg_reference(df)
+    pd.testing.assert_series_equal(out["fvg_top"], ref["fvg_top"], check_names=False)
+    pd.testing.assert_series_equal(out["fvg_bottom"], ref["fvg_bottom"], check_names=False)
+    assert out["fvg_dir"].tolist() == ref["fvg_dir"].tolist()
+    assert out["fvg_state"].tolist() == ref["fvg_state"].tolist()
+
+
+def test_fvg_zone_forms_and_fills():
+    from app.features.structures import compute_fvg_zones
+    # UP FVG at bar2: low[2]=101 > high[0]=100 -> gap bottom=100 top=101
+    df = pd.DataFrame({
+        "open":  [99.0, 100.5, 101.5, 101.5, 100.0],
+        "high":  [100.0, 101.0, 102.0, 102.0, 101.0],
+        "low":   [99.0,  100.0, 101.0, 100.5, 99.5],
+        "close": [99.5,  100.8, 101.8, 101.0, 99.8],
+    })
+    out = compute_fvg_zones(df, {})
+    assert out["fvg_dir"].iloc[2] == "UP"
+    assert out["fvg_bottom"].iloc[2] == 100.0
+    assert out["fvg_top"].iloc[2] == 101.0
+    assert out["fvg_ce"].iloc[2] == 100.5
+    assert out["fvg_state"].iloc[2] == "active"
+    assert out["fvg_state"].iloc[4] == "filled"   # bar4 low 99.5 <= bottom 100
+
+
+def test_fvg_zones_backtest_only():
+    from app.features.registry import feature_live_feasible
+    assert feature_live_feasible(FEATURE_REGISTRY["fvg_zones"]) is False
+
+
+def test_fvg_zones_causal_under_truncation():
+    params = {}
+    df = _enrich(_ohlcv(seed=11), params)
+    out_full = _materialize(df, params, ["fvg_zones"])
+    i = 180
+    df_t = _enrich(_ohlcv(seed=11).iloc[: i + 1], params)
+    out_t = _materialize(df_t, params, ["fvg_zones"])
+    a, b = out_full["fvg_top"].iloc[i], out_t["fvg_top"].iloc[i]
+    assert (pd.isna(a) and pd.isna(b)) or a == pytest.approx(b)
+    assert out_full["fvg_state"].iloc[i] == out_t["fvg_state"].iloc[i]
