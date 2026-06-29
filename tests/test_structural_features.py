@@ -373,3 +373,37 @@ def test_order_block_lookback_hard_capped():
     from app.features.structures import compute_order_block
     out = compute_order_block(df, params)
     assert "ob_top" in out
+
+
+# ---------------------------------------------------------------------------
+# Integration — all six seed features materialize together + catalog advertises them
+# ---------------------------------------------------------------------------
+
+def test_all_features_materialize_together():
+    params = {"swing_lookback": 5}
+    df = _enrich(_ohlcv(seed=31), params)
+    # declaring these four pulls in swing_levels + displacement via the DAG -> all six
+    required = ["premium_discount", "order_block", "fvg_zones", "choch"]
+    out = _materialize(df, params, required)
+    for col in ["last_swing_high_level", "premium_discount_pct", "range_state",
+                "displacement", "bos_up", "choch_up", "fvg_top", "fvg_state",
+                "ob_top", "ob_active"]:
+        assert col in out.columns, col
+    assert len(out) == len(df)
+
+
+def test_catalog_advertises_all_seed_features():
+    from app.features.catalog import feature_catalog_entries
+    entries = feature_catalog_entries()
+    names = {e["feature"] for e in entries}
+    assert {"swing_levels", "premium_discount", "displacement", "choch",
+            "fvg_zones", "order_block"} <= names
+    by = {e["feature"]: e for e in entries}
+    # vectorized + bounded => live-deployable
+    assert by["swing_levels"]["live_feasible"] is True
+    assert by["premium_discount"]["live_feasible"] is True
+    assert by["displacement"]["live_feasible"] is True
+    # stateful-unbounded => backtest-only in v1
+    assert by["fvg_zones"]["live_feasible"] is False
+    assert by["choch"]["live_feasible"] is False
+    assert by["order_block"]["live_feasible"] is False
