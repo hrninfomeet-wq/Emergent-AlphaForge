@@ -271,11 +271,13 @@ def compute_order_block(df: pd.DataFrame, params: dict) -> Dict[str, pd.Series]:
                 if c[j] < o[j]:
                     cur_top, cur_bot, cur_dir, cur_active = h[j], l[j], "bull", True
                     break
+            # no qualifying opposing candle in-window -> keep carrying the prior OB
         elif disp[i] and c[i] < o[i]:
             for j in range(i - 1, max(-1, i - 1 - lb), -1):
                 if c[j] > o[j]:
                     cur_top, cur_bot, cur_dir, cur_active = h[j], l[j], "bear", True
                     break
+            # no qualifying opposing candle in-window -> keep carrying the prior OB
         elif cur_active:
             if cur_dir == "bull" and l[i] <= cur_bot:
                 cur_active = False
@@ -303,7 +305,7 @@ register_feature(
         cost_class="session_loop",
         session_anchored=False,
         stateful_unbounded=True,
-        min_history_bars=2,
+        min_history_bars=22,
         compute=compute_order_block,
     ),
     description="Order block: the last opposing candle before a displacement (bounded "

@@ -214,6 +214,7 @@ def test_fvg_zones_matches_reference():
     pd.testing.assert_series_equal(out["fvg_bottom"], ref["fvg_bottom"], check_names=False)
     assert out["fvg_dir"].tolist() == ref["fvg_dir"].tolist()
     assert out["fvg_state"].tolist() == ref["fvg_state"].tolist()
+    assert (out["fvg_state"] == "active").any()   # non-vacuity: the fixture forms >=1 gap
 
 
 def test_fvg_zone_forms_and_fills():
@@ -232,6 +233,23 @@ def test_fvg_zone_forms_and_fills():
     assert out["fvg_ce"].iloc[2] == 100.5
     assert out["fvg_state"].iloc[2] == "active"
     assert out["fvg_state"].iloc[4] == "filled"   # bar4 low 99.5 <= bottom 100
+
+
+def test_fvg_down_zone_forms_and_fills():
+    from app.features.structures import compute_fvg_zones
+    # DOWN FVG at bar2: high[2]=99.0 < low[0]=100.0 -> bottom=high[2]=99, top=low[0]=100
+    df = pd.DataFrame({
+        "open":  [101.0, 100.0, 99.0,  99.2,  100.5],
+        "high":  [101.0, 100.5, 99.0,  99.4,  100.5],
+        "low":   [100.0, 99.0,  98.5,  99.0,  98.5],
+        "close": [100.5, 99.5,  98.8,  99.3,  100.2],
+    })
+    out = compute_fvg_zones(df, {})
+    assert out["fvg_dir"].iloc[2] == "DOWN"
+    assert out["fvg_bottom"].iloc[2] == 99.0
+    assert out["fvg_top"].iloc[2] == 100.0
+    assert out["fvg_state"].iloc[2] == "active"
+    assert out["fvg_state"].iloc[4] == "filled"   # DOWN filled when high>=top: bar4 high 100.5 >= 100
 
 
 def test_fvg_zones_backtest_only():
@@ -306,16 +324,41 @@ def test_order_block_forms_and_mitigates():
 
 
 def test_order_block_matches_reference():
-    params = {"swing_lookback": 5, "ob_lookback": 10}
-    df = _enrich(_ohlcv(seed=21), params)
-    df = _materialize(df, params, ["displacement"])
     from app.features.structures import compute_order_block
-    out = compute_order_block(df, params)
+    rng = np.random.default_rng(7)
+    n = 60
+    o = 100 + np.cumsum(rng.normal(0, 0.5, n))
+    c = o + rng.normal(0, 1.5, n)            # real non-zero bodies => up AND down candles
+    h = np.maximum(o, c) + np.abs(rng.normal(0, 0.3, n))
+    low = np.minimum(o, c) - np.abs(rng.normal(0, 0.3, n))
+    disp = rng.random(n) < 0.15              # ~15% displacement bars
+    df = pd.DataFrame({"open": o, "high": h, "low": low, "close": c, "displacement": disp})
+    out = compute_order_block(df, {"ob_lookback": 10})
     ref = _ob_reference(df, lookback=10)
     pd.testing.assert_series_equal(
         pd.Series(out["ob_top"]).reset_index(drop=True), ref["ob_top"], check_names=False)
     assert list(out["ob_dir"]) == ref["ob_dir"].tolist()
     assert list(out["ob_active"].astype(bool)) == ref["ob_active"].tolist()
+    assert out["ob_active"].astype(bool).any()   # non-vacuity: real OBs actually formed
+
+
+def test_order_block_bear_and_multibar_lookback():
+    from app.features.structures import compute_order_block
+    # bar1 = up candle (c>o) -> the bear OB; bar2 neutral (c==o); bar3 = bearish displacement.
+    # The opposing up-candle (bar1) is 2 bars before the displacement -> multi-bar lookback scan.
+    df = pd.DataFrame({
+        "open":  [100.0, 100.0, 103.0, 103.0, 100.0, 100.0],
+        "close": [100.0, 103.0, 103.0, 97.0,  100.0, 104.0],
+        "high":  [100.5, 103.5, 103.2, 103.5, 100.5, 104.5],
+        "low":   [99.5,  99.5,  102.8, 97.0,  99.5,  99.5],
+        "displacement": [False, False, False, True, False, False],
+    })
+    out = compute_order_block(df, {"ob_lookback": 10})
+    assert out["ob_dir"].iloc[3] == "bear"
+    assert out["ob_top"].iloc[3] == 103.5     # bar1 high
+    assert out["ob_bottom"].iloc[3] == 99.5   # bar1 low
+    assert bool(out["ob_active"].iloc[3]) is True
+    assert bool(out["ob_active"].iloc[5]) is False   # bear mitigated: bar5 high 104.5 >= ob_top 103.5
 
 
 def test_order_block_requires_displacement_chain():
