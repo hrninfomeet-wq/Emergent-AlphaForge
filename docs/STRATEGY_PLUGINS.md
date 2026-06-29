@@ -181,6 +181,18 @@ These columns power the adaptive and scenario-routed strategies and are availabl
 | `vwap_l1`, `vwap_l2` | VWAP − 1σ and − 2σ lower bands |
 | `nr7` | True on Narrow Range 7 bars (lowest range in 7 bars) |
 
+### Candle geometry (always-on)
+
+Per-bar candle geometry, computed for every bar (no params, no carry-forward):
+
+| Column | Description |
+|---|---|
+| `body_frac` | \|close − open\| as a fraction of the bar range (0 on a zero-range bar) |
+| `upper_wick_frac` | Upper wick (high − max(open, close)) as a fraction of the bar range |
+| `lower_wick_frac` | Lower wick (min(open, close) − low) as a fraction of the bar range |
+| `inside_bar` | True when the bar is fully inside the prior bar (high < prev high AND low > prev low) |
+| `close_z` | Trailing 60-bar rolling z-score of close (NaN during warm-up) |
+
 ### Pivot levels
 
 | Column | Description |
