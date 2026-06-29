@@ -97,3 +97,39 @@ register_feature(
                 "(premium >55, discount <45, equilibrium between). Requires swing_levels.",
     data_requirements=["ohlcv_1m"],
 )
+
+
+# ---------------------------------------------------------------------------
+# FEATURE 3 — displacement + BOS
+# ---------------------------------------------------------------------------
+
+def compute_displacement(df: pd.DataFrame, params: dict) -> Dict[str, pd.Series]:
+    atr_mult = float(params.get("disp_atr_mult", 1.5))
+    body_min = float(params.get("disp_body_frac_min", 0.5))
+    o, c, h, l = df["open"], df["close"], df["high"], df["low"]
+    atr = df["atr"]
+    body = (c - o).abs()
+    rng = (h - l)
+    body_frac = body / rng.where(rng > 0, np.nan)
+    disp = ((body >= atr_mult * atr) & (body_frac >= body_min)).fillna(False)
+    bos_up = (c > df["last_swing_high_level"]).fillna(False)
+    bos_down = (c < df["last_swing_low_level"]).fillna(False)
+    return {"displacement": disp, "bos_up": bos_up, "bos_down": bos_down}
+
+
+register_feature(
+    FeatureGroup(
+        name="displacement",
+        columns=("displacement", "bos_up", "bos_down"),
+        param_keys=("disp_atr_mult", "disp_body_frac_min"),
+        requires=("swing_levels",),
+        cost_class="vectorized",
+        session_anchored=False,
+        stateful_unbounded=False,
+        min_history_bars=2,
+        compute=compute_displacement,
+    ),
+    description="Displacement (large impulsive body vs ATR) and break-of-structure "
+                "flags (close beyond the last swing level). Requires swing_levels.",
+    data_requirements=["ohlcv_1m"],
+)
