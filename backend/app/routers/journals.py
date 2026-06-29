@@ -96,7 +96,7 @@ async def paper_account_analytics():
         if lp is not None:
             r["unrealized_pnl"] = lp["unrealized_pnl"]
     out = paper_analytics.build_account_analytics(closed, open_rows, starting_capital=starting)
-    return serialize_doc(out)
+    return serialize_doc(paper_analytics.json_safe_floats(out))
 
 
 @api.get("/paper/strategy-stats")
@@ -150,7 +150,7 @@ async def paper_strategy_stats():
         except Exception:
             s["drift"] = {"state": "no_baseline"}
 
-    return serialize_doc({"items": stats, "count": len(stats)})
+    return serialize_doc(paper_analytics.json_safe_floats({"items": stats, "count": len(stats)}))
 
 
 # ---------------------------------------------------------------------------

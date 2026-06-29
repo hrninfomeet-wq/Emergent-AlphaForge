@@ -250,3 +250,52 @@ def test_drift_ok_with_deltas():
     assert out["state"] == "ok"
     assert out["win_rate_delta"] == -6.0
     assert out["avg_delta"] == -30.0
+
+
+# ---------------------------------------------------------------------------
+# Fix: no-loss profit_factor must be JSON-safe (was float("inf") -> 500)
+# ---------------------------------------------------------------------------
+import json as _json  # noqa: E402
+
+
+def test_per_strategy_stats_no_losses_profit_factor_none_and_json_safe():
+    rows = [
+        {"strategy_id": "allwin", "deployment_id": "d9", "status": "CLOSED",
+         "realized_pnl": 500.0, "created_at": "2026-06-20T04:00:00+00:00",
+         "closed_at": "2026-06-20T04:10:00+00:00"},
+        {"strategy_id": "allwin", "deployment_id": "d9", "status": "CLOSED",
+         "realized_pnl": 300.0, "created_at": "2026-06-20T05:00:00+00:00",
+         "closed_at": "2026-06-20T05:10:00+00:00"},
+    ]
+    by = {s["strategy_id"]: s for s in per_strategy_stats(rows)}
+    assert by["allwin"]["profit_factor"] is None    # no losses -> None, not float('inf')
+    assert by["allwin"]["win_rate"] == 100.0
+    _json.dumps(per_strategy_stats(rows), allow_nan=False)   # FastAPI uses allow_nan=False
+
+
+def test_period_pnl_no_losses_profit_factor_none_and_json_safe():
+    rows = [_closed(1000, _BASE - 1000), _closed(500, _BASE - _DAY)]
+    p = period_pnl(rows, now_ms=_BASE)
+    assert p["profit_factor"] is None
+    assert p["win_rate"] == 100.0
+    _json.dumps(p, allow_nan=False)
+
+
+def test_json_safe_floats_replaces_nan_inf():
+    from app.paper_analytics import json_safe_floats
+    src = {"a": float("inf"), "b": float("nan"), "c": [1.0, float("-inf"), 2],
+           "d": {"e": float("inf")}, "f": "x", "g": 3, "h": True}
+    out = json_safe_floats(src)
+    assert out == {"a": None, "b": None, "c": [1.0, None, 2],
+                   "d": {"e": None}, "f": "x", "g": 3, "h": True}
+    _json.dumps(out, allow_nan=False)
+
+
+def test_f_rejects_nan_inf():
+    from app.paper_analytics import _f
+    assert _f(float("inf")) == 0.0
+    assert _f(float("nan")) == 0.0
+    assert _f(float("-inf")) == 0.0
+    assert _f("inf") == 0.0
+    assert _f(3.5) == 3.5
+    assert _f(None) == 0.0

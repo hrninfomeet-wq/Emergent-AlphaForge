@@ -6,6 +6,7 @@ per-strategy attribution. Mirrors the equity math in app/portfolio.py but keyed
 on paper trades' realized_pnl / closed_at."""
 from __future__ import annotations
 
+import math
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
 
@@ -39,9 +40,23 @@ def _f(value: Any, default: float = 0.0) -> float:
     try:
         if value in (None, ""):
             return default
-        return float(value)
+        result = float(value)
     except (TypeError, ValueError):
         return default
+    return result if math.isfinite(result) else default
+
+
+def json_safe_floats(obj: Any) -> Any:
+    """Recursively replace non-finite floats (NaN / +-Inf) with None so a payload
+    is JSON-serializable under FastAPI's allow_nan=False. Defense-in-depth for the
+    paper-analytics endpoints — a stray NaN/Inf must never 500 the page again."""
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {k: json_safe_floats(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [json_safe_floats(v) for v in obj]
+    return obj
 
 
 _EXIT_BUCKETS = ("target", "stop", "eod", "manual", "other")
@@ -247,8 +262,7 @@ def period_pnl(closed_trades: List[Dict[str, Any]], *, now_ms: Optional[int] = N
     decided = wins + losses
     out = {k: round(v, 2) for k, v in out.items()}
     out["win_rate"] = round(wins / decided * 100, 1) if decided else None
-    out["profit_factor"] = (round(gross_win / gross_loss, 2) if gross_loss > 0
-                            else (None if gross_win == 0 else float("inf")))
+    out["profit_factor"] = round(gross_win / gross_loss, 2) if gross_loss > 0 else None
     out["closed_count"] = decided
     return out
 
@@ -386,8 +400,7 @@ def per_strategy_stats(trades: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "open_count": g["open_count"],
             "open_mtm": round(g["open_mtm"], 2),
             "win_rate": round(g["_wins"] / decided * 100, 1) if decided else None,
-            "profit_factor": (round(g["_gw"] / g["_gl"], 2) if g["_gl"] > 0
-                              else (None if g["_gw"] == 0 else float("inf"))),
+            "profit_factor": round(g["_gw"] / g["_gl"], 2) if g["_gl"] > 0 else None,
             "expectancy": round(net / g["closed_trades"], 2) if g["closed_trades"] else None,
             "avg_hold_s": int(g["_hold_s"] / g["closed_trades"]) if g["closed_trades"] else None,
             "contribution_pct": round(net / total_net * 100, 1) if total_net else None,
