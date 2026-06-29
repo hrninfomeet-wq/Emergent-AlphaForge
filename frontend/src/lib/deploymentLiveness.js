@@ -11,7 +11,7 @@ export function deploymentLiveness(dep, feedHealth) {
     };
   }
   if (status !== "ACTIVE") {
-    return { dot: "bg-dimmer", text: "text-dimmer", label: status || "—", tooltip: status || "—" };
+    return { dot: "bg-slate-500", text: "text-dimmer", label: status || "—", tooltip: status || "—" };
   }
   const state = feedHealth?.state;
   const reason = feedHealth?.reason || "";
@@ -29,10 +29,10 @@ export function deploymentLiveness(dep, feedHealth) {
       return { dot: "bg-rose-400", text: "text-rose-300", label: "ACTIVE · NO LIVE CANDLES",
                tooltip: reason || "Live feed stalled." };
     case "MARKET_CLOSED":
-      return { dot: "bg-dimmer", text: "text-dimmer", label: "ACTIVE · MARKET CLOSED",
+      return { dot: "bg-slate-500", text: "text-dimmer", label: "ACTIVE · MARKET CLOSED",
                tooltip: "Market is closed." };
     default:
       // feedHealth not loaded yet — DO NOT claim green; show neutral "checking".
-      return { dot: "bg-dimmer", text: "text-dim", label: "ACTIVE", tooltip: "Checking live feed…" };
+      return { dot: "bg-slate-500", text: "text-dim", label: "ACTIVE", tooltip: "Checking live feed…" };
   }
 }
