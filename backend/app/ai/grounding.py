@@ -48,20 +48,22 @@ def build_grounding_catalog() -> Dict[str, Any]:
     strategies = reg.list_all()
 
     from app.features.catalog import feature_catalog_entries
-    from app.features.registry import FEATURE_REGISTRY, materialize_features
+    from app.features.registry import FEATURE_REGISTRY
 
-    feature_columns = feature_catalog_entries()
-    # Materialize ALL registered features on the sample frame so the column NAMES
-    # are real-verified (empty in SP-1 -> no-op). resolve+materialize over the
-    # whole registry advertises the augmented column universe to the AI.
-    all_feature_cols = sorted(
+    feature_entries = feature_catalog_entries()
+    # The augmented column universe advertised to the AI: the flat, sorted set of
+    # every registered feature's columns (empty in SP-1 -> []). The full per-feature
+    # metadata (requires / cost_class / live_feasible / ...) is available via
+    # feature_catalog_entries(); here we expose the NAMES the agent may reference.
+    feature_columns = sorted(
         set().union(*(set(g.columns) for g in FEATURE_REGISTRY.values()))
     ) if FEATURE_REGISTRY else []
-    all_columns = sorted(set(indicator_columns) | set(all_feature_cols))
+    all_columns = sorted(set(indicator_columns) | set(feature_columns))
 
     return {
         "indicator_columns": indicator_columns,
         "feature_columns": feature_columns,
+        "feature_entries": feature_entries,
         "all_columns_including_features": all_columns,
         "signal_fields": signal_fields,
         "strategies": strategies,

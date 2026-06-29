@@ -17,8 +17,12 @@ def _register(monkeypatch, *groups):
     return reg
 
 
-def test_registry_is_empty_by_default():
-    assert FEATURE_REGISTRY == {}
+def test_registry_contains_seed_features():
+    import app.features.catalog  # noqa: F401  -> ensures structures registered
+    from app.features.registry import FEATURE_REGISTRY
+    assert {"swing_levels", "premium_discount", "displacement"} <= set(FEATURE_REGISTRY)
+    g = FEATURE_REGISTRY["swing_levels"]
+    assert "last_swing_high_level" in g.columns
 
 
 def test_resolve_unknown_feature_raises_feature_error():
@@ -75,10 +79,16 @@ def test_materialize_caches_param_independent_group_once(monkeypatch):
     assert calls["n"] == 1            # second call served from cache
 
 
-def test_catalog_entries_shape_empty_in_sp1():
-    from app.features.catalog import feature_catalog_entries
-    entries = feature_catalog_entries()
-    assert entries == []          # no features registered yet
+def test_catalog_entries_shape():
+    import app.features.catalog as c
+    entries = c.feature_catalog_entries()
+    assert len(entries) >= 3
+    e = next(x for x in entries if x["feature"] == "swing_levels")
+    for k in ("feature", "columns", "needs_declaration", "requires", "cost_class",
+              "session_anchored", "stateful_unbounded", "min_history_bars",
+              "data_requirements", "description", "live_feasible"):
+        assert k in e, k
+    assert e["live_feasible"] is True
 
 
 def test_package_exports():
@@ -90,10 +100,11 @@ def test_package_exports():
 
 
 def test_grounding_catalog_has_feature_block():
+    import app.features.catalog  # noqa: F401
     from app.ai.grounding import build_grounding_catalog
     cat = build_grounding_catalog()
     assert "feature_columns" in cat
-    assert cat["feature_columns"] == []          # empty in SP-1
+    assert "last_swing_high_level" in cat["feature_columns"]
     assert "all_columns_including_features" in cat
-    # with no features, the augmented column set equals the indicator columns
-    assert set(cat["all_columns_including_features"]) == set(cat["indicator_columns"])
+    assert set(cat["indicator_columns"]) <= set(cat["all_columns_including_features"])
+    assert "last_swing_high_level" in cat["all_columns_including_features"]

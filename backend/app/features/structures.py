@@ -106,10 +106,10 @@ register_feature(
 def compute_displacement(df: pd.DataFrame, params: dict) -> Dict[str, pd.Series]:
     atr_mult = float(params.get("disp_atr_mult", 1.5))
     body_min = float(params.get("disp_body_frac_min", 0.5))
-    o, c, h, l = df["open"], df["close"], df["high"], df["low"]
+    o, c, h, lo = df["open"], df["close"], df["high"], df["low"]
     atr = df["atr"]
     body = (c - o).abs()
-    rng = (h - l)
+    rng = (h - lo)
     body_frac = body / rng.where(rng > 0, np.nan)
     disp = ((body >= atr_mult * atr) & (body_frac >= body_min)).fillna(False)
     bos_up = (c > df["last_swing_high_level"]).fillna(False)

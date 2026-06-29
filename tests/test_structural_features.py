@@ -117,3 +117,22 @@ def test_displacement_and_bos():
 def test_displacement_param_keys():
     g = FEATURE_REGISTRY["displacement"]
     assert set(g.param_keys) == {"disp_atr_mult", "disp_body_frac_min"}
+
+
+def test_displacement_true_branch_directly():
+    from app.features.structures import compute_displacement
+    # 3 bars; bar 1 has a big body (5) vs atr 1.0 and body_frac 5/6 -> displacement True
+    df = pd.DataFrame({
+        "open":  [100.0, 100.0, 100.0],
+        "close": [100.5, 105.0, 100.5],   # bar1 body=5
+        "high":  [101.0, 106.0, 101.0],   # bar1 range=6 -> body_frac=5/6>=0.5
+        "low":   [100.0, 100.0, 100.0],
+        "atr":   [1.0, 1.0, 1.0],
+        "last_swing_high_level": [104.0, 104.0, 104.0],
+        "last_swing_low_level":  [99.0, 99.0, 99.0],
+    })
+    out = compute_displacement(df, {"disp_atr_mult": 1.5, "disp_body_frac_min": 0.5})
+    assert bool(out["displacement"].iloc[1]) is True      # 5 >= 1.5*1 and 5/6 >= 0.5
+    assert bool(out["displacement"].iloc[0]) is False     # 0.5 < 1.5
+    assert bool(out["bos_up"].iloc[1]) is True            # close 105 > last_swing_high 104
+    assert bool(out["bos_down"].iloc[1]) is False
