@@ -77,6 +77,25 @@ def resolve_features(required: List[str]) -> List[FeatureGroup]:
     return ordered
 
 
+def feature_live_feasible(group: "FeatureGroup", *, live_window: int = 200,
+                          max_history: int = 150) -> bool:
+    """Pure derivation of live-deployability on the rolling live window.
+
+    A feature is live-correct on the ~200-bar deployment window only when it is
+    NOT session-anchored (needs this session's range), NOT stateful-unbounded
+    (carry-forward selection may depend on history older than the window), and
+    its warm-up fits inside the window with headroom. Otherwise it is
+    backtest-only in v1 (SP-4's agent refuses live deploy + explains).
+    """
+    if group.session_anchored:
+        return False
+    if group.stateful_unbounded:
+        return False
+    if group.min_history_bars > max_history:
+        return False
+    return True
+
+
 def materialize_features(df: pd.DataFrame, params: dict, required: List[str],
                          feature_caches: Dict[str, Dict], *,
                          max_per_group: int = 4) -> pd.DataFrame:

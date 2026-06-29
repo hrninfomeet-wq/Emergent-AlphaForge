@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from app.features.registry import FEATURE_REGISTRY, FeatureGroup
+from app.features.registry import FEATURE_REGISTRY, FeatureGroup, feature_live_feasible
 
 # name -> human metadata (kept beside the registry; SP-2 populates both).
 FEATURE_CATALOG: Dict[str, Dict[str, Any]] = {}
@@ -42,5 +42,11 @@ def feature_catalog_entries() -> List[Dict[str, Any]]:
             "min_history_bars": g.min_history_bars,
             "data_requirements": meta.get("data_requirements", ["ohlcv_1m"]),
             "description": meta.get("description", ""),
+            "live_feasible": feature_live_feasible(g),
         })
     return out
+
+
+# Importing structures registers the seed FeatureGroups (side-effect import at
+# the bottom to avoid a circular import: structures imports register_feature).
+from app.features import structures as _structures  # noqa: E402,F401
