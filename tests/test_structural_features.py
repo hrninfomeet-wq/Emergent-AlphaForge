@@ -390,6 +390,8 @@ def test_all_features_materialize_together():
                 "ob_top", "ob_active"]:
         assert col in out.columns, col
     assert len(out) == len(df)
+    # non-vacuity: the DAG actually produced real values (swings always form here)
+    assert out["last_swing_high_level"].notna().any()
 
 
 def test_catalog_advertises_all_seed_features():
