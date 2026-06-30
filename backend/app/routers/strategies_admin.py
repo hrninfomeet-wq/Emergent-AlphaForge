@@ -14,7 +14,13 @@ from typing import Any, Dict, List
 from fastapi import APIRouter, HTTPException
 
 from app.strategies.base import get_registry
-from app.schemas import StrategyAuthorReq, StrategyFromSourceReq
+from app.schemas import (
+    StrategyAuthorReq,
+    StrategyFromSourceReq,
+    PythonFromSourceReq,
+    PythonValidateReq,
+    PythonInstallReq,
+)
 
 api = APIRouter()
 log = logging.getLogger(__name__)
@@ -280,3 +286,87 @@ async def author_from_source(req: StrategyFromSourceReq):
         raise HTTPException(502, f"AI mapping failed: {e}")
     out["source_kind"] = ing["kind"]
     return out
+
+
+# ---------------------------------------------------------------------------
+# Full-Python authoring — generate / validate / install (Task 7)
+# ---------------------------------------------------------------------------
+
+@api.post("/strategies/author/python-from-source")
+async def author_python_from_source(req: PythonFromSourceReq):
+    """Generate an arbitrary StrategyBase module via the POWERFUL tier. No install."""
+    from app.ai import llm_client
+    from app.ai.source_ingest import ingest_source
+    from app.ai.py_author import author_python
+    if not llm_client.any_configured():
+        raise HTTPException(503, "AI authoring is not configured — set GEMINI_API_KEY or ANTHROPIC_API_KEY in backend/.env")
+    if not (req.source or "").strip():
+        raise HTTPException(400, "source is empty")
+    if req.provider:
+        try:
+            llm_client.resolve_provider(req.provider)
+        except RuntimeError as e:
+            raise HTTPException(400, str(e))
+    try:
+        ing = ingest_source(req.source)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except RuntimeError as e:
+        raise HTTPException(502, f"Transcript fetch failed: {e}")
+    try:
+        out = author_python(ing["text"], provider=req.provider)
+    except RuntimeError as e:
+        raise HTTPException(502, f"AI generation failed: {e}")
+    out["source_kind"] = ing["kind"]
+    return out
+
+
+@api.post("/strategies/author/python/validate")
+async def author_python_validate(req: PythonValidateReq):
+    """Static-check; if clean, smoke-test. Never raises on bad code."""
+    from app.ai.py_sandbox import static_check, smoke_test
+    violations = static_check(req.code or "")
+    if violations:
+        return {"ok": False, "violations": violations, "smoke": None}
+    smoke = smoke_test(req.code)
+    return {"ok": bool(smoke.get("ok")), "violations": [], "smoke": smoke}
+
+
+@api.post("/strategies/author/python/install")
+async def author_python_install(req: PythonInstallReq):
+    """Server re-validates (static + smoke), then writes + reloads + records provenance."""
+    import hashlib
+    from datetime import datetime, timezone
+    from app.ai.py_sandbox import static_check, smoke_test, extract_strategy_id
+    violations = static_check(req.code or "")
+    if violations:
+        raise HTTPException(400, "static check failed: " + "; ".join(violations))
+    cid = extract_strategy_id(req.code)
+    if cid is None or cid != req.strategy_id:
+        raise HTTPException(400, f"the module's class id ({cid!r}) must be a literal slug equal to strategy_id ({req.strategy_id!r})")
+    reg = get_registry()
+    origin = reg.origin_of(req.strategy_id)
+    if origin == "builtin":
+        raise HTTPException(403, "cannot overwrite a built-in strategy id")
+    if origin is not None and not req.overwrite:
+        raise HTTPException(409, f"Strategy id '{req.strategy_id}' already exists — choose another id or set overwrite")
+    smoke = smoke_test(req.code)
+    if not smoke.get("ok"):
+        raise HTTPException(422, f"smoke-test failed: {smoke.get('error')}")
+    _write_plugin_file(req.strategy_id, req.code)
+    reg.reload()
+    if reg.get(req.strategy_id) is None:
+        try:
+            os.remove(os.path.join(_plugins_dir(), f"{req.strategy_id}.py"))
+        except OSError:
+            pass
+        raise HTTPException(500, f"Strategy '{req.strategy_id}' failed to load after install")
+    now = datetime.now(timezone.utc).isoformat()
+    code_sha = hashlib.sha256(req.code.encode("utf-8")).hexdigest()[:16]
+    await _db().generated_strategies.update_one(
+        {"strategy_id": req.strategy_id},
+        {"$set": {"strategy_id": req.strategy_id, "source": "full_python", "code": req.code,
+                  "code_sha": code_sha, "model": None, "created_at": now}},
+        upsert=True,
+    )
+    return {"strategy_id": req.strategy_id, "installed": True, "code_sha": code_sha}
