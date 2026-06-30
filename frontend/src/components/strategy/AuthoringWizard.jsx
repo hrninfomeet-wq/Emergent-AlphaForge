@@ -76,6 +76,10 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
   const [providers, setProviders] = useState([]);          // [{id,label,configured}]
   const [provider, setProvider] = useState("");            // selected id
 
+  // Feasibility / converse state
+  const [ruleSet, setRuleSet] = useState(null);   // { decision, rules, summary }
+  const [conversing, setConversing] = useState(false);
+
   // Mode toggle + Full-Python state
   const [mode, setMode] = useState("spec"); // "spec" | "python"
   const [pyCode, setPyCode] = useState("");
@@ -207,6 +211,18 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
     // Clear any prior compile preview so the user knows the form changed
     setPreview(null);
     setOverwritePending(false);
+  }
+
+  async function runConverse() {
+    setConversing(true);
+    try {
+      const res = await api.authorConverse(aiSource, provider);
+      setRuleSet(res);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || e.message);
+    } finally {
+      setConversing(false);
+    }
   }
 
   async function onGenerateWithAi() {
@@ -385,6 +401,14 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
             >
               {(aiBusy || pyBusy) ? "Generating…" : "Generate with AI"}
             </button>
+            <button
+              onClick={runConverse}
+              disabled={conversing || !aiSource.trim() || !aiReady}
+              className="text-xs font-medium px-3 py-1.5 rounded-md bg-bg-2 border border-line text-foreground disabled:opacity-50"
+              data-testid="author-ai-converse-btn"
+            >
+              {conversing ? "Checking…" : "Check feasibility"}
+            </button>
           </div>
 
           {/* Fidelity readback */}
@@ -423,6 +447,38 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
         </div>
 
         {mode === "spec" && (<>
+
+        {/* RuleSet feasibility panel */}
+        {ruleSet && (
+          <div className={sectionCls} data-testid="ruleset-panel">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-xs font-semibold uppercase tracking-wider text-dim">Feasibility</span>
+              <span data-testid="ruleset-decision"
+                className={`text-[10px] px-2 py-0.5 rounded-full border font-mono ${
+                  ruleSet.decision === "BUILD" ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+                  : ruleSet.decision === "ADVISE" ? "border-amber-500/30 bg-amber-500/10 text-amber-300"
+                  : ruleSet.decision === "ASK" ? "border-sky-500/30 bg-sky-500/10 text-sky-300"
+                  : "border-rose-500/30 bg-rose-500/10 text-rose-300"}`}>
+                {ruleSet.decision}
+              </span>
+              <span className="text-[11px] text-dimmer">{ruleSet.summary}</span>
+            </div>
+            <div className="space-y-1">
+              {ruleSet.rules.map((r) => (
+                <div key={r.id} className="flex items-start gap-2 text-[11px]" data-testid="ruleset-rule">
+                  <span className={`mt-0.5 w-2 h-2 rounded-full shrink-0 ${
+                    r.decision_class === "BUILDABLE_NOW" ? "bg-emerald-500"
+                    : r.decision_class === "BUILDABLE_WITH_FEATURE" ? (r.live_feasible === false ? "bg-amber-500" : "bg-emerald-500")
+                    : r.decision_class === "AMBIGUOUS" ? "bg-sky-500" : "bg-rose-500"}`} />
+                  <div className="min-w-0">
+                    <div className="text-foreground">{r.text} <span className="text-dimmer">· {r.kind}/{r.criticality}</span></div>
+                    <div className="text-dimmer">{r.question || r.message}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* a. Identity */}
         <div className={sectionCls}>
@@ -619,6 +675,17 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
           </div>
         )}
 
+        {/* Install gate caveat note */}
+        {ruleSet && ruleSet.decision !== "BUILD" && (
+          <div className="text-[11px] text-amber-300" data-testid="install-gate-note">
+            {ruleSet.decision === "REJECT"
+              ? "Can't install — a core rule isn't buildable. See Feasibility above."
+              : ruleSet.decision === "ASK"
+              ? "Answer the clarifying question(s) above, then re-check."
+              : "Installing with caveats (some rules are backtest-only)."}
+          </div>
+        )}
+
         {/* Footer */}
         <div className="flex items-center justify-end gap-2 pt-1">
           <button
@@ -641,7 +708,7 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
           ) : (
             <button
               onClick={() => doInstall(false)}
-              disabled={busy}
+              disabled={busy || (ruleSet && ruleSet.decision === "REJECT")}
               className="text-xs font-semibold px-3 py-1.5 rounded-md bg-info/15 border border-info/50 text-foreground disabled:opacity-50"
               data-testid="author-install-btn"
             >
