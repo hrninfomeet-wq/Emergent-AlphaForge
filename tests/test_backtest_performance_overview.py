@@ -27,13 +27,14 @@ def test_performance_overview_components_exist():
     assert "performance-overview" in overview and "perf-key-metrics" in overview
 
 
-def test_two_separate_charts_with_named_axes():
-    # The single dual-pane chart was split into two separate charts, each with
-    # NAMED, vertically-oriented (text-up) left and right axis titles.
+def test_two_charts_pnl_and_account_then_drawdown():
+    # Pane 1 = Cumulative P&L + Account value (shared ₹ axis); Pane 2 = Drawdown
+    # only. The two-pane chart stays split into two separate cards with named,
+    # vertically-oriented (text-up) axis titles.
     overview = _read("components", "backtest", "PerformanceOverview.jsx")
-    assert "chart-pnl-vs-value" in overview and "chart-account-drawdown" in overview
-    # axis labels passed to the two charts
-    for label in ('label: "Cumulative P&L"', '"Trade value"', 'label: "Account value"', 'label: "Drawdown"'):
+    assert "chart-pnl-and-account" in overview and "chart-drawdown" in overview
+    assert "Cumulative P&L and Account value" in overview and 'title="Drawdown"' in overview
+    for label in ('label: "Cumulative P&L"', 'label: "Account value"', 'label: "Drawdown"'):
         assert label in overview
     chart = _read("components", "backtest", "DualAxisChart.jsx")
     # vertical, text-up axis-title rendering
@@ -41,14 +42,18 @@ def test_two_separate_charts_with_named_axes():
     assert "AxisTitle" in chart
 
 
-def test_chart_right_axis_is_per_trade_buy_value_not_index():
-    # The user's definition: right axis = per-trade net buy value (premium × qty
-    # + charges), NOT the index spot level. Sell − Buy must equal net P&L.
-    metrics = _read("lib", "backtestMetrics.js")
-    assert "tradeBuyValue" in metrics and "tradeSellValue" in metrics
-    assert "entry_option_price" in metrics and "total_charges" in metrics
+def test_pane1_second_line_is_account_value_not_trade_value():
+    # The user replaced the per-trade "Trade value" line with the Account value
+    # line (same ₹ unit as Cumulative P&L), shown on a SHARED axis so both stay
+    # readable as distinct lines. The trade-value line is gone from the charts.
     overview = _read("components", "backtest", "PerformanceOverview.jsx")
-    assert '"Trade value"' in overview
+    assert 'label: "Account value"' in overview
+    assert '"Trade value"' not in overview
+    assert "shared" in overview  # pane 1 shares the ₹ scale
+    # DualAxisChart now supports a shared single ₹ scale + an optional
+    # (single-series) mode for the Drawdown-only pane.
+    chart = _read("components", "backtest", "DualAxisChart.jsx")
+    assert "shared" in chart
 
 
 def test_account_value_low_high_cards():
