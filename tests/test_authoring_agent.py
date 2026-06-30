@@ -102,3 +102,46 @@ def test_map_source_to_ruleset_ambiguous_is_ask(monkeypatch):
     out = map_source_to_ruleset("enter on a strong move")
     assert out["decision"] == "ASK"
     assert out["rules"][0]["question"] == "How big is 'strong'?"
+
+
+def test_build_summary_is_present(monkeypatch):
+    from app.ai.authoring_agent import map_source_to_ruleset, ParsedRuleSet, ParsedRule
+    _patch_llm(monkeypatch, ParsedRuleSet(rules=[
+        ParsedRule(id="r1", text="rsi>70", kind="ENTRY", criticality="CORE", cols=["rsi"])]))
+    out = map_source_to_ruleset("enter when rsi over 70")
+    assert out["decision"] == "BUILD"
+    assert "map cleanly" in out["summary"]
+
+
+def test_dropped_optional_advise_summary_is_sensible(monkeypatch):
+    # ADVISE driven SOLELY by a dropped OPTIONAL rule must NOT emit the degenerate
+    # "backtest-only feature(s): ." string.
+    from app.ai.authoring_agent import map_source_to_ruleset, ParsedRuleSet, ParsedRule
+    _patch_llm(monkeypatch, ParsedRuleSet(rules=[
+        ParsedRule(id="r1", text="rsi>70", kind="ENTRY", criticality="CORE", cols=["rsi"]),
+        ParsedRule(id="r2", text="scale on OI", kind="SIZING", criticality="OPTIONAL",
+                   concepts=["oi"]),
+    ]))
+    out = map_source_to_ruleset("enter rsi>70; scale up on high OI")
+    assert out["decision"] == "ADVISE"
+    assert "dropped optional rule(s): r2" in out["summary"]
+    assert "feature(s): ." not in out["summary"]
+
+
+def test_backtest_only_advise_summary_names_feature(monkeypatch):
+    from app.ai.authoring_agent import map_source_to_ruleset, ParsedRuleSet, ParsedRule
+    _patch_llm(monkeypatch, ParsedRuleSet(rules=[
+        ParsedRule(id="r1", text="enter at FVG", kind="ENTRY", criticality="CORE",
+                   concepts=["fvg"])]))
+    out = map_source_to_ruleset("buy the bullish FVG")
+    assert out["decision"] == "ADVISE"
+    assert "fvg_zones" in out["summary"]
+
+
+def test_empty_parse_is_ask_not_build(monkeypatch):
+    from app.ai.authoring_agent import map_source_to_ruleset, ParsedRuleSet
+    _patch_llm(monkeypatch, ParsedRuleSet(rules=[]))
+    out = map_source_to_ruleset("nonsense that yields no rules")
+    assert out["decision"] == "ASK"
+    assert out["rules"] == []
+    assert "couldn't extract" in out["summary"]

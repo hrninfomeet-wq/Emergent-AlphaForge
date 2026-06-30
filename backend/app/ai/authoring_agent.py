@@ -135,6 +135,13 @@ def map_source_to_ruleset(source_text: str, provider: Optional[str] = None) -> d
             decision_class=v.feasibility.value, message=v.message,
             feature=v.feature, live_feasible=v.live_feasible))
 
+    if not gate_rules:
+        # The LLM extracted no rules — don't pretend that's a confident BUILD.
+        return GateResult(
+            decision="ASK", rules=[],
+            summary="I couldn't extract any rules from that — describe the entry "
+                    "and exit more concretely.").model_dump()
+
     decision = aggregate_gate(gate_rules)
     return GateResult(decision=decision, rules=gate_rules,
                       summary=_gate_summary(decision, gate_rules)).model_dump()
@@ -148,9 +155,18 @@ def _gate_summary(decision: str, rules: List[GateRule]) -> str:
         qs = [r.question for r in rules if r.decision_class == "AMBIGUOUS" and r.question]
         return "Need clarification before building: " + " ".join(qs)
     if decision == "ADVISE":
-        bt = [r.feature for r in rules
-              if r.decision_class == "BUILDABLE_WITH_FEATURE" and r.live_feasible is False]
-        return ("Buildable with caveats — backtest-only feature(s): "
-                + ", ".join(sorted(set(f for f in bt if f))) + ".")
+        # ADVISE has two causes: a backtest-only feature, and/or a dropped
+        # OPTIONAL rule. Narrate whichever applies (never an empty list).
+        bt = sorted(set(r.feature for r in rules
+                        if r.decision_class == "BUILDABLE_WITH_FEATURE"
+                        and r.live_feasible is False and r.feature))
+        dropped = [r.id for r in rules if r.criticality == "OPTIONAL"
+                   and r.decision_class in ("INFEASIBLE", "NEEDS_NEW_DATA")]
+        parts = []
+        if bt:
+            parts.append("backtest-only feature(s): " + ", ".join(bt))
+        if dropped:
+            parts.append("dropped optional rule(s): " + ", ".join(dropped))
+        return "Buildable with caveats — " + "; ".join(parts) + "."
     return ("Can't build this faithfully — a core rule needs data/precision the app "
             "doesn't have. See the rejected rule(s).")
