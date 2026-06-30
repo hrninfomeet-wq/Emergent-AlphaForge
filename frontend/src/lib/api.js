@@ -36,6 +36,8 @@ export const api = {
   getAuthorProviders: () => apiClient.get("/strategies/author/providers").then((r) => r.data),
   authorFromSource: (source, provider) =>
     apiClient.post("/strategies/author/from-source", { source, provider }, { timeout: LONG_TIMEOUT_MS }).then((r) => r.data),
+  authorConverse: (source, provider) =>
+    apiClient.post("/strategies/author/converse", { source, provider }, { timeout: LONG_TIMEOUT_MS }).then((r) => r.data),
   authorPythonFromSource: (source, provider) =>
     apiClient.post("/strategies/author/python-from-source", { source, provider }, { timeout: LONG_TIMEOUT_MS }).then((r) => r.data),
   validatePython: (code) =>

@@ -47,6 +47,7 @@ from app.indicators import (
     nr7,
     cpr_levels,
     attach_tod_tradeable,
+    candle_geometry,
 )
 from app.regime import classify_regime_series
 
@@ -234,6 +235,10 @@ def _compute_tod_tradeable(df: pd.DataFrame, p: dict) -> Dict[str, pd.Series]:
         float(p.get("tod_min_atr_frac", 0.6)))}
 
 
+def _compute_geometry(df: pd.DataFrame, p: dict) -> Dict[str, pd.Series]:
+    return candle_geometry(df)
+
+
 def _compute_regime(df: pd.DataFrame, p: dict) -> Dict[str, pd.Series]:
     # Reads adx/chop/atr/atr_avg -> keyed on adx_length, atr_length, chop_length.
     # ALWAYS assembled last; df here has NO pre-existing `regime` column.
@@ -266,6 +271,7 @@ GROUPS = [
     IndicatorGroup("cpr", ("cpr_narrow_pctile", "cpr_wide_pctile", "cpr_pctile_window"), _compute_cpr),
     IndicatorGroup("orb_width", ("or_minutes",), _compute_orb_width),
     IndicatorGroup("tod_tradeable", ("tod_lookback_sessions", "tod_min_atr_frac", "atr_length"), _compute_tod_tradeable),
+    IndicatorGroup("geometry", (), _compute_geometry),
     IndicatorGroup("regime", ("adx_length", "atr_length", "chop_length"), _compute_regime),
 ]
 

@@ -402,3 +402,29 @@ def test_providers_endpoint_real_env(monkeypatch):
     assert ids["gemini"]["configured"] is True
     assert ids["anthropic"]["configured"] is False
     assert body["active"] == "gemini"
+
+
+# ---------------------------------------------------------------------------
+# SP-4: POST /strategies/author/converse
+# ---------------------------------------------------------------------------
+
+def test_converse_route_returns_gate_decision(monkeypatch):
+    from app.ai.authoring_agent import ParsedRuleSet, ParsedRule
+    import app.ai.llm_client as llm
+    monkeypatch.setattr(llm, "complete_structured",
+                        lambda **kw: ParsedRuleSet(rules=[
+                            ParsedRule(id="r1", text="rsi>70", kind="ENTRY",
+                                       criticality="CORE", cols=["rsi"])]))
+    tc = _make_app()
+    try:
+        with patch("app.ai.llm_client.any_configured", return_value=True), \
+             patch("app.ai.source_ingest.ingest_source",
+                   return_value={"text": "enter when rsi over 70", "kind": "text"}):
+            resp = tc.post("/strategies/author/converse",
+                           json={"source": "enter when rsi over 70"})
+    finally:
+        _stop(tc)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["decision"] == "BUILD"
+    assert body["rules"][0]["decision_class"] == "BUILDABLE_NOW"

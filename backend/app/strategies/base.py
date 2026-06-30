@@ -32,6 +32,41 @@ class Signal:
     exit_mode: Optional[str] = None
 
 
+EVAL_CTX_KEYS = ("history_df", "i", "instrument", "session_date", "mode")
+
+
+def build_eval_ctx(*, history_df, i, instrument, session_date, mode="INTRADAY",
+                   session_extras=None) -> Dict[str, Any]:
+    """Assemble the canonical evaluate() ctx. The SAME builder is used by the
+    backtest, paper/live, and smoke paths so the contract can never drift again.
+    Canonical keys take precedence over `session_extras` (a strategy's
+    session_precompute output cannot clobber the frame index / instrument / mode)."""
+    ctx: Dict[str, Any] = dict(session_extras) if session_extras else {}
+    ctx.update({
+        "history_df": history_df,
+        "i": int(i),
+        "instrument": instrument,
+        "session_date": session_date,
+        "mode": mode,
+    })
+    return ctx
+
+
+def build_live_eval_ctx(strategy: "StrategyBase", df_enriched, last_idx: int,
+                        instrument: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Build the canonical ctx for the single-bar paper/live path: call the
+    strategy's session_precompute ONCE on the rolling window, then build_eval_ctx.
+    Host-safe (no motor import) so it is unit-testable without the live module."""
+    session_extras = strategy.session_precompute(df_enriched, params or {})
+    last_row = df_enriched.iloc[last_idx]
+    return build_eval_ctx(
+        history_df=df_enriched, i=last_idx, instrument=instrument,
+        session_date=str(last_row.get("session_date") or ""),
+        mode=str((params or {}).get("mode") or "INTRADAY"),
+        session_extras=session_extras,
+    )
+
+
 class StrategyBase:
     """Inherit from this to create a plugin.
     Required class attributes: id, name, version, supported_instruments, supported_modes,
@@ -48,6 +83,7 @@ class StrategyBase:
     supported_timeframes: List[str] = ["1m", "3m", "5m"]
     parameter_schema: Dict[str, Any] = {}
     is_builtin: bool = True
+    required_features: List[str] = []
 
     def default_params(self) -> Dict[str, Any]:
         return {k: v.get("default") for k, v in self.parameter_schema.items()}
@@ -84,6 +120,7 @@ class StrategyBase:
             "supported_timeframes": self.supported_timeframes,
             "parameter_schema": self.parameter_schema,
             "is_builtin": self.is_builtin,
+            "required_features": self.required_features,
             "origin": _origin_from_module(type(self).__module__),
         }
 

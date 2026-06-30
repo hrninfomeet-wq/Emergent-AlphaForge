@@ -8,9 +8,10 @@ import pandas as pd
 from dataclasses import dataclass, field, asdict
 from typing import Any, Dict, List, Optional, Tuple
 
-from app.strategies.base import StrategyBase, Signal
+from app.strategies.base import StrategyBase, Signal, build_eval_ctx
 from app.costs import apply_round_trip_cost
 from app.exit_engine import intrabar_exit
+from app.features import materialize_features
 
 TRADE_WINDOW_START = "09:25"
 # Default session end for entries: 15:00 IST. Combined with the 09:25 start this
@@ -86,6 +87,13 @@ def run_backtest(
 
     if not df.index.equals(pd.RangeIndex(len(df))):
         df = df.reset_index(drop=True)
+    if strategy.required_features:
+        # Structural features are materialized HERE (not in callers) so every
+        # run_backtest caller — the one-shot path AND the optimizer trials — gets
+        # them, computed fresh on THIS enriched frame. Fresh cache per call avoids
+        # a cross-trial staleness bug (features read indicator columns like atr, so
+        # a frame-independent cache would go stale when indicator params change).
+        df = materialize_features(df, params, strategy.required_features, {})
     # Pre-materialize rows as plain dicts ONCE. Indexing df.iloc[i] inside the
     # hot loop builds a fresh pandas Series every bar (very slow and GIL-heavy);
     # a list of dicts is 5-20x faster and is fully compatible with strategies,
@@ -109,8 +117,11 @@ def run_backtest(
     # (opening range, gap, session VWAP anchor, ...) precompute them ONCE here
     # via session_precompute() so the hot per-bar loop looks them up O(1) instead
     # of re-deriving them per bar (which is O(N) per bar -> O(N^2) per backtest).
-    ctx_global: Dict[str, Any] = {"history_df": df, "instrument": instrument}
-    ctx_global.update(strategy.session_precompute(df, params))
+    _session_extras = strategy.session_precompute(df, params)
+    ctx_global: Dict[str, Any] = build_eval_ctx(
+        history_df=df, i=0, instrument=instrument, session_date=None,
+        mode=str(params.get("mode") or "INTRADAY"), session_extras=_session_extras,
+    )
 
     for i in range(1, len(df)):
         row = records[i]
@@ -177,6 +188,7 @@ def run_backtest(
         # ctx.get(...) within evaluate() -- none retain a reference, assign it to
         # self, or write into it across calls (grep of backend/app/strategies).
         ctx_global["i"] = i
+        ctx_global["session_date"] = row.get("session_date")
         sig: Signal = strategy.evaluate(row, prev, params, ctx_global)
         if sig.direction not in ("CE", "PE"):
             continue
