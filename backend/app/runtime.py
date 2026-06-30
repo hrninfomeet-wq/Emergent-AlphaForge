@@ -513,6 +513,18 @@ async def _topup_vix() -> Dict[str, Any]:
             from_date = (last + _td(days=1)).strftime("%Y-%m-%d")
         else:
             from_date = VIX_BASELINE_START
+        # Forward-append alone can't fill a mid-window HOLE (a VIX day missed
+        # while later days were fetched). Pull the start back to the earliest
+        # missing/short VIX trading day in the recent repair window.
+        try:
+            from app.data_hygiene import (
+                most_recent_closed_session, _spot_day_rows, vix_topup_from_date,
+            )
+            judge = most_recent_closed_session()
+            vix_rows = await _spot_day_rows(db, VIX_INSTRUMENT)
+            from_date = vix_topup_from_date(vix_rows, forward_from=from_date, judge_until=judge)
+        except Exception as exc:
+            log.debug("VIX hole scan skipped: %s", exc)
         to_date = (_dt.now(_tz.utc) + ist).strftime("%Y-%m-%d")
         if from_date > to_date:
             return {"status": "ok", "reason": "up_to_date"}

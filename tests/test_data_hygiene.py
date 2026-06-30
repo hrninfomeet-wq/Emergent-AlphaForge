@@ -287,6 +287,34 @@ async def test_plan_fully_covered_yields_no_actions():
     assert plan["summary"]["overall_status"] == "verified"
 
 
+# ---- compute_hygiene_plan: auto-update repairs under-captured days -----------
+
+
+@pytest.mark.asyncio
+async def test_plan_repairs_under_captured_recent_day(monkeypatch):
+    """The daily AUTO-UPDATE runs compute_hygiene_plan. A recent CLOSED day that
+    has SOME bars (a 'found date', so spot coverage stays verified) but is
+    materially short must still get a spot repair action — the partial-session
+    class (live roller died mid-day). Previously only the manual catch-up did."""
+    import app.data_hygiene as dh
+    monkeypatch.setattr(dh, "most_recent_closed_session", lambda *a, **k: "2026-06-29")
+    db = FakeDB()
+    seed_full_spot_coverage(db, "NIFTY", "2026-06-08", "2026-06-29")
+    # one recent closed trading day captured only partially (5/375)
+    for r in db.candles_1m._agg_result:
+        if r["_id"] == "2026-06-22":
+            r["count"] = 5
+    plan = await compute_hygiene_plan(
+        db, start_date="2026-06-08", end_date="2026-06-29", instruments=["NIFTY"],
+    )
+    nifty = plan["instruments"][0]
+    spot_actions = [a for a in nifty["actions"] if a["kind"] == "spot"]
+    assert spot_actions, "auto-update plan must repair the under-captured day"
+    assert spot_actions[0]["from_date"] == "2026-06-22"
+    assert "under-captured" in spot_actions[0]["reason"]
+    assert nifty["spot"]["status"] != "verified"  # repair surfaced in the status
+
+
 # ---- band completeness: the May-2026 class of gap ---------------------------
 
 

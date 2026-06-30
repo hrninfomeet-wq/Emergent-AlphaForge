@@ -22,7 +22,8 @@ import { useMaximize, MaximizeButton } from "@/components/MaximizeButton";
 import { buildPerformanceSeries } from "@/lib/backtestMetrics";
 import { NumberSliderInput } from "@/components/NumberSliderInput";
 import BacktestRunJournal from "@/components/BacktestRunJournal";
-import { Play, Save, Filter, ChevronDown, ChevronRight, ChevronsUpDown, ArrowUp, ArrowDown, Download, FileJson, FileText, FolderOpen, ShieldCheck, Loader2, AlertTriangle } from "lucide-react";
+import { Play, Save, Filter, ChevronDown, ChevronRight, ChevronsUpDown, ArrowUp, ArrowDown, Download, FileJson, FileText, FolderOpen, ShieldCheck, Loader2, AlertTriangle, HelpCircle } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { dateToMs, msToDate } from "@/lib/time";
 
 const INSTRUMENTS = ["NIFTY", "BANKNIFTY", "SENSEX"];
@@ -764,7 +765,7 @@ export default function BacktestLab() {
                 placeholder="e.g. NIFTY scalp v2"
               />
             </div>
-            <Row label="Instrument">
+            <Row label="Instrument" hint="Which index to backtest. NIFTY is the most liquid (tightest option spreads); BANKNIFTY/SENSEX move more but have wider spreads — keep realistic costs on for them.">
               <Select value={config.instrument} onValueChange={(v) => setConfig({ ...config, instrument: v })}>
                 <SelectTrigger className="bg-bg-2 border-line h-8" data-testid="backtest-instrument-select">
                   <SelectValue />
@@ -774,7 +775,7 @@ export default function BacktestLab() {
                 </SelectContent>
               </Select>
             </Row>
-            <Row label="Strategy">
+            <Row label="Strategy" hint="The signal logic (its description shows below). Its tunable parameters appear in the Strategy Parameters card lower down.">
               <Select value={config.strategy_id} onValueChange={(v) => setConfig({ ...config, strategy_id: v })}>
                 <SelectTrigger className="bg-bg-2 border-line h-8" data-testid="backtest-strategy-select">
                   <SelectValue />
@@ -787,7 +788,7 @@ export default function BacktestLab() {
             {selectedStrategy && (
               <div className="text-[11px] text-dim leading-snug px-1">{selectedStrategy.description}</div>
             )}
-            <Row label="Pre-trade profile">
+            <Row label="Pre-trade profile" hint="A bundle of signal-quality gates (regime, VIX, time-of-day) applied BEFORE the strategy fires. 'Balanced' is a good default; stricter profiles trade less but cleaner; a permissive/off profile trades the most — use it to see raw signal quality.">
               <Select value={config.pretrade_profile} onValueChange={(v) => setConfig({ ...config, pretrade_profile: v })}>
                 <SelectTrigger className="bg-bg-2 border-line h-8" data-testid="backtest-profile-select">
                   <SelectValue />
@@ -804,6 +805,7 @@ export default function BacktestLab() {
                 data-testid="backtest-costs-switch"
               />
               <span className="text-xs text-dim">Apply realistic costs (slippage + brokerage)</span>
+              <Hint label="Apply realistic costs">Adds index-side slippage. Keep ON — an edge that only survives with costs OFF isn't deployable. For the option ₹ P&L, also enable 'Apply rupee costs' in Option Execution.</Hint>
             </div>
             <div className="flex items-center gap-2">
               <Switch
@@ -817,9 +819,10 @@ export default function BacktestLab() {
               >
                 Walk-forward split check (same params, IS vs OOS)
               </span>
+              <Hint label="Walk-forward split check">Replays the SAME parameters in-sample vs out-of-sample as a stability check — it does NOT re-optimize. A large IS-vs-OOS gap means the result is overfit/fragile. For honest re-optimization use the Optimizer's walk-forward run instead.</Hint>
             </div>
             <div className="pt-2 border-t border-line">
-              <Label className="text-xs text-dim">Date window (IST, optional)</Label>
+              <Label className="text-xs text-dim">Date window (IST, optional)<Hint label="Date window">Leave blank to use all warehouse data. A range tests a specific period. Aim for ≥ ~6 months for a meaningful sample; under ~1 month is anecdote, not evidence.</Hint></Label>
               <div className="grid grid-cols-2 gap-2 mt-1">
                 <Input
                   type="date"
@@ -841,7 +844,7 @@ export default function BacktestLab() {
               </div>
             </div>
             <div className="pt-2 border-t border-line">
-              <Label className="text-xs text-dim">Trade window (IST entries)</Label>
+              <Label className="text-xs text-dim">Trade window (IST entries)<Hint label="Trade window">Intraday entry window (IST). Default 09:25–15:00 skips the noisy first 10 minutes and stops NEW entries before the 15:30 square-off. Open to 09:15 only if the strategy is built for the open.</Hint></Label>
               <div className="grid grid-cols-2 gap-2 mt-1">
                 <Input
                   type="time"
@@ -874,9 +877,10 @@ export default function BacktestLab() {
                 data-testid="option-backtest-switch"
               />
               <span className="text-xs text-dim">Pair signals with option candles</span>
+              <Hint label="Pair signals with option candles">Re-prices each spot signal as a REAL ATM-band option trade (actual CE/PE premium candles) instead of index points. Turn ON for a realistic ₹ P&L — this is what makes a result deployable, and it reveals the Exit/risk controls below.</Hint>
             </div>
             <div className="grid grid-cols-2 gap-2">
-              <Row label="Expiry">
+              <Row label="Expiry" hint="Which expiry to trade. 'Nearest weekly (auto)' is the realistic default (most liquid, highest theta). 'Fixed' pins one expiry — research only.">
                 <Select
                   value={config.option_expiry_mode}
                   onValueChange={(v) => setConfig({ ...config, option_expiry_mode: v })}
@@ -890,7 +894,7 @@ export default function BacktestLab() {
                   </SelectContent>
                 </Select>
               </Row>
-              <Row label="Moneyness">
+              <Row label="Moneyness" hint="Strike vs spot. ATM = best liquidity + balanced delta/theta (default). OTM = cheaper, higher gamma, faster decay (needs a quick move). ITM = pricier, more delta, less theta. For intraday momentum, ATM or OTM1.">
                 <Select
                   value={config.option_moneyness}
                   onValueChange={(v) => setConfig({ ...config, option_moneyness: v })}
@@ -920,7 +924,7 @@ export default function BacktestLab() {
               </Row>
             )}
             <div className="grid grid-cols-2 gap-2">
-              <Row label="Lots">
+              <Row label="Lots" hint="Lots per trade (contract lot size is automatic). Ignored when Capital & position sizing is ON — the sizing panel sets the lots then.">
                 <Input
                   type="number"
                   min="1"
@@ -947,13 +951,14 @@ export default function BacktestLab() {
                   data-testid="option-auto-fetch-switch"
                 />
                 <span className="text-xs text-dim">Auto-fetch</span>
+                <Hint label="Auto-fetch">If option candles for a needed strike-day aren't in the warehouse, fetch them on the fly. Keep ON unless you've pre-filled the warehouse.</Hint>
               </div>
             </div>
 
             {/* DTE filter — multi-select: restrict the backtest to sessions a
                 chosen number of trading days before the weekly expiry (e.g. tick
                 DTE0+DTE1+DTE2 for the 0-2 DTE buying window). None ticked = all. */}
-            <Row label="DTE filter (days to expiry)">
+            <Row label="DTE filter (days to expiry)" hint="Only take trades when days-to-expiry is in the selected set. 0 = expiry day (max theta + gamma, whippy). Leave ALL unless isolating a DTE regime.">
               <div className="flex flex-wrap items-center gap-1" data-testid="option-dte-multiselect">
                 <button
                   type="button"
@@ -1001,11 +1006,12 @@ export default function BacktestLab() {
                   data-testid="option-costs-switch"
                 />
                 <span className="text-xs text-dim">Apply rupee costs (brokerage + STT + charges + spread)</span>
+                <Hint label="Apply rupee costs">Adds brokerage + bid-ask spread to the OPTION P&L (net ₹). Turn ON for realism — the daily ₹ caps below also require this.</Hint>
               </div>
               {config.option_costs_enabled && (
                 <>
                   <div className="grid grid-cols-2 gap-2">
-                    <Row label="Brokerage / order (₹)">
+                    <Row label="Brokerage / order (₹)" hint="Flat ₹ per order; entry and exit each count. ~₹20–40/order is typical for a discount broker. 0 = ignore.">
                       <Input
                         type="number" min="0" step="1"
                         value={config.option_brokerage_per_order}
@@ -1014,7 +1020,7 @@ export default function BacktestLab() {
                         data-testid="option-brokerage-input"
                       />
                     </Row>
-                    <Row label="Bid-ask spread (% of premium)">
+                    <Row label="Bid-ask spread (% of premium)" hint="Half-spread paid on BOTH entry and exit, as % of premium. ATM NIFTY ≈ 0.5–1%; wider for BANKNIFTY/SENSEX/OTM. 1% is a safe default — too low gives optimistic fills.">
                       <Input
                         type="number" min="0" step="0.25"
                         value={config.option_spread_pct}
@@ -1043,11 +1049,12 @@ export default function BacktestLab() {
                   data-testid="option-sizing-switch"
                 />
                 <span className="text-xs text-dim">Capital & position sizing (rupee equity curve)</span>
+                <Hint label="Capital & position sizing">Size each trade from an account balance instead of fixed lots — gives a real ₹ equity curve, return %, and drawdown. Turn ON to see deployable economics.</Hint>
               </div>
               {config.option_sizing_enabled && (
                 <>
                   <div className="grid grid-cols-2 gap-2">
-                    <Row label="Capital (₹)">
+                    <Row label="Capital (₹)" hint="Starting account ₹. Use a realistic amount you'd actually deploy (e.g. ₹2–5L). Drives return % and the Account value chart.">
                       <Input
                         type="number" min="0" step="10000"
                         value={config.option_capital}
@@ -1056,7 +1063,7 @@ export default function BacktestLab() {
                         data-testid="option-capital-input"
                       />
                     </Row>
-                    <Row label="Sizing mode">
+                    <Row label="Sizing mode" hint="'Premium at risk' sizes by how much you'd lose if stopped (recommended — risk-based). 'Fixed lots' always trades the same lots.">
                       <Select
                         value={config.option_sizing_mode}
                         onValueChange={(v) => setConfig({ ...config, option_sizing_mode: v })}
@@ -1073,7 +1080,7 @@ export default function BacktestLab() {
                   </div>
                   {config.option_sizing_mode === "premium_at_risk" ? (
                     <div className="grid grid-cols-3 gap-2">
-                      <Row label="Risk/trade (%)">
+                      <Row label="Risk/trade (%)" hint="Max % of capital risked per trade (premium × assumed stop). 0.5–2% is sane; above 2% risks ruin on a losing streak. With a 50% assumed stop, 1% risk ≈ 2% of capital deployed in premium.">
                         <Input
                           type="number" min="0.1" step="0.1"
                           value={config.option_risk_per_trade_pct}
@@ -1082,7 +1089,7 @@ export default function BacktestLab() {
                           data-testid="option-risk-pct-input"
                         />
                       </Row>
-                      <Row label="Max lots">
+                      <Row label="Max lots" hint="Hard cap on lots per trade regardless of the risk calc — stops one signal taking an oversized position when premiums are tiny.">
                         <Input
                           type="number" min="1" step="1"
                           value={config.option_max_lots}
@@ -1091,7 +1098,7 @@ export default function BacktestLab() {
                           data-testid="option-max-lots-input"
                         />
                       </Row>
-                      <Row label="Assumed stop (%)">
+                      <Row label="Assumed stop (%)" hint="The % premium drop assumed FOR SIZING (not the real exit). 50% is typical. A tighter assumed stop → bigger position for the same risk %. Keep it close to your actual stop.">
                         <Input
                           type="number" min="1" step="5"
                           value={config.option_assumed_stop_pct}
@@ -1103,7 +1110,7 @@ export default function BacktestLab() {
                     </div>
                   ) : (
                     <div className="grid grid-cols-2 gap-2">
-                      <Row label="Fixed lots">
+                      <Row label="Fixed lots" hint="Lots per trade in fixed-lots mode.">
                         <Input
                           type="number" min="1" step="1"
                           value={config.option_fixed_lots}
@@ -1112,7 +1119,7 @@ export default function BacktestLab() {
                           data-testid="option-fixed-lots-input"
                         />
                       </Row>
-                      <Row label="Max lots">
+                      <Row label="Max lots" hint="Hard cap on lots per trade regardless of the risk calc — stops one signal taking an oversized position when premiums are tiny.">
                         <Input
                           type="number" min="1" step="1"
                           value={config.option_max_lots}
@@ -1143,7 +1150,7 @@ export default function BacktestLab() {
             {/* Option exit mode — item 9. spot_exit mirrors the index trade;
                 option_levels exits on the option's own premium target/stop. */}
             <div className="pt-2 border-t border-line space-y-2">
-              <Row label="Option exit mode">
+              <Row label="Option exit mode" hint="How the option exits. 'Mirror spot exit' closes the option when the spot signal exits (simple). 'Option premium SL/target' exits on the OPTION's own price (levels below) — REQUIRED for trailing/breakeven to work.">
                 <Select
                   value={config.option_exit_mode}
                   onValueChange={(v) => setConfig({ ...config, option_exit_mode: v })}
@@ -1161,6 +1168,7 @@ export default function BacktestLab() {
                 <>
                   <div className="flex items-center gap-2">
                     <span className="text-xs text-dim">Level unit</span>
+                    <Hint label="Level unit">Target/Stop as premium Points or Percent of entry premium. % is more robust across strikes/days; pts is absolute.</Hint>
                     <div className="flex rounded-md border border-line overflow-hidden">
                       {["pts", "pct"].map((u) => (
                         <button
@@ -1176,7 +1184,7 @@ export default function BacktestLab() {
                     </div>
                   </div>
                   <div className="grid grid-cols-2 gap-2">
-                    <Row label={`Target (${config.option_sl_tp_unit === "pts" ? "pts" : "%"})`}>
+                    <Row label={`Target (${config.option_sl_tp_unit === "pts" ? "pts" : "%"})`} hint="Profit target on the option premium (e.g. 30%). Keep it realistic for the expected move; too greedy and few trades hit it.">
                       <Input
                         type="number"
                         min="0"
@@ -1191,7 +1199,7 @@ export default function BacktestLab() {
                         data-testid="option-target-input"
                       />
                     </Row>
-                    <Row label={`Stop (${config.option_sl_tp_unit === "pts" ? "pts" : "%"})`}>
+                    <Row label={`Stop (${config.option_sl_tp_unit === "pts" ? "pts" : "%"})`} hint="Stop on the option premium (e.g. 50%). Wider than the typical adverse wiggle or you'll be stopped on noise; too wide and losers hurt.">
                       <Input
                         type="number"
                         min="0"
@@ -1233,6 +1241,7 @@ export default function BacktestLab() {
                     data-testid="exit-controls-switch"
                   />
                   <span className="text-xs text-dim">Exit / risk controls (trailing · breakeven · daily caps)</span>
+                  <Hint label="Exit / risk controls">Adds a premium TRAILING stop, a BREAKEVEN lock, and daily ₹/trade caps on top of the option exit. Trailing & breakeven need exit mode = 'Option premium SL/target' (they trail the option's own premium); daily caps always apply.</Hint>
                 </div>
                 {config.exit_controls_enabled && (
                   <>
@@ -1244,6 +1253,7 @@ export default function BacktestLab() {
                     )}
                     <div className="flex items-center gap-2">
                       <span className="text-xs text-dim">Unit</span>
+                      <Hint label="Exit controls unit">Read the four fields below as a Fraction of entry premium (0.30 = 30%) or absolute Points. Fraction is recommended — it scales across strikes and days.</Hint>
                       <div className="flex rounded-md border border-line overflow-hidden">
                         {["pct", "pts"].map((u) => (
                           <button
@@ -1262,7 +1272,7 @@ export default function BacktestLab() {
                       </span>
                     </div>
                     <div className="grid grid-cols-2 gap-2">
-                      <Row label={`Breakeven trigger ${config.exit_controls_unit === "pts" ? "(pts profit)" : "(fraction)"}`}>
+                      <Row label={`Breakeven trigger ${config.exit_controls_unit === "pts" ? "(pts profit)" : "(fraction)"}`} hint="Once the option is up by this much, the stop jumps to the Breakeven lock level so you stop risking your own capital. e.g. 0.30 = at +30%, arm breakeven. Set it ABOVE your typical noise (too low = armed on a wiggle, then stopped flat). Must be GREATER than Breakeven lock.">
                         <Input
                           type="number" min="0" step={config.exit_controls_unit === "pts" ? "0.5" : "0.05"}
                           value={config.breakeven_trigger}
@@ -1272,7 +1282,7 @@ export default function BacktestLab() {
                           disabled={config.option_exit_mode !== "option_levels"}
                         />
                       </Row>
-                      <Row label={`Breakeven lock ${config.exit_controls_unit === "pts" ? "(pts above entry)" : "(fraction)"}`}>
+                      <Row label={`Breakeven lock ${config.exit_controls_unit === "pts" ? "(pts above entry)" : "(fraction)"}`} hint="Where the stop sits after the trigger fires. 0 = lock at exact entry (can't lose on the trade). 0.05 = lock +5% (bank a small gain). Must be LESS than Breakeven trigger. A higher lock is safer but stops out sooner.">
                         <Input
                           type="number" min="0" step={config.exit_controls_unit === "pts" ? "0.5" : "0.05"}
                           value={config.breakeven_lock}
@@ -1282,7 +1292,7 @@ export default function BacktestLab() {
                           disabled={config.option_exit_mode !== "option_levels"}
                         />
                       </Row>
-                      <Row label={`Trail activate ${config.exit_controls_unit === "pts" ? "(pts profit)" : "(fraction)"}`}>
+                      <Row label={`Trail activate ${config.exit_controls_unit === "pts" ? "(pts profit)" : "(fraction)"}`} hint="Premium gain at which the TRAILING stop switches on. e.g. 0.40 = start trailing at +40%. Set it ≥ Breakeven trigger so breakeven engages first and trailing then takes over for the big moves. Too low = trails on noise.">
                         <Input
                           type="number" min="0" step={config.exit_controls_unit === "pts" ? "0.5" : "0.05"}
                           value={config.trailing_activation}
@@ -1292,7 +1302,7 @@ export default function BacktestLab() {
                           disabled={config.option_exit_mode !== "option_levels"}
                         />
                       </Row>
-                      <Row label={`Trail distance ${config.exit_controls_unit === "pts" ? "(pts from peak)" : "(fraction)"}`}>
+                      <Row label={`Trail distance ${config.exit_controls_unit === "pts" ? "(pts from peak)" : "(fraction)"}`} hint="How far the trailing stop sits below the running peak. e.g. 0.25 = give back 25% from the peak. Tighter (0.15) locks more but exits on small pullbacks; looser (0.35) rides trends but gives back more. Match it to the instrument's intraday swings.">
                         <Input
                           type="number" min="0" step={config.exit_controls_unit === "pts" ? "0.5" : "0.05"}
                           value={config.trailing_distance}
@@ -1304,7 +1314,7 @@ export default function BacktestLab() {
                       </Row>
                     </div>
                     <div className="pt-1 grid grid-cols-3 gap-2">
-                      <Row label="Daily loss ₹">
+                      <Row label="Daily loss ₹" hint="Stop taking NEW trades once the session's realized loss reaches this (soft halt; auto-resets next session). Needs rupee costs on. Set to a loss you can stomach — e.g. 2–3× your average per-trade risk.">
                         <Input
                           type="number" min="0" step="500"
                           value={config.daily_cap_loss}
@@ -1314,7 +1324,7 @@ export default function BacktestLab() {
                           disabled={!config.option_costs_enabled}
                         />
                       </Row>
-                      <Row label="Daily target ₹">
+                      <Row label="Daily target ₹" hint="Stop taking NEW trades once the session is up this much (lock in a good day). Needs rupee costs on.">
                         <Input
                           type="number" min="0" step="500"
                           value={config.daily_cap_target}
@@ -1324,7 +1334,7 @@ export default function BacktestLab() {
                           disabled={!config.option_costs_enabled}
                         />
                       </Row>
-                      <Row label="Max trades / day">
+                      <Row label="Max trades / day" hint="Cap entries per session — curbs overtrading in choppy regimes. e.g. 3–5 for a scalper. Doesn't need costs on.">
                         <Input
                           type="number" min="0" step="1"
                           value={config.daily_cap_max_trades}
@@ -1347,7 +1357,7 @@ export default function BacktestLab() {
         </Panel>
 
         <Panel
-          title="Strategy Parameters"
+          title={<span>Strategy Parameters<Hint label="Strategy Parameters">Strategy-specific knobs. Each comes from the strategy's own schema — hover the strategy description above for what the strategy does. Start from the defaults; change one at a time and re-run, and prefer values the Optimizer found robust (stable in-sample vs out-of-sample) over a single lucky peak.</Hint></span>}
           right={<button onClick={() => setParamsOpen(!paramsOpen)} className="text-dim hover:text-foreground" data-testid="backtest-params-toggle">{paramsOpen ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}</button>}
           testid="backtest-params-panel"
         >
@@ -1517,10 +1527,26 @@ function Panel({ title, children, right, testid, rootRef, className = "", bodyCl
   );
 }
 
-function Row({ label, children }) {
+// Inline "?" help affordance: focusable icon revealing a styled tooltip on
+// hover/focus. Self-contained provider so it works wherever it's dropped.
+const Hint = ({ children, label = "help" }) => (
+  <TooltipProvider delayDuration={150}>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button type="button" aria-label={label}
+          className="ml-1 inline-flex align-middle text-dimmer hover:text-dim focus:outline-none focus-visible:text-dim">
+          <HelpCircle className="h-3 w-3" />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-xs text-[11px] leading-snug">{children}</TooltipContent>
+    </Tooltip>
+  </TooltipProvider>
+);
+
+function Row({ label, hint, children }) {
   return (
     <div>
-      <Label className="text-xs text-dim">{label}</Label>
+      <Label className="text-xs text-dim">{label}{hint && <Hint label={label}>{hint}</Hint>}</Label>
       <div className="mt-1">{children}</div>
     </div>
   );

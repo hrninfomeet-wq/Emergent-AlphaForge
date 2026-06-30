@@ -626,6 +626,36 @@ async def compute_hygiene_plan(
                 "eta_minutes": max(5, band["missing_pairs"] // 10),
             })
 
+        # Under-captured PAST days: a day with SOME stored bars still counts as a
+        # "found date", so spot coverage above stays "verified" — yet the day is
+        # materially short (the PC / live roller died mid-session). The daily
+        # AUTO-UPDATE runs THIS plan, so without this it never repairs partial
+        # sessions; only the manual catch-up did. Mirror the catch-up's bounded
+        # incomplete-day repair here so the auto-update self-heals them too.
+        if judge_until and not any(a["kind"] == "spot" for a in actions):
+            repair_floor = (
+                date.fromisoformat(judge_until) - timedelta(days=SPOT_REPAIR_LOOKBACK_DAYS)
+            ).isoformat()
+            repair_rows = [r for r in window_rows if repair_floor <= r["date"] <= judge_until]
+            incomplete = incomplete_spot_days(repair_rows, judge_until=judge_until)
+            if incomplete:
+                eg = incomplete[0]
+                actions.append({
+                    "id": f"spot_{inst}",
+                    "kind": "spot",
+                    "instrument": inst,
+                    "from_date": eg["date"],
+                    "to_date": end_date,
+                    "reason": (
+                        f"{len(incomplete)} under-captured day(s) to repair "
+                        f"(e.g. {eg['date']} {eg['count']}/{eg['expected']})"
+                    ),
+                    "eta_minutes": 2,
+                })
+                # surface the pending repair in the per-instrument + rolled-up status
+                if spot_status == "verified":
+                    spot_status = "warning"
+
         total_actions += len(actions)
         for s in (spot_status, contract_status, opt_status):
             if s == "degraded" and worst_status != "degraded":
@@ -691,6 +721,34 @@ def incomplete_spot_days(
         if expected > 0 and count < expected - int(tolerance):
             out.append({"date": day, "count": count, "expected": expected})
     return sorted(out, key=lambda d: d["date"])
+
+
+def vix_topup_from_date(
+    vix_day_rows: Sequence[Dict[str, Any]],
+    *,
+    forward_from: str,
+    judge_until: Optional[str],
+    lookback_days: int = SPOT_REPAIR_LOOKBACK_DAYS,
+) -> str:
+    """Earliest date the VIX top-up should fetch from.
+
+    Plain forward-append (``forward_from`` = last stored VIX day + 1) can never
+    fill a MID-window HOLE — a VIX trading day that was missed while LATER days
+    were fetched (its date sits below the high-water mark). This pulls the start
+    back to the earliest MISSING-or-short VIX trading day in the recent repair
+    window so the idempotent, upserting fetch fills it. Pure / unit-testable.
+    """
+    if not judge_until:
+        return forward_from
+    floor = (date.fromisoformat(judge_until) - timedelta(days=lookback_days)).isoformat()
+    recent = [r for r in vix_day_rows if floor <= str(r.get("date") or "") <= judge_until]
+    have = {str(r.get("date") or "") for r in recent}
+    missing = [d for d in trading_days_in_range(floor, judge_until) if d not in have]
+    short = [d["date"] for d in incomplete_spot_days(recent, judge_until=judge_until)]
+    holes = sorted(set(missing) | set(short))
+    if holes and holes[0] < forward_from:
+        return holes[0]
+    return forward_from
 
 
 async def _last_spot_date(db: Any, instrument: str) -> Optional[str]:

@@ -47,20 +47,23 @@ export function PerformanceOverview({ result }) {
         {hero.map((c) => <MetricCard key={c.testid} {...c} />)}
       </div>
 
-      {/* Two separate charts (split from one dual-pane chart per request). */}
+      {/* Pane 1: Cumulative P&L + Account value on a SHARED ₹ axis. They differ
+          only by the starting capital, so a shared scale keeps both readable as
+          distinct lines (independent auto-scaled axes would overlap them). */}
       <DualAxisChart
-        testid="chart-pnl-vs-value"
-        title="Cumulative P&L vs trade value"
-        left={{ data: series.cumPnl, kind: "area", color: "#2ED47A", label: "Cumulative P&L" }}
-        right={{ data: series.buyValue, kind: "line", color: "#5AA9FF", label: cur ? "Trade value" : series.rightLabel }}
+        testid="chart-pnl-and-account"
+        title="Cumulative P&L and Account value"
+        left={{ data: series.cumPnl, kind: "line", color: "#2ED47A", label: "Cumulative P&L" }}
+        right={{ data: series.accountValue, kind: "line", color: "#C9A227", label: "Account value" }}
+        shared
         currency={cur}
         height={300}
       />
+      {/* Pane 2: Drawdown only (single series). */}
       <DualAxisChart
-        testid="chart-account-drawdown"
-        title="Account value & drawdown"
-        left={{ data: series.accountValue, kind: "line", color: "#C9A227", label: "Account value" }}
-        right={{ data: series.drawdown, kind: "baseline", color: "#FF5D5D", label: "Drawdown" }}
+        testid="chart-drawdown"
+        title="Drawdown"
+        left={{ data: series.drawdown, kind: "baseline", color: "#FF5D5D", label: "Drawdown" }}
         currency={cur}
         height={260}
       />

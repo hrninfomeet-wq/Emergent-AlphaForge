@@ -73,6 +73,7 @@ _HOLIDAYS_2026: Set[str] = {
     "2026-04-14",  # Dr. Ambedkar Jayanti
     "2026-05-01",  # Maharashtra Day
     "2026-05-28",  # Eid-ul-Adha (Bakri Id)
+    "2026-06-26",  # Market closure — no NSE session (Upstox has no historical; only stale-feed artifacts were stored). Confirmed 2026-06-30.
     "2026-08-15",  # Independence Day (Saturday this year, but listed for safety)
     "2026-10-02",  # Mahatma Gandhi Jayanti
     "2026-11-08",  # Diwali Laxmi Pujan (Sunday) - special session
@@ -148,6 +149,7 @@ HOLIDAY_LABELS: dict = {
     "2026-04-14": "Dr. Ambedkar Jayanti",
     "2026-05-01": "Maharashtra Day",
     "2026-05-28": "Eid-ul-Adha (Bakri Id)",
+    "2026-06-26": "Market holiday",
     "2026-08-15": "Independence Day",
     "2026-10-02": "Mahatma Gandhi Jayanti",
     "2026-11-08": "Diwali Laxmi Pujan",
