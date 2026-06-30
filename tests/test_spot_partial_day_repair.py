@@ -13,7 +13,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 
-from app.data_hygiene import incomplete_spot_days, SPOT_INCOMPLETE_TOLERANCE  # noqa: E402
+from datetime import date, timedelta  # noqa: E402
+
+from app.data_hygiene import (  # noqa: E402
+    incomplete_spot_days,
+    vix_topup_from_date,
+    SPOT_INCOMPLETE_TOLERANCE,
+    SPOT_REPAIR_LOOKBACK_DAYS,
+)
+from app.nse_calendar import trading_days_in_range  # noqa: E402
 from tests.contract_corpus import backend_api_text
 
 
@@ -59,6 +67,61 @@ def test_in_progress_day_not_judged():
 def test_zero_count_day_skipped():
     rows = [{"date": "2026-06-12", "count": 0}]
     assert incomplete_spot_days(rows, judge_until="2026-06-12") == []
+
+
+# ---------------------------------------------------------------------------
+# vix_topup_from_date — fill mid-window HOLES, not just append forward
+# ---------------------------------------------------------------------------
+
+def _vix_full_rows(judge: str, lookback: int = SPOT_REPAIR_LOOKBACK_DAYS):
+    """A complete set of VIX day-rows over the whole repair window [judge-lookback, judge]."""
+    floor = (date.fromisoformat(judge) - timedelta(days=lookback)).isoformat()
+    return [{"date": d, "count": 375} for d in trading_days_in_range(floor, judge)]
+
+
+def test_vix_topup_no_holes_returns_forward_from():
+    rows = _vix_full_rows("2026-06-25")
+    assert vix_topup_from_date(rows, forward_from="2026-06-26", judge_until="2026-06-25") == "2026-06-26"
+
+
+def test_vix_topup_pulls_back_to_missing_hole():
+    # A VIX day missed while later days were fetched -> forward append can't fill it.
+    rows = _vix_full_rows("2026-06-25")
+    hole = rows[len(rows) // 2]["date"]
+    rows2 = [r for r in rows if r["date"] != hole]
+    assert vix_topup_from_date(rows2, forward_from="2026-06-26", judge_until="2026-06-25") == hole
+
+
+def test_vix_topup_pulls_back_to_short_day():
+    rows = _vix_full_rows("2026-06-25")
+    short_day = rows[-1]["date"]
+    rows2 = [({"date": r["date"], "count": 50} if r["date"] == short_day else r) for r in rows]
+    assert vix_topup_from_date(rows2, forward_from="2026-06-26", judge_until="2026-06-25") == short_day
+
+
+def test_vix_topup_no_judge_is_safe():
+    assert vix_topup_from_date([], forward_from="2026-06-26", judge_until=None) == "2026-06-26"
+
+
+# ---------------------------------------------------------------------------
+# Source pins — the AUTO-UPDATE path repairs partial days + VIX holes too
+# (tests never import runtime: motor absent)
+# ---------------------------------------------------------------------------
+
+def test_hygiene_plan_also_repairs_incomplete_days():
+    dh = (ROOT / "backend" / "app" / "data_hygiene.py").read_text(encoding="utf-8")
+    plan = dh[dh.index("async def compute_hygiene_plan"):dh.index("SPOT_INCOMPLETE_TOLERANCE = ")]
+    # the daily auto-update runs compute_hygiene_plan, so it must repair partial
+    # sessions too (not just the manual catch-up).
+    assert "incomplete_spot_days(" in plan
+    assert "under-captured" in plan
+    assert "SPOT_REPAIR_LOOKBACK_DAYS" in plan  # bounded churn guard wired in
+
+
+def test_vix_topup_uses_hole_aware_start():
+    rt = (ROOT / "backend" / "app" / "runtime.py").read_text(encoding="utf-8")
+    vix = rt[rt.index("async def _topup_vix"):rt.index("async def _trigger_autoupdate")]
+    assert "vix_topup_from_date(" in vix  # forward-only append replaced with hole-aware start
 
 
 # ---------------------------------------------------------------------------
