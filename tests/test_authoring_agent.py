@@ -46,3 +46,59 @@ def test_optional_infeasible_is_advise_not_reject():
 def test_live_feasible_feature_is_plain_build():
     rules = [G(), G(decision_class="BUILDABLE_WITH_FEATURE", live_feasible=True)]
     assert aggregate_gate(rules) == "BUILD"
+
+
+def _patch_llm(monkeypatch, parsed):
+    import app.ai.llm_client as llm
+    def fake(*, tier, system, user, output_model, provider=None, max_tokens=4000):
+        return parsed
+    monkeypatch.setattr(llm, "complete_structured", fake)
+
+
+def test_map_source_to_ruleset_build(monkeypatch):
+    from app.ai.authoring_agent import map_source_to_ruleset, ParsedRuleSet, ParsedRule
+    parsed = ParsedRuleSet(rules=[
+        ParsedRule(id="r1", text="enter when rsi>70", kind="ENTRY",
+                   criticality="CORE", cols=["rsi"], barspan=1),
+    ])
+    _patch_llm(monkeypatch, parsed)
+    out = map_source_to_ruleset("enter when rsi over 70")
+    assert out["decision"] == "BUILD"
+    assert out["rules"][0]["decision_class"] == "BUILDABLE_NOW"
+
+
+def test_map_source_to_ruleset_fvg_is_advise(monkeypatch):
+    from app.ai.authoring_agent import map_source_to_ruleset, ParsedRuleSet, ParsedRule
+    parsed = ParsedRuleSet(rules=[
+        ParsedRule(id="r1", text="enter at a bullish FVG", kind="ENTRY",
+                   criticality="CORE", concepts=["fvg"]),
+    ])
+    _patch_llm(monkeypatch, parsed)
+    out = map_source_to_ruleset("buy when price returns to a bullish FVG")
+    assert out["decision"] == "ADVISE"
+    r = out["rules"][0]
+    assert r["decision_class"] == "BUILDABLE_WITH_FEATURE"
+    assert r["feature"] == "fvg_zones" and r["live_feasible"] is False
+
+
+def test_map_source_to_ruleset_oi_core_is_reject(monkeypatch):
+    from app.ai.authoring_agent import map_source_to_ruleset, ParsedRuleSet, ParsedRule
+    parsed = ParsedRuleSet(rules=[
+        ParsedRule(id="r1", text="enter when OI rises", kind="ENTRY",
+                   criticality="CORE", concepts=["oi"]),
+    ])
+    _patch_llm(monkeypatch, parsed)
+    out = map_source_to_ruleset("enter when open interest spikes")
+    assert out["decision"] == "REJECT"
+
+
+def test_map_source_to_ruleset_ambiguous_is_ask(monkeypatch):
+    from app.ai.authoring_agent import map_source_to_ruleset, ParsedRuleSet, ParsedRule
+    parsed = ParsedRuleSet(rules=[
+        ParsedRule(id="r1", text="enter on a strong move", kind="ENTRY",
+                   criticality="CORE", ambiguous=True, question="How big is 'strong'?"),
+    ])
+    _patch_llm(monkeypatch, parsed)
+    out = map_source_to_ruleset("enter on a strong move")
+    assert out["decision"] == "ASK"
+    assert out["rules"][0]["question"] == "How big is 'strong'?"
