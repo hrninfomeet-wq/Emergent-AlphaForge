@@ -22,7 +22,7 @@ import { useMaximize, MaximizeButton } from "@/components/MaximizeButton";
 import { buildPerformanceSeries } from "@/lib/backtestMetrics";
 import { NumberSliderInput } from "@/components/NumberSliderInput";
 import BacktestRunJournal from "@/components/BacktestRunJournal";
-import { Play, Save, Filter, ChevronDown, ChevronRight, ChevronsUpDown, ArrowUp, ArrowDown, Download, FileJson, FileText, FolderOpen, ShieldCheck, Loader2 } from "lucide-react";
+import { Play, Save, Filter, ChevronDown, ChevronRight, ChevronsUpDown, ArrowUp, ArrowDown, Download, FileJson, FileText, FolderOpen, ShieldCheck, Loader2, AlertTriangle } from "lucide-react";
 import { dateToMs, msToDate } from "@/lib/time";
 
 const INSTRUMENTS = ["NIFTY", "BANKNIFTY", "SENSEX"];
@@ -1843,6 +1843,21 @@ function OptionBacktestCard({ optionBacktest }) {
       testid="option-backtest-card"
       right={<ShieldCheck className={`w-4 h-4 ${trusted ? "text-success" : "text-amber-300"}`} />}
     >
+      {data.candles_capped && (
+        <div
+          className="mb-3 rounded-md border border-amber-900 bg-amber-950 text-amber-200 p-2 flex items-start gap-2 text-[11px]"
+          role="alert"
+          data-testid="option-candles-capped-warning"
+        >
+          <AlertTriangle className="w-3.5 h-3.5 mt-px shrink-0 text-amber-300" />
+          <span>
+            Option-candle load hit its row cap. Candles load oldest-first, so the{" "}
+            <span className="font-semibold">newest</span> candles were dropped — trades in the most
+            recent period may be unpaired and this result is incomplete. Narrow the date range and
+            re-run to confirm pairing.
+          </span>
+        </div>
+      )}
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-2 mb-3">
         <AuditMetric label="Option P&L" value={fmtPnL(metrics.total_option_pnl_value)} />
         <AuditMetric label="Paired" value={`${fmtInt(paired)}/${fmtInt(totalSpot)}`} />

@@ -2,6 +2,16 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.48.1] — Backtest: stop silently dropping newest option candles at the load cap (2026-06-30)
+
+Fixes a **silent data-loss** bug in the paired-option backtest. `options_1m` candles were loaded
+oldest-first under a 1,000,000-row cap, so a long multi-strike range dropped the **newest** candles
+and the most-recent trades paired 0% with no warning. The cap is raised to 4,000,000
+(`OPTION_CANDLE_LOAD_CAP`, matching `optimizer`/`wfo`), a cap-hit now logs a warning and surfaces
+`candles_capped` in the backtest response, and the Backtest Lab **Option Execution** card banners it
+so the result is never silently incomplete. (Merged from `fix/option-candle-load-cap`, originally
+authored 2026-06-16 off an older `main`.)
+
 ## [0.48.x] — Strategy → Deploy to Live: armed auto-place within caps (2026-06-25, BUILD COMPLETE; live readback pending)
 
 Lets a **deployed backtest strategy** route its **continuous live signals** through the existing
