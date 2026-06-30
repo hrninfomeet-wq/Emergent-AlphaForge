@@ -923,6 +923,27 @@ export default function LiveOrderTicket({ mode, disabled, onQueued }) {
           </div>
           {placeResult.norenordno && <div>Order ID: {placeResult.norenordno}</div>}
           {placeResult.reason && <div className="text-dimmer">Reason: {placeResult.reason}</div>}
+          {/* Show individual verdicts on failure so the blocking check is visible */}
+          {!placeResult.placed && placeResult.verdicts?.length > 0 && (
+            <div className="mt-1.5 space-y-1">
+              {placeResult.verdicts.map((v, i) => (
+                <div
+                  key={i}
+                  className={`flex items-start gap-2 ${v.ok ? "text-emerald-300" : "text-danger"}`}
+                >
+                  {v.ok ? (
+                    <CheckCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                  ) : (
+                    <XCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                  )}
+                  <span>
+                    <span className="font-semibold">{v.check}</span>
+                    {v.detail ? <span className="text-dimmer ml-1">— {v.detail}</span> : null}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 

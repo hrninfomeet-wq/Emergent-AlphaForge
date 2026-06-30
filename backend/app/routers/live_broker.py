@@ -1022,6 +1022,7 @@ async def _validate_order_ticket(body: "_OrderTicketBody") -> Dict[str, Any]:
 
     pre_fetched_rows: List[Dict[str, Any]] = []
     fetch_error: Optional[str] = None
+    client = None
     try:
         client = await _get_client()
         spec = UNDERLYING_SPEC.get(underlying)
@@ -1061,6 +1062,26 @@ async def _validate_order_ticket(body: "_OrderTicketBody") -> Dict[str, Any]:
         for v in verdicts:
             if v.get("check") == "symbol" and not v.get("ok"):
                 v["detail"] = f"{fetch_error}; {v['detail']}"
+
+    # ------------------------------------------------------------------
+    # Margin pre-check — runs after validate_and_build so we have the
+    # resolved lot_size (total qty / lots).  Skipped if validation already
+    # failed (children is None) or if ref_ltp is absent (MARKET orders).
+    # Uses the same client that was built for search_scrip above.
+    # ------------------------------------------------------------------
+    if children is not None and body.ref_ltp is not None and client is not None:
+        from app.live.margin import margin_verdict as _margin_verdict
+        try:
+            total_qty = sum(c.qty for c in children)
+            resolved_lot_size = total_qty // (body.lots or 1)
+            limits_data = await client.limits()
+            mv = _margin_verdict(limits_data, ref_ltp=body.ref_ltp, lot_size=resolved_lot_size)
+            verdicts.append(mv)
+            if not mv["ok"]:
+                children = None
+        except Exception as exc:
+            verdicts.append({"check": "margin", "ok": False, "detail": f"margin pre-check error: {exc}"})
+            children = None
 
     uid = actid = ""
     try:
