@@ -425,6 +425,11 @@ class PythonFromSourceReq(BaseModel):
     provider: Optional[str] = None
 
 
+class ConverseReq(BaseModel):
+    source: str
+    provider: Optional[str] = None
+
+
 class PythonValidateReq(BaseModel):
     code: str
 

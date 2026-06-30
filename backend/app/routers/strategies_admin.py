@@ -17,6 +17,7 @@ from app.strategies.base import get_registry
 from app.schemas import (
     StrategyAuthorReq,
     StrategyFromSourceReq,
+    ConverseReq,
     PythonFromSourceReq,
     PythonValidateReq,
     PythonInstallReq,
@@ -286,6 +287,35 @@ async def author_from_source(req: StrategyFromSourceReq):
         raise HTTPException(502, f"AI mapping failed: {e}")
     out["source_kind"] = ing["kind"]
     return out
+
+
+@api.post("/strategies/author/converse")
+async def author_converse(req: ConverseReq):
+    """Collaborative gate: parse source -> per-rule feasibility -> BUILD/ASK/ADVISE/REJECT."""
+    from app.ai import llm_client
+    from app.ai.source_ingest import ingest_source
+    from app.ai.authoring_agent import map_source_to_ruleset
+    if not llm_client.any_configured():
+        raise HTTPException(503, "AI authoring is not configured — set GEMINI_API_KEY or ANTHROPIC_API_KEY in backend/.env")
+    if not (req.source or "").strip():
+        raise HTTPException(400, "source is empty")
+    if req.provider:
+        try:
+            llm_client.resolve_provider(req.provider)
+        except RuntimeError as e:
+            raise HTTPException(400, str(e))
+    try:
+        ing = ingest_source(req.source)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except RuntimeError as e:
+        raise HTTPException(502, f"Transcript fetch failed: {e}")
+    try:
+        return map_source_to_ruleset(ing["text"], provider=req.provider)
+    except RuntimeError as e:
+        raise HTTPException(503, detail=str(e))
+    except Exception as e:
+        raise HTTPException(502, detail=f"author/converse failed: {e}")
 
 
 # ---------------------------------------------------------------------------
