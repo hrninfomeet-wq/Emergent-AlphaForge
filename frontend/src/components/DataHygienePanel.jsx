@@ -226,7 +226,7 @@ export default function DataHygienePanel({ upstoxConnected }) {
 
   return (
     <div className="rounded-lg border border-line bg-bg-1" data-testid="data-hygiene-panel">
-      <div className="px-3 py-2 border-b border-line flex items-center gap-2">
+      <div className="px-3 py-2 border-b border-line flex items-center gap-2 flex-wrap">
         <ShieldCheck className="w-4 h-4 text-info" />
         <div className="text-xs font-semibold uppercase tracking-wider text-dim">Data Hygiene</div>
         {overall && (
