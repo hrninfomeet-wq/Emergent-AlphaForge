@@ -165,4 +165,7 @@ def test_flagship_ict_multirule_advise(monkeypatch):
     classes = {r["id"]: r["decision_class"] for r in out["rules"]}
     assert classes == {"r1": "BUILDABLE_WITH_FEATURE", "r2": "BUILDABLE_WITH_FEATURE",
                        "r3": "BUILDABLE_WITH_FEATURE"}
+    # pin the per-rule live-feasibility so "only the FVG rule drives ADVISE" is load-bearing
+    live = {r["id"]: r["live_feasible"] for r in out["rules"]}
+    assert live == {"r1": True, "r2": False, "r3": True}
     assert "fvg_zones" in out["summary"]
