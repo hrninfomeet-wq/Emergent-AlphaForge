@@ -146,3 +146,22 @@ def test_no_buy_and_hold_benchmark_series():
     overview = _read("components", "backtest", "PerformanceOverview.jsx").lower()
     assert "benchmark" not in overview
     assert "buy-and-hold" not in overview
+
+
+def test_backtest_form_fields_have_hints():
+    # Every field carries a "?"-hint (what it does + optimum + inter-relations);
+    # the exit/risk controls get the deepest guidance (the user's specific ask).
+    page = _read("pages", "BacktestLab.jsx")
+    assert "const Hint = " in page and "HelpCircle" in page
+    assert "function Row({ label, hint, children })" in page  # hint-capable Row
+    for needle in (
+        "Pair signals with option candles",
+        "Premium at risk",
+        "arm breakeven",                       # breakeven trigger guidance
+        "Must be GREATER than Breakeven lock",  # breakeven trigger inter-relation
+        "give back 25% from the peak",          # trail distance guidance
+        "soft halt",                            # daily caps behaviour
+        "scales across strikes",                # fraction-vs-points unit guidance
+    ):
+        assert needle in page, needle
+    assert page.count("hint=") >= 20            # the bulk of fields annotated via Row
