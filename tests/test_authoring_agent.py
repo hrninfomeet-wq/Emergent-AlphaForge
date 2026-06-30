@@ -145,3 +145,24 @@ def test_empty_parse_is_ask_not_build(monkeypatch):
     assert out["decision"] == "ASK"
     assert out["rules"] == []
     assert "couldn't extract" in out["summary"]
+
+
+def test_flagship_ict_multirule_advise(monkeypatch):
+    # The motivating case: a real ICT strategy whose FVG rule is backtest-only ->
+    # ADVISE (not a silently-degraded BUILD).
+    from app.ai.authoring_agent import map_source_to_ruleset, ParsedRuleSet, ParsedRule
+    parsed = ParsedRuleSet(rules=[
+        ParsedRule(id="r1", text="bias from premium/discount", kind="FILTER",
+                   criticality="CORE", concepts=["premium_discount"]),   # live ok
+        ParsedRule(id="r2", text="enter at a bullish FVG", kind="ENTRY",
+                   criticality="CORE", concepts=["fvg"]),                 # backtest-only
+        ParsedRule(id="r3", text="target the opposing liquidity", kind="EXIT",
+                   criticality="CORE", concepts=["sweep"]),               # live ok
+    ])
+    _patch_llm(monkeypatch, parsed)
+    out = map_source_to_ruleset("ICT: in discount, buy the bullish FVG, target liquidity")
+    assert out["decision"] == "ADVISE"
+    classes = {r["id"]: r["decision_class"] for r in out["rules"]}
+    assert classes == {"r1": "BUILDABLE_WITH_FEATURE", "r2": "BUILDABLE_WITH_FEATURE",
+                       "r3": "BUILDABLE_WITH_FEATURE"}
+    assert "fvg_zones" in out["summary"]
