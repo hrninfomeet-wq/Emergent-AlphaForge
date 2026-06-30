@@ -629,7 +629,7 @@ export default function Optimizer() {
         <Panel title="Optimization Setup" testid="opt-setup-panel">
           <div className="space-y-3">
             <div>
-              <Label className="text-xs text-dim">Run name</Label>
+              <Label className="text-xs text-dim">Run name<Hint label="Run name">Labels this run in Job History. Leave it blank and it auto-stamps <code>strategy · instrument · objective · timestamp</code> so every run stays unique; type your own only when you want a memorable tag. A duplicate typed name prompts before starting.</Hint></Label>
               <Input
                 value={config.name}
                 onChange={(e) => { nameTouchedRef.current = true; setConfig({ ...config, name: e.target.value }); }}
@@ -637,7 +637,7 @@ export default function Optimizer() {
                 data-testid="opt-name-input"
               />
             </div>
-            <Row label="Instrument">
+            <Row label="Instrument" hint={<>Which index to optimize — NIFTY, BANKNIFTY or SENSEX. Liquidity and lot size differ, so params don't transfer between them. <b>Optimize the one you'll actually trade.</b> Drives the lot size used for the Net P&L (₹) objective.</>}>
               <Select value={config.instrument} onValueChange={(v) => setConfig({ ...config, instrument: v })}>
                 <SelectTrigger className="bg-bg-2 border-line h-8" data-testid="opt-instrument-select"><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -645,7 +645,7 @@ export default function Optimizer() {
                 </SelectContent>
               </Select>
             </Row>
-            <Row label="Strategy">
+            <Row label="Strategy" hint={<>The strategy plugin whose parameters get tuned. Only loaded, non-retired strategies appear. Pick the one you intend to deploy — its tunable params define the entire search space.</>}>
               <Select value={config.strategy_id} onValueChange={(v) => setConfig({ ...config, strategy_id: v })}>
                 <SelectTrigger className="bg-bg-2 border-line h-8" data-testid="opt-strategy-select"><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -653,7 +653,7 @@ export default function Optimizer() {
                 </SelectContent>
               </Select>
             </Row>
-            <Row label="Method">
+            <Row label="Method" hint={<>How the search explores params. <b>Bayesian (TPE) is the default</b> — smart, focuses on promising regions, best for most runs. Grid is exhaustive (sampled if large); genetic (CMA-ES) suits many params. Switching method resets the trial budget to that method's default. <b>Grid is auto-swapped to Bayesian in walk-forward.</b></>}>
               <Select value={config.method} onValueChange={(v) => setConfig({ ...config, method: v, n_trials: METHODS.find(x => x.id === v)?.default_trials || 150 })}>
                 <SelectTrigger className="bg-bg-2 border-line h-8" data-testid="opt-method-select"><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -667,7 +667,7 @@ export default function Optimizer() {
                 )}
               </div>
             </Row>
-            <Row label="Objective">
+            <Row label="Objective" hint={<>What the search maximizes. <b>Risk-Adjusted is the balanced default</b> (Sharpe penalized by drawdown). Net P&L (₹) and (pts) <b>want costs ON</b> to be honest — and (pts) <i>ignores drawdown</i>, so it can pick a high-variance fit. Minimize Max DD trades return for stability.</>}>
               <Select value={config.objective} onValueChange={(v) => setConfig({ ...config, objective: v })}>
                 <SelectTrigger className="bg-bg-2 border-line h-8" data-testid="opt-objective-select"><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -676,7 +676,7 @@ export default function Optimizer() {
               </Select>
               <div className="text-[10px] text-dimmer mt-1">{OBJECTIVES.find((o) => o.id === config.objective)?.desc}</div>
             </Row>
-            <Row label="Pre-trade profile">
+            <Row label="Pre-trade profile" hint={<>Applies a pre-trade filter during every trial. <b>Use the same profile you'll backtest and trade with</b> so the optimized params match live behaviour; <b>None</b> optimizes the strategy's raw signals (params won't match a filtered live run).</>}>
               <Select value={config.pretrade_profile} onValueChange={(v) => setConfig({ ...config, pretrade_profile: v })}>
                 <SelectTrigger className="bg-bg-2 border-line h-8" data-testid="opt-profile-select"><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -688,7 +688,7 @@ export default function Optimizer() {
                 Apply the same pre-trade filter you'll backtest/trade with, so optimized params match live behaviour. "None" optimizes raw strategy signals.
               </div>
             </Row>
-            <Row label="Run type">
+            <Row label="Run type" hint={<><b>Single</b>: one fast search over the whole window — but the result is in-sample. <b>Walk-forward</b>: re-fits per train window and scores the unseen window after it, the honest out-of-sample answer. <b>Verify a Single run with walk-forward before trusting it</b> (note: grid becomes Bayesian here).</>}>
               <Select value={config.run_kind} onValueChange={(v) => setConfig({ ...config, run_kind: v })}>
                 <SelectTrigger className="bg-bg-2 border-line h-8" data-testid="opt-run-kind-select"><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -803,14 +803,14 @@ export default function Optimizer() {
                     data-testid="opt-wfo-option-aware"
                   />
                   <span className="text-[11px] text-dim">
-                    <b>Option-aware OOS (₹)</b> — after stitching, pair the OOS trades with real option candles and report net rupee + per-window rupee consistency
+                    <b>Option-aware OOS (₹)</b><Hint label="Option-aware OOS">After stitching the out-of-sample windows, re-pairs those OOS trades with <b>real option candles</b> and reports net rupee plus per-window rupee consistency beside the spot stitch — the check that your spot edge survives in actual option ₹. Uses the option sub-panel below (moneyness/DTE/lots/exit); it only reports, never fails or re-ranks the run, and data gaps degrade to a low-pairing note. <b>Suggested: ON.</b></Hint> — after stitching, pair the OOS trades with real option candles and report net rupee + per-window rupee consistency
                   </span>
                 </div>
               </div>
             )}
 
             {config.run_kind !== "walkforward" && (
-            <Row label="Evaluation">
+            <Row label="Evaluation" hint={<>How candidates are scored. <b>Spot points</b> ranks on the index backtest (fast). <b>Option re-rank</b> takes the top spot configs and re-scores them on REAL paired-option net rupee (delta/theta/costs) — slower but realistic for option buying. <b>Use Option re-rank for a deploy decision.</b></>}>
               <Select value={config.evaluation_mode} onValueChange={(v) => setConfig({ ...config, evaluation_mode: v })}>
                 <SelectTrigger className="bg-bg-2 border-line h-8" data-testid="opt-eval-mode-select"><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -835,7 +835,7 @@ export default function Optimizer() {
                 <div className="grid grid-cols-2 gap-2">
                   {config.run_kind !== "walkforward" && (
                   <div>
-                    <Label className="text-[11px] text-dim">Re-rank top-K</Label>
+                    <Label className="text-[11px] text-dim">Re-rank top-K<Hint label="Re-rank top-K">How many top spot candidates get fully option-backtested (and survival-checked, if enabled) on real option P&L — every extra one costs Analyzing time. <b>~50 is plenty</b> (the default); above 80 turns amber and is slow. Clamped 1-500.</Hint></Label>
                     <Input type="number" min={1} max={500} value={config.rerank_top_k}
                       onChange={(e) => setConfig({ ...config, rerank_top_k: e.target.value })}
                       className="bg-bg-2 border-line h-8 text-xs font-mono mt-1" data-testid="opt-rerank-k" />
@@ -847,13 +847,13 @@ export default function Optimizer() {
                       <input type="checkbox" checked={Boolean(config.rerank_diversity)}
                         onChange={(e) => setConfig({ ...config, rerank_diversity: e.target.checked })}
                         className="h-3 w-3 rounded border-line" data-testid="opt-rerank-diversity" />
-                      Diversity shortlist
+                      Diversity shortlist<Hint label="Diversity shortlist">Also re-scores a spread of lower-spot-ranked configs (within the SAME top-K budget) so an option-best-but-spot-mediocre setup can still surface. <b>Default OFF</b> (pure top-K). Turn ON if spot and option rupee look poorly correlated; it keeps the top ~70% and evenly samples the rest.</Hint>
                     </label>
                   </div>
                   )}
                   {config.run_kind !== "walkforward" && (
                   <div>
-                    <Label className="text-[11px] text-dim">Analyzing budget (min)</Label>
+                    <Label className="text-[11px] text-dim">Analyzing budget (min)<Hint label="Analyzing budget">Time cap (minutes) on the option re-rank + survival phase only. <b>0 = unlimited</b>; default is 30. On a hit it stops and returns the best evaluated so far (flagged), so a high Re-rank top-K can be cut short — leave headroom or set 0.</Hint></Label>
                     <Input type="number" min={0} max={240} value={config.analyze_budget_min}
                       onChange={(e) => setConfig({ ...config, analyze_budget_min: e.target.value })}
                       className="bg-bg-2 border-line h-8 text-xs font-mono mt-1" data-testid="opt-analyze-budget" />
@@ -863,14 +863,14 @@ export default function Optimizer() {
                   </div>
                   )}
                   <div>
-                    <Label className="text-[11px] text-dim">Moneyness</Label>
+                    <Label className="text-[11px] text-dim">Moneyness<Hint label="Moneyness">Which strike the signals are paired with. <b>ATM</b> (default) is the most liquid with the tightest spread. <b>OTM</b> is cheaper premium but lower delta and more theta decay; <b>ITM</b> moves more with the index but costs more. <b>Keep ATM unless you have a reason.</b></Hint></Label>
                     <Select value={config.option_moneyness} onValueChange={(v) => setConfig({ ...config, option_moneyness: v })}>
                       <SelectTrigger className="bg-bg-2 border-line h-8 mt-1"><SelectValue /></SelectTrigger>
                       <SelectContent>{OPT_MONEYNESS.map((m) => <SelectItem key={m} value={m}>{m.toUpperCase()}</SelectItem>)}</SelectContent>
                     </Select>
                   </div>
                   <div>
-                    <Label className="text-[11px] text-dim">DTE filter</Label>
+                    <Label className="text-[11px] text-dim">DTE filter<Hint label="DTE filter">Which days-to-expiry sessions to include. <b>0 = expiry-day / 0DTE</b> (max gamma but brutal theta); higher numbers (up to 6) are steadier. <b>ALL</b> (default) uses every weekly session. The SAME filter is applied in survival, so a narrow pick means fewer paired trades to gate on.</Hint></Label>
                     <div className="flex flex-wrap items-center gap-1 mt-1" data-testid="opt-dte-multiselect">
                       <button
                         type="button"
@@ -901,14 +901,14 @@ export default function Optimizer() {
                     </div>
                   </div>
                   <div>
-                    <Label className="text-[11px] text-dim">Lots</Label>
+                    <Label className="text-[11px] text-dim">Lots<Hint label="Lots">Position size in lots. <b>Default 1.</b> It scales the rupee P&L linearly but does NOT change the % / Sharpe / drawdown-% metrics — only raise it to see realistic rupee figures at your intended size.</Hint></Label>
                     <Input type="number" min={1} value={config.option_lots}
                       onChange={(e) => setConfig({ ...config, option_lots: e.target.value })}
                       className="bg-bg-2 border-line h-8 text-xs font-mono mt-1" />
                   </div>
                 </div>
                 <div>
-                  <Label className="text-[11px] text-dim">Option exit</Label>
+                  <Label className="text-[11px] text-dim">Option exit<Hint label="Option exit">When the option leg closes. <b>Mirror spot exit</b> (default) closes the option when the index SL/target hits — clean and recommended. <b>Option premium SL/target</b> instead exits on the option's own premium levels, which only then enables the Target/Stop fields below.</Hint></Label>
                   <Select value={config.option_exit_mode} onValueChange={(v) => setConfig({ ...config, option_exit_mode: v })}>
                     <SelectTrigger className="bg-bg-2 border-line h-8 mt-1"><SelectValue /></SelectTrigger>
                     <SelectContent>
@@ -920,7 +920,7 @@ export default function Optimizer() {
                 {config.option_exit_mode === "option_levels" && (
                   <>
                     <div className="flex items-center gap-2">
-                      <span className="text-[11px] text-dim">Level unit</span>
+                      <span className="text-[11px] text-dim">Level unit<Hint label="Option exit levels">Premium exit levels for the option leg. <b>Only used when Option exit = Option premium SL/target</b> — ignored under Mirror spot exit. <b>pts</b> = premium points (e.g. +40 / -30); <b>pct</b> = % of entry premium (default). Set the Target above the Stop.</Hint></span>
                       <div className="flex rounded-md border border-line overflow-hidden">
                         {["pts", "pct"].map((u) => (
                           <button
@@ -962,6 +962,7 @@ export default function Optimizer() {
                 <div className="flex items-center gap-2">
                   <Switch checked={config.option_costs_enabled} onCheckedChange={(v) => setConfig({ ...config, option_costs_enabled: v })} data-testid="opt-rerank-costs" />
                   <span className="text-[11px] text-dim">Apply option costs (charges + {config.option_spread_pct}% spread)</span>
+                  <Hint label="Apply option costs">Charges plus a spread % on the option leg, giving net (not gross) rupee. <b>Keep ON</b> (default) for realistic ranking — the survival gate also expects costs ON, so its survivors are judged AFTER costs per OOS fold.</Hint>
                 </div>
                 <div className="text-[10px] text-dimmer leading-snug">
                   Higher top-K = more candidates re-ranked on real option P&L (slower). Option candles are loaded once per run.
@@ -985,7 +986,7 @@ export default function Optimizer() {
                       className="h-3 w-3 rounded border-line"
                       data-testid="opt-survival-enabled"
                     />
-                    Enable survival gating
+                    Enable survival gating<Hint label="Enable survival gating">Re-scores each finalist on its actual rupee equity curve, per walk-forward OOS fold, and keeps only the ones that stay alive AND end profitable — the spot-points score can look great while the option ₹ curve quietly ruins you. <b>Requires Option re-rank; needs costs ON</b> (it's the rupee curve being judged). <b>Suggested: ON</b> for any deploy decision.</Hint>
                   </label>
                   {config.survival_config?.enabled && (
                     <>
@@ -994,7 +995,7 @@ export default function Optimizer() {
                       </div>
                       <div className="grid grid-cols-2 gap-2">
                         <div>
-                          <Label className="text-[11px] text-dim">Equity floor (₹)</Label>
+                          <Label className="text-[11px] text-dim">Equity floor (₹)<Hint label="Equity floor">Hard-reject any finalist whose account ₹ ever touches or drops to this level (the primary, first-checked gate, applied each OOS fold). <b>Default 0</b> = reject only if equity hits zero or goes negative. Set it to the smallest balance you could stomach mid-run, e.g. starting capital minus your max tolerable loss.</Hint></Label>
                           <Input
                             type="number"
                             value={config.survival_config?.min_equity ?? 0}
@@ -1004,7 +1005,7 @@ export default function Optimizer() {
                           />
                         </div>
                         <div>
-                          <Label className="text-[11px] text-dim">Max drawdown %</Label>
+                          <Label className="text-[11px] text-dim">Max drawdown %<Hint label="Max drawdown %">Reject a finalist if its worst peak-to-trough drop on the rupee curve exceeds this percent (magnitude). Lower = stricter. <b>Default 35.</b> Checked after the equity floor and before risk-of-ruin, on every OOS fold.</Hint></Label>
                           <Input
                             type="number"
                             min={0} max={100} step={1}
@@ -1015,7 +1016,7 @@ export default function Optimizer() {
                           />
                         </div>
                         <div>
-                          <Label className="text-[11px] text-dim">Max risk-of-ruin %</Label>
+                          <Label className="text-[11px] text-dim">Max risk-of-ruin %<Hint label="Max risk-of-ruin %">Reject if the modelled chance of blowing the account (Monte-Carlo bootstrap of daily ₹, judged on its <i>upper</i> 95% bound — fail-closed) exceeds this. <b>Default 5; lower = stricter.</b> Needs ≥100 stitched-OOS paired option trades, else the finalist is flagged insufficient-sample (not passed).</Hint></Label>
                           <Input
                             type="number"
                             min={0} max={100} step={1}
@@ -1026,7 +1027,7 @@ export default function Optimizer() {
                           />
                         </div>
                         <div>
-                          <Label className="text-[11px] text-dim">Objective</Label>
+                          <Label className="text-[11px] text-dim">Objective<Hint label="Survival objective">How surviving finalists are ranked. <b>Calmar (default)</b> = return ÷ worst drawdown (denominator floored at 5%), so it prefers steady survivors over jackpot-or-bust ones; <b>Total ₹</b> = raw net rupees, ignoring the ride. Stick with Calmar unless you only care about the final number.</Hint></Label>
                           <Select
                             value={config.survival_config?.objective ?? "calmar"}
                             onValueChange={(v) => setSurvival({ objective: v })}
@@ -1058,7 +1059,7 @@ export default function Optimizer() {
                     className="h-3 w-3 rounded border-line"
                     data-testid="search-exit-controls"
                   />
-                  Auto-tune exit controls per survivor
+                  Auto-tune exit controls per survivor<Hint label="Auto-tune exit controls">For each survivor, sweeps a small grid of trailing-stop give-backs and breakeven triggers and adopts whichever <i>still survives</i>, stays profitable, and improves Calmar — saved as <code>chosen_exit_controls</code>. <b>Requires Survivability ON + Option re-rank; single runs only (not walk-forward).</b> Adds time (each survivor is re-simulated across the whole grid).</Hint>
                 </label>
                 <div className="text-[10px] text-dimmer leading-snug">
                   Requires Survivability ON + Option re-rank. For each surviving finalist the optimizer sweeps a grid of trailing-stop distances and breakeven-trigger levels and keeps the best-surviving config (saved as <code className="font-mono">chosen_exit_controls</code> on the result).
@@ -1073,7 +1074,7 @@ export default function Optimizer() {
                     </div>
                     <div className="grid grid-cols-2 gap-2">
                       <div>
-                        <Label className="text-[11px] text-dim">Trail distances (fraction)</Label>
+                        <Label className="text-[11px] text-dim">Trail distances (fraction)<Hint label="Trail distances">Comma-separated fractions of peak premium you'll give back before the trailing stop fires (e.g. 0.20 = give back 20% off the high). Smaller = tighter, locks gains sooner but stops out on noise. <b>Blank = backend default [0.20, 0.35].</b> Each value must be between 0 and 1 (a fraction).</Hint></Label>
                         <Input
                           value={config.exit_search_trail_distance}
                           onChange={(e) => setConfig({ ...config, exit_search_trail_distance: e.target.value })}
@@ -1083,7 +1084,7 @@ export default function Optimizer() {
                         />
                       </div>
                       <div>
-                        <Label className="text-[11px] text-dim">BE trigger (fraction)</Label>
+                        <Label className="text-[11px] text-dim">BE trigger (fraction)<Hint label="BE trigger">Comma-separated premium-gain fractions that arm the breakeven stop (e.g. 0.30 = once +30%, lock the stop at entry). Each value must be strictly between 0 and 1 — a 0 you type is dropped, so you can't add a no-breakeven variant here. <b>Blank = backend default [0.0, 0.30]</b> (the default already includes a no-BE variant).</Hint></Label>
                         <Input
                           value={config.exit_search_breakeven_trigger}
                           onChange={(e) => setConfig({ ...config, exit_search_breakeven_trigger: e.target.value })}
@@ -1101,7 +1102,7 @@ export default function Optimizer() {
             {config.run_kind !== "walkforward" && (
               <>
                 <NumberSliderInput
-                  label="Trial budget"
+                  label={<>Trial budget<Hint label="Trial budget">How many backtests the search runs (each trial = one param set). Scale it to how many params you're tuning. Beyond a few hundred for small spaces the gains flatten and overfitting risk rises (max 5000). <b>Default 150</b>; push higher with many params or indicator periods on. With Auto-stop ON this is a ceiling, not a target.</Hint></>}
                   value={config.n_trials}
                   min={10} max={5000} step={10} decimals={0}
                   onChange={(v) => setConfig({ ...config, n_trials: v })}
@@ -1117,13 +1118,14 @@ export default function Optimizer() {
                     data-testid="opt-early-stop"
                   />
                   <span className="text-xs text-dim">Auto-stop when converged</span>
+                  <Hint label="Auto-stop when converged">Stops the search early once the best result plateaus, so <b>Trial budget becomes a ceiling, not a target</b> (it ends sooner if converged). <b>Default ON</b> — safe to leave on; it only skips trials that weren't improving.</Hint>
                 </div>
                 <div className="text-[10px] text-dimmer -mt-1 leading-snug">
                   n_trials becomes a ceiling — stops when the best plateaus.
                 </div>
                 {config.method === "bayesian" && (
                   <div>
-                    <Label className="text-[11px] text-dim">Parallel workers</Label>
+                    <Label className="text-[11px] text-dim">Parallel workers<Hint label="Parallel workers">Runs trial backtests concurrently (<b>Bayesian only</b> — ignored for Grid, and the field hides for other methods). <b>Keep 1 for a deploy decision</b> — sequential and reproducible; more than 1 is experimental, non-deterministic (results vary run-to-run) and uses more RAM. <b>Default 1.</b></Hint></Label>
                     <Input
                       type="number" min={1} max={15}
                       value={config.opt_workers}
@@ -1141,10 +1143,12 @@ export default function Optimizer() {
             <div className="flex items-center gap-2 pt-1">
               <Switch checked={config.costs_enabled} onCheckedChange={(v) => setConfig({ ...config, costs_enabled: v })} data-testid="opt-costs-switch" />
               <span className="text-xs text-dim">Apply realistic costs</span>
+              <Hint label="Apply realistic costs">Charges slippage and brokerage on the <i>spot</i> backtest so P&L reflects real fills. <b>Keep ON</b> for any rupee objective — <i>net ₹</i> just scales the cost-adjusted points by lot size. <b>Default ON.</b> (Option re-rank has its own separate option-cost toggle.)</Hint>
             </div>
             <div className="flex items-center gap-2">
               <Switch checked={config.optimize_indicator_periods} onCheckedChange={(v) => setConfig({ ...config, optimize_indicator_periods: v })} data-testid="opt-indicator-periods-switch" />
               <span className="text-xs text-dim">Optimize indicator periods</span>
+              <Hint label="Optimize indicator periods">Also tunes RSI / MACD / ATR / EMA / ADX lengths (indicators are recomputed every trial). This enlarges the real search space and is slower, so <b>give it more trials</b> when on. <b>Default OFF.</b></Hint>
             </div>
             <div className="text-[10px] text-dimmer -mt-1 leading-snug">
               Also tune RSI / MACD / ATR / EMA / ADX lengths (indicators are recomputed per trial). Slower but searches the real space.
@@ -1157,12 +1161,13 @@ export default function Optimizer() {
                   data-testid="opt-guards-switch"
                 />
                 <span className="text-xs text-dim">Guard rails</span>
+                <Hint label="Guard rails">Master switch for the two disqualifiers below (Min trades + Min CE/PE side %). <b>Default ON</b> — keeps the optimizer from "winning" with degenerate few-trade or all-CE/all-PE param sets. Off, only zero-trade sets are still rejected.</Hint>
               </div>
               {config.guards_enabled ? (
                 <>
                   <div className="grid grid-cols-2 gap-2">
                     <div>
-                      <Label className="text-[11px] text-dim">Min trades</Label>
+                      <Label className="text-[11px] text-dim">Min trades<Hint label="Min trades">Statistical-significance floor: any trial taking fewer trades than this is disqualified (so a lucky 2-trade run can't win). <b>Default 10.</b> Needs <b>Guard rails ON</b>.</Hint></Label>
                       <Input
                         type="number" min={0}
                         value={config.min_trades}
@@ -1172,7 +1177,7 @@ export default function Optimizer() {
                       />
                     </div>
                     <div>
-                      <Label className="text-[11px] text-dim">Min CE/PE side %</Label>
+                      <Label className="text-[11px] text-dim">Min CE/PE side %<Hint label="Min CE/PE side %">Rejects one-sided winners: the minority side (CE vs PE) must be at least this % of trades, else disqualified. <b>0 = off (default)</b>; capped at <b>50</b> (a 50/50 split). Needs <b>Guard rails ON</b>.</Hint></Label>
                       <Input
                         type="number" min={0} max={50}
                         value={config.min_direction_pct}
@@ -1193,7 +1198,7 @@ export default function Optimizer() {
               )}
             </div>
             <div className="pt-2 border-t border-line">
-              <Label className="text-xs text-dim">Date window (IST, optional)</Label>
+              <Label className="text-xs text-dim">Date window (IST, optional)<Hint label="Date window">Limits which candles the search uses. <b>Leave blank for all available data.</b> A recent window reflects the current regime (good for a deploy decision); a longer window tests more conditions. End blank defaults to the latest candle.</Hint></Label>
               <div className="grid grid-cols-2 gap-2 mt-1">
                 <Input type="date" value={config.start_date} onChange={(e) => setConfig({ ...config, start_date: e.target.value })} className="bg-bg-2 border-line h-8 text-xs" data-testid="opt-start-date" />
                 <Input type="date" value={config.end_date} onChange={(e) => setConfig({ ...config, end_date: e.target.value })} className="bg-bg-2 border-line h-8 text-xs" data-testid="opt-end-date" />
@@ -1276,10 +1281,10 @@ function Panel({ title, children, right, testid }) {
   );
 }
 
-function Row({ label, children }) {
+function Row({ label, hint, children }) {
   return (
     <div>
-      <Label className="text-xs text-dim">{label}</Label>
+      <Label className="text-xs text-dim">{label}{hint && <Hint label={typeof label === "string" ? label : "help"}>{hint}</Hint>}</Label>
       <div className="mt-1">{children}</div>
     </div>
   );
