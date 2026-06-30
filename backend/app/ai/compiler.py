@@ -66,7 +66,17 @@ def _param_names(spec: StrategySpec) -> Set[str]:
 def validate_spec(spec: StrategySpec) -> List[str]:
     """Return a list of human-readable errors (empty == valid)."""
     errors: List[str] = []
-    cols = allowed_columns(spec.required_features)
+    # Declared features must exist; an unknown name is a clean validation error,
+    # not an exception (resolve_features would otherwise raise FeatureError).
+    from app.features.registry import FEATURE_REGISTRY
+    unknown_feats = [f for f in spec.required_features if f not in FEATURE_REGISTRY]
+    if unknown_feats:
+        errors.append(
+            f"required_features: unknown feature(s) {unknown_feats}; "
+            f"available: {sorted(FEATURE_REGISTRY)}"
+        )
+    known_feats = [f for f in spec.required_features if f in FEATURE_REGISTRY]
+    cols = allowed_columns(known_feats)
     pnames = _param_names(spec)
 
     # id must be a clean slug (it becomes a Python identifier + a filename).
@@ -282,6 +292,11 @@ def compile_spec(spec: StrategySpec) -> str:
     lines.append(f"    supported_instruments = {list(spec.supported_instruments)!r}")
     lines.append(f"    supported_modes = {list(spec.supported_modes)!r}")
     lines.append(f"    supported_timeframes = {list(spec.supported_timeframes)!r}")
+    # Declared structural features must survive into the installed plugin so the
+    # engine materializes their columns at backtest/live time (else the strategy
+    # references columns that never get computed and silently never fires).
+    if spec.required_features:
+        lines.append(f"    required_features = {list(spec.required_features)!r}")
     # cooldown_bars is declared in the schema (the engine handles cooldown; the
     # generated evaluate() does NOT, mirroring builtins).
     schema_src = _param_schema_literal(spec)

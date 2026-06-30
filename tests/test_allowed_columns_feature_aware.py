@@ -43,3 +43,29 @@ def test_validate_spec_accepts_feature_col_when_declared():
     )
     errors = validate_spec(spec)
     assert not any("fvg_top" in e for e in errors)
+
+
+def test_validate_spec_unknown_feature_is_clean_error_not_raise():
+    spec = StrategySpec(id="t3", name="t3", required_features=["not_a_real_feature"],
+                        entry_ce=[Condition(left="close", op=">", right="rsi")])
+    errors = validate_spec(spec)   # must NOT raise
+    assert any("unknown feature" in e.lower() for e in errors)
+
+
+def test_compile_spec_emits_required_features_roundtrip():
+    from app.ai.compiler import compile_spec
+    from app.ai.spec_schema import ExitSpec
+    spec = StrategySpec(
+        id="t4", name="t4", required_features=["fvg_zones"],
+        entry_ce=[Condition(left="close", op=">", right="fvg_top")],
+        exits=ExitSpec(target_pct=10, stop_pct=5),
+    )
+    assert validate_spec(spec) == []          # minimal-valid (declared feature + exits)
+    src = compile_spec(spec)
+    assert "required_features = ['fvg_zones']" in src
+    ns = {}
+    exec(src, ns)
+    from app.strategies.base import StrategyBase
+    cls = next(v for v in ns.values()
+               if isinstance(v, type) and issubclass(v, StrategyBase) and v is not StrategyBase)
+    assert cls.required_features == ["fvg_zones"]
