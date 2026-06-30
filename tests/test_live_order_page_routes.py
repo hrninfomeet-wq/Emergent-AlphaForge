@@ -72,10 +72,18 @@ _TICKET = {
 }
 
 
-def _make_app(*, approval_store=None, place_mock=None):
+def _make_app(*, approval_store=None, place_mock=None, limits_data=None):
     app = FastAPI()
     app.include_router(_routes.api)
-    cl = MockNoren(search_scrip_data={"NFO": [_NIFTY_SCRIP]})
+    # The preview / approval-queue paths now run a margin pre-check via
+    # client.limits(); give the mock enough cash by default so the existing
+    # happy-path tests still pass (NIFTY 1-lot @ ref_ltp 200 needs
+    # 200*65*1.05 = ₹13,650).  Tests that exercise the margin gate pass their
+    # own limits_data (low cash / empty).
+    cl = MockNoren(
+        search_scrip_data={"NFO": [_NIFTY_SCRIP]},
+        limits_data=limits_data if limits_data is not None else {"cash": "50000"},
+    )
     store = approval_store if approval_store is not None else ApprovalStore()
 
     from app.live.overall_settings_store import OverallSettingsStore
@@ -149,6 +157,8 @@ class TestPreview:
             assert d["ok"] is True
             assert len(d["children"]) == 1
             assert all(v["ok"] for v in d["verdicts"])
+            # the margin pre-check ran and passed (cash 50000 >= 13,650 required)
+            assert any(v["check"] == "margin" and v["ok"] for v in d["verdicts"])
             # tick-valid price in the would-send jdata
             prc = float(d["children"][0]["prc"])
             assert round(round(prc / 0.05) * 0.05, 2) == round(prc, 2)
@@ -172,6 +182,55 @@ class TestPreview:
             d = tc.post("/live-broker/order/preview", json=body).json()
             assert d["ok"] is True
             assert d["children"][0]["prctyp"] == "MKT"
+        finally:
+            _stop(tc)
+
+
+# ---------------------------------------------------------------------------
+# margin pre-check (preview + approval-queue) — runs after the ticket validates,
+# reads client.limits(), and blocks fail-closed when cash can't cover 1 lot.
+# ---------------------------------------------------------------------------
+class TestMarginPreCheck:
+    def test_sufficient_cash_passes(self):
+        tc = _make_app(limits_data={"cash": "50000"})
+        try:
+            d = tc.post("/live-broker/order/preview", json=_TICKET).json()
+            assert d["ok"] is True
+            mv = [v for v in d["verdicts"] if v["check"] == "margin"]
+            assert mv and mv[0]["ok"] is True
+        finally:
+            _stop(tc)
+
+    def test_insufficient_cash_blocks_preview(self):
+        # NIFTY 1-lot @ ref_ltp 200 needs 200*65*1.05 = ₹13,650; cash 5,000 < that.
+        tc = _make_app(limits_data={"cash": "5000"})
+        try:
+            d = tc.post("/live-broker/order/preview", json=_TICKET).json()
+            assert d["ok"] is False
+            mv = [v for v in d["verdicts"] if v["check"] == "margin"]
+            assert mv and mv[0]["ok"] is False
+            assert "insufficient funds" in mv[0]["detail"]
+        finally:
+            _stop(tc)
+
+    def test_insufficient_cash_not_queued(self):
+        tc = _make_app(limits_data={"cash": "5000"})
+        try:
+            d = tc.post("/live-broker/order/approvals", json=_TICKET).json()
+            assert d["ok"] is False
+            assert any(v["check"] == "margin" and not v["ok"] for v in d["verdicts"])
+            # a ticket that fails the margin gate is NOT queued for approval
+            assert tc.get("/live-broker/order/approvals").json()["pending"] == []
+        finally:
+            _stop(tc)
+
+    def test_unreadable_limits_fails_closed(self):
+        # empty limits → no cash field → fail closed (block), never let it through
+        tc = _make_app(limits_data={})
+        try:
+            d = tc.post("/live-broker/order/preview", json=_TICKET).json()
+            assert d["ok"] is False
+            assert any(v["check"] == "margin" and not v["ok"] for v in d["verdicts"])
         finally:
             _stop(tc)
 
