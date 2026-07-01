@@ -1,221 +1,83 @@
-# Handoff
+# Handoff — START HERE
 
-Updated: 2026-06-25
+_Entry point for the next engineer or AI agent. This is the shortest useful orientation; the repository and `tests/` are the source of truth, not any prior chat._
 
-This is the entry point for the next AI agent or developer. **Read this + `CHANGELOG.md` before editing.** The repository and `tests/` are the source of truth — not any prior chat. `CHANGELOG.md` holds the detailed, versioned history (currently 0.17.x → 0.45.x); this file is the current architectural + state overview.
-
-> **Reference assets / capabilities** (see `CLAUDE.md` for the always-loaded version):
-> - **Flattrade *pi* API reference** — the broker API docs are decoded into `docs/Resources/flattrade-pi-api/` (`INDEX.md` + machine-readable `catalog.json` + 58 vision-verified per-endpoint md/json). Use these instead of the raw PDF.
-> - **PDF reading** — reusable PDF→Markdown tool at `docs/Resources/flattrade-pi-api/_tooling/extract_pdf.py` (libs `pymupdf4llm`/`pdfplumber` installed). Decodes any PDF; details in that folder's `_tooling/README.md`.
+**Read order:** this file → [`DEVELOPER_GUIDE.md`](DEVELOPER_GUIDE.md) (the consolidated deep onboarding — run/build/test, live-trading safety model, warehouse model, India rules, research→deploy, gotchas) → [`ARCHITECTURE.md`](ARCHITECTURE.md) (technical reference). Use the ["Where to go deep"](#5-where-to-go-deep) table below to jump straight to a topic.
 
 ---
 
-## 1. What this is
+## 1. Orientation
 
-AlphaForge Trading Lab — a local-first research & forward-testing terminal for **Indian index options** (NIFTF/BANKNIFTY/SENSEX). React + FastAPI + MongoDB in Docker, Upstox for data. It does: warehouse 1-minute spot + option candles → backtest/optimize strategies → save as presets → deploy for live **signal generation + auto paper trading**. A **Live Trading page (Flattrade)** now adds *real* order execution, but under hard, permanent gates — **the assistant never transmits or squares a real order itself**; real orders require a human Place click, run in a single-shot LIVE_TEST mode, and are capped at 1 lot in code (see the 2026-06-25 block in §2).
+**AlphaForge Trading Lab** is a **local-first research + forward-test app for Indian index options** (NIFTY / BANKNIFTY / SENSEX). The loop: warehouse 1-minute spot + option candles → backtest / optimize strategies → save as presets → deploy for signal generation, paper trading, and (under hard gates) live Flattrade execution.
 
-## 2. Status — current state
+Stack: **React** (CRA + craco) frontend, **FastAPI** (Python) backend, **MongoDB** (motor), all in **Docker Compose**. Frontend `:3000`, backend `:8001` (**every route under `/api`**), mongo `:27017`. **Upstox** = market data feed; **Flattrade** (Noren / PiConnect OMS) = live broker execution.
 
-### 2026-06-25 — Live Trading (Flattrade) execution + GTT/OCO backstop
+## 2. Current state
 
-Since 2026-06-22 the major work has been a **Live Trading page** that executes *real* orders via **Flattrade** (Noren/PiConnect OMS; Upstox stays data-only). `main == origin/main` and is pushed; the live-execution work plus the Paper-page redesign and the Strategy-Library + AI-authoring work are all merged onto one `origin/main`. Key state:
+Everything is integrated on **`main`** — there is no live stack of feature branches to track (past feature branches are merged and deleted). The app has grown across `0.17.x → 0.48.x` (see [`../CHANGELOG.md`](../CHANGELOG.md) for versioned detail). It runs in Docker; backend code is baked into the image, so **rebuild the container after backend edits**.
 
-- **Safe Core L0–L2 → L3 real orders → professional dashboard.** Built brainstorm→spec→plan→TDD with adversarial audits. The whole execution path lives in **`backend/app/live/`** (thin async `FlattradeClient`, `order_builder` choke-point, `safety`/`mode`/`margin`/`auto_square`/`executor` gates, `reconcile`, `kill_switch`) and **`frontend/src/components/live/`** (`LiveDashboard`, `LiveOrderTicket`, `GuardPanel`, `GttBook`, `PayoffChart`, `OverallSettingsPanel`). Page = `pages/LiveTrading.jsx` at `/live-trading`. Hard invariants enforced **in code**: entry only in LIVE_TEST single-shot, ≤1 lot (3 layers), arm-or-abort (no orphan), long-only default, exit-parity reuses `execution_policy`. The assistant builds 100% but **never clicks Place/square** — that's the user.
-- **Real fills validated live** (SENSEX CE/PE 1-lot, squared clean). Two bugs found+fixed from live tests: **tick-rounding** (every price Decimal-rounded to the scrip `ti`) and a **phantom-timer** (broker returns an order# then async-REJECTS → `/test-session` now reads the order book and resolves rejected entries).
-- **Software exit guard replaces resting SLs** (`live_position_guard.py`, started unconditionally in `server.py` lifespan). A resting SL-LMT on a short option margin-rejects (~₹1.8L naked-short SPAN an option-buyer lacks — *proven live*), so the guard instead **reads the BROKER position book ~1.5s**, evaluates stop/target/trailing + an overall basket in software (`overall_controls.py`), and squares via the margin-safe cancel-all-then-close. Offline-first: dry-run logs intended squares unless **`LIVE_GUARD_ARMED=1`** (currently armed). Configurable guard stop (default 50%). The Execution-Mode switch + approval queue were retired in favor of one-click direct place.
-- **GTT/OCO backstop — fully wired AND confirmed against the live broker (`gtt.py` + `FlattradeClient`).** The NRML "PC-died" net (a resting GTT/OCO blocks no margin, so it dodges the naked-short trap). Schema is the vision-verified PiConnect catalog (`docs/Resources/flattrade-pi-api/`), and the real-money-critical `ai_t` values were **confirmed by reading the user's own placed orders back**: single GTT below-trigger = **`LTP_B_O`** (flat request form, catalog #16); OCO = **`LMT_BOS_O`** with `oivariable` `x↔leg1`/`y↔leg2` and direction inferred from trigger-vs-LTP (catalog #21 + fired-leg `remarks` "Ltp X is below/above Y"). Routes: GET `/live-broker/gtt` lists the resting book (single GTTs *and* OCOs), POST builds+transmits on explicit `transmit=true`, DELETE cancels via `?kind=`. Only `LTP_A_O` (single above-only target) remains inferred (low-use; OCO covers the above direction). Memory: `live-execution-build-2026`, `flattrade-live-execution-2026`, `flattrade-api-docs-decoded-2026`.
-- **Test count is now ~2200+ host tests** (the 724 below is historical). Frontend builds clean (`CI=true npm run build`). **NEXT: strategy-deploy-to-live** — route a deployed backtest strategy's live signals through the order choke-point + software guard (its own spec→plan→build).
+Built subsystems (all verified present in `backend/app/`):
 
-### 2026-06-17 — research stack (historical, see CHANGELOG 0.40.x–0.46.x)
+- **Data Warehouse** — `candles_1m` holds 1-minute OHLCV for the 3 indices (spot + ATM-band option contracts) + INDIAVIX. Daily ATM-band completeness model, holiday-aware NSE calendar, one-button Sync + auto-update. (`completeness.py`, `data_hygiene.py`, `nse_calendar.py`, `routers/warehouse.py`.)
+- **Backtest Lab** — spot backtests + paired real-option-candle backtests; honest rupee-first metrics; optional exit/risk-control overlay (trailing / breakeven / daily caps). (`backtest.py`, `option_backtest.py`, `exit_controls.py`, `execution_policy.py`.)
+- **Optimizer** — Optuna TPE / Grid / Genetic search; single vs walk-forward (honest OOS); spot vs option re-rank; capital-aware **survival gate**; exit-control search. (`optimizer.py`, `wfo.py`, `walkforward.py`, `survival.py`, `rerank_select.py`.)
+- **Strategy Library** — builtin + drop-in plugin strategies; retire / delete lifecycle; multi-provider AI authoring wizard (Anthropic + Gemini; Spec + capability-aware + full-Python tiers). (`strategies/*`, `routers/strategies_admin.py`, `ai/*`.)
+- **Paper Trading** — live-tick-driven realism (tick exits, poll-for-new-bar entries). (`paper_auto.py`, `paper_trading.py`, `live_exit_monitor.py`.)
+- **Live Trading (Flattrade)** — offline-first; L0–L3 gate chain; the executor is the **single real-order chokepoint**; margin pre-check; OCO/GTT catastrophe backstop; kill switches; Greeks; ARMED auto-place only under an env gate **plus** per-deployment ARM **plus** caps **plus** EOD auto-disarm. (`live/executor.py`, `live/safety.py`, `live/margin.py`, `live/mode.py`, `live/arm_state.py`, `live/gtt.py`, `live/kill_switch.py`, `routers/live_broker.py`.)
 
-- **724 host tests pass.** Frontend builds clean (2 pre-existing exhaustive-deps warnings). `optimizer.py` is syntax-checked via `py_compile` only (optuna absent on host); it and `runtime.py`/routers are verified in the running stack, not host-imported.
-- **`main` is pushed to origin at `e6febbe` (0.37–0.39.x).** Everything since is a **linear stack of UNMERGED local feature branches** — push/merge ONLY on the user's explicit instruction (per-changeset approval):
-  `main → feat/survivable-optimization (0.40.x) → feat/live-tick-paper-realism (0.41.x) → feat/exit-risk-controls (0.42.x, Piece 2) → feat/adaptive-strategies (0.43.x, 5 strategies) → feat/backtest-exit-controls (0.44.x UI exposure of Piece 2 + 0.45.x Piece 3 merged in local-only) → (feat/integrated-validation-loop now == backtest-exit-controls tip)`.
-- **Read `CHANGELOG.md` 0.40.x → 0.45.x for the per-version detail.** Recent arc: **survivable optimization** (capital-aware survival gate, 0.40) → **live tick-driven paper realism** (0.41) → **exit/risk controls overlay** (Piece 2, 0.42; trailing/breakeven/daily-caps in sim + live + survival search) → **5 adaptive option-buying strategies** SEB/ARS/ORF/GAP/XRS (0.43) → **backtest-page exit/risk panel** + the dead-attribution-read fix + submit-time validation (0.44) → **trustworthy validation loop** (Piece 3, 0.45; the `deployment_quality` trust verdict made correct + surfaced everywhere via a `TrustScorecard`, flag-only).
-- **Key empirical finding (memory `option-buying-edge-hunt-2026`):** a disciplined survival-gated optimizer sweep over confluence_scalper / SEB / ORF × ATM/ITM × multiple 2025-26 NIFTY windows found **NO deployable survivor** — every candidate was *fragile* (OOS-positive but full-window option-₹ negative). ITM made SEB worse ⇒ the bottleneck is **directional signal quality**, not theta/moneyness/sizing. Nothing was deployed. The validation framework worked exactly as intended (refusing to promote a money-loser); Piece 3 turns that manual discipline into automated, surfaced gates.
-- **Roadmap next:** adaptive-strategies **Plan 4** (edge-gate WF ₹-expectancy + edge-proportional sizing) and the integrated optimize-loop UI polish; then a stronger/different signal family before more option-buying hunts. Before any of the stack lands, the user's own browser visual-checks + the merge decisions are pending.
-- Historical context: 6-slice live-realism/gate-rigor hardening (0.37.x), Data Warehouse overhaul (0.23–0.30), Backtest results redesign (0.31–0.36), execution-policy extraction (0.27), server.py split (0.28).
-- **New since the review** (read CHANGELOG 0.37.x before touching these): `app/live_friction.py` (single fill-model, shared by `option_backtest` + the live close path; per-deployment `risk.friction`); `app/rerank_select.py` (pure re-rank shortlist, opt-in `rerank_diversity`); `deployment_quality` now takes `evidence=` (selection-bias deflated-Sharpe + option-rupee-OOS) + `QualityThresholds`; `nse_calendar.market_status`; closed paper trades carry `gross_realized_pnl`/`friction_cost`/`total_charges` + `exit_price_source`/`exit_price_stale`.
-- Untracked local note files exist in the repo root ("Fable reply on progress.md", a docs note) — the user's, leave them.
-- **Newest branch `feat/scenario-adaptive-framework`** (2026-06-18, off the stack; CHANGELOG `0.46.x — WIP`): scenario-adaptive option-buying groundwork — causal `orb_width` indicator group (keyed on `or_minutes`, no look-ahead, first-session prior = NaN), a pure opening-range scenario classifier, and an optimizer cache-key fix (`or_minutes` in `INDICATOR_PARAM_KEYS` + an import-time guard that every memoized `indicator_groups.GROUPS` param is registered).
-- **Env note — pandas 3.0.3 now in `.venv`:** `pd.date_range` yields **µs**-resolution indices, so `idx.asi8 // 1_000_000` silently gives epoch-**seconds** not ms. This bit `tests/_adaptive_testutil.make_ohlc` (collapsed all fixture sessions to 1970, failing the `orb_width` causality tests); fixed by pinning the unit first (`idx.as_unit("ms").asi8`). Pin resolution before any epoch-ms conversion (production `yfinance_source.py` already does). Detail in CHANGELOG `0.46.x — WIP`; memory `pandas3-resolution-epoch-trap`.
+Routers mounted under `/api`: `research`, `strategies_admin`, `warehouse`, `journals`, `deployments`, `broker`, `live_broker`. Frontend pages: Dashboard, DataWarehouse, BacktestLab, Optimizer, StrategyLibrary, SavedPresets, LiveSignals, SignalJournal, PaperTrading, LiveTrading, PreTradeChecklist.
 
-## 3. Running the stack
-
-| Service | Where | Notes |
-|---|---|---|
-| Frontend | `http://localhost:3000` | React + nginx, dark/light theme |
-| Backend | `http://localhost:8001` | FastAPI, all routes under `/api` |
-| MongoDB | container `alphaforge_mongo` | named volume `mongo_data` (NOT in the project folder / OneDrive) |
-| Upstox | OAuth (daily expiry) + REST historical + V3 WebSocket | re-connect drives auto-update |
+## 3. Run & test quickstart
 
 ```bash
-docker compose up -d --build            # launch / rebuild (or start.bat / start.sh)
-python -m pytest tests -q               # 533 pass; tests NEVER import server.py (motor absent on host)
-cd frontend && npm run build            # must compile clean before committing FE
+docker compose up -d --build backend frontend    # launch / rebuild
+docker compose ps                                # backend + mongo healthy
+curl -s localhost:8001/api/health                # {"db":"ok"}
 ```
 
-Backend code is baked into the image — **rebuild the backend container after backend edits** (`docker compose up -d --build backend`). Frontend likewise.
+Frontend → `http://localhost:3000`, backend → `http://localhost:8001` (routes under `/api`), mongo in container `alphaforge_mongo` (named volume `mongo_data`, NOT in the project / OneDrive folder). Rebuild the relevant container after editing that half.
 
-## 4. Architecture
+**Tests run in two places** — the split matters:
 
-### Backend (split in Slice C / CHANGELOG 0.28.x — zero behavior change)
-- `backend/server.py` — **203-line app factory only**: startup/shutdown + scheduler wiring, root/health, mounts the routers, CORS.
-- `backend/app/schemas.py` — all Pydantic request models.
-- `backend/app/runtime.py` — shared singletons (`upstox_stream_manager`, `live_candle_roller`), constants, and the route helpers (catch-up chain, hygiene submit, VIX top-up, option preview, etc.).
-- `backend/app/routers/{research,warehouse,journals,deployments,broker}.py` — the 103 routes (each file: `api = APIRouter()`). Import DAG: **server → routers → runtime → app business modules** (no cycles; nothing imports server).
-- Key business modules: `completeness.py` (band truth), `data_hygiene.py` (warehouse plan/ledger/catch-up), `execution_policy.py` (exit truth), `backtest.py` + `option_backtest.py` + `portfolio.py` (engines), `optimizer.py` + `wfo.py` + `walkforward.py`, `deployment_evaluator.py`, `paper_auto.py` + `paper_trading.py` + `paper_squareoff.py`, `warehouse_autoupdate.py`, `warehouse_ohlc.py`, `option_coverage_cache.py`, `nse_calendar.py`, `live_candle_roller.py`, `upstox_client.py` + `upstox_stream.py`, `instruments.py` (canonical keys), `slippage.py`, `volatility.py`, `vix.py`, `dte.py`, `market_context.py`.
+- **Host tests (pure / contract).** `python -m pytest tests -q` from the repo root. These NEVER import `server.py` or the routers (motor/pymongo are absent on the host — those imports fail). They string-assert on the source via `tests/contract_corpus.py`. Use for the pure engines, contract pins, and JSX string-pins.
+- **Container tests (motor / route).** Tests that touch motor or FastAPI routes must run **inside the backend container**:
+  ```bash
+  docker cp tests/. alphaforge_backend:/app/tests
+  docker exec -w /app alphaforge_backend python -m pytest tests/<file> -q
+  ```
+- **Frontend "tests"** are pytest string-pins over the JSX source (run on the host with the contract tests).
+- **Browser smoke** is the final check: open the app in Chrome and **hard-reload (Ctrl+Shift+R)** to drop the stale CRA bundle — client-side navigation does not reload the JS.
 
-### Frontend
-- Pages: `pages/{Dashboard,BacktestLab,Optimizer,DataWarehouse,LiveSignals,SignalJournal,PaperTrading,StrategyLibrary,Checklist}.jsx`.
-- `components/warehouse/*` — Data Warehouse split (UpstoxPanel, OptionPlannerPanel, ExpiredBackfillPanel, CoverageHeatmaps, DataTrustPanel, VolatilityAuditPanel, Disclosures, shared).
-- `components/backtest/*` — Backtest results: `PerformanceOverview.jsx`, `DualAxisChart.jsx`, `MonthlyPnlCalendar.jsx`, `BacktestChart.jsx`.
-- `lib/backtestMetrics.js` — pure client-side metrics/series for the backtest results.
-- `lib/jobs.jsx` — global `JobsProvider` (background-job tracker, survives navigation; persists active run IDs to localStorage).
-- `components/{Layout,DataHygienePanel,WarehouseChart,WarehouseLookup,HolidayCalendarDialog,BacktestRunJournal,MetricCard,TokenCountdown}.jsx`.
+## 4. Standing conventions
 
-### Mongo collections
-`candles_1m`, `options_1m`, `option_contracts`, `option_known_empty` (broker-empty ledger), `integrity_hashes`, `warehouse_runs`, `option_coverage_cache`, `data_hygiene_latest` (persisted plan), `backtest_runs`, `optimization_jobs`, `presets`, `pretrade_profiles`, `strategy_deployments`, `signals` (unique partial index `(deployment_id, candle_ts)`), `paper_trades`, `ticks`, `upstox_tokens`.
+- **Per-changeset push approval.** Commit freely; **push only when the user explicitly says so.** Nothing is auto-pushed. On the default branch, branch first.
+- **Never place a real broker order unless explicitly armed.** The assistant never personally transmits or squares a real order. Real live entries require the env gate `LIVE_AUTOPLACE_ARMED=1` **and** a per-deployment ARM within caps; auto-squares require `LIVE_GUARD_ARMED=1`. Offline-first: unset ⇒ dry-run logs, no transmit.
+- **IST everywhere.** NSE session 09:15–15:30 IST with a 15:00 square-off; the system is **holiday-aware** (`nse_calendar.py`).
+- **Verify India-specific facts against the code** — lot sizes and expiry cadence live in `instruments.py` / `nse_calendar.py` / `dte.py` and have rotated over time; do not hard-code from memory.
+- **Never commit** `.env`, tokens, broker creds, or any credentials file.
 
-## 5. Data Warehouse — the philosophy (read before touching warehouse code)
+## 5. Where to go deep
 
-- **Daily ATM-band completeness is the single definition of "complete"** (`app/completeness.py`). A day is option-complete when *every strike its spot low–high touched* (nearest `round_to_step` ±1 pad), for **both legs**, at the day's resolved (next-available) expiry, has candles. `band_completeness` (counts + `per_day` rows + `coverage_pct`), `missing_band_pairs` (exact fetch list). The old per-day/per-expiry presence check was the "verified-but-incomplete" bug.
-- **Fetch is driven by the SAME band it's judged against** — `data_hygiene.build_band_fetch_plan` → `missing_band_pairs` → exact (day, expiry, side, strike) → contract → date tasks. Never re-derive a separate moneyness selection for the fetch (that was the 0.25.x bug).
-- **Broker-empty ledger** (`option_known_empty`): some band strikes are genuinely unavailable at Upstox (late-listed strikes Upstox never archived — verified: one authoritative token each, 0 candles, no duplicate in the 61.7k-contract store). After a band fetch, `record_broker_empty_pairs` ledgers requested-but-still-absent pairs **whose task did not fail AND are before the latest closed session** (`grace_from` — Upstox publishes F&O history with a lag; never ledger a same-night session). Ledgered pairs are excluded from `missing_pairs`/coverage and shown as "broker-empty" so status reaches **verified** honestly. `retest_known_empty=True` forces a re-test.
-- **Partial-day spot repair** (`incomplete_spot_days`): a trading day captured only partially (PC off mid-session → only the live roller's morning, e.g. 255/375) sits at the last-stored-date high-water mark, so plain catch-up never repaired it. Catch-up now detects closed days materially below the **calendar-expected** count (`nse_calendar.expected_candle_count`; Muhurat/weekend ticks never flagged) and re-fetches them, bounded by `SPOT_REPAIR_LOOKBACK_DAYS=21` (churn guard).
-- **Sync** = `POST /api/warehouse/sync` (alias of `/data-hygiene/catch-up`): catch-up new sessions + band sweep for spot-current instruments + **VIX top-up** (`_topup_vix`). Auto-update (`warehouse_autoupdate.py`) runs on startup / OAuth-connect / daily 18:00 IST; VIX is folded into the daily loop via `pre_run_fn`.
-- **Instant status**: `/api/data-hygiene/plan` persists its result to `data_hygiene_latest`; `/api/data-hygiene/latest` serves it so the page shows health on load. Rolling scope = `default_scope_start()` (9 months, floor 2024-11-27).
-- **Canonical keys**: candles stored under 2-part `SEGMENT|TOKEN`; dated 3-part keys only in expired-endpoint URLs; all lookups canonicalize (`instruments.canonical_instrument_key`). **Expired routing keys off `expiry_date < today(IST)`**, not provenance → `/v2/expired-instruments/...`.
-- Page (`DataWarehouse.jsx` + `components/warehouse/*`): status hero, **Sync now**, band-truth heatmaps with 8w/3m/All range chips, **Advanced tools** (collapsed: manual planner + expired backfill — pre-band moneyness selection, research only), **danger zone** (typed-confirmation clears), runs table with human labels.
+Start with the consolidated [`DEVELOPER_GUIDE.md`](DEVELOPER_GUIDE.md), then reach for the reference docs:
 
-## 6. Backtest results (CHANGELOG 0.31–0.36)
+| I need to… | Go to |
+|---|---|
+| Onboard deep: run/build/test, safety model, warehouse model, India rules, research→deploy, gotchas | [`DEVELOPER_GUIDE.md`](DEVELOPER_GUIDE.md) |
+| See capabilities + the end-to-end workflow at a glance | [`PROJECT_OVERVIEW.md`](PROJECT_OVERVIEW.md) |
+| Understand the data-warehouse completeness model | [`DEVELOPER_GUIDE.md`](DEVELOPER_GUIDE.md) (model) · [`ARCHITECTURE.md`](ARCHITECTURE.md) (technical) |
+| Understand the **live-trading safety model** (gate chain, ARM, kill switches) | [`DEVELOPER_GUIDE.md`](DEVELOPER_GUIDE.md) · [`STRATEGY_DEPLOYMENTS.md`](STRATEGY_DEPLOYMENTS.md) · [`ARCHITECTURE.md`](ARCHITECTURE.md) |
+| See the India trading rules (session, DTE, holidays, lots) | [`DEVELOPER_GUIDE.md`](DEVELOPER_GUIDE.md) · code: `nse_calendar.py` |
+| Trace the module map, data flow, Mongo collections, live-execution gate chain | [`ARCHITECTURE.md`](ARCHITECTURE.md) |
+| Look up a backend HTTP route | [`API_REFERENCE.md`](API_REFERENCE.md) |
+| Use a specific page in the UI | [`USER_MANUAL.md`](USER_MANUAL.md) |
+| Write a custom strategy plugin | [`STRATEGY_PLUGINS.md`](STRATEGY_PLUGINS.md) |
+| Understand the deployment model (modes, gates, kill switches, live) | [`STRATEGY_DEPLOYMENTS.md`](STRATEGY_DEPLOYMENTS.md) |
+| Install / launch the app | [`LOCAL_SETUP.md`](LOCAL_SETUP.md) · [`STARTUP_MANUAL.md`](STARTUP_MANUAL.md) |
+| Drive the optimizer / read walk-forward OOS | [`optimizer-user-guide.md`](optimizer-user-guide.md) · [`Walk-forward (honest OOS) what it does exactly.md`](<Walk-forward (honest OOS) what it does exactly.md>) |
+| Run a live-money readback | [`live-readback-checklist.md`](live-readback-checklist.md) |
+| Reference the Flattrade broker API | [`Resources/flattrade-pi-api/INDEX.md`](Resources/flattrade-pi-api/INDEX.md) (+ `catalog.json`, `endpoints/`) |
+| See versioned history / agent capabilities | [`../CHANGELOG.md`](../CHANGELOG.md) · [`../CLAUDE.md`](../CLAUDE.md) |
 
-Engine: `backtest.py` (spot) + `option_backtest.py` (paired option execution, premium-accurate) + `portfolio.py` (rupee equity curve, sizing). All exit decisions go through `execution_policy` / `intrabar_exit` (stop-first).
+---
 
-Results UI (`BacktestLab.jsx` `ResultsView` → `components/backtest/*`, all client-side from the run doc):
-- **KPI grid**: Trades, Win Rate, Profit Factor, Net P&L pts, Max DD pts, Sharpe, **Lowest/Highest account value** (min/max of the ₹ equity curve — surfaces e.g. the account briefly going negative).
-- **`PerformanceOverview`**: ₹-first hero (Net ₹, Return on capital %, Ending equity, Max DD ₹/%, **Profit ÷ max DD**, annualized Sharpe). **Honest-metric rule: CAGR/Calmar are suppressed under a ~1-year window** (`years >= 1.0`) — annualizing a few months produced absurd 1900% vanity numbers; the span-independent Profit÷maxDD is the headline reward/risk. Trade-quality block (avg win/loss, payoff, expectancy ₹, streaks, drawdown duration + recovered).
-- **`DualAxisChart` ×2** (named vertical axes, text-up): "Cumulative P&L vs trade value" (left = cum P&L, right = **per-trade net buy value** = entry premium×qty+charges — the user's definition, NOT index level) and "Account value & drawdown".
-- **`MonthlyPnlCalendar`**: year×month net-P&L grid.
-- **`BacktestChart`**: price chart with the strategy's trades — instrument title, **1m/5m/15m/1h/1d**, entry/exit markers with **#N trade-number labels (density-gated: shown when focused or ≤50 in view)**, focused-trade **Entry/Target/Stop/Exit** price lines (SL/target reconstructed from `spot_target_pts`/`spot_stop_pts`), **go-to date/time** locator + trade navigator, **full-screen maximize** (Fullscreen API). Trades table has **Lots (Qty) / Buy ₹ / Sell ₹** columns (Sell − Buy = net P&L).
-- **Advanced analytics** (collapsed): data-audit, option pairing/execution, context breakdown (DTE/regime/time/VIX), MAE/MFE, Monte Carlo, walk-forward IS/OOS, signal funnel.
-- `lib/backtestMetrics.js`: `buildPerformanceSeries`, `computeKeyMetrics`, `tradeBuyValue`/`tradeSellValue`, `monthlyPnl`.
-
-## 7. Execution policy (CHANGELOG 0.27.x) — do not bypass
-
-`app/execution_policy.py` is the **single source of exit semantics**, shared by sim and live: `resolve_premium_levels` (pts-over-pct, target above / stop below, floor — sim 0.0 / live ₹0.05), `tick_exit_reason` (a live tick is a degenerate bar routed through the backtest's own `intrabar_exit` → **stop-first**), `spot_mirror_levels` / `spot_mirror_exit_reason`. `tests/test_execution_policy.py` (11 golden tests) pins sim↔live parity — a real divergence (live deciders were target-first) was fixed here. Any new exit logic must route through this module.
-
-## 8. Forward testing / deployments / paper
-
-- Deployments (`strategy_deployments`) created only from saved presets or backtest runs; modes `signal_only | paper`; evaluate independently (no cross-strategy arbitration). Approval flow is **retired** — do not resurrect it.
-- `deployment_evaluator.py` runs on a 1-minute-close scheduler in market hours. Paper deployments with `risk.auto_paper` (default ON) auto-open a paper trade per clean CONFIRMED signal at real option premium; a per-minute marker fires premium + spot-mirror exits; 15:00 IST square-off (`risk.allow_overnight` opts out).
-- Forward metrics gated by ≥70%-covered 10:00–15:00 sessions; low-sample surfaces in Strategy Library under an amber badge. Strategy-source SHA pinned per deployment; evaluator auto-pauses on drift (re-pin via `POST /api/deployments/{id}/repin-source`).
-
-## 9. Non-negotiable trading rules / conventions (locked by the user)
-
-- **Premium-never-spot** fills; **lot size always from `option_contracts.lot_size`**; **OPEN trades never deletable**; **IST everywhere**.
-- DTE default `[0..6]`; signal window 09:25–14:50; expiry-day cutoff 15:00 IST (from `option_contracts.expiry_date`, never weekday-hardcoded).
-- Slippage: ATM 0.5pt / OTM1·ITM1 1pt / OTM2+·ITM2+ 2pt / expiry-day 30-min 2×.
-- Hygiene scope: rolling 9 months (floor 2024-11-27), NIFTY+BANKNIFTY+SENSEX, daily ATM band. No event calendar (post-hoc volatility detector instead).
-- **Never** commit `.env`, tokens, broker creds, or `memory/test_credentials.md`.
-
-## 10. Testing approach
-
-- `pytest -q` (533) must pass before any commit. **Tests never import `server.py`** (motor is absent on the host) — they string-assert on source via `tests/contract_corpus.py`: `backend_api_text()` (server + schemas + runtime + routers) and `warehouse_page_text()` (DataWarehouse page + `components/warehouse/*`). When you pin a route/testid, it can live in any router/component file.
-- `FakeDB`/`FakeCollection` stubs for hygiene/evaluator tests; add `self.option_known_empty = FakeCollection()` when a new test exercises the ledger.
-
-## 11. Working with the user / Kiro split / standing decisions
-
-- **Division of labor**: complex / trading-critical work → the senior agent (this one). Well-bounded UI slices → **Opus 4.8 in the Kiro app** via ready-to-paste prompts. Kiro must **never** edit `deployment_evaluator.py`, `optimizer.py`, `wfo.py`, `paper_auto.py`. `.kiro/specs/forward-surfaces-overhaul/design.md` is the conventions bible (theme tokens, kebab-case testids, IST, contract tests in the same commit, pytest + npm build + docker rebuild + browser check per slice). Quality-hardening Slice C (server split) was done by the senior agent; that spec is fully delivered.
-- **Standing decisions**: no Fyers/Flattrade integration (dropped); the "retire the legacy spot-only optimizer evaluation / flip rerank default" recommendation is **deferred** by the user ("I will retire the legacy later"); **per-changeset push approval** (commit freely, push only when the user says "push"); **batch docs** — one consolidated pass per session, important info only (the user explicitly wants tokens saved on doc churn).
-- See the persistent memory (`alphaforge-operating-context`) for usage reality: PC rarely runs in market hours (research honesty > live-uptime features); auto-paper wanted; low-sample metrics visible not hidden.
-
-## 12. Operational lessons (gotchas — read before related work)
-
-**Upstox**: 30-day chunks crossing Feb→Mar give `400 Invalid date range` (use `chunk_days=7`); historical is empty for the in-progress day (the live roller closes it); F&O history publishes with a **lag** (don't trust same-night completeness → the ledger grace rule); expired options need `/v2/expired-instruments/...` (normal V3 returns `UDAPI100011`); `GLOBAL_INDICATOR|USDINR` REST quote 400s but works on WS; WS subscription set is fixed at connect (stop+restart to change).
-**Contract correctness**: always filter `expiry_date >= today` when picking a live contract; `select_contract_for_signal` is exact-match-or-None (no nearest fallback — regression-pinned). Some Upstox expired strikes have outlier tokens with 0 candles and no alternative — genuinely broker-empty, not a remap bug (verified; do not "fix" by re-keying).
-**Performance**: `options_1m` is 5M+ docs — never aggregate it on a page-load path; use `option_coverage_cache` / index-friendly groupings, no `$lookup`. Candlestick timeframes window intraday so requests stay ~100ms.
-**Frontend**: long-job polling lives in `lib/jobs.jsx` (survives navigation). lightweight-charts — keep effect deps **stable** (data refs, not freshly-built objects) or it disposes+recreates and races autoSize ("Object is disposed"). **Do not shadow the global `window`** with a local variable (a `const window = useMemo(...)` crashed the chart's Fullscreen handler — `addEventListener is not a function`). CRA SPA client-navigation does NOT reload the JS bundle — after a rebuild, do a full reload (or check `curl localhost:3000 | grep main.*.js` for the new hash). The browser-screenshot tool intermittently times out on canvas-heavy pages (verify via DOM `find`/`read_page` + console instead).
-**Git**: `core.autocrlf=true` → harmless CRLF warnings on commit.
-
-## 13. Verification checklist
-
-```bash
-python -m pytest tests -q          # 533 pass
-cd frontend && npm run build       # compiles (1 pre-existing exhaustive-deps warning in BacktestLab)
-cd .. && docker compose up -d --build && docker compose ps
-curl -s localhost:8001/api/health  # {"db":"ok"}
-```
-UI smoke: Data Warehouse hero + Sync now + band heatmaps; Backtest results — KPI grid incl. account-value range, the two charts with named axes, monthly calendar, BacktestChart (timeframes, trade focus → #N markers + Entry/Tgt/SL lines, go-to, maximize); no console errors.
-
-## 14. What's next (open items)
-
-- **strategy-deploy-to-live — BUILD COMPLETE (2026-06-25), live readback PENDING.** A deployed
-  strategy's continuous signals now route through the executor choke-point + software guard to place
-  **real Flattrade orders under per-deployment ARM + caps** (armed auto-place; the user changed the
-  per-order-click rule). Built brainstorm → spec → plan → subagent-driven TDD; **2370 host tests +
-  clean FE build**, on branch **`feat/strategy-deploy-to-live` (17 commits, NOT merged/pushed)** in
-  worktree `.claude/worktrees/strategy-deploy-to-live`. See CHANGELOG **0.48.x** + agent memory
-  `strategy-deploy-to-live-2026`. Key files: `auto_live.py`, `live_deploy_governor.py`,
-  `live_deploy_context.py`, `executor.place_deployed_order`, the `live_position_guard` spot-mirror/
-  time-stop/EOD additions, and `routers/deployments.py` `live/arm|disarm|stop|status`. Two
-  offline-first env kills: `LIVE_AUTOPLACE_ARMED` (entries) + `LIVE_GUARD_ARMED` (auto squares).
-  **REMAINING = plan Task 16 (user-gated): Docker dry-run (both env unset → no transmit, safe) then a
-  USER-supervised 1-lot live readback — the assistant never arms/places.** A holistic review caught +
-  fixed a real "spot-only-strategy registers unguarded" bug (now: a 50% premium catastrophe stop is
-  always seeded + guard registration is mandatory). Lower-priority follow-up still open from the live
-  page itself: confirm the single-GTT above-trigger `ai_t` (`LTP_A_O`, inferred) if a target-only GTT
-  is ever needed.
-
-- **AGREED ROADMAP (2026-06-15, build in this order across upcoming sessions):**
-  **(1) Piece 2 — exit/risk controls** ✓ COMPLETE (Commit 1 enforce+evaluate + Commit 2
-  auto-search; both on `feat/exit-risk-controls`, 657 host tests, not pushed/merged).
-  **(2) Piece 3 — integrated optimize→validate-OOS→accept loop** (survival constraints
-  wired into the accept gate; next after Piece 2 is verified + landed). **(3)
-  Backtest-as-job Phase 2** (live progress + cancel — verified design already on file in
-  the Phase-2 bullet below). Each goes through brainstorm → spec → plan →
-  subagent-driven build, like 0.40.x/0.41.x.
-  **Branch state:** `main` (e6febbe, pushed) → `feat/survivable-optimization` (0.40.x)
-  → `feat/live-tick-paper-realism` (0.41.x) → **`feat/exit-risk-controls` (Piece 2,
-  0.42.x)**; none pushed/merged — user lands them on explicit instruction. **User
-  to-dos noted:** review deployment lot sizing (10-lot deployments realize ~−₹13-14k
-  per stop now that paper trades open+exit faithfully); optionally re-optimize with the
-  survival gate ON + deploy survivors for an honest forward test; a forward-vs-backtest
-  parity scorecard is the confidence gate before any broker API.
-
-- **DONE — Exit/Risk Controls Piece 2 COMPLETE (Commit 1 + Commit 2), on branch
-  `feat/exit-risk-controls` (2026-06-16; stacked on `feat/live-tick-paper-realism`).**
-  657 host tests pass. Not pushed/merged.
-  - *Commit 1 (enforce + evaluate):* Premium-axis trailing-stop + breakeven + soft
-    per-day loss/target/max-trades caps as one execution overlay, off by default
-    (byte-identical). Sim, optimizer/survival gate, and live all enforce the same
-    decider (shared pure `app/exit_controls.py`). TDD + spec + code-quality review per
-    task; 25-finding plan audit caught the max_trades off-by-one and real call sites.
-    Spec [docs/superpowers/specs/2026-06-15-exit-risk-controls-design.md], plan
-    [docs/superpowers/plans/2026-06-15-exit-risk-controls.md].
-  - *Commit 2 (auto-search):* `search_exit_controls` flag (requires Survivability ON +
-    option re-rank) sweeps a bounded, deterministic Cartesian grid of exit configs per
-    SURVIVING finalist and keeps the best-surviving one (`chosen_exit_controls`) — the
-    survival gate is the overfit guard. New pure `exit_control_grid` in
-    `app/exit_controls.py` (default: trail_distance [0.20, 0.35], breakeven_trigger
-    [0.0, 0.30]; capped at max_grid=12 via deterministic uniform stride, no RNG).
-    Optimizer wiring dormant-by-default (verified by py_compile + running stack). UI
-    toggle + corrected fraction-unit hint text.
-  **Running-stack verification pending the user:** docker rebuild; force a live
-  trail-stop + a daily-loss halt; confirm auto-resume next session; run an optimization
-  with Survivability + `search_exit_controls` on and confirm survivors carry an
-  auto-tuned `chosen_exit_controls` config. **Piece 3 (integrated
-  optimize→validate-OOS→accept loop) is the next roadmap item** after Piece 2 is
-  verified + landed.
-
-- **DONE — 0.37.x verified in the running stack** (`docker compose up -d --build` + browser smoke, both app images rebuilt): all six changes render with **no console errors** — cockpit market badge/clock + last-evaluated, the deploy wizard's friction control (default ON, prefilled) + selection-bias readiness line + gate ack warnings, the journal "P&L ₹ (net)" column, the chart's premium focus strip on an option_levels run, the Optimizer diversity toggle. API spot-checks confirmed `market_status` / `last_evaluated_ts` / `n_trials` / `deflated_sharpe` / `option_oos_net`. Two manual-flow checks were not exercised (no open trade / no stale close to trigger): the manual-close override prompt (#5) and a live stale-fill badge (#4) — both are guarded in code + unit-tested.
-- **DONE — paper journal surfaces the slice-1/4 data**: "P&L ₹ (net)" + gross/friction sub-line + `exit_price_stale` "est" badge.
-- **Request timeouts (done #1) + backtest-as-job Phase 1 (done #3 core)**: long synchronous calls (backtest run, warehouse sync, data-hygiene scans, audits) get a **per-request 10-min timeout** via `LONG_TIMEOUT_MS` in `frontend/src/lib/api.js` (global stays 60s; build-time tunable via `REACT_APP_API_TIMEOUT_LONG`). The `"timeout of 60000ms exceeded"` error was the **axios client** timeout, not a backend param. **Phase 1 now landed:** `POST /backtest/start` inserts the run doc up front with `status:"running"` (crash-visible), launches `run_backtest_job` via `asyncio.create_task`, and returns `{run_id}` instantly; the worker runs indicators + `run_backtest` + optional `walk_forward` inside **one `asyncio.to_thread` hop** (off the event loop — no more blocking the uvicorn loop / 5s healthcheck), then `$set`s the full result + `status:"done"` (or `"failed"` + `error`). The UI (`BacktestLab.runBacktest`) calls `api.startBacktest` then polls the existing `GET /backtest/runs/{id}` every 2s until terminal — so the **60s-timeout / duplicate-on-retry class is gone**. Legacy synchronous `POST /backtest/run` kept for scripts. Verified in the running stack: a browser run hits `/backtest/start` → 2 polls → result (`1841 trades`), no legacy call, no console errors; backend lifecycle confirmed via direct API (instant `queued` → `running` → `done`, full metrics + walk-forward). **Deferred (Phase 2-4, by user choice):** Phase 2 (live progress + cancel) has a verified design on file — see the dedicated "Phase 2" bullet below; Phase 3 (`JobsProvider` for backtests + restart-reconcile) and Phase 4 (true multi-core via `ProcessPoolExecutor`) follow it.
-- **Phase 2 (live progress + cancel) — VERIFIED DESIGN ON FILE, deferred by user (2026-06-14).** An 8-agent read-only audit (mapped engine + all call sites + the optimizer's progress/cancel pattern, then 3 adversarial skeptics) concluded **safe-with-care: zero impact on the existing app**. The design: add `*, progress_cb=None, should_cancel=None` (KEYWORD-ONLY, defaulting None) to `run_backtest` + a `BacktestCancelled` sentinel; one throttled guarded hook at the loop top (`if (should_cancel is not None or progress_cb is not None) and (i & 0x3FF)==0:`). Because all 8 existing callers pass nothing, the guard short-circuits every bar (~5 bytecode ops, **below timing noise** even across the optimizer's ~200 trials × ~22k bars + heatmap/robustness; determinism preserved exactly). Keyword-only `*,` makes a positional collision with the fragile `walkforward.py:39/41` calls structurally impossible; the contract corpus excludes `backtest.py`, so no test breaks. Worker: a **shared-counter + 1 Hz async poller** (motor stays on the loop — never called from the to_thread worker, mirroring `optimizer.py`), task stored to prevent GC. New `POST /backtest/runs/{id}/cancel` (flag only) + startup reconcile of orphaned `running` backtests → `failed`. Frontend: real `doc.progress` bar + Cancel button. **Two MUST-FIX items the adversaries caught (both in the new cancel path, not regressions):** (1) **cancel-during-finalize race** — cancel is only checked every 1024 bars, so a Cancel landing in the walk-forward/option-pairing tail is missed and the run saves as `done` with a dangling `cancelled:true`; fix = an authoritative post-compute cancel gate before writing `done` (mirror `optimizer.py:950` `final_status = "cancelled" if cancelled_flag …`). (2) **frontend crash on cancelled** — a cancelled doc has no `metrics`, so `doc.metrics.trade_count` (BacktestLab.jsx ~515) throws and surfaces a misleading "Backtest failed"; fix = handle `status==="cancelled"` with an early return BEFORE the metrics access. Est. ~half a day; hardest part is the worker poller concurrency. Phases 3 (`JobsProvider` for backtests) and 4 (`ProcessPoolExecutor` multi-core) remain after this. Pause/resume + fold-level crash-resume were assessed and **dropped** — a single backtest is one monolithic loop, not discrete optimizer trials.
-- **DONE — Survivable optimization (piece 1 of the Optimizer↔Backtest track), on branch `feat/survivable-optimization` (2026-06-15).** The optimizer maximized spot-index points, but ruin lives on the ₹-capital option-equity curve, so a "winner" could bankrupt the account (the user's −₹49k run). New **default-off** survival gate: pure `app/survival.py` (`calmar`, seeded per-day-bootstrap `monte_carlo_risk_of_ruin` with fail-closed CI, `survival_verdict` = guards → **absolute ₹ floor (primary)** → magnitude DD%-cap → RoR), evaluated **per walk-forward OOS fold** (`oos_fold_index_ranges` + `_survival_eval_oos`), wired into the option re-rank: each top-K finalist gated, **profitable survivors** ranked by a configurable **Calmar/Total-₹** objective; **zero survivors → `done_no_survivor`** + `survival_summary` (never promotes a disqualified candidate). `SurvivalConfigReq` schema + `/optimize/start` 400s (requires option_rerank + option exec + `costs_enabled`). Optimizer UI: Survivability panel + Survived/Disqualified badges + return-vs-drawdown scatter + no-survivor banner. **`survival_config.enabled=false` ⇒ byte-identical** (the legacy promotion `elif` is unchanged; verified). 600 host tests pass; backend e2e in the running stack confirmed the validations, the survival stage, and the floor correctly disqualifying finalists whose **OOS** equity hit −₹336k…−₹811k though in-sample looked fine (overfit-exposure working). **Adversarial design audit caught 4 blockers** (DD-sign no-op, discarded sim inputs, wrong-axis from-peak DD, in-sample double-selection) — all fixed; spec at [docs/superpowers/specs/2026-06-14-survivable-optimization-design.md](superpowers/specs/2026-06-14-survivable-optimization-design.md), plan at [docs/superpowers/plans/2026-06-14-survivable-optimization.md](superpowers/plans/2026-06-14-survivable-optimization.md). **Remaining:** the user's own browser visual-check of the Optimizer UI; then merge the branch. **Deferred:** Approach B (capital-aware *trials*) if survivor density is thin; piece 2 (exit/risk controls: trailing/breakeven stops + per-day caps in the backtest sim) and piece 3 (integrated optimize→validate-OOS→accept loop) — each its own spec.
-- **DONE — Live tick-driven paper-trading realism, on branch `feat/live-tick-paper-realism` (2026-06-15; branched off `feat/survivable-optimization`).** Goal: make deployed-strategy paper trading reflect *live* execution so the Signal Journal + Paper page are trustworthy forward-test evidence (before any future broker API). Researched first (Streak/retail platforms signal on **OHLC close, not LTP** — so entries stay candle-close, matching the 1-min backtest, no repaint; ticks drive **fills + exits**, not entry evaluation). Built: **`app/live_exit_monitor.py`** (`LiveExitMonitor`, ~1.5s loop reusing `mark_open_deployment_trades` → tick-level stop/target/spot-mirror/time-stop closes at the live premium; replaces the old once-per-minute mark; `/api/live-exit-monitor/status`); **poll-for-new-bar** evaluation (`_deployment_evaluator_loop` now evaluates on each new closed `candles_1m` NIFTY bar, ~2-3s after close, never the forming bucket; 15:00 square-off moved to run every cycle for time-safety); **union-subscription** (`_auto_follow_option_stream` subscribes `{ATM band} ∪ {every open-trade contract}` so a drifted strike stays markable); **tick-level time-stop** (`risk_hints` now threaded onto the trade in `build_auto_trade` so it fires live) + **exit-friction parity** (all closes route `close_trade → close_economics`); **live Paper page** (`GET /paper/open-positions` computes unrealized P&L from the latest tick at request time; page polls ~2s, full journal stays 30s). **`option_no_data` was earlier on this branch's base also fixed** (the live evaluator's `_has_recent_option_data` now accepts the live `ticks` tick, not just `options_1m` — that false-block had stopped ALL paper trades). 612 host tests pass; **verified in the running stack: exit monitor cycling ~1.5s; 25 trades closed today (15 target_hit / 10 stop_hit), all `exit_price_source=live_tick`; open-positions feed serves live P&L.** OBSERVATION for the user: with trades now opening + exiting faithfully, the 10-lot deployments realized −₹13-14k per stop — review deployment lot sizing (same point as the survivability work). Spec [docs/superpowers/specs/2026-06-15-live-tick-paper-realism-design.md](superpowers/specs/2026-06-15-live-tick-paper-realism-design.md), plan [docs/superpowers/plans/2026-06-15-live-tick-paper-realism.md](superpowers/plans/2026-06-15-live-tick-paper-realism.md). **Branch chain:** `main` → `feat/survivable-optimization` (0.40.x) → `feat/live-tick-paper-realism` (0.41.x); nothing pushed/merged. **Deferred:** tick-native intra-bar entries (needs a tick backtest); forward-vs-backtest parity scorecard; broker-API live execution (only after paper earns confidence — its own safety design).
-- **Dead-code cleanup** (still open): the old self-referential option-coverage endpoint/cache/`api.optionCoverage` (the heatmap reads band truth; this path has zero frontend call sites) — safe to delete.
-- After A/B-validating the option re-rank (now with the opt-in `rerank_diversity` shortlist), retire the legacy spot-only optimizer path (deferred by user), then a live-only risk engine.
-- Optional warehouse extras: option-price sanity check, `mongodump` backup button.
-- Backtest follow-ups (optional): a shared backend performance-metrics module so the optimizer/forward metrics reuse identical definitions; benchmark overlay was explicitly declined.
-- Phase 5/6 (survival models, Kelly, swing) deferred until ≥6 months of forward history.
+_Operational gotchas (Upstox chunking, F&O publish lag, lightweight-charts effect-dep stability, the stale-bundle reload) live in [`DEVELOPER_GUIDE.md`](DEVELOPER_GUIDE.md) → Gotchas & Known Issues — read them before touching warehouse, chart, or live code._

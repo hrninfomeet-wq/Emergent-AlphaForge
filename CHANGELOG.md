@@ -2,6 +2,25 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.48.2] — Documentation refresh + repo tidy-up (2026-07-01)
+
+Consolidated and refreshed the documentation so a new engineer/agent can onboard from a single guide,
+and removed historical cruft. **No application code changed.**
+
+- **Docs refreshed** (each drafted grounded in current code, then fact-checked against source):
+  `README.md`, `docs/HANDOFF.md` (now a concise START-HERE with a where-to-go-deep index),
+  `docs/ARCHITECTURE.md` (added the live-execution L0–L3 gate chain + the data-warehouse completeness
+  model), `docs/API_REFERENCE.md` (all ~171 routes incl. the live-deploy set), and
+  `docs/STRATEGY_DEPLOYMENTS.md` (dropped the retired approval-flow framing; documents armed
+  auto-place + OCO/GTT backstop + `live_position_guard`).
+- **New:** `docs/DEVELOPER_GUIDE.md` — the single consolidated onboarding guide: run/build/test
+  workflow (the four-tier test pyramid), the **live-trading safety model**, the data-warehouse model,
+  India trading rules, the research→deploy flow, and gotchas/known-issues.
+- **Removed** (all for already-merged features; preserved in git history): the 65 one-off design
+  specs + implementation plans under `docs/superpowers/`, the one-off `docs/experiments/` audit, and
+  the stale unreferenced `design_guidelines.md`. Also cleared ~27 MB of untracked local build
+  artifacts (the Flattrade `_build/` PDF-extraction dir, `__pycache__/`, `.pytest_cache/`).
+
 ## [0.48.1] — Backtest: stop silently dropping newest option candles at the load cap (2026-06-30)
 
 Fixes a **silent data-loss** bug in the paired-option backtest. `options_1m` candles were loaded
@@ -383,7 +402,7 @@ bankrupt the account (the user's −₹49k run). Survival mode fixes that.
   overfit-exposure working as designed. (Frontend pending the user's visual check.)
 - **Deferred**: Approach B (capital-aware *trials*) if survivor density proves thin;
   pieces 2 (exit/risk controls) + 3 (integrated loop) as their own specs. See
-  [docs/superpowers/specs/2026-06-14-survivable-optimization-design.md](docs/superpowers/specs/2026-06-14-survivable-optimization-design.md).
+  `docs/superpowers/specs/2026-06-14-survivable-optimization-design.md` (in git history).
 
 ## [0.39.x] — Backtests run as a background job (async, non-blocking) (2026-06-14)
 

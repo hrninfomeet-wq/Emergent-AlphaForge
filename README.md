@@ -1,121 +1,73 @@
 # AlphaForge Trading Lab
 
-A local-first research and forward-testing terminal for Indian index options on NIFTY 50, BANKNIFTY, and SENSEX. AlphaForge ingests clean market data, runs backtests with realistic costs (including paired real-option-candle execution), optimizes strategy parameters with honest walk-forward validation, and runs strategies forward against live 1-minute closes. Deployed strategies run independently and concurrently: paper-mode deployments auto-trade every clean signal at real option premiums, signal-only deployments journal without trading, and no broker orders are ever placed.
+A **local-first research and forward-testing terminal for Indian index options** (NIFTY 50, BANKNIFTY, SENSEX). AlphaForge maintains a clean 1-minute data warehouse, backtests strategies with honest rupee-first metrics and real option-candle execution, optimizes parameters with walk-forward (honest out-of-sample) validation, and runs surviving strategies forward — from signal-only journaling, to tick-driven paper trading, up to gated live execution through the Flattrade (Noren OMS) broker. Everything runs on your own machine in Docker; no real broker order is ever placed unless you explicitly arm it.
 
-This is a research tool. Options trading is high risk; treat every signal as a hypothesis until it survives walk-forward, forward testing, and paper trading.
+> This is a research tool. Index options are high-risk. Treat every signal as a hypothesis until it survives walk-forward, forward testing, and paper trading. All times are IST; the NSE session is 09:15–15:30 with a 15:00 square-off, and the calendar is holiday-aware.
 
-## Status (2026-06-12)
+## Key Capabilities
 
-| Area | Status |
-|---|---|
-| Local Docker stack | Working on Windows: MongoDB, FastAPI, React/nginx |
-| Index data warehouse | NIFTY/BANKNIFTY/SENSEX 1m candles, ~100% coverage 2024-11-27 → today |
-| Option data warehouse | NIFTY ~1.46M / BANKNIFTY ~1.69M / SENSEX ~2.21M ATM CE/PE candles (OI populated) |
-| Data Hygiene | UI hero panel: check (plan ~6s) + dependency-ordered fill |
-| Warehouse auto-update | On startup, OAuth-connect, and daily 18:00 IST |
-| Option coverage page load | Cache-backed (~200ms) |
-| Point-in-time lookup + chart | Spot/ATM lookup + per-index candlestick chart with gap detection |
-| NSE holiday calendar | 2024–2026 with Budget Saturdays + shifted-expiry; holiday modal |
-| Live tick → 1m OHLC roller | Running, closes Upstox same-day historical gap |
-| Strategy plugin system | Built-in + drop-in `.py` plugins |
-| Backtest + walk-forward | Complete with significance, regime detection, paired option execution + pre-run option-data preflight |
-| Optimizer | Bayesian / Grid / CMA-ES with robustness, importance, heatmap; guard rails, indicator-period search, option-aware re-rank, pause/resume |
-| Walk-forward optimization (WFO) | Honest OOS mode: per-window re-optimization, stitched OOS equity, WF efficiency / consistency / param stability |
-| India VIX | Ingested as `INDIAVIX` (baseline 2025-12-29); Data Hygiene scope; VIX-bucket context tagging + pre-trade VIX filters |
-| Slippage + volatility | Expiry-tail slippage + post-hoc detector |
-| Strategy Deployments | 1m_close evaluator running, drift detection ON |
-| Auto paper trading | Paper-mode deployments auto-trade clean signals at real option premium (`risk.auto_paper`, default ON for new deployments) |
-| Deployments command center | Per-strategy cards (today/lifetime stats), 3-step deploy wizard, undeploy ± journal purge |
-| Auto square-off | 15:00 IST every market day, override per deployment |
-| Quality gates + readiness | In the deploy wizard: validation evidence + warning acknowledgment |
-| OAuth token-expiry countdown | In the global top bar |
-| Forward metrics aggregation | Session-gated deployment metrics; low-sample results shown with an amber badge |
-| Per-deployment kill switches | Complete: max consecutive losses / daily loss cutoff / max open trades |
-
-453 backend tests pass.
+- **Data Warehouse** — 1-minute OHLCV for the 3 indices (spot + ATM-band option contracts) plus `INDIAVIX`, in the `candles_1m` collection. Daily ATM-band completeness model, holiday-aware NSE calendar (`nse_calendar.py`), one-button sync + auto-update, and Data Hygiene check/fill. (`app/completeness.py`, `app/data_hygiene.py`, `app/warehouse*.py`, `app/routers/warehouse.py`)
+- **Backtest Lab** — spot backtests and paired **real-option-candle** backtests, honest rupee-first metrics, and an optional exit/risk-control overlay (trailing / breakeven / daily caps). (`app/backtest.py`, `app/option_backtest.py`, `app/exit_controls.py`, `app/execution_policy.py`)
+- **Optimizer** — Bayesian (Optuna TPE) / Grid / Genetic search; single-shot **or** walk-forward (honest OOS); spot vs option re-rank evaluation; survival gate; exit-control search. (`app/optimizer.py`, `app/wfo.py`, `app/walkforward.py`, `app/survival.py`, `app/rerank_select.py`)
+- **Strategy Library** — built-in strategies plus drop-in `.py` plugins, a retire/delete lifecycle, and a multi-provider AI authoring wizard (Anthropic + Gemini). (`app/strategies/*`, `app/routers/strategies_admin.py`, `app/ai/*`)
+- **Paper Trading** — live-tick-driven paper realism: tick-based exits and poll-for-new-bar entries at real option premiums. (`app/paper_*.py`, `app/live_exit_monitor.py`)
+- **Live Trading (Flattrade)** — offline-first; an L0–L3 gate chain with a single real-order chokepoint (the executor); margin pre-check; OCO/GTT catastrophe backstop; kill switches; Greeks. ARMED auto-place only under an env gate **and** per-deployment ARM **and** account caps, with EOD auto-disarm. (`app/live/*` — `executor.py`, `safety.py`, `margin.py`, `arm_state.py`, `gtt.py`, `kill_switch.py`; `app/routers/live_broker.py`)
 
 ## Quick Start
 
 ```bash
-docker compose up -d --build
+docker compose up -d --build backend frontend
 ```
 
-Open:
+Then open:
 
-- Frontend: `http://localhost:3000`
-- Backend health: `http://localhost:8001/api/health`
+- Frontend — `http://localhost:3000`
+- Backend API health — `http://localhost:8001/api/health`  *(all routes are under `/api`)*
 
-Configuration:
+MongoDB runs on `:27017`. First-time setup (copy `backend/.env.example` → `backend/.env`, generate a `FERNET_KEY`, add Upstox data credentials) is covered in **[docs/LOCAL_SETUP.md](docs/LOCAL_SETUP.md)**; the daily launch/OAuth routine is in **[docs/STARTUP_MANUAL.md](docs/STARTUP_MANUAL.md)**.
 
-- Copy `backend/.env.example` to `backend/.env`.
-- Generate a stable `FERNET_KEY`:
-  ```bash
-  python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-  ```
-- Add Upstox API credentials to `backend/.env` for live data.
-- Never commit `.env`, access tokens, or broker account data.
-
-## Verification
-
-```bash
-python -m pytest tests -q
-cd frontend
-npm run build
-cd ..
-docker compose up -d --build
-docker compose ps
-```
-
-## Documentation
-
-- [Project Overview](docs/PROJECT_OVERVIEW.md) — capabilities, status, workflows, lessons learned.
-- [Handoff](docs/HANDOFF.md) — entry point for the next AI agent or developer. Includes operational lessons.
-- [Architecture](docs/ARCHITECTURE.md) — module map, data flow, collections, design choices.
-- [API Reference](docs/API_REFERENCE.md) — every backend route.
-- [User Manual](docs/USER_MANUAL.md) — how to use the app.
-- [Local Setup](docs/LOCAL_SETUP.md) — Docker and native installation.
-- [Startup Manual](docs/STARTUP_MANUAL.md) — one-click launcher, manual startup, and troubleshooting.
-- [Strategy Plugins](docs/STRATEGY_PLUGINS.md) — adding custom strategies.
-- [Strategy Deployments](docs/STRATEGY_DEPLOYMENTS.md) — forward-testing model.
-- [Plan](plan.md) — slice roadmap with done/next markers.
-
-## Repository Structure
+## Repository Layout
 
 ```
 .
-├── backend/
-│   ├── app/                  Strategy modules, evaluators, data hygiene, NSE calendar, etc.
-│   │   └── strategies/       Built-in strategies + drop-in plugins/
-│   ├── server.py             FastAPI routes
-│   ├── requirements.txt
-│   └── Dockerfile
-├── frontend/
-│   ├── src/                  React app, Tailwind, shadcn/ui
-│   ├── public/
-│   └── Dockerfile
-├── tests/                    Backend test suite (pytest)
-├── docs/                     Project documentation
-├── ltm/                      Project-local long-term memory (LTM workflow)
-├── memory/                   Local notes (gitignored secrets)
-├── .kiro/                    Kiro IDE steering files and hooks
-├── docker-compose.yml
-├── start-app.bat             Detailed Windows startup assistant
-├── start.bat / start.sh      Compatibility Windows launcher / Mac-Linux launcher
-├── plan.md                   Slice roadmap
+├── backend/            FastAPI app (app/, app/live/, app/strategies/, app/ai/, app/routers/), Dockerfile
+├── frontend/           React (CRA + craco) app: src/pages, src/components, src/hooks
+├── docs/               All project documentation (see index below)
+├── tests/              Host + container test suite (pytest)
+├── ltm/                Project-local long-term memory (LTM workflow)
+├── memory/             Local notes / secrets (gitignored)
+├── docker-compose.yml  mongo + backend + frontend
+├── CHANGELOG.md        Versioned history (currently 0.48.x)
 └── README.md
 ```
 
-## Project Conventions (Important)
+## Documentation Index
 
-- DTE filter default `[0..6]`. Auto square-off at 15:00 IST every market day. Time-of-day blocks 09:15–09:25 and 14:50–15:30 IST. Expiry-day cutoff at 15:00 IST.
-- Lot size always read from `option_contracts.lot_size` (Upstox-supplied). Never hardcoded.
-- Slippage defaults: ATM 0.5pt, OTM1/ITM1 1pt, OTM2+/ITM2+ 2pt, expiry-day 30-min 2x.
-- Deployments can only be created from saved Presets or saved Backtest Runs. Direct deployment from a raw plugin is blocked.
-- Walk-forward warns but does not block. The user makes a conscious choice via the ack checkbox.
-- Paper-mode deployments may auto-open paper trades on clean signals when `risk.auto_paper` is on (default for new deployments). Entries are always real option premium — live tick, else a fresh stored candle — never the spot index level; no premium means no trade plus a journaled `paper_trade_error`.
-- Deployment modes: `paper` (auto-trades every clean signal) and `signal_only` (journals only). The approval flow was retired 2026-06-12. No automatic broker order placement, ever.
-- All routes under `/api`. Local Docker stack is the source of truth.
+**New here? Read in this order:** `README.md` → **[docs/HANDOFF.md](docs/HANDOFF.md)** → **[docs/DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md)** (deep onboarding) → **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** (technical detail).
+
+| Doc | Purpose |
+|---|---|
+| [docs/HANDOFF.md](docs/HANDOFF.md) | **START HERE** — current state, how to run/test, table of contents into the deeper docs |
+| [docs/DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md) | **Deep onboarding** — run/build/test workflow, live-trading safety model, data-warehouse model, India trading rules, research→deploy flow, gotchas |
+| [docs/PROJECT_OVERVIEW.md](docs/PROJECT_OVERVIEW.md) | What AlphaForge is and the end-to-end research→deploy workflow, at a glance |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Technical reference: stack, module map, data flow, MongoDB collections, the live-execution gate chain |
+| [docs/API_REFERENCE.md](docs/API_REFERENCE.md) | Every backend HTTP route (all under `/api`) |
+| [docs/USER_MANUAL.md](docs/USER_MANUAL.md) | Per-page UI guide |
+| [docs/STRATEGY_PLUGINS.md](docs/STRATEGY_PLUGINS.md) | How to write a custom strategy plugin |
+| [docs/STRATEGY_DEPLOYMENTS.md](docs/STRATEGY_DEPLOYMENTS.md) | The deployment model: modes, gates, kill switches, live |
+| [docs/LOCAL_SETUP.md](docs/LOCAL_SETUP.md) | Install (Docker + native) |
+| [docs/STARTUP_MANUAL.md](docs/STARTUP_MANUAL.md) | Daily launch + troubleshooting |
+| [docs/optimizer-user-guide.md](docs/optimizer-user-guide.md) | Using the optimizer |
+| ["docs/Walk-forward (honest OOS) what it does exactly.md"](docs/Walk-forward%20%28honest%20OOS%29%20what%20it%20does%20exactly.md) | What walk-forward validation actually does |
+| [docs/live-readback-checklist.md](docs/live-readback-checklist.md) | Live market-hours readback runbook |
+| [docs/Resources/flattrade-pi-api/INDEX.md](docs/Resources/flattrade-pi-api/INDEX.md) | Decoded Flattrade (PiConnect/Noren) broker API reference |
+| [CHANGELOG.md](CHANGELOG.md) | Versioned history |
+| [CLAUDE.md](CLAUDE.md) | Agent capabilities + always-loaded project notes |
+
+## Testing
+
+Pure/contract tests run on the host Python; motor/route tests run **inside the backend container** (`docker cp tests/. alphaforge_backend:/app/tests` then `docker exec -w /app alphaforge_backend python -m pytest ...`). Frontend "tests" are pytest string-pins over the JSX source. The final gate is a Chrome browser smoke — hard-reload (Ctrl+Shift+R) to drop the stale bundle. See [docs/DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md) for the full run/build/test workflow.
 
 ## Safety Note
 
-Options can lose money quickly. AlphaForge surfaces realistic costs, walk-forward divergence, statistical significance, and forward session completeness so weak strategies are caught before capital is committed. Auto paper trading exists only to audit signal quality without manual clicking; it never touches a broker. The no-broker-orders rule is intentional and must remain.
+**No real broker order is ever placed unless the operator has explicitly armed live execution** — an environment gate (`LIVE_AUTOPLACE_ARMED=1`), a per-deployment ARM with account caps, and EOD auto-disarm all have to line up, and every real order passes through a single executor chokepoint behind an L0–L3 gate chain. Paper and signal-only deployments never touch a broker. The offline-first, no-broker-orders-by-default posture is intentional and must remain.
