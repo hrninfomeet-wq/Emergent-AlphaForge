@@ -1,297 +1,511 @@
 # Architecture
 
-Updated: 2026-06-11
+Technical reference for AlphaForge Trading Lab. For a task-oriented onboarding
+walkthrough (run/build/test, safety model, research→deploy flow, gotchas), read
+[DEVELOPER_GUIDE.md](./DEVELOPER_GUIDE.md) first — this file is the deep
+"where does X live and how does data move" companion.
 
-## Purpose
+Updated: 2026-07-01 · Verified against `main`.
 
-AlphaForge is a local-first research and forward-testing terminal for Indian index options. It stores market data on disk, audits coverage, runs backtests, optimizes parameters (including honest walk-forward), runs strategies forward against live 1-minute closes, and journals every signal. Paper-mode deployments can auto-trade clean signals at real option premiums; shadow and recommendation modes keep a manual approval gate; broker orders are never placed.
+---
 
-## Stack
+## 1. Purpose
+
+AlphaForge is a **local-first** research and forward-testing terminal for Indian
+index options (NIFTY / BANKNIFTY / SENSEX). It warehouses 1-minute market data on
+disk, audits coverage, runs spot and paired-option backtests, optimizes parameters
+(including honest walk-forward OOS), runs strategies forward against live 1-minute
+closes, paper-trades clean signals at real option premiums, and — behind a
+multi-gate chokepoint and explicit env arming — can place **real** broker orders
+through Flattrade.
+
+**Two brokers, two roles:**
+- **Upstox** — market **data** (historical REST + V3 WebSocket ticks). Read-only.
+- **Flattrade (Noren OMS)** — live **execution** (the only path that can place a
+  real order). Requires static IP + daily OAuth; limit / SL-limit only.
+
+---
+
+## 2. Stack & Topology
 
 | Layer | Technology | Role |
 |---|---|---|
-| Frontend | React, Tailwind, shadcn/ui, TradingView Lightweight Charts | Trading terminal UI |
-| Backend | FastAPI, Pydantic, pandas, NumPy, Motor | API, indicators, strategy execution, evaluators |
-| Database | MongoDB | Candles, contracts, audits, runs, presets, deployments, signals |
-| Broker | Upstox REST + V3 WebSocket | Historical data, quotes, live ticks |
-| Local runtime | Docker Compose | MongoDB + backend + frontend/nginx |
-| Optimization | Optuna (TPE, CMA-ES) | Bayesian / Genetic search |
+| Frontend | React (CRA + craco), Tailwind, shadcn/ui, TradingView Lightweight Charts | Trading terminal UI |
+| Backend | FastAPI, Pydantic, pandas, NumPy, Motor (async MongoDB) | API, indicators, strategy execution, evaluators, live executor |
+| Database | MongoDB 7 | Candles, contracts, audits, runs, presets, deployments, signals, paper/live trades |
+| Data feed | Upstox REST + V3 WebSocket (protobuf) | Historical candles, quotes, live ticks |
+| Broker | Flattrade PiConnect / Noren OMS | Real order execution (offline-first) |
+| Runtime | Docker Compose | mongo + backend + frontend |
+| Optimization | Optuna (TPE / CMA-ES) | Bayesian / Genetic / Grid search |
+| AI authoring | Anthropic + Gemini (multi-provider) | Strategy authoring wizard |
 
-## Runtime Topology
+### Containers & ports (`docker-compose.yml`)
 
-```mermaid
-flowchart LR
-  U["User"] --> F["React Frontend"]
-  F -->|"/api"| A["FastAPI"]
-  A <--> M["MongoDB"]
-  A <--> B["Upstox REST"]
-  WS["Upstox WebSocket V3"] -->|"index ticks"| ROL["Live Candle Roller"]
-  WS -->|"option ticks"| LM["Latest Tick Map"]
-  LM --> A
-  ROL --> M
-  A -->|"scheduler"| E["Deployment Evaluator (1m_close)"]
-  E --> M
-  A -->|"scheduler"| SQ["Paper Square-off (15:00 IST)"]
-  SQ --> M
-  Y["yfinance fallback"] --> A
+```
+┌─────────────┐    :3000    ┌──────────────┐   /api    ┌──────────────┐
+│  frontend   │ ──────────► │   backend    │ ────────► │    mongo     │
+│ (React/CRA) │             │  (FastAPI)   │  motor    │  (mongo:7)   │
+│  :3000      │             │  :8001       │           │  :27017      │
+└─────────────┘             └──────┬───────┘           └──────────────┘
+                                   │
+              ┌────────────────────┼─────────────────────┐
+              ▼                    ▼                      ▼
+       Upstox REST/WS        Flattrade Noren        yfinance fallback
+       (market data)         (live execution)       (spot ingest)
 ```
 
-## Data Flow
+- All backend routes are served under the **`/api`** prefix (parent
+  `APIRouter(prefix="/api")` in `backend/server.py`; per-domain routers add the
+  full literal path).
+- `backend/.env` supplies `MONGO_URL`, `DB_NAME=alphaforge`, `CORS_ORIGINS`, and
+  the offline-first live-execution env gates (§6).
+- The frontend is built with `REACT_APP_BACKEND_URL=http://localhost:8001`.
+- Only one volume mount survives rebuild: the strategy **plugins** dir
+  (`./backend/app/strategies/plugins`) is bind-mounted so drop-in `.py`
+  strategies persist. Mongo data persists in the `mongo_data` named volume.
+- **Rebuild/run:** `docker compose up -d --build backend frontend`.
 
-```mermaid
-flowchart TD
-  HIST["Upstox historical / yfinance"] --> C["candles_1m"]
-  TICKS["Upstox WebSocket ticks"] --> ROL["Live Candle Roller"]
-  TICKS --> LT["Latest Tick Map"]
-  LT --> PT
-  LT --> SQ
-  ROL --> C
-  C --> H["integrity_hashes"]
-  C --> EV["Deployment Evaluator"]
-  OC["Option contracts"] --> EV
-  EV --> SIG["signals (deployment-generated)"]
-  SIG -->|"auto-paper (paper mode) / approve"| PT["paper_trades"]
-  LT --> MARK["Per-minute Trade Marker"]
-  MARK -->|"stop/target/spot-mirror exits"| PT
-  PT -->|"15:00 IST"| SQ["Paper Square-off"]
-  C --> BT["Backtest Engine"]
-  OC --> OCP["Option Data Planner"]
-  OCP --> OF["Option Candle Fetch"]
-  OF --> O1["options_1m"]
-  O1 --> OPT["Paired Option Backtest"]
-  BT --> BR["backtest_runs"]
-  OPT --> BR
-  BR --> SDC["Deployment Creation"]
-  PRESET["presets"] --> SDC
-  SDC --> SD["strategy_deployments"]
-  SD --> EV
-  BR --> OPTM["optimizer / presets / journal"]
-```
+---
 
-## Backend Module Map
+## 3. Backend Module Map
+
+The app factory is `backend/server.py` (thin — ~240 lines): FastAPI app, CORS,
+`startup`/`shutdown` hooks, and the background scheduler loops. Request models
+live in `app/schemas.py`; shared singletons/helpers in `app/runtime.py`; routes in
+`app/routers/*`; domain logic in `app/*`.
+
+### Routers (`app/routers/`, all mounted under `/api`)
+
+| Router | Surface |
+|---|---|
+| `research.py` | strategies list, warehouse ingest, backtest run/list, optimizer + WFO, presets, profiles, volatility audit |
+| `warehouse.py` | Upstox OAuth/stream, data-hygiene plan/execute, coverage/audit, OHLC resample, holiday calendar, live-candle roller, option contracts/candles |
+| `journals.py` | signals + paper-trades lifecycle (approve/skip/mark/close/square-off) |
+| `deployments.py` | forward-test deployments (create/pause/resume/archive), preflight, quality, metrics, **live-arm** toggle |
+| `strategies_admin.py` | strategy library lifecycle (retire/delete) + AI authoring wizard endpoints |
+| `broker.py` | Flattrade OAuth/session, symbol resolution helpers |
+| `live_broker.py` | **live execution surface** — positions/orders/limits, dry-run + preview, approvals, mode gate, arm-state, guard-status, GTT/OCO book, square, Greeks, kill-switch |
+
+### Data warehouse (`app/`)
+
+| Module | Responsibility |
+|---|---|
+| `warehouse.py` | Index candle persistence, coverage, holiday-aware audit, clear |
+| `completeness.py` | **The one definition of option completeness: the daily ATM band.** Pure functions — a day is option-complete when every strike the spot range touched (rounded + padded) has stored CE+PE candles at the resolved expiry |
+| `data_hygiene.py` | Diffs desired scope vs stored warehouse; emits a dependency-ordered plan (spot → contracts → option candles). Index-friendly aggregations (no `$lookup`) so the plan runs in ~6s |
+| `nse_calendar.py` | Hand-curated NSE/BSE 2024–2026 holidays + Budget Saturdays + shifted-expiry days; `trading_days_in_range` / `is_market_holiday` / `calendar_for_year` |
+| `warehouse_autoupdate.py` | Guarded plan→execute catch-up on startup, OAuth-connect, and a daily 18:00 IST timer |
+| `warehouse_lookup.py` | Point-in-time spot + derived ATM + nearest-expiry CE/PE lookup (local reads only) |
+| `warehouse_ohlc.py` | Server-side 1m→5m/15m/1h/1d resample on IST buckets + intraday gap detection |
+| `option_*` (`_contract_store`, `_candles`, `_coverage`, `_coverage_cache`, `_data_audit`, `_data_planner`, `_plan_response`, `_warehouse_jobs`) | Option contract metadata, candle normalization, coverage summaries + precomputed cache, preview-first fetch planner, background fetch jobs |
+| `options_universe.py` / `instruments.py` | ATM rounding, strike step, lot/expiry metadata per index |
+| `upstox_client.py` / `upstox_stream.py` / `upstox_index_ingest.py` | OAuth + REST historical; V3 WebSocket (protobuf decode, sanitized ticks); background index ingest |
+| `live_candle_roller.py` | Aggregates WS ticks into per-minute `candles_1m`; drops non-trading-day / off-session ticks |
+| `live_option_universe.py` / `market_header.py` | Nearest-expiry ATM option subscription keys; normalized market-header quote |
+| `vix.py` / `yfinance_source.py` / `chunking.py` | India VIX ingest + as-of join; yfinance spot fallback; chunk-size guidance |
+
+### Research engine (`app/`)
+
+| Module | Responsibility |
+|---|---|
+| `indicators.py` / `indicator_groups.py` | Vectorized, param-driven indicators (incl. vectorized FVG) |
+| `regime.py` / `scenario_classifier.py` / `scenarios.py` | Regime detection (ADX/Choppiness/ATR); scenario-adaptive routing |
+| `market_context.py` / `context_signals.py` / `cpr.py` | Regime/ToD/DTE/VIX bucket tagging; S/R, round levels, divergence scores; CPR levels |
+| `backtest.py` | Strategy execution, metrics, statistical significance (materialized-records hot loop) |
+| `option_backtest.py` | Paired INDEX+OPTION leg simulation (`simulate_paired_option_trades`); spot_exit / option_levels exit modes |
+| `exit_engine.py` / `exit_controls.py` / `exit_controls_level.py` / `execution_policy.py` | Shared intrabar exit; trailing/breakeven/daily-cap overlay; execution policy |
+| `costs.py` / `option_costs.py` / `slippage.py` / `portfolio.py` | Indian intraday cost models (spot points + rupee option); slippage config; premium-at-risk sizing + rupee equity |
+| `dte.py` / `volatility.py` / `vol_seasonality.py` | DTE filter; post-hoc realized-vol detector; vol seasonality |
+| `optimizer.py` | Optuna TPE / Grid / CMA-ES; two-stage option re-rank; pause/resume/crash-resume; robustness/importance/heatmap |
+| `wfo.py` / `walkforward.py` | Honest walk-forward (`kind="wfo"`): per-window re-optimization on train, OOS scoring on unseen test slices |
+| `survival.py` / `survival_validate.py` / `rerank_select.py` / `early_stop.py` / `parallel_eval.py` | Survival gate; option re-rank selection; early stop; opt-in parallel trial workers |
+| `strategies/` | `base.py` (registry + plugin loader), `adaptive_base.py`, `scenario_routing_base.py`, `session_features.py`, and the drop-in `plugins/` dir |
+| `ai/` | Multi-provider authoring: `llm_client.py`, `_anthropic.py`, `_gemini.py`, `spec_schema.py`, `compiler.py`, `capability.py`, `authoring_agent.py`, `py_author.py` + `py_sandbox.py` (guarded full-Python tier), `grounding.py` |
+
+### Forward testing (paper) (`app/`)
+
+| Module | Responsibility |
+|---|---|
+| `strategy_deployments.py` / `strategy_source_hash.py` | Deployment doc builder + validation + source resolution; SHA-256 plugin pin for drift detection |
+| `deployment_preflight.py` / `deployment_quality.py` | Coverage/expiry/token preflight; 5 quality checks with ack-on-warning |
+| `deployment_evaluator.py` | 1m_close evaluator + scheduler: time-of-day blocks, expiry cutoff, drift auto-pause, kill-switch checks, `risk_hints` capture, auto-paper hook |
+| `deployment_kill_switch.py` | Per-deployment kill switches (consecutive-loss / daily-loss → PAUSE; max-open → soft BLOCK) |
+| `paper_auto.py` / `paper_trading.py` / `paper_open_positions.py` / `paper_squareoff.py` / `paper_analytics.py` | Auto paper trading (premium resolution: live tick → fresh candle → refuse; never spot), per-minute marker, 15:00 IST square-off, R-multiple/blotter analytics |
+| `forward_metrics.py` / `signal_lifecycle.py` / `preset_execution.py` | Session-gated deployment metrics; lifecycle state machine + audit events; preset replay |
+
+### Live execution (Flattrade) (`app/live/`)
+
+The single-real-order chokepoint and its safety scaffolding. See §6 for the gate chain.
+
+| Module | Responsibility |
+|---|---|
+| `executor.py` | **The SOLE `place_order` chokepoint** — `place_live_test_order` (manual single-shot) + `place_deployed_order` (armed deployment). No other module calls `client.place_order` for entry |
+| `mode.py` | Mode gate (L3.1): `PAPER` / `LIVE_OFFLINE` / `LIVE_TEST` / `LIVE_ARMED`; `is_live_order_allowed` is fail-closed; `is_deployment_live_allowed` per-deployment arm predicate |
+| `arm_state.py` | Pure `compute_arm_state` — collapses mode + per-deployment arm + the two env gates + connectivity into ONE verdict (`SAFE` / `DRY_RUN` / `LIVE`) |
+| `safety.py` | Pure fail-closed checks: fat-finger cap (default-deny), price band, jdata validation (limit/SL-LMT only), `RateThrottle` (SEBI <10/s, cancels never throttled) |
+| `margin.py` | Local `margin_verdict` + broker `GetOrderMargin` pre-trade gate (`broker_margin_verdict`) |
+| `order_builder.py` / `broker_protocol.py` / `order_sm.py` | Server-side intent build (tick rounding, marketable buffer); `OrderIntent` + allowed prctyp/prd/ret; order state machine |
+| `gtt.py` / `oco_levels.py` | **PC-down catastrophe backstop** — NRML-only resting GTT / OCO builders (block no margin; survive a dead PC); catastrophe band strictly wider than the software guard's stop |
+| `kill_switch.py` | Account-level guardrails + `plan_squareoff` (pure) + `panic_squareoff` (executor, never raises) |
+| `live_position_guard.py` / `live_sl_monitor.py` / `live_exit_monitor.py` / `auto_square.py` | In-process software SL guard (reads broker position book; transmits only when `LIVE_GUARD_ARMED=1`); square execution |
+| `close_loop.py` / `reboot_reconcile.py` / `reconcile.py` | Write realized P&L + CLOSED back to `live_trades` on a real square; reboot reconciliation (empty position-book = UNKNOWN, never false-close) |
+| `flattrade_client.py` / `flattrade_token.py` / `flattrade_symbol.py` / `mock_noren.py` | Real Noren client + daily OAuth + symbol resolve; `MockNoren` for tests |
+| `greeks.py` / `portfolio_greeks.py` / `option_premium.py` | Server-side Black-Scholes IV-from-premium + Greeks |
+| `session_store.py` / `arm_state` stores / `overall_settings_store.py` / `approval_store.py` / `idempotency.py` | Mode/session/settings/approval persistence; client-order-id idempotency |
+| `engine.py` (`app/live/`) / `auto_live.py` (`app/`) | `can_trade()` engine gate; the deployed auto-place entrypoint (env-gated transmit boundary) |
+
+---
+
+## 4. Frontend Structure (`frontend/src/`)
+
+### Entry & shared libs
 
 | File | Responsibility |
 |---|---|
-| `backend/server.py` | FastAPI routes, request models, scheduler wiring, startup/shutdown hooks |
-| `backend/app/db.py` | MongoDB client, `ensure_indexes()` (including `signals_deployment_bar_unique` partial), JSON-safe serialization |
-| `backend/app/models.py` | Shared Pydantic models |
-| `backend/app/encryption.py` | Fernet-encrypted token storage |
-| **Data warehouse** | |
-| `backend/app/warehouse.py` | Index candle persistence, coverage, **holiday-aware** audit (uses `nse_calendar.trading_days_in_range`), clear |
-| `backend/app/chunking.py` | Auto chunk guidance (uses 7-day chunks for spot to avoid Feb→Mar boundary issue) |
-| `backend/app/upstox_client.py` | OAuth, token storage, REST historical, WebSocket authorize URL |
-| `backend/app/upstox_stream.py` | V3 read-only WebSocket stream, protobuf decode, sanitized tick persistence |
-| `backend/app/live_option_universe.py` | Builds the nearest-expiry ATM option subscription keys for live paper/recommendation marking; preview first, then restart the read-only stream |
-| `backend/app/upstox_index_ingest.py` | Background index ingest jobs, bulk persistence |
-| `backend/app/instruments.py` | Supported index metadata, lot/strike settings |
-| `backend/app/options_universe.py` | ATM rounding and moneyness selection |
-| `backend/app/option_contract_store.py` | Option contract metadata persistence |
-| `backend/app/expired_contract_backfill.py` | Expired option contract metadata backfill |
-| `backend/app/option_candles.py` | Option candle normalization and persistence |
-| `backend/app/option_coverage.py` | Stored option candle summary by date |
-| `backend/app/option_data_audit.py` | Raw option contract/date audit + clear |
-| `backend/app/option_data_planner.py` | Preview-first planner with indexed expiry/side/strike lookup |
-| `backend/app/option_plan_response.py` | Compact response shaping for option planner |
-| `backend/app/option_warehouse_jobs.py` | Background option fetch jobs (selected-date task planning) |
-| `backend/app/data_hygiene.py` | Warehouse diff vs desired scope; submits dependency-ordered fetches. Index-friendly aggregations (no `$lookup`) so the plan runs in ~6s, not 120s+ |
-| `backend/app/warehouse_autoupdate.py` | Automatic catch-up: guarded plan→execute on startup, OAuth-connect, and a daily 18:00 IST timer; pure decision helpers + `AutoUpdateState` |
-| `backend/app/warehouse_lookup.py` | Point-in-time lookup: spot + derived ATM + nearest expiry + ATM CE/PE candles for a given IST date/time (local reads only) |
-| `backend/app/warehouse_ohlc.py` | Server-side OHLC resampling (1m→5m/15m/1h/1d on IST buckets) + intraday gap detection (days < 375 regular-session minutes); filters rows through the NSE/BSE calendar and 09:15-15:30 IST session window |
-| `backend/app/option_coverage_cache.py` | Precomputed per-underlying option-coverage cache (`option_coverage_cache` collection) with single-flight lock; fixes the 8s page-load aggregation |
-| `backend/app/nse_calendar.py` | NSE 2024–2026 holidays + Budget Saturdays + shifted-expiry days; labeled `calendar_for_year()` for the holiday-calendar modal |
-| `backend/app/live_candle_roller.py` | Subscribes to WS broadcast, aggregates per-minute OHLC, persists into `candles_1m`; drops non-trading-day and off-session ticks before they can create warehouse candles |
-| `backend/app/market_header.py` | Normalized market header quote aggregation (WS-first, REST fallback) |
-| **Research engine** | |
-| `backend/app/indicators.py` | Vectorized indicators (incl. vectorized `detect_fvg`; param-driven periods consumed by the optimizer's indicator-period search) |
-| `backend/app/regime.py` | Regime detection (ADX + Choppiness + ATR expansion) |
-| `backend/app/costs.py` | Realistic Indian intraday cost model (spot points) |
-| `backend/app/exit_engine.py` | Shared `intrabar_exit(high,low,stop,target,is_long,stop_first)` used by BOTH spot and option engines |
-| `backend/app/backtest.py` | Strategy execution, metrics, statistical significance. Hot loop uses pre-materialized dict records (`df.to_dict("records")`) instead of per-row `df.iloc` (~8.8x faster) |
-| `backend/app/dte.py` | DTE filter (0..6 trading days before nearest expiry), metadata-driven |
-| `backend/app/option_costs.py` | Rupee option cost model: brokerage + STT/exchange/SEBI/GST/stamp + %-of-premium bid-ask spread |
-| `backend/app/portfolio.py` | Premium-at-risk position sizing + rupee equity curve (lot SIZE from contract metadata) |
-| `backend/app/market_context.py` + `vix.py` + `context_signals.py` | Regime/time-of-day/DTE/VIX bucket tagging; India-VIX ingest+as-of join; S/R, round levels, RSI/MACD divergence (additive scores) |
-| `backend/app/option_backtest.py` | Paired INDEX + OPTION leg simulation (`simulate_paired_option_trades`); candles pre-grouped by `instrument_key`; spot_exit / option_levels exit modes; cost+sizing+slippage+context wired |
-| `backend/app/slippage.py` | Slippage config (ATM 0.5pt, OTM1/ITM1 1pt, OTM2+ 2pt, expiry-day 30-min 2x) |
-| `backend/app/volatility.py` | Post-hoc 5-min realized vs 30-day baseline detector |
-| `backend/app/optimizer.py` | Optuna TPE / Grid / CMA-ES. Lazy per-indicator-period enriched cache; guard rails (min_trades + CE/PE share, optional); `net_pnl_inr` objective; **two-stage option re-rank** (`_option_rerank`); **pause/resume/crash-resume** (`_job_control`, `_flush_trial_log`, `_rebuild_study`, `resume_optimization`); robustness/importance/heatmap; heavy work via `asyncio.to_thread` |
-| `backend/app/wfo.py` | **Honest walk-forward optimization** (`kind="wfo"` jobs): trading-day window splitter (rolling/anchored), per-window Optuna TPE re-optimization on the train slice only, OOS evaluation on the unseen test slice, stitched OOS equity + metrics, WF efficiency / OOS consistency / param stability; pause/resume at window granularity; deployable params from the most recent train window |
-| `backend/app/strategies/` | Built-in strategies + plugin loader |
-| **Forward testing** | |
-| `backend/app/strategy_deployments.py` | Deployment doc builder, validation, source resolution |
-| `backend/app/strategy_source_hash.py` | SHA-256 of plugin .py file (16 hex truncated) for drift detection |
-| `backend/app/deployment_preflight.py` | Spot coverage, expiries, active vs expired contracts, Upstox token state |
-| `backend/app/deployment_quality.py` | 5 quality checks; ack required when warnings present |
-| `backend/app/deployment_evaluator.py` | 1m_close evaluator, scheduler, time-of-day blocks, expiry cutoff, drift auto-pause, kill-switch checks, `risk_hints` capture, auto-paper hook (after the concurrency rule) |
-| `backend/app/deployment_kill_switch.py` | Per-deployment kill switches: `max_consecutive_losses` / `daily_loss_cutoff_pct` → PAUSE, `max_open_paper_trades` → soft BLOCK (paper deployments only) |
-| `backend/app/paper_auto.py` | Auto paper trading: premium resolution (live tick → fresh `options_1m` candle → refuse; never spot), risk levels from strategy hints or deployment fallbacks, spot-mirror exit levels, atomic per-signal claim shared with the approve route, per-minute open-trade marker (`mark_open_deployment_trades`) |
-| `backend/app/forward_metrics.py` | Session-gated deployment metrics from closed paper trades; full visibility at >=10 complete sessions, low-sample results flagged via `include_ineligible` |
-| `backend/app/signal_lifecycle.py` | Lifecycle state machine and audit events |
-| `backend/app/paper_trading.py` | Paper trade create/mark/close, stop/target auto-close |
-| `backend/app/paper_squareoff.py` | 15:00 IST background close-all loop with `allow_overnight` opt-out |
+| `App.js` | Router (`react-router-dom`), theme provider, `JobsProvider` (global background-job tracker), toaster |
+| `lib/theme.jsx` | System / Black / White theme state |
+| `lib/jobs.jsx` | Global job tracker above the router; persists active run IDs to `localStorage` so ingest/fetch/hygiene progress survives navigation |
+| `lib/api.js` | Axios wrapper for `/api/*` |
+| `lib/time.js` / `lib/fmt.js` / `lib/utils.js` | IST time helpers, formatting, misc utils |
+| `lib/backtestMetrics.js` / `paperAgg.js` / `exitReason.js` / `deploymentLiveness.js` | Client-side metric derivation |
+| `lib/exports.js` / `optExports.js` | CSV/JSON export helpers |
+| `index.css` | Design tokens (CSS variables) for both themes — no per-panel hex |
 
-## Frontend Module Map
+### Pages (`src/pages/`) → routes
 
-| File | Responsibility |
-|---|---|
-| `frontend/src/App.js` | Router, layout wrapper, theme provider, **JobsProvider** (global background-job tracker), toaster |
-| `frontend/src/lib/theme.jsx` | System / Black / White theme state |
-| `frontend/src/lib/jobs.jsx` | Global job tracker mounted above the router: tracks index-ingest + option-fetch jobs and the data-hygiene batch; persists active run IDs to `localStorage` so progress survives navigation/reload |
-| `frontend/src/lib/api.js` | Axios wrapper for `/api/*` |
-| `frontend/src/index.css` | Design tokens (CSS variables) for both themes |
-| `frontend/src/components/Layout.jsx` | Sidebar, top bar, theme selector, global active-jobs indicator, OAuth token-expiry countdown |
-| `frontend/src/components/TokenCountdown.jsx` | Reusable OAuth token-expiry countdown (color-escalating), used by Layout and the Upstox panel |
-| `frontend/src/lib/time.js` | IST time helpers |
-| `frontend/src/components/MarketHeader.jsx` | Persistent market quote header |
-| `frontend/src/components/DataHygienePanel.jsx` | Data Hygiene hero panel: check (plan) + fill (execute) + auto-update status/toggle |
-| `frontend/src/components/WarehouseLookup.jsx` | Spot + ATM CE/PE point-in-time lookup search bar |
-| `frontend/src/components/WarehouseChart.jsx` | Per-index candlestick chart (1m/5m/15m/1h/1d), OHLC crosshair legend, date/time locator, gap banner |
-| `frontend/src/components/HolidayCalendarDialog.jsx` | NSE/BSE holiday calendar modal with year selector |
-| `frontend/src/components/BacktestRunJournal.jsx` | Reusable, collapsible backtest run history table (mounted in Backtest Lab) |
-| `frontend/src/pages/Dashboard.jsx` | Status cards |
-| `frontend/src/pages/DataWarehouse.jsx` | Sectioned page: Connection, Data Hygiene, Index Data (+chart), Option Data, Verify & Audit (+lookup), Diagnostics |
-| `frontend/src/pages/BacktestLab.jsx` | Strategy testing + option pairing + Backtest Run Journal |
-| `frontend/src/pages/Optimizer.jsx` | Optimizer workflow |
-| `frontend/src/pages/StrategyLibrary.jsx` | Built-in + plugin browser |
-| `frontend/src/pages/SignalJournal.jsx` | Deployment signal audit trail (forward-test lifecycle) |
-| `frontend/src/pages/PreTradeChecklist.jsx` | Pre-trade checklist profiles |
-| `frontend/src/pages/LiveSignals.jsx` | Pending Approval panel + deployment form (PreflightBadge + QualityBadge) |
-| `frontend/src/pages/PaperTrading.jsx` | Paper trade journal with risk badges |
+| Route | Page | Purpose |
+|---|---|---|
+| `/` | `Dashboard.jsx` | Status cards |
+| `/warehouse` | `DataWarehouse.jsx` | Connection, Data Hygiene, Index+Option data, Verify/Audit, lookup, chart |
+| `/backtest` | `BacktestLab.jsx` | Spot + paired-option backtests + run journal |
+| `/optimizer` | `Optimizer.jsx` | Optuna / Grid / Genetic + WFO workflow |
+| `/strategies` | `StrategyLibrary.jsx` | Built-in + plugin browser, lifecycle, AI authoring |
+| `/presets` | `SavedPresets.jsx` | Saved strategy configurations |
+| `/checklist` | `PreTradeChecklist.jsx` | Pre-trade checklist profiles |
+| `/journal` | `SignalJournal.jsx` | Deployment signal audit trail |
+| `/paper` | `PaperTrading.jsx` | Paper trade journal + analytics |
+| `/live` | `LiveSignals.jsx` | Pending-approval + deployment form (preflight/quality) |
+| `/live-trading` | `LiveTrading.jsx` | Flattrade live dashboard (execution strip, blotter, GTT book, guard, Greeks, order ticket) |
 
-## MongoDB Collections
+### Components (`src/components/`)
+
+Grouped subfolders: `live/` (execution UI — `LiveDashboard`, `ExecutionStateStrip`,
+`LiveBlotter`, `GttBook`, `GuardPanel`, `GreeksCard`, `PositionMonitor`,
+`LiveOrderTicket`, `DeployToLivePanel`, `FeedHealthBanner`, `LiveDataProvider` —
+the single polling consolidation point), `warehouse/`, `backtest/`, `paper/`,
+`strategy/`, `journal/`, `charts/`, and `ui/` (shadcn primitives). Top-level shared
+components: `Layout.jsx` (sidebar, theme, token countdown, active-jobs indicator),
+`MarketHeader.jsx`, `DataHygienePanel.jsx`, `WarehouseChart.jsx`,
+`HolidayCalendarDialog.jsx`, `TrustScorecard.jsx`, and metric/badge widgets.
+
+---
+
+## 5. MongoDB Collections
+
+Collection names verified against `app/db.py` (`ensure_indexes`) and code accessors.
+
+### Market data & warehouse
 
 | Collection | Purpose |
 |---|---|
-| `candles_1m` | Index 1-minute OHLCV |
-| `options_1m` | Option premium 1-minute OHLCV + OI |
-| `option_contracts` | Option metadata: instrument, expiry_date, strike, side, instrument_key, lot_size |
-| `integrity_hashes` | Per-day index candle counts and hashes |
-| `warehouse_runs` | Ingest and fetch audit log (covers spot, contracts, options, hygiene) |
+| `candles_1m` | Index 1-minute OHLCV (spot + INDIAVIX). Unique `(instrument, ts)` |
+| `options_1m` | Option premium 1-minute OHLCV + OI. Unique `(instrument_key, ts)` + `(underlying, expiry_date, strike, side, ts)` |
+| `option_contracts` | Option metadata: instrument_key, expiry_date, strike, side, lot_size |
+| `option_coverage_cache` | Precomputed per-underlying coverage summary (fast page loads) |
+| `option_known_empty` | Memoized (contract, date) pairs the broker returned empty for (avoids re-fetch) |
+| `integrity_hashes` | Per-day index candle counts + hashes. Unique `(instrument, date)` |
+| `warehouse_runs` | Ingest / fetch audit log (spot, contracts, options, hygiene) |
+| `data_hygiene_latest` | Latest hygiene plan/state snapshot |
+| `ticks` | Sanitized live tick snapshots from the WS stream |
+| `chain_snapshots` | Option-chain snapshots |
+| `upstox_tokens` | Encrypted Upstox OAuth tokens |
+
+### Research
+
+| Collection | Purpose |
+|---|---|
 | `backtest_runs` | Backtest configs, trades, metrics, option results |
-| `optimization_jobs` | Optimizer jobs + best results. Statuses: queued/running/analyzing/done/cancelled/**paused**/**interrupted**/failed. Carries `evaluation_mode`, `rerank` (option re-rank table), and a transient compact `trial_log` for pause/crash resume. WFO jobs use `kind="wfo"` with `wfo_windows` (completed windows persist for window-granularity resume) |
-| `presets` | Saved strategy configurations |
-| `pretrade_profiles` | Conservative / Balanced / Aggressive plus custom |
-| `upstox_tokens` | Encrypted OAuth tokens |
-| `ticks` | Sanitized live tick snapshots from the WebSocket stream |
-| `signals` | Lifecycle state, reasons, blockers, audit events, `risk_hints` (strategy exit hints), `paper_trade_id` + `paper_trade_claim` (atomic auto/approve claim), `paper_trade_error` on refusals. Has unique partial index `signals_deployment_bar_unique` over `(deployment_id, candle_ts)` |
-| `paper_trades` | Paper fills (entry = option premium), mark-to-market, realized/unrealized P&L, `risk` (premium stop/target), `spot_exit` (direction-aware spot-mirror levels), source flag |
-| `strategy_deployments` | Forward-test deployment definitions |
-| `option_coverage_cache` | Precomputed per-underlying option-coverage summary (one small doc per index) for fast Data Warehouse page loads |
+| `optimization_jobs` | Optimizer + WFO jobs + best results; statuses incl. `paused` / `interrupted`; carries `evaluation_mode`, `rerank`, transient `trial_log`, `wfo_windows` |
+| `presets` | Saved strategy configurations (unique `name`) |
+| `pretrade_profiles` | Conservative / Balanced / Aggressive + custom (unique `name`) |
+| `strategy_lifecycle` | Per-strategy retire/delete lifecycle (unique `strategy_id`) |
+| `app_settings` | Misc app settings |
 
-## API Routes (High Level)
+### Forward test (paper) & signals
 
-All routes are prefixed with `/api`. See `docs/API_REFERENCE.md` for full request/response shapes.
+| Collection | Purpose |
+|---|---|
+| `strategy_deployments` | Forward-test deployment definitions (incl. `risk.live` arm block) |
+| `signals` | Lifecycle state, blockers, audit events, `risk_hints`, `paper_trade_claim`. Unique partial index `signals_deployment_bar_unique` over `(deployment_id, candle_ts)` |
+| `paper_trades` | Paper fills at option premium, MTM, realized/unrealized P&L, `risk`, `spot_exit`, source flag |
 
-### Health and dashboard
+### Live execution
 
-- `GET /` `GET /health` `GET /dashboard/summary`
-- `GET /market/header` `GET /market/header/stream`
+| Collection | Purpose |
+|---|---|
+| `live_broker_tokens` | Encrypted Flattrade OAuth/session token (daily) |
+| `live_mode` | ModeStore singleton (`{mode, single_shot_consumed, test_session_id}`) |
+| `live_test_sessions` | LIVE_TEST session records |
+| `live_orders` | Recorded order intents + broker order-id linkage (idempotency) |
+| `live_trades` | Deployed live position journal; realized P&L written on close (`close_loop`) |
+| `live_safety_config` | Kill-switch / guardrail config + latch |
+| `live_overall_settings` | Live overall control settings |
 
-### Strategies and warehouse
+---
 
-- `GET /strategies` `GET /strategies/{id}`
-- `POST /warehouse/ingest` (yfinance fallback)
-- `GET /warehouse/coverage` `GET /warehouse/runs` `GET /warehouse/audit/{instrument}` (holiday-aware)
-- `GET /warehouse/candles/{instrument}` `DELETE /warehouse/data/{instrument}`
-- `GET /warehouse/lookup?instrument=&date=&time=` — point-in-time spot + ATM CE/PE
-- `GET /warehouse/ohlc/{instrument}?timeframe=&start_ts=&end_ts=&include_gaps=` — resampled candles + gap report
-- `GET /warehouse/auto-update/status` `POST /warehouse/auto-update/toggle` `POST /warehouse/auto-update/run`
-- `GET /calendar/holidays?year=YYYY` — NSE/BSE holiday calendar for the modal
+## 6. The Live-Execution Gate Chain (L0–L3)
 
-### Upstox
+**Invariant: exactly one function transmits a real entry order.** Every real
+order goes through `app/live/executor.py`. No other module in the codebase calls
+`client.place_order` for entry — the `_transmit_and_arm` helper contains the SOLE
+`place_order` call. There are two sibling public entrypoints that both funnel
+into it:
 
-- `GET /upstox/status` `GET /upstox/auth/start` `GET /upstox/auth/callback` `POST /upstox/disconnect`
-- `GET /upstox/market-quote/{instrument}`
-- `POST /upstox/stream/start` `POST /upstox/stream/stop` `GET /upstox/stream/status` `GET /upstox/stream/ticks/latest`
-- `GET /upstox/stream/options/universe` `POST /upstox/stream/options/restart`
-- `POST /upstox/warehouse/ingest` `POST /upstox/warehouse/ingest/jobs` `GET /upstox/warehouse/ingest/jobs/{run_id}`
-- `GET /upstox/expiries/{instrument}`
-- `GET /upstox/options/contracts/{instrument}` `POST /upstox/options/contracts/{instrument}/sync`
-- `GET /upstox/expired-options/contracts/{instrument}` `POST /upstox/expired-options/contracts/{instrument}/sync`
-- `POST /upstox/options/warehouse/preview` `POST /upstox/options/warehouse/fetch`
-- `POST /upstox/options/warehouse/fetch/jobs` `GET /upstox/options/warehouse/fetch/jobs/{run_id}`
-- `POST /upstox/options/candles/ingest`
+- `place_live_test_order` — the **manual single-shot** path (`LIVE_TEST` mode,
+  lots hard-pinned to 1).
+- `place_deployed_order` — the **armed-deployment** path (`capped_lots`, NRML so
+  a resting GTT/OCO can attach).
 
-### Data hygiene
+### Gate order (identical for both paths, first failure wins)
 
-- `POST /data-hygiene/plan` — diff desired vs current warehouse, return prioritized actions
-- `POST /data-hygiene/execute` — submit fetches in dependency order (spot → contracts → option_candles)
-- `GET /data-hygiene/status` — recent hygiene runs
+```
+Gate 0  side_must_be_buy      Long-only. A sell entry = unprotected naked short.
+Gate 1  authorization         manual: LIVE_TEST + unconsumed single-shot
+                              deployed: allow_fn() (per-deployment risk.live arm gate)
+Gate 2  fresh dry-run         build_intent (server-side) + margin_verdict; lots
+                              pinned/capped; fat_finger_cap default-DENY if absent
+Gate 3  margin                broker-resolved lot size; deployed path ALSO runs a
+                              broker GetOrderMargin pre-trade check (fail-CLOSED on
+                              reject, fail-OPEN on transport hiccup)
+Gate 4  all verdicts pass     intent non-None AND every verdict.ok == True
+Gate 5  lot-cap defense       qty == exactly the resolved lot count (not-one-lot /
+                              not-within-lot-cap otherwise)
+Gate 6  engine.can_trade()    engine gate must return (True, ...)
+─────── TRANSMIT BOUNDARY (offline-first) ───────────────────────────────────────
+Gate 7  env arming            deployed path DRY-RUNS unless LIVE_AUTOPLACE_ARMED=1
+                              (returns the validated `would_send` jdata, transmits
+                              nothing). Manual click transmits regardless of env.
+Gate 8  rate throttle         SEBI <10/s token bucket (real-transmit path only)
+────────── THE ONLY place_order CALL ────────────────────────────────────────────
+Gate 9  idempotency claim     intent_store.claim_for_submit(cid) → then place_order
+        arm-or-abort          on fill: mark_submitted → consume_single_shot →
+                              arm(SL backstop + auto-square + best-effort resting
+                              OCO). If ANY post-fill step raises → best-effort
+                              square + halt engine. No unprotected position persists.
+```
 
-### Live candle roller
+### The env-kill pattern (offline-first)
 
-- `GET /live-candles/status` `POST /live-candles/start` `POST /live-candles/stop`
+Two host env vars are the master transmit switches. Both are read with the same
+affirmative-only parser (`1/true/yes/on`; **anything else, including unset, means
+DRY-RUN**), so the default posture is: build + fully validate every order, but
+transmit nothing.
 
-### Backtest, optimizer, presets, profiles
+| Env var | Gates | Effect when OFF (default) |
+|---|---|---|
+| `LIVE_AUTOPLACE_ARMED` | deployed **entry** transmit boundary (`executor._autoplace_armed`, `deployments._live_autoplace_armed`) | Armed deployment DRY-RUNS: returns validated `would_send`, no real entry |
+| `LIVE_GUARD_ARMED` | automatic **square** transmit (`runtime`, `live_position_guard`, `close_loop`) | Software guard LOGS intended squares but transmits none; a dry-run square returns `{squared: False, dry_run: True}` and is NOT journaled CLOSED |
 
-- `POST /backtest/run` `GET /backtest/runs` `GET /backtest/runs/{id}` `DELETE /backtest/runs/{id}`
-- `POST /backtest/option-preflight?ingest_missing=0|1` — pre-run option-data coverage report (+ optional background ingest of missing option data)
-- `POST /optimize/start` `POST /optimize/wfo` (honest walk-forward) `GET /optimize/jobs` `GET /optimize/jobs/{job_id}` `DELETE /optimize/jobs/{job_id}`
-- `POST /optimize/jobs/{job_id}/cancel` `POST /optimize/jobs/{job_id}/pause` `POST /optimize/jobs/{job_id}/resume` `POST /optimize/apply-as-preset/{job_id}?name=...`
-- `GET /presets` `PUT /presets/{name}` `DELETE /presets/{name}`
-- `GET /profiles` `PUT /profiles/{name}`
+`arm_state.compute_arm_state` collapses mode + per-deployment arm + both env gates
++ broker connectivity into ONE UI verdict — `SAFE` (nothing armed), `DRY_RUN`
+(armed but env gate off), or `LIVE` (a real entry would transmit right now).
 
-### Deployments
+### Per-deployment arm & auto-disarm
 
-- `GET /deployments` `POST /deployments` `GET /deployments/{id}`
-- `POST /deployments/{id}/pause` `POST /deployments/{id}/resume` `POST /deployments/{id}/archive`
-- `GET /deployments/{id}/signals`
-- `POST /deployments/{id}/evaluate-on-close` `POST /deployments/evaluate-active`
-- `GET /deployments/preflight?instrument=...`
-- `GET /deployments/quality?source_type=preset|backtest_run&source_id=...`
-- `GET /deployments/metrics` `GET /deployments/{id}/metrics`
+`mode.is_deployment_live_allowed` is fail-closed: a deployment transmits only when
+`risk.live.armed is True`, `now < risk.live.armed_until`, and the broker is
+connected. `armed_until` defaults to **15:00 IST** (the EOD square cutoff), so an
+arm self-expires the same trading day.
 
-### Signals and paper trading
+### PC-down catastrophe backstop (GTT / OCO)
 
-- `GET /signals` `POST /signals` `POST /signals/{id}/transition`
-- `POST /signals/{id}/approve` `POST /signals/{id}/skip` `POST /signals/{id}/mark-blocked`
-- `POST /signals/{id}/paper`
-- `GET /paper/trades` `POST /paper/trades/{id}/mark` `POST /paper/trades/{id}/close`
-- `POST /paper/square-off` (manual force close)
+A **GTT / OCO-GTT** rests on the **broker's** server, blocks no margin, and never
+sits in the order book until triggered — so if the PC/backend dies mid-session it
+still stops-out (and/or takes profit). Hard invariants (`gtt.py` + `oco_levels.py`):
 
-### Volatility
+- **NRML-only** (`prd == "M"`). MIS is auto-squared by the exchange, so a resting
+  GTT for it is unnecessary and dangerous — every builder fails-closed for `prd != "M"`.
+- The catastrophe band is derived **strictly wider** than the in-process software
+  guard's stop (`guard_stop + MIN_GAP_PP`, capped at ~5%-premium floor), so the
+  live guard always exits first and the OCO is a pure last resort that never
+  same-premium double-fires. If no safe gap exists it degrades to guard-only and
+  raises a `no_broker_backstop` alert rather than clamping up to the guard level.
+- On boot, `reboot_reconcile` closes the two holes a PC-death opens (stale
+  `live_trades` OPEN row; dangling/orphaned OCO leg) — treating an **empty**
+  position book as UNKNOWN, never "flat", so it never false-closes a live position.
 
-- `POST /volatility/audit` — annotates spot 1m bars with realized vs 30-day baseline ratios
+### Kill switches & guardrails
 
-### Options local
+`kill_switch.py`: account-level guardrails (`evaluate_guardrails`, fail-safing
+unknown P&L to a broker-stop-loss latch that only an explicit reset clears),
+`plan_squareoff` (pure — what WOULD be cancelled/flattened), and `panic_squareoff`
+(the executor; never raises; flatten intents bypass fat-finger + throttle so the
+engine can always exit). Per-deployment kill switches
+(`deployment_kill_switch.py`) PAUSE on consecutive-loss / daily-loss and soft-BLOCK
+on max-open.
 
-- `GET /options/candles` `GET /options/coverage` `GET /options/audit/{instrument}` `DELETE /options/data/{instrument}`
-- `GET /options/contracts/{instrument}`
+---
 
-## Critical Design Choices
+## 7. Data-Warehouse Completeness Model
 
-- **Local-first.** The local Docker stack is the source of truth. Online hosting is out of scope.
-- **Audit-first.** Every signal carries `bar_ts`, `decision_ts`, strategy id/version/hash, frozen params, pretrade snapshot, regime, option contract, blockers, and `tracked_for_pnl`.
-- **Auto paper trading is opt-out, broker orders are non-existent.** Paper-mode deployments auto-trade clean signals when `risk.auto_paper` is on (default for new deployments) so signal quality is auditable; shadow and recommendation modes still require a manual Approve. Nothing places broker orders.
-- **Option entries are premium, never spot.** Both the auto path and the approve route resolve a real option premium (live tick → fresh stored candle); if none is available the trade is refused and journaled. An atomic per-signal claim guarantees the two paths never double-trade one signal.
-- **Strict source provenance.** Deployments can be created only from saved presets or saved backtest runs. Direct deployment from a raw plugin is blocked.
-- **Strategy source SHA pinned.** Drift between pinned and current SHA auto-pauses the deployment with full audit.
-- **Idempotent journaling.** Unique partial index on `(deployment_id, candle_ts)` plus E11000 handling in the evaluator.
-- **Time-of-day discipline.** Default blocks: first 10 min and last 30 min of the session. Expiry-day cutoff at 15:00 IST. Auto square-off at 15:00 IST every market day with `allow_overnight` opt-out.
-- **No event calendar.** The post-hoc volatility detector replaces this. Reliable scheduled-event timestamps are unavailable.
-- **Walk-forward warns, never blocks.** The user makes a conscious choice via the ack checkbox.
-- **Honest OOS lives in WFO.** The single optimizer's result is in-sample by definition; the WFO mode re-optimizes per train window and scores only unseen test slices. Indicators are computed once on the full frame and sliced per window — safe because every indicator is causal (trailing windows only).
-- **Lot size is metadata.** Always read from `option_contracts.lot_size` (Upstox-supplied).
-- **Expiry resolution is metadata-driven.** Never weekday-hardcoded. The contract picker filters `expiry_date >= today`.
-- **CSS variable theming.** The dark and white themes are tokenized; per-panel hex codes are forbidden.
-- **Performance: precompute, don't scan on read.** Two page-load aggregations over millions of docs were replaced. Option coverage is served from `option_coverage_cache` (~200ms vs ~8s); the data-hygiene plan groups directly on the embedded `underlying`/`expiry_date` fields in `options_1m` instead of a `$lookup` join (~6s vs 120s+ timeout). Any new read-path aggregation over `options_1m` (5M+ docs) must be cached or windowed.
-- **Background jobs survive navigation.** Long-running ingest/fetch/hygiene jobs are tracked by a `JobsProvider` mounted above the router, with active run IDs persisted to `localStorage`. Polling loops must never live in page-local state.
-- **Warehouse auto-update.** On startup, on OAuth-connect, and daily at 18:00 IST, the warehouse catches up to yesterday's close via the data-hygiene plan/execute (today's bars come from the live roller). Gated on Upstox connected + not expired; single in-flight guard; user-toggleable.
+The warehouse's guarantee is the **daily ATM band** — the fix for the class of bug
+where hygiene reported "verified" yet backtests hit `MISSING_ENTRY_CANDLE` on the
+most volatile sessions (spot sweeps several strikes intraday; per-day/per-expiry
+coverage judged those as covered).
 
-## Main Risks
+```
+                       nse_calendar.py
+                   (holiday-aware trading days)
+                             │
+        ┌────────────────────┼─────────────────────┐
+        ▼                    ▼                       ▼
+  completeness.py       data_hygiene.py        warehouse.py
+  (PURE band model)     (DB diff + plan)       (persist/audit)
+        │                    │                       │
+        │  expected_pairs    │  plan (spot →         │  coverage,
+        │  per day =         │  contracts →          │  holiday-aware
+        │  every strike the  │  option candles)      │  audit
+        │  spot RANGE touched│  index-friendly       │
+        │  (rounded+padded), │  aggregations,        │
+        │  BOTH CE+PE, at    │  no $lookup (~6s)     │
+        │  resolved expiry   │                       │
+        └────────────────────┴───────────────────────┘
+```
 
-- **Upstox token expiry.** The OAuth flow must be re-run when tokens lapse; the evaluator and roller both depend on a valid token.
-- **Same-day historical empty.** Without the live candle roller, the evaluator stalls. The roller must be running during market hours.
-- **WS subscribed instruments captured at connect time.** Subscription edits in code do not propagate to a running stream — restart it.
-- **Live option ticks are intentionally narrow.** Use the universe preview/restart route during market hours. Default `radius=1` subscribes only ATM +/- 1 strike for CE/PE on NIFTY, BANKNIFTY, and SENSEX. Expand only after measuring stream stability and storage impact.
-- **Big option fetches.** A naive plan can spawn thousands of broker calls. Use Sample, Max contracts, and Missing only. Run month by month for high-accuracy data.
-- **Walk-forward divergence is informational.** The ack checkbox is the discipline; the user must use it honestly.
-- **Strategy source drift on a long-running deployment.** The evaluator auto-pauses, but the operator must re-create the deployment to resume on a new SHA.
+- **`completeness.py` (pure):** `strike_band(day_low, day_high, step, pad_steps)`
+  returns every tradable strike the spot range touched (using the SAME
+  `options_universe.round_to_step` as the planner, then padded), and
+  `expected_pairs_for_day` yields the `(day, expiry, side, strike)` keys the
+  warehouse must hold — both legs, at the nearest-on/after expiry. A day is
+  complete iff every expected pair has stored candles.
+- **`nse_calendar.py`:** hand-curated NSE/BSE 2024–2026 holidays (+ Budget
+  Saturdays, shifted-expiry days). All warehouse audits and gap detection filter
+  through it, so a market holiday is never counted as a missing day. Review +
+  bump `YEAR_LAST_VERIFIED` each new calendar year.
+- **`data_hygiene.py`:** diffs the desired scope (from `completeness`) against
+  what's stored and emits a **dependency-ordered** plan — spot first, then
+  contracts, then option candles. Aggregations group directly on the embedded
+  `underlying` / `expiry_date` fields in `options_1m` (no `$lookup`) so the plan
+  runs in ~6s instead of a 120s+ timeout.
+- **`warehouse_autoupdate.py`:** on startup, on OAuth-connect, and daily at 18:00
+  IST, catches the warehouse up to yesterday's close via plan→execute (today's
+  bars come from the live roller). Gated on Upstox connected + not-expired; single
+  in-flight guard; user-toggleable.
 
-## Operational Notes
+Expiry cadence and lot sizes are **metadata-driven** — read from `option_contracts`
+/ `nse_calendar`, never weekday-hardcoded. Verify against the code, not memory.
 
-- The 1m_close evaluator wakes 10s after each minute boundary during NSE market hours. The same server loop passes the live tick map into `evaluate_active_deployments` and runs `mark_open_deployment_trades` each minute, so open auto/approved paper trades are marked and stop/target/spot-mirror exits fire intraday.
+---
+
+## 8. Key Data Flows
+
+### Market data → warehouse
+
+```
+Upstox historical REST ─┐                 ┌─► integrity_hashes (per-day hash)
+yfinance (spot fallback)├─► candles_1m ───┤
+Upstox WS ticks ────────┘   options_1m    └─► option_coverage_cache (precomputed)
+   │  (live_candle_roller aggregates ticks → today's 1m bars)
+   └─► ticks (sanitized snapshots)
+```
+
+### Research → deploy
+
+```
+candles_1m ─► backtest.py ─► backtest_runs ─┐
+options_1m ─► option_backtest.py            ├─► (preset OR backtest_run)
+              optimizer.py / wfo.py ────────┘         │  strict provenance
+                                                       ▼
+                                          strategy_deployments (source SHA pinned)
+```
+
+### Deploy → paper (default) or live (armed)
+
+```
+strategy_deployments
+        │  1m_close evaluator (scheduler, ~10s after each bar)
+        ▼
+     signals ──► auto-paper (premium resolution) ──► paper_trades ──► 15:00 IST square-off
+        │                                                (per-minute marker: stop/target/spot-mirror)
+        └──► (risk.live armed + LIVE_AUTOPLACE_ARMED) ─► executor.place_deployed_order ─► live_trades
+                                                          (gate chain §6; arm = SL guard + resting OCO)
+```
+
+---
+
+## 9. Critical Design Choices
+
+- **Local-first.** The local Docker stack is the source of truth; online hosting
+  is out of scope.
+- **Audit-first.** Every signal carries `bar_ts`, `decision_ts`,
+  strategy id/version/hash, frozen params, pretrade snapshot, regime, contract,
+  blockers.
+- **Single real-order chokepoint.** One `place_order` site in `executor.py`; every
+  other path is blocked from placing entries.
+- **Offline-first / default-DRY-RUN.** Two env gates (`LIVE_AUTOPLACE_ARMED`,
+  `LIVE_GUARD_ARMED`) default OFF; unless set, the system fully validates orders
+  and transmits nothing.
+- **Long-only live entries.** A sell entry would open an unprotected naked short
+  (the SL backstop is always sell-to-close) — rejected before any broker contact.
+- **Option entries are premium, never spot.** Both the auto and approve paths
+  resolve a real option premium (live tick → fresh stored candle); if none is
+  available the trade is refused and journaled. An atomic per-signal claim
+  prevents double-trades.
+- **Strict source provenance.** Deployments can be created only from saved presets
+  or saved backtest runs; direct deployment from a raw plugin is blocked.
+- **Strategy source SHA pinned.** Drift between pinned and current SHA auto-pauses
+  the deployment with full audit.
+- **Idempotent journaling.** Unique partial index on `(deployment_id, candle_ts)`
+  plus E11000 handling in the evaluator.
+- **Time-of-day discipline.** Default blocks first 10 min / last 30 min; expiry
+  cutoff and auto square-off at 15:00 IST (with `allow_overnight` opt-out).
+- **Honest OOS lives in WFO.** The single optimizer result is in-sample by
+  definition; WFO re-optimizes per train window and scores only unseen test
+  slices. Indicators are computed once and sliced per window (safe — every
+  indicator is causal).
+- **Lot size & expiry are metadata.** Read from `option_contracts` /
+  `nse_calendar`, never hardcoded.
+- **Precompute, don't scan on read.** Option coverage is served from
+  `option_coverage_cache` (~200ms vs ~8s); the hygiene plan avoids `$lookup`
+  (~6s vs 120s+). Any new read-path aggregation over `options_1m` (millions of
+  docs) must be cached or windowed.
+- **Background jobs survive navigation.** A `JobsProvider` above the router tracks
+  ingest/fetch/hygiene jobs, persisting run IDs to `localStorage`. Polling loops
+  never live in page-local state.
+- **CSS variable theming.** Dark and white themes are tokenized; per-panel hex is
+  forbidden.
+
+---
+
+## 10. Operational Notes
+
+- The 1m_close evaluator wakes ~10s after each minute boundary during NSE hours;
+  the same loop passes the live tick map into `evaluate_active_deployments` and
+  runs the per-minute open-trade marker so stop/target/spot-mirror exits fire
+  intraday.
 - The paper square-off loop runs at 15:00 IST every market day (idempotent).
-- The live candle roller auto-starts after WS auto-start at backend boot and auto-flushes on shutdown.
-- The pre-flight route is matched before `/deployments/{id}` so the literal path takes precedence.
-- The unique partial index is created live on the running DB and reapplied on boot via `ensure_indexes()`.
+- The live candle roller and live exit monitor auto-start after WS auto-start at
+  boot (only if the Upstox token is valid) and flush on shutdown.
+- The live position guard starts unconditionally at boot (reads the broker
+  position book, not the Upstox stream); it no-ops offline and only transmits a
+  square when `LIVE_GUARD_ARMED=1`.
+- Orphaned optimization jobs left `queued`/`running`/`analyzing` by a restart are
+  reconciled to `interrupted` (resumable) on boot.
+- The unique partial index is created live and reapplied on boot via
+  `ensure_indexes()`.
+
+---
+
+## See Also
+
+- [DEVELOPER_GUIDE.md](./DEVELOPER_GUIDE.md) — run/build/test workflow, safety
+  model narrative, India trading rules, research→deploy flow, gotchas
+- [API_REFERENCE.md](./API_REFERENCE.md) — every backend HTTP route
+- [STRATEGY_DEPLOYMENTS.md](./STRATEGY_DEPLOYMENTS.md) — deployment modes, gates,
+  kill switches, live
+- [STRATEGY_PLUGINS.md](./STRATEGY_PLUGINS.md) — writing a custom strategy plugin
+- [Walk-forward (honest OOS) what it does exactly.md](./Walk-forward%20%28honest%20OOS%29%20what%20it%20does%20exactly.md)
+  — WFO deep dive
+- [live-readback-checklist.md](./live-readback-checklist.md) — real-money readback runbook
+- [Resources/flattrade-pi-api/INDEX.md](./Resources/flattrade-pi-api/INDEX.md) —
+  decoded Flattrade broker API reference

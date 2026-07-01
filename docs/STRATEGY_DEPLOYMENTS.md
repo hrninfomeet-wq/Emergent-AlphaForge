@@ -1,247 +1,364 @@
 # Strategy Deployments
 
-Updated: 2026-06-12 (overhaul evening pass)
+The deployment model: how an **audited research artifact** becomes a running,
+forward-testing (and optionally real-money) strategy — and every safety gate,
+kill switch, and chokepoint on the way.
 
-> **2026-06-12 overhaul:** modes are now `signal_only` | `paper` (legacy shadow/recommendation map to signal_only), the manual approval flow and its routes were RETIRED, deployments evaluate **independently** (the highest-score concurrency rule was removed; `risk.max_open_paper_trades` governs exposure), and undeploy = archive (`?purge=1` optionally deletes journals). Sections below describing Approve/Skip flows are historical context. Current truth: CHANGELOG 0.17.x + `docs/HANDOFF.md`.
+> **Cross-links:** the live-trading safety model in
+> [DEVELOPER_GUIDE.md](./DEVELOPER_GUIDE.md); the manual real-money go-live drill
+> in [live-readback-checklist.md](./live-readback-checklist.md); the technical
+> module map + the L0–L3 gate chain in [ARCHITECTURE.md](./ARCHITECTURE.md); the
+> HTTP routes in [API_REFERENCE.md](./API_REFERENCE.md).
 
-This document defines how a backtested strategy moves into forward testing. Paper-mode deployments can auto-trade every clean signal (default for new deployments) so signal quality is auditable; shadow and recommendation modes keep a manual approval gate; nothing places broker orders.
+---
 
-## Status
+## Core principle
 
-All 12 Phase 4b slices are implemented, plus the auto-paper-trading extension (2026-06-11):
+A strategy cannot be deployed from a raw plugin file. A **deployment is always
+built from a saved, audited artifact** — a saved **Preset** or a saved
+**Backtest Run** (`source_type` ∈ `{preset, backtest_run}`,
+`build_deployment_doc` in `strategy_deployments.py`). The build fails with a
+`ValueError` if the source is missing a `strategy_id`, `instrument`, or id/name.
 
-- Persisted Strategy Deployment objects in `strategy_deployments`.
-- Source validation: only saved Presets or saved Backtest Runs.
-- 1m_close evaluator with scheduler, time-of-day blocks, expiry-day cutoff, drift detection.
-- Approval UI (Approve / Skip / Mark Blocked) with paper trade creation on approval.
-- **Auto paper trading** on clean signals (`risk.auto_paper`) with option-premium entries, strategy-defined exits, and a per-minute live marker.
-- Pre-flight data realism check at deployment creation.
-- Quality warnings with required acknowledgment.
-- Paper trade auto square-off at 15:00 IST every market day, with `allow_overnight` opt-out.
-- Forward metrics aggregation per deployment (win-rate, avg P&L, profit factor, session-completeness-gated; low-sample results badged in Strategy Library).
-- Per-deployment kill switches (`max_consecutive_losses`, `daily_loss_cutoff_pct`, `max_open_paper_trades`).
-- Idempotency: unique partial index `(deployment_id, candle_ts)`.
-- Strategy source SHA pinning + drift auto-pause.
+The pipeline:
 
-Out of scope (Phase 5+):
+1. Backtest a strategy in the **Backtest Lab** (spot + paired-option).
+2. Save it as a Preset, or keep the Backtest Run.
+3. Create a **deployment** from that artifact — quality gate + acknowledgment.
+4. The 1-minute-close **evaluator** journals signals every market minute.
+5. Depending on the deployment's **mode/arm state**, a clean signal opens a
+   **paper trade**, a **real broker order**, or **nothing** (signal-only).
+6. Review honest **forward metrics** before trusting — or arming — the strategy.
 
-- Probability engine (Kaplan–Meier survival).
-- Per-tick evaluation mode.
-- Automatic broker order placement.
+---
 
-## Core Principle
+## The deployment document
 
-A strategy must pass through an explicit deployment contract before it can produce live recommendations or paper trades.
-
-The flow is:
-
-1. Backtest a strategy in Backtest Lab.
-2. Save or choose an approved Preset / Backtest Run.
-3. Create a Strategy Deployment from that audited artifact.
-4. Run the deployment in forward testing (`shadow`, `paper`, or `recommendation`).
-5. Journal clean signals (CONFIRMED) and blocked signals (AUDITED) separately.
-6. Paper deployments with `auto_paper` on trade every clean signal automatically; everything else is manually approved.
-7. Review forward profitability before trusting the strategy.
-
-Direct deployment from a raw strategy plugin file is blocked.
-
-## User Decisions (Locked)
-
-- First confirmation mode is `1m_close`. Per-tick mode is a later manual switch only.
-- **Amended 2026-06-10:** paper-mode deployments may auto-open a paper trade per clean signal (`risk.auto_paper`, default ON for new deployments) so signal outcomes are auditable without the user being present. Recommendation actions and anything beyond paper still require manual approval; broker orders are never placed.
-- Default option moneyness: `ATM`. Configurable: `ATM`, `OTM1`, `ITM1`.
-- Default DTE filter: `[0, 1, 2, 3, 4, 5, 6]`.
-- Auto square-off at 15:00 IST every market day. `risk.allow_overnight=true` opts out per deployment.
-- Time-of-day blocks: 09:15–09:25 (first 10 min) and 14:50–15:30 (last 30 min) IST.
-- Expiry-day cutoff at 15:00 IST blocks new signals on the deployment instrument's expiry day. Looked up from `option_contracts.expiry_date`. Never weekday-hardcoded.
-- Lot size always sourced from `option_contracts.lot_size` (Upstox-supplied).
-- Walk-forward divergence warns; the user makes a conscious choice via the ack checkbox.
-- Blocked signals are stored and clearly identifiable. Fewer cleaner signals are preferred over recording every weak setup.
-
-## Deployment Document
-
-`strategy_deployments` collection. Key fields:
+`strategy_deployments` collection, built by `build_deployment_doc`. Key fields:
 
 | Field | Purpose |
 |---|---|
-| `id` | Stable deployment id |
-| `name` | User-facing deployment name |
-| `source_type` | `preset` or `backtest_run` |
-| `source_id` | Preset name or backtest run id |
-| `strategy_id` | Strategy plugin id |
-| `strategy_version` | Plugin version at deployment time |
-| `strategy_hash` | Optional hash of strategy code/config |
-| `strategy_source_sha` | SHA-256 of plugin .py file (16 hex truncated). Pinned for drift detection |
-| `params` | Frozen strategy parameters |
-| `instrument` | `NIFTY`, `BANKNIFTY`, or `SENSEX` |
-| `timeframe` | `1m` for first version |
-| `confirmation_mode` | `1m_close` for first version |
-| `option_policy` | `{ moneyness, dte_filter }` — moneyness in `atm/otm1/itm1`, dte_filter default `[0..6]` |
-| `pretrade_profile` | Conservative / Balanced / Aggressive or custom |
-| `mode` | `shadow`, `paper`, or `recommendation` |
-| `risk` | `{ default_lots, allow_overnight, auto_paper, auto_paper_target_pts, auto_paper_stop_pts, auto_paper_target_pct, auto_paper_stop_pct, max_consecutive_losses, daily_loss_cutoff_pct, max_open_paper_trades }` — default_lots default 1, allow_overnight default false, auto_paper default true on new deployments (absent on pre-2026-06-11 deployments → old behavior), the `auto_paper_*` exit fields are optional premium fallbacks (points take precedence over percent), the last three are the kill switches (null = off) |
-| `kill_switch_reason`, `kill_switch_inputs` | Stamped when a kill switch auto-pauses the deployment |
-| `status` | `ACTIVE`, `PAUSED`, or `ARCHIVED` |
-| `quality_at_creation` | Snapshot of quality warnings at creation time |
-| `acknowledged_warnings` | True if user accepted quality warnings |
-| `last_evaluated_ts` | Idempotency cursor for the evaluator |
-| `drift_reason`, `drift_pinned_sha`, `drift_current_sha`, `drift_detected_at` | Set on auto-pause when source SHA drifts |
-| `created_at`, `updated_at` | Audit timestamps |
+| `id` / `name` | Stable id + user-facing name |
+| `source_type` / `source_id` | `preset` \| `backtest_run` + preset name / run id |
+| `source_snapshot` | Frozen name/metrics of the source at creation |
+| `strategy_id` / `strategy_version` / `strategy_hash` | The plugin + audit hash |
+| `strategy_source_sha` | SHA of the plugin `.py` at creation — pinned for **drift detection** |
+| `params` | Frozen strategy parameters (from the source's applied params) |
+| `instrument` | `NIFTY` \| `BANKNIFTY` \| `SENSEX` |
+| `timeframe` / `confirmation_mode` | `1m` / `1m_close` (`tick` reserved, not yet evaluated) |
+| `option_policy` | `{ moneyness: [atm/otm1/itm1], expiry_policy: "next_available", dte_filter }` — `dte_filter` default `[0..6]` |
+| `pretrade_profile` | Conservative / Balanced / Aggressive (or custom) |
+| `mode` | **`signal_only`** or **`paper`** (see below) |
+| `risk` | The whole risk block: `allow_overnight`, `default_lots`, `auto_paper`, the `auto_paper_*` premium exits, `friction`, the pinned `sizing` replay, the **kill-switch** fields, `daily_caps`, and the nested **`live`** arm sub-object |
+| `manual_approval_required` | Always `false` (the legacy approval gate was retired) |
+| `status` | `ACTIVE` \| `PAUSED` \| `ARCHIVED` |
+| `quality_at_creation` / `acknowledged_warnings` | Quality snapshot + the user's ack |
+| `last_evaluated_ts` | Idempotency cursor for the evaluator (epoch-ms of the last evaluated bar) |
+| `drift_*` | `drift_reason` / `drift_pinned_sha` / `drift_current_sha` / `drift_detected_at` on an auto-pause |
+| `kill_switch_reason` / `kill_switch` / `kill_switch_inputs` | Stamped when a kill switch auto-pauses |
+| `created_at` / `updated_at` / `audit` | Provenance |
 
-## Modes
+### Sizing replay
 
-### Shadow
+If the source run carries a position-sizing policy, `deployment_sizing_from_source`
+pins it to `risk.sizing` (`{sizing_config, lots, source_id}`). Live paper trades
+then **replay the source run's sizing** (`resolve_deployment_lots`): lot COUNT is
+sized from the pinned config while lot SIZE always comes from the live contract,
+so rupee-risk is held constant across instruments. No pin → `risk.default_lots`.
 
-Generates and journals signals but never creates paper trades. Use this first for every new deployment to confirm clean firing without hindsight.
+---
 
-### Paper
+## Modes (the real enum)
 
-Allowed to create paper trades. With `risk.auto_paper` on (default for new deployments), every clean signal opens a paper trade automatically; with it off, trades are created on manual approval only.
+Two modes only — `ALLOWED_MODES = {"signal_only", "paper"}`. **The old
+`shadow` / `recommendation` / manual-approval framing is gone.** Legacy stored
+values map on read: `shadow → signal_only`, `recommendation → signal_only`
+(`LEGACY_MODE_MAP`). The evaluator only ever opens a trade when `mode == "paper"`.
 
-### Recommendation
+### `signal_only`
+The evaluator journals every clean and blocked signal for audit, but **never
+opens a trade**. Use this first for a new deployment to confirm it fires cleanly
+without hindsight.
 
-Shows a trade recommendation with full context. The user clicks Take or Skip. This is not broker order execution.
+### `paper`
+Same journaling, plus — when `risk.auto_paper` is true (the wizard default) —
+**every clean CONFIRMED signal auto-opens a paper trade** at the real option
+premium (`paper_auto.auto_paper_trade_for_signal`). There is no manual
+Approve/Skip step; signal outcomes are auditable without an operator present.
 
-## Signal Lifecycle
+### The live overlay (not a mode)
+Real-money auto-placing is **not a third mode**. It is an **arm state** layered
+on top of a `paper` deployment via `risk.live` (the arm/disarm/stop routes). An
+armed deployment routes a clean signal to a **real order** and suppresses the
+paper path for that signal — see [Live path](#live-path-armed-real-money).
 
-States: `WATCHING → FORMING → CONFIRMED → TRIGGERED → ACTIVE → EXITED → AUDITED`. Plus side states: `SKIPPED`, `BLOCKED`.
+---
 
-The 1m_close evaluator produces:
+## Quality gate + acknowledgment
 
-- Clean signals at state `CONFIRMED` when strategy fires and pretrade allows.
-- Blocked signals at state `AUDITED` with `blockers[]` populated when filters or guards reject.
+At `POST /api/deployments`, `evaluate_source_quality` (`deployment_quality.py`)
+inspects the source plus **out-of-sample evidence** gathered by
+`_gather_deployment_evidence`: the latest honest walk-forward
+(efficiency / consistency / option-rupee OOS), exact-params option-rupee evidence
+(re-rank job or option backtest run), and the optimizer trial count behind the
+params (the selection-bias signal for a deflated Sharpe). Checks include missing
+walk-forward, walk-forward divergence, low trade count, weak Sharpe, large
+drawdown, selection bias, and option-rupee-OOS.
 
-Auto-paper transitions (paper mode, `auto_paper` on):
+If **any** warning is present, the create call returns
+**`400 acknowledgment_required`** unless the request carries
+`acknowledged_warnings=true`. On success the full `quality` snapshot + the ack
+flag are stored on the deployment. The gate **warns, never silently blocks** —
+the user makes a conscious choice.
 
-- The hook runs after the concurrency rule, re-reads the signal state, atomically claims it, opens the trade at the resolved option premium, and advances `CONFIRMED → TRIGGERED → ACTIVE` with `paper_trade_id` linked.
-- No resolvable premium → no trade; the signal keeps state CONFIRMED with a journaled `paper_trade_error` and stays approvable.
-- When the trade closes (stop/target/spot-mirror/square-off), the marker transitions the signal to `EXITED`.
+Companion informational routes (never block): `GET /deployments/quality`
+(preview at custom thresholds), `GET /deployments/readiness` (was the honest
+validation done?), and `GET /deployments/preflight` (data-realism: spot coverage,
+upcoming expiries, active vs expired contracts, Upstox token state).
 
-Approval transitions:
+Retired strategies cannot be deployed / resumed / re-pinned (`is_retired` → 409).
 
-- Approve: `CONFIRMED → TRIGGERED → ACTIVE` and (in paper mode) creates a paper trade at the resolved option premium. Premium unavailable → HTTP 409, signal stays CONFIRMED. Never duplicates an auto-created trade.
-- Skip: `CONFIRMED → SKIPPED → AUDITED`.
-- Mark Blocked: any non-AUDITED → `AUDITED` with the supplied note as a blocker.
+---
 
-## Audit Trail Invariants
+## The 1-minute-close evaluator
 
-Every signal must carry:
+`deployment_evaluator.evaluate_active_deployments` runs every ACTIVE deployment
+independently each minute (scheduler + `POST /deployments/evaluate-active`).
+Per deployment (`evaluate_deployment_on_close`), in order:
 
-- `bar_ts` — the candle minute the strategy evaluated against
-- `decision_ts` — wall-clock when the evaluator decided
-- `strategy_id`, `strategy_version`, `strategy_hash` (over id+version+params)
-- `pretrade_profile_name` + full `pretrade_settings_snapshot` resolved at signal time
-- `regime` at the time of evaluation
-- `option_contract` chosen with strike + side + instrument_key + lot_size
-- `tracked_for_pnl` flag — false when `option_no_data` or `concurrency_lower_score` or `manual_block`
-- `next_expiry_iso` for the deployment instrument
-- All blockers as a list of human-readable strings
+1. **Drift check** — if `strategy_source_sha` was pinned and the plugin file's
+   current SHA no longer matches, **auto-pause** (`status=PAUSED`,
+   `drift_reason="strategy_source_drift"`). Pre-pin deployments are exempt.
+2. **Kill switches** (`check_deployment_kill_switches`, paper only) — a pause
+   switch auto-pauses; the block switch adds a blocker to this bar.
+3. Load the latest ~200 closed 1-minute candles (needs ≥50 bars), enrich with
+   indicators + regime + features, and `strategy.evaluate()` the freshest bar.
+4. If direction is `CE`/`PE`, resolve the **pretrade filter**, the **option
+   contract** (ACTIVE-expiry only — never an expired strike), and the guards:
+   time-of-day window (**block 09:15–09:25 and 14:50–15:30 IST**), **expiry-day
+   15:00 cutoff** (from `option_contracts.expiry_date`, never weekday-hardcoded),
+   and recent-option-data.
+5. **Journal one signal**:
+   - clean → `CONFIRMED` (`blocked=false`);
+   - blocked → `AUDITED` with a human-readable `blockers[]`.
+   Full audit context is captured: `bar_ts`, `decision_ts`, strategy hash + SHA,
+   pretrade snapshot, regime, chosen contract, `risk_hints` (the strategy's own
+   exit definition), `next_expiry_iso`, and `tracked_for_pnl`.
 
-## Idempotency
+Deployments are intentionally **independent** (2026-06-12): two strategies firing
+on the same instrument/minute both journal and both may trade — enabling honest
+head-to-head comparison. The old highest-score concurrency demotion was removed;
+exposure is governed per-deployment by `max_open_paper_trades`.
 
-The unique partial index `signals_deployment_bar_unique` over `(deployment_id, candle_ts)` (partial: `{deployment_id: {$exists: true, $type: "string"}}`) prevents duplicate journaling.
+### Idempotency
+`last_evaluated_ts` gates re-evaluation of the same bar, and a unique partial
+index over `(deployment_id, candle_ts)` makes a duplicate insert a silent skip.
 
-The evaluator catches `E11000` errors and treats them as `outcome="skipped"`, `reason="already_journaled"`, then advances `last_evaluated_ts` to avoid retry loops. Manual research signals (no `deployment_id`) are unaffected.
+---
 
-## Concurrency Rule
+## Sink routing (per clean signal)
 
-If multiple deployments fire on the same `(instrument, candle_ts)`, only the highest-score signal is kept as actionable; the rest are journaled with `tracked_for_pnl=false` and reason `concurrency_lower_score`. The auto-paper hook runs after this rule so a trade can never open for a signal that is demoted moments later.
+After journaling, each clean `CONFIRMED` signal is re-read (guarding against
+concurrent mutation) and routed to **exactly one** sink (`if/elif`, never both;
+the shared atomic `paper_trade_claim` also enforces one-trade-per-signal):
 
-## Auto Paper Trading (`backend/app/paper_auto.py`)
+- **Armed + broker-connected** (`auto_live_enabled`) → **`auto_live`** (a REAL
+  order); the paper path is suppressed for that signal.
+- **Else, `auto_paper` on** → open a paper trade.
+- Else (signal-only, or auto_paper off) → nothing; the signal stays journaled.
 
-- **Entry price** (`resolve_option_entry_price`): live WS tick for the chosen contract, else a stored `options_1m` candle at most 5 minutes old, else refuse — NEVER the spot index level. A refusal journals `paper_trade_error` on the signal.
-- **Risk levels** (`compute_auto_risk_levels`): the strategy's `risk_hints` (captured on every signal: `target_pct`/`stop_pct` as % of premium, `spot_target_pts`/`spot_stop_pts`, time stop) win over the deployment fallbacks. Deployment fallbacks resolve points first (`auto_paper_target_pts`/`auto_paper_stop_pts`, ₹ of premium), then percent (`auto_paper_target_pct`/`auto_paper_stop_pct`) — the same points-over-percent rule as the backtest's `option_levels` mode, so a premium-SL/target backtest can be replicated live. Long-premium semantics; stop floors at ₹0.05.
-- **Spot-mirror exits**: built-in strategies define exits in SPOT POINTS — the live equivalent of the backtest's `spot_exit` mode. Trades carry direction-aware `spot_exit` levels (CE target above entry spot, PE below); the marker closes the option at its current premium when the underlying hits a level (`spot_target_hit`/`spot_stop_hit`).
-- **Per-minute marker** (`mark_open_deployment_trades`): during market hours the server loop marks OPEN deployment trades to the latest option tick, fires premium stop/target and spot-mirror exits, and transitions the linked signal to EXITED. Writes are conditional on `status=OPEN` so a concurrent manual close wins; tickless trades are not touched.
-- **Single-trade guarantee**: an atomic claim on the signal (`paper_trade_claim`) is shared by the auto hook and the approve route, so one signal can never produce two trades. A stale claim with no trade (crash inside the claim→insert window) blocks later auto-trades for that signal and is visible on the signal doc for audit.
-- Kill switches govern auto trades unchanged; `max_open_paper_trades` blocks the signal, so no trade opens.
+### Paper sink (`paper_auto.py`)
+- **Entry price** (`resolve_option_entry_price`): live WS tick for the contract,
+  else a stored `options_1m` candle ≤5 min old, else **refuse** (journal
+  `paper_trade_error`) — **never** the spot index level.
+- **Premium exits** (`compute_auto_risk_levels`): strategy `risk_hints`
+  (`target_pct`/`stop_pct`) win over deployment fallbacks; fallbacks resolve
+  **points before percent** (`auto_paper_*_pts` then `auto_paper_*_pct`) — the
+  same rule as the backtest's `option_levels` mode, so a premium-SL/target
+  backtest can be replicated live. Long-premium semantics; stop floors at ₹0.05.
+- **Spot-mirror exits** (`compute_spot_exit_levels`): built-in strategies define
+  exits in SPOT POINTS — the live equivalent of the backtest's `spot_exit` mode.
+- **Execution realism** (`risk.friction`): when opted in, the entry is slipped and
+  charged with the SAME model the backtest used so forward P&L doesn't overstate.
+- **Per-minute marker** (`mark_open_deployment_trades`): during market hours,
+  marks OPEN paper trades to the latest option tick, fires premium stop/target,
+  trailing/breakeven ratchet, time-stop, and spot-mirror exits, and transitions
+  the signal to `EXITED`. Writes are conditional on `status=OPEN`; stale/tickless
+  trades are left untouched.
+- **15:00 IST square-off** (`paper_squareoff.square_off_open_paper_trades`) is
+  the backstop when no exit fired; `risk.allow_overnight` opts out.
+- **Single-trade guarantee**: an atomic `paper_trade_claim` on the signal is
+  shared by both sinks and the (retired) approve route — one signal, one trade.
 
-## Kill Switches (`backend/app/deployment_kill_switch.py`)
+---
 
-Configured under `deployment.risk`; paper deployments only; evaluated right after the drift check:
+## Kill switches (`deployment_kill_switch.py`)
 
-- `max_consecutive_losses` → **PAUSE** (hard circuit-breaker) when the trailing run of losing closed paper trades reaches the limit.
-- `daily_loss_cutoff_pct` → **PAUSE** when today's net realized paper P&L as a % of capital deployed today drops to/below the (negative) cutoff.
-- `max_open_paper_trades` → **BLOCK** (soft) new signals while this many paper trades are OPEN; self-clears as trades close; does not pause.
+Two governors, both **paper-mode only** (a signal-only deployment has no realized
+P&L to act on).
 
-A pause stamps `kill_switch_reason` + `kill_switch_inputs` on the deployment; the deployment card shows the reason.
+**Hard circuit-breakers** (`risk`, checked by the evaluator before it fires):
 
-## Drift Detection
+- `max_consecutive_losses` → **PAUSE** when the trailing run of losing closed
+  paper trades reaches the limit.
+- `daily_loss_cutoff_pct` → **PAUSE** when today's net realized P&L, as a % of
+  capital deployed today, drops to/below the (negative) cutoff.
 
-`strategy_source_sha` is pinned at deployment creation. On every evaluator tick, the pinned SHA is compared to the current SHA of the plugin's .py file. On mismatch:
+Both stamp `kill_switch_reason` / `kill_switch` / `kill_switch_inputs` and set
+`status=PAUSED`; the deployment card shows the reason and stays paused until the
+user resumes it.
 
-- Deployment auto-pauses with `status="PAUSED"`.
-- Audit fields populated: `drift_reason="strategy_source_drift"`, `drift_pinned_sha`, `drift_current_sha`, `drift_detected_at`.
-- Pre-slice-8 deployments without a pinned SHA continue to operate (legacy compat).
+**Soft blocks** (self-clear as trades close, never pause):
 
-## Pre-flight And Quality Gates
+- `max_open_paper_trades` → **BLOCK** new signals while that many paper trades are
+  OPEN (adds a blocker to the bar's signal; the deployment stays ACTIVE).
+- **Soft daily governor** (`check_soft_daily_governor` over `risk.daily_caps`) →
+  **HALT new entries** for the session when today's realized cum-extremum trips
+  the loss / target cap or the entry count reaches `max_trades`. Stateless
+  (auto-resets next session); blocks entries only.
 
-At deployment creation:
+---
 
-1. `GET /api/deployments/preflight?instrument=...` returns spot coverage (last 30 trading days), upcoming expiries, active vs expired contracts, and Upstox token state. Frontend `PreflightBadge` surfaces this.
-2. `GET /api/deployments/quality?source_type=...&source_id=...` returns 5 checks (missing walk-forward, divergence, low trade count, weak Sharpe, large drawdown).
-3. If any quality warnings, `POST /api/deployments` requires `acknowledged_warnings=true`. Otherwise `400 acknowledgment_required`.
-4. Quality snapshot is stored on the deployment as `quality_at_creation` plus the ack flag.
+## Live path (armed, real-money)
 
-## API
+Real-money auto-placing is **off by default and heavily gated**. Enabling it is a
+deliberate, session-scoped act with an env master gate on top.
 
-Implemented routes:
+### Arm / disarm / stop (`routers/deployments.py`)
 
-- `GET /api/deployments`
-- `POST /api/deployments`
-- `GET /api/deployments/{id}`
-- `POST /api/deployments/{id}/pause`
-- `POST /api/deployments/{id}/resume`
-- `POST /api/deployments/{id}/archive`
-- `GET /api/deployments/{id}/signals`
-- `POST /api/deployments/{id}/evaluate-on-close`
-- `POST /api/deployments/evaluate-active`
-- `GET /api/deployments/preflight?instrument=...`
-- `GET /api/deployments/quality?source_type=...&source_id=...`
-- `GET /api/deployments/metrics?include_ineligible=0|1` (forward metrics; `include_ineligible=1` adds low-sample deployments)
-- `GET /api/deployments/{id}/metrics`
+`POST /deployments/{id}/live/arm` writes `risk.live` **only** if every guard
+passes: deployment exists and is `ACTIVE`, strategy not retired, not drift-paused,
+**broker connected** (a Flattrade token is stored), the `LiveEngine.can_trade()`
+is True, and `confirm` is the literal boolean `True` (StrictBool). The body sets
+`lots`, `max_lots_per_day`, `max_concurrent`, `daily_loss_cap`, and optional
+catastrophe stop/target %. The arm **expires at 15:00 IST that same session**
+(`armed_until`, via `armed_until_today_ist`) — arming after 15:00 IST is rejected
+rather than silently no-op'd. The user's `lots` is stored verbatim; the executor
+clamps it to the account ceiling at place time.
 
-Approval routes:
+- `POST /deployments/{id}/live/disarm` — stop new placing; does **not** flatten.
+- `POST /deployments/{id}/live/stop` — flatten THIS deployment's open live
+  positions (margin-safe square path) **then** disarm.
+- `POST /deployments/stop-all` — square all paper, pause every ACTIVE deployment,
+  and disarm + flatten every armed live deployment.
+- `GET /deployments/{id}/live/status` (and the batched `?ids=`) reports arm state,
+  caps, today's counters, open positions, and the two transmit gates
+  (`autoplace_armed`, `guard_armed`).
 
-- `POST /api/signals/{id}/approve`
-- `POST /api/signals/{id}/skip`
-- `POST /api/signals/{id}/mark-blocked`
+### The two env gates
+`risk.live.armed` authorizes the deployment. Transmit is a **separate**
+env-level concern:
+- **`LIVE_AUTOPLACE_ARMED`** — the executor's transmit boundary. Unless set, an
+  armed deployment is **offline-first**: the executor validates and returns
+  `dry_run=True` / `would_send`, transmitting **nothing** (journaled as
+  `live_intended` on the signal).
+- **`LIVE_GUARD_ARMED`** — the software-guard transmit gate.
 
-## Implementation Status
+### Live sink (`auto_live.py`) — a structural clone of the paper sink
+Same claim / lifecycle / journaling as paper; the one difference is the success
+side-effect is a **real order** through the executor chokepoint, journaled to
+`live_trades`. Stricter than paper on two points:
 
-| Slice | Description | Status |
-|---|---|---|
-| 1 | 1m_close evaluator + scheduler | Done |
-| 2 | Approval UI (Approve / Skip / Mark Blocked) | Done |
-| 3 | Auto square-off + expiry-day cutoff + dte_filter | Done |
-| 4 | Paper trade auto-creation on approval | Done |
-| 5 | Pre-flight data realism panel + active-expiry contract picker fix | Done |
-| 6 | Data Hygiene + NSE calendar | Done |
-| 6.5 | Live tick → 1m OHLC roller | Done |
-| 7 | Slippage + post-hoc volatility detector | Done |
-| 8 | Strategy source SHA pinning + drift detection | Done |
-| 9 | Quality warnings + ack checkbox | Done |
-| 10 | Forward metrics aggregation per deployment | Done |
-| 11 | Idempotency partial unique index | Done |
-| 12 | Per-deployment kill switches | Done |
-| — | Auto paper trading on clean signals + low-sample forward metrics (2026-06-11 extension) | Done |
+- **Entry ref_ltp must be a FRESH live OPTION tick** (`resolve_premium`,
+  `fresh is True`); a stale tick / last candle / absent tick is **refused** (a
+  stale ref would mis-band the LMT). Never spot, never a stale candle.
+- **Never unprotected**: if no premium stop is configured,
+  `resolve_live_exit_plan` seeds a **50% catastrophe premium stop** so the
+  software guard can always register the position.
 
-## Non-Goals For Current Phase
+Lots are the user's fixed `risk.live.lots` clamped to the account ceiling
+(`resolve_capped_lots`) — **not** the sizing-replay path.
 
-- No real broker order placement — ever. (Automated **paper** trading shipped 2026-06-11 as an explicit user decision; it is paper-only and opt-out via `risk.auto_paper`.)
-- No per-tick strategy evaluation by default.
-- No signals from unsaved/unreviewed strategy files.
-- No wide option-chain scanning until ATM/OTM1/ITM1 is reliable.
+### Per-deployment live caps governor (`live_deploy_governor.py`)
+Before each live entry, `check_live_caps` enforces (first match wins):
+`daily_loss_cap` (realized + open-unrealized today → **disarm + PAUSE**),
+`max_lots_per_day` (block), `max_concurrent` (block). No cap configured → the DB
+is never queried.
 
-## Success Criteria
+### The executor chokepoint (`live/executor.place_deployed_order`)
+The **single real-order site** for deployed orders. Long-only (`side="B"`);
+a full gate chain runs before any transmit: authorization (`allow_fn` = the arm
+gate), a fresh server-side dry-run, **margin must cover the FULL
+`capped_lots × lot_size`** (broker-authoritative `order_margin`), all verdicts
+pass, a lot-cap defense-in-depth check, `engine.can_trade()`, the transmit
+boundary (`LIVE_AUTOPLACE_ARMED`), and a SEBI rate throttle — only then does
+`_transmit_and_arm` place the order and arm protection.
 
-The deployment system is considered solid when:
+### Catastrophe backstop + software guard
+On a real fill, `arm` best-effort places a **resting broker OCO** (NRML product,
+the PC-down catastrophe net) whose `al_id` is journaled (`oco_al_id`;
+`oco_error="no_broker_backstop"` if it couldn't rest). Independently, the
+position is registered with the **`LivePositionGuard`** (`live_position_guard.py`)
+— a ~1.5 s loop that reads the **broker** position book and squares via the
+margin-safe cancel-all-then-close path when a stop/target/trailing/spot-mirror
+breaches. (Why software, not a resting SL: a resting SELL stop on a long option
+needs naked-short SPAN margin an option-buyer account lacks, so a broker SL is
+rejected every time — proven live 2026-06-24.) A position is removed from the
+registry **before** its square is issued, so a slow square is never double-sent.
+The 10-minute auto-square cap and the 15:00 EOD auto-disarm remain the ultimate
+backstops.
 
-- A saved Preset or Backtest Run can become a deployment with quality warnings surfaced.
-- Pre-flight check catches data realism issues before the user creates a deployment.
-- The 1m_close evaluator produces clean and blocked signals reliably during NSE market hours.
-- Drift detection auto-pauses deployments when plugin source changes.
-- Auto-paper (and approval) creates paper trades at real option premium with correct lot size and source provenance — one trade per signal, guaranteed.
-- The per-minute marker fires premium and spot-mirror exits intraday; auto square-off at 15:00 IST closes the rest while honoring `allow_overnight`.
-- Kill switches pause or block a misbehaving deployment without operator attention.
-- Forward metrics per deployment surface profitability honestly with session completeness annotation; low-sample results are visible but clearly badged.
+---
+
+## Signal lifecycle
+
+States: `WATCHING → FORMING → CONFIRMED → TRIGGERED → ACTIVE → EXITED → AUDITED`,
+plus side states `SKIPPED` / `BLOCKED`. The evaluator produces a **clean**
+`CONFIRMED` signal or a **blocked** `AUDITED` signal. On a sink open,
+`CONFIRMED → TRIGGERED → ACTIVE` with the trade linked (`paper_trade_id` or
+`live_trade_id`); on close the marker/guard transitions it to `EXITED`.
+
+Audit invariants every signal carries: `bar_ts`, `decision_ts`, strategy
+id/version/hash + source SHA, `pretrade_profile_name` + full snapshot, `regime`,
+the chosen `option_contract` (strike/side/instrument_key/lot_size), the
+`tracked_for_pnl` flag, `next_expiry_iso`, and all `blockers` as strings.
+
+---
+
+## Undeploy + forward metrics
+
+- **Archive** (`POST /deployments/{id}/archive`) stops signal generation and
+  paper trading; `?purge=1` also deletes journaled signals and CLOSED trades
+  (OPEN trades are kept so the marker / square-off can finish them).
+- **Forward metrics** (`forward_metrics.py`, `GET /deployments/metrics` and
+  `/{id}/metrics`) aggregate honest per-deployment results (win-rate, avg P&L,
+  profit factor) gated on complete forward sessions. Low-sample deployments are
+  hidden from the Strategy Library gate unless `include_ineligible=1`.
+- **Overview** (`GET /deployments/overview`) powers the Deployments page: one row
+  per non-archived deployment with today's signals + open/realized P&L, lifetime
+  results, `last_evaluated_ts`, and a holiday-aware `market_status`.
+
+---
+
+## API surface (implemented)
+
+Lifecycle: `GET/POST /deployments`, `GET /deployments/{id}`,
+`POST /deployments/{id}/pause|resume|stop|archive`, `POST /deployments/stop-all`,
+`POST /deployments/{id}/repin-source`.
+
+Evaluation: `POST /deployments/{id}/evaluate-on-close`,
+`POST /deployments/evaluate-active`, `GET /deployments/{id}/signals`.
+
+Evidence: `GET /deployments/preflight`, `/deployments/quality`,
+`/deployments/readiness`, `/deployments/metrics`, `/deployments/{id}/metrics`,
+`/deployments/overview`.
+
+Live: `POST /deployments/{id}/live/arm|disarm|stop`,
+`GET /deployments/{id}/live/status`, `GET /deployments/live/status?ids=`.
+
+See [API_REFERENCE.md](./API_REFERENCE.md) for the full route reference and the
+Flattrade broker endpoints in [`Resources/flattrade-pi-api/`](./Resources/flattrade-pi-api/).
+
+---
+
+## Non-goals / invariants
+
+- **No real broker order except through the armed live path**, and even then only
+  when `LIVE_AUTOPLACE_ARMED` is set — offline-first is the default everywhere.
+- Deployed live entries are **long-only** (option BUYS); a naked short is never
+  opened.
+- Everything is IST; the NSE session is 09:15–15:30 with a 15:00 square-off;
+  holidays and expiry dates come from the calendar / `option_contracts`, never a
+  hardcoded weekday.
+- No signals from unsaved/unreviewed strategy files — a deployment is always from
+  an audited Preset or Backtest Run.

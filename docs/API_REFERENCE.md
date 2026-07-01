@@ -1,417 +1,317 @@
 # API Reference
 
-Updated: 2026-06-01
-
-All routes are prefixed with `/api`. JSON request/response. CORS open in dev.
-
-## Health and Dashboard
-
-### `GET /api/`
-Returns `{ app, status, version }`.
-
-### `GET /api/health`
-Returns `{ db: "ok" }` or 503.
-
-### `GET /api/dashboard/summary`
-Warehouse stats + strategy load count + backtest run count + latest backtest meta.
-
-### `GET /api/market/header`
-Persistent market header snapshot:
-
-`{ source_mode, updated_at, items: [{ key, label, group, last_price, change, change_pct, timestamp, source, status }] }`
-
-WS-first, REST-fallback per tile. Failed symbols return `status: "error"` for that tile only. Never returns tokens.
-
-### `GET /api/market/header/stream`
-Server-Sent Events feed of market header snapshots.
-
-## Strategies
-
-### `GET /api/strategies`
-`{ items: [StrategyMeta] }`. Includes failed plugins with `is_loaded: false` + `error`.
-
-### `GET /api/strategies/{strategy_id}`
-Single strategy metadata.
-
-## Data Warehouse
-
-### `POST /api/warehouse/ingest`
-Body: `{ instrument, days }`. yfinance fallback ingest.
-
-### `GET /api/warehouse/coverage`
-Per-instrument coverage with per-day breakdown for heatmap.
-
-### `GET /api/warehouse/runs?limit=50`
-Ingest run audit log (also surfaces hygiene and option fetch jobs).
-
-### `GET /api/warehouse/audit/{instrument}?start_ts=...&end_ts=...`
-Per-day index candle audit. **Holiday-aware**: expected trading days come from `nse_calendar.trading_days_in_range` (skips weekends + NSE/BSE holidays, includes Budget Saturdays). `summary.calendar_assumption == "nse_trading_calendar"`.
-
-### `GET /api/warehouse/candles/{instrument}?limit=500`
-Latest N candles for chart preview.
-
-### `GET /api/warehouse/lookup?instrument=...&date=YYYY-MM-DD&time=HH:MM`
-Point-in-time warehouse lookup (reads only `candles_1m`, `options_1m`, `option_contracts` — never the broker). Returns the spot candle for that IST minute (exact or nearest bar within 5 min, `spot_exact` flag), the derived ATM strike (nearest to spot close, step per index), the nearest stored expiry on/after the date, and the ATM CE/PE candles with OI. Useful for cross-checking stored data against a broker terminal.
-
-### `GET /api/warehouse/ohlc/{instrument}?timeframe=1d&start_ts=&end_ts=&include_gaps=true`
-Server-side OHLC resampling of stored 1m candles. `timeframe ∈ {1m, 5m, 15m, 1h, 1d}` (resampled on IST-localized buckets; 1h is anchored to 09:15 IST). Returns `{ instrument, timeframe, bar_count, bars: [{ts, time, open, high, low, close, volume}], gaps: [{date, stored, expected, missing_count, missing_sample[]}], gap_day_count }`. `gaps` lists completed trading days with fewer than 375 stored minutes. Omit the window for full stored history; the Warehouse chart now does this for every timeframe.
-
-### `GET /api/warehouse/auto-update/status`
-Auto-update worker state: `{ enabled, in_progress, last_started_at, last_finished_at, last_status, last_reason, last_submitted_count, last_actions_planned, runs_count, history[] }`.
-
-### `POST /api/warehouse/auto-update/toggle`
-Body: `{ enabled: bool }`. Enable/disable automatic warehouse catch-up.
-
-### `POST /api/warehouse/auto-update/run`
-Trigger a catch-up immediately (manual). Returns `{ summary, state }`.
-
-### `GET /api/calendar/holidays?year=YYYY`
-NSE/BSE market-holiday calendar for the year (omit `year` for available years + current year). Returns `{ available_years: [...], calendar: { year, verified_through, holidays: [{date, label, weekday}], special_sessions: [{date, label, weekday}], holiday_count } }`.
-
-### `DELETE /api/warehouse/data/{instrument}?confirm=CLEAR`
-Developer-only clear. `instrument=ALL` clears all three indices. Does not touch options.
-
-## Upstox
-
-### `GET /api/upstox/status`
-Connection state. Tokens are not returned.
-
-### `GET /api/upstox/auth/start` / `GET /api/upstox/auth/callback`
-OAuth flow. Callback redirects to `FRONTEND_POST_AUTH_URL`.
-
-### `POST /api/upstox/disconnect`
-Removes the encrypted token doc.
-
-### `GET /api/upstox/market-quote/{instrument}`
-Sanitized live REST quote snapshot.
-
-### WebSocket stream
-
-#### `POST /api/upstox/stream/start`
-Body: `{ instrument_keys?, mode?, persist_ticks? }`. Starts the read-only V3 market-data stream.
-
-#### `POST /api/upstox/stream/stop`
-Stops the local stream.
-
-#### `GET /api/upstox/stream/status`
-Sanitized status: running flag, session id, mode, subscribed count, latest tick count, reconnect count, last tick time, last error.
-
-#### `GET /api/upstox/stream/ticks/latest?limit=50`
-Recent sanitized tick snapshots from memory, falling back to stored `ticks`.
-
-#### `GET /api/upstox/stream/options/universe?underlyings=NIFTY,BANKNIFTY,SENSEX&radius=1&max_option_keys=60`
-Preview the current live option subscription universe without mutating the stream. Uses live spot ticks first, falls back to latest stored `candles_1m`, then reads the nearest stored `option_contracts.expiry_date >= today`. Default radius `1` returns ATM +/- one strike for CE and PE.
-
-#### `POST /api/upstox/stream/options/restart`
-Body: `{ underlyings?, radius?, max_option_keys?, mode?, persist_ticks? }`. Restarts the read-only Upstox stream with the normal market-header instruments plus the previewed option universe. Use during market hours after current option contracts are synced. No broker orders are placed.
-
-### Index ingest
-
-#### `POST /api/upstox/warehouse/ingest`
-Body: `{ instrument, from_date, to_date, chunk_days? }`. Synchronous ingest.
-
-#### `POST /api/upstox/warehouse/ingest/jobs`
-Same body. Background job. Returns the warehouse run document immediately. Use this for >1 month ranges.
-
-Note: chunker uses **7-day chunks** for spot to avoid the Upstox `400 Invalid date range` on Feb→Mar boundaries.
-
-#### `GET /api/upstox/warehouse/ingest/jobs/{run_id}`
-Latest progress for a background ingest run.
-
-### Option contracts
-
-#### `GET /api/upstox/expiries/{instrument}`
-List of available expiries (Upstox Plus required).
-
-#### `GET /api/upstox/options/contracts/{instrument}?expiry=YYYY-MM-DD`
-Read-only current contract lookup.
-
-#### `POST /api/upstox/options/contracts/{instrument}/sync?expiry=YYYY-MM-DD`
-Fetches current contracts and stores them in `option_contracts`.
-
-#### `GET /api/upstox/expired-options/contracts/{instrument}?expiry=YYYY-MM-DD`
-Read-only expired contract lookup.
-
-#### `POST /api/upstox/expired-options/contracts/{instrument}/sync`
-Body: `{ from_date, to_date, max_expiries, confirm_large_fetch }`. Backfills expired contract metadata.
-
-### Option warehouse
-
-#### `POST /api/upstox/options/warehouse/preview`
-Preview-first planner. Default moneyness `["atm"]`. Returns compact summary plus per-row selected/fetch date counts.
-
-#### `POST /api/upstox/options/warehouse/fetch`
-Synchronous fetch guarded by `max_contracts`.
-
-#### `POST /api/upstox/options/warehouse/fetch/jobs`
-Background fetch using selected-date task planning.
-
-#### `GET /api/upstox/options/warehouse/fetch/jobs/{run_id}`
-Latest progress for a background option fetch run.
-
-#### `POST /api/upstox/options/candles/ingest`
-Direct option candle ingest for one contract/window.
-
-## Data Hygiene (Slice 6)
-
-### `POST /api/data-hygiene/plan`
-Body: `DataHygieneScopeReq` (instruments, sides, sample, from_date, to_date — all optional, defaults to `2024-11-27 → today`, NIFTY+BANKNIFTY+SENSEX, ATM CE+PE).
-
-Returns prioritized actions per instrument: spot ingest, contract sync, option candle fetch. Pure read; never fetches.
-
-### `POST /api/data-hygiene/execute`
-Body: `DataHygieneExecuteReq`. Submits the plan in dependency order (spot → contracts → option_candles). Re-running is safe; partial failures resume cleanly.
-
-### `GET /api/data-hygiene/status?plan_id=...`
-Recent hygiene run docs and progress.
-
-## Live Candle Roller (Slice 6.5)
-
-### `GET /api/live-candles/status`
-Roller status: tick counts, active buckets, last error, running flag.
-
-### `POST /api/live-candles/start`
-Manually start the roller. No-op if running. Auto-starts at backend boot after WS auto-start.
-
-### `POST /api/live-candles/stop`
-Stop and flush in-progress buckets.
-
-## Volatility (Slice 7)
-
-### `POST /api/volatility/audit`
-Body: `VolatilityAuditReq` with optional config override. Annotates spot 1m bars with realized 5-min vol vs 30-day baseline. Returns summary plus top-20 spike rows.
-
-## Backtest
-
-### `POST /api/backtest/run`
-Body: `BacktestReq`. Includes `instrument`, `mode`, `strategy_id`, `params`, `costs_enabled`, `walkforward`, `start_ts`, `end_ts`, `pretrade_filters`, `name`, `trade_window_start/end`, and an `option_backtest` block (enabled, moneyness — default `atm`, lots, exit_mode, dte_filter, cost_config, sizing_config). `dte_filter` accepts a single token (`"dte0"`, `0`) or a list (`[0, 1, 2]`) for multi-DTE selection; null/`"all"`/empty list = every weekly-expiry session.
-
-Returns full result with `id`, `metrics`, `trades`, `equity_curve`, `walkforward`, `significance`, `signal_funnel`, `regime_distribution`, optional `option_results`.
-
-### `POST /api/backtest/option-preflight?ingest_missing=0|1`
-Same body as `POST /backtest/run` with `option_backtest.enabled=true`. Returns a would-pair coverage report: `{ enabled, total_spot_trades, would_pair, missing_contract, missing_candle, coverage_pct, missing_contract_keys, expiry_mode, window }`. With `ingest_missing=1` and Upstox connected, submits a background option-warehouse fetch for the window.
-
-### `GET /api/backtest/runs?limit=50`
-Recent runs (lightweight).
-
-### `GET /api/backtest/runs/{id}`
-Full run.
-
-### `DELETE /api/backtest/runs/{id}`
-Remove a run.
-
-## Optimizer
-
-### `POST /api/optimize/start`
-Body: `OptimizerStartReq`. Key fields:
-
-| Field | Default | Notes |
-|-------|---------|-------|
-| `method` | `"bayesian"` | `bayesian` \| `grid` \| `genetic` |
-| `objective` | `"risk_adjusted"` | `risk_adjusted` \| `sharpe` \| `profit_factor` \| `total_pnl_pts` \| `net_pnl_inr` \| `win_rate` \| `neg_max_dd` |
-| `n_trials` | 200 | 10–5000 |
-| `evaluation_mode` | `"spot"` | `"spot"` (original, fast) \| `"option_rerank"` (two-stage: spot search then re-rank top-K by real option net rupee) |
-| `rerank_top_k` | 50 | 1–500; number of spot-best candidates re-evaluated on real option P&L |
-| `option_config` | null | Required when `evaluation_mode="option_rerank"`: `{ moneyness, dte_filter (token or list), lots, exit_mode, option_target_pts, option_stop_pts, option_target_pct, option_stop_pct, cost_config, entry_max_age_sec, exit_max_age_sec }` — premium levels in points take precedence over percent |
-| `guards_enabled` (frontend→) | — | Translated to `min_trades` / `min_direction_share` in the payload |
-| `min_trades` | 10 | 0 = no floor; disqualifies statistically meaningless samples |
-| `min_direction_share` | 0.0 | 0 = off; minority CE/PE share floor (0.10 = 10% minimum) |
-| `optimize_indicator_periods` | false | Also tunes RSI/MACD/ATR/EMA/ADX/CHOP/swing lengths; indicators recomputed per trial |
-| `pretrade_filters` | `{}` | Apply same pre-trade profile used in live trading |
-| `pretrade_profile` | `"None"` | Stored for display/clone; engine uses `pretrade_filters` |
-| `param_overrides` | `{}` | Widen/narrow per-param bounds |
-| `start_ts`, `end_ts` | null | IST epoch ms window |
-
-Returns `{ job_id, status: "queued" }`. Runs as a background asyncio task.
-
-### `POST /api/optimize/wfo`
-Honest walk-forward optimization. Body: `WfoStartReq` — the single-optimizer fields (instrument, strategy_id, objective, costs, pretrade, param_overrides, guards, date window) plus window configuration:
-
-| Field | Default | Notes |
-|-------|---------|-------|
-| `train_days` | 60 | Train window size in TRADING days present in the data (20–250) |
-| `test_days` | 20 | Unseen test window after each train window (5–60) |
-| `step_days` | null | Window step; default = `test_days` → contiguous, non-overlapping OOS |
-| `wf_mode` | `"rolling"` | `rolling` (fixed train size) \| `anchored` (train grows from first session) |
-| `n_trials_per_window` | 40 | Optuna trials per train window (10–500) |
-| `max_windows` | 12 | Cap (2–36); the OLDEST windows are dropped so deployable params come from the newest data |
-| `method` | `"bayesian"` | `bayesian` \| `genetic` (grid unsupported per-window) |
-| `option_aware` | false | WFO v2: after stitching, pair the OOS trades with real option candles once and report rupee results |
-| `option_config` | null | Required when `option_aware=true`; same shape as the re-rank `option_config` |
-
-Per window: re-optimize on the train slice only → evaluate that window's best params on its unseen test slice → stitch all test-window trades into one OOS equity curve. The job doc gets `kind="wfo"` and, when done, a `wfo` object: `windows[]` (train/test ranges, per-window best params, IS/OOS metrics), `stitched_oos` (the headline metrics), `stitched_oos_equity`, `efficiency` (OOS pnl/day ÷ IS pnl/day; null when IS ≤ 0), `consistency`, `param_stability` (rel_spread of each param across windows), `final_params` (best of the most recent train window; also saved as `best_params` plus a full `best_backtest_run_id`), and — when `option_aware` — `option_oos` (`net_pnl_value`, `win_rate`, `paired_trade_count`, `total_charges`, `coverage`, `per_window[]` rupee P&L, `rupee_consistency`, compact rupee `equity`, `config` echo; or `{error}` when pairing failed — the spot stitch is never affected). Window re-optimization itself stays on spot. Cancel works at trial boundaries; pause/resume works at window granularity (a half-finished window re-runs). Returns `{ job_id, status: "queued", kind: "wfo" }`.
-
-### `GET /api/optimize/jobs?limit=50`
-Recent jobs (lightweight projection — excludes `trial_log`, `heatmap`, `robustness`, `rerank`, `param_space`, `top_n_alternatives`, `wfo`, `wfo_windows`, `wfo_oos_trades`).
-
-### `GET /api/optimize/jobs/{job_id}`
-Full job document. Statuses: `queued → running → analyzing → done | cancelled | paused | interrupted | failed`.
-When done/cancelled: `best_params`, `best_value`, `best_metrics`, `best_backtest_run_id`, `evaluation_mode`, `top_n_alternatives`, `parameter_importance`, `heatmap`, `robustness`, `rerank` (when `evaluation_mode=option_rerank`), `wfo` (when `kind=wfo`).
-When paused/interrupted: `best_so_far`, `trial_log` (compact, for resume); WFO jobs persist `wfo_windows` + `wfo_oos_trades` instead.
-
-### `POST /api/optimize/jobs/{job_id}/cancel`
-Sets `cancelled=true`. Worker breaks at the next trial boundary. Analysis (heatmap/robustness) is skipped; best-so-far is still saved.
-
-### `POST /api/optimize/jobs/{job_id}/pause`
-Sets `paused=true`. Worker flushes the compact trial log and best-so-far, then sets `status=paused` and exits. Can be Resumed.
-
-### `POST /api/optimize/jobs/{job_id}/resume`
-Re-launches the worker for a `paused` / `interrupted` / `failed` job. Rehydrates prior trial history, re-seeds the Optuna study, and continues from the last saved trial.
-
-### `DELETE /api/optimize/jobs/{job_id}`
-Remove a job.
-
-### `POST /api/optimize/apply-as-preset/{job_id}?name=<preset_name>`
-Save best params as a Preset. Accepts jobs with status `done`, `cancelled`, `paused`, `interrupted`, or `failed` — uses `best_params` with a fallback to `best_so_far.params`. Returns 400 if no params exist yet. When the job carried an `option_config` (option re-rank or option-aware WFO), the preset stores `config.execution` (moneyness, dte_filter, exit_mode, premium levels, lots, cost_config) plus `source_job_kind` — Backtest Lab re-applies this policy on preset load and the deployment form prefills option policy + auto-paper fallbacks from it.
-
-## Presets and Profiles
-
-### `GET /api/presets`
-### `PUT /api/presets/{name}` body: `{ name, config }`
-### `DELETE /api/presets/{name}`
-
-### `GET /api/profiles`
-Seeded: Conservative, Balanced, Aggressive.
-
-### `PUT /api/profiles/{name}` body: `{ name, settings }`
-
-## Strategy Deployments (Slices 1, 3, 5, 8, 9)
-
-### `GET /api/deployments?status=&limit=`
-List deployments.
-
-### `POST /api/deployments`
-Body: `DeploymentCreateReq`:
-
-```json
-{
-  "name": "string",
-  "source_type": "preset" | "backtest_run",
-  "source_id": "string",
-  "mode": "signal_only" | "paper",  // legacy shadow/recommendation map to signal_only
-  "confirmation_mode": "1m_close",
-  "option_policy": {
-    "moneyness": "atm" | "otm1" | "itm1",
-    "dte_filter": [0, 1, 2, 3, 4, 5, 6]
-  },
-  "pretrade_profile": "string",
-  "risk": {
-    "default_lots": 1,
-    "allow_overnight": false
-  },
-  "auto_paper": true,
-  "auto_paper_target_pts": null,
-  "auto_paper_stop_pts": null,
-  "auto_paper_target_pct": null,
-  "auto_paper_stop_pct": null,
-  "max_consecutive_losses": null,
-  "daily_loss_cutoff_pct": null,
-  "max_open_paper_trades": null,
-  "acknowledged_warnings": false
-}
-```
-
-Behavior:
-
-- Resolves source preset/backtest run, freezes params, and stores `strategy_source_sha` (Slice 8).
-- Calls `deployment_quality.evaluate(...)`. If warnings exist and `acknowledged_warnings=false`, returns `400 acknowledgment_required` with the warning detail.
-- Stores `quality_at_creation` plus the ack flag for audit.
-- **Auto paper trading (2026-06-11, paper mode only):** `auto_paper` (default true) merges into `risk`. When ON, every clean CONFIRMED signal opens a paper trade automatically — no manual approval. Entry is real option PREMIUM (live tick → `options_1m` candle ≤5 min → refuse + journal `paper_trade_error` on the signal). Stop/target come from the signal's `risk_hints` (strategy-defined `target_pct`/`stop_pct` of entry premium) with the deployment-level fallbacks next: `auto_paper_target_pts`/`auto_paper_stop_pts` (₹ points of premium; precedence) then `auto_paper_target_pct`/`auto_paper_stop_pct` (% of entry premium) — same points-over-percent rule as the backtest's `option_levels` mode. The signal advances CONFIRMED→TRIGGERED→ACTIVE with an `auto_paper` audit snapshot and `paper_trade_id` link. A per-minute marker (`mark_open_deployment_trades`) marks OPEN trades to live ticks and fires stop/target exits intraday. Pre-existing deployments (no flag) keep approve-to-trade behavior.
-- The approval flow is retired (2026-06-12): `signal_only` deployments journal without trading; `paper` deployments auto-trade clean signals when `risk.auto_paper` is on. Entries always fill at resolved option premium (never spot).
-- Kill switches (Slice 12, paper mode only) are merged into `risk`. `max_consecutive_losses` and `daily_loss_cutoff_pct` (negative %) auto-PAUSE the deployment; `max_open_paper_trades` soft-BLOCKs new signals while that many trades are open. Omit/null/0 disables a switch. A paused deployment stamps `kill_switch_reason`, `kill_switch`, and `kill_switch_inputs`.
-
-### `GET /api/deployments/preflight?instrument=...`
-Slice 5 pre-flight check. Returns spot coverage (last 30 trading days), upcoming option expiries, active vs expired contracts, Upstox token state, and per-instrument structural break notes.
-
-### `GET /api/deployments/quality?source_type=...&source_id=...`
-Slice 9 quality evaluation against the source. Returns severity-colored warnings.
-
-### `GET /api/deployments/readiness?source_type=preset|backtest_run&source_id=...`
-Deployment-readiness evidence (informational, never blocks): `{source: {strategy_id, instrument, has_execution}, wfo, option_evidence}`. `wfo` = latest completed honest-WFO job for the strategy/instrument (`efficiency`, `windows`/`positive_windows`/`consistency_pct`, `option_oos_net`, `params_match` vs the source's params). `option_evidence` = latest option-rupee proof, preferring an exact-params option re-rank job, else an option-paired backtest run (`net_pnl_value`, `win_rate`, `paired_trade_count`, `params_match`). Surfaced as the "Validation evidence" card in the deployment form; missing evidence names the step to run.
-
-### `GET /api/deployments/metrics?strategy_id=&include_ineligible=false&limit=100`
-Session-gated forward metrics for deployments. By default returns only fully eligible deployments (`complete_session_count >= 10`). Pass `include_ineligible=1` to also get low-sample deployments — the Strategy Library does this and renders them under an amber "low sample" badge. Metrics are computed from closed `paper_trades`, but headline win-rate / avg P&L / profit factor include only trades whose entry session had at least 70% coverage in the 10:00-15:00 IST window.
-
-### `GET /api/deployments/{deployment_id}/metrics`
-Forward metrics for one deployment, including session-completeness summary and excluded incomplete-session trade count.
-
-### `GET /api/deployments/{id}`
-Single deployment doc.
-
-### `POST /api/deployments/{id}/pause` `POST /api/deployments/{id}/resume` `POST /api/deployments/{id}/archive`
-Status controls.
-
-### `GET /api/deployments/{id}/signals?limit=100`
-Signals linked to this deployment.
-
-### `POST /api/deployments/{id}/evaluate-on-close`
-Slice 1. Run the 1m_close evaluator once for this deployment. Used by the scheduler and the Evaluate-now button.
-
-### `POST /api/deployments/evaluate-active`
-Run the evaluator across every ACTIVE deployment. Used by the scheduler and on-demand.
-
-## Signals
-
-Retired 2026-06-12 (user decision — deployments journal and auto-trade their own signals; no manual flow): `POST /signals`, `/signals/{id}/transition`, `/approve`, `/skip`, `/mark-blocked`, `/signals/{id}/paper`. Old journaled signals remain readable.
-
-### `GET /api/signals?state=&limit=`
-Raw recent signal records (kept for compat/debug; the ledger below is the primary read).
-
-### `GET /api/signals/enriched`
-The trade-recommendation ledger: deployment signals joined with their paper trades. Params: `deployment_id, strategy_id, instrument, state, clean (true=clean only / false=blocked only), date_from, date_to (YYYY-MM-DD IST), sort (bar_ts|updated_at|confidence|instrument|state, "-" prefix desc), skip, limit (≤500), format=csv`. Each row adds: `score, spot_entry, bar_ist, deployment_name, contract, contract_expiry, trade_status, entry_premium, exit_premium, exit_reason, closed_at, lots, quantity, pnl_value (₹), pnl_premium_pts` to the signal's own `reasons[]` (entry triggers), `blockers[]`, `risk_hints`, `paper_trade_error`. Returns `{items, count, total, skip, limit}` or CSV.
-
-### `POST /api/signals/purge`
-Body `{ids?|deployment_id?|older_than_days?|states?}` (at least one of the first three). Deletes matching signals; returns `{deleted}`. Never touches trades.
-
-## Deployments overview / undeploy
-
-### `GET /api/deployments/overview`
-One call for the command center: per non-archived deployment `{deployment, today: {clean_signals, blocked_signals, realized_pnl, open_trades, open_unrealized}, lifetime: {closed_trades, realized_pnl, win_rate}}` plus account `totals`.
-
-### `POST /api/deployments/{id}/archive?purge=0|1`
-Undeploy: stops signal generation and paper trading. `purge=1` also deletes the deployment's signals and CLOSED trades (OPEN trades are kept for the marker/square-off); response reports the purge counts. Deployment create/resume responses include `option_stream` — the result of the best-effort live-option-stream realignment (`radius_for_deployments` derives the strike radius from ACTIVE paper deployments' moneyness).
-
-## Paper Trading
-
-### `GET /api/paper/trades`
-Journal with `status, deployment_id, strategy_id, instrument, date_from, date_to (YYYY-MM-DD IST), sort (updated_at|created_at|closed_at|realized_pnl|entry_price), skip, limit (≤500), format=csv`. Rows carry `deployment_name`; `events` excluded. Returns `{items, count, total, skip, limit}` or CSV.
-
-### `POST /api/paper/trades/purge`
-Body `{ids?|deployment_id?|older_than_days?}`. Deletes **CLOSED** trades only; returns `{deleted}`.
-
-### `POST /api/paper/trades/{id}/mark`
-Body: `{ last_price, auto_close_on_risk? }`. Updates unrealized P&L. Auto-closes if mark hits stored stop or target.
-
-### `POST /api/paper/trades/{id}/close`
-Body: `{ exit_price, reason }`. Closes the trade and stores realized P&L.
-
-### `POST /api/paper/square-off`
-Force-close all OPEN paper trades immediately. Idempotent. Used by the 15:00 IST background loop and by the manual button.
-
-## Options (Local Reads)
-
-### `GET /api/options/candles?instrument_key=...&...`
-Local stored option candle reads.
-
-### `GET /api/options/coverage?underlying=...&refresh=`
-Stored option candle summary by date for the heatmap. Served from the precomputed `option_coverage_cache` (~200ms vs ~8s for the raw aggregation). The cache is warmed on startup, refreshed after option-fetch jobs and after clearing option data. Pass `refresh=1` to force a recompute.
-
-### `GET /api/options/audit/{instrument}?start_ts=...&end_ts=...&expiry=&side=&limit_contracts=`
-Raw broad audit by contract metadata. Programmatic/diagnostic only — the UI panel was removed (the Data Hygiene panel, Option Coverage Heatmap, and Planner planned-coverage cover this). Use the Option Data Planner's planned coverage for the trust gate.
-
-### `GET /api/options/contracts/{instrument}`
-Local stored contract metadata.
-
-### `DELETE /api/options/data/{instrument}?confirm=CLEAR`
-Clear stored option candles only (does not touch index candles or contract metadata).
-
-## Error Conventions
+Updated: 2026-07-01
+
+Every backend HTTP route, grouped by area. All routes are mounted under the
+`/api` prefix (a single `APIRouter(prefix="/api")` in `backend/server.py`, which
+includes seven sub-routers: `research`, `strategies_admin`, `warehouse`,
+`journals`, `deployments`, `broker`, `live_broker`). JSON in / JSON out; CORS is
+open in dev. IST throughout; NSE session 09:15–15:30 with a 15:00 square-off.
+
+**Route count: 171** (source of truth: the `@api.<verb>(...)` decorators in
+`backend/server.py` + `backend/app/routers/*.py`). This file is the map; for
+request/response shapes read the route function and its Pydantic body model.
+
+Related docs: [ARCHITECTURE.md](./ARCHITECTURE.md) (module map, collections,
+gate chain) · [DEVELOPER_GUIDE.md](./DEVELOPER_GUIDE.md) · [USER_MANUAL.md](./USER_MANUAL.md)
+· [STRATEGY_DEPLOYMENTS.md](./STRATEGY_DEPLOYMENTS.md) · the decoded broker API in
+[Resources/flattrade-pi-api/INDEX.md](./Resources/flattrade-pi-api/INDEX.md).
+
+---
+
+## Health / dashboard / market header (`server.py`, `journals.py`, `broker.py`)
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/` | Root: `{ app, status, version }`. |
+| GET | `/api/health` | DB ping: `{ db: "ok" }` or 503 when MongoDB is down. |
+| GET | `/api/dashboard/summary` | Warehouse stats + strategy load count + backtest run count + latest backtest meta. |
+| GET | `/api/market/header` | Persistent market-header snapshot (WS-first, REST-fallback per tile; failed tiles carry `status:"error"`; never returns tokens). |
+| GET | `/api/market/header/stream` | Server-Sent Events feed of market-header snapshots. |
+
+## Data feed — Upstox connection + read-only market stream (`broker.py`)
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/upstox/status` | Upstox connection state (tokens never returned). |
+| GET | `/api/upstox/auth/start` | Begin the Upstox OAuth flow. |
+| GET | `/api/upstox/auth/callback` | OAuth callback; redirects to `FRONTEND_POST_AUTH_URL`. |
+| POST | `/api/upstox/disconnect` | Remove the encrypted Upstox token doc. |
+| GET | `/api/upstox/market-quote/{instrument}` | Sanitized live REST quote snapshot. |
+| POST | `/api/upstox/stream/start` | Start the read-only V3 market-data WS stream. |
+| POST | `/api/upstox/stream/stop` | Stop the local stream. |
+| GET | `/api/upstox/stream/status` | Sanitized stream status (running, session, subscribed count, tick counts, reconnects, last error). |
+| GET | `/api/upstox/stream/options/universe` | Preview the ATM-band option subscription universe without mutating the stream. |
+| POST | `/api/upstox/stream/options/restart` | Restart the read-only stream with header instruments + the previewed option universe (no broker orders). |
+| GET | `/api/upstox/stream/ticks/latest` | Recent sanitized tick snapshots (memory, falling back to stored `ticks`). |
+
+## Live candle roller + feed health (`broker.py`)
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/live-candles/status` | Tick→1m roller status: tick counts, active buckets, last error, running flag. |
+| POST | `/api/live-candles/start` | Manually start the roller (no-op if running); clears the supervisor suppression flag. |
+| POST | `/api/live-candles/stop` | Stop the roller and flush in-progress buckets. |
+| GET | `/api/live-feed/health` | Truthful pipeline health (token → stream → roller → fresh `candles_1m`): is it delivering, or what's blocking it? |
+| GET | `/api/live-exit-monitor/status` | Live paper-exit monitor status (tick-driven stop/target exits). |
+
+## Data Warehouse — spot ingest, OHLC, audit, calendar (`warehouse.py`)
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/api/warehouse/ingest` | yfinance-fallback ingest (`{ instrument, days }`). |
+| GET | `/api/warehouse/coverage` | Per-instrument coverage with per-day breakdown for the heatmap. |
+| GET | `/api/warehouse/runs` | Ingest-run audit log (also surfaces hygiene + option-fetch jobs). |
+| POST | `/api/warehouse/intraday-backfill/{instrument}` | Backfill TODAY's 1m candles from the Upstox intraday endpoint (closes the morning gap when the roller was down). `ALL` = all three indices. |
+| GET | `/api/warehouse/candles/{instrument}` | Latest N candles for chart preview. |
+| GET | `/api/warehouse/lookup` | Point-in-time lookup (spot bar + derived ATM strike + nearest expiry + ATM CE/PE candles); reads stored data only, never the broker. |
+| GET | `/api/warehouse/ohlc/{instrument}` | Server-side OHLC resampling of stored 1m candles (`timeframe ∈ {1m,5m,15m,1h,1d}`, IST buckets, 1h anchored to 09:15) + completed-day gap report. |
+| GET | `/api/warehouse/audit/{instrument}` | Per-day index-candle audit; **holiday-aware** (expected days from `nse_calendar.trading_days_in_range`). |
+| DELETE | `/api/warehouse/data/{instrument}` | Developer clear (`confirm=CLEAR`; `ALL` clears all three indices; does not touch options). |
+| GET | `/api/warehouse/auto-update/status` | Auto-update worker state (enabled, in_progress, last run, history). |
+| POST | `/api/warehouse/auto-update/toggle` | Enable/disable the automatic catch-up worker (`{ enabled }`). |
+| POST | `/api/warehouse/auto-update/run` | Trigger a catch-up immediately; returns `{ summary, state }`. |
+| GET | `/api/warehouse/vix/coverage` | India VIX warehouse coverage (count + date range + baseline start). |
+| POST | `/api/warehouse/vix/ingest` | Fetch India VIX 1m candles from Upstox → persist as `INDIAVIX` (powers the vix_bucket volatility layer). |
+| GET | `/api/calendar/holidays` | NSE/BSE holiday + special-session calendar (omit `year` for available years + current). |
+
+## Data Hygiene / one-button sync (`warehouse.py`)
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/api/data-hygiene/plan` | Prioritized per-instrument action plan (spot ingest, contract sync, option-candle fetch). Pure read; never fetches. |
+| POST | `/api/data-hygiene/execute` | Run a plan in dependency order (spot → contracts → option candles); re-runnable, resumes cleanly. |
+| GET | `/api/data-hygiene/status` | Recent hygiene run docs + progress. |
+| GET | `/api/data-hygiene/latest` | Last persisted hygiene plan (instant, no aggregation; null until first check). |
+| POST | `/api/data-hygiene/catch-up` | Sequential per-instrument catch-up to the last closed session, then band-exact option gap fill (`dry_run`, `include_options` flags). Needs an Upstox token. |
+| POST | `/api/warehouse/sync` | One-button sync — alias of `/data-hygiene/catch-up`. |
+
+## Volatility audit (`warehouse.py`)
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/api/volatility/audit` | Annotate spot 1m bars with realized 5-min vol vs 30-day baseline; returns summary + top-20 spike rows. |
+
+## Upstox index-history ingest (`warehouse.py`)
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/api/upstox/warehouse/ingest` | Synchronous spot ingest (`{ instrument, from_date, to_date, chunk_days? }`; 7-day chunks). |
+| POST | `/api/upstox/warehouse/ingest/jobs` | Same body, background job; returns the run doc immediately (use for >1 month ranges). |
+| GET | `/api/upstox/warehouse/ingest/jobs/{run_id}` | Progress for a background spot-ingest run. |
+
+## Option warehouse — contracts + candle fetch (`warehouse.py`)
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/upstox/expiries/{instrument}` | Available expiries (Upstox Plus). |
+| GET | `/api/upstox/options/contracts/{instrument}` | Read-only current contract lookup. |
+| POST | `/api/upstox/options/contracts/{instrument}/sync` | Fetch current contracts → store in `option_contracts`. |
+| GET | `/api/upstox/expired-options/contracts/{instrument}` | Read-only expired-contract lookup. |
+| POST | `/api/upstox/expired-options/contracts/{instrument}/sync` | Backfill expired-contract metadata over a date range. |
+| POST | `/api/upstox/options/warehouse/preview` | Preview-first planner (default moneyness `["atm"]`) with per-row selected/fetch counts. |
+| POST | `/api/upstox/options/warehouse/fetch` | Synchronous option-candle fetch guarded by `max_contracts`. |
+| POST | `/api/upstox/options/warehouse/fetch/jobs` | Background option-candle fetch using selected-date task planning. |
+| GET | `/api/upstox/options/warehouse/fetch/jobs/{run_id}` | Progress for a background option-fetch run. |
+| POST | `/api/upstox/options/candles/ingest` | Direct option-candle ingest for one contract/window. |
+
+## Options — local reads (`warehouse.py`)
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/options/candles` | Local stored option-candle reads. |
+| GET | `/api/options/coverage` | Stored option-candle summary by date for the heatmap (served from `option_coverage_cache`; `refresh=1` forces recompute). |
+| GET | `/api/options/audit/{instrument}` | Raw broad audit by contract metadata (diagnostic/programmatic only; UI panel removed). |
+| GET | `/api/options/contracts/{instrument}` | Local stored contract metadata. |
+| DELETE | `/api/options/data/{instrument}` | Clear stored option candles only (`confirm=CLEAR`; index candles + contract metadata untouched). |
+
+## Backtest Lab (`research.py`)
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/api/backtest/run` | Synchronous backtest (spot or paired-option via the `option_backtest` block); returns the full result. Kept for scripts. |
+| POST | `/api/backtest/start` | Fire-and-forget backtest: inserts the run doc, launches the worker, returns `{ run_id, status }`; client polls the run. |
+| POST | `/api/backtest/option-preflight` | Would-pair option-coverage report for an option-enabled config; `ingest_missing=1` submits a background fetch. |
+| GET | `/api/backtest/runs` | Recent runs (lightweight; excludes trades/equity/walkforward). |
+| GET | `/api/backtest/runs/{run_id}` | Full run doc. |
+| DELETE | `/api/backtest/runs/{run_id}` | Remove a run. |
+
+## Optimizer (`research.py`)
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/api/optimize/start` | Launch a search (`method ∈ bayesian|grid|genetic`; `evaluation_mode ∈ spot|option_rerank`; survival guards). Returns `{ job_id, status:"queued" }`. |
+| POST | `/api/optimize/wfo` | Honest walk-forward optimization (rolling/anchored windows, stitched OOS, optional `option_aware`). Returns `{ job_id, status:"queued", kind:"wfo" }`. |
+| GET | `/api/optimize/jobs` | Recent jobs (lightweight projection). |
+| GET | `/api/optimize/jobs/{job_id}` | Full job doc (`queued→running→analyzing→done|cancelled|paused|interrupted|failed`). |
+| DELETE | `/api/optimize/jobs/{job_id}` | Remove a job. |
+| POST | `/api/optimize/jobs/{job_id}/cancel` | Cancel at the next trial boundary (best-so-far still saved). |
+| POST | `/api/optimize/jobs/{job_id}/pause` | Flush the compact trial log + best-so-far, then pause. |
+| POST | `/api/optimize/jobs/{job_id}/resume` | Rehydrate a paused/interrupted/failed job and continue. |
+| POST | `/api/optimize/apply-as-preset/{job_id}` | Save the job's best params (+ any option execution policy) as a Preset. |
+
+## Presets + Profiles (`research.py`)
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/presets` | List saved presets. |
+| PUT | `/api/presets/{name}` | Upsert a preset (`{ name, config }`). |
+| DELETE | `/api/presets/{name}` | Delete a preset. |
+| POST | `/api/presets/{name}/rename` | Rename a preset (`new_name` query); re-points preset-sourced deployments. |
+| GET | `/api/profiles` | Pre-trade profiles (seeded Conservative / Balanced / Aggressive). |
+| PUT | `/api/profiles/{name}` | Upsert a profile (`{ name, settings }`). |
+
+## Strategy Library + AI Authoring (`strategies_admin.py`)
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/strategies` | List strategy metadata (failed plugins included with `is_loaded:false` + `error`). |
+| GET | `/api/strategies/catalog` | Authoring vocabulary: valid columns / ops / regimes / exit fields / param types (host-safe, no DB). |
+| GET | `/api/strategies/{strategy_id}` | Single strategy metadata (+ `is_retired`). |
+| POST | `/api/strategies/{strategy_id}/retire` | Retire a strategy (squares off its deployments; blocks new deploys). |
+| POST | `/api/strategies/{strategy_id}/un-retire` | Clear the retired flag. |
+| DELETE | `/api/strategies/{strategy_id}` | Delete a custom plugin file (must be retired + no non-archived deployments; built-ins rejected 403). |
+| POST | `/api/strategies/reload` | Reload the plugin registry from disk. |
+| POST | `/api/strategies/author/compile` | Validate + compile a spec to source WITHOUT installing (returns errors for the wizard). |
+| POST | `/api/strategies/author/install` | Compile + write plugin file + reload + record provenance (409 on id clash unless `overwrite`). |
+| GET | `/api/strategies/author/providers` | Configured AI providers + the active default (env only). |
+| POST | `/api/strategies/author/from-source` | Map pasted text / YouTube link → constrained `StrategySpec` + fidelity (FAST tier). |
+| POST | `/api/strategies/author/converse` | Collaborative gate: parse source → per-rule feasibility → BUILD/ASK/ADVISE/REJECT. |
+| POST | `/api/strategies/author/python-from-source` | Generate an arbitrary `StrategyBase` module via the POWERFUL tier (no install). |
+| POST | `/api/strategies/author/python/validate` | Static-check the generated Python; if clean, smoke-test it. |
+| POST | `/api/strategies/author/python/install` | Server re-validates (static + smoke), then writes + reloads + records provenance. |
+
+## Strategy Deployments (`deployments.py`)
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/deployments` | List deployments (`status`, `limit` filters). |
+| POST | `/api/deployments` | Create a deployment (freezes params + `strategy_source_sha`; runs the quality gate; auto-paper defaults). |
+| GET | `/api/deployments/preflight` | Pre-flight: spot coverage, upcoming expiries, active vs expired contracts, Upstox token, structural-break notes. |
+| GET | `/api/deployments/quality` | Quality evaluation vs the source (severity-colored warnings). |
+| GET | `/api/deployments/readiness` | Deployment-readiness evidence (latest WFO + option-rupee proof; informational, never blocks). |
+| GET | `/api/deployments/metrics` | Session-gated forward metrics across deployments (`include_ineligible` for low-sample). |
+| GET | `/api/deployments/{deployment_id}/metrics` | Forward metrics for one deployment (+ session-completeness summary). |
+| GET | `/api/deployments/overview` | Command-center roll-up: per-deployment today/lifetime + account totals. |
+| GET | `/api/deployments/{deployment_id}` | Single deployment doc. |
+| POST | `/api/deployments/{deployment_id}/pause` | Pause a deployment. |
+| POST | `/api/deployments/{deployment_id}/resume` | Resume a paused deployment (best-effort option-stream realign). |
+| POST | `/api/deployments/stop-all` | Stop everything: square off all open paper, pause every ACTIVE deployment, and disarm + flatten every armed-live deployment. |
+| POST | `/api/deployments/{deployment_id}/stop` | Square off THIS deployment's open paper positions, then pause. |
+| POST | `/api/deployments/{deployment_id}/archive` | Undeploy (`purge=1` also deletes its signals + CLOSED trades; OPEN kept for square-off). |
+| GET | `/api/deployments/{deployment_id}/signals` | Signals linked to this deployment. |
+| POST | `/api/deployments/{deployment_id}/evaluate-on-close` | Run the 1m_close evaluator once for this deployment. |
+| POST | `/api/deployments/evaluate-active` | Run the evaluator across every ACTIVE deployment. |
+| POST | `/api/deployments/{deployment_id}/repin-source` | Re-pin to the strategy's current source after a drift pause (recomputes SHA, resumes if drift-paused). |
+
+### Live-arming (real-money) sub-routes
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/api/deployments/{deployment_id}/live/arm` | Authorize REAL-money auto-placing until 15:00 IST (guards: ACTIVE, not retired, not drift-paused, broker connected, engine can-trade, `confirm=true` StrictBool). |
+| POST | `/api/deployments/{deployment_id}/live/disarm` | Disarm live auto-placing (does NOT flatten open positions). |
+| POST | `/api/deployments/{deployment_id}/live/stop` | Flatten THIS deployment's open live positions, then disarm (user-initiated exit — transmits directly). |
+| GET | `/api/deployments/live/status` | Batched live status for many deployments in one call (`ids=` comma-separated). |
+| GET | `/api/deployments/{deployment_id}/live/status` | One deployment's live arm state, caps, today's counters, open live positions, transmit gates. |
+
+## Signals ledger (`journals.py`)
+
+Legacy manual signal endpoints were retired 2026-06-12 (deployments journal +
+auto-trade their own signals). Remaining routes:
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/signals` | Raw recent signal records (compat/debug). |
+| GET | `/api/signals/enriched` | Trade-recommendation ledger: deployment signals joined with their paper trades (rich filters; `format=csv`). |
+| POST | `/api/signals/purge` | Delete matching signals (`ids`/`deployment_id`/`older_than_days`/`states`); never touches trades. |
+
+## Paper Trading (`journals.py`)
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/paper/account-config` | Read paper starting capital. |
+| PUT | `/api/paper/account-config` | Set paper starting capital (`> 0`). |
+| GET | `/api/paper/analytics` | Account analytics (equity curve, R-multiple, drawdown; open positions marked to the latest tick). |
+| GET | `/api/paper/strategy-stats` | Per-strategy / per-deployment paper stats. |
+| GET | `/api/paper/trades` | Paper-trade journal (rich filters; `format=csv`). |
+| GET | `/api/paper/open-positions` | OPEN positions with unrealized P&L from the latest tick (lightweight, ~2s poll). |
+| POST | `/api/paper/trades/purge` | Delete CLOSED paper trades only. |
+| POST | `/api/paper/trades/{trade_id}/mark` | Update unrealized P&L; auto-close if the mark hits the stored stop/target. |
+| POST | `/api/paper/trades/{trade_id}/close` | Close a trade (`{ exit_price, reason }`) and store realized P&L. |
+| POST | `/api/paper/square-off` | Force-close all OPEN paper trades (idempotent; used by the 15:00 IST loop + manual button). |
+
+## Live Broker — Flattrade connection + read-only books (`live_broker.py`)
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/flattrade/status` | Flattrade token connection status (never raises; no-token = `connected:false`). |
+| GET | `/api/flattrade/auth/start` | Flattrade OAuth login URL (400 if creds unset). |
+| GET | `/api/flattrade/auth/callback` | OAuth callback; resolves uid, saves the token, redirects to the frontend. |
+| POST | `/api/flattrade/disconnect` | Delete the stored Flattrade token. |
+| GET | `/api/live-broker/positions` | Broker net position book (400 if not connected). |
+| GET | `/api/live-broker/orders` | Broker order book. |
+| GET | `/api/live-broker/trades` | Broker trade book (filled orders). |
+| GET | `/api/live-broker/limits` | Account limits / margin. |
+| GET | `/api/live-broker/margin-probe` | Read-only NRML margin readback for a prospective 1× BUY LMT leg (GetOrderMargin). |
+| GET | `/api/live-broker/reconcile` | Fetch broker orders + positions → reconcile diff report. |
+| GET | `/api/live-broker/blotter` | Deployment-attributed live blotter (`live_trades` joined to the broker position book; degrades gracefully). |
+| GET | `/api/live-broker/symbol/resolve` | Preview Noren symbol resolution for a given option contract. |
+| GET | `/api/live-broker/order-rules/{underlying}` | Exchange rules for the UI (products / order-types / freeze / tick / lot / expiry). |
+| GET | `/api/live-broker/greeks` | Portfolio Greeks (net Δ / net Θ) — read-only, server-side BS IV-from-premium. |
+| GET | `/api/live-broker/guard-status` | Software exit-guard state (armed vs dry-run + per-position stop/target/peak/fill). |
+| GET | `/api/live-broker/atm-suggest` | Nearest-ATM strike + front expiry + its premium (live tick → last candle). |
+| POST | `/api/live-broker/option-premium` | Current premium for a contract (live tick ≤120s → last `options_1m` candle → none); read-only, always 200. |
+
+## Live Broker — order gates + placement chokepoint (`live_broker.py`)
+
+The executor is the SINGLE real-order chokepoint; entries reach the broker ONLY
+via `/live-broker/order/place`. See the gate chain in
+[ARCHITECTURE.md](./ARCHITECTURE.md) and the safety model in
+[DEVELOPER_GUIDE.md](./DEVELOPER_GUIDE.md).
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/api/live-broker/order/dry-run` | Build an OrderIntent + run all safety checks WITHOUT placing. |
+| POST | `/api/live-broker/order/preview` | Choke-point as a dry-run (exchange/tick/freeze/order-type checks, no placement). |
+| POST | `/api/live-broker/order/approvals` | Validate a ticket and, if it passes, queue it for explicit approval (returns a one-shot token). |
+| GET | `/api/live-broker/order/approvals` | List pending approvals (token never exposed). |
+| POST | `/api/live-broker/order/approvals/{approval_id}/approve` | Redeem the one-shot token → place the approved BUY entry (reverts to pending on any non-placement). |
+| POST | `/api/live-broker/order/approvals/{approval_id}/reject` | Decline a pending approval (never placeable afterwards). |
+| POST | `/api/live-broker/order/place` | **The only ENTRY chokepoint** — place one real option order through all gates (requires LIVE_TEST + unconsumed single-shot). |
+| POST | `/api/live-broker/order/square` | Manually square the open test position (exit-only) and revert to LIVE_OFFLINE. |
+| POST | `/api/live-broker/kill-switch` | Panic square-off of all open orders + positions (L3 transmits), revert mode, record `kill_switch`. |
+| GET | `/api/live-broker/test-session` | Test-session state (deadline, remaining_secs, heartbeat, status; auto-detects a rejected entry). |
+
+## Live Broker — mode, arm-state, safety, GTT/OCO, overall controls (`live_broker.py`)
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/live-broker/mode` | Current mode doc (`PAPER` / `LIVE_OFFLINE` / `LIVE_TEST`, single-shot state). |
+| PUT | `/api/live-broker/mode` | Transition mode (LIVE_TEST needs `confirm=true` + connected broker + engine can-trade). |
+| GET | `/api/live-broker/arm-state` | The single "will a signal place a REAL order right now?" verdict (mode + per-deployment arm + env gates + connectivity). |
+| GET | `/api/live-broker/safety-config` | Current live-trading guardrails (daily loss limit, profit lock, max open, max lots/order). |
+| PUT | `/api/live-broker/safety-config` | Update numeric guardrails. |
+| POST | `/api/live-broker/safety-config/reset-latch` | Explicitly reset the broker stop-loss latch. |
+| GET | `/api/live-broker/overall-settings` | Overall-controls config for a scope (basket SL/target/trailing/re-entry). |
+| PUT | `/api/live-broker/overall-settings` | Persist a validated overall-controls config (fail-closed). |
+| GET | `/api/live-broker/gtt` | List the broker GTT/OCO book (best-effort; empty list + note if not connected). |
+| POST | `/api/live-broker/gtt` | Build (and, with `transmit=true`, transmit) a NRML-only GTT/OCO catastrophe backstop; preview otherwise. |
+| DELETE | `/api/live-broker/gtt/{al_id}` | Cancel a GTT/OCO by alert id (`kind=gtt|oco`). |
+
+---
+
+## Error conventions
 
 | Code | Meaning |
 |---|---|
-| 400 | Bad request (invalid instrument, out-of-range params, no candles in window, `acknowledgment_required`, expired option key sent to wrong endpoint) |
-| 404 | Resource not found |
-| 409 | Conflict (occasional duplicate-source rejections, idempotency edge cases) |
-| 503 | Service unavailable (MongoDB down) |
+| 400 | Bad request (invalid instrument, out-of-range params, no candles in window, `acknowledgment_required`, live guard not satisfied, expired option key to the wrong endpoint). |
+| 403 | Forbidden (e.g. deleting a built-in strategy). |
+| 404 | Resource not found. |
+| 409 | Conflict (id already exists, retire-before-delete, drift/retired guards on arming, duplicate-source edge cases). |
+| 500 | Unexpected server error (rare; live-broker read routes deliberately degrade to 400/best-effort instead). |
+| 502 / 503 | Upstream/AI provider failure (502) · service unavailable — MongoDB down or AI authoring not configured (503). |
 
-Note: when a forward signal cannot land due to E11000 on the unique partial index `signals_deployment_bar_unique`, the evaluator does not bubble a 409 — it logs the row as `outcome="skipped"`, `reason="already_journaled"` and advances `last_evaluated_ts`.
+Note: when a forward signal cannot land due to `E11000` on the unique partial
+index `signals_deployment_bar_unique`, the evaluator does not bubble a 409 — it
+logs the row as `outcome="skipped"`, `reason="already_journaled"` and advances
+`last_evaluated_ts`.
