@@ -1,8 +1,8 @@
 """Live-feed health model + auto-reconcile decision logic.
 
 PURE + host-importable (stdlib/typing only — NO motor, NO app.db, NO Upstox).
-The master liveness signal is candles_1m freshness. See
-docs/superpowers/specs/2026-06-29-live-feed-health-truthful-liveness-design.md.
+The master liveness signal is candles_1m freshness. (Original design: the
+live-feed-health truthful-liveness spec, retired to git history 2026-07-01.)
 """
 from __future__ import annotations
 
