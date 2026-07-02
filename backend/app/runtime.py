@@ -92,7 +92,7 @@ live_exit_monitor = LiveExitMonitor(
     mark_fn=mark_open_deployment_trades,
 )
 
-from app.live_feed_health import supervise_once as _supervise_once, SUPERVISE_POLL_SEC as _SUPERVISE_POLL_SEC
+from app.live_feed_health import supervise_once as _supervise_once, decide_exit_monitor_action, SUPERVISE_POLL_SEC as _SUPERVISE_POLL_SEC
 
 # Auto-reconcile supervisor state (exposed to /live-feed/health). `suppressed` is
 # set True by a manual stop endpoint so the loop won't fight a deliberate Stop.
@@ -449,6 +449,25 @@ async def _live_feed_supervisor_loop() -> None:
                 stream_manager=upstox_stream_manager, roller=live_candle_roller,
                 instrument_keys=keys, mode=DEFAULT_STREAM_MODE, state=_feed_supervisor,
             )
+            # Reconcile the paper tick-exit / mark-to-market monitor in PARITY with the
+            # roller. Without this, a boot-before-OAuth gap (or any restart while the
+            # token is disconnected) leaves the monitor dead even after the supervisor
+            # revives the stream+roller — so OPEN paper trades are never marked-to-market
+            # (blotter Net/Max/Min P&L + P&L%/curve stuck at 0) nor tick-exited on SL/TP.
+            try:
+                em_action = decide_exit_monitor_action(
+                    market_open=market_open, token_ok=token_ok,
+                    suppressed=bool(_feed_supervisor.get("suppressed")),
+                    running=bool(live_exit_monitor.status().get("running")),
+                )
+                if em_action == "start_exit_monitor":
+                    await live_exit_monitor.start()
+                    actions = list(actions) + ["start_exit_monitor"]
+                elif em_action == "stop_exit_monitor":
+                    await live_exit_monitor.stop()
+                    actions = list(actions) + ["stop_exit_monitor"]
+            except Exception as exc:   # noqa: BLE001 - never kill the supervisor loop
+                log.warning("exit-monitor reconcile failed: %s", exc)
             _feed_supervisor["last_actions"] = actions
             _feed_supervisor["last_tick_at"] = datetime.now(timezone.utc).isoformat()
         except Exception as exc:   # noqa: BLE001 - never kill the loop
