@@ -1236,10 +1236,6 @@
   resolved "https://registry.yarnpkg.com/@csstools/selector-specificity/-/selector-specificity-2.2.0.tgz#2cbcf822bf3764c9658c4d2e568bd0c0cb748016"
   integrity sha512-+OJ9konv95ClSTOJCmMZqpd5+YGsB2S+x6w3E1oaM8UuR5j8nTNHYSz8c9BEPGDOCMQYIEEGlVPj/VY64iTbGw==
 
-"@emergentbase/visual-edits@https://assets.emergent.sh/npm/emergentbase-visual-edits-1.0.8.tgz":
-  version "1.0.8"
-  resolved "https://assets.emergent.sh/npm/emergentbase-visual-edits-1.0.8.tgz#92cfe0ada8724a048d1bdf2593a34bed202b5bd0"
-
 "@eslint-community/eslint-utils@^4.2.0":
   version "4.9.1"
   resolved "https://registry.yarnpkg.com/@eslint-community/eslint-utils/-/eslint-utils-4.9.1.tgz#4e90af67bc51ddee6cdef5284edf572ec376b595"
@@ -4243,11 +4239,6 @@ cosmiconfig@^7, cosmiconfig@^7.0.0, cosmiconfig@^7.0.1:
     parse-json "^5.0.0"
     path-type "^4.0.0"
     yaml "^1.10.0"
-
-cra-template@1.2.0:
-  version "1.2.0"
-  resolved "https://registry.yarnpkg.com/cra-template/-/cra-template-1.2.0.tgz#7bb339b1f762cc0901665dba8260333e13547e4e"
-  integrity sha512-06WBUmTq79NvqU91Y9OPCXv/ENy/UkUmQS0lBrOYCl/4f4l67idnGbBARDGLopCHfff6pf6UftcFRWHg+CVfRw==
 
 create-require@^1.1.0:
   version "1.1.1"
