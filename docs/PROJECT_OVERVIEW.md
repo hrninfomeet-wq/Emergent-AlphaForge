@@ -244,7 +244,7 @@ Health checks:
 
 If you are a new agent picking this up:
 
-1. Read `docs/HANDOFF.md` (entry point; has the latest "Recent Work" section).
-2. Read `plan.md` for the slice roadmap and `ltm/runtime/last-recall.md` for the richest record of recent sessions.
+1. Read `docs/HANDOFF.md` (the entry point — it defines the read order).
+2. Read `docs/DEVELOPER_GUIDE.md` for deep onboarding (run/build/test, safety model, warehouse model, gotchas).
 3. Read `docs/ARCHITECTURE.md` for the module map.
-4. The recommended next work is **(a) verify auto paper trading in the first live market session, (b) A/B-validate the optimizer's option re-rank, then retire the legacy spot path, and (c) the live risk engine** — the highest-value steps for profitability. The parallelism slice was deliberately deferred (see HANDOFF "Why no parallelism slice").
+4. For what changed recently and what is in flight, read `../CHANGELOG.md` — it is the versioned record of every slice.

@@ -68,7 +68,7 @@ Three services in `docker-compose.yml`:
 | `mongo` | `27017` | `alphaforge_mongo` | `mongo:7`, named volume `mongo_data` (NOT in the project folder / OneDrive) |
 
 ```bash
-docker compose up -d --build              # build + launch everything (or start.bat / start.sh)
+docker compose up -d --build              # build + launch everything (or start-app.bat / start.sh)
 docker compose up -d --build backend      # rebuild ONLY the backend after backend edits
 docker compose up -d --build frontend     # rebuild ONLY the frontend after frontend edits
 docker compose ps                         # confirm all three are up/healthy
