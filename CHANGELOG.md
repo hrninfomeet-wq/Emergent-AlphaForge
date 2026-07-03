@@ -2,6 +2,40 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.48.3] — Deep cleanup: dead code, unused deps, disk bloat (2026-07-03)
+
+Project-wide audit (multi-agent sweep, every deletion adversarially verified against dynamic
+imports / test string-pins / Docker / docs) followed by removal. **No behavior changed** — the app
+serves the same pages, routes, and features from slimmer sources and images.
+
+- **Disk: ~1.44 GB → ~0.52 GB.** Deleted regenerable artifacts: host `frontend/node_modules`
+  (~980 MB — Docker builds install their own; run `yarn install` in `frontend/` only if you want a
+  host dev server), stale `frontend/build`, all `__pycache__`/`.pytest_cache` (~14 MB), an orphaned
+  `.claude/worktrees` husk. The remaining ~514 MB is `.venv`, which the host test suite needs.
+- **Dead code removed** (verified unreferenced twice, independently): 34 of 46 never-imported shadcn
+  `components/ui/*` files (+ `hooks/use-toast.js`, `charts/MiniChart.jsx`), and
+  `backend/app/models.py` (superseded by `app/schemas.py`). Kept deliberately: `MultiPaneChart.jsx`
+  (earmarked for a deferred slice), `exit_controls_level.py` (parity-test pinned),
+  `live/live_friction_profile.py` (awaiting live-readback work).
+- **Dependencies slimmed, none upgraded.** Backend: 14 never-imported pins dropped (the unused auth
+  stack `pyjwt`/`python-jose`/`passlib`/`bcrypt`/`email-validator`, Emergent leftovers
+  `boto3`/`requests-oauthlib`/`jq`/`typer`, plus `python-multipart` and the lint set
+  `black`/`isort`/`flake8`/`mypy`); `scikit-learn` was flagged too but **kept** — adversarial
+  verification found optuna's param-importance imports it lazily at `optimizer.py:346`. Frontend:
+  38 packages dropped (18 unused `@radix-ui/*`, the react-hook-form/zod chain, `framer-motion`,
+  `cra-template`, the config-less ESLint-9 flat set, and `@emergentbase/visual-edits` — an external
+  tarball fetched from `assets.emergent.sh` on every image build); `dotenv` is now declared
+  (craco requires it; it previously resolved only via hoisting).
+- **Emergent-platform leftovers removed:** root `.gitconfig` (inert agent identity), `.emergent/`,
+  empty `test_reports/`, stock CRA `frontend/README.md`.
+- **Fixed:** the two `test_structural_features.py` failures on the host (pandas 2 vs 3
+  None-vs-NaN drift in object columns) — suite now fully green in both environments; stale doc
+  pointers (`plan.md`, `start.bat`, ltm recall file) repointed to the canonical read order.
+- **Untouched by design:** all warehouse/paper/live data (Mongo volume `mongo_data`),
+  `Strategy_note_self/`, `docs/Resources/flattrade-pi-api/` (+ source PDF), `memory/`,
+  the unmerged `feat/adaptive-strategies` XRS branch, and both stashes. `.kiro/` + `ltm/`
+  (Kiro-IDE-era memory tooling, idle since 2026-06-12) left in place pending a user decision.
+
 ## [0.48.2] — Documentation refresh + repo tidy-up (2026-07-01)
 
 Consolidated and refreshed the documentation so a new engineer/agent can onboard from a single guide,
