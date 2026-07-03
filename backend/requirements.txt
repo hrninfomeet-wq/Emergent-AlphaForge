@@ -21,6 +21,9 @@ numpy>=1.26.0
 yfinance>=0.2.66
 optuna==4.8.0
 cmaes==0.13.0
+# optuna's param-importance (optimizer.py _param_importance -> FanovaImportanceEvaluator)
+# imports sklearn lazily at call time — removing this silently blanks that panel.
+scikit-learn==1.8.0
 
 # AI strategy authoring
 anthropic>=0.77,<1.0
