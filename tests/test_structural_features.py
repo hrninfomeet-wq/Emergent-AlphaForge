@@ -205,6 +205,12 @@ def _fvg_reference(df):
                          "fvg_state": state})
 
 
+def _norm_missing(seq):
+    """None and NaN both mean 'no zone' — pandas 2 vs 3 differ on which one
+    survives an object column, so normalize before comparing."""
+    return [None if x is None or (isinstance(x, float) and x != x) else x for x in seq]
+
+
 def test_fvg_zones_matches_reference():
     params = {}
     df = _enrich(_ohlcv(seed=11), params)
@@ -212,7 +218,7 @@ def test_fvg_zones_matches_reference():
     ref = _fvg_reference(df)
     pd.testing.assert_series_equal(out["fvg_top"], ref["fvg_top"], check_names=False)
     pd.testing.assert_series_equal(out["fvg_bottom"], ref["fvg_bottom"], check_names=False)
-    assert out["fvg_dir"].tolist() == ref["fvg_dir"].tolist()
+    assert _norm_missing(out["fvg_dir"].tolist()) == _norm_missing(ref["fvg_dir"].tolist())
     assert out["fvg_state"].tolist() == ref["fvg_state"].tolist()
     assert (out["fvg_state"] == "active").any()   # non-vacuity: the fixture forms >=1 gap
 
@@ -337,7 +343,7 @@ def test_order_block_matches_reference():
     ref = _ob_reference(df, lookback=10)
     pd.testing.assert_series_equal(
         pd.Series(out["ob_top"]).reset_index(drop=True), ref["ob_top"], check_names=False)
-    assert list(out["ob_dir"]) == ref["ob_dir"].tolist()
+    assert _norm_missing(list(out["ob_dir"])) == _norm_missing(ref["ob_dir"].tolist())
     assert list(out["ob_active"].astype(bool)) == ref["ob_active"].tolist()
     assert out["ob_active"].astype(bool).any()   # non-vacuity: real OBs actually formed
 
