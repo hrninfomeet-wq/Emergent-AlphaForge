@@ -8,6 +8,7 @@ Covers:
 """
 from __future__ import annotations
 
+import importlib.util
 import math
 import sys
 import time
@@ -17,6 +18,14 @@ from typing import Any, Dict, List, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+# Route tests importing app.routers.live_broker pull in motor via app.db —
+# absent on the host. They run inside the backend container (DEVELOPER_GUIDE §B);
+# on the host they SKIP instead of failing.
+requires_motor = pytest.mark.skipif(
+    importlib.util.find_spec("motor") is None,
+    reason="imports motor-backed modules — runs in the backend container",
+)
 
 # Ensure backend/ is on sys.path (same pattern as all other test_live_*.py)
 _ROOT = Path(__file__).resolve().parents[1]
@@ -274,6 +283,7 @@ class TestAtmSuggestRoute:
             _c(strike=25050, instrument_key="NSE_FO|CE_5050"),
         ]
 
+    @requires_motor
     @pytest.mark.asyncio
     async def test_happy_path(self):
         from unittest.mock import AsyncMock, MagicMock, patch

@@ -193,3 +193,49 @@ def test_supervise_once_resets_suppression_at_session_end():
                                roller=roller, instrument_keys=["k"], mode="full", state=state))
     assert state["suppressed"] is False          # fresh next session
     assert stream._running is False              # feed stopped at close
+
+
+# --- exit-monitor reconcile (paper tick-exit/mark loop, parity with the roller) ---
+from app.live_feed_health import decide_exit_monitor_action  # noqa: E402
+
+
+def test_exit_monitor_started_when_feed_live_but_monitor_dead():
+    # THE BUG: market open + token ok + feed revived by the supervisor, but the
+    # tick-exit/mark monitor was left dead (boot happened before the daily OAuth).
+    # It must be (re)started so open paper trades get marked-to-market + auto-exited.
+    assert decide_exit_monitor_action(
+        market_open=True, token_ok=True, suppressed=False, running=False
+    ) == "start_exit_monitor"
+
+
+def test_exit_monitor_idempotent_when_already_running():
+    assert decide_exit_monitor_action(
+        market_open=True, token_ok=True, suppressed=False, running=True
+    ) is None
+
+
+def test_exit_monitor_stopped_at_session_end():
+    assert decide_exit_monitor_action(
+        market_open=False, token_ok=True, suppressed=False, running=True
+    ) == "stop_exit_monitor"
+    assert decide_exit_monitor_action(
+        market_open=False, token_ok=True, suppressed=False, running=False
+    ) is None
+
+
+def test_exit_monitor_left_as_is_on_token_expiry_midsession():
+    # Parity with decide_feed_actions: token expiry (needs login) does NOT tear the
+    # feed down; the monitor self-guards on stale ticks, so leave it unchanged.
+    assert decide_exit_monitor_action(
+        market_open=True, token_ok=False, suppressed=False, running=True
+    ) is None
+    assert decide_exit_monitor_action(
+        market_open=True, token_ok=False, suppressed=False, running=False
+    ) is None
+
+
+def test_exit_monitor_respects_manual_suppression():
+    # User manually stopped the feed (STOP button) — don't fight it.
+    assert decide_exit_monitor_action(
+        market_open=True, token_ok=True, suppressed=True, running=False
+    ) is None

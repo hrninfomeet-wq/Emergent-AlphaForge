@@ -11,6 +11,7 @@ Covers:
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import math
 import sys
 import types
@@ -19,6 +20,14 @@ from typing import Any, Dict, List, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+# The route tests below import app.routers.live_broker, which pulls in motor via
+# app.db — absent on the host. They run inside the backend container (see
+# DEVELOPER_GUIDE §B); on the host they SKIP instead of failing.
+requires_motor = pytest.mark.skipif(
+    importlib.util.find_spec("motor") is None,
+    reason="imports motor-backed modules — runs in the backend container",
+)
 
 # Ensure backend/ is on sys.path (same pattern as all other test_live_*.py files)
 _ROOT = Path(__file__).resolve().parents[1]
@@ -311,6 +320,7 @@ class TestResolvePremium:
 # Light route test — POST /live-broker/option-premium
 # ===========================================================================
 
+@requires_motor
 @pytest.mark.asyncio
 async def test_route_returns_premium_from_tick(monkeypatch):
     """Smoke-test the route end-to-end with all external dependencies patched."""
@@ -361,6 +371,7 @@ async def test_route_returns_premium_from_tick(monkeypatch):
     assert body["instrument_key"] == "NSE_FO|123"
 
 
+@requires_motor
 @pytest.mark.asyncio
 async def test_route_contract_not_found_returns_gracefully(monkeypatch):
     """When no contract matches, the route returns premium=None without 500."""
@@ -398,6 +409,7 @@ async def test_route_contract_not_found_returns_gracefully(monkeypatch):
     assert body.get("reason") == "contract_not_found"
 
 
+@requires_motor
 @pytest.mark.asyncio
 async def test_route_queries_active_expiries_without_cap(monkeypatch):
     """REGRESSION: the route MUST filter option_contracts to active expiries

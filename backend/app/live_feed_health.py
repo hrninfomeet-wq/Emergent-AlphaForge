@@ -110,6 +110,29 @@ def decide_feed_actions(*, market_open: bool, token_ok: bool, stream_running: bo
     return actions
 
 
+def decide_exit_monitor_action(*, market_open: bool, token_ok: bool, suppressed: bool,
+                               running: bool) -> Optional[str]:
+    """Pure reconciler decision for the paper tick-exit / mark-to-market monitor
+    (LiveExitMonitor), in PARITY with the roller. Returns "start_exit_monitor",
+    "stop_exit_monitor", or None.
+
+    The monitor is what marks OPEN paper trades to the live premium (unrealized /
+    MFE / MAE / P&L-series) and fires tick-level stop/target exits. It must run
+    whenever the feed should be live. Mirrors decide_feed_actions: market close
+    tears it down; token expiry (NEEDS_LOGIN) leaves it as-is (the marker
+    self-guards on stale ticks); manual suppression is respected; otherwise it is
+    (re)started when not already running. This is the self-heal for the
+    boot-before-OAuth gap — the supervisor revives the roller, but without this the
+    monitor stays dead and open trades are never marked (blotter columns stuck at 0)."""
+    if not market_open:
+        return "stop_exit_monitor" if running else None
+    if not token_ok:
+        return None            # human OAuth required; leave the monitor unchanged
+    if suppressed:
+        return None            # user manually stopped the feed; don't fight it
+    return "start_exit_monitor" if not running else None
+
+
 async def execute_feed_actions(actions: List[str], *, stream_manager, roller,
                                instrument_keys, mode, state: Dict[str, Any]) -> None:
     """Execute reconciler actions against the live managers. Updates `state`

@@ -6,6 +6,7 @@ so they can run without Docker, MongoDB, or the Upstox broker.
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import os
 import sys
 from datetime import datetime, time, timedelta, timezone
@@ -15,6 +16,14 @@ from unittest.mock import AsyncMock, MagicMock
 import numpy as np
 import pandas as pd
 import pytest
+
+# Tests importing app.live_deploy_context pull in motor via app.db — absent on
+# the host. They run inside the backend container (DEVELOPER_GUIDE §B); on the
+# host they SKIP instead of failing.
+requires_motor = pytest.mark.skipif(
+    importlib.util.find_spec("motor") is None,
+    reason="imports motor-backed modules — runs in the backend container",
+)
 
 
 # Make backend/ importable
@@ -976,6 +985,7 @@ async def test_tee_armed_but_not_connected_falls_through_to_paper():
 
 
 @pytest.mark.asyncio
+@requires_motor
 async def test_tee_no_live_ctx_does_not_crash_and_papers(monkeypatch):
     """live_ctx=None (production lazy-build) → build_live_deploy_context returns
     None when the broker is unconfigured; the armed deployment must not crash and

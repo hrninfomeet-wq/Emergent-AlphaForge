@@ -169,14 +169,14 @@ def test_project_docs_and_user_manual_are_current():
     # Both PROJECT_OVERVIEW and HANDOFF must cover the project's core topical areas.
     # Section titles evolve as the project evolves; the assertions below check topical
     # coverage rather than exact headings.
+    # Topical coverage (case-insensitive), NOT exact headings — section titles evolve
+    # as the docs are refreshed (e.g. HANDOFF now uses a "Current state" section and
+    # links ARCHITECTURE.md). Check the topics are covered, however they're phrased.
     for text in (overview, handoff):
-        for phrase in (
-            "Status",  # status section in some form
-            "Option",  # option workflow / planner
-            "Upstox",  # broker integration
-            "Architecture",  # architecture pointer / module map
-        ):
-            assert phrase in text
+        low = text.lower()
+        assert "status" in low or "current state" in low   # a status / current-state section
+        for phrase in ("option", "upstox", "architecture"):
+            assert phrase in low
 
     for phrase in (
         "Theme",
