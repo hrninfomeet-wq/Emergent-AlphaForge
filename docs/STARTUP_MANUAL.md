@@ -63,7 +63,7 @@ Shows usage.
 Open PowerShell or Command Prompt:
 
 ```powershell
-cd "C:\Users\haroo\OneDrive\Documents\New project\Emergent-AlphaForge"
+cd "<path-to-your-Emergent-AlphaForge-checkout>"
 ```
 
 Check Docker:
