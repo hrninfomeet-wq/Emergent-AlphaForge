@@ -2,6 +2,28 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.49.1] — Required capital, drawer chart, charges everywhere, live trade history (2026-07-04)
+
+Follow-ups from the 0.49.0 review, all four user-requested.
+
+- **Required Capital** (per-deployment drawer): the minimum demat balance the account needed at the
+  period's start to fund every trade in it — concurrent premium plus losses already banked (a loss
+  taken before the next entry raises it above peak deployed). Sits beside Max Deployed.
+- **Drawer chart**: two-axis line chart per deployment — Cumulative P&L (left) and Account value
+  (right; starting capital, editable on the account card, + the deployment's own P&L) versus each
+  trade chronologically; Daily/Weekly/Monthly/Yearly tabs, click a period row to chart it.
+- **Charges everywhere**: paper closes now ALWAYS compute statutory charges (zero-brokerage
+  Flattrade schedule: STT, exchange txn, GST, SEBI, stamp) — `realized_pnl` semantics unchanged
+  (gross when friction off), new `net_realized_pnl` stored per trade. Paper blotter gains a
+  Charges column with full breakdown tooltip + detail-drawer rows; per-strategy tables total them;
+  the Backtest trades list gains a sortable Charges ₹ column. (STT default stays at the
+  pre-Oct-2024 0.0625% — bumping to the current 0.1% would shift cost-model backtests; separate decision.)
+- **Live trade history**: `GET /api/live-broker/trade-history` (paginated close-loop journal) + a
+  Trade History table on the Live page stats card — entry/exit stamps, contract, lots, prices,
+  realized P&L, exit reason; missing values render as "—", never fabricated. Manual broker-side
+  trades stay in the Flattrade tradebook (not journaled by the app).
+- Host suite **2942 passed** (2 pins updated to the new charges contract, +6 new tests).
+
 ## [0.49.0] — Backtest UX + optimizer honesty fix + Paper↔Live parity + live trade stats (2026-07-04)
 
 Four user-requested slices across Backtest, Optimizer, Paper, and Live pages.
