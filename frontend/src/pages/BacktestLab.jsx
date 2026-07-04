@@ -84,7 +84,9 @@ export default function BacktestLab() {
     end_date: "",
     trade_window_start: "09:25",
     trade_window_end: "15:00",
-    option_backtest_enabled: false,
+    // ON by default: rupee-honest paired-option results are the primary
+    // workflow; flip off for spot-only research.
+    option_backtest_enabled: true,
     option_expiry_mode: "auto",
     option_expiry_date: "",
     // ATM default: matches the warehouse's auto-maintained scope (Data Hygiene
@@ -572,6 +574,47 @@ export default function BacktestLab() {
       setPreflighting(false);
     }
   };
+
+  // While a preflight ingest run is active, poll it; when it lands, re-check
+  // coverage automatically (closes the old "re-check in a minute" manual loop).
+  const ingestRunId = preflight?.ingest?.status === "started" ? preflight.ingest.run_id : null;
+  useEffect(() => {
+    if (!ingestRunId) return undefined;
+    let stopped = false;
+    const timer = setInterval(async () => {
+      try {
+        const job = await api.preflightIngestJob(ingestRunId);
+        if (stopped) return;
+        setPreflight((p) =>
+          p?.ingest?.run_id === ingestRunId
+            ? { ...p, ingest: { ...p.ingest, progress_pct: job.progress_pct, stage: job.stage, job_status: job.status, error: job.error } }
+            : p
+        );
+        if (["ok", "partial", "failed", "empty"].includes(String(job.status))) {
+          clearInterval(timer);
+          stopped = true;
+          if (job.status === "ok" || job.status === "partial") {
+            toast.success("Option ingest finished — re-checking coverage…");
+            checkOptionData(false);
+          } else {
+            toast.error(`Option ingest ${job.status}${job.error ? `: ${job.error}` : ""}`);
+            setPreflight((p) =>
+              p?.ingest?.run_id === ingestRunId
+                ? { ...p, ingest: { ...p.ingest, status: "failed", error: job.error } }
+                : p
+            );
+          }
+        }
+      } catch {
+        /* transient poll errors: keep polling */
+      }
+    }, 5000);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ingestRunId]);
 
   const runBacktest = async () => {
     // Finalize the run name: keep an explicitly-set name (warn on dup), else a fresh
@@ -1438,12 +1481,12 @@ function PreflightPanel({ preflight, preflighting, onCheck, onIngest }) {
         <p className="text-[11px] text-dimmer leading-relaxed">
           Verify that option candles exist for every spot signal before running. Missing data can be ingested from your broker.
         </p>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <Button
             onClick={onCheck}
             disabled={preflighting}
             variant="outline"
-            className="flex-1 text-xs h-8"
+            className="flex-1 min-w-[8.5rem] text-xs h-8"
             data-testid="option-preflight-check"
           >
             {preflighting ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : <ShieldCheck className="w-3.5 h-3.5 mr-1.5" />}
@@ -1453,7 +1496,7 @@ function PreflightPanel({ preflight, preflighting, onCheck, onIngest }) {
             onClick={onIngest}
             disabled={preflighting || !preflight || (preflight.missing_contract === 0 && preflight.missing_candle === 0)}
             variant="outline"
-            className="flex-1 text-xs h-8"
+            className="flex-1 min-w-[8.5rem] text-xs h-8"
             data-testid="option-preflight-ingest"
           >
             Ingest missing & recheck
@@ -1481,12 +1524,17 @@ function PreflightPanel({ preflight, preflighting, onCheck, onIngest }) {
 
             {preflight.ingest?.status === "started" && (
               <div className="rounded border border-info/40 bg-info/10 px-2 py-1.5 text-[11px] text-info">
-                Ingesting missing option data… run {String(preflight.ingest.run_id).slice(0, 8)}. Re-check in a minute.
+                Ingesting missing option data…
+                {preflight.ingest.stage === "contracts"
+                  ? " syncing contracts"
+                  : ` ${Math.round(preflight.ingest.progress_pct || 0)}%`}
+                {" "}· run {String(preflight.ingest.run_id).slice(0, 8)} · auto re-check when done
               </div>
             )}
             {preflight.ingest?.status && preflight.ingest.status !== "started" && (
               <div className="rounded border border-warning/40 bg-warning/10 px-2 py-1.5 text-[11px] text-warning">
-                Ingest not started: {preflight.ingest.reason || preflight.ingest.status}
+                {preflight.ingest.status === "failed" ? "Ingest failed" : "Ingest not started"}:{" "}
+                {preflight.ingest.reason || preflight.ingest.error || preflight.ingest.status}
               </div>
             )}
 
