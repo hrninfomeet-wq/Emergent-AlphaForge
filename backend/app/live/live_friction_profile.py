@@ -36,7 +36,7 @@ from typing import Dict
 # STT: Securities Transaction Tax — sell-side ONLY on option PREMIUM.
 # Rate: 0.1% of premium turnover on the sell leg.
 # Statutory basis: Finance Act 2024 / Budget 2024 (effective 2024-10-01).
-# FLAG: verify current rate — was 0.0625% pre-Oct-2024; raised to 0.1%.
+# option_costs.DEFAULT_STT_SELL_RATE carries the same 0.1% since 2026-07-04.
 STT_OPTIONS_SELL = 0.001  # 0.1% of sell turnover
 
 # Exchange transaction charges — charged on both legs (buy + sell premium).

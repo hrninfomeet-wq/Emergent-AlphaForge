@@ -28,9 +28,16 @@ def test_flattrade_zero_brokerage_still_has_statutory_charges():
     cfg = CostConfig(enabled=True, brokerage_per_order=0.0)
     ch = round_trip_charges(entry_premium=100.0, exit_premium=120.0, quantity=75, cfg=cfg)
     assert ch["brokerage"] == 0.0
-    # STT on sell turnover 120*75=9000 * 0.000625 = 5.625
-    assert ch["stt"] == round(9000 * 0.000625, 2)
+    # STT on sell turnover 120*75=9000 * 0.1% (post-2024-10-01 rate) = 9.0
+    assert ch["stt"] == round(9000 * 0.001, 2)
     assert ch["total_charges"] > 0  # statutory charges always apply
+
+
+def test_default_stt_rate_is_current_post_oct_2024():
+    """0.1% on sell premium since 2024-10-01 — keep in sync with the statutory
+    schedule; live_friction_profile.STT_OPTIONS_SELL carries the same rate."""
+    from app.option_costs import DEFAULT_STT_SELL_RATE
+    assert DEFAULT_STT_SELL_RATE == 0.001
 
 
 def test_brokerage_two_legs_for_paid_broker():

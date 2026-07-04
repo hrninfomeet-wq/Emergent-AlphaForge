@@ -2,6 +2,15 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.49.2] — STT rate updated to the current 0.1% (2026-07-04)
+
+`option_costs.DEFAULT_STT_SELL_RATE` 0.0625% → **0.1%** (Finance Act 2024, effective
+2024-10-01) — matches `live_friction_profile.STT_OPTIONS_SELL`. Affects every NEW
+cost-enabled backtest and all paper-close charge calculations. Saved presets/runs that
+serialized a full `cost_config` keep their stored rate for reproducibility; only configs
+without an explicit `stt_sell_rate` pick up the new default. Exchange-txn rate (0.035%)
+already matched the current NSE schedule and is unchanged.
+
 ## [0.49.1] — Required capital, drawer chart, charges everywhere, live trade history (2026-07-04)
 
 Follow-ups from the 0.49.0 review, all four user-requested.
