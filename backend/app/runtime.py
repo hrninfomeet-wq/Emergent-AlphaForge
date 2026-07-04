@@ -86,10 +86,15 @@ live_candle_roller = LiveCandleRoller(
     persister=persist_index_candles_bulk,
 )
 
+from app.paper_overall_controls import check_paper_overall_controls
+
 live_exit_monitor = LiveExitMonitor(
     db_factory=get_db,
     tick_lookup_factory=lambda: upstox_stream_manager.latest_tick_map().get,
     mark_fn=mark_open_deployment_trades,
+    # Basket-level overall controls (Paper page parity with Live): evaluated
+    # every cycle after per-leg marking; supervisor-reconciled with the monitor.
+    overall_fn=check_paper_overall_controls,
 )
 
 from app.live_feed_health import supervise_once as _supervise_once, decide_exit_monitor_action, SUPERVISE_POLL_SEC as _SUPERVISE_POLL_SEC

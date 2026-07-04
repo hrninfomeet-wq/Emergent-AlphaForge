@@ -277,7 +277,9 @@ def _approval_store() -> "ApprovalStore":
     return _APPROVAL_STORE_SINGLETON
 
 
-_OVERALL_SCOPES = ("overall", "broker_level")
+# "paper" = the Paper page's basket controls (same store/collection, evaluated
+# by paper_overall_controls from the LiveExitMonitor cycle — zero broker calls).
+_OVERALL_SCOPES = ("overall", "broker_level", "paper")
 
 
 def _overall_store(scope: str = "overall") -> "OverallSettingsStore":

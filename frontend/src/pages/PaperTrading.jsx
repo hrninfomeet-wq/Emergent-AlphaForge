@@ -13,6 +13,7 @@ import AccountHero from "@/components/paper/AccountHero";
 import PeriodPnlCards from "@/components/paper/PeriodPnlCards";
 import StrategyStatsTable from "@/components/paper/StrategyStatsTable";
 import DeploymentControlStrip from "@/components/paper/DeploymentControlStrip";
+import OverallSettingsPanel from "@/components/live/OverallSettingsPanel";
 import FeedHealthBanner from "@/components/live/FeedHealthBanner";
 import PnlCalendar from "@/components/paper/PnlCalendar";
 import ExitReasonBreakdown from "@/components/paper/ExitReasonBreakdown";
@@ -486,7 +487,12 @@ export default function PaperTrading() {
         onResume={doResume}
         onStop={doStop}
         onStopAll={doStopAll}
+        onCapsSaved={refreshAll}
       />
+
+      {/* Basket-level overall controls (Live-page parity): SL / target / trailing
+          on the WHOLE open paper basket, evaluated by the exit monitor. */}
+      <OverallSettingsPanel scope="paper" />
 
       {/* P&L calendar heat-grid (per-day realized ₹, filtered set) + global exit-reason card */}
       <div className="grid lg:grid-cols-[2fr_1fr] gap-3">

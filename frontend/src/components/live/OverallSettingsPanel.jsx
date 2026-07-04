@@ -238,7 +238,9 @@ const TRAIL_EXPLAINER = {
 };
 
 export default function OverallSettingsPanel({ scope = "overall" }) {
-  const scopeKey = scope === "broker_level" ? "broker_level" : "overall";
+  // "paper" = the Paper page's basket controls (same config contract; the
+  // backend evaluates it against the open paper basket, no broker involved).
+  const scopeKey = ["broker_level", "paper"].includes(scope) ? scope : "overall";
 
   const [config, setConfig] = useState(() => defaultConfig());
   const [loaded, setLoaded] = useState(() => defaultConfig()); // last-loaded snapshot (for Reset)
