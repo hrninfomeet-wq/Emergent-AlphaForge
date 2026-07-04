@@ -326,6 +326,7 @@ def precompute_all_indicators(df: pd.DataFrame, params: dict | None = None) -> p
     """Compute all indicators needed by built-in strategies. Returns enriched df."""
     p = params or {}
     df = df.copy()
+    df["gap_before"] = gap_before_mask(df)
     df["ema9"] = ema(df["close"], int(p.get("ema_fast", 9)))
     df["ema21"] = ema(df["close"], int(p.get("ema_slow", 21)))
     df["ema50"] = ema(df["close"], 50)

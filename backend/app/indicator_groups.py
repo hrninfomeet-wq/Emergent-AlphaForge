@@ -48,6 +48,8 @@ from app.indicators import (
     cpr_levels,
     attach_tod_tradeable,
     candle_geometry,
+    gap_before_mask,
+    _reset_on_gap,
 )
 from app.regime import classify_regime_series
 
@@ -74,6 +76,11 @@ class IndicatorGroup:
 # in `indicators.precompute_all_indicators` (lines ~248-306), calling identical
 # helpers with identical args so output is byte-identical by construction.
 # ---------------------------------------------------------------------------
+
+def _compute_gap_before(df: pd.DataFrame, p: dict) -> Dict[str, pd.Series]:
+    # Param-independent; must run FIRST so the wrapped groups can read the mask.
+    return {"gap_before": gap_before_mask(df)}
+
 
 def _compute_ema(df: pd.DataFrame, p: dict) -> Dict[str, pd.Series]:
     return {
@@ -250,6 +257,7 @@ def _compute_regime(df: pd.DataFrame, p: dict) -> Dict[str, pd.Series]:
 # Param-independent groups have param_keys = ().
 # ---------------------------------------------------------------------------
 GROUPS = [
+    IndicatorGroup("gap_before", (), _compute_gap_before),
     IndicatorGroup("ema", ("ema_fast", "ema_slow"), _compute_ema),
     IndicatorGroup("ema50", (), _compute_ema50),
     IndicatorGroup("rsi", ("rsi_length",), _compute_rsi),

@@ -73,3 +73,22 @@ def test_reset_on_gap_tuple_and_dict_shapes():
     geo = _reset_on_gap(gapped, lambda d: candle_geometry(d))
     assert set(geo) >= {"body_frac", "inside_bar", "close_z"}
     assert all(len(s) == len(gapped) for s in geo.values())
+
+
+def test_precompute_adds_gap_before_all_false_on_clean_frame():
+    from app.indicators import precompute_all_indicators
+    df = make_sessions([[100 + (i % 9) for i in range(80)],
+                        [110 + (i % 9) for i in range(80)]])
+    enr = precompute_all_indicators(df.copy(), {})
+    assert "gap_before" in enr.columns
+    assert enr["gap_before"].dtype == bool
+    assert not enr["gap_before"].any()
+
+
+def test_precompute_flags_intra_session_gap():
+    from app.indicators import precompute_all_indicators
+    df = make_ohlc([100 + (i % 9) * 0.7 for i in range(80)])   # single session
+    gapped = _drop_mid_session(df, 40, 6)
+    enr = precompute_all_indicators(gapped.copy(), {})
+    assert enr["gap_before"].sum() == 1
+    assert bool(enr["gap_before"].iloc[40]) is True

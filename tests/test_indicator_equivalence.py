@@ -73,9 +73,9 @@ def test_memoized_matches_reference_across_sweep_with_cache_reuse():
 def test_expected_columns_present():
     df = _fixture_df()
     enr = _enrich_new(df.copy(), {})
-    for col in ("ema9", "ema21", "rsi", "macd_hist", "atr", "atr_avg", "adx",
-                "chop", "vwap", "session_date", "ist_time", "regime",
-                "squeeze_on", "supertrend", "st_dir", "tod_tradeable",
+    for col in ("gap_before", "ema9", "ema21", "rsi", "macd_hist", "atr",
+                "atr_avg", "adx", "chop", "vwap", "session_date", "ist_time",
+                "regime", "squeeze_on", "supertrend", "st_dir", "tod_tradeable",
                 "cpr_tc", "cpr_bc", "day_type", "nr7", "fvg",
                 "orb_width_pct_partial", "orb_width_pct_prior"):
         assert col in enr.columns, f"missing {col}"
