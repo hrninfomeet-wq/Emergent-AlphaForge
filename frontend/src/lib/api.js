@@ -171,6 +171,8 @@ export const api = {
     apiClient.get("/paper/deployment-stats", { params: { deployment_id: deploymentId } }).then((r) => r.data),
   putPaperCaps: (deploymentId, caps) =>
     apiClient.put(`/deployments/${deploymentId}/paper-caps`, caps).then((r) => r.data),
+  liveTradeStats: () =>
+    apiClient.get("/live-broker/trade-stats").then((r) => r.data),
   listBacktestRuns: (limit = 50) =>
     apiClient.get(`/backtest/runs?limit=${limit}`).then((r) => r.data),
   getBacktestRun: (id) =>

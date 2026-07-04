@@ -824,6 +824,41 @@ async def live_broker_blotter(limit: int = Query(100, ge=1, le=500)):
     return {"rows": rows, "count": len(rows)}
 
 
+@api.get("/live-broker/trade-stats")
+async def live_trade_stats():
+    """Aggregate statistics over the journaled live_trades for analysis:
+    lifetime/today/week/month realized P&L, win rate, profit factor, and a
+    per-strategy/deployment breakdown. Reuses the proven paper aggregators —
+    live_trades docs share the same field contract (status / realized_pnl /
+    closed_at / strategy_id / deployment_id). Read-only, no broker calls."""
+    from app import paper_analytics
+    from app.db import get_db
+
+    db = get_db()
+    rows = await db.live_trades.find(
+        {}, {"_id": 0, "status": 1, "realized_pnl": 1, "unrealized_pnl": 1,
+             "closed_at": 1, "updated_at": 1, "created_at": 1,
+             "strategy_id": 1, "deployment_id": 1, "exit_reason": 1,
+             "risk_amount": 1},
+    ).to_list(length=100000)
+    closed = [r for r in rows if str(r.get("status") or "").upper() == "CLOSED"]
+    stats = paper_analytics.per_strategy_stats(rows)
+    dep_ids = sorted({str(s.get("deployment_id")) for s in stats if s.get("deployment_id")})
+    if dep_ids:
+        deps = await db.strategy_deployments.find(
+            {"id": {"$in": dep_ids}}, {"_id": 0, "id": 1, "name": 1},
+        ).to_list(length=len(dep_ids))
+        names = {str(d["id"]): str(d.get("name") or "") for d in deps}
+        for s in stats:
+            s["deployment_name"] = names.get(str(s.get("deployment_id") or ""), "")
+    return paper_analytics.json_safe_floats({
+        "period_pnl": paper_analytics.period_pnl(closed),
+        "per_strategy": stats,
+        "trade_count": len(rows),
+        "closed_count": len(closed),
+    })
+
+
 @api.get("/live-broker/symbol/resolve")
 async def live_broker_symbol_resolve(
     underlying: str = Query(..., description="e.g. NIFTY, BANKNIFTY, SENSEX"),
