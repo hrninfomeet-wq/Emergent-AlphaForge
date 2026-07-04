@@ -580,6 +580,7 @@ def _resolve_expiry_by_trade(spot_trades, contracts, fixed_expiry_date=None) -> 
 async def _survival_eval_oos(
     strategy, df_enriched, merged_params, contracts, candles_df,
     instrument, costs, pretrade, option_cfg, sc, n_folds=3, train_pct=0.6,
+    candles_by_key=None,
 ):
     """Evaluate one finalist's survival on each walk-forward OOS slice. Floor + DD%
     must hold per fold (per sc.min_oos_folds); RoR runs on the stitched OOS rupee
@@ -616,6 +617,7 @@ async def _survival_eval_oos(
         sim = await asyncio.to_thread(
             simulate_paired_option_trades,
             spot_trades=spot_trades, contracts=contracts, option_candles=candles_df,
+            candles_by_key=candles_by_key,
             underlying=instrument, moneyness=moneyness, lots=lots,
             entry_max_age_sec=int(option_cfg.get("entry_max_age_sec") or 120),
             exit_max_age_sec=int(option_cfg.get("exit_max_age_sec") or 180),
@@ -1216,6 +1218,10 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                 # keep PROFITABLE survivors, rank by the chosen objective. Reuses the
                 # contracts + candles already loaded by _option_rerank.
                 await _update_job(job_id, {"rerank_progress": {"stage": "survival", "candidates": len(ranked)}})
+                # Pre-group the shared option-candle frame ONCE (up to ~150s of
+                # per-sim copy+sort+groupby otherwise: K finalists x folds, plus
+                # the exit-control grid). Byte-identical to each sim rebuilding it.
+                rerank_by_key = build_candles_by_key(rerank_candles)
                 _per_item_surv: Optional[float] = None
                 for i, r in enumerate(ranked):
                     _s_t = time.monotonic()
@@ -1224,7 +1230,8 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                         df_enr = get_enriched(merged)
                         r["survival"] = await _survival_eval_oos(
                             strategy, df_enr, merged, rerank_contracts, rerank_candles,
-                            instrument, costs, pretrade, option_cfg, survival)
+                            instrument, costs, pretrade, option_cfg, survival,
+                            candles_by_key=rerank_by_key)
                     except Exception as e:
                         log.warning(f"survival eval failed: {e}")
                         r["survival"] = {"survived": False, "reason": "eval_error"}
@@ -1247,7 +1254,8 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                             for gc in grid:
                                 v = await _survival_eval_oos(
                                     strategy, df_enr, merged, rerank_contracts, rerank_candles,
-                                    instrument, costs, pretrade, {**option_cfg, "exit_controls": gc}, survival)
+                                    instrument, costs, pretrade, {**option_cfg, "exit_controls": gc}, survival,
+                                    candles_by_key=rerank_by_key)
                                 better = (v.get("calmar") or -1e9) > (r["survival"].get("calmar") or -1e9)
                                 if v.get("survived") and (v.get("total_return_pct") or 0) > 0 and better:
                                     r["survival"] = v
