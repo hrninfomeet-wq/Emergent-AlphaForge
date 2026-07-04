@@ -839,7 +839,7 @@ async def live_trade_stats():
         {}, {"_id": 0, "status": 1, "realized_pnl": 1, "unrealized_pnl": 1,
              "closed_at": 1, "updated_at": 1, "created_at": 1,
              "strategy_id": 1, "deployment_id": 1, "exit_reason": 1,
-             "risk_amount": 1},
+             "risk_amount": 1, "total_charges": 1},
     ).to_list(length=100000)
     closed = [r for r in rows if str(r.get("status") or "").upper() == "CLOSED"]
     stats = paper_analytics.per_strategy_stats(rows)
@@ -857,6 +857,40 @@ async def live_trade_stats():
         "trade_count": len(rows),
         "closed_count": len(closed),
     })
+
+
+@api.get("/live-broker/trade-history")
+async def live_trade_history(limit: int = Query(100, ge=1, le=500),
+                             skip: int = Query(0, ge=0),
+                             status: Optional[str] = Query(None, description="OPEN or CLOSED")):
+    """Paginated journaled live-trade history (raw live_trades docs, newest
+    first — the same records the Flattrade close-loop finalizes). Unlike the
+    blotter this returns the FULL close fields (closed_at, exit_price,
+    exit_reason, realized_pnl) for analysis. Read-only, no broker calls.
+    exit_price/realized_pnl may be None on CLOSED docs (never fabricated)."""
+    from app.db import get_db
+
+    db = get_db()
+    q: Dict[str, Any] = {}
+    s = str(status or "").strip().upper()
+    if s in ("OPEN", "CLOSED"):
+        q["status"] = s
+    total = await db.live_trades.count_documents(q)
+    rows = await (
+        db.live_trades.find(q, {"_id": 0})
+        .sort("created_at", -1).skip(skip).to_list(length=limit)
+    )
+    dep_ids = sorted({str(r.get("deployment_id") or "") for r in rows if r.get("deployment_id")})
+    names: Dict[str, str] = {}
+    if dep_ids:
+        deps = await db.strategy_deployments.find(
+            {"id": {"$in": dep_ids}}, {"_id": 0, "id": 1, "name": 1},
+        ).to_list(length=len(dep_ids))
+        names = {str(d["id"]): str(d.get("name") or "") for d in deps}
+    for r in rows:
+        r["deployment_name"] = names.get(str(r.get("deployment_id") or ""), "")
+    return {"items": rows, "count": len(rows), "total": total,
+            "skip": skip, "limit": limit}
 
 
 @api.get("/live-broker/symbol/resolve")

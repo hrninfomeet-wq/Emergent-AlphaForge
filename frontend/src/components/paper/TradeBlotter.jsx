@@ -15,11 +15,11 @@ const istParts = (iso) => {
            time: `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}` };
 };
 
-const COLSPAN = 18;
+const COLSPAN = 19;
 // Proportional column widths (%) so the table auto-fits the pane via `table-fixed`
 // — no horizontal scroll. Sum = 100. Numeric columns are sized for real ₹ values;
 // only the long Strategy and Contract texts truncate (with hover tooltips).
-const COLW = [3, 7, 6, 7, 3, 5, 5, 7, 4, 6, 7, 6, 6, 5, 6, 5, 5, 7];
+const COLW = [3, 6, 6, 7, 3, 5, 5, 6, 4, 6, 7, 6, 6, 5, 4, 6, 5, 5, 5];
 
 export default function TradeBlotter({
   rows, sort, onToggleSort, onCloseAtMarket, busy,
@@ -71,6 +71,7 @@ export default function TradeBlotter({
               <H col="mfe_value" right>Max P&amp;L</H>
               <H col="mae_value" right>Min P&amp;L</H>
               <H right>P&amp;L%</H>
+              <H right>Charges</H>
               <H col="realized_pnl" right>Net P&amp;L</H>
               <H right>P&amp;L curve</H>
               <H right>Status</H>
@@ -95,7 +96,7 @@ export default function TradeBlotter({
               </td>
               <td className="p-1" /><td className="p-1" /><td className="p-1" /><td className="p-1" />
               <td className="p-1" /><td className="p-1" /><td className="p-1" /><td className="p-1" />
-              <td className="p-1" /><td className="p-1" /><td className="p-1" />
+              <td className="p-1" /><td className="p-1" /><td className="p-1" /><td className="p-1" />
               <td className="p-1">
                 <FilterSelect k="status" title="Filter by status" testid="paper-status-filter">
                   <option value="">All</option>
@@ -145,6 +146,10 @@ export default function TradeBlotter({
                     <td className="px-1.5 py-1 text-right font-mono text-success">{fmtINRSigned(a.mfe_value)}</td>
                     <td className="px-1.5 py-1 text-right font-mono text-danger">{fmtINRSigned(a.mae_value)}</td>
                     <td className={`px-1.5 py-1 text-right font-mono ${colorPnL(pct)}`}>{pct == null ? "—" : fmtPct(pct, 1)}</td>
+                    <td className="px-1.5 py-1 text-right font-mono text-dimmer"
+                      title={t.charges ? `Brokerage ${t.charges.brokerage} · STT ${t.charges.stt} · Exch ${t.charges.exchange_txn} · GST ${t.charges.gst} · SEBI ${t.charges.sebi} · Stamp ${t.charges.stamp_duty}${t.net_realized_pnl != null ? ` → net after charges ₹${t.net_realized_pnl}` : ""}` : "Charges are computed when the trade closes"}>
+                      {isOpen || t.total_charges == null ? "—" : `₹${fmtNum(t.total_charges, 0)}`}
+                    </td>
                     <td className={`px-1.5 py-1 text-right font-mono ${colorPnL(net)}`}>{fmtINRSigned(net)}</td>
                     <td className="px-1.5 py-1 text-right"><div className="flex justify-end"><TradeSparkline points={a.spark} /></div></td>
                     <td className="px-1.5 py-1 text-right"><span className={`text-[10px] px-1.5 py-0.5 rounded border font-mono ${isOpen ? "border-emerald-500/40 text-emerald-300" : "border-line text-dim"}`}>{t.status}</span></td>

@@ -82,3 +82,41 @@ def test_month_and_year_buckets_exist():
     out = _run()
     assert any(r["bucket"] == "2026-06" for r in out["periods"]["month"])
     assert any(r["bucket"] == "2026" for r in out["periods"]["year"])
+
+
+def test_required_capital_matches_peak_when_no_prior_losses():
+    out = _run()
+    assert _day(out, "2026-06-29")["required_capital"] == 16500.0
+    assert _day(out, "2026-06-30")["required_capital"] == 6750.0
+    assert _day(out, "2026-07-03")["required_capital"] == 8250.0
+
+
+def test_required_capital_funds_losses_taken_before_the_next_entry():
+    # -800 banked FIRST, then a 9000-premium entry: the account needed
+    # 9000 + 800 = 9800 that day even though peak concurrent deployed is 9000.
+    trades = [
+        {"status": "CLOSED", "realized_pnl": -800,
+         "created_at": "2026-06-29T04:00:00Z", "closed_at": "2026-06-29T05:00:00Z",
+         "entry_price": 40, "quantity": 75},
+        {"status": "CLOSED", "realized_pnl": 200,
+         "created_at": "2026-06-29T05:30:00Z", "closed_at": "2026-06-29T06:00:00Z",
+         "entry_price": 120, "quantity": 75},
+    ]
+    out = deployment_period_stats(trades, starting_capital=100000, now_ms=NOW_MS)
+    d = _day(out, "2026-06-29")
+    assert d["max_deployed_value"] == 9000.0
+    assert d["required_capital"] == 9800.0
+
+
+def test_open_trade_synthetic_release_creates_no_future_bucket():
+    out = _run()
+    days = [r["bucket"] for r in out["periods"]["day"]]
+    assert days == ["2026-07-03", "2026-06-30", "2026-06-29"]
+
+
+def test_trade_series_is_chronological_with_bucket_keys():
+    out = _run()
+    s = out["trade_series"]
+    assert [p["pnl"] for p in s] == [500.0, -800.0, 300.0]
+    assert s[0]["day"] == "2026-06-29" and s[0]["week"] == "2026-06-29"
+    assert s[2]["month"] == "2026-06" and s[2]["year"] == "2026"
