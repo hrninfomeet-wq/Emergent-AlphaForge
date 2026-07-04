@@ -92,3 +92,53 @@ def test_precompute_flags_intra_session_gap():
     enr = precompute_all_indicators(gapped.copy(), {})
     assert enr["gap_before"].sum() == 1
     assert bool(enr["gap_before"].iloc[40]) is True
+
+
+def test_precompute_byte_identical_on_gap_free_window():
+    from app.indicators import precompute_all_indicators, ema, rsi, atr, adx, supertrend
+    df = make_sessions([[100 + (i % 11) - (i % 4) * 0.5 for i in range(90)],
+                        [105 + (i % 11) - (i % 4) * 0.5 for i in range(90)]])
+    enr = precompute_all_indicators(df.copy(), {})
+    base = df.copy()
+    pd.testing.assert_series_equal(enr["ema9"], ema(base["close"], 9), check_names=False)
+    pd.testing.assert_series_equal(enr["rsi"], rsi(base["close"], 14), check_names=False)
+    pd.testing.assert_series_equal(enr["atr"], atr(base, 14), check_names=False)
+    pd.testing.assert_series_equal(enr["adx"], adx(base, 14), check_names=False)
+    st, st_dir = supertrend(base, 10, 3.0)
+    pd.testing.assert_series_equal(enr["supertrend"], st, check_names=False)
+    pd.testing.assert_series_equal(enr["st_dir"], st_dir, check_names=False)
+
+
+def test_precompute_resets_indicators_across_gap():
+    from app.indicators import precompute_all_indicators, atr, ema
+    df = make_ohlc([100 + (i % 11) * 1.2 - (i % 4) * 0.6 for i in range(120)])
+    gapped = _drop_mid_session(df, 60, 8)
+    enr = precompute_all_indicators(gapped.copy(), {})
+    boundary = int(np.flatnonzero(enr["gap_before"].to_numpy())[0])
+    pre = gapped.iloc[:boundary]
+    post = gapped.iloc[boundary:]
+    # post-gap segment re-warms independently
+    pd.testing.assert_series_equal(
+        enr["atr"].iloc[boundary:].reset_index(drop=True),
+        atr(post, 14).reset_index(drop=True), check_names=False)
+    pd.testing.assert_series_equal(
+        enr["ema9"].iloc[boundary:].reset_index(drop=True),
+        ema(post["close"], 9).reset_index(drop=True), check_names=False)
+    # pre-gap segment untouched (no forward leakage)
+    pd.testing.assert_series_equal(
+        enr["atr"].iloc[:boundary].reset_index(drop=True),
+        atr(pre, 14).reset_index(drop=True), check_names=False)
+    # RESET proof: atr is NaN again right after the gap
+    assert enr["atr"].iloc[boundary:boundary + 13].isna().all()
+
+
+def test_precompute_matches_groups_on_gapped_frame():
+    from app.indicators import precompute_all_indicators
+    from app.regime import classify_regime_series
+    from app.indicator_groups import run_all_groups
+    df = make_ohlc([100 + (i % 13) * 1.1 - (i % 5) * 0.5 for i in range(150)])
+    gapped = _drop_mid_session(df, 70, 10)
+    ref = precompute_all_indicators(gapped.copy(), {})
+    ref["regime"] = classify_regime_series(ref)
+    new = run_all_groups(gapped.copy(), {})
+    pd.testing.assert_frame_equal(new, ref, check_like=True, check_dtype=True)

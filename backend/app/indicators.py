@@ -327,22 +327,22 @@ def precompute_all_indicators(df: pd.DataFrame, params: dict | None = None) -> p
     p = params or {}
     df = df.copy()
     df["gap_before"] = gap_before_mask(df)
-    df["ema9"] = ema(df["close"], int(p.get("ema_fast", 9)))
-    df["ema21"] = ema(df["close"], int(p.get("ema_slow", 21)))
-    df["ema50"] = ema(df["close"], 50)
-    df["rsi"] = rsi(df["close"], int(p.get("rsi_length", 14)))
-    macd_line, signal_line, hist = macd(
-        df["close"],
+    df["ema9"] = _reset_on_gap(df, lambda d: ema(d["close"], int(p.get("ema_fast", 9))))
+    df["ema21"] = _reset_on_gap(df, lambda d: ema(d["close"], int(p.get("ema_slow", 21))))
+    df["ema50"] = _reset_on_gap(df, lambda d: ema(d["close"], 50))
+    df["rsi"] = _reset_on_gap(df, lambda d: rsi(d["close"], int(p.get("rsi_length", 14))))
+    macd_line, signal_line, hist = _reset_on_gap(df, lambda d: macd(
+        d["close"],
         int(p.get("macd_fast", 12)),
         int(p.get("macd_slow", 26)),
         int(p.get("macd_signal", 9)),
-    )
+    ))
     df["macd_line"] = macd_line
     df["macd_signal"] = signal_line
     df["macd_hist"] = hist
-    df["atr"] = atr(df, int(p.get("atr_length", 14)))
-    df["adx"] = adx(df, int(p.get("adx_length", 14)))
-    df["chop"] = choppiness_index(df, int(p.get("chop_length", 14)))
+    df["atr"] = _reset_on_gap(df, lambda d: atr(d, int(p.get("atr_length", 14))))
+    df["adx"] = _reset_on_gap(df, lambda d: adx(d, int(p.get("adx_length", 14))))
+    df["chop"] = _reset_on_gap(df, lambda d: choppiness_index(d, int(p.get("chop_length", 14))))
     # Session VWAP per day (anchored)
     df["dt"] = pd.to_datetime(df["ts"], unit="ms", utc=True).dt.tz_convert("Asia/Kolkata")
     _dt = df["dt"]
@@ -362,20 +362,26 @@ def precompute_all_indicators(df: pd.DataFrame, params: dict | None = None) -> p
     for _, group in df.groupby("session_date", sort=False):
         vwap.loc[group.index] = session_vwap(group)
     df["vwap"] = vwap
-    df["atr_avg"] = df["atr"].rolling(100, min_periods=20).mean()
-    df["fvg"] = detect_fvg(df)
-    df = detect_swing_points(df, lookback=int(p.get("swing_lookback", 5)))
+    df["atr_avg"] = _reset_on_gap(df, lambda d: d["atr"].rolling(100, min_periods=20).mean())
+    df["fvg"] = _reset_on_gap(df, lambda d: detect_fvg(d))
+
+    def _swing_cols(d):
+        o = detect_swing_points(d, lookback=int(p.get("swing_lookback", 5)))
+        return {"is_swing_high": o["is_swing_high"], "is_swing_low": o["is_swing_low"]}
+    _sw = _reset_on_gap(df, _swing_cols)
+    df["is_swing_high"] = _sw["is_swing_high"]
+    df["is_swing_low"] = _sw["is_swing_low"]
     # --- adaptive toolkit columns (Plan 1) ---
-    df["vel_z"], df["accel_z"] = velocity_accel(
-        df["close"], int(p.get("vel_n", 2)), int(p.get("vel_z_window", 60)))
-    df["vr"], df["regime_score"] = variance_ratio(
-        df["close"], int(p.get("vr_q", 4)), int(p.get("vr_lookback", 90)), float(p.get("vr_scale", 0.5)))
-    on, fire, mom = squeeze(
-        df, int(p.get("bb_len", 20)), float(p.get("bb_mult", 2.0)),
-        int(p.get("kc_len", 20)), float(p.get("kc_atr_mult", 1.5)), int(p.get("sqz_mom_len", 20)))
+    df["vel_z"], df["accel_z"] = _reset_on_gap(df, lambda d: velocity_accel(
+        d["close"], int(p.get("vel_n", 2)), int(p.get("vel_z_window", 60))))
+    df["vr"], df["regime_score"] = _reset_on_gap(df, lambda d: variance_ratio(
+        d["close"], int(p.get("vr_q", 4)), int(p.get("vr_lookback", 90)), float(p.get("vr_scale", 0.5))))
+    on, fire, mom = _reset_on_gap(df, lambda d: squeeze(
+        d, int(p.get("bb_len", 20)), float(p.get("bb_mult", 2.0)),
+        int(p.get("kc_len", 20)), float(p.get("kc_atr_mult", 1.5)), int(p.get("sqz_mom_len", 20))))
     df["squeeze_on"], df["squeeze_fire"], df["sqz_mom"] = on, fire, mom
-    df["supertrend"], df["st_dir"] = supertrend(
-        df, int(p.get("st_period", 10)), float(p.get("st_mult", 3.0)))
+    df["supertrend"], df["st_dir"] = _reset_on_gap(df, lambda d: supertrend(
+        d, int(p.get("st_period", 10)), float(p.get("st_mult", 3.0))))
     sigma, u1, u2, l1, l2 = vwap_sigma_bands(df)
     df["vwap_sigma"], df["vwap_u1"], df["vwap_u2"], df["vwap_l1"], df["vwap_l2"] = sigma, u1, u2, l1, l2
     df["nr7"] = nr7(df)
@@ -392,6 +398,6 @@ def precompute_all_indicators(df: pd.DataFrame, params: dict | None = None) -> p
         df[c] = s
     df["tod_tradeable"] = attach_tod_tradeable(
         df, int(p.get("tod_lookback_sessions", 20)), float(p.get("tod_min_atr_frac", 0.6)))
-    for _gname, _gser in candle_geometry(df).items():
+    for _gname, _gser in _reset_on_gap(df, lambda d: candle_geometry(d)).items():
         df[_gname] = _gser
     return df

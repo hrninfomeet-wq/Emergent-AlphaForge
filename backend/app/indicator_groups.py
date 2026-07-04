@@ -84,39 +84,39 @@ def _compute_gap_before(df: pd.DataFrame, p: dict) -> Dict[str, pd.Series]:
 
 def _compute_ema(df: pd.DataFrame, p: dict) -> Dict[str, pd.Series]:
     return {
-        "ema9": ema(df["close"], int(p.get("ema_fast", 9))),
-        "ema21": ema(df["close"], int(p.get("ema_slow", 21))),
+        "ema9": _reset_on_gap(df, lambda d: ema(d["close"], int(p.get("ema_fast", 9)))),
+        "ema21": _reset_on_gap(df, lambda d: ema(d["close"], int(p.get("ema_slow", 21)))),
     }
 
 
 def _compute_ema50(df: pd.DataFrame, p: dict) -> Dict[str, pd.Series]:
-    return {"ema50": ema(df["close"], 50)}
+    return {"ema50": _reset_on_gap(df, lambda d: ema(d["close"], 50))}
 
 
 def _compute_rsi(df: pd.DataFrame, p: dict) -> Dict[str, pd.Series]:
-    return {"rsi": rsi(df["close"], int(p.get("rsi_length", 14)))}
+    return {"rsi": _reset_on_gap(df, lambda d: rsi(d["close"], int(p.get("rsi_length", 14))))}
 
 
 def _compute_macd(df: pd.DataFrame, p: dict) -> Dict[str, pd.Series]:
-    macd_line, signal_line, hist = macd(
-        df["close"],
+    macd_line, signal_line, hist = _reset_on_gap(df, lambda d: macd(
+        d["close"],
         int(p.get("macd_fast", 12)),
         int(p.get("macd_slow", 26)),
         int(p.get("macd_signal", 9)),
-    )
+    ))
     return {"macd_line": macd_line, "macd_signal": signal_line, "macd_hist": hist}
 
 
 def _compute_atr(df: pd.DataFrame, p: dict) -> Dict[str, pd.Series]:
-    return {"atr": atr(df, int(p.get("atr_length", 14)))}
+    return {"atr": _reset_on_gap(df, lambda d: atr(d, int(p.get("atr_length", 14))))}
 
 
 def _compute_adx(df: pd.DataFrame, p: dict) -> Dict[str, pd.Series]:
-    return {"adx": adx(df, int(p.get("adx_length", 14)))}
+    return {"adx": _reset_on_gap(df, lambda d: adx(d, int(p.get("adx_length", 14))))}
 
 
 def _compute_chop(df: pd.DataFrame, p: dict) -> Dict[str, pd.Series]:
-    return {"chop": choppiness_index(df, int(p.get("chop_length", 14)))}
+    return {"chop": _reset_on_gap(df, lambda d: choppiness_index(d, int(p.get("chop_length", 14))))}
 
 
 def _compute_time(df: pd.DataFrame, p: dict) -> Dict[str, pd.Series]:
@@ -148,44 +148,46 @@ def _compute_vwap(df: pd.DataFrame, p: dict) -> Dict[str, pd.Series]:
 
 def _compute_atr_avg(df: pd.DataFrame, p: dict) -> Dict[str, pd.Series]:
     # Rolling mean of the global `atr` column -> keyed on atr_length.
-    return {"atr_avg": df["atr"].rolling(100, min_periods=20).mean()}
+    return {"atr_avg": _reset_on_gap(df, lambda d: d["atr"].rolling(100, min_periods=20).mean())}
 
 
 def _compute_fvg(df: pd.DataFrame, p: dict) -> Dict[str, pd.Series]:
-    return {"fvg": detect_fvg(df)}
+    return {"fvg": _reset_on_gap(df, lambda d: detect_fvg(d))}
 
 
 def _compute_swing(df: pd.DataFrame, p: dict) -> Dict[str, pd.Series]:
     # detect_swing_points RETURNS a copied frame with the two columns appended;
-    # extract just our own columns.
-    out = detect_swing_points(df, lookback=int(p.get("swing_lookback", 5)))
-    return {"is_swing_high": out["is_swing_high"], "is_swing_low": out["is_swing_low"]}
+    # extract just our own columns, resetting the trailing window per gap segment.
+    def _cols(d):
+        out = detect_swing_points(d, lookback=int(p.get("swing_lookback", 5)))
+        return {"is_swing_high": out["is_swing_high"], "is_swing_low": out["is_swing_low"]}
+    return _reset_on_gap(df, _cols)
 
 
 def _compute_velocity(df: pd.DataFrame, p: dict) -> Dict[str, pd.Series]:
-    vel_z, accel_z = velocity_accel(
-        df["close"], int(p.get("vel_n", 2)), int(p.get("vel_z_window", 60)))
+    vel_z, accel_z = _reset_on_gap(df, lambda d: velocity_accel(
+        d["close"], int(p.get("vel_n", 2)), int(p.get("vel_z_window", 60))))
     return {"vel_z": vel_z, "accel_z": accel_z}
 
 
 def _compute_variance_ratio(df: pd.DataFrame, p: dict) -> Dict[str, pd.Series]:
-    vr, regime_score = variance_ratio(
-        df["close"], int(p.get("vr_q", 4)), int(p.get("vr_lookback", 90)),
-        float(p.get("vr_scale", 0.5)))
+    vr, regime_score = _reset_on_gap(df, lambda d: variance_ratio(
+        d["close"], int(p.get("vr_q", 4)), int(p.get("vr_lookback", 90)),
+        float(p.get("vr_scale", 0.5))))
     return {"vr": vr, "regime_score": regime_score}
 
 
 def _compute_squeeze(df: pd.DataFrame, p: dict) -> Dict[str, pd.Series]:
-    on, fire, mom = squeeze(
-        df, int(p.get("bb_len", 20)), float(p.get("bb_mult", 2.0)),
+    on, fire, mom = _reset_on_gap(df, lambda d: squeeze(
+        d, int(p.get("bb_len", 20)), float(p.get("bb_mult", 2.0)),
         int(p.get("kc_len", 20)), float(p.get("kc_atr_mult", 1.5)),
-        int(p.get("sqz_mom_len", 20)))
+        int(p.get("sqz_mom_len", 20))))
     return {"squeeze_on": on, "squeeze_fire": fire, "sqz_mom": mom}
 
 
 def _compute_supertrend(df: pd.DataFrame, p: dict) -> Dict[str, pd.Series]:
-    st, st_dir = supertrend(
-        df, int(p.get("st_period", 10)), float(p.get("st_mult", 3.0)))
+    st, st_dir = _reset_on_gap(df, lambda d: supertrend(
+        d, int(p.get("st_period", 10)), float(p.get("st_mult", 3.0))))
     return {"supertrend": st, "st_dir": st_dir}
 
 
@@ -243,7 +245,7 @@ def _compute_tod_tradeable(df: pd.DataFrame, p: dict) -> Dict[str, pd.Series]:
 
 
 def _compute_geometry(df: pd.DataFrame, p: dict) -> Dict[str, pd.Series]:
-    return candle_geometry(df)
+    return _reset_on_gap(df, lambda d: candle_geometry(d))
 
 
 def _compute_regime(df: pd.DataFrame, p: dict) -> Dict[str, pd.Series]:
