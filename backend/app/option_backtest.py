@@ -68,6 +68,29 @@ def _candle_at_or_before(rows: pd.DataFrame, target_ts: int, max_age_ms: int) ->
     return eligible.sort_values("ts").iloc[-1].to_dict()
 
 
+def _has_candle_at_or_before(sorted_ts: List[int], target_ts: int, max_age_ms: int) -> bool:
+    """Pure twin of _candle_at_or_before's presence test over a SORTED ts list:
+    is there a candle at-or-before target_ts within max_age_ms? (No DataFrame —
+    used by the option preflight, which works from a per-key ts index.)"""
+    if not sorted_ts:
+        return False
+    import bisect
+    pos = bisect.bisect_right(sorted_ts, target_ts) - 1
+    return pos >= 0 and (target_ts - sorted_ts[pos]) <= max_age_ms
+
+
+def preflight_trade_pairs(sorted_ts: List[int], entry_ts: int, exit_ts: int,
+                          entry_age_ms: int, exit_age_ms: int) -> bool:
+    """A spot trade pairs only if BOTH its entry and its exit have an option
+    candle at-or-before within the respective max-age window — the same two
+    gates simulate_paired_option_trades enforces. Checking only the entry side
+    (the pre-2026-07-05 bug) overstated preflight coverage: illiquid strikes
+    with an entry print but an exit-side gap were counted as would-pair, then
+    silently dropped as MISSING_EXIT_CANDLE in the real run."""
+    return (_has_candle_at_or_before(sorted_ts, entry_ts, entry_age_ms)
+            and _has_candle_at_or_before(sorted_ts, exit_ts, exit_age_ms))
+
+
 def _option_mfe_mae(rows: pd.DataFrame, entry_ts: int, exit_ts: int, entry_price: float) -> Dict[str, float]:
     window = rows[(rows["ts"] >= entry_ts) & (rows["ts"] <= exit_ts)]
     if window.empty:

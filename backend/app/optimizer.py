@@ -41,7 +41,7 @@ from app.options_universe import select_contract_for_signal
 from app.deployment_quality import compute_spot_option_correlation
 from app.dte import compute_dte, normalize_dte_filter
 from app.survival import survival_verdict, SurvivalConfig, oos_fold_index_ranges
-from app.early_stop import is_significant_improvement, should_early_stop
+from app.early_stop import is_significant_improvement, should_early_stop, effective_warmup_patience
 from app.analyze_budget import over_budget, ewma, eta_seconds
 
 log = logging.getLogger(__name__)
@@ -580,6 +580,7 @@ def _resolve_expiry_by_trade(spot_trades, contracts, fixed_expiry_date=None) -> 
 async def _survival_eval_oos(
     strategy, df_enriched, merged_params, contracts, candles_df,
     instrument, costs, pretrade, option_cfg, sc, n_folds=3, train_pct=0.6,
+    candles_by_key=None,
 ):
     """Evaluate one finalist's survival on each walk-forward OOS slice. Floor + DD%
     must hold per fold (per sc.min_oos_folds); RoR runs on the stitched OOS rupee
@@ -616,6 +617,7 @@ async def _survival_eval_oos(
         sim = await asyncio.to_thread(
             simulate_paired_option_trades,
             spot_trades=spot_trades, contracts=contracts, option_candles=candles_df,
+            candles_by_key=candles_by_key,
             underlying=instrument, moneyness=moneyness, lots=lots,
             entry_max_age_sec=int(option_cfg.get("entry_max_age_sec") or 120),
             exit_max_age_sec=int(option_cfg.get("exit_max_age_sec") or 180),
@@ -824,6 +826,10 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
         es_warmup = int(payload.get("early_stop_warmup", 200) or 0)
         es_patience = int(payload.get("early_stop_patience", 200) or 0)
         es_min_delta = float(payload.get("early_stop_min_delta", 0.001) or 0.0)
+        # Scale the ceiling warmup/patience to this run's budget so the default-ON
+        # auto-stop actually fires (200/200 never fires at the UI's 150-trial default).
+        es_warmup, es_patience = effective_warmup_patience(
+            n_trials=n_trials, warmup=es_warmup, patience=es_patience)
         costs = payload.get("costs_enabled", True)
         pretrade = payload.get("pretrade_filters", {})
         param_overrides = payload.get("param_overrides", {})
@@ -1216,6 +1222,10 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                 # keep PROFITABLE survivors, rank by the chosen objective. Reuses the
                 # contracts + candles already loaded by _option_rerank.
                 await _update_job(job_id, {"rerank_progress": {"stage": "survival", "candidates": len(ranked)}})
+                # Pre-group the shared option-candle frame ONCE (up to ~150s of
+                # per-sim copy+sort+groupby otherwise: K finalists x folds, plus
+                # the exit-control grid). Byte-identical to each sim rebuilding it.
+                rerank_by_key = build_candles_by_key(rerank_candles)
                 _per_item_surv: Optional[float] = None
                 for i, r in enumerate(ranked):
                     _s_t = time.monotonic()
@@ -1224,7 +1234,8 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                         df_enr = get_enriched(merged)
                         r["survival"] = await _survival_eval_oos(
                             strategy, df_enr, merged, rerank_contracts, rerank_candles,
-                            instrument, costs, pretrade, option_cfg, survival)
+                            instrument, costs, pretrade, option_cfg, survival,
+                            candles_by_key=rerank_by_key)
                     except Exception as e:
                         log.warning(f"survival eval failed: {e}")
                         r["survival"] = {"survived": False, "reason": "eval_error"}
@@ -1247,7 +1258,8 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                             for gc in grid:
                                 v = await _survival_eval_oos(
                                     strategy, df_enr, merged, rerank_contracts, rerank_candles,
-                                    instrument, costs, pretrade, {**option_cfg, "exit_controls": gc}, survival)
+                                    instrument, costs, pretrade, {**option_cfg, "exit_controls": gc}, survival,
+                                    candles_by_key=rerank_by_key)
                                 better = (v.get("calmar") or -1e9) > (r["survival"].get("calmar") or -1e9)
                                 if v.get("survived") and (v.get("total_return_pct") or 0) > 0 and better:
                                     r["survival"] = v

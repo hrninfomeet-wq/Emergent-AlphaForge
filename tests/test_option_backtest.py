@@ -63,6 +63,38 @@ def test_simulate_paired_option_trades_selects_contract_and_uses_option_premium_
     assert result["metrics"]["total_option_pnl_value"] == 1040.0
 
 
+def test_prebuilt_candles_by_key_is_byte_identical_to_internal_build():
+    """The optimizer survival + exit-control search hot loops pre-build
+    candles_by_key ONCE and pass it through (avoiding ~150s of per-sim
+    copy+sort+groupby). This pins the byte-identical contract the perf fix
+    relies on: passing candles_by_key == letting simulate build it."""
+    spot_trades = [
+        {"direction": "CE", "entry_ts": 100_000, "exit_ts": 220_000,
+         "entry_price": 26012.0, "exit_price": 26045.0},
+        {"direction": "PE", "entry_ts": 300_000, "exit_ts": 420_000,
+         "entry_price": 26040.0, "exit_price": 25990.0},
+    ]
+    contracts = [
+        {"instrument_key": "ce-otm1", "side": "CE", "strike": 26050.0, "lot_size": 65},
+        {"instrument_key": "pe-otm1", "side": "PE", "strike": 25950.0, "lot_size": 65},
+    ]
+    option_rows = pd.DataFrame([
+        {"instrument_key": "ce-otm1", "ts": 90_000, "close": 100.0, "high": 102.0, "low": 99.0},
+        {"instrument_key": "ce-otm1", "ts": 160_000, "close": 111.0, "high": 116.0, "low": 97.0},
+        {"instrument_key": "ce-otm1", "ts": 220_000, "close": 118.0, "high": 119.0, "low": 110.0},
+        {"instrument_key": "pe-otm1", "ts": 290_000, "close": 90.0, "high": 92.0, "low": 88.0},
+        {"instrument_key": "pe-otm1", "ts": 360_000, "close": 101.0, "high": 106.0, "low": 87.0},
+        {"instrument_key": "pe-otm1", "ts": 420_000, "close": 108.0, "high": 109.0, "low": 100.0},
+    ])
+    kw = dict(spot_trades=spot_trades, contracts=contracts, option_candles=option_rows,
+              underlying="NIFTY", moneyness="otm1", lots=1)
+    internal = option_backtest.simulate_paired_option_trades(**kw)
+    prebuilt = option_backtest.simulate_paired_option_trades(
+        candles_by_key=option_backtest.build_candles_by_key(option_rows), **kw)
+    assert internal["trades"] == prebuilt["trades"]
+    assert internal["metrics"] == prebuilt["metrics"]
+
+
 def test_simulate_paired_option_trades_disables_slippage_when_pts_zero():
     """Setting slippage_config to zero pts disables it - useful for math-pure backtests."""
     spot_trades = [
