@@ -7,6 +7,56 @@ from app.cpr import cpr_levels
 from app.vol_seasonality import attach_tod_tradeable
 
 
+# --- Intra-session gap handling -------------------------------------------
+# Warehouse candles are 1-minute and minute-aligned, so contiguous bars are
+# exactly 60_000 ms apart. A larger delta WITHIN the same IST session is a hole
+# (partial-day gap / half-day boundary). Overnight (cross-date) boundaries are a
+# different IST date and are intentionally NOT flagged — the whole-frame EWM/
+# rolling indicators are designed to carry across them.
+MAX_CONTIGUOUS_GAP_MS = 60_000
+
+
+def gap_before_mask(df: pd.DataFrame) -> pd.Series:
+    """Per-bar bool: True where this bar is >1 min after the previous bar AND in
+    the same IST session (calendar date). First bar is False. Derived from `ts`
+    only, so it is independent of any pre-existing `session_date` column."""
+    ts = df["ts"].to_numpy(dtype="int64")
+    n = len(ts)
+    out = np.zeros(n, dtype=bool)
+    if n >= 2:
+        ist_date = (pd.to_datetime(df["ts"], unit="ms", utc=True)
+                    .dt.tz_convert("Asia/Kolkata").dt.normalize().to_numpy())
+        delta = ts[1:] - ts[:-1]
+        same_session = ist_date[1:] == ist_date[:-1]
+        out[1:] = (delta > MAX_CONTIGUOUS_GAP_MS) & same_session
+    return pd.Series(out, index=df.index)
+
+
+def _reset_on_gap(df: pd.DataFrame, fn, *, mask_col: str = "gap_before"):
+    """Apply `fn` to each gap-bounded contiguous slice of `df` and reassemble.
+
+    `fn(sub_df)` returns a Series, a tuple[Series, ...], or a dict[str, Series].
+    Fast-path: when there is no intra-session gap, return `fn(df)` unchanged so
+    gap-free windows are byte-identical to the pre-change computation. When gaps
+    exist, split at each gap boundary into contiguous positional slices, apply
+    `fn` per slice (each re-warms from its first row), and concatenate the parts
+    back in order (slices keep the original index, so the result realigns).
+    """
+    gb = df[mask_col].to_numpy(dtype=bool)
+    if not gb.any():
+        return fn(df)
+    cuts = np.flatnonzero(gb).tolist()
+    starts = [0, *cuts]
+    ends = [*cuts, len(gb)]
+    parts = [fn(df.iloc[s:e]) for s, e in zip(starts, ends)]
+    first = parts[0]
+    if isinstance(first, tuple):
+        return tuple(pd.concat([p[k] for p in parts]) for k in range(len(first)))
+    if isinstance(first, dict):
+        return {key: pd.concat([p[key] for p in parts]) for key in first}
+    return pd.concat(parts)
+
+
 def ema(series: pd.Series, length: int) -> pd.Series:
     return series.ewm(span=length, adjust=False).mean()
 
