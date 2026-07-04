@@ -35,7 +35,10 @@ from typing import Any, Dict, Optional
 # All rates are fractions unless noted. Sourced from public broker charge lists;
 # operator-tunable via CostConfig.
 DEFAULT_BROKERAGE_PER_ORDER = 0.0        # Flattrade = 0; set 20 for Zerodha/Upstox-style
-DEFAULT_STT_SELL_RATE = 0.000625         # 0.0625% on SELL-side premium (options)
+# STT on options: 0.1% of SELL-side premium since 2024-10-01 (was 0.0625%).
+# Saved presets/runs that serialized a full cost_config keep their stored rate
+# (reproducibility); only configs without an explicit stt_sell_rate get this.
+DEFAULT_STT_SELL_RATE = 0.001
 DEFAULT_EXCHANGE_TXN_RATE = 0.00035      # ~0.035% of premium turnover (NSE options)
 DEFAULT_SEBI_RATE = 0.000001             # ₹10 per crore = 0.0001%
 DEFAULT_GST_RATE = 0.18                  # 18% on (brokerage + exchange txn + SEBI)
