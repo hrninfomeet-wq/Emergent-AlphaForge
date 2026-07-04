@@ -23,7 +23,7 @@ from app.live_friction import (  # noqa: E402
     close_economics,
     fill_premium,
 )
-from app.option_costs import round_trip_charges  # noqa: E402
+from app.option_costs import CostConfig, round_trip_charges  # noqa: E402
 from app.paper_trading import close_trade, paper_trade_from_signal  # noqa: E402
 
 
@@ -108,11 +108,20 @@ def test_friction_config_roundtrip_and_defaults():
 # close_economics — gross vs net
 # --------------------------------------------------------------------------- #
 
-def test_close_economics_disabled_is_pure_gross():
+def test_close_economics_disabled_keeps_gross_but_reports_statutory_charges():
+    """Friction OFF: realized stays GROSS (kill-switch/caps semantics
+    unchanged) but statutory charges are now always computed on the raw fills
+    (zero-brokerage Flattrade schedule) with an explicit net_realized_pnl."""
     econ = close_economics(raw_exit_premium=120.0, entry_price=100.0, raw_entry_price=100.0,
                            quantity=75, friction=FrictionConfig(), ts_ms=TS)
     assert econ["realized_pnl"] == econ["gross_realized_pnl"] == round((120.0 - 100.0) * 75, 2)
-    assert econ["total_charges"] == 0.0 and econ["friction_cost"] == 0.0 and econ["charges"] is None
+    assert econ["friction_cost"] == 0.0  # no fill model when friction is off
+    assert econ["charges"] is not None and econ["total_charges"] > 0.0
+    # statutory math, zero brokerage: matches option_costs on the raw fills
+    expected = round_trip_charges(entry_premium=100.0, exit_premium=120.0,
+                                  quantity=75, cfg=CostConfig(enabled=True))
+    assert econ["total_charges"] == round(float(expected["total_charges"]), 2)
+    assert econ["net_realized_pnl"] == round(econ["gross_realized_pnl"] - econ["total_charges"], 2)
 
 
 def test_close_economics_enabled_nets_below_gross_with_charges():
@@ -171,12 +180,14 @@ def _signal(lot_size=75):
     }
 
 
-def test_close_trade_without_friction_is_unchanged_gross():
+def test_close_trade_without_friction_books_gross_and_stores_charges():
     trade = paper_trade_from_signal(_signal(), lots=1, entry_price=100.0)
     closed = close_trade(trade, exit_price=120.0, reason="manual")
-    assert closed["realized_pnl"] == round((120.0 - 100.0) * 75, 2)
+    assert closed["realized_pnl"] == round((120.0 - 100.0) * 75, 2)  # still GROSS
     assert closed["exit_price"] == 120.0
-    assert "charges" not in closed and closed["total_charges"] == 0.0
+    # statutory charges always stored now, with the explicit net figure
+    assert "charges" in closed and closed["total_charges"] > 0.0
+    assert closed["net_realized_pnl"] == round(closed["realized_pnl"] - closed["total_charges"], 2)
 
 
 def test_close_trade_with_friction_books_net_and_records_gross():

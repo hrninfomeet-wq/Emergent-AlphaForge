@@ -227,6 +227,9 @@ def close_trade(
         "exit_reason": reason,
         "realized_pnl": realized,
         "gross_realized_pnl": econ["gross_realized_pnl"],
+        # Net after statutory charges — always stored; equals realized_pnl for
+        # friction-ON trades, gross − charges for friction-OFF (legacy gross).
+        "net_realized_pnl": econ.get("net_realized_pnl", realized),
         "friction_cost": econ["friction_cost"],
         "total_charges": econ["total_charges"],
         "exit_slippage_pts": econ["exit_slippage_pts"],

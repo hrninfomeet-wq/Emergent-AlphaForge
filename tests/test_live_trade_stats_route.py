@@ -37,3 +37,27 @@ def test_frontend_helper_and_card_wired():
     # analysis essentials on the card
     for needle in ("Win rate", "Profit factor", "Lifetime", "Expectancy"):
         assert needle in CARD_SRC
+
+
+def test_trade_history_route_returns_full_close_fields():
+    assert '@api.get("/live-broker/trade-history")' in BROKER_SRC
+    i = BROKER_SRC.index('"/live-broker/trade-history"')
+    block = BROKER_SRC[i:i + 2400]
+    assert 'sort("created_at", -1)' in block
+    assert "count_documents" in block  # pagination total
+    assert '"/live-broker/trade-history"' in API_SRC
+    assert 'data-testid="live-trade-history"' in CARD_SRC
+    # never fabricate: the card renders None P&L/exit as "—"
+    assert 't.realized_pnl != null' in CARD_SRC
+
+
+def test_charges_surfaces_are_wired():
+    from pathlib import Path
+    blotter = (ROOT / "frontend/src/components/paper/TradeBlotter.jsx").read_text(encoding="utf-8")
+    stats = (ROOT / "frontend/src/components/paper/StrategyStatsTable.jsx").read_text(encoding="utf-8")
+    bt = (ROOT / "frontend/src/pages/BacktestLab.jsx").read_text(encoding="utf-8")
+    pa = (ROOT / "backend/app/paper_analytics.py").read_text(encoding="utf-8")
+    assert "<H right>Charges</H>" in blotter
+    assert "total_charges" in stats
+    assert '{ key: "opt_charges", label: "Charges ₹"' in bt
+    assert 'g["total_charges"] += _f(t.get("total_charges"))' in pa

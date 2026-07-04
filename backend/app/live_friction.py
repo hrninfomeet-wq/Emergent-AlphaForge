@@ -165,15 +165,28 @@ def close_economics(
     """
     qty = max(0, int(quantity))
     if not friction.enabled:
-        # Legacy gross close: realized = (raw_exit - entry) * qty, no charges.
+        # Legacy gross close: realized stays GROSS (kill-switch / caps /
+        # analytics semantics unchanged) — but statutory charges are now ALWAYS
+        # computed and reported so the operator sees what the exchange would
+        # have taken. Zero-brokerage Flattrade schedule on the RAW exit (no
+        # fill model when friction is off — deliberately asymmetric with the
+        # enabled branch, which charges the slipped fill).
         gross = round((float(raw_exit_premium) - float(entry_price)) * qty, 2)
+        charges = round_trip_charges(
+            entry_premium=float(entry_price),
+            exit_premium=float(raw_exit_premium),
+            quantity=qty,
+            cfg=CostConfig(enabled=True),
+        ) if qty > 0 else None
+        total_charges = float(charges["total_charges"]) if charges else 0.0
         return {
             "exit_fill_price": float(raw_exit_premium),
             "realized_pnl": gross,
             "gross_realized_pnl": gross,
+            "net_realized_pnl": round(gross - total_charges, 2),
             "friction_cost": 0.0,
-            "total_charges": 0.0,
-            "charges": None,
+            "total_charges": round(total_charges, 2),
+            "charges": charges,
             "exit_slippage_pts": 0.0,
             "exit_spread_pts": 0.0,
         }
@@ -198,6 +211,7 @@ def close_economics(
         "exit_fill_price": round(exit_fill, 3),
         "realized_pnl": net,
         "gross_realized_pnl": gross,
+        "net_realized_pnl": net,
         "friction_cost": round(gross - net, 2),
         "total_charges": round(total_charges, 2),
         "charges": charges,

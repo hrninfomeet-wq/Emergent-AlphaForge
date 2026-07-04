@@ -371,6 +371,7 @@ def _new_period_bucket(key: str, prev_equity: Optional[float], prev_cum: float) 
         "pnl_min": 0.0, "pnl_max": 0.0,
         "capital_min": prev_equity, "capital_max": prev_equity,
         "max_drawdown_value": 0.0, "max_deployed_value": 0.0,
+        "required_capital": 0.0,
         "_start_cum": prev_cum, "_peak": prev_equity,
     }
 
@@ -393,7 +394,15 @@ def deployment_period_stats(trades: List[Dict[str, Any]], *,
       max_drawdown_value         peak-to-trough of equity within the bucket,
       max_deployed_value         peak CONCURRENT entry premium at risk, from a
                                  sweep over [created_at, closed_at|now) spans —
-                                 open trades count until now.
+                                 open trades count until now,
+      required_capital           the minimum balance the demat account must
+                                 have held at the bucket's start to fund every
+                                 trade in it: max over time of (concurrent
+                                 premium − realized P&L banked so far within
+                                 the bucket).
+
+    Also returns trade_series: chronological per-closed-trade points
+    (ts, pnl, day/week/month/year bucket keys) for the drawer chart.
     """
     closed = [t for t in trades
               if str(t.get("status") or "").upper() == "CLOSED"
@@ -401,6 +410,7 @@ def deployment_period_stats(trades: List[Dict[str, Any]], *,
     closed.sort(key=lambda t: _to_ms(t.get("closed_at") or t.get("updated_at")) or 0)
 
     out: Dict[str, Dict[str, Dict[str, Any]]] = {p: {} for p in _PERIODS}
+    trade_series: List[Dict[str, Any]] = []
     equity = float(starting_capital)
     cum_pnl = 0.0
     for t in closed:
@@ -409,6 +419,14 @@ def deployment_period_stats(trades: List[Dict[str, Any]], *,
         prev_equity, prev_cum = equity, cum_pnl
         equity += pnl
         cum_pnl += pnl
+        # Chronological per-trade point for the drawer chart; bucket keys let
+        # the client slice the series to any selected period bucket.
+        trade_series.append({
+            "ts": _to_ms(t.get("closed_at") or t.get("updated_at")),
+            "pnl": round(pnl, 2),
+            "day": day, "week": _bucket_key(day, "week"),
+            "month": day[:7], "year": day[:4],
+        })
         for p in _PERIODS:
             key = _bucket_key(day, p)
             b = out[p].get(key)
@@ -428,11 +446,19 @@ def deployment_period_stats(trades: List[Dict[str, Any]], *,
             b["_peak"] = max(b["_peak"], equity)
             b["max_drawdown_value"] = min(b["max_drawdown_value"], equity - b["_peak"])
 
-    # Peak concurrent deployed capital — sweep over open spans of ALL trades
-    # (open trades hold capital until now). Buckets with only open positions
-    # are created with None capitals so the UI can render them as "—".
+    # Capital sweep over open spans of ALL trades (open trades hold premium
+    # until now). Two metrics per bucket:
+    #   max_deployed_value — peak CONCURRENT entry premium at risk.
+    #   required_capital   — the minimum balance the (demat) account must have
+    #     held at the bucket's start to fund every trade in it: at each event,
+    #     requirement = concurrent premium − realized P&L accumulated so far
+    #     WITHIN the bucket (losses already taken must also be funded; profits
+    #     already banked reduce the need). Opens sort before same-timestamp
+    #     closes, so simultaneous roll-overs are counted conservatively.
+    # Buckets with only open positions are created with None capitals so the
+    # UI renders their equity columns as "—".
     now = now_ms if now_ms is not None else _now_ms()
-    events: List[tuple] = []
+    events: List[tuple] = []   # (ts, order, premium_delta, realized_pnl)
     for t in trades:
         start = _to_ms(t.get("created_at"))
         if start is None:
@@ -440,24 +466,38 @@ def deployment_period_stats(trades: List[Dict[str, Any]], *,
         value = _f(t.get("entry_price")) * _f(t.get("quantity"))
         if value <= 0:
             continue
-        end = _to_ms(t.get("closed_at")) if t.get("closed_at") else now
-        events.append((start, value))
-        events.append((end if end is not None else now, -value))
-    events.sort()
+        is_closed = str(t.get("status") or "").upper() == "CLOSED"
+        end = _to_ms(t.get("closed_at")) if t.get("closed_at") else None
+        pnl = _f(t.get("realized_pnl")) if is_closed else 0.0
+        # An OPEN trade's premium release "at now" is synthetic bookkeeping —
+        # it balances the sweep but must not create/write a bucket.
+        synthetic_end = end is None
+        events.append((start, 0, value, 0.0, False))
+        events.append((end if end is not None else now, 1, -value, pnl, synthetic_end))
+    events.sort(key=lambda e: (e[0], e[1]))
     deployed = 0.0
-    for ts, delta in events:
+    cum_in_bucket: Dict[str, float] = {p: 0.0 for p in _PERIODS}
+    cur_bucket: Dict[str, Optional[str]] = {p: None for p in _PERIODS}
+    for ts, _order, delta, pnl, synthetic in events:
         deployed += delta
-        if deployed <= 0:
+        if synthetic:
             continue
         day = _ist_day(ts)
         if day is None:
             continue
         for p in _PERIODS:
             key = _bucket_key(day, p)
+            if cur_bucket[p] != key:
+                cur_bucket[p] = key
+                cum_in_bucket[p] = 0.0
+            cum_in_bucket[p] += pnl
             b = out[p].get(key)
             if b is None:
                 b = out[p][key] = _new_period_bucket(key, None, 0.0)
-            b["max_deployed_value"] = max(b["max_deployed_value"], deployed)
+            if deployed > 0:
+                b["max_deployed_value"] = max(b["max_deployed_value"], deployed)
+            b["required_capital"] = max(
+                b["required_capital"], deployed - cum_in_bucket[p])
 
     result: Dict[str, List[Dict[str, Any]]] = {}
     for p in _PERIODS:
@@ -470,7 +510,8 @@ def deployment_period_stats(trades: List[Dict[str, Any]], *,
                          for k, v in b.items()})
         result[p] = rows
     return {"starting_capital": round(float(starting_capital), 2),
-            "closed_trades": len(closed), "periods": result}
+            "closed_trades": len(closed), "periods": result,
+            "trade_series": trade_series[-5000:]}
 
 
 # ---------------------------------------------------------------------------
@@ -484,6 +525,7 @@ def per_strategy_stats(trades: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         g = groups.setdefault(sid, {
             "strategy_id": sid, "deployment_id": t.get("deployment_id"),
             "net_pnl": 0.0, "closed_trades": 0, "open_count": 0, "open_mtm": 0.0,
+            "total_charges": 0.0,
             "_wins": 0, "_losses": 0, "_gw": 0.0, "_gl": 0.0, "_hold_s": 0.0,
             "_r_sum": 0.0, "_r_n": 0, "_exit": {b: 0 for b in _EXIT_BUCKETS}, "_exit_n": 0,
         })
@@ -495,6 +537,7 @@ def per_strategy_stats(trades: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             pnl = _f(t.get("realized_pnl"))
             g["net_pnl"] += pnl
             g["closed_trades"] += 1
+            g["total_charges"] += _f(t.get("total_charges"))
             if pnl > 0:
                 g["_wins"] += 1
                 g["_gw"] += pnl
@@ -524,6 +567,7 @@ def per_strategy_stats(trades: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "deployment_id": g["deployment_id"],
             "net_pnl": net,
             "closed_trades": g["closed_trades"],
+            "total_charges": round(g["total_charges"], 2),
             "open_count": g["open_count"],
             "open_mtm": round(g["open_mtm"], 2),
             "win_rate": round(g["_wins"] / decided * 100, 1) if decided else None,

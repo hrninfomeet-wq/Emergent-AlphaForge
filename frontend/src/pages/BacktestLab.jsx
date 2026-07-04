@@ -2529,6 +2529,7 @@ function TradesTable({ trades, optionBacktest }) {
         opt_status: opt?.status ?? null,
         opt_lots: opt?.lots ?? null,
         opt_qty: opt?.quantity ?? null,
+        opt_charges: opt?.status === "PAIRED" ? Number(opt.total_charges || 0) : null,
         // Buy value loads all charges on entry so Sell − Buy = net option P&L
         // (entry premium × qty + round-trip charges; sell = exit premium × qty).
         opt_buy_value: opt?.status === "PAIRED"
@@ -2604,6 +2605,7 @@ function TradesTable({ trades, optionBacktest }) {
         { key: "opt_pnl_pct", label: "Opt P&L%", align: "right", sortable: true },
         { key: "opt_buy_value", label: "Buy ₹", align: "right", sortable: true },
         { key: "opt_sell_value", label: "Sell ₹", align: "right", sortable: true },
+        { key: "opt_charges", label: "Charges ₹", align: "right", sortable: true },
         { key: "opt_exit_reason", label: "Opt Exit", align: "left", sortable: true },
         { key: "opt_pnl_value", label: "Opt P&L (₹)", align: "right", sortable: true },
       ]
@@ -2683,6 +2685,7 @@ function TradesTable({ trades, optionBacktest }) {
                     <td className={`p-2 text-right font-mono ${colorPnL(t.opt_pnl_pct)}`}>{t.opt_pnl_pct != null ? fmtPct(t.opt_pnl_pct, 1) : "—"}</td>
                     <td className="p-2 text-right font-mono text-dim">{t.opt_buy_value != null ? `₹${fmtInt(t.opt_buy_value)}` : "—"}</td>
                     <td className="p-2 text-right font-mono text-dim">{t.opt_sell_value != null ? `₹${fmtInt(t.opt_sell_value)}` : "—"}</td>
+                    <td className="p-2 text-right font-mono text-dimmer" title="Round-trip statutory charges (brokerage/STT/exchange/GST/SEBI/stamp; 0 when 'Apply realistic costs' is off)">{t.opt_charges != null ? `₹${fmtNum(t.opt_charges, 0)}` : "—"}</td>
                     <td className="p-2 text-[10px]"><ExitReasonBadge reason={t.opt_exit_reason} /></td>
                     <td className={`p-2 text-right font-mono ${colorPnL(t.opt_pnl_value)}`}>{t.opt_pnl_value != null ? fmtPnL(t.opt_pnl_value) : "—"}</td>
                   </>

@@ -44,7 +44,20 @@ export default function TradeDetailDrawer({ trade }) {
             <>
               <Row k="Gross" v={fmtINR(trade.gross_realized_pnl)} />
               <Row k="Friction" v={`−${fmtINR(Math.abs(Number(trade.friction_cost)))}`} />
-              <Row k="Charges" v={fmtINR(trade.total_charges)} />
+            </>
+          )}
+          {trade.total_charges != null && Number(trade.total_charges) > 0 && (
+            <>
+              <Row k="Charges (total)" v={`−${fmtINR(trade.total_charges)}`} />
+              {trade.charges && (
+                <Row k="↳ breakdown"
+                  v={`STT ${fmtINR(trade.charges.stt)} · Exch ${fmtINR(trade.charges.exchange_txn)} · GST ${fmtINR(trade.charges.gst)} · Stamp ${fmtINR(trade.charges.stamp_duty)} · SEBI ${fmtINR(trade.charges.sebi)} · Brkg ${fmtINR(trade.charges.brokerage)}`}
+                  cls="text-dimmer" />
+              )}
+              {trade.net_realized_pnl != null && (
+                <Row k="Net after charges" v={fmtINRSigned(trade.net_realized_pnl)}
+                  cls={Number(trade.net_realized_pnl) >= 0 ? "text-success" : "text-danger"} />
+              )}
             </>
           )}
         </div>
