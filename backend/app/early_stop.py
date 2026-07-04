@@ -26,3 +26,20 @@ def should_early_stop(*, completed: int, last_improve_trial: int, warmup: int, p
     if patience < 1 or completed < warmup:
         return False
     return (completed - last_improve_trial) >= patience
+
+
+def effective_warmup_patience(*, n_trials: int, warmup: int, patience: int) -> tuple[int, int]:
+    """Scale the CEILING warmup/patience to this run's trial budget.
+
+    The schema defaults warmup=patience=200, but the UI sends neither and uses
+    default budgets (bayesian 150, grid/genetic 200) — so a literal 200-trial
+    warmup means the advertised default-ON "Auto-stop when converged" can NEVER
+    fire (a no-op the UI still promises). This derives per-run effective values:
+    enough exploration before stopping, yet strictly below the budget so a real
+    plateau can always trigger a stop. A user who deliberately raises warmup on a
+    large run still gets up to their ceiling."""
+    n = max(1, int(n_trials))
+    eff_warmup = min(int(warmup), max(30, n // 3))
+    eff_patience = min(int(patience), max(20, n // 5))
+    eff_warmup = min(eff_warmup, max(1, n - 5))  # never swallow the whole budget
+    return eff_warmup, eff_patience

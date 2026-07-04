@@ -41,7 +41,7 @@ from app.options_universe import select_contract_for_signal
 from app.deployment_quality import compute_spot_option_correlation
 from app.dte import compute_dte, normalize_dte_filter
 from app.survival import survival_verdict, SurvivalConfig, oos_fold_index_ranges
-from app.early_stop import is_significant_improvement, should_early_stop
+from app.early_stop import is_significant_improvement, should_early_stop, effective_warmup_patience
 from app.analyze_budget import over_budget, ewma, eta_seconds
 
 log = logging.getLogger(__name__)
@@ -826,6 +826,10 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
         es_warmup = int(payload.get("early_stop_warmup", 200) or 0)
         es_patience = int(payload.get("early_stop_patience", 200) or 0)
         es_min_delta = float(payload.get("early_stop_min_delta", 0.001) or 0.0)
+        # Scale the ceiling warmup/patience to this run's budget so the default-ON
+        # auto-stop actually fires (200/200 never fires at the UI's 150-trial default).
+        es_warmup, es_patience = effective_warmup_patience(
+            n_trials=n_trials, warmup=es_warmup, patience=es_patience)
         costs = payload.get("costs_enabled", True)
         pretrade = payload.get("pretrade_filters", {})
         param_overrides = payload.get("param_overrides", {})

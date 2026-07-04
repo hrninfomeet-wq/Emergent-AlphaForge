@@ -2,7 +2,28 @@ import sys
 from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
-from app.early_stop import is_significant_improvement, should_early_stop
+from app.early_stop import is_significant_improvement, should_early_stop, effective_warmup_patience
+
+
+def test_default_ceiling_warmup_scales_below_ui_budget_so_autostop_can_fire():
+    # The bug: schema warmup=patience=200, UI budget 150 -> auto-stop never fired.
+    eff_w, eff_p = effective_warmup_patience(n_trials=150, warmup=200, patience=200)
+    assert eff_w < 150 and eff_p >= 1
+    # and it CAN now fire on a real plateau within the budget:
+    assert should_early_stop(completed=eff_w + eff_p, last_improve_trial=eff_w,
+                             warmup=eff_w, patience=eff_p) is True
+
+
+def test_effective_warmup_never_swallows_the_whole_budget():
+    for n in (10, 40, 150, 200, 500):
+        eff_w, eff_p = effective_warmup_patience(n_trials=n, warmup=200, patience=200)
+        assert eff_w < n, f"warmup {eff_w} must be < budget {n}"
+
+
+def test_large_deliberate_budget_keeps_full_ceiling():
+    # A user who runs 1000 trials still gets up to the 200 ceiling.
+    eff_w, eff_p = effective_warmup_patience(n_trials=1000, warmup=200, patience=200)
+    assert eff_w == 200 and eff_p == 200
 
 def test_first_trial_anchor_neg_inf_is_improvement():
     assert is_significant_improvement(0.5, float("-inf"), 0.001) is True
