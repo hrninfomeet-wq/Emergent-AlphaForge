@@ -2,6 +2,34 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.49.3] — Intra-session gap indicator warm-up reset (2026-07-05)
+
+**Silent correctness fix.** `warehouse.load_candles_df` returns raw rows with no
+reindex to a complete minute grid, and `run_backtest` iterates positionally, so a
+mid-session warehouse hole (a partial-day gap, or a half-day/closure boundary that
+leaves a session partially present) made the post-gap bar positionally adjacent to
+the pre-gap bar. The whole-frame rolling/EWM indicators (ATR/EMA/RSI/ADX/MACD/chop/
+atr_avg/fvg/swing/velocity/variance_ratio/squeeze/supertrend/candle-geometry) then
+computed **across the time discontinuity** with no NaN and no warning — contaminating
+signals on bars adjacent to a gap. Whole missing *days* were already caught by the
+day-level audit; intra-session partial gaps were not.
+
+Fix: a per-bar `gap_before` flag (a >1-minute jump **within** the same IST session;
+overnight/cross-date boundaries are intentionally not flagged, preserving the
+existing overnight-carry contract) drives a `_reset_on_gap` wrapper that recomputes
+each whole-frame indicator per gap-bounded segment, so post-gap bars re-warm from
+NaN instead of smearing. A no-gap fast-path makes gap-free windows **byte-identical**
+to the prior computation (proven by the indicator-equivalence + new parity tests),
+and the fix is mirrored in `indicator_groups.py` so the optimizer/WFO memoized path
+stays equivalent. Per-session indicators (VWAP/CPR/NR7/ORB/ToD) and per-row `regime`
+are unchanged. `run_backtest` is untouched — post-gap NaN warm-up is the same
+condition strategies already tolerate at frame start, so no trade fires on smeared
+indicators. Paper/live enrichment inherits the fix: after a real-time data hiccup,
+signals self-suppress until re-warmed. (`indicators.py`, `indicator_groups.py`,
+`tests/test_gap_reset.py`.) Ref: `OPTIMIZER_VERDICT_2026-07.md` edge case #2 (that
+research doc lives on `feat/exit-tiers-and-audit`; flip its edge-case-#2 row to FIXED
+when that branch is integrated). Spec + plan under `docs/superpowers/`.
+
 ## [0.49.2] — STT rate updated to the current 0.1% (2026-07-04)
 
 `option_costs.DEFAULT_STT_SELL_RATE` 0.0625% → **0.1%** (Finance Act 2024, effective
