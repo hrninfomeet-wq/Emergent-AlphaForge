@@ -2519,6 +2519,11 @@ function TradesTable({ trades, optionBacktest }) {
         opt_side: opt?.side ?? null,
         opt_entry: opt?.entry_option_price ?? null,
         opt_exit: opt?.exit_option_price ?? null,
+        // Premium move in % — long-option (buying) semantics: exit vs entry.
+        opt_pnl_pct:
+          opt?.entry_option_price != null && opt?.exit_option_price != null && Number(opt.entry_option_price) !== 0
+            ? ((Number(opt.exit_option_price) - Number(opt.entry_option_price)) / Number(opt.entry_option_price)) * 100
+            : null,
         opt_pnl_value: opt?.option_pnl_value ?? null,
         opt_exit_reason: opt?.option_exit_reason ?? null,
         opt_status: opt?.status ?? null,
@@ -2596,6 +2601,7 @@ function TradesTable({ trades, optionBacktest }) {
         { key: "opt_qty", label: "Lots (Qty)", align: "right", sortable: true },
         { key: "opt_entry", label: "Opt Entry", align: "right", sortable: true },
         { key: "opt_exit", label: "Opt Exit", align: "right", sortable: true },
+        { key: "opt_pnl_pct", label: "Opt P&L%", align: "right", sortable: true },
         { key: "opt_buy_value", label: "Buy ₹", align: "right", sortable: true },
         { key: "opt_sell_value", label: "Sell ₹", align: "right", sortable: true },
         { key: "opt_exit_reason", label: "Opt Exit", align: "left", sortable: true },
@@ -2674,6 +2680,7 @@ function TradesTable({ trades, optionBacktest }) {
                     </td>
                     <td className="p-2 text-right font-mono">{t.opt_entry != null ? fmtNum(t.opt_entry) : "—"}</td>
                     <td className="p-2 text-right font-mono">{t.opt_exit != null ? fmtNum(t.opt_exit) : "—"}</td>
+                    <td className={`p-2 text-right font-mono ${colorPnL(t.opt_pnl_pct)}`}>{t.opt_pnl_pct != null ? fmtPct(t.opt_pnl_pct, 1) : "—"}</td>
                     <td className="p-2 text-right font-mono text-dim">{t.opt_buy_value != null ? `₹${fmtInt(t.opt_buy_value)}` : "—"}</td>
                     <td className="p-2 text-right font-mono text-dim">{t.opt_sell_value != null ? `₹${fmtInt(t.opt_sell_value)}` : "—"}</td>
                     <td className="p-2 text-[10px]"><ExitReasonBadge reason={t.opt_exit_reason} /></td>
