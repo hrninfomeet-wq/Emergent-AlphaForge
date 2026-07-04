@@ -347,6 +347,133 @@ def build_account_analytics(closed_trades: List[Dict[str, Any]],
 
 
 # ---------------------------------------------------------------------------
+# Per-deployment period statistics (Paper page strategy drill-down)
+# ---------------------------------------------------------------------------
+
+_PERIODS = ("day", "week", "month", "year")
+
+
+def _bucket_key(day: str, period: str) -> str:
+    """Bucket an IST YYYY-MM-DD day string. week = the Monday of that week."""
+    if period == "day":
+        return day
+    if period == "week":
+        d = datetime.strptime(day, "%Y-%m-%d")
+        return (d - timedelta(days=d.weekday())).strftime("%Y-%m-%d")
+    if period == "month":
+        return day[:7]
+    return day[:4]
+
+
+def _new_period_bucket(key: str, prev_equity: Optional[float], prev_cum: float) -> Dict[str, Any]:
+    return {
+        "bucket": key, "trades": 0, "net_pnl": 0.0,
+        "pnl_min": 0.0, "pnl_max": 0.0,
+        "capital_min": prev_equity, "capital_max": prev_equity,
+        "max_drawdown_value": 0.0, "max_deployed_value": 0.0,
+        "_start_cum": prev_cum, "_peak": prev_equity,
+    }
+
+
+def deployment_period_stats(trades: List[Dict[str, Any]], *,
+                            starting_capital: float = DEFAULT_CAPITAL,
+                            now_ms: Optional[int] = None) -> Dict[str, Any]:
+    """Per-period statistics for ONE deployment's paper trades.
+
+    Account capital here is the deployment-ISOLATED equity: starting_capital
+    plus this deployment's own cumulative realized P&L — it answers "what did
+    this deployment do to the account", independent of sibling deployments.
+
+    Per bucket (day / ISO-week / month / year, IST close-day based):
+      trades, net_pnl,
+      pnl_min / pnl_max          worst and best point of the running P&L
+                                 within the bucket (0 baseline at bucket open),
+      capital_min / capital_max  running equity including the bucket's opening
+                                 value (None for buckets with no closed trade),
+      max_drawdown_value         peak-to-trough of equity within the bucket,
+      max_deployed_value         peak CONCURRENT entry premium at risk, from a
+                                 sweep over [created_at, closed_at|now) spans —
+                                 open trades count until now.
+    """
+    closed = [t for t in trades
+              if str(t.get("status") or "").upper() == "CLOSED"
+              and _ist_day(t.get("closed_at") or t.get("updated_at"))]
+    closed.sort(key=lambda t: _to_ms(t.get("closed_at") or t.get("updated_at")) or 0)
+
+    out: Dict[str, Dict[str, Dict[str, Any]]] = {p: {} for p in _PERIODS}
+    equity = float(starting_capital)
+    cum_pnl = 0.0
+    for t in closed:
+        day = _ist_day(t.get("closed_at") or t.get("updated_at"))
+        pnl = _f(t.get("realized_pnl"))
+        prev_equity, prev_cum = equity, cum_pnl
+        equity += pnl
+        cum_pnl += pnl
+        for p in _PERIODS:
+            key = _bucket_key(day, p)
+            b = out[p].get(key)
+            if b is None:
+                b = out[p][key] = _new_period_bucket(key, prev_equity, prev_cum)
+            elif b["capital_min"] is None:
+                # bucket was pre-created by the deployed-capital sweep
+                b["capital_min"] = b["capital_max"] = b["_peak"] = prev_equity
+                b["_start_cum"] = prev_cum
+            b["trades"] += 1
+            b["net_pnl"] += pnl
+            in_bucket = cum_pnl - b["_start_cum"]
+            b["pnl_min"] = min(b["pnl_min"], in_bucket)
+            b["pnl_max"] = max(b["pnl_max"], in_bucket)
+            b["capital_min"] = min(b["capital_min"], equity)
+            b["capital_max"] = max(b["capital_max"], equity)
+            b["_peak"] = max(b["_peak"], equity)
+            b["max_drawdown_value"] = min(b["max_drawdown_value"], equity - b["_peak"])
+
+    # Peak concurrent deployed capital — sweep over open spans of ALL trades
+    # (open trades hold capital until now). Buckets with only open positions
+    # are created with None capitals so the UI can render them as "—".
+    now = now_ms if now_ms is not None else _now_ms()
+    events: List[tuple] = []
+    for t in trades:
+        start = _to_ms(t.get("created_at"))
+        if start is None:
+            continue
+        value = _f(t.get("entry_price")) * _f(t.get("quantity"))
+        if value <= 0:
+            continue
+        end = _to_ms(t.get("closed_at")) if t.get("closed_at") else now
+        events.append((start, value))
+        events.append((end if end is not None else now, -value))
+    events.sort()
+    deployed = 0.0
+    for ts, delta in events:
+        deployed += delta
+        if deployed <= 0:
+            continue
+        day = _ist_day(ts)
+        if day is None:
+            continue
+        for p in _PERIODS:
+            key = _bucket_key(day, p)
+            b = out[p].get(key)
+            if b is None:
+                b = out[p][key] = _new_period_bucket(key, None, 0.0)
+            b["max_deployed_value"] = max(b["max_deployed_value"], deployed)
+
+    result: Dict[str, List[Dict[str, Any]]] = {}
+    for p in _PERIODS:
+        rows = []
+        for key in sorted(out[p].keys(), reverse=True):
+            b = dict(out[p][key])
+            b.pop("_peak", None)
+            b.pop("_start_cum", None)
+            rows.append({k: (round(v, 2) if isinstance(v, float) else v)
+                         for k, v in b.items()})
+        result[p] = rows
+    return {"starting_capital": round(float(starting_capital), 2),
+            "closed_trades": len(closed), "periods": result}
+
+
+# ---------------------------------------------------------------------------
 # Task 3: per-strategy attribution + contribution
 # ---------------------------------------------------------------------------
 

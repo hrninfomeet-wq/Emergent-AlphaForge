@@ -15,11 +15,11 @@ const istParts = (iso) => {
            time: `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}` };
 };
 
-const COLSPAN = 17;
+const COLSPAN = 18;
 // Proportional column widths (%) so the table auto-fits the pane via `table-fixed`
 // — no horizontal scroll. Sum = 100. Numeric columns are sized for real ₹ values;
-// only the long Strategy/Contract text truncates (with a hover tooltip).
-const COLW = [3, 7, 8, 3, 5, 5, 7, 4, 7, 8, 6, 6, 5, 6, 5, 5, 10];
+// only the long Strategy and Contract texts truncate (with hover tooltips).
+const COLW = [3, 7, 6, 7, 3, 5, 5, 7, 4, 6, 7, 6, 6, 5, 6, 5, 5, 7];
 
 export default function TradeBlotter({
   rows, sort, onToggleSort, onCloseAtMarket, busy,
@@ -59,7 +59,8 @@ export default function TradeBlotter({
                 <input type="checkbox" checked={!!allClosedSelected} onChange={onToggleAll} data-testid="paper-select-all" title="Select closed trades on this page" />
               </th>
               <H col="created_at">Entry Date/Time</H>
-              <H>Strategy / Contract</H>
+              <H>Strategy</H>
+              <H>Contract</H>
               <H right>Side</H>
               <H col="entry_price" right>Entry Price</H>
               <H col="exit_price" right>Exit Price</H>
@@ -84,6 +85,7 @@ export default function TradeBlotter({
                   {strategyOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                 </FilterSelect>
               </td>
+              <td className="p-1" />
               <td className="p-1">
                 <FilterSelect k="direction" title="Filter by side" testid="paper-side-filter">
                   <option value="">All</option>
@@ -131,7 +133,8 @@ export default function TradeBlotter({
                       )}
                     </td>
                     <td className="px-1.5 py-1 font-mono">{entry ? entry.day : "—"}<div className="text-dimmer">{entry ? entry.time : ""}</div></td>
-                    <td className="px-1.5 py-1 overflow-hidden"><div className="font-medium truncate" title={t.deployment_name}>{t.deployment_name || t.strategy_id}</div><div className="text-dimmer font-mono truncate" title={t.trading_symbol || t.instrument}>{t.trading_symbol || t.instrument}</div></td>
+                    <td className="px-1.5 py-1 overflow-hidden"><div className="font-medium truncate" title={t.deployment_name || t.strategy_id}>{t.deployment_name || t.strategy_id}</div></td>
+                    <td className="px-1.5 py-1 overflow-hidden"><div className="text-dim font-mono truncate" title={t.trading_symbol || t.instrument}>{t.trading_symbol || t.instrument}</div></td>
                     <td className="px-1.5 py-1 text-right"><span className={`font-mono ${t.direction === "CE" ? "text-emerald-400" : t.direction === "PE" ? "text-red-400" : "text-dim"}`}>{t.direction || "—"}</span></td>
                     <td className="px-1.5 py-1 text-right font-mono">{fmtNum(t.entry_price)}</td>
                     <td className="px-1.5 py-1 text-right font-mono">{t.exit_price != null ? fmtNum(t.exit_price) : (isOpen ? "live" : "—")}</td>

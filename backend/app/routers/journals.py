@@ -153,6 +153,23 @@ async def paper_strategy_stats():
     return serialize_doc(paper_analytics.json_safe_floats({"items": stats, "count": len(stats)}))
 
 
+@api.get("/paper/deployment-stats")
+async def paper_deployment_stats(deployment_id: str = Query(...)):
+    """Per-deployment drill-down: day/week/month/year buckets of capital,
+    P&L extremes, drawdown, and peak deployed capital (see
+    paper_analytics.deployment_period_stats for the exact semantics)."""
+    db = get_db()
+    starting = await _get_starting_capital(db)
+    rows = await db.paper_trades.find(
+        {"deployment_id": deployment_id},
+        {"_id": 0, "status": 1, "realized_pnl": 1, "created_at": 1,
+         "closed_at": 1, "updated_at": 1, "entry_price": 1, "quantity": 1},
+    ).to_list(length=100000)
+    out = paper_analytics.deployment_period_stats(rows, starting_capital=starting)
+    out["deployment_id"] = deployment_id
+    return serialize_doc(paper_analytics.json_safe_floats(out))
+
+
 # ---------------------------------------------------------------------------
 # Dashboard summary
 # ---------------------------------------------------------------------------
