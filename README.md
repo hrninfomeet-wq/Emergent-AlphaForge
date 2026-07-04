@@ -34,7 +34,6 @@ MongoDB runs on `:27017`. First-time setup (copy `backend/.env.example` → `bac
 ├── frontend/           React (CRA + craco) app: src/pages, src/components, src/hooks
 ├── docs/               All project documentation (see index below)
 ├── tests/              Host + container test suite (pytest)
-├── ltm/                Project-local long-term memory (LTM workflow)
 ├── memory/             Local notes / secrets (gitignored)
 ├── docker-compose.yml  mongo + backend + frontend
 ├── CHANGELOG.md        Versioned history (currently 0.48.x)

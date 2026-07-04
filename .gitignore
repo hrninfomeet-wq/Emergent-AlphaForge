@@ -69,16 +69,12 @@ credentials.json
 !backend/.env.example
 !frontend/.env.example
 
-# --- ltm-power ---
-ltm/store/*.jsonl
-ltm/runtime/*
-ltm/reports/*
-ltm/snapshots/*
-# --- /ltm-power ---
-
 # Local-only memory and credential scratch (never commit)
 memory/
 *credentials*
+
+# Personal strategy notes — local only, never commit
+Strategy_note_self/
 
 # Brainstorming visual-companion mockups
 .superpowers/
