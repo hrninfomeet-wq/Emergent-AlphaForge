@@ -16,6 +16,15 @@ def _read(*parts):
     return (FE.joinpath(*parts)).read_text(encoding="utf-8")
 
 
+def test_optimizer_defaults_to_option_net_evaluation():
+    """For an option-buying app the optimizer must default to ranking the winner
+    by REAL paired-option net rupee (option_rerank), not the spot proxy — a
+    2026-07 audit found spot-optimal configs that lose badly on real options."""
+    page = _read("pages", "Optimizer.jsx")
+    assert 'evaluation_mode: "option_rerank"' in page
+    assert 'evaluation_mode: "spot"' not in page  # spot must not be the default
+
+
 def test_optimizer_form_fields_have_hints():
     page = _read("pages", "Optimizer.jsx")
     # Hint affordance + the hint-capable Row (label + optional hint).
@@ -34,7 +43,7 @@ def test_optimizer_hint_content_is_present_and_grounded():
         "Bayesian (TPE) is the default",
         "Risk-Adjusted is the balanced default",
         "Verify a Single run with walk-forward before trusting it",
-        "Use Option re-rank for a deploy decision",
+        "Keep Option re-rank for any deploy decision",
         # trial controls + guards
         "becomes a ceiling, not a target",       # trial budget / early-stop
         "Keep 1 for a deploy decision",           # parallel workers

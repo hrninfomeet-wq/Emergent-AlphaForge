@@ -116,9 +116,12 @@ const DEFAULT_SETUP = {
   guards_enabled: true,
   min_trades: 10,
   min_direction_pct: 0,
-  // Evaluation mode: "spot" (fast, scores index backtest) or "option_rerank"
-  // (re-rank top-K by real paired-option net rupee).
-  evaluation_mode: "spot",
+  // Evaluation mode: "option_rerank" (DEFAULT — re-rank top-K by REAL
+  // paired-option net rupee, the number you actually trade) or "spot" (fast,
+  // scores the index backtest only; can badly mislead for option buying — a
+  // 2026-07 audit found a confluence run whose spot score was +289k but real
+  // option net was -207k). Option-buying app -> option-net is the honest default.
+  evaluation_mode: "option_rerank",
   rerank_top_k: 50,
   rerank_diversity: false,
   // Analyzing budget (minutes). Caps the option re-rank / survival-check phase;
@@ -810,18 +813,18 @@ export default function Optimizer() {
             )}
 
             {config.run_kind !== "walkforward" && (
-            <Row label="Evaluation" hint={<>How candidates are scored. <b>Spot points</b> ranks on the index backtest (fast). <b>Option re-rank</b> takes the top spot configs and re-scores them on REAL paired-option net rupee (delta/theta/costs) — slower but realistic for option buying. <b>Use Option re-rank for a deploy decision.</b></>}>
+            <Row label="Evaluation" hint={<>How candidates are scored. <b>Option re-rank (default)</b> takes the top spot configs and re-scores them on REAL paired-option net rupee (delta/theta/costs) — the number you actually trade. <b>Spot points</b> ranks on the index backtest only (fast, but spot P&L can badly mislead for option buying — a run can score +289k on spot while losing 2 lakh on real options). <b>Keep Option re-rank for any deploy decision.</b></>}>
               <Select value={config.evaluation_mode} onValueChange={(v) => setConfig({ ...config, evaluation_mode: v })}>
                 <SelectTrigger className="bg-bg-2 border-line h-8" data-testid="opt-eval-mode-select"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="spot">Spot points (fast)</SelectItem>
-                  <SelectItem value="option_rerank">Option re-rank (realistic)</SelectItem>
+                  <SelectItem value="option_rerank">Option re-rank (realistic · default)</SelectItem>
+                  <SelectItem value="spot">Spot points (fast, spot-only)</SelectItem>
                 </SelectContent>
               </Select>
               <div className="text-[10px] text-dimmer mt-1">
                 {config.evaluation_mode === "option_rerank"
-                  ? "Searches on spot, then re-ranks the top-K by REAL paired-option net rupee (delta/theta/costs). Slower but reflects what you actually trade."
-                  : "Scores the index backtest only. Fast, but spot P&L can mislead for option buying."}
+                  ? "Default. Searches on spot, then re-ranks the top-K by REAL paired-option net rupee (delta/theta/costs) — the winner is chosen by what you actually trade."
+                  : "Scores the index backtest only. Faster, but spot P&L can mislead for option buying — the winner may lose on real options."}
               </div>
             </Row>
             )}
