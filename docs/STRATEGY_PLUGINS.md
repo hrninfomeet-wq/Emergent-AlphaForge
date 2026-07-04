@@ -154,6 +154,7 @@ Every `row` provided to `evaluate()` already has these columns computed by `prec
 | `fvg` | "UP" / "DOWN" / None (Fair Value Gap at this bar) |
 | `is_swing_high`, `is_swing_low` | Boolean swing detection (5-bar default) |
 | `session_date`, `ist_time` | For session-anchored logic |
+| `gap_before` | Boolean: this bar is >1 min after the previous bar within the same IST session (a warehouse data gap). Rolling indicators reset their warm-up across it so they never compute over a time discontinuity |
 
 ### Regime
 
