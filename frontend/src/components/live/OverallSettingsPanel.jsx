@@ -119,7 +119,7 @@ function normaliseConfig(raw) {
   };
 }
 
-const SCOPE_LABEL = { overall: "Strategy-wide", broker_level: "Broker-level" };
+const SCOPE_LABEL = { overall: "Strategy-wide", broker_level: "Broker-level", paper: "Paper basket" };
 
 const inputCls =
   "bg-bg-2 border border-line rounded-md px-2 py-1.5 text-xs font-mono text-foreground placeholder:text-dimmer focus:outline-none focus:ring-1 focus:ring-info/50 disabled:opacity-50";

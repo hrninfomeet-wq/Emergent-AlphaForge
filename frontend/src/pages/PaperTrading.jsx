@@ -492,7 +492,19 @@ export default function PaperTrading() {
 
       {/* Basket-level overall controls (Live-page parity): SL / target / trailing
           on the WHOLE open paper basket, evaluated by the exit monitor. */}
-      <OverallSettingsPanel scope="paper" />
+      <div className="rounded-lg border border-line bg-bg-1" data-testid="paper-overall-controls">
+        <div className="px-3 py-2 border-b border-line">
+          <div className="text-[11px] font-semibold uppercase tracking-wider text-dim">
+            Overall Controls — paper basket
+          </div>
+          <div className="text-[10px] text-dimmer">
+            Basket SL / target / trailing across ALL open paper positions; a breach squares the whole basket (evaluated by the exit monitor, ~1.5s).
+          </div>
+        </div>
+        <div className="p-3">
+          <OverallSettingsPanel scope="paper" />
+        </div>
+      </div>
 
       {/* P&L calendar heat-grid (per-day realized ₹, filtered set) + global exit-reason card */}
       <div className="grid lg:grid-cols-[2fr_1fr] gap-3">
