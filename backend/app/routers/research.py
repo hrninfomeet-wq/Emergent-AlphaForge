@@ -35,6 +35,8 @@ from app.runtime import (
     _run_paired_option_backtest,
     _ts_ms_to_ist_date_str,
 )
+from app.option_contract_store import upsert_option_contracts
+from app.expired_contract_backfill import backfill_expired_option_contracts
 
 from app.schemas import (
     BacktestReq,
@@ -73,12 +75,66 @@ async def save_profile(name: str, body: ProfileSave):
     return doc
 
 
+async def _run_preflight_ingest_chain(
+    run_id: str,
+    plan_req: OptionWarehousePlanReq,
+    *,
+    sync_contracts: bool,
+) -> None:
+    """Background chain for the backtest preflight ingest.
+
+    Mirrors the data-hygiene catch-up stages: (optionally) sync option-contract
+    metadata first — current contracts AND expired-in-window weeklies — THEN
+    build the missing-only fetch plan, so contracts that were unknown a moment
+    ago produce fetch tasks instead of surviving as missing_contract gaps.
+    Any stage failure is recorded on the warehouse_runs row (the panel polls it).
+    """
+    db = get_db()
+
+    def _now() -> str:
+        return datetime.now(timezone.utc).isoformat()
+
+    try:
+        if sync_contracts:
+            await db.warehouse_runs.update_one(
+                {"id": run_id},
+                {"$set": {"status": "running", "stage": "contracts",
+                          "progress_pct": 5, "updated_at": _now()}},
+            )
+            items = await upstox_client.fetch_option_contracts(plan_req.underlying)
+            await upsert_option_contracts(db, items)
+            await backfill_expired_option_contracts(
+                db, plan_req.underlying,
+                from_date=plan_req.from_date, to_date=plan_req.to_date,
+                max_expiries=200, confirm_large_fetch=True,
+            )
+        preview = await _build_option_warehouse_preview(plan_req)
+        chunk_days = int(preview.get("chunk_guidance", {}).get("chunk_days") or 5)
+        await db.warehouse_runs.update_one(
+            {"id": run_id},
+            {"$set": {"stage": "option_candles", "chunk_days": chunk_days,
+                      "updated_at": _now()}},
+        )
+        await run_option_warehouse_fetch_job(
+            run_id, preview, fetch_missing_only=True, chunk_days=chunk_days,
+        )
+    except Exception as exc:
+        log.exception("backtest preflight ingest chain failed (run %s)", run_id)
+        await db.warehouse_runs.update_one(
+            {"id": run_id},
+            {"$set": {"status": "failed", "error": str(exc)[:300],
+                      "updated_at": _now()}},
+        )
+
+
 @api.post("/backtest/option-preflight")
 async def backtest_option_preflight(req: BacktestReq, ingest_missing: bool = Query(False)):
     """Pre-run check: does the option warehouse cover the signals this config
     would generate? Returns a would-pair coverage report. With ingest_missing=1
-    and Upstox connected, also submits a background fetch of the option data for
-    the window (ATM/ITM1/OTM1) so the gaps are filled before the real run."""
+    and Upstox connected, submits a background chain that (when contracts are
+    missing) syncs contract metadata first, then fetches the missing candles
+    for ATM/ITM1/OTM1 plus the configured moneyness. The panel polls the
+    returned run_id and re-checks automatically when the run finishes."""
     report = await _option_preflight_report(req)
     if not report.get("enabled"):
         return serialize_doc(report)
@@ -90,39 +146,40 @@ async def backtest_option_preflight(req: BacktestReq, ingest_missing: bool = Que
         elif not (req.start_ts and req.end_ts):
             report["ingest"] = {"status": "skipped", "reason": "no_window"}
         else:
-            # Fetch ATM + ITM1 + OTM1 both legs over the window via the standard
-            # option warehouse fetch job (missing-only, so re-running is cheap).
+            # Band always covers the default ATM±1 plus whatever moneyness this
+            # config actually trades — otherwise OTM2/OTM3/ITM2 setups ingest
+            # contracts the backtest never uses and coverage cannot converge.
+            band = ["atm", "itm1", "otm1"]
+            cfg_m = str(getattr(req.option_backtest, "moneyness", "") or "").lower()
+            if cfg_m and cfg_m not in band:
+                band.append(cfg_m)
             plan_req = OptionWarehousePlanReq(
                 underlying=report["instrument"],
                 from_date=_ts_ms_to_ist_date_str(req.start_ts),
                 to_date=_ts_ms_to_ist_date_str(req.end_ts),
                 expiry_policy="next_available",
-                moneyness=["atm", "itm1", "otm1"],
+                moneyness=band,
                 legs=["CE", "PE"],
                 sample_interval_minutes=1,
                 max_contracts=2000,
                 fetch_missing_only=True,
             )
-            try:
-                preview = await _build_option_warehouse_preview(plan_req)
-                chunk_days = int(preview.get("chunk_guidance", {}).get("chunk_days") or 5)
-                run_id = str(_uuid.uuid4())
-                ts = datetime.now(timezone.utc).isoformat()
-                await get_db().warehouse_runs.insert_one({
-                    "id": run_id, "instrument": report["instrument"],
-                    "source": "backtest_preflight", "kind": "option_candles",
-                    "started_at": ts, "updated_at": ts, "status": "queued",
-                    "from_date": plan_req.from_date, "to_date": plan_req.to_date,
-                    "moneyness": plan_req.moneyness, "legs": plan_req.legs,
-                    "chunk_days": chunk_days, "progress_pct": 0,
-                })
-                asyncio.create_task(run_option_warehouse_fetch_job(
-                    run_id, preview, fetch_missing_only=True, chunk_days=chunk_days,
-                ))
-                report["ingest"] = {"status": "started", "run_id": run_id,
-                                    "to_fetch": int(preview.get("summary", {}).get("missing_data_contracts", 0))}
-            except Exception as e:
-                report["ingest"] = {"status": "error", "error": str(e)[:300]}
+            sync_contracts = report["missing_contract"] > 0
+            run_id = str(_uuid.uuid4())
+            ts = datetime.now(timezone.utc).isoformat()
+            await get_db().warehouse_runs.insert_one({
+                "id": run_id, "instrument": report["instrument"],
+                "source": "backtest_preflight", "kind": "option_candles",
+                "started_at": ts, "updated_at": ts, "status": "queued",
+                "from_date": plan_req.from_date, "to_date": plan_req.to_date,
+                "moneyness": band, "legs": plan_req.legs,
+                "sync_contracts": sync_contracts, "progress_pct": 0,
+            })
+            asyncio.create_task(_run_preflight_ingest_chain(
+                run_id, plan_req, sync_contracts=sync_contracts,
+            ))
+            report["ingest"] = {"status": "started", "run_id": run_id,
+                                "moneyness": band, "contracts_stage": sync_contracts}
     return serialize_doc(report)
 
 

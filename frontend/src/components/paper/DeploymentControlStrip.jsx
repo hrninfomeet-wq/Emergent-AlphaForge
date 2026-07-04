@@ -1,20 +1,89 @@
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
+import { api } from "@/lib/api";
+import { toast } from "sonner";
 import { fmtNum, colorPnL } from "@/lib/fmt";
-import { Pause, Play, Square, OctagonX, Activity } from "lucide-react";
+import { Pause, Play, Square, OctagonX, Activity, SlidersHorizontal } from "lucide-react";
 import { deploymentLiveness } from "@/lib/deploymentLiveness";
 
 const inr = (v) => (v == null ? "—" : `₹${fmtNum(v, 0)}`);
 
+// Per-deployment paper caps editor — Live-deploy parity (lots/signal override,
+// max concurrent positions, daily loss cap ₹, max trades/day). Empty = no cap.
+function CapsEditor({ dep, onSaved }) {
+  const risk = dep.risk || {};
+  const caps = risk.daily_caps || {};
+  const [lots, setLots] = useState(risk.lots_override != null ? String(risk.lots_override) : "");
+  const [maxConc, setMaxConc] = useState(risk.max_concurrent != null ? String(risk.max_concurrent) : "");
+  const [maxLoss, setMaxLoss] = useState(caps.max_loss != null ? String(caps.max_loss) : "");
+  const [maxTrades, setMaxTrades] = useState(caps.max_trades != null ? String(caps.max_trades) : "");
+  const [saving, setSaving] = useState(false);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const dailyCaps =
+        maxLoss !== "" || maxTrades !== ""
+          ? {
+              enabled: true,
+              ...(maxLoss !== "" ? { max_loss: Math.abs(parseFloat(maxLoss)) } : {}),
+              ...(maxTrades !== "" ? { max_trades: parseInt(maxTrades, 10) } : {}),
+            }
+          : null;
+      await api.putPaperCaps(dep.id, {
+        lots_override: lots !== "" ? parseInt(lots, 10) : null,
+        max_concurrent: maxConc !== "" ? parseInt(maxConc, 10) : null,
+        daily_caps: dailyCaps,
+      });
+      toast.success("Paper caps saved");
+      onSaved?.();
+    } catch (e) {
+      toast.error(`Caps save failed: ${e.response?.data?.detail || e.message}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const Field = ({ label, value, onChange, placeholder }) => (
+    <label className="flex flex-col gap-0.5 text-[10px] text-dimmer">
+      {label}
+      <input value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder}
+        inputMode="numeric"
+        className="h-6 w-24 rounded border border-line bg-bg-2 px-1.5 text-[11px] font-mono text-foreground" />
+    </label>
+  );
+
+  return (
+    <div className="px-3 pb-2 flex items-end gap-3 flex-wrap bg-bg-0 border-t border-line/60 pt-2"
+      data-testid="paper-caps-editor">
+      <Field label="Lots / signal (override)" value={lots} onChange={setLots} placeholder="preset sizing" />
+      <Field label="Max concurrent" value={maxConc} onChange={setMaxConc} placeholder="∞" />
+      <Field label="Daily loss cap ₹" value={maxLoss} onChange={setMaxLoss} placeholder="off" />
+      <Field label="Max trades / day" value={maxTrades} onChange={setMaxTrades} placeholder="∞" />
+      <Button size="sm" variant="outline" disabled={saving} onClick={save}
+        className="h-6 text-[11px]" data-testid="paper-caps-save">
+        Save caps
+      </Button>
+      <span className="text-[10px] text-dimmer">
+        Empty = no cap. Lots override replaces the preset's sizing replay.
+      </span>
+    </div>
+  );
+}
+
 // One row of the Live Deployments strip: status dot + strategy/name, live open
 // count + MTM, and the Pause/Resume + Stop controls.
-function DeploymentControlRow({ dep, open, busy, feedHealth, onPause, onResume, onStop }) {
+function DeploymentControlRow({ dep, open, busy, feedHealth, onPause, onResume, onStop, onCapsSaved }) {
   const status = String(dep.status || "").toUpperCase();
   const isActive = status === "ACTIVE";
   const isPaused = status === "PAUSED";
   const live = deploymentLiveness(dep, feedHealth);
   const openCount = open?.openCount || 0;
   const openMtm = open?.openMtm || 0;
+  const [capsOpen, setCapsOpen] = useState(false);
+  const hasCaps = !!(dep.risk?.lots_override != null || dep.risk?.max_concurrent != null || dep.risk?.daily_caps);
   return (
+    <div data-testid="paper-deploy-row-wrap">
     <div className="px-3 py-2 flex items-center gap-2 flex-wrap" data-testid="paper-deploy-row">
       <span className={`w-2 h-2 rounded-full shrink-0 ${live.dot}`} title={live.tooltip} />
       <div className="min-w-0">
@@ -26,6 +95,11 @@ function DeploymentControlRow({ dep, open, busy, feedHealth, onPause, onResume, 
         {openCount} open · MTM <span className={colorPnL(openMtm)}>{inr(openMtm)}</span>
       </span>
       <div className="ml-auto flex items-center gap-1.5">
+        <Button variant="ghost" size="sm" disabled={busy} onClick={() => setCapsOpen(!capsOpen)}
+          className={`h-7 text-xs ${hasCaps ? "text-info" : "text-dim"} hover:text-foreground`}
+          data-testid="paper-deploy-caps" title="Lots / concurrency / daily caps (Live-deploy parity)">
+          <SlidersHorizontal className="w-3 h-3 mr-1" /> Caps
+        </Button>
         {isActive && (
           <Button variant="ghost" size="sm" disabled={busy} onClick={() => onPause(dep)}
             className="h-7 text-xs text-amber-300 hover:text-amber-200" data-testid="paper-deploy-pause">
@@ -44,12 +118,14 @@ function DeploymentControlRow({ dep, open, busy, feedHealth, onPause, onResume, 
         </Button>
       </div>
     </div>
+    {capsOpen && <CapsEditor dep={dep} onSaved={onCapsSaved} />}
+    </div>
   );
 }
 
 // Live Deployments control strip: master Stop-all + per-deployment Pause/Resume/Stop.
 // Presentational only — the page owns the doPause/doResume/doStop/doStopAll handlers.
-export default function DeploymentControlStrip({ liveDeployments, perDeployOpen, busy, feedHealth, onPause, onResume, onStop, onStopAll }) {
+export default function DeploymentControlStrip({ liveDeployments, perDeployOpen, busy, feedHealth, onPause, onResume, onStop, onStopAll, onCapsSaved }) {
   return (
     <div className="rounded-lg border border-line bg-bg-1" data-testid="paper-deploy-strip">
       <div className="px-3 py-2 border-b border-line flex items-center gap-2">
@@ -76,6 +152,7 @@ export default function DeploymentControlStrip({ liveDeployments, perDeployOpen,
               onPause={onPause}
               onResume={onResume}
               onStop={onStop}
+              onCapsSaved={onCapsSaved}
             />
           ))}
         </div>

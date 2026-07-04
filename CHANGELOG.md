@@ -2,6 +2,43 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.49.0] — Backtest UX + optimizer honesty fix + Paper↔Live parity + live trade stats (2026-07-04)
+
+Four user-requested slices across Backtest, Optimizer, Paper, and Live pages.
+
+- **Backtest UX.** `NumberSliderInput` params are finally typeable (clamp moved from
+  per-keystroke to commit on blur/Enter — fixes Backtest params, Optimizer trial budget,
+  PreTradeChecklist); "Pair signals with option candles" defaults **ON**; new sortable
+  **Opt P&L%** column ((Opt Exit − Opt Entry)/Opt Entry) beside Opt Exit; preflight button
+  row no longer clips in the 320px aside.
+- **Preflight ingest converges now.** The "Ingest missing & recheck" chain (a) syncs option-contract
+  metadata first when contracts are missing — current + expired-in-window backfill — so
+  `missing_contract` gaps actually fill; (b) ingests the configured moneyness band (OTM2/3, ITM2
+  setups previously fetched contracts the backtest never used); (c) the panel polls the run and
+  **auto re-checks** coverage on completion; (d) chain errors surface in the panel.
+- **Optimizer honesty fix (behavior change, deliberate).** "Optimize indicator periods" had been a
+  silent no-op since birth: `merged_params()` dropped the injected catalog params (rsi_length,
+  macd_*, adx_length, …) in every path — including the optimizer's own trials — so displayed
+  "optimized" periods were never applied. `merged_params` now accepts the shared indicator keys
+  (single source: `indicator_groups.SHARED_INDICATOR_PARAM_KEYS`, drift-guarded against
+  optimizer.py's literal). Re-running an old indicator-optimized preset now yields HONEST numbers.
+  The Backtest form shows a read-only "Carried from preset: …" line for non-schema params.
+- **Paper page.** Blotter "Strategy / Contract" split into two columns (18-col layout); Open P&L
+  KPI moved left of Live MTM; **per-deployment drill-down**: Daily/Weekly/Monthly/Yearly stats
+  (trades, net/min/max P&L, min/max deployment-isolated capital, max drawdown, peak deployed
+  capital via sweep-line) — `deployment_period_stats` + `GET /api/paper/deployment-stats`.
+- **Paper↔Live parity.** Overall controls (basket SL / target / trailing) now run for PAPER via a
+  new `paper` scope on the same store + the pure live evaluator, evaluated from the
+  LiveExitMonitor cycle (supervisor-reconciled; fail-closed on stale marks). Per-deployment caps
+  editor (Live-deploy parity): lots/signal override (beats the pinned sizing replay),
+  max concurrent, daily loss cap / max trades-day — `PUT /api/deployments/{id}/paper-caps`,
+  enforced at entry in `paper_auto`. OCO backstop stays live-only (real resting broker orders).
+- **Live page.** New **Live Trade Statistics** card: period P&L, win rate, profit factor and
+  per-strategy breakdown over the journaled `live_trades` close-loop history
+  (`GET /api/live-broker/trade-stats`, reusing the paper aggregators).
+- Tests: +25 (pandas-drift fix, seam regression, period-stats math, parity enforcement, wiring
+  pins) — host suite **2936 passed / 0 failed**.
+
 ## [0.48.3] — Deep cleanup: dead code, unused deps, disk bloat (2026-07-03)
 
 Project-wide audit (multi-agent sweep, every deletion adversarially verified against dynamic

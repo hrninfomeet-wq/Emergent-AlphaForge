@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Slider } from "@/components/ui/slider";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -5,7 +6,9 @@ import { Label } from "@/components/ui/label";
 /**
  * Combined slider + manual number input.
  * User can drag the slider OR type a precise value in the number box.
- * Both stay in sync. Values are clamped to [min, max].
+ * Both stay in sync. Values are clamped to [min, max] — but only on
+ * commit (blur/Enter), never per keystroke, so intermediate states like
+ * "5" while retyping "50"→"55" are typeable.
  */
 export function NumberSliderInput({
   label,
@@ -19,11 +22,21 @@ export function NumberSliderInput({
   testid,
   disabled = false,
 }) {
-  const handleInput = (raw) => {
+  // null = not editing; string while the user is typing in the box
+  const [draft, setDraft] = useState(null);
+
+  const commit = (raw) => {
+    setDraft(null);
     const num = Number(raw);
-    if (Number.isNaN(num)) return;
-    const clamped = Math.max(min, Math.min(max, num));
-    onChange(clamped);
+    if (raw === "" || Number.isNaN(num)) return; // revert to committed value
+    onChange(Math.max(min, Math.min(max, num)));
+  };
+
+  const handleTyping = (raw) => {
+    setDraft(raw);
+    const num = Number(raw);
+    // live-sync the slider only when the typed value is already valid in-range
+    if (raw !== "" && !Number.isNaN(num) && num >= min && num <= max) onChange(num);
   };
 
   return (
@@ -50,12 +63,16 @@ export function NumberSliderInput({
         <div className="relative shrink-0">
           <Input
             type="number"
-            value={Number(value ?? min).toFixed(decimals)}
+            value={draft ?? Number(value ?? min).toFixed(decimals)}
             min={min}
             max={max}
             step={step}
             disabled={disabled}
-            onChange={(e) => handleInput(e.target.value)}
+            onChange={(e) => handleTyping(e.target.value)}
+            onBlur={(e) => commit(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") commit(e.currentTarget.value);
+            }}
             className="w-24 h-7 bg-bg-2 border-line text-xs font-mono text-right pr-6"
             data-testid={testid ? `${testid}-input` : undefined}
           />

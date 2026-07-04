@@ -303,3 +303,27 @@ def run_all_groups(raw_df: pd.DataFrame, params: dict) -> pd.DataFrame:
     """Same group loop with NO cache (fresh group_caches each call). Convenience
     used by the harness to exercise the cache-miss path."""
     return enrich_with_cache(raw_df, params, {})
+
+
+# ---------------------------------------------------------------------------
+# Shared indicator-period params (single source of truth for the seam fix).
+#
+# These tune the SHARED enrichment (precompute_all_indicators /
+# enrich_with_cache), not any one strategy. StrategyBase.merged_params()
+# accepts them for EVERY strategy so that optimizer-tuned indicator periods
+# genuinely flow through trials, saved presets, Backtest Lab re-runs, and
+# paper deployments. optimizer.py keeps its own literal INDICATOR_PARAM_KEYS
+# (host tests string-pin it there) with an import-time guard that the two
+# tuples never drift.
+# ---------------------------------------------------------------------------
+SHARED_INDICATOR_PARAM_KEYS = (
+    "ema_fast", "ema_slow", "rsi_length",
+    "macd_fast", "macd_slow", "macd_signal",
+    "atr_length", "adx_length", "chop_length", "swing_lookback",
+    "vel_n", "vel_z_window", "vr_q", "vr_lookback", "vr_scale",
+    "bb_len", "bb_mult", "kc_len", "kc_atr_mult", "sqz_mom_len",
+    "st_period", "st_mult",
+    "cpr_narrow_pctile", "cpr_wide_pctile", "cpr_pctile_window",
+    "or_minutes",
+    "tod_lookback_sessions", "tod_min_atr_frac",
+)

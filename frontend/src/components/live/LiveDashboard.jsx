@@ -17,6 +17,7 @@ import FeedHealthBanner from "@/components/live/FeedHealthBanner";
 import ExecutionStateStrip from "@/components/live/ExecutionStateStrip";
 import LiveDeploymentStrip from "@/components/live/LiveDeploymentStrip";
 import LiveBlotter from "@/components/live/LiveBlotter";
+import LiveTradeStats from "@/components/live/LiveTradeStats";
 import GreeksCard from "@/components/live/GreeksCard";
 import PositionMonitor from "@/components/live/PositionMonitor";
 import LiveOrderTicket from "@/components/live/LiveOrderTicket";
@@ -527,6 +528,9 @@ export default function LiveDashboard() {
       >
         <LiveBlotter rows={blotter?.rows} gtt={gtt?.gtt} />
       </SectionCard>
+
+      {/* ── 1c-bis. Journaled live-trade history statistics (analysis) ───── */}
+      <LiveTradeStats />
 
       {/* ── 1d. Portfolio Greeks (net Δ / Θ across live positions) ───────── */}
       <GreeksCard />

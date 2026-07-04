@@ -294,6 +294,16 @@ def resolve_deployment_lots(
     from app.portfolio import SizingConfig, size_position
 
     lot_size = max(1, int((contract or {}).get("lot_size") or 1))
+    # Explicit per-deployment override (Paper page caps editor) wins over the
+    # pinned sizing replay — live-parity "lots per signal".
+    override = (risk_cfg or {}).get("lots_override")
+    if override is not None:
+        try:
+            n = int(override)
+        except (TypeError, ValueError):
+            n = 0
+        if n >= 1:
+            return n, {"sizing_mode": "lots_override"}
     pin = (risk_cfg or {}).get("sizing") or {}
     sizing_config = pin.get("sizing_config")
     if isinstance(sizing_config, dict):
@@ -417,6 +427,21 @@ async def auto_paper_trade_for_signal(
     gov = await check_soft_daily_governor(db, deployment)
     if gov.get("halt"):
         return {"created": False, "reason": f"daily_cap:{gov.get('reason')}"}
+
+    # Live-parity cap: max concurrent OPEN positions for this deployment.
+    max_concurrent = (deployment.get("risk") or {}).get("max_concurrent")
+    if max_concurrent is not None:
+        try:
+            cap = int(max_concurrent)
+        except (TypeError, ValueError):
+            cap = 0
+        if cap >= 1:
+            open_count = await db.paper_trades.count_documents(
+                {"deployment_id": str(deployment.get("id") or ""), "status": "OPEN"}
+            )
+            if open_count >= cap:
+                return {"created": False,
+                        "reason": f"max_concurrent:{open_count}/{cap}"}
 
     contract = signal_doc.get("option_contract") or {}
     instrument_key = str(contract.get("instrument_key") or "")

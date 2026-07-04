@@ -34,16 +34,21 @@ class LiveExitMonitor:
         db_factory: Callable[[], Any],
         tick_lookup_factory: Callable[[], Callable[[str], Optional[Dict[str, Any]]]],
         mark_fn: Callable[..., Awaitable[List[Dict[str, Any]]]],
+        overall_fn: Optional[Callable[..., Awaitable[Dict[str, Any]]]] = None,
         poll_seconds: float = POLL_SECONDS,
     ):
         self._db_factory = db_factory
         self._tick_lookup_factory = tick_lookup_factory
         self._mark_fn = mark_fn
+        # Optional basket-level pass run after per-leg marking (paper overall
+        # controls: SL / target / trailing on the whole open basket).
+        self._overall_fn = overall_fn
         self._poll_seconds = float(poll_seconds)
         self._task: Optional[asyncio.Task] = None
         self._stats: Dict[str, Any] = {
             "running": False, "started_at": None, "cycles": 0,
             "open_trades_checked": 0, "auto_closes": 0,
+            "overall_exits": 0, "overall_last": None,
             "last_run_at": None, "last_error": None,
         }
 
@@ -56,6 +61,12 @@ class LiveExitMonitor:
             db = self._db_factory()
             tick_lookup = self._tick_lookup_factory()
             summaries = await self._mark_fn(db, latest_tick_lookup=tick_lookup)
+            if self._overall_fn is not None:
+                overall = await self._overall_fn(db, latest_tick_lookup=tick_lookup)
+                self._stats["overall_last"] = {k: overall.get(k) for k in ("exit", "reason", "mtm")}
+                if overall.get("exit"):
+                    self._stats["overall_exits"] += 1
+                    log.info("overall controls squared the paper basket: %s", overall.get("reason"))
             closed = sum(1 for s in (summaries or []) if s.get("closed"))
             self._stats["cycles"] += 1
             self._stats["open_trades_checked"] += len(summaries or [])

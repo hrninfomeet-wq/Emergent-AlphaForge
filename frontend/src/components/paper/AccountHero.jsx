@@ -51,9 +51,9 @@ export default function AccountHero({ analytics, startingCapital, onSetCapital, 
           </div>
         </div>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-5 gap-y-2">
+          <Stat label="Open P&L" value={fmtINRSigned(a.open_pnl)} tone={a.open_pnl} />
           <Stat label="Live MTM" value={fmtINR(a.account_value_mtm)} tone={a.account_value_mtm - a.starting_capital} />
           <Stat label="Deployed in market" value={fmtINR(a.deployed_capital)} />
-          <Stat label="Open P&L" value={fmtINRSigned(a.open_pnl)} tone={a.open_pnl} />
           <Stat label="Max drawdown" value={fmtINR(a.max_drawdown_value)} tone={a.max_drawdown_value} />
         </div>
       </div>

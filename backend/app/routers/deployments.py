@@ -649,6 +649,51 @@ async def get_deployment(deployment_id: str):
     return serialize_doc(doc)
 
 
+class _PaperCapsBody(BaseModel):
+    """Paper-deployment risk caps (Live-deploy parity). Every field optional;
+    null clears the cap. daily_caps mirrors exit_controls.DailyCapsConfig."""
+    lots_override: Optional[int] = None
+    max_concurrent: Optional[int] = None
+    daily_caps: Optional[Dict[str, Any]] = None
+
+
+@api.put("/deployments/{deployment_id}/paper-caps")
+async def set_paper_caps(deployment_id: str, body: _PaperCapsBody):
+    """Set per-deployment paper trading caps: fixed lots per signal (overrides
+    the pinned sizing replay), max concurrent open positions, and the soft
+    daily governor config (max loss / target / max trades per day)."""
+    db = get_db()
+    dep = await db.strategy_deployments.find_one({"id": deployment_id}, {"_id": 0})
+    if not dep:
+        raise HTTPException(404, "Deployment not found")
+    if str(dep.get("mode") or "").lower() != "paper":
+        raise HTTPException(400, "paper-caps apply to paper deployments only")
+    if body.lots_override is not None and not (1 <= int(body.lots_override) <= 100):
+        raise HTTPException(400, "lots_override must be 1..100")
+    if body.max_concurrent is not None and not (1 <= int(body.max_concurrent) <= 50):
+        raise HTTPException(400, "max_concurrent must be 1..50")
+    if body.daily_caps is not None:
+        from app.exit_controls import DailyCapsConfig
+        try:
+            DailyCapsConfig.from_dict(body.daily_caps)  # validate shape
+        except Exception as exc:
+            raise HTTPException(400, f"invalid daily_caps: {exc}") from exc
+    risk = dict(dep.get("risk") or {})
+    for key, val in (("lots_override", body.lots_override),
+                     ("max_concurrent", body.max_concurrent),
+                     ("daily_caps", body.daily_caps)):
+        if val is None:
+            risk.pop(key, None)
+        else:
+            risk[key] = val
+    await db.strategy_deployments.update_one(
+        {"id": deployment_id},
+        {"$set": {"risk": risk, "updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    doc = await db.strategy_deployments.find_one({"id": deployment_id}, {"_id": 0})
+    return serialize_doc(doc)
+
+
 @api.post("/deployments/{deployment_id}/pause")
 async def pause_deployment(deployment_id: str):
     return serialize_doc(await _set_deployment_status(deployment_id, "PAUSED"))
