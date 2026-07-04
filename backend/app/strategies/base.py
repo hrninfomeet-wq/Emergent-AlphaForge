@@ -89,10 +89,15 @@ class StrategyBase:
         return {k: v.get("default") for k, v in self.parameter_schema.items()}
 
     def merged_params(self, override: Dict[str, Any] | None) -> Dict[str, Any]:
+        # Accept schema params PLUS the shared indicator-period keys: the
+        # optimizer injects those into its search space, and dropping them here
+        # made "optimize indicator periods" a silent no-op (trials, saved
+        # presets, and deployments all evaluated at default periods).
+        from app.indicator_groups import SHARED_INDICATOR_PARAM_KEYS
         out = self.default_params()
         if override:
             for k, v in override.items():
-                if k in out:
+                if k in out or k in SHARED_INDICATOR_PARAM_KEYS:
                     out[k] = v
         return out
 

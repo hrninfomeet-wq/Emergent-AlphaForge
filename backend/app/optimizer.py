@@ -73,6 +73,7 @@ INDICATOR_PARAM_KEYS = (
 # tuning them silently reuses a stale enriched frame. This import-time guard
 # prevents the two lists from drifting as new keyed groups are added.
 from app.indicator_groups import GROUPS as _GROUPS  # noqa: E402
+from app.indicator_groups import SHARED_INDICATOR_PARAM_KEYS as _SHARED_KEYS  # noqa: E402
 
 _missing_indicator_keys = {
     k for grp in _GROUPS for k in grp.param_keys
@@ -82,6 +83,16 @@ if _missing_indicator_keys:
         f"INDICATOR_PARAM_KEYS missing memoized-group params {_missing_indicator_keys}; "
         "tuning them would reuse a stale enriched frame. Add them to "
         "INDICATOR_PARAM_KEYS in app/optimizer.py."
+    )
+
+# merged_params() accepts exactly SHARED_INDICATOR_PARAM_KEYS so optimizer-tuned
+# periods flow through every evaluation path. The two tuples must never drift,
+# or a tuned param would either be dropped again (no-op) or key the cache
+# without reaching the enrichment.
+if set(INDICATOR_PARAM_KEYS) != set(_SHARED_KEYS):
+    raise RuntimeError(
+        "INDICATOR_PARAM_KEYS (optimizer.py) and SHARED_INDICATOR_PARAM_KEYS "
+        f"(indicator_groups.py) drifted: {set(INDICATOR_PARAM_KEYS) ^ set(_SHARED_KEYS)}"
     )
 
 # Catalog of indicator-period params the optimizer can inject into the search

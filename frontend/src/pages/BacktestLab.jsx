@@ -1412,6 +1412,19 @@ export default function BacktestLab() {
               {(!selectedStrategy.parameter_schema || Object.keys(selectedStrategy.parameter_schema).length === 0) && (
                 <div className="text-xs text-dimmer">No tunable parameters.</div>
               )}
+              {(() => {
+                // Params carried invisibly from an optimizer preset (e.g. tuned
+                // indicator periods) — show them so the run is reproducible on sight.
+                const schemaKeys = new Set(Object.keys(selectedStrategy.parameter_schema || {}));
+                const carried = Object.entries(config.params || {}).filter(([k]) => !schemaKeys.has(k));
+                if (carried.length === 0) return null;
+                return (
+                  <div className="rounded border border-line bg-bg-0 px-2 py-1.5 text-[11px] text-dimmer" data-testid="carried-preset-params">
+                    <span className="text-dim">Carried from preset:</span>{" "}
+                    <span className="font-mono">{carried.map(([k, v]) => `${k}=${v}`).join(" · ")}</span>
+                  </div>
+                );
+              })()}
             </div>
           )}
         </Panel>
