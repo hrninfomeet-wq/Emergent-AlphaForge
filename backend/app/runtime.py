@@ -22,7 +22,7 @@ from app.indicators import precompute_all_indicators
 from app.regime import classify_regime_series
 from app.strategies.base import get_registry
 from app.backtest import run_backtest
-from app.option_backtest import simulate_paired_option_trades
+from app.option_backtest import simulate_paired_option_trades, preflight_trade_pairs
 from app.dte import compute_dte, normalize_dte_filter
 from app.vix import VIX_INSTRUMENT, vix_instrument_key, annotate_trades_with_vix
 from app.option_data_planner import build_option_warehouse_plan
@@ -994,6 +994,7 @@ async def _option_preflight_report(req: BacktestReq) -> Dict[str, Any]:
     would_pair = 0
     missing_candle = 0
     entry_age_ms = max(0, int(config.entry_max_age_sec or 0)) * 1000
+    exit_age_ms = max(0, int(config.exit_max_age_sec or 0)) * 1000
     key_ts_index: Dict[str, list] = {}
     if needed:
         all_ts = [t for v in needed.values() for pair in v["ts"] for t in pair]
@@ -1012,12 +1013,13 @@ async def _option_preflight_report(req: BacktestReq) -> Dict[str, Any]:
         key = pt["key"]
         ts_list = key_ts_index.get(canonical_instrument_key(str(key)), [])
         entry_ts = int(spot_trades[pt["idx"]].get("entry_ts", 0))
-        ok = False
-        if ts_list:
-            pos = bisect.bisect_right(ts_list, entry_ts) - 1
-            if pos >= 0 and (entry_ts - ts_list[pos]) <= entry_age_ms:
-                ok = True
-        if ok:
+        exit_ts = int(spot_trades[pt["idx"]].get("exit_ts") or entry_ts)
+        # A trade only pairs if BOTH the entry AND the exit candle exist within
+        # their max-age windows — mirroring the real sim's two _candle_at_or_before
+        # gates (option_backtest.py). Checking only the entry side overstated
+        # coverage: illiquid strikes with an entry print but an exit-side gap were
+        # counted as would_pair, then silently dropped as MISSING_EXIT_CANDLE.
+        if preflight_trade_pairs(ts_list, entry_ts, exit_ts, entry_age_ms, exit_age_ms):
             would_pair += 1
         else:
             missing_candle += 1
