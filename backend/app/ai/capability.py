@@ -54,6 +54,47 @@ def capability_report() -> Dict[str, Any]:
     }
 
 
+def capability_summary() -> Dict[str, Any]:
+    """UI-friendly view of what the strategy engine CAN and CANNOT build, so the
+    authoring wizard can set user expectations up-front (not only after a failed
+    parse). Pure + host-safe. Groups the deterministic facts from capability_report
+    + the R2/R4 blocked-concept sets into plain-English buckets."""
+    rpt = capability_report()
+    wh = rpt["warehouse"]
+    features = [
+        {"name": f.get("feature") or f.get("name"),
+         "live_feasible": f.get("live_feasible"),
+         "columns": f.get("columns", [])}
+        for f in rpt["features"]
+    ]
+    # What the engine cannot build because the warehouse doesn't store the data.
+    cannot_build = [
+        "Open interest / PCR / max-pain (no OI history)",
+        "Option greeks / IV / IV-rank (no per-strike greeks history)",
+        "Order flow / market depth / tape (1m bars only, no L2/tick)",
+        "News / sentiment signals (not ingested)",
+        "VIX-history-based rules (no VIX history stored)",
+    ]
+    needs_engine_work = [
+        "Cross-instrument / relative-strength / pairs (needs a second instrument's "
+        "aligned bars — an engine change, not available yet)",
+    ]
+    data_limits = [
+        "1-minute OHLCV candles for NIFTY, BANKNIFTY, SENSEX (spot).",
+        "Option candles are stored for the ATM ±1 strike band only.",
+        f"Data starts {wh.get('date_range', {}).get('start') or '(see warehouse)'}.",
+        "Every rule must be computable from these 1m candles + the indicator "
+        "columns + the buildable structural features below.",
+    ]
+    return {
+        "columns": rpt["columns"],
+        "features": features,
+        "cannot_build": cannot_build,
+        "needs_engine_work": needs_engine_work,
+        "data_limits": data_limits,
+    }
+
+
 class FeasibilityClass(str, Enum):
     BUILDABLE_NOW = "BUILDABLE_NOW"
     BUILDABLE_WITH_FEATURE = "BUILDABLE_WITH_FEATURE"

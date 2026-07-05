@@ -85,12 +85,16 @@ async def author_catalog():
     Pure + host-safe (no DB). Lazy-imports the catalog helpers."""
     from app.ai.compiler import allowed_columns
     from app.ai.spec_schema import CMP_OPS
+    from app.ai.capability import capability_summary
     return {
         "columns": sorted(allowed_columns()),
         "ops": list(CMP_OPS),
         "regimes": ["TREND", "TREND_EXPANDING", "CHOP", "VOLATILE_CHOP", "MIXED", "UNKNOWN"],
         "exit_fields": ["spot_target_pts", "spot_stop_pts", "target_pct", "stop_pct", "time_stop_minutes"],
         "param_types": ["int", "float", "bool"],
+        # What the engine can/can't build — shown up-front in the wizard so users
+        # set expectations before writing a description (not only after a reject).
+        "capability": capability_summary(),
     }
 
 

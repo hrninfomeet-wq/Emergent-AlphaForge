@@ -79,6 +79,9 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
   // Feasibility / converse state
   const [ruleSet, setRuleSet] = useState(null);   // { decision, rules, summary }
   const [conversing, setConversing] = useState(false);
+  const [converseError, setConverseError] = useState(null); // persistent (not a flash toast)
+  const [genError, setGenError] = useState(null);           // persistent generate error
+  const [showCaps, setShowCaps] = useState(false);          // engine-capabilities panel
 
   // Mode toggle + Full-Python state
   const [mode, setMode] = useState("spec"); // "spec" | "python"
@@ -215,11 +218,16 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
 
   async function runConverse() {
     setConversing(true);
+    setConverseError(null);
     try {
       const res = await api.authorConverse(aiSource, provider);
       setRuleSet(res);
     } catch (e) {
-      toast.error(e.response?.data?.detail || e.message);
+      // Persist the error in a panel the user can read — NOT a flash toast that
+      // disappears before they can see what the feasibility problem was.
+      const detail = e.response?.data?.detail || e.message || "Feasibility check failed";
+      setConverseError({ status: e.response?.status, detail });
+      setRuleSet(null);
     } finally {
       setConversing(false);
     }
@@ -228,6 +236,7 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
   async function onGenerateWithAi() {
     if (!aiSource.trim()) return;
     setAiBusy(true);
+    setGenError(null);
     try {
       const res = await api.authorFromSource(aiSource, provider || undefined);
       loadFromSpec(res.spec);
@@ -235,7 +244,7 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
       setAiErrors(res.errors || []);
       toast.success("AI filled the form — review below");
     } catch (e) {
-      toast.error("AI generation failed: " + (e?.response?.data?.detail || e?.message || "unknown error"));
+      setGenError(e?.response?.data?.detail || e?.message || "AI generation failed");
     } finally {
       setAiBusy(false);
     }
@@ -244,6 +253,7 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
   async function onGeneratePython() {
     if (!aiSource.trim()) return;
     setPyBusy(true);
+    setGenError(null);
     try {
       const res = await api.authorPythonFromSource(aiSource, provider || undefined);
       setPyCode(res.code || "");
@@ -253,7 +263,7 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
       validationTokenRef.current += 1;
       toast.success("AI wrote a strategy — review, validate, then install");
     } catch (e) {
-      toast.error("Generation failed: " + (e?.response?.data?.detail || e?.message || "unknown error"));
+      setGenError(e?.response?.data?.detail || e?.message || "AI generation failed");
     } finally { setPyBusy(false); }
   }
 
@@ -365,6 +375,12 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
         {/* ✨ Describe with AI */}
         <div className={sectionCls}>
           <div className="text-[10px] uppercase tracking-wider text-dim">✨ Describe with AI</div>
+          <div className="text-[11px] text-dimmer leading-relaxed">
+            Paste your strategy rules (or a YouTube link). <b className="text-dim">Check feasibility</b> tells you,
+            rule by rule, what this engine can and can't build from it — read it before generating.
+            <b className="text-dim"> Generate with AI</b> then fills the form (or writes Python), and shows which
+            rules it captured vs. dropped so you can verify the result.
+          </div>
           {aiReady ? (
             <div className="flex items-center gap-2">
               <label className={labelCls + " mb-0"}>Provider</label>
@@ -409,7 +425,82 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
             >
               {conversing ? "Checking…" : "Check feasibility"}
             </button>
+            <button
+              type="button"
+              onClick={() => setShowCaps((s) => !s)}
+              className="ml-auto text-[11px] text-info hover:underline"
+              data-testid="author-caps-toggle"
+            >
+              {showCaps ? "Hide" : "What can this engine build?"}
+            </button>
           </div>
+
+          {/* Persistent AI error panel — stays until the next run (was a flash toast) */}
+          {genError && (
+            <div className="rounded-md border border-rose-900 bg-rose-950/50 p-2 space-y-1" data-testid="author-gen-error">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-semibold text-rose-300">Generation failed</span>
+                <button onClick={() => setGenError(null)} className="text-dimmer hover:text-rose-300" aria-label="Dismiss">
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+              <div className="text-[11px] text-rose-200 leading-relaxed whitespace-pre-wrap">{genError}</div>
+            </div>
+          )}
+          {converseError && (
+            <div className="rounded-md border border-rose-900 bg-rose-950/50 p-2 space-y-1" data-testid="author-converse-error">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-semibold text-rose-300">
+                  Feasibility check failed{converseError.status ? ` (${converseError.status})` : ""}
+                </span>
+                <button onClick={() => setConverseError(null)} className="text-dimmer hover:text-rose-300" aria-label="Dismiss">
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+              <div className="text-[11px] text-rose-200 leading-relaxed whitespace-pre-wrap">{converseError.detail}</div>
+            </div>
+          )}
+
+          {/* Engine capabilities & limits — set expectations up front */}
+          {showCaps && catalog?.capability && (
+            <div className="rounded-md border border-line bg-bg-0 p-2 space-y-2 text-[11px]" data-testid="author-caps-panel">
+              <div className="text-dim">
+                Every rule must be computable from what the warehouse stores. Here's what the engine can and can't do:
+              </div>
+              <div>
+                <div className="text-emerald-300 font-semibold mb-0.5">✓ Can build</div>
+                <div className="text-dimmer">
+                  Indicator columns ({(catalog.capability.columns || []).length}): {(catalog.capability.columns || []).join(", ")}
+                </div>
+                {(catalog.capability.features || []).length > 0 && (
+                  <div className="text-dimmer mt-1">
+                    Structural features:{" "}
+                    {(catalog.capability.features || []).map((f, i) => (
+                      <span key={f.name}>
+                        {i > 0 ? ", " : ""}{f.name}
+                        <span className={f.live_feasible === false ? "text-amber-400" : "text-emerald-400"}>
+                          {f.live_feasible === false ? " (backtest-only)" : ""}
+                        </span>
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div>
+                <div className="text-rose-300 font-semibold mb-0.5">✗ Can't build (data not stored)</div>
+                <ul className="text-dimmer list-disc pl-4 space-y-0.5">
+                  {(catalog.capability.cannot_build || []).map((c, i) => <li key={i}>{c}</li>)}
+                  {(catalog.capability.needs_engine_work || []).map((c, i) => <li key={`e${i}`} className="text-amber-300">{c}</li>)}
+                </ul>
+              </div>
+              <div>
+                <div className="text-dim font-semibold mb-0.5">Data limits</div>
+                <ul className="text-dimmer list-disc pl-4 space-y-0.5">
+                  {(catalog.capability.data_limits || []).map((c, i) => <li key={i}>{c}</li>)}
+                </ul>
+              </div>
+            </div>
+          )}
 
           {/* Fidelity readback */}
           {fidelity && (
