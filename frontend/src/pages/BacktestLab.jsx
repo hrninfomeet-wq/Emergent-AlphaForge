@@ -1849,7 +1849,7 @@ function ResultsView({ result, onSaveAsPreset }) {
 }
 
 function AdvancedAnalytics({ children }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(true);
   return (
     <div className="rounded-lg border border-line bg-bg-1" data-testid="backtest-advanced-analytics">
       <button
