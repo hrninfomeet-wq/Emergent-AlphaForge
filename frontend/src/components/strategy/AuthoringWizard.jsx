@@ -79,6 +79,9 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
   // Feasibility / converse state
   const [ruleSet, setRuleSet] = useState(null);   // { decision, rules, summary }
   const [conversing, setConversing] = useState(false);
+  const [converseError, setConverseError] = useState(null); // persistent (not a flash toast)
+  const [genError, setGenError] = useState(null);           // persistent generate error
+  const [showCaps, setShowCaps] = useState(false);          // engine-capabilities panel
 
   // Mode toggle + Full-Python state
   const [mode, setMode] = useState("spec"); // "spec" | "python"
@@ -215,11 +218,16 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
 
   async function runConverse() {
     setConversing(true);
+    setConverseError(null);
     try {
       const res = await api.authorConverse(aiSource, provider);
       setRuleSet(res);
     } catch (e) {
-      toast.error(e.response?.data?.detail || e.message);
+      // Persist the error in a panel the user can read — NOT a flash toast that
+      // disappears before they can see what the feasibility problem was.
+      const detail = e.response?.data?.detail || e.message || "Feasibility check failed";
+      setConverseError({ status: e.response?.status, detail });
+      setRuleSet(null);
     } finally {
       setConversing(false);
     }
@@ -228,6 +236,7 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
   async function onGenerateWithAi() {
     if (!aiSource.trim()) return;
     setAiBusy(true);
+    setGenError(null);
     try {
       const res = await api.authorFromSource(aiSource, provider || undefined);
       loadFromSpec(res.spec);
@@ -235,7 +244,7 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
       setAiErrors(res.errors || []);
       toast.success("AI filled the form — review below");
     } catch (e) {
-      toast.error("AI generation failed: " + (e?.response?.data?.detail || e?.message || "unknown error"));
+      setGenError(e?.response?.data?.detail || e?.message || "AI generation failed");
     } finally {
       setAiBusy(false);
     }
@@ -244,6 +253,7 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
   async function onGeneratePython() {
     if (!aiSource.trim()) return;
     setPyBusy(true);
+    setGenError(null);
     try {
       const res = await api.authorPythonFromSource(aiSource, provider || undefined);
       setPyCode(res.code || "");
@@ -253,7 +263,7 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
       validationTokenRef.current += 1;
       toast.success("AI wrote a strategy — review, validate, then install");
     } catch (e) {
-      toast.error("Generation failed: " + (e?.response?.data?.detail || e?.message || "unknown error"));
+      setGenError(e?.response?.data?.detail || e?.message || "AI generation failed");
     } finally { setPyBusy(false); }
   }
 
@@ -365,6 +375,12 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
         {/* ✨ Describe with AI */}
         <div className={sectionCls}>
           <div className="text-[10px] uppercase tracking-wider text-dim">✨ Describe with AI</div>
+          <div className="text-[11px] text-dimmer leading-relaxed">
+            Paste your strategy rules (or a YouTube link). <b className="text-dim">Check feasibility</b> tells you,
+            rule by rule, what this engine can and can't build from it — read it before generating.
+            <b className="text-dim"> Generate with AI</b> then fills the form (or writes Python), and shows which
+            rules it captured vs. dropped so you can verify the result.
+          </div>
           {aiReady ? (
             <div className="flex items-center gap-2">
               <label className={labelCls + " mb-0"}>Provider</label>
@@ -409,7 +425,104 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
             >
               {conversing ? "Checking…" : "Check feasibility"}
             </button>
+            <button
+              type="button"
+              onClick={() => setShowCaps((s) => !s)}
+              className="ml-auto text-[11px] text-info hover:underline"
+              data-testid="author-caps-toggle"
+            >
+              {showCaps ? "Hide" : "What can this engine build?"}
+            </button>
           </div>
+
+          {/* Persistent AI error panel — stays until the next run (was a flash toast) */}
+          {genError && (
+            <div className="rounded-md border border-rose-900 bg-rose-950/50 p-2 space-y-1" data-testid="author-gen-error">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-semibold text-rose-300">Generation failed</span>
+                <button onClick={() => setGenError(null)} className="text-dimmer hover:text-rose-300" aria-label="Dismiss">
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+              <div className="text-[11px] text-rose-200 leading-relaxed whitespace-pre-wrap">{genError}</div>
+            </div>
+          )}
+          {converseError && (
+            <div className="rounded-md border border-rose-900 bg-rose-950/50 p-2 space-y-1" data-testid="author-converse-error">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-semibold text-rose-300">
+                  Feasibility check failed{converseError.status ? ` (${converseError.status})` : ""}
+                </span>
+                <button onClick={() => setConverseError(null)} className="text-dimmer hover:text-rose-300" aria-label="Dismiss">
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+              <div className="text-[11px] text-rose-200 leading-relaxed whitespace-pre-wrap">{converseError.detail}</div>
+            </div>
+          )}
+
+          {/* Engine capabilities & limits — honest tiers, set expectations up front */}
+          {showCaps && catalog?.capability && (() => {
+            const cap = catalog.capability;
+            const featNames = (arr) => (arr || []).map((f) => f.name).join(", ");
+            return (
+              <div className="rounded-md border border-line bg-bg-0 p-2 space-y-2.5 text-[11px]" data-testid="author-caps-panel">
+                <div className="text-dim">
+                  Every rule is checked against what the engine can actually compute. There are
+                  four tiers — read them so you know what will work where:
+                </div>
+
+                {/* Tier 1 — build now (backtest + live) */}
+                <div data-testid="cap-tier-build-now">
+                  <div className="text-emerald-300 font-semibold">✓ Buildable now — backtest AND live</div>
+                  <div className="text-dimmer">{cap.build_now?.note}</div>
+                  <div className="text-dimmer mt-0.5">
+                    Indicator columns ({(cap.build_now?.columns || []).length}): {(cap.build_now?.columns || []).join(", ")}
+                  </div>
+                  {(cap.build_now?.features || []).length > 0 && (
+                    <div className="text-dimmer mt-0.5">Structural features: <span className="text-emerald-400">{featNames(cap.build_now.features)}</span></div>
+                  )}
+                </div>
+
+                {/* Tier 2 — backtest-only (live fidelity not guaranteed) */}
+                {(cap.backtest_only?.features || []).length > 0 && (
+                  <div data-testid="cap-tier-backtest-only">
+                    <div className="text-amber-300 font-semibold">◑ Backtest-only — live fidelity not guaranteed yet</div>
+                    <div className="text-dimmer">
+                      <span className="text-amber-400 font-mono">{featNames(cap.backtest_only.features)}</span>. {cap.backtest_only.note}
+                    </div>
+                  </div>
+                )}
+
+                {/* Tier 3 — addable with data (roadmap) */}
+                <div data-testid="cap-tier-addable">
+                  <div className="text-sky-300 font-semibold">◔ Not yet, but addable — needs data or engine work</div>
+                  <ul className="text-dimmer list-disc pl-4 space-y-0.5">
+                    {(cap.addable_data?.items || []).map((c, i) => <li key={`a${i}`}>{c}</li>)}
+                    {(cap.needs_engine?.items || []).map((c, i) => <li key={`n${i}`}>{c}</li>)}
+                  </ul>
+                  <div className="text-dimmer mt-0.5">{cap.addable_data?.note}</div>
+                  {cap.needs_engine?.note && <div className="text-dimmer mt-0.5">{cap.needs_engine.note}</div>}
+                </div>
+
+                {/* Tier 4 — truly infeasible */}
+                <div data-testid="cap-tier-infeasible">
+                  <div className="text-rose-300 font-semibold">✗ Out of reach on this infrastructure</div>
+                  <ul className="text-dimmer list-disc pl-4 space-y-0.5">
+                    {(cap.infeasible?.items || []).map((c, i) => <li key={i}>{c}</li>)}
+                  </ul>
+                  <div className="text-dimmer mt-0.5">{cap.infeasible?.note}</div>
+                </div>
+
+                <div>
+                  <div className="text-dim font-semibold">Data limits</div>
+                  <ul className="text-dimmer list-disc pl-4 space-y-0.5">
+                    {(cap.data_limits || []).map((c, i) => <li key={i}>{c}</li>)}
+                  </ul>
+                </div>
+              </div>
+            );
+          })()}
 
           {/* Fidelity readback */}
           {fidelity && (
