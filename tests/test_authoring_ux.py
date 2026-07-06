@@ -19,18 +19,25 @@ WIZ = (ROOT / "frontend/src/components/strategy/AuthoringWizard.jsx").read_text(
 ADMIN = (ROOT / "backend/app/routers/strategies_admin.py").read_text(encoding="utf-8")
 
 
-def test_capability_summary_shape():
+def test_capability_summary_has_honest_tiers():
     from app.ai.capability import capability_summary
     c = capability_summary()
-    for k in ("columns", "features", "cannot_build", "needs_engine_work", "data_limits"):
+    for k in ("build_now", "backtest_only", "addable_data", "needs_engine",
+              "infeasible", "data_limits", "columns", "features"):
         assert k in c and c[k] is not None, k
-    assert len(c["columns"]) > 0
-    # the classic can't-builds must be surfaced so users aren't surprised
-    blob = " ".join(c["cannot_build"]).lower()
-    assert "open interest" in blob and "greeks" in blob and "order flow" in blob
-    # every feature entry carries a live-feasible flag for the backtest-only badge
-    for f in c["features"]:
-        assert "name" in f and "live_feasible" in f
+    assert len(c["build_now"]["columns"]) > 0
+    # backtest-only tier is derived from live_feasible==False -> the SMC/ICT trio
+    bt = {f["name"] for f in c["backtest_only"]["features"]}
+    assert {"choch", "fvg_zones", "order_block"} <= bt
+    # build-now features are all live-feasible (fidelity in both backtest and live)
+    for f in c["build_now"]["features"]:
+        assert f["live_feasible"] is not False
+    # addable = OI/greeks (broker feed carries them); infeasible = order flow / tape
+    assert any("Open interest" in x for x in c["addable_data"]["items"])
+    assert any("greeks" in x.lower() for x in c["addable_data"]["items"])
+    assert any("Order flow" in x for x in c["infeasible"]["items"])
+    # the two tiers must NOT be conflated
+    assert c["addable_data"]["items"] and c["infeasible"]["items"]
 
 
 def test_catalog_route_ships_capability():
@@ -52,8 +59,15 @@ def test_wizard_persists_errors_not_flash_toasts():
     assert "toast.error" not in block  # no flash toast in the feasibility path
 
 
-def test_wizard_has_engine_capabilities_panel():
+def test_wizard_has_four_tier_capabilities_panel():
     assert 'data-testid="author-caps-panel"' in WIZ
     assert 'data-testid="author-caps-toggle"' in WIZ
     assert "catalog?.capability" in WIZ
-    assert "Can't build" in WIZ and "Data limits" in WIZ
+    # the four honest tiers must each render, so backtest-only isn't conflated
+    # with can't-build and addable-with-data isn't conflated with infeasible
+    for t in ("cap-tier-build-now", "cap-tier-backtest-only", "cap-tier-addable",
+              "cap-tier-infeasible"):
+        assert f'data-testid="{t}"' in WIZ, t
+    assert "live fidelity not guaranteed" in WIZ
+    assert "Out of reach on this infrastructure" in WIZ
+    assert "Data limits" in WIZ

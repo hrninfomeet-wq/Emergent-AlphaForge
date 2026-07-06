@@ -461,46 +461,68 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
             </div>
           )}
 
-          {/* Engine capabilities & limits — set expectations up front */}
-          {showCaps && catalog?.capability && (
-            <div className="rounded-md border border-line bg-bg-0 p-2 space-y-2 text-[11px]" data-testid="author-caps-panel">
-              <div className="text-dim">
-                Every rule must be computable from what the warehouse stores. Here's what the engine can and can't do:
-              </div>
-              <div>
-                <div className="text-emerald-300 font-semibold mb-0.5">✓ Can build</div>
-                <div className="text-dimmer">
-                  Indicator columns ({(catalog.capability.columns || []).length}): {(catalog.capability.columns || []).join(", ")}
+          {/* Engine capabilities & limits — honest tiers, set expectations up front */}
+          {showCaps && catalog?.capability && (() => {
+            const cap = catalog.capability;
+            const featNames = (arr) => (arr || []).map((f) => f.name).join(", ");
+            return (
+              <div className="rounded-md border border-line bg-bg-0 p-2 space-y-2.5 text-[11px]" data-testid="author-caps-panel">
+                <div className="text-dim">
+                  Every rule is checked against what the engine can actually compute. There are
+                  four tiers — read them so you know what will work where:
                 </div>
-                {(catalog.capability.features || []).length > 0 && (
-                  <div className="text-dimmer mt-1">
-                    Structural features:{" "}
-                    {(catalog.capability.features || []).map((f, i) => (
-                      <span key={f.name}>
-                        {i > 0 ? ", " : ""}{f.name}
-                        <span className={f.live_feasible === false ? "text-amber-400" : "text-emerald-400"}>
-                          {f.live_feasible === false ? " (backtest-only)" : ""}
-                        </span>
-                      </span>
-                    ))}
+
+                {/* Tier 1 — build now (backtest + live) */}
+                <div data-testid="cap-tier-build-now">
+                  <div className="text-emerald-300 font-semibold">✓ Buildable now — backtest AND live</div>
+                  <div className="text-dimmer">{cap.build_now?.note}</div>
+                  <div className="text-dimmer mt-0.5">
+                    Indicator columns ({(cap.build_now?.columns || []).length}): {(cap.build_now?.columns || []).join(", ")}
+                  </div>
+                  {(cap.build_now?.features || []).length > 0 && (
+                    <div className="text-dimmer mt-0.5">Structural features: <span className="text-emerald-400">{featNames(cap.build_now.features)}</span></div>
+                  )}
+                </div>
+
+                {/* Tier 2 — backtest-only (live fidelity not guaranteed) */}
+                {(cap.backtest_only?.features || []).length > 0 && (
+                  <div data-testid="cap-tier-backtest-only">
+                    <div className="text-amber-300 font-semibold">◑ Backtest-only — live fidelity not guaranteed yet</div>
+                    <div className="text-dimmer">
+                      <span className="text-amber-400 font-mono">{featNames(cap.backtest_only.features)}</span>. {cap.backtest_only.note}
+                    </div>
                   </div>
                 )}
+
+                {/* Tier 3 — addable with data (roadmap) */}
+                <div data-testid="cap-tier-addable">
+                  <div className="text-sky-300 font-semibold">◔ Not yet, but addable — needs data or engine work</div>
+                  <ul className="text-dimmer list-disc pl-4 space-y-0.5">
+                    {(cap.addable_data?.items || []).map((c, i) => <li key={`a${i}`}>{c}</li>)}
+                    {(cap.needs_engine?.items || []).map((c, i) => <li key={`n${i}`}>{c}</li>)}
+                  </ul>
+                  <div className="text-dimmer mt-0.5">{cap.addable_data?.note}</div>
+                  {cap.needs_engine?.note && <div className="text-dimmer mt-0.5">{cap.needs_engine.note}</div>}
+                </div>
+
+                {/* Tier 4 — truly infeasible */}
+                <div data-testid="cap-tier-infeasible">
+                  <div className="text-rose-300 font-semibold">✗ Out of reach on this infrastructure</div>
+                  <ul className="text-dimmer list-disc pl-4 space-y-0.5">
+                    {(cap.infeasible?.items || []).map((c, i) => <li key={i}>{c}</li>)}
+                  </ul>
+                  <div className="text-dimmer mt-0.5">{cap.infeasible?.note}</div>
+                </div>
+
+                <div>
+                  <div className="text-dim font-semibold">Data limits</div>
+                  <ul className="text-dimmer list-disc pl-4 space-y-0.5">
+                    {(cap.data_limits || []).map((c, i) => <li key={i}>{c}</li>)}
+                  </ul>
+                </div>
               </div>
-              <div>
-                <div className="text-rose-300 font-semibold mb-0.5">✗ Can't build (data not stored)</div>
-                <ul className="text-dimmer list-disc pl-4 space-y-0.5">
-                  {(catalog.capability.cannot_build || []).map((c, i) => <li key={i}>{c}</li>)}
-                  {(catalog.capability.needs_engine_work || []).map((c, i) => <li key={`e${i}`} className="text-amber-300">{c}</li>)}
-                </ul>
-              </div>
-              <div>
-                <div className="text-dim font-semibold mb-0.5">Data limits</div>
-                <ul className="text-dimmer list-disc pl-4 space-y-0.5">
-                  {(catalog.capability.data_limits || []).map((c, i) => <li key={i}>{c}</li>)}
-                </ul>
-              </div>
-            </div>
-          )}
+            );
+          })()}
 
           {/* Fidelity readback */}
           {fidelity && (

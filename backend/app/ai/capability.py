@@ -55,43 +55,87 @@ def capability_report() -> Dict[str, Any]:
 
 
 def capability_summary() -> Dict[str, Any]:
-    """UI-friendly view of what the strategy engine CAN and CANNOT build, so the
-    authoring wizard can set user expectations up-front (not only after a failed
-    parse). Pure + host-safe. Groups the deterministic facts from capability_report
-    + the R2/R4 blocked-concept sets into plain-English buckets."""
+    """UI-friendly view of what the strategy engine can build, grouped into HONEST
+    tiers that mirror the deterministic classifier (R1-R9), so the wizard sets
+    expectations up-front. Pure + host-safe.
+
+    Tiers (each is genuinely different in practice):
+      build_now       — indicator columns + live-feasible structural features:
+                        work in BOTH backtest and live/paper, full fidelity.
+      backtest_only   — stateful structural features (choch/fvg_zones/order_block):
+                        build + backtest fine, but the ~200-bar live window may not
+                        contain the zone's origin, so LIVE fidelity isn't guaranteed
+                        yet (an engineering limit, not a permanent one).
+      addable_data    — OI / PCR / greeks / IV: not stored today, but the broker
+                        feed carries them — buildable once ingested + plumbed.
+      needs_engine    — cross-instrument / relative-strength / pairs: needs a
+                        second instrument's aligned bars in the eval context.
+      infeasible      — order flow / depth / tape / news / sentiment: 1m retail
+                        bars can't reconstruct it (or there's no data source).
+    """
     rpt = capability_report()
     wh = rpt["warehouse"]
-    features = [
+    all_feats = [
         {"name": f.get("feature") or f.get("name"),
          "live_feasible": f.get("live_feasible"),
          "columns": f.get("columns", [])}
         for f in rpt["features"]
     ]
-    # What the engine cannot build because the warehouse doesn't store the data.
-    cannot_build = [
-        "Open interest / PCR / max-pain (no OI history)",
-        "Option greeks / IV / IV-rank (no per-strike greeks history)",
-        "Order flow / market depth / tape (1m bars only, no L2/tick)",
-        "News / sentiment signals (not ingested)",
-        "VIX-history-based rules (no VIX history stored)",
-    ]
-    needs_engine_work = [
-        "Cross-instrument / relative-strength / pairs (needs a second instrument's "
-        "aligned bars — an engine change, not available yet)",
-    ]
+    live_features = [f for f in all_feats if f["live_feasible"] is not False]
+    backtest_only_features = [f for f in all_feats if f["live_feasible"] is False]
+
+    build_now = {
+        "columns": rpt["columns"],
+        "features": live_features,
+        "note": "Work in both backtest and live/paper at full fidelity.",
+    }
+    backtest_only = {
+        "features": backtest_only_features,
+        "note": "Build and backtest fine. These carry a zone forward from whenever "
+                "it formed (SMC/ICT-style), and the live evaluator only sees the last "
+                "~200 candles — so if the zone formed earlier, the live value can "
+                "differ from the backtest. Deployable, but treat live behaviour as "
+                "not-yet-guaranteed until longer live warm-up / state persistence lands.",
+    }
+    addable_data = {
+        "items": [
+            "Open interest / PCR / max-pain",
+            "Option greeks / IV / IV-rank / vol structure",
+        ],
+        "note": "Not stored today, so they can't be backtested yet — but the Upstox/"
+                "Flattrade option feed does carry OI and greeks are derivable. Buildable "
+                "once we ingest + store their history and plumb them into the eval "
+                "context (backtest-first, so an edge can be validated before real money).",
+    }
+    needs_engine = {
+        "items": ["Cross-instrument / relative-strength / pairs / ratio-spreads"],
+        "note": "Needs a second instrument's time-aligned bars inside the rule "
+                "context — an engine change (planned Phase A), not a data gap.",
+    }
+    infeasible = {
+        "items": [
+            "Order flow / market depth (L2) / tape",
+            "News / sentiment signals",
+        ],
+        "note": "Out of reach on this infrastructure: 1-minute retail bars can't "
+                "reconstruct true tape/depth, and there's no news/sentiment source.",
+    }
     data_limits = [
         "1-minute OHLCV candles for NIFTY, BANKNIFTY, SENSEX (spot).",
         "Option candles are stored for the ATM ±1 strike band only.",
         f"Data starts {wh.get('date_range', {}).get('start') or '(see warehouse)'}.",
-        "Every rule must be computable from these 1m candles + the indicator "
-        "columns + the buildable structural features below.",
+        "Live/paper evaluation runs on the last ~200 candles per bar.",
     ]
     return {
-        "columns": rpt["columns"],
-        "features": features,
-        "cannot_build": cannot_build,
-        "needs_engine_work": needs_engine_work,
+        "build_now": build_now,
+        "backtest_only": backtest_only,
+        "addable_data": addable_data,
+        "needs_engine": needs_engine,
+        "infeasible": infeasible,
         "data_limits": data_limits,
+        # Back-compat flat keys (older UI + tests): columns + live features.
+        "columns": rpt["columns"],
+        "features": all_feats,
     }
 
 
