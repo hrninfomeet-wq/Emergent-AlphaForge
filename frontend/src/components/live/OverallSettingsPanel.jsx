@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
   CheckCircle,
+  ChevronDown,
   Loader2,
   RotateCcw,
   Save,
@@ -126,14 +127,60 @@ const inputCls =
 const labelCls = "text-[10px] uppercase tracking-wider text-dimmer font-semibold";
 
 // ── Small presentational helpers ────────────────────────────────────────────
-function SubSection({ title, badge, children }) {
+
+/**
+ * SettingChip — the compact summary-row control. Shows a short human-readable
+ * value and, when clicked, opens a popover anchored under it containing
+ * `children` (the section's existing editor controls, unchanged). Purely a
+ * layout/visibility wrapper — no config state lives here.
+ */
+function SettingChip({ label, value, active, open, onToggle, onClose, children }) {
+  const ref = useRef(null);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    function onDocMouseDown(e) {
+      if (ref.current && !ref.current.contains(e.target)) onClose();
+    }
+    function onKeyDown(e) {
+      if (e.key === "Escape") onClose();
+    }
+    document.addEventListener("mousedown", onDocMouseDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onDocMouseDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open, onClose]);
+
   return (
-    <div className="rounded-lg border border-line bg-bg-2/50 overflow-hidden">
-      <div className="px-3 py-2 border-b border-line bg-bg-2/40 flex items-center gap-2">
-        <span className="text-xs font-semibold text-foreground">{title}</span>
-        {badge}
-      </div>
-      <div className="px-3 py-3 space-y-3">{children}</div>
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={open}
+        className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border text-xs font-mono transition-colors ${
+          open
+            ? "border-info/60 bg-info/15 text-info"
+            : active
+            ? "border-line bg-bg-2 text-foreground hover:bg-bg-3"
+            : "border-line bg-bg-2/60 text-dimmer hover:bg-bg-3"
+        }`}
+      >
+        <span className="font-semibold">{label}</span>
+        <span className={active ? "" : "text-dimmer"}>{value}</span>
+        <ChevronDown
+          className={`w-3 h-3 shrink-0 transition-transform ${open ? "rotate-180" : ""}`}
+        />
+      </button>
+
+      {open && (
+        <div className="absolute z-50 mt-1.5 w-[min(22rem,90vw)] rounded-lg border border-line bg-bg-1 shadow-lg left-0">
+          <div className="px-3 py-3 space-y-3 max-h-[70vh] overflow-y-auto">
+            {children}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -250,6 +297,13 @@ export default function OverallSettingsPanel({ scope = "overall" }) {
   const [saveBusy, setSaveBusy] = useState(false);
   const [saveOk, setSaveOk] = useState(false);
   const [saveError, setSaveError] = useState(null);
+
+  // Which summary chip's popover is currently open ("sl" | "target" | "trailing" | "reentry" | null).
+  const [openChip, setOpenChip] = useState(null);
+  const toggleChip = useCallback((key) => {
+    setOpenChip((prev) => (prev === key ? null : key));
+  }, []);
+  const closeChip = useCallback(() => setOpenChip(null), []);
 
   // ── Load on mount + whenever scope changes ────────────────────────────────
   useEffect(() => {
@@ -375,6 +429,20 @@ export default function OverallSettingsPanel({ scope = "overall" }) {
 
   const unitSuffix = (unitMode) => (unitMode === "premium_pct" ? "%" : "₹");
 
+  // ── Compact chip summaries (display-only; never feed back into config) ────
+  const fmtVal = (mode, value) =>
+    mode === "premium_pct" ? `${num(value)}% premium` : `${fmtINR(num(value))} MTM`;
+
+  const slSummary = sl.enabled ? fmtVal(sl.mode, sl.value) : "off";
+  const targetSummary = target.enabled ? fmtVal(target.mode, target.value) : "off";
+  const trailingSummary =
+    trailMode === "none"
+      ? "off"
+      : TRAIL_MODES.find((m) => m.v === trailMode)?.label ?? trailMode;
+  const reentrySummary = reentryActive
+    ? `${intClamp(reentry.max, 1, 5, 1)}x${reentry.type === "momentum" ? " momentum" : ""}`
+    : "off";
+
   if (loading) {
     return (
       <div className="flex items-center gap-2 text-xs text-dimmer font-mono py-6 justify-center">
@@ -402,275 +470,270 @@ export default function OverallSettingsPanel({ scope = "overall" }) {
         )}
       </div>
 
-      {/* ── 1. Overall Stop Loss ─────────────────────────────────────────── */}
-      <SubSection
-        title="Overall Stop Loss"
-        badge={
-          sl.enabled ? (
-            <span className="inline-flex items-center px-1.5 py-0.5 rounded-full border border-danger/50 bg-danger/10 text-danger text-[10px] font-mono font-bold uppercase tracking-wider">
-              On
-            </span>
-          ) : null
-        }
-      >
-        <Toggle
-          checked={sl.enabled}
-          onChange={(v) => patchSection("sl", { enabled: v })}
-          label="Enable overall stop loss"
-        />
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <div className="flex flex-col gap-1">
-            <label className={labelCls}>Mode</label>
-            <Segmented
-              value={sl.mode}
-              options={UNIT_OPTIONS}
-              disabled={!sl.enabled}
-              onChange={(v) => patchSection("sl", { mode: v })}
-            />
-          </div>
-          <NumField
-            label={sl.mode === "premium_pct" ? "Loss (% of premium)" : "Loss (₹ MTM)"}
-            value={sl.value}
-            onChange={(v) => patchSection("sl", { value: v })}
-            disabled={!sl.enabled}
-            step={sl.mode === "premium_pct" ? "0.5" : "100"}
-            min="0"
-            placeholder={sl.mode === "premium_pct" ? "e.g. 30" : "e.g. 5000"}
-            suffix={unitSuffix(sl.mode)}
+      {/* ── Compact summary row — one chip per section; click to edit ──────── */}
+      <div className="flex items-center gap-2 flex-wrap">
+        {/* 1. Overall Stop Loss */}
+        <SettingChip
+          label="SL"
+          value={slSummary}
+          active={sl.enabled}
+          open={openChip === "sl"}
+          onToggle={() => toggleChip("sl")}
+          onClose={closeChip}
+        >
+          <Toggle
+            checked={sl.enabled}
+            onChange={(v) => patchSection("sl", { enabled: v })}
+            label="Enable overall stop loss"
           />
-        </div>
-      </SubSection>
-
-      {/* ── 2. Overall Target ────────────────────────────────────────────── */}
-      <SubSection
-        title="Overall Target"
-        badge={
-          target.enabled ? (
-            <span className="inline-flex items-center px-1.5 py-0.5 rounded-full border border-emerald-500/50 bg-emerald-500/10 text-emerald-300 text-[10px] font-mono font-bold uppercase tracking-wider">
-              On
-            </span>
-          ) : null
-        }
-      >
-        <Toggle
-          checked={target.enabled}
-          onChange={(v) => patchSection("target", { enabled: v })}
-          label="Enable overall target"
-        />
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <div className="flex flex-col gap-1">
-            <label className={labelCls}>Mode</label>
-            <Segmented
-              value={target.mode}
-              options={UNIT_OPTIONS}
-              disabled={!target.enabled}
-              onChange={(v) => patchSection("target", { mode: v })}
-            />
-          </div>
-          <NumField
-            label={target.mode === "premium_pct" ? "Profit (% of premium)" : "Profit (₹ MTM)"}
-            value={target.value}
-            onChange={(v) => patchSection("target", { value: v })}
-            disabled={!target.enabled}
-            step={target.mode === "premium_pct" ? "0.5" : "100"}
-            min="0"
-            placeholder={target.mode === "premium_pct" ? "e.g. 50" : "e.g. 8000"}
-            suffix={unitSuffix(target.mode)}
-          />
-        </div>
-      </SubSection>
-
-      {/* ── 3. Trailing ──────────────────────────────────────────────────── */}
-      <SubSection
-        title="Trailing"
-        badge={
-          trailMode !== "none" ? (
-            <span className="inline-flex items-center px-1.5 py-0.5 rounded-full border border-info/50 bg-info/10 text-info text-[10px] font-mono font-bold uppercase tracking-wider">
-              {TRAIL_MODES.find((m) => m.v === trailMode)?.label ?? trailMode}
-            </span>
-          ) : null
-        }
-      >
-        <div className="flex flex-col gap-1">
-          <label className={labelCls}>Mode</label>
-          <div className="flex gap-1 flex-wrap">
-            {TRAIL_MODES.map((m) => (
-              <button
-                key={m.v}
-                type="button"
-                onClick={() => patchSection("trailing", { mode: m.v })}
-                className={`flex-1 min-w-[72px] py-1.5 px-2 text-xs font-mono font-semibold rounded-md border transition-colors ${
-                  trailMode === m.v
-                    ? "border-info/60 bg-info/15 text-info"
-                    : "border-line bg-bg-2 text-dimmer hover:bg-bg-3"
-                }`}
-              >
-                {m.label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Plain-English mechanic explainer */}
-        <div className="text-[11px] font-mono text-dim leading-relaxed">
-          {TRAIL_EXPLAINER[trailMode] ?? TRAIL_EXPLAINER.none}
-        </div>
-
-        {trailMode !== "none" && (
-          <>
-            {/* Unit toggle (₹ / %) */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="flex flex-col gap-1">
-              <label className={labelCls}>Unit</label>
+              <label className={labelCls}>Mode</label>
               <Segmented
-                value={trailing.unit}
+                value={sl.mode}
                 options={UNIT_OPTIONS}
-                onChange={(v) => patchSection("trailing", { unit: v })}
+                disabled={!sl.enabled}
+                onChange={(v) => patchSection("sl", { mode: v })}
               />
             </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              {showLockParams && (
-                <NumField
-                  label="Lock-at (Y) — profit to activate"
-                  value={trailing.lock_at}
-                  onChange={(v) => patchSection("trailing", { lock_at: v })}
-                  step="100"
-                  min="0"
-                  placeholder="e.g. 4000"
-                  suffix={unitSuffix(trailing.unit)}
-                />
-              )}
-              {showLockParams && (
-                <NumField
-                  label="Lock-floor (X) — locked profit"
-                  value={trailing.lock_floor}
-                  onChange={(v) => patchSection("trailing", { lock_floor: v })}
-                  step="100"
-                  min="0"
-                  placeholder="e.g. 2000"
-                  suffix={unitSuffix(trailing.unit)}
-                />
-              )}
-              {showBaseSl && (
-                <NumField
-                  label="Base SL (S0) — initial stop (loss)"
-                  value={trailing.base_sl}
-                  onChange={(v) => patchSection("trailing", { base_sl: v })}
-                  step="100"
-                  min="0"
-                  placeholder="e.g. 3000"
-                  suffix={unitSuffix(trailing.unit)}
-                />
-              )}
-              {showTrailParams && (
-                <NumField
-                  label="Trail-per (A) — profit step"
-                  value={trailing.trail_per}
-                  onChange={(v) => patchSection("trailing", { trail_per: v })}
-                  step="100"
-                  min="0"
-                  placeholder="e.g. 1000"
-                  suffix={unitSuffix(trailing.unit)}
-                />
-              )}
-              {showTrailParams && (
-                <NumField
-                  label="Trail-by (B) — floor rise per step"
-                  value={trailing.trail_by}
-                  onChange={(v) => patchSection("trailing", { trail_by: v })}
-                  step="100"
-                  min="0"
-                  placeholder="e.g. 500"
-                  suffix={unitSuffix(trailing.unit)}
-                />
-              )}
-            </div>
-
-            {/* Inverted lock config — floor at/above trigger would exit instantly */}
-            {showLockParams &&
-              num(trailing.lock_floor) >= num(trailing.lock_at) && (
-                <div className="flex items-start gap-1.5 text-[11px] font-mono text-warning">
-                  <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-px" />
-                  <span>
-                    Lock floor ({num(trailing.lock_floor)}) should be BELOW the
-                    lock trigger ({num(trailing.lock_at)}) — as set it would exit
-                    immediately.
-                  </span>
-                </div>
-              )}
-          </>
-        )}
-      </SubSection>
-
-      {/* ── 4. Re-entry ──────────────────────────────────────────────────── */}
-      <SubSection
-        title="Re-entry"
-        badge={
-          reentryActive ? (
-            <span className="inline-flex items-center px-1.5 py-0.5 rounded-full border border-info/50 bg-info/10 text-info text-[10px] font-mono font-bold uppercase tracking-wider">
-              On
-            </span>
-          ) : null
-        }
-      >
-        <Toggle
-          checked={reentry.enabled}
-          onChange={(v) => patchSection("reentry", { enabled: v })}
-          label="Enable re-entry after an overall exit"
-        />
-        <div className="flex items-center gap-1.5 text-[11px] font-mono text-dimmer">
-          <AlertTriangle
-            className={`w-3.5 h-3.5 shrink-0 ${
-              reentry.enabled && !reentryEligible ? "text-warning" : "text-dimmer"
-            }`}
-          />
-          Requires an Overall SL or Target to be enabled (it re-enters after that
-          exit fires).
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <NumField
-            label="Max re-entries (1–5)"
-            value={reentry.max}
-            onChange={(v) => patchSection("reentry", { max: intClamp(v, 1, 5, 1) })}
-            disabled={!reentry.enabled}
-            step="1"
-            min="1"
-            placeholder="1"
-          />
-          <div className="flex flex-col gap-1">
-            <label className={labelCls}>Type</label>
-            <Segmented
-              value={reentry.type}
-              options={[
-                { v: "asap", label: "RE-ASAP" },
-                { v: "momentum", label: "RE-MOMENTUM" },
-              ]}
-              disabled={!reentry.enabled}
-              onChange={(v) => patchSection("reentry", { type: v })}
+            <NumField
+              label={sl.mode === "premium_pct" ? "Loss (% of premium)" : "Loss (₹ MTM)"}
+              value={sl.value}
+              onChange={(v) => patchSection("sl", { value: v })}
+              disabled={!sl.enabled}
+              step={sl.mode === "premium_pct" ? "0.5" : "100"}
+              min="0"
+              placeholder={sl.mode === "premium_pct" ? "e.g. 30" : "e.g. 5000"}
+              suffix={unitSuffix(sl.mode)}
             />
           </div>
-          {reentry.type === "momentum" && (
-            <NumField
-              label="Momentum % — move needed to re-enter"
-              value={reentry.momentum_pct}
-              onChange={(v) => patchSection("reentry", { momentum_pct: v })}
-              disabled={!reentry.enabled}
-              step="0.5"
-              min="0"
-              placeholder="e.g. 5"
-              suffix="%"
-            />
-          )}
-        </div>
+        </SettingChip>
 
-        <Toggle
-          checked={reentry.reverse}
-          disabled={!reentry.enabled}
-          onChange={(v) => patchSection("reentry", { reverse: v })}
-          label="Reverse on re-entry (flip side)"
-        />
-      </SubSection>
+        {/* 2. Overall Target */}
+        <SettingChip
+          label="Target"
+          value={targetSummary}
+          active={target.enabled}
+          open={openChip === "target"}
+          onToggle={() => toggleChip("target")}
+          onClose={closeChip}
+        >
+          <Toggle
+            checked={target.enabled}
+            onChange={(v) => patchSection("target", { enabled: v })}
+            label="Enable overall target"
+          />
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="flex flex-col gap-1">
+              <label className={labelCls}>Mode</label>
+              <Segmented
+                value={target.mode}
+                options={UNIT_OPTIONS}
+                disabled={!target.enabled}
+                onChange={(v) => patchSection("target", { mode: v })}
+              />
+            </div>
+            <NumField
+              label={target.mode === "premium_pct" ? "Profit (% of premium)" : "Profit (₹ MTM)"}
+              value={target.value}
+              onChange={(v) => patchSection("target", { value: v })}
+              disabled={!target.enabled}
+              step={target.mode === "premium_pct" ? "0.5" : "100"}
+              min="0"
+              placeholder={target.mode === "premium_pct" ? "e.g. 50" : "e.g. 8000"}
+              suffix={unitSuffix(target.mode)}
+            />
+          </div>
+        </SettingChip>
+
+        {/* 3. Trailing */}
+        <SettingChip
+          label="Trail"
+          value={trailingSummary}
+          active={trailMode !== "none"}
+          open={openChip === "trailing"}
+          onToggle={() => toggleChip("trailing")}
+          onClose={closeChip}
+        >
+          <div className="flex flex-col gap-1">
+            <label className={labelCls}>Mode</label>
+            <div className="flex gap-1 flex-wrap">
+              {TRAIL_MODES.map((m) => (
+                <button
+                  key={m.v}
+                  type="button"
+                  onClick={() => patchSection("trailing", { mode: m.v })}
+                  className={`flex-1 min-w-[72px] py-1.5 px-2 text-xs font-mono font-semibold rounded-md border transition-colors ${
+                    trailMode === m.v
+                      ? "border-info/60 bg-info/15 text-info"
+                      : "border-line bg-bg-2 text-dimmer hover:bg-bg-3"
+                  }`}
+                >
+                  {m.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Plain-English mechanic explainer */}
+          <div className="text-[11px] font-mono text-dim leading-relaxed">
+            {TRAIL_EXPLAINER[trailMode] ?? TRAIL_EXPLAINER.none}
+          </div>
+
+          {trailMode !== "none" && (
+            <>
+              {/* Unit toggle (₹ / %) */}
+              <div className="flex flex-col gap-1">
+                <label className={labelCls}>Unit</label>
+                <Segmented
+                  value={trailing.unit}
+                  options={UNIT_OPTIONS}
+                  onChange={(v) => patchSection("trailing", { unit: v })}
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {showLockParams && (
+                  <NumField
+                    label="Lock-at (Y) — profit to activate"
+                    value={trailing.lock_at}
+                    onChange={(v) => patchSection("trailing", { lock_at: v })}
+                    step="100"
+                    min="0"
+                    placeholder="e.g. 4000"
+                    suffix={unitSuffix(trailing.unit)}
+                  />
+                )}
+                {showLockParams && (
+                  <NumField
+                    label="Lock-floor (X) — locked profit"
+                    value={trailing.lock_floor}
+                    onChange={(v) => patchSection("trailing", { lock_floor: v })}
+                    step="100"
+                    min="0"
+                    placeholder="e.g. 2000"
+                    suffix={unitSuffix(trailing.unit)}
+                  />
+                )}
+                {showBaseSl && (
+                  <NumField
+                    label="Base SL (S0) — initial stop (loss)"
+                    value={trailing.base_sl}
+                    onChange={(v) => patchSection("trailing", { base_sl: v })}
+                    step="100"
+                    min="0"
+                    placeholder="e.g. 3000"
+                    suffix={unitSuffix(trailing.unit)}
+                  />
+                )}
+                {showTrailParams && (
+                  <NumField
+                    label="Trail-per (A) — profit step"
+                    value={trailing.trail_per}
+                    onChange={(v) => patchSection("trailing", { trail_per: v })}
+                    step="100"
+                    min="0"
+                    placeholder="e.g. 1000"
+                    suffix={unitSuffix(trailing.unit)}
+                  />
+                )}
+                {showTrailParams && (
+                  <NumField
+                    label="Trail-by (B) — floor rise per step"
+                    value={trailing.trail_by}
+                    onChange={(v) => patchSection("trailing", { trail_by: v })}
+                    step="100"
+                    min="0"
+                    placeholder="e.g. 500"
+                    suffix={unitSuffix(trailing.unit)}
+                  />
+                )}
+              </div>
+
+              {/* Inverted lock config — floor at/above trigger would exit instantly */}
+              {showLockParams &&
+                num(trailing.lock_floor) >= num(trailing.lock_at) && (
+                  <div className="flex items-start gap-1.5 text-[11px] font-mono text-warning">
+                    <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-px" />
+                    <span>
+                      Lock floor ({num(trailing.lock_floor)}) should be BELOW the
+                      lock trigger ({num(trailing.lock_at)}) — as set it would exit
+                      immediately.
+                    </span>
+                  </div>
+                )}
+            </>
+          )}
+        </SettingChip>
+
+        {/* 4. Re-entry */}
+        <SettingChip
+          label="Re-entry"
+          value={reentrySummary}
+          active={reentryActive}
+          open={openChip === "reentry"}
+          onToggle={() => toggleChip("reentry")}
+          onClose={closeChip}
+        >
+          <Toggle
+            checked={reentry.enabled}
+            onChange={(v) => patchSection("reentry", { enabled: v })}
+            label="Enable re-entry after an overall exit"
+          />
+          <div className="flex items-center gap-1.5 text-[11px] font-mono text-dimmer">
+            <AlertTriangle
+              className={`w-3.5 h-3.5 shrink-0 ${
+                reentry.enabled && !reentryEligible ? "text-warning" : "text-dimmer"
+              }`}
+            />
+            Requires an Overall SL or Target to be enabled (it re-enters after
+            that exit fires).
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <NumField
+              label="Max re-entries (1–5)"
+              value={reentry.max}
+              onChange={(v) => patchSection("reentry", { max: intClamp(v, 1, 5, 1) })}
+              disabled={!reentry.enabled}
+              step="1"
+              min="1"
+              placeholder="1"
+            />
+            <div className="flex flex-col gap-1">
+              <label className={labelCls}>Type</label>
+              <Segmented
+                value={reentry.type}
+                options={[
+                  { v: "asap", label: "RE-ASAP" },
+                  { v: "momentum", label: "RE-MOMENTUM" },
+                ]}
+                disabled={!reentry.enabled}
+                onChange={(v) => patchSection("reentry", { type: v })}
+              />
+            </div>
+            {reentry.type === "momentum" && (
+              <NumField
+                label="Momentum % — move needed to re-enter"
+                value={reentry.momentum_pct}
+                onChange={(v) => patchSection("reentry", { momentum_pct: v })}
+                disabled={!reentry.enabled}
+                step="0.5"
+                min="0"
+                placeholder="e.g. 5"
+                suffix="%"
+              />
+            )}
+          </div>
+
+          <Toggle
+            checked={reentry.reverse}
+            disabled={!reentry.enabled}
+            onChange={(v) => patchSection("reentry", { reverse: v })}
+            label="Reverse on re-entry (flip side)"
+          />
+        </SettingChip>
+      </div>
 
       {/* ── Actions ──────────────────────────────────────────────────────── */}
       <div className="flex items-center gap-2 flex-wrap pt-1">
