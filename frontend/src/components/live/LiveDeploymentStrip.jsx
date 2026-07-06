@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Activity, Clock, Loader2, OctagonX, ShieldOff, Square } from "lucide-react";
+import { Activity, ChevronDown, ChevronRight, Clock, Loader2, OctagonX, ShieldOff, Square } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { fmtINR } from "@/lib/fmt";
@@ -155,6 +155,8 @@ function UnarmedRow({ dep, busy, onArmed }) {
   );
 }
 
+const COLLAPSED_STORAGE_KEY = "af.liveDeploymentStrip.collapsed";
+
 // ── Main strip ─────────────────────────────────────────────────────────────
 export default function LiveDeploymentStrip({ onArmedSummaryChange }) {
   // Deployments + the batched per-deployment live status come from the shared
@@ -162,6 +164,25 @@ export default function LiveDeploymentStrip({ onArmedSummaryChange }) {
   // `liveStatuses` is the provider's deployLive byId map (missing id = not armed).
   const { deployments, deployLive: liveStatuses, refetch } = useLiveData();
   const [busy, setBusy] = useState(false);
+  const [collapsed, setCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem(COLLAPSED_STORAGE_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+
+  const toggleCollapsed = () => {
+    setCollapsed((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem(COLLAPSED_STORAGE_KEY, next ? "1" : "0");
+      } catch {
+        // ignore storage errors (e.g. private mode)
+      }
+      return next;
+    });
+  };
 
   // After any arm/disarm/stop, re-pull everything (statuses + roster + arm-state).
   const refreshAll = refetch.all;
@@ -221,6 +242,16 @@ export default function LiveDeploymentStrip({ onArmedSummaryChange }) {
   );
   const hasArmed = armedDeps.length > 0;
 
+  // Aggregate today's realized P&L across all armed deployments, for the
+  // always-visible header summary (matches ArmedRow's own today-P&L coloring).
+  let todayRealisedTotal = null;
+  for (const dep of armedDeps) {
+    const realised = liveStatuses[dep.id]?.today?.realized_pnl;
+    if (realised != null) {
+      todayRealisedTotal = (todayRealisedTotal ?? 0) + Number(realised);
+    }
+  }
+
   // Lift armed summary to parent (for LiveBanner).
   // autoplace_armed is a backend env flag shared across all deployments —
   // take it from any armed status that has the field set.
@@ -246,13 +277,38 @@ export default function LiveDeploymentStrip({ onArmedSummaryChange }) {
       className="rounded-lg border border-line bg-bg-1"
       data-testid="live-deploy-strip"
     >
-      {/* Header */}
+      {/* Header — always visible regardless of collapsed state */}
       <div className="px-3 py-2 border-b border-line flex items-center gap-2">
-        <Activity className="w-4 h-4 text-danger" />
-        <div className="text-xs font-semibold uppercase tracking-wider text-dim">
-          Live Deployments
-        </div>
-        <span className="text-[11px] text-dimmer">arm / disarm / stop real orders</span>
+        <button
+          type="button"
+          onClick={toggleCollapsed}
+          className="flex items-center gap-2 min-w-0 hover:opacity-80"
+          data-testid="live-deploy-strip-toggle"
+          title={collapsed ? "Expand" : "Collapse"}
+          aria-expanded={!collapsed}
+        >
+          <Activity className="w-4 h-4 text-danger shrink-0" />
+          <span className="text-xs font-semibold uppercase tracking-wider text-dim">
+            Live Deployments
+          </span>
+          {collapsed ? (
+            <ChevronRight className="w-3.5 h-3.5 text-dimmer shrink-0" />
+          ) : (
+            <ChevronDown className="w-3.5 h-3.5 text-dimmer shrink-0" />
+          )}
+        </button>
+
+        {/* Compact summary — visible whether expanded or collapsed */}
+        <span className="text-[11px] text-dimmer font-mono whitespace-nowrap" data-testid="live-deploy-strip-summary">
+          {armedDeps.length} armed · {unarmedDeps.length} unarmed
+          {todayRealisedTotal != null && (
+            <> · <span className={todayRealisedTotal >= 0 ? "text-success" : "text-danger"}>{fmtINR(todayRealisedTotal)}</span></>
+          )}
+        </span>
+
+        {!collapsed && (
+          <span className="text-[11px] text-dimmer">arm / disarm / stop real orders</span>
+        )}
         {busy && <Loader2 className="w-3.5 h-3.5 animate-spin text-dimmer ml-1" />}
         <Button
           variant="outline"
@@ -268,34 +324,38 @@ export default function LiveDeploymentStrip({ onArmedSummaryChange }) {
         </Button>
       </div>
 
-      {/* Armed deployments */}
-      {hasArmed && (
-        <div className="divide-y divide-line">
-          {armedDeps.map((dep) => (
-            <ArmedRow
-              key={dep.id}
-              dep={dep}
-              liveStatus={liveStatuses[dep.id]}
-              busy={busy}
-              onDisarm={doDisarm}
-              onStop={doStop}
-            />
-          ))}
-        </div>
-      )}
+      {!collapsed && (
+        <>
+          {/* Armed deployments */}
+          {hasArmed && (
+            <div className="divide-y divide-line">
+              {armedDeps.map((dep) => (
+                <ArmedRow
+                  key={dep.id}
+                  dep={dep}
+                  liveStatus={liveStatuses[dep.id]}
+                  busy={busy}
+                  onDisarm={doDisarm}
+                  onStop={doStop}
+                />
+              ))}
+            </div>
+          )}
 
-      {/* Unarmed deployments — show Deploy to Live */}
-      {unarmedDeps.length > 0 && (
-        <div className="divide-y divide-line">
-          {unarmedDeps.map((dep) => (
-            <UnarmedRow
-              key={dep.id}
-              dep={dep}
-              busy={busy}
-              onArmed={refreshAll}
-            />
-          ))}
-        </div>
+          {/* Unarmed deployments — show Deploy to Live */}
+          {unarmedDeps.length > 0 && (
+            <div className="divide-y divide-line">
+              {unarmedDeps.map((dep) => (
+                <UnarmedRow
+                  key={dep.id}
+                  dep={dep}
+                  busy={busy}
+                  onArmed={refreshAll}
+                />
+              ))}
+            </div>
+          )}
+        </>
       )}
     </div>
   );
