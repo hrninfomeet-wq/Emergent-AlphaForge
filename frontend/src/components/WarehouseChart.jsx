@@ -414,7 +414,7 @@ export default function WarehouseChart() {
 
       <div className="p-3">
         {meta.gap_day_count > 0 && (
-          <div className="mb-2 rounded-md border border-amber-900 bg-amber-950/30 p-2 text-[11px] text-amber-100 flex items-start gap-2" data-testid="chart-gap-banner">
+          <div className="mb-2 rounded-md border border-amber-900 bg-amber-950/30 p-2 text-[11px] text-warning flex items-start gap-2" data-testid="chart-gap-banner">
             <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
             <div>
               <span className="font-semibold">{meta.gap_day_count} day(s)</span> in this window have missing 1m candles (&lt; 375/session).

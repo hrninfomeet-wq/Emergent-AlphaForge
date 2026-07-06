@@ -7,7 +7,7 @@ export function SignificanceBadge({ significance }) {
   const ci = significance.ci95_win_rate || [0, 0];
   const map = {
     SIGNIFICANT: { cls: "bg-emerald-950 text-emerald-200 border-emerald-900", icon: CheckCircle2, label: "SIGNIFICANT" },
-    TENTATIVE:   { cls: "bg-amber-950 text-amber-200 border-amber-900", icon: AlertCircle, label: "BORDERLINE" },
+    TENTATIVE:   { cls: "bg-amber-950 text-warning border-amber-900", icon: AlertCircle, label: "BORDERLINE" },
     INSUFFICIENT:{ cls: "bg-rose-950 text-rose-200 border-rose-900", icon: XCircle, label: "WEAK" },
   };
   const cfg = map[badge] || map.INSUFFICIENT;

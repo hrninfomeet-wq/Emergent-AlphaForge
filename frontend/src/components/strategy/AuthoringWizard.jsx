@@ -396,7 +396,7 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
               </select>
             </div>
           ) : (
-            <div className="text-[11px] text-amber-300">
+            <div className="text-[11px] text-warning">
               No AI provider configured — set GEMINI_API_KEY or ANTHROPIC_API_KEY in backend/.env.
             </div>
           )}
@@ -487,9 +487,9 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
                 {/* Tier 2 — backtest-only (live fidelity not guaranteed) */}
                 {(cap.backtest_only?.features || []).length > 0 && (
                   <div data-testid="cap-tier-backtest-only">
-                    <div className="text-amber-300 font-semibold">◑ Backtest-only — live fidelity not guaranteed yet</div>
+                    <div className="text-warning font-semibold">◑ Backtest-only — live fidelity not guaranteed yet</div>
                     <div className="text-dimmer">
-                      <span className="text-amber-400 font-mono">{featNames(cap.backtest_only.features)}</span>. {cap.backtest_only.note}
+                      <span className="text-warning font-mono">{featNames(cap.backtest_only.features)}</span>. {cap.backtest_only.note}
                     </div>
                   </div>
                 )}
@@ -535,14 +535,14 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
                 </ul>
               )}
               {(fidelity.couldnt_map || []).length > 0 && (
-                <ul className="text-[11px] text-amber-300 space-y-0.5">
+                <ul className="text-[11px] text-warning space-y-0.5">
                   {fidelity.couldnt_map.map((item, i) => (
                     <li key={i}>⚠ couldn't map: {item}</li>
                   ))}
                 </ul>
               )}
               {(fidelity.ambiguous || []).length > 0 && (
-                <ul className="text-[11px] text-amber-300 space-y-0.5">
+                <ul className="text-[11px] text-warning space-y-0.5">
                   {fidelity.ambiguous.map((item, i) => (
                     <li key={i}>⚠ ambiguous: {item}</li>
                   ))}
@@ -569,7 +569,7 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
               <span data-testid="ruleset-decision"
                 className={`text-[10px] px-2 py-0.5 rounded-full border font-mono ${
                   ruleSet.decision === "BUILD" ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
-                  : ruleSet.decision === "ADVISE" ? "border-amber-500/30 bg-amber-500/10 text-amber-300"
+                  : ruleSet.decision === "ADVISE" ? "border-amber-500/30 bg-amber-500/10 text-warning"
                   : ruleSet.decision === "ASK" ? "border-sky-500/30 bg-sky-500/10 text-sky-300"
                   : "border-rose-500/30 bg-rose-500/10 text-rose-300"}`}>
                 {ruleSet.decision}
@@ -790,7 +790,7 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
 
         {/* Install gate caveat note */}
         {ruleSet && ruleSet.decision !== "BUILD" && (
-          <div className="text-[11px] text-amber-300" data-testid="install-gate-note">
+          <div className="text-[11px] text-warning" data-testid="install-gate-note">
             {ruleSet.decision === "REJECT"
               ? "Can't install — a core rule isn't buildable. See Feasibility above."
               : ruleSet.decision === "ASK"

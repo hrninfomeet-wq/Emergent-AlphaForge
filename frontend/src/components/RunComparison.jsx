@@ -61,7 +61,7 @@ function EquityOverlay({ a, b }) {
       <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="w-full h-28 bg-bg-2 rounded-md border border-line">
         <line x1="0" y1={zeroY} x2={W} y2={zeroY} stroke="currentColor" className="text-line" strokeWidth="0.3" />
         {pathA && <path d={pathA} fill="none" className="text-info" stroke="currentColor" strokeWidth="0.7" vectorEffect="non-scaling-stroke" />}
-        {pathB && <path d={pathB} fill="none" className="text-amber-300" stroke="currentColor" strokeWidth="0.7" vectorEffect="non-scaling-stroke" />}
+        {pathB && <path d={pathB} fill="none" className="text-warning" stroke="currentColor" strokeWidth="0.7" vectorEffect="non-scaling-stroke" />}
       </svg>
       <div className="flex items-center gap-4 mt-1 text-[10px] text-dimmer">
         <span className="flex items-center gap-1"><span className="inline-block w-3 h-0.5 bg-info" /> A · {a?.name || "Run A"}</span>
@@ -88,7 +88,7 @@ export default function RunComparison({ a, b, onClose }) {
         <div className="text-[11px] text-dimmer truncate">
           <span className="text-info font-mono">A</span> {a?.name} · {a?.instrument} {a?.strategy_id}
           <span className="mx-2 text-dimmer">vs</span>
-          <span className="text-amber-300 font-mono">B</span> {b?.name} · {b?.instrument} {b?.strategy_id}
+          <span className="text-warning font-mono">B</span> {b?.name} · {b?.instrument} {b?.strategy_id}
         </div>
         <Button size="sm" variant="ghost" onClick={onClose} className="ml-auto h-6 w-6 p-0" data-testid="run-comparison-close">
           <X className="w-3.5 h-3.5" />
@@ -105,7 +105,7 @@ export default function RunComparison({ a, b, onClose }) {
                 <tr className="text-dim border-b border-line">
                   <th className="text-left p-1.5">Metric</th>
                   <th className="text-right p-1.5 text-info">A</th>
-                  <th className="text-right p-1.5 text-amber-300">B</th>
+                  <th className="text-right p-1.5 text-warning">B</th>
                 </tr>
               </thead>
               <tbody>
@@ -137,7 +137,7 @@ export default function RunComparison({ a, b, onClose }) {
               <tr className="text-dim border-b border-line">
                 <th className="text-left p-1.5">Param</th>
                 <th className="text-right p-1.5 text-info">A</th>
-                <th className="text-right p-1.5 text-amber-300">B</th>
+                <th className="text-right p-1.5 text-warning">B</th>
               </tr>
             </thead>
             <tbody>
@@ -151,7 +151,7 @@ export default function RunComparison({ a, b, onClose }) {
                 const show = (v) => (v === undefined ? "—" : typeof v === "object" ? JSON.stringify(v) : String(v));
                 return (
                   <tr key={k} className={`border-b border-line ${differ ? "bg-amber-950/30" : ""}`} data-testid={differ ? "comparison-param-diff" : "comparison-param-same"}>
-                    <td className={`p-1.5 ${differ ? "text-amber-200 font-medium" : "text-dim"}`}>{k}</td>
+                    <td className={`p-1.5 ${differ ? "text-warning font-medium" : "text-dim"}`}>{k}</td>
                     <td className="p-1.5 text-right font-mono">{show(va)}</td>
                     <td className="p-1.5 text-right font-mono">{show(vb)}</td>
                   </tr>

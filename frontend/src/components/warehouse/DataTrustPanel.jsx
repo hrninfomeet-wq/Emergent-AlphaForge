@@ -26,7 +26,7 @@ export function DataTrustPanel({
   const statusClass = (status) => {
     if (status === "ok") return "bg-emerald-950 text-emerald-200 border-emerald-900";
     if (status === "missing" || status === "hash_mismatch") return "bg-rose-950 text-rose-200 border-rose-900";
-    if (status === "incomplete" || status === "unverified") return "bg-amber-950 text-amber-200 border-amber-900";
+    if (status === "incomplete" || status === "unverified") return "bg-amber-950 text-warning border-amber-900";
     return "bg-bg-3 text-dim border-line";
   };
 
@@ -36,7 +36,7 @@ export function DataTrustPanel({
         <ShieldCheck className="w-4 h-4 text-info" />
         <div className="text-xs font-semibold uppercase tracking-wider text-dim">Data Trust Audit</div>
         {summary && (
-          <span className={`ml-auto text-[10px] px-1.5 py-0.5 rounded border font-mono ${summary.complete ? "bg-emerald-950 text-emerald-200 border-emerald-900" : "bg-amber-950 text-amber-200 border-amber-900"}`}>
+          <span className={`ml-auto text-[10px] px-1.5 py-0.5 rounded border font-mono ${summary.complete ? "bg-emerald-950 text-emerald-200 border-emerald-900" : "bg-amber-950 text-warning border-amber-900"}`}>
             {summary.complete ? "trusted" : "needs review"}
           </span>
         )}

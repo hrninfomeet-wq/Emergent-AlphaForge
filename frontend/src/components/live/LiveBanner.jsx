@@ -65,7 +65,7 @@ export default function LiveBanner({ status, onRefresh, armedCount = 0, autoplac
           </span>
         )}
         {armedCount > 0 && autoplaceArmed === false && (
-          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-amber-500/60 bg-amber-500/10 text-amber-300 text-xs font-mono">
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-amber-500/60 bg-amber-500/10 text-warning text-xs font-mono">
             <Shield className="w-3 h-3" />
             DRY-RUN — set LIVE_AUTOPLACE_ARMED=1 for real orders
           </span>
@@ -100,7 +100,7 @@ export default function LiveBanner({ status, onRefresh, armedCount = 0, autoplac
           </>
         ) : (
           <>
-            <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full border border-amber-500/40 bg-amber-500/10 text-amber-300 text-xs font-mono">
+            <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full border border-amber-500/40 bg-amber-500/10 text-warning text-xs font-mono">
               <AlertTriangle className="w-3 h-3" />
               {expired ? "Daily token expired — login needed" : "Not connected — token missing or expired"}
             </span>
@@ -119,7 +119,7 @@ export default function LiveBanner({ status, onRefresh, armedCount = 0, autoplac
 
         {/* Regen hint */}
         {status?.regenerate_after_6am && (
-          <span className="text-amber-400 text-xs font-mono">
+          <span className="text-warning text-xs font-mono">
             &#9888; Regenerate after 6 AM IST
           </span>
         )}

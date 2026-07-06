@@ -41,7 +41,7 @@ const fmtIstHm = (ms) =>
 // Map the backend market_status phase to a label + chip classes.
 const MARKET_PHASE = {
   open: { label: "Market open", cls: "border-emerald-500/40 text-emerald-300" },
-  pre_open: { label: "Pre-open", cls: "border-amber-500/40 text-amber-300" },
+  pre_open: { label: "Pre-open", cls: "border-amber-500/40 text-warning" },
   closed: { label: "Market closed", cls: "border-line text-dimmer" },
   weekend: { label: "Weekend — closed", cls: "border-line text-dimmer" },
   holiday: { label: "Holiday — closed", cls: "border-line text-dimmer" },
@@ -249,14 +249,14 @@ function DeploymentCard({ item, busy, onPause, onResume, onRepin, onEvaluate, on
           <span className={`text-[10px] px-1.5 py-0.5 rounded border font-mono ${isPaper ? "border-emerald-500/40 text-emerald-300" : "border-info/40 text-info"}`}>
             {isPaper ? "PAPER AUTO-TRADE" : "SIGNAL ONLY"}
           </span>
-          <span className={`text-[10px] px-1.5 py-0.5 rounded border font-mono ${paused ? "border-amber-500/40 text-amber-300" : "border-emerald-500/40 text-emerald-300"}`}>
+          <span className={`text-[10px] px-1.5 py-0.5 rounded border font-mono ${paused ? "border-amber-500/40 text-warning" : "border-emerald-500/40 text-emerald-300"}`}>
             {d.status}
           </span>
         </div>
       </div>
 
       {paused && pausedReason && (
-        <div className="flex items-center gap-1.5 text-[11px] text-amber-300" data-testid="deployment-pause-reason">
+        <div className="flex items-center gap-1.5 text-[11px] text-warning" data-testid="deployment-pause-reason">
           <ShieldAlert className="w-3.5 h-3.5 shrink-0" />
           <span className="truncate" title={pausedReason}>Auto-paused: {pausedReason}</span>
           {isDriftPaused && (
@@ -737,7 +737,7 @@ function DeployWizard({ presets, initialPreset, onClose, onCreated }) {
                       </div>
                     </>
                   ) : (
-                    <div className="text-[10px] text-amber-400/80 leading-snug">
+                    <div className="text-[10px] text-warning leading-snug">
                       Fills booked gross (no slippage/charges) — forward P&amp;L will look better than your backtest. Recommended ON.
                     </div>
                   )}
@@ -871,7 +871,7 @@ function DeployWizard({ presets, initialPreset, onClose, onCreated }) {
                             data-testid="daily-cap-loss"
                             title={!form.friction_costs_enabled ? "Requires costs enabled (friction panel in step 2)" : "Block new signals once today's realized loss exceeds this ₹ amount"} />
                           {!form.friction_costs_enabled && (
-                            <div className="text-[10px] text-amber-400/80 mt-0.5">requires costs ON</div>
+                            <div className="text-[10px] text-warning mt-0.5">requires costs ON</div>
                           )}
                         </label>
                         <label className="text-[11px] text-dim">
@@ -885,7 +885,7 @@ function DeployWizard({ presets, initialPreset, onClose, onCreated }) {
                             data-testid="daily-cap-target"
                             title={!form.friction_costs_enabled ? "Requires costs enabled (friction panel in step 2)" : "Block new signals once today's realized profit exceeds this ₹ amount"} />
                           {!form.friction_costs_enabled && (
-                            <div className="text-[10px] text-amber-400/80 mt-0.5">requires costs ON</div>
+                            <div className="text-[10px] text-warning mt-0.5">requires costs ON</div>
                           )}
                         </label>
                         <label className="text-[11px] text-dim">
@@ -912,10 +912,10 @@ function DeployWizard({ presets, initialPreset, onClose, onCreated }) {
 
               {needAck && (
                 <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-2 space-y-1">
-                  <div className="text-[11px] text-amber-300 font-semibold">
+                  <div className="text-[11px] text-warning font-semibold">
                     Quality warnings on this preset — acknowledge to deploy:
                   </div>
-                  <ul className="text-[11px] text-amber-200/90 list-disc pl-4">
+                  <ul className="text-[11px] text-warning list-disc pl-4">
                     {(quality?.warnings || []).map((w) => <li key={w.id}>{w.label}{w.detail ? ` — ${w.detail}` : ""}</li>)}
                   </ul>
                   <label className="text-[11px] text-dim flex items-center gap-2 pt-1">
@@ -970,7 +970,7 @@ function ReadinessSummary({ readiness }) {
   const wfoOk = wfo && wfo.efficiency != null && wfo.efficiency >= 0.7 && (wfo.consistency_pct ?? 0) >= 50;
   const oeOk = oe && oe.params_match && Number(oe.net_pnl_value || 0) > 0;
   const row = (ok, present, okText, weakText, missText) => (
-    <div className={`flex items-start gap-2 text-[11px] ${!present ? "text-dimmer" : ok ? "text-emerald-400" : "text-amber-400"}`}>
+    <div className={`flex items-start gap-2 text-[11px] ${!present ? "text-dimmer" : ok ? "text-emerald-400" : "text-warning"}`}>
       <span className={`mt-1.5 inline-block w-1.5 h-1.5 rounded-full shrink-0 ${!present ? "bg-zinc-600" : ok ? "bg-emerald-400" : "bg-amber-400"}`} />
       <span>{!present ? missText : ok ? okText : weakText}</span>
     </div>
@@ -1009,7 +1009,7 @@ function PreflightSummary({ preflight }) {
       : "bg-zinc-600";
   const text = (status) =>
     status === "verified" ? "text-emerald-400"
-      : status === "warning" ? "text-amber-400"
+      : status === "warning" ? "text-warning"
       : status === "degraded" ? "text-rose-400"
       : "text-dimmer";
   return (

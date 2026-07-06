@@ -133,10 +133,10 @@ export default function DeployToLivePanel({ dep, onArmed }) {
     <>
       {/* Dry-run warning — shown after arm when autoplace_armed=false */}
       {dryRunWarning && (
-        <div className="mt-1 flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
+        <div className="mt-1 flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-warning">
           <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
           <span>
-            Backend dry-run only — set <code className="font-mono text-amber-200">LIVE_AUTOPLACE_ARMED=1</code> to transmit real orders.
+            Backend dry-run only — set <code className="font-mono text-warning">LIVE_AUTOPLACE_ARMED=1</code> to transmit real orders.
           </span>
         </div>
       )}
@@ -163,7 +163,7 @@ export default function DeployToLivePanel({ dep, onArmed }) {
             </DialogTitle>
           </DialogHeader>
 
-          <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-300 flex items-start gap-2">
+          <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-warning flex items-start gap-2">
             <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
             <span>
               Live orders transmit <strong>real money</strong> trades to Flattrade. Set conservative caps — these cannot be changed while armed.
@@ -176,7 +176,7 @@ export default function DeployToLivePanel({ dep, onArmed }) {
               <label className="text-[10px] uppercase tracking-wider text-dimmer mb-1 block">
                 Lots / signal
                 {maxLots != null && (
-                  <span className="ml-2 text-amber-300">ceiling: {maxLots}</span>
+                  <span className="ml-2 text-warning">ceiling: {maxLots}</span>
                 )}
               </label>
               <Input

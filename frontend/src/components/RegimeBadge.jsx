@@ -4,7 +4,7 @@ const CFG = {
   TREND:           { cls: "bg-emerald-950 text-emerald-200 border-emerald-900", icon: TrendingUp, label: "TREND" },
   TREND_EXPANDING: { cls: "bg-emerald-900/80 text-emerald-100 border-emerald-700", icon: TrendingUp, label: "TREND+EXP" },
   CHOP:            { cls: "bg-slate-900 text-slate-200 border-slate-700", icon: Shuffle, label: "CHOP" },
-  VOLATILE_CHOP:   { cls: "bg-amber-950 text-amber-200 border-amber-900", icon: Activity, label: "VOLATILE" },
+  VOLATILE_CHOP:   { cls: "bg-amber-950 text-warning border-amber-900", icon: Activity, label: "VOLATILE" },
   MIXED:           { cls: "bg-blue-950 text-blue-200 border-blue-900", icon: Shuffle, label: "MIXED" },
   UNKNOWN:         { cls: "bg-slate-900 text-slate-300 border-slate-700", icon: HelpCircle, label: "UNKNOWN" },
 };

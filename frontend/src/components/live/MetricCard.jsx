@@ -27,7 +27,7 @@ const TONE_CLASS = {
   success: "text-success",
   danger: "text-danger",
   info: "text-info",
-  warn: "text-amber-400",
+  warn: "text-warning",
 };
 
 export default function MetricCard({

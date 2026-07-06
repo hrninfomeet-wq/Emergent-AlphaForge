@@ -51,7 +51,7 @@ function Countdown({ until }) {
   const cls = ms < 5 * 60 * 1000
     ? "text-rose-300"
     : ms < 30 * 60 * 1000
-      ? "text-amber-300"
+      ? "text-warning"
       : "text-emerald-300";
 
   return (
@@ -111,7 +111,7 @@ function ArmedRow({ dep, liveStatus, busy, onDisarm, onStop }) {
           size="sm"
           disabled={busy}
           onClick={() => onDisarm(dep)}
-          className="h-7 text-xs text-amber-300 hover:text-amber-200"
+          className="h-7 text-xs text-warning"
           data-testid="live-deploy-disarm"
         >
           <ShieldOff className="w-3 h-3 mr-1" />

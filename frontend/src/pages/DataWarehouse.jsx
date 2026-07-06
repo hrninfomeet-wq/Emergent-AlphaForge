@@ -513,7 +513,7 @@ export default function DataWarehouse() {
                   <td className="p-2 font-mono text-right text-success">{fmtInt(r.candles_added || 0)}</td>
                   <td className="p-2 font-mono text-right text-dim">{fmtInt(r.candles_updated || 0)}</td>
                   <td className="p-2">
-                    <span className={`text-[10px] px-1.5 py-0.5 rounded font-mono ${r.status === "ok" ? "bg-emerald-950 text-emerald-200 border border-emerald-900" : r.status === "failed" ? "bg-rose-950 text-rose-200 border border-rose-900" : "bg-amber-950 text-amber-200 border border-amber-900"}`}>
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded font-mono ${r.status === "ok" ? "bg-emerald-950 text-emerald-200 border border-emerald-900" : r.status === "failed" ? "bg-rose-950 text-rose-200 border border-rose-900" : "bg-amber-950 text-warning border border-amber-900"}`}>
                       {r.status}
                     </span>
                   </td>

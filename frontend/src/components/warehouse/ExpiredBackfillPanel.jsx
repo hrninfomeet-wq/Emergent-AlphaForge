@@ -16,7 +16,7 @@ export function ExpiredContractBackfillPanel({ status, form, setForm, result, ru
         <Database className="w-4 h-4 text-info" />
         <div className="text-xs font-semibold uppercase tracking-wider text-dim">Backfill expired option contracts</div>
         {result && (
-          <span className={`ml-auto text-[10px] px-1.5 py-0.5 rounded border font-mono ${blocked ? "bg-amber-950 text-amber-200 border-amber-900" : result.status === "ok" ? "bg-emerald-950 text-emerald-200 border-emerald-900" : "bg-bg-3 text-dim border-line"}`}>
+          <span className={`ml-auto text-[10px] px-1.5 py-0.5 rounded border font-mono ${blocked ? "bg-amber-950 text-warning border-amber-900" : result.status === "ok" ? "bg-emerald-950 text-emerald-200 border-emerald-900" : "bg-bg-3 text-dim border-line"}`}>
             {result.status}
           </span>
         )}
@@ -114,7 +114,7 @@ export function ExpiredContractBackfillPanel({ status, form, setForm, result, ru
                 <div className="font-mono">{fmtInt(result.skipped || 0)}</div>
               </div>
               {result.reason && (
-                <div className="col-span-2 rounded-md border border-amber-900 bg-amber-950/40 p-2 text-amber-100">
+                <div className="col-span-2 rounded-md border border-amber-900 bg-amber-950/40 p-2 text-warning">
                   {result.reason}
                 </div>
               )}

@@ -6,7 +6,7 @@ export function deploymentLiveness(dep, feedHealth) {
   const status = String(dep?.status || "").toUpperCase();
   if (status === "PAUSED") {
     return {
-      dot: "bg-amber-400", text: "text-amber-300", label: "PAUSED",
+      dot: "bg-amber-400", text: "text-warning", label: "PAUSED",
       tooltip: dep?.paused_reason || dep?.kill_switch_reason || "Paused",
     };
   }
@@ -20,7 +20,7 @@ export function deploymentLiveness(dep, feedHealth) {
       return { dot: "bg-emerald-400", text: "text-emerald-300", label: "ACTIVE · LIVE",
                tooltip: reason || "Receiving fresh candles." };
     case "WARMING_UP":
-      return { dot: "bg-amber-400", text: "text-amber-300", label: "ACTIVE · STARTING",
+      return { dot: "bg-amber-400", text: "text-warning", label: "ACTIVE · STARTING",
                tooltip: reason || "Feed starting — first candle shortly." };
     case "NEEDS_LOGIN":
       return { dot: "bg-rose-400", text: "text-rose-300", label: "ACTIVE · FEED OFFLINE",

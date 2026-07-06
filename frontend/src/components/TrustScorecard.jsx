@@ -15,7 +15,7 @@ export function TrustScorecard({ quality }) {
       data-testid="trust-scorecard"
     >
       <div className="flex items-center gap-2 mb-2">
-        {ok ? <ShieldCheck className="w-4 h-4 text-success" /> : <AlertTriangle className="w-4 h-4 text-amber-400" />}
+        {ok ? <ShieldCheck className="w-4 h-4 text-success" /> : <AlertTriangle className="w-4 h-4 text-warning" />}
         <span className="text-[11px] font-semibold uppercase tracking-wider text-dim">
           Trust {ok ? "· no warnings" : `· ${warnings.length} warning${warnings.length > 1 ? "s" : ""}`}
         </span>
@@ -26,7 +26,7 @@ export function TrustScorecard({ quality }) {
         <ul className="space-y-1.5">
           {warnings.map((w) => (
             <li key={w.id} className="text-[11px]">
-              <span className="text-amber-300 font-medium">{w.label}</span>
+              <span className="text-warning font-medium">{w.label}</span>
               <span className="text-dimmer"> — {w.detail}</span>
             </li>
           ))}

@@ -274,7 +274,7 @@ function ReconcileChip({ reconcile }) {
 
   const mismatches = reconcile.mismatches ?? [];
   return (
-    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-amber-500/40 bg-amber-500/10 text-amber-300 text-xs font-mono">
+    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-amber-500/40 bg-amber-500/10 text-warning text-xs font-mono">
       <AlertTriangle className="w-3.5 h-3.5" />
       {mismatches.length > 0
         ? `${mismatches.length} mismatch${mismatches.length !== 1 ? "es" : ""}: ${mismatches.slice(0, 3).join(", ")}${mismatches.length > 3 ? "…" : ""}`
@@ -487,7 +487,7 @@ export default function LiveDashboard() {
       {/* ── 1a-ii. NO-BROKER-BACKSTOP alert (OCO place failed → software-guard-only) ── */}
       {noBackstopPositions.length > 0 && (
         <div
-          className="text-sm font-mono px-3 py-2.5 rounded-lg border-2 border-amber-500 bg-amber-500/15 text-amber-300 flex items-start gap-2"
+          className="text-sm font-mono px-3 py-2.5 rounded-lg border-2 border-amber-500 bg-amber-500/15 text-warning flex items-start gap-2"
           data-testid="no-broker-backstop-banner"
         >
           <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />

@@ -103,7 +103,7 @@ function GuardRow({ pos }) {
               Filled
             </span>
           ) : (
-            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full border border-amber-500/50 bg-amber-500/10 text-amber-300 text-[10px] font-mono font-bold uppercase tracking-wider">
+            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full border border-amber-500/50 bg-amber-500/10 text-warning text-[10px] font-mono font-bold uppercase tracking-wider">
               <Loader2 className="w-3 h-3 shrink-0 animate-spin" />
               Pending fill
             </span>
@@ -181,7 +181,7 @@ export default function GuardPanel() {
             Armed · live auto-exit
           </span>
         ) : (
-          <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full border border-amber-500/60 bg-amber-500/15 text-amber-300 text-[10px] font-mono font-bold uppercase tracking-wider">
+          <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full border border-amber-500/60 bg-amber-500/15 text-warning text-[10px] font-mono font-bold uppercase tracking-wider">
             <ShieldCheck className="w-3 h-3 shrink-0" />
             Dry-run · logs only
           </span>
@@ -254,7 +254,7 @@ export default function GuardPanel() {
         {/* Dry-run footer hint */}
         {!armed && (guarded.length > 0 || count > 0) && (
           <div className="flex items-start gap-1.5 text-[11px] font-mono text-dimmer pt-1 border-t border-line/60">
-            <AlertTriangle className="w-3.5 h-3.5 shrink-0 text-amber-400 mt-0.5" />
+            <AlertTriangle className="w-3.5 h-3.5 shrink-0 text-warning mt-0.5" />
             <span>
               Set <span className="text-dim font-semibold">LIVE_GUARD_ARMED=1</span> (env)
               + rebuild to transmit real auto-exits.

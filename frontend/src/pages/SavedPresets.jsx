@@ -71,7 +71,7 @@ const validationVerdict = (rd) => {
 const VAL_CLS = {
   strong: "border-emerald-500/40 text-emerald-300",
   partial: "border-sky-500/40 text-sky-300",
-  weak: "border-amber-500/40 text-amber-300",
+  weak: "border-amber-500/40 text-warning",
   none: "border-line text-dimmer",
 };
 
@@ -482,7 +482,7 @@ function PresetCard({ p, source, expanded, onToggle, selected, onToggleSelect, b
           <span className="truncate">{summary}</span>
         </div>
       ) : (
-        <div className="flex items-center gap-1.5 text-[11px] text-amber-400/80" title="No option-execution policy — deploys without option pairing (spot signals only)">
+        <div className="flex items-center gap-1.5 text-[11px] text-warning" title="No option-execution policy — deploys without option pairing (spot signals only)">
           <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
           <span>spot-only — no option execution policy</span>
         </div>
@@ -544,8 +544,8 @@ function CompareDialog({ a, b, onClose }) {
               return (
                 <div key={k} className={`grid grid-cols-[160px_1fr_1fr] gap-2 px-2 py-1 ${differ ? "bg-amber-500/5" : ""}`}>
                   <div className="text-[11px] text-dimmer truncate" title={k}>{k}</div>
-                  <div className={`text-[11px] font-mono ${differ ? "text-amber-300" : "text-dim"}`}>{fmt(pa[k])}</div>
-                  <div className={`text-[11px] font-mono ${differ ? "text-amber-300" : "text-dim"}`}>{fmt(pb[k])}</div>
+                  <div className={`text-[11px] font-mono ${differ ? "text-warning" : "text-dim"}`}>{fmt(pa[k])}</div>
+                  <div className={`text-[11px] font-mono ${differ ? "text-warning" : "text-dim"}`}>{fmt(pb[k])}</div>
                 </div>
               );
             })}

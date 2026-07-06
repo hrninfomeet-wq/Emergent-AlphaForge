@@ -54,7 +54,7 @@ export function OptionWarehousePanel({
       </div>
       <div className="p-3 space-y-3">
         <div className="rounded-md border border-amber-900/40 bg-amber-950/20 p-2 text-[11px] text-dim" data-testid="option-warehouse-philosophy-note">
-          <span className="font-semibold text-amber-200">Not the same as warehouse completeness.</span> This tool selects specific
+          <span className="font-semibold text-warning">Not the same as warehouse completeness.</span> This tool selects specific
           moneyness strikes (ATM, ITM1-2, OTM1-3) around a sampled reference price and counts a contract “covered” if it has
           <em> any</em> stored candle. Routine completeness — every strike the day’s spot range touched, for both legs — is the
           <span className="font-semibold"> daily ATM band</span>, maintained automatically by <span className="font-semibold">Sync now</span> /
@@ -337,7 +337,7 @@ export function OptionWarehousePanel({
               <AuditStat label="Selections" value={fmtInt(summary.selection_count || 0)} />
             </div>
 
-            <div className={`rounded-md border p-3 text-xs ${missingCount === 0 && missingMetaCount === 0 && items.length > 0 ? "border-emerald-900 bg-emerald-950/30 text-emerald-100" : "border-amber-900 bg-amber-950/30 text-amber-100"}`} data-testid="option-warehouse-planned-coverage">
+            <div className={`rounded-md border p-3 text-xs ${missingCount === 0 && missingMetaCount === 0 && items.length > 0 ? "border-emerald-900 bg-emerald-950/30 text-emerald-100" : "border-amber-900 bg-amber-950/30 text-warning"}`} data-testid="option-warehouse-planned-coverage">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="font-semibold">Planned coverage</span>
                 <span className="font-mono">{plannedCoverage}% · {fmtInt(summary.stored_selected_date_candles || 0)}/{fmtInt(summary.expected_candles_per_selected_dates || 0)} candles</span>
@@ -350,7 +350,7 @@ export function OptionWarehousePanel({
             </div>
 
             {plan.warning && (
-              <div className="rounded-md border border-amber-900 bg-amber-950/40 p-2 text-xs text-amber-100">
+              <div className="rounded-md border border-amber-900 bg-amber-950/40 p-2 text-xs text-warning">
                 {plan.warning}
               </div>
             )}

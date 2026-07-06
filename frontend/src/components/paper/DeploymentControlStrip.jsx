@@ -103,7 +103,7 @@ function DeploymentControlRow({ dep, open, busy, feedHealth, onPause, onResume, 
         </Button>
         {isActive && (
           <Button variant="ghost" size="sm" disabled={busy} onClick={() => onPause(dep)}
-            className="h-7 text-xs text-amber-300 hover:text-amber-200" data-testid="paper-deploy-pause">
+            className="h-7 text-xs text-warning" data-testid="paper-deploy-pause">
             <Pause className="w-3 h-3 mr-1" /> Pause
           </Button>
         )}

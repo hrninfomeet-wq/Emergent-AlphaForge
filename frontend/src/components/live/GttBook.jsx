@@ -276,7 +276,7 @@ export default function GttBook() {
 
       {/* Backstop note */}
       <div className="flex items-start gap-1.5 text-[11px] font-mono text-dimmer leading-snug">
-        <ShieldAlert className="w-3.5 h-3.5 shrink-0 mt-0.5 text-amber-400" />
+        <ShieldAlert className="w-3.5 h-3.5 shrink-0 mt-0.5 text-warning" />
         <span>
           OCO-GTT is a PC-died catastrophe backstop for NRML positions only; it's
           auto-cancelled when the software exit fills.

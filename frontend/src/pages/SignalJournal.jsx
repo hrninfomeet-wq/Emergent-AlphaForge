@@ -33,7 +33,7 @@ const STATES = ["CONFIRMED", "TRIGGERED", "ACTIVE", "EXITED", "AUDITED"];
 const PAGE_SIZE = 100;
 
 const STATE_STYLE = {
-  CONFIRMED: "border-amber-500/40 text-amber-300",
+  CONFIRMED: "border-amber-500/40 text-warning",
   TRIGGERED: "border-info/40 text-info",
   ACTIVE: "border-emerald-500/40 text-emerald-300",
   EXITED: "border-emerald-500/40 text-emerald-300",
@@ -440,7 +440,7 @@ export default function SignalJournal() {
                         </div>
                         {blockers.length > 0 && (
                           <div><span className="text-dimmer uppercase tracking-wider mr-2">Blockers</span>
-                            <span className="text-amber-300">{blockers.join("; ")}</span></div>
+                            <span className="text-warning">{blockers.join("; ")}</span></div>
                         )}
                         {s.paper_trade_error && (
                           <div><span className="text-dimmer uppercase tracking-wider mr-2">Paper trade error</span>

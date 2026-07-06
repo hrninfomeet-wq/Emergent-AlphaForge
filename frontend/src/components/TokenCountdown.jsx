@@ -63,7 +63,7 @@ export default function TokenCountdown({ status: externalStatus, variant = "badg
   const cls = st.expired || st.mins < 30
     ? "border-rose-900 bg-rose-950/40 text-rose-200"
     : st.mins < 120
-      ? "border-amber-900 bg-amber-950/40 text-amber-200"
+      ? "border-amber-900 bg-amber-950/40 text-warning"
       : "border-line bg-bg-2 text-dim";
   const Icon = st.expired || st.mins < 30 ? AlertTriangle : Clock;
 

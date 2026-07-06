@@ -29,7 +29,7 @@ export default function ExecutionStateStrip({ armState, onStandDown, standingDow
     verdict === "LIVE"
       ? { box: "border-2 border-danger bg-danger/15 text-danger", Icon: Zap }
       : verdict === "DRY_RUN"
-        ? { box: "border border-amber-500/50 bg-amber-500/10 text-amber-300", Icon: Shield }
+        ? { box: "border border-amber-500/50 bg-amber-500/10 text-warning", Icon: Shield }
         : { box: "border border-emerald-500/40 bg-emerald-500/10 text-emerald-300", Icon: ShieldCheck };
   const Icon = tone.Icon;
 

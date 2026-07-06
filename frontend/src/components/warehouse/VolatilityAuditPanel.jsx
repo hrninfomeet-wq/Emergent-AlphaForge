@@ -95,7 +95,7 @@ export function VolatilityAuditPanel() {
               </div>
               <div className="rounded-md border border-line bg-bg-2 p-2">
                 <div className="text-[10px] uppercase tracking-wider text-dimmer">Spike Bars</div>
-                <div className="text-sm font-mono mt-0.5 text-amber-300">{fmtInt(summary.spike_bars || 0)}</div>
+                <div className="text-sm font-mono mt-0.5 text-warning">{fmtInt(summary.spike_bars || 0)}</div>
               </div>
               <div className="rounded-md border border-line bg-bg-2 p-2">
                 <div className="text-[10px] uppercase tracking-wider text-dimmer">Spike Share</div>
@@ -130,7 +130,7 @@ export function VolatilityAuditPanel() {
                       <td className="p-2 text-right font-mono">{fmtNum(s.close, 2)}</td>
                       <td className="p-2 text-right font-mono">{fmtNum(s.realized_vol_5m, 4)}</td>
                       <td className="p-2 text-right font-mono text-dim">{fmtNum(s.vol_baseline_30d, 4)}</td>
-                      <td className="p-2 text-right font-mono text-amber-300">{fmtNum(s.vol_ratio, 2)}×</td>
+                      <td className="p-2 text-right font-mono text-warning">{fmtNum(s.vol_ratio, 2)}×</td>
                     </tr>
                   ))}
                 </tbody>

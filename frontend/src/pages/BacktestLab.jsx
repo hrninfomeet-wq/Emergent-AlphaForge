@@ -960,7 +960,7 @@ export default function BacktestLab() {
                   className="bg-bg-2 border-line h-8 text-xs"
                   data-testid="option-expiry-input"
                 />
-                <div className="text-[10px] text-amber-300 mt-1">
+                <div className="text-[10px] text-warning mt-1">
                   Pins ALL trades to this one expiry. Only use for single-expiry-day studies — for multi-day
                   backtests keep "Nearest weekly (auto)".
                 </div>
@@ -982,7 +982,7 @@ export default function BacktestLab() {
                   data-testid="option-lots-input"
                 />
                 {config.option_sizing_enabled && (
-                  <div className="text-[10px] text-amber-300 mt-1">
+                  <div className="text-[10px] text-warning mt-1">
                     Controlled by the sizing panel below while sizing is on.
                   </div>
                 )}
@@ -1181,7 +1181,7 @@ export default function BacktestLab() {
                   {config.option_sizing_mode === "premium_at_risk"
                     && !(config.option_exit_mode === "option_levels"
                       && (config.option_sl_tp_unit === "pts" ? config.option_stop_pts !== "" : config.option_stop_pct !== "")) && (
-                    <div className="text-[10px] text-amber-300 leading-snug" data-testid="option-sizing-estimate-note">
+                    <div className="text-[10px] text-warning leading-snug" data-testid="option-sizing-estimate-note">
                       No premium stop is set (exit mode is "{config.option_exit_mode === "spot_exit" ? "Mirror spot exit" : "Option premium SL/target"}{config.option_exit_mode === "option_levels" ? " without a stop" : ""}"),
                       so the per-trade rupee risk uses the Assumed stop % — an estimate, not an exact bound.
                     </div>
@@ -1263,7 +1263,7 @@ export default function BacktestLab() {
                     If neither is hit, the spot signal's exit closes the trade. Stop is assumed to fill
                     first if a single 1-min bar spans both levels.
                   </div>
-                  <div className="text-[10px] text-amber-300 leading-snug">
+                  <div className="text-[10px] text-warning leading-snug">
                     Live parity: these values do not travel with presets into deployments. To replicate premium
                     exits in live auto-paper trading, set the deployment's auto-paper fallback target/stop
                     (points or %) in the Live Signals form — strategy-defined exits still take priority there.
@@ -1289,7 +1289,7 @@ export default function BacktestLab() {
                 {config.exit_controls_enabled && (
                   <>
                     {config.option_exit_mode !== "option_levels" && (
-                      <div className="text-[10px] text-amber-300 leading-snug" data-testid="exit-controls-mode-note">
+                      <div className="text-[10px] text-warning leading-snug" data-testid="exit-controls-mode-note">
                         Trailing &amp; breakeven need exit mode “Option premium SL/target” (they trail the option’s
                         own premium). They’re skipped under “Mirror spot exit”. Daily caps still apply.
                       </div>
@@ -1741,7 +1741,7 @@ function ResultsView({ result, onSaveAsPreset }) {
           {result.name && <span className="ml-2 text-foreground font-medium">· {result.name}</span>}
         </div>
         {result.walkforward?.is_vs_oos?.divergence_warning && (
-          <span className="text-xs px-2 py-1 rounded bg-amber-950 text-amber-200 border border-amber-900" data-testid="divergence-warning">
+          <span className="text-xs px-2 py-1 rounded bg-amber-950 text-warning border border-amber-900" data-testid="divergence-warning">
             ⚠ IS vs OOS divergence &gt;15%
           </span>
         )}
@@ -1874,7 +1874,7 @@ function DataAuditCard({ audit }) {
   const complete = after.complete;
   const badgeClass = complete
     ? "bg-emerald-950 text-emerald-200 border-emerald-900"
-    : "bg-amber-950 text-amber-200 border-amber-900";
+    : "bg-amber-950 text-warning border-amber-900";
   const fillText = fill.attempted
     ? `${fill.status || "unknown"} · ${fmtInt(fill.fetched || 0)} fetched`
     : `${fill.status || "skipped"} · ${fill.reason || "coverage_complete"}`;
@@ -1883,7 +1883,7 @@ function DataAuditCard({ audit }) {
     <Panel
       title="Data Audit"
       testid="data-audit-card"
-      right={<ShieldCheck className={`w-4 h-4 ${complete ? "text-success" : "text-amber-300"}`} />}
+      right={<ShieldCheck className={`w-4 h-4 ${complete ? "text-success" : "text-warning"}`} />}
     >
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-2">
         <div className="rounded-md border border-line bg-bg-2 p-2">
@@ -1922,21 +1922,21 @@ function OptionBacktestCard({ optionBacktest }) {
   const trusted = totalSpot > 0 && paired === totalSpot && !coverage.missing_contract && !coverage.missing_entry_candle && !coverage.missing_exit_candle;
   const badgeClass = trusted
     ? "bg-emerald-950 text-emerald-200 border-emerald-900"
-    : "bg-amber-950 text-amber-200 border-amber-900";
+    : "bg-amber-950 text-warning border-amber-900";
 
   return (
     <Panel
       title="Option Execution"
       testid="option-backtest-card"
-      right={<ShieldCheck className={`w-4 h-4 ${trusted ? "text-success" : "text-amber-300"}`} />}
+      right={<ShieldCheck className={`w-4 h-4 ${trusted ? "text-success" : "text-warning"}`} />}
     >
       {data.candles_capped && (
         <div
-          className="mb-3 rounded-md border border-amber-900 bg-amber-950 text-amber-200 p-2 flex items-start gap-2 text-[11px]"
+          className="mb-3 rounded-md border border-amber-900 bg-amber-950 text-warning p-2 flex items-start gap-2 text-[11px]"
           role="alert"
           data-testid="option-candles-capped-warning"
         >
-          <AlertTriangle className="w-3.5 h-3.5 mt-px shrink-0 text-amber-300" />
+          <AlertTriangle className="w-3.5 h-3.5 mt-px shrink-0 text-warning" />
           <span>
             Option-candle load hit its row cap. Candles load oldest-first, so the{" "}
             <span className="font-semibold">newest</span> candles were dropped — trades in the most
@@ -2017,7 +2017,7 @@ function OptionBacktestCard({ optionBacktest }) {
             {fmtInt(data.dte_filter.matched_trades || 0)} of {fmtInt(data.dte_filter.input_trades || 0)} spot signals matched
           </span>
           {(data.dte_filter.matched_trades || 0) === 0 && (
-            <span className="text-amber-300">No signals fell on this DTE in the window — widen the date range or pick another DTE.</span>
+            <span className="text-warning">No signals fell on this DTE in the window — widen the date range or pick another DTE.</span>
           )}
         </div>
       )}
@@ -2072,7 +2072,7 @@ function OptionBacktestCard({ optionBacktest }) {
                   <td className="p-2 text-right font-mono text-dimmer">{t.option_target_level != null ? fmtNum(t.option_target_level) : "—"}</td>
                   <td className="p-2 text-right font-mono text-dimmer">{t.option_stop_level != null ? fmtNum(t.option_stop_level) : "—"}</td>
                   <td className="p-2 text-right font-mono" title={t.risk_amount != null ? `risk ₹${fmtNum(t.risk_amount, 0)}${t.risk_exceeded ? " (exceeded budget)" : ""}` : ""}>
-                    {t.lots != null ? t.lots : "—"}{t.risk_exceeded ? <span className="text-amber-300"> ⚠</span> : ""}
+                    {t.lots != null ? t.lots : "—"}{t.risk_exceeded ? <span className="text-warning"> ⚠</span> : ""}
                   </td>
                   <td className="p-2 text-[10px]">
                     <ExitReasonBadge reason={t.option_exit_reason} />
@@ -2362,7 +2362,7 @@ function MonteCarloCard({ trades, optionBacktest }) {
         </div>
         <div className="rounded-md border border-line bg-bg-2 p-2" data-testid="mc-pneg-block">
           <div className="text-[10px] uppercase tracking-wider text-dimmer">P(net &lt; 0)</div>
-          <div className={`text-base font-mono mt-0.5 ${pNegPct >= 25 ? "text-danger" : pNegPct >= 10 ? "text-amber-300" : "text-success"}`}>
+          <div className={`text-base font-mono mt-0.5 ${pNegPct >= 25 ? "text-danger" : pNegPct >= 10 ? "text-warning" : "text-success"}`}>
             {fmtPct(pNegPct, 1)}
           </div>
         </div>

@@ -16,7 +16,7 @@ export function UpstoxPanel({ status, busy, ingesting, form, setForm, ingestJob,
   const statusClass = connected
     ? "bg-emerald-950 text-emerald-200 border-emerald-900"
     : configured
-      ? "bg-amber-950 text-amber-200 border-amber-900"
+      ? "bg-amber-950 text-warning border-amber-900"
       : "bg-rose-950 text-rose-200 border-rose-900";
   const statusText = connected ? "connected" : configured ? "ready for OAuth" : "needs credentials";
 

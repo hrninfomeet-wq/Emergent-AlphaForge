@@ -35,7 +35,7 @@ export default function FeedHealthBanner({ feedHealth, activeCount = 0 }) {
 
   const warming = state === "WARMING_UP";
   const tone = warming
-    ? "border-amber-500/40 bg-amber-500/10 text-amber-300"
+    ? "border-amber-500/40 bg-amber-500/10 text-warning"
     : "border-2 border-danger bg-danger/10 text-danger";
 
   return (

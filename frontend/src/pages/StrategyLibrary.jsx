@@ -181,7 +181,7 @@ function StrategyCard({ s, metrics, onRetire, onUnretire, onDelete }) {
             ) : (
               <Badge className="bg-bg-3 text-dim border-line">built-in</Badge>
             )}
-            {s.is_retired && <Badge className="bg-amber-950 text-amber-200 border-amber-900">retired</Badge>}
+            {s.is_retired && <Badge className="bg-amber-950 text-warning border-amber-900">retired</Badge>}
           </div>
           <div className="text-[11px] font-mono text-dimmer mt-0.5">{s.id}</div>
         </div>
@@ -264,7 +264,7 @@ function ForwardMetricsBlock({ metrics }) {
                   {item.deployment_name || item.deployment_id}
                   {lowSample && (
                     <span
-                      className="text-[9px] uppercase tracking-wide px-1 py-px rounded bg-amber-950 text-amber-300 border border-amber-900 shrink-0"
+                      className="text-[9px] uppercase tracking-wide px-1 py-px rounded bg-amber-950 text-warning border border-amber-900 shrink-0"
                       title={`Only ${sessions} of ${minSessions} complete forward sessions — treat these numbers as preliminary, not evidence.`}
                     >
                       low sample

@@ -42,7 +42,7 @@ function HeartbeatDot({ heartbeat }) {
   return (
     <span
       className={`inline-flex items-center gap-1 text-[10px] font-mono ${
-        isRecent ? "text-emerald-300" : "text-amber-400"
+        isRecent ? "text-emerald-300" : "text-warning"
       }`}
       title={heartbeat ? `Last heartbeat: ${heartbeat}` : "No heartbeat"}
     >
@@ -191,7 +191,7 @@ export default function PositionMonitor() {
     <div className="rounded-lg border-2 border-amber-500/50 bg-amber-500/5 overflow-hidden">
       {/* Header */}
       <div className="px-4 py-2.5 border-b border-amber-500/30 bg-amber-500/10 flex items-center gap-2 flex-wrap">
-        <span className="text-sm font-bold text-amber-300 uppercase tracking-wider">
+        <span className="text-sm font-bold text-warning uppercase tracking-wider">
           Live Position Active
         </span>
         <HeartbeatDot heartbeat={heartbeat} />
@@ -265,7 +265,7 @@ export default function PositionMonitor() {
             <span className="text-dimmer">Time remaining</span>
             <span
               className={`text-2xl font-bold tabular-nums ${
-                isUrgent ? "text-danger" : "text-amber-300"
+                isUrgent ? "text-danger" : "text-warning"
               }`}
             >
               {formatCountdown(remainingSecs)}
@@ -290,7 +290,7 @@ export default function PositionMonitor() {
             type="button"
             disabled={squareBusy || killBusy}
             onClick={handleSquare}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-amber-500/50 bg-amber-500/10 text-amber-300 text-xs font-mono font-semibold hover:bg-amber-500/20 disabled:opacity-60 transition-colors"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-amber-500/50 bg-amber-500/10 text-warning text-xs font-mono font-semibold hover:bg-amber-500/20 disabled:opacity-60 transition-colors"
           >
             {squareBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Square className="w-3.5 h-3.5" />}
             Square now

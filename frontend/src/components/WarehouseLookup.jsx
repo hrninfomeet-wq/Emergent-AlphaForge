@@ -73,7 +73,7 @@ export default function WarehouseLookup() {
             <div className="text-[11px]"><OHLC candle={leg.candle} /></div>
             <div className="mt-1 text-[10px] text-dimmer font-mono">
               OI {fmtInt(leg.candle?.oi || 0)} · vol {fmtInt(leg.candle?.volume || 0)}
-              {!leg.exact && <span className="text-amber-300"> · nearest bar</span>}
+              {!leg.exact && <span className="text-warning"> · nearest bar</span>}
             </div>
           </>
         ) : (
@@ -126,7 +126,7 @@ export default function WarehouseLookup() {
                 <span className="text-[11px] font-semibold">{result.underlying} spot</span>
                 <span className="text-[10px] font-mono text-dimmer">
                   {result.spot?.ist_time || result.target_ist}
-                  {result.spot && !result.spot_exact && <span className="text-amber-300"> · nearest bar</span>}
+                  {result.spot && !result.spot_exact && <span className="text-warning"> · nearest bar</span>}
                 </span>
               </div>
               {result.spot ? (
@@ -149,7 +149,7 @@ export default function WarehouseLookup() {
             )}
 
             {(result.notes || []).length > 0 && (
-              <div className="rounded-md border border-amber-900 bg-amber-950/30 p-2 text-[11px] text-amber-100 space-y-0.5">
+              <div className="rounded-md border border-amber-900 bg-amber-950/30 p-2 text-[11px] text-warning space-y-0.5">
                 {result.notes.map((n, i) => <div key={i}>• {n}</div>)}
               </div>
             )}

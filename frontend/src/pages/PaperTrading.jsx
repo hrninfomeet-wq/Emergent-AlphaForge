@@ -453,7 +453,7 @@ export default function PaperTrading() {
           className={`ml-auto inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full border font-mono ${
             livePosHealth.live
               ? "border-emerald-500/40 text-emerald-300 bg-emerald-500/10"
-              : "border-amber-500/40 text-amber-300 bg-amber-500/10"
+              : "border-amber-500/40 text-warning bg-amber-500/10"
           }`}
           data-testid="paper-feed-health"
           title={livePosHealth.live
@@ -551,7 +551,7 @@ export default function PaperTrading() {
             className="bg-bg-2 border-line h-7 text-xs w-[150px] pr-1" data-testid="paper-date-to" title="To (IST)" />
 
           <Button variant="ghost" size="sm" onClick={closeAllOpen} disabled={busy || openCount === 0}
-            className="h-7 text-xs text-amber-300 hover:text-amber-200" data-testid="paper-close-all">
+            className="h-7 text-xs text-warning" data-testid="paper-close-all">
             <XCircle className="w-3 h-3 mr-1" /> Close all open
           </Button>
           <Button variant="ghost" size="sm" onClick={exportCsv} className="h-7 text-xs" data-testid="paper-export-csv">

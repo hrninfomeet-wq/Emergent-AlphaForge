@@ -395,7 +395,7 @@ export default function OverallSettingsPanel({ scope = "overall" }) {
           {SCOPE_LABEL[scopeKey] ?? scopeKey}
         </span>
         {loadNote && (
-          <span className="inline-flex items-center gap-1 text-amber-400" title={loadNote}>
+          <span className="inline-flex items-center gap-1 text-warning" title={loadNote}>
             <AlertTriangle className="w-3 h-3 shrink-0" />
             defaults
           </span>
@@ -589,7 +589,7 @@ export default function OverallSettingsPanel({ scope = "overall" }) {
             {/* Inverted lock config — floor at/above trigger would exit instantly */}
             {showLockParams &&
               num(trailing.lock_floor) >= num(trailing.lock_at) && (
-                <div className="flex items-start gap-1.5 text-[11px] font-mono text-amber-400">
+                <div className="flex items-start gap-1.5 text-[11px] font-mono text-warning">
                   <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-px" />
                   <span>
                     Lock floor ({num(trailing.lock_floor)}) should be BELOW the
@@ -621,7 +621,7 @@ export default function OverallSettingsPanel({ scope = "overall" }) {
         <div className="flex items-center gap-1.5 text-[11px] font-mono text-dimmer">
           <AlertTriangle
             className={`w-3.5 h-3.5 shrink-0 ${
-              reentry.enabled && !reentryEligible ? "text-amber-400" : "text-dimmer"
+              reentry.enabled && !reentryEligible ? "text-warning" : "text-dimmer"
             }`}
           />
           Requires an Overall SL or Target to be enabled (it re-enters after that

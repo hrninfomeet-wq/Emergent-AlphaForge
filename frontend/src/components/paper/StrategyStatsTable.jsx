@@ -16,7 +16,7 @@ function DriftChip({ drift }) {
   const avUp = (d.avg_delta ?? 0) >= 0;
   const cls = (wrUp && avUp) ? "bg-emerald-500/10 text-emerald-300 border-emerald-500/30"
     : (!wrUp && !avUp) ? "bg-rose-500/10 text-rose-300 border-rose-500/30"
-    : "bg-amber-500/10 text-amber-300 border-amber-500/30";
+    : "bg-amber-500/10 text-warning border-amber-500/30";
   return (
     <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded border ${cls}`}
       title="Live (session-gated) vs pinned backtest (option-₹)">

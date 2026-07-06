@@ -842,7 +842,7 @@ export default function Optimizer() {
                     <Input type="number" min={1} max={500} value={config.rerank_top_k}
                       onChange={(e) => setConfig({ ...config, rerank_top_k: e.target.value })}
                       className="bg-bg-2 border-line h-8 text-xs font-mono mt-1" data-testid="opt-rerank-k" />
-                    <div className={`text-[10px] mt-1 ${Number(config.rerank_top_k) > 80 ? "text-amber-400" : "text-dimmer"}`} data-testid="opt-rerank-k-hint">
+                    <div className={`text-[10px] mt-1 ${Number(config.rerank_top_k) > 80 ? "text-warning" : "text-dimmer"}`} data-testid="opt-rerank-k-hint">
                       Each candidate is fully option-backtested + survival-checked in Analyzing — higher = slower. ~50 is usually plenty.
                     </div>
                     <label className="flex items-center gap-1.5 mt-1.5 text-[10px] text-dim"
@@ -1053,7 +1053,7 @@ export default function Optimizer() {
 
             {config.run_kind !== "walkforward" && config.evaluation_mode === "option_rerank" && (
               <div className="rounded-md border border-amber-500/30 bg-amber-500/5 p-2 space-y-2" data-testid="opt-exit-search-panel">
-                <div className="text-[10px] uppercase tracking-wider text-amber-400">Exit-Control Search</div>
+                <div className="text-[10px] uppercase tracking-wider text-warning">Exit-Control Search</div>
                 <label className="flex items-center gap-2 text-[11px] text-dim">
                   <input
                     type="checkbox"
@@ -1067,7 +1067,7 @@ export default function Optimizer() {
                 <div className="text-[10px] text-dimmer leading-snug">
                   Requires Survivability ON + Option re-rank. For each surviving finalist the optimizer sweeps a grid of trailing-stop distances and breakeven-trigger levels and keeps the best-surviving config (saved as <code className="font-mono">chosen_exit_controls</code> on the result).
                   {(!config.survival_config?.enabled) && (
-                    <span className="text-amber-400 block mt-1"> Enable Survivability above to activate this search.</span>
+                    <span className="text-warning block mt-1"> Enable Survivability above to activate this search.</span>
                   )}
                 </div>
                 {config.search_exit_controls && config.survival_config?.enabled && (
@@ -1402,21 +1402,21 @@ function CurrentJobView({ job, onApply, onStop, onPause, onResume, onOpenBest })
           <div className="text-xs text-rose-300 mt-2 font-mono">{job.error}</div>
         )}
         {cancelled && (
-          <div className="text-xs text-amber-300 mt-2">Optimization was cancelled. Best result so far has been preserved.</div>
+          <div className="text-xs text-warning mt-2">Optimization was cancelled. Best result so far has been preserved.</div>
         )}
         {paused && (
           <div className="text-xs text-sky-300 mt-2">Paused at trial {job.n_trials_completed}/{job.n_trials_total}. Click Resume to continue from here.</div>
         )}
         {interrupted && (
-          <div className="text-xs text-orange-300 mt-2">Interrupted by a restart at trial {job.n_trials_completed}/{job.n_trials_total}. Click Resume to continue.</div>
+          <div className="text-xs text-warning mt-2">Interrupted by a restart at trial {job.n_trials_completed}/{job.n_trials_total}. Click Resume to continue.</div>
         )}
         {status === "analyzing" && job.rerank_progress && (
-          <div className="text-[11px] font-mono text-amber-300 mt-2" data-testid="opt-analyze-eta">
+          <div className="text-[11px] font-mono text-warning mt-2" data-testid="opt-analyze-eta">
             Analyzing {job.rerank_progress?.stage}: {job.rerank_progress?.done ?? 0}/{job.rerank_progress?.total ?? 0} · ETA {fmtEta(job.rerank_progress?.eta_sec)}
           </div>
         )}
         {finished && job.analyze_budget_hit && (
-          <div className="text-xs text-amber-300 mt-2 leading-snug" data-testid="opt-analyze-budget-hit">
+          <div className="text-xs text-warning mt-2 leading-snug" data-testid="opt-analyze-budget-hit">
             Analyzing budget hit — evaluated {job.analyzed_candidates ?? "?"} candidate(s). Raise the budget or lower Re-rank top-K for full coverage.
           </div>
         )}
@@ -1435,7 +1435,7 @@ function CurrentJobView({ job, onApply, onStop, onPause, onResume, onOpenBest })
       {bsf.params && Object.keys(bsf.params).length > 0 && (
         <div className="rounded-lg border border-line bg-bg-1 p-3" data-testid="opt-best-so-far">
           <div className="flex items-center gap-2 mb-2">
-            <Trophy className="w-4 h-4 text-amber-400" />
+            <Trophy className="w-4 h-4 text-warning" />
             <div className="text-xs font-semibold uppercase tracking-wider text-dim">Best so far</div>
             <div className="ml-auto text-right" data-testid="opt-best-headline">
               {isOptionRerank ? (
@@ -1537,7 +1537,7 @@ function WfoResults({ job }) {
   const cons = wfo.consistency || {};
   const windows = wfo.windows || [];
   const stability = wfo.param_stability || [];
-  const effColor = eff == null ? "text-dim" : eff >= 0.7 ? "text-emerald-400" : eff >= 0.4 ? "text-amber-400" : "text-rose-400";
+  const effColor = eff == null ? "text-dim" : eff >= 0.7 ? "text-emerald-400" : eff >= 0.4 ? "text-warning" : "text-rose-400";
   const effLabel = eff == null ? "n/a" : eff.toFixed(2);
   return (
     <div className="space-y-3" data-testid="wfo-results">
@@ -1574,7 +1574,7 @@ function WfoResults({ job }) {
 
       {/* Option-aware OOS: the rupee reality check on the stitch */}
       {wfo.option_oos && wfo.option_oos.error && (
-        <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-[11px] text-amber-300" data-testid="wfo-option-oos-error">
+        <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-[11px] text-warning" data-testid="wfo-option-oos-error">
           Option-aware OOS pairing failed: {String(wfo.option_oos.error)}. The spot stitch above is unaffected — check option-data coverage for the window.
         </div>
       )}
@@ -1800,12 +1800,12 @@ function StatusBadge({ status }) {
   const map = {
     queued: { c: "bg-slate-800 text-slate-200 border-slate-700", label: "QUEUED" },
     running: { c: "bg-info/20 text-info border-info/50 animate-pulse", label: "RUNNING" },
-    analyzing: { c: "bg-amber-950 text-amber-200 border-amber-900 animate-pulse", label: "ANALYZING" },
+    analyzing: { c: "bg-amber-950 text-warning border-amber-900 animate-pulse", label: "ANALYZING" },
     done: { c: "bg-emerald-950 text-emerald-200 border-emerald-900", label: "DONE" },
     done_no_survivor: { c: "bg-rose-950 text-rose-200 border-rose-900", label: "NO SURVIVOR" },
-    cancelled: { c: "bg-amber-950 text-amber-200 border-amber-900", label: "CANCELLED" },
+    cancelled: { c: "bg-amber-950 text-warning border-amber-900", label: "CANCELLED" },
     paused: { c: "bg-sky-950 text-sky-200 border-sky-900", label: "PAUSED" },
-    interrupted: { c: "bg-orange-950 text-orange-200 border-orange-900", label: "INTERRUPTED" },
+    interrupted: { c: "bg-orange-950 text-warning border-orange-900", label: "INTERRUPTED" },
     failed: { c: "bg-rose-950 text-rose-200 border-rose-900", label: "FAILED" },
   };
   const m = map[status] || map.queued;
@@ -2139,7 +2139,7 @@ function RerankResults({ rerank, survivalSummary, jobStatus }) {
                           if (trail != null) parts.push(`trail ${trail}%`);
                           if (be != null) parts.push(`BE ${be}%`);
                           return (
-                            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded border bg-amber-950 text-amber-200 border-amber-900 whitespace-nowrap">
+                            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded border bg-amber-950 text-warning border-amber-900 whitespace-nowrap">
                               auto-tuned: {parts.length > 0 ? parts.join(" / ") : "exit config"}
                             </span>
                           );

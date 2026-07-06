@@ -8,7 +8,7 @@ import { ShieldCheck, RefreshCw, Play, CheckCircle2, AlertTriangle, AlertCircle,
 
 const STATUS_STYLES = {
   verified: "bg-emerald-950 text-emerald-200 border-emerald-900",
-  warning: "bg-amber-950 text-amber-200 border-amber-900",
+  warning: "bg-amber-950 text-warning border-amber-900",
   degraded: "bg-rose-950 text-rose-200 border-rose-900",
 };
 
@@ -277,7 +277,7 @@ export default function DataHygienePanel({ upstoxConnected }) {
           <div className="rounded-md border border-line bg-bg-2 p-2.5 flex items-center gap-3 flex-wrap" data-testid="hygiene-hero">
             {(plan.instruments || []).map((i) => {
               const oc = i.option_candles || {};
-              const cls = oc.status === "verified" ? "text-emerald-300" : oc.status === "warning" ? "text-amber-300" : "text-rose-300";
+              const cls = oc.status === "verified" ? "text-emerald-300" : oc.status === "warning" ? "text-warning" : "text-rose-300";
               return (
                 <span key={i.instrument} className="text-[11px] font-mono inline-flex items-center gap-1.5">
                   <span className="text-dim">{i.instrument}</span>
@@ -404,7 +404,7 @@ export default function DataHygienePanel({ upstoxConnected }) {
                   {(catchUpResult.plan?.instruments || [])
                     .filter((i) => !i.up_to_date)
                     .map((i) => (
-                      <span key={i.instrument} className="px-1.5 py-0.5 rounded bg-amber-950 text-amber-200 border border-amber-900 font-mono">
+                      <span key={i.instrument} className="px-1.5 py-0.5 rounded bg-amber-950 text-warning border border-amber-900 font-mono">
                         {i.instrument}: {i.missing_trading_days}d ({i.from_date} → {i.to_date})
                       </span>
                     ))}
@@ -488,7 +488,7 @@ export default function DataHygienePanel({ upstoxConnected }) {
                   {(inst.option_candles?.missing_pairs || 0) > 0 && (
                     <div className="mt-2 pt-2 border-t border-line space-y-1 text-[10px]" data-testid={`hygiene-band-${inst.instrument.toLowerCase()}`}>
                       <div className="flex items-center justify-between gap-2">
-                        <span className="text-amber-300">{fmtInt(inst.option_candles.missing_pairs)} strike-day(s) missing</span>
+                        <span className="text-warning">{fmtInt(inst.option_candles.missing_pairs)} strike-day(s) missing</span>
                         <span className="text-dimmer font-mono">{fmtInt(inst.option_candles.judged_days || 0)} days judged</span>
                       </div>
                       <div className="text-dimmer font-mono leading-snug" title="missing strike-days by month">
@@ -518,7 +518,7 @@ export default function DataHygienePanel({ upstoxConnected }) {
                   {(inst.actions || []).length > 0 ? (
                     <div className="mt-2 pt-2 border-t border-line flex flex-wrap gap-1">
                       {inst.actions.map((a) => (
-                        <span key={a.id} className="text-[10px] px-1.5 py-0.5 rounded bg-amber-950 text-amber-200 border border-amber-900" title={a.reason}>
+                        <span key={a.id} className="text-[10px] px-1.5 py-0.5 rounded bg-amber-950 text-warning border border-amber-900" title={a.reason}>
                           {KIND_LABEL[a.kind] || a.kind}
                         </span>
                       ))}

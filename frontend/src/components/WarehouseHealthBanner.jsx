@@ -29,7 +29,7 @@ const STREAM_STALE_MS = 3 * 60 * 1000; // a running stream with no tick in 3m is
 function coverageTone(pct) {
   if (pct == null) return "text-dim";
   if (pct >= 99.0) return "text-emerald-300";
-  if (pct >= 95.0) return "text-amber-300";
+  if (pct >= 95.0) return "text-warning";
   return "text-rose-300";
 }
 
@@ -106,10 +106,10 @@ export default function WarehouseHealthBanner() {
   return (
     <div className={`rounded-lg border border-line bg-bg-1 border-l-2 ${accent}`} data-testid="warehouse-health-banner">
       <div className="px-3 py-2 border-b border-line flex items-center gap-2">
-        <ShieldCheck className={`w-4 h-4 ${allVerified ? "text-emerald-400" : "text-amber-400"}`} />
+        <ShieldCheck className={`w-4 h-4 ${allVerified ? "text-emerald-400" : "text-warning"}`} />
         <div className="text-xs font-semibold uppercase tracking-wider text-dim">Warehouse Health</div>
         <span
-          className={`text-[10px] px-2 py-0.5 rounded-full border font-mono ${allVerified ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300" : "border-amber-500/30 bg-amber-500/10 text-amber-300"}`}
+          className={`text-[10px] px-2 py-0.5 rounded-full border font-mono ${allVerified ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300" : "border-amber-500/30 bg-amber-500/10 text-warning"}`}
           data-testid="warehouse-health-overall"
         >
           {allVerified ? "trustworthy" : "check needed"}
@@ -137,8 +137,8 @@ export default function WarehouseHealthBanner() {
             <RefreshCw className="w-3 h-3" /> Auto-update
           </div>
           <div className="flex items-center gap-1.5">
-            {autoOk ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" /> : <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />}
-            <span className={autoOk ? "text-emerald-300" : "text-amber-300"}>{auto?.last_status || "never run"}</span>
+            {autoOk ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" /> : <AlertTriangle className="w-3.5 h-3.5 text-warning" />}
+            <span className={autoOk ? "text-emerald-300" : "text-warning"}>{auto?.last_status || "never run"}</span>
             {auto?.last_submitted_count ? <span className="text-dimmer">· {auto.last_submitted_count} jobs</span> : null}
           </div>
           <div className="text-dimmer font-mono mt-0.5">{auto?.last_finished_at ? isoToFull(auto.last_finished_at) : "—"}</div>
@@ -173,7 +173,7 @@ export default function WarehouseHealthBanner() {
           </div>
           <div className="flex items-center gap-1.5">
             <span className={`w-2 h-2 rounded-full ${streamOk ? "bg-emerald-500" : streamRunning ? "bg-amber-500" : "bg-slate-500"}`} />
-            <span className={streamOk ? "text-emerald-300" : streamRunning ? "text-amber-300" : "text-dim"}>
+            <span className={streamOk ? "text-emerald-300" : streamRunning ? "text-warning" : "text-dim"}>
               {!streamRunning ? "stopped" : streamStale ? "stale" : "running"}
             </span>
             {streamRunning ? <span className="text-dimmer">· {stream?.instrument_count ?? 0} keys</span> : null}

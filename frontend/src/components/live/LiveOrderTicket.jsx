@@ -386,7 +386,7 @@ export default function LiveOrderTicket({ mode, disabled, onQueued }) {
           </>
         )}
         {rulesError && (
-          <span className="inline-flex items-center gap-1 text-amber-400" title={rulesError}>
+          <span className="inline-flex items-center gap-1 text-warning" title={rulesError}>
             <AlertTriangle className="w-3 h-3 shrink-0" />
             defaults
           </span>
@@ -644,7 +644,7 @@ export default function LiveOrderTicket({ mode, disabled, onQueued }) {
             </span>
           )}
           {premiumBadge === "last_candle" && (
-            <span className="text-[10px] font-mono font-semibold text-amber-400">
+            <span className="text-[10px] font-mono font-semibold text-warning">
               ● last close
             </span>
           )}
@@ -723,7 +723,7 @@ export default function LiveOrderTicket({ mode, disabled, onQueued }) {
           </span>
         )}
         {willSplit && (
-          <span className="inline-flex items-center gap-1 text-amber-400">
+          <span className="inline-flex items-center gap-1 text-warning">
             <AlertTriangle className="w-3 h-3 shrink-0" />
             splits into {childCount} child orders (freeze {freezeQty})
           </span>
@@ -853,7 +853,7 @@ export default function LiveOrderTicket({ mode, disabled, onQueued }) {
         <div className="space-y-2">
           {previewResult.ok !== true && (
             <div className="flex items-center gap-1.5 text-xs text-dimmer font-mono">
-              <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+              <AlertTriangle className="w-3.5 h-3.5 text-warning shrink-0" />
               Preview must pass all checks before this order can be placed.
             </div>
           )}
