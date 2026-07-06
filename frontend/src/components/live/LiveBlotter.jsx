@@ -1,7 +1,9 @@
-import { useMemo } from "react";
+import { Fragment, useMemo } from "react";
 import { Link } from "react-router-dom";
 import { Layers } from "lucide-react";
 import { fmtINR, fmtINRSigned, colorPnL } from "@/lib/fmt";
+import { useInteractiveColumns } from "@/components/common/useInteractiveColumns";
+import { ResetLayoutButton } from "@/components/common/ResetLayoutButton";
 
 /**
  * LiveBlotter — deployment-attributed live trades from GET /live-broker/blotter.
@@ -23,6 +25,21 @@ function istTime(iso) {
 }
 
 const SIDE_CLASS = { LONG: "text-success", B: "text-success", SHORT: "text-danger", S: "text-danger" };
+
+// Default column set for the interactive layout hook (drag-resize / drag-reorder,
+// persisted per-table). Purely presentational — read-only rendering below is
+// unchanged; only column width/order becomes user-adjustable.
+const DEFAULT_COLUMNS = [
+  { key: "time", label: "Time", align: "left", defaultWidth: 80 },
+  { key: "strategy", label: "Strategy / Deployment", align: "left", defaultWidth: 170 },
+  { key: "symbol", label: "Symbol", align: "left", defaultWidth: 110 },
+  { key: "side", label: "Side", align: "center", defaultWidth: 60 },
+  { key: "lots", label: "Lots", align: "right", defaultWidth: 60 },
+  { key: "entry", label: "Entry", align: "right", defaultWidth: 80 },
+  { key: "ltp", label: "LTP", align: "right", defaultWidth: 80 },
+  { key: "pnl", label: "P&L", align: "right", defaultWidth: 90 },
+  { key: "status", label: "Status", align: "center", defaultWidth: 90 },
+];
 
 export default function LiveBlotter({ rows, gtt }) {
   // al_id → { sl, tp } from the resting GTT/OCO book, so a backed position can
@@ -61,6 +78,12 @@ export default function LiveBlotter({ rows, gtt }) {
     }
     return { liveCount: lc, closedCount: cc, flatCount: fc, livePnl: live, closedPnl: closed };
   }, [rows]);
+
+  const { orderedColumns, getHeaderProps, getResizeHandleProps, resetLayout, isCustomized } = useInteractiveColumns({
+    tableId: "live-blotter",
+    columns: DEFAULT_COLUMNS,
+    defaultWidth: 90,
+  });
 
   if (rows == null) {
     return <div className="text-xs text-dimmer font-mono py-4 text-center">Loading live blotter&hellip;</div>;
@@ -105,21 +128,35 @@ export default function LiveBlotter({ rows, gtt }) {
             </span>
           )}
         </span>
+        <ResetLayoutButton onReset={resetLayout} isCustomized={isCustomized} label="live blotter" testid="live-blotter-reset-layout" />
       </div>
 
       <div className="overflow-x-auto">
-        <table className="w-full text-xs font-mono tabular-nums">
+        <table className="w-full text-xs font-mono tabular-nums" style={{ tableLayout: "fixed" }}>
+          <colgroup>
+            {orderedColumns.map((c) => <col key={c.key} style={{ width: `${c.width}px` }} />)}
+          </colgroup>
           <thead>
             <tr className="border-b border-line text-dimmer uppercase tracking-wider text-[10px]">
-              <th className="text-left py-2 pr-3 pl-0">Time</th>
-              <th className="text-left py-2 px-3">Strategy / Deployment</th>
-              <th className="text-left py-2 px-3">Symbol</th>
-              <th className="text-center py-2 px-3">Side</th>
-              <th className="text-right py-2 px-3">Lots</th>
-              <th className="text-right py-2 px-3">Entry</th>
-              <th className="text-right py-2 px-3">LTP</th>
-              <th className="text-right py-2 px-3">P&amp;L</th>
-              <th className="text-center py-2 pl-3 pr-0">Status</th>
+              {orderedColumns.map((col, i) => {
+                const headerProps = getHeaderProps(col.key);
+                const alignCls = col.align === "right" ? "text-right" : col.align === "center" ? "text-center" : "text-left";
+                const edgeCls = i === 0 ? "pl-0" : i === orderedColumns.length - 1 ? "pr-0" : "";
+                return (
+                  <th
+                    key={col.key}
+                    {...headerProps}
+                    className={`relative py-2 px-3 ${alignCls} ${edgeCls} ${headerProps["data-drag-over"] ? "bg-bg-2" : ""}`}
+                  >
+                    {col.label}
+                    <span
+                      {...getResizeHandleProps(col.key)}
+                      className="absolute top-0 right-0 h-full w-1.5 cursor-col-resize hover:bg-info/40"
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                  </th>
+                );
+              })}
             </tr>
           </thead>
           <tbody>
@@ -127,14 +164,13 @@ export default function LiveBlotter({ rows, gtt }) {
               const status = String(r?.status ?? (r?.at_broker ? "LIVE" : "FLAT"));
               const isFlat = status === "FLAT";   // truly empty rows dim; CLOSED keeps its P&L visible
               const side = String(r?.direction ?? "");
-              return (
-                <tr
-                  key={r?.id ?? r?.norenordno ?? i}
-                  className={`border-b border-line/50 hover:bg-bg-2/40 transition-colors ${
-                    isFlat ? "opacity-60" : ""
-                  }`}
-                >
-                  <td className="py-2 pr-3 pl-0 text-dim">{istTime(r?.created_at)}</td>
+
+              // Cell content keyed to match DEFAULT_COLUMNS keys — identical markup
+              // to the original fixed-order cells, just data-driven so drag-reorder
+              // reorders body cells along with header cells.
+              const cells = {
+                time: <td className="py-2 px-3 text-dim">{istTime(r?.created_at)}</td>,
+                strategy: (
                   <td className="py-2 px-3">
                     {r?.deployment_id ? (
                       <Link
@@ -151,21 +187,31 @@ export default function LiveBlotter({ rows, gtt }) {
                     )}
                     <div className="text-dimmer text-[10px]">{r?.strategy_id ?? ""}</div>
                   </td>
-                  <td className="py-2 px-3 text-foreground">{r?.trading_symbol || "–"}</td>
+                ),
+                symbol: <td className="py-2 px-3 text-foreground">{r?.trading_symbol || "–"}</td>,
+                side: (
                   <td className={`py-2 px-3 text-center font-semibold ${SIDE_CLASS[side] ?? "text-dim"}`}>
                     {side || "–"}
                   </td>
-                  <td className="py-2 px-3 text-right text-foreground">{r?.lots ?? "–"}</td>
+                ),
+                lots: <td className="py-2 px-3 text-right text-foreground">{r?.lots ?? "–"}</td>,
+                entry: (
                   <td className="py-2 px-3 text-right text-dim">
                     {r?.entry_price != null ? fmtINR(r.entry_price, 2) : "–"}
                   </td>
+                ),
+                ltp: (
                   <td className="py-2 px-3 text-right text-foreground">
                     {r?.ltp != null ? fmtINR(r.ltp, 2) : "–"}
                   </td>
+                ),
+                pnl: (
                   <td className={`py-2 px-3 text-right font-semibold ${colorPnL(r?.pnl)}`}>
                     {r?.pnl != null ? fmtINRSigned(r.pnl) : "–"}
                   </td>
-                  <td className="py-2 pl-3 pr-0 text-center">
+                ),
+                status: (
+                  <td className="py-2 px-3 text-center">
                     {status === "LIVE" ? (
                       <span className="inline-flex items-center gap-1 justify-center flex-wrap">
                         <span className="inline-block px-1.5 py-0.5 rounded text-[10px] border border-emerald-500/40 bg-emerald-500/10 text-emerald-300">
@@ -207,6 +253,19 @@ export default function LiveBlotter({ rows, gtt }) {
                       </span>
                     )}
                   </td>
+                ),
+              };
+
+              return (
+                <tr
+                  key={r?.id ?? r?.norenordno ?? i}
+                  className={`border-b border-line/50 hover:bg-bg-2/40 transition-colors ${
+                    isFlat ? "opacity-60" : ""
+                  }`}
+                >
+                  {orderedColumns.map((col) => (
+                    <Fragment key={col.key}>{cells[col.key]}</Fragment>
+                  ))}
                 </tr>
               );
             })}

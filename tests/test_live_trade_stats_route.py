@@ -57,7 +57,11 @@ def test_charges_surfaces_are_wired():
     stats = (ROOT / "frontend/src/components/paper/StrategyStatsTable.jsx").read_text(encoding="utf-8")
     bt = (ROOT / "frontend/src/pages/BacktestLab.jsx").read_text(encoding="utf-8")
     pa = (ROOT / "backend/app/paper_analytics.py").read_text(encoding="utf-8")
-    assert "<H right>Charges</H>" in blotter
+    # TradeBlotter's columns moved from inline `<H right>Charges</H>` JSX to a
+    # data-driven column-definition array (feeds the shared drag-resize/reorder
+    # useInteractiveColumns hook) — the Charges column itself, right-aligned,
+    # is still wired.
+    assert '{ key: "charges", label: "Charges", sortCol: null, right: true' in blotter
     assert "total_charges" in stats
     assert '{ key: "opt_charges", label: "Charges ₹"' in bt
     assert 'g["total_charges"] += _f(t.get("total_charges"))' in pa

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
@@ -19,6 +19,8 @@ import { PerformanceOverview } from "@/components/backtest/PerformanceOverview";
 import { BacktestChart } from "@/components/backtest/BacktestChart";
 import { TrustScorecard } from "@/components/TrustScorecard";
 import { useMaximize, MaximizeButton } from "@/components/MaximizeButton";
+import { useInteractiveColumns } from "@/components/common/useInteractiveColumns";
+import { ResetLayoutButton } from "@/components/common/ResetLayoutButton";
 import { buildPerformanceSeries } from "@/lib/backtestMetrics";
 import { NumberSliderInput } from "@/components/NumberSliderInput";
 import BacktestRunJournal from "@/components/BacktestRunJournal";
@@ -2555,27 +2557,41 @@ function SignalFunnelCard({ funnel, regimeDist, totalRegime }) {
 }
 
 const TRADE_COLUMNS = [
-  { key: "idx", label: "#", align: "left", sortable: true },
-  { key: "direction", label: "Dir", align: "left", sortable: true },
-  { key: "entry_ts", label: "Entry", align: "left", sortable: true },
-  { key: "entry_price", label: "Entry Px", align: "right", sortable: true },
-  { key: "exit_ts", label: "Exit", align: "left", sortable: true },
-  { key: "exit_price", label: "Exit Px", align: "right", sortable: true },
-  { key: "exit_reason", label: "Reason", align: "left", sortable: true },
-  { key: "score", label: "Score", align: "right", sortable: true },
-  { key: "pnl_pts", label: "P&L (pts)", align: "right", sortable: true },
-  { key: "pnl_pct", label: "P&L %", align: "right", sortable: true },
+  { key: "idx", label: "#", align: "left", sortable: true, defaultWidth: 50 },
+  { key: "direction", label: "Dir", align: "left", sortable: true, defaultWidth: 60 },
+  { key: "entry_ts", label: "Entry", align: "left", sortable: true, defaultWidth: 90 },
+  { key: "entry_price", label: "Entry Px", align: "right", sortable: true, defaultWidth: 90 },
+  { key: "exit_ts", label: "Exit", align: "left", sortable: true, defaultWidth: 90 },
+  { key: "exit_price", label: "Exit Px", align: "right", sortable: true, defaultWidth: 90 },
+  { key: "exit_reason", label: "Reason", align: "left", sortable: true, defaultWidth: 100 },
+  { key: "score", label: "Score", align: "right", sortable: true, defaultWidth: 70 },
+  { key: "pnl_pts", label: "P&L (pts)", align: "right", sortable: true, defaultWidth: 90 },
+  { key: "pnl_pct", label: "P&L %", align: "right", sortable: true, defaultWidth: 80 },
 ];
 
-function SortHeader({ col, sort, onSort }) {
+function SortHeader({ col, sort, onSort, headerProps, resizeHandleProps, width }) {
   const active = sort.key === col.key;
   const Icon = !active ? ChevronsUpDown : sort.dir === "asc" ? ArrowUp : ArrowDown;
   const alignCls = col.align === "right" ? "text-right" : "text-left";
+  const style = width != null ? { width: `${width}px` } : undefined;
+  const dragCls = headerProps?.["data-drag-over"] ? "bg-bg-3" : "";
+  const resizeHandle = resizeHandleProps ? (
+    <span
+      {...resizeHandleProps}
+      className="absolute top-0 right-0 h-full w-1.5 cursor-col-resize hover:bg-info/40"
+      onClick={(e) => e.stopPropagation()}
+    />
+  ) : null;
   if (!col.sortable) {
-    return <th className={`${alignCls} p-2`}>{col.label}</th>;
+    return (
+      <th {...headerProps} className={`relative ${alignCls} p-2 ${dragCls}`} style={style}>
+        {col.label}
+        {resizeHandle}
+      </th>
+    );
   }
   return (
-    <th className={`${alignCls} p-2`}>
+    <th {...headerProps} className={`relative ${alignCls} p-2 ${dragCls}`} style={style}>
       <button
         type="button"
         onClick={() => onSort(col.key)}
@@ -2586,6 +2602,7 @@ function SortHeader({ col, sort, onSort }) {
         <span>{col.label}</span>
         <Icon className={`w-3 h-3 ${active ? "text-info" : "text-dimmer"}`} />
       </button>
+      {resizeHandle}
     </th>
   );
 }
@@ -2680,6 +2697,34 @@ function TradesTable({ trades, optionBacktest }) {
     return rows;
   }, [filtered, sort]);
 
+  // Build column set: base spot columns, plus option columns when paired. This
+  // is recomputed fresh every render (option legs vary run-to-run), which is
+  // exactly the shape useInteractiveColumns is designed to merge a persisted
+  // width/order layout onto — by key, dropping stale keys, appending new ones.
+  // Computed (and the hook below called) unconditionally, before the "no
+  // trades" early return, to satisfy the Rules of Hooks.
+  const columns = optionEnabled
+    ? [
+        ...TRADE_COLUMNS,
+        { key: "opt_symbol", label: "Opt Leg", align: "left", sortable: true, defaultWidth: 110 },
+        { key: "opt_qty", label: "Lots (Qty)", align: "right", sortable: true, defaultWidth: 100 },
+        { key: "opt_entry", label: "Opt Entry", align: "right", sortable: true, defaultWidth: 90 },
+        { key: "opt_exit", label: "Opt Exit", align: "right", sortable: true, defaultWidth: 90 },
+        { key: "opt_pnl_pct", label: "Opt P&L%", align: "right", sortable: true, defaultWidth: 90 },
+        { key: "opt_buy_value", label: "Buy ₹", align: "right", sortable: true, defaultWidth: 90 },
+        { key: "opt_sell_value", label: "Sell ₹", align: "right", sortable: true, defaultWidth: 90 },
+        { key: "opt_charges", label: "Charges ₹", align: "right", sortable: true, defaultWidth: 90 },
+        { key: "opt_exit_reason", label: "Opt Exit", align: "left", sortable: true, defaultWidth: 100 },
+        { key: "opt_pnl_value", label: "Opt P&L (₹)", align: "right", sortable: true, defaultWidth: 100 },
+      ]
+    : TRADE_COLUMNS;
+
+  const { orderedColumns, getHeaderProps, getResizeHandleProps, resetLayout, isCustomized } = useInteractiveColumns({
+    tableId: "backtest-trades",
+    columns,
+    defaultWidth: 90,
+  });
+
   if (!trades.length) {
     return (
       <Panel title="Trades" testid="trades-panel">
@@ -2699,23 +2744,6 @@ function TradesTable({ trades, optionBacktest }) {
       {children}
     </select>
   );
-
-  // Build column set: base spot columns, plus option columns when paired.
-  const columns = optionEnabled
-    ? [
-        ...TRADE_COLUMNS,
-        { key: "opt_symbol", label: "Opt Leg", align: "left", sortable: true },
-        { key: "opt_qty", label: "Lots (Qty)", align: "right", sortable: true },
-        { key: "opt_entry", label: "Opt Entry", align: "right", sortable: true },
-        { key: "opt_exit", label: "Opt Exit", align: "right", sortable: true },
-        { key: "opt_pnl_pct", label: "Opt P&L%", align: "right", sortable: true },
-        { key: "opt_buy_value", label: "Buy ₹", align: "right", sortable: true },
-        { key: "opt_sell_value", label: "Sell ₹", align: "right", sortable: true },
-        { key: "opt_charges", label: "Charges ₹", align: "right", sortable: true },
-        { key: "opt_exit_reason", label: "Opt Exit", align: "left", sortable: true },
-        { key: "opt_pnl_value", label: "Opt P&L (₹)", align: "right", sortable: true },
-      ]
-    : TRADE_COLUMNS;
 
   return (
     <Panel
@@ -2742,6 +2770,7 @@ function TradesTable({ trades, optionBacktest }) {
             <option value="win">Wins</option>
             <option value="loss">Losses</option>
           </FilterSelect>
+          <ResetLayoutButton onReset={resetLayout} isCustomized={isCustomized} label="trades table" testid="trades-reset-layout" />
           <MaximizeButton maximized={maximized} onToggle={toggleMaximize} label="trades" testid="trades-maximize" />
         </div>
       }
@@ -2756,51 +2785,73 @@ function TradesTable({ trades, optionBacktest }) {
         style={maximized ? { minHeight: 0 } : undefined}
       >
         <table className="w-full text-xs" data-testid="trades-table">
+          <colgroup>
+            {orderedColumns.map((col) => <col key={col.key} style={{ width: `${col.width}px` }} />)}
+          </colgroup>
           <thead className="sticky top-0 bg-bg-2 z-10">
             <tr className="text-dim">
-              {columns.map((col) => (
-                <SortHeader key={col.key} col={col} sort={sort} onSort={onSort} />
+              {orderedColumns.map((col) => (
+                <SortHeader
+                  key={col.key}
+                  col={col}
+                  sort={sort}
+                  onSort={onSort}
+                  width={col.width}
+                  headerProps={getHeaderProps(col.key)}
+                  resizeHandleProps={getResizeHandleProps(col.key)}
+                />
               ))}
             </tr>
           </thead>
           <tbody>
-            {sorted.map((t) => (
-              <tr key={t.idx} className="border-b border-line hover:bg-bg-2" data-testid="trade-row">
-                <td className="p-2 font-mono">{t.idx}</td>
-                <td className={`p-2 font-mono font-medium ${t.direction === "CE" ? "text-emerald-300" : "text-rose-300"}`}>{t.direction}</td>
-                <td className="p-2 text-dim">{tsToTime(t.entry_ts)}</td>
-                <td className="p-2 text-right font-mono">{fmtNum(t.entry_price)}</td>
-                <td className="p-2 text-dim">{tsToTime(t.exit_ts)}</td>
-                <td className="p-2 text-right font-mono">{fmtNum(t.exit_price)}</td>
-                <td className="p-2 text-[10px] text-dim">{t.exit_reason}</td>
-                <td className="p-2 text-right font-mono text-dim">{t.score}</td>
-                <td className={`p-2 text-right font-mono ${colorPnL(t.pnl_pts)}`}>{fmtPnL(t.pnl_pts)}</td>
-                <td className={`p-2 text-right font-mono ${colorPnL(t.pnl_pts)}`}>{fmtPct(t.pnl_pct, 2)}</td>
-                {optionEnabled && (
-                  <>
-                    <td className="p-2 font-mono text-[10px]" title={t.opt_symbol || ""}>
-                      {t.opt_symbol
-                        ? <span>{t.opt_side ? <span className={t.opt_side === "CE" ? "text-emerald-300" : "text-rose-300"}>{t.opt_strike} {t.opt_side}</span> : t.opt_symbol}</span>
-                        : <span className="text-dimmer">{t.opt_status ? t.opt_status.replace(/_/g, " ").toLowerCase() : "—"}</span>}
-                    </td>
-                    <td className="p-2 text-right font-mono text-[10px]" title={t.opt_qty != null ? `${fmtInt(t.opt_qty)} qty` : ""}>
-                      {t.opt_lots != null ? `${fmtInt(t.opt_lots)} (${fmtInt(t.opt_qty)})` : "—"}
-                    </td>
-                    <td className="p-2 text-right font-mono">{t.opt_entry != null ? fmtNum(t.opt_entry) : "—"}</td>
-                    <td className="p-2 text-right font-mono">{t.opt_exit != null ? fmtNum(t.opt_exit) : "—"}</td>
-                    <td className={`p-2 text-right font-mono ${colorPnL(t.opt_pnl_pct)}`}>{t.opt_pnl_pct != null ? fmtPct(t.opt_pnl_pct, 1) : "—"}</td>
-                    <td className="p-2 text-right font-mono text-dim">{t.opt_buy_value != null ? `₹${fmtInt(t.opt_buy_value)}` : "—"}</td>
-                    <td className="p-2 text-right font-mono text-dim">{t.opt_sell_value != null ? `₹${fmtInt(t.opt_sell_value)}` : "—"}</td>
-                    <td className="p-2 text-right font-mono text-dimmer" title="Round-trip statutory charges (brokerage/STT/exchange/GST/SEBI/stamp; 0 when 'Apply realistic costs' is off)">{t.opt_charges != null ? `₹${fmtNum(t.opt_charges, 0)}` : "—"}</td>
-                    <td className="p-2 text-[10px]"><ExitReasonBadge reason={t.opt_exit_reason} /></td>
-                    <td className={`p-2 text-right font-mono ${colorPnL(t.opt_pnl_value)}`}>{t.opt_pnl_value != null ? fmtPnL(t.opt_pnl_value) : "—"}</td>
-                  </>
-                )}
-              </tr>
-            ))}
+            {sorted.map((t) => {
+              // Cell content keyed identically to TRADE_COLUMNS / the option
+              // column keys above — same markup as the original fixed-order
+              // JSX, just looked up per column so drag-reorder can rearrange
+              // both header and body cells together.
+              const cellRenderers = {
+                idx: <td className="p-2 font-mono">{t.idx}</td>,
+                direction: <td className={`p-2 font-mono font-medium ${t.direction === "CE" ? "text-emerald-300" : "text-rose-300"}`}>{t.direction}</td>,
+                entry_ts: <td className="p-2 text-dim">{tsToTime(t.entry_ts)}</td>,
+                entry_price: <td className="p-2 text-right font-mono">{fmtNum(t.entry_price)}</td>,
+                exit_ts: <td className="p-2 text-dim">{tsToTime(t.exit_ts)}</td>,
+                exit_price: <td className="p-2 text-right font-mono">{fmtNum(t.exit_price)}</td>,
+                exit_reason: <td className="p-2 text-[10px] text-dim">{t.exit_reason}</td>,
+                score: <td className="p-2 text-right font-mono text-dim">{t.score}</td>,
+                pnl_pts: <td className={`p-2 text-right font-mono ${colorPnL(t.pnl_pts)}`}>{fmtPnL(t.pnl_pts)}</td>,
+                pnl_pct: <td className={`p-2 text-right font-mono ${colorPnL(t.pnl_pts)}`}>{fmtPct(t.pnl_pct, 2)}</td>,
+                opt_symbol: (
+                  <td className="p-2 font-mono text-[10px]" title={t.opt_symbol || ""}>
+                    {t.opt_symbol
+                      ? <span>{t.opt_side ? <span className={t.opt_side === "CE" ? "text-emerald-300" : "text-rose-300"}>{t.opt_strike} {t.opt_side}</span> : t.opt_symbol}</span>
+                      : <span className="text-dimmer">{t.opt_status ? t.opt_status.replace(/_/g, " ").toLowerCase() : "—"}</span>}
+                  </td>
+                ),
+                opt_qty: (
+                  <td className="p-2 text-right font-mono text-[10px]" title={t.opt_qty != null ? `${fmtInt(t.opt_qty)} qty` : ""}>
+                    {t.opt_lots != null ? `${fmtInt(t.opt_lots)} (${fmtInt(t.opt_qty)})` : "—"}
+                  </td>
+                ),
+                opt_entry: <td className="p-2 text-right font-mono">{t.opt_entry != null ? fmtNum(t.opt_entry) : "—"}</td>,
+                opt_exit: <td className="p-2 text-right font-mono">{t.opt_exit != null ? fmtNum(t.opt_exit) : "—"}</td>,
+                opt_pnl_pct: <td className={`p-2 text-right font-mono ${colorPnL(t.opt_pnl_pct)}`}>{t.opt_pnl_pct != null ? fmtPct(t.opt_pnl_pct, 1) : "—"}</td>,
+                opt_buy_value: <td className="p-2 text-right font-mono text-dim">{t.opt_buy_value != null ? `₹${fmtInt(t.opt_buy_value)}` : "—"}</td>,
+                opt_sell_value: <td className="p-2 text-right font-mono text-dim">{t.opt_sell_value != null ? `₹${fmtInt(t.opt_sell_value)}` : "—"}</td>,
+                opt_charges: <td className="p-2 text-right font-mono text-dimmer" title="Round-trip statutory charges (brokerage/STT/exchange/GST/SEBI/stamp; 0 when 'Apply realistic costs' is off)">{t.opt_charges != null ? `₹${fmtNum(t.opt_charges, 0)}` : "—"}</td>,
+                opt_exit_reason: <td className="p-2 text-[10px]"><ExitReasonBadge reason={t.opt_exit_reason} /></td>,
+                opt_pnl_value: <td className={`p-2 text-right font-mono ${colorPnL(t.opt_pnl_value)}`}>{t.opt_pnl_value != null ? fmtPnL(t.opt_pnl_value) : "—"}</td>,
+              };
+              return (
+                <tr key={t.idx} className="border-b border-line hover:bg-bg-2" data-testid="trade-row">
+                  {orderedColumns.map((col) => (
+                    <Fragment key={col.key}>{cellRenderers[col.key]}</Fragment>
+                  ))}
+                </tr>
+              );
+            })}
             {sorted.length === 0 && (
               <tr>
-                <td colSpan={columns.length} className="p-4 text-center text-dimmer">No trades match the current filters.</td>
+                <td colSpan={orderedColumns.length} className="p-4 text-center text-dimmer">No trades match the current filters.</td>
               </tr>
             )}
           </tbody>
