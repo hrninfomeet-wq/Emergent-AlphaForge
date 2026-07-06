@@ -58,6 +58,28 @@ const parseDteFilter = (value) => {
   return [...new Set(arr.map(toInt).filter((n) => n !== null))].sort((a, b) => a - b);
 };
 
+// Split a loaded run/preset's stored params into the indicator-period catalog
+// keys (ema_fast, rsi_length, ...) vs everything else, so a preset produced by
+// "optimize indicator periods" restores those overrides into the dedicated
+// indicatorParams state instead of leaking into per-strategy config.params.
+// A key only counts as an indicator-period override if the target strategy's
+// OWN schema doesn't also declare it — mirrors the backend's precedence rule
+// (optimizer._build_param_space: "strategy already exposes it — respect its
+// bounds"), so a strategy that happens to define e.g. its own rsi_length keeps
+// it as a normal strategy param instead of being misfiled here.
+const splitIndicatorParams = (params, catalog, schema) => {
+  const cat = catalog || {};
+  const schemaKeys = schema ? new Set(Object.keys(schema)) : null;
+  const indicator = {};
+  if (params) {
+    for (const [k, v] of Object.entries(params)) {
+      if (schemaKeys && schemaKeys.has(k)) continue;
+      if (Object.prototype.hasOwnProperty.call(cat, k)) indicator[k] = v;
+    }
+  }
+  return indicator;
+};
+
 // Persist the last viewed run id so the results survive tab navigation /
 // unmount. We store only the id (not the heavy result payload) and re-hydrate
 // from the backtest_runs API on mount.
@@ -65,6 +87,17 @@ const LAST_RUN_KEY = "alphaforge.backtest.lastRunId";
 
 export default function BacktestLab() {
   const [strategies, setStrategies] = useState([]);
+  // Global indicator-period catalog (ema_fast, rsi_length, ...), sourced from
+  // GET /strategies (single source of truth — backend/app/optimizer.py
+  // INDICATOR_PARAM_CATALOG). Strategy-agnostic, so kept separate from
+  // config.params (see indicatorParams below).
+  const [indicatorCatalog, setIndicatorCatalog] = useState({});
+  // Indicator-period overrides the user has touched (or that were carried by a
+  // loaded preset/past run). Only holds keys that differ from — or are being
+  // edited toward differing from — the catalog default; NOT reset when the
+  // strategy changes (unlike config.params), since these params are
+  // strategy-agnostic (shared across all strategies via merged_params()).
+  const [indicatorParams, setIndicatorParams] = useState({});
   const [profiles, setProfiles] = useState([]);
   const [pastRuns, setPastRuns] = useState([]);
   const [presets, setPresets] = useState([]);
@@ -150,7 +183,10 @@ export default function BacktestLab() {
   const [searchParams, setSearchParams] = useSearchParams();
 
   useEffect(() => {
-    api.listStrategies().then((d) => setStrategies(d.items || []));
+    api.listStrategies().then((d) => {
+      setStrategies(d.items || []);
+      setIndicatorCatalog(d.indicator_param_catalog || {});
+    });
     api.listProfiles().then((d) => setProfiles(d.items || []));
     refreshRuns();
     refreshPresets();
@@ -209,6 +245,11 @@ export default function BacktestLab() {
       const targetStrategy = cfg.strategy_id || config.strategy_id;
       if (cfg.params) {
         pendingParamsRef.current = { strategy_id: targetStrategy, params: { ...cfg.params } };
+        const targetSchema = strategies.find((s) => s.id === targetStrategy)?.parameter_schema;
+        const carriedIndicator = splitIndicatorParams(cfg.params, indicatorCatalog, targetSchema);
+        if (Object.keys(carriedIndicator).length > 0) {
+          setIndicatorParams((p) => ({ ...p, ...carriedIndicator }));
+        }
       }
       // Execution policy travels with the preset: re-apply the option context
       // the result was validated under (moneyness, DTE, exit mode, levels,
@@ -320,6 +361,18 @@ export default function BacktestLab() {
 
   // Save the current Backtest Lab setup (params + option execution/exit policy)
   // as a named preset so it can be re-tested and deployed as-is.
+  // Only send indicator-period keys that differ from the catalog default, so a
+  // run with untouched indicator periods produces byte-identical params to
+  // before this feature existed (nothing extra gets sent when nothing changed).
+  const nonDefaultIndicatorParams = () => {
+    const out = {};
+    for (const [k, v] of Object.entries(indicatorParams)) {
+      const def = indicatorCatalog[k]?.default;
+      if (v !== undefined && v !== def) out[k] = v;
+    }
+    return out;
+  };
+
   const saveAsPreset = async () => {
     const suggested = config.name && config.name !== "Untitled Run"
       ? config.name
@@ -333,7 +386,7 @@ export default function BacktestLab() {
       strategy_id: config.strategy_id,
       instrument: config.instrument,
       mode: config.mode,
-      params: { ...config.params },
+      params: { ...config.params, ...nonDefaultIndicatorParams() },
       source: "backtest",  // origin tag for the Saved Presets page grouping
     };
     const ex = buildExecutionFromConfig();
@@ -466,13 +519,14 @@ export default function BacktestLab() {
   }, [selectedStrategy?.id]);
 
   const setParam = (k, v) => setConfig((c) => ({ ...c, params: { ...c.params, [k]: v } }));
+  const setIndicatorParam = (k, v) => setIndicatorParams((p) => ({ ...p, [k]: v }));
 
   const buildPayload = () => ({
     instrument: config.instrument,
     mode: config.mode,
     strategy_id: config.strategy_id,
     timeframe: config.timeframe,
-    params: config.params,
+    params: { ...config.params, ...nonDefaultIndicatorParams() },
     costs_enabled: config.costs_enabled,
     walkforward: config.walkforward,
     train_pct: config.train_pct,
@@ -687,6 +741,11 @@ export default function BacktestLab() {
       const runParams = r.params_applied || r.config?.params;
       if (runParams) {
         pendingParamsRef.current = { strategy_id: runStrategy, params: { ...runParams } };
+        const runSchema = strategies.find((s) => s.id === runStrategy)?.parameter_schema;
+        const carriedIndicator = splitIndicatorParams(runParams, indicatorCatalog, runSchema);
+        if (Object.keys(carriedIndicator).length > 0) {
+          setIndicatorParams((p) => ({ ...p, ...carriedIndicator }));
+        }
       }
       // Restore the pretrade PROFILE too: the run stores resolved filters, not the
       // profile name, so match those filters back to a known profile. Without this,
@@ -1425,6 +1484,13 @@ export default function BacktestLab() {
                   </div>
                 );
               })()}
+              {Object.keys(indicatorCatalog).length > 0 && (
+                <IndicatorPeriodsGroup
+                  catalog={indicatorCatalog}
+                  values={indicatorParams}
+                  onChange={setIndicatorParam}
+                />
+              )}
             </div>
           )}
         </Panel>
@@ -1609,6 +1675,46 @@ function Row({ label, hint, children }) {
     <div>
       <Label className="text-xs text-dim">{label}{hint && <Hint label={label}>{hint}</Hint>}</Label>
       <div className="mt-1">{children}</div>
+    </div>
+  );
+}
+
+// Strategy-agnostic indicator-period overrides (ema_fast, rsi_length, ...),
+// sourced from the optimizer's INDICATOR_PARAM_CATALOG (single source of
+// truth — see backend/app/optimizer.py). Collapsed by default since these are
+// advanced/optional: most runs should use the strategy's own defaults.
+function IndicatorPeriodsGroup({ catalog, values, onChange }) {
+  const [open, setOpen] = useState(false);
+  const entries = Object.entries(catalog);
+  return (
+    <div className="rounded border border-line bg-bg-0" data-testid="indicator-periods-group">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full px-2 py-1.5 flex items-center gap-1.5 text-left"
+        data-testid="indicator-periods-toggle"
+      >
+        {open ? <ChevronDown className="w-3.5 h-3.5 text-dim" /> : <ChevronRight className="w-3.5 h-3.5 text-dim" />}
+        <span className="text-[11px] font-semibold uppercase tracking-wider text-dim">Indicator periods (advanced)</span>
+        <Hint label="Indicator periods (advanced)">
+          Shared indicator-period knobs (EMA/RSI/MACD/ATR/ADX/CHOP/swing) used across strategies. Leave alone unless
+          you know what you're changing — the optimizer already searches these when "optimize indicator periods" is
+          enabled. Only values you change from the default are sent with the run.
+        </Hint>
+      </button>
+      {open && (
+        <div className="px-2 pb-2 space-y-3">
+          {entries.map(([key, def]) => (
+            <ParamRow
+              key={key}
+              name={key}
+              def={def}
+              value={values[key] ?? def.default}
+              onChange={(v) => onChange(key, v)}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }

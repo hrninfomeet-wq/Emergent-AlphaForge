@@ -70,13 +70,14 @@ async def _square_off_strategy_deployments(strategy_id: str) -> List[Dict[str, A
 
 @api.get("/strategies")
 async def list_strategies():
+    from app.optimizer import INDICATOR_PARAM_CATALOG  # lazy: avoid any import-cycle risk with app.optimizer
     items = get_registry().list_all()
     db = _db()
     rows = await db.strategy_lifecycle.find({"retired": True}, {"_id": 0}).to_list(length=None)
     retired = {r["strategy_id"] for r in rows}
     for it in items:
         it["is_retired"] = it["id"] in retired
-    return {"items": items}
+    return {"items": items, "indicator_param_catalog": INDICATOR_PARAM_CATALOG}
 
 
 @api.get("/strategies/catalog")
