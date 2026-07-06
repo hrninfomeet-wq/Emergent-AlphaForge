@@ -7,6 +7,7 @@ import {
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { fmtNum } from "@/lib/fmt";
+import { getApiErrorMessage } from "@/lib/apiError";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
@@ -63,7 +64,7 @@ export default function LiveSignals() {
       setOverview(ov);
       setPresets(presetList.items || []);
     } catch (e) {
-      toast.error(`Load failed: ${e.response?.data?.detail || e.message}`);
+      toast.error(`Load failed: ${getApiErrorMessage(e, "Load failed")}`);
     } finally {
       setLoading(false);
     }
@@ -104,7 +105,7 @@ export default function LiveSignals() {
       if (okMsg) toast.success(okMsg);
       await refresh();
     } catch (e) {
-      toast.error(e.response?.data?.detail?.message || e.response?.data?.detail || e.message);
+      toast.error(getApiErrorMessage(e));
     } finally {
       setBusy(false);
     }
@@ -520,7 +521,7 @@ function DeployWizard({ presets, initialPreset, onClose, onCreated }) {
         : "Deployed. Signals start with the next market minute.");
       onCreated();
     } catch (e) {
-      toast.error(`Deployment failed: ${e.response?.data?.detail?.message || e.response?.data?.detail || e.message}`);
+      toast.error(`Deployment failed: ${getApiErrorMessage(e)}`);
     } finally {
       setBusy(false);
     }

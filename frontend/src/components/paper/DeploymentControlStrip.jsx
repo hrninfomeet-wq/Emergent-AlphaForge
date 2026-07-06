@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { fmtNum, colorPnL } from "@/lib/fmt";
 import { Pause, Play, Square, OctagonX, Activity, SlidersHorizontal } from "lucide-react";
 import { deploymentLiveness } from "@/lib/deploymentLiveness";
+import { getApiErrorMessage } from "@/lib/apiError";
 
 const inr = (v) => (v == null ? "—" : `₹${fmtNum(v, 0)}`);
 
@@ -38,7 +39,7 @@ function CapsEditor({ dep, onSaved }) {
       toast.success("Paper caps saved");
       onSaved?.();
     } catch (e) {
-      toast.error(`Caps save failed: ${e.response?.data?.detail || e.message}`);
+      toast.error(`Caps save failed: ${getApiErrorMessage(e)}`);
     } finally {
       setSaving(false);
     }
