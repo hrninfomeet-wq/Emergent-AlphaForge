@@ -2,6 +2,58 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.50.0] — Trading correctness: paper capital gate, verified kill switch, historical range ingestion, deletable strategies (2026-07-07)
+
+Four money-handling correctness/safety features (branch `feat/trading-correctness`,
+one commit each; full host suite 3,032 passed).
+
+- **Honest paper capital constraint** (`app/paper_capital.py`): a paper deployment now
+  behaves like a demat account of configurable size. Entry-time gate in
+  `auto_paper_trade_for_signal` (post-premium-resolution): a trade's premium outlay must
+  fit available capital or the signal is **skipped and journaled** (`paper_trade_skip`
+  on the signal, visible in the Signals Ledger with the full arithmetic). Per-deployment
+  `risk.capital {amount, basis}` from the deploy wizard/caps editor is the primary gate
+  (the scope `required_capital` is measured at, so the invariant is provable), plus an
+  opt-in account-wide ceiling on `paper_account` (sum of open premium across ALL
+  deployments). Basis `fixed` = never compounds, losses debit
+  (`amount + min(0, realized in current IST day/week/month/year, total)` — provably
+  bounds required_capital in every analytics bucket); `cumulative` = amount + total
+  realized P&L. Missing config = legacy unconstrained; both layers default off. The
+  wizard's paper step also gains an explicit lots-per-signal override (wires to the
+  existing `lots_override`).
+- **Kill-switch hardening** (`panic_squareoff_verified` + `KillSwitchPanel`): flattening
+  is exchange-aware marketable LIMIT only (per-leg exch/prd/tick from the position row;
+  LMT is the only price type this account/API has), priced through the fresh GetQuotes
+  touch clamped inside the uc/lc circuit band, freeze-qty sliced; unfilled exits
+  re-price through a bounded widening band (1→2→4%) via cancel+re-place (never
+  ModifyOrder), re-reading fillshares after each cancel so a race fill can't over-sell;
+  broker REJECTs end the leg immediately and surface the reason. Per-leg outcome report
+  (placed/FILLED/UNFILLED-WORKING/REJECTED + reason) + final position-book re-check
+  (`all_flat`/`residual`) reach the UI; the button now lives in an always-visible panel
+  whenever open positions/working orders exist (typed-KILL confirm), not only inside a
+  test session. `TERMINAL` gains the broker's "REJECT"/"CANCELLED" spellings.
+- **Historical range ingestion** (Data Warehouse page): `/data-hygiene/catch-up` gains
+  `from_date`/`to_date`/`confirm` — range mode plans first, ALWAYS (server-side 400
+  without `confirm=true` after a dry run), then runs a sequential upsert-only chain:
+  spot → expired-contract backfill (with a 35-day expiry lookahead past `to_date` —
+  each day's band needs its NEXT expiry) → band-exact option fill over the range.
+  Explicit ranges reach back to the verified-calendar floor 2024-01-22 with honest
+  warnings (pre-baseline broker depth, expired-options API dependence). New panel:
+  dry-run-gated Ingest + "Verify range" that diffs per-day counts/integrity hashes
+  against the plan-time snapshot. **Live-verified end-to-end**: 2024-11-25/26 NIFTY
+  ingested (750 spot + 10,500 option candles, 0 failures) with five 2026-06 control-day
+  hashes byte-identical — the warehouse now starts 2024-11-25.
+- **Deletable strategies**: the 11 non-confluence built-ins moved to
+  `app/strategies/plugins/` as pure renames (origin flips to `custom` → retire AND
+  delete); `confluence_scalper` stays the one permanent built-in (delete still 403s).
+  Byte-identity proven by running the real backtest path for all 12 strategies over
+  3,413 real candles before/after the move (identical trades/schemas/meta; source-sha
+  pinning unaffected). The origin flip's safety gap is closed:
+  `GET /strategies/{id}/references` reports the orphan blast radius (presets, backtest
+  runs, optimizer jobs — no re-link path exists) and `DELETE /strategies/{id}` refuses
+  with those counts until called with `?confirm=true`; the Strategy Library confirm
+  dialog itemizes them.
+
 ## [0.49.3] — Intra-session gap indicator warm-up reset (2026-07-05)
 
 **Silent correctness fix.** `warehouse.load_candles_df` returns raw rows with no
