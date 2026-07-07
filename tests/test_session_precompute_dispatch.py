@@ -14,7 +14,7 @@ import pandas as pd
 
 from app.backtest import run_backtest
 from app.strategies.base import StrategyBase, Signal
-from app.strategies.builtin.opening_range_breakout import OpeningRangeBreakout
+from app.strategies.plugins.opening_range_breakout import OpeningRangeBreakout
 
 
 def _run_df(n=60, sess="2025-01-02"):

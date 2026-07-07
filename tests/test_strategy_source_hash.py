@@ -68,7 +68,7 @@ def test_hash_strategy_source_is_deterministic():
 
 def test_hash_strategy_source_different_files_give_different_hashes():
     from app.strategies.builtin.confluence_scalper import ConfluenceScalper
-    from app.strategies.builtin.fibonacci_pullback import FibonacciPullback
+    from app.strategies.plugins.fibonacci_pullback import FibonacciPullback
 
     h1 = hash_strategy_source(ConfluenceScalper())
     h2 = hash_strategy_source(FibonacciPullback())

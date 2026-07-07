@@ -27,7 +27,10 @@ export const api = {
   getStrategy: (id) => apiClient.get(`/strategies/${id}`).then((r) => r.data),
   retireStrategy: (id) => apiClient.post(`/strategies/${id}/retire`).then((r) => r.data),
   unretireStrategy: (id) => apiClient.post(`/strategies/${id}/un-retire`).then((r) => r.data),
-  deleteStrategy: (id) => apiClient.delete(`/strategies/${id}`).then((r) => r.data),
+  deleteStrategy: (id, confirm = false) =>
+    apiClient.delete(`/strategies/${id}`, { params: confirm ? { confirm: true } : {} }).then((r) => r.data),
+  strategyReferences: (id) =>
+    apiClient.get(`/strategies/${id}/references`).then((r) => r.data),
   reloadStrategies: () => apiClient.post("/strategies/reload").then((r) => r.data),
   getStrategyCatalog: () => apiClient.get("/strategies/catalog").then((r) => r.data),
   authorCompile: (spec) => apiClient.post("/strategies/author/compile", { spec }).then((r) => r.data),

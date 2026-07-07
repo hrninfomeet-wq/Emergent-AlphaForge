@@ -278,10 +278,13 @@ Open the **Optimizer** page → pick your strategy → method=bayesian → objec
 
 ## Examples to Study
 
-Look at the 12 built-in strategies in `backend/app/strategies/builtin/` for working patterns:
-- `confluence_scalper.py` — multi-factor scoring with VWAP inhibit + regime gate
-- `opening_range_breakout.py` — uses `session_precompute` to set `ctx["orb_hi"]` / `ctx["orb_lo"]`
-- `smc_liquidity_sweep_fvg.py` — uses `ctx["history_df"]` for lookback
-- `vwap_mean_reversion.py` — regime-conditional (only in chop)
-- `gap_fade.py` — `AdaptiveStrategyBase` example with `session_precompute`
+Look at the shipped strategies for working patterns — `confluence_scalper.py`
+(the one permanent built-in) lives in `backend/app/strategies/builtin/`; the
+other 11 ship as regular plugins in `backend/app/strategies/plugins/` so they
+can be retired AND deleted like any custom strategy:
+- `builtin/confluence_scalper.py` — multi-factor scoring with VWAP inhibit + regime gate
+- `plugins/opening_range_breakout.py` — uses `session_precompute` to set `ctx["orb_hi"]` / `ctx["orb_lo"]`
+- `plugins/smc_liquidity_sweep_fvg.py` — uses `ctx["history_df"]` for lookback
+- `plugins/vwap_mean_reversion.py` — regime-conditional (only in chop)
+- `plugins/gap_fade.py` — `AdaptiveStrategyBase` example with `session_precompute`
 - `opening_range_regime_router.py` — `ScenarioRoutedStrategyBase` example

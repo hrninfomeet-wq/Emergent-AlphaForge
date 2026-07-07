@@ -5,7 +5,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 
 import pandas as pd
 import pytest
-from app.strategies.builtin.adaptive_regime_scalper import AdaptiveRegimeScalper
+from app.strategies.plugins.adaptive_regime_scalper import AdaptiveRegimeScalper
 
 
 def _row(**kw):

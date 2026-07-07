@@ -16,8 +16,8 @@ sys.path.insert(0, str(ROOT / "backend"))
 
 import pandas as pd
 
-from app.strategies.builtin.gap_fade import GapFade
-from app.strategies.builtin.opening_range_adaptive import OpeningRangeAdaptive
+from app.strategies.plugins.gap_fade import GapFade
+from app.strategies.plugins.opening_range_adaptive import OpeningRangeAdaptive
 from app.strategies.scenario_routing_base import ScenarioRoutedStrategyBase
 from app.strategies.session_features import gap_by_session, opening_range_by_session
 

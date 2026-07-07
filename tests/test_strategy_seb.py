@@ -5,7 +5,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 
 import pandas as pd
 import pytest
-from app.strategies.builtin.squeeze_expansion_breakout import SqueezeExpansionBreakout
+from app.strategies.plugins.squeeze_expansion_breakout import SqueezeExpansionBreakout
 
 
 def _row(**kw):

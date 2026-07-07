@@ -13,6 +13,20 @@ import app.routers.strategies_admin as sa
 def _matches(doc, query):
     return all(doc.get(k) == v for k, v in query.items())
 
+def _matches_ref(doc, query):
+    """Reference-count query matcher: $or + dotted keys (config.strategy_id)."""
+    if "$or" in query:
+        return any(_matches_ref(doc, sub) for sub in query["$or"])
+    for k, v in query.items():
+        cur = doc
+        for part in k.split("."):
+            cur = cur.get(part) if isinstance(cur, dict) else None
+            if cur is None:
+                break
+        if cur != v:
+            return False
+    return True
+
 class _Cursor:
     def __init__(self, docs): self._docs = docs
     async def to_list(self, length=None): return list(self._docs)
@@ -23,6 +37,8 @@ class FakeColl:
         return next((dict(d) for d in self.docs if _matches(d, q)), None)
     def find(self, q, projection=None):
         return _Cursor([dict(d) for d in self.docs if _matches(d, q)])
+    async def count_documents(self, q):
+        return len([d for d in self.docs if _matches_ref(d, q)])
     async def update_one(self, q, update, upsert=False):
         for d in self.docs:
             if _matches(d, q):
@@ -193,6 +209,66 @@ def test_delete_with_live_deployment_409():
         r = tc.delete("/strategies/foo")
         assert r.status_code == 409
         assert "deployment" in r.json()["detail"].lower()
+    finally:
+        _stop(tc)
+
+
+def _seed_references(db):
+    db.presets.docs.append({"name": "p1", "config": {"strategy_id": "foo"}})
+    db.backtest_runs.docs.append({"id": "r1", "strategy_id": "foo"})
+    db.backtest_runs.docs.append({"id": "r2", "strategy_id": "foo"})
+    db.optimization_jobs.docs.append({"id": "o1", "strategy_id": "foo"})
+
+
+def test_references_endpoint_counts_both_id_shapes():
+    tc, db = _delete_app("custom", retired=True,
+                         deployments=[{"id": "d1", "strategy_id": "foo", "status": "ARCHIVED"}])
+    _seed_references(db)
+    try:
+        r = tc.get("/strategies/foo/references")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["references"] == {
+            "presets": 1, "backtest_runs": 2, "optimization_jobs": 1,
+            "deployments_total": 1, "deployments_blocking": 0,
+        }
+        assert body["orphaned_total"] == 4
+    finally:
+        _stop(tc)
+
+
+def test_delete_with_references_requires_explicit_confirm():
+    """Item D safety gap: origin flipped to custom must NOT make deletion a
+    one-click orphaning of presets/runs/jobs — the counts come back in a 409
+    until the caller confirms."""
+    tc, db = _delete_app("custom", retired=True)
+    _seed_references(db)
+    try:
+        with patch.object(sa, "_delete_plugin_file", Mock(return_value=True)) as mock_dpf:
+            r = tc.delete("/strategies/foo")
+            assert r.status_code == 409
+            detail = r.json()["detail"]
+            assert detail["code"] == "references_exist"
+            assert detail["references"]["backtest_runs"] == 2
+            assert "orphans 4" in detail["message"]
+            mock_dpf.assert_not_called()
+
+            r = tc.delete("/strategies/foo", params={"confirm": "true"})
+            assert r.status_code == 200
+            body = r.json()
+            assert body["deleted"] is True
+            assert body["orphaned_references"]["presets"] == 1
+            mock_dpf.assert_called_once_with("foo")
+    finally:
+        _stop(tc)
+
+
+def test_delete_without_references_needs_no_confirm():
+    tc, _db_ = _delete_app("custom", retired=True)
+    try:
+        with patch.object(sa, "_delete_plugin_file", Mock(return_value=True)):
+            r = tc.delete("/strategies/foo")
+            assert r.status_code == 200 and r.json()["deleted"] is True
     finally:
         _stop(tc)
 

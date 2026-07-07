@@ -5,7 +5,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 
 import pandas as pd
 import pytest
-from app.strategies.builtin.opening_range_adaptive import OpeningRangeAdaptive
+from app.strategies.plugins.opening_range_adaptive import OpeningRangeAdaptive
 
 
 def _session_hist(n=26, sess="2025-01-02"):

@@ -27,7 +27,7 @@ from app.indicators import precompute_all_indicators
 from app.regime import classify_regime_series
 from app.scenario_classifier import classify_scenario
 from app.strategies.base import get_registry
-from app.strategies.builtin.opening_range_regime_router import OpeningRangeRegimeRouter
+from app.strategies.plugins.opening_range_regime_router import OpeningRangeRegimeRouter
 from app.backtest import run_backtest
 from tests._adaptive_testutil import make_ohlc
 
@@ -99,7 +99,11 @@ def _ctx_row(close, open_px, *, orb_w, session="2025-01-08"):
 def test_registry_discovers_orr(registry):
     strat = registry.get("opening_range_regime_router")
     assert strat is not None, "ORR not discovered into the registry"
-    assert isinstance(strat, OpeningRangeRegimeRouter)
+    # ORR ships from plugins/ now, and auto_discover FRESH-imports plugin
+    # modules (sys.modules pop) — the registry's class object is not the same
+    # object this test imported, so compare by qualified name, not isinstance.
+    assert type(strat).__name__ == OpeningRangeRegimeRouter.__name__
+    assert type(strat).__module__ == "app.strategies.plugins.opening_range_regime_router"
     assert strat.id == "opening_range_regime_router"
     assert strat.name and strat.version and strat.description
     assert strat.scenarios_traded == ("TREND_CONTINUATION", "VOLATILE_FADE")

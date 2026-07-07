@@ -65,13 +65,29 @@ export default function StrategyLibrary() {
     }
   }
   async function onDelete(s) {
-    if (!window.confirm(`Delete the file for "${s.name}" permanently? This cannot be undone.`)) return;
+    // Blast radius first: deleting orphans every preset/backtest/optimizer job
+    // that references the strategy (no re-link path) — the confirm must say so.
+    let refsMsg = "";
     try {
-      await api.deleteStrategy(s.id);
+      const r = await api.strategyReferences(s.id);
+      const refs = r.references || {};
+      if (r.orphaned_total > 0) {
+        refsMsg =
+          `\n\nThis orphans ${r.orphaned_total} saved artifact(s):\n` +
+          `  · ${refs.presets ?? 0} preset(s)\n` +
+          `  · ${refs.backtest_runs ?? 0} backtest run(s)\n` +
+          `  · ${refs.optimization_jobs ?? 0} optimizer job(s)\n` +
+          `Their stored results remain readable but can never be re-run or re-linked.`;
+      }
+    } catch { /* backend re-checks and blocks on its own if this failed */ }
+    if (!window.confirm(`Delete the file for "${s.name}" permanently? This cannot be undone.${refsMsg}`)) return;
+    try {
+      await api.deleteStrategy(s.id, true);
       toast.success(`Deleted ${s.name}.`);
       load();
     } catch (e) {
-      toast.error(`Delete failed: ${e.response?.data?.detail || e.message}`);
+      const detail = e.response?.data?.detail;
+      toast.error(`Delete failed: ${(typeof detail === "string" ? detail : detail?.message) || e.message}`);
     }
   }
 

@@ -142,8 +142,41 @@ async def unretire_strategy(strategy_id: str):
     return {"strategy_id": strategy_id, "retired": False}
 
 
+async def _strategy_reference_counts(db, strategy_id: str) -> Dict[str, int]:
+    """How many saved artifacts reference this strategy id. Deleting the
+    strategy ORPHANS them — presets can no longer be re-run/deployed, runs and
+    optimizer jobs lose their re-run path — and no re-link mechanism exists.
+    The user must see this blast radius before confirming a delete. Documents
+    carry the id either top-level (runs/jobs/deployments) or under config
+    (presets), so both shapes are counted."""
+    ref_q = {"$or": [{"strategy_id": strategy_id},
+                     {"config.strategy_id": strategy_id}]}
+    deps = await db.strategy_deployments.find(
+        {"strategy_id": strategy_id}, {"_id": 0, "status": 1}).to_list(length=None)
+    return {
+        "presets": int(await db.presets.count_documents(ref_q)),
+        "backtest_runs": int(await db.backtest_runs.count_documents(ref_q)),
+        "optimization_jobs": int(await db.optimization_jobs.count_documents(ref_q)),
+        "deployments_total": len(deps),
+        "deployments_blocking": len([d for d in deps if d.get("status") != "ARCHIVED"]),
+    }
+
+
+@api.get("/strategies/{strategy_id}/references")
+async def strategy_references(strategy_id: str):
+    """The delete blast radius: saved artifacts that would be orphaned."""
+    if not _exists(strategy_id):
+        raise HTTPException(404, f"Strategy {strategy_id} not found")
+    refs = await _strategy_reference_counts(_db(), strategy_id)
+    return {
+        "strategy_id": strategy_id,
+        "references": refs,
+        "orphaned_total": refs["presets"] + refs["backtest_runs"] + refs["optimization_jobs"],
+    }
+
+
 @api.delete("/strategies/{strategy_id}")
-async def delete_strategy(strategy_id: str):
+async def delete_strategy(strategy_id: str, confirm: bool = False):
     reg = get_registry()
     origin = reg.origin_of(strategy_id)
     if origin is None:
@@ -154,10 +187,24 @@ async def delete_strategy(strategy_id: str):
     life = await db.strategy_lifecycle.find_one({"strategy_id": strategy_id}, {"_id": 0})
     if not (life and life.get("retired")):
         raise HTTPException(409, "Retire the strategy before deleting its file")
-    deps = await db.strategy_deployments.find({"strategy_id": strategy_id}, {"_id": 0}).to_list(length=None)
-    blocking = [d for d in deps if d.get("status") != "ARCHIVED"]
-    if blocking:
-        raise HTTPException(409, f"{len(blocking)} deployment(s) still reference this strategy; archive them first")
+    refs = await _strategy_reference_counts(db, strategy_id)
+    if refs["deployments_blocking"]:
+        raise HTTPException(
+            409, f"{refs['deployments_blocking']} deployment(s) still reference this strategy; archive them first")
+    # Orphan gate: presets/runs/jobs keep a dangling strategy_id after the
+    # delete (no re-link path exists). Refuse unless the caller explicitly
+    # confirmed with the counts in hand.
+    orphaned = refs["presets"] + refs["backtest_runs"] + refs["optimization_jobs"]
+    if orphaned and not confirm:
+        raise HTTPException(409, detail={
+            "code": "references_exist",
+            "message": (
+                f"Deleting {strategy_id} orphans {orphaned} saved artifact(s): "
+                f"{refs['presets']} preset(s), {refs['backtest_runs']} backtest run(s), "
+                f"{refs['optimization_jobs']} optimizer job(s); they can never be "
+                "re-run or re-linked. Re-call with ?confirm=true to proceed."),
+            "references": refs,
+        })
     # Order matters: _delete_plugin_file resolves the file path via the registry
     # (get_registry().get), so it MUST run before unregister() clears the entry.
     # NOTE: these 3 teardown steps are not atomic — a mid-step failure can leave
@@ -165,7 +212,7 @@ async def delete_strategy(strategy_id: str):
     _delete_plugin_file(strategy_id)
     reg.unregister(strategy_id)
     await db.strategy_lifecycle.delete_one({"strategy_id": strategy_id})
-    return {"strategy_id": strategy_id, "deleted": True}
+    return {"strategy_id": strategy_id, "deleted": True, "orphaned_references": refs}
 
 
 @api.post("/strategies/reload")

@@ -5,7 +5,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 
 import pandas as pd
 import pytest
-from app.strategies.builtin.gap_fade import GapFade
+from app.strategies.plugins.gap_fade import GapFade
 
 
 def _hist(gap_open, prev_close=100.0, cur_close=104.0, n_cur=35):
