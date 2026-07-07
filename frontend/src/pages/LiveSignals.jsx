@@ -334,6 +334,11 @@ const WIZARD_DEFAULTS = {
   max_consecutive_losses: "",
   daily_loss_cutoff_pct: "",
   max_open_paper_trades: "",
+  // Paper account realism: optional lots override (replaces the preset's
+  // sizing replay, live-parity) + capital constraint. Empty = current behavior.
+  lots_override: "",
+  capital_amount: "",
+  capital_basis: "fixed",
   // Live execution realism (friction): price paper fills like the backtest so
   // forward P&L mirrors it instead of overstating gross. ON by default; the
   // costs sub-toggle + rates prefill from the preset's backtest policy.
@@ -473,6 +478,10 @@ function DeployWizard({ presets, initialPreset, onClose, onCreated }) {
         max_consecutive_losses: form.max_consecutive_losses === "" ? null : Math.max(0, parseInt(form.max_consecutive_losses, 10) || 0),
         daily_loss_cutoff_pct: form.daily_loss_cutoff_pct === "" ? null : Number(form.daily_loss_cutoff_pct),
         max_open_paper_trades: form.max_open_paper_trades === "" ? null : Math.max(0, parseInt(form.max_open_paper_trades, 10) || 0),
+        // Paper account realism: only sent when configured (null = legacy).
+        lots_override: form.mode === "paper" && form.lots_override !== "" ? Math.max(1, parseInt(form.lots_override, 10) || 1) : null,
+        capital_amount: form.mode === "paper" && form.capital_amount !== "" ? Number(form.capital_amount) : null,
+        capital_basis: form.mode === "paper" && form.capital_amount !== "" ? form.capital_basis : null,
         // Live execution realism: only meaningful for paper mode. Slippage maps
         // ATM / OTM1=ITM1 / OTM2+=ITM2+ to the backtest's buckets; costs mirror
         // the preset's backtest cost model. Backend normalizes to FrictionConfig.
@@ -607,7 +616,7 @@ function DeployWizard({ presets, initialPreset, onClose, onCreated }) {
                 <label className="block text-[11px] text-dim">
                   Sizing
                   <div className="mt-1 h-8 flex items-center overflow-hidden text-ellipsis whitespace-nowrap rounded-md border border-line bg-bg-2 px-2 text-[11px] text-dim"
-                    title="Lots replay the source run's sizing policy; the capital shown is the backtest notional used for comparability, not a live balance. Lot size comes from the option contract.">
+                    title="Lots replay the source run's sizing policy; the capital shown is the backtest notional used for comparability. To make lots explicit or cap real exposure, use the Paper account panel below. Lot size comes from the option contract.">
                     {sizingSummary}
                   </div>
                 </label>
@@ -685,6 +694,45 @@ function DeployWizard({ presets, initialPreset, onClose, onCreated }) {
                   <div className="text-[10px] text-dimmer leading-snug">
                     The strategy's own exits always win: spot-point levels are mirrored automatically (option closes
                     when the index hits the level), premium-% hints apply directly. No live premium → no trade, reason journaled.
+                  </div>
+                </div>
+              )}
+
+              {form.mode === "paper" && (
+                <div className="rounded-md border border-violet-500/30 bg-violet-500/5 p-2 space-y-2" data-testid="wizard-capital">
+                  <div className="text-[11px] text-dim">
+                    <b>Paper account</b> — size like a real demat account (both optional)
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    <label className="text-[11px] text-dim">
+                      Lots / signal (override)
+                      <Input type="number" min="1" max="100" step="1" value={form.lots_override}
+                        onChange={(e) => set("lots_override", e.target.value)}
+                        className="mt-1 bg-bg-2 border-line h-8" placeholder="preset sizing"
+                        data-testid="wizard-lots-override" />
+                    </label>
+                    <label className="text-[11px] text-dim">
+                      Capital (₹)
+                      <Input type="number" min="0" step="10000" value={form.capital_amount}
+                        onChange={(e) => set("capital_amount", e.target.value)}
+                        className="mt-1 bg-bg-2 border-line h-8" placeholder="unconstrained"
+                        data-testid="wizard-capital-amount" />
+                    </label>
+                    <label className="text-[11px] text-dim">
+                      Capital basis
+                      <select value={form.capital_basis} onChange={(e) => set("capital_basis", e.target.value)}
+                        disabled={form.capital_amount === ""}
+                        className="mt-1 h-8 w-full rounded-md border border-input bg-bg-2 px-2 text-xs disabled:opacity-50"
+                        data-testid="wizard-capital-basis">
+                        <option value="fixed">Fixed — never compounds; losses debit</option>
+                        <option value="cumulative">Cumulative — capital + realized P&amp;L</option>
+                      </select>
+                    </label>
+                  </div>
+                  <div className="text-[10px] text-dimmer leading-snug">
+                    With capital set, a signal whose premium outlay doesn't fit the remaining capital is <b>skipped and
+                    journaled</b> (reason in the Signals Ledger), so required capital can never exceed the account.
+                    Lots override replaces the preset's sizing replay (same as the Paper page caps editor). Empty = unchanged behavior.
                   </div>
                 </div>
               )}
@@ -930,7 +978,8 @@ function DeployWizard({ presets, initialPreset, onClose, onCreated }) {
               <div className="text-[10px] text-dimmer leading-snug">
                 Summary: <b className="text-dim">{form.source_id || "?"}</b> on <b className="text-dim">{instrument || "?"}</b> ·
                 {form.mode === "paper" ? " paper auto-trade" : " signal only"} · {String(form.option_moneyness).toUpperCase()} ·
-                DTE {form.dte_filter.length ? form.dte_filter.join(",") : "all"} · {sizingSummary}.
+                DTE {form.dte_filter.length ? form.dte_filter.join(",") : "all"} · {form.mode === "paper" && form.lots_override !== "" ? `${form.lots_override} lot(s) override` : sizingSummary}
+                {form.mode === "paper" && form.capital_amount !== "" ? ` · capital ₹${fmtNum(Number(form.capital_amount), 0)} (${form.capital_basis})` : ""}.
                 Evaluation runs every market minute (09:15–15:30 IST, signal window 09:25–14:50); square-off 15:00 IST.
               </div>
             </>

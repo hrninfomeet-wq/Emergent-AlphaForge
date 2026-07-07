@@ -386,6 +386,24 @@ async def create_deployment(req: DeploymentCreateReq):
             "max_open_paper_trades": req.max_open_paper_trades,
         }.items() if v is not None
     }
+    # Paper account realism: per-deployment capital constraint + wizard-time
+    # lots override (same field the Paper caps editor writes post-deploy).
+    if req.lots_override is not None and not (1 <= int(req.lots_override) <= 100):
+        raise HTTPException(400, "lots_override must be 1..100")
+    capital_cfg = None
+    if req.capital_amount is not None:
+        try:
+            _amt = float(req.capital_amount)
+        except (TypeError, ValueError):
+            raise HTTPException(400, "capital_amount must be a number")
+        if _amt <= 0:
+            raise HTTPException(400, "capital_amount must be > 0")
+        _basis = str(req.capital_basis or "fixed").lower()
+        if _basis not in ("fixed", "cumulative"):
+            raise HTTPException(400, "capital_basis must be 'fixed' or 'cumulative'")
+        capital_cfg = {"amount": _amt, "basis": _basis}
+    elif req.capital_basis is not None:
+        raise HTTPException(400, "capital_basis requires capital_amount")
     try:
         doc = build_deployment_doc(
             source_type=req.source_type,
@@ -413,6 +431,9 @@ async def create_deployment(req: DeploymentCreateReq):
                 # slippage + charges the backtest used.
                 **({"friction": FrictionConfig.from_dict(req.friction).to_dict()}
                    if req.friction is not None else {}),
+                **({"capital": capital_cfg} if capital_cfg is not None else {}),
+                **({"lots_override": int(req.lots_override)}
+                   if req.lots_override is not None else {}),
             },
             dte_filter=req.dte_filter,
             allow_overnight=req.allow_overnight,
@@ -651,10 +672,13 @@ async def get_deployment(deployment_id: str):
 
 class _PaperCapsBody(BaseModel):
     """Paper-deployment risk caps (Live-deploy parity). Every field optional;
-    null clears the cap. daily_caps mirrors exit_controls.DailyCapsConfig."""
+    null clears the cap. daily_caps mirrors exit_controls.DailyCapsConfig.
+    capital is the honest capital constraint {"amount": float, "basis":
+    "fixed"|"cumulative"} enforced at paper-trade entry (paper_capital)."""
     lots_override: Optional[int] = None
     max_concurrent: Optional[int] = None
     daily_caps: Optional[Dict[str, Any]] = None
+    capital: Optional[Dict[str, Any]] = None
 
 
 @api.put("/deployments/{deployment_id}/paper-caps")
@@ -678,10 +702,16 @@ async def set_paper_caps(deployment_id: str, body: _PaperCapsBody):
             DailyCapsConfig.from_dict(body.daily_caps)  # validate shape
         except Exception as exc:
             raise HTTPException(400, f"invalid daily_caps: {exc}") from exc
+    if body.capital is not None:
+        from app.paper_capital import parse_capital_config
+        if parse_capital_config(body.capital) is None:
+            raise HTTPException(
+                400, "invalid capital: expected {amount > 0, basis: fixed|cumulative}")
     risk = dict(dep.get("risk") or {})
     for key, val in (("lots_override", body.lots_override),
                      ("max_concurrent", body.max_concurrent),
-                     ("daily_caps", body.daily_caps)):
+                     ("daily_caps", body.daily_caps),
+                     ("capital", body.capital)):
         if val is None:
             risk.pop(key, None)
         else:

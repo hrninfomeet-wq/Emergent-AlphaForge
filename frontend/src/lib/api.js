@@ -204,8 +204,9 @@ export const api = {
   paperAnalytics: () => apiClient.get("/paper/analytics").then((r) => r.data),
   paperStrategyStats: () => apiClient.get("/paper/strategy-stats").then((r) => r.data),
   getPaperAccountConfig: () => apiClient.get("/paper/account-config").then((r) => r.data),
-  setPaperAccountConfig: (starting_capital) =>
-    apiClient.put("/paper/account-config", { starting_capital }).then((r) => r.data),
+  setPaperAccountConfig: (payload) =>
+    apiClient.put("/paper/account-config",
+      typeof payload === "number" ? { starting_capital: payload } : payload).then((r) => r.data),
   listDeployments: (params = {}) =>
     apiClient.get("/deployments", { params }).then((r) => r.data),
   deploymentsOverview: () =>

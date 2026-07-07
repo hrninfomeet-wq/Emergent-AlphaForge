@@ -148,9 +148,13 @@ export default function PaperTrading() {
   }, []);
 
   // Starting capital is fetched once (the user edits it via the AccountHero).
+  const [acctCapCfg, setAcctCapCfg] = useState({ enforce_capital: false, capital_basis: "fixed" });
   useEffect(() => {
     api.getPaperAccountConfig()
-      .then((c) => setStartingCapital(c?.starting_capital ?? null))
+      .then((c) => {
+        setStartingCapital(c?.starting_capital ?? null);
+        setAcctCapCfg({ enforce_capital: Boolean(c?.enforce_capital), capital_basis: c?.capital_basis || "fixed" });
+      })
       .catch(() => {});
   }, []);
 
@@ -378,14 +382,15 @@ export default function PaperTrading() {
     } finally { setBusy(false); }
   };
 
-  // ---- Configurable starting capital ----
-  const handleSetCapital = async (v) => {
+  // ---- Configurable starting capital (+ optional account-wide entry ceiling) ----
+  const handleSetCapital = async (v, opts = {}) => {
     setBusy(true);
     try {
-      const res = await api.setPaperAccountConfig(v);
+      const res = await api.setPaperAccountConfig({ starting_capital: v, ...opts });
       const cap = res?.starting_capital ?? v;
       setStartingCapital(cap);
-      toast.success(`Starting capital set to ${fmtINR(cap)}`);
+      setAcctCapCfg({ enforce_capital: Boolean(res?.enforce_capital), capital_basis: res?.capital_basis || "fixed" });
+      toast.success(`Starting capital set to ${fmtINR(cap)}${res?.enforce_capital ? " (account-wide entry ceiling ON)" : ""}`);
       const an = await api.paperAnalytics().catch(() => null);
       if (an) setAnalytics(an);
     } catch (e) {
@@ -466,7 +471,7 @@ export default function PaperTrading() {
       </div>
 
       {/* Account hero — value + equity curve + editable starting capital */}
-      <AccountHero analytics={analytics} startingCapital={startingCapital} onSetCapital={handleSetCapital} busy={busy} />
+      <AccountHero analytics={analytics} startingCapital={startingCapital} capitalConfig={acctCapCfg} onSetCapital={handleSetCapital} busy={busy} />
 
       {/* Period P&L cards */}
       <PeriodPnlCards period={analytics?.period_pnl} />

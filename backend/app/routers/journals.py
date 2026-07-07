@@ -54,24 +54,46 @@ async def _get_starting_capital(db) -> float:
 
 class AccountConfigReq(BaseModel):
     starting_capital: float
+    # Account-wide capital ceiling (paper_capital): when enforce_capital is on,
+    # the SUM of open premium across ALL paper deployments is gated against
+    # starting_capital at entry time. Omitted fields keep their stored value.
+    enforce_capital: Optional[bool] = None
+    capital_basis: Optional[str] = None  # fixed | cumulative
 
 
 @api.get("/paper/account-config")
 async def get_paper_account_config():
-    return {"starting_capital": await _get_starting_capital(get_db())}
+    db = get_db()
+    doc = await db.app_settings.find_one({"key": "paper_account"}, {"_id": 0}) or {}
+    return {
+        "starting_capital": await _get_starting_capital(db),
+        "enforce_capital": bool(doc.get("enforce_capital")),
+        "capital_basis": str(doc.get("capital_basis") or "fixed"),
+    }
 
 
 @api.put("/paper/account-config")
 async def set_paper_account_config(req: AccountConfigReq):
     if req.starting_capital <= 0:
         raise HTTPException(400, "starting_capital must be > 0")
+    if req.capital_basis is not None and str(req.capital_basis).lower() not in ("fixed", "cumulative"):
+        raise HTTPException(400, "capital_basis must be 'fixed' or 'cumulative'")
     db = get_db()
+    updates: Dict[str, Any] = {"key": "paper_account",
+                               "starting_capital": float(req.starting_capital)}
+    if req.enforce_capital is not None:
+        updates["enforce_capital"] = bool(req.enforce_capital)
+    if req.capital_basis is not None:
+        updates["capital_basis"] = str(req.capital_basis).lower()
     await db.app_settings.update_one(
-        {"key": "paper_account"},
-        {"$set": {"key": "paper_account", "starting_capital": float(req.starting_capital)}},
-        upsert=True,
+        {"key": "paper_account"}, {"$set": updates}, upsert=True,
     )
-    return {"starting_capital": float(req.starting_capital)}
+    doc = await db.app_settings.find_one({"key": "paper_account"}, {"_id": 0}) or {}
+    return {
+        "starting_capital": float(req.starting_capital),
+        "enforce_capital": bool(doc.get("enforce_capital")),
+        "capital_basis": str(doc.get("capital_basis") or "fixed"),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -285,7 +307,8 @@ async def list_signals_enriched(
             **{k: s.get(k) for k in (
                 "id", "deployment_id", "strategy_id", "instrument", "direction", "state",
                 "bar_ts", "decision_ts", "updated_at", "blocked", "blockers", "reasons",
-                "risk_hints", "paper_trade_id", "paper_trade_error", "tracked_for_pnl",
+                "risk_hints", "paper_trade_id", "paper_trade_error", "paper_trade_skip",
+                "tracked_for_pnl",
             )},
             "score": s.get("confidence"),
             "spot_entry": s.get("entry_price"),

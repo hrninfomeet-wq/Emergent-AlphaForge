@@ -13,16 +13,18 @@ function Stat({ label, value, tone = null }) {
   );
 }
 
-export default function AccountHero({ analytics, startingCapital, onSetCapital, busy }) {
+export default function AccountHero({ analytics, startingCapital, capitalConfig, onSetCapital, busy }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(String(startingCapital ?? 200000));
+  const [enforceDraft, setEnforceDraft] = useState(Boolean(capitalConfig?.enforce_capital));
+  const [basisDraft, setBasisDraft] = useState(capitalConfig?.capital_basis || "fixed");
   if (!analytics) return null;
   const a = analytics;
   const curve = (a.equity_curve || []).map((p) => ({ day: p.day, equity: p.equity_value }));
   const save = () => {
     const v = Number(draft);
     if (!Number.isFinite(v) || v <= 0) return;
-    onSetCapital(v);
+    onSetCapital(v, { enforce_capital: enforceDraft, capital_basis: basisDraft });
     setEditing(false);
   };
   return (
@@ -36,16 +38,41 @@ export default function AccountHero({ analytics, startingCapital, onSetCapital, 
           </div>
           <div className="text-[11px] text-dimmer flex items-center gap-1">
             start {editing ? (
-              <span className="inline-flex items-center gap-1">
+              <span className="inline-flex items-center gap-1.5 flex-wrap">
                 <input value={draft} onChange={(e) => setDraft(e.target.value)} type="number"
                   className="h-6 w-24 bg-bg-2 border border-line rounded px-1 text-[11px]" data-testid="paper-capital-input" />
+                <label className="inline-flex items-center gap-1 text-[10px] text-dimmer"
+                  title="When on, a new paper trade (any deployment) must fit inside this capital — skipped and journaled otherwise.">
+                  <input type="checkbox" checked={enforceDraft} onChange={(e) => setEnforceDraft(e.target.checked)}
+                    className="h-3 w-3 rounded border-line" data-testid="paper-capital-enforce" />
+                  account-wide entry ceiling
+                </label>
+                {enforceDraft && (
+                  <select value={basisDraft} onChange={(e) => setBasisDraft(e.target.value)}
+                    className="h-6 rounded border border-line bg-bg-2 px-1 text-[10px]" data-testid="paper-capital-basis">
+                    <option value="fixed">fixed</option>
+                    <option value="cumulative">cumulative</option>
+                  </select>
+                )}
                 <button onClick={save} disabled={busy} className="text-success" title="Save"><Check className="w-3.5 h-3.5" /></button>
                 <button onClick={() => setEditing(false)} className="text-dimmer" title="Cancel"><X className="w-3.5 h-3.5" /></button>
               </span>
             ) : (
               <span className="inline-flex items-center gap-1">
                 {fmtINR(a.starting_capital)}
-                <button onClick={() => { setDraft(String(a.starting_capital)); setEditing(true); }} className="text-dimmer hover:text-foreground" title="Edit starting capital" data-testid="paper-capital-edit"><Pencil className="w-3 h-3" /></button>
+                {capitalConfig?.enforce_capital && (
+                  <span className="text-[10px] px-1 py-0.5 rounded border border-violet-500/40 text-violet-300"
+                    title={`Account-wide entry ceiling ON (${capitalConfig?.capital_basis || "fixed"} basis): new paper trades across all deployments must fit inside the starting capital.`}
+                    data-testid="paper-capital-enforced-badge">
+                    ceiling {capitalConfig?.capital_basis || "fixed"}
+                  </span>
+                )}
+                <button onClick={() => {
+                  setDraft(String(a.starting_capital));
+                  setEnforceDraft(Boolean(capitalConfig?.enforce_capital));
+                  setBasisDraft(capitalConfig?.capital_basis || "fixed");
+                  setEditing(true);
+                }} className="text-dimmer hover:text-foreground" title="Edit starting capital" data-testid="paper-capital-edit"><Pencil className="w-3 h-3" /></button>
               </span>
             )}
           </div>

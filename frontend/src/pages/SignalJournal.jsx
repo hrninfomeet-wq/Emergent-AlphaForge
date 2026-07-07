@@ -408,8 +408,10 @@ export default function SignalJournal() {
                     <td className={`p-2 font-mono text-right ${colorPnL(s.pnl_premium_pts)}`}>{s.pnl_premium_pts != null ? fmtNum(s.pnl_premium_pts) : "—"}</td>
                     <td className="p-2 font-mono text-right">{fmtNum(s.score, 0)}</td>
                     <td className="p-2"><span className={`text-[10px] px-1.5 py-0.5 rounded border font-mono ${STATE_STYLE[s.state] || "border-line text-dim"}`}>{s.state}</span></td>
-                    <td className="p-2 text-dimmer truncate max-w-[180px]" title={[...(s.paper_trade_error ? [s.paper_trade_error] : []), ...blockers].join("; ")}>
-                      {s.paper_trade_error ? <span className="text-rose-300">{s.paper_trade_error}</span> : (blockers.length ? blockers.join("; ") : "—")}
+                    <td className="p-2 text-dimmer truncate max-w-[180px]" title={[...(s.paper_trade_error ? [s.paper_trade_error] : []), ...(s.paper_trade_skip ? [s.paper_trade_skip] : []), ...blockers].join("; ")}>
+                      {s.paper_trade_error ? <span className="text-rose-300">{s.paper_trade_error}</span>
+                        : s.paper_trade_skip ? <span className="text-warning">{s.paper_trade_skip}</span>
+                        : (blockers.length ? blockers.join("; ") : "—")}
                     </td>
                   </tr>
                   {isOpen && (
@@ -445,6 +447,10 @@ export default function SignalJournal() {
                         {s.paper_trade_error && (
                           <div><span className="text-dimmer uppercase tracking-wider mr-2">Paper trade error</span>
                             <span className="text-rose-300">{s.paper_trade_error}</span></div>
+                        )}
+                        {s.paper_trade_skip && (
+                          <div><span className="text-dimmer uppercase tracking-wider mr-2">Skipped</span>
+                            <span className="text-warning">{s.paper_trade_skip}</span></div>
                         )}
                         <div className="text-dimmer">
                           tracked_for_pnl: {s.tracked_for_pnl ? "yes" : "no"} · lots: {s.lots ?? "—"} · qty: {s.quantity ?? "—"}

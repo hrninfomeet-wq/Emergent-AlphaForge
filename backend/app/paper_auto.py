@@ -328,15 +328,14 @@ def resolve_deployment_lots(
     return max(1, int((risk_cfg or {}).get("default_lots") or 1)), {"sizing_mode": "fixed_lots_legacy"}
 
 
-def build_auto_trade(
+def resolve_entry_economics(
     signal_doc: Dict[str, Any],
     deployment: Dict[str, Any],
     entry_price: float,
 ) -> Dict[str, Any]:
-    """Construct the paper-trade doc shared by the auto and approve paths:
-    premium entry, lots from deployment risk, premium stop/target from hints →
-    deployment pct fallback, and spot-mirror levels from the strategy's spot
-    hints. The caller stamps deployment_id / source before insert."""
+    """Friction-adjusted entry fill, premium exit levels, and sized lots — the
+    entry economics shared by the capital gate and the trade builder, computed
+    ONCE so the gate can never disagree with the booked trade."""
     risk_cfg = deployment.get("risk") or {}
 
     # Live execution-realism (app.live_friction): when the deployment opted in
@@ -362,6 +361,39 @@ def build_auto_trade(
         fill_entry, signal_doc.get("risk_hints"), risk_cfg,
     )
     lots, sizing_audit = resolve_deployment_lots(risk_cfg, fill_entry, contract, stop_price)
+    return {
+        "friction": friction,
+        "entry_fill": entry_fill,
+        "raw_entry": raw_entry,
+        "fill_entry": fill_entry,
+        "stop_price": stop_price,
+        "target_price": target_price,
+        "lots": lots,
+        # Same clamp paper_trade_from_signal applies — premium × quantity is the
+        # rupee outlay the capital gate checks.
+        "lot_size": max(1, int((contract or {}).get("lot_size") or 1)),
+        "sizing_audit": sizing_audit,
+    }
+
+
+def build_auto_trade(
+    signal_doc: Dict[str, Any],
+    deployment: Dict[str, Any],
+    entry_price: float,
+    economics: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Construct the paper-trade doc shared by the auto and approve paths:
+    premium entry, lots from deployment risk, premium stop/target from hints →
+    deployment pct fallback, and spot-mirror levels from the strategy's spot
+    hints. The caller stamps deployment_id / source before insert. Pass the
+    precomputed ``economics`` when the capital gate already resolved them."""
+    econ = economics or resolve_entry_economics(signal_doc, deployment, entry_price)
+    friction = econ["friction"]
+    entry_fill = econ["entry_fill"]
+    raw_entry = econ["raw_entry"]
+    fill_entry = econ["fill_entry"]
+    stop_price, target_price = econ["stop_price"], econ["target_price"]
+    lots, sizing_audit = econ["lots"], econ["sizing_audit"]
     trade = paper_trade_from_signal(
         signal_doc,
         lots=lots,
@@ -471,7 +503,33 @@ async def auto_paper_trade_for_signal(
         log.warning("auto-paper skipped for signal %s: %s", signal_id, error)
         return {"created": False, "error": error}
 
-    trade = build_auto_trade(signal_doc, deployment, entry_price)
+    # Honest capital constraint (paper account realism): the trade's premium
+    # outlay must fit the deployment's configured capital (and the opt-in
+    # account-wide ceiling). Runs AFTER premium resolution because the outlay
+    # needs the actual fill; the claim is released so the skip is retryable,
+    # and the reason is journaled on the signal — never a silent drop.
+    econ = resolve_entry_economics(signal_doc, deployment, entry_price)
+    from app.paper_capital import check_capital_gate
+    gate = await check_capital_gate(
+        db, deployment,
+        new_exposure=float(econ["fill_entry"]) * econ["lots"] * econ["lot_size"],
+        now=now_utc,
+    )
+    if not gate.get("allowed", True):
+        reason = str(gate.get("reason") or "capital_gate")
+        await release_paper_trade_claim(db, signal_id)
+        await db.signals.update_one(
+            {"id": signal_id},
+            {"$set": {"paper_trade_skip": reason,
+                      "updated_at": datetime.now(timezone.utc).isoformat()}},
+        )
+        log.info("auto-paper capital gate skipped signal %s: %s", signal_id, reason)
+        return {"created": False, "reason": reason,
+                "capital_gate": {k: gate.get(k) for k in
+                                 ("scope", "basis", "capital", "committed",
+                                  "available", "need")}}
+
+    trade = build_auto_trade(signal_doc, deployment, entry_price, economics=econ)
     trade["deployment_id"] = str(deployment.get("id") or "")
     trade["source"] = "paper_auto_on_signal"
     trade["auto_created"] = True

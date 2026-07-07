@@ -14,10 +14,13 @@ const inr = (v) => (v == null ? "—" : `₹${fmtNum(v, 0)}`);
 function CapsEditor({ dep, onSaved }) {
   const risk = dep.risk || {};
   const caps = risk.daily_caps || {};
+  const capital = risk.capital || {};
   const [lots, setLots] = useState(risk.lots_override != null ? String(risk.lots_override) : "");
   const [maxConc, setMaxConc] = useState(risk.max_concurrent != null ? String(risk.max_concurrent) : "");
   const [maxLoss, setMaxLoss] = useState(caps.max_loss != null ? String(caps.max_loss) : "");
   const [maxTrades, setMaxTrades] = useState(caps.max_trades != null ? String(caps.max_trades) : "");
+  const [capAmount, setCapAmount] = useState(capital.amount != null ? String(capital.amount) : "");
+  const [capBasis, setCapBasis] = useState(capital.basis || "fixed");
   const [saving, setSaving] = useState(false);
 
   const save = async () => {
@@ -35,6 +38,7 @@ function CapsEditor({ dep, onSaved }) {
         lots_override: lots !== "" ? parseInt(lots, 10) : null,
         max_concurrent: maxConc !== "" ? parseInt(maxConc, 10) : null,
         daily_caps: dailyCaps,
+        capital: capAmount !== "" ? { amount: Math.abs(parseFloat(capAmount)), basis: capBasis } : null,
       });
       toast.success("Paper caps saved");
       onSaved?.();
@@ -61,12 +65,23 @@ function CapsEditor({ dep, onSaved }) {
       <Field label="Max concurrent" value={maxConc} onChange={setMaxConc} placeholder="∞" />
       <Field label="Daily loss cap ₹" value={maxLoss} onChange={setMaxLoss} placeholder="off" />
       <Field label="Max trades / day" value={maxTrades} onChange={setMaxTrades} placeholder="∞" />
+      <Field label="Capital ₹ (entry gate)" value={capAmount} onChange={setCapAmount} placeholder="unconstrained" />
+      <label className="flex flex-col gap-0.5 text-[10px] text-dimmer">
+        Capital basis
+        <select value={capBasis} onChange={(e) => setCapBasis(e.target.value)} disabled={capAmount === ""}
+          className="h-6 rounded border border-line bg-bg-2 px-1 text-[11px] text-foreground disabled:opacity-50"
+          data-testid="paper-caps-capital-basis">
+          <option value="fixed">fixed</option>
+          <option value="cumulative">cumulative</option>
+        </select>
+      </label>
       <Button size="sm" variant="outline" disabled={saving} onClick={save}
         className="h-6 text-[11px]" data-testid="paper-caps-save">
         Save caps
       </Button>
       <span className="text-[10px] text-dimmer">
-        Empty = no cap. Lots override replaces the preset's sizing replay.
+        Empty = no cap. Lots override replaces the preset's sizing replay. Capital skips (and journals)
+        entries whose premium outlay doesn't fit.
       </span>
     </div>
   );
@@ -82,7 +97,7 @@ function DeploymentControlRow({ dep, open, busy, feedHealth, onPause, onResume, 
   const openCount = open?.openCount || 0;
   const openMtm = open?.openMtm || 0;
   const [capsOpen, setCapsOpen] = useState(false);
-  const hasCaps = !!(dep.risk?.lots_override != null || dep.risk?.max_concurrent != null || dep.risk?.daily_caps);
+  const hasCaps = !!(dep.risk?.lots_override != null || dep.risk?.max_concurrent != null || dep.risk?.daily_caps || dep.risk?.capital);
   return (
     <div data-testid="paper-deploy-row-wrap">
     <div className="px-3 py-2 flex items-center gap-2 flex-wrap" data-testid="paper-deploy-row">

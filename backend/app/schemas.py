@@ -361,6 +361,15 @@ class DeploymentCreateReq(BaseModel):
     # Default None → gross (legacy); the deploy wizard prefills it ON from the
     # preset's backtest execution policy and lets the user tune every knob.
     friction: Optional[Dict[str, Any]] = None
+    # Paper account realism (2026-07): optional per-deployment capital
+    # constraint. When set, a new paper trade's premium outlay must fit inside
+    # the configured capital ("fixed" = never compounds, losses debit;
+    # "cumulative" = capital + realized P&L). Missing → legacy unconstrained.
+    capital_amount: Optional[float] = None
+    capital_basis: Optional[str] = None  # fixed | cumulative
+    # Explicit lots per signal at deploy time (parity with the Paper caps
+    # editor's post-deploy lots_override): overrides the pinned sizing replay.
+    lots_override: Optional[int] = None
     acknowledged_warnings: bool = False
 
 
