@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   AlertTriangle,
   CheckCircle,
@@ -130,32 +131,76 @@ const labelCls = "text-[10px] uppercase tracking-wider text-dimmer font-semibold
 
 /**
  * SettingChip — the compact summary-row control. Shows a short human-readable
- * value and, when clicked, opens a popover anchored under it containing
- * `children` (the section's existing editor controls, unchanged). Purely a
- * layout/visibility wrapper — no config state lives here.
+ * value and, when clicked, opens a popover containing `children` (the
+ * section's existing editor controls, unchanged). Purely a layout/visibility
+ * wrapper — no config state lives here.
+ *
+ * The popover is rendered through a portal into document.body with its
+ * position computed from the trigger button's viewport rect (`position:
+ * fixed`), rather than `position: absolute` inside the chip row. A plain
+ * absolute popover gets silently clipped by any ancestor with
+ * `overflow-hidden` — which is exactly what this panel's host card does on
+ * the Live Trading page (SectionCard in LiveDashboard.jsx), even though the
+ * Paper Trading page's plain div wrapper doesn't clip it. Computing a fixed
+ * position (and capping height to whichever of above/below has more room)
+ * makes the popover fully visible and scrollable regardless of what wraps
+ * this panel.
  */
 function SettingChip({ label, value, active, open, onToggle, onClose, children }) {
-  const ref = useRef(null);
+  const btnRef = useRef(null);
+  const popoverRef = useRef(null);
+  const [pos, setPos] = useState(null);
+
+  const recalcPosition = useCallback(() => {
+    const btn = btnRef.current;
+    if (!btn) return;
+    const rect = btn.getBoundingClientRect();
+    const margin = 8;
+    const width = Math.min(352, window.innerWidth - margin * 2);
+    let left = rect.left;
+    if (left + width > window.innerWidth - margin) {
+      left = Math.max(margin, window.innerWidth - margin - width);
+    }
+    const spaceBelow = window.innerHeight - rect.bottom - margin;
+    const spaceAbove = rect.top - margin;
+    const openUp = spaceBelow < 200 && spaceAbove > spaceBelow;
+    const maxHeight = Math.max(160, (openUp ? spaceAbove : spaceBelow) - 8);
+    setPos({
+      left,
+      width,
+      maxHeight,
+      top: openUp ? undefined : rect.bottom + 6,
+      bottom: openUp ? window.innerHeight - rect.top + 6 : undefined,
+    });
+  }, []);
 
   useEffect(() => {
     if (!open) return undefined;
+    recalcPosition();
     function onDocMouseDown(e) {
-      if (ref.current && !ref.current.contains(e.target)) onClose();
+      if (btnRef.current && btnRef.current.contains(e.target)) return;
+      if (popoverRef.current && popoverRef.current.contains(e.target)) return;
+      onClose();
     }
     function onKeyDown(e) {
       if (e.key === "Escape") onClose();
     }
+    window.addEventListener("scroll", recalcPosition, true);
+    window.addEventListener("resize", recalcPosition);
     document.addEventListener("mousedown", onDocMouseDown);
     document.addEventListener("keydown", onKeyDown);
     return () => {
+      window.removeEventListener("scroll", recalcPosition, true);
+      window.removeEventListener("resize", recalcPosition);
       document.removeEventListener("mousedown", onDocMouseDown);
       document.removeEventListener("keydown", onKeyDown);
     };
-  }, [open, onClose]);
+  }, [open, onClose, recalcPosition]);
 
   return (
-    <div ref={ref} className="relative">
+    <div className="relative">
       <button
+        ref={btnRef}
         type="button"
         onClick={onToggle}
         aria-expanded={open}
@@ -174,13 +219,22 @@ function SettingChip({ label, value, active, open, onToggle, onClose, children }
         />
       </button>
 
-      {open && (
-        <div className="absolute z-50 mt-1.5 w-[min(22rem,90vw)] rounded-lg border border-line bg-bg-1 shadow-lg left-0">
-          <div className="px-3 py-3 space-y-3 max-h-[70vh] overflow-y-auto">
-            {children}
-          </div>
-        </div>
-      )}
+      {open && pos &&
+        createPortal(
+          <div
+            ref={popoverRef}
+            className="fixed z-50 rounded-lg border border-line bg-bg-1 shadow-lg"
+            style={{ left: pos.left, top: pos.top, bottom: pos.bottom, width: pos.width }}
+          >
+            <div
+              className="px-3 py-3 space-y-3 overflow-y-auto"
+              style={{ maxHeight: pos.maxHeight }}
+            >
+              {children}
+            </div>
+          </div>,
+          document.body
+        )}
     </div>
   );
 }
