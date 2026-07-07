@@ -403,6 +403,14 @@ class DataHygieneCatchUpReq(BaseModel):
     include_options: bool = True
     dry_run: bool = False
     chunk_days_spot: int = 30
+    # Historical range ingestion (2026-07): when BOTH dates are given the
+    # request targets an explicit [from_date, to_date] window instead of the
+    # incremental tail gap. Range mode ALWAYS plans first: an execute call is
+    # rejected unless confirm=true (the UI dry-runs, shows the plan, then
+    # re-posts with confirm). Upsert-only end to end.
+    from_date: Optional[str] = None
+    to_date: Optional[str] = None
+    confirm: bool = False
 
 
 class AutoUpdateToggleReq(BaseModel):

@@ -39,6 +39,11 @@ from app.options_universe import strike_step_for
 log = logging.getLogger(__name__)
 
 DEFAULT_START_DATE = "2024-11-27"  # hard floor — never audit earlier than this
+# Explicit historical-range ingestion may reach further back than the default
+# scope, but never before this: the curated NSE holiday calendar
+# (nse_calendar._HOLIDAYS_2024) starts here, and without holiday truth the
+# expected-day accounting (and therefore honest coverage reporting) is wrong.
+CALENDAR_VERIFIED_FLOOR = "2024-01-22"
 # Rolling completeness window (user decision 2026-06-12): guarantee a complete
 # warehouse over the last N calendar months; older data is kept but no longer
 # audited/fetched by default.
@@ -917,6 +922,166 @@ async def compute_catch_up_plan(
             "total_actions": total_actions,
             "instruments_count": len(insts),
             "target_end": target_end,
+        },
+    }
+
+
+async def compute_range_ingest_plan(
+    db: Any,
+    *,
+    from_date: str,
+    to_date: str,
+    instruments: Optional[List[str]] = None,
+    include_options: bool = True,
+    legs: Optional[List[str]] = None,
+    now_ist: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Historical range-ingestion plan — the ALWAYS-run-first dry-run for an
+    arbitrary user-chosen [from_date, to_date] window (unlike
+    compute_catch_up_plan, which only targets the tail gap).
+
+    Reports, per instrument: which trading days in the range are missing or
+    under-captured for SPOT (with expected candle counts from the holiday-aware
+    calendar) and the contracts + option_candles actions the executor would
+    chain afterwards. The option universe for a past range is broker-discovered
+    (expired-instruments API), so the exact contract/candle count is honestly
+    reported as resolvable only after spot + contracts land — the plan never
+    pretends to know it.
+
+    Raises ValueError on unusable ranges (bad dates, from > to, before the
+    verified-calendar floor, no closed session in range) — the route maps that
+    to HTTP 400. Pure read: never fetches, never writes.
+    """
+    try:
+        f_dt = date.fromisoformat(str(from_date))
+        t_dt = date.fromisoformat(str(to_date))
+    except (TypeError, ValueError):
+        raise ValueError("from_date and to_date must be YYYY-MM-DD")
+    if f_dt > t_dt:
+        raise ValueError("from_date must be on or before to_date")
+    if str(from_date) < CALENDAR_VERIFIED_FLOOR:
+        raise ValueError(
+            f"from_date before {CALENDAR_VERIFIED_FLOOR} is not supported: the NSE "
+            f"holiday calendar here is only verified from {CALENDAR_VERIFIED_FLOOR}, "
+            "so expected-day accounting (and honest coverage reporting) would be "
+            "wrong for earlier dates.")
+    closed = most_recent_closed_session(now_ist)
+    if not closed or str(from_date) > closed:
+        raise ValueError(
+            "range has no closed trading session yet — Upstox historical is empty "
+            "for the in-progress day")
+    clamped_end = min(str(to_date), closed)
+
+    warnings: List[str] = []
+    if clamped_end < str(to_date):
+        warnings.append(
+            f"to_date clamped to the most recent closed session ({clamped_end}).")
+    if str(from_date) < DEFAULT_START_DATE:
+        warnings.append(
+            f"Range starts before the project baseline {DEFAULT_START_DATE}. Broker "
+            "data depth that far back is unverified — the run will report exactly "
+            "what the broker returns, day by day; days it cannot serve stay "
+            "missing and are reported, never faked.")
+    if include_options:
+        warnings.append(
+            "Option contracts/candles for expired series come from Upstox's "
+            "expired-instruments API. If the broker has no data for part of this "
+            "range, those days are reported as unresolved/empty — nothing is "
+            "half-ingested.")
+    warnings.append(
+        "All candle writes are upserts keyed (instrument, ts): existing candles "
+        "are never deleted and days can only gain candles. A re-fetched existing "
+        "day changes its integrity hash only if the broker corrected values.")
+
+    insts = [str(i).upper() for i in (instruments or DEFAULT_INSTRUMENTS) if i]
+    legs_list = list(legs or DEFAULT_LEGS)
+    tdays = trading_days_in_range(str(from_date), clamped_end)
+
+    inst_reports: List[Dict[str, Any]] = []
+    total_actions = 0
+    total_expected_new_spot = 0
+
+    for inst in insts:
+        day_rows = await _spot_day_rows(db, inst)
+        counts = {r["date"]: int(r.get("count") or 0) for r in day_rows
+                  if str(from_date) <= r["date"] <= clamped_end}
+        missing = [d for d in tdays if counts.get(d, 0) <= 0]
+        incomplete = [
+            {"date": d, "count": counts[d], "expected": expected_candle_count(d)}
+            for d in tdays
+            if counts.get(d, 0) > 0 and counts[d] < expected_candle_count(d)
+        ]
+        expected_new = sum(expected_candle_count(d) for d in missing) + sum(
+            i["expected"] - i["count"] for i in incomplete)
+        total_expected_new_spot += expected_new
+
+        spot_days = sorted(missing + [i["date"] for i in incomplete])
+        actions: List[Dict[str, Any]] = []
+        if spot_days:
+            actions.append({
+                "id": f"spot_{inst}",
+                "kind": "spot",
+                "instrument": inst,
+                "from_date": spot_days[0],
+                "to_date": spot_days[-1],
+                "reason": (f"{len(missing)} missing + {len(incomplete)} under-captured "
+                           f"trading day(s) of {len(tdays)} in range "
+                           f"(~{expected_new} candles)"),
+                "eta_minutes": max(2, len(spot_days) // 10),
+            })
+        if include_options:
+            actions.append({
+                "id": f"contracts_{inst}",
+                "kind": "contracts",
+                "instrument": inst,
+                "from_date": str(from_date),
+                "to_date": clamped_end,
+                "reason": ("Backfill EXPIRED option contracts for the range "
+                           "(broker expired-instruments API) + sync current contracts"),
+                "eta_minutes": 3,
+            })
+            actions.append({
+                "id": f"options_{inst}",
+                "kind": "option_candles",
+                "instrument": inst,
+                "from_date": str(from_date),
+                "to_date": clamped_end,
+                "legs": legs_list,
+                "reason": ("Band-exact option-candle fill over the range; the exact "
+                           "contract/candle list is resolved AFTER spot + contracts "
+                           "land (strike band needs the day's spot low/high)"),
+                "eta_minutes": max(5, len(tdays) * 2),
+            })
+        total_actions += len(actions)
+        inst_reports.append({
+            "instrument": inst,
+            "from_date": str(from_date),
+            "to_date": clamped_end,
+            "up_to_date": not actions,
+            "trading_days": len(tdays),
+            "stored_days": sum(1 for d in tdays if counts.get(d, 0) > 0),
+            "missing_trading_days": len(missing),
+            "missing_days_sample": missing[:15],
+            "incomplete_days": incomplete,
+            "expected_new_spot_candles": expected_new,
+            "actions": actions,
+        })
+
+    return {
+        "id": str(uuid.uuid4()),
+        "mode": "historical_range",
+        "computed_at": datetime.now(timezone.utc).isoformat(),
+        "window": {"start": str(from_date), "end": clamped_end},
+        "scope": {"legs": legs_list, "include_options": bool(include_options)},
+        "instruments": inst_reports,
+        "warnings": warnings,
+        "summary": {
+            "overall_status": "verified" if total_actions == 0 else "warning",
+            "total_actions": total_actions,
+            "instruments_count": len(insts),
+            "target_end": clamped_end,
+            "trading_days": len(tdays),
+            "expected_new_spot_candles": total_expected_new_spot,
         },
     }
 

@@ -31,6 +31,7 @@ from app.data_hygiene import (
     build_band_fetch_plan,
     compute_catch_up_plan,
     compute_hygiene_plan,
+    compute_range_ingest_plan,
     default_scope_start,
     execute_hygiene_plan,
     hygiene_status,
@@ -59,6 +60,7 @@ from app.runtime import (
     _ist_market_bounds_ms,
     _overlay_option_contract_metadata,
     _start_catch_up_chain,
+    _start_historical_range_chain,
     _topup_vix,
     _trigger_autoupdate,
     log,
@@ -669,6 +671,10 @@ async def warehouse_sync_route(req: DataHygieneCatchUpReq):
 
 
 async def _run_warehouse_sync(req: DataHygieneCatchUpReq):
+    # Historical range mode: BOTH dates present routes to the range planner +
+    # range chain (dry-run-first is enforced there via the confirm gate).
+    if req.from_date or req.to_date:
+        return await _run_historical_range_ingest(req)
     db = get_db()
     plan = await compute_catch_up_plan(
         db,
@@ -775,6 +781,84 @@ async def _run_warehouse_sync(req: DataHygieneCatchUpReq):
             {"instrument": i, "missing_pairs": p.get("missing_pairs", 0)} for i, p in band_sweeps
         ],
         "vix": vix_result,
+    })
+
+
+async def _run_historical_range_ingest(req: DataHygieneCatchUpReq):
+    """Historical range ingestion: dry-run-first plan → typed confirm → the
+    sequential range chain (spot → expired+current contracts → band options).
+
+    The plan is NEVER persisted to data_hygiene_latest (a historical range must
+    not overwrite the rolling-window health strip the page loads instantly).
+    Upsert-only end to end — this path can never delete or rewrite candles
+    beyond broker-value corrections on re-fetched days.
+    """
+    if not (req.from_date and req.to_date):
+        raise HTTPException(
+            400, "historical range ingestion needs BOTH from_date and to_date")
+    db = get_db()
+    try:
+        plan = await compute_range_ingest_plan(
+            db,
+            from_date=str(req.from_date),
+            to_date=str(req.to_date),
+            instruments=req.instruments,
+            include_options=bool(req.include_options),
+            legs=req.legs,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+    if req.dry_run:
+        return serialize_doc({"plan": plan, "submitted_count": 0, "dry_run": True})
+    if not req.confirm:
+        raise HTTPException(
+            400,
+            "historical range ingestion always plans first: call with "
+            "dry_run=true, review the plan, then re-post with confirm=true")
+
+    total_actions = int(plan.get("summary", {}).get("total_actions") or 0)
+    if total_actions == 0:
+        return serialize_doc({"plan": plan, "submitted": [], "submitted_count": 0,
+                              "up_to_date": True})
+
+    status = await upstox_client.get_connection_status()
+    if not status.get("connected"):
+        raise HTTPException(400, "Upstox is not connected. Connect it before running a historical ingest.")
+    if status.get("expired"):
+        raise HTTPException(400, "Upstox token expired. Reconnect before running a historical ingest.")
+
+    submitted: List[Dict[str, Any]] = []
+    for inst_report in plan.get("instruments", []):
+        if inst_report.get("up_to_date"):
+            continue
+        instrument = str(inst_report["instrument"]).upper()
+        if instrument not in upstox_client.INSTRUMENT_KEYS:
+            continue
+        spot_action = next(
+            (a for a in inst_report.get("actions", []) if a.get("kind") == "spot"), None)
+        run_ids = await _start_historical_range_chain(
+            instrument=instrument,
+            from_date=inst_report["from_date"],
+            to_date=inst_report["to_date"],
+            spot_from=(spot_action or {}).get("from_date"),
+            spot_to=(spot_action or {}).get("to_date"),
+            include_options=bool(req.include_options),
+            legs=list(req.legs or HYGIENE_DEFAULT_LEGS),
+            chunk_days_spot=int(req.chunk_days_spot or 30),
+        )
+        for kind, run_id in run_ids:
+            submitted.append({
+                "action_id": f"{kind}_{instrument}",
+                "kind": kind,
+                "instrument": instrument,
+                "run_id": run_id,
+            })
+
+    return serialize_doc({
+        "plan": plan,
+        "submitted": submitted,
+        "submitted_count": len(submitted),
     })
 
 

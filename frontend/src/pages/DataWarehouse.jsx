@@ -15,6 +15,7 @@ import { INSTRUMENTS, RUN_SOURCE_LABELS, SectionHeader, dateInput } from "@/comp
 import { UpstoxPanel } from "@/components/warehouse/UpstoxPanel";
 import { OptionWarehousePanel } from "@/components/warehouse/OptionPlannerPanel";
 import { ExpiredContractBackfillPanel } from "@/components/warehouse/ExpiredBackfillPanel";
+import { HistoricalIngestPanel } from "@/components/warehouse/HistoricalIngestPanel";
 import { CoverageHeatmap, OptionCoverageHeatmap } from "@/components/warehouse/CoverageHeatmaps";
 import { DataTrustPanel } from "@/components/warehouse/DataTrustPanel";
 import { VolatilityAuditPanel } from "@/components/warehouse/VolatilityAuditPanel";
@@ -414,6 +415,13 @@ export default function DataWarehouse() {
       <CoverageHeatmap coverage={coverage} />
 
       <WarehouseChart />
+
+      {/* ============ Historical range ingestion ============ */}
+      <SectionHeader
+        title="Historical Range Ingestion"
+        subtitle="Backfill an arbitrary past date range (spot + expired-contract options) — dry-run plan first, then confirm; upsert-only"
+      />
+      <HistoricalIngestPanel status={upstoxStatus} onRefresh={refresh} />
 
       {/* ============ Option data ============ */}
       <SectionHeader title="Option Data" subtitle="Daily ATM-band coverage — maintained automatically by Sync / auto-update" />

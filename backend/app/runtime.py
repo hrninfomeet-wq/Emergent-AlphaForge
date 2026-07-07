@@ -1582,6 +1582,240 @@ async def _fail_remaining_catch_up(db, contracts_run_id, options_run_id, reason:
             )
 
 
+# Historical-range contracts stage: how far past to_date to discover expiries —
+# every day in the range needs its NEXT expiry, which can be up to a month out
+# (BANKNIFTY is monthly-expiry-only).
+EXPIRY_LOOKAHEAD_DAYS = 35
+
+
+async def _start_historical_range_chain(
+    *,
+    instrument: str,
+    from_date: str,
+    to_date: str,
+    spot_from: Optional[str],
+    spot_to: Optional[str],
+    include_options: bool,
+    legs: List[str],
+    chunk_days_spot: int,
+) -> List[tuple]:
+    """Historical-range twin of _start_catch_up_chain: create tracked run docs
+    and launch ONE sequential background task over an explicit [from_date,
+    to_date] window. spot_from/spot_to narrow stage 1 to the missing/under-
+    captured days (None = spot already complete, stage 1 is skipped); the
+    contracts stage backfills EXPIRED contracts for the range (the current-
+    contract sync knows nothing about old expiries); the option stage band-fills
+    the requested range. Upsert-only end to end — no stage can delete."""
+    db = get_db()
+    now = datetime.now(timezone.utc).isoformat()
+    created: List[tuple] = []
+
+    spot_run_id = None
+    eff_chunk_days = int(chunk_days_spot or 30)
+    if spot_from and spot_to:
+        spot_run_id = str(_uuid.uuid4())
+        guidance = chunk_guidance_for_index(spot_from, spot_to, chunk_days_spot)
+        eff_chunk_days = int(guidance["chunk_days"])
+        await db.warehouse_runs.insert_one({
+            "id": spot_run_id, "instrument": instrument,
+            "source": "data_hygiene", "kind": "spot", "range_ingest": True,
+            "started_at": now, "updated_at": now, "status": "queued",
+            "from_date": spot_from, "to_date": spot_to,
+            "days": guidance["calendar_days"], "chunk_days": eff_chunk_days,
+            "chunk_mode": guidance["mode"], "total_chunks": guidance["estimated_api_calls"],
+            "completed_chunks": 0, "progress_pct": 0,
+            "total_fetched": 0, "candles_added": 0, "candles_updated": 0,
+            "matched_existing": 0, "failed_chunks": [],
+        })
+        created.append(("spot", spot_run_id))
+
+    contracts_run_id = None
+    options_run_id = None
+    if include_options:
+        contracts_run_id = str(_uuid.uuid4())
+        await db.warehouse_runs.insert_one({
+            "id": contracts_run_id, "instrument": instrument,
+            "source": "data_hygiene", "kind": "contracts", "range_ingest": True,
+            "started_at": now, "updated_at": now, "status": "queued",
+            "from_date": from_date, "to_date": to_date, "progress_pct": 0,
+        })
+        created.append(("contracts", contracts_run_id))
+
+        options_run_id = str(_uuid.uuid4())
+        await db.warehouse_runs.insert_one({
+            "id": options_run_id, "instrument": instrument,
+            "source": "data_hygiene", "kind": "option_candles", "range_ingest": True,
+            "started_at": now, "updated_at": now, "status": "queued",
+            "from_date": from_date, "to_date": to_date,
+            "legs": legs, "progress_pct": 0,
+        })
+        created.append(("option_candles", options_run_id))
+
+    asyncio.create_task(_run_historical_range_chain(
+        instrument=instrument,
+        from_date=from_date,
+        to_date=to_date,
+        spot_from=spot_from,
+        spot_to=spot_to,
+        eff_chunk_days=eff_chunk_days,
+        spot_run_id=spot_run_id,
+        contracts_run_id=contracts_run_id,
+        options_run_id=options_run_id,
+        legs=legs,
+    ), name=f"range-ingest-{instrument}")
+
+    return created
+
+
+async def _run_historical_range_chain(
+    *,
+    instrument: str,
+    from_date: str,
+    to_date: str,
+    spot_from: Optional[str],
+    spot_to: Optional[str],
+    eff_chunk_days: int,
+    spot_run_id: Optional[str],
+    contracts_run_id: Optional[str],
+    options_run_id: Optional[str],
+    legs: List[str],
+) -> None:
+    """Sequential historical-range worker: spot → expired+current contracts →
+    band-exact option candles over the requested range. Never deletes; every
+    write is an upsert. Each stage updates its own warehouse_runs doc, and a
+    failed earlier stage skips the rest with a recorded reason."""
+    db = get_db()
+
+    # Stage 1: spot ingest for the missing/under-captured days (skipped when
+    # the range's spot is already complete — an options-only repair).
+    if spot_run_id and spot_from and spot_to:
+        try:
+            await run_upstox_index_ingest_job(spot_run_id, instrument, spot_from, spot_to, eff_chunk_days)
+        except Exception as exc:
+            log.exception("range-ingest spot failed for %s", instrument)
+            await db.warehouse_runs.update_one(
+                {"id": spot_run_id},
+                {"$set": {"status": "failed",
+                          "error": (str(exc) or type(exc).__name__)[:300],
+                          "updated_at": datetime.now(timezone.utc).isoformat()}},
+            )
+            await _fail_remaining_catch_up(db, contracts_run_id, options_run_id, "spot_ingest_failed")
+            return
+
+    if contracts_run_id is None:
+        return  # spot-only mode
+
+    # The option band needs spot candles for the range (the day's low/high set
+    # the strike band). Unlike the catch-up chain we judge by what the
+    # warehouse HOLDS, not what this run fetched — a re-run over an already-
+    # ingested range must still be able to fill options.
+    range_lo_ms = int((datetime.fromisoformat(from_date) - timedelta(hours=5, minutes=30))
+                      .replace(tzinfo=timezone.utc).timestamp() * 1000)
+    range_hi_ms = int((datetime.fromisoformat(to_date) + timedelta(days=1) - timedelta(hours=5, minutes=30))
+                      .replace(tzinfo=timezone.utc).timestamp() * 1000)
+    spot_in_range = await db.candles_1m.count_documents(
+        {"instrument": instrument, "ts": {"$gte": range_lo_ms, "$lt": range_hi_ms}})
+    if int(spot_in_range or 0) <= 0:
+        await _fail_remaining_catch_up(
+            db, contracts_run_id, options_run_id, "no_spot_candles_in_range")
+        return
+
+    # Stage 2: EXPIRED option contracts for the range (broker-discovered) +
+    # current contract sync (covers a range that reaches into live expiries).
+    # The band resolves each trading day to the NEXT expiry ON/AFTER it, which
+    # usually falls AFTER to_date (e.g. a Mon-Tue range whose weekly expiry is
+    # Thursday) — so the expiry discovery must look ahead past the range end
+    # or the band plan reports every day's contracts as unresolved.
+    from app.expired_contract_backfill import backfill_expired_option_contracts
+    contracts_to = (datetime.fromisoformat(to_date)
+                    + timedelta(days=EXPIRY_LOOKAHEAD_DAYS)).strftime("%Y-%m-%d")
+    await db.warehouse_runs.update_one(
+        {"id": contracts_run_id},
+        {"$set": {"status": "running", "progress_pct": 10,
+                  "updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    try:
+        backfill_result = await backfill_expired_option_contracts(
+            db, instrument,
+            from_date=from_date, to_date=contracts_to,
+            max_expiries=200,
+            confirm_large_fetch=True,
+        )
+        current_upserted = 0
+        try:
+            items = await upstox_client.fetch_option_contracts(instrument)
+            contract_result = await upsert_option_contracts(db, items)
+            current_upserted = int(contract_result.get("upserted")
+                                   or contract_result.get("inserted") or 0)
+        except Exception:
+            # Best-effort: an old range only needs the expired backfill.
+            log.warning("range-ingest current-contract sync failed for %s (non-fatal)",
+                        instrument)
+        await db.warehouse_runs.update_one(
+            {"id": contracts_run_id},
+            {"$set": {
+                "status": str(backfill_result.get("status") or "ok"),
+                "progress_pct": 100,
+                "expiry_count": int(backfill_result.get("expiry_count") or 0),
+                "fetched_contracts": int(backfill_result.get("fetched_contracts") or 0),
+                "upserted": int(backfill_result.get("upserted") or 0) + current_upserted,
+                "linked_helper_run_id": backfill_result.get("run_id"),
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }},
+        )
+        if str(backfill_result.get("status")) == "failed":
+            await _fail_remaining_catch_up(db, None, options_run_id, "contract_backfill_failed")
+            return
+    except Exception as exc:
+        log.exception("range-ingest contract backfill failed for %s", instrument)
+        await db.warehouse_runs.update_one(
+            {"id": contracts_run_id},
+            {"$set": {"status": "failed",
+                      "error": (str(exc) or type(exc).__name__)[:300],
+                      "updated_at": datetime.now(timezone.utc).isoformat()}},
+        )
+        await _fail_remaining_catch_up(db, None, options_run_id, "contract_backfill_failed")
+        return
+
+    # Stage 3: band-exact option fill over the REQUESTED range (the catch-up
+    # chain uses the rolling window here; a historical ingest targets exactly
+    # what the user asked for).
+    try:
+        plan = await build_band_fetch_plan(db, instrument, from_date, to_date, legs=legs)
+        chunk_days = 5
+        await db.warehouse_runs.update_one(
+            {"id": options_run_id},
+            {"$set": {"status": "running", "progress_pct": 5, "chunk_days": chunk_days,
+                      "band": True, "from_date": from_date,
+                      "missing_pairs": plan.get("missing_pairs", 0),
+                      "to_fetch_count": len(plan.get("items") or []),
+                      "unresolved_contracts": (plan.get("unresolved_contracts") or [])[:50],
+                      "updated_at": datetime.now(timezone.utc).isoformat()}},
+        )
+        await run_option_warehouse_fetch_job(
+            options_run_id, plan, fetch_missing_only=True, chunk_days=chunk_days,
+        )
+        recorded = await record_broker_empty_pairs(db, instrument, plan, options_run_id)
+        if recorded:
+            log.info("range-ingest %s: %d band pair(s) ledgered as broker-empty",
+                     instrument, recorded)
+    except HTTPException as exc:
+        await db.warehouse_runs.update_one(
+            {"id": options_run_id},
+            {"$set": {"status": "failed", "error": str(exc.detail)[:300],
+                      "updated_at": datetime.now(timezone.utc).isoformat()}},
+        )
+    except Exception as exc:
+        log.exception("range-ingest option fetch failed for %s", instrument)
+        await db.warehouse_runs.update_one(
+            {"id": options_run_id},
+            {"$set": {"status": "failed",
+                      "error": (str(exc) or type(exc).__name__)[:300],
+                      "updated_at": datetime.now(timezone.utc).isoformat()}},
+        )
+
+
 async def _hygiene_submit_spot(instrument: str, from_date: str, to_date: str, chunk_days: int) -> str:
     """Submit a spot ingest as a background task and return the run_id."""
     db = get_db()

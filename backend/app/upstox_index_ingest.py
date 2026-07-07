@@ -149,10 +149,12 @@ async def run_upstox_index_ingest_job(
                 totals["matched_existing"] += saved["matched"]
                 observed_dates.update(saved["dates"])
         except Exception as exc:
+            # str(exc) can be empty (e.g. cryptography's InvalidToken) — a blank
+            # error string reads as "no reason"; always carry the type name.
             failed_chunks.append({
                 "from_date": chunk["from_date"],
                 "to_date": chunk["to_date"],
-                "error": str(exc)[:300],
+                "error": (str(exc) or type(exc).__name__)[:300],
             })
 
         totals["completed_chunks"] += 1
