@@ -30,12 +30,13 @@ Key safety properties
 """
 from __future__ import annotations
 
+import asyncio
 import math
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.live.broker_protocol import OrderIntent
 from app.live.idempotency import new_client_order_id
-from app.live.order_builder import round_to_tick
+from app.live.order_builder import round_to_tick, slice_to_freeze
 from app.live.safety import validate_jdata
 
 # ---------------------------------------------------------------------------
@@ -44,7 +45,13 @@ from app.live.safety import validate_jdata
 
 #: Order statuses that are terminal — no further state changes possible.
 #: Always compared in UPPER case after normalisation (see _normalize_status).
-TERMINAL: frozenset[str] = frozenset({"COMPLETE", "REJECTED", "CANCELED"})
+#: "REJECT" (OrderBook sample spelling) and "CANCELLED" (double-L drift) are
+#: included so a rejected order never receives a futile cancel.
+TERMINAL: frozenset[str] = frozenset(
+    {"COMPLETE", "REJECTED", "REJECT", "CANCELED", "CANCELLED"})
+
+#: Rejected-order statuses (both spellings seen across Noren surfaces).
+_REJECTED_STATUSES: frozenset[str] = frozenset({"REJECTED", "REJECT"})
 
 #: Sensible defaults for a single-account retail setup.
 DEFAULT_SAFETY_CONFIG: Dict[str, Any] = {
@@ -538,6 +545,395 @@ async def panic_squareoff(
         "flatten_failures": flatten_failures,
         "unpriced": unpriced,
         "total": total,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 4b. Verified panic squareoff — bounded re-price loop + per-leg outcomes
+# ---------------------------------------------------------------------------
+
+#: Widening marketable-limit band schedule (%): pass 1 crosses 1% through the
+#: touch, unfilled legs re-price at 2%, then 4%. len() bounds the loop. Order
+#: APIs are rate-limited to 10/sec + 40/min — with a handful of legs this
+#: schedule (place + cancel per pass) stays well inside the budget.
+FLATTEN_BAND_SCHEDULE: Tuple[float, ...] = (1.0, 2.0, 4.0)
+
+#: Seconds to wait after each placement pass before polling the order book.
+FLATTEN_POLL_SECONDS: float = 2.0
+
+#: tsym prefix → exchange single-order freeze qty. Position-book rows don't
+#: name their underlying, so the tsym prefix is the only local signal (order
+#: matters: BANKNIFTY before NIFTY). Unknown prefix → no slicing; an oversize
+#: reject is then surfaced per-leg, never swallowed. Values mirror
+#: flattrade_symbol.EXCHANGE_RULES freeze_qty.
+_FREEZE_BY_TSYM_PREFIX: Tuple[Tuple[str, int], ...] = (
+    ("BANKNIFTY", 600), ("NIFTY", 1800), ("BSXOPT", 1000), ("SENSEX", 1000))
+
+#: Leg outcomes (report vocabulary — the UI colors off these strings).
+LEG_FILLED = "FILLED"
+LEG_REJECTED = "REJECTED"
+LEG_UNCONFIRMED = "PLACED_UNCONFIRMED"
+LEG_FAILED = "FAILED"
+LEG_UNPRICED = "UNPRICED"
+
+
+def _pos_float(value: Any) -> Optional[float]:
+    """float(value) if it is finite and > 0, else None (Noren sends strings)."""
+    try:
+        x = float(value)
+    except (TypeError, ValueError):
+        return None
+    return x if math.isfinite(x) and x > 0 else None
+
+
+def _leg_price(netqty: int, ref: Optional[float], band_pct: float,
+               tick: float, quote: Dict[str, Any]) -> Optional[float]:
+    """Marketable LIMIT price for one flatten leg, exchange-aware.
+
+    Long → SELL priced through the best BID (bp1); short → BUY through the
+    best ASK (sp1) — from a fresh GetQuotes snapshot when available, else the
+    (possibly stale) position-book lp. The band crosses the anchor to stay
+    marketable on a moving market; the price is clamped inside the exchange
+    circuit band [lc, uc] when the quote carries it (a limit outside the band
+    is an automatic reject), then aligned to the leg's own tick (SELL down /
+    BUY up). Returns None when no usable anchor exists.
+    """
+    if netqty > 0:
+        anchor = _pos_float(quote.get("bp1")) or ref
+        if anchor is None:
+            return None
+        prc = anchor * (1.0 - abs(band_pct) / 100.0)
+        lc = _pos_float(quote.get("lc"))
+        if lc is not None:
+            prc = max(prc, lc)
+        return round_to_tick(prc, tick, mode="down")
+    anchor = _pos_float(quote.get("sp1")) or ref
+    if anchor is None:
+        return None
+    prc = anchor * (1.0 + abs(band_pct) / 100.0)
+    uc = _pos_float(quote.get("uc"))
+    if uc is not None:
+        prc = min(prc, uc)
+    return round_to_tick(prc, tick, mode="up")
+
+
+def _freeze_qty_for_tsym(tsym: str) -> Optional[int]:
+    t = str(tsym or "").upper()
+    for prefix, freeze in _FREEZE_BY_TSYM_PREFIX:
+        if t.startswith(prefix):
+            return freeze
+    return None
+
+
+def _build_flatten_legs(open_positions: List[Dict[str, Any]],
+                        ref_price_field: str) -> List[Dict[str, Any]]:
+    """One leg per position (freeze-sliced when qty exceeds the exchange's
+    single-order max). Unpriceable/unparseable rows become UNPRICED legs —
+    surfaced, never silently dropped."""
+    legs: List[Dict[str, Any]] = []
+    for pos in open_positions:
+        tsym = pos.get("tsym", "")
+        raw_netqty = pos.get("netqty", 0)
+        netqty = _parse_netqty(raw_netqty)
+        if netqty is None:
+            legs.append({"tsym": tsym, "netqty": raw_netqty, "qty": 0,
+                         "exch": pos.get("exch", "NFO"), "prd": "I",
+                         "attempts": [], "filled_qty": 0,
+                         "outcome": LEG_UNPRICED, "reason": "unparseable netqty"})
+            continue
+        if netqty == 0:
+            continue
+        ref = _pos_float(pos.get(ref_price_field))
+        token = str(pos.get("token") or "") or None
+        if ref is None and token is None:
+            legs.append({"tsym": tsym, "netqty": netqty, "qty": abs(netqty),
+                         "exch": pos.get("exch", "NFO"),
+                         "prd": (str(pos.get("prd")) if pos.get("prd") else "I"),
+                         "attempts": [], "filled_qty": 0,
+                         "outcome": LEG_UNPRICED,
+                         "reason": "no usable reference price (stale lp, no token for quotes)"})
+            continue
+        tick = _pos_float(pos.get("ti")) or 0.05
+        base = {
+            "tsym": tsym,
+            "exch": pos.get("exch", "NFO"),
+            # Flatten in the position's OWN product (MIS sell does not net an
+            # NRML long) — same rule as panic_squareoff.
+            "prd": (str(pos.get("prd")) if pos.get("prd") else "I"),
+            "tick": tick,
+            "token": token,
+            "ref": ref,
+        }
+        qty = abs(netqty)
+        freeze = _freeze_qty_for_tsym(tsym)
+        if freeze and qty > freeze:
+            try:
+                slices = slice_to_freeze(qty, freeze)
+            except ValueError:
+                # slice_to_freeze fat-finger-caps at 10x freeze — an ENTRY
+                # safeguard. A flatten must always exit what the account holds:
+                # slice unbounded.
+                n = math.ceil(qty / freeze)
+                slices = [freeze] * (n - 1) + [qty - freeze * (n - 1)]
+        else:
+            slices = [qty]
+        for i, sqty in enumerate(slices):
+            legs.append({
+                **base,
+                "netqty": sqty if netqty > 0 else -sqty,
+                "qty": sqty,
+                "slice": f"{i + 1}/{len(slices)}" if len(slices) > 1 else None,
+                "attempts": [],
+                "filled_qty": 0,
+                "outcome": None,
+                "reason": None,
+            })
+    return legs
+
+
+async def _order_row(client: Any, norenordno: str) -> Optional[Dict[str, Any]]:
+    """Best-effort single-order lookup from a fresh order-book poll."""
+    try:
+        book = await client.order_book()
+    except Exception:
+        return None
+    for row in book or []:
+        if str(row.get("norenordno")) == str(norenordno):
+            return row
+    return None
+
+
+async def panic_squareoff_verified(
+    client: Any,
+    open_orders: List[Dict[str, Any]],
+    open_positions: List[Dict[str, Any]],
+    *,
+    uid: str = "",
+    actid: str = "",
+    band_schedule: Tuple[float, ...] = FLATTEN_BAND_SCHEDULE,
+    poll_seconds: float = FLATTEN_POLL_SECONDS,
+    sleep: Any = None,
+    ref_price_field: str = "lp",
+) -> Dict[str, Any]:
+    """panic_squareoff + verification: bounded re-price loop and an honest
+    per-leg outcome report.
+
+    The account allows ONLY LIMIT/SL-LIMIT (no market orders; the decoded
+    PiConnect reference documents no MKT price type at all), so a panic
+    flatten is a marketable LIMIT that may not fill. This executor:
+
+    1. cancels every working order (same semantics as panic_squareoff);
+    2. flattens each position leg with an exchange-aware marketable LIMIT
+       (fresh GetQuotes touch when the row carries a token, circuit-band
+       clamped, per-leg tick, position's own prd/exch, freeze-qty sliced);
+    3. polls the order book after each pass and RE-PRICES unfilled legs at a
+       widening band via cancel + re-place (never ModifyOrder — the client's
+       modify omits doc-mandatory exch/tsym/qty/ret). Remaining qty after a
+       partial fill is re-read from the broker's own fillshares AFTER the
+       cancel so a race-window fill can never cause an over-sell;
+    4. re-fetches the position book at the end: ``all_flat`` + ``residual``
+       report the broker's truth, and ``legs`` carries every attempt with
+       placed/filled/REJECTED + the broker's reason string.
+
+    A broker REJECT ends its leg immediately (re-pricing a margin/RMS reject
+    burns rate budget for nothing) and is surfaced loudly; transport errors
+    retry on the next pass. An unfilled final attempt is LEFT WORKING at the
+    most aggressive price — a resting exit beats no exit — and reported as
+    PLACED_UNCONFIRMED. NEVER raises.
+
+    Report: panic_squareoff's keys (canceled / cancel_failures / flattened /
+    flatten_failures / unpriced / total) plus ``legs``, ``filled``,
+    ``pending``, ``residual``, ``all_flat``. ``flattened`` keeps its historic
+    meaning (legs whose exit the broker ACCEPTED); ``filled`` is confirmed.
+    ``total`` now additionally requires the final position book to be flat.
+    """
+    _sleep = sleep or asyncio.sleep
+
+    # Step 1 — cancel every working order (identical semantics to panic).
+    canceled = 0
+    cancel_failures: List[Dict[str, Any]] = []
+    for order in open_orders:
+        if _normalize_status(order.get("status")) in TERMINAL:
+            continue
+        norenordno = order.get("norenordno", "")
+        try:
+            result = await client.cancel_order(norenordno)
+            if result.ok:
+                canceled += 1
+            else:
+                cancel_failures.append({
+                    "norenordno": norenordno,
+                    "reason": result.rejreason or "cancel returned ok=False",
+                })
+        except Exception as exc:
+            cancel_failures.append({"norenordno": norenordno, "reason": str(exc)})
+
+    # Step 2 — flatten with verification passes.
+    legs = _build_flatten_legs(open_positions, ref_price_field)
+
+    for pass_no, band in enumerate(band_schedule):
+        pending = [l for l in legs if l["outcome"] is None]
+        if not pending:
+            break
+
+        for leg in pending:
+            prev = leg["attempts"][-1] if leg["attempts"] else None
+            if prev is not None and prev.get("placed"):
+                # Cancel the working remainder before re-pricing, then re-read
+                # the order's FINAL fill count — it may have (partially) filled
+                # in the race window, and over-selling would open a short.
+                try:
+                    cres = await client.cancel_order(prev["norenordno"])
+                    cancel_ok = bool(cres.ok)
+                    cancel_reason = cres.rejreason
+                except Exception as exc:
+                    cancel_ok, cancel_reason = False, str(exc)
+                final = await _order_row(client, prev["norenordno"])
+                if final is not None:
+                    prev["status"] = _normalize_status(final.get("status"))
+                    prev["filled"] = max(int(prev.get("filled") or 0),
+                                         _parse_netqty(final.get("fillshares")) or 0)
+                    leg["filled_qty"] = sum(int(a.get("filled") or 0)
+                                            for a in leg["attempts"])
+                if not cancel_ok and (prev.get("status") or "") not in TERMINAL:
+                    # Cancel failed and the order still looks live: do NOT
+                    # place a second exit for the same qty. Report and leave
+                    # the working order in place.
+                    prev["reason"] = f"cancel failed: {cancel_reason}"
+                    continue
+
+            remaining = leg["qty"] - leg["filled_qty"]
+            if remaining <= 0:
+                leg["outcome"] = LEG_FILLED
+                continue
+
+            quote: Dict[str, Any] = {}
+            if leg.get("token"):
+                try:
+                    quote = (await client.get_quotes(leg["exch"], leg["token"])) or {}
+                except Exception:
+                    quote = {}
+            prc = _leg_price(leg["netqty"], leg.get("ref"), band, leg["tick"], quote)
+            attempt: Dict[str, Any] = {
+                "pass": pass_no + 1, "band_pct": band, "prc": prc,
+                "norenordno": None, "placed": False, "status": None,
+                "reason": None, "filled": 0,
+            }
+            leg["attempts"].append(attempt)
+            if prc is None:
+                attempt["reason"] = "no usable price (stale lp, no quote)"
+                continue  # a later pass may get a quote
+
+            cid = new_client_order_id()
+            intent = OrderIntent(
+                client_order_id=cid,
+                trantype="S" if leg["netqty"] > 0 else "B",
+                prctyp="LMT",
+                exch=leg["exch"],
+                tsym=leg["tsym"],
+                qty=remaining,
+                prc=prc,
+                prd=leg["prd"],
+                ret="DAY",
+                trgprc=None,
+                remarks=cid,
+            )
+            try:
+                result = await client.place_order(intent)
+            except Exception as exc:
+                attempt["reason"] = str(exc)  # transport error → retry next pass
+                continue
+            if result.ok:
+                attempt["placed"] = True
+                attempt["norenordno"] = result.norenordno
+            else:
+                attempt["reason"] = result.rejreason or "place_order returned ok=False"
+                leg["outcome"] = LEG_REJECTED
+                leg["reason"] = attempt["reason"]
+
+        if not any(l["outcome"] is None for l in legs):
+            break
+
+        # Verification poll — classify this pass's placements.
+        try:
+            await _sleep(poll_seconds)
+        except Exception:
+            pass
+        try:
+            book = await client.order_book()
+        except Exception:
+            book = []
+        by_no = {str(o.get("norenordno")): o for o in (book or [])}
+        for leg in [l for l in legs if l["outcome"] is None]:
+            att = leg["attempts"][-1] if leg["attempts"] else None
+            if att is None or not att.get("norenordno"):
+                continue
+            row = by_no.get(str(att["norenordno"]))
+            if row is None:
+                continue  # not visible yet — next pass re-checks post-cancel
+            status = _normalize_status(row.get("status"))
+            att["status"] = status
+            att["filled"] = max(int(att.get("filled") or 0),
+                                _parse_netqty(row.get("fillshares")) or 0)
+            leg["filled_qty"] = sum(int(a.get("filled") or 0) for a in leg["attempts"])
+            if status in _REJECTED_STATUSES:
+                leg["outcome"] = LEG_REJECTED
+                leg["reason"] = str(row.get("rejreason") or "rejected (no reason given)")
+                att["reason"] = leg["reason"]
+            elif status == "COMPLETE" or leg["filled_qty"] >= leg["qty"]:
+                leg["outcome"] = LEG_FILLED
+
+    # Final classification for legs the loop couldn't confirm.
+    for leg in legs:
+        if leg["outcome"] is not None:
+            continue
+        if leg["filled_qty"] >= leg["qty"]:
+            leg["outcome"] = LEG_FILLED
+        elif any(a.get("placed") for a in leg["attempts"]):
+            leg["outcome"] = LEG_UNCONFIRMED
+            leg["reason"] = (f"unfilled after {len(band_schedule)} pass(es); "
+                             "most aggressive exit left working")
+        else:
+            leg["outcome"] = LEG_FAILED
+            last = leg["attempts"][-1] if leg["attempts"] else {}
+            leg["reason"] = str(last.get("reason") or "no attempt succeeded")
+
+    # Step 3 — the broker's truth: is the account actually flat?
+    residual: List[Dict[str, Any]] = []
+    all_flat: Optional[bool] = None
+    try:
+        final_positions = await client.position_book()
+        residual = [
+            {"tsym": p.get("tsym"), "netqty": p.get("netqty")}
+            for p in (final_positions or [])
+            if (_parse_netqty(p.get("netqty")) or 0) != 0
+        ]
+        all_flat = residual == []
+    except Exception as exc:
+        residual = [{"tsym": "(position re-check failed)", "netqty": str(exc)}]
+        all_flat = None
+
+    unpriced = [{"tsym": l["tsym"], "netqty": l["netqty"]}
+                for l in legs if l["outcome"] == LEG_UNPRICED]
+    flatten_failures = [{"tsym": l["tsym"], "netqty": l["netqty"], "reason": l["reason"]}
+                        for l in legs if l["outcome"] in (LEG_REJECTED, LEG_FAILED)]
+    flattened = sum(1 for l in legs if any(a.get("placed") for a in l["attempts"]))
+    filled = sum(1 for l in legs if l["outcome"] == LEG_FILLED)
+    pending = sum(1 for l in legs if l["outcome"] == LEG_UNCONFIRMED)
+
+    return {
+        "canceled": canceled,
+        "cancel_failures": cancel_failures,
+        "flattened": flattened,
+        "flatten_failures": flatten_failures,
+        "unpriced": unpriced,
+        "filled": filled,
+        "pending": pending,
+        "legs": legs,
+        "residual": residual,
+        "all_flat": all_flat,
+        "total": (cancel_failures == [] and flatten_failures == []
+                  and unpriced == [] and all_flat is True),
     }
 
 

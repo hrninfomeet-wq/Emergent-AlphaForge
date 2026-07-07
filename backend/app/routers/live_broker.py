@@ -73,6 +73,7 @@ from app.live.flattrade_symbol import (
 )
 from app.live.portfolio_greeks import compute_portfolio_greeks
 from app.live.kill_switch import (
+    panic_squareoff_verified,
     SafetyConfigStore,
     default_store as _default_safety_store,
     plan_squareoff,
@@ -2050,15 +2051,53 @@ async def live_test_session():
 # No entry order is placed here.
 # ---------------------------------------------------------------------------
 
+# Seconds between the verified-flatten passes (patched to ~0 in route tests).
+_KILL_POLL_SECONDS: float = 2.0
+
+
+def _kill_summary_message(panic: Dict[str, Any], connected: bool) -> str:
+    """One honest sentence for the UI headline — the per-leg report carries
+    the detail; a partial flatten must never read as success."""
+    if not connected:
+        return "Broker not connected — squareoff PLAN only, nothing transmitted."
+    legs = panic.get("legs")
+    if legs is None:
+        return "Kill switch executed."
+    filled = int(panic.get("filled") or 0)
+    pending = int(panic.get("pending") or 0)
+    rejected = len(panic.get("flatten_failures") or [])
+    unpriced = len(panic.get("unpriced") or [])
+    bits = [f"{filled}/{len(legs)} legs filled"] if legs else ["no open positions"]
+    if pending:
+        bits.append(f"{pending} unfilled (exit left working)")
+    if rejected:
+        bits.append(f"{rejected} REJECTED")
+    if unpriced:
+        bits.append(f"{unpriced} unpriced")
+    cf = len(panic.get("cancel_failures") or [])
+    if cf:
+        bits.append(f"{cf} cancel failure(s)")
+    if panic.get("all_flat") is True:
+        verdict = "ALL FLAT."
+    elif panic.get("all_flat") is False:
+        verdict = "POSITIONS REMAIN — check the per-leg report."
+    else:
+        verdict = "flat-check unavailable — verify positions manually."
+    return f"Kill switch: {', '.join(bits)}. {verdict}"
+
+
 @api.post("/live-broker/kill-switch")
 async def live_kill_switch():
     """Execute the squareoff of all open orders and positions (L3: transmits).
 
-    In L3 the kill-switch route EXECUTES the squareoff via panic_squareoff
-    (which calls client.cancel_order and client.place_order for exits only).
-    It then reverts mode to LIVE_OFFLINE and records the session as 'kill_switch'.
+    In L3 the kill-switch route EXECUTES the squareoff via
+    panic_squareoff_verified (exit-only cancel + marketable-LIMIT flatten with
+    a bounded re-price loop and per-leg outcome verification — this account is
+    LIMIT/SL-LIMIT only, so fills are never assumed). It then reverts mode to
+    LIVE_OFFLINE and records the session as 'kill_switch'.
 
-    Returns the panic report + config + transmitted=True.
+    Returns the verified panic report (panic.legs / residual / all_flat) +
+    config + a one-line message + transmitted=True.
     """
     store = _config_store()
     config = await store.get_config()
@@ -2091,14 +2130,15 @@ async def live_kill_switch():
             pass
 
     if connected:
-        # EXIT-ONLY: panic_squareoff calls cancel_order + place_order (sell/buy exits)
-        panic_result = await panic_squareoff(
+        # EXIT-ONLY: panic_squareoff_verified calls cancel_order + place_order
+        # (sell/buy exits) with a bounded re-price loop + fill verification.
+        panic_result = await panic_squareoff_verified(
             client,
             open_orders,
             open_positions,
-            band_pct=1.0,
             uid=uid,
             actid=actid,
+            poll_seconds=_KILL_POLL_SECONDS,
         )
         transmitted = True
 
@@ -2152,6 +2192,7 @@ async def live_kill_switch():
         "transmitted": transmitted,
         "armed": True,
         "connected": connected,
+        "message": _kill_summary_message(panic_result, connected),
     }
 
 

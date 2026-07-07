@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { CheckCircle2, Heart, Loader2, ShieldOff, Square, XCircle, XOctagon } from "lucide-react";
+import { CheckCircle2, Heart, Loader2, ShieldOff, Square, XCircle } from "lucide-react";
 import { api } from "@/lib/api";
 import { fmtINR } from "@/lib/fmt";
 import { useLiveData } from "@/components/live/LiveDataProvider";
@@ -61,7 +61,6 @@ export default function PositionMonitor() {
   // refetch after a Square/Kill action via refetch.session().
   const { session, refetch } = useLiveData();
   const [squareBusy, setSquareBusy] = useState(false);
-  const [killBusy, setKillBusy] = useState(false);
   const [actionMsg, setActionMsg] = useState(null);
   const [dismissed, setDismissed] = useState(false);
 
@@ -172,20 +171,9 @@ export default function PositionMonitor() {
     }
   };
 
-  const handleKill = async () => {
-    if (killBusy) return;
-    setKillBusy(true);
-    setActionMsg(null);
-    try {
-      const res = await api.liveKillSwitch();
-      setActionMsg({ ok: true, text: res?.message ?? "Kill switch triggered." });
-      refetch.session();
-    } catch (e) {
-      setActionMsg({ ok: false, text: e?.response?.data?.detail ?? "Kill switch failed." });
-    } finally {
-      setKillBusy(false);
-    }
-  };
+  // Kill switch moved to KillSwitchPanel (always visible whenever open
+  // positions/working orders exist — not only during a test session — with a
+  // typed confirm + per-leg outcome report).
 
   return (
     <div className="rounded-lg border-2 border-amber-500/50 bg-amber-500/5 overflow-hidden">
@@ -284,25 +272,16 @@ export default function PositionMonitor() {
           </div>
         </div>
 
-        {/* Action buttons */}
+        {/* Action buttons — the account-wide Kill switch lives in KillSwitchPanel */}
         <div className="flex items-center gap-2 flex-wrap">
           <button
             type="button"
-            disabled={squareBusy || killBusy}
+            disabled={squareBusy}
             onClick={handleSquare}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-amber-500/50 bg-amber-500/10 text-warning text-xs font-mono font-semibold hover:bg-amber-500/20 disabled:opacity-60 transition-colors"
           >
             {squareBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Square className="w-3.5 h-3.5" />}
             Square now
-          </button>
-          <button
-            type="button"
-            disabled={squareBusy || killBusy}
-            onClick={handleKill}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border-2 border-danger/70 bg-danger/10 text-danger text-xs font-mono font-bold hover:bg-danger/20 disabled:opacity-60 transition-colors"
-          >
-            {killBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <XOctagon className="w-3.5 h-3.5" />}
-            Kill switch
           </button>
         </div>
 

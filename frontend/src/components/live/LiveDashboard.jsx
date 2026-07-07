@@ -20,6 +20,7 @@ import LiveBlotter from "@/components/live/LiveBlotter";
 import LiveTradeStats from "@/components/live/LiveTradeStats";
 import GreeksCard from "@/components/live/GreeksCard";
 import PositionMonitor from "@/components/live/PositionMonitor";
+import KillSwitchPanel from "@/components/live/KillSwitchPanel";
 import LiveOrderTicket from "@/components/live/LiveOrderTicket";
 import OverallSettingsPanel from "@/components/live/OverallSettingsPanel";
 import GttBook from "@/components/live/GttBook";
@@ -607,8 +608,13 @@ export default function LiveDashboard() {
           </SectionCard>
         </div>
 
-        {/* RIGHT column — monitor · positions · orders · guard */}
+        {/* RIGHT column — kill switch · monitor · positions · orders · guard */}
         <div className="space-y-4">
+          {/* KillSwitchPanel self-gates on open positions / working orders /
+              an active session — the flatten-everything button must exist
+              whenever there is anything to flatten, not only in a session. */}
+          <KillSwitchPanel />
+
           {/* PositionMonitor self-polls + self-renders (no card chrome). */}
           <PositionMonitor />
 

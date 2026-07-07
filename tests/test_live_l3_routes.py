@@ -221,6 +221,8 @@ def _make_app(
         "_schedule_auto_square": MagicMock(),
         # Patch _utcnow_iso to a fixed time for deterministic tests
         "_utcnow_iso": lambda: "2026-06-22T06:00:00+00:00",
+        # No real sleeps between the kill-switch verification passes
+        "_KILL_POLL_SECONDS": 0.0,
     }
 
     ctx_managers = []
@@ -712,6 +714,58 @@ def test_kill_switch_not_connected_returns_plan_not_transmitted():
                 p.stop()
             except RuntimeError:
                 pass
+
+
+def test_kill_switch_partial_failure_report_reaches_response():
+    """Mock-broker partial flatten: leg 1 fills, leg 2 (BFO) is REJECTED by the
+    broker — the response must carry per-leg outcomes with the broker's reason
+    and a message that never reads as success (item B: a partial flatten is
+    loudly visible, never swallowed)."""
+    class PartialClient(MockNoren):
+        def __init__(self, **kw):
+            super().__init__(**kw)
+            self._placed = 0
+
+        async def place_order(self, intent):
+            self._placed += 1
+            if intent.tsym.startswith("BSXOPT"):
+                from app.live.broker_protocol import OrderResult
+                return OrderResult(ok=False, rejreason="RMS:margin shortfall",
+                                   raw={"stat": "Not_Ok", "emsg": "RMS:margin shortfall"})
+            result = await super().place_order(intent)
+            order = self._orders[result.norenordno]
+            order["status"] = "COMPLETE"
+            order["fillshares"] = str(order["qty"])
+            self._position_book_data = [
+                p for p in self._position_book_data if p["tsym"] != intent.tsym]
+            return result
+
+    positions = [
+        {"tsym": "NIFTY26JUN26C25000", "exch": "NFO", "netqty": "65", "lp": "200.0", "prd": "M"},
+        {"tsym": "BSXOPT26JUN26C81000", "exch": "BFO", "netqty": "20", "lp": "350.0", "prd": "M"},
+    ]
+    cl = PartialClient(position_book_data=[dict(p) for p in positions])
+    tc = _make_app(client=cl)
+    try:
+        r = tc.post("/live-broker/kill-switch")
+        assert r.status_code == 200
+        data = r.json()
+        legs = data["panic"]["legs"]
+        outcomes = {l["tsym"]: l["outcome"] for l in legs}
+        assert outcomes["NIFTY26JUN26C25000"] == "FILLED"
+        assert outcomes["BSXOPT26JUN26C81000"] == "REJECTED"
+        rej = next(l for l in legs if l["outcome"] == "REJECTED")
+        assert "RMS:margin shortfall" in rej["reason"]
+        # The filled leg went out exchange-aware: NFO, LMT, position's own prd.
+        book = asyncio.run(cl.order_book())
+        assert book[0]["exch"] == "NFO" and book[0]["prctyp"] == "LMT" and book[0]["prd"] == "M"
+        # Loud partial-failure summary + broker-truth residuals.
+        assert data["panic"]["all_flat"] is False
+        assert data["panic"]["residual"][0]["tsym"] == "BSXOPT26JUN26C81000"
+        assert "1 REJECTED" in data["message"]
+        assert "POSITIONS REMAIN" in data["message"]
+    finally:
+        _stop_patches(tc)
 
 
 # ---------------------------------------------------------------------------
