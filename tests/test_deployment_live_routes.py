@@ -87,11 +87,15 @@ class _Collection:
         query = query or {}
         return _Cursor([dict(r) for r in self.rows if _match(r, query)])
 
-    async def find_one(self, query, projection=None):
-        for r in self.rows:
-            if _match(r, query):
-                return dict(r)
-        return None
+    async def find_one(self, query, projection=None, sort=None):
+        matches = [r for r in self.rows if _match(r, query)]
+        if sort:
+            for key, direction in reversed(list(sort)):
+                try:
+                    matches.sort(key=lambda r: r.get(key, ""), reverse=(direction == -1))
+                except TypeError:
+                    pass
+        return dict(matches[0]) if matches else None
 
     async def update_one(self, query, update, upsert=False):
         for r in self.rows:
@@ -123,6 +127,7 @@ class FakeDB:
         self.strategy_deployments = _Collection()
         self.live_trades = _Collection()
         self.paper_trades = _Collection()
+        self.signals = _Collection()
 
 
 # ---------------------------------------------------------------------------
@@ -658,6 +663,46 @@ class TestStatusBatch:
         _install(monkeypatch, db)
         out = asyncio.run(dep.deployments_live_status_batch(ids=""))
         assert out == {}
+
+    def test_last_entry_surfaces_latest_live_trade_error(self, monkeypatch):
+        """A refused live entry (signals.live_trade_error, previously write-only)
+        is surfaced on the deployment's live-status payload — the LATEST one."""
+        db = FakeDB()
+        db.strategy_deployments.rows.append(_deployment("dep-1"))
+        db.signals.rows.extend([
+            {"id": "sig-old", "deployment_id": "dep-1", "candle_ts": 1000,
+             "updated_at": "2026-06-25T09:00:00+00:00", "live_trade_error": "throttled"},
+            {"id": "sig-new", "deployment_id": "dep-1", "candle_ts": 2000,
+             "updated_at": "2026-06-25T10:30:00+00:00",
+             "live_trade_error": "live_entry_premium_unavailable_or_stale"},
+        ])
+        _install(monkeypatch, db)
+        out = asyncio.run(dep.deployment_live_status("dep-1"))
+        assert out["last_entry"]["error"] == "live_entry_premium_unavailable_or_stale"
+        assert out["last_entry"]["signal_id"] == "sig-new"   # latest by candle_ts (the bar)
+        assert out["last_entry"]["at"] == "2026-06-25T10:30:00+00:00"
+
+    def test_last_entry_surfaces_dry_run_intent(self, monkeypatch):
+        db = FakeDB()
+        db.strategy_deployments.rows.append(_deployment("dep-1"))
+        db.signals.rows.append(
+            {"id": "sig-1", "deployment_id": "dep-1", "updated_at": "2026-06-25T10:00:00+00:00",
+             "live_intended": {"would_send": {"tsym": "X"}, "ref_ltp": 120.0, "lots": 2}})
+        _install(monkeypatch, db)
+        out = asyncio.run(dep.deployment_live_status("dep-1"))
+        assert out["last_entry"]["intended"]["ref_ltp"] == 120.0
+        assert out["last_entry"]["error"] is None
+
+    def test_last_entry_none_when_latest_signal_has_no_live_outcome(self, monkeypatch):
+        """A paper-only / no-live-attempt latest signal → no chip (last_entry None)."""
+        db = FakeDB()
+        db.strategy_deployments.rows.append(_deployment("dep-1"))
+        db.signals.rows.append(
+            {"id": "sig-1", "deployment_id": "dep-1", "updated_at": "2026-06-25T10:00:00+00:00",
+             "status": "NEW"})  # no live_trade_error / live_intended
+        _install(monkeypatch, db)
+        out = asyncio.run(dep.deployment_live_status("dep-1"))
+        assert out["last_entry"] is None
 
 
 # ===========================================================================

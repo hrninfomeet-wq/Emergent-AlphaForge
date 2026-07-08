@@ -984,6 +984,37 @@ async def _live_status_payload(db: Any, deployment_id: str) -> Optional[Dict[str
             "target_level": st.get("target_level"),
             "seen_filled": e.get("seen_filled"),
         })
+
+    # Most recent live-entry OUTCOME for this deployment. auto_live writes
+    # signals.live_trade_error (a refused/blocked entry — e.g. stale premium,
+    # throttle, broker reject) and signals.live_intended (the offline-first
+    # dry-run audit), but nothing ever read them — so an armed deployment that
+    # silently never places had no on-screen explanation. Surface the latest so
+    # the Live strip can show WHY. Only populated when the latest signal actually
+    # carries one of those fields (a paper-only latest signal → None, no chip).
+    last_entry: Optional[Dict[str, Any]] = None
+    try:
+        # Sort by candle_ts (the bar timestamp) desc — the latest BAR's signal
+        # carries the current live outcome. This rides the existing
+        # (deployment_id, candle_ts) unique index for an INDEXED sort (no
+        # in-memory sort / collection scan on the 10s batch poll), and is more
+        # robust than updated_at (which a later unrelated write could bump).
+        sig = await db.signals.find_one(
+            {"deployment_id": deployment_id},
+            sort=[("candle_ts", -1)],
+        )
+        if sig and (sig.get("live_trade_error") is not None
+                    or sig.get("live_intended") is not None):
+            last_entry = {
+                "signal_id": sig.get("id"),
+                "error": sig.get("live_trade_error"),
+                "intended": sig.get("live_intended"),
+                "at": sig.get("updated_at") or sig.get("created_at"),
+            }
+    except Exception as exc:
+        logging.getLogger(__name__).debug(
+            "live_status: last-entry lookup failed for %s: %s", deployment_id, exc)
+
     return {
         "armed": bool(live.get("armed")),
         "armed_until": live.get("armed_until"),
@@ -995,6 +1026,7 @@ async def _live_status_payload(db: Any, deployment_id: str) -> Optional[Dict[str
         },
         "today": today,
         "open_positions": open_positions,
+        "last_entry": last_entry,
         "autoplace_armed": _live_autoplace_armed(),
         "guard_armed": _live_guard_armed(),
     }

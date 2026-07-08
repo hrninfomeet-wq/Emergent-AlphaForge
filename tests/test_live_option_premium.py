@@ -175,6 +175,68 @@ class TestResolvePremium:
         )
         assert result["source"] == "live_tick"
 
+    # ---- epoch-MILLISECONDS ticks (the real Upstox unit) ----
+
+    def test_fresh_ms_tick_is_normalized_and_fresh(self):
+        """Upstox ticks carry epoch-MILLISECONDS (ltt/currentTs). A 1-second-old
+        ms tick MUST read FRESH against a seconds now_ts — the unit bug that
+        silently disabled every deploy-to-live entry (fresh branch unreachable)."""
+        tick = {"last_price": 84.5, "ts": (NOW + 1) * 1000}  # ~1s ahead, in MS
+        result = resolve_premium(
+            instrument_key="K", tick=tick, candle_close=50.0, now_ts=NOW, max_age_sec=120
+        )
+        assert result["source"] == "live_tick"
+        assert result["fresh"] is True
+        assert result["premium"] == 84.5
+        assert result["ts"] == pytest.approx(NOW + 1)  # returned normalized to seconds
+
+    def test_stale_ms_tick_falls_back_to_candle(self):
+        tick = {"last_price": 84.5, "ts": (NOW - 300) * 1000}  # 300s old, in MS
+        result = resolve_premium(
+            instrument_key="K", tick=tick, candle_close=77.0, now_ts=NOW, max_age_sec=120
+        )
+        assert result["source"] == "last_candle"
+
+    def test_ms_received_ts_normalized(self):
+        tick = {"last_price": 72.0, "received_ts": (NOW - 10) * 1000}  # 10s old, MS
+        result = resolve_premium(
+            instrument_key="K", tick=tick, candle_close=42.0, now_ts=NOW, max_age_sec=120
+        )
+        assert result["source"] == "live_tick"
+
+    def test_seconds_tick_still_fresh_regression(self):
+        """A seconds-epoch tick (< 1e11) must be UNCHANGED by normalization."""
+        tick = {"last_price": 84.5, "ts": NOW}
+        result = resolve_premium(instrument_key="K", tick=tick, candle_close=50.0, now_ts=NOW)
+        assert result["source"] == "live_tick"
+        assert result["ts"] == NOW  # not divided
+
+    # ---- candle fallback age ----
+
+    def test_candle_age_exposed_when_candle_ts_given(self):
+        result = resolve_premium(
+            instrument_key="K", tick=None, candle_close=77.0, now_ts=NOW,
+            candle_ts=(NOW - 45) * 1000,  # 45s old, MS
+        )
+        assert result["source"] == "last_candle"
+        assert result["candle_age_sec"] == pytest.approx(45, abs=1e-6)
+
+    def test_candle_rejected_when_older_than_max_candle_age(self):
+        result = resolve_premium(
+            instrument_key="K", tick=None, candle_close=77.0, now_ts=NOW,
+            candle_ts=(NOW - 3600) * 1000, max_candle_age_sec=300,  # 1h old, 5m bound
+        )
+        assert result["source"] == "none"  # too old to pass off as current
+        assert result["premium"] is None
+
+    def test_candle_within_max_age_is_used(self):
+        result = resolve_premium(
+            instrument_key="K", tick=None, candle_close=77.0, now_ts=NOW,
+            candle_ts=(NOW - 60) * 1000, max_candle_age_sec=300,
+        )
+        assert result["source"] == "last_candle"
+        assert result["premium"] == 77.0
+
     # ---- stale tick falls back to candle ----
 
     def test_stale_tick_falls_back_to_candle(self):

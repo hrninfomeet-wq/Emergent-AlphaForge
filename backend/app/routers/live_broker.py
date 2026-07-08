@@ -2154,8 +2154,9 @@ async def get_option_premium(body: _OptionPremiumRequest):
     # 2. Live tick (may be None if not subscribed / stream not running)
     tick = tick_map.get(instrument_key) if tick_map else None
 
-    # 3. Last options_1m candle close
+    # 3. Last options_1m candle close (+ its ts so the resolver can report age)
     candle_close = None
+    candle_ts = None
     try:
         candle = await db.options_1m.find_one(
             {"instrument_key": instrument_key},
@@ -2163,6 +2164,7 @@ async def get_option_premium(body: _OptionPremiumRequest):
         )
         if candle:
             candle_close = candle.get("close")
+            candle_ts = candle.get("ts")
     except Exception as exc:
         log.warning("get_option_premium: options_1m fetch failed for %s: %s", instrument_key, exc)
 
@@ -2172,6 +2174,7 @@ async def get_option_premium(body: _OptionPremiumRequest):
         tick=tick,
         candle_close=candle_close,
         now_ts=now_ts,
+        candle_ts=candle_ts,
     )
     result["instrument_key"] = instrument_key
     return result

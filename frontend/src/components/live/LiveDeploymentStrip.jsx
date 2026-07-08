@@ -62,6 +62,20 @@ function Countdown({ until }) {
   );
 }
 
+// Map a backend live-entry refusal reason to a short human label. The full
+// reason is always available in the chip's tooltip.
+function entryErrorLabel(reason) {
+  if (!reason) return null;
+  const map = {
+    live_entry_premium_unavailable_or_stale: "no fresh premium",
+    signal_claimed_elsewhere: "claimed elsewhere",
+    dry_run_failed: "pre-trade gate",
+    not_within_lot_cap: "lot cap",
+    cannot_trade: "engine halted",
+  };
+  return map[reason] || String(reason).replace(/[_:]/g, " ").trim();
+}
+
 // ── One armed-deployment row ───────────────────────────────────────────────
 function ArmedRow({ dep, liveStatus, busy, onDisarm, onStop }) {
   // Status payload shape: { today: {orders, lots, realized_pnl}, open_positions: [...] }
@@ -103,6 +117,20 @@ function ArmedRow({ dep, liveStatus, busy, onDisarm, onStop }) {
       <span className="text-[11px] font-mono text-dimmer whitespace-nowrap">
         {openPositions} open
       </span>
+
+      {/* Entry-refused chip — WHY an armed deployment isn't placing (stale
+          premium / throttle / gate block). Surfaces the previously write-only
+          signals.live_trade_error via the live-status payload's last_entry. */}
+      {liveStatus?.last_entry?.error && (
+        <span
+          className="inline-flex items-center gap-1 text-[10px] font-medium text-rose-300 bg-rose-500/10 border border-rose-500/30 rounded px-1.5 py-0.5 whitespace-nowrap"
+          title={`Last live entry refused: ${liveStatus.last_entry.error}${liveStatus.last_entry.at ? ` (at ${liveStatus.last_entry.at})` : ""}`}
+          data-testid="live-entry-refused"
+        >
+          <OctagonX className="w-3 h-3 shrink-0" />
+          entry refused: {entryErrorLabel(liveStatus.last_entry.error)}
+        </span>
+      )}
 
       {/* Controls */}
       <div className="ml-auto flex items-center gap-1.5">
