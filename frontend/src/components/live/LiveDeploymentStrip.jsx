@@ -3,6 +3,7 @@ import { Activity, ChevronDown, ChevronRight, Clock, Loader2, OctagonX, ShieldOf
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { fmtINR } from "@/lib/fmt";
+import { getApiErrorMessage } from "@/lib/apiError";
 import { Button } from "@/components/ui/button";
 import DeployToLivePanel from "@/components/live/DeployToLivePanel";
 import { useLiveData } from "@/components/live/LiveDataProvider";
@@ -244,14 +245,29 @@ export default function LiveDeploymentStrip({ onArmedSummaryChange }) {
   };
 
   const doStopAll = async () => {
-    if (!window.confirm("Stop ALL live trading? This disarms and squares off every live deployment.")) return;
+    // Honest blast radius: /deployments/stop-all squares EVERY open paper trade,
+    // pauses EVERY active deployment (paper included), AND disarms every armed live
+    // deployment — not just "live" as the button label implies.
+    if (!window.confirm(
+      "Stop ALL trading?\n\n"
+      + "• squares off EVERY open PAPER trade\n"
+      + "• pauses EVERY active deployment (paper included)\n"
+      + "• disarms + flattens every armed LIVE deployment\n\n"
+      + "Continue?"
+    )) return;
     setBusy(true);
     try {
-      await api.stopAllDeployments(); // POST /deployments/stop-all (squares + pauses every live/paper deployment)
-      toast.success("Stopped all live deployments");
+      const res = await api.stopAllDeployments();
+      const squared = res?.squared_off_count ?? (res?.squared_off?.length ?? 0);
+      const paused = (res?.paused_deployment_ids || []).length;
+      const disarmed = (res?.disarmed_live_deployment_ids || []).length;
+      toast.success(
+        `Stopped ALL — ${squared} paper position(s) squared · ${paused} deployment(s) `
+        + `paused · ${disarmed} live disarmed`,
+      );
       await refreshAll();
     } catch (e) {
-      toast.error(e.response?.data?.detail || e.message);
+      toast.error(getApiErrorMessage(e, e.message));
     } finally {
       setBusy(false);
     }

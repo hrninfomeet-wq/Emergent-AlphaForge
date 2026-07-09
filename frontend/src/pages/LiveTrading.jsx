@@ -1,5 +1,6 @@
 import LiveDashboard from "@/components/live/LiveDashboard";
 import { LiveDataProvider } from "@/components/live/LiveDataProvider";
+import LiveErrorBoundary from "@/components/live/LiveErrorBoundary";
 
 /**
  * Live Trading page — real-money broker terminal (Flattrade / Noren).
@@ -11,7 +12,9 @@ import { LiveDataProvider } from "@/components/live/LiveDataProvider";
 export default function LiveTrading() {
   return (
     <LiveDataProvider>
-      <LiveDashboard />
+      <LiveErrorBoundary>
+        <LiveDashboard />
+      </LiveErrorBoundary>
     </LiveDataProvider>
   );
 }

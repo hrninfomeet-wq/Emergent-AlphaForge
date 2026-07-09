@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { CheckCircle, XCircle, Loader2, AlertTriangle, Send } from "lucide-react";
 import { api } from "@/lib/api";
 import { fmtINR } from "@/lib/fmt";
+import { getApiErrorMessage } from "@/lib/apiError";
 import PayoffChart from "./PayoffChart";
 
 /**
@@ -136,7 +137,7 @@ export default function LiveOrderTicket({ mode, disabled, onQueued }) {
         // Fall back to a sensible default but keep a note for the chip strip.
         setRules(defaultRulesFor(underlying));
         setRulesError(
-          e?.response?.data?.detail ?? e?.message ?? "rules unavailable — using defaults"
+          getApiErrorMessage(e, "rules unavailable — using defaults")
         );
       })
       .finally(() => {
@@ -199,7 +200,7 @@ export default function LiveOrderTicket({ mode, disabled, onQueued }) {
       }
     } catch (e) {
       setAtmNote(
-        e?.response?.data?.detail ?? e?.message ?? "ATM lookup failed — enter manually"
+        getApiErrorMessage(e, "ATM lookup failed — enter manually")
       );
     } finally {
       setAtmBusy(false);
@@ -237,7 +238,7 @@ export default function LiveOrderTicket({ mode, disabled, onQueued }) {
     } catch (e) {
       setPremiumBadge(null);
       setPremiumNote(
-        e?.response?.data?.detail ?? e?.message ?? "fetch failed — enter manually"
+        getApiErrorMessage(e, "fetch failed — enter manually")
       );
     } finally {
       setFetchBusy(false);
@@ -266,7 +267,13 @@ export default function LiveOrderTicket({ mode, disabled, onQueued }) {
     order_type: orderType,
     product,
     ref_ltp: isMarket ? null : parseFloat(refLtp),
-    band_pct: parseFloat(bandPct),
+    // Clamp NaN/blank/negative → a safe default so clearing the Band % field can
+    // never post `null` and 422 the route (whose detail array would then render as
+    // a raw object and white-screen the page).
+    band_pct: (() => {
+      const b = parseFloat(bandPct);
+      return Number.isFinite(b) && b >= 0 ? b : 5;
+    })(),
     fat_finger_cap: FAT_FINGER_CAP,
     levels: buildLevels(),
     buffer_pct: BUFFER_PCT,
@@ -294,7 +301,7 @@ export default function LiveOrderTicket({ mode, disabled, onQueued }) {
       const res = await api.previewLiveOrder(buildPayload());
       setPreviewResult(res);
     } catch (e) {
-      setPreviewError(e?.response?.data?.detail ?? e?.message ?? "Preview failed");
+      setPreviewError(getApiErrorMessage(e, "Preview failed"));
     } finally {
       setPreviewBusy(false);
     }
@@ -328,9 +335,7 @@ export default function LiveOrderTicket({ mode, disabled, onQueued }) {
         await api.setLiveMode("LIVE_TEST", true);
         armed = true;
       } catch (e) {
-        setQueueError(
-          `Could not arm LIVE_TEST: ${e?.response?.data?.detail ?? e?.message ?? "mode error"}`
-        );
+        setQueueError(`Could not arm LIVE_TEST: ${getApiErrorMessage(e, "mode error")}`);
         return;
       }
       // 2. create the approval (re-validates server-side)
@@ -345,7 +350,7 @@ export default function LiveOrderTicket({ mode, disabled, onQueued }) {
       placedOk = !!placed?.placed;
       if (placedOk) setPreviewResult(null); // clear so it can't double-fire
     } catch (e) {
-      setQueueError(e?.response?.data?.detail ?? e?.message ?? "Place failed");
+      setQueueError(getApiErrorMessage(e, "Place failed"));
     } finally {
       setShowPlaceConfirm(false);
       // Stand down: armed but nothing placed → revert to a safe mode (best-effort).

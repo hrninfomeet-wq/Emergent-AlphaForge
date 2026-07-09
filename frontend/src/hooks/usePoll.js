@@ -19,6 +19,11 @@ export function usePoll(fetcher, intervalMs, { enabled = true } = {}) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
+  // Epoch-ms of the last SUCCESSFUL fetch (null until the first success). Lets
+  // consumers show an "as of HH:MM:SS" and grey/badge a slice whose data has
+  // gone stale — a failing poll keeps the last-good `data`, so without this a
+  // frozen value is indistinguishable from a live one.
+  const [lastSuccess, setLastSuccess] = useState(null);
 
   const fetcherRef = useRef(fetcher);
   fetcherRef.current = fetcher;
@@ -30,6 +35,7 @@ export function usePoll(fetcher, intervalMs, { enabled = true } = {}) {
       if (mountedRef.current) {
         setData(result);
         setError(null);
+        setLastSuccess(Date.now());
       }
       return result;
     } catch (e) {
@@ -54,5 +60,5 @@ export function usePoll(fetcher, intervalMs, { enabled = true } = {}) {
     };
   }, [refetch, intervalMs, enabled]);
 
-  return { data, error, loading, refetch };
+  return { data, error, loading, lastSuccess, refetch };
 }

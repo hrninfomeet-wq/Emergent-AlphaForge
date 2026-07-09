@@ -44,9 +44,9 @@ export function LiveDataProvider({ children }) {
   // ── Slow broker group (15s) — one poll per endpoint for independent error
   //    isolation (a single failing endpoint never blanks the others). ──────────
   const { data: status, error: eStatus, refetch: rStatus } = usePoll(() => api.flattradeStatus(), SLOW_MS);
-  const { data: limits, error: eLimits, refetch: rLimits } = usePoll(() => api.liveBrokerLimits(), SLOW_MS);
-  const { data: positions, error: ePositions, refetch: rPositions } = usePoll(() => api.liveBrokerPositions(), SLOW_MS);
-  const { data: orders, error: eOrders, refetch: rOrders } = usePoll(() => api.liveBrokerOrders(), SLOW_MS);
+  const { data: limits, error: eLimits, lastSuccess: lsLimits, refetch: rLimits } = usePoll(() => api.liveBrokerLimits(), SLOW_MS);
+  const { data: positions, error: ePositions, lastSuccess: lsPositions, refetch: rPositions } = usePoll(() => api.liveBrokerPositions(), SLOW_MS);
+  const { data: orders, error: eOrders, lastSuccess: lsOrders, refetch: rOrders } = usePoll(() => api.liveBrokerOrders(), SLOW_MS);
   const { data: reconcile, error: eReconcile, refetch: rReconcile } = usePoll(() => api.liveBrokerReconcile(), SLOW_MS);
   const { data: armState, error: eArmState, refetch: rArmState } = usePoll(() => api.getArmState(), SLOW_MS);
   const { data: blotter, error: eBlotter, refetch: rBlotter } = usePoll(() => api.getLiveBlotter(), SLOW_MS);
@@ -114,6 +114,18 @@ export function LiveDataProvider({ children }) {
     [refetchSlow, rGuard, rSession, rGtt, rDeployLive, rDeployments, rFeedHealth, refetchAll],
   );
 
+  // Page-level health: which MONEY-relevant slices are currently erroring (their
+  // on-screen data is now stale/last-known). Drives the degraded banner so a
+  // frozen value is never silently shown as live.
+  const health = useMemo(() => {
+    const moneyErrors = {
+      status: eStatus, limits: eLimits, positions: ePositions, orders: eOrders,
+      reconcile: eReconcile, armState: eArmState, blotter: eBlotter,
+    };
+    const errorSlices = Object.keys(moneyErrors).filter((k) => moneyErrors[k]);
+    return { degraded: errorSlices.length > 0, errorSlices };
+  }, [eStatus, eLimits, ePositions, eOrders, eReconcile, eArmState, eBlotter]);
+
   const value = useMemo(
     () => ({
       // data (null until the first successful fetch — consumers treat null = loading)
@@ -127,13 +139,17 @@ export function LiveDataProvider({ children }) {
         guard: eGuard, session: eSession, gtt: eGtt, deployLive: eDeployLive, greeks: eGreeks,
         feedHealth: eFeedHealth,
       },
+      // epoch-ms of the last successful fetch for the money slices (null until first)
+      lastSuccess: { limits: lsLimits, positions: lsPositions, orders: lsOrders },
+      health,
       refetch,
     }),
     [
       status, limits, positions, orders, reconcile, armState, blotter, deployments,
       guard, session, gtt, greeks, feedHealth, deployLiveData,
       eStatus, eLimits, ePositions, eOrders, eReconcile, eArmState, eBlotter, eDeployments,
-      eGuard, eSession, eGtt, eDeployLive, eGreeks, eFeedHealth, refetch,
+      eGuard, eSession, eGtt, eDeployLive, eGreeks, eFeedHealth,
+      lsLimits, lsPositions, lsOrders, health, refetch,
     ],
   );
 

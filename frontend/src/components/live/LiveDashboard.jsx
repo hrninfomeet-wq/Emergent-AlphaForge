@@ -76,6 +76,23 @@ function signedINR(val) {
   return `${sign}${fmtINR(n)}`;
 }
 
+// "HH:MM:SS" of a last-success epoch-ms, or "—". Used for the money data's
+// as-of stamp so a frozen value never reads as live.
+function fmtAsOf(ms) {
+  if (!Number.isFinite(ms)) return "—";
+  try {
+    return new Date(ms).toLocaleTimeString();
+  } catch {
+    return "—";
+  }
+}
+
+// Human labels for the degraded-banner slice names.
+const SLICE_LABEL = {
+  status: "connection", limits: "cash/margin", positions: "positions",
+  orders: "orders", reconcile: "reconcile", armState: "arm-state", blotter: "blotter",
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Defensive array extraction — Noren returns an array; some wrappers nest it.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -274,11 +291,22 @@ function ReconcileChip({ reconcile }) {
   }
 
   const mismatches = reconcile.mismatches ?? [];
+  // Each mismatch is {type, detail:{tsym, netqty, norenordno, ...}} — join on the
+  // objects directly renders "[object Object]" exactly when the safety chip fires.
+  const fmtMismatch = (m) => {
+    const type = m?.type ?? "mismatch";
+    const tsym = m?.detail?.tsym ?? m?.detail?.norenordno ?? "";
+    const qty = m?.detail?.netqty ?? m?.detail?.qty;
+    return `${type}${tsym ? ` ${tsym}` : ""}${qty != null ? ` (${qty})` : ""}`;
+  };
   return (
-    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-amber-500/40 bg-amber-500/10 text-warning text-xs font-mono">
+    <span
+      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-amber-500/40 bg-amber-500/10 text-warning text-xs font-mono"
+      title={mismatches.length > 0 ? mismatches.map(fmtMismatch).join("\n") : undefined}
+    >
       <AlertTriangle className="w-3.5 h-3.5" />
       {mismatches.length > 0
-        ? `${mismatches.length} mismatch${mismatches.length !== 1 ? "es" : ""}: ${mismatches.slice(0, 3).join(", ")}${mismatches.length > 3 ? "…" : ""}`
+        ? `${mismatches.length} mismatch${mismatches.length !== 1 ? "es" : ""}: ${mismatches.slice(0, 3).map(fmtMismatch).join(", ")}${mismatches.length > 3 ? "…" : ""}`
         : "Reconciliation mismatch"}
     </span>
   );
@@ -339,7 +367,7 @@ export default function LiveDashboard() {
   // after an imperative action (OAuth redirect, stand-down).
   const {
     status, limits, positions, orders, reconcile, armState, blotter, guard, gtt, refetch,
-    feedHealth, deployments,
+    feedHealth, deployments, lastSuccess, health,
   } = useLiveData();
   const fetchAll = refetch.all;
 
@@ -448,6 +476,24 @@ export default function LiveDashboard() {
       {/* Single execution-state verdict (replaces the old hardcoded "L3" chip) */}
       <ExecutionStateStrip armState={armState} onStandDown={handleStandDown} standingDown={standDownBusy} />
 
+      {/* ── Degraded-data banner — a failing poll keeps the last-good value on
+          screen, so without this a FROZEN number looks live. Driven by the
+          provider's per-slice errors. ─────────────────────────────────────── */}
+      {health?.degraded && (
+        <div
+          className="text-sm font-mono px-3 py-2.5 rounded-lg border-2 border-amber-500 bg-amber-500/15 text-warning flex items-start gap-2"
+          data-testid="live-degraded-banner"
+        >
+          <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+          <span>
+            <span className="font-bold">Broker data may be STALE</span> — the last poll
+            failed for {(health.errorSlices || []).map((s) => SLICE_LABEL[s] || s).join(", ")}.
+            The values below are the LAST-KNOWN reading, not live. The kill switch still
+            works; reconnect / reload if this persists.
+          </span>
+        </div>
+      )}
+
       {authMsg && (
         <div
           className={`text-sm font-mono px-3 py-2 rounded border ${
@@ -537,6 +583,19 @@ export default function LiveDashboard() {
       <GreeksCard />
 
       {/* ── 2. Hero metric strip ────────────────────────────────────────── */}
+      <div className="flex items-center justify-between gap-2 px-0.5">
+        <span className="text-[10px] font-mono uppercase tracking-wider text-dimmer">
+          Broker account
+        </span>
+        <span
+          className={`text-[10px] font-mono ${health?.degraded ? "text-warning" : "text-dimmer"}`}
+          data-testid="live-hero-asof"
+          title="Time of the last successful broker read for these numbers"
+        >
+          as of {fmtAsOf(lastSuccess?.positions ?? lastSuccess?.limits)}
+          {health?.degraded ? " · STALE" : ""}
+        </span>
+      </div>
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
         <MetricCard
           label="Available Cash"

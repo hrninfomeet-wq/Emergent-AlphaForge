@@ -3,6 +3,7 @@ import { Loader2, XOctagon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { api } from "@/lib/api";
+import { getApiErrorMessage } from "@/lib/apiError";
 import { useLiveData } from "@/components/live/LiveDataProvider";
 
 /**
@@ -20,7 +21,6 @@ import { useLiveData } from "@/components/live/LiveDataProvider";
  */
 
 const TERMINAL_ORDER = new Set(["COMPLETE", "REJECTED", "REJECT", "CANCELED", "CANCELLED"]);
-const SESSION_ACTIVE = ["armed", "filled", "open"];
 
 function asRows(raw) {
   if (Array.isArray(raw)) return raw;
@@ -111,18 +111,21 @@ function LegReport({ panic }) {
 }
 
 export default function KillSwitchPanel() {
-  const { positions, orders, session, refetch } = useLiveData();
+  const { positions, orders, errors, refetch } = useLiveData();
   const openPositions = asRows(positions).filter(isOpenPosition);
   const workingOrders = asRows(orders).filter(isWorkingOrder);
-  const sessionActive = SESSION_ACTIVE.includes(session?.status);
+
+  // Broker state is UNKNOWN when a book poll has never loaded or is erroring. The
+  // kill switch must be reachable EXACTLY then (no token, restart-before-OAuth,
+  // failed poll) — the flatten endpoint reads its OWN books, so it works even when
+  // the dashboard can't. This panel therefore ALWAYS renders (never self-unmounts).
+  const brokerUnknown =
+    positions == null || orders == null || !!errors?.positions || !!errors?.orders;
 
   const [confirming, setConfirming] = useState(false);
   const [confirmText, setConfirmText] = useState("");
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
-
-  const visible = openPositions.length > 0 || workingOrders.length > 0 || sessionActive;
-  if (!visible && !result) return null;
 
   const fire = async () => {
     if (confirmText !== "KILL" || busy) return;
@@ -131,7 +134,7 @@ export default function KillSwitchPanel() {
       const res = await api.liveKillSwitch();
       setResult(res);
     } catch (e) {
-      setResult({ error: e?.response?.data?.detail ?? e?.message ?? "Kill switch failed." });
+      setResult({ error: getApiErrorMessage(e, "Kill switch failed.") });
     } finally {
       setBusy(false);
       setConfirming(false);
@@ -150,12 +153,20 @@ export default function KillSwitchPanel() {
         <span className="text-[10px] text-dimmer font-mono">
           cancels all working orders · flattens every position (marketable LIMIT, re-priced until filled) · sweeps GTT/OCO · reverts to OFFLINE
         </span>
-        <span className="ml-auto text-[10px] font-mono text-dim">
-          {openPositions.length} open · {workingOrders.length} working
+        <span className="ml-auto text-[10px] font-mono text-dim" data-testid="kill-switch-counts">
+          {brokerUnknown
+            ? "broker state UNKNOWN"
+            : `${openPositions.length} open · ${workingOrders.length} working`}
         </span>
       </div>
 
       <div className="px-4 py-3 space-y-3">
+        {brokerUnknown && (
+          <div className="text-[11px] font-mono text-warning" data-testid="kill-switch-degraded">
+            Broker state UNKNOWN (no/failed book read) — the kill will still attempt to
+            flatten whatever the broker holds (it reads the broker directly).
+          </div>
+        )}
         {!confirming ? (
           <Button
             variant="outline"
@@ -170,7 +181,9 @@ export default function KillSwitchPanel() {
         ) : (
           <div className="rounded-md border-2 border-danger bg-danger/10 p-2 space-y-2">
             <div className="text-xs font-semibold text-danger">
-              Final confirm — this cancels {workingOrders.length} working order(s) and flattens {openPositions.length} position(s) with REAL exit orders.
+              {brokerUnknown
+                ? "Final confirm — broker state is UNKNOWN; this will attempt to cancel every working order and flatten every position the broker holds, with REAL exit orders."
+                : `Final confirm — this cancels ${workingOrders.length} working order(s) and flattens ${openPositions.length} position(s) with REAL exit orders.`}
             </div>
             <div className="flex items-center gap-2">
               <Input
@@ -204,18 +217,26 @@ export default function KillSwitchPanel() {
             {String(result.error)}
           </div>
         )}
-        {result && !result.error && (
+        {result?.already_running && (
+          <div className="text-xs font-mono px-2 py-1 rounded border border-amber-500/40 bg-amber-500/10 text-warning">
+            {String(result.message || "Kill switch already in progress.")}
+          </div>
+        )}
+        {result && !result.error && !result.already_running && (
           <div className="space-y-2">
             <div className={`text-xs font-mono px-2 py-1 rounded border ${
               result?.panic?.all_flat === true
                 ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
                 : "border-amber-500/40 bg-amber-500/10 text-warning"
             }`}>
-              {result.message || "Kill switch executed."}
+              {String(result.message || "Kill switch executed.")}
             </div>
             {result.connected === false ? (
+              // A read error (expired token) is UNKNOWN, not a benign "not connected".
               <div className="text-[11px] font-mono text-danger">
-                Broker NOT connected — nothing was transmitted (plan only).
+                {result.read_error
+                  ? "Broker read FAILED — positions UNKNOWN. New entries are blocked; reconnect Flattrade and re-fire to flatten."
+                  : "Broker NOT connected — nothing was transmitted (plan only)."}
               </div>
             ) : (
               <LegReport panic={result.panic} />
