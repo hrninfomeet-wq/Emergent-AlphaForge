@@ -1190,6 +1190,22 @@ class _Clock:
         self.t = self.t + timedelta(seconds=float(secs))
 
 
+class _RepriceByTsym:
+    """reprice_fn recorder that returns `unpriced` for a given set of tsyms and a
+    successful exit_order for the rest (K-budget fairness test)."""
+
+    def __init__(self, unpriced_tsyms):
+        self.calls = []
+        self._unpriced = set(unpriced_tsyms)
+
+    async def reprice_fn(self, client, position, *, band_pct, prev_ordno, prev_qty, reason):
+        self.calls.append({"tsym": position["tsym"], "band_pct": band_pct})
+        if position["tsym"] in self._unpriced:
+            return {"squared": False, "reason": "unpriced"}
+        return {"squared": True, "via": "exit_order",
+                "norenordno": f"RP_{position['tsym']}", "qty": prev_qty}
+
+
 class _CancelRecClient(_OcoClient):
     """_OcoClient that ALSO records cancel_order calls (finalize orphan-cancel test)."""
 
@@ -1305,9 +1321,11 @@ class TestLayer2Reprice:
         assert len(rp.calls) == 2 and rp.calls[1]["band_pct"] == 2.0
         assert reg.get("ORD1")["square_band_idx"] == 2         # advanced on the success
 
-    def test_unpriced_reprice_is_held_not_stamped(self):
-        """unpriced (no broker call — bad lp) does NOT stamp ts or count reprices; the
-        entry may re-attempt next cycle (no interval burned)."""
+    def test_unpriced_reprice_stamps_ts_but_not_counted(self):
+        """unpriced (primitive placed nothing — bad lp/quote) is NOT counted as a
+        re-price and does NOT advance the band, but DOES stamp square_last_ts (so it
+        rotates fairly through the K-budget instead of monopolizing it) and surfaces a
+        signal."""
         reg = LiveMonitorRegistry()
         _registered(reg, entry=250.0, stop_pct=30)
         client = _FakeClient([_pos(netqty=20, lp=170.0)])
@@ -1318,9 +1336,10 @@ class TestLayer2Reprice:
         t0 = reg.get("ORD1")["square_last_ts"]
         clock.advance(5.0); run(g._cycle())                   # unpriced
         assert len(rp.calls) == 1
-        assert reg.get("ORD1")["square_last_ts"] == t0         # ts UNCHANGED
+        assert reg.get("ORD1")["square_last_ts"] != t0         # ts STAMPED (fair rotation)
         assert reg.get("ORD1")["square_band_idx"] == 1         # band unchanged
-        assert g.status()["reprices"] == 0                     # not counted
+        assert g.status()["reprices"] == 0                     # not counted as a placement
+        assert "unpriced" in (g.status()["last_error"] or "")  # surfaced, not silent
 
     def test_already_flat_reprice_no_band_advance_then_finalizes(self):
         """already_flat at re-price (a fill in the cancel window) → band NOT advanced;
@@ -1457,3 +1476,28 @@ class TestLayer2Reprice:
         run(g._cycle())
         assert len(reg) == 0 and calls == ["stop"]
         assert client._orders[e["square_ordno"]]["status"] == "CANCELED"  # resting exit cleaned up
+
+    def test_unpriced_legs_do_not_starve_priceable_legs(self):
+        """BUG-2 regression: persistently-`unpriced` squaring legs must NOT monopolize
+        the per-cycle K-budget. If `unpriced` never stamped square_last_ts, the two
+        unpriced legs would keep the oldest ts forever and be re-selected every cycle,
+        starving the priceable leg at the Layer-1 1% band on a blown-through market."""
+        reg = LiveMonitorRegistry()
+        for k in ["U0", "U1", "P0"]:
+            reg.register(key=k, tsym=k, exch="BFO", qty=20, prd="I",
+                         entry_price=250.0, state=build_monitor_state(250.0, stop_pct=30))
+        book = [{"tsym": t, "exch": "BFO", "netqty": "20", "lp": "170.0", "urmtom": "0"}
+                for t in ["U0", "U1", "P0"]]
+        client = _FakeClient(book)
+        rp = _RepriceByTsym({"U0", "U1"})            # these two are always unpriced
+        sq, clock = _SquareRec(), _Clock(_NOW)
+        g = _l2_guard(reg, client, sq, rp, clock)    # K=2
+        run(g._cycle())                              # 3 first squares
+        priced = False
+        for _ in range(4):
+            clock.advance(5.0)
+            run(g._cycle())
+            if any(c["tsym"] == "P0" for c in rp.calls):
+                priced = True
+                break
+        assert priced, "priceable leg P0 was starved by unpriced legs monopolizing the K-budget"

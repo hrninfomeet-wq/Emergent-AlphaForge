@@ -654,8 +654,16 @@ async def reprice_exit_leg(
     filled: Optional[int] = None
     if prev_ordno:
         row = await _order_row(client, prev_ordno)
-        if row is not None:
-            filled = _parse_netqty(row.get("fillshares"))
+        # The prior exit MUST be readable AND TERMINAL before we place a new one.
+        # ``_cancel_all_working_for_scrip`` reports ``cleared`` OPTIMISTICALLY when its
+        # confirm re-fetch can't verify (order_book raises / returns [] on a broker
+        # Not_Ok blip), so a resting prior exit can survive a "cleared". Trusting only
+        # ``cleared`` + fillshares would then STACK a second resting SELL on top of the
+        # live prior one → a naked options short. Require terminal status here (mirrors
+        # kill_switch.panic_squareoff_verified); else place NOTHING (cancel_unconfirmed).
+        if row is None or _normalize_status(row.get("status")) not in TERMINAL:
+            return {"squared": False, "reason": "cancel_unconfirmed"}
+        filled = _parse_netqty(row.get("fillshares"))
 
     try:
         pbook = await client.position_book()

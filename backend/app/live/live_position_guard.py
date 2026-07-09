@@ -393,6 +393,10 @@ class LivePositionGuard:
             # cycle — global per-cycle budget so a synchronized basket can't burst past
             # the order rate limit. Empty on an UNKNOWN book (never re-price on a bad read).
             reprice_ids = self._select_reprice_ids(now, by_tsym, book_is_known)
+            # Snapshot last_error so the end-of-cycle "clean cycle → clear stale error"
+            # reset does NOT clobber a signal a re-price / finalize sets THIS cycle
+            # (e.g. exit exhausted / rejected / unpriced — never a silent stuck exit).
+            _err_at_start = self._stats.get("last_error")
 
             for entry in self._registry.snapshot():
                 pos = by_tsym.get(entry["tsym"])
@@ -482,7 +486,11 @@ class LivePositionGuard:
 
             self._stats["cycles"] += 1
             self._stats["last_run_at"] = datetime.now(timezone.utc).isoformat()
-            self._stats["last_error"] = None
+            # Clear a STALE error only when nothing this cycle set a new one — so a
+            # re-price / finalize signal (exhausted / rejected / unpriced) survives to
+            # be surfaced in status(), rather than being wiped by the clean-cycle reset.
+            if self._stats.get("last_error") == _err_at_start:
+                self._stats["last_error"] = None
         except Exception as exc:
             self._stats["last_error"] = str(exc)[:240]
             log.exception("live position guard cycle failed: %s", exc)
@@ -592,15 +600,21 @@ class LivePositionGuard:
         reason = result.get("reason")
         via = result.get("via")
 
-        # unpriced == no broker call was made, the prior exit still rests → held.
-        # Do NOT stamp (so it re-attempts freely) and do NOT count.
+        # Stamp square_last_ts on EVERY attempt (not just placements). This is what
+        # makes the interval a true rate gate AND — critically — keeps an
+        # unpriceable-yet-open leg from monopolizing the oldest-first K-budget and
+        # STARVING priceable legs (a leg whose ts never advanced would be re-selected
+        # every cycle). An attempt was made this cycle either way.
+        entry["square_last_ts"] = now
+
+        # unpriced == the primitive placed NOTHING (no usable anchor — illiquid strike /
+        # quote outage); the prior exit still rests. Surface it (so a leg that can't
+        # escalate is not silent) and do NOT count it as a re-price; the next interval
+        # re-attempts.
         if reason == "unpriced":
+            self._stats["last_error"] = f'{entry["tsym"]}: reprice unpriced (no quote) — retrying'
             return
 
-        # A real broker attempt happened → stamp so the interval is a true rate gate,
-        # and record it. (Stamp-on-attempt, not stamp-on-success — otherwise a
-        # repeatedly-failing re-price would re-place every cycle and breach 40/min.)
-        entry["square_last_ts"] = now
         self._stats["reprices"] = self._stats.get("reprices", 0) + 1
         exits.append({"id": entry["id"], "tsym": entry["tsym"],
                       "reason": "reprice", "band_pct": band, "result": result})

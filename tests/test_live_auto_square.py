@@ -1223,6 +1223,26 @@ class _CancelNoop(MockNoren):
         return OrderResult(ok=True, norenordno=ordno)
 
 
+class _BlipConfirmClient(MockNoren):
+    """order_book returns [] on the CONFIRM re-fetch (a throttled-broker Not_Ok blip →
+    _cancel_all_working_for_scrip optimistically reports cleared) but the prior order
+    RECOVERS visible-OPEN on the subsequent _order_row read. cancel_order does not mark
+    the order terminal (the cancel didn't take). Exercises the BUG-1 double-sell race."""
+
+    def __init__(self, prior):
+        super().__init__()
+        self._prior = prior
+        self._ob = 0
+
+    async def cancel_order(self, ordno):
+        return OrderResult(ok=True, norenordno=ordno)
+
+    async def order_book(self):
+        self._ob += 1
+        # 1 = discovery, 2 = confirm pass (BLIP → []), 3+ = _order_row (recover).
+        return [] if self._ob == 2 else [dict(self._prior)]
+
+
 class TestRepriceExitLeg:
     def _client(self, *, prev=None, book=None, quote=None, cls=MockNoren):
         cl = cls()
@@ -1315,3 +1335,29 @@ class TestRepriceExitLeg:
                           book=[{"tsym": _RTSYM, "exch": "NFO", "netqty": "20", "lp": "170"}], cls=_AlwaysReject)
         r = run(reprice_exit_leg(cl, self._pos(), band_pct=2.0, prev_ordno="PREV1", prev_qty=20, reason="stop_reprice"))
         assert r["squared"] is False and len(r["failures"]) == 2
+
+    def test_double_sell_guard_when_cancel_confirm_blips(self):
+        """BUG-1 regression: the cancel-confirm order_book BLIPS ([] on the confirm read)
+        so _cancel_all_working_for_scrip optimistically reports cleared, but the prior
+        exit recovers OPEN on the next read. The primitive MUST require the prior order
+        be TERMINAL before placing → cancel_unconfirmed, NEVER stack a 2nd resting SELL
+        (a naked options short)."""
+        prior = {"norenordno": "PREV1", "tsym": _RTSYM, "status": "OPEN", "fillshares": "0", "qty": 20}
+        cl = _BlipConfirmClient(prior)
+        cl.set_position_book([{"tsym": _RTSYM, "exch": "NFO", "netqty": "20", "lp": "170"}])
+        cl.set_quotes({"lp": "170", "bp1": "168", "lc": "150"})
+        r = run(reprice_exit_leg(cl, self._pos(), band_pct=2.0, prev_ordno="PREV1", prev_qty=20, reason="stop_reprice"))
+        assert r["squared"] is False and r["reason"] == "cancel_unconfirmed"
+        assert len(cl._orders) == 0, "NO new exit may be placed while the prior may still rest"
+
+    def test_short_position_reprice_is_a_buy(self):
+        """Direction invariant: a SHORT position (netqty<0) re-prices as a BUY-to-close,
+        ask-anchored (sp1, +band, uc-clamped)."""
+        prev = {"norenordno": "PREV1", "tsym": _RTSYM, "status": "OPEN", "fillshares": "0", "qty": 20}
+        cl = self._client(prev=prev, book=[{"tsym": _RTSYM, "exch": "NFO", "netqty": "-20", "lp": "170"}])
+        pos = {"tsym": _RTSYM, "exch": "NFO", "netqty": "-20", "lp": "170", "prd": "I", "token": "999"}
+        r = run(reprice_exit_leg(cl, pos, band_pct=2.0, prev_ordno="PREV1", prev_qty=20, reason="x_reprice"))
+        assert r["squared"] is True and r["via"] == "exit_order" and r["qty"] == 20
+        placed = self._placed(cl)
+        assert len(placed) == 1 and placed[0]["trantype"] == "B"  # BUY to close a short
+        assert 172.0 <= placed[0]["prc"] <= 190.0                 # ask-anchored, uc-clamped
