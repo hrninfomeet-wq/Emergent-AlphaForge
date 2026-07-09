@@ -138,8 +138,11 @@ async def strategy_pipeline(strategy_id: str):
     optimizations = await _count_latest(db.optimization_jobs, {"strategy_id": strategy_id}, "created_at")
     presets = await _count_latest(db.presets, {"config.strategy_id": strategy_id}, "saved_at")
     deployments = await _count_latest(db.strategy_deployments, {"strategy_id": strategy_id}, "created_at")
+    # deployment.mode is stored lower-case ("paper" / "shadow") — match case-insensitively.
     paper = await _count_latest(
-        db.strategy_deployments, {"strategy_id": strategy_id, "mode": "PAPER"}, "created_at")
+        db.strategy_deployments,
+        {"strategy_id": strategy_id, "mode": {"$regex": "^paper$", "$options": "i"}},
+        "created_at")
     # "has been armed for live at least once" (risk.live is written on arm, retained
     # on disarm) vs currently-armed (transient, expires 15:00 IST).
     live_ever = await db.strategy_deployments.count_documents(

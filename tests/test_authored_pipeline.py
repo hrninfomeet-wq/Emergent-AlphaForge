@@ -81,10 +81,15 @@ def _get(d, path):
 
 
 def _match(d, q):
+    import re
     for k, v in q.items():
         actual = _get(d, k)
         if isinstance(v, dict) and "$exists" in v:
             if (actual is not None) != v["$exists"]:
+                return False
+        elif isinstance(v, dict) and "$regex" in v:
+            flags = re.IGNORECASE if "i" in v.get("$options", "") else 0
+            if actual is None or not re.search(v["$regex"], str(actual), flags):
                 return False
         elif actual != v:
             return False
@@ -121,9 +126,10 @@ def test_pipeline_aggregates_stages():
         optimization_jobs=[{"strategy_id": sid, "created_at": "2026-07-03"}],
         presets=[{"config": {"strategy_id": sid}, "saved_at": "2026-07-06"}],
         strategy_deployments=[
-            {"strategy_id": sid, "mode": "PAPER", "created_at": "2026-07-07"},
-            {"strategy_id": sid, "mode": "PAPER", "created_at": "2026-07-08",
+            {"strategy_id": sid, "mode": "paper", "created_at": "2026-07-07"},
+            {"strategy_id": sid, "mode": "paper", "created_at": "2026-07-08",
              "risk": {"live": {"armed": False}}},   # armed once, now disarmed
+            {"strategy_id": sid, "mode": "shadow", "created_at": "2026-07-06"},
         ],
     )
     reg = types.SimpleNamespace(get=lambda s: object(), origin_of=lambda s: None)
@@ -133,7 +139,8 @@ def test_pipeline_aggregates_stages():
     assert out["backtests"]["latest"] == "2026-07-05"
     assert out["optimizations"]["count"] == 1
     assert out["presets"]["count"] == 1
-    assert out["deployments"]["count"] == 2
+    assert out["deployments"]["count"] == 3
+    assert out["paper_deployments"]["count"] == 2   # lower-case "paper", NOT "shadow"
     assert out["live_ever_count"] == 1 and out["live_armed_count"] == 0
     assert out["stages"] == {
         "authored": True, "backtested": True, "optimized": True,
