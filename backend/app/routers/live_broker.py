@@ -41,7 +41,6 @@ CHOKEPOINT CLASSIFICATION (grep-verifiable):
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 import re
@@ -325,39 +324,45 @@ def _make_arm(
     protected by the software guard's premium stop and the guard's 15:00 IST EOD
     square (a manual position is no longer EOD-exempt), plus manual Square / Kill.
 
-    Registration is best-effort (a registry failure is logged, never aborts the arm
-    — manual Square + the EOD square still protect). The session record is mandatory.
+    Registration is now MANDATORY. Both replacement backstops (the guard stop and
+    the EOD square) iterate the guard registry, so an unregistered position would be
+    protected by NEITHER — with the timer gone there is no longer a backstop that
+    protects an unregistered fill. So a registration failure PROPAGATES (matching the
+    deployed ``arm_for``), and the executor's ``_abort_protect`` squares + halts
+    rather than leaving a real position live-and-unguarded. The session record is
+    likewise mandatory.
     """
     levels = levels or {}
 
     async def _arm(intent: Any, norenordno: str) -> None:
         now = _utcnow_iso()
 
-        # --- Register with the software guard (replaces the doomed resting SL) ---
-        try:
-            stop_pct = levels.get("stop_pct")
-            if stop_pct is None and levels.get("stop_pts") is None:
-                stop_pct = _GUARD_DEFAULT_STOP_PCT
-            state = build_monitor_state(
-                float(ref_ltp),
-                stop_pct=stop_pct,
-                stop_pts=levels.get("stop_pts"),
-                target_pct=levels.get("target_pct"),
-                target_pts=levels.get("target_pts"),
-                trail=levels.get("trail"),
-            )
-            _get_live_registry().register(
-                key=norenordno,
-                tsym=intent.tsym,
-                exch=intent.exch,
-                qty=intent.qty,
-                prd=intent.prd,
-                entry_price=float(ref_ltp),
-                state=state,
-            )
-            log.info("arm: registered %s with software guard (stop_pct=%s)", intent.tsym, stop_pct)
-        except Exception as exc:
-            log.warning("arm: software-guard registration failed: %s (guard stop + EOD still protect)", exc)
+        # --- Register with the software guard (replaces the doomed resting SL).
+        # MANDATORY: any failure PROPAGATES → executor _abort_protect squares the
+        # fill. Do NOT swallow — the guard stop + EOD square both need the registry
+        # entry, and the old ungated 10-min timer that used to protect an unregistered
+        # fill is gone. ---
+        stop_pct = levels.get("stop_pct")
+        if stop_pct is None and levels.get("stop_pts") is None:
+            stop_pct = _GUARD_DEFAULT_STOP_PCT
+        state = build_monitor_state(
+            float(ref_ltp),
+            stop_pct=stop_pct,
+            stop_pts=levels.get("stop_pts"),
+            target_pct=levels.get("target_pct"),
+            target_pts=levels.get("target_pts"),
+            trail=levels.get("trail"),
+        )
+        _get_live_registry().register(
+            key=norenordno,
+            tsym=intent.tsym,
+            exch=intent.exch,
+            qty=intent.qty,
+            prd=intent.prd,
+            entry_price=float(ref_ltp),
+            state=state,
+        )
+        log.info("arm: registered %s with software guard (stop_pct=%s)", intent.tsym, stop_pct)
 
         # --- Record session (hard failure raises — executor will abort-protect).
         # sl_norenordno is None: no resting broker SL is placed anymore. ---
@@ -763,8 +768,6 @@ async def live_broker_symbol_resolve(
         "expiry_date": expiry,
         "lot_size": lot_size,
     }
-
-    import asyncio
 
     try:
         underlying_upper = underlying.strip().upper()

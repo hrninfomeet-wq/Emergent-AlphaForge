@@ -172,7 +172,7 @@ class TestGuardCycle:
         run(g._cycle())
         assert len(rec.squared) == 1
         # Broker confirms flat → entry dropped.
-        client.set([])
+        client.set([_pos(netqty=0, lp=170.0)])
         run(g._cycle())
         assert len(r) == 0
 
@@ -590,7 +590,7 @@ class TestSpotMirrorAndTimeStop:
         run(g._cycle())
         assert slow.calls == 1
         # once the broker confirms flat, the entry is dropped
-        client.set([])
+        client.set([_pos(netqty=0, lp=170.0)])
         run(g._cycle())
         assert len(r) == 0
 
@@ -753,7 +753,7 @@ class TestOnCloseHook:
         assert calls == []
         assert len(reg) == 1 and reg.get("ORD1")["squaring"] is True
         # Cycle 2: broker confirms flat → on_close journals the close ONCE.
-        client.set([])
+        client.set([_pos(netqty=0, lp=170.0)])
         run(guard._cycle())
         assert len(calls) == 1
         assert calls[0]["exit_price"] == 170.0                # the last broker mark (cycle 1)
@@ -770,7 +770,7 @@ class TestOnCloseHook:
                                        now_fn=lambda: _NOW, raise_in_close=True)
         run(guard._cycle())                                    # issue (still open)
         assert rec.squared and rec.squared[0][0] == _TSYM      # square happened
-        client.set([])
+        client.set([_pos(netqty=0, lp=170.0)])
         run(guard._cycle())                                    # confirm-flat → on_close raises
         assert len(calls) == 1                                 # hook fired
         assert len(reg) == 0                                   # still dropped despite the raise
@@ -790,7 +790,7 @@ class TestOnCloseHook:
         assert calls == []
         assert reg.get("ORDX")["squaring"] is True
         # Cycle 2: broker confirms flat → on_close fires with the EOD reason.
-        client.set([])
+        client.set([_pos(netqty=0, lp=170.0)])
         run(guard._cycle())
         assert len(calls) == 1
         assert calls[0]["reason"] == "eod_square"
@@ -864,7 +864,7 @@ class TestOcoCancelAfterRealFill:
         assert reg.get("ORD1")["squaring"] is True
         # Cycle 2: the broker now reports the position flat → confirmed-flat →
         # cancel the OCO and drop the entry.
-        client.set([])
+        client.set([_pos(netqty=0, lp=170.0)])
         run(guard._cycle())
         assert client.cancel_oco_calls == ["OCO1"]            # OCO cancelled on confirmed-flat
         assert len(reg) == 0                                  # entry dropped
@@ -881,7 +881,7 @@ class TestOcoCancelAfterRealFill:
         run(guard._cycle())                                   # issue (still open)
         assert sq.squared and sq.squared[0][0] == _TSYM       # square ran
         assert client.cancel_oco_calls == []                  # not yet — still open
-        client.set([])                                        # broker confirms flat
+        client.set([_pos(netqty=0, lp=170.0)])                                        # broker confirms flat
         run(guard._cycle())
         assert client.cancel_oco_calls == ["OCO1"]            # OCO cancelled
 
@@ -904,7 +904,7 @@ class TestOcoCancelAfterRealFill:
                                   now_fn=lambda: _NOW)
         run(guard._cycle())                                       # seen_filled, no square
         assert rec.squared == [] and reg.get("ORD1")["squaring"] is False
-        client.set([])                                            # closed elsewhere → flat
+        client.set([_pos(netqty=0, lp=170.0)])                                            # closed elsewhere → flat
         run(guard._cycle())
         assert client.cancel_oco_calls == ["OCO1"]               # orphan OCO cancelled
         assert calls == []                                       # NOT journaled (not squaring)
@@ -938,7 +938,7 @@ class TestOcoCancelAfterRealFill:
                                   square_fn=sq.square_fn, now_fn=lambda: _NOW)
         run(guard._cycle())
         assert client.cancel_oco_calls == []                  # still open → not yet
-        client.set([])
+        client.set([_pos(netqty=0, lp=170.0)])
         run(guard._cycle())
         assert client.cancel_oco_calls == ["OCO1"]
 
@@ -951,7 +951,7 @@ class TestOcoCancelAfterRealFill:
         sq = _ScriptedSquare({"squared": False, "failures": ["rejected twice"]},
                              client=client)
         guard = LivePositionGuard(registry=reg, client_factory=lambda: _aw(client),
-                                  square_fn=sq.square_fn)
+                                  square_fn=sq.square_fn, now_fn=lambda: _NOW)
         run(guard._cycle())
         assert client.cancel_oco_calls == []
 
@@ -963,7 +963,7 @@ class TestOcoCancelAfterRealFill:
         client = _OcoClient([_pos(netqty=20, lp=170.0)])
         sq = _ScriptedSquare({"squared": True}, client=client)
         guard = LivePositionGuard(registry=reg, client_factory=lambda: _aw(client),
-                                  square_fn=sq.square_fn)
+                                  square_fn=sq.square_fn, now_fn=lambda: _NOW)
         run(guard._cycle())
         assert sq.squared                                     # square ran
         assert client.cancel_oco_calls == []                  # nothing to cancel
@@ -976,7 +976,7 @@ class TestOcoCancelAfterRealFill:
         client = _FakeClient([_pos(netqty=20, lp=170.0)])     # no cancel_oco attr
         sq = _ScriptedSquare({"squared": True})
         guard = LivePositionGuard(registry=reg, client_factory=lambda: _aw(client),
-                                  square_fn=sq.square_fn)
+                                  square_fn=sq.square_fn, now_fn=lambda: _NOW)
         exits = run(guard._cycle())                           # must not raise
         assert sq.squared and len(exits) == 1
 
@@ -996,10 +996,84 @@ class TestOcoCancelAfterRealFill:
         exits = run(guard._cycle())                           # issue (still open)
         assert len(exits) == 1                                # square issue recorded
         assert client.cancel_oco_calls == []                  # not on place-accept
-        client.set([])
+        client.set([_pos(netqty=0, lp=170.0)])
         run(guard._cycle())                                   # confirm-flat → cancel raises
         assert client.cancel_oco_calls == ["OCO1"]            # attempted
         assert len(reg) == 0                                  # still dropped despite the raise
+
+
+# ---------------------------------------------------------------------------
+# Confirmed-flat requires a REAL broker read — an empty/garbage position_book (a
+# broker Not_Ok hiccup returns [], NOT a real flat) or an unparseable netqty must
+# NEVER finalize a guard square (cancel OCO / journal CLOSED / drop). Mirrors the
+# reboot_reconcile "empty-book false-close hole" guard and kill_switch._parse_netqty
+# ("NEVER coerce an unparseable netqty to flat").
+# ---------------------------------------------------------------------------
+class TestConfirmedFlatRequiresRealBook:
+    def _garbage_row(self, netqty):
+        return {"tsym": _TSYM, "exch": "BFO", "netqty": netqty, "lp": "1.0", "urmtom": "0"}
+
+    def test_transient_empty_book_does_not_finalize_open_squaring_position(self):
+        """A single empty position_book (broker Not_Ok → []) must NOT be read as
+        flat: the OCO stays, no false CLOSE is journaled, the entry stays watched."""
+        reg = LiveMonitorRegistry()
+        _registered_with_oco(reg, oco_al_id="OCO1")
+        client = _OcoClient([_pos(netqty=20, lp=170.0)])      # breach → squares, still open
+        calls = []
+
+        async def on_close(entry, exit_price, reason, result):
+            calls.append(reason)
+
+        sq = _ScriptedSquare({"squared": True}, client=client)
+        guard = LivePositionGuard(registry=reg, client_factory=lambda: _aw(client),
+                                  square_fn=sq.square_fn, on_close=on_close,
+                                  now_fn=lambda: _NOW)
+        run(guard._cycle())                                   # issue → squaring, open
+        assert reg.get("ORD1")["squaring"] is True
+        client.set([])                                        # broker hiccup — NOT a real flat
+        run(guard._cycle())
+        assert client.cancel_oco_calls == []                 # OCO must stay (position may be open!)
+        assert calls == []                                   # no false CLOSED journaled
+        assert len(reg) == 1                                 # entry kept + still watched
+        # A REAL flat (present netqty==0 row in a non-empty book) DOES finalize.
+        client.set([_pos(netqty=0, lp=170.0)])
+        run(guard._cycle())
+        assert client.cancel_oco_calls == ["OCO1"]
+        assert calls == ["stop"]
+        assert len(reg) == 0
+
+    def test_unparseable_netqty_does_not_finalize(self):
+        """A present row whose netqty can't be parsed ('nan'/'abc') is UNKNOWN, not
+        flat — never finalize on it."""
+        reg = LiveMonitorRegistry()
+        _registered_with_oco(reg, oco_al_id="OCO1")
+        client = _OcoClient([_pos(netqty=20, lp=170.0)])
+        sq = _ScriptedSquare({"squared": True}, client=client)
+        guard = LivePositionGuard(registry=reg, client_factory=lambda: _aw(client),
+                                  square_fn=sq.square_fn, now_fn=lambda: _NOW)
+        run(guard._cycle())                                   # issue → squaring
+        client.set([self._garbage_row("nan")])
+        run(guard._cycle())
+        assert client.cancel_oco_calls == []                 # unparseable ≠ flat → hold
+        assert len(reg) == 1
+        assert reg.get("ORD1")["squaring"] is True
+
+    def test_absent_from_nonempty_book_is_a_confirmed_flat(self):
+        """A tsym ABSENT from a NON-empty book (a complete book that no longer lists
+        it) is a genuine flat and DOES finalize — only an empty/garbage book is held."""
+        reg = LiveMonitorRegistry()
+        _registered_with_oco(reg, oco_al_id="OCO1")
+        client = _OcoClient([_pos(netqty=20, lp=170.0)])
+        sq = _ScriptedSquare({"squared": True}, client=client)
+        guard = LivePositionGuard(registry=reg, client_factory=lambda: _aw(client),
+                                  square_fn=sq.square_fn, now_fn=lambda: _NOW)
+        run(guard._cycle())                                   # issue → squaring
+        # Book is non-empty (some OTHER scrip) but our tsym is gone → confirmed flat.
+        client.set([{"tsym": "SOMEOTHER", "exch": "BFO", "netqty": "50",
+                     "lp": "10.0", "urmtom": "0"}])
+        run(guard._cycle())
+        assert client.cancel_oco_calls == ["OCO1"]
+        assert len(reg) == 0
 
 
 # ---------------------------------------------------------------------------

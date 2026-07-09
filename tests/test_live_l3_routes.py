@@ -967,6 +967,20 @@ def test_chokepoint_grep_entry_only_via_executor():
     assert "panic_squareoff" in source
 
 
+def test_manual_10min_timer_symbols_are_removed():
+    """The manual LIVE_TEST 10-minute auto-square timer is gone; its functions and
+    constants must NOT reappear (a re-introduction would silently re-arm the removed
+    backstop). Positive guard against regression-by-resurrection."""
+    import app.live.auto_square as _auto_square
+    for name in ("_schedule_auto_square", "_auto_square_task", "_check_and_square_if_due",
+                 "_TIMER_CHECK_INTERVAL"):
+        assert not hasattr(_routes, name), f"{name} must stay removed from live_broker"
+    for name in ("deadline_iso", "is_due", "SQUARE_HORIZON_SEC", "_to_utc"):
+        assert not hasattr(_auto_square, name), f"{name} must stay removed from auto_square"
+    # SessionStore no longer carries the deadline countdown.
+    assert not hasattr(SessionStore, "remaining_secs")
+
+
 # ===========================================================================
 # FIX 1 — LONG-ONLY GUARD AT THE ROUTE: _PlaceBody.side constrained to
 # Literal["B"]; side="S" must be 422 (Pydantic validation) or blocked by

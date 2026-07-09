@@ -312,6 +312,14 @@ class LivePositionGuard:
                 return exits
 
             book = await client.position_book()
+            # A NON-EMPTY list is a KNOWN book. An empty list / non-list is UNKNOWN
+            # — Flattrade's position_book() returns [] on ANY broker Not_Ok (session
+            # expiry, throttle, no-data), NOT only a genuinely flat account, and it
+            # returns (does not raise) so the cycle's try/except can't catch it. We
+            # must NEVER read UNKNOWN as flat and finalize a still-open position
+            # (cancel its OCO / journal a false CLOSE). Mirrors reboot_reconcile's
+            # "empty-book false-close hole" guard.
+            book_is_known = isinstance(book, list) and len(book) > 0
             by_tsym: Dict[str, Dict[str, Any]] = {}
             for p in (book or []):
                 by_tsym[str(p.get("tsym", ""))] = p
@@ -332,21 +340,37 @@ class LivePositionGuard:
                 pos = by_tsym.get(entry["tsym"])
                 netqty = _parse_netqty(pos.get("netqty")) if pos else None
 
-                # Not (yet) a live position in the book — flat / absent / unparseable.
+                # Not a live non-zero position in the book — flat / absent / unparseable.
                 if pos is None or netqty is None or netqty == 0:
-                    if entry.get("seen_filled"):
-                        # It filled earlier and the broker now reports it FLAT — the
-                        # one confirmed-flat signal. This is the SOLE place the OCO is
-                        # cancelled, the close journaled, and the entry dropped
-                        # (however it went flat: the guard's exit filled, the OCO
-                        # fired, or it was closed elsewhere).
-                        await self._finalize_flat(client, entry)
-                    else:
+                    if not entry.get("seen_filled"):
                         # Still pending its fill — KEEP, but bound a never-filling
-                        # (rejected/canceled) entry by a grace window.
+                        # (rejected/canceled) entry by a grace window. (A pending
+                        # entry never gets finalized, so the UNKNOWN-book guard below
+                        # is not needed here — it just keeps waiting.)
                         entry["misses"] = int(entry.get("misses", 0)) + 1
                         if entry["misses"] >= self._max_pending_misses:
                             self._registry.remove(entry["id"])
+                        continue
+                    # seen_filled: decide CONFIRMED-FLAT vs UNKNOWN. Finalizing
+                    # (cancel OCO + journal close + drop) is IRREVERSIBLE, so it must
+                    # fire ONLY on a real "the broker says this position is gone",
+                    # never on an UNKNOWN read.
+                    if not book_is_known:
+                        # Empty/non-list book == UNKNOWN (broker hiccup) → HOLD: keep
+                        # the entry registered + the OCO resting. The position may
+                        # well still be open; the next good read decides.
+                        continue
+                    if pos is not None and netqty is None:
+                        # Present row but UNPARSEABLE netqty ("nan"/"abc") == UNKNOWN
+                        # for this scrip → HOLD (never coerce unparseable to flat,
+                        # per kill_switch._parse_netqty's contract).
+                        continue
+                    # book_is_known AND (present row netqty==0, OR this tsym absent
+                    # from a complete non-empty book) → genuinely FLAT. The SOLE place
+                    # the OCO is cancelled, the close journaled, and the entry dropped
+                    # (however it went flat: the guard's exit filled, the OCO fired,
+                    # or it was closed elsewhere).
+                    await self._finalize_flat(client, entry)
                     continue
 
                 # Live, filled position.
@@ -551,16 +575,25 @@ class LivePositionGuard:
     async def _evaluate_eod_square(
         self, client: Any, now: datetime, exits: List[Dict[str, Any]]
     ) -> None:
-        """15:00 IST EOD square for EVERY guarded position (manual + deployed).
+        """15:00 IST EOD square for guarded positions (manual + deployed) that are
+        NOT already being squared.
 
-        The 10-minute auto-square timer that once bounded manual LIVE_TEST
-        positions was removed, so the 15:00 IST EOD square is now their "never
-        left open" backstop too — no registered position is EOD-exempt. Deployed
-        positions additionally follow their strategy rules + resting OCO; manual
-        positions rely on the software guard stop + this EOD square. reason=
+        The 10-minute auto-square timer that once bounded manual LIVE_TEST positions
+        was removed, so the 15:00 IST EOD square is the "never left open" backstop for
+        a still-open, not-yet-squared position (no source is EOD-exempt any more).
+        Deployed positions additionally follow their strategy rules + resting OCO;
+        manual positions rely on the software guard stop + this EOD square. reason=
         "eod_square"; the actual transmit is gated by the injected square_fn
-        (LIVE_GUARD_ARMED). An entry already `squaring` is skipped — a guard exit is
-        already working for it (and will finalize on confirmed-flat)."""
+        (LIVE_GUARD_ARMED).
+
+        LIMITATION (Layer-1): an entry already `squaring` (a guard exit was issued but
+        the broker hasn't confirmed flat) is SKIPPED here — re-issuing it every ~1.5s
+        cycle from 15:00 onward would breach the order rate limit for no benefit at
+        the same 1% band. So EOD does NOT force-fill a guard exit that is resting
+        unfilled on a blown-through market; that position waits on its resting exit +
+        (for deployed) the OCO. Delivering an EOD-time re-price/escalation for a stuck
+        `squaring` entry is Layer 2 (interval-gated widening re-price, mirroring
+        kill_switch.panic_squareoff_verified)."""
         if len(self._registry) == 0:
             return
         ist_now = (now.astimezone(timezone.utc) + _IST).time()
