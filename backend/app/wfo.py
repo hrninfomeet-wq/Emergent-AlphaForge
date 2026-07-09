@@ -354,13 +354,17 @@ async def _job_control(job_id: str) -> Tuple[bool, bool]:
 def _evaluate_slice(
     enr_full: pd.DataFrame, a: int, b: int, strategy, merged: Dict[str, Any],
     instrument: str, costs: bool, pretrade: Dict[str, Any],
+    trade_window_start: Optional[str] = None, trade_window_end: Optional[str] = None,
 ) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     """Backtest one [a:b) row slice of the enriched frame. Returns (metrics
-    with ce/pe counts folded in, trades)."""
+    with ce/pe counts folded in, trades). trade_window_* (O6): entry window; None →
+    run_backtest's default."""
     from app.backtest import run_backtest
     df_slice = enr_full.iloc[a:b].reset_index(drop=True)
+    _tw = ({"trade_window_start": trade_window_start, "trade_window_end": trade_window_end}
+           if trade_window_start and trade_window_end else {})
     res = run_backtest(df_slice, strategy, merged, instrument=instrument,
-                       costs_enabled=costs, pretrade_filters=pretrade)
+                       costs_enabled=costs, pretrade_filters=pretrade, **_tw)
     metrics = dict(res["metrics"])
     trades = res.get("trades", []) or []
     ce = sum(1 for t in trades if str(t.get("direction", "")).upper() == "CE")
@@ -496,6 +500,11 @@ async def run_wfo(job_id: str, payload: Dict[str, Any], resume: bool = False) ->
         objective = payload.get("objective", "risk_adjusted")
         costs = payload.get("costs_enabled", True)
         pretrade = payload.get("pretrade_filters", {})
+        # O6: live-effective entry window (IST), applied to BOTH the per-window
+        # training search and the OOS test slice so the stitched OOS mirrors what
+        # live can actually take (deployments block 14:50–15:00).
+        trade_window_start = payload.get("trade_window_start") or None
+        trade_window_end = payload.get("trade_window_end") or None
         param_overrides = payload.get("param_overrides", {})
         start_ts = payload.get("start_ts")
         end_ts = payload.get("end_ts")
@@ -639,7 +648,8 @@ async def run_wfo(job_id: str, payload: Dict[str, Any], resume: bool = False) ->
                     merged = strategy.merged_params(params)
                     enr = get_enriched(merged)
                     metrics, _ = _evaluate_slice(enr, tr_a, tr_b, strategy, merged,
-                                                 instrument, costs, pretrade)
+                                                 instrument, costs, pretrade,
+                                                 trade_window_start, trade_window_end)
                     val = obj(metrics)
                     if val > window_best["value"]:
                         window_best.update({"value": val, "params": dict(params), "metrics": metrics})
@@ -682,7 +692,8 @@ async def run_wfo(job_id: str, payload: Dict[str, Any], resume: bool = False) ->
                                       for p in param_list]
                         results = await asyncio.to_thread(
                             parallel_backtest, pool, param_sets, raw_df=df, instrument=instrument,
-                            costs=costs, pretrade=pretrade, worker=_worker_evaluate_wfo)
+                            costs=costs, pretrade=pretrade, worker=_worker_evaluate_wfo,
+                            trade_window_start=trade_window_start, trade_window_end=trade_window_end)
                         for trial, params, (metrics, _m) in zip(trials, param_list, results):
                             if metrics is None:
                                 study.tell(trial, None, state=optuna.trial.TrialState.FAIL)
@@ -728,7 +739,7 @@ async def run_wfo(job_id: str, payload: Dict[str, Any], resume: bool = False) ->
                     enr_best = get_enriched(merged_best)
                     oos_metrics, oos_trades = await asyncio.to_thread(
                         _evaluate_slice, enr_best, te_a, te_b, strategy, merged_best,
-                        instrument, costs, pretrade)
+                        instrument, costs, pretrade, trade_window_start, trade_window_end)
                     oos_trades_all.extend(oos_trades)
                     completed_windows.append({
                         **{k: w[k] for k in ("index", "train_start", "train_end", "test_start",

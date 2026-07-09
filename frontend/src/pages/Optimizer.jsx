@@ -157,6 +157,11 @@ const DEFAULT_SETUP = {
   // Optional explicit grid bounds — empty string = use backend defaults.
   exit_search_trail_distance: "",
   exit_search_breakeven_trigger: "",
+  // Entry-time window (IST). Default = the LIVE-EFFECTIVE window every deployment
+  // enforces (09:25 open block → 14:50 close block), so validated results never
+  // include 14:50–15:00 entries live can't take (O6).
+  trade_window_start: "09:25",
+  trade_window_end: "14:50",
   name: "Optimization run",
   start_date: "",
   end_date: "",
@@ -412,6 +417,8 @@ export default function Optimizer() {
             : 0,
           start_ts: dateToMs(config.start_date, false),
           end_ts: dateToMs(config.end_date, true),
+          trade_window_start: config.trade_window_start || "09:25",
+          trade_window_end: config.trade_window_end || "14:50",
           name: finalName,
           train_days: Number(config.wf_train_days) || 60,
           test_days: Number(config.wf_test_days) || 20,
@@ -457,6 +464,8 @@ export default function Optimizer() {
           : 0,
         start_ts: dateToMs(config.start_date, false),
         end_ts: dateToMs(config.end_date, true),
+        trade_window_start: config.trade_window_start || "09:25",
+        trade_window_end: config.trade_window_end || "14:50",
         name: finalName,
         evaluation_mode: config.evaluation_mode,
         rerank_top_k: Math.max(1, Math.min(500, Number(config.rerank_top_k) || 50)),
@@ -627,6 +636,8 @@ export default function Optimizer() {
       option_capital: c.option_config?.sizing_config?.capital ?? prev.option_capital,
       start_date: c.start_ts ? msToDate(c.start_ts) : "",
       end_date: c.end_ts ? msToDate(c.end_ts) : "",
+      trade_window_start: c.trade_window_start ?? prev.trade_window_start,
+      trade_window_end: c.trade_window_end ?? prev.trade_window_end,
       name: `${c.name || "Optimization run"} (copy)`,
     }));
     toast.success("Config loaded into setup — tweak and Auto-Optimize.");
@@ -1235,6 +1246,14 @@ export default function Optimizer() {
                 <Input type="date" value={config.start_date} onChange={(e) => setConfig({ ...config, start_date: e.target.value })} className="bg-bg-2 border-line h-8 text-xs" data-testid="opt-start-date" />
                 <Input type="date" value={config.end_date} onChange={(e) => setConfig({ ...config, end_date: e.target.value })} className="bg-bg-2 border-line h-8 text-xs" data-testid="opt-end-date" />
               </div>
+              <Label className="text-xs text-dim mt-2 block">Entry window (IST)<Hint label="Entry window">Only entries INSIDE this intraday window count. <b>Default 09:25–14:50</b> = the live-effective window every deployment enforces (it blocks the first 10 min and last 40 min), so the optimizer never rewards 14:50–15:00 entries live can never take. Exits are unaffected.</Hint></Label>
+              <div className="grid grid-cols-2 gap-2 mt-1">
+                <Input type="time" value={config.trade_window_start} onChange={(e) => setConfig({ ...config, trade_window_start: e.target.value })} className="bg-bg-2 border-line h-8 text-xs" data-testid="opt-trade-window-start" />
+                <Input type="time" value={config.trade_window_end} onChange={(e) => setConfig({ ...config, trade_window_end: e.target.value })} className="bg-bg-2 border-line h-8 text-xs" data-testid="opt-trade-window-end" />
+              </div>
+              {config.trade_window_end > "14:50" && (
+                <span className="text-warning text-[10px] block mt-1">Entries after 14:50 can't be taken live (deployments block the last 40 min) — results may overstate.</span>
+              )}
             </div>
           </div>
         </Panel>

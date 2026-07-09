@@ -63,7 +63,9 @@ def _noop(_x: int) -> int:
 def _worker_evaluate(strategy_id: str, merged: Dict[str, Any], slice_bounds: Optional[Tuple[int, int]],
                      instrument: str, costs: bool, pretrade: Dict[str, Any],
                      frame: Optional[pd.DataFrame] = None,
-                     caches: Optional[Dict[str, Dict]] = None) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
+                     caches: Optional[Dict[str, Dict]] = None,
+                     trade_window_start: Optional[str] = None,
+                     trade_window_end: Optional[str] = None) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
     """Top-level, picklable. In the FORK-pool path, `frame`/`caches` are omitted and
     the worker reads the fork-inherited `_RAW_DF` + per-worker `_WORKER_CACHES`
     globals (never pickled; the cache is cleared per worker in `_init_worker`). In
@@ -71,13 +73,16 @@ def _worker_evaluate(strategy_id: str, merged: Dict[str, Any], slice_bounds: Opt
     `caches` dict explicitly — the module global must NEVER be used in the parent
     because it is keyed only on (group, params), not the frame, so a later job would
     index-align another frame's cached Series → NaN tails → wrong results (O12).
+    trade_window_* (O6): entry window forwarded to run_backtest; None → its default.
     Returns (metrics|None, merged). Never raises — failure -> (None, merged)."""
     try:
         base = frame if frame is not None else _RAW_DF
         frame = base if slice_bounds is None else base.iloc[slice_bounds[0]:slice_bounds[1]]
         strategy = get_registry().get(strategy_id)
         enr = enrich_with_cache(frame, merged, _WORKER_CACHES if caches is None else caches)
-        res = run_backtest(enr, strategy, merged, instrument=instrument, costs_enabled=costs, pretrade_filters=pretrade)
+        _tw = ({"trade_window_start": trade_window_start, "trade_window_end": trade_window_end}
+               if trade_window_start and trade_window_end else {})
+        res = run_backtest(enr, strategy, merged, instrument=instrument, costs_enabled=costs, pretrade_filters=pretrade, **_tw)
         metrics = dict(res["metrics"])
         trades = res.get("trades", []) or []
         ce = sum(1 for t in trades if str(t.get("direction", "")).upper() == "CE")
@@ -91,13 +96,16 @@ def _worker_evaluate(strategy_id: str, merged: Dict[str, Any], slice_bounds: Opt
 def _worker_evaluate_wfo(strategy_id: str, merged: Dict[str, Any], slice_bounds: Tuple[int, int],
                          instrument: str, costs: bool, pretrade: Dict[str, Any],
                          frame: Optional[pd.DataFrame] = None,
-                         caches: Optional[Dict[str, Dict]] = None) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
+                         caches: Optional[Dict[str, Dict]] = None,
+                         trade_window_start: Optional[str] = None,
+                         trade_window_end: Optional[str] = None) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
     """WFO worker: enrich the FULL frame, THEN slice to the window, preserving
     indicator warmup — mirrors wfo._evaluate_slice (enrich-once-then-slice). The
     single-run _worker_evaluate slices RAW then enriches, which strips warmup at
     window starts, so WFO needs this distinct path. slice_bounds is REQUIRED.
     Reads fork-inherited _RAW_DF (or `frame` in the sequential fallback), and a fresh
     per-call `caches` in the fallback (never the frame-blind module global — O12).
+    trade_window_* (O6): entry window forwarded to run_backtest; None → its default.
     Returns (metrics|None, merged); never raises."""
     try:
         base = frame if frame is not None else _RAW_DF
@@ -105,8 +113,10 @@ def _worker_evaluate_wfo(strategy_id: str, merged: Dict[str, Any], slice_bounds:
         a, b = slice_bounds
         df_slice = enr.iloc[a:b].reset_index(drop=True)
         strategy = get_registry().get(strategy_id)
+        _tw = ({"trade_window_start": trade_window_start, "trade_window_end": trade_window_end}
+               if trade_window_start and trade_window_end else {})
         res = run_backtest(df_slice, strategy, merged, instrument=instrument,
-                           costs_enabled=costs, pretrade_filters=pretrade)
+                           costs_enabled=costs, pretrade_filters=pretrade, **_tw)
         metrics = dict(res["metrics"])
         trades = res.get("trades", []) or []
         ce = sum(1 for t in trades if str(t.get("direction", "")).upper() == "CE")
@@ -149,7 +159,9 @@ def shutdown_pool() -> None:
 def parallel_backtest(pool: Optional[ProcessPoolExecutor],
                       param_sets: List[Tuple[str, Dict[str, Any], Optional[Tuple[int, int]]]],
                       *, raw_df: pd.DataFrame, instrument: str, costs: bool, pretrade: Dict[str, Any],
-                      worker=_worker_evaluate) -> List[Tuple[Optional[Dict[str, Any]], Dict[str, Any]]]:
+                      worker=_worker_evaluate,
+                      trade_window_start: Optional[str] = None,
+                      trade_window_end: Optional[str] = None) -> List[Tuple[Optional[Dict[str, Any]], Dict[str, Any]]]:
     """Run param_sets [(strategy_id, merged, slice_bounds), …]. Results are returned
     in SUBMISSION ORDER. `worker` selects the evaluation function — defaults to the
     single-run _worker_evaluate (slice-raw-then-enrich); pass _worker_evaluate_wfo for
@@ -163,7 +175,10 @@ def parallel_backtest(pool: Optional[ProcessPoolExecutor],
         # (the module global _WORKER_CACHES is keyed only on (group, params) → silent
         # index-align poisoning). Sharing within this one call is correct (same frame).
         local_caches: Dict[str, Dict] = {}
-        return [worker(sid, m, sb, instrument, costs, pretrade, raw_df, local_caches)
+        return [worker(sid, m, sb, instrument, costs, pretrade, raw_df, local_caches,
+                       trade_window_start, trade_window_end)
                 for (sid, m, sb) in param_sets]
-    futs = [pool.submit(worker, sid, m, sb, instrument, costs, pretrade) for (sid, m, sb) in param_sets]
+    futs = [pool.submit(worker, sid, m, sb, instrument, costs, pretrade,
+                        trade_window_start=trade_window_start, trade_window_end=trade_window_end)
+            for (sid, m, sb) in param_sets]
     return [f.result() for f in futs]  # iterated in submission order -> order preserved

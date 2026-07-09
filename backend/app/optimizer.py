@@ -294,16 +294,21 @@ async def _update_job(job_id: str, patch: Dict[str, Any]) -> None:
     await db.optimization_jobs.update_one({"id": job_id}, {"$set": patch})
 
 
-def _evaluate(get_enriched, strategy, params: Dict[str, Any], instrument: str, costs: bool, pretrade: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+def _evaluate(get_enriched, strategy, params: Dict[str, Any], instrument: str, costs: bool, pretrade: Dict[str, Any],
+              trade_window_start: Optional[str] = None, trade_window_end: Optional[str] = None) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Run one backtest with given params and return (metrics, merged_params).
 
     `get_enriched(merged)` returns the indicator+regime enriched dataframe for
     the merged params (recomputing when indicator periods change). Direction
     counts (ce/pe) are folded into the metrics so the guard rails and UI can
-    detect one-sided solutions."""
+    detect one-sided solutions. trade_window_* (O6): when both set, restrict entries
+    to the live-effective IST window; None → run_backtest's own 09:25–15:00 default
+    (byte-identical for pre-O6 callers)."""
     merged = strategy.merged_params(params)
     df_enriched = get_enriched(merged)
-    res = run_backtest(df_enriched, strategy, merged, instrument=instrument, costs_enabled=costs, pretrade_filters=pretrade)
+    _tw = ({"trade_window_start": trade_window_start, "trade_window_end": trade_window_end}
+           if trade_window_start and trade_window_end else {})
+    res = run_backtest(df_enriched, strategy, merged, instrument=instrument, costs_enabled=costs, pretrade_filters=pretrade, **_tw)
     metrics = dict(res["metrics"])
     trades = res.get("trades", []) or []
     ce = sum(1 for t in trades if str(t.get("direction", "")).upper() == "CE")
@@ -580,7 +585,7 @@ def _resolve_expiry_by_trade(spot_trades, contracts, fixed_expiry_date=None) -> 
 async def _survival_eval_oos(
     strategy, df_enriched, merged_params, contracts, candles_df,
     instrument, costs, pretrade, option_cfg, sc, n_folds=3, train_pct=0.6,
-    candles_by_key=None,
+    candles_by_key=None, trade_window_start=None, trade_window_end=None,
 ):
     """Evaluate one finalist's survival on each walk-forward OOS slice. Floor + DD%
     must hold per fold (per sc.min_oos_folds); RoR runs on the stitched OOS rupee
@@ -600,9 +605,11 @@ async def _survival_eval_oos(
     spot_total = paired_total = skipped_total = 0
     for _fold, a, b in oos_fold_index_ranges(len(df_enriched), n_folds, train_pct):
         test_df = df_enriched.iloc[a:b].reset_index(drop=True)
+        _tw = ({"trade_window_start": trade_window_start, "trade_window_end": trade_window_end}
+               if trade_window_start and trade_window_end else {})
         res = await asyncio.to_thread(
             run_backtest, test_df, strategy, merged_params,
-            instrument=instrument, costs_enabled=costs, pretrade_filters=pretrade)
+            instrument=instrument, costs_enabled=costs, pretrade_filters=pretrade, **_tw)
         spot_trades = res.get("trades", []) or []
         if dte_target is not None:
             spot_trades = [t for t in spot_trades if t.get("entry_ts") is not None
@@ -844,6 +851,11 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
         min_direction_share = float(payload.get("min_direction_share", 0.0) or 0.0)
         optimize_indicator_periods = bool(payload.get("optimize_indicator_periods", False))
         opt_workers = int(payload.get("opt_workers", 1) or 1)  # opt-in multi-core; 1 = sequential (default)
+        # O6: live-effective entry window (IST). Threaded into EVERY optimizer
+        # backtest (trials, survival folds, parallel workers) so selection + the
+        # survival gate agree and never reward 14:50–15:00 entries live can't take.
+        trade_window_start = payload.get("trade_window_start") or None
+        trade_window_end = payload.get("trade_window_end") or None
 
         # Two-stage option re-rank (opt-in). "spot" keeps the original behavior.
         evaluation_mode = str(payload.get("evaluation_mode", "spot"))
@@ -917,11 +929,13 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
             if _OPT_TIMING:
                 import time as _t
                 _t0 = _t.perf_counter()
-                out = _evaluate(get_enriched, strategy, params, instrument, costs, pretrade)
+                out = _evaluate(get_enriched, strategy, params, instrument, costs, pretrade,
+                                trade_window_start, trade_window_end)
                 _TIMING["backtest_s"] += _t.perf_counter() - _t0
                 _TIMING["backtest_n"] += 1
                 return out
-            return _evaluate(get_enriched, strategy, params, instrument, costs, pretrade)
+            return _evaluate(get_enriched, strategy, params, instrument, costs, pretrade,
+                             trade_window_start, trade_window_end)
 
         def obj(metrics: Dict[str, Any]) -> float:
             return _objective_value(
@@ -1103,7 +1117,8 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                     param_sets = [(strategy.id, strategy.merged_params(p), None) for p in param_list]
                     results = await asyncio.to_thread(
                         parallel_backtest, pool, param_sets,
-                        raw_df=raw_df, instrument=instrument, costs=costs, pretrade=pretrade)
+                        raw_df=raw_df, instrument=instrument, costs=costs, pretrade=pretrade,
+                        trade_window_start=trade_window_start, trade_window_end=trade_window_end)
                     # Atomic flush: tell+append ALL in ask-order, THEN best, THEN checkpoint.
                     for trial, params, (metrics, _m) in zip(trials, param_list, results):
                         if metrics is None:
@@ -1262,7 +1277,8 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                         r["survival"] = await _survival_eval_oos(
                             strategy, df_enr, merged, rerank_contracts, rerank_candles,
                             instrument, costs, pretrade, option_cfg, survival,
-                            candles_by_key=rerank_by_key)
+                            candles_by_key=rerank_by_key,
+                            trade_window_start=trade_window_start, trade_window_end=trade_window_end)
                     except Exception as e:
                         log.warning(f"survival eval failed: {e}")
                         r["survival"] = {"survived": False, "reason": "eval_error"}
@@ -1287,7 +1303,8 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                                 v = await _survival_eval_oos(
                                     strategy, df_enr, merged, rerank_contracts, rerank_candles,
                                     instrument, costs, pretrade, {**option_cfg, "exit_controls": gc}, survival,
-                                    candles_by_key=rerank_by_key)
+                                    candles_by_key=rerank_by_key,
+                                    trade_window_start=trade_window_start, trade_window_end=trade_window_end)
                                 better = (v.get("calmar") or -1e9) > (r["survival"].get("calmar") or -1e9)
                                 if v.get("survived") and (v.get("total_return_pct") or 0) > 0 and better:
                                     r["survival"] = v

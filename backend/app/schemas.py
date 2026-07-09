@@ -217,6 +217,12 @@ class OptimizerStartReq(BaseModel):
     # default; 0 = unlimited. On hit, the stage stops and returns the best of the
     # candidates evaluated so far (flagged), instead of silently grinding for hours.
     analyze_budget_sec: int = 1800
+    # Entry-time window (IST HH:MM). Defaults to the LIVE-EFFECTIVE window every
+    # deployment enforces (09:25 open block → 14:50 close block, deployment_evaluator
+    # BLOCK_OPEN_UNTIL/BLOCK_CLOSE_FROM) so the optimizer never rewards 14:50–15:00
+    # entries that live can never take (O6). run_backtest's own default is 09:25–15:00.
+    trade_window_start: str = "09:25"
+    trade_window_end: str = "14:50"
 
 
 class WfoStartReq(BaseModel):
@@ -255,6 +261,11 @@ class WfoStartReq(BaseModel):
     # optimizer re-rank's option_config shape.
     option_aware: bool = False
     option_config: Optional[Dict[str, Any]] = None
+    # Entry-time window (IST HH:MM); live-effective 09:25–14:50 by default (O6),
+    # threaded into every per-window run_backtest so OOS folds exclude un-takeable
+    # 14:50–15:00 entries too.
+    trade_window_start: str = "09:25"
+    trade_window_end: str = "14:50"
 
 
 class UpstoxStreamStartReq(BaseModel):

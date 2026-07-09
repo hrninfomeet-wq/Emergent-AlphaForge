@@ -635,9 +635,10 @@ async def apply_opt_as_preset(job_id: str, name: str = Query(...)):
     best_params = job.get("best_params") or (job.get("best_so_far") or {}).get("params")
     if not best_params:
         raise HTTPException(400, "Job has no best parameters to save (no qualifying trial yet)")
+    _cfg = job.get("config") or {}
     config = {
         "instrument": job["instrument"],
-        "mode": job.get("config", {}).get("mode", "SCALP"),
+        "mode": _cfg.get("mode", "SCALP"),
         "strategy_id": job["strategy_id"],
         "params": best_params,
         "source": "optimizer",  # explicit origin tag for the Saved Presets page
@@ -645,6 +646,35 @@ async def apply_opt_as_preset(job_id: str, name: str = Query(...)):
         "source_job_kind": job.get("kind") or "single",
         "optimization_method": job["method"],
         "objective": job["objective"],
+    }
+    # O9(a): carry the pre-trade PROFILE the result was validated under so the
+    # deploy wizard prefills IT instead of silently pinning "Balanced" (a different
+    # confidence/regime gate ⇒ different live trade set than what was validated).
+    if _cfg.get("pretrade_profile"):
+        config["pretrade_profile"] = _cfg["pretrade_profile"]
+    if _cfg.get("pretrade_filters"):
+        config["pretrade_filters"] = _cfg["pretrade_filters"]
+    # O9(c): stamp the evaluation STAGE reached + terminal job status so a
+    # cancelled/failed spot-only preset stops looking identical to a survival-passed
+    # one (apply-as-preset is allowed from cancelled/paused/failed jobs).
+    _eval_mode = _cfg.get("evaluation_mode", "spot")
+    _surv = job.get("survival_summary") or {}
+    _survival_on = bool((_cfg.get("survival_config") or {}).get("enabled"))
+    if _survival_on and (_surv.get("survivors") or 0) > 0:
+        _stage = "survival_passed"
+    elif _eval_mode == "option_rerank":
+        _stage = "option_ranked"
+    else:
+        _stage = "spot_only"
+    config["validation"] = {
+        "stage": _stage,
+        "job_status": job.get("status"),          # done | cancelled | paused | interrupted | failed
+        "evaluation_mode": _eval_mode,
+        "survival_ran": _survival_on,
+        "survivors": _surv.get("survivors"),
+        "survival_capital": _surv.get("capital"),
+        "trade_window_start": _cfg.get("trade_window_start"),
+        "trade_window_end": _cfg.get("trade_window_end"),
     }
     # Carry the execution policy the result was validated under (option re-rank
     # or option-aware WFO), so the preset is the full deployable artifact:
