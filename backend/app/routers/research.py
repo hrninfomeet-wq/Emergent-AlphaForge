@@ -493,18 +493,33 @@ async def optimize_start(req: OptimizerStartReq):
         raise HTTPException(400, f"Unknown evaluation_mode {req.evaluation_mode}")
     if req.evaluation_mode == "option_rerank" and not (1 <= req.rerank_top_k <= 500):
         raise HTTPException(400, "rerank_top_k must be 1–500")
+    oc = req.option_config or {}
     sc = req.survival_config
     if sc and sc.enabled:
         from app.survival_validate import validate_survival_request
-        cap = float(((req.option_config or {}).get("sizing_config") or {}).get("capital", 200_000) or 200_000)
+        cap = float((oc.get("sizing_config") or {}).get("capital", 200_000) or 200_000)
+        # O3: the survival curve's costs come from option_config.cost_config (the
+        # OPTION rupee cost model), NOT the spot `costs_enabled` flag. Gate on the
+        # flag that actually governs the curve the gate judges — else survival can
+        # pass a GROSS option curve (no spread/brokerage/STT) as deployable.
+        option_costs_on = bool((oc.get("cost_config") or {}).get("enabled"))
         err = validate_survival_request(
             enabled=True, evaluation_mode=req.evaluation_mode,
-            costs_enabled=req.costs_enabled, capital=cap, ruin_floor=sc.ruin_floor,
+            costs_enabled=option_costs_on, capital=cap, ruin_floor=sc.ruin_floor,
             max_drawdown_pct=sc.max_drawdown_pct, max_ror_pct=sc.max_ror_pct,
         )
         if err:
             raise HTTPException(400, err)
-    oc = req.option_config or {}
+    # O5: premium-based exit-control search is a NO-OP unless option execution uses
+    # premium levels (exit_mode='option_levels'). Under the default spot exit the
+    # grid burns with zero effect and silently adopts nothing — reject it loudly so
+    # the user picks option-levels exit or turns the search off.
+    if req.search_exit_controls and str(oc.get("exit_mode") or "").strip() != "option_levels":
+        raise HTTPException(
+            400,
+            "search_exit_controls requires option_config.exit_mode='option_levels' — "
+            "premium-based exit controls (trailing/target/stop on the option leg) are "
+            "a no-op under spot exit, so the grid would burn with no effect.")
     if oc.get("exit_controls") or oc.get("daily_caps"):
         from app.exit_controls import validate_exit_risk_config
         errs = validate_exit_risk_config(

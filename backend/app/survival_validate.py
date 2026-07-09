@@ -18,7 +18,10 @@ def validate_survival_request(
         return ("Survival mode requires evaluation_mode='option_rerank' — option execution and "
                 "the rupee gate both live in the re-rank (rupee equity is impossible spot-only).")
     if not costs_enabled:
-        return "Survival mode requires costs_enabled=true (else risk-of-ruin/Calmar run on gross P&L)."
+        return ("Survival mode requires option costs enabled "
+                "(option_config.cost_config.enabled=true) — else risk-of-ruin/Calmar "
+                "run on GROSS option P&L (no spread/brokerage/STT), and index-option "
+                "spread alone flips marginal survivors.")
     if not (0.0 <= float(ruin_floor) < float(capital)):
         return f"ruin_floor must be 0 <= ruin_floor < capital ({capital})."
     if not (0 < float(max_drawdown_pct) <= 100):

@@ -1289,7 +1289,12 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                     best_so_far["exit_controls"] = best.get("chosen_exit_controls") or option_cfg.get("exit_controls")
                     best_so_far["daily_caps"] = option_cfg.get("daily_caps")
                     survival_summary = {"survivors": len(survivors), "evaluated": len(ranked),
-                                        "objective": survival.objective}
+                                        "objective": survival.objective,
+                                        # O2: record the capital the gate actually
+                                        # scaled DD%/RoR against (defaults 200k) so
+                                        # the UI shows the basis instead of an unseen
+                                        # phantom account.
+                                        "capital": float((option_cfg.get("sizing_config") or {}).get("capital", 200_000) or 200_000)}
                 else:
                     # Zero survivors: do NOT promote a disqualified candidate as "best".
                     reasons: Dict[str, int] = {}
@@ -1299,6 +1304,7 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                     best_so_far = {"value": -1e9, "params": {}, "metrics": {}, "trial_num": -1}
                     survival_summary = {
                         "survivors": 0, "evaluated": len(ranked), "reason_counts": reasons,
+                        "capital": float((option_cfg.get("sizing_config") or {}).get("capital", 200_000) or 200_000),
                         "suggestions": ["loosen max_drawdown_pct or max_ror_pct",
                                         "widen parameter bounds / increase rerank_top_k",
                                         "extend the date range for more OOS trades"]}
@@ -1409,8 +1415,17 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
         if best_run:
             from app.deployment_quality import evaluate_source_quality
             finished["best_option_pnl_value"] = ((best_run.get("option_backtest") or {}).get("portfolio") or {}).get("net_pnl_value")
-            _oos = (best_so_far.get("metrics") or {}).get("survival", {}).get("total_return_pct")
-            finished["best_quality"] = evaluate_source_quality(best_run, evidence={"oos_return_pct": _oos, "n_trials": n_trials, "spot_option_correlation": spot_option_corr})
+            # O4: the survival folds are IN-SAMPLE w.r.t. finalist selection (finalists
+            # are filtered on them and the exit grid is tuned against them), so
+            # survival.total_return_pct is NOT a clean out-of-sample signal. Do NOT
+            # feed it as oos_return_pct — that would let the deploy-quality verdict
+            # claim "positive out-of-sample" for a number the search already fit.
+            # Carry it separately as stress_return_pct (advisory). True OOS is WFO-only.
+            _stress = (best_so_far.get("metrics") or {}).get("survival", {}).get("total_return_pct")
+            finished["best_quality"] = evaluate_source_quality(
+                best_run,
+                evidence={"oos_return_pct": None, "stress_return_pct": _stress,
+                          "n_trials": n_trials, "spot_option_correlation": spot_option_corr})
         await _update_job(job_id, finished)
         log.info(f"Optimization {job_id} {final_status}: best={best_so_far['value']:.4f} run_id={best_backtest_run_id}")
     except Exception as e:

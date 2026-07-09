@@ -44,6 +44,14 @@ def test_survival_requires_costs_enabled():
     assert msg and "costs" in msg.lower()
 
 
+def test_survival_costs_message_names_the_option_cost_flag():
+    # O3: the message must point at option_config.cost_config (the flag that actually
+    # governs the survival curve), not the spot costs_enabled — else the user re-checks
+    # the wrong switch and the gate can still judge a gross option curve.
+    msg = validate_survival_request(**_req(costs_enabled=False))
+    assert "option_config.cost_config.enabled" in msg
+
+
 def test_survival_rejects_ruin_floor_ge_capital():
     msg = validate_survival_request(**_req(ruin_floor=200_000))
     assert msg and "ruin_floor" in msg

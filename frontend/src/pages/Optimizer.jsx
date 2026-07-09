@@ -139,6 +139,9 @@ const DEFAULT_SETUP = {
   option_costs_enabled: true,
   option_brokerage_per_order: 0,
   option_spread_pct: 1.0,
+  // Trading capital the survival gate scales DD% / risk-of-ruin against (O2). Was a
+  // hidden hard-wired ₹200k; now user-set and posted as option_config.sizing_config.capital.
+  option_capital: 200000,
   survival_config: {
     enabled: false,
     min_equity: 0,
@@ -362,11 +365,15 @@ export default function Optimizer() {
       option_stop_pts: config.option_exit_mode === "option_levels" && config.option_sl_tp_unit === "pts" && config.option_stop_pts !== "" ? Number(config.option_stop_pts) : null,
       option_target_pct: config.option_exit_mode === "option_levels" && config.option_sl_tp_unit === "pct" && config.option_target_pct !== "" ? Number(config.option_target_pct) : null,
       option_stop_pct: config.option_exit_mode === "option_levels" && config.option_sl_tp_unit === "pct" && config.option_stop_pct !== "" ? Number(config.option_stop_pct) : null,
-      cost_config: config.option_costs_enabled ? {
+      // Survival gating judges the rupee curve AFTER costs, so costs are forced ON
+      // whenever survival is enabled (O3 — the backend 400s otherwise).
+      cost_config: (config.option_costs_enabled || config.survival_config?.enabled) ? {
         enabled: true,
         brokerage_per_order: Number(config.option_brokerage_per_order || 0),
         spread_pct_of_premium: Number(config.option_spread_pct || 0),
       } : null,
+      // Capital basis for the survival gate's DD% / risk-of-ruin (O2).
+      sizing_config: { capital: Math.max(1, Number(config.option_capital || 200000)) },
       ...(exitControlSearch ? { exit_control_search: exitControlSearch } : {}),
     };
   };
@@ -617,6 +624,7 @@ export default function Optimizer() {
       option_costs_enabled: c.option_config?.cost_config?.enabled ?? prev.option_costs_enabled,
       option_brokerage_per_order: c.option_config?.cost_config?.brokerage_per_order ?? prev.option_brokerage_per_order,
       option_spread_pct: c.option_config?.cost_config?.spread_pct_of_premium ?? prev.option_spread_pct,
+      option_capital: c.option_config?.sizing_config?.capital ?? prev.option_capital,
       start_date: c.start_ts ? msToDate(c.start_ts) : "",
       end_date: c.end_ts ? msToDate(c.end_ts) : "",
       name: `${c.name || "Optimization run"} (copy)`,
@@ -963,9 +971,16 @@ export default function Optimizer() {
                   </>
                 )}
                 <div className="flex items-center gap-2">
-                  <Switch checked={config.option_costs_enabled} onCheckedChange={(v) => setConfig({ ...config, option_costs_enabled: v })} data-testid="opt-rerank-costs" />
-                  <span className="text-[11px] text-dim">Apply option costs (charges + {config.option_spread_pct}% spread)</span>
-                  <Hint label="Apply option costs">Charges plus a spread % on the option leg, giving net (not gross) rupee. <b>Keep ON</b> (default) for realistic ranking — the survival gate also expects costs ON, so its survivors are judged AFTER costs per OOS fold.</Hint>
+                  <Switch
+                    checked={config.option_costs_enabled || Boolean(config.survival_config?.enabled)}
+                    disabled={Boolean(config.survival_config?.enabled)}
+                    onCheckedChange={(v) => setConfig({ ...config, option_costs_enabled: v })}
+                    data-testid="opt-rerank-costs" />
+                  <span className="text-[11px] text-dim">
+                    Apply option costs (charges + {config.option_spread_pct}% spread)
+                    {config.survival_config?.enabled && <span className="text-purple-400"> — locked ON by Survivability</span>}
+                  </span>
+                  <Hint label="Apply option costs">Charges plus a spread % on the option leg, giving net (not gross) rupee. <b>Keep ON</b> (default) for realistic ranking — the survival gate also expects costs ON, so its survivors are judged AFTER costs per OOS fold. Turning Survivability on force-locks this switch.</Hint>
                 </div>
                 <div className="text-[10px] text-dimmer leading-snug">
                   Higher top-K = more candidates re-ranked on real option P&L (slower). Option candles are loaded once per run.
@@ -995,6 +1010,20 @@ export default function Optimizer() {
                     <>
                       <div className="text-[10px] text-dimmer leading-snug">
                         Requires option execution + costs ON. Gates finalists on the rupee equity curve, evaluated per walk-forward OOS fold.
+                      </div>
+                      <div>
+                        <Label className="text-[11px] text-dim">Trading capital (₹)<Hint label="Trading capital">The account size the gate scales drawdown % and risk-of-ruin against — DD% is a fraction of THIS, and RoR paths start from it. <b>Default ₹2,00,000.</b> Set it to your real deployable capital: a smaller account makes every % gate stricter (a ₹35k drawdown is 70% of ₹50k but only 17.5% of ₹200k). Equity floor / ruin floor must be below it.</Hint></Label>
+                        <Input
+                          type="number"
+                          min={1}
+                          value={config.option_capital ?? 200000}
+                          onChange={(e) => setConfig((c) => ({ ...c, option_capital: Number(e.target.value) }))}
+                          className="bg-bg-2 border-line h-8 text-xs font-mono mt-1"
+                          data-testid="opt-survival-capital"
+                        />
+                        {Number(config.survival_config?.min_equity ?? 0) >= Number(config.option_capital || 200000) && (
+                          <span className="text-warning text-[10px] block mt-1">Equity floor ≥ capital — nothing can pass. Lower the floor or raise capital.</span>
+                        )}
                       </div>
                       <div className="grid grid-cols-2 gap-2">
                         <div>
