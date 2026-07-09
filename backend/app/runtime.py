@@ -168,6 +168,27 @@ async def _live_guard_square_fn(client, position, *, reason):
     return await square_position(client, position, reason=reason, band_pct=1.0, uid=uid, actid=actid)
 
 
+async def _live_guard_reprice_fn(client, position, *, band_pct, prev_ordno, prev_qty, reason):
+    """Layer 2: over-sell-safe widening re-price of a resting-unfilled guard exit via
+    auto_square.reprice_exit_leg — GATED by LIVE_GUARD_ARMED (same offline-first switch
+    as the square). When NOT armed, logs the intended escalation and transmits nothing.
+
+    Distinct from _live_guard_square_fn: this cancels the TRACKED prior exit, re-reads
+    its fillshares, and places ONLY the confirmed remaining qty at a wider bid-anchored,
+    circuit-clamped price — never over-sells."""
+    if not _live_guard_armed():
+        logging.getLogger(__name__).warning(
+            "LIVE GUARD (dry-run): WOULD re-price %s at band=%s%% (prev=%s qty=%s) "
+            "— set LIVE_GUARD_ARMED=1 to transmit",
+            position.get("tsym"), band_pct, prev_ordno, prev_qty,
+        )
+        return {"squared": False, "dry_run": True, "reason": reason}
+    from app.live.auto_square import reprice_exit_leg
+    return await reprice_exit_leg(
+        client, position, band_pct=band_pct,
+        prev_ordno=prev_ordno, prev_qty=prev_qty, reason=reason)
+
+
 async def _live_guard_overall_provider():
     """Return the saved overall-controls config (basket SL/target/trailing) for the
     guard's basket evaluation, or None if unavailable."""
@@ -221,6 +242,7 @@ live_position_guard = LivePositionGuard(
     registry=get_live_monitor_registry(),
     client_factory=_live_guard_client_factory,
     square_fn=_live_guard_square_fn,
+    reprice_fn=_live_guard_reprice_fn,
     overall_provider=_live_guard_overall_provider,
     spot_tick_fn=_live_guard_spot_tick_fn,
     eod_square_ist=dtime(15, 0),

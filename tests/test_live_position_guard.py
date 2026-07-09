@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from datetime import datetime, time as dtime, timezone
+from datetime import datetime, time as dtime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -1134,3 +1134,326 @@ class TestGuardTokenCapture:
         rec = _Recorder()
         run(_guard(r, client, rec)._cycle())
         assert r.get("ORD1")["position"]["token"] is None
+
+
+# ---------------------------------------------------------------------------
+# Layer 2 — over-sell-safe widening re-price of a resting-unfilled guard exit.
+# The first square (band 1%) goes through square_fn (unchanged). A squaring entry
+# that stays open past the interval is ESCALATED at widening bands (2%, 4%) via a
+# SEPARATE injected reprice_fn — over-sell-safe (cancels the tracked prior order,
+# re-reads its fillshares, sizes to the confirmed remainder). Band advances only on
+# a genuine new placement; empty/UNKNOWN reads never re-price; a per-cycle budget
+# bounds a synchronized basket; the loop terminates loudly (never silently spins).
+# ---------------------------------------------------------------------------
+class _SquareRec:
+    """square_fn that returns a norenordno (so the first square's exit id is tracked)."""
+
+    def __init__(self, result=None):
+        self.calls = []
+        self._result = result or {"squared": True, "via": "exit_order", "norenordno": "EXIT0"}
+
+    async def square_fn(self, client, position, *, reason):
+        self.calls.append((position["tsym"], reason))
+        return dict(self._result)
+
+
+class _RepriceRec:
+    """reprice_fn recorder. Returns scripted results in order (last repeats); default =
+    a successful exit_order placement with a fresh norenordno each call."""
+
+    def __init__(self, results=None):
+        self.calls = []
+        self._results = list(results) if results is not None else None
+        self._n = 0
+
+    async def reprice_fn(self, client, position, *, band_pct, prev_ordno, prev_qty, reason):
+        self.calls.append({"band_pct": band_pct, "prev_ordno": prev_ordno,
+                           "prev_qty": prev_qty, "reason": reason, "tsym": position["tsym"]})
+        if self._results is not None:
+            r = self._results[min(self._n, len(self._results) - 1)]
+            self._n += 1
+            return dict(r)
+        self._n += 1
+        return {"squared": True, "via": "exit_order", "norenordno": f"RP{self._n}", "qty": prev_qty}
+
+
+class _Clock:
+    """Mutable injected clock; advance() between cycles to drive the interval gate."""
+
+    def __init__(self, t=_NOW):
+        self.t = t
+
+    def now(self):
+        return self.t
+
+    def advance(self, secs):
+        self.t = self.t + timedelta(seconds=float(secs))
+
+
+class _CancelRecClient(_OcoClient):
+    """_OcoClient that ALSO records cancel_order calls (finalize orphan-cancel test)."""
+
+    def __init__(self, positions):
+        super().__init__(positions)
+        self.cancel_order_calls = []
+
+    async def cancel_order(self, ordno):
+        self.cancel_order_calls.append(ordno)
+        return type("R", (), {"ok": True})()
+
+
+def _l2_guard(reg, client, sq, rp, clock, **kw):
+    return LivePositionGuard(
+        registry=reg, client_factory=lambda: _aw(client),
+        square_fn=sq.square_fn, reprice_fn=rp.reprice_fn, now_fn=clock.now,
+        reprice_interval_seconds=4.0, reprice_band_schedule=(1.0, 2.0, 4.0),
+        reprice_max_per_cycle=2, **kw)
+
+
+class TestLayer2Reprice:
+    def test_reprice_escalates_at_widening_bands_after_interval(self):
+        reg = LiveMonitorRegistry()
+        _registered(reg, entry=250.0, stop_pct=30)             # stop 175
+        client = _FakeClient([_pos(netqty=20, lp=170.0)])      # breach; stays OPEN
+        sq, rp, clock = _SquareRec(), _RepriceRec(), _Clock(_NOW)
+        g = _l2_guard(reg, client, sq, rp, clock)
+        # Cycle 1: FIRST square at band 1% via square_fn; tracking seeded; no re-price.
+        run(g._cycle())
+        assert len(sq.calls) == 1 and rp.calls == []
+        e = reg.get("ORD1")
+        assert e["squaring"] is True and e["square_band_idx"] == 1
+        assert e["square_ordno"] == "EXIT0" and e["square_qty"] == 20
+        # Cycle 2: interval NOT elapsed → no re-price.
+        clock.advance(1.5)
+        run(g._cycle())
+        assert rp.calls == []
+        # Cycle 3: interval elapsed → re-price at band 2%, prev exit id/qty passed.
+        clock.advance(3.0)                                     # 4.5s > 4.0
+        run(g._cycle())
+        assert len(rp.calls) == 1
+        assert rp.calls[0]["band_pct"] == 2.0
+        assert rp.calls[0]["prev_ordno"] == "EXIT0" and rp.calls[0]["prev_qty"] == 20
+        e = reg.get("ORD1")
+        assert e["square_band_idx"] == 2 and e["square_ordno"] == "RP1"
+        # Cycle 4: interval again → band 4% (terminal) → exhausted.
+        clock.advance(4.5)
+        run(g._cycle())
+        assert len(rp.calls) == 2 and rp.calls[1]["band_pct"] == 4.0
+        e = reg.get("ORD1")
+        assert e["square_band_idx"] == 3 and e["reprice_exhausted"] is True
+        # Cycle 5+: schedule exhausted → no further re-price (resting exit + OCO remain).
+        clock.advance(4.5)
+        run(g._cycle())
+        assert len(rp.calls) == 2
+        assert g.status()["stuck"] == 1 and g.status()["reprices"] == 2
+
+    def test_no_reprice_on_unknown_empty_book(self):
+        """A squaring entry on an UNKNOWN (empty []) book is NOT re-priced (broker
+        hiccup ≠ real read); state is frozen (no false finalize either); a later good
+        read resumes the escalation."""
+        reg = LiveMonitorRegistry()
+        _registered(reg, entry=250.0, stop_pct=30)
+        client = _FakeClient([_pos(netqty=20, lp=170.0)])
+        sq, rp, clock = _SquareRec(), _RepriceRec(), _Clock(_NOW)
+        g = _l2_guard(reg, client, sq, rp, clock)
+        run(g._cycle())                                        # first square
+        clock.advance(5.0)
+        client.set([])                                         # broker hiccup → UNKNOWN
+        run(g._cycle())
+        assert rp.calls == []                                  # NOT re-priced on []
+        assert reg.get("ORD1")["square_band_idx"] == 1         # state frozen
+        assert len(reg) == 1                                   # not finalized on a bad read
+        client.set([_pos(netqty=20, lp=170.0)])                # good read again
+        run(g._cycle())
+        assert len(rp.calls) == 1 and rp.calls[0]["band_pct"] == 2.0
+
+    def test_hard_reject_stops_entry_no_spam(self):
+        """A re-price that hard-REJECTS (failures) STOPS the entry — over many cycles
+        it is attempted exactly ONCE (rate-limit safe), band NOT advanced, surfaced."""
+        reg = LiveMonitorRegistry()
+        _registered(reg, entry=250.0, stop_pct=30)
+        client = _FakeClient([_pos(netqty=20, lp=170.0)])
+        rp = _RepriceRec([{"squared": False, "failures": ["RMS reject"]}])
+        sq, clock = _SquareRec(), _Clock(_NOW)
+        g = _l2_guard(reg, client, sq, rp, clock)
+        run(g._cycle())
+        for _ in range(10):
+            clock.advance(5.0)
+            run(g._cycle())
+        assert len(rp.calls) == 1                              # attempted once, then STOPPED
+        assert reg.get("ORD1")["reprice_stopped"] is True
+        assert reg.get("ORD1")["square_band_idx"] == 1         # band NOT advanced
+        assert g.status()["stuck"] == 1
+
+    def test_cancel_unconfirmed_retries_same_band(self):
+        """cancel_unconfirmed (prior exit not provably dead → placed nothing) keeps the
+        SAME band, stamps ts (rate gate), and retries only after the interval."""
+        reg = LiveMonitorRegistry()
+        _registered(reg, entry=250.0, stop_pct=30)
+        client = _FakeClient([_pos(netqty=20, lp=170.0)])
+        rp = _RepriceRec([{"squared": False, "reason": "cancel_unconfirmed"},
+                          {"squared": True, "via": "exit_order", "norenordno": "RP2", "qty": 20}])
+        sq, clock = _SquareRec(), _Clock(_NOW)
+        g = _l2_guard(reg, client, sq, rp, clock)
+        run(g._cycle())
+        clock.advance(5.0); run(g._cycle())                   # attempt 1 → cancel_unconfirmed
+        assert len(rp.calls) == 1 and rp.calls[0]["band_pct"] == 2.0
+        assert reg.get("ORD1")["square_band_idx"] == 1         # band NOT advanced
+        clock.advance(2.0); run(g._cycle())                   # < interval → no retry
+        assert len(rp.calls) == 1
+        clock.advance(3.0); run(g._cycle())                   # ≥ interval → retry SAME band
+        assert len(rp.calls) == 2 and rp.calls[1]["band_pct"] == 2.0
+        assert reg.get("ORD1")["square_band_idx"] == 2         # advanced on the success
+
+    def test_unpriced_reprice_is_held_not_stamped(self):
+        """unpriced (no broker call — bad lp) does NOT stamp ts or count reprices; the
+        entry may re-attempt next cycle (no interval burned)."""
+        reg = LiveMonitorRegistry()
+        _registered(reg, entry=250.0, stop_pct=30)
+        client = _FakeClient([_pos(netqty=20, lp=170.0)])
+        rp = _RepriceRec([{"squared": False, "reason": "unpriced"}])
+        sq, clock = _SquareRec(), _Clock(_NOW)
+        g = _l2_guard(reg, client, sq, rp, clock)
+        run(g._cycle())
+        t0 = reg.get("ORD1")["square_last_ts"]
+        clock.advance(5.0); run(g._cycle())                   # unpriced
+        assert len(rp.calls) == 1
+        assert reg.get("ORD1")["square_last_ts"] == t0         # ts UNCHANGED
+        assert reg.get("ORD1")["square_band_idx"] == 1         # band unchanged
+        assert g.status()["reprices"] == 0                     # not counted
+
+    def test_already_flat_reprice_no_band_advance_then_finalizes(self):
+        """already_flat at re-price (a fill in the cancel window) → band NOT advanced;
+        the next confirmed-flat cycle finalizes."""
+        reg = LiveMonitorRegistry()
+        _registered(reg, entry=250.0, stop_pct=30)
+        client = _FakeClient([_pos(netqty=20, lp=170.0)])
+        rp = _RepriceRec([{"squared": True, "via": "already_flat", "remaining": 0}])
+        sq, clock = _SquareRec(), _Clock(_NOW)
+        g = _l2_guard(reg, client, sq, rp, clock)
+        run(g._cycle())
+        clock.advance(5.0); run(g._cycle())                   # already_flat
+        assert len(rp.calls) == 1
+        assert reg.get("ORD1")["square_band_idx"] == 1         # NOT advanced
+        client.set([_pos(netqty=0, lp=170.0)])                # broker confirms flat
+        run(g._cycle())
+        assert len(reg) == 0                                   # finalized
+
+    def test_k_budget_bounds_synchronized_basket(self):
+        """A synchronized basket of N squaring legs re-prices at most K per cycle
+        (oldest-square_last_ts first → round-robin drain), not all N at once."""
+        reg = LiveMonitorRegistry()
+        tsyms = [f"T{i}" for i in range(6)]
+        for i, ts in enumerate(tsyms):
+            reg.register(key=f"K{i}", tsym=ts, exch="BFO", qty=20, prd="I",
+                         entry_price=250.0, state=build_monitor_state(250.0, stop_pct=30))
+        book = [{"tsym": ts, "exch": "BFO", "netqty": "20", "lp": "170.0", "urmtom": "0"}
+                for ts in tsyms]
+        client = _FakeClient(book)
+        sq, rp, clock = _SquareRec(), _RepriceRec(), _Clock(_NOW)
+        g = _l2_guard(reg, client, sq, rp, clock)
+        run(g._cycle())                                        # 6 first squares
+        assert len(sq.calls) == 6
+        clock.advance(5.0); run(g._cycle())                   # K=2 → exactly 2 re-prices
+        assert len(rp.calls) == 2
+        clock.advance(5.0); run(g._cycle())                   # the 2 oldest untouched legs
+        assert len(rp.calls) == 4
+
+    def test_finalize_cancels_orphaned_guard_exit(self):
+        """On confirmed-flat, _finalize_flat cancels BOTH the OCO and the tracked
+        resting guard exit (square_ordno) — else the SELL is orphaned → naked short if
+        the OCO filled first."""
+        reg = LiveMonitorRegistry()
+        _registered_with_oco(reg, oco_al_id="OCO1", stop_pct=30)
+        client = _CancelRecClient([_pos(netqty=20, lp=170.0)])
+        sq = _SquareRec({"squared": True, "via": "exit_order", "norenordno": "EXIT0"})
+        rp, clock = _RepriceRec(), _Clock(_NOW)
+        g = _l2_guard(reg, client, sq, rp, clock)
+        run(g._cycle())                                        # first square → square_ordno EXIT0
+        assert reg.get("ORD1")["square_ordno"] == "EXIT0"
+        client.set([_pos(netqty=0, lp=170.0)])                # OCO filled → flat
+        run(g._cycle())
+        assert client.cancel_oco_calls == ["OCO1"]
+        assert "EXIT0" in client.cancel_order_calls           # orphaned guard exit cancelled
+        assert len(reg) == 0
+
+    def test_square_reason_never_mutated_by_reprice(self):
+        """square_reason is written once by the first square and never overwritten by a
+        re-price; the journal reason on confirmed-flat is the ORIGINAL reason."""
+        reg = LiveMonitorRegistry()
+        _registered(reg, entry=250.0, stop_pct=30)            # breach → reason "stop"
+        client = _FakeClient([_pos(netqty=20, lp=170.0)])
+        calls = []
+
+        async def on_close(entry, exit_price, reason, result):
+            calls.append(reason)
+
+        sq, rp, clock = _SquareRec(), _RepriceRec(), _Clock(_NOW)
+        g = _l2_guard(reg, client, sq, rp, clock, on_close=on_close)
+        run(g._cycle())
+        clock.advance(5.0); run(g._cycle())                   # reprice 2%
+        clock.advance(5.0); run(g._cycle())                   # reprice 4%
+        assert reg.get("ORD1")["square_reason"] == "stop"     # never overwritten
+        assert rp.calls[0]["reason"] == "stop_reprice"        # local suffix only
+        client.set([_pos(netqty=0, lp=170.0)]); run(g._cycle())
+        assert calls == ["stop"]                              # journal reason == original
+
+    def test_eod_skips_squaring_while_reprice_escalates(self):
+        """Past 15:00 IST, EOD does NOT re-square a `squaring` entry (rate-limit); the
+        re-price loop is the sole escalator."""
+        reg = LiveMonitorRegistry()
+        _registered(reg, entry=250.0, stop_pct=30)
+        client = _FakeClient([_pos(netqty=20, lp=170.0)])
+        sq, rp, clock = _SquareRec(), _RepriceRec(), _Clock(_EOD_NOW)  # 15:00 IST
+        g = _l2_guard(reg, client, sq, rp, clock)
+        run(g._cycle())                                        # premium first square; EOD skips
+        assert len(sq.calls) == 1                              # not an EOD double-square
+        clock.advance(5.0); run(g._cycle())                   # re-price escalates
+        assert len(sq.calls) == 1                              # EOD still skips the squaring entry
+        assert len(rp.calls) == 1 and rp.calls[0]["band_pct"] == 2.0
+
+    def test_integration_real_primitive_and_executor_full_crash(self):
+        """End-to-end with the REAL square_position + reprice_exit_leg + MockNoren (not
+        recorders): breach → real first square → real widening re-price (cancels the
+        prior exit, places the new) → broker fills → confirmed-flat finalizes + journals
+        ONCE. Proves the guard↔primitive contract matches by construction."""
+        from app.live.mock_noren import MockNoren
+        from app.live.auto_square import reprice_exit_leg, square_position
+        reg = LiveMonitorRegistry()
+        _registered_with_oco(reg, oco_al_id="OCO1", stop_pct=30)   # stop 175
+        client = MockNoren()
+        client.set_position_book([{"tsym": _TSYM, "exch": "BFO", "netqty": "20",
+                                   "lp": "170", "token": "999"}])
+        client.set_quotes({"lp": "170", "bp1": "168", "sp1": "172", "lc": "150", "uc": "190"})
+        calls = []
+
+        async def on_close(entry, exit_price, reason, result):
+            calls.append(reason)
+
+        async def sqfn(cl, position, *, reason):
+            return await square_position(cl, position, reason=reason)
+
+        clock = _Clock(_NOW)
+        g = LivePositionGuard(
+            registry=reg, client_factory=lambda: _aw(client), square_fn=sqfn,
+            reprice_fn=reprice_exit_leg, on_close=on_close, now_fn=clock.now,
+            reprice_interval_seconds=4.0, reprice_band_schedule=(1.0, 2.0, 4.0),
+            reprice_max_per_cycle=2)
+        # Cycle 1: breach → REAL first square (a marketable SELL LMT is placed).
+        run(g._cycle())
+        e = reg.get("ORD1")
+        assert e["squaring"] is True and e["square_ordno"] is not None
+        first = e["square_ordno"]
+        assert client._orders[first]["status"] == "OPEN" and client._orders[first]["trantype"] == "S"
+        # Cycle 2: interval elapsed → REAL re-price at 2% — cancels the prior exit,
+        # places a fresh one for the full (unfilled) remaining.
+        clock.advance(5.0); run(g._cycle())
+        e = reg.get("ORD1")
+        assert e["square_band_idx"] == 2 and e["square_ordno"] != first
+        assert client._orders[first]["status"] == "CANCELED"       # prior exit cancelled
+        assert g.status()["reprices"] == 1
+        # The broker fills the escalated exit → position flat → finalize + journal once.
+        client.set_position_book([{"tsym": _TSYM, "exch": "BFO", "netqty": "0", "lp": "170"}])
+        run(g._cycle())
+        assert len(reg) == 0 and calls == ["stop"]
+        assert client._orders[e["square_ordno"]]["status"] == "CANCELED"  # resting exit cleaned up

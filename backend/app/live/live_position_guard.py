@@ -63,6 +63,21 @@ _IST = timedelta(hours=5, minutes=30)
 # a minutes-old underlying price (mirrors paper_auto.MARK_TICK_MAX_AGE_SECONDS).
 MARK_TICK_MAX_AGE_SECONDS = 120
 
+# ── Layer 2 widening re-price defaults ──
+# Widening marketable band for escalating a resting-unfilled guard exit. band[0]
+# is the FIRST square (Layer 1, byte-identical); band[1:] are the escalations.
+# Mirrors kill_switch.FLATTEN_BAND_SCHEDULE.
+REPRICE_BAND_SCHEDULE = (1.0, 2.0, 4.0)
+# Minimum seconds between a square and its re-price (≈ 2-3 poll cycles → the
+# marketable LMT gets a real fill chance before we cancel+re-place).
+REPRICE_INTERVAL_SECONDS = 4.0
+# Max re-prices ISSUED per cycle across ALL guarded positions — bounds a
+# synchronized N-leg burst inside Noren's order rate limit (10/s, 40/min); the
+# per-position interval alone does not de-synchronize a basket.
+REPRICE_MAX_PER_CYCLE = 2
+# Fixed epoch for sorting entries with no square_last_ts yet (oldest-first).
+_EPOCH0 = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
 
 def _in_market_hours(now_utc: Optional[datetime] = None) -> bool:
     ist = (now_utc or datetime.now(timezone.utc)) + _IST
@@ -188,6 +203,22 @@ class LiveMonitorRegistry:
             # dropped. A place-accept is NOT a fill, so nothing irreversible fires on it.
             "squaring": False,
             "square_reason": None,
+            # Layer 2 widening re-price state (only meaningful while `squaring`):
+            #   square_band_idx  — index into the band schedule for the NEXT re-price
+            #                      (0 = first square used band[0]; 1+ = escalations).
+            #   square_last_ts   — when the last square/re-price was ISSUED (interval gate).
+            #   square_ordno     — broker id of the currently-resting guard exit (so a
+            #                      re-price can cancel exactly IT, and _finalize_flat can
+            #                      cancel it on confirmed-flat → no orphaned naked short).
+            #   square_qty       — the qty the resting exit was placed for (over-sell math).
+            #   reprice_exhausted/reprice_stopped — terminal signals (schedule spent /
+            #                      hard reject) so a stuck exit is surfaced, never silent.
+            "square_band_idx": 0,
+            "square_last_ts": None,
+            "square_ordno": None,
+            "square_qty": 0,
+            "reprice_exhausted": False,
+            "reprice_stopped": False,
             # the dict handed to square_fn (the margin-safe square reads tsym/exch/
             # netqty/lp); netqty/lp are refreshed from the broker each cycle.
             "position": {
@@ -251,10 +282,26 @@ class LivePositionGuard:
         eod_square_ist: dtime = dtime(15, 0),
         now_fn: Optional[Callable[[], datetime]] = None,
         on_close: Optional[Callable[..., Awaitable[None]]] = None,
+        reprice_fn: Optional[Callable[..., Awaitable[Dict[str, Any]]]] = None,
+        reprice_band_schedule: tuple = REPRICE_BAND_SCHEDULE,
+        reprice_interval_seconds: float = REPRICE_INTERVAL_SECONDS,
+        reprice_max_per_cycle: int = REPRICE_MAX_PER_CYCLE,
     ) -> None:
         self._registry = registry
         self._client_factory = client_factory
         self._square_fn = square_fn
+        # Layer 2 over-sell-safe widening re-price of a resting-unfilled guard exit.
+        # reprice_fn(client, position, *, band_pct, prev_ordno, prev_qty, reason) is a
+        # DISTINCT executor from square_fn (NOT square_position — that sizes off a
+        # stale netqty and can't reliably cancel the prior exit → over-sell). It
+        # cancels the tracked prev order, re-reads its fillshares, and places ONLY the
+        # confirmed-remaining qty at a bid-anchored, circuit-clamped price. Default
+        # None ⇒ no re-pricing (Layer-1 behavior: the first exit rests until flat —
+        # host tests that don't exercise re-price pass None).
+        self._reprice_fn = reprice_fn
+        self._reprice_band_schedule = tuple(reprice_band_schedule)
+        self._reprice_interval_seconds = float(reprice_interval_seconds)
+        self._reprice_max_per_cycle = int(reprice_max_per_cycle)
         # Optional close-loop hook fired from ``_finalize_flat`` when the broker
         # confirms a guard-squared position FLAT (NOT on place-acceptance). Signature:
         #   async on_close(entry, exit_price, exit_reason, result) -> None
@@ -289,12 +336,18 @@ class LivePositionGuard:
         self._task: Optional[asyncio.Task] = None
         self._stats: Dict[str, Any] = {
             "running": False, "started_at": None, "cycles": 0,
-            "guarded": 0, "exits": 0, "last_run_at": None, "last_error": None,
+            "guarded": 0, "exits": 0, "reprices": 0, "stuck": 0,
+            "last_run_at": None, "last_error": None,
         }
 
     def status(self) -> Dict[str, Any]:
         st = dict(self._stats)
         st["guarded"] = len(self._registry)
+        # `stuck` = guarded positions whose re-price loop has terminated with the
+        # exit still unfilled (schedule exhausted or hard reject) — surfaced so an
+        # operator sees an un-fillable exit, never a silent one.
+        st["stuck"] = sum(1 for e in self._registry.snapshot()
+                          if e.get("reprice_exhausted") or e.get("reprice_stopped"))
         return st
 
     async def _cycle(self) -> List[Dict[str, Any]]:
@@ -335,6 +388,11 @@ class LivePositionGuard:
                     spot_map = self._spot_tick_fn() or {}
                 except Exception:
                     spot_map = {}
+
+            # Layer 2: pick the ≤ K squaring entries to ESCALATE (widen the band) this
+            # cycle — global per-cycle budget so a synchronized basket can't burst past
+            # the order rate limit. Empty on an UNKNOWN book (never re-price on a bad read).
+            reprice_ids = self._select_reprice_ids(now, by_tsym, book_is_known)
 
             for entry in self._registry.snapshot():
                 pos = by_tsym.get(entry["tsym"])
@@ -389,10 +447,14 @@ class LivePositionGuard:
                 })
 
                 # A guard square is already working for this entry (place accepted,
-                # not yet confirmed flat). Do NOT re-evaluate stops or re-issue — wait
-                # for the broker to confirm flat (handled above) while the resting exit
-                # + the still-intact OCO protect it. (Layer 2 will re-price here.)
+                # not yet confirmed flat). Do NOT re-evaluate stops or re-issue. If it
+                # was selected for escalation this cycle, over-sell-safely re-price the
+                # exit at the next (wider) band; otherwise WAIT (the resting exit + the
+                # still-intact OCO protect it). Layer-1 invariant preserved: no stop
+                # re-eval while squaring; finalize still only on confirmed-flat.
                 if entry.get("squaring"):
+                    if entry["id"] in reprice_ids:
+                        await self._reprice(client, entry, now, exits)
                     continue
 
                 verdict = evaluate_exit(entry["state"], lp)
@@ -400,7 +462,7 @@ class LivePositionGuard:
                 if verdict["exit"]:
                     await self._issue_square(
                         client, entry, f"software_{verdict['reason']}",
-                        verdict["reason"], exits)
+                        verdict["reason"], exits, now)
                     continue
 
                 # ── Deployed-position exit parity (paper/backtest mirror) ──
@@ -413,7 +475,7 @@ class LivePositionGuard:
                 await self._evaluate_time_stop(client, entry, now, exits)
 
             # ── Basket-level overall controls (overall SL / target / trailing) ──
-            await self._evaluate_overall_basket(client, by_tsym, exits)
+            await self._evaluate_overall_basket(client, by_tsym, exits, now)
 
             # ── 15:00 IST EOD square (deployed positions only) ──
             await self._evaluate_eod_square(client, now, exits)
@@ -428,7 +490,7 @@ class LivePositionGuard:
 
     async def _issue_square(
         self, client: Any, entry: Dict[str, Any], square_reason: str,
-        exit_reason: str, exits: List[Dict[str, Any]],
+        exit_reason: str, exits: List[Dict[str, Any]], now: datetime,
     ) -> None:
         """Issue a margin-safe square exit for a breached position and MARK it
         squaring — place-and-track, NOT place-and-forget. NEVER raises.
@@ -456,10 +518,131 @@ class LivePositionGuard:
             result = {"squared": False, "error": str(exc)[:200]}
         if result.get("squared") and not result.get("dry_run"):
             entry["squaring"] = True
-            entry["square_reason"] = exit_reason
+            entry["square_reason"] = exit_reason        # written ONCE (never by a re-price)
+            # Seed the Layer 2 escalation state: the NEXT band, when this exit was
+            # issued (interval gate), and the resting exit's id/qty (so a re-price
+            # can cancel exactly it and _finalize_flat can cancel it on flat).
+            entry["square_band_idx"] = 1
+            entry["square_last_ts"] = now
+            entry["square_ordno"] = result.get("norenordno")
+            try:
+                entry["square_qty"] = abs(int(entry["position"].get("netqty") or 0))
+            except (TypeError, ValueError):
+                entry["square_qty"] = 0
         self._stats["exits"] += 1
         exits.append({"id": entry["id"], "tsym": entry["tsym"],
                       "reason": exit_reason, "result": result})
+
+    def _select_reprice_ids(
+        self, now: datetime, by_tsym: Dict[str, Dict[str, Any]], book_is_known: bool
+    ) -> set:
+        """Return the ≤ reprice_max_per_cycle entry ids to ESCALATE (widen the band)
+        this cycle. Bounds a synchronized N-leg burst inside the order rate limit.
+
+        Excludes an entry that: has no reprice_fn wired; is on an UNKNOWN book (empty/
+        [] read — never re-price on a broker hiccup); is not squaring; has already
+        terminated (exhausted / stopped); has no band left; is not a LIVE non-zero
+        position this cycle; or whose interval has not elapsed. Eligible entries are
+        drained OLDEST-square_last_ts first (round-robin) so no leg starves."""
+        if not book_is_known or self._reprice_fn is None:
+            return set()
+        sched = self._reprice_band_schedule
+        eligible: List[Dict[str, Any]] = []
+        for e in self._registry.snapshot():
+            if not e.get("squaring"):
+                continue
+            if e.get("reprice_stopped") or e.get("reprice_exhausted"):
+                continue
+            if int(e.get("square_band_idx", 0)) >= len(sched):
+                continue
+            pos = by_tsym.get(e["tsym"])
+            nq = _parse_netqty(pos.get("netqty")) if pos else None
+            if pos is None or nq is None or nq == 0:
+                continue  # not a live non-zero position this cycle (flat/absent/unparseable)
+            ts = e.get("square_last_ts")
+            if ts is not None and (now - ts).total_seconds() < self._reprice_interval_seconds:
+                continue  # give the current resting exit time to fill before re-pricing
+            eligible.append(e)
+        eligible.sort(key=lambda e: e.get("square_last_ts") or _EPOCH0)
+        return {e["id"] for e in eligible[: self._reprice_max_per_cycle]}
+
+    async def _reprice(
+        self, client: Any, entry: Dict[str, Any], now: datetime,
+        exits: List[Dict[str, Any]],
+    ) -> None:
+        """One over-sell-safe escalation of a resting-unfilled guard exit via the
+        injected ``reprice_fn`` (which cancels the TRACKED prior order, re-reads its
+        fillshares, and places ONLY the confirmed remaining qty at a bid-anchored,
+        circuit-clamped price). NEVER raises. The band advances ONLY on a genuine new
+        placement; a re-price NEVER cancels the OCO, journals, or drops the entry —
+        those stay with the confirmed-flat finalizer. ``square_reason`` is never
+        mutated (the ``_reprice`` suffix is a local remarks string only)."""
+        sched = self._reprice_band_schedule
+        band = sched[int(entry["square_band_idx"])]
+        try:
+            result = await self._reprice_fn(
+                client, entry["position"], band_pct=band,
+                prev_ordno=entry.get("square_ordno"),
+                prev_qty=int(entry.get("square_qty", 0)),
+                reason=f'{entry.get("square_reason")}_reprice')
+        except Exception as exc:  # a re-price must never kill the loop
+            log.exception("guard reprice failed for %s: %s", entry["tsym"], exc)
+            result = {"squared": False, "reason": "error", "error": str(exc)[:200]}
+
+        reason = result.get("reason")
+        via = result.get("via")
+
+        # unpriced == no broker call was made, the prior exit still rests → held.
+        # Do NOT stamp (so it re-attempts freely) and do NOT count.
+        if reason == "unpriced":
+            return
+
+        # A real broker attempt happened → stamp so the interval is a true rate gate,
+        # and record it. (Stamp-on-attempt, not stamp-on-success — otherwise a
+        # repeatedly-failing re-price would re-place every cycle and breach 40/min.)
+        entry["square_last_ts"] = now
+        self._stats["reprices"] = self._stats.get("reprices", 0) + 1
+        exits.append({"id": entry["id"], "tsym": entry["tsym"],
+                      "reason": "reprice", "band_pct": band, "result": result})
+
+        # The fill happened during/before the cancel → do NOT advance the band; the
+        # next cycle's confirmed-flat path finalizes.
+        if via == "already_flat" or result.get("remaining") == 0:
+            return
+
+        if result.get("squared") and via == "exit_order":
+            entry["square_band_idx"] = int(entry["square_band_idx"]) + 1
+            entry["square_ordno"] = result.get("norenordno")
+            try:
+                entry["square_qty"] = int(result.get("qty") or entry.get("square_qty", 0))
+            except (TypeError, ValueError):
+                pass
+            if int(entry["square_band_idx"]) >= len(sched):
+                # Terminal band placed, still unfilled — surface it (never silent).
+                entry["reprice_exhausted"] = True
+                self._stats["last_error"] = (
+                    f'{entry["tsym"]}: exit resting at {band}% (terminal band) — unfilled')
+                log.warning(
+                    "guard reprice exhausted for %s at %s%% band — resting unfilled",
+                    entry["tsym"], band)
+            return
+
+        # ── failures — band NOT advanced ──
+        if reason == "cancel_unconfirmed":
+            # Could not confirm the prior exit is dead → the primitive placed NOTHING
+            # (over-sell-safe). Same band, retry next interval.
+            self._stats["last_error"] = f'{entry["tsym"]}: reprice cancel unconfirmed — retrying'
+            return
+        if result.get("failures"):
+            # Hard REJECT (placed ok=False twice) — RMS/margin/session; re-pricing
+            # cannot cure it. STOP escalating this entry and page the operator.
+            entry["reprice_stopped"] = True
+            self._stats["last_error"] = (
+                f'{entry["tsym"]}: exit REJECTED — position may be unprotected (operator)')
+            log.warning("guard reprice REJECTED for %s: %s", entry["tsym"], result.get("failures"))
+            return
+        # transport / unknown error → keep same band, retry next interval.
+        return
 
     async def _finalize_flat(self, client: Any, entry: Dict[str, Any]) -> None:
         """The broker confirms this position FLAT (netqty→0). The SOLE place that
@@ -470,6 +653,10 @@ class LivePositionGuard:
           the OCO itself fired, and it clears an OCO that a close-elsewhere would
           otherwise orphan (a resting alert against a flat account could open a fresh
           naked short).
+        * cancel the tracked guard exit (``square_ordno``) too: the guard leaves a
+          marketable SELL resting alongside the OCO, so if the OCO (or a manual close)
+          filled FIRST, that guard SELL is now orphaned against a flat account → a
+          fresh naked short if the market ticks back into it. Best-effort cancel it.
         * on_close journals ONLY when a guard square was pending (``squaring``), using
           the tracked reason and the last-seen broker mark (an estimate; reboot
           reconcile back-fills the true fill price). A position closed OUTSIDE the
@@ -482,6 +669,14 @@ class LivePositionGuard:
                 log.exception(
                     "guard cancel_oco failed for %s (al_id=%s): %s",
                     entry["tsym"], entry.get("oco_al_id"), exc)
+        sq_ordno = entry.get("square_ordno")
+        if sq_ordno and hasattr(client, "cancel_order"):
+            try:
+                await client.cancel_order(sq_ordno)
+            except Exception as exc:  # best-effort; a no-op if already terminal
+                log.exception(
+                    "guard cancel resting exit failed for %s (%s): %s",
+                    entry["tsym"], sq_ordno, exc)
         if entry.get("squaring") and self._on_close is not None:
             try:
                 await self._on_close(
@@ -545,7 +740,7 @@ class LivePositionGuard:
         if not reason:
             return False
         await self._issue_square(
-            client, entry, f"software_{reason}", reason, exits)
+            client, entry, f"software_{reason}", reason, exits, now)
         return True
 
     async def _evaluate_time_stop(
@@ -569,7 +764,7 @@ class LivePositionGuard:
         if elapsed_min < minutes:
             return False
         await self._issue_square(
-            client, entry, "software_time_stop", "time_stop", exits)
+            client, entry, "software_time_stop", "time_stop", exits, now)
         return True
 
     async def _evaluate_eod_square(
@@ -601,12 +796,13 @@ class LivePositionGuard:
             return
         for entry in self._registry.snapshot():
             if entry.get("squaring"):
-                continue  # a square is already working for this entry
+                continue  # a square is already working (Layer 2 re-price escalates it)
             await self._issue_square(
-                client, entry, "eod_square", "eod_square", exits)
+                client, entry, "eod_square", "eod_square", exits, now)
 
     async def _evaluate_overall_basket(
-        self, client: Any, by_tsym: Dict[str, Dict[str, Any]], exits: List[Dict[str, Any]]
+        self, client: Any, by_tsym: Dict[str, Dict[str, Any]],
+        exits: List[Dict[str, Any]], now: datetime,
     ) -> None:
         """Evaluate the AGGREGATE basket MTM against the overall controls and, on
         an overall SL / target / trailing breach, square ALL remaining guarded
@@ -663,7 +859,7 @@ class LivePositionGuard:
             if entry.get("squaring"):
                 continue
             await self._issue_square(
-                client, entry, f"software_{ov['reason']}", ov["reason"], exits)
+                client, entry, f"software_{ov['reason']}", ov["reason"], exits, now)
         self._overall_state = None  # basket squared → reset
 
     async def _run(self) -> None:

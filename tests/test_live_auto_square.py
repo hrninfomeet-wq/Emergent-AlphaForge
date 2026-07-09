@@ -53,10 +53,12 @@ sys.path.insert(0, str(ROOT / "backend"))
 from app.live.mock_noren import MockNoren
 from app.live.auto_square import (
     build_sl_backstop_intent,
+    reprice_exit_leg,
     square_position,
 )
 from app.live.order_builder import round_to_tick
 from app.live.idempotency import new_client_order_id
+from app.live.broker_protocol import OrderResult
 
 
 # ---------------------------------------------------------------------------
@@ -1201,3 +1203,115 @@ class TestSquarePositionDepthAwarePrice:
         result = run(square_position(client, pos, reason="deadline"))
         assert result["via"] == "already_flat"
         assert len(client._orders) == 0
+
+
+# ---------------------------------------------------------------------------
+# reprice_exit_leg — Layer 2 over-sell-safe widening re-price primitive.
+# ---------------------------------------------------------------------------
+_RTSYM = "NIFTY2662221000CE"
+
+
+class _AlwaysReject(MockNoren):
+    async def place_order(self, intent):
+        return OrderResult(ok=False, rejreason="RMS reject", raw={})
+
+
+class _CancelNoop(MockNoren):
+    """cancel_order reports ok but does NOT mark the order terminal → the confirm
+    re-fetch still sees it working → cancel_unconfirmed."""
+    async def cancel_order(self, ordno):
+        return OrderResult(ok=True, norenordno=ordno)
+
+
+class TestRepriceExitLeg:
+    def _client(self, *, prev=None, book=None, quote=None, cls=MockNoren):
+        cl = cls()
+        if prev is not None:
+            cl._orders[prev["norenordno"]] = prev
+        cl.set_position_book(book if book is not None else [])
+        cl.set_quotes(quote or {"lp": "170", "bp1": "168", "sp1": "172", "lc": "150", "uc": "190"})
+        return cl
+
+    def _pos(self, netqty="20", lp="170", token="999"):
+        return {"tsym": _RTSYM, "exch": "NFO", "netqty": netqty, "lp": lp, "prd": "I", "token": token}
+
+    def _placed(self, cl, exclude="PREV1"):
+        return [o for o in cl._orders.values() if o["norenordno"] != exclude]
+
+    def test_unpriced_no_cancel_no_place(self):
+        """No usable anchor (no quote bid AND no lp) → unpriced; nothing cancelled/placed."""
+        cl = MockNoren()
+        cl.set_quotes({})  # no bp1
+        cl._orders["PREV1"] = {"norenordno": "PREV1", "tsym": _RTSYM, "status": "OPEN", "fillshares": "0"}
+        pos = {"tsym": _RTSYM, "exch": "NFO", "netqty": "20", "lp": None, "prd": "I", "token": None}
+        r = run(reprice_exit_leg(cl, pos, band_pct=2.0, prev_ordno="PREV1", prev_qty=20, reason="stop_reprice"))
+        assert r["squared"] is False and r["reason"] == "unpriced"
+        assert cl._orders["PREV1"]["status"] == "OPEN"  # NOT cancelled
+        assert len(cl._orders) == 1                     # nothing placed
+
+    def test_over_sell_safe_sizes_to_confirmed_remaining(self):
+        """prev_qty 20, prior order filled 10, book shows 10 → places exactly 10 (not 20)."""
+        prev = {"norenordno": "PREV1", "tsym": _RTSYM, "status": "OPEN", "fillshares": "10", "qty": 20}
+        cl = self._client(prev=prev, book=[{"tsym": _RTSYM, "exch": "NFO", "netqty": "10", "lp": "170"}])
+        r = run(reprice_exit_leg(cl, self._pos(), band_pct=2.0, prev_ordno="PREV1", prev_qty=20, reason="stop_reprice"))
+        assert r["squared"] is True and r["via"] == "exit_order" and r["qty"] == 10
+        placed = self._placed(cl)
+        assert len(placed) == 1 and placed[0]["qty"] == 10 and placed[0]["trantype"] == "S"
+        assert cl._orders["PREV1"]["status"] == "CANCELED"  # prior exit cancelled first
+
+    def test_book_floors_remaining_below_fillshares_math(self):
+        """The KNOWN book floors the remaining — never sell more than the account holds
+        (book 5 < prev_qty-filled 10 → place 5)."""
+        prev = {"norenordno": "PREV1", "tsym": _RTSYM, "status": "OPEN", "fillshares": "10", "qty": 20}
+        cl = self._client(prev=prev, book=[{"tsym": _RTSYM, "exch": "NFO", "netqty": "5", "lp": "170"}])
+        r = run(reprice_exit_leg(cl, self._pos(), band_pct=2.0, prev_ordno="PREV1", prev_qty=20, reason="stop_reprice"))
+        assert r["qty"] == 5
+
+    def test_book_unknown_sizes_off_fillshares(self):
+        """filled readable + position_book UNKNOWN (empty) → size off fillshares."""
+        prev = {"norenordno": "PREV1", "tsym": _RTSYM, "status": "OPEN", "fillshares": "5", "qty": 20}
+        cl = self._client(prev=prev, book=[])  # empty == UNKNOWN
+        r = run(reprice_exit_leg(cl, self._pos(), band_pct=2.0, prev_ordno="PREV1", prev_qty=20, reason="stop_reprice"))
+        assert r["squared"] is True and r["qty"] == 15  # 20 - 5
+
+    def test_already_flat_when_fully_filled(self):
+        """prior order fully filled + book flat → already_flat, nothing placed."""
+        prev = {"norenordno": "PREV1", "tsym": _RTSYM, "status": "OPEN", "fillshares": "20", "qty": 20}
+        cl = self._client(prev=prev, book=[{"tsym": _RTSYM, "exch": "NFO", "netqty": "0", "lp": "170"}])
+        r = run(reprice_exit_leg(cl, self._pos(), band_pct=2.0, prev_ordno="PREV1", prev_qty=20, reason="stop_reprice"))
+        assert r["squared"] is True and r["via"] == "already_flat" and r["remaining"] == 0
+        assert self._placed(cl) == []
+
+    def test_cancel_unconfirmed_when_fillshares_unreadable(self):
+        """prior order absent from the book (fillshares unreadable) → cancel_unconfirmed,
+        places nothing (cannot size safely)."""
+        cl = self._client(prev=None, book=[{"tsym": _RTSYM, "exch": "NFO", "netqty": "20", "lp": "170"}])
+        r = run(reprice_exit_leg(cl, self._pos(), band_pct=2.0, prev_ordno="PREV_GONE", prev_qty=20, reason="stop_reprice"))
+        assert r["squared"] is False and r["reason"] == "cancel_unconfirmed"
+        assert len(cl._orders) == 0  # nothing placed
+
+    def test_cancel_unconfirmed_when_prior_exit_wont_die(self):
+        """The prior exit can't be confirmed terminal → cancel_unconfirmed, no place."""
+        cl = self._client(prev={"norenordno": "PREV1", "tsym": _RTSYM, "status": "OPEN", "fillshares": "0"},
+                          book=[{"tsym": _RTSYM, "exch": "NFO", "netqty": "20", "lp": "170"}], cls=_CancelNoop)
+        r = run(reprice_exit_leg(cl, self._pos(), band_pct=2.0, prev_ordno="PREV1", prev_qty=20, reason="stop_reprice"))
+        assert r["squared"] is False and r["reason"] == "cancel_unconfirmed"
+        assert len(cl._orders) == 1  # only the (uncancellable) prior order; nothing new
+
+    def test_successful_place_bid_anchored_clamped(self):
+        """A clean re-price places the full remaining at a bid-anchored, lc-clamped price."""
+        prev = {"norenordno": "PREV1", "tsym": _RTSYM, "status": "OPEN", "fillshares": "0", "qty": 20}
+        cl = self._client(prev=prev, book=[{"tsym": _RTSYM, "exch": "NFO", "netqty": "20", "lp": "170"}])
+        r = run(reprice_exit_leg(cl, self._pos(), band_pct=4.0, prev_ordno="PREV1", prev_qty=20, reason="stop_reprice"))
+        assert r["squared"] is True and r["via"] == "exit_order" and r["qty"] == 20
+        placed = self._placed(cl)
+        # SELL through bid 168 * (1 - 4%) = 161.28, clamped >= lc 150, tick-rounded.
+        assert len(placed) == 1
+        assert 150.0 <= placed[0]["prc"] <= 168.0 and placed[0]["trantype"] == "S"
+
+    def test_reject_twice_returns_failures(self):
+        """Two rejected place attempts → squared False with both reasons; no over-place."""
+        cl = self._client(prev={"norenordno": "PREV1", "tsym": _RTSYM, "status": "OPEN", "fillshares": "0", "qty": 20},
+                          book=[{"tsym": _RTSYM, "exch": "NFO", "netqty": "20", "lp": "170"}], cls=_AlwaysReject)
+        r = run(reprice_exit_leg(cl, self._pos(), band_pct=2.0, prev_ordno="PREV1", prev_qty=20, reason="stop_reprice"))
+        assert r["squared"] is False and len(r["failures"]) == 2

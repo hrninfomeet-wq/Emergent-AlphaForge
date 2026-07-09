@@ -59,7 +59,14 @@ from app.live.order_builder import round_to_tick
 
 from app.live.broker_protocol import OrderIntent
 from app.live.idempotency import new_client_order_id
-from app.live.kill_switch import TERMINAL, _normalize_status, _parse_netqty
+from app.live.kill_switch import (
+    TERMINAL,
+    _leg_price,
+    _normalize_status,
+    _order_row,
+    _parse_netqty,
+    _pos_float,
+)
 
 #: Max cancel+confirm passes before an exit is placed. A working order that
 #: survives this many passes is treated as un-cancellable (margin-unsafe to exit).
@@ -572,3 +579,148 @@ async def square_position(
         "note": "exit rejected twice; operator intervention required",
         "failures": failures,
     }
+
+
+# ---------------------------------------------------------------------------
+# 4. reprice_exit_leg — Layer 2 OVER-SELL-SAFE widening re-price of ONE resting
+#    (unfilled) guard exit. Distinct from square_position: square_position sizes
+#    off the PASSED netqty (never re-read post-cancel) and relies on order_book
+#    discovery to cancel — both over-sell/double-sell races when re-invoked on a
+#    still-open position. This primitive cancels the TRACKED prior order, re-reads
+#    ITS fillshares, and places ONLY the confirmed remaining qty at a bid-anchored,
+#    circuit-clamped price (kill_switch._leg_price). Mirrors panic_squareoff_verified's
+#    per-leg logic for one leg, non-blocking (the guard drives the cadence).
+# ---------------------------------------------------------------------------
+
+async def reprice_exit_leg(
+    client: Any,
+    position: Dict[str, Any],
+    *,
+    band_pct: float,
+    prev_ordno: Optional[str],
+    prev_qty: int,
+    reason: str,
+) -> Dict[str, Any]:
+    """Cancel the tracked resting exit and re-place the confirmed remaining qty at a
+    wider marketable band. NEVER raises. NEVER over-sells.
+
+    Result dict (the guard's ``_reprice`` classifies on these):
+      • ``{"squared": False, "reason": "unpriced"}`` — no usable anchor (no quote AND
+        no lp); NOTHING was cancelled or placed (the prior exit still rests).
+      • ``{"squared": False, "reason": "cancel_unconfirmed"}`` — could not confirm the
+        prior exit is terminal, or could not read the fill count to size safely →
+        placed NOTHING (over-sell-safe).
+      • ``{"squared": True, "via": "already_flat", "remaining": 0}`` — the position
+        filled in the cancel window; nothing to place.
+      • ``{"squared": True, "via": "exit_order", "norenordno": …, "qty": remaining}`` —
+        a fresh marketable LMT was placed for the confirmed remaining qty.
+      • ``{"squared": False, "failures": [...]}`` — the place rejected twice.
+
+    Direction is the position's own sign (long option → SELL). ``prev_qty`` is the qty
+    the prior exit was placed for; the true remaining is ``prev_qty − fillshares``,
+    additionally floored by the broker position book when it is a KNOWN (non-empty)
+    read — never sell more than the account actually holds.
+    """
+    tsym = position.get("tsym", "")
+    exch = position.get("exch", "NFO")
+    prd = str(position.get("prd") or "I")
+    token = str(position.get("token") or "") or None
+
+    pos_netqty = _parse_netqty(position.get("netqty")) or 0
+    trantype = "S" if pos_netqty > 0 else "B"
+    tick = _pos_float(position.get("ti")) or 0.05
+    ref = _pos_float(position.get("lp"))
+
+    # ── Step A — compute the price BEFORE any cancel: never strip a protective exit
+    # we cannot replace. A fresh GetQuotes gives the bid/ask anchor + circuit band. ──
+    quote: Dict[str, Any] = {}
+    if token and hasattr(client, "get_quotes"):
+        try:
+            quote = (await client.get_quotes(exch, token)) or {}
+        except Exception:
+            quote = {}
+    prc = _leg_price(pos_netqty, ref, band_pct, tick, quote)
+    if prc is None:
+        return {"squared": False, "reason": "unpriced"}
+
+    # ── Step B — cancel the TRACKED prior exit (+ any other working order for the
+    # scrip) and CONFIRM none non-terminal remain. Unconfirmed → place nothing. ──
+    seed = [prev_ordno] if prev_ordno else []
+    state = await _cancel_all_working_for_scrip(client, tsym, seed)
+    if not state["cleared"]:
+        return {"squared": False, "reason": "cancel_unconfirmed"}
+
+    # ── Step C — size to the CONFIRMED remaining qty (the over-sell guard). ──
+    filled: Optional[int] = None
+    if prev_ordno:
+        row = await _order_row(client, prev_ordno)
+        if row is not None:
+            filled = _parse_netqty(row.get("fillshares"))
+
+    try:
+        pbook = await client.position_book()
+    except Exception:
+        pbook = None
+    book_known = isinstance(pbook, list) and len(pbook) > 0
+    book_netqty: Optional[int] = None
+    if book_known:
+        for p in pbook:
+            if str(p.get("tsym", "")) == str(tsym):
+                book_netqty = _parse_netqty(p.get("netqty"))
+                break
+        if book_netqty is None:
+            book_netqty = 0  # absent from a complete book → flat
+
+    if prev_ordno:
+        if filled is None:
+            # Cannot read the prior order's fill count post-cancel → cannot size
+            # safely → place NOTHING (over-sell-safe). Retry next interval.
+            return {"squared": False, "reason": "cancel_unconfirmed"}
+        if book_known:
+            remaining = min(int(prev_qty) - int(filled), abs(int(book_netqty)))
+        else:
+            remaining = int(prev_qty) - int(filled)  # fillshares authoritative
+    else:
+        # No tracked prior order → size off the KNOWN book only (else unknown → hold).
+        if not book_known:
+            return {"squared": False, "reason": "cancel_unconfirmed"}
+        remaining = abs(int(book_netqty))
+
+    if remaining <= 0:
+        return {"squared": True, "via": "already_flat", "remaining": 0}
+
+    # ── Step D — place the marketable LMT for the confirmed remaining; retry once. ──
+    failures: List[str] = []
+
+    async def _try_place() -> "OrderResult":  # type: ignore[name-defined]  # noqa: F821
+        cid = new_client_order_id()
+        intent = OrderIntent(
+            client_order_id=cid, trantype=trantype, prctyp="LMT",
+            exch=exch, tsym=tsym, qty=remaining, prc=prc, prd=prd,
+            ret="DAY", trgprc=None, remarks=cid,
+        )
+        return await client.place_order(intent)
+
+    try:
+        result = await _try_place()
+    except Exception as exc:
+        failures.append(str(exc))
+        result = None  # type: ignore[assignment]
+    if result is not None and result.ok:
+        return {"squared": True, "via": "exit_order",
+                "norenordno": result.norenordno, "qty": remaining}
+    if result is not None and not result.ok:
+        failures.append(result.rejreason or "place_order returned ok=False")
+
+    try:
+        result2 = await _try_place()
+    except Exception as exc2:
+        failures.append(str(exc2))
+        result2 = None  # type: ignore[assignment]
+    if result2 is not None and result2.ok:
+        return {"squared": True, "via": "exit_order",
+                "norenordno": result2.norenordno, "qty": remaining, "note": "placed on retry"}
+    if result2 is not None and not result2.ok:
+        failures.append(result2.rejreason or "retry place_order returned ok=False")
+
+    return {"squared": False, "failures": failures}
