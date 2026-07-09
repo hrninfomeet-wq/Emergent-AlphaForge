@@ -1006,8 +1006,19 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                     break
                 if pf and await _maybe_pause():
                     return
-                metrics, merged = await asyncio.to_thread(evaluate, params)
-                val = obj(metrics)
+                # O14: a single raising combo must NOT crash the whole job (resume
+                # then deterministically re-hits the same combo forever). Mirror the
+                # bayesian study.optimize(catch=Exception): disqualify + continue.
+                try:
+                    metrics, merged = await asyncio.to_thread(evaluate, params)
+                    val = obj(metrics)
+                except Exception as exc:
+                    log.warning("grid trial %d raised (%s) — disqualified, continuing",
+                                completed, exc)
+                    trial_history.append({"params": params, "metrics": None,
+                                          "objective_value": None, "error": str(exc)[:200]})
+                    completed += 1
+                    continue
                 trial_history.append({"params": params, "metrics": metrics, "objective_value": round(val, 4)})
                 if val > best_so_far["value"]:
                     best_so_far = {"value": val, "params": dict(params), "metrics": metrics, "trial_num": completed}
@@ -1151,6 +1162,22 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
         analyzed_candidates = None
         _last_progress = [0.0]
 
+        async def _analyze_should_stop() -> bool:
+            """O13: analyze-stage stop signal — over-budget OR a user cancel/pause
+            that landed AFTER the trial loop (the single cancel read at the top of
+            the analyze stage misses those). On stop the caller breaks and the job
+            finalizes with PARTIAL results (best-so-far + whatever ranked/survived).
+            Byte-identical when nobody stops and the budget is 0/unhit."""
+            nonlocal analyze_budget_hit
+            if over_budget(elapsed=time.monotonic() - _an_t0, budget_sec=analyze_budget_sec):
+                analyze_budget_hit = True
+                return True
+            try:
+                cf, pf = await _job_control(job_id)
+            except Exception:
+                return False
+            return bool(cf or pf)
+
         async def _an_progress(stage, done, total, per_item):
             now = time.monotonic()
             if now - _last_progress[0] < 1.0 and done < total:   # throttle ~1/sec
@@ -1243,8 +1270,7 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                     if (i + 1) % 10 == 0:
                         log.info("rerank %d/%d", i + 1, len(ranked))
                     await _an_progress("survival", i + 1, len(ranked), _per_item_surv)
-                    if over_budget(elapsed=time.monotonic() - _an_t0, budget_sec=analyze_budget_sec):
-                        analyze_budget_hit = True
+                    if await _analyze_should_stop():  # O13: budget OR cancel/pause
                         break
                 survivors = [r for r in ranked if r.get("survival", {}).get("survived")
                              and (r["survival"].get("total_return_pct") or 0) > 0]
@@ -1252,6 +1278,8 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                     from app.exit_controls import exit_control_grid
                     grid = exit_control_grid(option_cfg.get("exit_control_search"))
                     for r in survivors:
+                        if await _analyze_should_stop():  # O13: grid was ungoverned
+                            break
                         try:
                             merged = strategy.merged_params(r["params"])
                             df_enr = get_enriched(merged)
@@ -1343,6 +1371,11 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
         # tail): partial results are still finalized below.
         heatmap = None
         robustness = None
+        # O13: a cancel that landed DURING the analyze stage (rerank/survival) was
+        # silently discarded — the cancel flag was read once before analysis. Refresh
+        # it so the spot-mode heatmap/robustness tail is skipped on a mid-analyze stop.
+        if not cancelled_flag:
+            cancelled_flag = await _is_cancelled(job_id)
         if not cancelled_flag and evaluation_mode == "spot" and not over_budget(
                 elapsed=time.monotonic() - _an_t0, budget_sec=analyze_budget_sec):
             try:

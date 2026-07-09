@@ -62,18 +62,21 @@ def _noop(_x: int) -> int:
 
 def _worker_evaluate(strategy_id: str, merged: Dict[str, Any], slice_bounds: Optional[Tuple[int, int]],
                      instrument: str, costs: bool, pretrade: Dict[str, Any],
-                     frame: Optional[pd.DataFrame] = None) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
-    """Top-level, picklable. In the FORK-pool path, `frame` is omitted and the
-    worker reads the fork-inherited `_RAW_DF` module global (never pickled). In the
-    SEQUENTIAL in-process path, the parent passes `frame` explicitly (no global, so
-    concurrent jobs can't race). Re-derives the strategy from the registry. Returns
-    (metrics|None, merged). Never raises — failure -> (None, merged), mirroring
-    study.optimize(catch=Exception)."""
+                     frame: Optional[pd.DataFrame] = None,
+                     caches: Optional[Dict[str, Dict]] = None) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
+    """Top-level, picklable. In the FORK-pool path, `frame`/`caches` are omitted and
+    the worker reads the fork-inherited `_RAW_DF` + per-worker `_WORKER_CACHES`
+    globals (never pickled; the cache is cleared per worker in `_init_worker`). In
+    the SEQUENTIAL in-process path, the parent passes `frame` AND a fresh per-call
+    `caches` dict explicitly — the module global must NEVER be used in the parent
+    because it is keyed only on (group, params), not the frame, so a later job would
+    index-align another frame's cached Series → NaN tails → wrong results (O12).
+    Returns (metrics|None, merged). Never raises — failure -> (None, merged)."""
     try:
         base = frame if frame is not None else _RAW_DF
         frame = base if slice_bounds is None else base.iloc[slice_bounds[0]:slice_bounds[1]]
         strategy = get_registry().get(strategy_id)
-        enr = enrich_with_cache(frame, merged, _WORKER_CACHES)
+        enr = enrich_with_cache(frame, merged, _WORKER_CACHES if caches is None else caches)
         res = run_backtest(enr, strategy, merged, instrument=instrument, costs_enabled=costs, pretrade_filters=pretrade)
         metrics = dict(res["metrics"])
         trades = res.get("trades", []) or []
@@ -87,16 +90,18 @@ def _worker_evaluate(strategy_id: str, merged: Dict[str, Any], slice_bounds: Opt
 
 def _worker_evaluate_wfo(strategy_id: str, merged: Dict[str, Any], slice_bounds: Tuple[int, int],
                          instrument: str, costs: bool, pretrade: Dict[str, Any],
-                         frame: Optional[pd.DataFrame] = None) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
+                         frame: Optional[pd.DataFrame] = None,
+                         caches: Optional[Dict[str, Dict]] = None) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
     """WFO worker: enrich the FULL frame, THEN slice to the window, preserving
     indicator warmup — mirrors wfo._evaluate_slice (enrich-once-then-slice). The
     single-run _worker_evaluate slices RAW then enriches, which strips warmup at
     window starts, so WFO needs this distinct path. slice_bounds is REQUIRED.
-    Reads fork-inherited _RAW_DF (or `frame` in the sequential fallback). Returns
-    (metrics|None, merged); never raises."""
+    Reads fork-inherited _RAW_DF (or `frame` in the sequential fallback), and a fresh
+    per-call `caches` in the fallback (never the frame-blind module global — O12).
+    Returns (metrics|None, merged); never raises."""
     try:
         base = frame if frame is not None else _RAW_DF
-        enr = enrich_with_cache(base, merged, _WORKER_CACHES)
+        enr = enrich_with_cache(base, merged, _WORKER_CACHES if caches is None else caches)
         a, b = slice_bounds
         df_slice = enr.iloc[a:b].reset_index(drop=True)
         strategy = get_registry().get(strategy_id)
@@ -153,6 +158,12 @@ def parallel_backtest(pool: Optional[ProcessPoolExecutor],
     safe) — the fallback for opt_workers<=1 / fork-unavailable / concurrent-job. When pool
     is set, workers read the fork-inherited _RAW_DF global (raw_df is NOT pickled per task)."""
     if pool is None:
-        return [worker(sid, m, sb, instrument, costs, pretrade, raw_df) for (sid, m, sb) in param_sets]
+        # Sequential fallback runs IN THE PARENT. Use a FRESH cache dict per call so
+        # a later job / different frame can never reuse another frame's cached Series
+        # (the module global _WORKER_CACHES is keyed only on (group, params) → silent
+        # index-align poisoning). Sharing within this one call is correct (same frame).
+        local_caches: Dict[str, Dict] = {}
+        return [worker(sid, m, sb, instrument, costs, pretrade, raw_df, local_caches)
+                for (sid, m, sb) in param_sets]
     futs = [pool.submit(worker, sid, m, sb, instrument, costs, pretrade) for (sid, m, sb) in param_sets]
     return [f.result() for f in futs]  # iterated in submission order -> order preserved
