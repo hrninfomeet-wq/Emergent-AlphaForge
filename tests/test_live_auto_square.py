@@ -1,28 +1,12 @@
 """TDD tests for backend/app/live/auto_square.py (Task L3.3).
 
+The time-cap primitives (deadline_iso / is_due / SQUARE_HORIZON_SEC) were removed
+with the manual 10-minute auto-square timer (see docs/superpowers/specs/
+2026-07-09-remove-manual-livetest-10min-timer-design.md); only the square executor
+and the SL-LMT backstop builder remain.
+
 Coverage
 --------
-deadline_iso:
-  - fill "2026-06-22T10:00:00" + 600 s → "...10:10:00"
-  - horizon clamped to 600 if a larger value is passed (e.g. 3600)
-  - horizon < 600 respected (e.g. 300 s → 5 min)
-  - timezone-aware fill time handled correctly
-  - [FIX1] deadline_iso always emits a UTC-aware (+00:00) ISO string
-  - [FIX1] IST-aware fill → UTC-normalized deadline (catastrophic pairing test)
-  - [FIX1] is_due correctly orders aware-IST now vs UTC-aware deadline
-
-is_due:
-  - now before deadline → False
-  - now exactly at deadline → True
-  - now after deadline → True
-  - unparseable deadline string → True (fail-safe square-now)
-  - unparseable now string → True (fail-safe square-now)
-  - both unparseable → True (fail-safe)
-  - [FIX1] aware-UTC deadline vs aware-IST now that is genuinely past → True
-  - [FIX1] aware-UTC deadline vs aware-IST now that is genuinely before → False
-  - [FIX1] naive vs naive still compares correctly (back-compat)
-  - [FIX1] aware now 30 min after deadline (both aware) → True
-
 build_sl_backstop_intent:
   - trgprc == stop_trigger
   - prc == max(0.05, round(stop_trigger - 0.05, 2))
@@ -68,10 +52,6 @@ sys.path.insert(0, str(ROOT / "backend"))
 
 from app.live.mock_noren import MockNoren
 from app.live.auto_square import (
-    SQUARE_HORIZON_SEC,
-    _to_utc,
-    deadline_iso,
-    is_due,
     build_sl_backstop_intent,
     square_position,
 )
@@ -104,152 +84,6 @@ def _position(
     if working_norenordno is not None:
         pos["working_norenordno"] = working_norenordno
     return pos
-
-
-# ---------------------------------------------------------------------------
-# deadline_iso
-# ---------------------------------------------------------------------------
-
-class TestDeadlineIso:
-    def test_basic_10_minutes(self):
-        dl = deadline_iso("2026-06-22T10:00:00")
-        assert dl == "2026-06-22T10:10:00+00:00"
-
-    def test_horizon_clamped_to_600(self):
-        """Passing horizon_sec=3600 (1 hour) must be clamped to 600 s."""
-        dl = deadline_iso("2026-06-22T10:00:00", horizon_sec=3600)
-        # Clamped to 10:10:00, not 11:00:00
-        assert "10:10:00" in dl
-        assert "11:00:00" not in dl
-
-    def test_horizon_below_600_respected(self):
-        """horizon_sec=300 (5 min) should NOT be clamped."""
-        dl = deadline_iso("2026-06-22T10:00:00", horizon_sec=300)
-        assert "10:05:00" in dl
-
-    def test_timezone_aware_fill_time(self):
-        """Timezone-aware ISO strings are handled without error."""
-        dl = deadline_iso("2026-06-22T10:00:00+05:30", horizon_sec=600)
-        # Should be parseable and 10 minutes ahead
-        from datetime import datetime
-        dt = datetime.fromisoformat(dl)
-        dt_fill = datetime.fromisoformat("2026-06-22T10:00:00+05:30")
-        diff = (dt - dt_fill).total_seconds()
-        assert diff == 600
-
-    def test_square_horizon_sec_constant_is_600(self):
-        assert SQUARE_HORIZON_SEC == 600
-
-    # --- FIX 1 new tests ---
-
-    def test_deadline_iso_always_emits_utc_aware_string(self):
-        """[FIX1] deadline_iso must always return a UTC-aware (+00:00) ISO string,
-        even when given a naive input."""
-        dl = deadline_iso("2026-06-22T10:00:00")  # naive
-        # Must be parseable and have tz offset
-        from datetime import datetime
-        dt = datetime.fromisoformat(dl)
-        assert dt.tzinfo is not None, "deadline_iso returned a naive datetime string"
-        from datetime import timezone as tz
-        import datetime as _dt
-        # Offset must be UTC (0)
-        assert dt.utcoffset() == _dt.timedelta(0), (
-            f"Expected UTC (+00:00) offset, got {dt.utcoffset()}"
-        )
-
-    def test_deadline_iso_ist_fill_normalizes_to_utc(self):
-        """[FIX1] Catastrophic pairing: IST-aware fill → deadline must be UTC-normalized.
-        Deadline from 10:00 IST (+05:30) = 04:30 UTC + 10min = 04:40 UTC."""
-        dl = deadline_iso("2026-06-22T10:00:00+05:30", horizon_sec=600)
-        from datetime import datetime, timezone
-        dt = datetime.fromisoformat(dl)
-        # Must be UTC-aware
-        assert dt.tzinfo is not None
-        assert dt.utcoffset().total_seconds() == 0, (
-            f"Expected UTC offset, got {dt.utcoffset()}"
-        )
-        # 10:00 IST = 04:30 UTC; + 10 min = 04:40 UTC
-        assert dt.hour == 4 and dt.minute == 40, (
-            f"Expected 04:40 UTC, got {dt.isoformat()}"
-        )
-
-
-# ---------------------------------------------------------------------------
-# is_due
-# ---------------------------------------------------------------------------
-
-class TestIsDue:
-    def test_before_deadline_returns_false(self):
-        assert is_due("2026-06-22T10:10:00", "2026-06-22T10:05:00") is False
-
-    def test_at_deadline_returns_true(self):
-        assert is_due("2026-06-22T10:10:00", "2026-06-22T10:10:00") is True
-
-    def test_after_deadline_returns_true(self):
-        assert is_due("2026-06-22T10:10:00", "2026-06-22T10:15:00") is True
-
-    def test_unparseable_deadline_returns_true(self):
-        """Fail-safe: bad deadline string → square now."""
-        assert is_due("not-a-date", "2026-06-22T10:05:00") is True
-
-    def test_unparseable_now_returns_true(self):
-        """Fail-safe: bad now string → square now."""
-        assert is_due("2026-06-22T10:10:00", "garbage") is True
-
-    def test_both_unparseable_returns_true(self):
-        assert is_due("bad", "also-bad") is True
-
-    def test_empty_strings_return_true(self):
-        assert is_due("", "") is True
-
-    def test_one_second_before_deadline_is_false(self):
-        assert is_due("2026-06-22T10:10:00", "2026-06-22T10:09:59") is False
-
-    def test_one_second_after_deadline_is_true(self):
-        assert is_due("2026-06-22T10:10:00", "2026-06-22T10:10:01") is True
-
-    # --- FIX 1 new tests: tz-aware vs tz-aware correct ordering ---
-
-    def test_aware_ist_now_past_utc_deadline_returns_true(self):
-        """[FIX1] Catastrophic pairing: UTC-aware deadline vs IST-aware now that IS past it.
-
-        Deadline: 2026-06-22T04:40:00+00:00 (04:40 UTC)
-        Now:      2026-06-22T10:15:00+05:30 (= 04:45 UTC — 5 min past deadline)
-        Expected: True (position IS past deadline)
-        """
-        deadline = "2026-06-22T04:40:00+00:00"
-        now_ist = "2026-06-22T10:15:00+05:30"   # 04:45 UTC — past deadline
-        assert is_due(deadline, now_ist) is True, (
-            "is_due returned False for an IST now that is genuinely past the UTC deadline"
-        )
-
-    def test_aware_ist_now_before_utc_deadline_returns_false(self):
-        """[FIX1] IST-aware now that is genuinely BEFORE UTC deadline → False.
-
-        Deadline: 2026-06-22T04:40:00+00:00 (04:40 UTC)
-        Now:      2026-06-22T10:05:00+05:30 (= 04:35 UTC — 5 min before deadline)
-        Expected: False
-        """
-        deadline = "2026-06-22T04:40:00+00:00"
-        now_ist = "2026-06-22T10:05:00+05:30"   # 04:35 UTC — before deadline
-        assert is_due(deadline, now_ist) is False, (
-            "is_due returned True for an IST now that is genuinely before the UTC deadline"
-        )
-
-    def test_naive_vs_naive_ordering_preserved(self):
-        """[FIX1] Naive-vs-naive still compares correctly (back-compat).
-        Both assumed UTC → ordering is identical to before."""
-        # Before deadline (same as existing test_before_deadline_returns_false but explicit)
-        assert is_due("2026-06-22T10:10:00", "2026-06-22T10:09:00") is False
-        assert is_due("2026-06-22T10:10:00", "2026-06-22T10:11:00") is True
-
-    def test_aware_now_30min_after_aware_deadline_is_true(self):
-        """[FIX1] Deadline 20min after an aware fill, now 30min after fill (both aware UTC) → True."""
-        # Fill at 09:00 UTC; deadline = 09:10 UTC; now = 09:30 UTC → past deadline
-        fill = "2026-06-22T09:00:00+00:00"
-        dl = deadline_iso(fill, horizon_sec=600)  # 09:10 UTC
-        now = "2026-06-22T09:30:00+00:00"         # 30 min after fill = past deadline
-        assert is_due(dl, now) is True
 
 
 # ---------------------------------------------------------------------------

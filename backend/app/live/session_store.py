@@ -3,7 +3,6 @@
 Holds the armed state for the ONE active live-test position:
   - entry_norenordno
   - sl_norenordno          (protective SL backstop; None if not placed)
-  - deadline               (ISO UTC string — fill_time + 10 min)
   - status                 "armed" | "squared" | "kill_switch"
   - heartbeat_ts           last GET /test-session access (ISO UTC)
 
@@ -16,8 +15,10 @@ DB-agnostic: constructor takes any async collection that exposes find_one /
 update_one (upsert=True) / find.  Tests pass FakeAsyncCollection; production
 code uses ``default_store()``.
 
-remaining_secs(now_iso) helper computes seconds until deadline from an injected
-now — no wall-clock inside.
+The 10-minute auto-square timer was removed (see docs/superpowers/specs/
+2026-07-09-remove-manual-livetest-10min-timer-design.md), so there is no longer a
+``deadline`` or a ``remaining_secs`` countdown — the software guard's premium stop
+plus the 15:00 IST EOD square are the manual position's backstops.
 """
 from __future__ import annotations
 
@@ -29,29 +30,10 @@ _SINGLETON_ID = "session_singleton"
 _EMPTY: Dict[str, Any] = {
     "entry_norenordno": None,
     "sl_norenordno": None,
-    "deadline": None,
     "status": "none",
     "heartbeat_ts": None,
     "reject_reason": None,
 }
-
-
-def _remaining(deadline_iso: Optional[str], now_iso: str) -> Optional[float]:
-    """Return seconds until ``deadline_iso`` from ``now_iso``, or None on parse error."""
-    if not deadline_iso:
-        return None
-    try:
-        def _to_utc(s: str) -> datetime:
-            dt = datetime.fromisoformat(s)
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            else:
-                dt = dt.astimezone(timezone.utc)
-            return dt
-
-        return max(0.0, (_to_utc(deadline_iso) - _to_utc(now_iso)).total_seconds())
-    except Exception:
-        return None
 
 
 class SessionStore:
@@ -73,7 +55,6 @@ class SessionStore:
         self,
         *,
         entry_norenordno: str,
-        deadline: str,
         sl_norenordno: Optional[str] = None,
         now_iso: Optional[str] = None,
     ) -> Dict[str, Any]:
@@ -82,7 +63,6 @@ class SessionStore:
         doc = {
             "entry_norenordno": entry_norenordno,
             "sl_norenordno": sl_norenordno,
-            "deadline": deadline,
             "status": "armed",
             "heartbeat_ts": ts,
         }
@@ -128,10 +108,6 @@ class SessionStore:
             {"$set": dict(_EMPTY)},
             upsert=True,
         )
-
-    def remaining_secs(self, deadline_iso: Optional[str], now_iso: str) -> Optional[float]:
-        """Pure helper — seconds until deadline from now_iso (no wall-clock)."""
-        return _remaining(deadline_iso, now_iso)
 
 
 def _utcnow_iso() -> str:

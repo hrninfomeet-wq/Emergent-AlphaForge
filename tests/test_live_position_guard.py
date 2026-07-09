@@ -53,6 +53,12 @@ def _guard(registry, client, rec):
         registry=registry,
         client_factory=lambda: _aw(client),
         square_fn=rec.square_fn,
+        # Pin a pre-EOD clock (11:30 IST) so the 15:00 EOD square never fires in
+        # tests that only exercise the per-position paths. (Manual positions are no
+        # longer EOD-exempt, so an unpinned wall-clock past 15:00 IST would square
+        # them and break unrelated assertions.) `_NOW` is defined later in the
+        # module; late binding resolves it at call time.
+        now_fn=lambda: _NOW,
     )
 
 
@@ -200,7 +206,8 @@ class TestGuardCycle:
         client = _FakeClient([])
         rec = _Recorder()
         g = LivePositionGuard(registry=r, client_factory=lambda: _aw(client),
-                              square_fn=rec.square_fn, max_pending_misses=3)
+                              square_fn=rec.square_fn, max_pending_misses=3,
+                              now_fn=lambda: _NOW)  # pre-EOD: isolate the grace-window path
         for _ in range(3):
             run(g._cycle())
         assert rec.squared == []
@@ -295,7 +302,8 @@ class TestOverallBasket:
             return _c
 
         g = LivePositionGuard(registry=r, client_factory=lambda: _aw(cl),
-                              square_fn=rec.square_fn, overall_provider=prov)
+                              square_fn=rec.square_fn, overall_provider=prov,
+                              now_fn=lambda: _NOW)  # pre-EOD: isolate the basket path
         return r, cl, rec, g
 
     def _pos(self, ts, urmtom, lp=235):
@@ -621,11 +629,14 @@ class TestEodSquare:
         assert rec.squared[0][1] == "eod_square"
         assert len(r) == 0
 
-    def test_eod_does_not_square_manual(self):
+    def test_eod_squares_manual(self):
+        # The 10-min auto-square timer was removed; the 15:00 IST EOD square is now
+        # the "never left open" backstop for a manual test position too.
         r, rec, g = self._mk(source="manual", now=_EOD_NOW)
         run(g._cycle())
-        assert rec.squared == []
-        assert len(r) == 1  # manual keeps its own 10-min timer; EOD never touches it
+        assert len(rec.squared) == 1
+        assert rec.squared[0][1] == "eod_square"
+        assert len(r) == 0
 
     def test_no_eod_square_before_1500_ist(self):
         r, rec, g = self._mk(source="auto_live", now=_NOW)  # 11:30 IST

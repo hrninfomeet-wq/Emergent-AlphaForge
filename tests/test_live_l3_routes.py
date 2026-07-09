@@ -7,7 +7,7 @@ Test coverage:
   POST /live-broker/order/place   — PAPER → blocked; LIVE_TEST all-pass → exactly 1 place_order,
                                     protected=True, session recorded; halted engine → blocked
   POST /live-broker/order/square  — exit-only, squares position, reverts mode
-  GET  /live-broker/test-session  — returns deadline + remaining_secs + heartbeat
+  GET  /live-broker/test-session  — returns status + heartbeat + entry order (no timer)
   POST /live-broker/kill-switch   — EXECUTES panic squareoff, reverts mode, transmitted=True
 
 CHOKEPOINT invariant:
@@ -217,8 +217,6 @@ def _make_app(
             "uid": "TESTUID",
             "actid": "TESTUID",
         }),
-        # Patch _schedule_auto_square to be a no-op (background task)
-        "_schedule_auto_square": MagicMock(),
         # Patch _utcnow_iso to a fixed time for deterministic tests
         "_utcnow_iso": lambda: "2026-06-22T06:00:00+00:00",
         # No real sleeps between the kill-switch verification passes
@@ -389,8 +387,9 @@ def test_place_in_live_test_all_pass_exactly_one_place_order():
         _stop_patches(tc)
 
 
-def test_place_in_live_test_session_has_deadline():
-    """After a successful place, the session store has a deadline."""
+def test_place_in_live_test_session_has_no_deadline():
+    """After a successful place, the session is armed with NO deadline (the 10-min
+    auto-square timer was removed — the guard stop + 15:00 EOD are the backstops)."""
     ms = _make_mode_store(mode="LIVE_TEST", consumed=False)
     cl = _make_mock_noren()
     cl._search_scrip_data = {"NFO": [_NIFTY_SCRIP]}
@@ -402,9 +401,9 @@ def test_place_in_live_test_session_has_deadline():
         assert r.status_code == 200
         data = r.json()
         assert data["placed"] is True
-        # Check session was recorded
+        # Check session was recorded — armed, but no deadline field is set.
         sess = asyncio.run(ss.get())
-        assert sess["deadline"] is not None
+        assert sess.get("deadline") is None
         assert sess["status"] == "armed"
         assert sess["entry_norenordno"] is not None
     finally:
@@ -491,7 +490,6 @@ def test_square_exits_position_and_reverts_mode():
     # Pre-arm the session
     asyncio.run(ss.arm(
         entry_norenordno="MOCK_ENTRY",
-        deadline="2026-06-22T06:10:00+00:00",
     ))
     tc = _make_app(mode_store=ms, client=cl, session_store=ss)
     try:
@@ -554,12 +552,12 @@ def test_square_is_exit_only_no_buy_orders():
 # GET /live-broker/test-session
 # ===========================================================================
 
-def test_test_session_returns_deadline_and_remaining():
-    """GET /test-session returns deadline, remaining_secs, and heartbeat."""
+def test_test_session_returns_status_and_heartbeat_no_deadline():
+    """GET /test-session returns status/heartbeat/entry — and NO deadline or
+    remaining_secs (the 10-min timer was removed)."""
     ss = _make_session_store()
     asyncio.run(ss.arm(
         entry_norenordno="MOCK1",
-        deadline="2026-06-22T06:10:00+00:00",
         sl_norenordno="MOCK_SL",
         now_iso="2026-06-22T06:00:00+00:00",
     ))
@@ -568,8 +566,8 @@ def test_test_session_returns_deadline_and_remaining():
         r = tc.get("/live-broker/test-session")
         assert r.status_code == 200
         data = r.json()
-        assert data["deadline"] == "2026-06-22T06:10:00+00:00"
-        assert data["remaining_secs"] is not None
+        assert "deadline" not in data
+        assert "remaining_secs" not in data
         assert data["heartbeat"] is not None
         assert data["sl_norenordno"] == "MOCK_SL"
         assert data["status"] == "armed"
@@ -586,7 +584,7 @@ def test_test_session_no_session_returns_none_fields():
         r = tc.get("/live-broker/test-session")
         assert r.status_code == 200
         data = r.json()
-        assert data["deadline"] is None
+        assert "deadline" not in data
         assert data["position"] is None
     finally:
         _stop_patches(tc)
@@ -597,7 +595,6 @@ def test_test_session_bumps_heartbeat():
     ss = _make_session_store()
     asyncio.run(ss.arm(
         entry_norenordno="M1",
-        deadline="2026-06-22T06:10:00+00:00",
         now_iso="2026-06-22T06:00:00+00:00",
     ))
     # First heartbeat is the arm time
@@ -633,7 +630,6 @@ def test_kill_switch_executes_and_transmits():
     ss = _make_session_store()
     asyncio.run(ss.arm(
         entry_norenordno="MOCK_ENTRY",
-        deadline="2026-06-22T06:10:00+00:00",
     ))
     tc = _make_app(mode_store=ms, client=cl, session_store=ss)
     try:
@@ -693,7 +689,6 @@ def test_kill_switch_not_connected_returns_plan_not_transmitted():
         # _get_client raises → connected=False
         "_get_client": AsyncMock(side_effect=Exception("not connected")),
         "_get_token_doc": AsyncMock(return_value={"jKey": "x", "uid": "u", "actid": "u"}),
-        "_schedule_auto_square": MagicMock(),
         "_utcnow_iso": lambda: "2026-06-22T06:00:00+00:00",
     }
     ctx = []
@@ -924,7 +919,6 @@ def test_kill_switch_not_connected_does_not_sweep():
         "_l3_engine": lambda: FakeEngine(),
         "_get_client": AsyncMock(side_effect=Exception("not connected")),
         "_get_token_doc": AsyncMock(return_value={"jKey": "x", "uid": "u", "actid": "u"}),
-        "_schedule_auto_square": MagicMock(),
         "_utcnow_iso": lambda: "2026-06-22T06:00:00+00:00",
     }
     ctx = []
@@ -947,73 +941,6 @@ def test_kill_switch_not_connected_does_not_sweep():
                 pass
 
 
-# ===========================================================================
-# Background auto-square timer helper (_check_and_square_if_due)
-# ===========================================================================
-
-def test_check_and_square_if_due_fires_at_deadline():
-    """_check_and_square_if_due with a past deadline triggers a square."""
-    cl = _make_mock_noren(
-        position_book=[{
-            "tsym": "NIFTY26JUN26C25000",
-            "exch": "NFO",
-            "netqty": "65",
-            "lp": "200.0",
-        }],
-    )
-    ss = _make_session_store()
-    asyncio.run(ss.arm(
-        entry_norenordno="MOCK_ENTRY",
-        deadline="2026-06-22T06:00:00+00:00",  # PAST deadline
-        now_iso="2026-06-22T05:50:00+00:00",
-    ))
-    ms = _make_mode_store(mode="LIVE_TEST", consumed=True)
-
-    # Patch _mode_store so _check_and_square_if_due can revert mode
-    with patch.object(_routes, "_mode_store", lambda: ms):
-        result = asyncio.run(_routes._check_and_square_if_due(
-            client=cl,
-            deadline="2026-06-22T06:00:00+00:00",
-            band_pct=5.0,
-            session_store=ss,
-            uid="",
-            actid="",
-            now_iso="2026-06-22T06:05:00+00:00",  # AFTER deadline
-        ))
-
-    assert result is not None
-    # Mode should be reverted
-    mode_doc = asyncio.run(ms.get())
-    assert mode_doc["mode"] == "LIVE_OFFLINE"
-    # Session should be squared
-    sess = asyncio.run(ss.get())
-    assert sess["status"] == "squared"
-
-
-def test_check_and_square_if_due_does_not_fire_before_deadline():
-    """_check_and_square_if_due before deadline → returns None (no square)."""
-    cl = _make_mock_noren()
-    ss = _make_session_store()
-    asyncio.run(ss.arm(
-        entry_norenordno="MOCK_ENTRY",
-        deadline="2026-06-22T06:10:00+00:00",  # FUTURE deadline
-        now_iso="2026-06-22T06:00:00+00:00",
-    ))
-
-    result = asyncio.run(_routes._check_and_square_if_due(
-        client=cl,
-        deadline="2026-06-22T06:10:00+00:00",
-        band_pct=5.0,
-        session_store=ss,
-        uid="",
-        actid="",
-        now_iso="2026-06-22T06:05:00+00:00",  # BEFORE deadline
-    ))
-
-    assert result is None
-    book = asyncio.run(cl.order_book())
-    assert len(book) == 0
-
 
 # ===========================================================================
 # CHOKEPOINT CLASSIFICATION (documented inline)
@@ -1023,10 +950,8 @@ def test_chokepoint_grep_entry_only_via_executor():
     """Structural test: verify the route module delegates entry to the executor.
 
     ENTRY place_order:  executor.place_live_test_order (via /order/place route)
-    EXIT  place_order:  auto_square.square_position (square route, kill, timer)
+    EXIT  place_order:  auto_square.square_position (square route, kill)
     EXIT  cancel_order: auto_square.square_position + kill_switch.panic_squareoff
-    SL backstop:        build_sl_backstop_intent → place_order inside _make_arm
-                        (exit-only sell-to-close SELL SL-LMT)
     """
     router_path = ROOT / "backend" / "app" / "routers" / "live_broker.py"
     source = router_path.read_text()
@@ -1040,9 +965,6 @@ def test_chokepoint_grep_entry_only_via_executor():
     # The square and kill routes must use square_position / panic_squareoff
     assert "square_position" in source
     assert "panic_squareoff" in source
-
-    # Verify SL backstop is annotated as exit-only
-    assert "build_sl_backstop_intent" in source
 
 
 # ===========================================================================
@@ -1344,10 +1266,7 @@ def test_permissive_engine_never_on_production_path():
 # as REJECTED/CANCELED, the route must:
 #   (a) mark the session 'rejected' with the broker rejreason,
 #   (b) revert the mode to LIVE_OFFLINE,
-#   (c) return remaining_secs: 0 and status: 'rejected'.
-#
-# Terminal sessions (squared/kill_switch/rejected) must always return
-# remaining_secs: 0 — no phantom countdown.
+#   (c) return status: 'rejected'.
 #
 # If the order client is unavailable (None) the route must leave the session
 # unchanged and never 500.
@@ -1385,7 +1304,7 @@ def _make_mock_noren_with_open_order(entry_norenordno: str) -> MockNoren:
 
 
 def test_test_session_armed_rejected_order_auto_resolves():
-    """Armed session + broker shows REJECTED entry → status=rejected, remaining_secs=0, mode reverted.
+    """Armed session + broker shows REJECTED entry → status=rejected, mode reverted.
 
     This is the primary regression test: Flattrade returns an order number then
     async-rejects it, leaving the session stuck 'armed'. The /test-session route
@@ -1398,7 +1317,6 @@ def test_test_session_armed_rejected_order_auto_resolves():
     # Pre-arm the session with the entry order
     asyncio.run(ss.arm(
         entry_norenordno=ENTRY_ORD,
-        deadline="2026-06-22T07:00:00+00:00",
         now_iso="2026-06-22T06:00:00+00:00",
     ))
     tc = _make_app(mode_store=ms, client=cl, session_store=ss)
@@ -1409,10 +1327,6 @@ def test_test_session_armed_rejected_order_auto_resolves():
 
         # Session must be auto-resolved to rejected
         assert data["status"] == "rejected", f"Expected 'rejected', got {data['status']!r}"
-        # No phantom countdown
-        assert data["remaining_secs"] == 0, (
-            f"Expected remaining_secs=0 for rejected session, got {data['remaining_secs']!r}"
-        )
         # Reject reason populated
         assert data["reject_reason"] is not None
         assert "RMS" in (data["reject_reason"] or ""), (
@@ -1444,7 +1358,6 @@ def test_test_session_rejection_detected_through_prod_client_path():
     ss = _make_session_store()
     asyncio.run(ss.arm(
         entry_norenordno=ENTRY_ORD,
-        deadline="2026-06-22T07:00:00+00:00",
         now_iso="2026-06-22T06:00:00+00:00",
     ))
     tc = _make_app(mode_store=ms, client=cl, session_store=ss)
@@ -1457,21 +1370,19 @@ def test_test_session_rejection_detected_through_prod_client_path():
                 f"phantom not cleared — got {data['status']!r} (the detection is "
                 f"dead unless it uses _get_client, not _order_client)"
             )
-            assert data["remaining_secs"] == 0
             assert "MIS" in (data["reject_reason"] or "")
         finally:
             _stop_patches(tc)
 
 
 def test_test_session_armed_open_order_stays_active():
-    """Armed session + broker shows OPEN entry → session stays armed, remaining_secs > 0."""
+    """Armed session + broker shows OPEN entry → session stays armed (not auto-resolved)."""
     ENTRY_ORD = "MOCK_ENTRY_2"
     ms = _make_mode_store(mode="LIVE_TEST", consumed=True)
     cl = _make_mock_noren_with_open_order(ENTRY_ORD)
     ss = _make_session_store()
     asyncio.run(ss.arm(
         entry_norenordno=ENTRY_ORD,
-        deadline="2026-06-22T07:00:00+00:00",  # future relative to patched _utcnow_iso
         now_iso="2026-06-22T06:00:00+00:00",
     ))
     tc = _make_app(mode_store=ms, client=cl, session_store=ss)
@@ -1482,10 +1393,6 @@ def test_test_session_armed_open_order_stays_active():
 
         # Session stays active — not auto-resolved
         assert data["status"] == "armed", f"Expected 'armed', got {data['status']!r}"
-        # Countdown must still be positive (deadline is in the future)
-        assert data["remaining_secs"] is not None and data["remaining_secs"] > 0, (
-            f"Expected positive remaining_secs for active session, got {data['remaining_secs']!r}"
-        )
         # Mode untouched
         mode_doc = asyncio.run(ms.get())
         assert mode_doc["mode"] == "LIVE_TEST"
@@ -1493,12 +1400,11 @@ def test_test_session_armed_open_order_stays_active():
         _stop_patches(tc)
 
 
-def test_test_session_terminal_squared_returns_zero_remaining():
-    """A terminal (squared) session always returns remaining_secs=0 — no phantom countdown."""
+def test_test_session_terminal_squared_stays_squared():
+    """A terminal (squared) session reports status=squared (no countdown fields)."""
     ss = _make_session_store()
     asyncio.run(ss.arm(
         entry_norenordno="MOCK_ENTRY_3",
-        deadline="2026-06-22T07:00:00+00:00",  # future
         now_iso="2026-06-22T06:00:00+00:00",
     ))
     # Manually transition to squared (e.g. position was closed)
@@ -1510,10 +1416,7 @@ def test_test_session_terminal_squared_returns_zero_remaining():
         assert r.status_code == 200
         data = r.json()
         assert data["status"] == "squared"
-        # Must be zero even though deadline is in the future
-        assert data["remaining_secs"] == 0, (
-            f"Expected remaining_secs=0 for squared session, got {data['remaining_secs']!r}"
-        )
+        assert "remaining_secs" not in data
     finally:
         _stop_patches(tc)
 
@@ -1523,7 +1426,6 @@ def test_test_session_no_client_leaves_session_unchanged():
     ss = _make_session_store()
     asyncio.run(ss.arm(
         entry_norenordno="MOCK_ENTRY_4",
-        deadline="2026-06-22T07:00:00+00:00",
         now_iso="2026-06-22T06:00:00+00:00",
     ))
     # Build app with _order_client returning None (not connected)
@@ -1540,7 +1442,6 @@ def test_test_session_no_client_leaves_session_unchanged():
         "_l3_engine": lambda: FakeEngine(),
         "_get_client": AsyncMock(side_effect=Exception("not connected")),
         "_get_token_doc": AsyncMock(return_value={"jKey": "x", "uid": "u", "actid": "u"}),
-        "_schedule_auto_square": MagicMock(),
         "_utcnow_iso": lambda: "2026-06-22T06:00:00+00:00",
     }
     ctx = []

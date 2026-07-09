@@ -29,14 +29,15 @@ GET  /live-broker/mode                  — current mode doc
 PUT  /live-broker/mode                  — transition mode (PAPER/LIVE_OFFLINE/LIVE_TEST)
 POST /live-broker/order/place           — THE ONLY entry route → executor (guarded chokepoint)
 POST /live-broker/order/square          — manual square of the test position (exit-only)
-GET  /live-broker/test-session          — deadline/remaining/heartbeat/status
+GET  /live-broker/test-session          — heartbeat/status/entry-order (no timer)
 POST /live-broker/kill-switch           — EXECUTE panic squareoff + revert mode (L3: transmits)
 
 CHOKEPOINT CLASSIFICATION (grep-verifiable):
   ENTRY place_order  : executor.place_live_test_order ONLY (via POST /order/place)
-  EXIT  place_order  : auto_square.square_position (square route + kill + timer)
+  EXIT  place_order  : auto_square.square_position (square route + kill)
   EXIT  cancel_order : auto_square.square_position + kill_switch.panic_squareoff
-  SL backstop        : build_sl_backstop_intent → client.place_order inside _make_arm (exit-only sell-to-close)
+  Backstop           : software guard premium stop + 15:00 IST EOD square (the manual
+                       10-min auto-square timer was removed)
 """
 from __future__ import annotations
 
@@ -82,12 +83,7 @@ from app.live.kill_switch import (
 from app.live.mode import ModeStore, default_store as _default_mode_store
 from app.live.idempotency import IntentStore, default_store as _default_intent_store
 from app.live.session_store import SessionStore, default_store as _default_session_store
-from app.live import auto_square
-from app.live.auto_square import (
-    build_sl_backstop_intent,
-    deadline_iso,
-    square_position,
-)
+from app.live.auto_square import square_position
 from app.live import executor as _executor_mod
 from app.live.engine import LiveEngine
 from app.live.option_premium import match_contract, resolve_premium
@@ -301,20 +297,16 @@ def _utcnow_iso() -> str:
 # ---------------------------------------------------------------------------
 
 #: Default software-guard stop (% premium below entry) when the order carries no
-#: explicit stop. A DEEP disaster stop — manual Square + the 10-min cap are the
-#: primary near-term protection; the software guard is the catastrophe net that the
+#: explicit stop. A DEEP disaster stop — manual Square + the 15:00 IST EOD square are
+#: the near-term protection; the software guard is the catastrophe net that the
 #: resting broker SL could never be (it always margin-rejected for an option buyer).
 _GUARD_DEFAULT_STOP_PCT = 50.0
 
 
 def _make_arm(
-    client: Any,
     *,
     ref_ltp: float,
-    band_pct: float,
     session_store: SessionStore,
-    uid: str,
-    actid: str,
     levels: Optional[Dict[str, Any]] = None,
 ) -> Any:
     """Return an async arm(intent, norenordno) callable for use by the executor.
@@ -325,19 +317,21 @@ def _make_arm(
        the live premium and squares through the margin-safe cancel-all-then-close —
        there is NO resting SELL SL (which always margin-rejected for an option-buyer
        account: a resting sell-stop needs full naked-short SPAN margin).
-    2. Computes the deadline (fill_time = now; deadline = now + 600s).
-    3. Records the session doc via session_store.arm(...). A failure here RAISES
+    2. Records the session doc via session_store.arm(...). A failure here RAISES
        (so the executor's _abort_protect path runs).
-    4. Schedules the 10-minute auto-square (the ultimate backstop).
+
+    The manual 10-minute auto-square timer was removed (see docs/superpowers/specs/
+    2026-07-09-remove-manual-livetest-10min-timer-design.md); the armed position is
+    protected by the software guard's premium stop and the guard's 15:00 IST EOD
+    square (a manual position is no longer EOD-exempt), plus manual Square / Kill.
 
     Registration is best-effort (a registry failure is logged, never aborts the arm
-    — the time-square cap still protects). The session record is mandatory.
+    — manual Square + the EOD square still protect). The session record is mandatory.
     """
     levels = levels or {}
 
     async def _arm(intent: Any, norenordno: str) -> None:
         now = _utcnow_iso()
-        dl = deadline_iso(now)
 
         # --- Register with the software guard (replaces the doomed resting SL) ---
         try:
@@ -363,176 +357,17 @@ def _make_arm(
             )
             log.info("arm: registered %s with software guard (stop_pct=%s)", intent.tsym, stop_pct)
         except Exception as exc:
-            log.warning("arm: software-guard registration failed: %s (time-cap still protects)", exc)
+            log.warning("arm: software-guard registration failed: %s (guard stop + EOD still protect)", exc)
 
         # --- Record session (hard failure raises — executor will abort-protect).
         # sl_norenordno is None: no resting broker SL is placed anymore. ---
         await session_store.arm(
             entry_norenordno=norenordno,
-            deadline=dl,
             sl_norenordno=None,
             now_iso=now,
         )
 
-        # --- Start background server-timer task (the 10-min backstop) ---
-        _schedule_auto_square(
-            client=client,
-            deadline=dl,
-            band_pct=band_pct,
-            session_store=session_store,
-            uid=uid,
-            actid=actid,
-        )
-
     return _arm
-
-
-# ---------------------------------------------------------------------------
-# Background server-timer
-#
-# After a successful arm, this thin asyncio task waits until the deadline
-# (checking at regular intervals) and then calls square_position + reverts mode.
-# The logic is delegated to the tested auto_square functions; this is glue only.
-# ---------------------------------------------------------------------------
-
-_TIMER_CHECK_INTERVAL = 15  # seconds between deadline checks
-
-
-def _schedule_auto_square(
-    *,
-    client: Any,
-    deadline: str,
-    band_pct: float,
-    session_store: SessionStore,
-    uid: str,
-    actid: str,
-) -> None:
-    """Schedule the background auto-square task (fire-and-forget asyncio task)."""
-    asyncio.create_task(
-        _auto_square_task(
-            client=client,
-            deadline=deadline,
-            band_pct=band_pct,
-            session_store=session_store,
-            uid=uid,
-            actid=actid,
-        ),
-        name="live_auto_square",
-    )
-
-
-async def _check_and_square_if_due(
-    *,
-    client: Any,
-    deadline: str,
-    band_pct: float,
-    session_store: SessionStore,
-    uid: str,
-    actid: str,
-    now_iso: Optional[str] = None,
-) -> Optional[Dict[str, Any]]:
-    """Check if the deadline has passed; if so, square the position and revert mode.
-
-    Returns the square result dict if squaring was triggered, else None.
-
-    This helper is called by the background task AND can be called directly in
-    tests with an injected past ``now_iso`` to exercise the timer logic without
-    real time passing.
-    """
-    now = now_iso or _utcnow_iso()
-    if not auto_square.is_due(deadline, now):
-        return None
-
-    # Deadline reached — load session to get position details
-    sess = await session_store.get()
-    status = sess.get("status")
-    if status not in ("armed",):
-        # Already squared or killed — nothing to do
-        return None
-
-    entry_norenordno = sess.get("entry_norenordno")
-    if not entry_norenordno:
-        return None
-
-    # Build a minimal position dict for square_position.
-    # We only have the norenordno and need to cancel any working order.
-    # The actual position (tsym/exch/netqty/lp) must come from the broker.
-    try:
-        positions = await client.position_book()
-    except Exception as exc:
-        log.error("auto_square_task: could not fetch positions: %s", exc)
-        return None
-
-    # Find the position associated with the entry norenordno (heuristic: first open)
-    position = None
-    for pos in positions:
-        nq = pos.get("netqty", 0)
-        try:
-            nq_int = int(float(str(nq).replace(",", "")))
-        except (TypeError, ValueError):
-            nq_int = 0
-        if nq_int != 0:
-            position = dict(pos)
-            position["working_norenordno"] = entry_norenordno
-            break
-
-    if position is None:
-        # No open position found — already flat
-        await session_store.update_status("squared")
-        return {"squared": True, "via": "cancel", "note": "no open position at deadline"}
-
-    result = await square_position(
-        client,
-        position,
-        reason="auto_square_deadline",
-        band_pct=band_pct,
-        uid=uid,
-        actid=actid,
-        now_iso=now,
-    )
-
-    await session_store.update_status("squared")
-
-    # Revert mode to LIVE_OFFLINE
-    try:
-        ms = _mode_store()
-        await ms.revert_to_offline(now_iso=now)
-    except Exception as exc:
-        log.warning("auto_square: could not revert mode: %s", exc)
-
-    return result
-
-
-async def _auto_square_task(
-    *,
-    client: Any,
-    deadline: str,
-    band_pct: float,
-    session_store: SessionStore,
-    uid: str,
-    actid: str,
-) -> None:
-    """Background asyncio task: poll until deadline, then square + revert mode."""
-    while True:
-        await asyncio.sleep(_TIMER_CHECK_INTERVAL)
-        result = await _check_and_square_if_due(
-            client=client,
-            deadline=deadline,
-            band_pct=band_pct,
-            session_store=session_store,
-            uid=uid,
-            actid=actid,
-        )
-        if result is not None:
-            log.info("auto_square_task: deadline reached, square result: %s", result)
-            break
-        # Check if session was squared by another path
-        try:
-            sess = await session_store.get()
-            if sess.get("status") not in ("armed",):
-                break
-        except Exception:
-            pass
 
 
 # ---------------------------------------------------------------------------
@@ -1829,14 +1664,10 @@ async def live_order_place(body: _PlaceBody):
     engine = _l3_engine()
     ss = _session_store()
 
-    # Build the arm callable (exit-only: SL backstop + session record)
+    # Build the arm callable (guard registration + session record; no timer)
     arm = _make_arm(
-        client,
         ref_ltp=body.ref_ltp,
-        band_pct=body.band_pct,
         session_store=ss,
-        uid=uid,
-        actid=actid,
         levels=body.levels,  # software-guard stop/target/trailing (falls back to a deep default)
     )
 
@@ -1948,7 +1779,6 @@ async def _revert_mode() -> None:
 # ---------------------------------------------------------------------------
 
 _ACTIVE_SESSION_STATUSES = frozenset({"armed", "filled", "open"})
-_TERMINAL_SESSION_STATUSES = frozenset({"squared", "kill_switch", "rejected", "canceled", "none"})
 
 # Broker order statuses that mean the entry was never (or will never be) a real position.
 _BROKER_REJECT_STATUSES = frozenset({"REJECTED", "CANCELED"})
@@ -1958,15 +1788,17 @@ _BROKER_ACTIVE_STATUSES = frozenset({"COMPLETE", "OPEN", "TRIGGER_PENDING", "PAR
 
 @api.get("/live-broker/test-session")
 async def live_test_session():
-    """Return the current test-session state (deadline, remaining_secs, heartbeat, status).
+    """Return the current test-session state (heartbeat, status, entry order).
+
+    The 10-minute auto-square timer was removed, so there is no ``deadline`` or
+    ``remaining_secs`` countdown (see docs/superpowers/specs/
+    2026-07-09-remove-manual-livetest-10min-timer-design.md). The armed position is
+    protected by the software guard's premium stop + the 15:00 IST EOD square.
 
     Auto-detects a rejected/canceled entry order:
     If the session is active (armed/filled/open) AND the broker order book reports the
     entry order as REJECTED or CANCELED, the session is automatically transitioned to
-    'rejected', the mode is reverted to LIVE_OFFLINE, and remaining_secs is zeroed.
-
-    Terminal sessions (squared/kill_switch/rejected/canceled/none) always return
-    remaining_secs: 0 — never a positive countdown for a closed session.
+    'rejected' and the mode is reverted to LIVE_OFFLINE.
     """
     ss = _session_store()
     now = _utcnow_iso()
@@ -1979,15 +1811,14 @@ async def live_test_session():
 
     sess = await ss.get()
     status = sess.get("status", "none")
-    deadline = sess.get("deadline")
     entry_norenordno = sess.get("entry_norenordno")
 
     # --- Auto-detect a rejected/canceled entry order ---
     # Only bother checking when the session appears active and has an entry order.
     # MUST use the async _get_client() (the real broker client) — NOT _order_client(),
     # which returns None in production (only tests patch it), so the detection was
-    # silently dead live: a broker-rejected entry kept the session 'armed' with a
-    # phantom countdown. _get_client() raises HTTPException when not connected.
+    # silently dead live: a broker-rejected entry kept the session 'armed'.
+    # _get_client() raises HTTPException when not connected.
     if status in _ACTIVE_SESSION_STATUSES and entry_norenordno:
         client = None
         try:
@@ -2027,16 +1858,8 @@ async def live_test_session():
     # Re-read status after potential auto-update
     status = sess.get("status", "none")
 
-    # Terminal sessions always return remaining_secs: 0 (never a phantom countdown)
-    if status in _TERMINAL_SESSION_STATUSES:
-        remaining: Optional[float] = 0
-    else:
-        remaining = ss.remaining_secs(deadline, now)
-
     return {
         "position": sess.get("entry_norenordno"),
-        "deadline": deadline,
-        "remaining_secs": remaining,
         "heartbeat": now,
         "sl_norenordno": sess.get("sl_norenordno"),
         "status": status,

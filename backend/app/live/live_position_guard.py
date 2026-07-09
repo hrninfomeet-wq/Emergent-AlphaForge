@@ -33,7 +33,11 @@ Safety properties
 - The cycle NEVER raises out — a broker/feed error records and skips.
 - The square is the SAME cancel-all-then-confirm-then-close path used everywhere
   (no naked-short margin trap).
-- The 10-minute auto-square cap remains the ultimate backstop, independent of this.
+- The 15:00 IST EOD square is the ultimate "never left open" backstop for every
+  guarded position (manual + deployed); deployed positions additionally carry a
+  resting broker OCO for the PC-down case. (The old 10-minute manual auto-square
+  timer was removed — see docs/superpowers/specs/2026-07-09-remove-manual-livetest
+  -10min-timer-design.md.)
 """
 from __future__ import annotations
 
@@ -147,8 +151,10 @@ class LiveMonitorRegistry:
                        (close the option when the UNDERLYING hits a level).
         ``time_stop_minutes``: close after this many minutes from ``entry_ts``.
         ``entry_ts``: ISO-8601 / datetime entry timestamp (basis for the time-stop).
-        ``source``: ``"manual"`` (LIVE_TEST single-shot, keeps its own 10-min cap +
-                    EOD-exempt) or e.g. ``"auto_live"`` (deployed → EOD-squared).
+        ``source``: ``"manual"`` (LIVE_TEST single-shot) or e.g. ``"auto_live"``
+                    (deployed). BOTH are EOD-squared at 15:00 IST — the manual
+                    10-min auto-square timer was removed, so EOD is the manual
+                    position's "never left open" backstop too.
         ``deployment_id``: the owning deployment (audit; deployed positions only).
         """
         item = {
@@ -500,19 +506,21 @@ class LivePositionGuard:
     async def _evaluate_eod_square(
         self, client: Any, now: datetime, exits: List[Dict[str, Any]]
     ) -> None:
-        """15:00 IST EOD square for DEPLOYED positions only (source != "manual").
+        """15:00 IST EOD square for EVERY guarded position (manual + deployed).
 
-        Manual LIVE_TEST positions keep their own 10-min single-shot timer and are
-        NEVER touched by EOD. Remove-before-square, reason="eod_square"; the
-        actual transmit is gated by the injected square_fn (LIVE_GUARD_ARMED)."""
+        The 10-minute auto-square timer that once bounded manual LIVE_TEST
+        positions was removed, so the 15:00 IST EOD square is now their "never
+        left open" backstop too — no registered position is EOD-exempt. Deployed
+        positions additionally follow their strategy rules + resting OCO; manual
+        positions rely on the software guard stop + this EOD square. Remove-before-
+        square, reason="eod_square"; the actual transmit is gated by the injected
+        square_fn (LIVE_GUARD_ARMED)."""
         if len(self._registry) == 0:
             return
         ist_now = (now.astimezone(timezone.utc) + _IST).time()
         if ist_now < self._eod_square_ist:
             return
         for entry in self._registry.snapshot():
-            if str(entry.get("source") or "manual") == "manual":
-                continue  # manual positions are EOD-exempt
             await self._square_and_record(
                 client, entry, "eod_square", "eod_square", exits)
 

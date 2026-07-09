@@ -1,29 +1,19 @@
-"""Auto-square engine — L3.3 hard cap (≤10 minutes) for live test positions.
+"""Auto-square engine — the margin-safe square EXECUTOR + SL-LMT backstop builder.
 
-One job: a filled live position is NEVER left open past its deadline.
+One job: give the live path a way to exit a filled position it holds, bypassing
+every fat-finger/throttle guard, through the cancel-all-then-close path that never
+trips the naked-short margin trap.
+
+History: this module once also owned an "L3.3 hard cap (≤10 minutes)" time-square
+for manual live-test positions (``SQUARE_HORIZON_SEC`` / ``deadline_iso`` /
+``is_due``). That timer was removed (see docs/superpowers/specs/
+2026-07-09-remove-manual-livetest-10min-timer-design.md) — deployed strategies
+follow their strategy rules + a resting OCO, and the 15:00 IST EOD square is the
+manual position's "never left open" backstop. Only the executor and the SL builder
+remain here.
 
 Architecture
 ------------
-* Time is INJECTED everywhere as ISO strings — NO wall-clock calls inside logic.
-  This makes the module fully deterministic under test.
-
-* All timestamps are normalized to UTC before any arithmetic or comparison.
-  Callers SHOULD pass UTC (the engine uses a UTC-aware now).  Naive timestamps
-  are assumed UTC.  This prevents tz-aware vs tz-naive mismatches from silently
-  mis-ordering the deadline comparison (the audit hole: IST-aware now compared
-  against a naive/mismatched deadline could return False up to 5 h 30 m past the
-  real deadline).
-
-* ``_to_utc`` is the single normalization helper: naive → UTC-aware via replace();
-  aware → UTC via astimezone().
-
-* ``deadline_iso`` computes fill_time + horizon (clamped to SQUARE_HORIZON_SEC).
-  It ALWAYS emits a UTC-aware ISO string (+00:00) regardless of input timezone.
-
-* ``is_due`` is fail-safe: if either timestamp cannot be parsed it returns True
-  ("if we can't tell the time, square NOW rather than risk holding past the cap").
-  Both sides are normalized to UTC before comparison.
-
 * ``build_sl_backstop_intent`` creates a protective SL-LMT exit for a LONG option.
   Returns None for any invalid/sub-tick stop_trigger instead of asserting/raising —
   a sub-0.05 premium is real deep-OTM market data, not a programming error.
@@ -63,7 +53,6 @@ Key safety properties (mirrors kill_switch.py's language):
 from __future__ import annotations
 
 import math
-from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
 
 from app.live.order_builder import round_to_tick
@@ -75,115 +64,6 @@ from app.live.kill_switch import TERMINAL, _normalize_status, _parse_netqty
 #: Max cancel+confirm passes before an exit is placed. A working order that
 #: survives this many passes is treated as un-cancellable (margin-unsafe to exit).
 _MAX_CANCEL_PASSES: int = 2
-
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
-#: Hard cap on how long a live test position may remain open after entry fill.
-#: 600 seconds = 10 minutes. This value MUST NOT be exceeded; ``deadline_iso``
-#: clamps any caller-supplied ``horizon_sec`` to this value.
-SQUARE_HORIZON_SEC: int = 600
-
-
-# ---------------------------------------------------------------------------
-# 1. Time helpers — fully injected, no wall-clock
-# ---------------------------------------------------------------------------
-
-def _to_utc(iso: str) -> datetime:
-    """Parse an ISO 8601 string and return a UTC-aware datetime.
-
-    All timestamps are normalized to UTC; callers SHOULD pass UTC (the engine
-    uses a UTC-aware now).  Naive timestamps are assumed UTC.
-
-    Parameters
-    ----------
-    iso:
-        An ISO 8601 datetime string, with or without a timezone offset.
-
-    Returns
-    -------
-    A timezone-aware ``datetime`` in UTC.
-
-    Raises
-    ------
-    ValueError / TypeError — if ``iso`` cannot be parsed.  Callers that must
-    not raise should wrap in try/except (e.g. ``is_due``).
-    """
-    dt = datetime.fromisoformat(iso)
-    if dt.tzinfo is None:
-        # Naive input — assumed UTC (engine always passes UTC-aware strings;
-        # naive is legacy / test convenience and is treated as UTC).
-        dt = dt.replace(tzinfo=timezone.utc)
-    else:
-        dt = dt.astimezone(timezone.utc)
-    return dt
-
-
-def deadline_iso(fill_time_iso: str, *, horizon_sec: int = SQUARE_HORIZON_SEC) -> str:
-    """Return fill_time + horizon as a UTC-aware ISO 8601 string.
-
-    All timestamps are normalized to UTC; callers SHOULD pass UTC (the engine
-    uses a UTC-aware now).  Naive is assumed UTC.
-
-    Parameters
-    ----------
-    fill_time_iso:
-        The time the entry fill was confirmed, as an ISO 8601 string.
-        May be naive (assumed UTC) or timezone-aware (any zone; converted to UTC).
-    horizon_sec:
-        How many seconds from fill_time before the position must be squared.
-        Clamped to ``SQUARE_HORIZON_SEC`` (600 s) — callers MUST NOT rely on
-        a horizon beyond the hard cap.  If a value > 600 is supplied it is
-        silently clamped and documented in the docstring so the behaviour is
-        deterministic rather than surprising.
-
-    Returns
-    -------
-    UTC-aware ISO 8601 string of fill_time + min(horizon_sec, 600) seconds.
-    The result ALWAYS carries a ``+00:00`` offset so ``is_due`` comparisons
-    are unambiguous regardless of the caller's local timezone.
-
-    Clamp rationale
-    ---------------
-    The hard cap is 10 minutes.  Accepting a larger horizon would let a caller
-    accidentally extend it — clamping means the invariant "never open past 10 min"
-    is enforced here, not left to the caller.
-    """
-    effective_horizon = min(int(horizon_sec), SQUARE_HORIZON_SEC)
-    dt_utc = _to_utc(fill_time_iso)
-    result = dt_utc + timedelta(seconds=effective_horizon)
-    return result.isoformat()
-
-
-def is_due(deadline: str, now: str) -> bool:
-    """Return True iff now >= deadline (position must be squared immediately).
-
-    All timestamps are normalized to UTC before comparison; callers SHOULD pass
-    UTC (the engine uses a UTC-aware now).  Naive is assumed UTC.
-
-    Fail-safe: if EITHER string cannot be parsed as ISO 8601, return True.
-    Rationale: if we cannot determine the time relationship, the safe action is
-    to square now rather than risk holding an open position past the hard cap.
-
-    Parameters
-    ----------
-    deadline:
-        ISO 8601 deadline string (from ``deadline_iso``).  Should be UTC-aware.
-    now:
-        Current time as ISO 8601 string (injected by the engine — never
-        derived from wall-clock inside this function).
-
-    Returns
-    -------
-    True  — position is at or past its deadline, must be squared.
-    False — position is still within its window.
-    """
-    try:
-        return _to_utc(now) >= _to_utc(deadline)
-    except Exception:
-        # Any parse failure → fail-safe: square now.
-        return True
 
 
 # ---------------------------------------------------------------------------

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { CheckCircle2, Heart, Loader2, ShieldOff, Square, XCircle } from "lucide-react";
+import { CheckCircle2, Loader2, ShieldOff, Square, XCircle } from "lucide-react";
 import { api } from "@/lib/api";
 import { fmtINR } from "@/lib/fmt";
 import { useLiveData } from "@/components/live/LiveDataProvider";
@@ -8,10 +8,15 @@ import { useLiveData } from "@/components/live/LiveDataProvider";
  * PositionMonitor — polls getLiveTestSession every 3s.
  *
  * Status-aware rendering:
- *   active (armed/filled/open)  → amber countdown card with Square/Kill buttons
+ *   active (armed/filled/open)  → amber guarded-position card with a Square button
  *   rejected / canceled         → compact RED card + reject_reason + Dismiss
  *   squared / kill_switch       → compact GREEN card + Dismiss
  *   none                        → nothing rendered
+ *
+ * The 10-minute auto-square countdown was removed (see docs/superpowers/specs/
+ * 2026-07-09-remove-manual-livetest-10min-timer-design.md); the position is
+ * protected by the software guard's stop + the 15:00 IST EOD square, and can be
+ * closed any time with Square (or the account-wide Kill switch).
  */
 
 const HEARTBEAT_STALE_MS = 10_000; // amber if heartbeat older than this
@@ -22,17 +27,6 @@ const ACTIVE_STATUSES = ["armed", "filled", "open"];
 const REJECT_STATUSES = ["rejected", "canceled"];
 /** Statuses that represent a position that was squared/killed. */
 const CLOSED_STATUSES = ["squared", "kill_switch"];
-
-function pad2(n) {
-  return String(Math.max(0, Math.floor(n))).padStart(2, "0");
-}
-
-function formatCountdown(secs) {
-  const s = Math.max(0, Math.round(secs));
-  const mm = Math.floor(s / 60);
-  const ss = s % 60;
-  return `${pad2(mm)}:${pad2(ss)}`;
-}
 
 function HeartbeatDot({ heartbeat }) {
   const isRecent =
@@ -149,12 +143,7 @@ export default function PositionMonitor() {
   if (!hasActivePosition) return null;
 
   const pos = session.position;
-  const remainingSecs = session.remaining_secs ?? 0;
-  const deadline = session.deadline ?? null;
   const heartbeat = session.heartbeat ?? null;
-  const totalSecs = 10 * 60; // 10-min session window
-  const progressPct = Math.max(0, Math.min(100, (1 - remainingSecs / totalSecs) * 100));
-  const isUrgent = remainingSecs < 120; // last 2 min — show amber
 
   const handleSquare = async () => {
     if (squareBusy) return;
@@ -183,9 +172,6 @@ export default function PositionMonitor() {
           Live Position Active
         </span>
         <HeartbeatDot heartbeat={heartbeat} />
-        <span className="ml-auto text-xs text-dimmer font-mono">
-          {deadline && `Deadline: ${deadline}`}
-        </span>
       </div>
 
       <div className="px-4 py-3 space-y-4">
@@ -247,29 +233,13 @@ export default function PositionMonitor() {
           ) : null}
         </div>
 
-        {/* Countdown + progress bar */}
-        <div className="space-y-1.5">
-          <div className="flex items-center justify-between text-xs font-mono">
-            <span className="text-dimmer">Time remaining</span>
-            <span
-              className={`text-2xl font-bold tabular-nums ${
-                isUrgent ? "text-danger" : "text-warning"
-              }`}
-            >
-              {formatCountdown(remainingSecs)}
-            </span>
-          </div>
-          <div className="h-2 rounded-full bg-bg-3 overflow-hidden">
-            <div
-              className={`h-full rounded-full transition-all duration-1000 ${
-                isUrgent ? "bg-danger" : "bg-amber-400"
-              }`}
-              style={{ width: `${progressPct}%` }}
-            />
-          </div>
-          <div className="text-[10px] text-dimmer font-mono text-right">
-            {Math.round(progressPct)}% elapsed
-          </div>
+        {/* Protection note — no timer; the software guard + EOD square protect it */}
+        <div className="text-[11px] font-mono text-dimmer flex items-start gap-1.5">
+          <ShieldOff className="w-3.5 h-3.5 text-warning shrink-0 mt-px" />
+          <span>
+            Guarded by the software stop &amp; the 15:00 IST end-of-day square — no
+            auto-timer. Close it any time with Square (or the Kill switch).
+          </span>
         </div>
 
         {/* Action buttons — the account-wide Kill switch lives in KillSwitchPanel */}
