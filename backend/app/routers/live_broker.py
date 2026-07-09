@@ -302,6 +302,14 @@ def _utcnow_iso() -> str:
 _GUARD_DEFAULT_STOP_PCT = 50.0
 
 
+def _live_guard_armed() -> bool:
+    """True iff LIVE_GUARD_ARMED is affirmative — the software exit guard (premium
+    stop + 15:00 EOD square) will TRANSMIT real squares. Used to gate a real manual
+    LIVE_TEST entry: we refuse to open a real position the guard can't auto-close.
+    Mirrors runtime._live_guard_armed (kept local to avoid a route→runtime import)."""
+    return os.environ.get("LIVE_GUARD_ARMED", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _make_arm(
     *,
     ref_ltp: float,
@@ -1694,6 +1702,10 @@ async def live_order_place(body: _PlaceBody):
         buffer_pct=0.5,
         uid=uid,
         actid=actid,
+        # Never open a REAL manual position the guard/EOD can't auto-close: a
+        # LIVE_TEST entry transmits real, but its automated exits transmit only when
+        # LIVE_GUARD_ARMED=1 (the removed 10-min timer used to square ungated).
+        guard_armed=_live_guard_armed(),
     )
     return result
 
@@ -1853,6 +1865,22 @@ async def live_test_session():
                             # Reload session after update
                             sess = await ss.get()
                             status = sess.get("status", "rejected")
+                        elif broker_status == "COMPLETE":
+                            # Entry FILLED. The software guard registers the fill keyed
+                            # by this entry norenordno and drops it ONLY on a confirmed-
+                            # flat finalize (guard stop / EOD / manual square). So if the
+                            # registry no longer holds it, the position was squared →
+                            # resolve the session to 'squared' so the "Live Position
+                            # Active" card clears (the guard/EOD auto-close path does not
+                            # touch the session store). Mode is already LIVE_OFFLINE
+                            # (consume_single_shot reverted it at entry).
+                            if _get_live_registry().get(entry_norenordno) is None:
+                                try:
+                                    await ss.update_status("squared")
+                                except Exception as exc:
+                                    log.warning("test_session: could not update_status to squared: %s", exc)
+                                sess = await ss.get()
+                                status = sess.get("status", "squared")
                         break
             except Exception as exc:
                 # Not connected or order_book failed — leave session unchanged, never 500

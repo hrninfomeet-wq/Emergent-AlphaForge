@@ -311,6 +311,26 @@ def test_mode_live_test_consumed_blocks():
     assert run(client.order_book()) == []
 
 
+def test_guard_disarmed_blocks_real_manual_entry():
+    """A real manual LIVE_TEST entry is BLOCKED unless the software guard is armed to
+    auto-close it. Its only automated exits — the software guard stop and the 15:00
+    IST EOD square — both transmit through the LIVE_GUARD_ARMED-gated square_fn, and
+    the old ungated 10-min auto-square timer is gone. So placing a real entry with the
+    guard disarmed would leave it with no automated close → block, zero orders."""
+    client = MockNoren(limits_data=_GOOD_LIMITS)
+    result = run(_place(client=client, guard_armed=False))
+    assert result["placed"] is False
+    assert result["reason"] == "guard_not_armed"
+    assert run(client.order_book()) == [], "place_order must NOT have been called"
+
+
+def test_guard_armed_allows_real_manual_entry():
+    """Regression: with the guard armed, a valid manual entry still proceeds (the new
+    gate does not block the armed path)."""
+    result = run(_place(guard_armed=True))
+    assert result["placed"] is True
+
+
 def test_margin_shortfall_blocks():
     """cash='1000' << 200*65*1.05=13650 → dry_run_failed (margin verdict false), zero orders."""
     client = MockNoren(limits_data={"cash": "1000"})

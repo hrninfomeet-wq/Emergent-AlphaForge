@@ -221,6 +221,10 @@ def _make_app(
         "_utcnow_iso": lambda: "2026-06-22T06:00:00+00:00",
         # No real sleeps between the kill-switch verification passes
         "_KILL_POLL_SECONDS": 0.0,
+        # The manual place route now gates a real entry on LIVE_GUARD_ARMED (never
+        # open a position the guard can't auto-close). Default the harness to ARMED so
+        # the place-path tests exercise placement; a dedicated test flips it to False.
+        "_live_guard_armed": lambda: True,
     }
 
     ctx_managers = []
@@ -406,6 +410,27 @@ def test_place_in_live_test_session_has_no_deadline():
         assert sess.get("deadline") is None
         assert sess["status"] == "armed"
         assert sess["entry_norenordno"] is not None
+    finally:
+        _stop_patches(tc)
+
+
+def test_place_blocked_when_guard_disarmed():
+    """POST /order/place with the software guard DISARMED (LIVE_GUARD_ARMED off) →
+    blocked 'guard_not_armed', zero orders. Never open a real manual position whose
+    only automated exits (guard stop + EOD square) can't transmit."""
+    ms = _make_mode_store(mode="LIVE_TEST", consumed=False)
+    cl = _make_mock_noren()
+    cl._search_scrip_data = {"NFO": [_NIFTY_SCRIP]}
+    eng = FakeEngine(can_trade_result=(True, ""))
+    tc = _make_app(mode_store=ms, client=cl, engine=eng)
+    try:
+        with patch.object(_routes, "_live_guard_armed", lambda: False):
+            r = tc.post("/live-broker/order/place", json=_PLACE_BODY)
+        assert r.status_code == 200
+        data = r.json()
+        assert data["placed"] is False
+        assert data["reason"] == "guard_not_armed"
+        assert asyncio.run(cl.order_book()) == [], "place_order must NOT have been called"
     finally:
         _stop_patches(tc)
 
@@ -1315,6 +1340,65 @@ def _make_mock_noren_with_open_order(entry_norenordno: str) -> MockNoren:
         "qty": "65",
     }
     return cl
+
+
+def _make_mock_noren_with_complete_order(entry_norenordno: str) -> MockNoren:
+    """Return a MockNoren whose order_book contains the entry order as COMPLETE (filled)."""
+    cl = MockNoren()
+    cl._orders[entry_norenordno] = {
+        "norenordno": entry_norenordno,
+        "trantype": "B",
+        "status": "COMPLETE",
+        "rejreason": "",
+        "fillshares": "65",
+        "avgprc": "100",
+        "qty": "65",
+    }
+    return cl
+
+
+def test_test_session_filled_then_guard_closed_resolves_squared():
+    """Armed session + entry order COMPLETE + the software guard NO LONGER holds it
+    (the registry drops an entry only on a confirmed-flat finalize) → the session
+    resolves to 'squared' so the "Live Position Active" card clears. The guard/EOD
+    auto-close path does not touch the SessionStore, so without this the card lingered."""
+    from app.live.live_position_guard import LiveMonitorRegistry
+    ENTRY_ORD = "MOCK_FILLED_CLOSED"
+    ms = _make_mode_store(mode="LIVE_OFFLINE", consumed=True)  # already reverted at fill
+    cl = _make_mock_noren_with_complete_order(ENTRY_ORD)
+    ss = _make_session_store()
+    asyncio.run(ss.arm(entry_norenordno=ENTRY_ORD, now_iso="2026-06-22T06:00:00+00:00"))
+    empty_reg = LiveMonitorRegistry()  # guard finalized it → no longer registered
+    tc = _make_app(mode_store=ms, client=cl, session_store=ss)
+    try:
+        with patch.object(_routes, "_get_live_registry", lambda: empty_reg):
+            data = tc.get("/live-broker/test-session").json()
+        assert data["status"] == "squared", f"expected squared, got {data['status']!r}"
+        assert asyncio.run(ss.get())["status"] == "squared"
+    finally:
+        _stop_patches(tc)
+
+
+def test_test_session_filled_and_still_guarded_stays_armed():
+    """Armed session + entry COMPLETE but STILL held by the guard (position open) →
+    the session stays 'armed' (no premature squared)."""
+    from app.live.live_position_guard import LiveMonitorRegistry
+    from app.live.live_sl_monitor import build_monitor_state
+    ENTRY_ORD = "MOCK_FILLED_OPEN"
+    ms = _make_mode_store(mode="LIVE_OFFLINE", consumed=True)
+    cl = _make_mock_noren_with_complete_order(ENTRY_ORD)
+    ss = _make_session_store()
+    asyncio.run(ss.arm(entry_norenordno=ENTRY_ORD, now_iso="2026-06-22T06:00:00+00:00"))
+    reg = LiveMonitorRegistry()
+    reg.register(key=ENTRY_ORD, tsym="NIFTY26JUN26C25000", exch="NFO", qty=65, prd="I",
+                 entry_price=100.0, state=build_monitor_state(100.0, stop_pct=50))
+    tc = _make_app(mode_store=ms, client=cl, session_store=ss)
+    try:
+        with patch.object(_routes, "_get_live_registry", lambda: reg):
+            data = tc.get("/live-broker/test-session").json()
+        assert data["status"] == "armed", f"expected armed, got {data['status']!r}"
+    finally:
+        _stop_patches(tc)
 
 
 def test_test_session_armed_rejected_order_auto_resolves():

@@ -1075,6 +1075,32 @@ class TestConfirmedFlatRequiresRealBook:
         assert client.cancel_oco_calls == ["OCO1"]
         assert len(reg) == 0
 
+    def test_partial_fill_holds_squaring_no_re_issue_until_flat(self):
+        """A guard exit that only PARTIALLY fills (broker netqty shrinks 20→10 but
+        never 0) keeps the entry `squaring`: it is NOT re-issued (the squaring skip)
+        and NOT finalized (still open), across cycles, until the broker confirms
+        netqty→0. Pins the Layer-1 behavior — the resting exit + OCO protect the
+        remainder; Layer 2 adds an interval-gated re-price for the unfilled part."""
+        reg = LiveMonitorRegistry()
+        _registered_with_oco(reg, oco_al_id="OCO1")
+        client = _OcoClient([_pos(netqty=20, lp=170.0)])      # breach → square
+        sq = _ScriptedSquare({"squared": True}, client=client)
+        guard = LivePositionGuard(registry=reg, client_factory=lambda: _aw(client),
+                                  square_fn=sq.square_fn, now_fn=lambda: _NOW)
+        run(guard._cycle())                                   # issue → squaring
+        assert len(sq.squared) == 1
+        # Partial fill: netqty 20 → 10. Still open → held, NOT re-squared, NOT finalized.
+        client.set([_pos(netqty=10, lp=170.0)])
+        run(guard._cycle())
+        assert len(sq.squared) == 1                           # no second square issued
+        assert client.cancel_oco_calls == []                  # not finalized (still open)
+        assert len(reg) == 1 and reg.get("ORD1")["squaring"] is True
+        # Remaining fills: netqty → 0 → confirmed flat → finalize.
+        client.set([_pos(netqty=0, lp=170.0)])
+        run(guard._cycle())
+        assert client.cancel_oco_calls == ["OCO1"]
+        assert len(reg) == 0
+
 
 # ---------------------------------------------------------------------------
 # Guard cycle — token capture from the broker book row (Task C3)

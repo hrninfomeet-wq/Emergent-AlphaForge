@@ -182,6 +182,7 @@ async def place_live_test_order(
     buffer_pct: float = 0.5,
     uid: str = "",
     actid: str = "",
+    guard_armed: bool = True,
 ) -> Dict[str, Any]:
     """Place exactly one real entry order through all safety gates.
 
@@ -245,6 +246,18 @@ async def place_live_test_order(
     mode = await mode_store.get()
     if not is_live_order_allowed(mode):
         return _blocked("mode_not_live_test", verdicts)
+
+    # ------------------------------------------------------------------
+    # Gate 1.5 — never open a REAL manual position the guard can't auto-close.
+    # A LIVE_TEST entry transmits real, but its ONLY automated exits — the software
+    # guard stop and the 15:00 IST EOD square — both transmit through the
+    # LIVE_GUARD_ARMED-gated square_fn. With the 10-minute auto-square timer removed,
+    # a real entry placed while the guard is disarmed would have NO automated close
+    # (only manual Square/Kill). Refuse to open a real position we can't auto-close.
+    # The caller (route) injects the live LIVE_GUARD_ARMED state; tests default True.
+    # ------------------------------------------------------------------
+    if not guard_armed:
+        return _blocked("guard_not_armed", verdicts)
 
     # ------------------------------------------------------------------
     # Gate 2 — fresh server-side dry-run (lots HARD-PINNED to 1, cap ≤ 1)
