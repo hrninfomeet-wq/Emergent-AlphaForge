@@ -214,19 +214,24 @@ export default function BacktestLab() {
     } catch { /* ignore quota / privacy-mode errors */ }
   }, [result?.id]);
 
-  // Deep-link: ?run=<id> auto-loads that run, ?preset=<name> applies preset
+  // Deep-link: ?run=<id> auto-loads that run, ?preset=<name> applies preset,
+  // ?strategy=<id> just selects the strategy (the authoring wizard's "Backtest now").
   useEffect(() => {
     const runId = searchParams.get("run");
     const presetName = searchParams.get("preset");
+    const strategyId = searchParams.get("strategy");
     if (runId) {
       loadPastRun(runId);
       setSearchParams({}, { replace: true });
     } else if (presetName) {
       applyPreset(presetName);
       setSearchParams({}, { replace: true });
+    } else if (strategyId) {
+      setConfig((c) => ({ ...c, strategy_id: strategyId }));
+      setSearchParams({}, { replace: true });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchParams.get("run"), searchParams.get("preset")]);
+  }, [searchParams.get("run"), searchParams.get("preset"), searchParams.get("strategy")]);
 
   // Auto-fill the Run name with a fresh descriptive+timestamp default whenever the
   // strategy / instrument changes (and on mount) — unless the user typed their own

@@ -18,6 +18,7 @@ from app.live_friction import FrictionConfig
 from app.strategy_source_hash import hash_strategy_source, build_repin_update
 from app.deployment_quality import evaluate_source_quality, QualityThresholds
 from app.forward_metrics import (
+    build_arm_advisories,
     compute_forward_metrics_for_deployment,
     compute_forward_metrics_for_deployments,
 )
@@ -566,12 +567,16 @@ async def list_deployment_metrics(
 
 @api.get("/deployments/{deployment_id}/metrics")
 async def get_deployment_metrics(deployment_id: str):
-    """Return session-gated forward metrics for one deployment."""
+    """Return session-gated forward metrics for one deployment, plus the NON-blocking
+    live-arm advisories the ARM dialog renders (S19)."""
     db = get_db()
     deployment = await db.strategy_deployments.find_one({"id": deployment_id}, {"_id": 0})
     if not deployment:
         raise HTTPException(404, "Deployment not found")
-    return serialize_doc(await compute_forward_metrics_for_deployment(db, deployment))
+    fwd = await compute_forward_metrics_for_deployment(db, deployment)
+    out = serialize_doc(fwd)
+    out["arm_advisories"] = build_arm_advisories(fwd)
+    return out
 
 
 @api.get("/deployments/overview")
@@ -900,6 +905,13 @@ async def arm_deployment_live(deployment_id: str, body: _LiveArmBody):
     out = {**live, "autoplace_armed": autoplace}
     if not autoplace:
         out["note"] = "backend will dry-run-log, not transmit real orders (LIVE_AUTOPLACE_ARMED is off)"
+    # S19: arming has NO performance gate — echo the forward evidence + non-blocking
+    # advisories so the operator sees whether the paper record actually supports this.
+    try:
+        fwd = await compute_forward_metrics_for_deployment(db, deployment)
+    except Exception:
+        fwd = None
+    out["arm_advisories"] = build_arm_advisories(fwd)
     return serialize_doc(out)
 
 

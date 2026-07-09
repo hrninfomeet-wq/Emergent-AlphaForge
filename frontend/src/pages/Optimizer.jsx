@@ -238,6 +238,17 @@ export default function Optimizer() {
     } catch { /* ignore quota / privacy-mode errors */ }
   }, [config]);
 
+  // Deep-link: /optimizer?strategy=<id> selects the strategy (the authoring wizard's
+  // "Optimize" next-step CTA). Mount-only; clears the param so a reload doesn't re-apply.
+  useEffect(() => {
+    const sid = new URLSearchParams(window.location.search).get("strategy");
+    if (sid) {
+      setConfig((c) => ({ ...c, strategy_id: sid }));
+      navigate("/optimizer", { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Persist / clear the active job id so it can be re-attached after navigation.
   useEffect(() => {
     try {

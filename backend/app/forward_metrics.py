@@ -252,6 +252,40 @@ async def compute_forward_metrics_for_deployment(
     }
 
 
+def build_arm_advisories(forward: Optional[Dict[str, Any]]) -> List[Dict[str, str]]:
+    """NON-BLOCKING advisories for the live-arm dialog, derived from a deployment's
+    forward (paper) metrics. The arm route has NO performance gate — arming consulted
+    zero evidence (audit S19) — so surface the record and flag the cases that most
+    warrant a second look: non-positive forward P&L, too few complete sessions, or no
+    forward trades at all. Advisory only: arming still succeeds. Pure + host-testable."""
+    if not forward:
+        return [{"severity": "warning", "id": "no_forward_evidence",
+                 "message": "No forward (paper) record for this deployment yet — "
+                            "arming live with zero validated sessions."}]
+    adv: List[Dict[str, str]] = []
+    complete = int(((forward.get("session_completeness") or {}).get("complete_session_count")) or 0)
+    min_sessions = int(((forward.get("library_gate") or {}).get("min_complete_sessions"))
+                       or MIN_COMPLETE_SESSIONS_FOR_LIBRARY)
+    trades = int(forward.get("trade_count") or 0)
+    total_pnl = forward.get("total_pnl")
+    wr = forward.get("win_rate")
+    if total_pnl is not None and float(total_pnl) <= 0 and trades > 0:
+        adv.append({"severity": "danger", "id": "nonpositive_forward_pnl",
+                    "message": f"Forward P&L is ₹{float(total_pnl):,.0f} (≤ 0) over "
+                               f"{trades} trade(s), win-rate {wr}% — the paper record "
+                               f"is not profitable."})
+    if complete < min_sessions:
+        adv.append({"severity": "warning", "id": "thin_sessions",
+                    "message": f"Only {complete} complete forward session(s) "
+                               f"(< {min_sessions}) — the forward edge is not yet "
+                               f"established."})
+    if trades == 0:
+        adv.append({"severity": "warning", "id": "no_forward_trades",
+                    "message": "Zero closed forward trades — nothing has validated "
+                               "the live path yet."})
+    return adv
+
+
 async def compute_forward_metrics_for_deployments(
     db: Any,
     deployments: Iterable[Dict[str, Any]],

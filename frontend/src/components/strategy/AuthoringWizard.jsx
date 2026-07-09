@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { api } from "@/lib/api";
 import {
   Dialog,
@@ -43,6 +44,7 @@ const labelCls = "text-[10px] uppercase tracking-wider text-dimmer mb-1 block";
 const sectionCls = "rounded-lg border border-line bg-bg-1 p-3 space-y-2";
 
 export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
+  const navigate = useNavigate();
   const [catalog, setCatalog] = useState(null);
   const [catalogError, setCatalogError] = useState(null);
 
@@ -82,6 +84,14 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
   const [converseError, setConverseError] = useState(null); // persistent (not a flash toast)
   const [genError, setGenError] = useState(null);           // persistent generate error
   const [showCaps, setShowCaps] = useState(false);          // engine-capabilities panel
+
+  // Installed-strategy id → shows the next-step panel (S17) instead of a vanishing toast.
+  const [installedId, setInstalledId] = useState(null);
+
+  // Invalidate a stale feasibility verdict when its source is edited — otherwise an
+  // earlier REJECT keeps the Install button locked even after the user fixes the spec
+  // (audit S: stale REJECT lock). Cleared on every source keystroke.
+  useEffect(() => { setRuleSet(null); }, [aiSource]);
 
   // Mode toggle + Full-Python state
   const [mode, setMode] = useState("spec"); // "spec" | "python"
@@ -291,7 +301,8 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
       const id = extractIdFromCode(pyCode);
       const res = await api.installPython(pyCode, id);
       toast.success("Installed " + res.strategy_id);
-      onInstalled?.(); onOpenChange(false);
+      onInstalled?.();                       // refresh the library list
+      setInstalledId(res.strategy_id);       // show the next-step panel (S17)
     } catch (e) {
       toast.error("Install failed: " + (e?.response?.data?.detail || e?.message || "unknown error"));
     } finally { setPyBusy(false); }
@@ -315,8 +326,8 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
     try {
       const res = await api.authorInstall(buildSpec(), overwrite);
       toast.success("Installed " + res.strategy_id);
-      onInstalled?.();
-      onOpenChange(false);
+      onInstalled?.();                       // refresh the library list
+      setInstalledId(res.strategy_id);       // show the next-step panel (S17)
     } catch (e) {
       const detail = e?.response?.data?.detail || e?.message || "unknown error";
       toast.error("Install failed: " + detail);
@@ -344,8 +355,11 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
   const toggleRegime = (r) =>
     setSkipRegimes((cur) => (cur.includes(r) ? cur.filter((x) => x !== r) : [...cur, r]));
 
+  const closeWizard = () => { setInstalledId(null); onOpenChange(false); };
+  const goto = (path) => { navigate(path); closeWizard(); };
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={(v) => { if (!v) setInstalledId(null); onOpenChange(v); }}>
       <DialogContent
         className="max-w-3xl max-h-[85vh] overflow-y-auto bg-bg-1 border-line"
         data-testid="authoring-wizard"
@@ -356,6 +370,42 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
           </DialogTitle>
         </DialogHeader>
 
+        {installedId ? (
+          <div className="space-y-3 py-2" data-testid="author-next-steps">
+            <div className="text-sm font-semibold text-emerald-300">
+              Installed <span className="font-mono">{installedId}</span> — what next?
+            </div>
+            <div className="text-[11px] text-dim leading-relaxed">
+              A new strategy is authored but has NO track record. The path to live is:
+              <b> backtest → save a preset → deploy</b>. Live deployments accept only
+              saved presets or backtest runs (not a bare strategy), so start by backtesting.
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                onClick={() => goto(`/backtest?strategy=${encodeURIComponent(installedId)}`)}
+                className="text-xs font-semibold px-3 py-1.5 rounded-md bg-info/15 border border-info/50 text-foreground"
+                data-testid="author-next-backtest"
+              >
+                Backtest now
+              </button>
+              <button
+                onClick={() => goto(`/optimizer?strategy=${encodeURIComponent(installedId)}`)}
+                className="text-xs font-semibold px-3 py-1.5 rounded-md bg-bg-2 border border-line text-foreground"
+                data-testid="author-next-optimize"
+              >
+                Optimize
+              </button>
+              <button
+                onClick={closeWizard}
+                className="text-xs font-medium px-3 py-1.5 rounded-md bg-bg-2 border border-line text-dim ml-auto"
+                data-testid="author-next-close"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        ) : (
+        <>
         {catalogError && (
           <div className="text-[11px] text-rose-300 bg-rose-950/50 border border-rose-900 rounded-md p-2">
             Could not load the authoring catalog: {catalogError}. Dropdowns may be empty.
@@ -864,6 +914,8 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
               </button>
             </div>
           </div>
+        )}
+        </>
         )}
 
       </DialogContent>

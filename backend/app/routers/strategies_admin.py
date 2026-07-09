@@ -115,6 +115,57 @@ def _exists(strategy_id: str) -> bool:
     return reg.get(strategy_id) is not None or reg.origin_of(strategy_id) is not None
 
 
+async def _count_latest(coll: Any, q: Dict[str, Any], ts_field: str) -> Dict[str, Any]:
+    """{count, latest} for a strategy's docs in one collection (latest by ts_field)."""
+    n = await coll.count_documents(q)
+    latest = None
+    if n:
+        doc = await coll.find_one(q, {ts_field: 1, "_id": 0}, sort=[(ts_field, -1)])
+        latest = (doc or {}).get(ts_field)
+    return {"count": int(n), "latest": latest}
+
+
+@api.get("/strategies/{strategy_id}/pipeline")
+async def strategy_pipeline(strategy_id: str):
+    """Authored→backtested→optimized→paper→live pipeline state for one strategy:
+    counts + latest timestamps across backtest_runs, optimization_jobs, presets and
+    strategy_deployments (audit S18). Powers the StrategyCard stage chips and lets the
+    Library replace its per-strategy readiness fan-out with one call."""
+    if not _exists(strategy_id):
+        raise HTTPException(404, f"Strategy {strategy_id} not found")
+    db = _db()
+    backtests = await _count_latest(db.backtest_runs, {"strategy_id": strategy_id}, "created_at")
+    optimizations = await _count_latest(db.optimization_jobs, {"strategy_id": strategy_id}, "created_at")
+    presets = await _count_latest(db.presets, {"config.strategy_id": strategy_id}, "saved_at")
+    deployments = await _count_latest(db.strategy_deployments, {"strategy_id": strategy_id}, "created_at")
+    paper = await _count_latest(
+        db.strategy_deployments, {"strategy_id": strategy_id, "mode": "PAPER"}, "created_at")
+    # "has been armed for live at least once" (risk.live is written on arm, retained
+    # on disarm) vs currently-armed (transient, expires 15:00 IST).
+    live_ever = await db.strategy_deployments.count_documents(
+        {"strategy_id": strategy_id, "risk.live": {"$exists": True}})
+    live_armed = await db.strategy_deployments.count_documents(
+        {"strategy_id": strategy_id, "risk.live.armed": True})
+    return {
+        "strategy_id": strategy_id,
+        "backtests": backtests,
+        "optimizations": optimizations,
+        "presets": presets,
+        "deployments": deployments,
+        "paper_deployments": paper,
+        "live_ever_count": int(live_ever),
+        "live_armed_count": int(live_armed),
+        "stages": {
+            "authored": True,
+            "backtested": backtests["count"] > 0,
+            "optimized": optimizations["count"] > 0,
+            "preset_saved": presets["count"] > 0,
+            "paper": deployments["count"] > 0,
+            "live": int(live_ever) > 0,
+        },
+    }
+
+
 @api.post("/strategies/{strategy_id}/retire")
 async def retire_strategy(strategy_id: str):
     if not _exists(strategy_id):
