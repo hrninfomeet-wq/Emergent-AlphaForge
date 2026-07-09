@@ -150,20 +150,31 @@ class TestGuardCycle:
         # peak updated
         assert r.get("ORD1")["state"]["peak"] == 250.0  # entry; 240<250
 
-    def test_stop_breach_squares_once_and_removes(self):
+    def test_stop_breach_issues_square_and_keeps_until_flat(self):
         r = LiveMonitorRegistry()
         _registered(r, entry=250.0, stop_pct=30)  # stop = 175
         client = _FakeClient([_pos(netqty=20, lp=170.0)])  # below stop
         rec = _Recorder()
-        exits = run(_guard(r, client, rec)._cycle())
+        g = _guard(r, client, rec)
+        exits = run(g._cycle())
         assert len(rec.squared) == 1
         tsym, reason, netqty, lp = rec.squared[0]
         assert tsym == _TSYM
         assert reason == "software_stop"
         assert netqty == 20
         assert lp == 170.0
-        assert len(r) == 0          # removed (no re-guard / double-square)
+        # Place-accept is not a fill: the entry is KEPT (squaring) — not removed —
+        # so the position stays watched and protected until the broker confirms flat.
+        assert len(r) == 1
+        assert r.get("ORD1")["squaring"] is True
         assert len(exits) == 1
+        # A `squaring` entry is not re-squared while it stays open.
+        run(g._cycle())
+        assert len(rec.squared) == 1
+        # Broker confirms flat → entry dropped.
+        client.set([])
+        run(g._cycle())
+        assert len(r) == 0
 
     def test_target_breach(self):
         r = LiveMonitorRegistry()
@@ -279,9 +290,13 @@ class TestGuardCycle:
                 raise RuntimeError("square exploded")
 
         bad = _BadRec()
-        g = LivePositionGuard(registry=r, client_factory=lambda: _aw(client), square_fn=bad.square_fn)
+        g = LivePositionGuard(registry=r, client_factory=lambda: _aw(client),
+                              square_fn=bad.square_fn, now_fn=lambda: _NOW)
         exits = run(g._cycle())  # must not raise
-        assert len(r) == 0          # still removed (no re-square attempt next cycle)
+        # A failed square leaves squaring False, so the entry is KEPT (not orphaned)
+        # and the next cycle retries — the position is never dropped un-squared.
+        assert len(r) == 1
+        assert r.get("ORD1")["squaring"] is False
         assert exits[0]["result"]["squared"] is False
 
 
@@ -318,7 +333,9 @@ class TestOverallBasket:
         run(g._cycle())
         assert len(rec.squared) == 2
         assert all(s[1] == "software_overall_sl" for s in rec.squared)
-        assert len(r) == 0
+        # Squares issued for both legs; entries KEPT (squaring) until confirmed flat.
+        assert len(r) == 2
+        assert all(r.get(f"P{i}")["squaring"] is True for i in (0, 1))
 
     def test_overall_target_squares_basket(self):
         cfg = {"sl": {"enabled": False, "mode": "mtm", "value": 0},
@@ -442,7 +459,7 @@ class TestSpotMirrorAndTimeStop:
             now_fn=lambda: now,
         )
 
-    def test_spot_mirror_target_squares_and_removes(self):
+    def test_spot_mirror_target_squares_and_keeps_until_flat(self):
         spot_exit = {"direction": "CE", "instrument_key": _IDX_KEY,
                      "spot_target": 75600.0, "spot_stop": 75000.0}
         r = self._deployed(spot_exit=spot_exit)
@@ -453,7 +470,8 @@ class TestSpotMirrorAndTimeStop:
         run(g._cycle())
         assert len(rec.squared) == 1
         assert rec.squared[0][1] == "software_spot_target_hit"
-        assert len(r) == 0  # removed
+        assert len(r) == 1  # kept (squaring) until the broker confirms flat
+        assert r.get("ORD1")["squaring"] is True
 
     def test_spot_mirror_stop_first(self):
         spot_exit = {"direction": "CE", "instrument_key": _IDX_KEY,
@@ -477,7 +495,8 @@ class TestSpotMirrorAndTimeStop:
         run(g._cycle())
         assert len(rec.squared) == 1
         assert rec.squared[0][1] == "software_time_stop"
-        assert len(r) == 0
+        assert len(r) == 1  # kept (squaring) until the broker confirms flat
+        assert r.get("ORD1")["squaring"] is True
 
     def test_time_stop_not_elapsed_held(self):
         entry_ts = "2026-06-25T05:45:00+00:00"  # 15 min before _NOW
@@ -540,9 +559,10 @@ class TestSpotMirrorAndTimeStop:
         assert rec.squared == []
         assert len(r) == 1  # premium path still works, untouched by spot/time/EOD
 
-    def test_remove_before_square_no_double_square(self):
-        # a slow / raising square_fn must never be issued twice — entry is gone
-        # from the registry before the await, so a re-cycle can't re-square.
+    def test_squaring_flag_prevents_double_square(self):
+        # The `squaring` flag (not remove-before-square) is the re-entrancy guard:
+        # once a square is issued the entry is KEPT but marked squaring, so a later
+        # cycle that still sees the position OPEN never re-issues a second square.
         spot_exit = {"direction": "CE", "instrument_key": _IDX_KEY,
                      "spot_target": 75600.0, "spot_stop": 75000.0}
         r = self._deployed(spot_exit=spot_exit)
@@ -554,8 +574,6 @@ class TestSpotMirrorAndTimeStop:
 
             async def square_fn(self, client, position, *, reason):
                 self.calls += 1
-                # simulate a slow square: yield control; the entry must already
-                # be removed so a concurrent/next cycle never re-squares it.
                 await asyncio.sleep(0)
                 return {"squared": True, "reason": reason}
 
@@ -566,10 +584,15 @@ class TestSpotMirrorAndTimeStop:
             spot_tick_fn=lambda: spot_map, now_fn=lambda: _NOW,
         )
         run(g._cycle())
-        assert len(r) == 0
-        # a second cycle (registry now empty) issues no further squares
+        assert slow.calls == 1
+        assert len(r) == 1 and r.get("ORD1")["squaring"] is True
+        # a second cycle — position STILL open — must NOT re-square (squaring skip)
         run(g._cycle())
         assert slow.calls == 1
+        # once the broker confirms flat, the entry is dropped
+        client.set([])
+        run(g._cycle())
+        assert len(r) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -627,7 +650,9 @@ class TestEodSquare:
         run(g._cycle())
         assert len(rec.squared) == 1
         assert rec.squared[0][1] == "eod_square"
-        assert len(r) == 0
+        # EOD issues the square; the entry is KEPT (squaring) until confirmed flat.
+        assert len(r) == 1
+        assert r.get("ORD1")["squaring"] is True
 
     def test_eod_squares_manual(self):
         # The 10-min auto-square timer was removed; the 15:00 IST EOD square is now
@@ -636,7 +661,8 @@ class TestEodSquare:
         run(g._cycle())
         assert len(rec.squared) == 1
         assert rec.squared[0][1] == "eod_square"
-        assert len(r) == 0
+        assert len(r) == 1
+        assert r.get("ORD1")["squaring"] is True
 
     def test_no_eod_square_before_1500_ist(self):
         r, rec, g = self._mk(source="auto_live", now=_NOW)  # 11:30 IST
@@ -716,29 +742,38 @@ class TestOnCloseHook:
             registry=reg, client_factory=lambda: _aw(client),
             square_fn=rec.square_fn, on_close=on_close, now_fn=now_fn)
 
-    def test_on_close_fires_on_premium_stop_with_exit_mark_and_result(self):
+    def test_on_close_fires_on_confirmed_flat_with_exit_mark_and_result(self):
         reg = LiveMonitorRegistry()
         _registered(reg, entry=250.0, stop_pct=30)            # stop at 175
         client = _FakeClient([_pos(netqty=20, lp=170.0)])     # below stop → exit
         rec, calls = _Recorder(), []
-        guard = self._guard_with_close(reg, client, rec, calls)
+        guard = self._guard_with_close(reg, client, rec, calls, now_fn=lambda: _NOW)
+        # Cycle 1: breach → square ISSUED; on_close does NOT fire yet (still open).
+        run(guard._cycle())
+        assert calls == []
+        assert len(reg) == 1 and reg.get("ORD1")["squaring"] is True
+        # Cycle 2: broker confirms flat → on_close journals the close ONCE.
+        client.set([])
         run(guard._cycle())
         assert len(calls) == 1
-        assert calls[0]["exit_price"] == 170.0                # the broker last-price mark
+        assert calls[0]["exit_price"] == 170.0                # the last broker mark (cycle 1)
         assert calls[0]["reason"] == "stop"
-        assert calls[0]["result"]["squared"] is True
-        assert len(reg) == 0                                  # removed-before-square
+        assert calls[0]["result"] == {"squared": True, "via": "confirmed_flat"}
+        assert len(reg) == 0                                  # dropped on confirmed-flat
 
     def test_on_close_exception_does_not_kill_the_cycle(self):
         reg = LiveMonitorRegistry()
         _registered(reg, entry=250.0, stop_pct=30)
         client = _FakeClient([_pos(netqty=20, lp=170.0)])
         rec, calls = _Recorder(), []
-        guard = self._guard_with_close(reg, client, rec, calls, raise_in_close=True)
-        exits = run(guard._cycle())                            # must not raise
+        guard = self._guard_with_close(reg, client, rec, calls,
+                                       now_fn=lambda: _NOW, raise_in_close=True)
+        run(guard._cycle())                                    # issue (still open)
+        assert rec.squared and rec.squared[0][0] == _TSYM      # square happened
+        client.set([])
+        run(guard._cycle())                                    # confirm-flat → on_close raises
         assert len(calls) == 1                                 # hook fired
-        assert rec.squared and rec.squared[0][0] == _TSYM      # square still happened
-        assert len(exits) == 1                                 # exit still recorded
+        assert len(reg) == 0                                   # still dropped despite the raise
 
     def test_on_close_fires_for_eod_square_of_deployed_position(self):
         reg = LiveMonitorRegistry()
@@ -750,6 +785,12 @@ class TestOnCloseHook:
         # 15:30 IST = 10:00 UTC → past the 15:00 EOD cutoff
         now_fn = lambda: datetime(2026, 6, 26, 10, 0, tzinfo=timezone.utc)
         guard = self._guard_with_close(reg, client, rec, calls, now_fn=now_fn)
+        # Cycle 1: EOD square ISSUED; on_close deferred until confirmed flat.
+        run(guard._cycle())
+        assert calls == []
+        assert reg.get("ORDX")["squaring"] is True
+        # Cycle 2: broker confirms flat → on_close fires with the EOD reason.
+        client.set([])
         run(guard._cycle())
         assert len(calls) == 1
         assert calls[0]["reason"] == "eod_square"
@@ -801,19 +842,73 @@ def _registered_with_oco(registry, *, oco_al_id="OCO1", entry=250.0, stop_pct=30
 
 
 class TestOcoCancelAfterRealFill:
-    def test_real_fill_cancels_oco_after_square(self):
-        """square_fn returns a REAL fill ({"squared":True}) → cancel_oco("OCO1")
-        IS called, and AFTER the square (not before)."""
+    def test_place_accept_keeps_oco_until_confirmed_flat(self):
+        """A place-accepted square ({"squared":True}) is PENDING, not done: the OCO
+        stays resting and the entry stays registered until the BROKER BOOK confirms
+        the position flat. Only THEN is the OCO cancelled and the entry dropped.
+
+        This is the Layer 1 safety invariant — on a fast crash a marketable exit can
+        rest unfilled, so cancelling the OCO / dropping the entry on place-acceptance
+        would leave the position OPEN and UNPROTECTED yet reported closed."""
+        reg = LiveMonitorRegistry()
+        _registered_with_oco(reg, oco_al_id="OCO1")
+        client = _OcoClient([_pos(netqty=20, lp=170.0)])     # breach; still OPEN in book
+        sq = _ScriptedSquare({"squared": True}, client=client)
+        guard = LivePositionGuard(registry=reg, client_factory=lambda: _aw(client),
+                                  square_fn=sq.square_fn, now_fn=lambda: _NOW)
+        # Cycle 1: breach → square ISSUED, but the position still shows open.
+        run(guard._cycle())
+        assert sq.squared and sq.squared[0][0] == _TSYM       # square issued
+        assert client.cancel_oco_calls == []                  # OCO STILL resting
+        assert len(reg) == 1                                  # entry STILL registered
+        assert reg.get("ORD1")["squaring"] is True
+        # Cycle 2: the broker now reports the position flat → confirmed-flat →
+        # cancel the OCO and drop the entry.
+        client.set([])
+        run(guard._cycle())
+        assert client.cancel_oco_calls == ["OCO1"]            # OCO cancelled on confirmed-flat
+        assert len(reg) == 0                                  # entry dropped
+
+    def test_real_fill_cancels_oco_on_confirmed_flat(self):
+        """The OCO is cancelled once the broker confirms the position flat (not on
+        the place-accept cycle)."""
         reg = LiveMonitorRegistry()
         _registered_with_oco(reg, oco_al_id="OCO1")
         client = _OcoClient([_pos(netqty=20, lp=170.0)])     # below stop → breach
         sq = _ScriptedSquare({"squared": True}, client=client)
         guard = LivePositionGuard(registry=reg, client_factory=lambda: _aw(client),
-                                  square_fn=sq.square_fn)
-        run(guard._cycle())
+                                  square_fn=sq.square_fn, now_fn=lambda: _NOW)
+        run(guard._cycle())                                   # issue (still open)
         assert sq.squared and sq.squared[0][0] == _TSYM       # square ran
+        assert client.cancel_oco_calls == []                  # not yet — still open
+        client.set([])                                        # broker confirms flat
+        run(guard._cycle())
         assert client.cancel_oco_calls == ["OCO1"]            # OCO cancelled
-        assert sq.cancel_count_at_square == 0                 # cancel was AFTER square
+
+    def test_closed_elsewhere_cancels_orphan_oco_without_journaling(self):
+        """A seen-filled position that goes flat WITHOUT the guard squaring it
+        (closed manually / the OCO fired) is dropped and its OCO cancelled (orphan
+        cleanup — a resting alert against a flat account could open a fresh naked
+        short) but the close is NOT journaled (no guard square was pending)."""
+        reg = LiveMonitorRegistry()
+        _registered_with_oco(reg, oco_al_id="OCO1", stop_pct=30)  # stop 175
+        client = _OcoClient([_pos(netqty=20, lp=250.0)])          # held (above stop)
+        rec = _Recorder()
+        calls = []
+
+        async def on_close(entry, exit_price, reason, result):
+            calls.append(reason)
+
+        guard = LivePositionGuard(registry=reg, client_factory=lambda: _aw(client),
+                                  square_fn=rec.square_fn, on_close=on_close,
+                                  now_fn=lambda: _NOW)
+        run(guard._cycle())                                       # seen_filled, no square
+        assert rec.squared == [] and reg.get("ORD1")["squaring"] is False
+        client.set([])                                            # closed elsewhere → flat
+        run(guard._cycle())
+        assert client.cancel_oco_calls == ["OCO1"]               # orphan OCO cancelled
+        assert calls == []                                       # NOT journaled (not squaring)
+        assert len(reg) == 0                                     # dropped
 
     def test_dry_run_square_does_not_cancel_oco(self):
         """square_fn returns a dry-run ({"squared":False,"dry_run":True}) →
@@ -824,19 +919,26 @@ class TestOcoCancelAfterRealFill:
         client = _OcoClient([_pos(netqty=20, lp=170.0)])
         sq = _ScriptedSquare({"squared": False, "dry_run": True}, client=client)
         guard = LivePositionGuard(registry=reg, client_factory=lambda: _aw(client),
-                                  square_fn=sq.square_fn)
+                                  square_fn=sq.square_fn, now_fn=lambda: _NOW)
         run(guard._cycle())
         assert sq.squared                                     # square (dry-run) ran
         assert client.cancel_oco_calls == []                  # OCO NOT cancelled
+        # A dry-run transmits nothing → entry kept, OCO resting, squaring stays False.
+        assert len(reg) == 1
+        assert reg.get("ORD1")["squaring"] is False
 
-    def test_real_dry_run_field_present_but_false_cancels(self):
-        """A real fill carrying an explicit dry_run=False still cancels."""
+    def test_real_dry_run_field_present_but_false_cancels_on_flat(self):
+        """A real square carrying an explicit dry_run=False cancels the OCO — once
+        the broker confirms flat (not on the place-accept cycle)."""
         reg = LiveMonitorRegistry()
         _registered_with_oco(reg, oco_al_id="OCO1")
         client = _OcoClient([_pos(netqty=20, lp=170.0)])
         sq = _ScriptedSquare({"squared": True, "dry_run": False}, client=client)
         guard = LivePositionGuard(registry=reg, client_factory=lambda: _aw(client),
-                                  square_fn=sq.square_fn)
+                                  square_fn=sq.square_fn, now_fn=lambda: _NOW)
+        run(guard._cycle())
+        assert client.cancel_oco_calls == []                  # still open → not yet
+        client.set([])
         run(guard._cycle())
         assert client.cancel_oco_calls == ["OCO1"]
 
@@ -879,7 +981,8 @@ class TestOcoCancelAfterRealFill:
         assert sq.squared and len(exits) == 1
 
     def test_cancel_oco_raising_does_not_break_cycle(self):
-        """A cancel_oco that RAISES is logged but never breaks the guard cycle."""
+        """A cancel_oco that RAISES (on confirmed-flat) is logged but never breaks
+        the guard cycle, and the entry is still dropped."""
         class _RaisingOco(_OcoClient):
             async def cancel_oco(self, al_id):
                 self.cancel_oco_calls.append(al_id)
@@ -889,10 +992,14 @@ class TestOcoCancelAfterRealFill:
         client = _RaisingOco([_pos(netqty=20, lp=170.0)])
         sq = _ScriptedSquare({"squared": True}, client=client)
         guard = LivePositionGuard(registry=reg, client_factory=lambda: _aw(client),
-                                  square_fn=sq.square_fn)
-        exits = run(guard._cycle())                           # must not raise
+                                  square_fn=sq.square_fn, now_fn=lambda: _NOW)
+        exits = run(guard._cycle())                           # issue (still open)
+        assert len(exits) == 1                                # square issue recorded
+        assert client.cancel_oco_calls == []                  # not on place-accept
+        client.set([])
+        run(guard._cycle())                                   # confirm-flat → cancel raises
         assert client.cancel_oco_calls == ["OCO1"]            # attempted
-        assert len(exits) == 1                                # exit still recorded
+        assert len(reg) == 0                                  # still dropped despite the raise
 
 
 # ---------------------------------------------------------------------------

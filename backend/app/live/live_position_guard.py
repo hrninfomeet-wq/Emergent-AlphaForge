@@ -25,9 +25,12 @@ Two pieces
 
 Safety properties
 -----------------
-- A position is removed from the registry BEFORE the square is issued, so a slow
-  square can never be issued twice for the same position.
-- A position the broker reports FLAT (netqty == 0) is dropped (closed elsewhere).
+- A guard square is PLACE-AND-TRACK, not place-and-forget: a place-acceptance is
+  not a fill. On a breach the entry is MARKED ``squaring`` (and KEPT registered,
+  OCO resting); the flag stops it being re-issued. Only when the broker book
+  confirms the position FLAT (netqty→0) does ``_finalize_flat`` cancel the OCO,
+  journal the close, and drop the entry — so a resting-unfilled exit never leaves
+  the position open-and-unprotected yet reported closed.
 - A stale / missing ``lp`` is treated as "no reading" by ``evaluate_exit`` → never
   a spurious square.
 - The cycle NEVER raises out — a broker/feed error records and skips.
@@ -178,6 +181,13 @@ class LiveMonitorRegistry:
             # pending fill is NEVER dropped before it appears.
             "seen_filled": False,
             "misses": 0,
+            # Confirm-flat bookkeeping (Layer 1): once a guard square is placed and
+            # accepted, `squaring` flips True and the entry is KEPT (the OCO stays
+            # resting) until the broker book confirms netqty→0 — only then is the OCO
+            # cancelled, the close journaled (with `square_reason`), and the entry
+            # dropped. A place-accept is NOT a fill, so nothing irreversible fires on it.
+            "squaring": False,
+            "square_reason": None,
             # the dict handed to square_fn (the margin-safe square reads tsym/exch/
             # netqty/lp); netqty/lp are refreshed from the broker each cycle.
             "position": {
@@ -245,13 +255,15 @@ class LivePositionGuard:
         self._registry = registry
         self._client_factory = client_factory
         self._square_fn = square_fn
-        # Optional close-loop hook fired after EVERY guard square (the single
-        # _square_and_record choke-point). Signature:
+        # Optional close-loop hook fired from ``_finalize_flat`` when the broker
+        # confirms a guard-squared position FLAT (NOT on place-acceptance). Signature:
         #   async on_close(entry, exit_price, exit_reason, result) -> None
-        # The production impl (runtime._live_guard_on_close) journals realized P&L
-        # to live_trades, but ONLY for a real fill — it inspects `result` and
-        # no-ops on a dry-run/failed square. Default None ⇒ no-op (host tests stay
-        # db-free). A close-loop failure NEVER kills the guard cycle.
+        # It is called with a synthesized confirmed-flat result
+        # ({"squared": True, "via": "confirmed_flat"}) only when a guard square was
+        # pending (`squaring`). The production impl (runtime._live_guard_on_close)
+        # journals realized P&L to live_trades; should_journal_close still gates out
+        # manual/dry-run. Default None ⇒ no-op (host tests stay db-free). A close-loop
+        # failure NEVER kills the guard cycle.
         self._on_close = on_close
         self._poll_seconds = float(poll_seconds)
         # Spot-mirror source: () -> live tick map {instrument_key: {"last_price",
@@ -323,8 +335,12 @@ class LivePositionGuard:
                 # Not (yet) a live position in the book — flat / absent / unparseable.
                 if pos is None or netqty is None or netqty == 0:
                     if entry.get("seen_filled"):
-                        # It filled earlier and is now flat → closed elsewhere; drop.
-                        self._registry.remove(entry["id"])
+                        # It filled earlier and the broker now reports it FLAT — the
+                        # one confirmed-flat signal. This is the SOLE place the OCO is
+                        # cancelled, the close journaled, and the entry dropped
+                        # (however it went flat: the guard's exit filled, the OCO
+                        # fired, or it was closed elsewhere).
+                        await self._finalize_flat(client, entry)
                     else:
                         # Still pending its fill — KEEP, but bound a never-filling
                         # (rejected/canceled) entry by a grace window.
@@ -348,10 +364,17 @@ class LivePositionGuard:
                     "token": pos.get("token"),
                 })
 
+                # A guard square is already working for this entry (place accepted,
+                # not yet confirmed flat). Do NOT re-evaluate stops or re-issue — wait
+                # for the broker to confirm flat (handled above) while the resting exit
+                # + the still-intact OCO protect it. (Layer 2 will re-price here.)
+                if entry.get("squaring"):
+                    continue
+
                 verdict = evaluate_exit(entry["state"], lp)
                 entry["state"] = verdict["state"]
                 if verdict["exit"]:
-                    await self._square_and_record(
+                    await self._issue_square(
                         client, entry, f"software_{verdict['reason']}",
                         verdict["reason"], exits)
                     continue
@@ -379,49 +402,71 @@ class LivePositionGuard:
             log.exception("live position guard cycle failed: %s", exc)
         return exits
 
-    async def _square_and_record(
+    async def _issue_square(
         self, client: Any, entry: Dict[str, Any], square_reason: str,
         exit_reason: str, exits: List[Dict[str, Any]],
     ) -> None:
-        """Remove-BEFORE-square (so a slow square is never re-issued), square via
-        the injected margin-safe square_fn, record the exit. NEVER raises."""
-        self._registry.remove(entry["id"])
+        """Issue a margin-safe square exit for a breached position and MARK it
+        squaring — place-and-track, NOT place-and-forget. NEVER raises.
+
+        This does NOT drop the entry, cancel the OCO, or journal the close. A
+        ``square_fn`` result is a place-ACCEPTANCE (or a dry-run), not a fill: on a
+        fast crash the marketable exit can rest unfilled. So the entry stays
+        registered and the OCO stays resting until the broker book confirms the
+        position flat, at which point ``_finalize_flat`` (the sole finalizer) cancels
+        the OCO, journals the close, and drops the entry.
+
+        Result handling:
+          * real + accepted (squared, not dry_run) → set ``squaring`` so we don't
+            re-issue; wait for confirmed-flat.
+          * dry-run (LIVE_GUARD_ARMED off) → transmits nothing; leave ``squaring``
+            False, keep the entry + OCO, journal nothing (validation semantics).
+          * real + failed (squared falsy) → leave ``squaring`` False so the next
+            cycle retries (never orphan the position).
+        """
         try:
             result = await self._square_fn(
                 client, entry["position"], reason=square_reason)
         except Exception as exc:  # square must never kill the loop
             log.exception("guard square failed for %s: %s", entry["tsym"], exc)
             result = {"squared": False, "error": str(exc)[:200]}
-        # Cancel the resting OCO ONLY AFTER a CONFIRMED REAL square fill (never
-        # before — cancel_oco cannot stop an already-triggered OCO; and never on
-        # a dry-run/failed square — stripping the broker net without squaring
-        # would leave the position fully UNPROTECTED). Gate on all of:
-        #   oco_al_id present AND client.cancel_oco exists AND squared AND not dry_run.
-        if (
-            entry.get("oco_al_id")
-            and hasattr(client, "cancel_oco")
-            and result.get("squared")
-            and not result.get("dry_run")
-        ):
+        if result.get("squared") and not result.get("dry_run"):
+            entry["squaring"] = True
+            entry["square_reason"] = exit_reason
+        self._stats["exits"] += 1
+        exits.append({"id": entry["id"], "tsym": entry["tsym"],
+                      "reason": exit_reason, "result": result})
+
+    async def _finalize_flat(self, client: Any, entry: Dict[str, Any]) -> None:
+        """The broker confirms this position FLAT (netqty→0). The SOLE place that
+        cancels the resting OCO, journals the close, and drops the entry — gated on
+        broker truth, never on a place-acceptance. NEVER raises.
+
+        * cancel_oco runs on ANY confirmed flat when an oco_al_id exists: a no-op if
+          the OCO itself fired, and it clears an OCO that a close-elsewhere would
+          otherwise orphan (a resting alert against a flat account could open a fresh
+          naked short).
+        * on_close journals ONLY when a guard square was pending (``squaring``), using
+          the tracked reason and the last-seen broker mark (an estimate; reboot
+          reconcile back-fills the true fill price). A position closed OUTSIDE the
+          guard is dropped without a journal.
+        """
+        if entry.get("oco_al_id") and hasattr(client, "cancel_oco"):
             try:
                 await client.cancel_oco(entry["oco_al_id"])
             except Exception as exc:  # a cancel failure logs, never breaks the cycle
                 log.exception(
                     "guard cancel_oco failed for %s (al_id=%s): %s",
                     entry["tsym"], entry.get("oco_al_id"), exc)
-        self._stats["exits"] += 1
-        exits.append({"id": entry["id"], "tsym": entry["tsym"],
-                      "reason": exit_reason, "result": result})
-        # Close-loop: journal realized P&L back to live_trades (real fills only;
-        # the production hook no-ops on a dry-run/failed square). exit_price is the
-        # broker last-price refreshed onto the entry this cycle (an exit MARK, not
-        # a confirmed fill). NEVER let a close-loop failure kill the guard.
-        if self._on_close is not None:
+        if entry.get("squaring") and self._on_close is not None:
             try:
                 await self._on_close(
-                    entry, entry["position"].get("lp"), exit_reason, result)
+                    entry, entry["position"].get("lp"),
+                    entry.get("square_reason"),
+                    {"squared": True, "via": "confirmed_flat"})
             except Exception as exc:
                 log.exception("guard on_close failed for %s: %s", entry["tsym"], exc)
+        self._registry.remove(entry["id"])
 
     def _fresh_spot_price(
         self, spot_map: Dict[str, Any], instrument_key: str, now: datetime
@@ -475,7 +520,7 @@ class LivePositionGuard:
         )
         if not reason:
             return False
-        await self._square_and_record(
+        await self._issue_square(
             client, entry, f"software_{reason}", reason, exits)
         return True
 
@@ -499,7 +544,7 @@ class LivePositionGuard:
         elapsed_min = (now - entry_ts).total_seconds() / 60.0
         if elapsed_min < minutes:
             return False
-        await self._square_and_record(
+        await self._issue_square(
             client, entry, "software_time_stop", "time_stop", exits)
         return True
 
@@ -512,16 +557,19 @@ class LivePositionGuard:
         positions was removed, so the 15:00 IST EOD square is now their "never
         left open" backstop too — no registered position is EOD-exempt. Deployed
         positions additionally follow their strategy rules + resting OCO; manual
-        positions rely on the software guard stop + this EOD square. Remove-before-
-        square, reason="eod_square"; the actual transmit is gated by the injected
-        square_fn (LIVE_GUARD_ARMED)."""
+        positions rely on the software guard stop + this EOD square. reason=
+        "eod_square"; the actual transmit is gated by the injected square_fn
+        (LIVE_GUARD_ARMED). An entry already `squaring` is skipped — a guard exit is
+        already working for it (and will finalize on confirmed-flat)."""
         if len(self._registry) == 0:
             return
         ist_now = (now.astimezone(timezone.utc) + _IST).time()
         if ist_now < self._eod_square_ist:
             return
         for entry in self._registry.snapshot():
-            await self._square_and_record(
+            if entry.get("squaring"):
+                continue  # a square is already working for this entry
+            await self._issue_square(
                 client, entry, "eod_square", "eod_square", exits)
 
     async def _evaluate_overall_basket(
@@ -575,10 +623,13 @@ class LivePositionGuard:
             return
 
         # Overall breach → square EVERY remaining guarded position through the
-        # single _square_and_record choke-point (remove-before-square + exit
-        # record + close-loop on_close — identical to the per-position exits).
+        # single _issue_square choke-point (place-and-mark; the OCO cancel + close-
+        # loop happen later on confirmed-flat). An entry already `squaring` is
+        # skipped — its exit is already working.
         for entry in self._registry.snapshot():
-            await self._square_and_record(
+            if entry.get("squaring"):
+                continue
+            await self._issue_square(
                 client, entry, f"software_{ov['reason']}", ov["reason"], exits)
         self._overall_state = None  # basket squared → reset
 

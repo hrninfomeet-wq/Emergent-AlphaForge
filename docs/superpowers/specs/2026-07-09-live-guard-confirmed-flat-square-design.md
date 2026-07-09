@@ -162,10 +162,12 @@ the close truthfully. The position is never simultaneously open, unprotected, an
 ### 3.6 Acknowledged Layer‑1 boundary
 
 Layer 1 does not re‑price a resting exit. On a fully blown‑through market the guard's own 1% exit
-may sit unfilled until the OCO, the 10‑minute manual auto‑square cap, or EOD acts. Layer 1's
-contract is *keep it protected and honestly journaled*; **Layer 2** (follow‑up) adds the
-1 → 2 → 4 % escalation (mirroring `kill_switch.panic_squareoff_verified`) that forces the fill, plus
-interval‑gated retry so a hard‑rejecting square doesn't re‑place every cycle.
+may sit unfilled until the resting OCO fires or the 15:00 IST EOD square acts. (The manual 10‑minute
+auto‑square cap that once backstopped this was removed first — see
+`2026-07-09-remove-manual-livetest-10min-timer-design.md`.) Layer 1's contract is *keep it protected
+and honestly journaled*; **Layer 2** (follow‑up) adds the 1 → 2 → 4 % escalation (mirroring
+`kill_switch.panic_squareoff_verified`) that forces the fill, plus interval‑gated retry so a
+hard‑rejecting square doesn't re‑place every cycle.
 
 ---
 

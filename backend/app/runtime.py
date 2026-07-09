@@ -192,17 +192,20 @@ def _live_guard_spot_tick_fn() -> dict:
 
 
 async def _live_guard_on_close(entry, exit_price, reason, result) -> None:
-    """Close-loop: journal realized P&L back to the live_trades doc when the guard
-    squares a DEPLOYED position. Fired from the guard's single _square_and_record
-    choke-point for every exit (premium stop/target/trail, spot-mirror, time-stop,
-    EOD, overall-basket).
+    """Close-loop: journal realized P&L back to the live_trades doc when the guard's
+    square is CONFIRMED FLAT by the broker. Fired from the guard's ``_finalize_flat``
+    (the sole confirmed-flat finalizer) with a synthesized
+    ``{"squared": True, "via": "confirmed_flat"}`` result — NOT on place-acceptance,
+    and only for an entry that had a guard square pending (`squaring`), across every
+    exit path (premium stop/target/trail, spot-mirror, time-stop, EOD, overall-basket).
 
-    Safety (both adversarially verified): only journals on a REAL fill —
-    ``should_journal_close`` skips a dry-run (LIVE_GUARD_ARMED off → squared=False)
-    or failed square, and skips ``source=="manual"`` single-shots (no live_trades
-    doc). Links by the entry norenordno (== entry["id"] for an auto_live entry;
-    a rehydrated entry is keyed by tsym and has no doc, so the update no-ops).
-    Idempotent (status != CLOSED). NEVER raises (the guard wraps this call)."""
+    Safety (both adversarially verified): only journals a CONFIRMED close —
+    ``should_journal_close`` skips a dry-run / non-squared result and ``source==
+    "manual"`` single-shots (no live_trades doc). Links by the entry norenordno
+    (== entry["id"] for an auto_live entry; a rehydrated entry is keyed by tsym and
+    has no doc, so the update no-ops). exit_price is the last broker mark (an
+    estimate; reboot reconcile back-fills the true fill price). Idempotent
+    (status != CLOSED). NEVER raises (the guard wraps this call)."""
     from app.live.close_loop import should_journal_close, close_live_trade
     if not should_journal_close(entry, result):
         return
