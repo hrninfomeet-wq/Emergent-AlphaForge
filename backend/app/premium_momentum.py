@@ -51,6 +51,26 @@ def premium_series_for_key(option_candles: pd.DataFrame,
     return sub["ts"].to_numpy(dtype="int64"), sub["close"].to_numpy(dtype="float64")
 
 
+def premium_ohlc_for_key(option_candles: pd.DataFrame,
+                         instrument_key: str) -> Dict[str, np.ndarray]:
+    """{ts, open, high, low, close} arrays for one instrument_key, ascending by ts.
+    close = premium (the momentum/target basis); low/open drive GAP-HONEST stop
+    fills. Missing o/h/l columns fall back to close (so close-only fixtures still
+    behave). Empty arrays when the key is absent."""
+    empty = np.array([], dtype="float64")
+    blank = {"ts": np.array([], dtype="int64"), "open": empty, "high": empty, "low": empty, "close": empty}
+    if option_candles is None or option_candles.empty:
+        return blank
+    sub = option_candles[option_candles["instrument_key"] == instrument_key]
+    if sub.empty:
+        return blank
+    sub = sub.sort_values("ts")
+    close = sub["close"].to_numpy(dtype="float64")
+    col = lambda name: sub[name].to_numpy(dtype="float64") if name in sub.columns else close
+    return {"ts": sub["ts"].to_numpy(dtype="int64"), "open": col("open"),
+            "high": col("high"), "low": col("low"), "close": close}
+
+
 def momentum_triggered(*, premium_now: float, ref_premium: float,
                        pct: Optional[float] = None, pts: Optional[float] = None) -> bool:
     """True once premium_now has risen to/above the momentum trigger from ref.
@@ -73,15 +93,24 @@ def walk_premium_momentum(*, ts, premium, ref_premium: float,
                           target_pts: Optional[float] = None,
                           stop_pct: Optional[float] = None,
                           stop_pts: Optional[float] = None,
-                          trail=None) -> Dict[str, Any]:
+                          trail=None, low=None, open_=None) -> Dict[str, Any]:
     """Walk a single locked strike's premium series (ascending ts):
-    1. find the FIRST bar whose premium crosses the momentum trigger -> ENTRY;
-    2. from the next bar, exit on premium stop / target (continuous), else at EOD.
-    Look-ahead safe: never reads a future bar for the current decision. `trail`
-    is a callable(entry_premium, running_high, base_stop)->stop for Phase 2;
-    None => continuous base stop only. Returns a trade dict (entered=False if the
-    momentum trigger never fired)."""
+    1. find the FIRST bar whose premium (close) crosses the momentum trigger -> ENTRY;
+    2. from the next bar, exit on premium stop / target, else at EOD.
+
+    STOP fills are GAP-HONEST when the per-bar ``low`` and ``open_`` arrays are given
+    (the real backtest path passes them): the stop is TOUCHED intra-bar when the bar
+    LOW <= stop, and FILLED at ``min(stop, bar_open)`` — so a premium that gaps down
+    THROUGH the stop books the real (worse) fill, not the stop level. This is the
+    dominant tail risk for an option buyer, so it must not be flattered. When low/open
+    are omitted (simple unit fixtures / the legacy path), the stop falls back to a
+    close-touch fill at the stop level. Target stays conservative (close >= target,
+    fill at target). Look-ahead safe: never reads a future bar for the current
+    decision. ``trail`` is the Phase-2 stepped ratchet. Returns entered=False if the
+    momentum trigger never fired."""
     ts = list(ts); premium = [float(p) for p in premium]
+    lo = [float(v) for v in low] if low is not None else None
+    op = [float(v) for v in open_] if open_ is not None else None
     n = len(premium)
     # --- entry: first cross ---
     entry_i = None
@@ -98,16 +127,22 @@ def walk_premium_momentum(*, ts, premium, ref_premium: float,
     running_high = entry_premium
     # --- exit: from the bar AFTER entry (fill at entry bar's premium) ---
     for j in range(entry_i + 1, n):
-        p = premium[j]
-        running_high = max(running_high, p)
+        c = premium[j]
+        running_high = max(running_high, c)
         stop = base_stop
         if trail is not None and base_stop is not None:
             stop = trail(entry_premium=entry_premium, running_high=running_high,
                          base_stop=base_stop)
-        # stop-first (pessimistic), mirroring the spot engine's intrabar_exit
-        if stop is not None and p <= stop:
-            return _exit(ts, entry_i, entry_premium, j, stop, "STOP")
-        if target is not None and p >= target:
+        # stop-first (pessimistic), mirroring the spot engine's intrabar_exit.
+        if stop is not None:
+            # touch: intra-bar LOW when available (gap-honest), else the close.
+            touched = (lo[j] <= stop) if lo is not None else (c <= stop)
+            if touched:
+                # fill: gap-honest min(stop, open) — a bar that OPENED below the stop
+                # gapped through it and fills worse; else fills at the stop.
+                fill = min(stop, op[j]) if op is not None else stop
+                return _exit(ts, entry_i, entry_premium, j, fill, "STOP")
+        if target is not None and c >= target:
             return _exit(ts, entry_i, entry_premium, j, target, "TARGET")
     # EOD
     return _exit(ts, entry_i, entry_premium, n - 1, premium[n - 1], "EOD")

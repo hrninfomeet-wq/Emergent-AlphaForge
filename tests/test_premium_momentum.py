@@ -150,3 +150,56 @@ def test_walk_with_stepped_trail_exits_at_ratcheted_stop():
     # FILL CONVENTION: exit at the stop LEVEL (mirrors the spot engine's intrabar_exit),
     # not the gapped bar premium. 211.5 base + floor(40/20)*20 = 251.5.
     assert r["exit_premium"] == 251.5
+
+
+# ---------------------------------------------------------------------------
+# Phase 1.1 — GAP-HONEST stop fills (option-buyer tail risk must not be flattered)
+# ---------------------------------------------------------------------------
+from app.premium_momentum import premium_ohlc_for_key
+
+
+def test_premium_ohlc_falls_back_to_close_when_ohlc_missing():
+    candles = pd.DataFrame([
+        {"instrument_key": "K", "ts": 2, "close": 11.0},
+        {"instrument_key": "K", "ts": 1, "close": 10.0},
+    ])
+    oh = premium_ohlc_for_key(candles, "K")
+    assert list(oh["ts"]) == [1, 2]
+    assert list(oh["close"]) == [10.0, 11.0]
+    assert list(oh["low"]) == [10.0, 11.0]    # fallback to close
+    assert list(oh["open"]) == [10.0, 11.0]
+
+
+def test_walk_gap_honest_stop_fills_at_open_on_gapdown():
+    # entry 235; stop_pct 20 -> base stop 188. A bar gaps DOWN through the stop:
+    # open 170 (below stop), low 165, close 180. Legacy (close-only) fills at the 188
+    # stop LEVEL; gap-honest fills at min(stop, open)=170 — the real, worse fill.
+    ts    = [1, 2, 3]
+    close = [200, 235, 180]
+    low   = [200, 235, 165]
+    open_ = [200, 235, 170]
+    r = walk_premium_momentum(ts=ts, premium=close, low=low, open_=open_, ref_premium=200.0,
+                              entry_pct=15.0, stop_pct=20.0, target_pct=100.0)
+    assert r["entered"] and r["exit_reason"] == "STOP"
+    assert r["exit_premium"] == 170.0    # min(188 stop, 170 open) — NOT the 188 level
+
+
+def test_walk_intrabar_stop_touch_on_low_even_if_close_recovers():
+    # bar low 180 touches the 188 stop, but close 210 recovers above it. A close-only
+    # model MISSES the stop-out; the intra-bar low model catches it (conservative).
+    # open 205 is above the stop, so the fill is the stop level, not a gap.
+    ts    = [1, 2, 3, 4]
+    close = [200, 235, 210, 210]
+    low   = [200, 235, 180, 205]
+    open_ = [200, 235, 205, 208]
+    r = walk_premium_momentum(ts=ts, premium=close, low=low, open_=open_, ref_premium=200.0,
+                              entry_pct=15.0, stop_pct=20.0, target_pct=100.0)
+    assert r["entered"] and r["exit_reason"] == "STOP" and r["exit_ts"] == 3
+    assert r["exit_premium"] == 188.0    # min(188 stop, 205 open) = 188 (opened above)
+
+
+def test_walk_close_only_stop_is_legacy_fill_at_level():
+    # No low/open provided -> legacy close-touch, fill at the stop level (188).
+    r = walk_premium_momentum(ts=[1, 2, 3], premium=[200, 235, 180], ref_premium=200.0,
+                              entry_pct=15.0, stop_pct=20.0, target_pct=100.0)
+    assert r["entered"] and r["exit_reason"] == "STOP" and r["exit_premium"] == 188.0

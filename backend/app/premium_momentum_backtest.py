@@ -14,7 +14,7 @@ from typing import Any, Dict, List
 import pandas as pd
 
 from app.premium_momentum import (
-    lock_reference_strike, premium_series_for_key, stepped_trail_stop,
+    lock_reference_strike, premium_ohlc_for_key, stepped_trail_stop,
     walk_premium_momentum,
 )
 
@@ -62,8 +62,8 @@ def run_premium_momentum_backtest(*, spot_df: pd.DataFrame, option_candles: pd.D
         spot_at_ref = float(ref_row["close"])
         ref_ts = int(ref_row["ts"])
 
-        # Lock each side's strike + get its premium series FROM the reference bar on.
-        candidates = []          # (side, locked, ts[], prem[])
+        # Lock each side's strike + get its OHLC premium series FROM the reference bar on.
+        candidates = []          # (side, locked, ohlc dict of arrays)
         excluded = False
         for side in sides:
             locked = lock_reference_strike(contracts=contracts, underlying=instrument,
@@ -72,26 +72,27 @@ def run_premium_momentum_backtest(*, spot_df: pd.DataFrame, option_candles: pd.D
                 excluded = True
                 cov["exclude_reasons"]["no_contract"] = cov["exclude_reasons"].get("no_contract", 0) + 1
                 break
-            ts_arr, prem_arr = premium_series_for_key(option_candles, locked["instrument_key"])
-            mask = ts_arr >= ref_ts
-            ts_arr, prem_arr = ts_arr[mask], prem_arr[mask]
-            if len(prem_arr) == 0:
+            oh = premium_ohlc_for_key(option_candles, locked["instrument_key"])
+            mask = oh["ts"] >= ref_ts
+            oh = {k: v[mask] for k, v in oh.items()}
+            if len(oh["close"]) == 0:
                 excluded = True
                 cov["exclude_reasons"]["no_premium_series"] = cov["exclude_reasons"].get("no_premium_series", 0) + 1
                 break
-            candidates.append((side, locked, ts_arr, prem_arr))
+            candidates.append((side, locked, oh))
         if excluded:
             cov["sessions_excluded"] += 1
             continue
 
         # Walk each candidate; keep the one that ENTERS EARLIEST (first-to-trigger).
         best = None   # (side, locked, ref_premium, r)
-        for side, locked, ts_arr, prem_arr in candidates:
-            ref_premium = float(prem_arr[0])   # premium at/after the reference bar
-            r = walk_premium_momentum(ts=ts_arr, premium=prem_arr, ref_premium=ref_premium,
+        for side, locked, oh in candidates:
+            ref_premium = float(oh["close"][0])   # premium at/after the reference bar
+            r = walk_premium_momentum(ts=oh["ts"], premium=oh["close"], ref_premium=ref_premium,
                                       entry_pct=entry_pct, entry_pts=entry_pts,
                                       target_pct=target_pct, target_pts=target_pts,
-                                      stop_pct=stop_pct, stop_pts=stop_pts, trail=trail)
+                                      stop_pct=stop_pct, stop_pts=stop_pts, trail=trail,
+                                      low=oh["low"], open_=oh["open"])
             if not r.get("entered"):
                 continue
             if best is None or r["entry_ts"] < best[3]["entry_ts"]:
