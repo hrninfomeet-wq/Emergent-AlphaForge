@@ -665,15 +665,17 @@ def test_walk_with_stepped_trail_exits_at_ratcheted_stop():
     trail = functools.partial(stepped_trail_stop, x=20.0, y=20.0)
     # entry 235 (crosses 15% of 200=230 at 235). base stop 235*.9=211.5.
     ts   = [1, 2, 3, 4, 5]
-    prem = [200, 235, 275, 255, 205]   # high 275 -> favorable 40 -> 2 steps -> stop 211.5+40=251.5; 255>251.5,
-    #                                    then 205 < 251.5 -> exit at the ratcheted stop
+    prem = [200, 235, 275, 255, 205]   # high 275 -> favorable 40 -> 2 steps -> stop 211.5+40=251.5;
+    #                                    255>251.5 holds, then 205<=251.5 -> STOP.
     r = walk_premium_momentum(ts=ts, premium=prem, ref_premium=200.0, entry_pct=15.0,
                               stop_pct=10.0, target_pct=100.0, trail=trail)
     assert r["entered"] and r["exit_reason"] == "STOP"
-    assert r["exit_premium"] <= 205.0 and r["exit_premium"] >= 200.0
+    # FILL CONVENTION: exit at the stop LEVEL (mirrors the spot engine's intrabar_exit),
+    # not the gapped bar premium. 211.5 base + floor(40/20)*20 = 251.5.
+    assert r["exit_premium"] == 251.5
 ```
 
-- [ ] **Step 2: Run, verify fail** (walk currently ignores nothing — but assert the ratchet math; adjust to code arithmetic).
+- [ ] **Step 2: Run, verify fail** (the stepped ratchet isn't wired yet; the assertion encodes the fill-at-stop-level convention — if arithmetic differs, the code is source of truth, fix the assertion).
 - [ ] **Step 3:** In `run_premium_momentum_backtest`, when `params` has `trail_x`/`trail_y`, build `trail = functools.partial(stepped_trail_stop, x=trail_x, y=trail_y)` and pass it to `walk_premium_momentum`. (The walk already threads it.)
 - [ ] **Step 4: Run both test files, verify pass;** confirm byte-identity when `trail` is absent (Phase-1 tests still green).
 - [ ] **Step 5: Commit** (`feat(premium-momentum): stepped trail wired into the sim`).
