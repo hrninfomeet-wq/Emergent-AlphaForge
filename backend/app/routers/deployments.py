@@ -141,19 +141,6 @@ async def _square_live_positions_for_deployment(
     from app.live.close_loop import should_journal_close, close_live_trade
     squared: List[str] = []
     for entry in targets:
-        reg.remove(entry["id"])
-        # Cancel the resting broker OCO for this position. This is a USER-INITIATED
-        # flatten that always transmits, so cancel-then-square is safe (square_position
-        # re-confirms netqty as a backstop). Best-effort: a cancel failure must never
-        # break the stop — log and continue to the square.
-        if entry.get("oco_al_id") and client is not None and hasattr(client, "cancel_oco"):
-            try:
-                await client.cancel_oco(entry["oco_al_id"])
-            except Exception:
-                import logging
-                logging.getLogger(__name__).exception(
-                    "deployment-stop cancel_oco failed for %s (al_id=%s)",
-                    entry.get("tsym"), entry.get("oco_al_id"))
         position = dict(entry.get("position") or {})
         position.setdefault("tsym", entry.get("tsym"))
         result: Dict[str, Any] = {"squared": False}
@@ -163,6 +150,23 @@ async def _square_live_positions_for_deployment(
         except Exception:
             pass
         squared.append(entry.get("tsym"))
+        # Drop the guard entry + cancel the resting OCO ONLY after a CONFIRMED square.
+        # square_position now serializes per-tsym exits and returns squared=False when
+        # another path is already flattening this scrip (reason=exit_in_flight_elsewhere)
+        # — in that case we must NOT strip the OCO or stop watching, or a competing
+        # square that then fails would leave the position naked and unwatched. On
+        # squared=False the entry + OCO stay intact (the other path / the guard handles
+        # it; the broker OCO remains the PC-down backstop).
+        if result.get("squared") and not result.get("dry_run"):
+            reg.remove(entry["id"])
+            if entry.get("oco_al_id") and client is not None and hasattr(client, "cancel_oco"):
+                try:
+                    await client.cancel_oco(entry["oco_al_id"])
+                except Exception:
+                    import logging
+                    logging.getLogger(__name__).exception(
+                        "deployment-stop cancel_oco failed for %s (al_id=%s)",
+                        entry.get("tsym"), entry.get("oco_al_id"))
         # Close-loop: journal realized P&L for this deployment position, but ONLY
         # on a real fill (should_journal_close skips a failed/dry-run square and
         # manual-source entries). Linked by the entry norenordno; never raises.

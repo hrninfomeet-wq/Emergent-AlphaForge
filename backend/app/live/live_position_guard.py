@@ -655,6 +655,15 @@ class LivePositionGuard:
             self._stats["last_error"] = f'{entry["tsym"]}: reprice unpriced (no quote) — retrying'
             return
 
+        # Another exit path (kill switch / manual square) holds this tsym's exit
+        # claim — the primitive placed NOTHING. Same band, retry next interval (by
+        # then the other path has either flattened it — the confirmed-flat finalize
+        # cleans up — or released the claim).
+        if reason == "exit_in_flight_elsewhere":
+            self._stats["last_error"] = (
+                f'{entry["tsym"]}: reprice deferred — exit in flight on another path')
+            return
+
         self._stats["reprices"] = self._stats.get("reprices", 0) + 1
         exits.append({"id": entry["id"], "tsym": entry["tsym"],
                       "reason": "reprice", "band_pct": band, "result": result})

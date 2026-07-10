@@ -52,12 +52,14 @@ Key safety properties (mirrors kill_switch.py's language):
 """
 from __future__ import annotations
 
+import logging
 import math
 from typing import Any, Dict, List, Optional
 
 from app.live.order_builder import round_to_tick
 
 from app.live.broker_protocol import BrokerReadError, OrderIntent
+from app.live.exit_claims import claim_exit
 from app.live.idempotency import new_client_order_id
 from app.live.kill_switch import (
     TERMINAL,
@@ -67,6 +69,8 @@ from app.live.kill_switch import (
     _parse_netqty,
     _pos_float,
 )
+
+log = logging.getLogger(__name__)
 
 #: Max cancel+confirm passes before an exit is placed. A working order that
 #: survives this many passes is treated as un-cancellable (margin-unsafe to exit).
@@ -284,6 +288,41 @@ async def _cancel_all_working_for_scrip(
 
 
 async def square_position(
+    client: Any,
+    position: Dict[str, Any],
+    *,
+    reason: str,
+    band_pct: float = 1.0,
+    uid: str = "",
+    actid: str = "",
+    now_iso: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Per-tsym-serialized marketable-limit exit (see ``_square_position_impl``).
+
+    The software guard (stop/spot-mirror/time-stop/EOD squares), the deployment
+    stop, and the manual square route all funnel through here; this thin wrapper
+    claims an exclusive per-tsym exit lock so two of them can't place a second
+    SELL on the same scrip and reverse it into a naked short. On contention it
+    returns squared=False (the caller keeps retrying / re-reads), never placing
+    a competing exit. The kill switch claims tsyms itself and DEFERS any it
+    cannot claim (see live_broker._run_kill_switch)."""
+    tsym = str(position.get("tsym", "") or "")
+    async with claim_exit(tsym, label=reason) as got:
+        if not got:
+            log.warning("square_position: exit for %s already in flight on another "
+                        "path — skipping (reason=%s)", tsym, reason)
+            return {
+                "squared": False, "via": None, "norenordno": None,
+                "reason": "exit_in_flight_elsewhere",
+                "note": "another exit path is already flattening this scrip",
+                "failures": [],
+            }
+        return await _square_position_impl(
+            client, position, reason=reason, band_pct=band_pct,
+            uid=uid, actid=actid, now_iso=now_iso)
+
+
+async def _square_position_impl(
     client: Any,
     position: Dict[str, Any],
     *,
@@ -625,9 +664,18 @@ async def reprice_exit_leg(
     """Cancel the tracked resting exit and re-place the confirmed remaining qty at a
     wider marketable band. NEVER raises. NEVER over-sells.
 
+    Per-tsym-serialized like ``square_position``: a re-price is an EXIT PATH, so it
+    claims the tsym's exit lock first. Without it, a kill switch (which claims every
+    open tsym, then cancels + re-places exits) racing a guard re-price could each
+    place a SELL for the full remaining qty — a naked short. On contention it
+    returns ``{"squared": False, "reason": "exit_in_flight_elsewhere"}`` and the
+    guard retries at the SAME band next interval.
+
     Result dict (the guard's ``_reprice`` classifies on these):
       • ``{"squared": False, "reason": "unpriced"}`` — no usable anchor (no quote AND
         no lp); NOTHING was cancelled or placed (the prior exit still rests).
+      • ``{"squared": False, "reason": "exit_in_flight_elsewhere"}`` — another exit
+        path holds this tsym's claim; NOTHING was cancelled or placed.
       • ``{"squared": False, "reason": "cancel_unconfirmed"}`` — could not confirm the
         prior exit is terminal, or could not read the fill count to size safely →
         placed NOTHING (over-sell-safe).
@@ -642,6 +690,26 @@ async def reprice_exit_leg(
     additionally floored by the broker position book when it is a KNOWN (non-empty)
     read — never sell more than the account actually holds.
     """
+    _tsym_key = str(position.get("tsym", "") or "")
+    async with claim_exit(_tsym_key, label=reason) as got:
+        if not got:
+            log.warning("reprice_exit_leg: exit for %s already in flight on another "
+                        "path — skipping (reason=%s)", _tsym_key, reason)
+            return {"squared": False, "reason": "exit_in_flight_elsewhere"}
+        return await _reprice_exit_leg_impl(
+            client, position, band_pct=band_pct, prev_ordno=prev_ordno,
+            prev_qty=prev_qty, reason=reason)
+
+
+async def _reprice_exit_leg_impl(
+    client: Any,
+    position: Dict[str, Any],
+    *,
+    band_pct: float,
+    prev_ordno: Optional[str],
+    prev_qty: int,
+    reason: str,
+) -> Dict[str, Any]:
     tsym = position.get("tsym", "")
     exch = position.get("exch", "NFO")
     prd = str(position.get("prd") or "I")

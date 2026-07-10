@@ -290,6 +290,31 @@ def test_deployed_limits_read_failure_blocks_without_raising():
     assert "reconnect Flattrade" in margin_v["detail"]
 
 
+def test_kill_between_gate6_and_place_aborts_transmit():
+    """L15: a kill (safety latch / halt) landing AFTER Gate 6 but BEFORE
+    place_order must abort the transmit — the executor re-checks can_trade() at
+    the place_order chokepoint. Modeled by an engine whose can_trade flips
+    True→False between the two checks; NO order is placed."""
+    class _FlipEngine:
+        def __init__(self):
+            self.calls = 0
+
+        async def can_trade(self):
+            self.calls += 1
+            return (True, "") if self.calls == 1 else (False, "kill_switch")
+
+        async def halt(self, reason):  # pragma: no cover - not exercised here
+            pass
+
+    eng = _FlipEngine()
+    client = MockNoren(limits_data={"cash": "99999999"})
+    result = _run(_place_deployed(client=client, engine=eng, autoplace_armed=True))
+    assert result["placed"] is False
+    assert "cannot_trade" in result["reason"]
+    assert eng.calls == 2                 # Gate 6 + the pre-transmit re-check
+    assert _book(client) == [], "no order may be placed after the kill"
+
+
 # --- Gate 3 (broker margin probe): fail-CLOSED on broker reject -------------
 
 def test_deployed_broker_margin_reject_blocks():

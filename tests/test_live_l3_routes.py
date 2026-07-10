@@ -219,12 +219,13 @@ def _make_app(
         }),
         # Patch _utcnow_iso to a fixed time for deterministic tests
         "_utcnow_iso": lambda: "2026-06-22T06:00:00+00:00",
-        # No real sleeps between the kill-switch verification passes
+        # No real sleeps between the kill-switch verification passes / re-sweep
         "_KILL_POLL_SECONDS": 0.0,
         # The manual place route now gates a real entry on LIVE_GUARD_ARMED (never
         # open a position the guard can't auto-close). Default the harness to ARMED so
         # the place-path tests exercise placement; a dedicated test flips it to False.
         "_live_guard_armed": lambda: True,
+        "_KILL_RESWEEP_DELAY": 0.0,
     }
 
     ctx_managers = []
@@ -849,6 +850,153 @@ def test_kill_switch_orderbook_ok_then_positionbook_raises_still_fails_safe():
         assert cl.place_calls == 0 and cl.cancel_calls == 0
     finally:
         _stop_patches(tc)
+
+
+# --- Kill = STOP-ALL (latch + halt + disarm), serialized ---------------------
+
+class _KillDeployCursor:
+    def __init__(self, docs):
+        self._docs = docs
+
+    async def to_list(self, length=None):
+        return [dict(d) for d in self._docs]
+
+
+class _KillDeployCol:
+    """Motor-style strategy_deployments fake for the kill disarm helper."""
+
+    def __init__(self, docs):
+        self.docs = docs
+
+    def find(self, query, projection=None):
+        # the disarm helper queries {"risk.live.armed": True}
+        armed = [d for d in self.docs
+                 if ((d.get("risk") or {}).get("live") or {}).get("armed") is True]
+        return _KillDeployCursor(armed)
+
+    async def update_one(self, query, update):
+        for d in self.docs:
+            if d.get("id") == query.get("id"):
+                if "$set" in update:
+                    d.update(update["$set"])
+        return _UpdateResult(matched_count=1)
+
+
+class _KillDb:
+    def __init__(self, deploys):
+        self.strategy_deployments = _KillDeployCol(deploys)
+
+
+def test_kill_switch_is_stop_all_trips_latch_halts_disarms():
+    """The kill switch STOPS ALL: it trips the persistent safety latch (→ the
+    executor's can_trade blocks new entries), halts the engine, and disarms every
+    armed live deployment — so an armed deployment can't re-enter after ALL FLAT."""
+    from app.live.kill_switch import is_entry_blocked
+
+    deploys = [
+        {"id": "d1", "risk": {"live": {"armed": True, "lots": 2}}},
+        {"id": "d2", "risk": {"live": {"armed": True}}},
+        {"id": "d3", "risk": {"live": {"armed": False}}},  # already disarmed → untouched
+    ]
+    fake_db = _KillDb(deploys)
+    cs = _make_config_store()
+    eng = FakeEngine()
+    cl = _make_mock_noren(position_book=[{
+        "tsym": "NIFTY26JUN26C25000", "exch": "NFO", "netqty": "65", "lp": "200.0"}])
+    tc = _make_app(config_store=cs, engine=eng, client=cl)
+    try:
+        with patch("app.db.get_db", return_value=fake_db):
+            r = tc.post("/live-broker/kill-switch")
+        assert r.status_code == 200
+        body = r.json()
+        sa = body["stop_all"]
+        assert sa["latch_tripped"] is True
+        assert sa["engine_halted"] is True
+        assert set(sa["disarmed_deployment_ids"]) == {"d1", "d2"}
+        # engine actually halted with the kill reason
+        assert eng.halted is True and "kill_switch" in eng.halt_calls
+        # the persistent latch is set → is_entry_blocked True (executor Gate 6 reads this)
+        assert is_entry_blocked(asyncio.run(cs.get_config())) is True
+        # the two armed deployments are now disarmed with the reason
+        assert deploys[0]["risk"]["live"]["armed"] is False
+        assert deploys[0]["risk"]["live"]["disarmed_reason"] == "kill_switch"
+        assert deploys[1]["risk"]["live"]["armed"] is False
+        assert deploys[2]["risk"]["live"]["armed"] is False  # unchanged
+    finally:
+        _stop_patches(tc)
+
+
+def test_kill_switch_stops_all_even_on_token_expiry():
+    """A token-expired kill can't flatten (connected False), but the stop-all
+    (latch/halt/disarm) STILL runs — new entries are blocked regardless."""
+    from app.live.kill_switch import is_entry_blocked
+
+    deploys = [{"id": "d1", "risk": {"live": {"armed": True}}}]
+    fake_db = _KillDb(deploys)
+    cs = _make_config_store()
+    eng = FakeEngine()
+    cl = _make_mock_noren()
+    cl.script_read_error("order_book", "Session Expired : Invalid Session Key")
+    tc = _make_app(config_store=cs, engine=eng, client=cl)
+    try:
+        with patch("app.db.get_db", return_value=fake_db):
+            r = tc.post("/live-broker/kill-switch")
+        body = r.json()
+        assert body["connected"] is False           # couldn't read the broker
+        assert body["stop_all"]["latch_tripped"] is True
+        assert body["stop_all"]["engine_halted"] is True
+        assert body["stop_all"]["disarmed_deployment_ids"] == ["d1"]
+        assert is_entry_blocked(asyncio.run(cs.get_config())) is True
+        assert deploys[0]["risk"]["live"]["armed"] is False
+    finally:
+        _stop_patches(tc)
+
+
+def test_kill_switch_defers_tsym_already_being_exited():
+    """L8: a tsym already claimed by another exit path (guard/auto-square mid-exit)
+    is DEFERRED — the kill does NOT panic-flatten it (that would double-sell); the
+    stop-all (latch/disarm) still runs."""
+    from app.live.exit_claims import registry, reset_exit_claims
+
+    reset_exit_claims()
+    deploys = [{"id": "d1", "risk": {"live": {"armed": True}}}]
+    fake_db = _KillDb(deploys)
+    cs = _make_config_store()
+    eng = FakeEngine()
+    tsym = "NIFTY26JUN26C25000"
+    cl = _CountingClient(
+        limits_data=_GOOD_LIMITS,
+        position_book_data=[{"tsym": tsym, "exch": "NFO", "netqty": "65", "lp": "200.0"}],
+        search_scrip_data={"NFO": [_NIFTY_SCRIP]},
+    )
+    tc = _make_app(config_store=cs, engine=eng, client=cl)
+    try:
+        asyncio.run(registry().claim(tsym, "another_path_token"))  # held elsewhere
+        with patch("app.db.get_db", return_value=fake_db):
+            r = tc.post("/live-broker/kill-switch")
+        body = r.json()
+        assert tsym in body["stop_all"]["deferred_tsyms"]     # deferred, not flattened
+        assert cl.place_calls == 0                            # NO competing exit placed
+        assert body["stop_all"]["latch_tripped"] is True      # stop-all still ran
+    finally:
+        reset_exit_claims()
+        _stop_patches(tc)
+
+
+def test_kill_switch_rejects_concurrent_request():
+    """A second kill while one is in progress fast-rejects (no double-flatten)."""
+    from app.routers import live_broker as lb
+
+    async def _run():
+        await lb._kill_lock.acquire()
+        try:
+            return await lb.live_kill_switch()   # lock held → fast-reject
+        finally:
+            lb._kill_lock.release()
+
+    res = asyncio.run(_run())
+    assert res.get("already_running") is True
+    assert res["transmitted"] is False
 
 
 def test_kill_switch_partial_failure_report_reaches_response():

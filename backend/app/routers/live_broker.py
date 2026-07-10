@@ -41,8 +41,10 @@ CHOKEPOINT CLASSIFICATION (grep-verifiable):
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+import uuid
 import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -79,11 +81,13 @@ from app.live.kill_switch import (
     default_store as _default_safety_store,
     plan_squareoff,
     panic_squareoff,
+    _parse_netqty,
 )
 from app.live.mode import ModeStore, default_store as _default_mode_store
 from app.live.idempotency import IntentStore, default_store as _default_intent_store
 from app.live.session_store import SessionStore, default_store as _default_session_store
 from app.live.auto_square import square_position
+from app.live.exit_claims import registry as _exit_claim_registry
 from app.live import executor as _executor_mod
 from app.live.engine import LiveEngine
 from app.live.option_premium import match_contract, resolve_premium
@@ -1981,21 +1985,111 @@ def _kill_summary_message(panic: Dict[str, Any], connected: bool) -> str:
     return f"Kill switch: {', '.join(bits)}. {verdict}"
 
 
+# Serializes the kill route against itself — a second kill while one is running
+# would re-pass a stale open-position list to a non-self-idempotent panic and risk
+# a double-flatten. A concurrent kill fast-rejects (see the route).
+_kill_lock = asyncio.Lock()
+
+# After the main flatten, wait this long then re-read the books once and re-flatten
+# any residual — catches an in-flight entry fill (or a post-fill OCO) that lands
+# just after the panic pass. New entries are already blocked by the latch/halt.
+_KILL_RESWEEP_DELAY: float = 2.0
+
+
+async def _disarm_all_live_deployments(db: Any, reason: str) -> List[str]:
+    """Disarm every armed live deployment (risk.live.armed True → False) so the
+    auto-live entry path and the UI both stop. The kill flatten is broker-wide, so
+    (unlike stop-all) we do NOT re-square per deployment here. Returns the ids."""
+    now = _utcnow_iso()
+    armed = await db.strategy_deployments.find(
+        {"risk.live.armed": True}, {"_id": 0, "id": 1, "risk": 1}
+    ).to_list(length=None)
+    disarmed: List[str] = []
+    for d in armed:
+        dep_id = d.get("id")
+        if not dep_id:
+            continue
+        risk = dict(d.get("risk") or {})
+        live = dict(risk.get("live") or {})
+        live["armed"] = False
+        live["disarmed_reason"] = reason
+        live["disarmed_at"] = now
+        risk["live"] = live
+        await db.strategy_deployments.update_one(
+            {"id": dep_id}, {"$set": {"risk": risk, "updated_at": now}})
+        disarmed.append(dep_id)
+    return disarmed
+
+
 @api.post("/live-broker/kill-switch")
 async def live_kill_switch():
-    """Execute the squareoff of all open orders and positions (L3: transmits).
+    """STOP-ALL: block every new entry, then flatten everything, then re-sweep.
 
-    In L3 the kill-switch route EXECUTES the squareoff via
-    panic_squareoff_verified (exit-only cancel + marketable-LIMIT flatten with
-    a bounded re-price loop and per-leg outcome verification — this account is
-    LIMIT/SL-LIMIT only, so fills are never assumed). It then reverts mode to
-    LIVE_OFFLINE and records the session as 'kill_switch'.
+    Order matters (all local stop-all steps run FIRST and UNCONDITIONALLY — even a
+    token-expired kill must stop new entries):
+      1. Trip the persistent SafetyConfig latch → the executor's Gate 6
+         (engine.can_trade) blocks every new entry across restarts.
+      2. Halt the LiveEngine singleton (the same object the executor consults).
+      3. Disarm every armed live deployment.
+    Only then flatten via panic_squareoff_verified (exit-only cancel + marketable-
+    LIMIT flatten with a bounded re-price loop + per-leg verification), sweep resting
+    GTT/OCO, and — after a short delay — re-read and re-flatten any residual to catch
+    an in-flight fill. Serialized against itself; reverts mode; records the session.
 
-    Returns the verified panic report (panic.legs / residual / all_flat) +
-    config + a one-line message + transmitted=True.
+    Returns the verified panic report + a stop_all block (latch/halt/disarm) +
+    the re-sweep result + config + a one-line message.
     """
+    if _kill_lock.locked():
+        # Distinct shape: `already_running` (NOT connected:False, which the UI would
+        # misread as "broker not connected / plan-only"). The frontend special-cases
+        # already_running to show just the "in progress" notice.
+        return {
+            "already_running": True,
+            "transmitted": False,
+            "armed": True,
+            "message": "Kill switch already in progress — ignoring the duplicate request.",
+        }
+
+    async with _kill_lock:
+        return await _run_kill_switch()
+
+
+async def _run_kill_switch() -> Dict[str, Any]:
+    from app.db import get_db
+
     store = _config_store()
-    config = await store.get_config()
+
+    # ── STOP-ALL (local, UNCONDITIONAL — runs FIRST, before ANY broker/DB read that
+    #    could raise, so a token-expired kill OR a transient DB blip still blocks
+    #    every new entry). Each step is independently try-guarded. ────────────────
+    stop_all: Dict[str, Any] = {
+        "latch_tripped": False, "engine_halted": False, "disarmed_deployment_ids": [],
+    }
+    try:
+        await store.trip()                       # persistent latch → can_trade() False
+        stop_all["latch_tripped"] = True
+    except Exception as exc:
+        log.error("kill_switch: safety-latch trip FAILED: %s", exc)
+    try:
+        eng = _l3_engine()
+        if eng is not None:
+            await eng.halt("kill_switch")        # in-process singleton halt (no DB needed)
+            stop_all["engine_halted"] = True
+    except Exception as exc:
+        log.warning("kill_switch: engine halt failed: %s", exc)
+    try:
+        stop_all["disarmed_deployment_ids"] = await _disarm_all_live_deployments(
+            get_db(), "kill_switch")
+    except Exception as exc:
+        log.error("kill_switch: disarm-all FAILED: %s", exc)
+
+    # config is a RESPONSE-ONLY field — read it AFTER the safety actions and guarded,
+    # so a transient DB error can never gate the stop-all (esp. the Mongo-free halt).
+    try:
+        config = await store.get_config()
+    except Exception as exc:
+        log.warning("kill_switch: config read failed (report-only): %s", exc)
+        config = {}
 
     open_orders: List[Dict[str, Any]] = []
     open_positions: List[Dict[str, Any]] = []
@@ -2035,72 +2129,155 @@ async def live_kill_switch():
         except Exception:
             pass
 
+    resweep: Optional[Dict[str, Any]] = None
     if connected:
-        # EXIT-ONLY: panic_squareoff_verified calls cancel_order + place_order
-        # (sell/buy exits) with a bounded re-price loop + fill verification.
-        panic_result = await panic_squareoff_verified(
-            client,
-            open_orders,
-            open_positions,
-            uid=uid,
-            actid=actid,
-            poll_seconds=_KILL_POLL_SECONDS,
-        )
-        transmitted = True
-
-        # Sweep ALL resting GTT/OCO alerts. panic_squareoff cancels working
-        # ORDERS + flattens positions but does NOT touch resting GTT/OCO — those
-        # would survive the panic and could fire later. Best-effort: a sweep
-        # failure must NEVER block the panic flatten.
+        # Claim every open tsym's EXIT lock so no other exit path (the software
+        # guard's square/re-price, the EOD square, the manual square route — all
+        # funnel through square_position / reprice_exit_leg) can start a COMPETING
+        # exit while we flatten — that would double-sell into a naked short. A tsym
+        # we CANNOT claim is being exited by another path RIGHT NOW; panic-
+        # flattening it would place a SECOND sell, so we DEFER it (the other path
+        # exits it; the all_flat re-read reports any residual so the operator
+        # re-fires). Released in the finally below (TTL backstops a leak).
+        kill_token = uuid.uuid4().hex
+        claimed_tsyms: List[str] = []
+        for _p in (open_positions or []):
+            _t = str(_p.get("tsym") or "")
+            if _t and await _exit_claim_registry().claim(_t, kill_token):
+                claimed_tsyms.append(_t)
+        claimed_set = set(claimed_tsyms)
+        deferred = sorted({str(p.get("tsym") or "") for p in (open_positions or [])
+                           if p.get("tsym") and str(p.get("tsym")) not in claimed_set})
+        if deferred:
+            log.warning("kill_switch: %d tsym(s) already being exited elsewhere — "
+                        "deferring (not double-selling): %s", len(deferred), deferred)
+        stop_all["deferred_tsyms"] = deferred
+        # Flatten ONLY claimed tsyms (positions AND their working orders).
+        # The order book is RE-READ after the claims: a guard exit placed in the
+        # books-read → claim window would be missing from the initial snapshot, so
+        # the panic would not cancel it and its later fill would double-sell. Once
+        # the claims are held no new exit can be placed for a claimed tsym, so a
+        # post-claim read sees every working order that will exist during the
+        # flatten. Best-effort: an unreadable re-read falls back to the initial
+        # snapshot (the panic still runs — a kill must flatten).
         try:
-            for row in (await client.gtt_book() or []):
-                al_id = row.get("al_id") or row.get("Al_id")
-                if not al_id:
-                    continue
-                # Pick cancel_oco vs cancel_gtt from the row's ai_t: an OCO
-                # bracket reads back as the documented "LMT_BOS_O" (see gtt.py
-                # AI_T_OCO); anything else is a single-leg GTT. If ai_t is
-                # missing/ambiguous, try cancel_oco then cancel_gtt (best-effort).
-                ai_t = str(row.get("ai_t") or "").strip().upper()
-                try:
-                    if ai_t == "LMT_BOS_O":
-                        await client.cancel_oco(al_id)
-                    elif ai_t:
-                        await client.cancel_gtt(al_id)
-                    else:
-                        try:
-                            await client.cancel_oco(al_id)
-                        except Exception:
-                            await client.cancel_gtt(al_id)
-                except Exception as exc:
-                    log.warning("kill_switch: gtt/oco cancel failed for %s: %s",
-                                al_id, exc)
+            _fresh_orders = await client.order_book()
+            if isinstance(_fresh_orders, list):
+                open_orders = _fresh_orders
         except Exception as exc:
-            log.warning("kill_switch: gtt/oco sweep failed: %s", exc)
+            log.warning("kill_switch: post-claim order_book re-read failed "
+                        "(using the initial snapshot): %s", exc)
+        panic_positions = [p for p in (open_positions or [])
+                           if str(p.get("tsym") or "") in claimed_set]
+        panic_orders = [o for o in (open_orders or [])
+                        if str(o.get("tsym") or "") in claimed_set]
 
-        # Revert mode
-        await _revert_mode()
-
-        # Update session status
-        ss = _session_store()
         try:
-            await ss.update_status("kill_switch")
-        except Exception:
-            pass
+            # EXIT-ONLY: panic_squareoff_verified calls cancel_order + place_order
+            # (sell/buy exits) with a bounded re-price loop + fill verification.
+            panic_result = await panic_squareoff_verified(
+                client, panic_orders, panic_positions,
+                uid=uid, actid=actid, poll_seconds=_KILL_POLL_SECONDS,
+            )
+            transmitted = True
+
+            # Sweep ALL resting GTT/OCO alerts. panic_squareoff cancels working
+            # ORDERS + flattens positions but does NOT touch resting GTT/OCO — those
+            # would survive the panic and could fire later. Best-effort: a sweep
+            # failure must NEVER block the panic flatten.
+            try:
+                for row in (await client.gtt_book() or []):
+                    al_id = row.get("al_id") or row.get("Al_id")
+                    if not al_id:
+                        continue
+                    # Pick cancel_oco vs cancel_gtt from the row's ai_t: an OCO
+                    # bracket reads back as the documented "LMT_BOS_O" (see gtt.py
+                    # AI_T_OCO); anything else is a single-leg GTT. If ai_t is
+                    # missing/ambiguous, try cancel_oco then cancel_gtt (best-effort).
+                    ai_t = str(row.get("ai_t") or "").strip().upper()
+                    try:
+                        if ai_t == "LMT_BOS_O":
+                            await client.cancel_oco(al_id)
+                        elif ai_t:
+                            await client.cancel_gtt(al_id)
+                        else:
+                            try:
+                                await client.cancel_oco(al_id)
+                            except Exception:
+                                await client.cancel_gtt(al_id)
+                    except Exception as exc:
+                        log.warning("kill_switch: gtt/oco cancel failed for %s: %s",
+                                    al_id, exc)
+            except Exception as exc:
+                log.warning("kill_switch: gtt/oco sweep failed: %s", exc)
+
+            # Revert mode
+            await _revert_mode()
+
+            # Update session status
+            ss = _session_store()
+            try:
+                await ss.update_status("kill_switch")
+            except Exception:
+                pass
+
+            # ── RE-SWEEP — ONLY when the panic CONFIRMED all_flat (positions verified
+            #    closed, incl. any deferred tsym). Then a short wait + re-read catches
+            #    an in-flight entry fill (or a post-fill OCO leg) that lands just after
+            #    the pass; new entries are already blocked by the latch/halt, so a
+            #    residual can only be a straggler. If panic did NOT confirm flat we do
+            #    NOT blindly re-flatten — a still-working exit may fill and a second
+            #    exit would double-sell; the report says POSITIONS REMAIN and the
+            #    operator re-fires. ─────────────────────────────────────────────────
+            if panic_result.get("all_flat") is True:
+                try:
+                    await asyncio.sleep(_KILL_RESWEEP_DELAY)
+                    r_orders = await client.order_book()
+                    r_positions = await client.position_book()
+                    nonflat = [p for p in r_positions
+                               if (_parse_netqty(p.get("netqty")) or 0) != 0]
+                    if nonflat or r_orders:
+                        log.warning("kill_switch: re-sweep found residual after ALL FLAT "
+                                    "(%d positions, %d orders) — re-flattening",
+                                    len(nonflat), len(r_orders))
+                        resweep = await panic_squareoff_verified(
+                            client, r_orders, r_positions, uid=uid, actid=actid,
+                            poll_seconds=_KILL_POLL_SECONDS)
+                    else:
+                        resweep = {"clean": True, "all_flat": True}
+                except BrokerReadError as exc:
+                    resweep = {"read_error": str(exc.emsg)}
+                    log.warning("kill_switch: re-sweep read failed: %s", exc)
+                except Exception as exc:
+                    resweep = {"error": str(exc)[:200]}
+                    log.warning("kill_switch: re-sweep failed: %s", exc)
+        finally:
+            # ALWAYS release the kill's exit claims, even if the flatten raised.
+            for _t in claimed_tsyms:
+                try:
+                    await _exit_claim_registry().release(_t, kill_token)
+                except Exception:
+                    pass  # TTL backstops any leak
     else:
-        # Not connected — return a plan only (pre-L3 degraded behaviour)
+        # Not connected — return a plan only (pre-L3 degraded behaviour). The
+        # stop-all (latch/halt/disarm) above STILL ran, so no new entries fire.
         panic_result = plan_squareoff(open_orders, open_positions)
 
     message = _kill_summary_message(panic_result, connected)
     if read_error is not None:
         hint = TOKEN_EXPIRED_HINT if token_expired else f"broker read failed: {read_error}"
-        message = (f"Kill switch could NOT read the broker ({hint}). Positions "
-                   "UNKNOWN — nothing was transmitted; reconnect Flattrade and "
-                   "re-fire the kill.")
+        entry_state = ("New entries are BLOCKED (latch tripped)"
+                       if stop_all["latch_tripped"]
+                       else "WARNING: could not trip the latch — new entries may NOT be blocked")
+        message = (f"Kill switch could NOT read the broker ({hint}). {entry_state}, "
+                   "but positions are UNKNOWN — reconnect Flattrade and re-fire the "
+                   "kill to flatten.")
 
     return {
         "plan": plan_squareoff(open_orders, open_positions),
         "panic": panic_result,
+        "resweep": resweep,
+        "stop_all": stop_all,
         "config": config,
         "transmitted": transmitted,
         "armed": True,

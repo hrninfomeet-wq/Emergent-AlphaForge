@@ -448,6 +448,47 @@ class TestSquarePositionFreshNetqtyReconfirm:
         # No SELL exit order was placed (would-be naked short refused).
         assert [o for o in client._orders.values() if o["trantype"] == "S"] == []
 
+    def test_square_position_skips_when_tsym_exit_already_claimed(self):
+        """L8: if another exit path holds the per-tsym exit claim, square_position
+        refuses (squared=False, reason=exit_in_flight_elsewhere) and places NO
+        competing exit — preventing a double-sell / naked short."""
+        from app.live.exit_claims import registry, reset_exit_claims
+
+        async def _run():
+            reset_exit_claims()
+            # Another path claims the tsym first (holds the exit lock).
+            assert await registry().claim("NIFTY2662221000CE", "other_path") is True
+            client = MockNoren(position_book_data=[])
+            pos = _position(netqty=65, lp=200.0)  # tsym defaults to NIFTY2662221000CE
+            result = await square_position(client, pos, reason="deadline")
+            reset_exit_claims()
+            return result, client
+
+        result, client = run(_run())
+        assert result["squared"] is False
+        assert result["reason"] == "exit_in_flight_elsewhere"
+        assert [o for o in client._orders.values() if o["trantype"] in ("S", "B")] == []
+
+    def test_square_position_places_exit_when_claim_is_free(self):
+        """Sanity: with no competing claim, square_position works normally (the
+        wrapper is transparent), and releases the claim afterwards."""
+        from app.live.exit_claims import registry, reset_exit_claims
+
+        async def _run():
+            reset_exit_claims()
+            client = MockNoren(position_book_data=[])
+            pos = _position(netqty=65, lp=200.0)
+            result = await square_position(client, pos, reason="deadline")
+            # claim released → a subsequent claim on the same tsym succeeds
+            free_again = await registry().claim("NIFTY2662221000CE", "probe")
+            reset_exit_claims()
+            return result, client, free_again
+
+        result, client, free_again = run(_run())
+        assert result["squared"] is True
+        assert len([o for o in client._orders.values() if o["trantype"] == "S"]) == 1
+        assert free_again is True  # the wrapper released its claim
+
     def test_square_refuses_when_discovery_read_fails_with_empty_seeds(self):
         """Fail-CLOSED even with NO seed working-order: if the DISCOVERY order-book
         read raises (expired token), we cannot confirm there are no untracked

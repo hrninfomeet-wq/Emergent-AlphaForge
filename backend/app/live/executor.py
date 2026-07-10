@@ -153,6 +153,14 @@ async def _transmit_and_arm(
         await intent_store.record_intent(intent, mode=mode, deployment_id=deployment_id)
     else:
         await intent_store.record_intent(intent, mode=mode)
+    # FINAL pre-transmit gate — close the Gate-6→place_order window. A kill switch
+    # (safety-latch trip / engine halt) landing DURING validation must abort this
+    # transmit: an armed deployment must not fire an entry that began before the
+    # kill but reaches the broker after "ALL FLAT". Re-checked here (the single
+    # place_order chokepoint), before the claim, so no dangling claim is left.
+    ok, why = await engine.can_trade()
+    if not ok:
+        return _blocked(f"cannot_trade:{why}", verdicts)
     if not await intent_store.claim_for_submit(cid):
         return _blocked("already_claimed", verdicts)
     result = await client.place_order(intent)            # THE ONLY place_order CALL IN THIS MODULE
