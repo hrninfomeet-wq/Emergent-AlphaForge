@@ -1,4 +1,4 @@
-import { Zap, Shield, ShieldCheck, Loader2, PowerOff } from "lucide-react";
+import { Zap, Shield, ShieldCheck, Loader2, PowerOff, AlertTriangle } from "lucide-react";
 
 /**
  * ExecutionStateStrip — the SINGLE "will a signal place a REAL order right now?"
@@ -22,6 +22,8 @@ export default function ExecutionStateStrip({ armState, onStandDown, standingDow
     single_shot_consumed: latchConsumed,
     would_transmit_entry: entryTx,
     would_transmit_exit: exitTx,
+    exit_gap: exitGap,
+    warning,
     reasons,
   } = armState;
 
@@ -40,6 +42,21 @@ export default function ExecutionStateStrip({ armState, onStandDown, standingDow
   const manualLive = mode === "LIVE_TEST";
 
   return (
+    <div className="space-y-1.5">
+    {(exitGap || warning) && (
+      <div
+        className="rounded-lg px-3 py-2 flex items-start gap-2 text-xs font-mono border-2 border-amber-500 bg-amber-500/15 text-warning"
+        data-testid="execution-gate-gap-warning"
+        role="alert"
+      >
+        <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+        <span>
+          <b className="uppercase tracking-wider">Exit gate gap:</b>{" "}
+          {warning ||
+            "Real entries armed but guard auto-squares are dry-run — only the broker OCO protects open positions."}
+        </span>
+      </div>
+    )}
     <div
       className={`rounded-lg px-3 py-2 flex items-center gap-2 flex-wrap text-xs font-mono ${tone.box}`}
       data-testid="execution-state-strip"
@@ -83,6 +100,7 @@ export default function ExecutionStateStrip({ armState, onStandDown, standingDow
           {reasons.join(" · ")}
         </span>
       )}
+    </div>
     </div>
   );
 }

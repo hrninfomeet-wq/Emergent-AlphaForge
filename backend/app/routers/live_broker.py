@@ -383,9 +383,46 @@ def _make_arm(
             entry_norenordno=norenordno,
             sl_norenordno=None,
             now_iso=now,
+            tsym=intent.tsym,
+            exch=intent.exch,
         )
 
     return _arm
+
+
+# ---------------------------------------------------------------------------
+def _select_session_position(
+    positions: List[Dict[str, Any]], sess: Dict[str, Any]
+) -> Optional[Dict[str, Any]]:
+    """Pick the armed session's OPEN position from the broker book. Prefer an exact
+    ``tsym`` (and ``exch`` when both are set) match so a co-existing DEPLOYED
+    position is never flattened by mistake (audit L13 — the old code squared "the
+    first non-zero row in the whole account"). Falls back to the legacy first-open
+    heuristic ONLY when the session pinned no tsym (an older armed session). Returns
+    the position dict (with a parsed non-zero netqty) or None when this session's
+    contract is flat."""
+    def _nz(pos: Dict[str, Any]) -> bool:
+        return (_parse_netqty(pos.get("netqty")) or 0) != 0
+
+    sess_tsym = str(sess.get("tsym") or "").strip()
+    sess_exch = str(sess.get("exch") or "").strip()
+    if sess_tsym:
+        # Match by tsym (the contract is uniquely identified by it). exch is only a
+        # TIEBREAKER when multiple open rows share the tsym — it must never EXCLUDE
+        # the sole match (a broker exch-string quirk mustn't fail-open into "flat").
+        matches = [pos for pos in (positions or [])
+                   if str(pos.get("tsym") or "").strip() == sess_tsym and _nz(pos)]
+        if not matches:
+            return None  # pinned contract not open ⇒ this session is already flat
+        if sess_exch and len(matches) > 1:
+            for pos in matches:
+                if str(pos.get("exch") or "").strip() == sess_exch:
+                    return dict(pos)
+        return dict(matches[0])
+    for pos in positions or []:  # legacy session (no tsym pinned): old heuristic
+        if _nz(pos):
+            return dict(pos)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -1810,18 +1847,13 @@ async def live_order_square():
     except Exception as exc:
         raise HTTPException(400, f"Could not fetch positions: {exc}") from exc
 
-    position: Optional[Dict[str, Any]] = None
+    # Select THIS session's position by its pinned tsym (audit L13), not the first
+    # open row — a co-existing deployed position must not be flattened by a manual
+    # live-test square.
     entry_norenordno = sess.get("entry_norenordno")
-    for pos in positions:
-        nq = pos.get("netqty", 0)
-        try:
-            nq_int = int(float(str(nq).replace(",", "")))
-        except (TypeError, ValueError):
-            nq_int = 0
-        if nq_int != 0:
-            position = dict(pos)
-            position["working_norenordno"] = entry_norenordno
-            break
+    position = _select_session_position(positions, sess)
+    if position is not None:
+        position["working_norenordno"] = entry_norenordno
 
     if position is None:
         # No open position — still revert mode

@@ -419,6 +419,39 @@ class TestSquarePositionFreshNetqtyReconfirm:
         assert len(orders) == 1
         assert orders[0]["qty"] == 65
 
+    def test_fresh_book_partial_reduction_clamps_exit_qty(self):
+        """Item #6 hardening: the fresh re-read shows a REDUCED netqty (a partial
+        fill — e.g. the resting OCO filled part of the leg — between the caller's
+        read and the square). The exit must sell only the CURRENT qty, never the
+        caller's larger stale one, else the second sell overshoots into a naked
+        short. (The guard's retry loop makes this hand-off window reachable.)"""
+        client = MockNoren()
+        client.set_position_book([
+            {"tsym": "NIFTY2662221000CE", "exch": "NFO", "netqty": "25", "lp": "200.0"}
+        ])
+        pos = _position(netqty=65, lp=200.0)  # caller's STALE read: long 65
+        result = run(square_position(client, pos, reason="deadline"))
+        assert result["squared"] is True and result["via"] == "exit_order"
+        orders = [o for o in client._orders.values() if o["trantype"] == "S"]
+        assert len(orders) == 1
+        assert orders[0]["qty"] == 25, (
+            f"exit sold {orders[0]['qty']} but only 25 held → naked short of "
+            f"{orders[0]['qty'] - 25}")
+
+    def test_fresh_book_sign_flip_corrects_direction(self):
+        """If the fresh netqty flipped sign (over-fill elsewhere left a small short),
+        the exit direction must follow the CURRENT book (BUY to cover), not the
+        caller's stale long."""
+        client = MockNoren()
+        client.set_position_book([
+            {"tsym": "NIFTY2662221000CE", "exch": "NFO", "netqty": "-15", "lp": "200.0"}
+        ])
+        pos = _position(netqty=65, lp=200.0)  # stale: long 65
+        result = run(square_position(client, pos, reason="deadline"))
+        assert result["squared"] is True and result["via"] == "exit_order"
+        buys = [o for o in client._orders.values() if o["trantype"] == "B"]
+        assert len(buys) == 1 and buys[0]["qty"] == 15
+
     def test_fresh_book_empty_is_unknown_not_flat_squares(self):
         """An EMPTY fresh book (broker Not_Ok / hiccup) is 'unknown', NOT flat —
         must fall through and square (the default MockNoren has [] book; this is

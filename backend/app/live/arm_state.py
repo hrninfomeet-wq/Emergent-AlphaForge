@@ -67,6 +67,20 @@ def compute_arm_state(
         reasons.append(f"{armed_deployment_count} deployment(s) armed but LIVE_AUTOPLACE_ARMED off (dry-run)")
     reasons.append("guard transmits squares" if guard_armed else "guard dry-run (no real squares)")
 
+    # DANGEROUS SPLIT (audit L20 gate-split): automated ENTRIES transmit for real
+    # but automated guard EXITS are dry-run — a deployment will OPEN real positions
+    # yet the unattended software guard only LOGS its squares. The broker OCO is
+    # then the sole automated backstop. Surface this loudly (the UI banners it).
+    exit_gap = bool(auto_armed and autoplace_armed and connected and not guard_armed)
+    warning: Optional[str] = None
+    if exit_gap:
+        warning = (
+            "Real entries armed but guard squares are DRY-RUN "
+            "(LIVE_AUTOPLACE_ARMED=1, LIVE_GUARD_ARMED=0): deployed positions will "
+            "open for real, but the software guard will NOT auto-square them — only "
+            "the broker OCO protects them. Set LIVE_GUARD_ARMED=1 to arm auto-exits."
+        )
+
     if would_transmit_entry:
         verdict = "LIVE"
         label = "LIVE — entries transmit real orders"
@@ -86,6 +100,8 @@ def compute_arm_state(
         "armed_deployments": int(armed_deployment_count),
         "would_transmit_entry": would_transmit_entry,
         "would_transmit_exit": would_transmit_exit,
+        "exit_gap": exit_gap,
+        "warning": warning,
         "verdict": verdict,
         "label": label,
         "reasons": reasons,

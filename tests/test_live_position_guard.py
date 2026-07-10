@@ -323,7 +323,10 @@ class TestGuardCycle:
         assert rec.squared == []
         assert len(r) == 1
 
-    def test_square_failure_does_not_kill_loop(self):
+    def test_square_failure_rereregisters_and_retries(self):
+        # A raised square must NOT kill the loop AND must NOT permanently un-watch
+        # the position (audit L20 fail-open fix): the guard re-registers it and
+        # retries next cycle (bounded). It's a pending retry, not a recorded exit.
         r = LiveMonitorRegistry()
         _registered(r, entry=250.0, stop_pct=30)
         client = _FakeClient([_pos(netqty=20, lp=170.0)])
@@ -339,8 +342,10 @@ class TestGuardCycle:
         exits = run(g._cycle())  # must not raise
         # A failed square leaves squaring False, so the entry is KEPT (not orphaned)
         # and the next cycle retries — the position is never dropped un-squared.
+        # The retry counter advances toward the bounded escalation budget.
         assert len(r) == 1
         assert r.get("ORD1")["squaring"] is False
+        assert r.get("ORD1")["square_retries"] == 1   # retry counter advanced
         assert exits[0]["result"]["squared"] is False
 
 

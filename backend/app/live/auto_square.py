@@ -516,6 +516,18 @@ async def _square_position_impl(
                 "note": "position already flat (no order placed)",
                 "failures": [],
             }
+        # PARTIAL reduction (e.g. the resting OCO filled PART of the leg between the
+        # caller's read and now): the exit MUST sell only what is CURRENTLY held —
+        # squaring the caller's larger stale netqty would place a naked short. Clamp
+        # to the fresh book truth (also corrects the SELL/BUY direction if the sign
+        # flipped). The guard's item-#6 retry loop makes this hand-off window more
+        # reachable, so the clamp is the safety net.
+        if fresh_netqty != netqty:
+            log.warning(
+                "square_position: netqty for %s changed %s → %s between read and "
+                "place (partial fill / drift) — squaring the CURRENT qty, not the "
+                "stale one", tsym, netqty, fresh_netqty)
+            netqty = fresh_netqty
 
     # ------------------------------------------------------------------
     # Step 3.6 — DEPTH-AWARE square price (C3): refresh the reference price from

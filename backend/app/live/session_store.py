@@ -33,6 +33,11 @@ _EMPTY: Dict[str, Any] = {
     "status": "none",
     "heartbeat_ts": None,
     "reject_reason": None,
+    # The armed position's contract so the deadline/manual square selects THIS
+    # position by symbol instead of "the first non-zero row in the whole account"
+    # (audit L13 — a co-existing deployed position could otherwise be flattened).
+    "tsym": None,
+    "exch": None,
 }
 
 
@@ -57,14 +62,23 @@ class SessionStore:
         entry_norenordno: str,
         sl_norenordno: Optional[str] = None,
         now_iso: Optional[str] = None,
+        tsym: Optional[str] = None,
+        exch: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Write the armed session doc (overwrites any previous session)."""
+        """Write the armed session doc (overwrites any previous session).
+
+        ``tsym``/``exch`` pin the armed contract so a later square targets THIS
+        position by symbol (audit L13). They are optional for backward-compat: a
+        session armed without them falls back to the legacy first-open selection.
+        """
         ts = now_iso or _utcnow_iso()
         doc = {
             "entry_norenordno": entry_norenordno,
             "sl_norenordno": sl_norenordno,
             "status": "armed",
             "heartbeat_ts": ts,
+            "tsym": tsym,
+            "exch": exch,
         }
         await self._c.update_one(
             {"_id": _SINGLETON_ID},
