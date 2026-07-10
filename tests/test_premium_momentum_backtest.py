@@ -45,6 +45,31 @@ def test_one_session_ce_first_to_trigger():
     assert t["entry_premium"] == 120.0   # first bar >= 115
 
 
+def test_first_to_trigger_picks_the_earlier_entry_side():
+    # BOTH sides cross their momentum threshold, at DIFFERENT bars — the strategy
+    # must take the side that crossed FIRST (earliest entry_ts). PE crosses at ts2,
+    # CE only at ts3, so PE must win (headline first-to-trigger behaviour).
+    spot = pd.DataFrame([
+        _spot_bar(1, "09:31", 24000.0), _spot_bar(2, "09:32", 24000.0), _spot_bar(3, "09:33", 24000.0),
+    ])
+    contracts = [
+        {"instrument_key": "CE|23950", "strike": 23950, "side": "CE", "expiry_date": "2026-07-14"},
+        {"instrument_key": "PE|24050", "strike": 24050, "side": "PE", "expiry_date": "2026-07-14"},
+    ]
+    opt = pd.DataFrame([
+        _opt("CE|23950", 1, 100.0), _opt("CE|23950", 2, 105.0), _opt("CE|23950", 3, 130.0),  # crosses 115 at ts3
+        _opt("PE|24050", 1, 100.0), _opt("PE|24050", 2, 120.0), _opt("PE|24050", 3, 125.0),  # crosses 115 at ts2
+    ])
+    out = run_premium_momentum_backtest(
+        spot_df=spot, option_candles=opt, contracts=contracts, instrument="NIFTY",
+        params={"reference_time": "09:31", "moneyness": "itm1", "side": "first_to_trigger",
+                "momentum_pct": 15.0, "target_pct": 50.0, "stop_pct": 20.0},
+    )
+    assert len(out["trades"]) == 1
+    t = out["trades"][0]
+    assert t["side"] == "PE" and t["entry_ts"] == 2 and t["entry_premium"] == 120.0
+
+
 def test_session_excluded_when_locked_strike_has_no_candles():
     spot = pd.DataFrame([_spot_bar(1, "09:31", 24000.0), _spot_bar(2, "09:32", 24000.0)])
     contracts = [{"instrument_key": "CE|23950", "strike": 23950, "side": "CE", "expiry_date": "2026-07-14"}]

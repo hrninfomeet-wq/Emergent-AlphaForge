@@ -114,6 +114,10 @@ def walk_premium_momentum(*, ts, premium, ref_premium: float,
 
 
 def _stop_or_target_level(entry: float, pct: Optional[float], pts: Optional[float], *, is_stop: bool):
+    # Fail loud on ambiguous config, symmetric with momentum_triggered — never
+    # silently prefer one unit over the other.
+    if pct is not None and pts is not None:
+        raise ValueError("stop/target: pass exactly one of pct or pts, not both")
     if pct is not None:
         return entry * (1.0 - pct / 100.0) if is_stop else entry * (1.0 + pct / 100.0)
     if pts is not None:
