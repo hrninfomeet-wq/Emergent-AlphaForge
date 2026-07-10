@@ -25,6 +25,7 @@ const NAV_GROUPS = [
       { to: "/strategies", label: "Strategy Library", icon: Library, testid: "nav-strategies" },
       { to: "/warehouse", label: "Data Warehouse", icon: Database, testid: "nav-warehouse" },
       { to: "/optimizer", label: "Optimizer", icon: Gauge, testid: "nav-optimizer" },
+      { to: "/premium-momentum", label: "Premium Momentum", icon: LineChart, testid: "nav-premium-momentum" },
       { to: "/presets", label: "Saved Presets", icon: Bookmark, testid: "nav-presets" },
     ],
   },
@@ -182,6 +183,7 @@ function pageTitle(path) {
     case "/journal": return "Signal Journal";
     case "/paper": return "Paper Trading";
     case "/optimizer": return "Auto Optimizer";
+    case "/premium-momentum": return "Premium Momentum";
     case "/presets": return "Saved Presets";
     case "/live": return "Live Signals";
     case "/live-trading": return "Live Trading";

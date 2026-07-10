@@ -299,3 +299,17 @@ def test_premium_lookup_canonicalizes_dated_metadata_keys():
     assert list(prem) == [100.0, 110.0]
     oh = premium_ohlc_for_key(candles, "NSE_FO|42390|10-02-2026")
     assert list(oh["close"]) == [100.0, 110.0]
+
+
+def test_frontend_premium_momentum_page_is_wired():
+    # UI wiring pins (host string-pins over JSX, the repo's standard): the page
+    # exists, the route is registered, and the nav entry points at it.
+    from pathlib import Path
+    fe = Path(__file__).resolve().parents[1] / "frontend" / "src"
+    page = (fe / "pages" / "PremiumMomentum.jsx").read_text(encoding="utf-8")
+    assert "/premium-momentum/backtest" in page          # posts to the API route
+    assert "pm-coverage" in page and "pm-run-btn" in page
+    app = (fe / "App.js").read_text(encoding="utf-8")
+    assert '<Route path="/premium-momentum"' in app
+    layout = (fe / "components" / "Layout.jsx").read_text(encoding="utf-8")
+    assert '"/premium-momentum"' in layout
