@@ -174,6 +174,7 @@ class TestGuardCycle:
         # Broker confirms flat → entry dropped.
         client.set([_pos(netqty=0, lp=170.0)])
         run(g._cycle())
+        run(g._cycle())  # 2nd consecutive flat read (flat_confirm_reads=2)
         assert len(r) == 0
 
     def test_target_breach(self):
@@ -184,8 +185,10 @@ class TestGuardCycle:
         run(_guard(r, client, rec)._cycle())
         assert rec.squared[0][1] == "software_target"
 
-    def test_filled_then_flat_removed_no_square(self):
-        # cycle 1: filled (netqty 20) → seen_filled; cycle 2: flat → removed (closed elsewhere)
+    def test_filled_then_flat_removed_after_confirm_reads(self):
+        # cycle 1: filled → seen_filled; then it must take TWO consecutive
+        # AUTHENTICATED flat reads (flat_confirm_reads default 2) to drop —
+        # a single empty read must NOT un-watch a live position.
         r = LiveMonitorRegistry()
         _registered(r, entry=250.0, stop_pct=30)
         client = _FakeClient([_pos(netqty=20, lp=240.0)])
@@ -195,8 +198,49 @@ class TestGuardCycle:
         assert len(r) == 1            # still guarded (filled, above stop)
         client.set([_pos(netqty=0, lp=240.0)])  # now flat
         run(g._cycle())
+        assert len(r) == 1            # ONE flat read → NOT yet dropped
+        assert r.get("ORD1")["flat_reads"] == 1
+        run(g._cycle())
         assert rec.squared == []
-        assert len(r) == 0            # filled-then-flat → dropped
+        assert len(r) == 0            # TWO consecutive flat reads → dropped
+
+    def test_single_flat_read_then_live_again_resets_and_keeps(self):
+        # A transient empty read followed by the position reappearing must NOT
+        # drop the entry and must reset the flat-read counter.
+        r = LiveMonitorRegistry()
+        _registered(r, entry=250.0, stop_pct=30)
+        client = _FakeClient([_pos(netqty=20, lp=240.0)])
+        rec = _Recorder()
+        g = _guard(r, client, rec)
+        run(g._cycle())               # seen_filled
+        client.set([_pos(netqty=0, lp=240.0)])  # transient blip: flat
+        run(g._cycle())
+        assert len(r) == 1 and r.get("ORD1")["flat_reads"] == 1
+        client.set([_pos(netqty=20, lp=240.0)])  # back at broker
+        run(g._cycle())
+        assert len(r) == 1 and r.get("ORD1")["flat_reads"] == 0  # counter reset
+
+    def test_read_error_never_drops_or_squares(self):
+        # A BrokerReadError (e.g. expired token) is UNKNOWN, not flat: the guard
+        # skips the whole cycle, drops nothing, squares nothing, and records the
+        # token-expiry to last_error.
+        from app.live.broker_protocol import BrokerReadError
+
+        class _RaisingClient:
+            async def position_book(self):
+                raise BrokerReadError("Session Expired : Invalid Session Key",
+                                      route="PositionBook")
+
+        r = LiveMonitorRegistry()
+        _registered(r, entry=250.0, stop_pct=30)
+        rec = _Recorder()
+        g = LivePositionGuard(registry=r, client_factory=lambda: _aw(_RaisingClient()),
+                              square_fn=rec.square_fn)
+        exits = run(g._cycle())       # must not raise
+        assert exits == []
+        assert len(r) == 1            # entry preserved (UNKNOWN != flat)
+        assert rec.squared == []
+        assert "reconnect Flattrade" in (g.status().get("last_error") or "")
 
     def test_pending_fill_not_dropped_during_grace(self):
         # a just-armed position not yet in the book must NOT be dropped (async fill)
@@ -592,6 +636,7 @@ class TestSpotMirrorAndTimeStop:
         # once the broker confirms flat, the entry is dropped
         client.set([_pos(netqty=0, lp=170.0)])
         run(g._cycle())
+        run(g._cycle())  # 2nd consecutive flat read (flat_confirm_reads=2)
         assert len(r) == 0
 
 
@@ -755,6 +800,7 @@ class TestOnCloseHook:
         # Cycle 2: broker confirms flat → on_close journals the close ONCE.
         client.set([_pos(netqty=0, lp=170.0)])
         run(guard._cycle())
+        run(guard._cycle())  # 2nd consecutive flat read (flat_confirm_reads=2)
         assert len(calls) == 1
         assert calls[0]["exit_price"] == 170.0                # the last broker mark (cycle 1)
         assert calls[0]["reason"] == "stop"
@@ -772,6 +818,7 @@ class TestOnCloseHook:
         assert rec.squared and rec.squared[0][0] == _TSYM      # square happened
         client.set([_pos(netqty=0, lp=170.0)])
         run(guard._cycle())                                    # confirm-flat → on_close raises
+        run(guard._cycle())  # 2nd consecutive flat read (flat_confirm_reads=2)
         assert len(calls) == 1                                 # hook fired
         assert len(reg) == 0                                   # still dropped despite the raise
 
@@ -792,6 +839,7 @@ class TestOnCloseHook:
         # Cycle 2: broker confirms flat → on_close fires with the EOD reason.
         client.set([_pos(netqty=0, lp=170.0)])
         run(guard._cycle())
+        run(guard._cycle())  # 2nd consecutive flat read (flat_confirm_reads=2)
         assert len(calls) == 1
         assert calls[0]["reason"] == "eod_square"
         assert calls[0]["source"] == "auto_live"
@@ -866,6 +914,7 @@ class TestOcoCancelAfterRealFill:
         # cancel the OCO and drop the entry.
         client.set([_pos(netqty=0, lp=170.0)])
         run(guard._cycle())
+        run(guard._cycle())  # 2nd consecutive flat read (flat_confirm_reads=2)
         assert client.cancel_oco_calls == ["OCO1"]            # OCO cancelled on confirmed-flat
         assert len(reg) == 0                                  # entry dropped
 
@@ -883,6 +932,7 @@ class TestOcoCancelAfterRealFill:
         assert client.cancel_oco_calls == []                  # not yet — still open
         client.set([_pos(netqty=0, lp=170.0)])                                        # broker confirms flat
         run(guard._cycle())
+        run(guard._cycle())  # 2nd consecutive flat read (flat_confirm_reads=2)
         assert client.cancel_oco_calls == ["OCO1"]            # OCO cancelled
 
     def test_closed_elsewhere_cancels_orphan_oco_without_journaling(self):
@@ -906,6 +956,7 @@ class TestOcoCancelAfterRealFill:
         assert rec.squared == [] and reg.get("ORD1")["squaring"] is False
         client.set([_pos(netqty=0, lp=170.0)])                                            # closed elsewhere → flat
         run(guard._cycle())
+        run(guard._cycle())  # 2nd consecutive flat read (flat_confirm_reads=2)
         assert client.cancel_oco_calls == ["OCO1"]               # orphan OCO cancelled
         assert calls == []                                       # NOT journaled (not squaring)
         assert len(reg) == 0                                     # dropped
@@ -940,6 +991,7 @@ class TestOcoCancelAfterRealFill:
         assert client.cancel_oco_calls == []                  # still open → not yet
         client.set([_pos(netqty=0, lp=170.0)])
         run(guard._cycle())
+        run(guard._cycle())  # 2nd consecutive flat read (flat_confirm_reads=2)
         assert client.cancel_oco_calls == ["OCO1"]
 
     def test_failed_square_does_not_cancel_oco(self):
@@ -998,6 +1050,7 @@ class TestOcoCancelAfterRealFill:
         assert client.cancel_oco_calls == []                  # not on place-accept
         client.set([_pos(netqty=0, lp=170.0)])
         run(guard._cycle())                                   # confirm-flat → cancel raises
+        run(guard._cycle())  # 2nd consecutive flat read (flat_confirm_reads=2)
         assert client.cancel_oco_calls == ["OCO1"]            # attempted
         assert len(reg) == 0                                  # still dropped despite the raise
 
@@ -1038,6 +1091,7 @@ class TestConfirmedFlatRequiresRealBook:
         # A REAL flat (present netqty==0 row in a non-empty book) DOES finalize.
         client.set([_pos(netqty=0, lp=170.0)])
         run(guard._cycle())
+        run(guard._cycle())  # 2nd consecutive flat read (flat_confirm_reads=2)
         assert client.cancel_oco_calls == ["OCO1"]
         assert calls == ["stop"]
         assert len(reg) == 0
@@ -1072,6 +1126,7 @@ class TestConfirmedFlatRequiresRealBook:
         client.set([{"tsym": "SOMEOTHER", "exch": "BFO", "netqty": "50",
                      "lp": "10.0", "urmtom": "0"}])
         run(guard._cycle())
+        run(guard._cycle())  # 2nd consecutive flat read (flat_confirm_reads=2)
         assert client.cancel_oco_calls == ["OCO1"]
         assert len(reg) == 0
 
@@ -1098,6 +1153,7 @@ class TestConfirmedFlatRequiresRealBook:
         # Remaining fills: netqty → 0 → confirmed flat → finalize.
         client.set([_pos(netqty=0, lp=170.0)])
         run(guard._cycle())
+        run(guard._cycle())  # 2nd consecutive flat read (flat_confirm_reads=2)
         assert client.cancel_oco_calls == ["OCO1"]
         assert len(reg) == 0
 
@@ -1356,6 +1412,7 @@ class TestLayer2Reprice:
         assert reg.get("ORD1")["square_band_idx"] == 1         # NOT advanced
         client.set([_pos(netqty=0, lp=170.0)])                # broker confirms flat
         run(g._cycle())
+        run(g._cycle())  # 2nd consecutive flat read (flat_confirm_reads=2)
         assert len(reg) == 0                                   # finalized
 
     def test_k_budget_bounds_synchronized_basket(self):
@@ -1392,6 +1449,7 @@ class TestLayer2Reprice:
         assert reg.get("ORD1")["square_ordno"] == "EXIT0"
         client.set([_pos(netqty=0, lp=170.0)])                # OCO filled → flat
         run(g._cycle())
+        run(g._cycle())  # 2nd consecutive flat read (flat_confirm_reads=2)
         assert client.cancel_oco_calls == ["OCO1"]
         assert "EXIT0" in client.cancel_order_calls           # orphaned guard exit cancelled
         assert len(reg) == 0
@@ -1415,6 +1473,7 @@ class TestLayer2Reprice:
         assert reg.get("ORD1")["square_reason"] == "stop"     # never overwritten
         assert rp.calls[0]["reason"] == "stop_reprice"        # local suffix only
         client.set([_pos(netqty=0, lp=170.0)]); run(g._cycle())
+        run(g._cycle())  # 2nd consecutive flat read (flat_confirm_reads=2)
         assert calls == ["stop"]                              # journal reason == original
 
     def test_eod_skips_squaring_while_reprice_escalates(self):
@@ -1474,6 +1533,7 @@ class TestLayer2Reprice:
         # The broker fills the escalated exit → position flat → finalize + journal once.
         client.set_position_book([{"tsym": _TSYM, "exch": "BFO", "netqty": "0", "lp": "170"}])
         run(g._cycle())
+        run(g._cycle())  # 2nd consecutive flat read (flat_confirm_reads=2)
         assert len(reg) == 0 and calls == ["stop"]
         assert client._orders[e["square_ordno"]]["status"] == "CANCELED"  # resting exit cleaned up
 

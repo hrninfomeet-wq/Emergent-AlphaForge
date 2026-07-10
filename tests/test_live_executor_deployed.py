@@ -275,6 +275,21 @@ def test_deployed_margin_full_size_blocks():
     assert _book(client) == []
 
 
+def test_deployed_limits_read_failure_blocks_without_raising():
+    """limits() RAISING (expired token) on the deployed path must return a normal
+    BLOCKED result — never propagate (that would 500 the caller AND strand the
+    paper/live mutual-exclusion claim auto_live holds)."""
+    client = MockNoren(limits_data={"cash": "99999999"})
+    client.script_read_error("limits", "Session Expired : Invalid Session Key")
+    result = _run(_place_deployed(client=client, capped_lots=2))
+    assert result["placed"] is False
+    assert result["reason"] == "dry_run_failed"
+    assert _book(client) == [], "place_order must NOT have been called"
+    margin_v = next((v for v in result["verdicts"] if v["check"] == "margin"), None)
+    assert margin_v is not None and margin_v["ok"] is False
+    assert "reconnect Flattrade" in margin_v["detail"]
+
+
 # --- Gate 3 (broker margin probe): fail-CLOSED on broker reject -------------
 
 def test_deployed_broker_margin_reject_blocks():

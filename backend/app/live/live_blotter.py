@@ -73,6 +73,8 @@ def build_live_blotter(
     trades: List[Dict[str, Any]],
     broker_positions: List[Dict[str, Any]],
     deployments_by_id: Dict[str, Dict[str, Any]],
+    *,
+    broker_ok: bool = True,
 ) -> List[Dict[str, Any]]:
     """Join live_trades with the broker position book into attributed blotter rows.
 
@@ -86,6 +88,11 @@ def build_live_blotter(
         with null P&L.
     deployments_by_id
         ``{deployment_id: deployment_doc}`` for name resolution.
+    broker_ok
+        False when the broker position book could NOT be read (e.g. an expired
+        daily token). In that case an OPEN journal row with no broker match is
+        UNKNOWN, not FLAT — we must never render a false "flat" for a position we
+        simply could not read (that misreads as "you're safe" on a live trade).
 
     Returns
     -------
@@ -128,6 +135,12 @@ def build_live_blotter(
             status = "CLOSED"
             pnl = _to_float(t.get("realized_pnl"))
             ltp = _to_float(t.get("exit_price"))
+        elif not broker_ok and str(t.get("status") or "").upper() == "OPEN":
+            # UNKNOWN: the broker book was UNREADABLE (e.g. expired token), so we
+            # cannot confirm this OPEN position is flat. Never render a false FLAT
+            # for a live position we couldn't read — surface UNKNOWN and prompt a
+            # reconnect instead. (No P&L claimed — we have none.)
+            status = "UNKNOWN"
         else:
             # FLAT: unfilled, superseded same-tsym, or externally closed with no
             # close-loop data — never claim a realized P&L we don't have.

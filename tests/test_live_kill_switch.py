@@ -464,8 +464,9 @@ class TestPanicSquareoff:
         """Core contract: 3 working orders + 2 longs + 1 short → all cleared.
 
         MockNoren's cancel_order works against self._orders (the real placed orders
-        dict), not against order_book_data (which is an unused fixture field).
-        We must place real orders so they exist in _orders before calling panic.
+        dict). The order_book_data fixture, when set, is what order_book() RETURNS,
+        but cancel_order still mutates _orders — so to test real cancellation we
+        place real orders here rather than injecting an order_book fixture.
         """
         client = MockNoren(
             position_book_data=[
@@ -787,6 +788,7 @@ class TestKillSwitchRoute:
 
         orders_before = asyncio.run(client.order_book())
         positions = asyncio.run(client.position_book())
+        assert len(orders_before) == 2  # the injected order_book fixture IS returned
 
         # The route fetches order_book() + position_book() then calls plan_squareoff.
         # plan_squareoff does NOT take a client argument.

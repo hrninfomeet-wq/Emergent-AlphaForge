@@ -430,6 +430,41 @@ class TestSquarePositionFreshNetqtyReconfirm:
         assert result["via"] == "exit_order"
         assert len([o for o in client._orders.values() if o["trantype"] == "S"]) == 1
 
+    def test_square_refuses_when_cancel_confirm_read_fails(self):
+        """Fail-CLOSED: when the order-book read that CONFIRMS the resting SL was
+        cancelled raises (expired token), square_position must NOT place a new
+        exit (a resting SL + a fresh exit = naked short / margin reject). It
+        returns squared=False so the caller keeps retrying — the position keeps
+        its existing SL, so it is not left unprotected."""
+        client = MockNoren()
+        client.set_position_book([
+            {"tsym": "NIFTY2662221000CE", "exch": "NFO", "netqty": "65", "lp": "200.0"}
+        ])
+        client.script_read_error("order_book", "Session Expired : Invalid Session Key")
+        pos = _position(netqty=65, lp=200.0, working_norenordno="W1")
+        result = run(square_position(client, pos, reason="deadline"))
+        assert result["squared"] is False
+        assert result["reason"] == "cancel_unconfirmed"
+        # No SELL exit order was placed (would-be naked short refused).
+        assert [o for o in client._orders.values() if o["trantype"] == "S"] == []
+
+    def test_square_refuses_when_discovery_read_fails_with_empty_seeds(self):
+        """Fail-CLOSED even with NO seed working-order: if the DISCOVERY order-book
+        read raises (expired token), we cannot confirm there are no untracked
+        resting orders → refuse the exit (squared=False), never place a possibly
+        naked exit. (Guards the empty-seed_ids path that would otherwise short-
+        circuit to cleared=True.)"""
+        client = MockNoren()
+        client.set_position_book([
+            {"tsym": "NIFTY2662221000CE", "exch": "NFO", "netqty": "65", "lp": "200.0"}
+        ])
+        client.script_read_error("order_book", "Session Expired : Invalid Session Key")
+        pos = _position(netqty=65, lp=200.0)  # NO working_norenordno → empty seed_ids
+        result = run(square_position(client, pos, reason="deadline"))
+        assert result["squared"] is False
+        assert result["reason"] == "cancel_unconfirmed"
+        assert [o for o in client._orders.values() if o["trantype"] == "S"] == []
+
     def test_fresh_book_other_tsym_only_squares_this_one(self):
         """A non-empty book that contains OTHER scrips but not this tsym → this
         tsym is absent → treated as flat (no order). (No silent square of a

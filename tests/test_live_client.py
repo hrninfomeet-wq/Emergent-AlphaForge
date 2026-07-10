@@ -26,8 +26,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 
-from app.live.broker_protocol import OrderIntent, OrderResult
-from app.live.flattrade_client import FlattradeClient, _dispatch
+import pytest
+
+from app.live.broker_protocol import BrokerReadError, OrderIntent, OrderResult
+from app.live.flattrade_client import FlattradeClient, _dispatch, _is_no_data
 
 
 # ---------------------------------------------------------------------------
@@ -203,8 +205,8 @@ def test_order_book_returns_list_on_success():
     assert result[0]["tsym"] == "NIFTY25000CE"
 
 
-def test_order_book_returns_empty_on_not_ok():
-    """order_book returns [] when stat != Ok (e.g., no orders)."""
+def test_order_book_returns_empty_on_no_data():
+    """order_book returns [] ONLY for a genuinely-empty book (emsg ~ "no data")."""
     client = _client()
     mock_httpx, _ = _make_httpx_mock(200, {"stat": "Not_Ok", "emsg": "No Data"})
 
@@ -212,6 +214,20 @@ def test_order_book_returns_empty_on_not_ok():
         result = run(client.order_book())
 
     assert result == []
+
+
+def test_order_book_raises_on_session_expired():
+    """order_book RAISES BrokerReadError on a real read failure (expired token) —
+    it must NOT swallow it into an empty (no-working-orders-looking) list."""
+    client = _client()
+    mock_httpx, _ = _make_httpx_mock(
+        200, {"stat": "Not_Ok", "emsg": "Session Expired : Invalid Session Key"})
+
+    with patch("app.live.flattrade_client.httpx.AsyncClient", return_value=mock_httpx):
+        with pytest.raises(BrokerReadError) as ei:
+            run(client.order_book())
+    assert ei.value.is_session_expired
+    assert ei.value.route == "OrderBook"
 
 
 # ---------------------------------------------------------------------------
@@ -232,12 +248,54 @@ def test_position_book_parses_list():
     assert result[0]["tsym"] == "NIFTY25000CE"
 
 
-def test_position_book_returns_empty_on_failure():
+def test_position_book_returns_empty_on_no_data():
+    """A flat account: Noren PositionBook returns the documented "no data" emsg."""
     client = _client()
-    mock_httpx, _ = _make_httpx_mock(200, {"stat": "Not_Ok", "emsg": "No positions"})
+    mock_httpx, _ = _make_httpx_mock(
+        200, {"stat": "Not_Ok", "request_time": "14:14:11 26-05-2020",
+              "emsg": 'Error Occurred : 5 "no data"'})
     with patch("app.live.flattrade_client.httpx.AsyncClient", return_value=mock_httpx):
         result = run(client.position_book())
     assert result == []
+
+
+def test_position_book_raises_on_session_expired():
+    """THE core fix: an expired daily token must RAISE, never look like a flat
+    account (that false ALL FLAT / false 'squared' is the bug being fixed)."""
+    client = _client()
+    mock_httpx, _ = _make_httpx_mock(
+        200, {"stat": "Not_Ok", "emsg": "Session Expired : Invalid Session Key"})
+    with patch("app.live.flattrade_client.httpx.AsyncClient", return_value=mock_httpx):
+        with pytest.raises(BrokerReadError) as ei:
+            run(client.position_book())
+    assert ei.value.is_session_expired
+    assert ei.value.route == "PositionBook"
+
+
+def test_trade_book_returns_empty_on_no_data():
+    client = _client()
+    mock_httpx, _ = _make_httpx_mock(200, {"stat": "Not_Ok", "emsg": 'Error Occurred : 5 "no data"'})
+    with patch("app.live.flattrade_client.httpx.AsyncClient", return_value=mock_httpx):
+        result = run(client.trade_book())
+    assert result == []
+
+
+def test_trade_book_raises_on_session_expired():
+    client = _client()
+    mock_httpx, _ = _make_httpx_mock(
+        200, {"stat": "Not_Ok", "emsg": "Session Expired : Invalid Session Key"})
+    with patch("app.live.flattrade_client.httpx.AsyncClient", return_value=mock_httpx):
+        with pytest.raises(BrokerReadError):
+            run(client.trade_book())
+
+
+def test_book_parses_list_on_success_unchanged():
+    """Regression guard: the success (list) path is untouched by the raise change."""
+    client = _client()
+    rows = [{"norenordno": "1"}, {"norenordno": "2"}]
+    mock_httpx, _ = _make_httpx_mock(200, rows)
+    with patch("app.live.flattrade_client.httpx.AsyncClient", return_value=mock_httpx):
+        assert run(client.order_book()) == rows
 
 
 # ---------------------------------------------------------------------------
@@ -262,12 +320,59 @@ def test_limits_returns_dict_on_success():
     assert result["stat"] == "Ok"
 
 
-def test_limits_returns_empty_on_failure():
+def test_limits_raises_on_session_expired():
+    """Margin gate must fail CLOSED on an unreadable account, not on an empty {}."""
     client = _client()
-    mock_httpx, _ = _make_httpx_mock(200, {"stat": "Not_Ok", "emsg": "Session expired"})
+    mock_httpx, _ = _make_httpx_mock(200, {"stat": "Not_Ok", "emsg": "Session Expired : Invalid Session Key"})
     with patch("app.live.flattrade_client.httpx.AsyncClient", return_value=mock_httpx):
-        result = run(client.limits())
-    assert result == {}
+        with pytest.raises(BrokerReadError) as ei:
+            run(client.limits())
+    assert ei.value.route == "Limits"
+
+
+def test_limits_raises_on_server_timeout():
+    """Server Timeout is a real failure (not "no data") — must raise."""
+    client = _client()
+    mock_httpx, _ = _make_httpx_mock(200, {"stat": "Not_Ok", "emsg": "Server Timeout :  "})
+    with patch("app.live.flattrade_client.httpx.AsyncClient", return_value=mock_httpx):
+        with pytest.raises(BrokerReadError):
+            run(client.limits())
+
+
+def test_limits_returns_empty_on_no_data():
+    """A genuinely-empty Limits ("no data") stays {} (no raise)."""
+    client = _client()
+    mock_httpx, _ = _make_httpx_mock(200, {"stat": "Not_Ok", "emsg": 'Error Occurred : 5 "no data"'})
+    with patch("app.live.flattrade_client.httpx.AsyncClient", return_value=mock_httpx):
+        assert run(client.limits()) == {}
+
+
+def test_book_raises_on_unexpected_shape():
+    """A response that is neither a list nor a dict cannot be CONFIRMED empty →
+    raise (never silently return [] / infer flat from an unknown shape)."""
+    client = _client()
+    mock_httpx, _ = _make_httpx_mock(200, None)  # resp.json() → None
+    with patch("app.live.flattrade_client.httpx.AsyncClient", return_value=mock_httpx):
+        with pytest.raises(BrokerReadError, match="unexpected"):
+            run(client.position_book())
+
+
+def test_limits_raises_on_unexpected_shape():
+    client = _client()
+    mock_httpx, _ = _make_httpx_mock(200, [1, 2, 3])  # a list where a dict is expected
+    with patch("app.live.flattrade_client.httpx.AsyncClient", return_value=mock_httpx):
+        with pytest.raises(BrokerReadError):
+            run(client.limits())
+
+
+def test_is_no_data_discriminator():
+    """The empty-vs-error discriminator: only "no data" phrasing is empty."""
+    assert _is_no_data('Error Occurred : 5 "no data"')
+    assert _is_no_data("No Data")
+    assert not _is_no_data("Session Expired : Invalid Session Key")
+    assert not _is_no_data("Server Timeout :  ")
+    assert not _is_no_data("Invalid Input : INVALID_IP")
+    assert not _is_no_data(None)
 
 
 # ---------------------------------------------------------------------------

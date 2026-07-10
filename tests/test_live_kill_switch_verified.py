@@ -155,6 +155,17 @@ def test_all_legs_fill_first_pass_all_flat():
     assert book[0]["prd"] == "M"
 
 
+def test_position_read_failure_verdict_is_unknown_never_all_flat():
+    """THE core fix: when the final position re-read RAISES (expired token), the
+    kill verdict must be UNKNOWN (all_flat=None), NEVER a false ALL FLAT."""
+    cl = MockNoren()
+    cl.script_read_error("position_book", "Session Expired : Invalid Session Key")
+    out = _run(panic_squareoff_verified(cl, [], [], sleep=_nosleep))
+    assert out["all_flat"] is None          # UNKNOWN, not True
+    assert out["total"] is False            # never a clean all-clear
+    assert out["residual"] != []            # carries the re-check-failed marker
+
+
 # ---------- reject-and-surface --------------------------------------------------
 
 def test_immediate_reject_surfaces_reason_per_leg():

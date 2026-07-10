@@ -64,6 +64,7 @@ from app.live.flattrade_token import (
     save_token,
 )
 from app.live.flattrade_client import FlattradeClient
+from app.live.broker_protocol import BrokerReadError, TOKEN_EXPIRED_HINT
 from app.live.reconcile import reconcile
 from app.live.flattrade_symbol import (
     SymbolResolutionError,
@@ -467,6 +468,14 @@ async def flattrade_disconnect():
 # Live-broker data routes (hit the real Flattrade API; require a stored token)
 # ---------------------------------------------------------------------------
 
+def _broker_read_400(exc: BrokerReadError, route: str) -> HTTPException:
+    """Map a BrokerReadError to a 400 that names the actionable cause (token
+    expiry) so the dashboard shows 'reconnect Flattrade' rather than an
+    empty/flat-looking book."""
+    msg = TOKEN_EXPIRED_HINT if exc.is_session_expired else str(exc.emsg)[:300]
+    return HTTPException(400, f"Flattrade {route}: {msg}")
+
+
 @api.get("/live-broker/positions")
 async def live_broker_positions():
     """Return the broker net position book. Returns 400 if not connected."""
@@ -479,6 +488,8 @@ async def live_broker_positions():
     try:
         positions = await client.position_book()
         return {"positions": positions, "count": len(positions)}
+    except BrokerReadError as exc:
+        raise _broker_read_400(exc, "position_book") from exc
     except Exception as exc:
         log.exception("live_broker_positions failed")
         raise HTTPException(400, f"Flattrade position_book error: {str(exc)[:300]}") from exc
@@ -496,6 +507,8 @@ async def live_broker_orders():
     try:
         orders = await client.order_book()
         return {"orders": orders, "count": len(orders)}
+    except BrokerReadError as exc:
+        raise _broker_read_400(exc, "order_book") from exc
     except Exception as exc:
         log.exception("live_broker_orders failed")
         raise HTTPException(400, f"Flattrade order_book error: {str(exc)[:300]}") from exc
@@ -513,6 +526,8 @@ async def live_broker_trades():
     try:
         trades = await client.trade_book()
         return {"trades": trades, "count": len(trades)}
+    except BrokerReadError as exc:
+        raise _broker_read_400(exc, "trade_book") from exc
     except Exception as exc:
         log.exception("live_broker_trades failed")
         raise HTTPException(400, f"Flattrade trade_book error: {str(exc)[:300]}") from exc
@@ -530,6 +545,8 @@ async def live_broker_limits():
     try:
         lims = await client.limits()
         return lims
+    except BrokerReadError as exc:
+        raise _broker_read_400(exc, "limits") from exc
     except Exception as exc:
         log.exception("live_broker_limits failed")
         raise HTTPException(400, f"Flattrade limits error: {str(exc)[:300]}") from exc
@@ -648,12 +665,22 @@ async def live_broker_blotter(limit: int = Query(100, ge=1, le=500)):
         log.debug("blotter: live_trades fetch failed: %s", exc)
 
     # Broker position book = P&L truth. Best-effort: a disconnected broker still
-    # yields attributed rows (all FLAT, null P&L) rather than a 4xx.
+    # yields attributed rows rather than a 4xx. But a READ FAILURE (expired token)
+    # must NOT render OPEN positions as FLAT — carry broker_ok=False so those rows
+    # show UNKNOWN and the UI can prompt a reconnect.
     broker_positions: List[Dict[str, Any]] = []
+    broker_ok = True
+    broker_read_error: Optional[str] = None
     try:
         client = await _get_client()
         broker_positions = await client.position_book()
+    except BrokerReadError as exc:
+        broker_ok = False
+        broker_read_error = TOKEN_EXPIRED_HINT if exc.is_session_expired else str(exc.emsg)
+        log.debug("blotter: position book read failed: %s", exc)
     except Exception as exc:
+        broker_ok = False
+        broker_read_error = "broker unreachable"
         log.debug("blotter: position book unavailable: %s", exc)
 
     # Resolve deployment display names for attribution.
@@ -669,8 +696,9 @@ async def live_broker_blotter(limit: int = Query(100, ge=1, le=500)):
         except Exception as exc:
             log.debug("blotter: deployment name lookup failed: %s", exc)
 
-    rows = build_live_blotter(trades, broker_positions, deployments_by_id)
-    return {"rows": rows, "count": len(rows)}
+    rows = build_live_blotter(trades, broker_positions, deployments_by_id, broker_ok=broker_ok)
+    return {"rows": rows, "count": len(rows), "broker_ok": broker_ok,
+            "broker_read_error": broker_read_error}
 
 
 @api.get("/live-broker/trade-stats")
@@ -1740,9 +1768,15 @@ async def live_order_square():
     ss = _session_store()
     sess = await ss.get()
 
-    # Fetch broker positions to build the position dict
+    # Fetch broker positions to build the position dict. A read FAILURE (e.g.
+    # expired token) must surface as an error — NEVER be mistaken for a flat
+    # account and mark the session 'squared' (the false-squared bug). The raise
+    # here is above the squared-write, so a read error can never false-square.
     try:
         positions = await client.position_book()
+    except BrokerReadError as exc:
+        msg = TOKEN_EXPIRED_HINT if exc.is_session_expired else str(exc.emsg)
+        raise HTTPException(400, f"Could not fetch positions ({msg}) — position NOT squared") from exc
     except Exception as exc:
         raise HTTPException(400, f"Could not fetch positions: {exc}") from exc
 
@@ -1775,8 +1809,15 @@ async def live_order_square():
         actid=actid,
     )
 
-    await ss.update_status("squared")
-    await _revert_mode()
+    # Only mark 'squared' + revert mode on a CONFIRMED square. On failure keep the
+    # session armed and return the failed result so the UI can surface it and the
+    # operator can retry (the software guard / 15:00 EOD square remain the
+    # automated backstops) — never record an open position as squared.
+    if isinstance(result, dict) and result.get("squared"):
+        await ss.update_status("squared")
+        await _revert_mode()
+    else:
+        log.error("manual square NOT confirmed (result=%s) — session stays armed", result)
     return result
 
 
@@ -1961,6 +2002,8 @@ async def live_kill_switch():
     connected = False
     transmitted = False
     panic_result: Dict[str, Any] = {}
+    read_error: Optional[str] = None
+    token_expired = False
 
     try:
         client = await _get_client()
@@ -1969,6 +2012,15 @@ async def live_kill_switch():
         connected = True
     except HTTPException:
         pass
+    except BrokerReadError as exc:
+        # A broker READ failure (e.g. an expired daily token) is NOT a flat
+        # account and NOT merely "not connected" — do NOT let it read as a benign
+        # plan-only no-op. Keep connected=False (fail-safe: transmit nothing, do
+        # NOT mark the session kill_switch), but surface token-expiry so the
+        # operator re-auths and re-fires the kill against a live position.
+        read_error = str(exc.emsg)
+        token_expired = exc.is_session_expired
+        log.warning("kill_switch: broker read failed (positions UNKNOWN): %s", exc)
     except Exception as exc:
         log.warning("kill_switch: broker fetch failed: %s", exc)
 
@@ -2039,6 +2091,13 @@ async def live_kill_switch():
         # Not connected — return a plan only (pre-L3 degraded behaviour)
         panic_result = plan_squareoff(open_orders, open_positions)
 
+    message = _kill_summary_message(panic_result, connected)
+    if read_error is not None:
+        hint = TOKEN_EXPIRED_HINT if token_expired else f"broker read failed: {read_error}"
+        message = (f"Kill switch could NOT read the broker ({hint}). Positions "
+                   "UNKNOWN — nothing was transmitted; reconnect Flattrade and "
+                   "re-fire the kill.")
+
     return {
         "plan": plan_squareoff(open_orders, open_positions),
         "panic": panic_result,
@@ -2046,7 +2105,9 @@ async def live_kill_switch():
         "transmitted": transmitted,
         "armed": True,
         "connected": connected,
-        "message": _kill_summary_message(panic_result, connected),
+        "read_error": read_error,
+        "token_expired": token_expired,
+        "message": message,
     }
 
 

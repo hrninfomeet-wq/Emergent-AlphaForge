@@ -57,7 +57,7 @@ from typing import Any, Dict, List, Optional
 
 from app.live.order_builder import round_to_tick
 
-from app.live.broker_protocol import OrderIntent
+from app.live.broker_protocol import BrokerReadError, OrderIntent
 from app.live.idempotency import new_client_order_id
 from app.live.kill_switch import (
     TERMINAL,
@@ -226,8 +226,18 @@ async def _cancel_all_working_for_scrip(
                 non = o.get("norenordno")
                 if non:
                     ids.add(non)
+        except BrokerReadError as exc:
+            # FAIL-CLOSED: an unreadable order book (e.g. expired token) means we
+            # cannot confirm there are no UNTRACKED resting orders (e.g. a resting
+            # SL) for this scrip. Refuse to report cleared — placing an exit while
+            # a resting SL might still be working is a naked-short / margin-reject
+            # risk. This matters most when seed_ids is empty (no working order was
+            # passed): without it, an errored discovery would fall through to the
+            # cleared=True early-return below.
+            return {"cleared": False, "remaining": sorted(ids),
+                    "reason": f"cancel-discovery read failed ({str(exc.emsg)[:80]})"}
         except Exception:
-            pass  # discovery is best-effort — fall back to the seed ids
+            pass  # a non-broker discovery hiccup is best-effort — fall back to seed ids
 
     if not ids:
         return {"cleared": True, "remaining": []}
@@ -245,6 +255,17 @@ async def _cancel_all_working_for_scrip(
 
         try:
             book = await client.order_book()
+        except BrokerReadError as exc:
+            # FAIL-CLOSED: an unreadable order book (e.g. expired token) means we
+            # CANNOT confirm the resting SL was cancelled. Do NOT trust the cancels
+            # — report cleared=False so square_position refuses to place the exit
+            # (a resting SL + a new exit = naked short / margin reject). The
+            # existing SL stays working, so the position is not left unprotected.
+            return {
+                "cleared": False,
+                "remaining": sorted(ids),
+                "reason": f"cancel-confirm read failed ({str(exc.emsg)[:80]})",
+            }
         except Exception:
             return {"cleared": True, "remaining": []}  # trust cancels if book unavailable
 

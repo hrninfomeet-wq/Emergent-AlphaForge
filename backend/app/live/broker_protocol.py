@@ -5,6 +5,48 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Protocol
 
+class BrokerReadError(RuntimeError):
+    """Raised by a BrokerClient read method (``order_book`` / ``position_book`` /
+    ``trade_book`` / ``limits``) when the broker returns an authenticated-session
+    FAILURE — most importantly the in-band daily-token expiry
+    ``{"stat":"Not_Ok","emsg":"Session Expired : Invalid Session Key"}``.
+
+    CRITICAL CONTRACT — read this before catching it:
+
+    A genuinely EMPTY book is NOT an error. Noren signals empty with an ``emsg``
+    containing ``"no data"`` (a flat account's PositionBook returns
+    ``{"stat":"Not_Ok","emsg":'Error Occurred : 5 "no data"'}``); the readers
+    return ``[]`` / ``{}`` for that case and do NOT raise.
+
+    This exception therefore means the read could not be TRUSTED. A caller must
+    treat the result as UNKNOWN and must NEVER infer "the account is flat" or
+    "there are no working orders" from it — that inference on a swallowed error
+    is exactly the bug this type exists to prevent (kill switch reporting a false
+    ALL FLAT on an expired token, auto-square marking a session "squared", the
+    guard un-watching a live position).
+
+    Subclasses ``RuntimeError`` so pre-existing broad ``except RuntimeError`` /
+    ``except Exception`` handlers keep degrading safely (they just must not treat
+    the degraded path as "flat").
+    """
+
+    def __init__(self, emsg: str, *, route: str = "") -> None:
+        self.emsg = emsg or ""
+        self.route = route
+        super().__init__(f"Flattrade {route} read failed: {emsg}" if route else str(emsg))
+
+    @property
+    def is_session_expired(self) -> bool:
+        """True when the broker rejected with a session/auth failure (daily OAuth
+        token expired or invalid) — the actionable 'reconnect Flattrade' case."""
+        low = self.emsg.lower()
+        return "session expired" in low or "invalid session" in low
+
+
+# The user-facing remediation shown wherever a BrokerReadError bubbles to the UI.
+TOKEN_EXPIRED_HINT = "token expired — reconnect Flattrade"
+
+
 ORDER_STATES = ("INTENT", "SUBMITTED", "ACKED", "OPEN", "TRIGGER_PENDING",
                 "PARTIAL", "COMPLETE", "REJECTED", "CANCELED")
 ALLOWED_PRCTYP = ("LMT", "SL-LMT")     # Flattrade API: market/CO/BO/IOC blocked

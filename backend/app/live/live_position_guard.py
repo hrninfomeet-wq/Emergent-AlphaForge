@@ -51,6 +51,7 @@ from datetime import datetime, time as dtime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from app.execution_policy import spot_mirror_exit_reason
+from app.live.broker_protocol import BrokerReadError, TOKEN_EXPIRED_HINT
 from app.live.kill_switch import _parse_netqty
 from app.live.live_sl_monitor import build_monitor_state, evaluate_exit
 from app.live.overall_controls import build_overall_state, evaluate_overall
@@ -196,6 +197,9 @@ class LiveMonitorRegistry:
             # pending fill is NEVER dropped before it appears.
             "seen_filled": False,
             "misses": 0,
+            # Consecutive authenticated flat reads for a seen-filled entry — the
+            # finalize gate (see LivePositionGuard._cycle / flat_confirm_reads).
+            "flat_reads": 0,
             # Confirm-flat bookkeeping (Layer 1): once a guard square is placed and
             # accepted, `squaring` flips True and the entry is KEPT (the OCO stays
             # resting) until the broker book confirms netqty→0 — only then is the OCO
@@ -277,6 +281,7 @@ class LivePositionGuard:
         square_fn: Callable[..., Awaitable[Dict[str, Any]]],
         poll_seconds: float = POLL_SECONDS,
         max_pending_misses: int = 40,
+        flat_confirm_reads: int = 2,
         overall_provider: Optional[Callable[[], Awaitable[Optional[Dict[str, Any]]]]] = None,
         spot_tick_fn: Optional[Callable[[], Dict[str, Any]]] = None,
         eod_square_ist: dtime = dtime(15, 0),
@@ -333,6 +338,14 @@ class LivePositionGuard:
         # (40 × ~1.5s ≈ 60s — well past a marketable fill, short enough to clean up
         # a rejected/canceled entry).
         self._max_pending_misses = int(max_pending_misses)
+        # A seen-filled position that reads flat is FINALIZED (OCO cancelled,
+        # close journaled, entry dropped) ONLY after this many CONSECUTIVE
+        # AUTHENTICATED flat reads — a single flat read (broker book eventual-
+        # consistency, a transient blip) must not un-watch a live position. A
+        # BrokerReadError read is NOT a flat read and never advances this counter
+        # (the cycle skips instead); an UNKNOWN/empty book neither advances nor
+        # resets it; a live read resets it.
+        self._flat_confirm_reads = max(1, int(flat_confirm_reads))
         self._task: Optional[asyncio.Task] = None
         self._stats: Dict[str, Any] = {
             "running": False, "started_at": None, "cycles": 0,
@@ -364,12 +377,29 @@ class LivePositionGuard:
                 self._stats["last_error"] = "no client"
                 return exits
 
-            book = await client.position_book()
-            # A NON-EMPTY list is a KNOWN book. An empty list / non-list is UNKNOWN
-            # — Flattrade's position_book() returns [] on ANY broker Not_Ok (session
-            # expiry, throttle, no-data), NOT only a genuinely flat account, and it
-            # returns (does not raise) so the cycle's try/except can't catch it. We
-            # must NEVER read UNKNOWN as flat and finalize a still-open position
+            # A READ FAILURE (e.g. expired token) is UNKNOWN, not flat. Since the
+            # broker-truth contract, FlattradeClient's position_book() RAISES a
+            # typed BrokerReadError on any Noren failure instead of returning [].
+            # Skip the ENTIRE cycle so the finalize / stop / EOD logic below can
+            # never act on an unreadable book and un-watch a live position. (The
+            # cycle is also wrapped in a broad except, but handling it here lets
+            # us surface token-expiry and guarantees no partial-cycle side effects.)
+            try:
+                book = await client.position_book()
+            except BrokerReadError as exc:
+                self._stats["last_error"] = (
+                    TOKEN_EXPIRED_HINT if exc.is_session_expired
+                    else f"position read failed: {str(exc.emsg)[:180]}")
+                return exits
+
+            # A NON-EMPTY list is a KNOWN book. With the raise-on-error contract an
+            # empty [] is the doc-confirmed "no data" flat account — but we STILL
+            # hold on an empty/non-list book as defense-in-depth: a legacy/mock
+            # client may return [] on error, the "no data" discriminator is only
+            # doc-verified for PositionBook, and a seen-filled guard entry implies
+            # a position existed today (Noren keeps its netqty=0 row intraday), so
+            # a truly-empty book while guarding is anomalous, not proof of flat.
+            # We must NEVER read UNKNOWN as flat and finalize a still-open position
             # (cancel its OCO / journal a false CLOSE). Mirrors reboot_reconcile's
             # "empty-book false-close hole" guard.
             book_is_known = isinstance(book, list) and len(book) > 0
@@ -420,7 +450,8 @@ class LivePositionGuard:
                     if not book_is_known:
                         # Empty/non-list book == UNKNOWN (broker hiccup) → HOLD: keep
                         # the entry registered + the OCO resting. The position may
-                        # well still be open; the next good read decides.
+                        # well still be open; the next good read decides. (Does not
+                        # advance flat_reads — an UNKNOWN read is not a flat read.)
                         continue
                     if pos is not None and netqty is None:
                         # Present row but UNPARSEABLE netqty ("nan"/"abc") == UNKNOWN
@@ -428,16 +459,25 @@ class LivePositionGuard:
                         # per kill_switch._parse_netqty's contract).
                         continue
                     # book_is_known AND (present row netqty==0, OR this tsym absent
-                    # from a complete non-empty book) → genuinely FLAT. The SOLE place
-                    # the OCO is cancelled, the close journaled, and the entry dropped
-                    # (however it went flat: the guard's exit filled, the OCO fired,
-                    # or it was closed elsewhere).
+                    # from a complete non-empty book) → an authenticated flat read.
+                    # Require N CONSECUTIVE such reads before finalizing, so a single
+                    # broker-book eventual-consistency blip (a KNOWN book momentarily
+                    # missing this row) can't un-watch a still-live position. UNKNOWN
+                    # reads neither advance nor reset the count; a live read resets it.
+                    entry["flat_reads"] = int(entry.get("flat_reads", 0)) + 1
+                    if entry["flat_reads"] < self._flat_confirm_reads:
+                        continue
+                    # N consecutive authenticated flat reads → genuinely FLAT. The SOLE
+                    # place the OCO is cancelled, the close journaled, and the entry
+                    # dropped (however it went flat: the guard's exit filled, the OCO
+                    # fired, or it was closed elsewhere).
                     await self._finalize_flat(client, entry)
                     continue
 
                 # Live, filled position.
                 entry["seen_filled"] = True
                 entry["misses"] = 0
+                entry["flat_reads"] = 0
                 lp = _finite_pos(pos.get("lp"))
                 # Refresh the square dict from the broker truth.
                 entry["position"].update({

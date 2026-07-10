@@ -57,6 +57,30 @@ def test_flat_broker_position_netqty_zero_is_flat():
     assert rows[0]["pnl"] is None
 
 
+def test_open_row_is_unknown_not_flat_when_broker_unreadable():
+    # broker_ok=False (e.g. expired token): an OPEN journal row with no broker
+    # match must NOT read FLAT (a false "you're safe") — it reads UNKNOWN.
+    rows = build_live_blotter([_trade(status="OPEN")], [], DEPS, broker_ok=False)
+    assert rows[0]["status"] == "UNKNOWN"
+    assert rows[0]["at_broker"] is False
+    assert rows[0]["pnl"] is None
+
+
+def test_closed_row_stays_closed_when_broker_unreadable():
+    # A CLOSED trade's realized P&L comes from the journal, not the broker — an
+    # unreadable broker must not turn it into UNKNOWN.
+    closed = _trade(status="CLOSED", realized_pnl=1500.0, exit_price=130.0)
+    rows = build_live_blotter([closed], [], DEPS, broker_ok=False)
+    assert rows[0]["status"] == "CLOSED"
+    assert rows[0]["pnl"] == 1500.0
+
+
+def test_broker_ok_true_default_preserves_flat_semantics():
+    # Regression: the default (broker_ok=True) is byte-compatible with old callers.
+    rows = build_live_blotter([_trade(status="OPEN")], [], DEPS)
+    assert rows[0]["status"] == "FLAT"
+
+
 def test_pnl_attributed_to_newest_row_only_for_same_tsym():
     # Two OPEN journal rows on the same tsym (re-entry, no close-loop). The single
     # aggregated broker position must be attributed to the NEWEST row only, so the

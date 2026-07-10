@@ -64,17 +64,27 @@ class _FakeClient:
         return list(self._positions)
 
 
-def _blotter(*, trades, positions, deployments, connected=True, limit=None):
+class _RaisingClient:
+    """position_book raises BrokerReadError (e.g. an expired daily token)."""
+
+    async def position_book(self) -> List[Dict[str, Any]]:
+        from app.live.broker_protocol import BrokerReadError
+        raise BrokerReadError("Session Expired : Invalid Session Key", route="PositionBook")
+
+
+def _blotter(*, trades, positions, deployments, connected=True, limit=None, read_error=False):
     app = FastAPI()
     app.include_router(_routes.api)
     db = _DB(trades=trades, deployments=deployments)
     # _get_client lives on the router; the route does a deferred `from app.db
     # import get_db`, so patch get_db at its source module.
-    client_patch = patch.object(
-        _routes, "_get_client",
-        AsyncMock(return_value=_FakeClient(positions)) if connected
-        else AsyncMock(side_effect=Exception("not connected")),
-    )
+    if read_error:
+        client_ret = AsyncMock(return_value=_RaisingClient())
+    elif connected:
+        client_ret = AsyncMock(return_value=_FakeClient(positions))
+    else:
+        client_ret = AsyncMock(side_effect=Exception("not connected"))
+    client_patch = patch.object(_routes, "_get_client", client_ret)
     import app.db as _dbmod
     db_patch = patch.object(_dbmod, "get_db", lambda: db)
     client_patch.start()
@@ -119,4 +129,15 @@ def test_route_degrades_when_broker_disconnected():
 
 def test_route_empty_when_no_trades():
     body = _blotter(trades=[], positions=[dict(_POS)], deployments=[dict(_DEP)])
-    assert body == {"rows": [], "count": 0}
+    assert body == {"rows": [], "count": 0, "broker_ok": True, "broker_read_error": None}
+
+
+def test_route_broker_read_error_marks_open_unknown_not_flat():
+    # A read failure (expired token) must NOT render an OPEN position as FLAT:
+    # the route carries broker_ok=false and the row reads UNKNOWN.
+    trade = dict(_TRADE, status="OPEN")
+    body = _blotter(trades=[trade], positions=[], deployments=[dict(_DEP)], read_error=True)
+    assert body["broker_ok"] is False
+    assert body["broker_read_error"]  # non-empty (reconnect hint)
+    assert body["rows"][0]["status"] == "UNKNOWN"
+    assert body["rows"][0]["pnl"] is None

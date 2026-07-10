@@ -344,6 +344,20 @@ def test_margin_shortfall_blocks():
     assert run(client.order_book()) == []
 
 
+def test_limits_read_failure_blocks_fail_closed():
+    """limits() RAISING (expired token) must BLOCK the order fail-closed — never
+    500, never place — with a reconnect hint in the margin verdict."""
+    client = MockNoren(limits_data=_GOOD_LIMITS)
+    client.script_read_error("limits", "Session Expired : Invalid Session Key")
+    result = run(_place(client=client))
+    assert result["placed"] is False
+    assert result["reason"] == "dry_run_failed"
+    assert run(client.order_book()) == [], "place_order must NOT have been called"
+    margin_v = next((v for v in result["verdicts"] if v["check"] == "margin"), None)
+    assert margin_v is not None and margin_v["ok"] is False
+    assert "reconnect Flattrade" in margin_v["detail"]
+
+
 def test_band_pct_zero_blocks():
     """band_pct=0 forces a buffer clamp to 0 — the price_band check will FAIL because
     the computed price with even a small buffer exceeds the zero band.

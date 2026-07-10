@@ -549,6 +549,56 @@ def test_square_no_position_still_reverts_mode():
         _stop_patches(tc)
 
 
+def test_square_read_failure_400_and_session_stays_armed():
+    """A broker read failure (expired token) must NOT false-square: the route
+    400s (reconnect hint), the armed session stays 'armed', mode stays LIVE_TEST."""
+    ms = _make_mode_store(mode="LIVE_TEST", consumed=True)
+    cl = _make_mock_noren(position_book=[{
+        "tsym": "NIFTY26JUN26C25000", "exch": "NFO", "netqty": "65", "lp": "200.0"}])
+    cl.script_read_error("position_book", "Session Expired : Invalid Session Key")
+    ss = _make_session_store()
+    asyncio.run(ss.arm(entry_norenordno="MOCK_ENTRY"))
+    tc = _make_app(mode_store=ms, client=cl, session_store=ss)
+    try:
+        r = tc.post("/live-broker/order/square", json={})
+        assert r.status_code == 400
+        assert "reconnect Flattrade" in r.text
+        assert asyncio.run(ss.get())["status"] == "armed"      # NOT squared
+        assert asyncio.run(ms.get())["mode"] == "LIVE_TEST"    # NOT reverted
+    finally:
+        _stop_patches(tc)
+
+
+def test_square_failed_exit_does_not_mark_squared():
+    """When square_position returns squared=False (exit rejected), the route must
+    NOT mark the session 'squared' or revert mode — it stays armed for a retry."""
+    from app.live.broker_protocol import OrderResult
+
+    class _RejectPlace(MockNoren):
+        async def place_order(self, intent):
+            return OrderResult(ok=False, rejreason="RMS blocked",
+                               raw={"stat": "Not_Ok", "emsg": "RMS blocked"})
+
+    ms = _make_mode_store(mode="LIVE_TEST", consumed=True)
+    cl = _RejectPlace(
+        limits_data=_GOOD_LIMITS,
+        position_book_data=[{"tsym": "NIFTY26JUN26C25000", "exch": "NFO",
+                             "netqty": "65", "lp": "200.0"}],
+        search_scrip_data={"NFO": [_NIFTY_SCRIP]},
+    )
+    ss = _make_session_store()
+    asyncio.run(ss.arm(entry_norenordno="MOCK_ENTRY"))
+    tc = _make_app(mode_store=ms, client=cl, session_store=ss)
+    try:
+        r = tc.post("/live-broker/order/square", json={})
+        assert r.status_code == 200
+        assert r.json().get("squared") is False
+        assert asyncio.run(ss.get())["status"] == "armed"      # NOT squared
+        assert asyncio.run(ms.get())["mode"] == "LIVE_TEST"    # NOT reverted
+    finally:
+        _stop_patches(tc)
+
+
 def test_square_is_exit_only_no_buy_orders():
     """Square route never places a BUY entry order."""
     cl = _make_mock_noren(
@@ -734,6 +784,71 @@ def test_kill_switch_not_connected_returns_plan_not_transmitted():
                 p.stop()
             except RuntimeError:
                 pass
+
+
+class _CountingClient(MockNoren):
+    """Counts real order-affecting calls so a test can prove NOTHING transmitted."""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.place_calls = 0
+        self.cancel_calls = 0
+
+    async def place_order(self, intent):
+        self.place_calls += 1
+        return await super().place_order(intent)
+
+    async def cancel_order(self, non):
+        self.cancel_calls += 1
+        return await super().cancel_order(non)
+
+
+def test_kill_switch_position_read_error_transmits_nothing_and_flags_token_expired():
+    """A token-expired kill (position_book RAISES) must transmit NOTHING, keep
+    connected=False, flag token_expired, emit no place/cancel, and NOT mark the
+    session kill_switch — never a false ALL FLAT that reads as a clean no-op."""
+    cl = _CountingClient(limits_data=_GOOD_LIMITS, search_scrip_data={"NFO": [_NIFTY_SCRIP]})
+    cl.script_read_error("position_book", "Session Expired : Invalid Session Key")
+    ss = _make_session_store()
+    asyncio.run(ss.arm(entry_norenordno="MOCK_ENTRY"))
+    tc = _make_app(client=cl, session_store=ss)
+    try:
+        r = tc.post("/live-broker/kill-switch")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["connected"] is False
+        assert data["transmitted"] is False
+        assert data["token_expired"] is True
+        assert data["read_error"]
+        assert "reconnect" in data["message"].lower()
+        assert cl.place_calls == 0 and cl.cancel_calls == 0  # nothing transmitted
+        assert asyncio.run(ss.get())["status"] == "armed"    # NOT marked kill_switch
+    finally:
+        _stop_patches(tc)
+
+
+def test_kill_switch_orderbook_ok_then_positionbook_raises_still_fails_safe():
+    """Concurrent interleaving: order_book() succeeds (returns working orders) but
+    position_book() RAISES. connected must stay False (nothing transmitted) — a
+    read error on either book is UNKNOWN, never a partial transmit."""
+    cl = _CountingClient(
+        limits_data=_GOOD_LIMITS,
+        order_book_data=[{"tsym": "NIFTY26JUN26C25000", "norenordno": "OPEN1",
+                          "status": "OPEN", "trantype": "B"}],
+        search_scrip_data={"NFO": [_NIFTY_SCRIP]},
+    )
+    cl.script_read_error("position_book", "Session Expired : Invalid Session Key")
+    tc = _make_app(client=cl)
+    try:
+        r = tc.post("/live-broker/kill-switch")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["connected"] is False
+        assert data["transmitted"] is False
+        assert data["token_expired"] is True
+        assert cl.place_calls == 0 and cl.cancel_calls == 0
+    finally:
+        _stop_patches(tc)
 
 
 def test_kill_switch_partial_failure_report_reaches_response():

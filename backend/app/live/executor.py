@@ -36,9 +36,22 @@ from __future__ import annotations
 import time
 from typing import Any, Callable, Dict, List, Optional
 
+from app.live.broker_protocol import BrokerReadError
 from app.live.mode import is_live_order_allowed
 from app.live.order_builder import build_intent
 from app.live.margin import broker_margin_verdict, margin_verdict
+
+
+def _limits_read_error_verdict(exc: "BrokerReadError") -> dict:
+    """Fail-CLOSED margin verdict for an unreadable account (e.g. expired daily
+    token). Blocks the order and names the cause so the operator can re-auth,
+    instead of a 500 (site 279) or a leaked paper/live claim (site 445)."""
+    return {
+        "check": "margin",
+        "ok": False,
+        "detail": f"margin unavailable — broker limits read failed "
+                  f"({str(exc.emsg)[:100]}); blocking fail-closed (reconnect Flattrade)",
+    }
 from app.live.idempotency import new_client_order_id
 from app.live.auto_square import square_position
 
@@ -289,7 +302,15 @@ async def place_live_test_order(
     # Only append the margin verdict when resolution succeeded (resolved_lot_size
     # is not None); if resolution failed the symbol verdict already blocked.
     # ------------------------------------------------------------------
-    limits = await client.limits()
+    try:
+        limits = await client.limits()
+    except BrokerReadError as exc:
+        # An unreadable account (expired token / broker error) must BLOCK the
+        # entry, not 500 out of the route with a claimed order path outstanding.
+        limits = {}
+        if resolved_lot_size is not None:
+            verdicts.append(_limits_read_error_verdict(exc))
+        return _blocked("dry_run_failed", verdicts)
     if resolved_lot_size is not None:
         verdicts.append(margin_verdict(limits, ref_ltp=ref_ltp, lot_size=resolved_lot_size))
 
@@ -455,7 +476,17 @@ async def place_deployed_order(
     # Gate 3 — margin must cover the FULL capped_lots * lot_size size.
     # client.limits() is a READ (matches the manual path's margin gate).
     # ------------------------------------------------------------------
-    limits = await client.limits()
+    try:
+        limits = await client.limits()
+    except BrokerReadError as exc:
+        # Deployed path: auto_live holds the paper/live mutual-exclusion CLAIM and
+        # only releases it on a normal return — so we must fall through to the
+        # blocked-return, never let this raise escape (that would strand the claim
+        # AND 500 the caller). Block fail-closed with the cause named.
+        limits = {}
+        if resolved_lot is not None:
+            verdicts.append(_limits_read_error_verdict(exc))
+        return _blocked("dry_run_failed", verdicts)
     if resolved_lot is not None:
         verdicts.append(margin_verdict(limits, ref_ltp=ref_ltp, lot_size=resolved_lot * capped_lots))
         # Broker GetOrderMargin pre-trade gate (A4): ask the broker its

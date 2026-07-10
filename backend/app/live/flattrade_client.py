@@ -26,12 +26,48 @@ from typing import Any, Callable, Dict, List, Optional
 import httpx
 
 from app.live._net import force_ipv4, ipv4_transport
-from app.live.broker_protocol import OrderIntent, OrderResult
+from app.live.broker_protocol import BrokerReadError, OrderIntent, OrderResult
 
 log = logging.getLogger(__name__)
 
 _PICONNECT_BASE = "https://piconnect.flattrade.in/PiConnectAPI"
 _PICONNECT_WS = "wss://piconnect.flattrade.in/PiConnectWSAPI/"
+
+# Noren signals a genuinely EMPTY book (flat account / no orders) with a Not_Ok
+# response whose emsg contains "no data" — e.g. a flat account's PositionBook
+# returns {"stat":"Not_Ok","emsg":'Error Occurred : 5 "no data"'} (confirmed in
+# docs/Resources/flattrade-pi-api/catalog.json). That is NOT an error and must
+# stay an empty result. EVERY OTHER Not_Ok (Session Expired, Server Timeout,
+# Invalid Input, …) is a real read failure and must raise BrokerReadError so no
+# caller can mistake an unreadable book for a flat account. If a future book's
+# empty-signal uses a different phrase, add it here (keep it conservative — a
+# false "empty" re-introduces the swallow-error bug this guards against).
+_NO_DATA_MARKERS = ("no data",)
+
+
+def _is_no_data(emsg: Any) -> bool:
+    """True when a Noren ``stat != "Ok"`` response denotes a genuinely EMPTY book
+    rather than a read error (see ``_NO_DATA_MARKERS``)."""
+    return isinstance(emsg, str) and any(m in emsg.lower() for m in _NO_DATA_MARKERS)
+
+
+def _parse_book(route: str, data: Any) -> List[Dict[str, Any]]:
+    """Parse a Noren list-returning book response (OrderBook/TradeBook/PositionBook).
+
+    Success is a JSON list. A Not_Ok dict is either a genuinely-empty book
+    (emsg ~ "no data" → []) or a real failure (→ raise ``BrokerReadError``). An
+    unexpected shape cannot be CONFIRMED empty, so it also raises rather than
+    silently returning [] (never infer "flat" from uncertainty)."""
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        if data.get("stat") == "Ok":
+            return [data]  # defensive: a single-row dict where a list was expected
+        emsg = data.get("emsg", "unknown error")
+        if _is_no_data(emsg):
+            return []
+        raise BrokerReadError(str(emsg), route=route)
+    raise BrokerReadError(f"unexpected {route} response shape: {type(data).__name__}", route=route)
 
 
 # ---------------------------------------------------------------------------
@@ -100,49 +136,50 @@ class FlattradeClient:
     async def order_book(self) -> List[Dict[str, Any]]:
         """Return the current order book as a list of order dicts.
 
-        Noren returns a list on success, or {"stat": "Not_Ok", ...} on empty/error.
-        We return an empty list on stat != Ok.
+        Returns [] for a genuinely-empty book; raises ``BrokerReadError`` on a
+        real read failure (e.g. an expired daily token) — callers must NOT read
+        that as "no working orders". See ``_parse_book``.
         """
         jdata: Dict[str, Any] = {"uid": self._uid, "actid": self._actid}
         data = await self._post("OrderBook", jdata)
-        if isinstance(data, list):
-            return data
-        if isinstance(data, dict) and data.get("stat") == "Ok":
-            # Shouldn't happen but be defensive
-            return [data]
-        return []
+        return _parse_book("OrderBook", data)
 
     async def trade_book(self) -> List[Dict[str, Any]]:
-        """Return the current trade book (filled orders) as a list of dicts."""
+        """Return the current trade book (filled orders) as a list of dicts.
+
+        Empty book → []; real read failure → ``BrokerReadError``."""
         jdata: Dict[str, Any] = {"uid": self._uid, "actid": self._actid}
         data = await self._post("TradeBook", jdata)
-        if isinstance(data, list):
-            return data
-        if isinstance(data, dict) and data.get("stat") == "Ok":
-            return [data]
-        return []
+        return _parse_book("TradeBook", data)
 
     async def position_book(self) -> List[Dict[str, Any]]:
-        """Return net positions as a list of position dicts."""
+        """Return net positions as a list of position dicts.
+
+        A flat account → [] (Noren emsg ~ "no data"); a real read failure (e.g.
+        an expired daily token) → ``BrokerReadError``. This is the load-bearing
+        distinction: a caller must NEVER conclude the account is flat from a
+        failed read (that was the false-ALL-FLAT / false-squared bug)."""
         jdata: Dict[str, Any] = {"uid": self._uid, "actid": self._actid}
         data = await self._post("PositionBook", jdata)
-        if isinstance(data, list):
-            return data
-        if isinstance(data, dict) and data.get("stat") == "Ok":
-            return [data]
-        return []
+        return _parse_book("PositionBook", data)
 
     async def limits(self) -> Dict[str, Any]:
         """Return account limits/margin as a flat dict.
 
-        Noren Limits response shape: {stat, cash, payin, marginused, ...}
-        We return the full dict (empty dict on failure).
+        Noren Limits response shape: {stat, cash, payin, marginused, ...}.
+        Returns {} only for the (unusual) genuinely-empty response; raises
+        ``BrokerReadError`` on a real read failure so the margin gate fails
+        CLOSED against an unreadable account rather than an ambiguous {}.
         """
         jdata: Dict[str, Any] = {"uid": self._uid, "actid": self._actid}
         data = await self._post("Limits", jdata)
         if isinstance(data, dict) and data.get("stat") == "Ok":
             return data
-        return {}
+        emsg = data.get("emsg", "unknown error") if isinstance(data, dict) else \
+            f"unexpected Limits response shape: {type(data).__name__}"
+        if _is_no_data(emsg):
+            return {}
+        raise BrokerReadError(str(emsg), route="Limits")
 
     async def search_scrip(self, exch: str, text: str) -> List[Dict[str, Any]]:
         """Search for scrips matching text on an exchange.

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, List, Optional
 
-from app.live.broker_protocol import OrderIntent, OrderResult
+from app.live.broker_protocol import BrokerReadError, OrderIntent, OrderResult
 
 
 def make_om(
@@ -69,6 +69,7 @@ class MockNoren:
         *,
         order_book_data: Optional[List[Dict[str, Any]]] = None,
         position_book_data: Optional[List[Dict[str, Any]]] = None,
+        trade_book_data: Optional[List[Dict[str, Any]]] = None,
         limits_data: Optional[Dict[str, Any]] = None,
         search_scrip_data: Optional[Dict[str, List[Dict[str, Any]]]] = None,
         gtt_book_data: Optional[List[Dict[str, Any]]] = None,
@@ -93,8 +94,15 @@ class MockNoren:
         self._next_reject_reason: Optional[str] = None
 
         # Injected fixture data
+        self._order_book_data: Optional[List[Dict[str, Any]]] = order_book_data
         self._position_book_data: List[Dict[str, Any]] = position_book_data or []
+        self._trade_book_data: List[Dict[str, Any]] = trade_book_data or []
         self._limits_data: Dict[str, Any] = limits_data or {}
+
+        # Scripted read errors: reader-method-name -> BrokerReadError to raise on
+        # the NEXT call (persists until cleared). Lets consumer tests simulate an
+        # expired daily token so the "error != flat" contract can be asserted.
+        self._read_errors: Dict[str, BrokerReadError] = {}
         self._order_margin_data: Dict[str, Any] = order_margin_data or {}
         self._quotes_data: Dict[str, Any] = quotes_data or {}
         # search_scrip_data keyed by (exch, text) or just exch; we support both
@@ -114,6 +122,27 @@ class MockNoren:
 
     def set_position_book(self, data: List[Dict[str, Any]]) -> None:
         self._position_book_data = data
+
+    def set_trade_book(self, data: List[Dict[str, Any]]) -> None:
+        self._trade_book_data = data
+
+    def script_read_error(
+        self,
+        method: str,
+        emsg: str = "Session Expired : Invalid Session Key",
+    ) -> None:
+        """Make the given reader method ("order_book" / "position_book" /
+        "trade_book" / "limits") raise BrokerReadError until cleared — used to
+        simulate an expired daily token / broker read failure in consumer tests."""
+        self._read_errors[method] = BrokerReadError(emsg, route=method)
+
+    def clear_read_error(self, method: str) -> None:
+        self._read_errors.pop(method, None)
+
+    def _maybe_raise_read(self, method: str) -> None:
+        exc = self._read_errors.get(method)
+        if exc is not None:
+            raise exc
 
     def set_limits(self, data: Dict[str, Any]) -> None:
         self._limits_data = data
@@ -189,15 +218,25 @@ class MockNoren:
         return OrderResult(ok=True, norenordno=norenordno, raw={"stat": "Ok", "norenordno": norenordno})
 
     async def order_book(self) -> List[Dict[str, Any]]:
-        """Return a snapshot of all in-memory orders."""
+        """Return a snapshot of all in-memory orders (or the injected fixture)."""
+        self._maybe_raise_read("order_book")
+        if self._order_book_data is not None:
+            return list(self._order_book_data)
         return list(self._orders.values())
 
     async def position_book(self) -> List[Dict[str, Any]]:
         """Return injected position fixture."""
+        self._maybe_raise_read("position_book")
         return list(self._position_book_data)
+
+    async def trade_book(self) -> List[Dict[str, Any]]:
+        """Return injected trade-book fixture (filled orders)."""
+        self._maybe_raise_read("trade_book")
+        return list(self._trade_book_data)
 
     async def limits(self) -> Dict[str, Any]:
         """Return injected limits fixture."""
+        self._maybe_raise_read("limits")
         return dict(self._limits_data)
 
     async def order_margin(self, **kw: Any) -> Dict[str, Any]:
