@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 
 from app.instruments import canonical_instrument_key
+from app.option_costs import CostConfig, round_trip_charges, spread_pts_for_premium
 from app.options_universe import select_contract_for_signal
 
 
@@ -195,6 +196,36 @@ def _exit(ts, entry_i, entry_premium, exit_i, exit_premium, reason) -> Dict[str,
         "exit_reason": reason,
         "premium_pnl": round(float(exit_premium) - float(entry_premium), 4),
         "bars_held": int(exit_i - entry_i),
+    }
+
+
+def apply_costs_to_trade(trade: Dict[str, Any], *, cost_cfg: CostConfig,
+                         lot_size: int, lots: int) -> Dict[str, Any]:
+    """Overlay the engine's rupee cost model on one walked trade (POST-step: the
+    verified mark-based walk is untouched; costs adjust FILLS and add net figures).
+
+    Mirrors live_friction.fill_premium's spread convention exactly — BUY pays
+    +half-spread, SELL receives -half-spread (spread_pts_for_premium / 2 per side)
+    — and app.option_costs.round_trip_charges for the statutory + brokerage ₹,
+    charged on the FILL turnovers. Disabled config ⇒ fills = marks, zero charges
+    (net == gross), so the added fields are always present and comparable."""
+    entry = float(trade["entry_premium"])
+    exit_ = float(trade["exit_premium"])
+    qty = max(1, int(lot_size)) * max(1, int(lots))
+    entry_fill = entry + spread_pts_for_premium(entry, cost_cfg) / 2.0
+    exit_fill = max(0.0, exit_ - spread_pts_for_premium(exit_, cost_cfg) / 2.0)
+    charges = round_trip_charges(entry_premium=entry_fill, exit_premium=exit_fill,
+                                 quantity=qty, cfg=cost_cfg)["total_charges"] if cost_cfg.enabled else 0.0
+    gross_rupees = round((exit_fill - entry_fill) * qty, 2)
+    net_rupees = round(gross_rupees - charges, 2)
+    return {
+        **trade,
+        "entry_fill": round(entry_fill, 4),
+        "exit_fill": round(exit_fill, 4),
+        "charges_rupees": round(float(charges), 2),
+        "gross_pnl_rupees": gross_rupees,
+        "net_pnl_rupees": net_rupees,
+        "net_pnl_pts": round(net_rupees / qty, 4),
     }
 
 

@@ -38,7 +38,31 @@ const DEFAULTS = {
   target_value: "",
   trail_x: "",
   trail_y: "",
+  // Cost model (engine schedule): ON by default — a gross backtest flatters.
+  costs_enabled: true,
+  spread_pct: "1.0",
+  brokerage: "0",
+  lots: "1",
+  // Tuner grids (comma lists). Tuning REQUIRES costs on (backend 400s otherwise).
+  tune_momentum: "10,15,20,25",
+  tune_stop: "10,20,30",
+  tune_target: "none,30,50",
+  tune_trail_x: "",
+  tune_trail_y: "",
+  train_frac: "0.7",
 };
+
+function parseGridList(s, { allowNone = false } = {}) {
+  const out = [];
+  for (const part of String(s || "").split(",")) {
+    const v = part.trim();
+    if (!v) continue;
+    if (allowNone && /^(none|null|-)$/i.test(v)) { out.push(null); continue; }
+    const n = Number(v);
+    if (Number.isFinite(n)) out.push(n);
+  }
+  return out;
+}
 
 function dateToMs(d, endOfDay) {
   if (!d) return null;
@@ -57,18 +81,34 @@ export default function PremiumMomentum() {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
+  const [tuneBusy, setTuneBusy] = useState(false);
+  const [tuneResult, setTuneResult] = useState(null);
+  const [tuneError, setTuneError] = useState(null);
 
   const set = (k) => (e) => setCfg((c) => ({ ...c, [k]: e.target.value }));
+
+  function baseParams() {
+    const params = {
+      reference_time: cfg.reference_time || "09:31",
+      moneyness: cfg.moneyness,
+      side: cfg.side,
+      lots: Math.max(1, Number(cfg.lots) || 1),
+      cost_config: cfg.costs_enabled
+        ? {
+            enabled: true,
+            spread_pct_of_premium: Number(cfg.spread_pct) || 0,
+            brokerage_per_order: Number(cfg.brokerage) || 0,
+          }
+        : { enabled: false },
+    };
+    return params;
+  }
 
   async function run() {
     setBusy(true);
     setError(null);
     try {
-      const params = {
-        reference_time: cfg.reference_time || "09:31",
-        moneyness: cfg.moneyness,
-        side: cfg.side,
-      };
+      const params = baseParams();
       const mom = num(cfg.momentum_value);
       if (mom != null) params[cfg.momentum_unit === "pts" ? "momentum_pts" : "momentum_pct"] = mom;
       const stop = num(cfg.stop_value);
@@ -95,6 +135,39 @@ export default function PremiumMomentum() {
       setError(e?.response?.data?.detail || e?.message || "Backtest failed");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function runTune() {
+    setTuneBusy(true);
+    setTuneError(null);
+    try {
+      const grid = {};
+      const gm = parseGridList(cfg.tune_momentum);
+      if (gm.length) grid.momentum_pct = gm;
+      const gs = parseGridList(cfg.tune_stop);
+      if (gs.length) grid.stop_pct = gs;
+      const gt = parseGridList(cfg.tune_target, { allowNone: true });
+      if (gt.length) grid.target_pct = gt;
+      const gx = parseGridList(cfg.tune_trail_x);
+      if (gx.length) grid.trail_x = gx;
+      const gy = parseGridList(cfg.tune_trail_y);
+      if (gy.length) grid.trail_y = gy;
+      const body = {
+        instrument: cfg.instrument,
+        start_ts: dateToMs(cfg.start_date, false),
+        end_ts: dateToMs(cfg.end_date, true),
+        base_params: baseParams(),
+        grid,
+        train_frac: Math.min(0.9, Math.max(0.5, Number(cfg.train_frac) || 0.7)),
+      };
+      const res = await apiClient.post("/premium-momentum/tune", body, { timeout: LONG_TIMEOUT_MS });
+      setTuneResult(res.data);
+      toast.success(`Tune done — ${res.data.n_configs} configs`);
+    } catch (e) {
+      setTuneError(e?.response?.data?.detail || e?.message || "Tune failed");
+    } finally {
+      setTuneBusy(false);
     }
   }
 
@@ -202,6 +275,33 @@ export default function PremiumMomentum() {
             </div>
           </div>
 
+          <div className="border-t border-line pt-2 space-y-2">
+            <label className="flex items-center gap-2 text-[11px] text-dim">
+              <input
+                type="checkbox"
+                checked={cfg.costs_enabled}
+                onChange={(e) => setCfg((c) => ({ ...c, costs_enabled: e.target.checked }))}
+                className="h-3 w-3 rounded border-line"
+                data-testid="pm-costs-enabled"
+              />
+              Apply cost model (spread + statutory charges)
+            </label>
+            <div className="grid grid-cols-3 gap-2">
+              <div>
+                <label className={labelCls}>Spread %/side</label>
+                <input value={cfg.spread_pct} onChange={set("spread_pct")} className={inputCls} data-testid="pm-spread" />
+              </div>
+              <div>
+                <label className={labelCls}>Brokerage ₹/leg</label>
+                <input value={cfg.brokerage} onChange={set("brokerage")} className={inputCls} data-testid="pm-brokerage" />
+              </div>
+              <div>
+                <label className={labelCls}>Lots</label>
+                <input value={cfg.lots} onChange={set("lots")} className={inputCls} data-testid="pm-lots" />
+              </div>
+            </div>
+          </div>
+
           <button
             onClick={run}
             disabled={busy}
@@ -214,10 +314,11 @@ export default function PremiumMomentum() {
 
           <div className="text-[10px] text-dimmer leading-relaxed border-t border-line pt-2">
             <b className="text-dim">Honesty notes:</b> 1-minute bars (bar-close entries — a tick engine
-            would differ); <b className="text-dim">no cost model yet</b> (brokerage/spread/STT make real
-            results worse); P&L is premium points per unit, not ₹ × lot. Stops fill gap-honestly
-            (intra-bar low touch, min(stop, open)). Sessions without warehouse coverage are excluded
-            and counted below — never silently mis-filled.
+            would differ). The cost model (engine schedule: spread/side + STT 0.1% sell + exchange/SEBI/
+            stamp/GST) is <b className="text-dim">ON by default</b> — turning it off flatters results.
+            Stops fill gap-honestly (intra-bar low touch, min(stop, open)). Sessions without warehouse
+            coverage are excluded and counted — never silently mis-filled. Tuning REQUIRES costs on and
+            selects on TRAIN only; the test column is out-of-sample.
           </div>
         </div>
 
@@ -284,6 +385,23 @@ export default function PremiumMomentum() {
                   <div className="text-[10px] text-dimmer">avg win / avg loss</div>
                 </div>
               </div>
+              {result?.summary && (
+                <div className="mt-3 flex flex-wrap gap-2 text-[11px] font-mono" data-testid="pm-net-summary">
+                  <span className={`px-2 py-0.5 rounded border ${result.summary.net_pnl_pts >= 0 ? "border-emerald-500/40 text-emerald-300" : "border-rose-500/40 text-rose-300"}`}>
+                    NET {result.summary.net_pnl_pts.toFixed(1)} pts
+                  </span>
+                  <span className={`px-2 py-0.5 rounded border ${result.summary.net_pnl_rupees >= 0 ? "border-emerald-500/40 text-emerald-300" : "border-rose-500/40 text-rose-300"}`}>
+                    NET ₹{result.summary.net_pnl_rupees.toLocaleString("en-IN")}
+                  </span>
+                  <span className="px-2 py-0.5 rounded border border-line text-dimmer">
+                    charges ₹{result.summary.charges_rupees.toLocaleString("en-IN")}
+                  </span>
+                  <span className="px-2 py-0.5 rounded border border-line text-dimmer">
+                    {result.summary.lots} lot(s) × {result.summary.lot_size}
+                    {result.summary.costs_enabled ? "" : " — COSTS OFF (gross)"}
+                  </span>
+                </div>
+              )}
               <div className="mt-3 flex flex-wrap gap-2 text-[11px] font-mono">
                 {Object.entries(byMonth).sort().map(([m, v]) => (
                   <span key={m} className={`px-2 py-0.5 rounded border ${v.sum >= 0 ? "border-emerald-500/40 text-emerald-300" : "border-rose-500/40 text-rose-300"}`}>
@@ -333,6 +451,94 @@ export default function PremiumMomentum() {
               </div>
             </div>
           )}
+          {/* Tuner — honest grid search (train/test split; selects on TRAIN only) */}
+          <div className="rounded-lg border border-purple-500/30 bg-purple-500/5 p-3 space-y-2" data-testid="pm-tune-panel">
+            <div className="text-[10px] uppercase tracking-wider text-purple-400">
+              Tune (honest grid — costs required, selects on train, reports out-of-sample)
+            </div>
+            <div className="grid grid-cols-2 lg:grid-cols-5 gap-2">
+              <div>
+                <label className={labelCls}>Momentum % list</label>
+                <input value={cfg.tune_momentum} onChange={set("tune_momentum")} className={inputCls} data-testid="pm-tune-momentum" />
+              </div>
+              <div>
+                <label className={labelCls}>Stop % list</label>
+                <input value={cfg.tune_stop} onChange={set("tune_stop")} className={inputCls} data-testid="pm-tune-stop" />
+              </div>
+              <div>
+                <label className={labelCls}>Target % list ("none" ok)</label>
+                <input value={cfg.tune_target} onChange={set("tune_target")} className={inputCls} data-testid="pm-tune-target" />
+              </div>
+              <div>
+                <label className={labelCls}>Trail X pts list</label>
+                <input value={cfg.tune_trail_x} onChange={set("tune_trail_x")} className={inputCls} data-testid="pm-tune-trail-x" />
+              </div>
+              <div>
+                <label className={labelCls}>Train fraction</label>
+                <input value={cfg.train_frac} onChange={set("train_frac")} className={inputCls} data-testid="pm-train-frac" />
+              </div>
+            </div>
+            <button
+              onClick={runTune}
+              disabled={tuneBusy || !cfg.costs_enabled}
+              title={cfg.costs_enabled ? "" : "Tuning requires the cost model ON"}
+              className="inline-flex items-center gap-2 text-xs font-semibold px-3 py-1.5 rounded-md bg-purple-500/15 border border-purple-500/50 text-foreground disabled:opacity-50"
+              data-testid="pm-tune-btn"
+            >
+              {tuneBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
+              {tuneBusy ? "Tuning…" : "Run tune"}
+            </button>
+            {!cfg.costs_enabled && (
+              <div className="text-[10px] text-warning">Tuning requires the cost model ON — gross tuning finds edges smaller than the friction it ignores.</div>
+            )}
+            {tuneError && (
+              <div className="rounded-md border border-rose-900 bg-rose-950/50 p-2 text-[11px] text-rose-200 whitespace-pre-wrap" data-testid="pm-tune-error">
+                {String(tuneError)}
+              </div>
+            )}
+            {tuneResult && (
+              <div className="space-y-2" data-testid="pm-tune-results">
+                <div className="text-[11px] text-dimmer font-mono">
+                  split: train {tuneResult.split.train_sessions} sessions ({tuneResult.split.train_range?.join(" → ")}) ·
+                  test {tuneResult.split.test_sessions} ({tuneResult.split.test_range?.join(" → ")}) · {tuneResult.n_configs} configs
+                </div>
+                <div className="overflow-x-auto max-h-[340px] overflow-y-auto">
+                  <table className="w-full text-[11px] font-mono">
+                    <thead className="text-dimmer text-left">
+                      <tr>
+                        <th className="pr-3 py-1">#</th>
+                        <th className="pr-3">params</th>
+                        <th className="pr-3 text-right">train n</th>
+                        <th className="pr-3 text-right">train net</th>
+                        <th className="pr-3 text-right">test n</th>
+                        <th className="pr-3 text-right">test net (OOS)</th>
+                        <th>verdict</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {tuneResult.configs.map((c, i) => (
+                        <tr key={i} className="border-t border-line/50">
+                          <td className="pr-3 py-1">{i + 1}</td>
+                          <td className="pr-3">{Object.entries(c.params).map(([k, v]) => `${k}=${v == null ? "none" : v}`).join(" ")}</td>
+                          <td className="pr-3 text-right">{c.train.trades}</td>
+                          <td className={`pr-3 text-right ${c.train.net_pnl_pts >= 0 ? "text-emerald-300" : "text-rose-300"}`}>{c.train.net_pnl_pts.toFixed(1)}</td>
+                          <td className="pr-3 text-right">{c.test.trades}</td>
+                          <td className={`pr-3 text-right ${c.test.net_pnl_pts >= 0 ? "text-emerald-300" : "text-rose-300"}`}>{c.test.net_pnl_pts.toFixed(1)}</td>
+                          <td>
+                            {c.overfit_warning
+                              ? <span className="text-warning">⚠ overfit</span>
+                              : c.train.net_pnl_pts > 0 && c.test.net_pnl_pts > 0
+                                ? <span className="text-emerald-300">✓ holds OOS</span>
+                                : <span className="text-dimmer">—</span>}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </div>

@@ -313,3 +313,73 @@ def test_frontend_premium_momentum_page_is_wired():
     assert '<Route path="/premium-momentum"' in app
     layout = (fe / "components" / "Layout.jsx").read_text(encoding="utf-8")
     assert '"/premium-momentum"' in layout
+
+
+# ---------------------------------------------------------------------------
+# Phase 1.2 — cost model (reuses app.option_costs; nets must match the engine)
+# ---------------------------------------------------------------------------
+from app.option_costs import CostConfig, round_trip_charges, spread_pts_for_premium
+from app.premium_momentum import apply_costs_to_trade
+
+
+def _trade(entry=100.0, exit_=120.0):
+    return {"entered": True, "entry_premium": entry, "exit_premium": exit_,
+            "premium_pnl": round(exit_ - entry, 4), "exit_reason": "TARGET"}
+
+
+def test_apply_costs_spread_and_charges_match_engine_model():
+    # spread 2% of premium per SIDE convention = half per fill (mirrors
+    # live_friction.fill_premium): BUY 100 -> +1.0, SELL 120 -> -1.2
+    cfg = CostConfig.from_dict({"enabled": True, "spread_pct_of_premium": 2.0,
+                                "brokerage_per_order": 20.0})
+    out = apply_costs_to_trade(_trade(), cost_cfg=cfg, lot_size=65, lots=2)
+    assert out["entry_fill"] == 101.0     # 100 + spread(100)*2%/2
+    assert out["exit_fill"] == 118.8      # 120 - spread(120)*2%/2
+    qty = 65 * 2
+    charges = round_trip_charges(entry_premium=101.0, exit_premium=118.8,
+                                 quantity=qty, cfg=cfg)["total_charges"]
+    assert out["charges_rupees"] == charges                       # engine-identical
+    assert out["gross_pnl_rupees"] == round((118.8 - 101.0) * qty, 2)
+    assert out["net_pnl_rupees"] == round((118.8 - 101.0) * qty - charges, 2)
+    assert out["net_pnl_pts"] == round(out["net_pnl_rupees"] / qty, 4)
+    assert out["premium_pnl"] == 20.0     # gross mark P&L untouched
+
+
+def test_apply_costs_disabled_is_identity_plus_qty_fields():
+    cfg = CostConfig()                    # enabled=False default
+    t = _trade()
+    out = apply_costs_to_trade(t, cost_cfg=cfg, lot_size=65, lots=1)
+    assert out["entry_fill"] == 100.0 and out["exit_fill"] == 120.0
+    assert out["charges_rupees"] == 0.0
+    assert out["net_pnl_pts"] == 20.0     # equals gross when costs off
+
+
+def test_sim_applies_costs_when_configured():
+    spot = pd.DataFrame([
+        {"ts": 1, "ist_time": "09:31", "close": 24000.0, "session_date": "2026-07-10"},
+        {"ts": 2, "ist_time": "09:32", "close": 24000.0, "session_date": "2026-07-10"},
+        {"ts": 3, "ist_time": "09:33", "close": 24000.0, "session_date": "2026-07-10"},
+    ])
+    contracts = [{"instrument_key": "CE|23950", "strike": 23950, "side": "CE",
+                  "expiry_date": "2026-07-14"}]
+    opt = pd.DataFrame([
+        {"instrument_key": "CE|23950", "ts": 1, "close": 100.0},
+        {"instrument_key": "CE|23950", "ts": 2, "close": 120.0},
+        {"instrument_key": "CE|23950", "ts": 3, "close": 125.0},
+    ])
+    from app.premium_momentum_backtest import run_premium_momentum_backtest
+    out = run_premium_momentum_backtest(
+        spot_df=spot, option_candles=opt, contracts=contracts, instrument="NIFTY",
+        params={"reference_time": "09:31", "moneyness": "itm1", "side": "CE",
+                "momentum_pct": 15.0, "stop_pct": 50.0,
+                "lots": 2,
+                "cost_config": {"enabled": True, "spread_pct_of_premium": 2.0}})
+    assert len(out["trades"]) == 1
+    t = out["trades"][0]
+    assert t["entry_fill"] > t["entry_premium"]          # paid the ask
+    assert t["exit_fill"] < t["exit_premium"]            # received the bid
+    assert "net_pnl_rupees" in t and "charges_rupees" in t
+    s = out["summary"]
+    assert s["lot_size"] == 65 and s["lots"] == 2
+    assert s["net_pnl_rupees"] == t["net_pnl_rupees"]
+    assert s["costs_enabled"] is True

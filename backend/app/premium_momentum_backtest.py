@@ -13,9 +13,11 @@ from typing import Any, Dict, List
 
 import pandas as pd
 
+from app.instruments import UNDERLYING_META
+from app.option_costs import CostConfig
 from app.premium_momentum import (
-    lock_reference_strike, premium_ohlc_for_key, stepped_trail_stop,
-    walk_premium_momentum,
+    apply_costs_to_trade, lock_reference_strike, premium_ohlc_for_key,
+    stepped_trail_stop, walk_premium_momentum,
 )
 
 
@@ -56,6 +58,12 @@ def run_premium_momentum_backtest(*, spot_df: pd.DataFrame, option_candles: pd.D
     trail = None
     if trail_x is not None and trail_y is not None:
         trail = functools.partial(stepped_trail_stop, x=trail_x, y=trail_y)
+    # Cost model (Phase 1.2): the engine's option cost schedule, applied as a
+    # post-step on each trade's fills. Disabled ⇒ net == gross (fields always
+    # present so results are shape-stable and comparable).
+    cost_cfg = CostConfig.from_dict(params.get("cost_config"))
+    lots = max(1, int(params.get("lots") or 1))
+    lot_size = int(UNDERLYING_META.get(str(instrument).upper(), {}).get("lot_size", 1))
 
     trades: List[Dict[str, Any]] = []
     cov = {"sessions_total": 0, "sessions_traded": 0, "sessions_excluded": 0,
@@ -135,12 +143,21 @@ def run_premium_momentum_backtest(*, spot_df: pd.DataFrame, option_candles: pd.D
             cov["sessions_no_signal"] += 1
             continue
         side, locked, ref_premium, r = best
-        trades.append({
+        trade = {
             "session_date": str(session), "side": side, "strike": locked["strike"],
             "instrument_key": locked["instrument_key"], "moneyness": moneyness,
             "expiry_date": sess_expiry, "ref_premium": round(ref_premium, 4),
             **r,
-        })
+        }
+        trades.append(apply_costs_to_trade(trade, cost_cfg=cost_cfg,
+                                           lot_size=lot_size, lots=lots))
         cov["sessions_traded"] += 1
 
-    return {"trades": trades, "coverage": cov, "params": dict(params)}
+    summary = {
+        "lot_size": lot_size, "lots": lots, "costs_enabled": bool(cost_cfg.enabled),
+        "gross_pnl_pts": round(sum(t["premium_pnl"] for t in trades), 2),
+        "net_pnl_pts": round(sum(t["net_pnl_pts"] for t in trades), 2),
+        "net_pnl_rupees": round(sum(t["net_pnl_rupees"] for t in trades), 2),
+        "charges_rupees": round(sum(t["charges_rupees"] for t in trades), 2),
+    }
+    return {"trades": trades, "coverage": cov, "summary": summary, "params": dict(params)}
