@@ -44,7 +44,7 @@ from app.runtime import (
     live_candle_roller,
     live_exit_monitor,
     live_position_guard,
-    live_startup_recovery,
+    maybe_run_live_recovery,
     upstox_stream_manager,
 )
 
@@ -143,7 +143,7 @@ async def startup() -> None:
     # One-shot live recovery (non-blocking, best-effort): adopt orphaned orders
     # (resume_pending) + re-attach the software guard to open broker positions left
     # unwatched by a restart. Skips when the broker isn't connected.
-    asyncio.create_task(live_startup_recovery(), name="live-startup-recovery")
+    asyncio.create_task(maybe_run_live_recovery(), name="live-startup-recovery")
 
     # Background scheduler: evaluate ACTIVE deployments ~10s after each 1-minute bar closes.
     asyncio.create_task(_deployment_evaluator_loop(), name="deployment-evaluator")

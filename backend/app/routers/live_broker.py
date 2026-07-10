@@ -455,6 +455,16 @@ async def flattrade_auth_callback(
         if not jKey:
             return RedirectResponse(f"{frontend_url}?flattrade_error=missing_token_in_response")
         await save_token(DEFAULT_USER_ID, jKey=jKey, uid=uid, actid=actid)
+        # Fire live recovery NOW that a token exists — the boot-time run is SKIPPED
+        # when the PC boots before this daily login, so without this an overnight
+        # position stays unguarded + unreconciled + the auto-square timer un-armed.
+        # Non-blocking (broker reads take a moment); the redirect proceeds.
+        try:
+            from app import runtime as _rt
+            asyncio.create_task(_rt.maybe_run_live_recovery(force=True),
+                                name="live-recovery-oauth")
+        except Exception as exc:
+            log.warning("post-OAuth live recovery trigger failed: %s", exc)
         return RedirectResponse(f"{frontend_url}?flattrade_connected=1")
     except Exception as exc:
         log.exception("flattrade token exchange failed")
@@ -1380,13 +1390,29 @@ async def guard_status():
             "target_level": st.get("target_level"),
             "peak": st.get("peak"),
             "seen_filled": e.get("seen_filled"),
+            # source == "rehydrated" ⇒ re-attached after a restart with a DEEP-DEFAULT
+            # catastrophe stop (the original per-position levels were lost); the UI
+            # can flag "levels reset to default — re-set your stop/target".
+            "source": e.get("source"),
         })
+    rehydrated = sum(1 for g in guarded if g.get("source") == "rehydrated")
     return {
         "armed": armed,
         "mode": "ARMED — transmits real squares" if armed else "dry-run — logs intended squares, no transmit",
         "count": len(reg),
+        "rehydrated_count": rehydrated,
         "guarded": guarded,
     }
+
+
+@api.get("/live-broker/recovery-status")
+async def live_recovery_status_route():
+    """Did overnight-position recovery run for the CURRENT Flattrade token? Lets the
+    UI show a red strip while a live position exists but recovery hasn't succeeded
+    (boot-before-OAuth). ``succeeded`` flips true once resume_pending + guard
+    rehydrate + reboot reconcile + auto-square re-arm complete for the live token."""
+    from app import runtime as _rt
+    return _rt.live_recovery_status()
 
 
 # ---------------------------------------------------------------------------

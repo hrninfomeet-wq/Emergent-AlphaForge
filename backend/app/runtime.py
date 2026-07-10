@@ -307,6 +307,62 @@ async def live_startup_recovery() -> None:
                   res.get("relinked"), res.get("no_backstop"), res.get("status"))
     except Exception as exc:
         _log.warning("live startup recovery: reboot reconcile failed: %s", exc)
+    # (The old step 4 — re-arm the 10-min manual auto-square timer — is gone with
+    # the timer itself: a recovered manual position is protected by the rehydrated
+    # software guard stop + the 15:00 IST EOD square, like any other position.)
+
+
+# ---------------------------------------------------------------------------
+# Re-runnable live recovery — the boot-time run is SKIPPED when the PC boots
+# before the daily Flattrade OAuth, so recovery must also fire when a token first
+# appears (OAuth callback) and be retried by the supervisor. A per-token latch
+# runs it exactly once per token so overnight positions come back guarded +
+# reconciled regardless of boot order.
+# ---------------------------------------------------------------------------
+
+_live_recovery_state: Dict[str, Any] = {
+    "succeeded": False,
+    "token_fingerprint": None,
+    "last_attempt_at": None,
+    "last_result": None,
+}
+
+
+async def maybe_run_live_recovery(*, force: bool = False) -> Dict[str, Any]:
+    """Run ``live_startup_recovery`` IFF a Flattrade token is present and recovery
+    has not already succeeded for THIS token (fingerprinted by jKey). Idempotent
+    and safe to call from boot, the OAuth callback, and the supervisor. Never
+    raises."""
+    _log = logging.getLogger(__name__)
+    try:
+        doc = await _live_token_doc()
+    except Exception:
+        doc = None
+    jkey = (doc or {}).get("jKey")
+    if not jkey:
+        _live_recovery_state["last_result"] = "no_token"
+        return {"ran": False, "reason": "no_token"}
+    fp = str(jkey)[:12]  # short fingerprint — never store the whole session key
+    if (not force and _live_recovery_state["succeeded"]
+            and _live_recovery_state["token_fingerprint"] == fp):
+        return {"ran": False, "reason": "already_recovered"}
+    _live_recovery_state["last_attempt_at"] = datetime.now(timezone.utc).isoformat()
+    try:
+        await live_startup_recovery()
+        _live_recovery_state["succeeded"] = True
+        _live_recovery_state["token_fingerprint"] = fp
+        _live_recovery_state["last_result"] = "ok"
+        _log.info("live recovery: completed for token %s…", fp)
+        return {"ran": True, "reason": "ok"}
+    except Exception as exc:   # noqa: BLE001 — recovery must never take down the caller
+        _live_recovery_state["last_result"] = f"error: {str(exc)[:120]}"
+        _log.warning("live recovery: failed: %s", exc)
+        return {"ran": True, "reason": "error"}
+
+
+def live_recovery_status() -> Dict[str, Any]:
+    """Snapshot of the live-recovery latch (for /live-broker/recovery-status)."""
+    return dict(_live_recovery_state)
 
 
 # ---------------------------------------------------------------------------
@@ -500,6 +556,14 @@ async def _live_feed_supervisor_loop() -> None:
                 log.warning("exit-monitor reconcile failed: %s", exc)
             _feed_supervisor["last_actions"] = actions
             _feed_supervisor["last_tick_at"] = datetime.now(timezone.utc).isoformat()
+            # Retry live recovery until it succeeds for the current Flattrade token.
+            # This is what makes the boot-before-OAuth case recover: the boot run is
+            # skipped (no token yet), the OAuth callback fires it, and this backstops
+            # both. The per-token latch makes it a cheap no-op once done.
+            try:
+                await maybe_run_live_recovery()
+            except Exception as exc:   # noqa: BLE001 - never kill the supervisor
+                log.warning("live recovery (supervisor) failed: %s", exc)
         except Exception as exc:   # noqa: BLE001 - never kill the loop
             log.exception("live-feed supervisor tick failed: %s", exc)
 
