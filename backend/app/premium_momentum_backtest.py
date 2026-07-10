@@ -8,12 +8,14 @@ Coverage-gated: sessions whose locked strike lacks a premium series are excluded
 and counted, never mis-filled."""
 from __future__ import annotations
 
+import functools
 from typing import Any, Dict, List
 
 import pandas as pd
 
 from app.premium_momentum import (
-    lock_reference_strike, premium_series_for_key, walk_premium_momentum,
+    lock_reference_strike, premium_series_for_key, stepped_trail_stop,
+    walk_premium_momentum,
 )
 
 
@@ -38,6 +40,11 @@ def run_premium_momentum_backtest(*, spot_df: pd.DataFrame, option_candles: pd.D
     target_pts = params.get("target_pts")
     stop_pct = params.get("stop_pct")
     stop_pts = params.get("stop_pts")
+    trail_x = params.get("trail_x")
+    trail_y = params.get("trail_y")
+    trail = None
+    if trail_x is not None and trail_y is not None:
+        trail = functools.partial(stepped_trail_stop, x=trail_x, y=trail_y)
 
     trades: List[Dict[str, Any]] = []
     cov = {"sessions_total": 0, "sessions_traded": 0, "sessions_excluded": 0,
@@ -84,7 +91,7 @@ def run_premium_momentum_backtest(*, spot_df: pd.DataFrame, option_candles: pd.D
             r = walk_premium_momentum(ts=ts_arr, premium=prem_arr, ref_premium=ref_premium,
                                       entry_pct=entry_pct, entry_pts=entry_pts,
                                       target_pct=target_pct, target_pts=target_pts,
-                                      stop_pct=stop_pct, stop_pts=stop_pts)
+                                      stop_pct=stop_pct, stop_pts=stop_pts, trail=trail)
             if not r.get("entered"):
                 continue
             if best is None or r["entry_ts"] < best[3]["entry_ts"]:

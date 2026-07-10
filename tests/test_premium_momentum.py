@@ -135,3 +135,18 @@ def test_stepped_trail_ratchet_points():
 def test_stepped_trail_never_below_base():
     assert stepped_trail_stop(entry_premium=200.0, running_high=205.0,
                               base_stop=175.0, x=20.0, y=20.0) == 175.0
+
+
+def test_walk_with_stepped_trail_exits_at_ratcheted_stop():
+    import functools
+    trail = functools.partial(stepped_trail_stop, x=20.0, y=20.0)
+    # entry 235 (crosses 15% of 200=230 at 235). base stop 235*.9=211.5.
+    ts   = [1, 2, 3, 4, 5]
+    prem = [200, 235, 275, 255, 205]   # high 275 -> favorable 40 -> 2 steps -> stop 211.5+40=251.5;
+    #                                    255>251.5 holds, then 205<=251.5 -> STOP.
+    r = walk_premium_momentum(ts=ts, premium=prem, ref_premium=200.0, entry_pct=15.0,
+                              stop_pct=10.0, target_pct=100.0, trail=trail)
+    assert r["entered"] and r["exit_reason"] == "STOP"
+    # FILL CONVENTION: exit at the stop LEVEL (mirrors the spot engine's intrabar_exit),
+    # not the gapped bar premium. 211.5 base + floor(40/20)*20 = 251.5.
+    assert r["exit_premium"] == 251.5
