@@ -511,6 +511,49 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
             </div>
           )}
 
+          {/* RuleSet feasibility panel */}
+          {ruleSet && (
+            <div className={sectionCls} data-testid="ruleset-panel">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-xs font-semibold uppercase tracking-wider text-dim">Feasibility</span>
+                <span data-testid="ruleset-decision"
+                  className={`text-[10px] px-2 py-0.5 rounded-full border font-mono ${
+                    ruleSet.decision === "BUILD" ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+                    : ruleSet.decision === "ADVISE" ? "border-amber-500/30 bg-amber-500/10 text-warning"
+                    : ruleSet.decision === "ASK" ? "border-sky-500/30 bg-sky-500/10 text-sky-300"
+                    : "border-rose-500/30 bg-rose-500/10 text-rose-300"}`}>
+                  {ruleSet.decision}
+                </span>
+                <span className="text-[11px] text-dimmer">{ruleSet.summary}</span>
+              </div>
+              <div className="space-y-1">
+                {ruleSet.rules.map((r) => (
+                  <div key={r.id} className="flex items-start gap-2 text-[11px]" data-testid="ruleset-rule">
+                    <span className={`mt-0.5 w-2 h-2 rounded-full shrink-0 ${
+                      r.decision_class === "BUILDABLE_NOW" ? "bg-emerald-500"
+                      : r.decision_class === "BUILDABLE_WITH_FEATURE" ? (r.live_feasible === false ? "bg-amber-500" : "bg-emerald-500")
+                      : r.decision_class === "AMBIGUOUS" ? "bg-sky-500" : "bg-rose-500"}`} />
+                    <div className="min-w-0">
+                      <div className="text-foreground">{r.text} <span className="text-dimmer">· {r.kind}/{r.criticality}</span></div>
+                      <div className="text-dimmer">{r.question || r.message}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Install gate caveat note */}
+          {ruleSet && ruleSet.decision !== "BUILD" && (
+            <div className="text-[11px] text-warning" data-testid="install-gate-note">
+              {ruleSet.decision === "REJECT"
+                ? "Can't install — a core rule isn't buildable. See Feasibility above."
+                : ruleSet.decision === "ASK"
+                ? "Answer the clarifying question(s) above, then re-check."
+                : "Installing with caveats (some rules are backtest-only)."}
+            </div>
+          )}
+
           {/* Engine capabilities & limits — honest tiers, set expectations up front */}
           {showCaps && catalog?.capability && (() => {
             const cap = catalog.capability;
@@ -610,38 +653,6 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
         </div>
 
         {mode === "spec" && (<>
-
-        {/* RuleSet feasibility panel */}
-        {ruleSet && (
-          <div className={sectionCls} data-testid="ruleset-panel">
-            <div className="flex items-center gap-2 mb-2">
-              <span className="text-xs font-semibold uppercase tracking-wider text-dim">Feasibility</span>
-              <span data-testid="ruleset-decision"
-                className={`text-[10px] px-2 py-0.5 rounded-full border font-mono ${
-                  ruleSet.decision === "BUILD" ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
-                  : ruleSet.decision === "ADVISE" ? "border-amber-500/30 bg-amber-500/10 text-warning"
-                  : ruleSet.decision === "ASK" ? "border-sky-500/30 bg-sky-500/10 text-sky-300"
-                  : "border-rose-500/30 bg-rose-500/10 text-rose-300"}`}>
-                {ruleSet.decision}
-              </span>
-              <span className="text-[11px] text-dimmer">{ruleSet.summary}</span>
-            </div>
-            <div className="space-y-1">
-              {ruleSet.rules.map((r) => (
-                <div key={r.id} className="flex items-start gap-2 text-[11px]" data-testid="ruleset-rule">
-                  <span className={`mt-0.5 w-2 h-2 rounded-full shrink-0 ${
-                    r.decision_class === "BUILDABLE_NOW" ? "bg-emerald-500"
-                    : r.decision_class === "BUILDABLE_WITH_FEATURE" ? (r.live_feasible === false ? "bg-amber-500" : "bg-emerald-500")
-                    : r.decision_class === "AMBIGUOUS" ? "bg-sky-500" : "bg-rose-500"}`} />
-                  <div className="min-w-0">
-                    <div className="text-foreground">{r.text} <span className="text-dimmer">· {r.kind}/{r.criticality}</span></div>
-                    <div className="text-dimmer">{r.question || r.message}</div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
 
         {/* a. Identity */}
         <div className={sectionCls}>
@@ -835,17 +846,6 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
                 ))}
               </ul>
             )}
-          </div>
-        )}
-
-        {/* Install gate caveat note */}
-        {ruleSet && ruleSet.decision !== "BUILD" && (
-          <div className="text-[11px] text-warning" data-testid="install-gate-note">
-            {ruleSet.decision === "REJECT"
-              ? "Can't install — a core rule isn't buildable. See Feasibility above."
-              : ruleSet.decision === "ASK"
-              ? "Answer the clarifying question(s) above, then re-check."
-              : "Installing with caveats (some rules are backtest-only)."}
           </div>
         )}
 
