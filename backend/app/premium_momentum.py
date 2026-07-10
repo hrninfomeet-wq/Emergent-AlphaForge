@@ -130,3 +130,17 @@ def _exit(ts, entry_i, entry_premium, exit_i, exit_premium, reason) -> Dict[str,
         "premium_pnl": round(float(exit_premium) - float(entry_premium), 4),
         "bars_held": int(exit_i - entry_i),
     }
+
+
+def stepped_trail_stop(*, entry_premium: float, running_high: float,
+                       base_stop: float, x: float, y: float) -> float:
+    """AlgoTest discrete ratchet: for every X favorable move (premium above entry),
+    raise the stop by Y. stop = base_stop + floor(favorable / X) * Y. NOT a
+    continuous high-water-minus-offset trail. Never below base_stop."""
+    if x is None or x <= 0 or y is None or y <= 0:
+        return base_stop
+    favorable = float(running_high) - float(entry_premium)
+    if favorable < x:
+        return base_stop
+    steps = int(favorable // float(x))
+    return float(base_stop) + steps * float(y)

@@ -117,3 +117,21 @@ def test_walk_no_entry_when_never_crosses():
     r = walk_premium_momentum(ts=[1, 2, 3], premium=[200, 205, 210], ref_premium=200.0,
                               entry_pct=15.0, target_pct=20.0, stop_pct=20.0)
     assert r["entered"] is False
+
+
+from app.premium_momentum import stepped_trail_stop
+
+
+def test_stepped_trail_ratchet_points():
+    f = lambda high: stepped_trail_stop(entry_premium=200.0, running_high=high,
+                                        base_stop=175.0, x=20.0, y=20.0)
+    assert f(210.0) == 175.0   # < 1 full X step -> base stop
+    assert f(220.0) == 195.0   # 1 step: 175 + 1*20
+    assert f(239.0) == 195.0   # still 1 step
+    assert f(240.0) == 215.0   # 2 steps: 175 + 2*20
+    assert f(220.0) == 195.0   # monotonic within a call is by running_high, not path
+
+
+def test_stepped_trail_never_below_base():
+    assert stepped_trail_stop(entry_premium=200.0, running_high=205.0,
+                              base_stop=175.0, x=20.0, y=20.0) == 175.0
