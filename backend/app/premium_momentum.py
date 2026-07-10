@@ -93,24 +93,35 @@ def walk_premium_momentum(*, ts, premium, ref_premium: float,
                           target_pts: Optional[float] = None,
                           stop_pct: Optional[float] = None,
                           stop_pts: Optional[float] = None,
-                          trail=None, low=None, open_=None) -> Dict[str, Any]:
+                          trail=None, low=None, open_=None, high=None) -> Dict[str, Any]:
     """Walk a single locked strike's premium series (ascending ts):
     1. find the FIRST bar whose premium (close) crosses the momentum trigger -> ENTRY;
     2. from the next bar, exit on premium stop / target, else at EOD.
 
-    STOP fills are GAP-HONEST when the per-bar ``low`` and ``open_`` arrays are given
-    (the real backtest path passes them): the stop is TOUCHED intra-bar when the bar
-    LOW <= stop, and FILLED at ``min(stop, bar_open)`` — so a premium that gaps down
-    THROUGH the stop books the real (worse) fill, not the stop level. This is the
-    dominant tail risk for an option buyer, so it must not be flattered. When low/open
-    are omitted (simple unit fixtures / the legacy path), the stop falls back to a
-    close-touch fill at the stop level. Target stays conservative (close >= target,
-    fill at target). Look-ahead safe: never reads a future bar for the current
-    decision. ``trail`` is the Phase-2 stepped ratchet. Returns entered=False if the
+    INTRA-BAR HONEST EXITS when the per-bar ``low``/``open_``/``high`` arrays are
+    given (the real backtest path passes all three):
+      - STOP: touched when bar LOW <= stop, FILLED at ``min(stop, bar_open)`` — a
+        premium that gaps down THROUGH the stop books the real (worse) fill. This is
+        the option buyer's dominant tail risk and must not be flattered.
+      - TARGET: touched when bar HIGH >= target, FILLED at ``max(target, bar_open)``
+        — symmetric with the stop, so intra-bar winners are not silently dropped
+        (a close-only target undercounts wins and skews optimization pessimistic).
+      - Same-bar stop+target resolves STOP-FIRST (pessimistic), mirroring the spot
+        engine's intrabar_exit.
+    Without the OHLC arrays (simple fixtures / legacy path) both fall back to
+    close-touch, fill-at-level.
+
+    LOOK-AHEAD SAFETY: the trail's high-water mark is updated at the END of each
+    bar, so bar j's stop is ratcheted only by highs through bar j-1 — bar j's own
+    close can never raise the stop that governs bar j's low (adverse-first
+    pessimism inside the bar). An entry on the LAST bar is rejected (no bar left
+    to manage the exit — a zero-bar phantom trade must not be booked).
+    ``trail`` is the Phase-2 stepped ratchet. Returns entered=False if the
     momentum trigger never fired."""
     ts = list(ts); premium = [float(p) for p in premium]
     lo = [float(v) for v in low] if low is not None else None
     op = [float(v) for v in open_] if open_ is not None else None
+    hi = [float(v) for v in high] if high is not None else None
     n = len(premium)
     # --- entry: first cross ---
     entry_i = None
@@ -119,7 +130,9 @@ def walk_premium_momentum(*, ts, premium, ref_premium: float,
                               pct=entry_pct, pts=entry_pts):
             entry_i = i
             break
-    if entry_i is None:
+    if entry_i is None or entry_i == n - 1:
+        # No trigger, or triggered on the LAST bar (nothing left to manage — a
+        # zero-bar EOD "trade" would be phantom noise in the stats).
         return {"entered": False}
     entry_premium = premium[entry_i]
     base_stop = _stop_or_target_level(entry_premium, stop_pct, stop_pts, is_stop=True)
@@ -128,9 +141,10 @@ def walk_premium_momentum(*, ts, premium, ref_premium: float,
     # --- exit: from the bar AFTER entry (fill at entry bar's premium) ---
     for j in range(entry_i + 1, n):
         c = premium[j]
-        running_high = max(running_high, c)
         stop = base_stop
         if trail is not None and base_stop is not None:
+            # running_high is through bar j-1 (updated at loop END) — bar j's own
+            # close must never ratchet the stop applied to bar j's low.
             stop = trail(entry_premium=entry_premium, running_high=running_high,
                          base_stop=base_stop)
         # stop-first (pessimistic), mirroring the spot engine's intrabar_exit.
@@ -142,8 +156,15 @@ def walk_premium_momentum(*, ts, premium, ref_premium: float,
                 # gapped through it and fills worse; else fills at the stop.
                 fill = min(stop, op[j]) if op is not None else stop
                 return _exit(ts, entry_i, entry_premium, j, fill, "STOP")
-        if target is not None and c >= target:
-            return _exit(ts, entry_i, entry_premium, j, target, "TARGET")
+        if target is not None:
+            # touch: intra-bar HIGH when available (symmetric honesty), else close.
+            hit = (hi[j] >= target) if hi is not None else (c >= target)
+            if hit:
+                # fill: max(target, open) — a bar that OPENED above the target gapped
+                # up through it and fills better (the honest sell at the open).
+                fill = max(target, op[j]) if op is not None else target
+                return _exit(ts, entry_i, entry_premium, j, fill, "TARGET")
+        running_high = max(running_high, c)
     # EOD
     return _exit(ts, entry_i, entry_premium, n - 1, premium[n - 1], "EOD")
 
@@ -175,11 +196,14 @@ def stepped_trail_stop(*, entry_premium: float, running_high: float,
                        base_stop: float, x: float, y: float) -> float:
     """AlgoTest discrete ratchet: for every X favorable move (premium above entry),
     raise the stop by Y. stop = base_stop + floor(favorable / X) * Y. NOT a
-    continuous high-water-minus-offset trail. Never below base_stop."""
+    continuous high-water-minus-offset trail. Never below base_stop, and never
+    ABOVE the traded high-water mark — an aggressive Y > X config must not place
+    the stop at a price the premium never printed (which would force a same-bar
+    exit at a phantom level)."""
     if x is None or x <= 0 or y is None or y <= 0:
         return base_stop
     favorable = float(running_high) - float(entry_premium)
     if favorable < x:
         return base_stop
     steps = int(favorable // float(x))
-    return float(base_stop) + steps * float(y)
+    return min(float(base_stop) + steps * float(y), float(running_high))

@@ -203,3 +203,84 @@ def test_walk_close_only_stop_is_legacy_fill_at_level():
     r = walk_premium_momentum(ts=[1, 2, 3], premium=[200, 235, 180], ref_premium=200.0,
                               entry_pct=15.0, stop_pct=20.0, target_pct=100.0)
     assert r["entered"] and r["exit_reason"] == "STOP" and r["exit_premium"] == 188.0
+
+
+# ---------------------------------------------------------------------------
+# Adversarial-review regression tests (red-team confirmed findings)
+# ---------------------------------------------------------------------------
+def test_trail_no_intrabar_lookahead_on_reversal_bar():
+    # HIGH finding: a wide-range REVERSAL bar (drops through the base stop, then
+    # rallies to a big close) must exit at the BASE stop — bar j's own close must
+    # NEVER ratchet the stop that governs bar j's low. Old (buggy) code booked 210
+    # here (close 260 ratcheted the stop to 220 before testing low 150).
+    import functools
+    trail = functools.partial(stepped_trail_stop, x=20.0, y=20.0)
+    ts    = [1, 2, 3]
+    close = [170, 200, 260]
+    low   = [170, 200, 150]
+    open_ = [170, 200, 210]
+    high  = [170, 200, 260]
+    # ref 170, +15% => trigger 195.5 -> entry at close 200 (idx1). stop_pct 20 -> base 160.
+    r = walk_premium_momentum(ts=ts, premium=close, low=low, open_=open_, high=high,
+                              ref_premium=170.0, entry_pct=15.0, stop_pct=20.0,
+                              target_pct=100.0, trail=trail)
+    assert r["entered"] and r["exit_reason"] == "STOP"
+    assert r["exit_premium"] == 160.0   # base stop — NOT 210 (look-ahead ratchet)
+
+
+def test_target_intrabar_touch_on_high():
+    # MEDIUM finding: a bar whose HIGH pierces the target but whose close falls
+    # back must still book the win (symmetric with the intra-bar stop touch).
+    ts    = [1, 2, 3]
+    close = [200, 235, 255]
+    low   = [200, 235, 250]
+    open_ = [200, 235, 250]
+    high  = [200, 235, 285]   # target 235*1.2 = 282 -> high 285 pierces it
+    r = walk_premium_momentum(ts=ts, premium=close, low=low, open_=open_, high=high,
+                              ref_premium=200.0, entry_pct=15.0, stop_pct=20.0,
+                              target_pct=20.0)
+    assert r["entered"] and r["exit_reason"] == "TARGET"
+    assert r["exit_premium"] == 282.0   # fill at target level (opened below it)
+
+
+def test_target_gap_up_fills_at_open():
+    # Gap-UP through the target fills at the open (the honest better fill).
+    ts    = [1, 2, 3]
+    close = [200, 235, 300]
+    low   = [200, 235, 290]
+    open_ = [200, 235, 295]   # opens ABOVE the 282 target
+    high  = [200, 235, 305]
+    r = walk_premium_momentum(ts=ts, premium=close, low=low, open_=open_, high=high,
+                              ref_premium=200.0, entry_pct=15.0, stop_pct=20.0,
+                              target_pct=20.0)
+    assert r["entered"] and r["exit_reason"] == "TARGET"
+    assert r["exit_premium"] == 295.0   # max(282 target, 295 open)
+
+
+def test_same_bar_stop_and_target_resolves_stop_first():
+    # Wide-range bar touches BOTH levels -> pessimistic stop-first.
+    ts    = [1, 2, 3]
+    close = [200, 235, 240]
+    low   = [200, 235, 180]   # touches 188 stop
+    open_ = [200, 235, 240]
+    high  = [200, 235, 290]   # also pierces 282 target
+    r = walk_premium_momentum(ts=ts, premium=close, low=low, open_=open_, high=high,
+                              ref_premium=200.0, entry_pct=15.0, stop_pct=20.0,
+                              target_pct=20.0)
+    assert r["entered"] and r["exit_reason"] == "STOP"
+
+
+def test_entry_on_last_bar_is_rejected():
+    # LOW finding: a trigger on the final bar has no bar left to manage — a
+    # zero-bar phantom "trade" must not be booked.
+    r = walk_premium_momentum(ts=[1, 2], premium=[200, 235], ref_premium=200.0,
+                              entry_pct=15.0, stop_pct=20.0, target_pct=20.0)
+    assert r["entered"] is False
+
+
+def test_stepped_trail_capped_at_traded_high():
+    # Hardening: an aggressive Y >> X must not place the stop above prices that
+    # ever traded (stop capped at the high-water mark).
+    got = stepped_trail_stop(entry_premium=200.0, running_high=260.0,
+                             base_stop=160.0, x=20.0, y=100.0)
+    assert got == 260.0   # min(160 + 3*100, 260) — capped, not 460

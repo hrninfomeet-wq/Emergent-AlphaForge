@@ -92,7 +92,7 @@ def run_premium_momentum_backtest(*, spot_df: pd.DataFrame, option_candles: pd.D
                                       entry_pct=entry_pct, entry_pts=entry_pts,
                                       target_pct=target_pct, target_pts=target_pts,
                                       stop_pct=stop_pct, stop_pts=stop_pts, trail=trail,
-                                      low=oh["low"], open_=oh["open"])
+                                      low=oh["low"], open_=oh["open"], high=oh["high"])
             if not r.get("entered"):
                 continue
             if best is None or r["entry_ts"] < best[3]["entry_ts"]:
