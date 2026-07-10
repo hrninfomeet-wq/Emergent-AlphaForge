@@ -28,6 +28,17 @@ def _sides_for(param: str) -> List[str]:
     return ["CE", "PE"]
 
 
+def expiry_for_session(session_date: str, expiries_sorted: List[str]) -> str | None:
+    """Nearest expiry ON/AFTER the session date — the blueprint's 'current weekly'
+    (includes the expiry day itself, i.e. 0-DTE on Tuesdays for NIFTY). None when
+    no expiry covers the session (surfaced as a coverage exclusion, never a silent
+    fallback to a dead contract)."""
+    for e in expiries_sorted:
+        if e >= session_date:
+            return e
+    return None
+
+
 def run_premium_momentum_backtest(*, spot_df: pd.DataFrame, option_candles: pd.DataFrame,
                                   contracts: List[Dict[str, Any]], instrument: str,
                                   params: Dict[str, Any]) -> Dict[str, Any]:
@@ -50,6 +61,12 @@ def run_premium_momentum_backtest(*, spot_df: pd.DataFrame, option_candles: pd.D
     cov = {"sessions_total": 0, "sessions_traded": 0, "sessions_excluded": 0,
            "sessions_no_signal": 0, "exclude_reasons": {}}
 
+    # Per-session expiry resolution (the blueprint's "current weekly"): when the
+    # contract universe carries expiry metadata, each session trades the nearest
+    # expiry on/after ITS OWN date — a multi-week window must never pair every
+    # session against the window's FIRST week (dead contracts, collapsed sample).
+    expiries_sorted = sorted({str(c.get("expiry_date")) for c in contracts if c.get("expiry_date")})
+
     for session, sdf in spot_df.groupby("session_date"):
         cov["sessions_total"] += 1
         sdf = sdf.sort_values("ts")
@@ -61,19 +78,36 @@ def run_premium_momentum_backtest(*, spot_df: pd.DataFrame, option_candles: pd.D
         ref_row = ref_rows.iloc[0]
         spot_at_ref = float(ref_row["close"])
         ref_ts = int(ref_row["ts"])
+        session_end_ts = int(sdf["ts"].max())
 
-        # Lock each side's strike + get its OHLC premium series FROM the reference bar on.
+        # This session's contract set: nearest weekly expiry >= session date.
+        # No expiry metadata at all (simple fixtures) => permissive full set,
+        # mirroring option_backtest's convention.
+        sess_expiry = None
+        sess_contracts = contracts
+        if expiries_sorted:
+            sess_expiry = expiry_for_session(str(session), expiries_sorted)
+            if sess_expiry is None:
+                cov["sessions_excluded"] += 1
+                cov["exclude_reasons"]["no_expiry"] = cov["exclude_reasons"].get("no_expiry", 0) + 1
+                continue
+            sess_contracts = [c for c in contracts if str(c.get("expiry_date")) == sess_expiry]
+
+        # Lock each side's strike + get its OHLC premium series bounded to THIS
+        # SESSION (reference bar -> session end). Without the session-end bound a
+        # locked key's next-day candles would leak in and the walk would "EOD"-exit
+        # on the wrong day (intraday strategy = same-day square-off).
         candidates = []          # (side, locked, ohlc dict of arrays)
         excluded = False
         for side in sides:
-            locked = lock_reference_strike(contracts=contracts, underlying=instrument,
+            locked = lock_reference_strike(contracts=sess_contracts, underlying=instrument,
                                            spot_at_ref=spot_at_ref, side=side, moneyness=moneyness)
             if not locked:
                 excluded = True
                 cov["exclude_reasons"]["no_contract"] = cov["exclude_reasons"].get("no_contract", 0) + 1
                 break
             oh = premium_ohlc_for_key(option_candles, locked["instrument_key"])
-            mask = oh["ts"] >= ref_ts
+            mask = (oh["ts"] >= ref_ts) & (oh["ts"] <= session_end_ts)
             oh = {k: v[mask] for k, v in oh.items()}
             if len(oh["close"]) == 0:
                 excluded = True
@@ -104,7 +138,7 @@ def run_premium_momentum_backtest(*, spot_df: pd.DataFrame, option_candles: pd.D
         trades.append({
             "session_date": str(session), "side": side, "strike": locked["strike"],
             "instrument_key": locked["instrument_key"], "moneyness": moneyness,
-            "ref_premium": round(ref_premium, 4),
+            "expiry_date": sess_expiry, "ref_premium": round(ref_premium, 4),
             **r,
         })
         cov["sessions_traded"] += 1

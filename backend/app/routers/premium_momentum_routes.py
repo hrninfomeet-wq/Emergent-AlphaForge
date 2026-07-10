@@ -26,7 +26,9 @@ from pydantic import BaseModel, Field
 
 from app.db import get_db
 from app.premium_momentum import lock_reference_strike
-from app.premium_momentum_backtest import _sides_for, run_premium_momentum_backtest
+from app.premium_momentum_backtest import (
+    _sides_for, expiry_for_session, run_premium_momentum_backtest,
+)
 from app.runtime import OPTION_CANDLE_LOAD_CAP
 from app.warehouse import load_candles_df
 
@@ -78,13 +80,16 @@ async def premium_momentum_backtest(req: PremiumMomentumBacktestReq) -> Dict[str
     spot_df["session_date"] = _dt.dt.strftime("%Y-%m-%d")
     spot_df["ist_time"] = _dt.dt.strftime("%H:%M")
 
-    # 2) The chosen weekly expiry: nearest expiry ON/AFTER the first session date
-    #    (same "next available expiry" policy the paired-option backtest uses).
-    #    A single expiry keeps each (strike, side) unique so the sim's lock is
-    #    unambiguous across the window.
+    # 2) Contracts for the window: every expiry from the first session up to a
+    #    little past the last (each SESSION resolves its own nearest weekly expiry
+    #    inside the sim — the blueprint's "current weekly" — so a multi-week window
+    #    must carry every week's contracts, not just the first week's).
     first_session = str(spot_df["session_date"].min())
+    last_session = str(spot_df["session_date"].max())
+    expiry_ceiling = (pd.Timestamp(last_session) + pd.Timedelta(days=14)).strftime("%Y-%m-%d")
     contracts = await db.option_contracts.find(
-        {"underlying": instrument, "expiry_date": {"$gte": first_session}},
+        {"underlying": instrument,
+         "expiry_date": {"$gte": first_session, "$lte": expiry_ceiling}},
         {"_id": 0},
     ).sort([("expiry_date", 1), ("strike", 1), ("side", 1)]).to_list(length=None)
     expiries = sorted({str(c.get("expiry_date")) for c in contracts if c.get("expiry_date")})
@@ -93,23 +98,26 @@ async def premium_momentum_backtest(req: PremiumMomentumBacktestReq) -> Dict[str
             spot_df=spot_df, option_candles=pd.DataFrame(), contracts=[],
             instrument=instrument, params=params,
         ))
-    chosen_expiry = expiries[0]
-    contracts = [c for c in contracts if str(c.get("expiry_date")) == chosen_expiry]
 
     # 3) Pre-lock each session's reference-time strikes (per side) to learn which
     #    instrument_keys the sim will trade, so we can pull their candles. Uses
-    #    the SAME lock helper as the sim -> the keys agree exactly.
+    #    the SAME lock helper AND the SAME per-session expiry resolution as the
+    #    sim -> the keys agree exactly.
     ref_time = str(params.get("reference_time") or "09:31")
     moneyness = str(params.get("moneyness") or "itm1")
     sides = _sides_for(params.get("side"))
     locked_keys: set[str] = set()
-    for _session, sdf in spot_df.groupby("session_date"):
+    for session, sdf in spot_df.groupby("session_date"):
         ref_rows = sdf[sdf["ist_time"] >= ref_time].sort_values("ts")
         if ref_rows.empty:
             continue
+        sess_expiry = expiry_for_session(str(session), expiries)
+        if sess_expiry is None:
+            continue
+        sess_contracts = [c for c in contracts if str(c.get("expiry_date")) == sess_expiry]
         spot_at_ref = float(ref_rows.iloc[0]["close"])
         for side in sides:
-            locked = lock_reference_strike(contracts=contracts, underlying=instrument,
+            locked = lock_reference_strike(contracts=sess_contracts, underlying=instrument,
                                            spot_at_ref=spot_at_ref, side=side, moneyness=moneyness)
             if locked:
                 locked_keys.add(str(locked["instrument_key"]))
