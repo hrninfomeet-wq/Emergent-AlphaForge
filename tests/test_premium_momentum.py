@@ -284,3 +284,18 @@ def test_stepped_trail_capped_at_traded_high():
     got = stepped_trail_stop(entry_premium=200.0, running_high=260.0,
                              base_stop=160.0, x=20.0, y=100.0)
     assert got == 260.0   # min(160 + 3*100, 260) — capped, not 460
+
+
+def test_premium_lookup_canonicalizes_dated_metadata_keys():
+    # Expired-contract metadata keys are DATED 3-part (NSE_FO|42390|10-02-2026)
+    # while options_1m stores plain 2-part keys. The lookup must canonicalize or
+    # every past-expiry session silently reads "no premium series" (this exactly
+    # reproduced as 92/127 sessions excluded in the first real backtest run).
+    candles = pd.DataFrame([
+        {"instrument_key": "NSE_FO|42390", "ts": 1, "close": 100.0},
+        {"instrument_key": "NSE_FO|42390", "ts": 2, "close": 110.0},
+    ])
+    ts, prem = premium_series_for_key(candles, "NSE_FO|42390|10-02-2026")
+    assert list(prem) == [100.0, 110.0]
+    oh = premium_ohlc_for_key(candles, "NSE_FO|42390|10-02-2026")
+    assert list(oh["close"]) == [100.0, 110.0]

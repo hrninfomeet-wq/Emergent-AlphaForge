@@ -25,6 +25,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
 from app.db import get_db
+from app.instruments import canonical_instrument_key
 from app.premium_momentum import lock_reference_strike
 from app.premium_momentum_backtest import (
     _sides_for, expiry_for_session, run_premium_momentum_backtest,
@@ -124,11 +125,14 @@ async def premium_momentum_backtest(req: PremiumMomentumBacktestReq) -> Dict[str
 
     # 4) Full-day options_1m for the locked strikes across the whole window
     #    (non-trade-driven: the entire session series, not a trade-bounded slice).
-    #    Query by the exact locked keys so the sim's exact-match lock finds them.
+    #    Candles are stored under CANONICAL 2-part keys while expired-contract
+    #    metadata carries dated 3-part keys — query canonical or find nothing for
+    #    any past expiry (root cause #3; the sim canonicalizes at lookup too).
     option_rows: List[Dict[str, Any]] = []
     if locked_keys:
+        canon_keys = sorted({canonical_instrument_key(k) for k in locked_keys})
         option_rows = await db.options_1m.find(
-            {"instrument_key": {"$in": sorted(locked_keys)},
+            {"instrument_key": {"$in": canon_keys},
              "ts": {"$gte": int(req.start_ts), "$lte": int(req.end_ts)}},
             {"_id": 0},
         ).sort("ts", 1).to_list(length=OPTION_CANDLE_LOAD_CAP)

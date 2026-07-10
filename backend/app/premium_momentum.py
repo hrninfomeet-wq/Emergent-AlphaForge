@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
+from app.instruments import canonical_instrument_key
 from app.options_universe import select_contract_for_signal
 
 
@@ -41,10 +42,14 @@ def lock_reference_strike(*, contracts: List[Dict[str, Any]], underlying: str,
 def premium_series_for_key(option_candles: pd.DataFrame,
                            instrument_key: str) -> Tuple[np.ndarray, np.ndarray]:
     """(ts[], premium[]) for one instrument_key, ascending by ts. premium = close.
-    Empty arrays when the key is absent."""
+    The key is CANONICALIZED before matching (candles are stored under the plain
+    2-part SEGMENT|TOKEN form, while expired-contract metadata carries dated 3-part
+    keys — an exact raw match silently finds nothing for any past expiry; root
+    cause #3 in option_backtest). Empty arrays when the key is absent."""
     if option_candles is None or option_candles.empty:
         return np.array([], dtype="int64"), np.array([], dtype="float64")
-    sub = option_candles[option_candles["instrument_key"] == instrument_key]
+    key = canonical_instrument_key(instrument_key)
+    sub = option_candles[option_candles["instrument_key"] == key]
     if sub.empty:
         return np.array([], dtype="int64"), np.array([], dtype="float64")
     sub = sub.sort_values("ts")
@@ -56,12 +61,13 @@ def premium_ohlc_for_key(option_candles: pd.DataFrame,
     """{ts, open, high, low, close} arrays for one instrument_key, ascending by ts.
     close = premium (the momentum/target basis); low/open drive GAP-HONEST stop
     fills. Missing o/h/l columns fall back to close (so close-only fixtures still
-    behave). Empty arrays when the key is absent."""
+    behave). The key is CANONICALIZED before matching (dated metadata keys vs
+    plain candle keys — see premium_series_for_key). Empty arrays when absent."""
     empty = np.array([], dtype="float64")
     blank = {"ts": np.array([], dtype="int64"), "open": empty, "high": empty, "low": empty, "close": empty}
     if option_candles is None or option_candles.empty:
         return blank
-    sub = option_candles[option_candles["instrument_key"] == instrument_key]
+    sub = option_candles[option_candles["instrument_key"] == canonical_instrument_key(instrument_key)]
     if sub.empty:
         return blank
     sub = sub.sort_values("ts")
