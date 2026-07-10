@@ -55,6 +55,8 @@ def momentum_triggered(*, premium_now: float, ref_premium: float,
                        pct: Optional[float] = None, pts: Optional[float] = None) -> bool:
     """True once premium_now has risen to/above the momentum trigger from ref.
     Exactly one of pct (% of ref) or pts (absolute premium points) is used."""
+    if pct is not None and pts is not None:
+        raise ValueError("momentum_triggered: pass exactly one of pct or pts, not both")
     if ref_premium is None or ref_premium <= 0:
         return False
     if pct is not None:
@@ -91,8 +93,8 @@ def walk_premium_momentum(*, ts, premium, ref_premium: float,
     if entry_i is None:
         return {"entered": False}
     entry_premium = premium[entry_i]
-    base_stop = _level(entry_premium, stop_pct, stop_pts, is_stop=True)
-    target = _level(entry_premium, target_pct, target_pts, is_stop=False)
+    base_stop = _stop_or_target_level(entry_premium, stop_pct, stop_pts, is_stop=True)
+    target = _stop_or_target_level(entry_premium, target_pct, target_pts, is_stop=False)
     running_high = entry_premium
     # --- exit: from the bar AFTER entry (fill at entry bar's premium) ---
     for j in range(entry_i + 1, n):
@@ -111,7 +113,7 @@ def walk_premium_momentum(*, ts, premium, ref_premium: float,
     return _exit(ts, entry_i, entry_premium, n - 1, premium[n - 1], "EOD")
 
 
-def _level(entry: float, pct: Optional[float], pts: Optional[float], *, is_stop: bool):
+def _stop_or_target_level(entry: float, pct: Optional[float], pts: Optional[float], *, is_stop: bool):
     if pct is not None:
         return entry * (1.0 - pct / 100.0) if is_stop else entry * (1.0 + pct / 100.0)
     if pts is not None:

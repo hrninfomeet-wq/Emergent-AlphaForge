@@ -58,28 +58,59 @@ def test_momentum_triggered_pct_and_pts():
     assert momentum_triggered(premium_now=209.9, ref_premium=200.0, pts=10.0) is False
 
 
-def test_walk_enters_on_first_cross_then_targets():
-    # ref 200; +15% => enter at >=230. target +20% (from entry) => 276, stop -20% => 220.8
+def test_momentum_triggered_rejects_both_pct_and_pts():
+    # Ambiguous config must fail loudly, not silently prefer pct.
+    import pytest
+    with pytest.raises(ValueError):
+        momentum_triggered(premium_now=230.0, ref_premium=200.0, pct=15.0, pts=10.0)
+
+
+def test_walk_enters_on_first_cross_then_eod_when_target_not_reached():
+    # ref 200; +15% => enter at >=230. target +20% (from entry) => 282, stop -20% => 188.
     ts   = [1, 2, 3, 4, 5, 6]
-    prem = [200, 220, 235, 250, 280, 260]  # crosses 230 at idx2 (235), target 235*1.2=282 not hit til? 280<282,
-    #                                        280 at idx4; 235*1.2=282 -> not hit; but +20% target uses entry=235
+    prem = [200, 220, 235, 250, 280, 260]  # crosses 230 at idx2 (235); 280<282 so target never hit
     r = walk_premium_momentum(ts=ts, premium=prem, ref_premium=200.0,
                               entry_pct=15.0, target_pct=20.0, stop_pct=20.0)
     assert r["entered"] is True
     assert r["entry_ts"] == 3 and r["entry_premium"] == 235.0
-    # stop = 235*0.8 = 188 (never hit); target = 235*1.2 = 282 (never hit) -> TIME/EOD exit at last bar
-    assert r["exit_reason"] in ("EOD", "TIME_EXIT")
-    assert r["exit_premium"] == 260.0
+    # stop = 235*0.8 = 188 (never hit); target = 235*1.2 = 282 (never hit) -> EOD at last bar
+    assert r["exit_reason"] == "EOD"
+    assert r["exit_premium"] == 260.0   # EOD fills at the bar premium, not a stop/target level
 
 
-def test_walk_stop_hit_before_target():
+def test_walk_eod_when_stop_not_reached():
     ts   = [1, 2, 3, 4]
-    prem = [200, 235, 200, 190]  # enter 235 at idx1; stop = 235*0.8=188; idx3 190>188 not hit; idx? 190>188
+    prem = [200, 235, 200, 190]  # enter 235 at idx1; stop = 235*0.8=188; low 190 > 188 -> never hit
     r = walk_premium_momentum(ts=ts, premium=prem, ref_premium=200.0,
                               entry_pct=15.0, target_pct=50.0, stop_pct=20.0)
     assert r["entered"] is True and r["entry_premium"] == 235.0
-    # lowest is 190, stop is 188 -> not hit -> EOD at 190
+    # lowest is 190, stop is 188 -> not hit -> EOD at 190 (the bar premium)
+    assert r["exit_reason"] == "EOD"
     assert r["exit_premium"] == 190.0
+
+
+def test_walk_stop_fills_at_stop_level():
+    # ref 200; +15% => enter at >=230 (idx1 = 235). stop -20% from entry => 188.
+    ts   = [1, 2, 3, 4]
+    prem = [200, 235, 210, 185]  # idx3 185 <= 188 -> STOP; fill at the 188 LEVEL, not the 185 bar
+    r = walk_premium_momentum(ts=ts, premium=prem, ref_premium=200.0,
+                              entry_pct=15.0, target_pct=50.0, stop_pct=20.0)
+    assert r["entered"] is True and r["entry_premium"] == 235.0
+    assert r["exit_reason"] == "STOP"
+    assert r["exit_ts"] == 4
+    assert r["exit_premium"] == 188.0   # the stop LEVEL (fill convention), NOT the 185 bar premium
+
+
+def test_walk_target_fills_at_target_level():
+    # ref 200; +15% => enter at >=230 (idx1 = 235). target +20% from entry => 282.
+    ts   = [1, 2, 3, 4]
+    prem = [200, 235, 250, 300]  # idx3 300 >= 282 -> TARGET; fill at the 282 LEVEL, not the 300 bar
+    r = walk_premium_momentum(ts=ts, premium=prem, ref_premium=200.0,
+                              entry_pct=15.0, target_pct=20.0, stop_pct=20.0)
+    assert r["entered"] is True and r["entry_premium"] == 235.0
+    assert r["exit_reason"] == "TARGET"
+    assert r["exit_ts"] == 4
+    assert r["exit_premium"] == 282.0   # the target LEVEL (fill convention), NOT the 300 bar premium
 
 
 def test_walk_no_entry_when_never_crosses():
