@@ -52,6 +52,12 @@ async def ensure_indexes() -> None:
         name="signals_deployment_bar_unique",
         partialFilterExpression={"deployment_id": {"$exists": True, "$type": "string"}},
     )
+    # Track B: one premium-momentum session lock per deployment per IST day.
+    # create-once semantics — a racing second insert hits E11000 and ADOPTS.
+    await db.premium_locks.create_index(
+        [("deployment_id", 1), ("session_date", 1)], unique=True,
+        name="uniq_premium_lock_per_session",
+    )
     await db.strategy_deployments.create_index([("created_at", -1)])
     await db.strategy_deployments.create_index([("status", 1), ("updated_at", -1)])
     await db.strategy_deployments.create_index([("source_type", 1), ("source_id", 1)])
