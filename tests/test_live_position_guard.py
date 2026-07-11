@@ -243,10 +243,12 @@ class TestGuardCycle:
         assert "reconnect Flattrade" in (g.status().get("last_error") or "")
 
     def test_pending_fill_not_dropped_during_grace(self):
-        # a just-armed position not yet in the book must NOT be dropped (async fill)
+        # a just-armed position not yet in a KNOWN book must NOT be dropped (async
+        # fill). The book is non-empty (another scrip) so the read is KNOWN — an
+        # EMPTY book is UNKNOWN and must not advance the age-out counter at all.
         r = LiveMonitorRegistry()
         _registered(r)
-        client = _FakeClient([])  # not filled yet
+        client = _FakeClient([_pos(netqty=10, lp=50.0, tsym="OTHERSCRIP")])
         rec = _Recorder()
         g = _guard(r, client, rec)
         run(g._cycle())
@@ -254,19 +256,34 @@ class TestGuardCycle:
         assert len(r) == 1            # kept — still pending its fill
         assert r.get("ORD1")["misses"] == 1
 
-    def test_never_filled_dropped_after_grace(self):
-        # a rejected/never-filling entry is cleaned up after the grace window
+    def test_pending_fill_unknown_book_does_not_age(self):
+        # An EMPTY ([]) book is UNKNOWN — it says nothing about the pending fill,
+        # so 60s of broker blips must not age out a perfectly pending entry.
         r = LiveMonitorRegistry()
         _registered(r)
-        client = _FakeClient([])
+        client = _FakeClient([])      # UNKNOWN book
+        rec = _Recorder()
+        g = _guard(r, client, rec)
+        for _ in range(5):
+            run(g._cycle())
+        assert len(r) == 1
+        assert r.get("ORD1")["misses"] == 0   # counter never advanced
+
+    def test_never_filled_dropped_after_grace(self):
+        # never-filling entry ages out after max_pending_misses KNOWN-book reads
+        # (the book carries another scrip, so each read is authenticated-known).
+        r = LiveMonitorRegistry()
+        _registered(r)
+        client = _FakeClient([_pos(netqty=10, lp=50.0, tsym="OTHERSCRIP")])
         rec = _Recorder()
         g = LivePositionGuard(registry=r, client_factory=lambda: _aw(client),
                               square_fn=rec.square_fn, max_pending_misses=3,
-                              now_fn=lambda: _NOW)  # pre-EOD: isolate the grace-window path
-        for _ in range(3):
-            run(g._cycle())
+                              now_fn=lambda: _NOW)
+        run(g._cycle()); run(g._cycle())
+        assert len(r) == 1            # inside the grace window
+        run(g._cycle())
+        assert len(r) == 0            # aged out (rejected/canceled entry)
         assert rec.squared == []
-        assert len(r) == 0            # dropped after 3 misses
 
     def test_stale_lp_never_squares(self):
         r = LiveMonitorRegistry()

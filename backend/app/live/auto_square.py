@@ -194,6 +194,32 @@ def _marketable_prc(ref: float, trantype: str, band_pct: float, tick: float = 0.
         return round_to_tick(ref * (1.0 + eff / 100.0), _tick, mode="up")
 
 
+async def _fresh_book_state(client: Any, tsym: str) -> tuple:
+    """One fresh position-book read for *tsym*, classified tri-state:
+
+      ``("flat", 0)``        — a KNOWN (non-empty) book whose row for tsym is
+                               absent or parses to netqty 0: the position is gone.
+      ``("live", n)``        — a parsed non-zero netqty n (the current truth).
+      ``("unknown", None)``  — the read raised, the book is empty/non-list, or the
+                               row is present with an UNPARSEABLE netqty. UNKNOWN
+                               must never be coerced to flat (no false
+                               already_flat) nor used to resize an exit.
+    """
+    try:
+        book = await client.position_book()
+    except Exception:
+        return ("unknown", None)
+    if not (isinstance(book, list) and book):
+        return ("unknown", None)
+    for row in book:
+        if str(row.get("tsym", "")) == str(tsym):
+            n = _parse_netqty(row.get("netqty"))
+            if n is None:
+                return ("unknown", None)  # present but garbage — per _parse_netqty's contract
+            return ("flat", 0) if n == 0 else ("live", n)
+    return ("flat", 0)  # absent from a complete non-empty book
+
+
 async def _cancel_all_working_for_scrip(
     client: Any, tsym: str, seed_ids: List[str]
 ) -> Dict[str, Any]:
@@ -230,18 +256,19 @@ async def _cancel_all_working_for_scrip(
                 non = o.get("norenordno")
                 if non:
                     ids.add(non)
-        except BrokerReadError as exc:
-            # FAIL-CLOSED: an unreadable order book (e.g. expired token) means we
-            # cannot confirm there are no UNTRACKED resting orders (e.g. a resting
-            # SL) for this scrip. Refuse to report cleared — placing an exit while
-            # a resting SL might still be working is a naked-short / margin-reject
-            # risk. This matters most when seed_ids is empty (no working order was
-            # passed): without it, an errored discovery would fall through to the
-            # cleared=True early-return below.
+        except Exception as exc:
+            # FAIL-CLOSED on ANY read failure: an unreadable order book — a typed
+            # BrokerReadError (expired token) AND a transport error (httpx timeout,
+            # HTTP!=200 RuntimeError) alike — means we cannot confirm there are no
+            # UNTRACKED resting orders (e.g. a resting SL) for this scrip. Refuse to
+            # report cleared — placing an exit while a resting SL might still be
+            # working is a naked-short / margin-reject risk, and transport failures
+            # CORRELATE with the cancel itself having silently failed (same degraded
+            # broker). This matters most when seed_ids is empty: without it, an
+            # errored discovery would fall through to the cleared=True early-return.
+            emsg = getattr(exc, "emsg", None) or str(exc)
             return {"cleared": False, "remaining": sorted(ids),
-                    "reason": f"cancel-discovery read failed ({str(exc.emsg)[:80]})"}
-        except Exception:
-            pass  # a non-broker discovery hiccup is best-effort — fall back to seed ids
+                    "reason": f"cancel-discovery read failed ({str(emsg)[:80]})"}
 
     if not ids:
         return {"cleared": True, "remaining": []}
@@ -259,19 +286,21 @@ async def _cancel_all_working_for_scrip(
 
         try:
             book = await client.order_book()
-        except BrokerReadError as exc:
-            # FAIL-CLOSED: an unreadable order book (e.g. expired token) means we
-            # CANNOT confirm the resting SL was cancelled. Do NOT trust the cancels
-            # — report cleared=False so square_position refuses to place the exit
-            # (a resting SL + a new exit = naked short / margin reject). The
-            # existing SL stays working, so the position is not left unprotected.
+        except Exception as exc:
+            # FAIL-CLOSED on ANY read failure (BrokerReadError AND transport): an
+            # unreadable order book means we CANNOT confirm the resting SL was
+            # cancelled. Do NOT trust the cancels — a cancel POST timeout and a
+            # confirm-read timeout correlate (same degraded broker), so "trust the
+            # cancels" here was exactly the both-timeouts → cleared=True → naked
+            # short window. Report cleared=False so square_position refuses to
+            # place the exit; the existing SL stays working, so the position is
+            # not left unprotected, and the caller retries.
+            emsg = getattr(exc, "emsg", None) or str(exc)
             return {
                 "cleared": False,
                 "remaining": sorted(ids),
-                "reason": f"cancel-confirm read failed ({str(exc.emsg)[:80]})",
+                "reason": f"cancel-confirm read failed ({str(emsg)[:80]})",
             }
-        except Exception:
-            return {"cleared": True, "remaining": []}  # trust cancels if book unavailable
 
         remaining = [
             o.get("norenordno")
@@ -494,40 +523,31 @@ async def _square_position_impl(
     #     do NOT treat as flat — fall through to the existing path unchanged
     #     ("unknown" must never trigger a false already-flat).
     # ------------------------------------------------------------------
-    try:
-        fresh_book = await client.position_book()
-    except Exception:
-        fresh_book = None  # unknown — fall through (the place path validates)
-
-    if isinstance(fresh_book, list) and fresh_book:
-        fresh_netqty: Optional[int] = None
-        for row in fresh_book:
-            if str(row.get("tsym", "")) == str(tsym):
-                fresh_netqty = _parse_netqty(row.get("netqty", 0))
-                break
-        # Row absent OR netqty 0/absent → flat (a non-empty book that no longer
-        # carries a non-flat row for this tsym means the position is gone).
-        if not fresh_netqty:
-            return {
-                "squared": True,
-                "via": "already_flat",
-                "norenordno": None,
-                "reason": reason,
-                "note": "position already flat (no order placed)",
-                "failures": [],
-            }
+    state_35, fresh_netqty = await _fresh_book_state(client, tsym)
+    if state_35 == "flat":
+        return {
+            "squared": True,
+            "via": "already_flat",
+            "norenordno": None,
+            "reason": reason,
+            "note": "position already flat (no order placed)",
+            "failures": [],
+        }
+    if state_35 == "live" and fresh_netqty != netqty:
         # PARTIAL reduction (e.g. the resting OCO filled PART of the leg between the
         # caller's read and now): the exit MUST sell only what is CURRENTLY held —
         # squaring the caller's larger stale netqty would place a naked short. Clamp
         # to the fresh book truth (also corrects the SELL/BUY direction if the sign
-        # flipped). The guard's item-#6 retry loop makes this hand-off window more
+        # flipped). The guard's retry loop makes this hand-off window more
         # reachable, so the clamp is the safety net.
-        if fresh_netqty != netqty:
-            log.warning(
-                "square_position: netqty for %s changed %s → %s between read and "
-                "place (partial fill / drift) — squaring the CURRENT qty, not the "
-                "stale one", tsym, netqty, fresh_netqty)
-            netqty = fresh_netqty
+        log.warning(
+            "square_position: netqty for %s changed %s → %s between read and "
+            "place (partial fill / drift) — squaring the CURRENT qty, not the "
+            "stale one", tsym, netqty, fresh_netqty)
+        netqty = fresh_netqty
+    # state_35 == "unknown" (raising/empty book, or a row with UNPARSEABLE netqty)
+    # → fall through UNCHANGED: unknown is never coerced to flat (no false
+    # already_flat) and never used to resize (no clamp off garbage).
 
     # ------------------------------------------------------------------
     # Step 3.6 — DEPTH-AWARE square price (C3): refresh the reference price from
@@ -575,6 +595,35 @@ async def _square_position_impl(
         }
 
     # ------------------------------------------------------------------
+    # Step 4.5 — POST-CANCEL netqty re-confirm. A working order (a triggered OCO
+    # leg, a resting guard exit) can FILL inside the cancel window — the cancel
+    # confirm sees it terminal (COMPLETE is terminal!) and reports cleared, but
+    # the position it filled against is now smaller or GONE. Placing the exit off
+    # the pre-cancel qty would be a full-qty SELL against a flat book → a naked
+    # short. So the sizing decision is re-taken from a read AFTER the cancels are
+    # confirmed terminal: flat → already_flat (place NOTHING); live → clamp to
+    # the current truth; unknown (raise/empty/garbage) → status-quo fall-through
+    # with the pre-cancel qty (never coerce unknown to flat; the place path
+    # validates, and the guard/caller retries on failure).
+    # ------------------------------------------------------------------
+    state_45, post_netqty = await _fresh_book_state(client, tsym)
+    if state_45 == "flat":
+        return {
+            "squared": True,
+            "via": "already_flat",
+            "norenordno": None,
+            "reason": reason,
+            "note": "position went flat during the cancel window (no order placed)",
+            "failures": [],
+        }
+    if state_45 == "live" and post_netqty != netqty:
+        log.warning(
+            "square_position: netqty for %s changed %s → %s during the cancel "
+            "window (a working order filled) — squaring the CURRENT qty",
+            tsym, netqty, post_netqty)
+        netqty = post_netqty
+
+    # ------------------------------------------------------------------
     # Step 5 — build and place a marketable-limit exit
     # Direction MUST be correct:
     #   long  (netqty > 0) → SELL
@@ -613,6 +662,7 @@ async def _square_position_impl(
             "squared": True,
             "via": "exit_order",
             "norenordno": result.norenordno,
+            "qty": qty,
             "reason": reason,
             "note": None,
             "failures": [],
@@ -634,6 +684,7 @@ async def _square_position_impl(
             "squared": True,
             "via": "exit_order",
             "norenordno": result2.norenordno,
+            "qty": qty,
             "reason": reason,
             "note": "placed on retry",
             "failures": failures,
@@ -788,7 +839,13 @@ async def _reprice_exit_leg_impl(
         if book_known:
             remaining = min(int(prev_qty) - int(filled), abs(int(book_netqty)))
         else:
-            remaining = int(prev_qty) - int(filled)  # fillshares authoritative
+            # FAIL-CLOSED: without a KNOWN book, fillshares bound only the TRACKED
+            # order — a fill by any OTHER order in the window (a triggered OCO leg
+            # the cancel-all just cancelled after a partial fill) is invisible, so
+            # `prev_qty − filled` can exceed what the account still holds → a
+            # naked short. Place NOTHING; the guard retries at the same band next
+            # interval, by which time the book is readable again.
+            return {"squared": False, "reason": "cancel_unconfirmed"}
     else:
         # No tracked prior order → size off the KNOWN book only (else unknown → hold).
         if not book_known:

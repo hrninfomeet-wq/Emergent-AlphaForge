@@ -393,16 +393,19 @@ class TestSquarePositionFreshNetqtyReconfirm:
         assert result["via"] == "already_flat"
         assert len(client._orders) == 0
 
-    def test_fresh_book_row_missing_netqty_treated_as_flat(self):
-        """A matching row with NO netqty key → absent → treated as flat (no order)."""
+    def test_fresh_book_row_missing_netqty_is_unknown_falls_through(self):
+        """A matching row with NO netqty key is a MALFORMED row → UNKNOWN, not flat
+        (per _parse_netqty's contract): fall through and place the exit off the
+        caller's qty. Claiming already_flat off a malformed row is how a still-open
+        position gets its OCO cancelled + a false CLOSED journal (review fix)."""
         client = MockNoren()
         client.set_position_book([
             {"tsym": "NIFTY2662221000CE", "exch": "NFO", "lp": "200.0"}
         ])
         pos = _position(netqty=65, lp=200.0)
         result = run(square_position(client, pos, reason="deadline"))
-        assert result["via"] == "already_flat"
-        assert len(client._orders) == 0
+        assert result["via"] == "exit_order"
+        assert len(client._orders) == 1   # exit placed off the caller's qty
 
     def test_fresh_book_still_nonflat_squares_normally(self):
         """A NON-EMPTY fresh book that STILL shows the tsym non-flat → squares
@@ -1396,12 +1399,18 @@ class TestRepriceExitLeg:
         r = run(reprice_exit_leg(cl, self._pos(), band_pct=2.0, prev_ordno="PREV1", prev_qty=20, reason="stop_reprice"))
         assert r["qty"] == 5
 
-    def test_book_unknown_sizes_off_fillshares(self):
-        """filled readable + position_book UNKNOWN (empty) → size off fillshares."""
+    def test_book_unknown_fails_closed(self):
+        """filled readable + position_book UNKNOWN (empty) → place NOTHING
+        (cancel_unconfirmed). fillshares bound only the TRACKED order — a fill by
+        any OTHER order in the window (a cancelled OCO leg's partial) is invisible
+        without a KNOWN book, so prev_qty−filled can exceed what the account holds
+        → naked short. The guard retries at the same band next interval (review fix)."""
         prev = {"norenordno": "PREV1", "tsym": _RTSYM, "status": "OPEN", "fillshares": "5", "qty": 20}
         cl = self._client(prev=prev, book=[])  # empty == UNKNOWN
         r = run(reprice_exit_leg(cl, self._pos(), band_pct=2.0, prev_ordno="PREV1", prev_qty=20, reason="stop_reprice"))
-        assert r["squared"] is True and r["qty"] == 15  # 20 - 5
+        assert r["squared"] is False and r["reason"] == "cancel_unconfirmed"
+        assert not [o for o in cl._orders.values()
+                    if str(o.get("norenordno")) != "PREV1"]   # nothing NEW placed
 
     def test_already_flat_when_fully_filled(self):
         """prior order fully filled + book flat → already_flat, nothing placed."""
@@ -1470,3 +1479,71 @@ class TestRepriceExitLeg:
         placed = self._placed(cl)
         assert len(placed) == 1 and placed[0]["trantype"] == "B"  # BUY to close a short
         assert 172.0 <= placed[0]["prc"] <= 190.0                 # ask-anchored, uc-clamped
+
+
+# ---------------------------------------------------------------------------
+# Review fixes — post-cancel re-confirm + transport-error fail-closed
+# ---------------------------------------------------------------------------
+
+class _SequencedBookClient(MockNoren):
+    """position_book returns the next fixture from a sequence (last repeats)."""
+
+    def __init__(self, books, **kw):
+        super().__init__(**kw)
+        self._books = list(books)
+
+    async def position_book(self):
+        if len(self._books) > 1:
+            return list(self._books.pop(0))
+        return list(self._books[0])
+
+
+class TestPostCancelReconfirm:
+    def test_fill_during_cancel_window_aborts_place(self):
+        """A working order (e.g. a triggered OCO leg) that FILLS inside the cancel
+        window flattens the position; the cancel-confirm sees it terminal
+        (COMPLETE is terminal) and reports cleared. The post-cancel re-confirm
+        must catch the flat and place NOTHING — placing the pre-cancel qty would
+        be a full SELL against a flat book → naked short (review fix, CRITICAL)."""
+        live = [{"tsym": "NIFTY2662221000CE", "exch": "NFO", "netqty": "65", "lp": "200.0"}]
+        flat = [{"tsym": "NIFTY2662221000CE", "exch": "NFO", "netqty": "0", "lp": "200.0"}]
+        client = _SequencedBookClient([live, flat])   # 3.5 sees live; 4.5 sees flat
+        pos = _position(netqty=65, lp=200.0)
+        result = run(square_position(client, pos, reason="stop"))
+        assert result["squared"] is True
+        assert result["via"] == "already_flat"
+        assert "cancel window" in (result.get("note") or "")
+        assert len(client._orders) == 0               # NOTHING placed
+
+    def test_partial_fill_during_cancel_window_clamps_qty(self):
+        """A PARTIAL fill inside the cancel window shrinks the position; the exit
+        must be sized to the post-cancel truth, not the pre-cancel 65."""
+        live = [{"tsym": "NIFTY2662221000CE", "exch": "NFO", "netqty": "65", "lp": "200.0"}]
+        part = [{"tsym": "NIFTY2662221000CE", "exch": "NFO", "netqty": "30", "lp": "200.0"}]
+        client = _SequencedBookClient([live, part])
+        pos = _position(netqty=65, lp=200.0)
+        result = run(square_position(client, pos, reason="stop"))
+        assert result["squared"] is True and result["via"] == "exit_order"
+        assert result["qty"] == 30                    # clamped to current truth
+        orders = list(client._orders.values())
+        assert len(orders) == 1 and orders[0]["qty"] == 30
+
+
+class TestCancelAllTransportFailClosed:
+    def test_discovery_transport_error_fails_closed(self):
+        """A NON-BrokerReadError read failure (httpx timeout → RuntimeError) during
+        cancel discovery must fail CLOSED: the cancel POST and the confirm read
+        fail together on a degraded broker, and 'trust the cancels' was exactly
+        the both-timeouts → naked-short window (review fix)."""
+        class _TransportErrClient(MockNoren):
+            async def order_book(self):
+                raise RuntimeError("HTTP 502")
+        client = _TransportErrClient()
+        client.set_position_book([
+            {"tsym": "NIFTY2662221000CE", "exch": "NFO", "netqty": "65", "lp": "200.0"}])
+        pos = _position(netqty=65, lp=200.0)
+        pos["working_norenordno"] = "W1"              # a tracked working order
+        result = run(square_position(client, pos, reason="stop"))
+        assert result["squared"] is False
+        assert result["reason"] == "cancel_unconfirmed"
+        assert len(client._orders) == 0               # exit NOT placed

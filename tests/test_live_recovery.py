@@ -37,6 +37,7 @@ def test_maybe_run_recovery_runs_once_per_token():
 
     async def _stub():
         calls.append(1)
+        return True                              # COMPLETE run
 
     with patch.object(rt, "_live_token_doc",
                       AsyncMock(return_value={"jKey": "TOKEN_ABC123", "uid": "U"})), \
@@ -49,6 +50,40 @@ def test_maybe_run_recovery_runs_once_per_token():
     assert rt.live_recovery_status()["succeeded"] is True
 
 
+def test_maybe_run_recovery_incomplete_does_not_latch_and_retries():
+    """A run that HAPPENED but could not do its job (broker unreachable at boot:
+    every step swallowed its failure) must NOT latch success — the supervisor
+    keeps retrying until a COMPLETE run. This was the review's top finding: a
+    latched incomplete run left an overnight position unguarded all day behind a
+    green recovery-status strip."""
+    from app import runtime as rt
+    rt._live_recovery_state.update(
+        {"succeeded": False, "token_fingerprint": None, "last_result": None})
+    calls = []
+
+    async def _incomplete():
+        calls.append(1)
+        return False                             # ran, but INCOMPLETE
+
+    async def _complete():
+        calls.append(1)
+        return True
+
+    with patch.object(rt, "_live_token_doc",
+                      AsyncMock(return_value={"jKey": "TOKEN_ABC123", "uid": "U"})):
+        with patch.object(rt, "live_startup_recovery", _incomplete):
+            r1 = _run(rt.maybe_run_live_recovery())
+            r2 = _run(rt.maybe_run_live_recovery())     # supervisor tick: RETRIES
+        assert r1 == {"ran": True, "reason": "incomplete"}
+        assert r2 == {"ran": True, "reason": "incomplete"}
+        assert rt.live_recovery_status()["succeeded"] is False
+        assert len(calls) == 2                          # not latched — kept retrying
+        with patch.object(rt, "live_startup_recovery", _complete):
+            r3 = _run(rt.maybe_run_live_recovery())     # broker back → completes
+        assert r3 == {"ran": True, "reason": "ok"}
+        assert rt.live_recovery_status()["succeeded"] is True
+
+
 def test_maybe_run_recovery_reruns_on_new_token():
     from app import runtime as rt
     rt._live_recovery_state.update(
@@ -57,6 +92,7 @@ def test_maybe_run_recovery_reruns_on_new_token():
 
     async def _stub():
         calls.append(1)
+        return True                              # COMPLETE run
 
     with patch.object(rt, "_live_token_doc",
                       AsyncMock(return_value={"jKey": "NEWTOKEN9999", "uid": "U"})), \

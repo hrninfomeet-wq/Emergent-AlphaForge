@@ -60,12 +60,20 @@ log = logging.getLogger(__name__)
 
 POLL_SECONDS = 1.5
 _IST = timedelta(hours=5, minutes=30)
-# A non-confirming square whose reason is one of these is a benign CONTENTION, not
-# a broker failure — another exit path holds the per-tsym exit claim (see
-# exit_claims). The guard retries next cycle but does NOT count it toward the
-# square-retry exhaustion budget (else a legitimate concurrent exit could force the
-# guard to stop re-issuing for a still-open position).
-_SOFT_RETRY_REASONS = frozenset({"exit_in_flight_elsewhere"})
+# A non-confirming square whose reason is one of these placed NOTHING at the
+# broker, so it must not burn the square-retry exhaustion budget (whose whole
+# rationale is bounding real order-API hammering):
+#   exit_in_flight_elsewhere — benign contention: another exit path holds the
+#       per-tsym exit claim (see exit_claims); resolves when it finishes.
+#   unpriced — no usable mark to price the exit; transient market-data gap.
+#   cancel_unconfirmed — the pre-place cancel/confirm could not verify the scrip
+#       is clear (unreadable order book / surviving working order); placing would
+#       risk a naked short, so nothing was placed. ~40s of an order-book blip
+#       must not permanently stop the guard (it previously could).
+# All three retry next cycle and surface via last_error; only genuine place
+# REJECTS/raises count toward the budget.
+_SOFT_RETRY_REASONS = frozenset(
+    {"exit_in_flight_elsewhere", "unpriced", "cancel_unconfirmed"})
 # A spot tick older than this is treated as absent — the guard never squares on
 # a minutes-old underlying price (mirrors paper_auto.MARK_TICK_MAX_AGE_SECONDS).
 MARK_TICK_MAX_AGE_SECONDS = 120
@@ -466,16 +474,30 @@ class LivePositionGuard:
                 if pos is None or netqty is None or netqty == 0:
                     if not entry.get("seen_filled"):
                         # Still pending its fill — KEEP, but bound a never-filling
-                        # (rejected/canceled) entry by a grace window. (A pending
-                        # entry never gets finalized, so the UNKNOWN-book guard below
-                        # is not needed here — it just keeps waiting.)
+                        # (rejected/canceled) entry by a grace window. An UNKNOWN
+                        # book gives NO information about the fill, so it must not
+                        # advance the age-out counter (60s of broker blips would
+                        # otherwise age out a perfectly pending entry).
+                        if not book_is_known:
+                            continue
                         entry["misses"] = int(entry.get("misses", 0)) + 1
                         if entry["misses"] >= self._max_pending_misses:
-                            # Never filled but a resting OCO may still exist → cancel
-                            # it so an age-out can't leave a stray alert at the broker
-                            # that could fire against a position that never existed
-                            # (audit L21). A confirmed-flat drop cancels its OCO via
-                            # _finalize_flat instead.
+                            # Aging out an entry that never showed in the position
+                            # book: the ENTRY ORDER may still be WORKING (a resting
+                            # LMT the market walked away from) — a later fill would
+                            # be unwatched. Best-effort cancel it (the registry key
+                            # IS its norenordno) BEFORE dropping, then cancel the
+                            # resting OCO so no stray alert survives (audit L21). A
+                            # confirmed-flat drop cancels its OCO via _finalize_flat
+                            # instead.
+                            if hasattr(client, "cancel_order"):
+                                try:
+                                    await client.cancel_order(entry["id"])
+                                except Exception as exc:
+                                    log.warning(
+                                        "guard age-out: cancel entry order %s failed "
+                                        "(may already be terminal): %s",
+                                        entry["id"], exc)
                             await self._cancel_oco_best_effort(
                                 client, entry, "age_out")
                             self._registry.remove(entry["id"])
@@ -544,7 +566,10 @@ class LivePositionGuard:
                 # dry-run every cycle. A real (armed) square never sets this flag.
                 # square_stopped (retry budget exhausted, audit L20) likewise stays
                 # registered — the OCO backstop + confirmed-flat finalize still
-                # apply — but is never re-issued (operator escalation was raised).
+                # apply — and its DISCRETIONARY squares (premium/spot/time) stop
+                # here; the 15:00 EOD backstop still attempts it every cycle
+                # (ignore_square_stopped=True) since a no-OCO manual/rehydrated
+                # position has no other automated exit left.
                 if entry.get("dry_run_exit_logged") or entry.get("square_stopped"):
                     continue
 
@@ -586,6 +611,7 @@ class LivePositionGuard:
     async def _issue_square(
         self, client: Any, entry: Dict[str, Any], square_reason: str,
         exit_reason: str, exits: List[Dict[str, Any]], now: datetime,
+        ignore_square_stopped: bool = False,
     ) -> None:
         """Issue a margin-safe square exit for a breached position and MARK it
         squaring — place-and-track, NOT place-and-forget. NEVER raises.
@@ -618,7 +644,14 @@ class LivePositionGuard:
         same cycle — the per-cycle token makes a FAILED square wait for the next
         cycle instead of burning 2-3 broker attempts per cycle.
         """
-        if entry.get("dry_run_exit_logged") or entry.get("square_stopped"):
+        if entry.get("dry_run_exit_logged"):
+            return
+        if entry.get("square_stopped") and not ignore_square_stopped:
+            # Retry budget exhausted — no more discretionary squares. The EOD
+            # square passes ignore_square_stopped=True: the 15:00 backstop must
+            # keep attempting (a manual/rehydrated position may have NO OCO, so
+            # EOD is its ONLY remaining automated exit; a persistent RMS reject
+            # retried once per cycle for the last 30 min is the acceptable cost).
             return
         if entry.get("last_square_cycle") == self._cycle_token:
             return
@@ -634,14 +667,23 @@ class LivePositionGuard:
         if squared_ok and not dry_run:
             entry["squaring"] = True
             entry["square_reason"] = exit_reason        # written ONCE (never by a re-price)
+            # A broker-ACCEPTED square proves the path works again — clear the
+            # failure bookkeeping so an earlier bad spell can't linger.
+            entry["square_retries"] = 0
+            entry["square_stopped"] = False
             # Seed the Layer 2 escalation state: the NEXT band, when this exit was
             # issued (interval gate), and the resting exit's id/qty (so a re-price
             # can cancel exactly it and _finalize_flat can cancel it on flat).
             entry["square_band_idx"] = 1
             entry["square_last_ts"] = now
             entry["square_ordno"] = result.get("norenordno")
+            # Prefer the qty the executor ACTUALLY placed (it re-confirms and
+            # clamps to the fresh book truth post-cancel); fall back to the
+            # last-seen netqty. A later re-price sizes off this, so recording the
+            # pre-clamp qty could over-sell on a book-unreadable re-price.
             try:
-                entry["square_qty"] = abs(int(entry["position"].get("netqty") or 0))
+                entry["square_qty"] = int(result.get("qty")
+                                          or abs(int(entry["position"].get("netqty") or 0)))
             except (TypeError, ValueError):
                 entry["square_qty"] = 0
             # "exits" counts squares the broker ACCEPTED — a dry-run intent or a
@@ -655,10 +697,14 @@ class LivePositionGuard:
             log.info("guard DRY-RUN square for %s (%s) — LIVE_GUARD_ARMED off, "
                      "nothing transmitted (logged once)", entry["tsym"], exit_reason)
         elif str(result.get("reason") or "") in _SOFT_RETRY_REASONS:
-            # Benign contention — another exit path is flattening this scrip right
-            # now. Retry next cycle; never counts toward the retry budget.
-            log.info("guard square for %s deferred — exit in flight on another "
-                     "path; retrying next cycle", entry["tsym"])
+            # Placed NOTHING (contention / unpriced / cancel-unconfirmed). Retry
+            # next cycle; never counts toward the retry budget — but surface it so
+            # a position that can't square is never silent.
+            _soft = str(result.get("reason"))
+            self._stats["last_error"] = (
+                f'{entry["tsym"]}: square deferred ({_soft}) — retrying')
+            log.info("guard square for %s deferred (%s) — retrying next cycle",
+                     entry["tsym"], _soft)
         else:
             entry["square_retries"] = int(entry.get("square_retries", 0)) + 1
             if entry["square_retries"] >= self._max_square_retries:
@@ -989,7 +1035,8 @@ class LivePositionGuard:
             if entry.get("squaring"):
                 continue  # a square is already working (Layer 2 re-price escalates it)
             await self._issue_square(
-                client, entry, "eod_square", "eod_square", exits, now)
+                client, entry, "eod_square", "eod_square", exits, now,
+                ignore_square_stopped=True)
 
     async def _evaluate_overall_basket(
         self, client: Any, by_tsym: Dict[str, Dict[str, Any]],

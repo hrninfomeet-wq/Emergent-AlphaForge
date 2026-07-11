@@ -23,19 +23,22 @@ import logging
 import time
 import uuid
 from contextlib import asynccontextmanager
-from typing import Callable, Dict, Tuple
+from typing import Callable, Dict, Optional, Tuple
 
 log = logging.getLogger(__name__)
 
 # The TTL only backstops a HUNG/DEAD holder (a crash takes the whole single-process
 # backend down, clearing this in-memory registry). It MUST comfortably exceed the
-# worst-case exit: a degraded broker gives each round-trip a 20s timeout
-# (flattrade_client), and an exit does cancel-confirm passes + banded place retries,
-# and the kill holds its claims across the flatten + the re-sweep. Set well above
-# that so a still-active exit path can NEVER have its claim silently reclaimed and
+# worst-case exit — a degraded broker gives each round-trip a 20s timeout
+# (flattrade_client), and a single square does ~11 round-trips (fresh reads +
+# cancel-confirm passes + banded place retries) ≈ 220s at the timeout ceiling — so
+# a still-active exit path can NEVER have its claim silently reclaimed and
 # double-sold — the whole point of the mutex. A hung holder blocking exits for this
 # long is the acceptable side (the position keeps its existing protection meanwhile).
-_DEFAULT_TTL_SECONDS = 180.0
+# The kill switch holds claims across its whole flatten + GTT sweep + re-sweep,
+# which can run far longer than one square — it passes its own ttl_seconds
+# (see live_broker._KILL_CLAIM_TTL_SECONDS).
+_DEFAULT_TTL_SECONDS = 360.0
 
 
 class ExitClaimRegistry:
@@ -53,16 +56,22 @@ class ExitClaimRegistry:
         self._ttl = float(ttl_seconds)
         self._clock = clock
 
-    async def claim(self, tsym: str, token: str) -> bool:
+    async def claim(
+        self, tsym: str, token: str, ttl_seconds: Optional[float] = None
+    ) -> bool:
         """Acquire the exit claim for *tsym*. True on success; False if another
-        (unexpired) token already holds it."""
+        (unexpired) token already holds it. ``ttl_seconds`` overrides the registry
+        default for THIS claim — the kill switch holds claims across its entire
+        multi-pass flatten + re-sweep and must size the TTL to that, not to a
+        single square (an expired kill claim would let the guard place a COMPETING
+        exit mid-kill → double-sell)."""
         key = str(tsym)
         async with self._lock:
             now = self._clock()
             cur = self._claims.get(key)
             if cur is not None and cur[1] > now:
                 return False
-            self._claims[key] = (token, now + self._ttl)
+            self._claims[key] = (token, now + float(ttl_seconds or self._ttl))
             return True
 
     async def release(self, tsym: str, token: str) -> None:

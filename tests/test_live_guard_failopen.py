@@ -293,19 +293,51 @@ def test_flat_drop_cancels_orphaned_oco():
     assert sq.calls == 0                          # never squared (closed elsewhere)
 
 
-def test_age_out_cancels_orphaned_oco():
+class _OcoOrderClient(_OcoClient):
+    """_OcoClient that also records cancel_order calls (the age-out path now
+    best-effort cancels the still-working ENTRY order before dropping)."""
+
+    def __init__(self, positions):
+        super().__init__(positions)
+        self.cancel_order_calls = []
+
+    async def cancel_order(self, norenordno):
+        self.cancel_order_calls.append(str(norenordno))
+        return {"stat": "Ok"}
+
+
+def test_age_out_cancels_entry_order_and_orphaned_oco():
+    # The book must be KNOWN (non-empty, other scrip) for misses to advance — an
+    # empty book is UNKNOWN and never ages anything out. On age-out the guard now
+    # cancels the possibly-still-working ENTRY order (its id IS the norenordno)
+    # AND the resting OCO, so a late fill can't arrive unwatched with a live OCO.
     reg = LiveMonitorRegistry()
     _registered(reg, oco_al_id="OCO2")
-    client = _OcoClient([])                       # never fills (empty book)
+    client = _OcoOrderClient([_pos(netqty=10, lp=50.0, tsym="SOMEOTHER")])
     sq = _ScriptedSquare({"squared": True})
     g = LivePositionGuard(registry=reg, client_factory=lambda: _aw(client),
                           square_fn=sq.square_fn, max_pending_misses=2,
                           now_fn=lambda: _NOW)
     run(g._cycle())                              # misses=1
     assert client.cancel_oco_calls == []
-    run(g._cycle())                              # misses=2 → age-out drop + cancel
+    run(g._cycle())                              # misses=2 → age-out drop + cancels
     assert len(reg) == 0
+    assert client.cancel_order_calls == ["ORD1"]  # entry order cancelled first
     assert client.cancel_oco_calls == ["OCO2"]
+
+
+def test_age_out_never_advances_on_unknown_book():
+    reg = LiveMonitorRegistry()
+    _registered(reg, oco_al_id="OCO2")
+    client = _OcoClient([])                       # EMPTY == UNKNOWN
+    sq = _ScriptedSquare({"squared": True})
+    g = LivePositionGuard(registry=reg, client_factory=lambda: _aw(client),
+                          square_fn=sq.square_fn, max_pending_misses=2,
+                          now_fn=lambda: _NOW)
+    for _ in range(6):                            # 3x the grace window
+        run(g._cycle())
+    assert len(reg) == 1                          # never aged out
+    assert client.cancel_oco_calls == []
 
 
 def test_retry_exhaustion_stop_keeps_oco_as_backstop():
@@ -438,3 +470,68 @@ def test_no_gate_split_when_disconnected():
         mode_doc={"mode": "PAPER"}, connected=False,
         autoplace_armed=True, guard_armed=False, armed_deployment_count=1)
     assert st["exit_gap"] is False       # broker not connected → nothing transmits
+
+
+# ---------------------------------------------------------------------------
+# Review fixes — soft-failure classification, EOD bypass, accepted-square reset
+# ---------------------------------------------------------------------------
+
+def test_cancel_unconfirmed_is_soft_never_burns_budget():
+    """cancel_unconfirmed placed NOTHING (unreadable order book / surviving
+    working order) — ~40s of an order-book blip must not permanently stop the
+    guard, so it never counts toward the retry budget (review fix)."""
+    reg = LiveMonitorRegistry()
+    _registered(reg)
+    client = _FakeClient([_pos(lp=170.0)])
+    sq = _ScriptedSquare({"squared": False, "reason": "cancel_unconfirmed"})
+    g = LivePositionGuard(registry=reg, client_factory=lambda: _aw(client),
+                          square_fn=sq.square_fn, max_square_retries=2,
+                          now_fn=lambda: _NOW)
+    for _ in range(6):                            # 3x the budget
+        run(g._cycle())
+    assert len(reg) == 1                          # still watched
+    assert reg.get("ORD1").get("square_retries", 0) == 0
+    assert not reg.get("ORD1").get("square_stopped")
+    assert g.status()["escalations"] == 0
+    assert sq.calls == 6                          # kept retrying every cycle
+
+
+def test_eod_still_attempts_a_square_stopped_entry():
+    """square_stopped halts DISCRETIONARY squares, but the 15:00 EOD backstop must
+    keep attempting — a no-OCO manual/rehydrated position has no other automated
+    exit left (review fix: square_stopped must not gate the EOD square)."""
+    from datetime import datetime, timezone
+    reg = LiveMonitorRegistry()
+    _registered(reg)
+    entry = reg.get("ORD1")
+    entry["seen_filled"] = True
+    entry["square_stopped"] = True                # budget exhausted earlier
+    entry["square_retries"] = 99
+    client = _FakeClient([_pos(netqty=20, lp=240.0)])   # above stop (no breach)
+    sq = _ScriptedSquare({"squared": False})
+    now_eod = datetime(2026, 7, 9, 9, 35, tzinfo=timezone.utc)  # 15:05 IST
+    g = LivePositionGuard(registry=reg, client_factory=lambda: _aw(client),
+                          square_fn=sq.square_fn, now_fn=lambda: now_eod)
+    run(g._cycle())
+    assert sq.calls == 1                          # EOD attempted despite stopped
+    run(g._cycle())
+    assert sq.calls == 2                          # and keeps attempting per cycle
+
+
+def test_accepted_square_resets_retry_bookkeeping():
+    """A broker-ACCEPTED square proves the path works — the failure counters from
+    an earlier bad spell must not linger (review fix)."""
+    reg = LiveMonitorRegistry()
+    _registered(reg)
+    entry = reg.get("ORD1")
+    entry["square_retries"] = 7                   # earlier bad spell
+    client = _FakeClient([_pos(lp=170.0)])        # breach
+    sq = _ScriptedSquare({"squared": True, "norenordno": "EXIT1", "qty": 20})
+    g = LivePositionGuard(registry=reg, client_factory=lambda: _aw(client),
+                          square_fn=sq.square_fn, now_fn=lambda: _NOW)
+    run(g._cycle())
+    e = reg.get("ORD1")
+    assert e["squaring"] is True
+    assert e["square_retries"] == 0               # reset on accept
+    assert e.get("square_stopped") in (False, None)
+    assert e["square_qty"] == 20                  # seeded from the executor's qty

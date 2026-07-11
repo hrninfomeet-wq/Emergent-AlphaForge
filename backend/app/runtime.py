@@ -250,7 +250,7 @@ live_position_guard = LivePositionGuard(
 )
 
 
-async def live_startup_recovery() -> None:
+async def live_startup_recovery() -> bool:
     """One-shot startup recovery for the live execution path (best-effort, non-blocking).
 
     Closes the two restart-orphan holes the in-memory live state otherwise leaves:
@@ -262,12 +262,20 @@ async def live_startup_recovery() -> None:
          restart is never left unwatched (no software stop/target/EOD square).
 
     Skips silently when the broker isn't connected. Never raises out.
+
+    Returns True only when the run was COMPLETE: a broker client existed, no step
+    raised, and the reboot reconcile could actually READ the position book. The
+    per-token recovery latch (``maybe_run_live_recovery``) records success only on
+    True — a run whose every step failed (network down at boot, broker outage)
+    returns False so the supervisor keeps retrying, instead of latching a green
+    "recovered" over an unguarded position.
     """
     _log = logging.getLogger(__name__)
+    complete = True
     client = await _live_guard_client_factory()
     if client is None:
         _log.info("live startup recovery: broker not connected — skipping resume_pending + guard rehydrate")
-        return
+        return False
     # 1. resume_pending — adopt orphaned orders (build a real-client engine; the
     #    live_broker singleton is built with a None client, so use a local one).
     try:
@@ -284,6 +292,7 @@ async def live_startup_recovery() -> None:
         _log.info("live startup recovery: resume_pending adopted=%s needs_submit=%s",
                   res.get("adopted"), res.get("needs_submit"))
     except Exception as exc:
+        complete = False
         _log.warning("live startup recovery: resume_pending failed: %s", exc)
     # 2. guard rehydrate — re-attach to open positions.
     try:
@@ -294,6 +303,7 @@ async def live_startup_recovery() -> None:
         else:
             _log.info("live startup recovery: no open broker positions to rehydrate")
     except Exception as exc:
+        complete = False
         _log.warning("live startup recovery: guard rehydrate failed: %s", exc)
     # 3. transient-safe reboot reconciliation — journal any OCO that fired (or any
     #    position closed externally) while the PC was down + sweep orphan OCOs.
@@ -305,11 +315,20 @@ async def live_startup_recovery() -> None:
                   "relinked=%s no_backstop=%s status=%s",
                   res.get("closed"), res.get("cancelled"),
                   res.get("relinked"), res.get("no_backstop"), res.get("status"))
+        # reconcile reads the position book directly and reports an unreadable/
+        # empty read as "unknown_position_book". Both rehydrate (step 2) and
+        # reconcile swallow read failures internally, so this status is the honest
+        # broker-readability signal for the whole run: unreadable ⇒ the rehydrate
+        # almost certainly saw nothing either ⇒ recovery is NOT complete.
+        if res.get("status") == "unknown_position_book":
+            complete = False
     except Exception as exc:
+        complete = False
         _log.warning("live startup recovery: reboot reconcile failed: %s", exc)
     # (The old step 4 — re-arm the 10-min manual auto-square timer — is gone with
     # the timer itself: a recovered manual position is protected by the rehydrated
     # software guard stop + the 15:00 IST EOD square, like any other position.)
+    return complete
 
 
 # ---------------------------------------------------------------------------
@@ -348,7 +367,18 @@ async def maybe_run_live_recovery(*, force: bool = False) -> Dict[str, Any]:
         return {"ran": False, "reason": "already_recovered"}
     _live_recovery_state["last_attempt_at"] = datetime.now(timezone.utc).isoformat()
     try:
-        await live_startup_recovery()
+        complete = await live_startup_recovery()
+        if not complete:
+            # A run happened but could NOT do its job (broker unreachable, a step
+            # failed, or the position book was unreadable). Do NOT latch success —
+            # the supervisor keeps retrying every tick until a COMPLETE run, which
+            # is the entire point of the retry loop (an incomplete run latched as
+            # "ok" would leave an overnight position unguarded all day behind a
+            # green recovery-status strip).
+            _live_recovery_state["last_result"] = "incomplete — will retry"
+            _log.warning("live recovery: ran but INCOMPLETE (broker unreachable or a "
+                         "step failed) — will retry")
+            return {"ran": True, "reason": "incomplete"}
         _live_recovery_state["succeeded"] = True
         _live_recovery_state["token_fingerprint"] = fp
         _live_recovery_state["last_result"] = "ok"

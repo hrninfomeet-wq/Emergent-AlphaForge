@@ -983,6 +983,59 @@ def test_kill_switch_defers_tsym_already_being_exited():
         _stop_patches(tc)
 
 
+def test_kill_sweep_keeps_deferred_tsyms_oco():
+    """The account-wide GTT/OCO sweep must EXEMPT a DEFERRED tsym's alerts: the
+    kill did not flatten that position (another exit path owns it) and its
+    resting OCO is exactly the backstop the deferral relies on if that path then
+    fails. Every other tsym's alert is still swept (review fix)."""
+    from app.live.exit_claims import registry, reset_exit_claims
+
+    reset_exit_claims()
+
+    class _AlertClient(_CountingClient):
+        def __init__(self, **kw):
+            super().__init__(**kw)
+            self.cancelled_alerts = []
+
+        async def cancel_oco(self, al_id):
+            self.cancelled_alerts.append(str(al_id))
+            return await super().cancel_oco(al_id)
+
+        async def cancel_gtt(self, al_id):
+            self.cancelled_alerts.append(str(al_id))
+            return await super().cancel_gtt(al_id)
+
+    deferred_tsym = "NIFTY26JUN26C25000"
+    other_tsym = "NIFTY26JUN26P24000"
+    fake_db = _KillDb([])
+    cs = _make_config_store()
+    eng = FakeEngine()
+    cl = _AlertClient(
+        limits_data=_GOOD_LIMITS,
+        position_book_data=[
+            {"tsym": deferred_tsym, "exch": "NFO", "netqty": "65", "lp": "200.0"},
+            {"tsym": other_tsym, "exch": "NFO", "netqty": "65", "lp": "150.0"},
+        ],
+        gtt_book_data=[
+            {"al_id": "ALDEF", "tsym": deferred_tsym, "ai_t": "LMT_BOS_O"},
+            {"al_id": "ALOTH", "tsym": other_tsym, "ai_t": "LMT_BOS_O"},
+        ],
+        search_scrip_data={"NFO": [_NIFTY_SCRIP]},
+    )
+    tc = _make_app(config_store=cs, engine=eng, client=cl)
+    try:
+        asyncio.run(registry().claim(deferred_tsym, "another_path_token"))
+        with patch("app.db.get_db", return_value=_KillDb([])):
+            r = tc.post("/live-broker/kill-switch")
+        body = r.json()
+        assert deferred_tsym in body["stop_all"]["deferred_tsyms"]
+        assert "ALOTH" in cl.cancelled_alerts        # non-deferred alert swept
+        assert "ALDEF" not in cl.cancelled_alerts    # deferred tsym's OCO KEPT
+    finally:
+        reset_exit_claims()
+        _stop_patches(tc)
+
+
 def test_kill_switch_rejects_concurrent_request():
     """A second kill while one is in progress fast-rejects (no double-flatten)."""
     from app.routers import live_broker as lb

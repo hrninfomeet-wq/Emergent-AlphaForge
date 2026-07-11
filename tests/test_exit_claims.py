@@ -68,3 +68,16 @@ def test_empty_tsym_is_never_serialized():
 
 def test_module_singleton_shared():
     assert registry() is registry()
+
+
+def test_claim_ttl_override_outlives_default():
+    """A per-claim ttl_seconds override (the kill switch passes ~900s) must keep
+    blocking after the registry default would have expired (review fix: an
+    expired kill claim mid-flatten reopens the double-sell race)."""
+    t = {"now": 0.0}
+    reg = ExitClaimRegistry(ttl_seconds=10.0, clock=lambda: t["now"])
+    assert asyncio.run(reg.claim("TSYM", "kill_token", ttl_seconds=100.0)) is True
+    t["now"] = 50.0                                # past the 10s default
+    assert asyncio.run(reg.claim("TSYM", "guard_token")) is False   # still held
+    t["now"] = 150.0                               # past the 100s override
+    assert asyncio.run(reg.claim("TSYM", "guard_token")) is True    # expired now

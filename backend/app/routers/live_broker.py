@@ -2053,6 +2053,16 @@ _kill_lock = asyncio.Lock()
 # just after the panic pass. New entries are already blocked by the latch/halt.
 _KILL_RESWEEP_DELAY: float = 2.0
 
+# TTL for the kill's per-tsym exit claims. The kill holds its claims across the
+# ENTIRE multi-pass verified flatten + GTT sweep + resweep — on a degraded broker
+# (20s per round-trip) that can run far past the registry's single-square default.
+# An EXPIRED kill claim would let the guard place a competing exit mid-kill (the
+# exact double-sell the mutex prevents), so this is sized to the pathological
+# ceiling. Claims are explicitly released in the kill's finally on every normal /
+# raised / cancelled path; the TTL only backstops a hung task, and the in-memory
+# registry dies with the process anyway.
+_KILL_CLAIM_TTL_SECONDS: float = 900.0
+
 
 async def _disarm_all_live_deployments(db: Any, reason: str) -> List[str]:
     """Disarm every armed live deployment (risk.live.armed True → False) so the
@@ -2201,7 +2211,8 @@ async def _run_kill_switch() -> Dict[str, Any]:
         claimed_tsyms: List[str] = []
         for _p in (open_positions or []):
             _t = str(_p.get("tsym") or "")
-            if _t and await _exit_claim_registry().claim(_t, kill_token):
+            if _t and await _exit_claim_registry().claim(
+                    _t, kill_token, ttl_seconds=_KILL_CLAIM_TTL_SECONDS):
                 claimed_tsyms.append(_t)
         claimed_set = set(claimed_tsyms)
         deferred = sorted({str(p.get("tsym") or "") for p in (open_positions or [])
@@ -2210,27 +2221,51 @@ async def _run_kill_switch() -> Dict[str, Any]:
             log.warning("kill_switch: %d tsym(s) already being exited elsewhere — "
                         "deferring (not double-selling): %s", len(deferred), deferred)
         stop_all["deferred_tsyms"] = deferred
-        # Flatten ONLY claimed tsyms (positions AND their working orders).
-        # The order book is RE-READ after the claims: a guard exit placed in the
-        # books-read → claim window would be missing from the initial snapshot, so
-        # the panic would not cancel it and its later fill would double-sell. Once
-        # the claims are held no new exit can be placed for a claimed tsym, so a
-        # post-claim read sees every working order that will exist during the
-        # flatten. Best-effort: an unreadable re-read falls back to the initial
-        # snapshot (the panic still runs — a kill must flatten).
-        try:
-            _fresh_orders = await client.order_book()
-            if isinstance(_fresh_orders, list):
-                open_orders = _fresh_orders
-        except Exception as exc:
-            log.warning("kill_switch: post-claim order_book re-read failed "
-                        "(using the initial snapshot): %s", exc)
-        panic_positions = [p for p in (open_positions or [])
-                           if str(p.get("tsym") or "") in claimed_set]
-        panic_orders = [o for o in (open_orders or [])
-                        if str(o.get("tsym") or "") in claimed_set]
 
         try:
+            # Flatten ONLY claimed tsyms (positions AND their working orders).
+            # BOTH books are RE-READ after the claims (inside this try so a
+            # cancelled request can never leak the claims past the finally):
+            #   orders — a guard exit placed in the books-read → claim window
+            #     would be missing from the initial snapshot, so the panic would
+            #     not cancel it and its later fill would double-sell;
+            #   positions — panic legs are SIZED from this list, and a fill in
+            #     the same window (e.g. a triggered OCO leg) shrinks what the
+            #     account actually holds.
+            # Once the claims are held no new software exit can start for a
+            # claimed tsym, so a post-claim read sees the true working set. Each
+            # read gets ONE retry; on repeated failure fall back to the initial
+            # snapshot LOUDLY (the panic still runs — a kill must flatten — but
+            # the stale-window race is then open again, so it must not be silent).
+            for _attempt in (1, 2):
+                try:
+                    _fresh_orders = await client.order_book()
+                    if isinstance(_fresh_orders, list):
+                        open_orders = _fresh_orders
+                    break
+                except Exception as exc:
+                    if _attempt == 2:
+                        log.error("kill_switch: post-claim order_book re-read failed "
+                                  "TWICE (using the STALE initial snapshot — a "
+                                  "just-placed exit may not be cancelled): %s", exc)
+            for _attempt in (1, 2):
+                try:
+                    _fresh_positions = await client.position_book()
+                    if isinstance(_fresh_positions, list) and _fresh_positions:
+                        # Only claimed tsyms are flattened either way; a fresh read
+                        # re-sizes their legs. (An empty/unknown read keeps the
+                        # initial snapshot — never treat unknown as flat.)
+                        open_positions = _fresh_positions
+                    break
+                except Exception as exc:
+                    if _attempt == 2:
+                        log.error("kill_switch: post-claim position_book re-read "
+                                  "failed TWICE (sizing legs from the STALE initial "
+                                  "snapshot): %s", exc)
+            panic_positions = [p for p in (open_positions or [])
+                               if str(p.get("tsym") or "") in claimed_set]
+            panic_orders = [o for o in (open_orders or [])
+                            if str(o.get("tsym") or "") in claimed_set]
             # EXIT-ONLY: panic_squareoff_verified calls cancel_order + place_order
             # (sell/buy exits) with a bounded re-price loop + fill verification.
             panic_result = await panic_squareoff_verified(
@@ -2239,14 +2274,25 @@ async def _run_kill_switch() -> Dict[str, Any]:
             )
             transmitted = True
 
-            # Sweep ALL resting GTT/OCO alerts. panic_squareoff cancels working
+            # Sweep resting GTT/OCO alerts. panic_squareoff cancels working
             # ORDERS + flattens positions but does NOT touch resting GTT/OCO — those
             # would survive the panic and could fire later. Best-effort: a sweep
             # failure must NEVER block the panic flatten.
+            # DEFERRED tsyms are EXEMPT: the kill did not flatten them (another
+            # exit path holds their claim) and their resting OCO is exactly the
+            # backstop that deferral relies on if that other path then fails —
+            # sweeping it would leave a possibly-open position with nothing. An
+            # alert row with no readable tsym is cancelled (pre-deferral behavior).
+            _deferred_set = set(deferred)
             try:
                 for row in (await client.gtt_book() or []):
                     al_id = row.get("al_id") or row.get("Al_id")
                     if not al_id:
+                        continue
+                    _row_tsym = str(row.get("tsym") or row.get("Tsym") or "")
+                    if _row_tsym and _row_tsym in _deferred_set:
+                        log.info("kill_switch: keeping OCO/GTT %s for DEFERRED %s "
+                                 "(its exit is owned by another path)", al_id, _row_tsym)
                         continue
                     # Pick cancel_oco vs cancel_gtt from the row's ai_t: an OCO
                     # bracket reads back as the documented "LMT_BOS_O" (see gtt.py
@@ -2292,17 +2338,57 @@ async def _run_kill_switch() -> Dict[str, Any]:
                     await asyncio.sleep(_KILL_RESWEEP_DELAY)
                     r_orders = await client.order_book()
                     r_positions = await client.position_book()
+                    # A row whose netqty cannot be parsed is UNKNOWN, not flat —
+                    # it must poison "clean" (never a silent maybe-open position)
+                    # but is NOT fed to the panic (sizing off garbage is how a
+                    # naked short happens; the operator resolves it).
                     nonflat = [p for p in r_positions
                                if (_parse_netqty(p.get("netqty")) or 0) != 0]
+                    unparseable = [
+                        {"tsym": p.get("tsym"), "netqty": p.get("netqty")}
+                        for p in r_positions
+                        if p.get("netqty") is not None
+                        and _parse_netqty(p.get("netqty")) is None]
                     if nonflat or r_orders:
-                        log.warning("kill_switch: re-sweep found residual after ALL FLAT "
-                                    "(%d positions, %d orders) — re-flattening",
-                                    len(nonflat), len(r_orders))
+                        # Residual tsyms were never claimed in the first pass (they
+                        # weren't open then) — claim them NOW so the resweep can't
+                        # race a simultaneous guard/EOD square on the same fresh
+                        # position; DEFER any we cannot claim (the guard owns it).
+                        _r_deferred: List[str] = []
+                        for _rt in {str(p.get("tsym") or "") for p in nonflat}:
+                            if not _rt:
+                                continue
+                            if _rt in claimed_set or await _exit_claim_registry().claim(
+                                    _rt, kill_token, ttl_seconds=_KILL_CLAIM_TTL_SECONDS):
+                                if _rt not in claimed_set:
+                                    claimed_tsyms.append(_rt)  # released in finally
+                                    claimed_set.add(_rt)
+                            else:
+                                _r_deferred.append(_rt)
+                        r_nonflat = [p for p in nonflat
+                                     if str(p.get("tsym") or "") in claimed_set]
+                        r_orders_claimed = [
+                            o for o in (r_orders or [])
+                            if str(o.get("tsym") or "") in claimed_set]
+                        log.warning("kill_switch: re-sweep found residual after ALL "
+                                    "FLAT (%d positions, %d orders, %d deferred) — "
+                                    "re-flattening the claimed set",
+                                    len(nonflat), len(r_orders or []), len(_r_deferred))
                         resweep = await panic_squareoff_verified(
-                            client, r_orders, r_positions, uid=uid, actid=actid,
+                            client, r_orders_claimed, r_nonflat, uid=uid, actid=actid,
                             poll_seconds=_KILL_POLL_SECONDS)
+                        if _r_deferred:
+                            resweep["deferred_tsyms"] = sorted(_r_deferred)
+                            resweep["all_flat"] = None  # deferred ⇒ cannot claim flat
                     else:
-                        resweep = {"clean": True, "all_flat": True}
+                        resweep = {"clean": not unparseable,
+                                   "all_flat": True if not unparseable else None}
+                    if unparseable:
+                        resweep["unparseable_rows"] = unparseable
+                        resweep["clean"] = False
+                        log.error("kill_switch: re-sweep saw %d UNPARSEABLE netqty "
+                                  "row(s) — treating as UNKNOWN, not flat: %s",
+                                  len(unparseable), unparseable)
                 except BrokerReadError as exc:
                     resweep = {"read_error": str(exc.emsg)}
                     log.warning("kill_switch: re-sweep read failed: %s", exc)
@@ -2322,6 +2408,16 @@ async def _run_kill_switch() -> Dict[str, Any]:
         panic_result = plan_squareoff(open_orders, open_positions)
 
     message = _kill_summary_message(panic_result, connected)
+    # The headline is built from the FIRST panic — if the resweep then found (or
+    # failed on) a residual, "ALL FLAT" is no longer true and must not stand (the
+    # operator would walk away from a rejected re-flatten).
+    if resweep is not None and not (
+            resweep.get("clean") is True or resweep.get("all_flat") is True):
+        detail = (resweep.get("read_error") or resweep.get("error")
+                  or "residual positions/orders found after the flatten")
+        message = (f"Kill switch: first pass flattened, but the re-sweep is NOT "
+                   f"clean ({str(detail)[:160]}). Verify the account is flat and "
+                   "re-fire the kill if needed.")
     if read_error is not None:
         hint = TOKEN_EXPIRED_HINT if token_expired else f"broker read failed: {read_error}"
         entry_state = ("New entries are BLOCKED (latch tripped)"
