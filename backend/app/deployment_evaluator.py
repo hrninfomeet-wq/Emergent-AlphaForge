@@ -53,6 +53,11 @@ def _ist_time_of_ts(ts_ms: int) -> time:
     return (dt_utc + IST_OFFSET).time()
 
 
+def _ist_session_date_of_ts(ts_ms: int) -> str:
+    dt_utc = datetime.fromtimestamp(int(ts_ms) / 1000, tz=timezone.utc)
+    return (dt_utc + IST_OFFSET).strftime("%Y-%m-%d")
+
+
 def _is_blocked_by_window(ts_ms: int) -> Optional[str]:
     """Return blocker reason if the given bar timestamp falls in a blocked window."""
     t = _ist_time_of_ts(ts_ms)
@@ -368,16 +373,54 @@ async def evaluate_deployment_on_close(
     bar_ist_dt = datetime.fromtimestamp(candle_ts / 1000, tz=timezone.utc) + IST_OFFSET
     expiry_blocker = _is_blocked_by_expiry_day_cutoff(bar_ist_dt, next_expiry_iso)
 
-    # Strategy evaluate
-    try:
-        eval_ctx = build_live_eval_ctx(strategy, df_enriched, last_idx, instrument, merged_params)
-        sig = strategy.evaluate(last_bar, prev_bar, merged_params, eval_ctx)
-    except Exception as exc:
-        log.exception("strategy %s evaluate() failed for deployment %s", strategy_id, deployment_id)
-        await _mark_deployment_evaluated(db, deployment_id, candle_ts)
-        return {"deployment_id": deployment_id, "outcome": "error", "reason": f"strategy_evaluate_exception: {exc}"}
+    # ---- Track B: premium-momentum deployments use the premium session engine
+    # instead of the generic spot evaluate + per-bar contract re-resolution. The
+    # branch REJOINS the shared signal pipeline below (audit/lifecycle/dedupe all
+    # apply). See docs/superpowers/specs/2026-07-10-premium-momentum-track-b-*.md
+    pm_result = None
+    if strategy_id == "premium_momentum":
+        from app.premium_momentum_live import evaluate_premium_momentum_bar
+        from app.runtime import upstox_stream_manager
+        pm_contracts = await db.option_contracts.find(
+            {"underlying": instrument,
+             "expiry_date": {"$gte": _ist_session_date_of_ts(candle_ts)}},
+            {"_id": 0},
+        ).sort([("expiry_date", 1), ("strike", 1), ("side", 1)]).to_list(length=None)
+        # per-session weekly: keep only the nearest expiry >= session (blueprint
+        # "current weekly"); mirrors the backtest's expiry_for_session.
+        _expiries = sorted({str(c.get("expiry_date")) for c in pm_contracts if c.get("expiry_date")})
+        if _expiries:
+            pm_contracts = [c for c in pm_contracts if str(c.get("expiry_date")) == _expiries[0]]
+        pm_result = await evaluate_premium_momentum_bar(
+            locks_col=db.premium_locks, deployment=deployment, instrument=instrument,
+            candle_ts=candle_ts, spot_close=float(last_bar["close"]),
+            contracts=pm_contracts,
+            latest_tick_map=upstox_stream_manager.latest_tick_map,
+            now_ts=datetime.now(timezone.utc).timestamp(),
+        )
+        if pm_result.get("outcome") != "triggered":
+            await _mark_deployment_evaluated(db, deployment_id, candle_ts)
+            return {"deployment_id": deployment_id, "outcome": "no_setup",
+                    "reason": f"premium_{pm_result.get('outcome')}",
+                    "pm": {k: pm_result.get(k) for k in ("outcome", "reason", "blockers")},
+                    "candle_ts": candle_ts}
 
-    direction = str(getattr(sig, "direction", "NONE") or "NONE").upper()
+    # Strategy evaluate (skipped entirely for the Track B branch: the plugin's
+    # evaluate is deliberately inert — pm_result already carries the decision)
+    sig = None
+    if pm_result is None:
+        try:
+            eval_ctx = build_live_eval_ctx(strategy, df_enriched, last_idx, instrument, merged_params)
+            sig = strategy.evaluate(last_bar, prev_bar, merged_params, eval_ctx)
+        except Exception as exc:
+            log.exception("strategy %s evaluate() failed for deployment %s", strategy_id, deployment_id)
+            await _mark_deployment_evaluated(db, deployment_id, candle_ts)
+            return {"deployment_id": deployment_id, "outcome": "error", "reason": f"strategy_evaluate_exception: {exc}"}
+
+    if pm_result is None:
+        direction = str(getattr(sig, "direction", "NONE") or "NONE").upper()
+    else:
+        direction = str(pm_result["direction"]).upper()
     if direction not in ("CE", "PE"):
         await _mark_deployment_evaluated(db, deployment_id, candle_ts)
         return {"deployment_id": deployment_id, "outcome": "no_setup", "candle_ts": candle_ts}
@@ -400,13 +443,18 @@ async def evaluate_deployment_on_close(
     moneyness = str(moneyness_list[0] if isinstance(moneyness_list, list) and moneyness_list else "atm").lower()
     spot_price = float(last_bar["close"])
 
-    contract, contract_blocker = await _resolve_option_contract(
-        db,
-        instrument=instrument,
-        spot_price=spot_price,
-        direction=direction,
-        moneyness=moneyness,
-    )
+    if pm_result is not None:
+        # Track B: the contract comes from the SESSION LOCK — never re-resolved
+        # from the current bar's drifting spot (the audit's L-bypass site).
+        contract, contract_blocker = dict(pm_result["contract"]), None
+    else:
+        contract, contract_blocker = await _resolve_option_contract(
+            db,
+            instrument=instrument,
+            spot_price=spot_price,
+            direction=direction,
+            moneyness=moneyness,
+        )
 
     # No-data flag: contract exists but has no recent option candle
     no_recent_option_data = False
@@ -464,16 +512,31 @@ async def evaluate_deployment_on_close(
         audit_context["option_no_data"] = True
         all_blockers.append("option_no_data (no candle in last 5 minutes; signal recorded but not tracked for P&L)")
 
-    signal_doc = create_signal_doc(
-        instrument=instrument,
-        direction=direction,
-        strategy_id=strategy_id,
-        entry_price=spot_price,
-        confidence=getattr(sig, "score", None),
-        reasons=getattr(sig, "reasons", []) or [],
-        option_contract=contract or {},
-        context=audit_context,
-    )
+    if pm_result is None:
+        signal_doc = create_signal_doc(
+            instrument=instrument,
+            direction=direction,
+            strategy_id=strategy_id,
+            entry_price=spot_price,
+            confidence=getattr(sig, "score", None),
+            reasons=getattr(sig, "reasons", []) or [],
+            option_contract=contract or {},
+            context=audit_context,
+        )
+    else:
+        _pm_ref = float(pm_result["ref_premium"])
+        _pm_now = float(pm_result["premium_now"])
+        _pm_pct = ((_pm_now - _pm_ref) / _pm_ref * 100.0) if _pm_ref else 0.0
+        signal_doc = create_signal_doc(
+            instrument=instrument,
+            direction=direction,
+            strategy_id=strategy_id,
+            entry_price=spot_price,
+            confidence=100,
+            reasons=[f"premium +{_pm_pct:.1f}% over ref"],
+            option_contract=contract or {},
+            context=audit_context,
+        )
     signal_doc["deployment_id"] = deployment_id
     signal_doc["candle_ts"] = candle_ts
     signal_doc["blockers"] = all_blockers
@@ -487,6 +550,17 @@ async def evaluate_deployment_on_close(
         "spot_stop_pts": getattr(sig, "spot_stop_pts", None),
         "time_stop_minutes": getattr(sig, "time_stop_minutes", None),
     }
+    if pm_result is not None:
+        signal_doc["risk_hints"] = {
+            "target_pct": (params or {}).get("target_pct"),
+            "stop_pct": (params or {}).get("stop_pct"),
+            "spot_target_pts": None, "spot_stop_pts": None,
+            "time_stop_minutes": None,
+        }
+        signal_doc["premium_momentum"] = {
+            "ref_premium": pm_result["ref_premium"],
+            "premium_now": pm_result["premium_now"],
+        }
 
     if all_blockers:
         # Record as SKIPPED via lifecycle: WATCHING -> AUDITED is allowed but we also need
@@ -531,6 +605,12 @@ async def evaluate_deployment_on_close(
                 "candle_ts": candle_ts,
             }
         raise
+    if pm_result is not None and outcome == "clean":
+        from app.premium_lock_store import latch_trigger
+        await latch_trigger(db.premium_locks,
+                            deployment_id=deployment_id,
+                            session_date=_ist_session_date_of_ts(candle_ts),
+                            side=direction)
     await _mark_deployment_evaluated(db, deployment_id, candle_ts)
 
     return {
