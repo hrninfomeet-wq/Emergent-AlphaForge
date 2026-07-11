@@ -24,7 +24,7 @@ from app.live.option_premium import resolve_premium
 from app.premium_lock_store import (
     capture_ref, get_lock, get_or_create_lock, mark_done,
 )
-from app.premium_momentum import lock_reference_strike
+from app.premium_momentum import lock_reference_strike, momentum_triggered
 
 log = logging.getLogger(__name__)
 
@@ -43,15 +43,23 @@ def _ist_session_date(ts_ms: int) -> str:
 
 def _fresh_premium(latest_tick_map: Callable[[], Dict[str, Any]],
                    instrument_key: str, now_ts: float) -> Optional[Dict[str, Any]]:
-    """FRESH tick premium via the canonical resolver, else None (HOLD)."""
+    """FRESH tick premium via the canonical resolver, else None (HOLD).
+
+    The returned ``ts`` is the tick timestamp in epoch MILLISECONDS — the unit
+    persisted as ``{side}_ref_ts`` in the lock doc (matching ``candle_ts`` and
+    the raw tick feed). ``resolve_premium`` normalizes its ``ts`` to SECONDS,
+    so it is converted back to ms here."""
     try:
         tick = (latest_tick_map() or {}).get(instrument_key)
     except Exception:
+        log.warning("premium_momentum_live: latest_tick_map failed for %s — "
+                    "treating as no tick (HOLD)", instrument_key, exc_info=True)
         tick = None
     res = resolve_premium(instrument_key=instrument_key, tick=tick,
                           candle_close=None, now_ts=now_ts)
     if res.get("fresh") is True and res.get("premium") is not None:
-        return {"premium": float(res["premium"]), "ts": int(res.get("tick_ts") or 0)}
+        return {"premium": float(res["premium"]),
+                "ts": int(round(float(res.get("ts") or 0) * 1000.0))}
     return None
 
 
@@ -132,9 +140,16 @@ async def evaluate_premium_momentum_bar(
         if fp is None:
             missing_ref = True
             continue
-        await capture_ref(locks_col, deployment_id=dep_id, session_date=session,
-                          side=s, ref_premium=fp["premium"], ref_ts=fp["ts"])
-        lock[f"{s}_ref_premium"] = fp["premium"]
+        if await capture_ref(locks_col, deployment_id=dep_id, session_date=session,
+                             side=s, ref_premium=fp["premium"], ref_ts=fp["ts"]):
+            lock[f"{s}_ref_premium"] = fp["premium"]
+        else:
+            # lost the store's first-wins race — adopt the PERSISTED winner's
+            # value, never this process's losing premium.
+            lock = (await get_lock(locks_col, deployment_id=dep_id,
+                                   session_date=session)) or lock
+        if lock.get(f"{s}_ref_premium") is None:
+            missing_ref = True
     if missing_ref:
         if bar_hhmm > cutoff:
             await mark_done(locks_col, deployment_id=dep_id, session_date=session,
@@ -144,9 +159,14 @@ async def evaluate_premium_momentum_bar(
                 "blockers": ["ref_premium_unavailable (stale/absent tick — holding)"]}
 
     # --- monitor: first side to cross wins (CE first on a same-bar tie) ---
-    from app.premium_momentum import momentum_triggered
     mom_pct = params.get("momentum_pct")
     mom_pts = params.get("momentum_pts")
+    if mom_pts is not None:
+        # Explicit precedence: a user-set momentum_pts wins over momentum_pct
+        # (the registration schema DEFAULTS pct=15.0, so both-set is the normal
+        # shape of a pts deployment — momentum_triggered raises on both-set,
+        # which would silently dead-bar the session as outcome=error every bar).
+        mom_pct = None
     for side in sides:
         s = side.lower()
         key = str(((lock.get(s) or {}).get("instrument_key")) or "")
