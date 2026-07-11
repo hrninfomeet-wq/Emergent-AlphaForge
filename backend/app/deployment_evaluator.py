@@ -428,11 +428,21 @@ async def evaluate_deployment_on_close(
     # Resolve pretrade profile at signal time, snapshot for audit
     profile_name = str(deployment.get("pretrade_profile") or "Balanced")
     pretrade_settings = await _resolve_pretrade_filters(db, profile_name)
-    pretrade_blockers = _apply_pretrade_filter(
-        score=int(getattr(sig, "score", 0) or 0),
-        regime=last_bar.get("regime"),
-        filters=pretrade_settings,
-    )
+    if pm_result is not None:
+        # Track B: the premium engine IS the entry gate (ref capture, momentum
+        # threshold, late-lock cutoff, tick-freshness HOLDs). The score/regime
+        # pretrade filter is a spot-signal concept the mechanical blueprint never
+        # had (and the backtest never simulated): sig is None on this branch, so
+        # feeding score=0 into any seeded profile (Balanced min=60) would journal
+        # 'blocked' every bar and the strategy could NEVER trade. Bypass it —
+        # window/expiry/kill blockers below still apply unchanged.
+        pretrade_blockers: List[str] = []
+    else:
+        pretrade_blockers = _apply_pretrade_filter(
+            score=int(getattr(sig, "score", 0) or 0),
+            regime=last_bar.get("regime"),
+            filters=pretrade_settings,
+        )
 
     # Strategy-level blockers from the Signal dataclass
     strategy_blockers: List[str] = list(getattr(sig, "blockers", []) or [])
@@ -501,13 +511,21 @@ async def evaluate_deployment_on_close(
             "volume": float(last_bar.get("volume", 0) or 0),
             "ist_time": _ist_time_of_ts(candle_ts).strftime("%H:%M"),
         },
-        "score": int(getattr(sig, "score", 0) or 0),
+        # pm branch: sig is None — audit score must match the journaled
+        # confidence (100), never a contradictory 0 from the inert Signal.
+        "score": 100 if pm_result is not None else int(getattr(sig, "score", 0) or 0),
         "tracked_for_pnl": bool(contract and not no_recent_option_data and not all_blockers),
         # Trustworthy timing audit per user spec (2026-05-27).
         "bar_ts": candle_ts,                                         # the candle minute the strategy evaluated
         "decision_ts": datetime.now(timezone.utc).isoformat(),       # wall-clock when the evaluator decided
         "next_expiry_iso": next_expiry_iso,                          # source of truth for expiry-day cutoff
     }
+    if pm_result is not None:
+        # Honest audit: the settings snapshot above is what the profile WOULD
+        # have applied — record explicitly that the branch did not apply it.
+        audit_context["pretrade_bypassed"] = (
+            "premium_momentum (mechanical engine gates entry; score/regime filter not applicable)"
+        )
     if no_recent_option_data:
         audit_context["option_no_data"] = True
         all_blockers.append("option_no_data (no candle in last 5 minutes; signal recorded but not tracked for P&L)")
@@ -551,9 +569,12 @@ async def evaluate_deployment_on_close(
         "time_stop_minutes": getattr(sig, "time_stop_minutes", None),
     }
     if pm_result is not None:
+        # merged_params, NOT raw deployment params: a deployment whose params
+        # omit stop_pct must journal the plugin-schema default (20.0), or the
+        # live exit plan silently falls through to the 50% deep-default floor.
         signal_doc["risk_hints"] = {
-            "target_pct": (params or {}).get("target_pct"),
-            "stop_pct": (params or {}).get("stop_pct"),
+            "target_pct": merged_params.get("target_pct"),
+            "stop_pct": merged_params.get("stop_pct"),
             "spot_target_pts": None, "spot_stop_pts": None,
             "time_stop_minutes": None,
         }
@@ -607,10 +628,22 @@ async def evaluate_deployment_on_close(
         raise
     if pm_result is not None and outcome == "clean":
         from app.premium_lock_store import latch_trigger
-        await latch_trigger(db.premium_locks,
-                            deployment_id=deployment_id,
-                            session_date=_ist_session_date_of_ts(candle_ts),
-                            side=direction)
+        latched = await latch_trigger(db.premium_locks,
+                                      deployment_id=deployment_id,
+                                      session_date=_ist_session_date_of_ts(candle_ts),
+                                      side=direction)
+        if not latched:
+            # The lock store refused the latch (concurrent first-to-trigger win,
+            # or done_for_day flipped mid-bar, e.g. the EOD backstop). Fail SAFE
+            # on trades: downgrade the outcome so the sink tee (outcome=="clean")
+            # never routes this signal; the CONFIRMED journal row remains as the
+            # visible audit trail of the refused pass.
+            log.warning(
+                "premium latch refused for deployment=%s bar=%s side=%s — "
+                "signal journaled but NOT routed to a trade sink",
+                deployment_id, candle_ts, direction,
+            )
+            outcome = "latch_refused"
     await _mark_deployment_evaluated(db, deployment_id, candle_ts)
 
     return {

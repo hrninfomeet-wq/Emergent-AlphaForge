@@ -216,7 +216,7 @@ def make_deployment(last_evaluated_ts: int = 0) -> Dict[str, Any]:
         "timeframe": "1m",
         "confirmation_mode": "1m_close",
         "option_policy": {"moneyness": ["atm"], "expiry_policy": "next_available"},
-        "pretrade_profile": "Balanced",   # not seeded -> empty filter settings
+        "pretrade_profile": "Balanced",   # branch bypasses the score/regime filter (see test below with the REAL seeded profile)
         "mode": "shadow",
         "risk": {},
         "status": "ACTIVE",
@@ -318,6 +318,96 @@ def test_rerun_same_trigger_bar_is_idempotent():
     assert r2["outcome"] == "skipped"
     assert r2["reason"] == "already_evaluated_this_bar"
     assert len(db.signals.rows) == 1                               # no double journal
+
+
+# --- review fix (critical): the PRODUCTION-seeded profile must not block ------
+
+def test_trigger_journals_clean_with_real_seeded_balanced_profile():
+    """Seed the REAL Balanced profile (server startup seeds DEFAULT_PROFILES).
+
+    sig is None on the Track B branch; before the fix the pipeline fed score=0
+    into _apply_pretrade_filter, so Balanced's min_confidence_score=60 (and its
+    allowed_regimes) blocked EVERY trigger in production — outcome 'blocked'
+    each bar, latch never set, strategy could never trade."""
+    from app.runtime import DEFAULT_PROFILES
+    db = _FakeDB()
+    dep = seed_db(db, end_ts=TS_0931)
+    db.pretrade_profiles.rows = [
+        {"name": "Balanced", "settings": dict(DEFAULT_PROFILES["Balanced"])}
+    ]
+    _eval_with_ticks(db, dep, _fresh_ticks(100.0, 110.0))          # ref bar
+    db.candles_1m.rows.append({
+        "instrument": "NIFTY", "ts": TS_0932,
+        "open": 24000.0, "high": 24001.0, "low": 23999.0,
+        "close": 24000.5, "volume": 2000,
+    })
+    db.ticks.rows = [{"instrument_key": CE_KEY, "ts": now_ms(), "last_price": 116.0}]
+    res = _eval_with_ticks(db, _dep_from_db(db), _fresh_ticks(116.0, 111.0))
+
+    assert res["outcome"] == "clean"
+    assert res["blockers"] == []                                   # no pretrade_min_score / pretrade_regime
+    sig = db.signals.rows[0]
+    assert sig["state"] == "CONFIRMED"
+    # audit is honest + internally consistent: bypass recorded, score==confidence
+    assert "pretrade_bypassed" in sig["context"]
+    assert sig["context"]["score"] == 100
+    assert sig["confidence"] == 100
+    assert db.premium_locks.docs[0]["triggered_side"] == "CE"
+
+
+# --- review fix (important): risk_hints come from merged_params ---------------
+
+def test_risk_hints_use_schema_defaults_when_deployment_omits_stop_pct():
+    """A deployment whose params OMIT stop_pct must journal the plugin-schema
+    default (20.0) via merged_params — raw params journaled None, and the live
+    exit plan then fell through to the 50% deep-default floor (2.5x the stop)."""
+    db = _FakeDB()
+    dep = seed_db(db, end_ts=TS_0931)
+    dep["params"].pop("stop_pct")                                  # partial override set
+    db.strategy_deployments.rows = [dict(dep)]
+    _eval_with_ticks(db, dep, _fresh_ticks(100.0, 110.0))          # ref bar
+    db.candles_1m.rows.append({
+        "instrument": "NIFTY", "ts": TS_0932,
+        "open": 24000.0, "high": 24001.0, "low": 23999.0,
+        "close": 24000.5, "volume": 2000,
+    })
+    db.ticks.rows = [{"instrument_key": CE_KEY, "ts": now_ms(), "last_price": 116.0}]
+    res = _eval_with_ticks(db, _dep_from_db(db), _fresh_ticks(116.0, 111.0))
+
+    assert res["outcome"] == "clean"
+    sig = db.signals.rows[0]
+    assert sig["risk_hints"]["stop_pct"] == 20.0                   # schema default, not None
+    assert sig["risk_hints"]["target_pct"] is None                 # schema default None preserved
+
+
+# --- review fix (minor): a refused latch must not route the signal ------------
+
+def test_latch_refusal_downgrades_outcome_so_signal_is_not_routed():
+    """If latch_trigger returns False (concurrent latch / done_for_day flipped
+    mid-bar) the pass must NOT stay 'clean' — the sink tee routes exactly
+    outcome=='clean', so a refused latch would otherwise place a trade for a
+    session the lock store considers closed."""
+    db = _FakeDB()
+    dep = seed_db(db, end_ts=TS_0931)
+    _eval_with_ticks(db, dep, _fresh_ticks(100.0, 110.0))          # ref bar
+    db.candles_1m.rows.append({
+        "instrument": "NIFTY", "ts": TS_0932,
+        "open": 24000.0, "high": 24001.0, "low": 23999.0,
+        "close": 24000.5, "volume": 2000,
+    })
+    db.ticks.rows = [{"instrument_key": CE_KEY, "ts": now_ms(), "last_price": 116.0}]
+
+    async def _refuse(*a, **k):
+        return False
+
+    with patch("app.premium_lock_store.latch_trigger", _refuse):
+        res = _eval_with_ticks(db, _dep_from_db(db), _fresh_ticks(116.0, 111.0))
+
+    assert res["outcome"] == "latch_refused"                       # tee skips (!= 'clean')
+    assert len(db.signals.rows) == 1                               # journal kept (audit trail)
+    assert db.signals.rows[0]["state"] == "CONFIRMED"
+    # the real store was never latched by this pass
+    assert db.premium_locks.docs[0].get("triggered_side") is None
 
 
 # --- hard requirement (b): a BLOCKED journal must NOT burn the session --------
