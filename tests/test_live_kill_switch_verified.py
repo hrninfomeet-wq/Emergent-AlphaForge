@@ -326,3 +326,271 @@ def test_never_raises_on_client_explosions():
     assert leg["outcome"] == "FAILED"
     assert "socket torn" in leg["reason"]
     assert out["all_flat"] is None  # flat-check unavailable ≠ flat
+
+
+# ---------- lost-ack place → next pass must ADOPT, never blind re-place ----------
+# A RAISED place_order may have LANDED at the broker (httpx timeout where the
+# POST was processed). The old loop left attempt["placed"]=False so the next
+# pass skipped the cancel-prev branch and re-placed the full remaining qty next
+# to the live ghost → both fill → naked short. The loop must scan the order
+# book for remarks == the attempt's client_order_id and adopt what it finds.
+
+from app.live.broker_protocol import OrderResult  # noqa: E402
+from app.live.kill_switch import LEG_FAILED, TERMINAL  # noqa: E402
+
+
+class LostAckKillClient(MockNoren):
+    """place_order ACCEPTS (order lands, remarks=cid) then RAISES on the first
+    call. fill_ghost=True makes the landed ghost fill COMPLETE immediately
+    (position book flattens). break_book_after_raise=True makes subsequent
+    order_book reads raise (same degraded broker)."""
+
+    def __init__(self, *, fill_ghost=False, land=True,
+                 break_book_after_raise=False, **kw):
+        super().__init__(**kw)
+        self._to_raise = 1
+        self._fill_ghost = fill_ghost
+        self._land = land
+        self._break_book = break_book_after_raise
+        self.place_calls = 0
+
+    async def place_order(self, intent):
+        self.place_calls += 1
+        if self._to_raise > 0:
+            self._to_raise -= 1
+            if self._land:
+                res = await super().place_order(intent)
+                if self._fill_ghost:
+                    o = self._orders[res.norenordno]
+                    o["status"] = "COMPLETE"
+                    o["fillshares"] = str(o["qty"])
+                    self._position_book_data = []
+            if self._break_book:
+                self.script_read_error("order_book", "Server Timeout")
+            raise RuntimeError("httpx.ReadTimeout: PlaceOrder")
+        return await super().place_order(intent)
+
+    async def cancel_order(self, norenordno):
+        o = self._orders.get(norenordno)
+        if o is not None and o["status"] == "COMPLETE":
+            return OrderResult(ok=False,
+                               rejreason="Rejected : ORA:Order not found to Cancel",
+                               raw={"stat": "Not_Ok"})
+        return await super().cancel_order(norenordno)
+
+
+def test_lost_ack_place_is_adopted_never_double_placed():
+    """The pass-1 place raises but LANDED (ghost OPEN). Pass 2 must adopt the
+    ghost via remarks==cid and run the normal cancel+resize path — never place
+    a second full-qty SELL next to the live ghost."""
+    cl = LostAckKillClient(position_book_data=[_pos()])
+    out = _run(panic_squareoff_verified(cl, [], [_pos()], sleep=_nosleep))
+    leg = out["legs"][0]
+    working_sells = [o for o in cl._orders.values()
+                     if o["trantype"] == "S"
+                     and str(o["status"]).upper() not in TERMINAL]
+    assert len(working_sells) == 1, (
+        f"{len(working_sells)} working SELLs — the lost-ack ghost plus a blind "
+        "re-place can both fill → naked short")
+    # The ghost was adopted into the pass-1 attempt (then cancelled by pass 2).
+    assert leg["attempts"][0]["norenordno"] == "MOCK1"
+    assert cl._orders["MOCK1"]["status"] == "CANCELED"
+
+
+def test_lost_ack_ghost_that_filled_places_nothing_more():
+    """The lost-ack ghost FILLS before the next pass: the position is flat.
+    Adoption must see COMPLETE + fillshares and classify the leg FILLED —
+    placing the 'remaining' would be a full-qty SELL on a flat book."""
+    cl = LostAckKillClient(fill_ghost=True, position_book_data=[_pos()])
+    out = _run(panic_squareoff_verified(cl, [], [_pos()], sleep=_nosleep))
+    leg = out["legs"][0]
+    assert cl.place_calls == 1, (
+        "a second exit was placed after the lost-ack ghost already filled — "
+        "naked short")
+    assert leg["outcome"] == LEG_FILLED
+    assert out["filled"] == 1
+    assert out["all_flat"] is True
+
+
+def test_lost_ack_with_unreadable_book_never_replaces():
+    """Fail-CLOSED: the place raised and the order book is unreadable — the
+    loop cannot know whether the exit landed, so it must NOT re-place (the
+    ghost may be live). The leg ends FAILED (loud), never double-placed."""
+    cl = LostAckKillClient(break_book_after_raise=True,
+                           position_book_data=[_pos()])
+    out = _run(panic_squareoff_verified(cl, [], [_pos()], sleep=_nosleep))
+    leg = out["legs"][0]
+    assert cl.place_calls == 1, (
+        "place_order was retried while the order book was UNREADABLE — a "
+        "possible ghost SELL + this retry = naked short")
+    assert leg["outcome"] == LEG_FAILED
+    assert "httpx.ReadTimeout" in (leg["reason"] or "")
+
+
+def test_lost_ack_that_never_landed_is_replaced_next_pass():
+    """Guard-rail: the raised place never landed (readable book, cid absent) —
+    the next pass must still place the exit (a kill must flatten)."""
+    cl = LostAckKillClient(land=False, position_book_data=[_pos()])
+    out = _run(panic_squareoff_verified(cl, [], [_pos()], sleep=_nosleep))
+    leg = out["legs"][0]
+    assert any(a.get("placed") for a in leg["attempts"])
+    working_sells = [o for o in cl._orders.values()
+                     if o["trantype"] == "S"
+                     and str(o["status"]).upper() not in TERMINAL]
+    assert len(working_sells) == 1
+
+
+# ---------- pass-1 confirm barrier — pre-existing working orders --------------
+# Step-1 cancels used to fire-and-forget: a pre-existing working order (e.g. a
+# resting guard exit) that FILLED before its cancel landed still got a full-qty
+# leg placed from the stale position snapshot → over-sell → naked short. After
+# the cancels, ONE order-book re-fetch must confirm the cancelled set is
+# terminal, read fillshares of the filled ones, and re-size/skip legs (the
+# over-sell-safe logic reprice_exit_leg already implements).
+
+
+class PreexistingFillOnCancelClient(MockNoren):
+    """The pre-existing working order fills before its cancel lands: the cancel
+    comes back 'not found', the book shows it terminal with fillshares, and the
+    position book reflects the fill."""
+
+    def __init__(self, ordno, *, fill_qty, post_book, cancel_ok=False,
+                 terminal_status="COMPLETE", **kw):
+        super().__init__(**kw)
+        self._fill_ordno = ordno
+        self._fill_qty = fill_qty
+        self._post_book = post_book
+        self._cancel_ok = cancel_ok
+        self._terminal_status = terminal_status
+
+    async def cancel_order(self, norenordno):
+        if norenordno == self._fill_ordno:
+            o = self._orders[norenordno]
+            o["status"] = self._terminal_status
+            o["fillshares"] = str(self._fill_qty)
+            self._position_book_data = list(self._post_book)
+            if not self._cancel_ok:
+                return OrderResult(
+                    ok=False,
+                    rejreason="Rejected : ORA:Order not found to Cancel",
+                    raw={"stat": "Not_Ok"})
+            return OrderResult(ok=True, norenordno=norenordno)
+        return await super().cancel_order(norenordno)
+
+
+def _seed_working(cl, ordno="G1", qty=65, trantype="S",
+                  tsym="NIFTY26JUN26C25000"):
+    row = {"norenordno": ordno, "tsym": tsym, "status": "OPEN",
+           "trantype": trantype, "qty": qty, "fillshares": "0",
+           "prc": 199.0, "exch": "NFO", "prd": "M"}
+    cl._orders[ordno] = row
+    return dict(row)
+
+
+def test_preexisting_exit_fill_during_cancel_places_nothing():
+    """THE window: a resting guard exit fills before its cancel lands → the
+    position is already flat. The pass-1 leg must be skipped (FILLED), not
+    placed full-qty from the stale snapshot."""
+    cl = PreexistingFillOnCancelClient(
+        "G1", fill_qty=65, post_book=[_pos(netqty="0")],
+        position_book_data=[_pos()])
+    row = _seed_working(cl)
+    out = _run(panic_squareoff_verified(cl, [row], [_pos()], sleep=_nosleep))
+    new_orders = [o for o in cl._orders.values() if o["norenordno"] != "G1"]
+    assert new_orders == [], (
+        f"panic placed {[o['qty'] for o in new_orders]} after the resting exit "
+        "already flattened the position → naked short")
+    assert out["legs"][0]["outcome"] == LEG_FILLED
+    assert out["all_flat"] is True
+
+
+def test_preexisting_exit_partial_fill_resizes_leg():
+    """A partial fill (25/65) in the cancel window shrinks the position to 40 —
+    every placed exit must be sized 40, never the stale 65."""
+    cl = PreexistingFillOnCancelClient(
+        "G1", fill_qty=25, post_book=[_pos(netqty="40")], cancel_ok=True,
+        terminal_status="CANCELED", position_book_data=[_pos()])
+    row = _seed_working(cl)
+    out = _run(panic_squareoff_verified(cl, [row], [_pos()], sleep=_nosleep))
+    placed = [o for o in cl._orders.values() if o["norenordno"] != "G1"]
+    assert placed, "the remaining 40 must still be flattened"
+    assert all(o["qty"] == 40 for o in placed), (
+        f"placed qtys {[o['qty'] for o in placed]} — selling the stale 65 "
+        "against a 40 position is a 25-lot naked short")
+    assert out["legs"][0]["qty"] == 40
+
+
+def test_preexisting_order_that_wont_cancel_blocks_the_leg():
+    """The cancelled set is NOT confirmed terminal (the order survives the
+    cancel) → placing the exit next to a live working order risks the
+    double-sell; the leg must be blocked LOUDLY, nothing placed."""
+    class _StubbornClient(MockNoren):
+        async def cancel_order(self, norenordno):
+            if norenordno == "G1":
+                return OrderResult(ok=True, norenordno=norenordno)  # never clears
+            return await super().cancel_order(norenordno)
+
+    cl = _StubbornClient(position_book_data=[_pos()])
+    row = _seed_working(cl)
+    out = _run(panic_squareoff_verified(cl, [row], [_pos()], sleep=_nosleep))
+    new_orders = [o for o in cl._orders.values() if o["norenordno"] != "G1"]
+    assert new_orders == [], (
+        "a full-qty exit was placed while the resting guard exit is still "
+        "WORKING — if both fill the account is short")
+    leg = out["legs"][0]
+    assert leg["outcome"] == LEG_FAILED
+    assert "unconfirmed" in (leg["reason"] or "").lower()
+    assert out["total"] is False
+
+
+def test_cancel_confirm_read_failure_blocks_the_leg():
+    """The barrier's order-book re-fetch raises → the cancelled set cannot be
+    confirmed terminal → fail CLOSED (no legs placed for that scrip)."""
+    cl = MockNoren(position_book_data=[_pos()])
+    row = _seed_working(cl)
+    cl.script_read_error("order_book", "Session Expired : Invalid Session Key")
+    out = _run(panic_squareoff_verified(cl, [row], [_pos()], sleep=_nosleep))
+    new_orders = [o for o in cl._orders.values() if o["norenordno"] != "G1"]
+    assert new_orders == [], (
+        "exits were placed although the cancel-confirm read FAILED — the "
+        "resting order may still be live → double-sell risk")
+    assert out["legs"][0]["outcome"] == LEG_FAILED
+    assert out["total"] is False
+
+
+def test_untracked_working_order_on_another_scrip_blocks_its_leg():
+    """An OCO leg that TRIGGERED between the caller's snapshot and the barrier
+    is a working order the kill never cancelled. Its scrip's leg must be
+    blocked (that order can fill against the position → double-sell), even
+    though the scrip had NO attempted cancel; other scrips flatten normally."""
+    tsym_a = "NIFTY26JUN26C25000"
+    tsym_b = "BANKNIFTY26JUN26C52000"
+    cl = MockNoren(position_book_data=[_pos(tsym=tsym_a),
+                                       _pos(tsym=tsym_b, netqty="30")])
+    row_a = _seed_working(cl, ordno="G1", tsym=tsym_a)      # in the snapshot
+    _seed_working(cl, ordno="X9", qty=30, tsym=tsym_b)      # NOT in the snapshot
+    out = _run(panic_squareoff_verified(
+        cl, [row_a], [_pos(tsym=tsym_a), _pos(tsym=tsym_b, netqty="30")],
+        sleep=_nosleep))
+    placed = [o for o in cl._orders.values()
+              if o["norenordno"] not in ("G1", "X9")]
+    assert placed and all(o["tsym"] == tsym_a for o in placed), (
+        "an exit was placed on the scrip with an untracked WORKING order — "
+        "if both fill the account is short")
+    legs = {l["tsym"]: l for l in out["legs"]}
+    assert legs[tsym_b]["outcome"] == LEG_FAILED
+    assert "untracked" in (legs[tsym_b]["reason"] or "")
+    assert any(a.get("placed") for a in legs[tsym_a]["attempts"])
+
+
+def test_clean_cancel_still_flattens_full_qty():
+    """Green-path guard: the pre-existing order cancels cleanly (terminal,
+    fillshares 0, book unchanged) → the barrier must NOT over-block; the leg
+    is placed for the full qty as before."""
+    cl = MockNoren(position_book_data=[_pos()])
+    row = _seed_working(cl)
+    out = _run(panic_squareoff_verified(cl, [row], [_pos()], sleep=_nosleep))
+    assert cl._orders["G1"]["status"] == "CANCELED"
+    placed = [o for o in cl._orders.values() if o["norenordno"] != "G1"]
+    assert placed and placed[0]["qty"] == 65
+    assert any(a.get("placed") for a in out["legs"][0]["attempts"])

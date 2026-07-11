@@ -36,7 +36,10 @@ Architecture
   - Builds a marketable-limit exit in the CORRECT direction (long→SELL, short→BUY).
   - If lp is missing/non-finite/≤0 → returns {squared: False, reason: 'unpriced'}.
     The caller (engine) MUST halt on squared=False — it NEVER silently skips.
-  - Retries a rejected exit ONCE (same qty/prc, fresh client_order_id).
+  - Retries a rejected exit ONCE (same qty/prc, fresh client_order_id). A
+    RAISED place is first resolved against the order book (remarks==cid): a
+    landed order is ADOPTED, never re-posted; an unreadable book means NO
+    retry (fail closed — the lost-ack double-sell guard).
   - On two consecutive rejects → {squared: False, failures: [...]}. NO raise.
   - NEVER applies fat-finger or throttle guards to an exit intent.
   - NEVER raises; always returns a dict.
@@ -63,11 +66,13 @@ from app.live.exit_claims import claim_exit
 from app.live.idempotency import new_client_order_id
 from app.live.kill_switch import (
     TERMINAL,
+    _REJECTED_STATUSES,
     _leg_price,
     _normalize_status,
     _order_row,
     _parse_netqty,
     _pos_float,
+    _scan_order_by_remarks,
 )
 
 log = logging.getLogger(__name__)
@@ -430,6 +435,17 @@ async def _square_position_impl(
       A rejected place_order is retried ONCE with the same qty/prc but a fresh
       client_order_id.  If the retry also fails, squared=False is returned with
       both reject reasons in `failures`.  No further retries; no raise.
+
+    Lost-ack guard (double-sell window):
+      A place_order that RAISED (transport error) may still have been ACCEPTED
+      by the broker.  Before the retry, the order book is scanned for
+      remarks == the first attempt's client_order_id (the resume_pending
+      adoption pattern): a landed non-REJECTED order is ADOPTED (squared=True,
+      its norenordno, note says adopted) instead of re-posted; the retry only
+      happens when a READABLE book confirms nothing landed (or it landed
+      REJECTED).  An unreadable book → squared=False with
+      reason='cancel_unconfirmed' and NO retry — never a blind same-qty
+      re-post next to a possible live ghost.
     """
     failures: List[str] = []
     tsym = position.get("tsym", "")
@@ -633,8 +649,7 @@ async def _square_position_impl(
     qty = abs(netqty)
     prc = _marketable_prc(ref, trantype, band_pct)
 
-    async def _try_place() -> "OrderResult":  # type: ignore[name-defined]  # noqa: F821
-        cid = new_client_order_id()
+    async def _try_place(cid: str) -> "OrderResult":  # type: ignore[name-defined]  # noqa: F821
         intent = OrderIntent(
             client_order_id=cid,
             trantype=trantype,
@@ -651,11 +666,14 @@ async def _square_position_impl(
         return await client.place_order(intent)
 
     # First attempt
+    cid1 = new_client_order_id()
+    raised_first = False
     try:
-        result = await _try_place()
+        result = await _try_place(cid1)
     except Exception as exc:
         failures.append(str(exc))
         result = None  # type: ignore[assignment]
+        raised_first = True
 
     if result is not None and result.ok:
         return {
@@ -672,9 +690,47 @@ async def _square_position_impl(
     if result is not None and not result.ok:
         failures.append(result.rejreason or "place_order returned ok=False")
 
+    if raised_first:
+        # LOST-ACK GUARD (double-sell window): the first place RAISED — a
+        # transport error (httpx timeout) where the broker may still have
+        # ACCEPTED the order. Re-posting blind next to that ghost exit fills
+        # twice → naked short. Resolve against the order book first
+        # (remarks == cid, the resume_pending adoption pattern):
+        #   found & not REJECTED → ADOPT it (working or filled, it IS our
+        #     exit; the guard's confirmed-flat finalize owns the rest);
+        #   found REJECTED → no ghost can fill (fillshares 0) → retry ok;
+        #   absent from a READABLE book → never landed → retry ok;
+        #   unreadable → cannot know → NO retry (fail closed). The caller
+        #     retries next cycle; its cancel-all discovery absorbs any ghost
+        #     once the book is readable again.
+        verdict, ghost = await _scan_order_by_remarks(client, cid1)
+        if (verdict == "found"
+                and _normalize_status(ghost.get("status")) not in _REJECTED_STATUSES):
+            return {
+                "squared": True,
+                "via": "exit_order",
+                "norenordno": ghost.get("norenordno"),
+                "qty": qty,
+                "reason": reason,
+                "note": ("adopted in-flight exit (place raised after the "
+                         "broker accepted it — lost ack)"),
+                "failures": failures,
+            }
+        if verdict == "unreadable":
+            return {
+                "squared": False,
+                "via": None,
+                "norenordno": None,
+                "reason": "cancel_unconfirmed",
+                "note": ("exit place raised (transport) and the order book is "
+                         "unreadable — cannot verify whether the exit landed; "
+                         "refusing a blind retry (double-sell risk)"),
+                "failures": failures,
+            }
+
     # Retry once with a fresh client_order_id (same qty/prc)
     try:
-        result2 = await _try_place()
+        result2 = await _try_place(new_client_order_id())
     except Exception as exc2:
         failures.append(str(exc2))
         result2 = None  # type: ignore[assignment]
@@ -745,7 +801,12 @@ async def reprice_exit_leg(
       • ``{"squared": True, "via": "already_flat", "remaining": 0}`` — the position
         filled in the cancel window; nothing to place.
       • ``{"squared": True, "via": "exit_order", "norenordno": …, "qty": remaining}`` —
-        a fresh marketable LMT was placed for the confirmed remaining qty.
+        a fresh marketable LMT was placed for the confirmed remaining qty (a
+        ``note`` of "adopted …" means the place RAISED but had landed at the
+        broker and was adopted via remarks==cid instead of re-posted).
+      • ``{"squared": False, "reason": "cancel_unconfirmed", "failures": [...]}`` —
+        the place RAISED and the order book is unreadable: whether it landed is
+        unknowable, so NOTHING more was placed (lost-ack double-sell guard).
       • ``{"squared": False, "failures": [...]}`` — the place rejected twice.
 
     Direction is the position's own sign (long option → SELL). ``prev_qty`` is the qty
@@ -858,8 +919,7 @@ async def _reprice_exit_leg_impl(
     # ── Step D — place the marketable LMT for the confirmed remaining; retry once. ──
     failures: List[str] = []
 
-    async def _try_place() -> "OrderResult":  # type: ignore[name-defined]  # noqa: F821
-        cid = new_client_order_id()
+    async def _try_place(cid: str) -> "OrderResult":  # type: ignore[name-defined]  # noqa: F821
         intent = OrderIntent(
             client_order_id=cid, trantype=trantype, prctyp="LMT",
             exch=exch, tsym=tsym, qty=remaining, prc=prc, prd=prd,
@@ -867,19 +927,45 @@ async def _reprice_exit_leg_impl(
         )
         return await client.place_order(intent)
 
+    cid1 = new_client_order_id()
+    raised_first = False
     try:
-        result = await _try_place()
+        result = await _try_place(cid1)
     except Exception as exc:
         failures.append(str(exc))
         result = None  # type: ignore[assignment]
+        raised_first = True
     if result is not None and result.ok:
         return {"squared": True, "via": "exit_order",
                 "norenordno": result.norenordno, "qty": remaining}
     if result is not None and not result.ok:
         failures.append(result.rejreason or "place_order returned ok=False")
 
+    if raised_first:
+        # LOST-ACK GUARD (double-sell window): the raised place may have LANDED
+        # (httpx timeout where the broker processed the POST). Re-posting the
+        # remaining qty next to that live ghost fills twice → naked short.
+        # Resolve via remarks==cid (resume_pending adoption pattern): adopt a
+        # landed order; retry only when a READABLE book confirms it never
+        # landed (or it landed REJECTED — fillshares 0 by definition); place
+        # NOTHING while the book is unreadable (the guard retries next
+        # interval and this primitive's cancel-all absorbs any ghost then).
+        verdict, ghost = await _scan_order_by_remarks(client, cid1)
+        if (verdict == "found"
+                and _normalize_status(ghost.get("status")) not in _REJECTED_STATUSES):
+            return {"squared": True, "via": "exit_order",
+                    "norenordno": ghost.get("norenordno"), "qty": remaining,
+                    "note": ("adopted in-flight exit (place raised after the "
+                             "broker accepted it — lost ack)")}
+        if verdict == "unreadable":
+            return {"squared": False, "reason": "cancel_unconfirmed",
+                    "note": ("exit place raised (transport) and the order book "
+                             "is unreadable — cannot verify whether the exit "
+                             "landed; refusing a blind retry (double-sell risk)"),
+                    "failures": failures}
+
     try:
-        result2 = await _try_place()
+        result2 = await _try_place(new_client_order_id())
     except Exception as exc2:
         failures.append(str(exc2))
         result2 = None  # type: ignore[assignment]
