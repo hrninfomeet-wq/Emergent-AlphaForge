@@ -147,8 +147,8 @@ route and the existing entry-refused chip with zero frontend work.
 ## 5. Parity contract & documented divergences
 
 Shared pure helpers (`lock_reference_strike`, `momentum_triggered`, `stepped_trail_stop`) are
-the single source of rule truth. Divergences that remain, stated up front and measured in
-paper before any live arming:
+the single source of rule truth. Divergences that remain, stated up front (measurable via the
+optional paper parity report whenever the user wants — never a gate):
 
 | # | Divergence | Direction |
 |---|---|---|
@@ -157,18 +157,23 @@ paper before any live arming:
 | 3 | Entry mark = Upstox tick; exit mark = broker lp | small basis; measured |
 | 4 | Last-line trigger re-check can refuse an entry the backtest would fill | live more conservative — intentional |
 
-A parity report (paper entries/exits vs same-day sim) is part of the validation checklist, not
-an afterthought.
+The parity report (paper entries/exits vs same-day sim) ships as an available tool; running it
+is the user's choice, not a precondition for anything.
 
 ---
 
 ## 6. Key risks (from recon) and their mitigations
 
-1. **Branch topology (top risk):** the live-guard audit cluster (`fix/broker-truth-integrity`,
-   items #1/#3/#5/#6) is **not on main**, and its reconciliation is in flight in a separate
-   session (`task_452d7fbb`) — both lines touch `live_position_guard.py`/`executor.py`.
-   **Precondition:** land (or explicitly close) the reconciliation **before** Track B
-   implementation starts; the spec targets main and must be re-based over whatever lands.
+1. **Branch topology — RESOLVED 2026-07-10:** the live-guard reconciliation LANDED on main
+   (`23a61c1`…`4ec5e2b`: broker-truth, kill stop-all, recovery re-runs, guard fail-open +
+   square-by-tsym, adversarial hardening; `fix/broker-truth-integrity` superseded).
+   **Consequence:** this spec's file:line anchors were verified against pre-reconciliation
+   `0ebaff0`, and the reconciled commits changed ~1,365 lines in exactly these files — seam
+   SEMANTICS are unchanged (the reconcile merged both lines' meaning), but the implementation
+   plan MUST re-verify every line anchor against the post-reconcile tip before coding. Also:
+   `maybe_run_live_recovery` (per-token latch, item #5) now EXISTS on main (`runtime.py:350`)
+   — the recovery step in seam 8 hooks the `maybe_run_live_recovery`/`live_startup_recovery`
+   pair, not `live_startup_recovery` alone as originally written.
 2. **Subscription blindness windows** (WS revive, manual restart, band rebuild) — closed by the
    single shared pin helper (seam 7); during any residual gap the monitor HOLDs and the entry
    path refuses with a journaled reason (fail-visible, not fail-silent).
@@ -192,22 +197,30 @@ an afterthought.
 - **Container:** evaluator branch end-to-end with MockNoren + a fake tick map (lock → trigger →
   signal → paper entry → guard registration with stepped trail); recovery rehydration; the
   three double-entry guards.
-- **Adversarial review** (the session's established bar for live-money code) before any arming.
-- **Paper validation:** ≥ 10 complete paper sessions (the same threshold as the existing
-  forward-metrics library gate) with entries/exits + the parity report vs same-day sim.
-- **Live arming last**, behind the unchanged env gates, only after paper validates — consistent
-  with the project's standing "real-money readback on hold until a live signal validates" rule.
-  Market-hours dependency: the PC must be running in market hours for paper sessions (known
-  operating constraint).
+- **Adversarial review** (the session's established bar for live-money code) before merge.
+- **Live arming: NO Track-B-specific gate (user decision 2026-07-10).** A premium-momentum
+  deployment is live-armable the moment it exists, through exactly the same chain as every
+  other strategy (per-deployment arm confirm + `LIVE_AUTOPLACE_ARMED` / `LIVE_GUARD_ARMED` env
+  gates + broker connected + engine can_trade). Track B adds **no** paper-session precondition,
+  no waiting period, and no new blocker of any kind. The existing app-wide arm advisories stay
+  what they already are — informational, never blocking.
+- **Paper parity report (recommended tool, not a gate):** the paper path exercises the identical
+  lock/trigger/exit machinery, so a paper-vs-same-day-sim parity report is available whenever
+  the user wants to measure the §5 divergences — entirely optional. Market-hours dependency
+  noted: the PC must be running in market hours for either paper or live sessions.
 
 ---
 
 ## 8. Sequencing
 
-0. **Precondition:** live-guard reconciliation (`task_452d7fbb`) lands or is explicitly closed.
-1. Lock collection + state machine + evaluator branch (paper-effective immediately).
+0. **Precondition SATISFIED (2026-07-10):** the live-guard reconciliation landed on main
+   (`4ec5e2b`). Plan step 0 becomes: re-verify this spec's line anchors against the
+   post-reconcile tip (semantics unchanged; lines moved).
+1. Lock collection + state machine + evaluator branch (paper- AND live-effective through the
+   standard chain from day one).
 2. `stepped_xy` guard mode + exit-plan carriage.
-3. Subscription pin helper (all three call sites) + recovery step 4.
+3. Subscription pin helper (all three call sites) + recovery step (hooks the
+   `maybe_run_live_recovery` per-token latch now on main).
 4. Last-line re-check + failure-visibility reasons + UI status chip verification.
-5. Adversarial review → container rebuild → paper sessions → parity report → (user decision)
-   live arming.
+5. Adversarial review → container rebuild → **live-armable immediately at user discretion**
+   (standard arm chain + env gates only); optional paper parity report available as a tool.
