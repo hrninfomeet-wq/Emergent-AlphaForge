@@ -17,7 +17,6 @@ sys.path.insert(0, str(ROOT / "backend"))
 import pandas as pd
 
 from app.strategies.plugins.gap_fade import GapFade
-from app.strategies.plugins.opening_range_adaptive import OpeningRangeAdaptive
 from app.strategies.scenario_routing_base import ScenarioRoutedStrategyBase
 from app.strategies.session_features import gap_by_session, opening_range_by_session
 
@@ -84,6 +83,18 @@ def test_gap_fast_path_matches_per_bar_reference():
         assert GapFade._gap(row, fast_ctx) == _ref_gap(row, df, i), f"gap mismatch at bar {i}"
 
 
+def _or_from_precomputed(row, pre, i):
+    """The documented consumer contract of ``opening_range_by_session``: gate with
+    ``i >= or_ready_idx[session]``, then read the session's (or_hi, or_lo). Inlined
+    here since its only shipped consumer (OpeningRangeAdaptive) was deliberately
+    deleted; the helper stays for custom strategies."""
+    sess = row.get("session_date")
+    ready = pre["or_ready_idx"].get(sess)
+    if ready is None or int(i) < int(ready):
+        return None  # still forming (or never forms this session)
+    return pre["or_hi"][sess], pre["or_lo"][sess]
+
+
 def test_opening_range_fast_path_matches_per_bar_reference():
     df = _multi_session_df()
     M = 15
@@ -91,9 +102,7 @@ def test_opening_range_fast_path_matches_per_bar_reference():
     assert set(pre) >= {"or_hi", "or_lo", "or_ready_idx"}
     for i in range(len(df)):
         row = df.iloc[i]
-        fast_ctx = {"i": i, "or_hi": pre["or_hi"], "or_lo": pre["or_lo"],
-                    "or_ready_idx": pre["or_ready_idx"]}
-        assert OpeningRangeAdaptive._opening_range(row, fast_ctx, M) == \
+        assert _or_from_precomputed(row, pre, i) == \
             _ref_opening_range(row, df, i, M), f"OR mismatch at bar {i}"
 
 

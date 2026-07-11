@@ -6,11 +6,12 @@ sys.path.insert(0, str(ROOT / "backend"))
 from app.strategies.base import get_registry, StrategyRegistry, StrategyBase
 
 
-#: The 11 shipped strategies that moved to plugins/ (deletable); only
-#: confluence_scalper stays a permanent built-in.
+#: The shipped strategies that moved to plugins/ (deletable); only
+#: confluence_scalper stays a permanent built-in. opening_range_adaptive moved
+#: too, then was deliberately deleted (0ebaff0) — deletable is the point.
 MOVED_TO_PLUGINS = (
     "adaptive_regime_scalper", "explosive_reversal", "fibonacci_pullback",
-    "gap_fade", "opening_range_adaptive", "opening_range_breakout",
+    "gap_fade", "opening_range_breakout",
     "opening_range_regime_router", "smc_liquidity_sweep_fvg",
     "squeeze_expansion_breakout", "vwap_mean_reversion", "vwap_pullback_scalp",
 )
@@ -23,7 +24,7 @@ def test_meta_includes_origin_for_builtin():
 
 
 def test_shipped_strategies_are_plugins_except_confluence():
-    """Item D: the 11 moved strategies register from plugins/ (origin=custom →
+    """Item D: the moved strategies register from plugins/ (origin=custom →
     retire+delete both possible); ids all still present; confluence_scalper is
     the only remaining true built-in (delete refuses)."""
     reg = get_registry(); reg.auto_discover()

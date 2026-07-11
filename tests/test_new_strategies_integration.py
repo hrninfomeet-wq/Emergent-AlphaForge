@@ -9,7 +9,7 @@ from app.strategies.base import get_registry
 from app.indicators import precompute_all_indicators
 from tests._adaptive_testutil import make_sessions
 
-NEW_IDS = ["squeeze_expansion_breakout", "adaptive_regime_scalper", "opening_range_adaptive"]
+NEW_IDS = ["squeeze_expansion_breakout", "adaptive_regime_scalper"]
 
 
 def test_new_strategies_auto_discovered():

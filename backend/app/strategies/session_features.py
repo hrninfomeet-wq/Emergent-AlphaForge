@@ -49,12 +49,13 @@ def orb_range_by_session(df: pd.DataFrame, range_minutes: int = 15) -> Dict[str,
 def opening_range_by_session(df: pd.DataFrame, or_minutes: int) -> Dict[str, Dict]:
     """Gated opening range (first ``or_minutes`` bars) high/low per session_date.
 
-    Mirrors ``OpeningRangeAdaptive._opening_range``: the range is only valid once
-    the session has accumulated MORE than ``or_minutes`` bars ("still forming"
-    before that). ``or_ready_idx[session]`` is the global RangeIndex position of
-    the first bar at which the range is ready, so a strategy gates with
+    Unlike ``orb_range_by_session`` the range is only valid once the session has
+    accumulated MORE than ``or_minutes`` bars ("still forming" before that).
+    ``or_ready_idx[session]`` is the global RangeIndex position of the first bar
+    at which the range is ready, so a strategy gates with
     ``i >= or_ready_idx[session]``. Sessions with <= or_minutes bars never form a
-    range and are omitted entirely.
+    range and are omitted entirely. Its shipped consumer (OpeningRangeAdaptive)
+    was deliberately deleted; the helper stays for custom strategies.
     """
     or_hi: Dict[str, float] = {}
     or_lo: Dict[str, float] = {}
