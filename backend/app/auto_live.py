@@ -347,6 +347,46 @@ async def auto_live_trade_for_signal(
                     signal_id, instrument_key)
         return {"created": False, "error": "live_entry_premium_unavailable_or_stale"}
 
+    # (f2) Track B last-line re-check: the momentum trigger was decided on the
+    # bar close; the premium may have collapsed in the seconds before placement.
+    # Re-verify against the FRESH entry tick (ref_ltp IS premium_now). On
+    # failure: journal a distinct refusal, release the claim AND the session
+    # latch so a later bar may re-trigger. Marginally more conservative than
+    # the backtest's trigger-bar-close fill — intentional (spec §5.4).
+    pm = signal_doc.get("premium_momentum") or {}
+    if pm.get("ref_premium") is not None:
+        from app.premium_momentum import momentum_triggered
+        dep_params = dict(deployment.get("params") or {})
+        mom_pct = dep_params.get("momentum_pct")
+        mom_pts = dep_params.get("momentum_pts")
+        if mom_pts is not None:
+            # Explicit precedence: a user-set momentum_pts wins over momentum_pct
+            # (the registration schema DEFAULTS pct=15.0, so both-set is the
+            # normal shape of a pts deployment — momentum_triggered raises on
+            # both-set). Same rule as evaluate_premium_momentum_bar.
+            mom_pct = None
+        if not momentum_triggered(premium_now=float(ref_ltp),
+                                  ref_premium=float(pm["ref_premium"]),
+                                  pct=mom_pct, pts=mom_pts):
+            await release_live_trade_claim(db, signal_id)
+            await db.signals.update_one(
+                {"id": signal_id},
+                {"$set": {"live_trade_error": "premium_trigger_not_met",
+                          "live_intended": {"ref_premium": pm["ref_premium"],
+                                            "premium_at_entry": float(ref_ltp)},
+                          "updated_at": datetime.now(timezone.utc).isoformat()}},
+            )
+            from app.premium_lock_store import unlatch_trigger
+            from datetime import timedelta as _td
+            _sess = (datetime.now(timezone.utc) + _td(hours=5, minutes=30)).strftime("%Y-%m-%d")
+            await unlatch_trigger(db.premium_locks,
+                                  deployment_id=str(deployment.get("id") or ""),
+                                  session_date=_sess)
+            log.warning("auto-live refused for signal %s: premium %.2f fell back "
+                        "below the trigger (ref %.2f)",
+                        signal_id, float(ref_ltp), float(pm["ref_premium"]))
+            return {"created": False, "reason": "premium_trigger_not_met"}
+
     # (g) capped lots + exit plan
     plan = resolve_live_exit_plan(signal_doc, deployment)
 
@@ -485,6 +525,21 @@ async def auto_live_trade_for_signal(
     if signal_doc.get("risk_hints"):
         trade["risk_hints"] = signal_doc["risk_hints"]
     await db.live_trades.insert_one(trade)
+
+    if pm.get("ref_premium") is not None:
+        # Track B: adopt the placed order into today's session lock so recovery
+        # rehydrates with the PERSISTED entry premium (mark_entered no-ops when
+        # the lock is gone). A lock-write failure must never fail a PLACED order.
+        try:
+            from app.premium_lock_store import mark_entered
+            from datetime import timedelta as _td
+            _sess = (datetime.now(timezone.utc) + _td(hours=5, minutes=30)).strftime("%Y-%m-%d")
+            await mark_entered(db.premium_locks, deployment_id=dep_id,
+                               session_date=_sess,
+                               norenordno=str(result.get("norenordno") or ""),
+                               entry_premium=float(ref_ltp))
+        except Exception:
+            log.exception("premium-momentum mark_entered failed for signal %s", signal_id)
 
     snapshot = {"live": {
         "trade_id": trade["id"],

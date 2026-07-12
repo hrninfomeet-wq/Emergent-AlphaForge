@@ -73,6 +73,9 @@ function entryErrorLabel(reason) {
     dry_run_failed: "pre-trade gate",
     not_within_lot_cap: "lot cap",
     cannot_trade: "engine halted",
+    premium_trigger_not_met: "premium fell back below the trigger before placement",
+    strike_lock_failed: "could not lock the strike at the reference time",
+    ref_premium_unavailable: "no fresh option tick to capture the reference premium",
   };
   return map[reason] || String(reason).replace(/[_:]/g, " ").trim();
 }

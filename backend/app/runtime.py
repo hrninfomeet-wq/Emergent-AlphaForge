@@ -236,6 +236,23 @@ async def _live_guard_on_close(entry, exit_price, reason, result) -> None:
         exit_price=exit_price,
         exit_reason=reason,
     )
+    # Track B: a premium-momentum deployment's confirmed-flat close also marks
+    # today's session lock done (done_for_day, reason="exited") so the evaluator
+    # holds 'done' instead of re-monitoring the session. NEVER raises.
+    try:
+        _dep_id = str((entry or {}).get("deployment_id") or "")
+        if _dep_id:
+            _db = get_db()
+            _dep = await _db.strategy_deployments.find_one({"id": _dep_id})
+            if str((_dep or {}).get("strategy_id") or "") == "premium_momentum":
+                from app.premium_lock_store import mark_done
+                _today = (datetime.now(timezone.utc)
+                          + timedelta(hours=5, minutes=30)).strftime("%Y-%m-%d")
+                await mark_done(_db.premium_locks, deployment_id=_dep_id,
+                                session_date=_today, reason="exited")
+    except Exception:
+        log.exception("premium-momentum mark_done(exited) failed for entry %s",
+                      (entry or {}).get("id"))
 
 
 live_position_guard = LivePositionGuard(

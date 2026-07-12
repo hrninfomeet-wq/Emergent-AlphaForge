@@ -383,3 +383,18 @@ def test_sim_applies_costs_when_configured():
     assert s["lot_size"] == 65 and s["lots"] == 2
     assert s["net_pnl_rupees"] == t["net_pnl_rupees"]
     assert s["costs_enabled"] is True
+
+
+# ---------------------------------------------------------------------------
+# Track B Task 8 — live-strip refusal labels (host string-pins over JSX)
+# ---------------------------------------------------------------------------
+
+def test_frontend_live_strip_has_premium_momentum_refusal_labels():
+    # The three premium-momentum refusal reasons must map to human labels in
+    # LiveDeploymentStrip's entryErrorLabel map (else the chip shows raw keys).
+    from pathlib import Path
+    fe = Path(__file__).resolve().parents[1] / "frontend" / "src"
+    strip = (fe / "components" / "live" / "LiveDeploymentStrip.jsx").read_text(encoding="utf-8")
+    assert "premium_trigger_not_met:" in strip
+    assert "strike_lock_failed:" in strip
+    assert "ref_premium_unavailable:" in strip
