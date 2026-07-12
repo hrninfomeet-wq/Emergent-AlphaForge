@@ -254,43 +254,73 @@ async def rehydrate_premium_momentum(db, registry, broker_positions_by_tsym) -> 
     """Track B recovery: re-attach the guard to premium-momentum positions using
     the PERSISTED lock state (entry premium, deployment, exit plan) instead of
     the generic 50%-catastrophe rehydrate. Locks whose position is gone are
-    closed out honestly (done_for_day='exited_while_down'). Never raises."""
+    closed out honestly (done_for_day='exited_while_down').
+
+    RE-RUN SAFE: recovery re-runs are routine (the supervisor retries on
+    complete=False; every daily Flattrade OAuth forces maybe_run_live_recovery).
+    A lock whose entry norenordno OR tsym is already in the registry is SKIPPED
+    (counted in ``skipped``) — re-registering would either double-watch one
+    position under two keys (two independent stop evaluations → two full-qty
+    square orders on a fast gap through both levels) or REPLACE a mid-square
+    entry (``register()`` overwrites, resetting ``squaring``/``square_ordno``
+    and re-arming a second exit while the first still rests at the broker).
+    Mirrors the generic ``rehydrate_from_broker`` watched_tsyms guard.
+    Never raises."""
+    from app.live.kill_switch import _parse_netqty
     from app.live.live_sl_monitor import build_monitor_state
     from app.premium_lock_store import mark_done
-    out = {"reattached": 0, "closed": 0, "errors": 0}
+    out = {"reattached": 0, "closed": 0, "skipped": 0, "errors": 0}
     try:
         today = (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).strftime("%Y-%m-%d")
         locks = await db.premium_locks.find(
             {"session_date": today, "entered_norenordno": {"$ne": None},
              "done_for_day": False}, {"_id": 0}).to_list(length=None)
+        # Already-watched set: registry entries are keyed by entry norenordno
+        # (auto_live / this function) OR by tsym (generic rehydrate), and the
+        # guard matches broker positions to entries BY TSYM — collect both ids
+        # and tsyms so no re-run path can double-watch or clobber a live entry.
+        watched: set = set()
+        for e in registry.snapshot():
+            watched.add(str(e.get("id") or ""))
+            watched.add(str(e.get("tsym") or ""))
+        watched.discard("")
         for lock in locks:
             try:
                 side = str(lock.get("triggered_side") or "").lower()
                 contract = dict(lock.get(side) or {})
                 tsym = str(contract.get("trading_symbol") or contract.get("tsym") or "")
-                dep = await db.strategy_deployments.find_one(
-                    {"id": lock["deployment_id"]}, {"_id": 0})
+                ordno = str(lock["entered_norenordno"])
+                if ordno in watched or (tsym and tsym in watched):
+                    out["skipped"] += 1
+                    continue  # already guarded (re-run / fresh arm) — never clobber
                 pos = broker_positions_by_tsym.get(tsym)
                 if not pos:
                     await mark_done(db.premium_locks, deployment_id=lock["deployment_id"],
                                     session_date=today, reason="exited_while_down")
                     out["closed"] += 1
                     continue
-                params = dict((dep or {}).get("params") or {})
-                risk = dict((dep or {}).get("risk") or {})
+                qty = _parse_netqty(pos.get("netqty"))
+                if not qty:
+                    continue  # flat/unparseable netqty — leave to the generic rehydrate
                 entry = float(lock.get("entry_premium") or 0) or None
                 if entry is None:
                     continue  # no persisted entry -> leave to the generic rehydrate
+                dep = await db.strategy_deployments.find_one(
+                    {"id": lock["deployment_id"]}, {"_id": 0})
+                params = dict((dep or {}).get("params") or {})
+                risk = dict((dep or {}).get("risk") or {})
                 state = build_monitor_state(
                     entry, stop_pct=params.get("stop_pct") or 50.0,
                     target_pct=params.get("target_pct"),
                     trail=risk.get("exit_controls"))
                 registry.register(
-                    key=str(lock["entered_norenordno"]), tsym=tsym,
+                    key=ordno, tsym=tsym,
                     exch=str(contract.get("exch") or "NFO"),
-                    qty=int(pos.get("netqty") or 0), prd="I",
+                    qty=abs(qty), prd="I",
                     entry_price=entry, state=state, source="auto_live",
                     deployment_id=str(lock["deployment_id"]))
+                watched.add(ordno)
+                watched.add(tsym)  # guard against duplicate locks on one tsym
                 out["reattached"] += 1
             except Exception:
                 out["errors"] += 1
@@ -350,10 +380,10 @@ async def live_startup_recovery() -> bool:
         _log.warning("live startup recovery: resume_pending failed: %s", exc)
     # 2. Track B premium-momentum rehydrate — re-attach entered premium positions
     #    from their PERSISTED lock state (entry premium + deployment exit plan).
-    #    MUST run BEFORE the generic guard rehydrate (step 3): that step registers
-    #    entries keyed BY TSYM and skips tsyms already in the registry snapshot,
-    #    so premium-first makes it skip these; the reverse order would double-
-    #    guard the same tsym under two keys (tsym + norenordno). NOTE: the
+    #    MUST run BEFORE the generic guard rehydrate (step 3): both steps skip
+    #    already-watched tsyms, so premium-first means the premium position gets
+    #    its persisted plan and the generic step skips it; the reverse order
+    #    would leave it on the generic 50% catastrophe default. NOTE: the
     #    generic step reads the position book INTERNALLY (no book variable is in
     #    scope here), so this step performs its own read via the same client. An
     #    empty/non-list book == UNKNOWN (transient) -> skip entirely (no
@@ -366,23 +396,33 @@ async def live_startup_recovery() -> bool:
         complete = False
         _log.warning("live startup recovery: premium rehydrate position-book read failed: %s", exc)
     if isinstance(_pm_book, list) and _pm_book:
+        from app.live.kill_switch import _parse_netqty as _pm_parse_netqty
         _held_by_tsym: Dict[str, Any] = {}
         for _pos in _pm_book:
             try:
-                _nq = int(float(_pos.get("netqty") or 0))
+                _nq = _pm_parse_netqty(_pos.get("netqty"))
                 _ts = str(_pos.get("tsym") or "")
             except Exception:
                 continue
-            if _nq != 0 and _ts:
+            if _nq and _ts:
                 _held_by_tsym[_ts] = _pos
         pm_res = await rehydrate_premium_momentum(
             get_db(), get_live_monitor_registry(), _held_by_tsym)
         _log.info("live startup recovery: premium-momentum rehydrate reattached=%s "
-                  "closed=%s errors=%s", pm_res.get("reattached"),
-                  pm_res.get("closed"), pm_res.get("errors"))
+                  "closed=%s skipped=%s errors=%s", pm_res.get("reattached"),
+                  pm_res.get("closed"), pm_res.get("skipped"), pm_res.get("errors"))
+        # A per-lock error leaves that position guarded only at the generic 50%
+        # catastrophe stop (persisted plan stop/trail silently lost) — do NOT
+        # latch a green "recovered" over it. Retrying is safe: the already-
+        # watched guard in rehydrate_premium_momentum makes a re-run skip every
+        # lock that DID attach (no double-watch, no clobber).
+        if pm_res.get("errors"):
+            complete = False
     elif _pm_book is not None:
         _log.info("live startup recovery: premium rehydrate skipped — position book "
-                  "empty (UNKNOWN); no lock closed")
+                  "%s (UNKNOWN); no lock closed",
+                  "empty" if isinstance(_pm_book, list)
+                  else "unreadable (non-list payload)")
     # 3. guard rehydrate — re-attach to the remaining open positions (default stop).
     try:
         n = await live_position_guard.rehydrate_from_broker()
