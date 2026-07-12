@@ -49,7 +49,7 @@ log = logging.getLogger(__name__)
 POLL_SECONDS = 1.5
 _IST = timedelta(hours=5, minutes=30)
 
-_VALID_MODES = ("none", "breakeven", "lock", "lock_trail", "trail")
+_VALID_MODES = ("none", "breakeven", "lock", "lock_trail", "trail", "stepped_xy")
 
 
 def _in_market_hours(now_utc: Optional[datetime] = None) -> bool:
@@ -135,6 +135,8 @@ def build_monitor_state(
             "step": trail.get("step"),
             "raise_by": trail.get("raise_by"),
             "gap": trail.get("gap"),
+            "x": trail.get("x"),
+            "y": trail.get("y"),
         },
     }
     return state
@@ -185,6 +187,7 @@ def evaluate_exit(state: Dict[str, Any], ltp: Any) -> Dict[str, Any]:
     mode = new_state.get("mode", "none")
     trail = new_state["trail"]
 
+    prev_peak = new_state["peak"]
     # 2. Peak
     if ltp > new_state["peak"]:
         new_state["peak"] = ltp
@@ -217,6 +220,19 @@ def evaluate_exit(state: Dict[str, Any], ltp: Any) -> Dict[str, Any]:
         gap = trail.get("gap")
         if _finite_pos(gap):
             _raise_stop(new_state, peak - float(gap))
+    elif mode == "stepped_xy":
+        # AlgoTest discrete X-Y ratchet, delegated to the SAME pure helper the
+        # backtest uses (byte-parity incl. the never-above-high-water cap). The
+        # ratchet consumes the peak through the PREVIOUS observation (prev_peak)
+        # so the tick that sets a new high is never judged against a stop it
+        # raised itself — mirroring the backtest's loop-end high-water update.
+        x, y = trail.get("x"), trail.get("y")
+        initial = new_state.get("initial_stop")
+        if _finite_pos(x) and _finite_pos(y) and initial is not None:
+            from app.premium_momentum import stepped_trail_stop
+            _raise_stop(new_state, stepped_trail_stop(
+                entry_premium=entry, running_high=prev_peak,
+                base_stop=float(initial), x=float(x), y=float(y)))
 
     # 4. Exit decision.
     stop_level = new_state["stop_level"]

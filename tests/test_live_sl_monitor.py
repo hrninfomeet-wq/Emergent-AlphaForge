@@ -271,3 +271,47 @@ class TestMonitorCycle:
         run(mon._cycle())
         assert len(rec.squared) == 1
         assert rec.squared[0][1] == "target"
+
+
+# --- Track B: stepped_xy trail (AlgoTest X-Y ratchet, backtest-parity) --------
+from app.premium_momentum import stepped_trail_stop
+
+
+def test_stepped_xy_matches_backtest_helper_worked_example():
+    # entry 200, stop 20% -> base 160; x=20 y=20: peak 220 -> stop 195? NO —
+    # helper: base + floor(favorable/x)*y capped at peak. favorable=20 -> 160+20=180.
+    st = build_monitor_state(200.0, stop_pct=20.0,
+                             trail={"mode": "stepped_xy", "x": 20.0, "y": 20.0})
+    r1 = evaluate_exit(st, 220.0)                 # new peak 220
+    # ratchet uses the PREVIOUS peak (200) => favorable 0 => stop stays 160
+    assert r1["state"]["stop_level"] == 160.0
+    r2 = evaluate_exit(r1["state"], 221.0)        # prev peak 220 -> favorable 20
+    expected = stepped_trail_stop(entry_premium=200.0, running_high=220.0,
+                                  base_stop=160.0, x=20.0, y=20.0)
+    assert r2["state"]["stop_level"] == expected == 180.0
+
+
+def test_stepped_xy_new_high_tick_never_exits_against_its_own_ratchet():
+    # Aggressive y >> x: the tick that makes the new high must NOT be judged
+    # against a stop ratcheted BY that same tick (backtest look-ahead parity).
+    st = build_monitor_state(200.0, stop_pct=20.0,
+                             trail={"mode": "stepped_xy", "x": 10.0, "y": 100.0})
+    r = evaluate_exit(st, 260.0)                  # huge up-tick
+    assert r["exit"] is False                     # no same-tick self-trap
+
+
+def test_stepped_xy_monotonic_and_capped_at_prior_peak():
+    st = build_monitor_state(200.0, stop_pct=20.0,
+                             trail={"mode": "stepped_xy", "x": 10.0, "y": 100.0})
+    r1 = evaluate_exit(st, 260.0)                 # peak now 260, stop still 160
+    r2 = evaluate_exit(r1["state"], 250.0)        # prev peak 260: base+6*100 capped at 260
+    assert r2["state"]["stop_level"] == 260.0     # cap = prior traded high
+    assert r2["exit"] is True                     # 250 <= 260 -> trailing_stop
+    assert r2["reason"] == "trailing_stop"
+
+
+def test_stepped_xy_requires_base_stop_and_xy():
+    # mode present but x/y missing -> behaves as fixed stop (no ratchet, no crash)
+    st = build_monitor_state(200.0, stop_pct=20.0, trail={"mode": "stepped_xy"})
+    r = evaluate_exit(st, 240.0)
+    assert r["exit"] is False and r["state"]["stop_level"] == 160.0
