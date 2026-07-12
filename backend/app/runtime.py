@@ -250,6 +250,57 @@ live_position_guard = LivePositionGuard(
 )
 
 
+async def rehydrate_premium_momentum(db, registry, broker_positions_by_tsym) -> Dict[str, Any]:
+    """Track B recovery: re-attach the guard to premium-momentum positions using
+    the PERSISTED lock state (entry premium, deployment, exit plan) instead of
+    the generic 50%-catastrophe rehydrate. Locks whose position is gone are
+    closed out honestly (done_for_day='exited_while_down'). Never raises."""
+    from app.live.live_sl_monitor import build_monitor_state
+    from app.premium_lock_store import mark_done
+    out = {"reattached": 0, "closed": 0, "errors": 0}
+    try:
+        today = (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).strftime("%Y-%m-%d")
+        locks = await db.premium_locks.find(
+            {"session_date": today, "entered_norenordno": {"$ne": None},
+             "done_for_day": False}, {"_id": 0}).to_list(length=None)
+        for lock in locks:
+            try:
+                side = str(lock.get("triggered_side") or "").lower()
+                contract = dict(lock.get(side) or {})
+                tsym = str(contract.get("trading_symbol") or contract.get("tsym") or "")
+                dep = await db.strategy_deployments.find_one(
+                    {"id": lock["deployment_id"]}, {"_id": 0})
+                pos = broker_positions_by_tsym.get(tsym)
+                if not pos:
+                    await mark_done(db.premium_locks, deployment_id=lock["deployment_id"],
+                                    session_date=today, reason="exited_while_down")
+                    out["closed"] += 1
+                    continue
+                params = dict((dep or {}).get("params") or {})
+                risk = dict((dep or {}).get("risk") or {})
+                entry = float(lock.get("entry_premium") or 0) or None
+                if entry is None:
+                    continue  # no persisted entry -> leave to the generic rehydrate
+                state = build_monitor_state(
+                    entry, stop_pct=params.get("stop_pct") or 50.0,
+                    target_pct=params.get("target_pct"),
+                    trail=risk.get("exit_controls"))
+                registry.register(
+                    key=str(lock["entered_norenordno"]), tsym=tsym,
+                    exch=str(contract.get("exch") or "NFO"),
+                    qty=int(pos.get("netqty") or 0), prd="I",
+                    entry_price=entry, state=state, source="auto_live",
+                    deployment_id=str(lock["deployment_id"]))
+                out["reattached"] += 1
+            except Exception:
+                out["errors"] += 1
+                log.exception("premium-momentum rehydrate failed for lock %s", lock.get("deployment_id"))
+    except Exception:
+        out["errors"] += 1
+        log.exception("premium-momentum rehydrate scan failed")
+    return out
+
+
 async def live_startup_recovery() -> bool:
     """One-shot startup recovery for the live execution path (best-effort, non-blocking).
 
@@ -260,6 +311,9 @@ async def live_startup_recovery() -> bool:
       2. guard rehydrate — re-attach the software exit guard to open broker positions
          (the guard registry is empty on boot), so a position opened before the
          restart is never left unwatched (no software stop/target/EOD square).
+         Premium-momentum positions are re-attached FIRST from their persisted
+         lock state (real entry premium + exit plan, ``rehydrate_premium_momentum``);
+         the generic rehydrate then covers the rest at the default catastrophe stop.
 
     Skips silently when the broker isn't connected. Never raises out.
 
@@ -294,7 +348,42 @@ async def live_startup_recovery() -> bool:
     except Exception as exc:
         complete = False
         _log.warning("live startup recovery: resume_pending failed: %s", exc)
-    # 2. guard rehydrate — re-attach to open positions.
+    # 2. Track B premium-momentum rehydrate — re-attach entered premium positions
+    #    from their PERSISTED lock state (entry premium + deployment exit plan).
+    #    MUST run BEFORE the generic guard rehydrate (step 3): that step registers
+    #    entries keyed BY TSYM and skips tsyms already in the registry snapshot,
+    #    so premium-first makes it skip these; the reverse order would double-
+    #    guard the same tsym under two keys (tsym + norenordno). NOTE: the
+    #    generic step reads the position book INTERNALLY (no book variable is in
+    #    scope here), so this step performs its own read via the same client. An
+    #    empty/non-list book == UNKNOWN (transient) -> skip entirely (no
+    #    mark_done, no register); the reboot reconcile (step 4) surfaces an
+    #    unreadable book as incomplete so the supervisor retries.
+    try:
+        _pm_book = await client.position_book()
+    except Exception as exc:
+        _pm_book = None
+        complete = False
+        _log.warning("live startup recovery: premium rehydrate position-book read failed: %s", exc)
+    if isinstance(_pm_book, list) and _pm_book:
+        _held_by_tsym: Dict[str, Any] = {}
+        for _pos in _pm_book:
+            try:
+                _nq = int(float(_pos.get("netqty") or 0))
+                _ts = str(_pos.get("tsym") or "")
+            except Exception:
+                continue
+            if _nq != 0 and _ts:
+                _held_by_tsym[_ts] = _pos
+        pm_res = await rehydrate_premium_momentum(
+            get_db(), get_live_monitor_registry(), _held_by_tsym)
+        _log.info("live startup recovery: premium-momentum rehydrate reattached=%s "
+                  "closed=%s errors=%s", pm_res.get("reattached"),
+                  pm_res.get("closed"), pm_res.get("errors"))
+    elif _pm_book is not None:
+        _log.info("live startup recovery: premium rehydrate skipped — position book "
+                  "empty (UNKNOWN); no lock closed")
+    # 3. guard rehydrate — re-attach to the remaining open positions (default stop).
     try:
         n = await live_position_guard.rehydrate_from_broker()
         if n:
@@ -305,7 +394,7 @@ async def live_startup_recovery() -> bool:
     except Exception as exc:
         complete = False
         _log.warning("live startup recovery: guard rehydrate failed: %s", exc)
-    # 3. transient-safe reboot reconciliation — journal any OCO that fired (or any
+    # 4. transient-safe reboot reconciliation — journal any OCO that fired (or any
     #    position closed externally) while the PC was down + sweep orphan OCOs.
     #    Empty position_book == UNKNOWN (no close, no cancel); never raises.
     try:
@@ -316,7 +405,7 @@ async def live_startup_recovery() -> bool:
                   res.get("closed"), res.get("cancelled"),
                   res.get("relinked"), res.get("no_backstop"), res.get("status"))
         # reconcile reads the position book directly and reports an unreadable/
-        # empty read as "unknown_position_book". Both rehydrate (step 2) and
+        # empty read as "unknown_position_book". Both rehydrate (steps 2–3) and
         # reconcile swallow read failures internally, so this status is the honest
         # broker-readability signal for the whole run: unreadable ⇒ the rehydrate
         # almost certainly saw nothing either ⇒ recovery is NOT complete.
