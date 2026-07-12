@@ -304,6 +304,11 @@ async def upstox_stream_options_restart(req: UpstoxOptionStreamRestartReq):
         max_option_keys=req.max_option_keys,
     )
     option_keys = universe.get("instrument_keys") or []
+    # Track B: pin today's premium-momentum LOCKED strikes (cap-exempt, like
+    # open paper keys) so a manual restart never drops a locked feed.
+    from app.premium_pin import premium_pin_keys
+    pin_keys = await premium_pin_keys(get_db().premium_locks)
+    option_keys = list(dict.fromkeys([*option_keys, *(str(k) for k in pin_keys if k)]))
     if not option_keys:
         raise HTTPException(400, "No live option keys available. Sync current option contracts and ensure spot data exists.")
 

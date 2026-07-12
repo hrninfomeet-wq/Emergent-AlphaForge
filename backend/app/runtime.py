@@ -1255,7 +1255,15 @@ async def _auto_follow_option_stream(min_radius: int = 0) -> Dict[str, Any]:
         # strike has drifted out of the ATM band — else the exit monitor loses its
         # premium feed and a stop could blow past un-monitored.
         open_keys = await db.paper_trades.distinct("instrument_key", {"status": "OPEN"})
-        option_keys = list(dict.fromkeys([*option_keys, *(str(k) for k in open_keys if k)]))
+        # Track B: pin today's premium-momentum LOCKED strikes (cap-exempt, like
+        # open paper keys) so ATM drift / rebuilds never drop a locked feed.
+        from app.premium_pin import premium_pin_keys
+        pin_keys = await premium_pin_keys(db.premium_locks)
+        option_keys = list(dict.fromkeys([
+            *option_keys,
+            *(str(k) for k in open_keys if k),
+            *(str(k) for k in pin_keys if k),
+        ]))
         if not option_keys:
             return {"restarted": False, "reason": "no_option_keys", "radius": radius}
         # Idempotent: skip the (disruptive) restart when every desired option key
