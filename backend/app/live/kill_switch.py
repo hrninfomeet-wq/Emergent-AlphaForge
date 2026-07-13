@@ -703,6 +703,189 @@ async def _order_row(client: Any, norenordno: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+async def _scan_order_by_remarks(
+    client: Any, cid: str
+) -> Tuple[str, Optional[Dict[str, Any]]]:
+    """Tri-state lost-ack resolver: did a RAISED place_order actually land?
+
+    A place that RAISES (httpx timeout, socket reset) may still have been
+    ACCEPTED by the broker — retrying it blind posts a SECOND exit next to the
+    live ghost and both can fill (naked short). Every order pins
+    ``remarks == client_order_id`` (order builder invariant), so a fresh
+    order-book scan on that key resolves the ambiguity — the same adoption
+    pattern as ``engine.resume_pending``.
+
+    Returns
+    -------
+    ``("found", row)``      — the order LANDED (any status; the caller decides
+                              whether to adopt it or, for a REJECTED row whose
+                              fillshares are 0 by definition, retry fresh).
+    ``("absent", None)``    — a READABLE book has no such order: the POST never
+                              landed and a fresh retry is safe. (The real
+                              client returns [] only for a confirmed-empty
+                              book; every other Not_Ok raises BrokerReadError.)
+    ``("unreadable", None)``— the book cannot be read, or the client exposes
+                              no ``order_book`` at all: the caller must NOT
+                              retry (fail closed — never place next to a
+                              possible ghost).
+    """
+    if not hasattr(client, "order_book"):
+        return ("unreadable", None)
+    try:
+        book = await client.order_book()
+    except Exception:
+        return ("unreadable", None)
+    for row in (book or []):
+        if str(row.get("remarks") or "") == str(cid):
+            return ("found", row)
+    return ("absent", None)
+
+
+async def _confirm_cancels_and_resize_legs(
+    client: Any,
+    attempted_cancels: List[Tuple[str, str]],
+    legs: List[Dict[str, Any]],
+) -> None:
+    """Post-cancel CONFIRM BARRIER for ``panic_squareoff_verified`` (mutates legs).
+
+    Step-1 cancels used to be fire-and-forget: a pre-existing working order
+    (e.g. a resting guard exit) that FILLED before its cancel landed still got
+    a full-qty leg placed from the stale position snapshot → over-sell → naked
+    short. This barrier runs once between the cancels and the first placement
+    pass and mirrors the over-sell-safe sizing ``reprice_exit_leg`` already
+    implements (terminal-status requirement + fillshares + book-floor min()):
+
+    * ONE order-book re-fetch must show every attempted cancel TERMINAL. A
+      scrip with a non-terminal / missing cancelled order — or ANY untracked
+      working order (e.g. an OCO leg that triggered mid-kill) — is BLOCKED:
+      its legs become LEG_FAILED (loud, in flatten_failures) and nothing is
+      placed for it this invocation. Unreadable re-fetch → every cancelled
+      scrip is blocked (fail closed).
+    * fillshares of terminal cancelled orders whose trantype matches the leg's
+      exit direction reduced the position → subtract them from the leg qty.
+    * a fresh position-book read, when KNOWN (non-empty), floors the remaining
+      per scrip (absent from a known book = flat). A raising/empty book is
+      UNKNOWN — no floor, but the fillshares math still bounds the qty because
+      the attempted set is the COMPLETE working set for the scrip.
+    * a scrip whose remaining hits 0 closes its legs as LEG_FILLED (the
+      resting order did the exit's job); partially-reduced legs are re-sized
+      (``resized_from`` records the original qty in the report).
+    """
+    pending = [l for l in legs if l["outcome"] is None]
+    if not pending:
+        return
+    leg_tsyms = {str(l["tsym"]) for l in pending}
+    touched = {t for _, t in attempted_cancels if t in leg_tsyms}
+    if not touched:
+        return
+    # One position per scrip → one exit direction per scrip.
+    exit_dir = {str(l["tsym"]): ("S" if l["netqty"] > 0 else "B") for l in pending}
+
+    try:
+        book = await client.order_book()
+    except Exception as exc:
+        emsg = getattr(exc, "emsg", None) or str(exc)
+        reason = (f"cancel unconfirmed — order book unreadable after the "
+                  f"cancels ({str(emsg)[:80]}); refusing to place exits "
+                  "(double-sell risk)")
+        for leg in pending:
+            if str(leg["tsym"]) in touched:
+                leg["outcome"] = LEG_FAILED
+                leg["reason"] = reason
+        return
+
+    rows_by_no = {str(r.get("norenordno")): r for r in (book or [])}
+    attempted_nos = {no for no, _ in attempted_cancels}
+    blocked: Dict[str, str] = {}
+    reduced: Dict[str, int] = {}
+
+    for no, tsym in attempted_cancels:
+        if tsym not in leg_tsyms:
+            continue  # no pending leg on this scrip — nothing to protect
+        row = rows_by_no.get(str(no))
+        if row is None:
+            blocked.setdefault(tsym, (
+                f"cancel unconfirmed — cancelled order {no} not found in the "
+                "re-fetched book; refusing to place (double-sell risk)"))
+            continue
+        status = _normalize_status(row.get("status"))
+        if status not in TERMINAL:
+            blocked.setdefault(tsym, (
+                f"cancel unconfirmed — order {no} still {status or 'WORKING'} "
+                "after the cancel; refusing to place (double-sell risk)"))
+            continue
+        fs = _parse_netqty(row.get("fillshares")) or 0
+        if fs > 0:
+            # Only fills in the leg's EXIT direction shrank the position. A
+            # missing trantype counts too: an under-sized exit is surfaced by
+            # the final residual check; an over-sized one is a naked short.
+            tran = _normalize_status(row.get("trantype"))
+            if not tran or tran == exit_dir.get(tsym):
+                reduced[tsym] = reduced.get(tsym, 0) + fs
+
+    # Discovery: an untracked working order on a leg scrip (e.g. an OCO leg
+    # that TRIGGERED between the caller's snapshot and now) can also fill
+    # against the position — block that scrip too (a re-fired kill snapshots
+    # and cancels it).
+    for r in (book or []):
+        if _normalize_status(r.get("status")) in TERMINAL:
+            continue
+        t = str(r.get("tsym") or "")
+        if t in leg_tsyms and str(r.get("norenordno")) not in attempted_nos:
+            blocked.setdefault(t, (
+                f"cancel unconfirmed — untracked working order "
+                f"{r.get('norenordno')} live on the scrip; refusing to place "
+                "(double-sell risk)"))
+
+    # Position-book floor (tri-state: a raising/empty book is UNKNOWN → no
+    # floor; a present-but-unparseable netqty row is UNKNOWN for its scrip).
+    pnet: Dict[str, Optional[int]] = {}
+    pbook_known = False
+    if touched - set(blocked):
+        try:
+            pbook = await client.position_book()
+        except Exception:
+            pbook = None
+        if isinstance(pbook, list) and pbook:
+            pbook_known = True
+            for p in pbook:
+                pnet[str(p.get("tsym") or "")] = _parse_netqty(p.get("netqty"))
+
+    # Union: `blocked` can contain a leg scrip with NO attempted cancel (a
+    # working order discovered post-snapshot, e.g. a mid-kill OCO trigger) —
+    # its legs must be failed too, not silently placed next to that order.
+    for tsym in sorted(touched | set(blocked)):
+        group = [l for l in pending if str(l["tsym"]) == tsym]
+        if tsym in blocked:
+            for leg in group:
+                leg["outcome"] = LEG_FAILED
+                leg["reason"] = blocked[tsym]
+            continue
+        total = sum(int(l["qty"]) for l in group)
+        allowed = total - int(reduced.get(tsym, 0))
+        if pbook_known:
+            if tsym not in pnet:
+                allowed = 0  # absent from a KNOWN book → flat
+            elif pnet[tsym] is not None:
+                allowed = min(allowed, abs(int(pnet[tsym])))
+            # unparseable row → UNKNOWN → keep the fillshares-only bound
+        allowed = max(0, allowed)
+        if allowed >= total:
+            continue  # nothing filled against this scrip — legs unchanged
+        for leg in group:
+            take = min(int(leg["qty"]), allowed)
+            allowed -= take
+            if take <= 0:
+                leg["outcome"] = LEG_FILLED
+                leg["reason"] = ("position flattened during the cancel window "
+                                 "(a cancelled working order filled) — nothing "
+                                 "left for this leg")
+            elif take < int(leg["qty"]):
+                leg["resized_from"] = int(leg["qty"])
+                leg["qty"] = take
+                leg["netqty"] = take if leg["netqty"] > 0 else -take
+
+
 async def panic_squareoff_verified(
     client: Any,
     open_orders: List[Dict[str, Any]],
@@ -723,15 +906,26 @@ async def panic_squareoff_verified(
     flatten is a marketable LIMIT that may not fill. This executor:
 
     1. cancels every working order (same semantics as panic_squareoff);
-    2. flattens each position leg with an exchange-aware marketable LIMIT
+    2. CONFIRM BARRIER: when step 1 attempted any cancel, one order-book
+       re-fetch must show the cancelled set terminal before anything is
+       placed; fillshares of filled ones + a position-book floor re-size or
+       skip the legs, and an unconfirmable scrip is BLOCKED (LEG_FAILED, loud)
+       — a working order that filled inside the cancel window already exited
+       (part of) the position, so placing the stale full qty would over-sell
+       into a naked short (see ``_confirm_cancels_and_resize_legs``);
+    3. flattens each position leg with an exchange-aware marketable LIMIT
        (fresh GetQuotes touch when the row carries a token, circuit-band
        clamped, per-leg tick, position's own prd/exch, freeze-qty sliced);
-    3. polls the order book after each pass and RE-PRICES unfilled legs at a
+    4. polls the order book after each pass and RE-PRICES unfilled legs at a
        widening band via cancel + re-place (never ModifyOrder — the client's
        modify omits doc-mandatory exch/tsym/qty/ret). Remaining qty after a
        partial fill is re-read from the broker's own fillshares AFTER the
-       cancel so a race-window fill can never cause an over-sell;
-    4. re-fetches the position book at the end: ``all_flat`` + ``residual``
+       cancel so a race-window fill can never cause an over-sell. A placement
+       that RAISED (lost ack) is resolved against the book via remarks==cid
+       before the next pass — adopted if it landed, re-placed only when a
+       READABLE book confirms it never did, skipped while the book is
+       unreadable (never a blind same-qty re-post next to a live ghost);
+    5. re-fetches the position book at the end: ``all_flat`` + ``residual``
        report the broker's truth, and ``legs`` carries every attempt with
        placed/filled/REJECTED + the broker's reason string.
 
@@ -750,12 +944,18 @@ async def panic_squareoff_verified(
     _sleep = sleep or asyncio.sleep
 
     # Step 1 — cancel every working order (identical semantics to panic).
+    # Every attempted cancel is tracked (norenordno, tsym) — the confirm
+    # barrier below must verify the WHOLE set went terminal, including the
+    # ones whose cancel call itself failed or raised (those are the likeliest
+    # to still be live).
     canceled = 0
     cancel_failures: List[Dict[str, Any]] = []
+    attempted_cancels: List[Tuple[str, str]] = []
     for order in open_orders:
         if _normalize_status(order.get("status")) in TERMINAL:
             continue
         norenordno = order.get("norenordno", "")
+        attempted_cancels.append((str(norenordno), str(order.get("tsym") or "")))
         try:
             result = await client.cancel_order(norenordno)
             if result.ok:
@@ -771,6 +971,15 @@ async def panic_squareoff_verified(
     # Step 2 — flatten with verification passes.
     legs = _build_flatten_legs(open_positions, ref_price_field)
 
+    # Step 2.5 — CONFIRM BARRIER: when Step 1 had something to cancel, one
+    # order-book re-fetch must confirm the cancelled set is terminal (reading
+    # fillshares of the filled ones) and the legs are re-sized/skipped off the
+    # broker's truth BEFORE anything is placed. A working order that filled
+    # inside the cancel window already exited (part of) the position — placing
+    # the stale full qty on top of that fill is the double-sell.
+    if attempted_cancels:
+        await _confirm_cancels_and_resize_legs(client, attempted_cancels, legs)
+
     for pass_no, band in enumerate(band_schedule):
         pending = [l for l in legs if l["outcome"] is None]
         if not pending:
@@ -778,6 +987,45 @@ async def panic_squareoff_verified(
 
         for leg in pending:
             prev = leg["attempts"][-1] if leg["attempts"] else None
+            if (prev is not None and not prev.get("placed")
+                    and prev.get("cid") and not prev.get("norenordno")):
+                # LOST-ACK GUARD (double-sell window): the previous attempt
+                # RAISED after transmitting (it carries a cid but no ack) — the
+                # broker may have ACCEPTED it. The old behavior skipped the
+                # cancel-prev branch (placed=False) and re-placed the remaining
+                # qty NEXT TO the live ghost → both fill → naked short. Resolve
+                # against the book first (remarks == cid, the resume_pending
+                # adoption pattern):
+                #   found, not REJECTED → ADOPT it; the normal cancel+resize
+                #     branch below then treats it exactly like an acked order;
+                #   found REJECTED → no ghost can fill (fillshares 0) → the
+                #     leg ends REJECTED like any post-ack book reject;
+                #   absent from a READABLE book → it never landed → place;
+                #   unreadable → skip this pass (fail closed — never place
+                #     next to a possible ghost).
+                verdict, ghost = await _scan_order_by_remarks(client, prev["cid"])
+                if verdict == "unreadable":
+                    prev["reason"] = ((str(prev.get("reason") or "") +
+                                       " | lost ack unresolved: order book "
+                                       "unreadable — not re-placing").strip(" |"))
+                    continue
+                if verdict == "found":
+                    status = _normalize_status(ghost.get("status"))
+                    prev["status"] = status
+                    if status in _REJECTED_STATUSES:
+                        leg["outcome"] = LEG_REJECTED
+                        leg["reason"] = str(ghost.get("rejreason")
+                                            or prev.get("reason")
+                                            or "rejected (no reason given)")
+                        prev["reason"] = leg["reason"]
+                        continue
+                    prev["placed"] = True
+                    prev["norenordno"] = ghost.get("norenordno")
+                    prev["filled"] = max(int(prev.get("filled") or 0),
+                                         _parse_netqty(ghost.get("fillshares")) or 0)
+                    leg["filled_qty"] = sum(int(a.get("filled") or 0)
+                                            for a in leg["attempts"])
+                # verdict == "absent" → never landed; fall through and place.
             if prev is not None and prev.get("placed"):
                 # Cancel the working remainder before re-pricing, then re-read
                 # the order's FINAL fill count — it may have (partially) filled
@@ -825,6 +1073,10 @@ async def panic_squareoff_verified(
                 continue  # a later pass may get a quote
 
             cid = new_client_order_id()
+            # The cid is recorded BEFORE transmitting: if place_order raises
+            # after the broker accepted (lost ack), the next pass resolves the
+            # attempt against the book via remarks==cid instead of re-placing.
+            attempt["cid"] = cid
             intent = OrderIntent(
                 client_order_id=cid,
                 trantype="S" if leg["netqty"] > 0 else "B",

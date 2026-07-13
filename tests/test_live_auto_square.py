@@ -1547,3 +1547,170 @@ class TestCancelAllTransportFailClosed:
         assert result["squared"] is False
         assert result["reason"] == "cancel_unconfirmed"
         assert len(client._orders) == 0               # exit NOT placed
+
+
+# ---------------------------------------------------------------------------
+# LOST-ACK double-sell guard — a RAISED place_order may have LANDED at the
+# broker (httpx 20s timeout where the POST was actually processed). Before ANY
+# retry the executor must re-read the order book and ADOPT a working/filled
+# order whose remarks == the first attempt's client_order_id (the order builder
+# pins remarks=cid; same pattern as engine.resume_pending) instead of
+# re-posting; if the book is unreadable it must NOT retry (fail closed) — a
+# blind same-qty re-post next to a live ghost SELL fills twice → naked short.
+# ---------------------------------------------------------------------------
+
+class LostAckClient(MockNoren):
+    """place_order ACCEPTS (order lands in the book, remarks=cid) then RAISES —
+    the classic lost ack. Raises only on the first ``raise_first`` calls.
+
+    land=False models the transport dying BEFORE the broker processed the POST
+    (nothing lands — a genuine retry is then correct and safe).
+    break_book_after_raise=True additionally makes every subsequent order_book
+    read raise (the same degraded broker serves both endpoints)."""
+
+    def __init__(self, *, raise_first=1, land=True,
+                 break_book_after_raise=False, **kw):
+        super().__init__(**kw)
+        self._to_raise = raise_first
+        self._land = land
+        self._break_book = break_book_after_raise
+        self.place_calls = 0
+
+    async def place_order(self, intent):
+        self.place_calls += 1
+        if self._to_raise > 0:
+            self._to_raise -= 1
+            if self._land:
+                await super().place_order(intent)  # broker accepted it...
+            if self._break_book:
+                self.script_read_error("order_book", "Server Timeout")
+            raise RuntimeError("httpx.ReadTimeout: PlaceOrder")  # ...ack lost
+        return await super().place_order(intent)
+
+
+class TestSquarePositionLostAckAdoption:
+    def test_raised_place_that_landed_is_adopted_not_reposted(self):
+        """THE lost-ack window: the first place raises but the broker ACCEPTED
+        it. The blind same-qty retry posts a SECOND sell → both fill → naked
+        short. square_position must scan the book for remarks==cid, ADOPT the
+        ghost, and never call place_order again."""
+        client = LostAckClient()
+        pos = _position(netqty=65, lp=200.0)
+        result = run(square_position(client, pos, reason="deadline"))
+        sells = [o for o in client._orders.values() if o["trantype"] == "S"]
+        assert len(sells) == 1, (
+            f"{len(sells)} SELLs at the broker — the blind retry re-posted a "
+            "lost-ack exit; both can fill → naked short")
+        assert client.place_calls == 1
+        assert result["squared"] is True
+        assert result["via"] == "exit_order"
+        assert result["norenordno"] == sells[0]["norenordno"]
+
+    def test_raised_place_that_never_landed_still_retries(self):
+        """Guard-rail: transport died BEFORE the broker got the POST (readable
+        book, cid absent) → the retry is correct and must still happen."""
+        client = LostAckClient(land=False)
+        pos = _position(netqty=65, lp=200.0)
+        result = run(square_position(client, pos, reason="deadline"))
+        sells = [o for o in client._orders.values() if o["trantype"] == "S"]
+        assert len(sells) == 1
+        assert client.place_calls == 2               # raise, then the real retry
+        assert result["squared"] is True
+        assert result["via"] == "exit_order"
+
+    def test_raised_place_with_unreadable_book_never_retries(self):
+        """Fail-CLOSED: the place raised AND the order book cannot be read →
+        we cannot know whether the exit landed. Retrying blind risks the
+        double-sell; the executor must place NOTHING more and report
+        squared=False so the guard retries next cycle (its cancel-all will
+        discover/cancel any ghost once the book recovers)."""
+        client = LostAckClient(break_book_after_raise=True)
+        pos = _position(netqty=65, lp=200.0)
+        result = run(square_position(client, pos, reason="deadline"))
+        assert client.place_calls == 1, (
+            "place_order was retried while the order book was UNREADABLE — "
+            "a possible ghost SELL + this retry = naked short")
+        assert result["squared"] is False
+        assert result["reason"] == "cancel_unconfirmed"
+        assert any("httpx.ReadTimeout" in f for f in result["failures"])
+
+    def test_raised_place_landed_rejected_is_retried(self):
+        """The first POST landed but the broker REJECTED it (book row status
+        REJECTED, fillshares always 0) → no ghost can fill; a fresh retry is
+        safe and must happen."""
+        class _LandedRejectClient(LostAckClient):
+            async def place_order(self, intent):
+                self.place_calls += 1
+                if self._to_raise > 0:
+                    self._to_raise -= 1
+                    res = await MockNoren.place_order(self, intent)
+                    self._orders[res.norenordno]["status"] = "REJECTED"
+                    self._orders[res.norenordno]["rejreason"] = "RMS check failed"
+                    raise RuntimeError("httpx.ReadTimeout: PlaceOrder")
+                return await MockNoren.place_order(self, intent)
+
+        client = _LandedRejectClient()
+        pos = _position(netqty=65, lp=200.0)
+        result = run(square_position(client, pos, reason="deadline"))
+        assert client.place_calls == 2
+        assert result["squared"] is True
+        assert result["via"] == "exit_order"
+        working = [o for o in client._orders.values()
+                   if o["trantype"] == "S"
+                   and str(o["status"]).upper() not in _TERMINAL]
+        assert len(working) == 1
+
+
+class TestRepriceExitLegLostAckAdoption:
+    def _pos(self, netqty="20", lp="170", token="999"):
+        return {"tsym": _RTSYM, "exch": "NFO", "netqty": netqty, "lp": lp,
+                "prd": "I", "token": token}
+
+    def _seed(self, cl):
+        cl._orders["PREV1"] = {"norenordno": "PREV1", "tsym": _RTSYM,
+                               "status": "OPEN", "fillshares": "0", "qty": 20,
+                               "trantype": "S"}
+        cl.set_position_book([{"tsym": _RTSYM, "exch": "NFO", "netqty": "20",
+                               "lp": "170"}])
+        cl.set_quotes({"lp": "170", "bp1": "168", "sp1": "172",
+                       "lc": "150", "uc": "190"})
+
+    def test_raised_place_that_landed_is_adopted_not_reposted(self):
+        """Same lost-ack window in the Layer-2 re-price: the raised place landed
+        → adopt it; never re-post the remaining qty next to the live ghost."""
+        cl = LostAckClient()
+        self._seed(cl)
+        r = run(reprice_exit_leg(cl, self._pos(), band_pct=2.0,
+                                 prev_ordno="PREV1", prev_qty=20,
+                                 reason="stop_reprice"))
+        new = [o for o in cl._orders.values() if o["norenordno"] != "PREV1"]
+        assert len(new) == 1, (
+            f"{len(new)} fresh SELLs placed — the lost-ack ghost plus the blind "
+            "retry can both fill → naked short")
+        assert cl.place_calls == 1
+        assert r["squared"] is True and r["via"] == "exit_order"
+        assert r["norenordno"] == new[0]["norenordno"]
+
+    def test_raised_place_with_unreadable_book_never_retries(self):
+        """Fail-CLOSED in the re-price: raised place + unreadable book → place
+        NOTHING more (cancel_unconfirmed); the guard retries next interval."""
+        cl = LostAckClient(break_book_after_raise=True)
+        self._seed(cl)
+        r = run(reprice_exit_leg(cl, self._pos(), band_pct=2.0,
+                                 prev_ordno="PREV1", prev_qty=20,
+                                 reason="stop_reprice"))
+        assert cl.place_calls == 1
+        assert r["squared"] is False
+        assert r["reason"] == "cancel_unconfirmed"
+
+    def test_raised_place_that_never_landed_still_retries(self):
+        """Guard-rail: nothing landed (readable book, cid absent) → retry."""
+        cl = LostAckClient(land=False)
+        self._seed(cl)
+        r = run(reprice_exit_leg(cl, self._pos(), band_pct=2.0,
+                                 prev_ordno="PREV1", prev_qty=20,
+                                 reason="stop_reprice"))
+        new = [o for o in cl._orders.values() if o["norenordno"] != "PREV1"]
+        assert len(new) == 1
+        assert cl.place_calls == 2
+        assert r["squared"] is True and r["via"] == "exit_order"
