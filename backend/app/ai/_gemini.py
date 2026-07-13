@@ -25,7 +25,16 @@ _log = logging.getLogger(__name__)
 T = TypeVar("T", bound=BaseModel)
 
 # A truncated structured output is the #1 real-world failure — give plenty of room.
-DEFAULT_MAX_TOKENS = 8192
+#
+# gemini-2.5-pro is a "thinking" model whose thinking tokens are drawn from the SAME
+# max_output_tokens budget as the JSON output. An 8k / 8192 budget was consistently
+# consumed by thinking on non-trivial rulesets, leaving the JSON cut off mid-string
+# (user-reported: "response was cut off at the 8000-token limit before it finished").
+# google-genai accepts up to 65,536 on gemini-2.5 models; 32,768 gives generous
+# headroom for thinking + structured JSON output on realistic strategy descriptions
+# without needlessly spiking cost/latency for small prompts (Gemini bills on ACTUAL
+# tokens emitted, not on the ceiling).
+DEFAULT_MAX_TOKENS = 32768
 
 
 def _base_config(system: str, model: str, max_tokens: int) -> dict:

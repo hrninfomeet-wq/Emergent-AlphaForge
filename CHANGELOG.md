@@ -2,6 +2,115 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.53.0] — Phase 4 groundwork: AI feasibility accepts premium-native rules + Gemini token-cutoff fix (2026-07-13, Emergent handoff session)
+
+**The Strategy Library AI wizard no longer blanket-rejects the AlgoTest
+"Configurable Contingency Breakout" blueprint.** The user-facing symptom was
+that every rule of a premium-native blueprint (option-premium momentum trigger,
+locked strike, stepped premium trail, session gates, position size) came back
+`Can't map this to anything derivable from 1m OHLCV — R9 REJECT`, even though
+the shipped `premium_momentum` code family already implements exactly those
+rules and the deployment layer already handles the session gates + position
+sizing. Root cause was `backend/app/ai/capability.py`'s R1-R9 model having zero
+vocabulary for premium-native rules — Phase 4 (per the
+`2026-07-13-premium-momentum-phase4-5-full-contingency-design.md` spec) had
+never happened.
+
+**What landed this session** (host-safe / pure, TDD; motor/route work
+deliberately deferred to a follow-up session because it needs the container
++ a live warehouse fixture):
+
+1. **New `PREMIUM_TRIGGER_CONCEPTS` classifier branch** (`app/ai/capability.py`) —
+   fires BEFORE R5 so `option_premium_trigger` never collides with the existing
+   ICT `premium_discount` mapping. Verdict: `BUILDABLE_NOW` with a mapped
+   `feature="premium_trigger_config"` pointing at the shipped code
+   (`app/premium_momentum*.py`, `app/live/live_sl_monitor.py` stepped_xy).
+   Backed by 14 new host-safe tests in `tests/test_capability_premium_trigger.py`.
+2. **New `SESSION_GATE_CONCEPTS` classifier branch** — entry/exit time windows,
+   EOD square-off, re-entry cutoff, day caps, global TP/SL, AND position size
+   all map to `feature="deployment_layer"` with a message pointing users at the
+   *existing* mechanism (`app/live_deploy_governor.py`,
+   `app/deployment_kill_switch.py`, `app/live/auto_square.py`) instead of
+   pretending they belong in a strategy's `evaluate()`.
+3. **Honest scoping for `PHASE5_FUTURE_CONCEPTS`** (`lazy_leg_contingency` +
+   aliases) — verdict is `BUILDABLE_WITH_FEATURE` + `live_feasible=False` with
+   an explicit "Phase 5 future work, design committed but not shipped" message,
+   pointing at `docs/superpowers/specs/2026-07-13-...phase4-5*.md`. NOT an
+   `INFEASIBLE` (that would mis-frame it as impossible) and NOT a false BUILD
+   (that would promise behavior the code can't back).
+4. **`capability_summary()` advertises the premium-trigger tier** so the LLM
+   authoring prompt teaches the model the correct concept names AND the
+   Strategy Library UI can render a discoverable "Premium-trigger strategies"
+   section. Shipped features vs. Phase-5 future work explicitly separated.
+5. **LLM prompt updated** (`app/ai/authoring_agent.py::_ruleset_system_prompt`)
+   — the new concept vocabulary is enumerated for the model, WITH an explicit
+   disambiguation warning about the `premium_discount` (ICT zone) vs.
+   `option_premium_trigger` (option-price rule) token collision that would
+   otherwise silently mis-route.
+6. **Gemini truncation fix** (`app/ai/_gemini.py`, `app/ai/_anthropic.py`,
+   `app/ai/llm_client.py`, `app/ai/py_author.py`): user was hitting
+   `"AI (gemini-2.5-pro) response was cut off at the 8000-token limit"` on
+   every AI Generate / Check Feasibility because `py_author.py` hard-capped at
+   8000 and `_gemini.DEFAULT_MAX_TOKENS` was 8192 — gemini-2.5-pro's thinking
+   tokens draw from the same budget and consumed most of it. Bumped
+   `_gemini.DEFAULT_MAX_TOKENS` 8192 → 32768, `_anthropic.DEFAULT_MAX_TOKENS`
+   8192 → 16384, `llm_client.complete_structured` wrapper default to match
+   the highest per-backend default, and removed `py_author.py`'s explicit
+   `max_tokens=8000` cap (it now inherits the wrapper default). google-genai
+   /Anthropic bill on emitted tokens, not the ceiling, so this doesn't spike
+   cost for small outputs. New host-safe test file:
+   `tests/test_gemini_token_budget.py` (8 tests) pins the invariants.
+7. **`docs/LOCAL_SETUP.md`** rewritten with a proper "sync from GitHub and
+   run" TL;DR, an AI wizard setup section (Phase 4 sanity check), and
+   troubleshooting entries for AI-provider config + the historic token-cutoff.
+8. **`backend/.env.example`** expanded to a full template — AI keys grouped
+   with links to obtain them, live-trading flags called out as OFFLINE-FIRST
+   with explicit `LIVE_AUTOPLACE_ARMED=0` / `LIVE_GUARD_ARMED=0` defaults.
+
+**End-to-end proof (with a live Gemini API call using the user's key):**
+
+Before Phase 4: 13/13 blueprint rules → `INFEASIBLE` → aggregate `REJECT`.
+
+After Phase 4: 13/13 rules mapped honestly:
+- 11 `BUILDABLE_NOW` (7 → `premium_trigger_config`, 4 → `deployment_layer`)
+- 2 `BUILDABLE_WITH_FEATURE` (`lazy_leg_contingency`, Phase-5 future work,
+  honestly-scoped as backtest-only until shipped)
+- Aggregate: **`ADVISE` — "Buildable with caveats — backtest-only feature(s):
+  lazy_leg_contingency."** ✅ matches the spec's "ACCEPT or honestly-scoped
+  partial mapping, not a blanket reject" end state.
+
+**Test count**: 3,304 host-safe tests pass (up from ~3,290 pre-session).
+1 pre-existing test (`test_premium_momentum_route::test_route_runs_a_real_
+warehouse_backtest`) still fails on the host because it needs a seeded Mongo
+warehouse — verified unrelated to this session's changes by re-running on the
+baseline commit before staging any edits.
+
+**Deferred to a follow-up session** (do NOT treat these as done):
+
+- **Phase 4 engine dispatch**: `backtest.run_backtest` / the general
+  Optimizer + Backtest Lab pages still can't dispatch a premium-trigger
+  deployment through the same sim + honest tuner used by the bespoke
+  `/premium-momentum` page — running the shipped `premium_momentum` plugin
+  through the general Optimizer still produces "Option re-rank produced no
+  paired results" (the second bug §1.2 in the Phase 4-5 spec, still open).
+  The declarative config block + the capability classifier speak the same
+  vocabulary now, but the *runtime* still branches on `strategy_id ==
+  "premium_momentum"`. Config-block-based dispatch is the next task.
+- **Phase 5 lazy-leg contingency** (two-leg state machine, session overlays)
+  — full spec in `docs/superpowers/specs/2026-07-13-...phase4-5*.md`.
+- **Broader AlgoTest-style multi-leg / greeks-based strategy builder** — user
+  request; requires Phase 4 engine dispatch to land first (so the same
+  declarative config can express both single- and multi-leg shapes).
+- **Optimizer / Backtest / Live / Paper page UX review** — user flagged low
+  confidence in what these pages do. Deferred; will need a working-session
+  walkthrough to know what to change.
+
+Non-negotiables preserved: no new arming gate, offline-first defaults intact,
+`app/live/executor.py` still the sole entry chokepoint (this session touched
+zero live-execution modules), byte-identical backward compatibility for the
+existing single-leg `premium_momentum` deployment (nothing in
+`premium_momentum*.py` or `deployment_evaluator.py` was touched).
+
 ## [0.52.0] — Premium-momentum strategy: live & paper execution (Track B) (2026-07-12)
 
 **New deployable strategy family**: `premium_momentum` rides the standard deployment/arm/guard

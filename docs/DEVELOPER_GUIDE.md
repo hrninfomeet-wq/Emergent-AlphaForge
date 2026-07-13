@@ -49,6 +49,7 @@ Then, by task:
 | The optimizer | [docs/optimizer-user-guide.md](optimizer-user-guide.md), [docs/Walk-forward (honest OOS) what it does exactly.md](<Walk-forward (honest OOS) what it does exactly.md>) |
 | Live broker execution | This guide §E, [docs/live-readback-checklist.md](live-readback-checklist.md), [docs/Resources/flattrade-pi-api/INDEX.md](Resources/flattrade-pi-api/INDEX.md) |
 | Install / daily launch | [docs/LOCAL_SETUP.md](LOCAL_SETUP.md), [docs/STARTUP_MANUAL.md](STARTUP_MANUAL.md) |
+| Continuing from the 2026-07-13 Emergent handoff session | [docs/EMERGENT_SESSION_NOTES.md](EMERGENT_SESSION_NOTES.md) — what landed, what's deferred, non-negotiables preserved |
 | Agent capabilities / PDF tooling | [CLAUDE.md](../CLAUDE.md) |
 
 **Golden rule:** ground every change in the actual code. Verify routes exist, module names are

@@ -14,6 +14,20 @@ Stack: **React** (CRA + craco) frontend, **FastAPI** (Python) backend, **MongoDB
 
 ## 2. Current state
 
+**Latest (2026-07-13, v0.53.0, Emergent handoff session)**: AI feasibility now
+accepts premium-native rules (option-premium momentum, locked strike, stepped
+premium trail) with a mapped `premium_trigger_config` verdict, session gates +
+position size map to `deployment_layer`, `lazy_leg_contingency` is honestly
+scoped as Phase-5 future work (not a blanket reject or false accept), and the
+Gemini 8000-token cutoff on Strategy Library AI actions is fixed
+(`DEFAULT_MAX_TOKENS` 8192 → 32768, `py_author.py`'s hard cap removed). 14 new
+host-safe tests + prompt/summary/env-template updates + LOCAL_SETUP rewrite.
+The Phase 4 **engine dispatch** (running a premium-trigger deployment through
+the general Optimizer/Backtest Lab instead of only the bespoke `/premium-
+momentum` page) is still open — the capability classifier and the runtime
+speak the same vocabulary now, but the *runtime* still branches on strategy
+id. See CHANGELOG 0.53.0 for the full detail and deferred-work list.
+
 Everything of substance is integrated on **local `main`**, but local `main` is currently **ahead of
 `origin/main` by dozens of commits** (unpushed — push only on explicit user request, see §4). There
 is no *long-lived* stack of feature branches, but at any given time there may be **1-2 active WIP

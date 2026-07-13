@@ -89,15 +89,17 @@ def complete_structured(
     user: str,
     output_model: Type[T],
     provider: Optional[str] = None,
-    max_tokens: int = 8192,
+    max_tokens: int = 32768,
 ) -> T:
     """Resolve provider + tier -> model, dispatch to that backend, return a validated
     `output_model`. Backends raise RuntimeError on any provider error (clean 502 upstream).
 
-    max_tokens defaults to 8192 (both backends' own default): a lower wrapper default
-    silently OVERRODE the per-backend default and re-introduced the exact Gemini
-    output truncation the 8192 fix was meant to solve — authored RuleSets / Python
-    were cut off mid-JSON on every non-overriding caller (audit S1)."""
+    max_tokens defaults to the highest per-backend default (Gemini's 32,768): a lower
+    wrapper default silently OVERRODE the per-backend default and re-introduced the exact
+    Gemini output truncation this budget increase was meant to solve — authored RuleSets
+    / Python were cut off mid-JSON on every non-overriding caller (audit S1). If we ever
+    bump _gemini.DEFAULT_MAX_TOKENS or _anthropic.DEFAULT_MAX_TOKENS higher, bump this too
+    (there's a host-safe test — test_gemini_token_budget.py — that pins the invariant)."""
     prov = resolve_provider(provider)
     model = model_for(prov, tier)
     if prov == "anthropic":

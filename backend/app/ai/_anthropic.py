@@ -6,7 +6,10 @@ from pydantic import BaseModel
 T = TypeVar("T", bound=BaseModel)
 
 # Match the Gemini backend: a truncated structured output is the #1 failure.
-DEFAULT_MAX_TOKENS = 8192
+# Claude 4.x supports 64k output tokens; 16k is a generous floor for structured
+# strategy authoring output (rulesets + fidelity + notes routinely hit 8-12k) while
+# staying well below the model ceiling. Anthropic bills on actual tokens emitted.
+DEFAULT_MAX_TOKENS = 16384
 
 
 def call(*, model: str, system: str, user: str, output_model: Type[T],

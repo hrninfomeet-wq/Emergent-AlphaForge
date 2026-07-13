@@ -133,6 +133,37 @@ def capability_summary() -> Dict[str, Any]:
         "needs_engine": needs_engine,
         "infeasible": infeasible,
         "data_limits": data_limits,
+        # NEW (Phase 4): advertise the premium-trigger tier so the AI authoring
+        # prompt teaches the LLM the correct concept names, and the Strategy
+        # Library UI can render a discoverable "Premium-trigger strategies"
+        # section. What's shipped vs. Phase-5 future work is called out here.
+        "premium_trigger": {
+            "shipped": [
+                "Locked-strike + premium-momentum entry "
+                "(BUY when option premium rises N%/pts from a reference-time snapshot)",
+                "Configurable moneyness selection (ITM/ATM/OTM band)",
+                "Premium-based stop / target (%)",
+                "Stepped X-Y premium trail (backtest + live parity via stepped_xy)",
+                "Single-leg first-to-trigger CE+PE lock (either side may fire)",
+            ],
+            "future": [
+                "Phase 5: simultaneous two-leg entry (both CE and PE may enter)",
+                "Phase 5: lazy-leg contingency — on primary SL, arm the dormant "
+                "opposite side with a fresh premium snapshot",
+                "Phase 5: session-level max positions / re-entry cutoff / "
+                "global target-SL as declared strategy config (today they're "
+                "deployment-layer configuration)",
+            ],
+            "concepts": sorted(PREMIUM_TRIGGER_CONCEPTS),
+            "session_gates": sorted(SESSION_GATE_CONCEPTS),
+            "note": (
+                "These rules do NOT map to per-bar OHLCV columns — they're driven "
+                "by locked strikes + premium snapshots + momentum thresholds, and "
+                "run through the shipped app/premium_momentum*.py family plus "
+                "app/live/live_sl_monitor.py (stepped_xy trail). Configure on the "
+                "deployment's premium_trigger block, not inside the strategy."
+            ),
+        },
         # Back-compat flat keys (older UI + tests): columns + live features.
         "columns": rpt["columns"],
         "features": all_feats,
@@ -170,6 +201,71 @@ DATA_BLOCKED_CONCEPTS: FrozenSet[str] = frozenset({
     "theta", "vega", "gamma", "delta", "historical_greeks", "greeks",
     "vol_structure", "term_structure", "news", "sentiment",
 })
+
+# NEW (Phase 4) — premium-native trigger concepts: rules the shipped
+# `premium_momentum` strategy family + its declarative deployment config already
+# handle. These do NOT map to a per-rule column model (they're driven by locked
+# strikes + premium snapshots + momentum thresholds), but they ARE buildable —
+# they were coming back as blanket-R9 rejects only because the classifier had no
+# vocabulary for them. Backed by the shipped modules:
+#   * `app/premium_momentum.py`      -> lock_reference_strike, momentum_triggered
+#   * `app/premium_momentum_backtest.py` -> walk_premium_momentum, stepped_trail_stop
+#   * `app/premium_momentum_live.py`     -> live evaluation
+#   * `app/live/live_sl_monitor.py`      -> stepped_xy trail mode
+#   * `app/premium_lock_store.py`        -> persisted locks
+# Phase-5 concepts (lazy-leg contingency) are handled separately below with an
+# honestly-scoped "future work" verdict — NOT a blanket accept.
+PREMIUM_TRIGGER_CONCEPTS: FrozenSet[str] = frozenset({
+    "option_premium_trigger",   # BUY when option premium crosses N%/pts from snapshot
+    "option_premium_momentum",  # alias
+    "premium_momentum",         # legacy name for the shipped strategy family
+    "locked_strike",            # time-locked reference strike
+    "strike_lock",              # alias
+    "premium_snapshot",         # entry-time premium capture
+    "moneyness_selection",      # ITM1 / OTM1 / ATM strike-selection knob
+    "stepped_premium_trail",    # X-Y ratchet trail on premium (5%/5% blueprint default)
+    "premium_stop_pct",         # premium-based SL
+    "premium_target_pct",       # premium-based TP
+})
+
+# NEW (Phase 4) — session-level gates handled at the DEPLOYMENT layer, not
+# inside a strategy's evaluate(). Historically these came back INFEASIBLE (R9)
+# because the classifier only knew per-bar rules. They're accepted here with a
+# message pointing at the existing mechanism, so users understand WHY they don't
+# appear as strategy code:
+#   * entry_time_gate / exit_time_gate -> deployment time windows + auto square-off
+#     (`app/auto_live.py`, `app/deployment_evaluator.py`)
+#   * eod_squareoff -> `app/live/auto_square.py`
+#   * re_entry_cutoff -> `app/live_deploy_governor.py` (day caps + time windows)
+#   * max_positions_per_day / max_lots_per_day -> `app/live_deploy_governor.py`,
+#     `app/deployment_kill_switch.py`
+#   * global_target_sl -> deployment-level P&L kill via kill_switch
+SESSION_GATE_CONCEPTS: FrozenSet[str] = frozenset({
+    "entry_time_gate", "entry_time",
+    "exit_time_gate", "exit_time",
+    "eod_squareoff", "eod_close", "session_close",
+    "re_entry_cutoff", "no_entry_after",
+    "max_positions_per_day", "max_lots_per_day", "day_caps",
+    "global_target_sl", "session_target", "session_stop",
+    "session_pnl_kill",
+    # Position sizing is deployment-layer config too — lots per leg is set on
+    # the deployment (paper capital / live per-order cap), not baked into the
+    # strategy rule. Without this, "Size 2 lots" comes back INFEASIBLE (R9)
+    # because the LLM emits it as a bare SIZING rule with no columns/concepts.
+    "position_size", "lot_size", "lots_per_leg", "sizing",
+})
+
+# Phase-5 (future work) concepts: honestly-scoped as BUILDABLE_WITH_FEATURE +
+# live_feasible=False, so the UI can render "buildable, not shipped yet" rather
+# than promising an accept the code can't back or blanket-rejecting a legitimate
+# shape. Track in docs/superpowers/specs/2026-07-13-premium-momentum-phase4-5*.md.
+PHASE5_FUTURE_CONCEPTS: Dict[str, str] = {
+    "lazy_leg_contingency": "lazy_leg_contingency",
+    "lazy_leg": "lazy_leg_contingency",
+    "contingent_leg": "lazy_leg_contingency",
+    "two_leg_contingency": "lazy_leg_contingency",
+    "opposite_side_activation": "lazy_leg_contingency",
+}
 
 # R3 — needs a second instrument's aligned bars (engine plumbing, Phase A).
 RELATIVE_STRENGTH_CONCEPTS: FrozenSet[str] = frozenset({
@@ -229,6 +325,59 @@ def classify_rule(tokens: RuleTokens, *, required_features=()) -> Verdict:
         return Verdict(FeasibilityClass.NEEDS_NEW_DATA,
                        f"'{c}' needs data the warehouse does not store "
                        f"(only 1m OHLCV + ATM-band option candles).")
+
+    # ---------------------------------------------------------------
+    # NEW (Phase 4): premium-native triggers. Fires BEFORE R5 so an
+    # `option_premium_trigger` never collides with the ICT `premium` -> R5 path
+    # (test_option_premium_trigger_wins_over_bare_premium_alias). The shipped
+    # `premium_momentum` code family + a small declarative config block on the
+    # deployment cover ALL these knobs today; the LLM/UI only needed a name
+    # for what it was seeing.
+    if tokens.concepts & PREMIUM_TRIGGER_CONCEPTS:
+        return Verdict(
+            FeasibilityClass.BUILDABLE_NOW,
+            "Buildable via the shipped premium-trigger config "
+            "(locked-strike + premium momentum + stepped trail). Configure on the "
+            "deployment's premium_trigger block — no per-rule column mapping needed. "
+            "Backed by app/premium_momentum*.py + app/live/live_sl_monitor.py "
+            "(stepped_xy).",
+            feature="premium_trigger_config", live_feasible=True,
+        )
+
+    # NEW (Phase 4): session-level gates handled at the deployment layer, not
+    # inside strategy evaluate() code. The message names the actual mechanism
+    # so a user reading the report knows WHERE to configure it.
+    if tokens.concepts & SESSION_GATE_CONCEPTS:
+        overlap = sorted(tokens.concepts & SESSION_GATE_CONCEPTS)[0]
+        return Verdict(
+            FeasibilityClass.BUILDABLE_NOW,
+            f"'{overlap}' is handled at the deployment layer (time-of-day windows, "
+            "day caps, and the auto square-off / kill-switch chain — see "
+            "app/live_deploy_governor.py, app/deployment_kill_switch.py, "
+            "app/live/auto_square.py). Configure it on the deployment, not inside "
+            "the strategy.",
+            feature="deployment_layer", live_feasible=True,
+        )
+
+    # NEW (Phase 4/5 gate): honest scoping for lazy-leg contingency — genuinely
+    # NOT shipped yet (design lives in
+    # docs/superpowers/specs/2026-07-13-premium-momentum-phase4-5-full-contingency-design.md),
+    # but it IS a defined future-work item, so refusing to acknowledge it (R9
+    # blanket reject) mis-frames it as impossible. Verdict: buildable-with-a-
+    # future-feature, live-gated until Phase 5 ships.
+    for c in sorted(tokens.concepts):
+        if c in PHASE5_FUTURE_CONCEPTS:
+            feat = PHASE5_FUTURE_CONCEPTS[c]
+            return Verdict(
+                FeasibilityClass.BUILDABLE_WITH_FEATURE,
+                "Lazy-leg contingency (opposite-side activation on primary-leg "
+                "SL) is Phase 5 future work — the design is committed "
+                "(docs/superpowers/specs/2026-07-13-premium-momentum-phase4-5-"
+                "full-contingency-design.md) but not yet shipped. Not-yet live-"
+                "feasible; today the single-leg first-to-trigger shape ships.",
+                feature=feat, live_feasible=False,
+            )
+    # ---------------------------------------------------------------
 
     # R3 — relative strength / pairs: needs a second instrument's aligned bars.
     if tokens.concepts & RELATIVE_STRENGTH_CONCEPTS:

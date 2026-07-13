@@ -1,8 +1,35 @@
 # Local Setup
 
-Updated: 2026-05-29
+Updated: 2026-07-13 (Phase 4 handoff — AI-key setup added, sync-from-GitHub flow validated)
 
 Two options: **Docker Compose (recommended)** or **Native (Python + Node + local MongoDB)**.
+
+## TL;DR — sync from GitHub and run
+
+```bash
+git clone https://github.com/hrninfomeet-wq/Emergent-AlphaForge.git
+cd Emergent-AlphaForge
+
+# 1) copy env templates
+cp backend/.env.example backend/.env
+cp frontend/.env.example frontend/.env
+
+# 2) generate a Fernet key for backend/.env (required for Upstox token encryption)
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+# paste into backend/.env as FERNET_KEY=...
+
+# 3) paste your Upstox client id/secret and (optional) AI keys into backend/.env
+#    (see backend/.env.example for every key that matters — grouped by purpose)
+
+# 4) launch
+docker compose up -d --build
+
+# 5) open the app
+# Frontend:  http://localhost:3000
+# Backend:   http://localhost:8001/api/health
+```
+
+Everything else on this page is expanded detail on those five steps.
 
 ## Option A — Docker Compose (Recommended)
 
@@ -26,11 +53,17 @@ copy frontend\.env.example frontend\.env
 # 3. Generate a stable FERNET_KEY for backend/.env
 python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 
-# 4. Edit backend/.env and add Upstox credentials (optional, but required for live data):
-#    UPSTOX_CLIENT_ID=...
-#    UPSTOX_CLIENT_SECRET=...
-#    UPSTOX_REDIRECT_URI=http://localhost:8001/api/upstox/auth/callback
-#    FRONTEND_POST_AUTH_URL=http://localhost:3000/warehouse
+# 4. Edit backend/.env — fill in the sections you need:
+#    Upstox (required for warehouse data ingest):
+#      UPSTOX_CLIENT_ID=...
+#      UPSTOX_CLIENT_SECRET=...
+#
+#    AI wizard (required for Strategy Library's "Check Feasibility" + AI Generate):
+#      GEMINI_API_KEY=...   (get one free at https://aistudio.google.com/apikey)
+#      # optional: ANTHROPIC_API_KEY=... for the Claude authoring path
+#
+#    Live trading stays OFF by default (LIVE_AUTOPLACE_ARMED=0 / LIVE_GUARD_ARMED=0).
+#    Leave those at 0 until you're actively armed to place real orders.
 
 # 5. Launch
 docker compose up -d --build
@@ -62,12 +95,14 @@ docker compose logs -f mongo
 
 The Windows launcher checks Docker Desktop, validates env files without printing secrets, starts the stack sequentially, waits for health, and then opens the browser. See `docs/STARTUP_MANUAL.md`.
 
-### Upgrade
+### Upgrade (pull latest, rebuild)
 
 ```bash
 git pull
 docker compose up -d --build
 ```
+
+Backend code is baked into the image, so **you must rebuild after backend edits or a fresh `git pull`** — a plain `docker compose up -d` will restart the old image.
 
 ---
 
@@ -92,7 +127,7 @@ python -m venv .venv
 .venv\Scripts\activate                  # Windows
 # source .venv/bin/activate              # Mac/Linux
 pip install -r requirements.txt
-copy .env.example .env
+copy .env.example .env                   # then edit — see backend/.env.example
 
 # Frontend
 cd ..\frontend
@@ -103,6 +138,9 @@ copy .env.example .env
 # Linux: sudo systemctl start mongod
 # Mac:   brew services start mongodb-community
 # Windows: start the MongoDB service from Services panel
+
+# NATIVE: change MONGO_URL in backend/.env to `mongodb://localhost:27017`
+# (Docker Compose uses `mongodb://mongo:27017`.)
 
 # Start backend
 cd ..\backend
@@ -118,6 +156,30 @@ yarn start
 
 ---
 
+## AI Wizard Setup (Strategy Library — Check Feasibility / AI Generate)
+
+As of Phase 4 (2026-07-13), the AI authoring wizard **accepts premium-native rules** (option-premium momentum triggers, locked strikes, stepped premium trails) and **maps session-level gates** (entry/exit time, EOD square-off, re-entry cutoff, day caps, position size) to their existing deployment-layer configuration — no more blanket rejects on the AlgoTest-style Configurable Contingency Breakout blueprint.
+
+To use it, add at least one AI provider key to `backend/.env`:
+
+```env
+# Gemini (free tier available — get a key at https://aistudio.google.com/apikey)
+GEMINI_API_KEY=your_key_here
+
+# Optional — Anthropic (Claude), preferred if both are set
+ANTHROPIC_API_KEY=your_key_here
+```
+
+Also as of Phase 4, the Gemini token-budget cutoff bug is fixed: `_gemini.DEFAULT_MAX_TOKENS` is now 32,768 (previously 8,192 was consumed by gemini-2.5-pro thinking tokens on non-trivial descriptions, leaving the JSON cut off mid-string). No user-facing action needed — just pull, rebuild, and long strategy descriptions no longer error.
+
+Restart backend after editing `.env`:
+
+```bash
+docker compose restart backend
+```
+
+---
+
 ## Quick Verification Script
 
 After the stack is up, run these checks:
@@ -129,7 +191,11 @@ curl http://localhost:8001/api/health
 
 # Strategies loaded
 curl http://localhost:8001/api/strategies
-# Expect: items array with 6 built-in strategies
+# Expect: items array with 6 built-in strategies (incl. premium_momentum)
+
+# AI provider status
+curl http://localhost:8001/api/ai/providers
+# Expect: providers list with at least one `configured: true`
 
 # Upstox connection (if OAuth is configured)
 curl http://localhost:8001/api/upstox/status
@@ -137,13 +203,13 @@ curl http://localhost:8001/api/upstox/status
 # Live candle roller (during market hours)
 curl http://localhost:8001/api/live-candles/status
 
-# Backend tests
+# Backend tests (host-safe / pure only — motor tests run inside the backend container)
 python -m pytest tests -q
-# Expect: 440 tests pass (as of 2026-06-12)
+# Expect: ~3300 tests pass (as of 2026-07-13)
 
 # Frontend build
 cd frontend
-npm run build
+yarn build
 ```
 
 ---
@@ -153,18 +219,25 @@ npm run build
 1. Open Dashboard. Check status cards.
 2. Open Data Warehouse. If Upstox is connected, run Data Hygiene plan + execute to bring the warehouse current.
 3. Open Backtest Lab. Pick a strategy and run a 6-month backtest with walk-forward enabled.
-4. Open Optimizer. Run Bayesian search with risk_adjusted objective.
+4. Open Optimizer. Run Bayesian search with the `risk_adjusted` objective.
 5. Apply best params as a Preset.
 6. Open Live Signals. Create a deployment from the Preset (mode `shadow` first).
 7. Wait for signals during market hours, or click Evaluate-now to dry-run.
 
+### Trying the AI wizard (Phase 4 sanity check)
+
+1. Open Strategy Library.
+2. Click **AI Author** → paste the AlgoTest "Configurable Contingency Breakout (NF CE PE EXP2 Base)" blueprint from `docs/superpowers/specs/2026-07-13-...md`.
+3. Click **Check Feasibility**. You should see an ADVISE (not REJECT) with rules mapping to `premium_trigger_config` (shipped) and `deployment_layer` (existing deployment config), plus `lazy_leg_contingency` marked as backtest-only Phase-5 future work.
+4. If it still says REJECT: check `docker compose logs backend` for `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` errors and confirm `curl http://localhost:8001/api/ai/providers` shows at least one configured.
+
 ---
 
-## Phase 4 Upstox Setup
+## Upstox OAuth Setup
 
 The backend has full OAuth and historical/live data integration. To use real Upstox data:
 
-1. Register an Upstox API app and get `CLIENT_ID` + `CLIENT_SECRET`.
+1. Register an Upstox API app and get `CLIENT_ID` + `CLIENT_SECRET` at https://developer.upstox.com/.
 2. Add to `backend/.env`:
    ```
    FERNET_KEY=<generated_value>
@@ -186,7 +259,7 @@ The token is encrypted in MongoDB. Tokens expire — re-do OAuth when fetches st
 ```bash
 # Backup (Docker)
 docker exec -t alphaforge_mongo mongodump --archive=/tmp/backup.gz --gzip
-docker cp alphaforge_mongo:/tmp/backup.gz ./alphaforge_backup_2026_05_29.gz
+docker cp alphaforge_mongo:/tmp/backup.gz ./alphaforge_backup_2026_07_13.gz
 
 # Restore
 docker cp ./alphaforge_backup_YYYYMMDD.gz alphaforge_mongo:/tmp/backup.gz
@@ -209,6 +282,16 @@ docker exec -t alphaforge_mongo mongorestore --archive=/tmp/backup.gz --gzip
 ### Frontend shows "Network Error"
 - Verify `REACT_APP_BACKEND_URL=http://localhost:8001` in `frontend/.env`.
 - Verify backend health: `curl http://localhost:8001/api/health`.
+
+### AI wizard says "no AI provider configured"
+- At least one of `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` must be set in `backend/.env`.
+- After editing `.env`, restart backend: `docker compose restart backend`.
+- Verify: `curl http://localhost:8001/api/ai/providers` should show at least one with `configured: true`.
+
+### AI "response was cut off at the N-token limit" (historic — fixed in Phase 4)
+- Symptom: `AI generation failed: The AI (gemini-2.5-pro) response was cut off at the 8000-token limit`.
+- Root cause was `_gemini.DEFAULT_MAX_TOKENS=8192` + a `max_tokens=8000` hard cap in `py_author.py`; gemini-2.5-pro's thinking tokens consumed the whole budget on any non-trivial rule set.
+- Fix: on Phase 4+ builds this can no longer happen for reasonable descriptions. If you still hit it on a truly gigantic description, the error is now actionable ("shorten / split the description and retry").
 
 ### Upstox 400 "Invalid date range"
 - Spot ingest chunker is fixed at 7 days. If you call the synchronous `/upstox/warehouse/ingest` with a bigger custom `chunk_days`, you may hit the Feb→Mar boundary issue. Leave it Auto.

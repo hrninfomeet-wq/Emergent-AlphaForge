@@ -61,13 +61,19 @@ def author_python(source_text: str, provider: str | None = None) -> Dict[str, An
     from app.ai import llm_client
 
     catalog = build_grounding_catalog()
+    # NOTE: previous versions passed `max_tokens=8000` here, which was the SOURCE of
+    # the user-reported "AI (gemini-2.5-pro) response was cut off at the 8000-token
+    # limit" error in Strategy Library AI-generate. On gemini-2.5-pro, thinking
+    # tokens are drawn from this same budget and readily consume 6-7k, leaving the
+    # actual authored-Python JSON output cut off mid-string. Use the wrapper's
+    # default (currently 32,768) — Gemini/Anthropic bill on emitted tokens, not the
+    # ceiling, so this doesn't spike cost for small outputs.
     out: AuthoredPython = llm_client.complete_structured(
         tier=llm_client.POWERFUL,
         system=_system_prompt(catalog),
         user=source_text,
         output_model=AuthoredPython,
         provider=provider,
-        max_tokens=8000,
     )
     return {"code": out.code, "fidelity": out.fidelity.model_dump(),
             "notes": out.notes, "suggested_id": out.suggested_id}

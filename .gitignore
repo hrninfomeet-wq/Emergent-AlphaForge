@@ -54,6 +54,8 @@ logs/
 # AlphaForge specific
 /app/reference-repo/
 /app/.emergent/
+.emergent/
+plan.md
 /tmp/
 *.gz
 *.zip

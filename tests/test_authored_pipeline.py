@@ -30,10 +30,23 @@ def _run(c):
 
 
 # --- S1: max_tokens default lifted --------------------------------------------
+# Historical fix: the wrapper default was silently OVERRIDING the per-backend default
+# and re-introducing the Gemini truncation bug (a 4096 default here made every caller
+# that didn't pass max_tokens hit MAX_TOKENS). The invariant is "wrapper default >=
+# per-backend default", not "wrapper default == 8192" — the latter re-broke the bug
+# once we discovered gemini-2.5-pro's thinking tokens draw from the same budget and
+# needed a much higher ceiling (see test_gemini_token_budget.py for the current
+# minimums).
 
-def test_complete_structured_default_max_tokens_is_8192():
+def test_complete_structured_default_is_at_least_per_backend_default():
+    from app.ai import _gemini, _anthropic
     default = inspect.signature(complete_structured).parameters["max_tokens"].default
-    assert default == 8192, f"max_tokens default {default} re-introduces Gemini truncation"
+    assert default >= _gemini.DEFAULT_MAX_TOKENS, (
+        f"wrapper max_tokens default {default} is BELOW _gemini.DEFAULT_MAX_TOKENS "
+        f"({_gemini.DEFAULT_MAX_TOKENS}) — this re-introduces the Gemini truncation "
+        "bug on every caller that doesn't override."
+    )
+    assert default >= _anthropic.DEFAULT_MAX_TOKENS
 
 
 # --- S19: live-arm advisories from forward evidence ---------------------------
