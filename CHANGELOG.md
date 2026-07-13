@@ -2,6 +2,88 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.52.0] — Premium-momentum strategy: live & paper execution (Track B) (2026-07-12)
+
+**New deployable strategy family**: `premium_momentum` rides the standard deployment/arm/guard
+rails with a dedicated evaluator branch instead of the generic `strategy.evaluate()` — the first
+strategy in the app driven by a **time-locked strike + premium-native trigger** rather than a spot
+indicator. At a configurable reference time the evaluator locks the CE/PE strike from spot,
+captures each side's real premium from fresh WS ticks (persisted in a new `premium_locks`
+collection, unique per `(deployment_id, session_date)`), and the first side whose premium rises
+past the momentum threshold journals a signal through the normal audit pipeline. Exits ride a new
+`stepped_xy` guard trail mode (AlgoTest-style discrete X-Y ratchet) alongside the existing
+stop/target machinery. **No new arming gate**: the strategy is live-armable through the exact same
+chain as every other deployment (per-deployment ARM + `LIVE_AUTOPLACE_ARMED`/`LIVE_GUARD_ARMED` +
+caps) — a deliberate design choice, not an oversight. Locked strikes are pinned into every option
+subscription-stream rebuild (auto-follow + manual restart), and recovery re-hydrates entered
+positions from the persisted lock state with a watched-set guard against double-registering a
+position across a restart. 250 tests (201 container + 49 host). Branch
+`feat/premium-momentum-track-b`, 9-task TDD plan, merged to local main only (not pushed). **Not yet
+validated in real market hours** — needs a live weekday session.
+
+## [0.51.0] — Premium-momentum strategy: backtest, cost model & honest tuner (Track A) (2026-07-10)
+
+**New option-native backtest engine** (`premium_momentum.py` + `premium_momentum_backtest.py`):
+simulates a time-locked-strike, premium-momentum-triggered strategy with gap-honest intrabar
+stop/target fills and a stepped X-Y trailing ratchet, built as a self-contained sim (not the
+two-stage spot-then-option engine) to avoid re-resolving a drifting strike. A red-team pass found
+and fixed a HIGH-severity look-ahead bug (the trailing high-water mark was updated before the same
+bar's low was tested against it) plus a session-scoping bug that silently excluded 92/127 real
+sessions (dated-vs-plain instrument-key mismatch, the same root-cause class as the warehouse's
+expired-contract key split). **Cost model**: `apply_costs_to_trade` reuses the existing
+`option_costs` rupee model verbatim. **Honest tuner** (`premium_momentum_tuner.py`): costs are
+mandatory to tune (raises if disabled), selection happens on a chronological TRAIN split only,
+results always report OOS, and an overfit flag fires when train-best diverges from OOS — validated
+on its first real run (best-by-train +408 pts → −418 pts OOS, correctly flagged as overfit).
+**Honest finding**: the AlgoTest blueprint's default parameters have **no edge** on 2026-H1 NIFTY
+(18 of 19 sensitivity-sweep cells negative after costs) — the capability was built anyway, per an
+explicit decision to separate "can the app run this kind of strategy" from "does this specific
+config make money." New `/premium-momentum` research page (setup form, coverage-first results, Tune
+panel).
+
+## [0.50.3] — Live-safety: close two pre-existing double-sell windows (2026-07-11/12)
+
+Two races the audit's adversarial review had flagged but left open: (1) **lost-ack blind retry** —
+a `place_order` call that raised (network/timeout) but may have actually landed at the broker was
+previously retried blind; all three exit executors (`auto_square`, `reprice_exit_leg`,
+`panic_squareoff_verified`) now resolve `remarks==client_order_id` against the order book first,
+adopting a landed order instead of re-posting, and fail closed (no retry) if the book can't be
+read. (2) **panic cancel-confirm barrier** — the kill-switch's flatten pass now confirms every
+targeted cancel is terminal (one re-fetch) and re-sizes/skips legs against the fresh position book
+before placing, instead of racing a possibly-still-working cancel.
+
+## [0.50.2] — Live-safety: reconcile audit backlog onto the Layer-1/2 guard (2026-07-11)
+
+The four live-safety audit items (#1 broker-truth, #3 kill-switch stop-all, #5 recovery-that-reruns,
+#6 guard fail-open) were written against an older guard design; a parallel session had since landed
+a confirmed-flat finalize + widening re-price guard (Layer 1/2) on main, so a mechanical
+cherry-pick would have regressed it. This branch reconciles all four onto the current guard, then
+fixes every CONFIRMED finding from a fresh 3-lens adversarial review: the recovery latch now only
+records success on a truly *complete* run (client present, no step raised, book readable) —
+previously an incomplete recovery could latch green over an unguarded position; kill-switch claims
+gained per-claim TTLs and a post-cancel re-confirm; the EOD square now bypasses a `square_stopped`
+guard entry (a no-OCO manual position must still get its 15:00 backstop).
+
+## [0.50.1] — Live-safety audit backlog: items #5–#10 (2026-07-08/09)
+
+Closes out the remaining half of the July audit backlog (see `docs/audit-report-2026-07.md`): **#5
+recovery that re-runs** (boot-time recovery was token-gated and boot-only — never ran if OAuth
+completed after boot; now re-triggered on the OAuth callback and retried by the supervisor loop,
+with a per-token latch); **#6 guard fail-open + gate-split** (a guard that exhausted its retry
+budget now re-registers the position instead of silently dropping it; arm-state exposes an
+`exit_gap` warning when auto-place is armed but the guard isn't); **#7 optimizer survival-gate
+honesty** (the gate can no longer run gross of option costs; a phantom ₹200k capital default is now
+a real UI input; the reported "OOS" no longer double-counts in-sample folds); **#8 optimizer
+robustness trio** (a cross-job trial-cache poisoning bug in the parallel-worker fallback could leak
+another job's cached Series into a new run's results — fixed with a per-call fresh cache); **#9
+deployment parity** (the optimizer's trade window now matches what a live deployment can actually
+take, instead of rewarding entries in the last 10 minutes before the deployment block); **#10
+authored→deployed pipeline** (a `max_tokens` default was silently re-introducing the Gemini
+truncation bug the authoring-UX fix had already solved once). Also fixed in this window: the
+strategy-pipeline endpoint's paper-deployment count used an uppercase `"PAPER"` match against the
+lowercase-stored `mode` field, undercounting every paper deployment on the Strategy Library pipeline
+view.
+
 ## [0.50.0] — Trading correctness: paper capital gate, verified kill switch, historical range ingestion, deletable strategies (2026-07-07)
 
 Four money-handling correctness/safety features (branch `feat/trading-correctness`,

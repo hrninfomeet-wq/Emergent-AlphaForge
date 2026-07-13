@@ -33,8 +33,9 @@ Start here, in order:
 
 1. **[docs/HANDOFF.md](HANDOFF.md)** — "START HERE": current state, orientation, and a where-to-go-deep index.
 2. **This guide** — the consolidated onboarding.
-3. **[CHANGELOG.md](../CHANGELOG.md)** — versioned history (0.1.0 → 0.48.1, newest first). The repo +
-   `tests/` are the source of truth, not any prior chat.
+3. **[CHANGELOG.md](../CHANGELOG.md)** — versioned history (0.1.0 → 0.52.x, newest first). The repo +
+   `tests/` are the source of truth, not any prior chat — and check `git log` against the top
+   changelog entry before trusting it; doc passes have lagged real commits before.
 4. **[docs/ARCHITECTURE.md](ARCHITECTURE.md)** — full module map, data flow, collections, the live gate chain.
 
 Then, by task:
@@ -142,7 +143,10 @@ A short narrative; the full module map + data-flow diagrams are in **[docs/ARCHI
   `execution_policy.py` + `exit_controls.py` (backtest); `optimizer.py` + `wfo.py` +
   `walkforward.py` + `survival.py` + `rerank_select.py` (optimizer); `deployment_evaluator.py` +
   `paper_auto.py` + `live_exit_monitor.py` (forward test); `auto_live.py` + `app/live/*` (live
-  execution).
+  execution); `premium_momentum.py` + `premium_momentum_backtest.py` + `premium_momentum_tuner.py` +
+  `premium_momentum_live.py` + `premium_lock_store.py` + `premium_pin.py` (the premium-momentum
+  strategy family — time-locked-strike, premium-native-trigger backtest + live/paper execution;
+  see §E and §G below and [STRATEGY_DEPLOYMENTS.md](STRATEGY_DEPLOYMENTS.md)).
 - **Frontend** (`frontend/src/`): `pages/*.jsx` per page (Dashboard, BacktestLab, Optimizer,
   DataWarehouse, LiveTrading, PaperTrading, StrategyLibrary, journals, checklist); `components/*`
   per subsystem (`warehouse/`, `backtest/`, `live/`); `lib/jobs.jsx` is the global background-job
@@ -308,6 +312,97 @@ schema from the vision-verified PiConnect catalog) sits at the broker with no ma
 `GET /live-broker/gtt` lists it, `POST` builds + transmits **only on explicit `transmit=true`**,
 `DELETE` cancels. The `ai_t` values were confirmed by reading the user's own placed orders back.
 
+### Broker-truth integrity — a read failure is UNKNOWN, never flat
+
+`BrokerReadError` (`live/broker_protocol.py`) is raised by the Flattrade readers whenever the Noren
+API returns `stat != Ok` — **except** the documented "no data" empty-book signal, which is a real
+zero, not a failure (`_is_no_data`/`_parse_book` in `flattrade_client.py`). Every consumer (kill
+route, both square paths, the guard cycle, the executor's pre-transmit limit gates, the blotter)
+treats a read error as **UNKNOWN**, not FLAT and not squared — the alternative (treating an
+expired-session error response as an empty position book) is how a live position could go
+completely unmonitored while everything *looks* green. If you add a new broker-read consumer, it
+must fail closed (hold / block / mark UNKNOWN) on `BrokerReadError`, never coerce to flat.
+
+### The kill switch is a true stop-all, and exits are serialized against double-selling
+
+`kill_switch._run_kill_switch` trips the account-wide safety latch (`engine.can_trade()` goes false)
+**before** it does anything else, halts the engine, and disarms every armed deployment — only then
+does it flatten. All three exit paths (the software guard, the kill switch, and a manual/deployment
+square) funnel through `live/exit_claims.py`, a per-tsym asyncio-lock claim registry with a TTL: a
+second path trying to exit a tsym another path already claimed gets `exit_in_flight_elsewhere`
+instead of racing a double-sell. Two additional double-sell windows were closed after being found
+by adversarial review (2026-07-11/12), and the pattern they establish should be followed by any new
+exit code:
+
+- **Lost-ack adoption.** A `place_order` call that raised (timeout/network) may have actually landed
+  at the broker. Before any retry, resolve `remarks == client_order_id` against the order book
+  (`kill_switch._scan_order_by_remarks`): if it landed, **adopt it, never re-post**; if the book
+  can't be read, **fail closed** (no retry) rather than guess. All three exit executors
+  (`auto_square`, `reprice_exit_leg`, `panic_squareoff_verified`) follow this.
+- **Cancel-confirm barrier.** Before placing a flatten/reprice order, every cancel it depends on must
+  be independently confirmed **terminal** (one re-fetch) — don't place a square order on the
+  assumption that a cancel you just sent has already landed.
+
+### Recovery re-runs on every fresh token, not just at boot
+
+`runtime.maybe_run_live_recovery` is triggered from three places — process boot, the OAuth callback
+(so a token obtained *after* boot still triggers a recovery pass), and the supervisor loop (so a
+transient failure gets retried) — gated by a **per-token latch** keyed on the token fingerprint. The
+latch is only recorded as success when the run is truly **complete** (client present, no step
+raised, the position book was actually readable) — an earlier version latched green on a merely
+*attempted* run, which could leave a real position unguarded while recovery believed it had already
+handled it. If you touch recovery, preserve the completeness-gated latch; a "ran but incomplete"
+state must be retried, never remembered as done.
+
+### The guard fails open, never silently drops a position
+
+If `live_position_guard`'s square retries are exhausted, the position is **re-added** to the
+registry (`readd`) in an escalated `square_stopped` state rather than quietly un-watched — the
+broker-side OCO/GTT backstop and the position's `status.stuck` flag remain the safety net, and an
+operator is expected to notice the escalation. The **EOD 15:00 IST square explicitly bypasses**
+`square_stopped` (a no-OCO manual/rehydrated position must still get its end-of-day flatten even if
+its earlier retries were exhausted).
+
+### `auto_square.py`'s manual 10-minute timer is gone — EOD is the only manual backstop
+
+A past design had a hard 10-minute auto-square cap for manual `LIVE_TEST` positions. It was
+**removed** (see `docs/superpowers/specs/2026-07-09-remove-manual-livetest-10min-timer-design.md`):
+deployed strategies already exit on their own rules plus a resting OCO, and for a manual position
+the 15:00 IST EOD square is now the sole time-based backstop. `auto_square.build_sl_backstop_intent`
+and `square_position` remain — the executor + SL-backstop builder — but do not resurrect a
+resting-timer concept if you touch this file; read its module docstring first, it's deliberately
+detailed about what was removed and why.
+
+### Premium-momentum: a strategy driven by a locked strike + premium trigger, not spot
+
+`premium_momentum` is architecturally different from every other strategy: instead of
+`strategy.evaluate()` reading spot candles, `deployment_evaluator.py` has a **dedicated branch** for
+`strategy_id == "premium_momentum"` that calls `premium_momentum_live.evaluate_premium_momentum_bar`
+per bar. At a configurable reference time it locks the CE/PE strike from spot and captures each
+side's premium from fresh WS ticks into a new `premium_locks` collection (unique per
+`(deployment_id, session_date)`, create-once / duplicate-key-adopt for crash safety); the first side
+whose premium crosses the momentum threshold journals a signal and — **only after that journal
+succeeds** — the trigger is atomically latched (a failed latch downgrades the outcome so nothing
+trades on a journaled-but-unlatched signal). Exits can use a new `stepped_xy` guard trail mode
+(`live_sl_monitor.py`) — an AlgoTest-style discrete ratchet (raise the stop by Y for every X of
+favorable move), sourced from `deployment.risk.exit_controls`. Backtest and live share correctness
+through **shared pure helper functions** (`lock_reference_strike`, `momentum_triggered`,
+`stepped_trail_stop`, …), not a shared loop — the backtest is a self-contained option-native sim
+precisely to avoid the two-stage engine's spot-re-resolution of a drifting strike.
+
+**There is no premium-momentum-specific arming gate.** It authorizes through the exact same
+per-deployment ARM + `LIVE_AUTOPLACE_ARMED`/`LIVE_GUARD_ARMED` + caps chain as every other strategy
+— this was an explicit user decision (an earlier spec draft had a 10-paper-session validation gate;
+it was removed on request). **Do not add one back "for safety."** Locked strikes are pinned into
+every option subscription-stream rebuild (both the auto-follow path in `runtime.py` and the manual
+restart route in `routers/broker.py` — a new stream-rebuild site must union in `premium_pin_keys`
+too, or a locked strike can silently drop off the tick feed mid-session). Recovery
+(`rehydrate_premium_momentum`) re-registers guard entries for already-entered locks using the
+**persisted entry premium**, and skips any lock whose order id or resolved trading symbol is
+already in the registry's watched set — recovery/supervisor retries are routine, and without this
+guard a re-run could double-watch one position under two keys (two independent stop evaluations,
+two full-qty square orders on a fast gap).
+
 ### The one invariant that never changes
 
 **The assistant never personally transmits or squares a real order.** It builds 100% of the code,
@@ -396,6 +491,17 @@ Optimizer  ──► Backtest Lab  ──► Preset / run  ──► Deployment 
    **armed** to route live signals through the executor chokepoint under the env gates + per-deployment
    ARM + caps + EOD auto-disarm described in §E. **Gate: a human arms it; the assistant never does.**
 
+**Premium-native strategies** (e.g. `premium_momentum`) follow the same 5-step flow but with their
+own backtest engine (`premium_momentum_backtest.py`, option-native self-contained sim rather than
+the spot-then-paired-option two-stage engine) and their own tuner (`premium_momentum_tuner.py`).
+That tuner is a reusable **honest-tuning pattern** worth following for any future tunable strategy:
+costs are **mandatory** to enable before tuning (the tuner refuses otherwise), parameter selection
+happens on a **chronological TRAIN split only**, results always report the **OOS** slice the
+selection never saw, and an **overfit flag** fires automatically when the train-best config's OOS
+result diverges sharply from its train result. Its first real run selected a config that looked
+like +408 points on train and was actually −418 points OOS — flagged correctly, by design, not by
+luck. Don't build a "just pick the best backtest number" tuner for a new strategy; copy this shape.
+
 **Empirical note** (memory `option-buying-edge-hunt-2026`): a disciplined survival-gated sweep over
 confluence / SEB / ORF found **no deployable option-buying survivor** — the bottleneck was
 directional signal quality, not theta/moneyness. The framework refusing to promote a money-loser is
@@ -458,6 +564,38 @@ before touching that area.
   lacks) — this is why the software guard reads the broker position book and squares in software,
   and why the PC-down net is an NRML GTT/OCO (no margin cost) rather than a resting SL.
 
+**Testing:**
+- There is a recurring, **documented false-fail class** in the container test run: tests that
+  string-assert on source by reading `/app/backend/...` or `/app/frontend/...` paths (e.g.
+  `TestGuardWiringContract`, several `test_premium_*` source-pin tests) fail inside the container
+  because its layout is flattened relative to the host repo. This is NOT a regression — judge
+  correctness by whether the **motor/route** tests pass in the container and the **same** tests pass
+  on the **host**; don't chase these specific failures.
+- `sklearn` is load-bearing for the optimizer even though nothing imports it directly — `optuna`
+  lazy-imports it. Don't remove it as an apparently-unused dependency.
+- Running the **full** suite inside the container will always show a handful of reds from the
+  path-contract tests above — judge the container run by the motor/route subset you actually care
+  about, not a full-suite pass/fail count.
+
+**Premium-momentum specifics:**
+- `option_premium.resolve_premium` returns the tick timestamp under the key **`"ts"`, in seconds**
+  — not `"tick_ts"`, and not milliseconds. A caller that reads the wrong key or wrong unit silently
+  breaks freshness checks (this was a real bug caught by review, not hypothetical).
+- Any option-series lookup by `instrument_key` (backtest premium series, live pin sets, etc.) must
+  canonicalize the key first (`instruments.canonical_instrument_key`) — expired-contract metadata
+  carries dated 3-part keys while candles are stored under the plain 2-part form. Skipping this
+  silently excluded 92/127 real sessions the first time it was missed.
+
+**Subagent / workflow orchestration:**
+- A Workflow or subagent panel that returns **0 completed agents** (all dead on a session/token
+  limit) is **not** a passed check, even if the aggregate result looks like "0 issues found." Treat
+  it as unverified and say so — don't report a false clean.
+- When a subagent panel dies repeatedly on session/token limits, the token-efficient move is usually
+  to finish the remaining work **inline** (the orchestrator already has full context; a fresh
+  subagent has to re-derive it) rather than keep retrying the same dispatch.
+- `Workflow({scriptPath, resumeFromRunId})` replays completed `agent()` calls from cache instantly —
+  always resume this way after an interruption instead of re-running a whole script from scratch.
+
 **Git:** `core.autocrlf=true` → harmless CRLF warnings on commit.
 
 ---
@@ -470,6 +608,9 @@ before touching that area.
   explicit instruction. HANDOFF tracks the current branch stack.
 - **Never place real broker orders unless explicitly armed.** The assistant never clicks Place /
   arms / squares. See §E.
+- **Don't add a new arming gate without being asked.** A new strategy or feature should ride the
+  existing arm/gate/cap chain (§E) by default; propose a new gate rather than assuming one is
+  wanted — premium-momentum's spec explicitly had one removed on request.
 - **IST everywhere**; NSE session 09:15–15:30 with 15:00 square-off; holiday-aware.
 - **Premium-never-spot** fills; lot size from `option_contracts.lot_size`; OPEN trades never
   deletable.

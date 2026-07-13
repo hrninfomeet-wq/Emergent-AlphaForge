@@ -295,8 +295,54 @@ breaches. (Why software, not a resting SL: a resting SELL stop on a long option
 needs naked-short SPAN margin an option-buyer account lacks, so a broker SL is
 rejected every time — proven live 2026-06-24.) A position is removed from the
 registry **before** its square is issued, so a slow square is never double-sent.
-The 10-minute auto-square cap and the 15:00 EOD auto-disarm remain the ultimate
-backstops.
+If the guard's retries are exhausted it **re-adds** the position in an escalated
+`square_stopped` state rather than dropping it silently — the broker OCO/GTT and
+the 15:00 IST EOD square (which explicitly bypasses `square_stopped`) remain the
+ultimate backstops. (A prior manual-position-only 10-minute auto-square timer was
+**removed** — the EOD square is now the sole time-based backstop for a manual
+position; deployed strategies exit on their own rules + the resting OCO.)
+
+---
+
+## `premium_momentum`: a lock-driven deployment variant
+
+`premium_momentum` deploys through the identical pipeline above (Preset/Run → deployment → quality
+gate → evaluator → paper/live sink), but the **evaluator step is different**. Instead of calling
+the strategy's `evaluate()` (the plugin's is inert — it registers schema/metadata only),
+`deployment_evaluator.py` has a dedicated branch for `strategy_id == "premium_momentum"` that calls
+`premium_momentum_live.evaluate_premium_momentum_bar` per bar:
+
+1. At a configurable reference time, lock the CE/PE strike from spot and capture each side's
+   premium from fresh WS ticks into `premium_locks` (unique per `(deployment_id, session_date)`).
+2. Monitor both sides' premium against the momentum threshold every bar.
+3. The first side to trigger journals a signal through the **normal** audit pipeline — same
+   `signals` collection, same CONFIRMED/AUDITED states, same idempotency index. The pretrade filter
+   is explicitly **bypassed** for this branch (with an audit-context marker) since a lock-driven
+   trigger isn't a confidence-scored signal in the usual sense; the contract is taken from the
+   **lock**, never re-resolved from (possibly drifted) spot.
+4. **Only after the journal insert succeeds** is the trigger atomically latched
+   (`premium_lock_store.latch_trigger`) — if the latch is refused (a race, or the lock flipped to
+   `done_for_day` mid-bar), the signal's outcome is downgraded so the sink tee never routes a trade
+   for a journaled-but-unlatched signal.
+
+From there it is **routed and armed exactly like every other deployment** — the same sink routing
+(armed+connected → `auto_live`, else `auto_paper`, else journal-only), the same per-deployment ARM +
+`LIVE_AUTOPLACE_ARMED`/`LIVE_GUARD_ARMED` + caps + EOD auto-disarm chain, the same executor
+chokepoint. **There is no premium-momentum-specific arming gate** — this was an explicit design
+decision (an earlier draft spec had a 10-paper-session validation gate; it was removed on request),
+and none should be added without being asked. `auto_live.py` adds one extra safety check specific to
+this strategy: a **last-line re-check** of the momentum trigger right before transmit (premium can
+move between the bar's journal and the actual order), releasing the claim and journaling
+`premium_trigger_not_met` if it no longer holds — the lock itself is untouched so a later bar can
+retry.
+
+Exits can use a new guard trail mode, `stepped_xy` (`risk.exit_controls = {"mode": "stepped_xy",
+"x": ..., "y": ...}`) — an AlgoTest-style discrete ratchet (raise the stop by `y` for every `x` of
+favorable premium move) — alongside the ordinary stop/target fields. On restart,
+`rehydrate_premium_momentum` re-registers already-entered locks with the guard using the
+**persisted entry premium** (not a generic default), skipping any lock whose order id or trading
+symbol the guard already has watched, so a recovery re-run can never double-watch (and
+double-square) one position.
 
 ---
 

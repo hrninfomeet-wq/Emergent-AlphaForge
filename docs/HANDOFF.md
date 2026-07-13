@@ -14,7 +14,15 @@ Stack: **React** (CRA + craco) frontend, **FastAPI** (Python) backend, **MongoDB
 
 ## 2. Current state
 
-Everything is integrated on **`main`** — there is no live stack of feature branches to track (past feature branches are merged and deleted). The app has grown across `0.17.x → 0.48.x` (see [`../CHANGELOG.md`](../CHANGELOG.md) for versioned detail). It runs in Docker; backend code is baked into the image, so **rebuild the container after backend edits**.
+Everything of substance is integrated on **local `main`**, but local `main` is currently **ahead of
+`origin/main` by dozens of commits** (unpushed — push only on explicit user request, see §4). There
+is no *long-lived* stack of feature branches, but at any given time there may be **1-2 active WIP
+branches** from a parallel session that haven't landed on main yet — run `git branch -v` and don't
+assume main is the whole story before describing "current state" to anyone. The app has grown
+across `0.17.x → 0.52.x` (see [`../CHANGELOG.md`](../CHANGELOG.md) for versioned detail — if the top
+entry looks more than a week old, the changelog itself is probably behind `git log`; it has happened
+before). It runs in Docker; backend code is baked into the image, so **rebuild the container after
+backend edits**.
 
 Built subsystems (all verified present in `backend/app/`):
 
@@ -23,9 +31,10 @@ Built subsystems (all verified present in `backend/app/`):
 - **Optimizer** — Optuna TPE / Grid / Genetic search; single vs walk-forward (honest OOS); spot vs option re-rank; capital-aware **survival gate**; exit-control search. (`optimizer.py`, `wfo.py`, `walkforward.py`, `survival.py`, `rerank_select.py`.)
 - **Strategy Library** — builtin + drop-in plugin strategies; retire / delete lifecycle; multi-provider AI authoring wizard (Anthropic + Gemini; Spec + capability-aware + full-Python tiers). (`strategies/*`, `routers/strategies_admin.py`, `ai/*`.)
 - **Paper Trading** — live-tick-driven realism (tick exits, poll-for-new-bar entries). (`paper_auto.py`, `paper_trading.py`, `live_exit_monitor.py`.)
-- **Live Trading (Flattrade)** — offline-first; L0–L3 gate chain; the executor is the **single real-order chokepoint**; margin pre-check; OCO/GTT catastrophe backstop; kill switches; Greeks; ARMED auto-place only under an env gate **plus** per-deployment ARM **plus** caps **plus** EOD auto-disarm. (`live/executor.py`, `live/safety.py`, `live/margin.py`, `live/mode.py`, `live/arm_state.py`, `live/gtt.py`, `live/kill_switch.py`, `routers/live_broker.py`.)
+- **Live Trading (Flattrade)** — offline-first; L0–L3 gate chain; the executor is the **single real-order chokepoint**; margin pre-check; OCO/GTT catastrophe backstop; kill switches; per-token-latched recovery that re-runs on every fresh daily OAuth (not boot-only); exit executors resolve a raised-but-maybe-landed order against the broker book before ever blind-retrying; Greeks; ARMED auto-place only under an env gate **plus** per-deployment ARM **plus** caps **plus** EOD auto-disarm. **No resting manual-position timer** — the old 10-minute test-session auto-square was removed; 15:00 IST EOD square is the sole time-based backstop for a manual position (deployed strategies exit on their own rules + a resting OCO). (`live/executor.py`, `live/safety.py`, `live/margin.py`, `live/mode.py`, `live/arm_state.py`, `live/gtt.py`, `live/kill_switch.py`, `live/exit_claims.py`, `live/auto_square.py`, `routers/live_broker.py`.)
+- **Premium-momentum strategy** (new) — a deployable strategy family driven by a **time-locked strike + real option-premium trigger** instead of a spot indicator: at a configurable reference time the evaluator locks the CE/PE strike from spot, captures each side's premium from fresh ticks, and the first side to cross a momentum threshold enters; exits use a new stepped X-Y trail guard mode alongside stop/target. Backtest is a self-contained option-native sim with a cost model and an honest (costs-mandatory, chronological-train/OOS-report) tuner; live/paper execution rides the *exact same* deploy/arm/guard rails as every other strategy — **there is no premium-momentum-specific arming gate, and none should ever be added** (a deliberate, explicit design decision — don't "helpfully" add one later). See [`STRATEGY_DEPLOYMENTS.md`](STRATEGY_DEPLOYMENTS.md) for the deployment-level detail. (`premium_momentum.py`, `premium_momentum_backtest.py`, `premium_momentum_tuner.py`, `premium_momentum_live.py`, `premium_lock_store.py`, `premium_pin.py`, `strategies/plugins/premium_momentum.py`, `routers/premium_momentum_routes.py`.) The shipped default (AlgoTest blueprint) parameters have **no edge** on 2026-H1 NIFTY — this is a capability, not (yet) a validated money-maker, and it has not been run through a real market-hours session.
 
-Routers mounted under `/api`: `research`, `strategies_admin`, `warehouse`, `journals`, `deployments`, `broker`, `live_broker`. Frontend pages: Dashboard, DataWarehouse, BacktestLab, Optimizer, StrategyLibrary, SavedPresets, LiveSignals, SignalJournal, PaperTrading, LiveTrading, PreTradeChecklist.
+Routers mounted under `/api`: `research`, `strategies_admin`, `warehouse`, `journals`, `deployments`, `broker`, `live_broker`. Frontend pages: Dashboard, DataWarehouse, BacktestLab, Optimizer, StrategyLibrary, SavedPresets, LiveSignals, SignalJournal, PaperTrading, LiveTrading, PreTradeChecklist, PremiumMomentum.
 
 ## 3. Run & test quickstart
 
@@ -55,6 +64,14 @@ Frontend → `http://localhost:3000`, backend → `http://localhost:8001` (route
 - **IST everywhere.** NSE session 09:15–15:30 IST with a 15:00 square-off; the system is **holiday-aware** (`nse_calendar.py`).
 - **Verify India-specific facts against the code** — lot sizes and expiry cadence live in `instruments.py` / `nse_calendar.py` / `dte.py` and have rotated over time; do not hard-code from memory.
 - **Never commit** `.env`, tokens, broker creds, or any credentials file.
+- **Don't add a new live-arming gate without being asked.** The default posture for a new strategy or
+  feature is to ride the *existing* arm/gate/cap chain (§E in `DEVELOPER_GUIDE.md`), not to invent a
+  parallel one "for safety" — extra gates that weren't requested have already had to be explicitly
+  removed once (premium-momentum's spec amendment). If a feature genuinely needs new protection,
+  propose it and let the user decide.
+- **A subagent panel that returns 0 completed agents is not a passed check.** If an adversarial-review
+  or verification panel dies on a session/token limit with nothing completed, treat it as **unverified**,
+  say so, and either retry, do the check yourself, or ask — never report it as a clean pass.
 
 ## 5. Where to go deep
 
@@ -77,6 +94,7 @@ Start with the consolidated [`DEVELOPER_GUIDE.md`](DEVELOPER_GUIDE.md), then rea
 | Run a live-money readback | [`live-readback-checklist.md`](live-readback-checklist.md) |
 | Reference the Flattrade broker API | [`Resources/flattrade-pi-api/INDEX.md`](Resources/flattrade-pi-api/INDEX.md) (+ `catalog.json`, `endpoints/`) |
 | See versioned history / agent capabilities | [`../CHANGELOG.md`](../CHANGELOG.md) · [`../CLAUDE.md`](../CLAUDE.md) |
+| Decode an `L##`/`O##`/`S##` finding-ID cited in a commit message | [`audit-report-2026-07.md`](audit-report-2026-07.md) (historical — all 88 findings now resolved, kept for the ID cross-reference) |
 
 ---
 

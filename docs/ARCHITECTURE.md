@@ -5,7 +5,9 @@ walkthrough (run/build/test, safety model, research→deploy flow, gotchas), rea
 [DEVELOPER_GUIDE.md](./DEVELOPER_GUIDE.md) first — this file is the deep
 "where does X live and how does data move" companion.
 
-Updated: 2026-07-01 · Verified against `main`.
+Updated: 2026-07-13 · Verified against local `main` (includes the live-safety-reconcile hardening
+and the premium-momentum strategy family — check `git log` if this is more than a couple of weeks
+old, doc passes have lagged commits before).
 
 ---
 
@@ -119,8 +121,9 @@ live in `app/schemas.py`; shared singletons/helpers in `app/runtime.py`; routes 
 | `optimizer.py` | Optuna TPE / Grid / CMA-ES; two-stage option re-rank; pause/resume/crash-resume; robustness/importance/heatmap |
 | `wfo.py` / `walkforward.py` | Honest walk-forward (`kind="wfo"`): per-window re-optimization on train, OOS scoring on unseen test slices |
 | `survival.py` / `survival_validate.py` / `rerank_select.py` / `early_stop.py` / `parallel_eval.py` | Survival gate; option re-rank selection; early stop; opt-in parallel trial workers |
-| `strategies/` | `base.py` (registry + plugin loader), `adaptive_base.py`, `scenario_routing_base.py`, `session_features.py`, and the drop-in `plugins/` dir |
+| `strategies/` | `base.py` (registry + plugin loader), `adaptive_base.py`, `scenario_routing_base.py`, `session_features.py`, and the drop-in `plugins/` dir (incl. `plugins/premium_momentum.py` — inert `evaluate()`; the real logic lives in the evaluator branch below) |
 | `ai/` | Multi-provider authoring: `llm_client.py`, `_anthropic.py`, `_gemini.py`, `spec_schema.py`, `compiler.py`, `capability.py`, `authoring_agent.py`, `py_author.py` + `py_sandbox.py` (guarded full-Python tier), `grounding.py` |
+| `premium_momentum.py` / `premium_momentum_backtest.py` / `premium_momentum_tuner.py` | Time-locked-strike, premium-native-trigger strategy: pure walk/trail/cost helpers, the option-native self-contained backtest sim, and the costs-mandatory chronological-train/OOS-report tuner |
 
 ### Forward testing (paper) (`app/`)
 
@@ -132,6 +135,9 @@ live in `app/schemas.py`; shared singletons/helpers in `app/runtime.py`; routes 
 | `deployment_kill_switch.py` | Per-deployment kill switches (consecutive-loss / daily-loss → PAUSE; max-open → soft BLOCK) |
 | `paper_auto.py` / `paper_trading.py` / `paper_open_positions.py` / `paper_squareoff.py` / `paper_analytics.py` | Auto paper trading (premium resolution: live tick → fresh candle → refuse; never spot), per-minute marker, 15:00 IST square-off, R-multiple/blotter analytics |
 | `forward_metrics.py` / `signal_lifecycle.py` / `preset_execution.py` | Session-gated deployment metrics; lifecycle state machine + audit events; preset replay |
+| `premium_momentum_live.py` | Per-bar session state machine for `premium_momentum` (`pre_reference → lock+ref-capture → monitoring → triggered/done`); called from a dedicated branch in `deployment_evaluator.py`, not the generic `strategy.evaluate()` path |
+| `premium_lock_store.py` | `premium_locks` collection accessor — create-once/duplicate-key-adopt lock, atomic trigger latch, entered/done state transitions, recovery source |
+| `premium_pin.py` | `premium_pin_keys()` — today's locked option keys, unioned (cap-exempt) into every option-stream subscription rebuild so a locked strike never drops off the tick feed |
 
 ### Live execution (Flattrade) (`app/live/`)
 
@@ -147,7 +153,8 @@ The single-real-order chokepoint and its safety scaffolding. See §6 for the gat
 | `order_builder.py` / `broker_protocol.py` / `order_sm.py` | Server-side intent build (tick rounding, marketable buffer); `OrderIntent` + allowed prctyp/prd/ret; order state machine |
 | `gtt.py` / `oco_levels.py` | **PC-down catastrophe backstop** — NRML-only resting GTT / OCO builders (block no margin; survive a dead PC); catastrophe band strictly wider than the software guard's stop |
 | `kill_switch.py` | Account-level guardrails + `plan_squareoff` (pure) + `panic_squareoff` (executor, never raises) |
-| `live_position_guard.py` / `live_sl_monitor.py` / `live_exit_monitor.py` / `auto_square.py` | In-process software SL guard (reads broker position book; transmits only when `LIVE_GUARD_ARMED=1`); square execution |
+| `exit_claims.py` | Per-tsym asyncio-lock claim registry (TTL) — serializes the guard/kill-switch/manual square paths against each other so two exit paths can never double-sell the same position |
+| `live_position_guard.py` / `live_sl_monitor.py` / `live_exit_monitor.py` / `auto_square.py` | In-process software SL guard (reads broker position book; transmits only when `LIVE_GUARD_ARMED=1`; `live_sl_monitor` trail modes incl. `stepped_xy` for premium-momentum); square execution (`auto_square` — no resting manual timer; EOD 15:00 IST is the sole time-based backstop for a manual position, see its module docstring) |
 | `close_loop.py` / `reboot_reconcile.py` / `reconcile.py` | Write realized P&L + CLOSED back to `live_trades` on a real square; reboot reconciliation (empty position-book = UNKNOWN, never false-close) |
 | `flattrade_client.py` / `flattrade_token.py` / `flattrade_symbol.py` / `mock_noren.py` | Real Noren client + daily OAuth + symbol resolve; `MockNoren` for tests |
 | `greeks.py` / `portfolio_greeks.py` / `option_premium.py` | Server-side Black-Scholes IV-from-premium + Greeks |
@@ -238,6 +245,7 @@ Collection names verified against `app/db.py` (`ensure_indexes`) and code access
 | `strategy_deployments` | Forward-test deployment definitions (incl. `risk.live` arm block) |
 | `signals` | Lifecycle state, blockers, audit events, `risk_hints`, `paper_trade_claim`. Unique partial index `signals_deployment_bar_unique` over `(deployment_id, candle_ts)` |
 | `paper_trades` | Paper fills at option premium, MTM, realized/unrealized P&L, `risk`, `spot_exit`, source flag |
+| `premium_locks` | `premium_momentum` per-session strike lock + ref-premium capture + trigger-latch state. Unique `(deployment_id, session_date)` (`uniq_premium_lock_per_session`, created in `db.ensure_indexes`) |
 
 ### Live execution
 
