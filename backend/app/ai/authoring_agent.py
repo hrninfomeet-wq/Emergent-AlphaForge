@@ -114,6 +114,23 @@ def _ruleset_system_prompt(report: dict) -> str:
         "max_positions_per_day, max_lots_per_day, global_target_sl, "
         "position_size, lot_size, sizing.\n"
         "\n"
+        "    Strategy-shape declarations (leg identity, expiry, holding period, "
+        "underlying instrument). These are NOT per-bar rules — they describe "
+        "the deployment/config-block shape. Prefer to FOLD them into the "
+        "primary premium-trigger rule's concepts; if you emit them as separate "
+        "rules, mark kind=META or kind=FILTER and use one of these concepts:\n"
+        "      Holding period: intraday, intraday_same_day, holding_period.\n"
+        "      Option kind:    option_kind, option_type_selection, ce_leg, "
+        "pe_leg, leg_kind, option_side, call_side, put_side.\n"
+        "      Expiry:         expiry_selection, expiry_type, weekly_expiry, "
+        "monthly_expiry, weekly, monthly.\n"
+        "      Underlying:     underlying_instrument, instrument_selection, "
+        "underlying, nifty, banknifty, sensex.\n"
+        "\n"
+        "    (Any META/FILTER/SESSION rule with an empty concepts list is now "
+        "accepted as `declarative_config` — but you should still emit the "
+        "specific concept name above whenever possible.)\n"
+        "\n"
         "    Blocked data (no warehouse coverage yet): oi, open_interest, pcr, "
         "max_pain, iv, iv_rank, greeks (delta/gamma/theta/vega), news, sentiment, "
         "order_flow, orderflow, depth, l2, tape.\n"
@@ -168,7 +185,12 @@ def map_source_to_ruleset(source_text: str, provider: Optional[str] = None) -> d
         tokens = RuleTokens(
             cols=frozenset(pr.cols), concepts=frozenset(c.lower() for c in pr.concepts),
             barspan=pr.barspan, window=pr.window,
-            session_anchored=pr.session_anchored, ohlcv_derivable=pr.ohlcv_derivable)
+            session_anchored=pr.session_anchored, ohlcv_derivable=pr.ohlcv_derivable,
+            # Phase 4.1: forward the LLM's rule-kind so the classifier can
+            # promote a purely descriptive META/FILTER/SESSION rule to
+            # `declarative_config` instead of blanket-R9-rejecting it. See
+            # capability.py's descriptive-META fallback for the invariant.
+            kind=pr.kind)
         v = classify_rule(tokens)
         gate_rules.append(GateRule(
             id=pr.id, text=pr.text, kind=pr.kind, criticality=pr.criticality,

@@ -155,7 +155,13 @@ def capability_summary() -> Dict[str, Any]:
                 "deployment-layer configuration)",
             ],
             "concepts": sorted(PREMIUM_TRIGGER_CONCEPTS),
-            "session_gates": sorted(SESSION_GATE_CONCEPTS),
+            "session_gates": sorted(
+                SESSION_GATE_CONCEPTS
+                | HOLDING_PERIOD_CONCEPTS
+                | OPTION_KIND_CONCEPTS
+                | EXPIRY_SELECTION_CONCEPTS
+                | INSTRUMENT_SELECTION_CONCEPTS
+            ),
             "note": (
                 "These rules do NOT map to per-bar OHLCV columns — they're driven "
                 "by locked strikes + premium snapshots + momentum thresholds, and "
@@ -185,6 +191,14 @@ class RuleTokens:
     window: int = 0
     session_anchored: bool = False
     ohlcv_derivable: bool = False
+    # NEW (Phase 4.1): the rule's kind (ENTRY/EXIT/FILTER/GATE/SIZING/SESSION/
+    # META). Optional for backward compat — pre-Phase-4.1 call sites pass None
+    # and see the original R9-on-empty-tokens behavior. When the caller (i.e.,
+    # map_source_to_ruleset) passes the LLM-provided kind, the classifier grows
+    # a safety-net descriptive-META fallback so purely declarative rules
+    # ("The strategy is intraday", "Options are weekly expiry") don't get
+    # blanket-R9-rejected.
+    kind: Optional[str] = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -266,6 +280,59 @@ PHASE5_FUTURE_CONCEPTS: Dict[str, str] = {
     "two_leg_contingency": "lazy_leg_contingency",
     "opposite_side_activation": "lazy_leg_contingency",
 }
+
+# NEW (Phase 4.1) — Holding-period / session-mode declarations. The user's
+# reproducer had "The strategy is intraday, same-day exits only" (META/CORE)
+# emitted by the LLM with EMPTY concepts+cols, falling through to R9. When the
+# LLM DOES emit a concept, it should route to deployment_layer (session mode +
+# EOD square-off are deployment config, not evaluate() logic). Session 1 handled
+# the specific gates (entry_time_gate, exit_time_gate, eod_squareoff) — this
+# group covers the SCOPE declaration itself.
+HOLDING_PERIOD_CONCEPTS: FrozenSet[str] = frozenset({
+    "intraday", "intraday_same_day", "same_day_squareoff",
+    "holding_period", "session_scope", "strategy_scope",
+})
+
+# NEW (Phase 4.1) — Leg-identity / option-kind declarations. "For the CE leg,
+# the option type is CE" (FILTER/CORE) is a descriptive shape statement; the
+# actual behavior is a `side: CE|PE|BOTH` field on the premium_trigger_config
+# block. Same for lazy-leg identity ("Lazy Leg 1 is a PE").
+OPTION_KIND_CONCEPTS: FrozenSet[str] = frozenset({
+    "option_kind", "option_type_selection",
+    "ce_leg", "pe_leg",
+    "leg_kind", "option_side",
+    "call_side", "put_side",
+})
+
+# NEW (Phase 4.1) — Expiry-selection declarations. "Options are current weekly
+# expiry" (FILTER/CORE) is a config knob on premium_trigger_config, not a rule.
+EXPIRY_SELECTION_CONCEPTS: FrozenSet[str] = frozenset({
+    "expiry_selection", "expiry_type",
+    "weekly_expiry", "monthly_expiry",
+    "weekly", "monthly", "expiry",
+})
+
+# NEW (Phase 4.1) — Underlying-instrument declarations. "The instrument is
+# NIFTY 50 spot" is a deployment-level choice, not a strategy rule. Kept
+# permissive across the three warehouse-supported symbols (see
+# WAREHOUSE_MANIFEST["instruments"]).
+INSTRUMENT_SELECTION_CONCEPTS: FrozenSet[str] = frozenset({
+    "underlying_instrument", "instrument_selection", "underlying",
+    "nifty", "nifty50", "nifty_50",
+    "banknifty", "bank_nifty",
+    "sensex",
+})
+
+# Kinds where a rule with EMPTY tokens is likely to be a purely DESCRIPTIVE
+# declaration of the strategy's shape (session mode, leg identity, expiry
+# selection) rather than a genuine LLM decomposition failure. For these kinds,
+# the classifier grows a safety-net fallback that accepts the rule as
+# `declarative_config` instead of blanket-R9-rejecting.
+#
+# Deliberately EXCLUDES: ENTRY, EXIT, GATE, SIZING. On those kinds an empty-
+# tokens rule is a real LLM failure that MUST surface as REJECT — silently
+# accepting it would let the app promise behavior it can't back.
+_DESCRIPTIVE_META_KINDS: FrozenSet[str] = frozenset({"META", "FILTER", "SESSION"})
 
 # R3 — needs a second instrument's aligned bars (engine plumbing, Phase A).
 RELATIVE_STRENGTH_CONCEPTS: FrozenSet[str] = frozenset({
@@ -377,6 +444,59 @@ def classify_rule(tokens: RuleTokens, *, required_features=()) -> Verdict:
                 "feasible; today the single-leg first-to-trigger shape ships.",
                 feature=feat, live_feasible=False,
             )
+
+    # NEW (Phase 4.1): Holding-period declarations (intraday / same-day-exit) —
+    # deployment-layer session-mode config, not a per-bar rule.
+    if tokens.concepts & HOLDING_PERIOD_CONCEPTS:
+        overlap = sorted(tokens.concepts & HOLDING_PERIOD_CONCEPTS)[0]
+        return Verdict(
+            FeasibilityClass.BUILDABLE_NOW,
+            f"'{overlap}' is a session-mode declaration handled at the deployment "
+            "layer (time-of-day windows + auto square-off — see app/auto_live.py, "
+            "app/live/auto_square.py). Not a per-bar rule.",
+            feature="deployment_layer", live_feasible=True,
+        )
+
+    # NEW (Phase 4.1): Option-kind / leg-identity declarations (CE/PE, call/put)
+    # — these are a `side` config field on the premium_trigger_config block,
+    # not evaluate() logic. Lazy-leg identity ("Lazy Leg 1 is a PE") reaches
+    # here only if the LLM didn't tag it as lazy_leg_contingency; the primary-
+    # leg identity is what this branch mostly handles.
+    if tokens.concepts & OPTION_KIND_CONCEPTS:
+        overlap = sorted(tokens.concepts & OPTION_KIND_CONCEPTS)[0]
+        return Verdict(
+            FeasibilityClass.BUILDABLE_NOW,
+            f"'{overlap}' is a leg-identity declaration mapped to the "
+            "premium_trigger_config's `side` field (CE|PE|BOTH) on the deployment. "
+            "Configure via the config block, not in the strategy.",
+            feature="premium_trigger_config", live_feasible=True,
+        )
+
+    # NEW (Phase 4.1): Expiry-selection declarations (weekly / monthly / current-
+    # expiry). Contract-selection knob on the premium_trigger_config block. The
+    # warehouse already stores option candles for the current weekly expiry
+    # (ATM +-1 band); monthly is a future add.
+    if tokens.concepts & EXPIRY_SELECTION_CONCEPTS:
+        overlap = sorted(tokens.concepts & EXPIRY_SELECTION_CONCEPTS)[0]
+        return Verdict(
+            FeasibilityClass.BUILDABLE_NOW,
+            f"'{overlap}' is a contract-selection declaration mapped to the "
+            "premium_trigger_config's `expiry` field on the deployment. Weekly "
+            "expiry is fully supported today; monthly is future work.",
+            feature="premium_trigger_config", live_feasible=True,
+        )
+
+    # NEW (Phase 4.1): Underlying-instrument declarations (NIFTY / BANKNIFTY /
+    # SENSEX). Deployment-level `symbol` choice, not a rule.
+    if tokens.concepts & INSTRUMENT_SELECTION_CONCEPTS:
+        overlap = sorted(tokens.concepts & INSTRUMENT_SELECTION_CONCEPTS)[0]
+        return Verdict(
+            FeasibilityClass.BUILDABLE_NOW,
+            f"'{overlap}' is an underlying-symbol declaration set on the "
+            "deployment (NIFTY / BANKNIFTY / SENSEX are the warehouse-supported "
+            "options; see WAREHOUSE_MANIFEST). Not a per-bar rule.",
+            feature="deployment_layer", live_feasible=True,
+        )
     # ---------------------------------------------------------------
 
     # R3 — relative strength / pairs: needs a second instrument's aligned bars.
@@ -429,6 +549,33 @@ def classify_rule(tokens: RuleTokens, *, required_features=()) -> Verdict:
                        "Exceeds Spec's 2-bar window. Full-Python via the history "
                        "frame, or a small *_Nago column.",
                        feature=None, live_feasible=True)
+
+    # NEW (Phase 4.1) — Descriptive-META fallback. For rules of kind META,
+    # FILTER, or SESSION with NO structural markers at all (no cols, no
+    # concepts, no ohlcv_derivable, no barspan>2, no window, not
+    # session_anchored), assume the LLM emitted a purely declarative shape
+    # statement ("The strategy is intraday", "For the CE leg the option type
+    # is CE", "Options are current weekly expiry") that will be captured by
+    # the deployment's config block, NOT a genuine decomposition failure.
+    # Historic behavior was blanket R9 REJECT — which was the direct cause
+    # of the user's REJECT verdict on the NF CE PE EXP2 blueprint even after
+    # Session 1's Phase-4 fix.
+    #
+    # SAFETY: EXCLUDES ENTRY / EXIT / GATE / SIZING — on those kinds an empty-
+    # tokens rule IS a real LLM failure and MUST surface as REJECT. Silently
+    # accepting an empty-tokens ENTRY rule would let the app promise trading
+    # behavior it has no way to execute.
+    if tokens.kind in _DESCRIPTIVE_META_KINDS and not tokens.concepts \
+       and not tokens.cols and not tokens.ohlcv_derivable \
+       and tokens.barspan <= 2 and tokens.window == 0 \
+       and not tokens.session_anchored:
+        return Verdict(
+            FeasibilityClass.BUILDABLE_NOW,
+            f"Descriptive {tokens.kind.lower()} declaration — captured by the "
+            "deployment's declarative config block (symbol, side, expiry, "
+            "session mode). Not a per-bar rule that needs a column mapping.",
+            feature="declarative_config", live_feasible=True,
+        )
 
     # R9 — default: nothing maps.
     return Verdict(FeasibilityClass.INFEASIBLE,

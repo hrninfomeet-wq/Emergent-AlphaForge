@@ -30,6 +30,8 @@ from app.premium_momentum_backtest import (
     _sides_for, expiry_for_session, run_premium_momentum_backtest,
 )
 from app.premium_momentum_tuner import MAX_CONFIGS_DEFAULT, tune_premium_momentum
+from app.premium_trigger_config import PremiumTriggerConfig, config_from_dict
+from app.premium_trigger_dispatch import dispatch_backtest
 from app.runtime import OPTION_CANDLE_LOAD_CAP
 from app.warehouse import load_candles_df
 
@@ -187,3 +189,64 @@ async def premium_momentum_tune(req: PremiumMomentumTuneReq) -> Dict[str, Any]:
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     return _json_safe(out)
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 engine dispatch (Session 2) — backtest path only.
+#
+# Same underlying sim as /premium-momentum/backtest, but dispatched from a
+# declarative PremiumTriggerConfig instead of a bare params dict. This is the
+# runtime side of the promise the AI feasibility classifier now makes
+# ("premium_trigger_config is buildable"). Byte-identical parity to the bespoke
+# route is a HARD invariant — covered by tests/test_premium_trigger_dispatch_parity.py.
+#
+# Deferred to follow-up sessions:
+#   * live/deployment_evaluator dispatch on the same config schema
+#   * Optimizer tuner dispatch on the same config schema
+#   * frontend config-block builder on the deployment/preset UI
+# ---------------------------------------------------------------------------
+class PremiumTriggerBacktestReq(BaseModel):
+    """Request body for the config-driven backtest route.
+
+    `premium_trigger`: the declarative config block. Same schema whether it's
+                       coming from the deployment record, the Optimizer, the AI
+                       authoring wizard, or the frontend builder.
+    """
+    instrument: str
+    start_ts: int
+    end_ts: int
+    premium_trigger: Dict[str, Any] = Field(default_factory=dict)
+
+
+@api.post("/premium-trigger/backtest")
+async def premium_trigger_backtest(req: PremiumTriggerBacktestReq) -> Dict[str, Any]:
+    """Config-driven premium-trigger backtest. Byte-identical to
+    /premium-momentum/backtest when given the equivalent params — see the
+    parity test."""
+    instrument = req.instrument.upper()
+    try:
+        cfg = config_from_dict(req.premium_trigger)
+    except Exception as exc:
+        # Pydantic ValidationError -> user-friendly 400 (any typo in a field
+        # name or an out-of-range value must surface here, not at sim time).
+        raise HTTPException(400, f"invalid premium_trigger config: {exc}") from exc
+
+    params_for_load = cfg.to_backtest_params()
+    loaded = await _load_window(
+        instrument, req.start_ts, req.end_ts,
+        ref_time=str(params_for_load.get("reference_time") or "09:31"),
+        moneynesses=[str(params_for_load.get("moneyness") or "itm1")],
+        sides=_sides_for(params_for_load.get("side")),
+    )
+    if loaded is None:
+        # Same shape as _empty_result, augmented with the config for
+        # traceability (so the caller doesn't lose their input on empty runs).
+        empty = _empty_result(params_for_load)
+        empty["premium_trigger_config"] = cfg.model_dump(mode="json")
+        empty["dispatch"] = "premium_trigger_config"
+        return empty
+    spot_df, option_candles, contracts = loaded
+    return _json_safe(dispatch_backtest(
+        cfg=cfg, spot_df=spot_df, option_candles=option_candles,
+        contracts=contracts, instrument=instrument,
+    ))
