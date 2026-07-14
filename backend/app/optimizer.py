@@ -582,6 +582,66 @@ def _resolve_expiry_by_trade(spot_trades, contracts, fixed_expiry_date=None) -> 
     return out
 
 
+async def _survival_eval_oos_premium_trigger(
+    strategy, df_enriched, merged_params, contracts, candles_df,
+    instrument, option_cfg, sc, n_folds=3, train_pct=0.6,
+):
+    """premium_momentum variant of _survival_eval_oos. No spot signal exists to
+    pair (evaluate() is a deliberate stub), so each fold dispatches straight to
+    the option-native sim via dispatch_full_backtest instead of run_backtest +
+    simulate_paired_option_trades. Reuses the contracts/candles the caller
+    already loaded (no extra DB round-trip) — only needs session_date/ist_time
+    columns added to each fold's slice, mirroring premium_momentum_routes.py's
+    _load_window (the sim's session-iteration relies on them)."""
+    from app.portfolio import build_rupee_equity_curve
+    from app.premium_trigger_dispatch import dispatch_full_backtest
+
+    capital = float((option_cfg.get("sizing_config") or {}).get("capital", 200_000) or 200_000)
+    all_paired: List[Dict[str, Any]] = []
+    fold_pass: List[bool] = []
+    spot_total = paired_total = skipped_total = 0
+    for _fold, a, b in oos_fold_index_ranges(len(df_enriched), n_folds, train_pct):
+        test_df = df_enriched.iloc[a:b].reset_index(drop=True).copy()
+        if not test_df.empty and "session_date" not in test_df.columns:
+            _dt = pd.to_datetime(test_df["ts"], unit="ms", utc=True).dt.tz_convert("Asia/Kolkata")
+            test_df["session_date"] = _dt.dt.strftime("%Y-%m-%d")
+            test_df["ist_time"] = _dt.dt.strftime("%H:%M")
+        pm_result = await asyncio.to_thread(
+            dispatch_full_backtest, strategy_id=strategy.id, merged_params=merged_params,
+            spot_df=test_df, option_candles=candles_df, contracts=contracts,
+            instrument=instrument, capital=capital,
+        )
+        if pm_result is None:
+            fold_pass.append(False)
+            continue
+        port = pm_result.get("portfolio") or {}
+        cov = pm_result.get("coverage") or {}
+        spot_total += int(cov.get("spot_trade_count", 0) or 0)
+        paired_total += int(cov.get("paired_trade_count", 0) or 0)
+        skipped_total += int(cov.get("skipped_by_cap", 0) or 0)
+        all_paired.extend(t for t in pm_result.get("trades", []) if t.get("status") == "PAIRED")
+        curve = port.get("curve") or []
+        eqs = [c.get("equity_value") for c in curve if c.get("equity_value") is not None]
+        floor_ok = (min(eqs) > sc.min_equity) if eqs else False
+        dd = port.get("max_drawdown_pct")
+        dd_ok = dd is not None and abs(float(dd)) <= sc.max_drawdown_pct
+        fold_pass.append(bool(floor_ok and dd_ok))
+
+    folds_ok = (all(fold_pass) if sc.min_oos_folds == "all"
+                else sum(fold_pass) > len(fold_pass) / 2) if fold_pass else False
+    stitched_port = build_rupee_equity_curve(all_paired, capital=capital)
+    trade_pnls = [float(t.get("option_pnl_value", 0.0)) for t in all_paired]
+    verdict = survival_verdict(
+        portfolio=stitched_port, trade_pnls=trade_pnls, cfg=sc,
+        coverage={"spot_trade_count": spot_total, "paired_trade_count": paired_total,
+                  "skipped_by_cap": skipped_total},
+        capital=capital)
+    verdict["folds_ok"] = folds_ok
+    verdict["fold_pass"] = fold_pass
+    verdict["survived"] = bool(verdict["survived"] and folds_ok)
+    return verdict
+
+
 async def _survival_eval_oos(
     strategy, df_enriched, merged_params, contracts, candles_df,
     instrument, costs, pretrade, option_cfg, sc, n_folds=3, train_pct=0.6,
@@ -590,6 +650,12 @@ async def _survival_eval_oos(
     """Evaluate one finalist's survival on each walk-forward OOS slice. Floor + DD%
     must hold per fold (per sc.min_oos_folds); RoR runs on the stitched OOS rupee
     series. Returns the survival_verdict dict augmented with folds_ok/fold_pass."""
+    if getattr(strategy, "id", None) == "premium_momentum":
+        return await _survival_eval_oos_premium_trigger(
+            strategy, df_enriched, merged_params, contracts, candles_df,
+            instrument, option_cfg, sc, n_folds=n_folds, train_pct=train_pct,
+        )
+
     from app.portfolio import build_rupee_equity_curve
     moneyness = str(option_cfg.get("moneyness") or "atm")
     lots = int(option_cfg.get("lots") or 1)
@@ -667,6 +733,70 @@ async def _survival_eval_oos(
     return verdict
 
 
+async def _option_rerank_premium_trigger(
+    candidates: List[Dict[str, Any]], get_enriched, strategy, instrument: str,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Any, bool]:
+    """premium_momentum's Stage-2 re-rank. `strategy.evaluate()` is a deliberate
+    stub (real logic lives only in deployment_evaluator.py's dedicated branch), so
+    there is no spot signal to pair — dispatching each candidate through
+    run_backtest + simulate_paired_option_trades always produced zero paired
+    trades (the "Option re-rank produced no paired results" bug). Instead dispatch
+    each candidate straight to the option-native sim via dispatch_full_backtest.
+    Loads the shared warehouse window ONCE (same historical period for every
+    candidate in the sweep) covering the union of moneyness values any candidate
+    might need, mirroring _option_rerank's own "load once, simulate per-candidate
+    in-memory" shape so this stays a drop-in Stage-2 substitute."""
+    from app.premium_trigger_dispatch import dispatch_full_backtest
+    from app.routers.premium_momentum_routes import _load_window
+
+    def _degenerate(cand: Dict[str, Any]) -> Dict[str, Any]:
+        return {"params": cand["params"], "spot_objective": cand["objective_value"],
+                "spot_metrics": cand["metrics"], "option_pnl_value": 0.0, "option_pnl_pts": 0.0,
+                "option_win_rate": 0.0, "paired_trade_count": 0, "spot_trade_count": 0,
+                "coverage": {}}
+
+    if not candidates:
+        return ([], [], pd.DataFrame(), False)
+
+    merged_list = [strategy.merged_params(c["params"]) for c in candidates]
+    enr0 = get_enriched(merged_list[0])
+    if enr0.empty or "ts" not in enr0.columns:
+        return ([_degenerate(c) for c in candidates], [], pd.DataFrame(), False)
+
+    start_ts, end_ts = int(enr0["ts"].min()), int(enr0["ts"].max())
+    moneynesses = sorted({str(m.get("moneyness") or "itm1") for m in merged_list})
+    ref_time = str(merged_list[0].get("reference_time") or "09:31")
+    loaded = await _load_window(instrument, start_ts, end_ts, ref_time=ref_time,
+                                moneynesses=moneynesses, sides=["CE", "PE"])
+    if loaded is None:
+        return ([_degenerate(c) for c in candidates], [], pd.DataFrame(), False)
+    spot_df, option_candles, contracts = loaded
+
+    ranked: List[Dict[str, Any]] = []
+    for cand, merged in zip(candidates, merged_list):
+        pm_result = await asyncio.to_thread(
+            dispatch_full_backtest, strategy_id=strategy.id, merged_params=merged,
+            spot_df=spot_df, option_candles=option_candles, contracts=contracts,
+            instrument=instrument,
+        )
+        if pm_result is None:
+            ranked.append(_degenerate(cand))
+            continue
+        m = pm_result["metrics"]
+        ranked.append({
+            "params": cand["params"], "spot_objective": cand["objective_value"],
+            "spot_metrics": cand["metrics"],
+            "option_pnl_value": float(m.get("total_option_pnl_value", 0.0) or 0.0),
+            "option_pnl_pts": float(m.get("total_option_pnl_pts", 0.0) or 0.0),
+            "option_win_rate": float(m.get("win_rate", 0.0) or 0.0),
+            "paired_trade_count": int(m.get("paired_trade_count", 0) or 0),
+            "spot_trade_count": int(m.get("paired_trade_count", 0) or 0),
+            "coverage": pm_result["coverage"],
+        })
+    ranked.sort(key=lambda r: (r["paired_trade_count"] > 0, r["option_pnl_value"]), reverse=True)
+    return ranked, contracts, option_candles, False
+
+
 async def _option_rerank(
     db, strategy, get_enriched, candidates: List[Dict[str, Any]],
     instrument: str, costs: bool, pretrade: Dict[str, Any], option_cfg: Dict[str, Any],
@@ -676,6 +806,9 @@ async def _option_rerank(
     rupee. Option contracts + candles are loaded from the DB ONCE (over the
     union of all candidates' needed strikes), then each candidate is simulated
     in-memory. Returns candidates ranked by option net-rupee P&L."""
+    if getattr(strategy, "id", None) == "premium_momentum":
+        return await _option_rerank_premium_trigger(candidates, get_enriched, strategy, instrument)
+
     moneyness = str(option_cfg.get("moneyness") or "atm")
     lots = int(option_cfg.get("lots") or 1)
     fixed_expiry = option_cfg.get("expiry_date")

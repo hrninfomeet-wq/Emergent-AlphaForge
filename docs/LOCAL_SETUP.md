@@ -90,7 +90,7 @@ docker compose logs -f mongo
 
 ### One-Command Launchers
 
-- Windows: double-click `start-app.bat` (recommended) or `start.bat` (compatibility wrapper)
+- Windows: double-click `start-app.bat`
 - Mac/Linux: `./start.sh`
 
 The Windows launcher checks Docker Desktop, validates env files without printing secrets, starts the stack sequentially, waits for health, and then opens the browser. See `docs/STARTUP_MANUAL.md`.
@@ -191,10 +191,11 @@ curl http://localhost:8001/api/health
 
 # Strategies loaded
 curl http://localhost:8001/api/strategies
-# Expect: items array with 6 built-in strategies (incl. premium_momentum)
+# Expect: items array with 12 strategies (11 deletable plugins + confluence_scalper,
+# including premium_momentum)
 
 # AI provider status
-curl http://localhost:8001/api/ai/providers
+curl http://localhost:8001/api/strategies/author/providers
 # Expect: providers list with at least one `configured: true`
 
 # Upstox connection (if OAuth is configured)
@@ -204,8 +205,13 @@ curl http://localhost:8001/api/upstox/status
 curl http://localhost:8001/api/live-candles/status
 
 # Backend tests (host-safe / pure only — motor tests run inside the backend container)
-python -m pytest tests -q
-# Expect: ~3300 tests pass (as of 2026-07-13)
+# Needs a host Python env with pymongo/motor/pandas/pytest installed — the repo ships a
+# root-level `.venv` with these already (create your own with
+# `pip install -r backend/requirements.txt` if it's missing). A bare system Python
+# without this WILL fail to collect ~25 test files with "No module named 'pymongo'" —
+# that's an environment gap, not a code failure.
+.venv\Scripts\python.exe -m pytest tests -q   # Windows; .venv/bin/python -m pytest tests -q on Mac/Linux
+# Expect: ~3300+ tests pass (as of 2026-07-14)
 
 # Frontend build
 cd frontend
@@ -229,7 +235,7 @@ yarn build
 1. Open Strategy Library.
 2. Click **AI Author** → paste the AlgoTest "Configurable Contingency Breakout (NF CE PE EXP2 Base)" blueprint from `docs/superpowers/specs/2026-07-13-...md`.
 3. Click **Check Feasibility**. You should see an ADVISE (not REJECT) with rules mapping to `premium_trigger_config` (shipped) and `deployment_layer` (existing deployment config), plus `lazy_leg_contingency` marked as backtest-only Phase-5 future work.
-4. If it still says REJECT: check `docker compose logs backend` for `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` errors and confirm `curl http://localhost:8001/api/ai/providers` shows at least one configured.
+4. If it still says REJECT: check `docker compose logs backend` for `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` errors and confirm `curl http://localhost:8001/api/strategies/author/providers` shows at least one configured.
 
 ---
 
@@ -286,7 +292,7 @@ docker exec -t alphaforge_mongo mongorestore --archive=/tmp/backup.gz --gzip
 ### AI wizard says "no AI provider configured"
 - At least one of `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` must be set in `backend/.env`.
 - After editing `.env`, restart backend: `docker compose restart backend`.
-- Verify: `curl http://localhost:8001/api/ai/providers` should show at least one with `configured: true`.
+- Verify: `curl http://localhost:8001/api/strategies/author/providers` should show at least one with `configured: true`.
 
 ### AI "response was cut off at the N-token limit" (historic — fixed in Phase 4)
 - Symptom: `AI generation failed: The AI (gemini-2.5-pro) response was cut off at the 8000-token limit`.

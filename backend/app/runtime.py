@@ -948,6 +948,47 @@ async def _run_paired_option_backtest(req: BacktestReq, spot_trades: List[Dict[s
     db = get_db()
     underlying = req.instrument.upper()
 
+    # Phase 4 engine dispatch: premium_momentum's evaluate() is a deliberate stub
+    # (the real logic lives only in deployment_evaluator.py's dedicated branch), so
+    # `spot_trades` (built from the generic run_backtest -> strategy.evaluate() path)
+    # is always empty for this strategy — the caller never has real spot trades to
+    # pass in here. Dispatch to the option-native sim directly instead of pairing an
+    # empty list. Every other strategy_id is unaffected (dispatch_full_backtest
+    # returns None immediately with zero side effects for any other id).
+    if req.strategy_id == "premium_momentum" and req.start_ts is not None and req.end_ts is not None:
+        from app.premium_momentum_backtest import _sides_for
+        from app.premium_trigger_dispatch import dispatch_full_backtest
+        from app.routers.premium_momentum_routes import _load_window
+
+        loaded = await _load_window(
+            underlying, req.start_ts, req.end_ts,
+            ref_time=str(req.params.get("reference_time") or "09:31"),
+            moneynesses=[str(req.params.get("moneyness") or "itm1")],
+            sides=_sides_for(req.params.get("side")),
+        )
+        if loaded is None:
+            return None
+        spot_df, option_candles, contracts = loaded
+        pm_result = dispatch_full_backtest(
+            strategy_id=req.strategy_id, merged_params=req.params,
+            spot_df=spot_df, option_candles=option_candles, contracts=contracts,
+            instrument=underlying,
+        )
+        if pm_result is not None:
+            pm_result["skipped_trades"] = []
+            pm_result["request"] = config.model_dump()
+            pm_result["data"] = {
+                "expiry_date": config.expiry_date, "expiry_mode": "premium_trigger_config",
+                "resolved_expiries": [], "trades_without_expiry": 0,
+                "contracts_loaded": len(contracts), "instrument_keys_needed": 0,
+                "candles_loaded": int(len(option_candles)), "candles_capped": False,
+                "source": "premium_trigger_dispatch", "auto_fetch": False, "dte_filter": None,
+            }
+            return pm_result
+        # cfg didn't validate (e.g. no momentum trigger set) -> fall through to the
+        # normal spot_trades path below, which will correctly produce an empty/
+        # honest result since spot_trades is empty for this strategy anyway.
+
     # Volatility context: annotate spot trades with India VIX (as-of join) so the
     # context breakdown can show edge by VIX regime. Best-effort — if VIX has not
     # been ingested, trades simply carry vix=None.

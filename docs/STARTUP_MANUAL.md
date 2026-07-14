@@ -24,7 +24,7 @@ start-app.bat
 
 You can double-click it from File Explorer or run it from Command Prompt/PowerShell inside the project root.
 
-The older `start.bat` still works and now delegates to `start-app.bat`.
+(The older `start.bat` wrapper was removed — `start-app.bat` is the only Windows launcher now.)
 
 ### What The Launcher Checks
 
@@ -284,7 +284,7 @@ If another app owns one of those ports, close that app or change the host-port m
 Run these before claiming the app baseline is green:
 
 ```powershell
-python -m pytest tests -q
+.venv\Scripts\python.exe -m pytest tests -q   # needs pymongo/motor/pytest — see docs/LOCAL_SETUP.md
 cd frontend
 npm run build
 cd ..

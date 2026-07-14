@@ -2,6 +2,93 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.53.1] — Phase 4 engine dispatch: Optimizer/Backtest Lab wiring (2026-07-14)
+
+Completes the "engine dispatch" half of Phase 4 that the 0.53.0 Emergent session
+explicitly deferred. Independently verified 0.53.0's own claims first (see
+"Verification" below), then closed the actual user-facing bug.
+
+**The bug**: running the shipped `premium_momentum` plugin through the general
+Backtest Lab or Optimizer page produced "Option re-rank produced no paired
+results." Root cause: `premium_momentum`'s `evaluate()` is a deliberate stub
+(the real trigger logic lives only in `deployment_evaluator.py`'s dedicated
+branch) — the generic pages call that stub, get zero spot signals, and have
+nothing to pair.
+
+**The fix** — `backend/app/premium_trigger_dispatch.py::dispatch_full_backtest`:
+for `strategy_id == "premium_momentum"`, runs the option-native sim directly and
+reshapes its trades into `option_backtest.py`'s canonical PAIRED-trade contract
+(one rename/synthesize table, documented in the module), then reuses the
+existing pure aggregators (`_compute_metrics`, `build_option_equity_curve`,
+`build_context_breakdown`, `portfolio.build_rupee_equity_curve`) so the result
+is shape-indistinguishable from what any other strategy produces. Returns
+`None` immediately for every other strategy — the entire regression-safety
+mechanism. Wired into 3 chokepoints:
+
+- `runtime.py::_run_paired_option_backtest` — the single function
+  `optimizer.py::_save_best_as_backtest` and **both** `research.py` Backtest
+  Lab routes (`backtest_run`, `run_backtest_job`) call. One edit, three sites
+  fixed.
+- `optimizer.py::_option_rerank` — the Optimizer's Stage-2 re-rank (the exact
+  function whose degenerate all-zero output produced the user-visible message).
+- `optimizer.py::_survival_eval_oos` — the walk-forward OOS survival check.
+
+**Verified live against real local warehouse data** (not synthetic fixtures):
+`/api/backtest/run` for `premium_momentum` (2026-06-01→06-05, NIFTY, itm1,
+15%/20%) now returns 5 real paired trades, net P&L −₹12,575.55 — byte-identical
+to what the bespoke `/premium-momentum/backtest` and config-driven
+`/premium-trigger/backtest` routes already produced for the same window
+(three independent code paths, one number).
+
+**A real bug found and fixed during live verification**: the adapter initially
+passed pandas-derived `entry_ts`/`exit_ts`/`strike` through as `numpy.int64`/
+`float64`. JSON serialization tolerates this silently, but Mongo's BSON encoder
+does not — `/api/backtest/run` 500'd on `bson.errors.InvalidDocument` at the
+`backtest_runs.insert_one` step, *after* the backtest itself computed
+correctly. Fixed by casting to native Python types at the adapter boundary;
+regression-pinned in `tests/test_premium_trigger_optimizer_dispatch.py`.
+
+**Independently verified 0.53.0's own claims** rather than trusting them:
+capability classifier re-tested with adversarial cases beyond its own test
+suite (co-occurring ICT + option-premium concepts, bare-alias collisions) —
+confirmed correct, no bugs found. The `/api/premium-trigger/backtest` route's
+byte-identical-parity claim re-verified end-to-end against real local data
+(not just the unit test) — confirmed. `docs/LOCAL_SETUP.md` had 4 real
+inaccuracies fixed here: `/api/ai/providers` → `/api/strategies/author/providers`
+(wrong route, 4 occurrences across 2 docs), "6 built-in strategies" → 12
+(stale count), a reference to the already-deleted `start.bat` wrapper, and a
+missing note that the host pytest quickstart needs the repo's `.venv`
+(pymongo/motor aren't on a bare system Python — this silently collects 0 useful
+tests otherwise). `backend/backend_test.py` (Emergent's own ad hoc integration
+script, hardcoded to its cloud sandbox URL, broken by a real `source`/
+`source_text` field-name bug) removed — its meaningful coverage (config
+validation) is already in `tests/test_premium_trigger_dispatch_parity.py`; its
+route-shape claim was hand-verified via curl above. A stray repo-root
+`.gitconfig` from the automation's own commits also removed (inert, but not
+something that belongs in version control).
+
+**Deliberately NOT fixed here — a separate, real gap found during
+verification**: the *full multi-trial* Optimizer search (Bayesian/Grid,
+sweeping `n_trials` param combos) still cannot produce a result for
+`premium_momentum`. Its Stage-1 per-trial objective scorer
+(`optimizer.py::_objective_value`) unconditionally disqualifies any trial with
+`trade_count == 0` — and Stage 1 scores every trial via the same stub
+`evaluate()`, so every premium_momentum trial is disqualified before Stage 2
+(now fixed) ever runs. `min_trades=0` does NOT bypass this — the `tc == 0`
+check is unconditional, separate from the `min_trades` threshold. Confirmed
+live: a 10-trial Bayesian job completes ("done") but every trial scores the
+disqualification sentinel and `best_option_pnl_value` is `None`. A grid-method
+job crashes outright (`_grid_combinations` assumes every `parameter_schema`
+field has numeric min/max bounds; `premium_momentum`'s `reference_time`/
+`moneyness`/`side` are strings). Fixing this needs Stage 1 to also dispatch
+through the option-native sim per trial — a real architecture/performance
+decision (previously cheap-spot-only Stage 1 would become option-native-sim
+Stage 1 for this strategy family), not a small patch. Until it lands: **use
+Backtest Lab's single-run** (`/api/backtest/run`, fully working, verified
+above) to test one parameter set at a time; the dedicated `/premium-momentum`
+page's own honest tuner (Track A) remains the right tool for a real parameter
+search over this strategy family.
+
 ## [0.53.0] — Phase 4 groundwork: AI feasibility accepts premium-native rules + Gemini token-cutoff fix (2026-07-13, Emergent handoff session)
 
 **The Strategy Library AI wizard no longer blanket-rejects the AlgoTest

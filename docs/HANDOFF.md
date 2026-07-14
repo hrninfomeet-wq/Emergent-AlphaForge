@@ -14,19 +14,32 @@ Stack: **React** (CRA + craco) frontend, **FastAPI** (Python) backend, **MongoDB
 
 ## 2. Current state
 
-**Latest (2026-07-13, v0.53.0, Emergent handoff session)**: AI feasibility now
+**Latest (2026-07-14, v0.53.1)**: Phase 4 **engine dispatch** is done —
+`premium_momentum` now runs through the general Backtest Lab
+(`/api/backtest/run`, `/api/backtest/start`) and the Optimizer's Stage-2
+re-rank + walk-forward survival check, instead of only the bespoke
+`/premium-momentum` page. `backend/app/premium_trigger_dispatch.py::
+dispatch_full_backtest` reshapes the option-native sim's trades into the
+standard paired-option-trade contract so every existing consumer reads it
+unchanged; returns `None` for every other strategy (zero regression risk —
+3347 host tests pass, 0 failed). Verified live against real local warehouse
+data (not just fixtures): identical net P&L across three independent routes
+for the same window. **Still open**: the *full multi-trial* Optimizer search
+(sweeping param combos via Bayesian/Grid) cannot yet score `premium_momentum`
+candidates — Stage 1's per-trial objective scorer disqualifies every trial
+before Stage 2 (now fixed) is reached, since Stage 1 still uses the stub
+`evaluate()`. Use Backtest Lab's single-run for one parameter set at a time,
+or the dedicated `/premium-momentum` page's own tuner for a real search. See
+CHANGELOG 0.53.1 for the full detail.
+
+**Previous (2026-07-13, v0.53.0, Emergent handoff session)**: AI feasibility
 accepts premium-native rules (option-premium momentum, locked strike, stepped
 premium trail) with a mapped `premium_trigger_config` verdict, session gates +
 position size map to `deployment_layer`, `lazy_leg_contingency` is honestly
 scoped as Phase-5 future work (not a blanket reject or false accept), and the
 Gemini 8000-token cutoff on Strategy Library AI actions is fixed
-(`DEFAULT_MAX_TOKENS` 8192 → 32768, `py_author.py`'s hard cap removed). 14 new
-host-safe tests + prompt/summary/env-template updates + LOCAL_SETUP rewrite.
-The Phase 4 **engine dispatch** (running a premium-trigger deployment through
-the general Optimizer/Backtest Lab instead of only the bespoke `/premium-
-momentum` page) is still open — the capability classifier and the runtime
-speak the same vocabulary now, but the *runtime* still branches on strategy
-id. See CHANGELOG 0.53.0 for the full detail and deferred-work list.
+(`DEFAULT_MAX_TOKENS` 8192 → 32768, `py_author.py`'s hard cap removed). See
+CHANGELOG 0.53.0 for the full detail.
 
 Everything of substance is integrated on **local `main`**, but local `main` is currently **ahead of
 `origin/main` by dozens of commits** (unpushed — push only on explicit user request, see §4). There

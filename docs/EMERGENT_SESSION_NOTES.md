@@ -179,7 +179,7 @@ For the user's local run (Docker Desktop + `docker compose up`):
    need (Fernet key, Upstox credentials, `GEMINI_API_KEY` — the Anthropic
    key is optional).
 3. `docker compose up -d --build`
-4. Sanity: `curl http://localhost:8001/api/ai/providers` should show
+4. Sanity: `curl http://localhost:8001/api/strategies/author/providers` should show
    `gemini` (or `anthropic`) with `configured: true`.
 5. Strategy Library → AI Author → paste the AlgoTest blueprint → Check
    Feasibility → should return **ADVISE**, not REJECT.
