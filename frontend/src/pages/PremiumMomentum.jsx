@@ -38,6 +38,19 @@ const DEFAULTS = {
   target_value: "",
   trail_x: "",
   trail_y: "",
+  trail_x_pct: "",
+  trail_y_pct: "",
+  // Phase 5A contingency (backtest-only): leg mode + reversal (lazy) leg.
+  leg_mode: "first_to_trigger",
+  entry_cutoff: "",
+  exit_time: "",
+  lazy_enabled: false,
+  lazy_moneyness: "itm1",
+  lazy_momentum_value: "10",
+  lazy_stop_value: "10",
+  lazy_target_value: "",
+  lazy_trail_x_pct: "",
+  lazy_trail_y_pct: "",
   // Cost model (engine schedule): ON by default — a gross backtest flatters.
   costs_enabled: true,
   spread_pct: "1.0",
@@ -92,6 +105,7 @@ export default function PremiumMomentum() {
       reference_time: cfg.reference_time || "09:31",
       moneyness: cfg.moneyness,
       side: cfg.side,
+      leg_mode: cfg.leg_mode || "first_to_trigger",
       lots: Math.max(1, Number(cfg.lots) || 1),
       cost_config: cfg.costs_enabled
         ? {
@@ -101,6 +115,24 @@ export default function PremiumMomentum() {
           }
         : { enabled: false },
     };
+    if (cfg.entry_cutoff) params.entry_cutoff = cfg.entry_cutoff;
+    if (cfg.exit_time) params.exit_time = cfg.exit_time;
+    if (cfg.lazy_enabled) {
+      params.lazy_enabled = true;
+      params.lazy_moneyness = cfg.lazy_moneyness || cfg.moneyness;
+      const lm = num(cfg.lazy_momentum_value);
+      if (lm != null) params.lazy_momentum_pct = lm;
+      const ls = num(cfg.lazy_stop_value);
+      if (ls != null) params.lazy_stop_pct = ls;
+      const lt = num(cfg.lazy_target_value);
+      if (lt != null) params.lazy_target_pct = lt;
+      const ltx = num(cfg.lazy_trail_x_pct);
+      const lty = num(cfg.lazy_trail_y_pct);
+      if (ltx != null && lty != null) {
+        params.lazy_trail_x_pct = ltx;
+        params.lazy_trail_y_pct = lty;
+      }
+    }
     return params;
   }
 
@@ -120,6 +152,12 @@ export default function PremiumMomentum() {
       if (tx != null && ty != null) {
         params.trail_x = tx;
         params.trail_y = ty;
+      }
+      const txp = num(cfg.trail_x_pct);
+      const typ = num(cfg.trail_y_pct);
+      if (txp != null && typ != null) {
+        params.trail_x_pct = txp;
+        params.trail_y_pct = typ;
       }
       const body = {
         instrument: cfg.instrument,
@@ -231,6 +269,14 @@ export default function PremiumMomentum() {
             </select>
           </div>
 
+          <div>
+            <label className={labelCls}>Leg mode</label>
+            <select value={cfg.leg_mode} onChange={set("leg_mode")} className={inputCls} data-testid="pm-leg-mode">
+              <option value="first_to_trigger">First to trigger (one primary)</option>
+              <option value="both">Both legs (independent CE + PE)</option>
+            </select>
+          </div>
+
           <div className="grid grid-cols-3 gap-2 items-end">
             <div className="col-span-2">
               <label className={labelCls}>Momentum entry (premium rise)</label>
@@ -273,6 +319,75 @@ export default function PremiumMomentum() {
               <label className={labelCls}>Trail Y (pts)</label>
               <input value={cfg.trail_y} onChange={set("trail_y")} className={inputCls} placeholder="raise SL by Y" data-testid="pm-trail-y" />
             </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className={labelCls}>Trail X % (of entry, optional)</label>
+              <input value={cfg.trail_x_pct} onChange={set("trail_x_pct")} className={inputCls} placeholder="every X% up" data-testid="pm-trail-x-pct" />
+            </div>
+            <div>
+              <label className={labelCls}>Trail Y % (of entry)</label>
+              <input value={cfg.trail_y_pct} onChange={set("trail_y_pct")} className={inputCls} placeholder="raise SL by Y%" data-testid="pm-trail-y-pct" />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className={labelCls}>Entry cutoff (IST, optional)</label>
+              <input type="time" value={cfg.entry_cutoff} onChange={set("entry_cutoff")} className={inputCls} data-testid="pm-entry-cutoff" />
+            </div>
+            <div>
+              <label className={labelCls}>Hard exit time (IST, optional)</label>
+              <input type="time" value={cfg.exit_time} onChange={set("exit_time")} className={inputCls} data-testid="pm-exit-time" />
+            </div>
+          </div>
+
+          <div className="border-t border-line pt-2 space-y-2">
+            <label className="flex items-center gap-2 text-[11px] text-dim">
+              <input
+                type="checkbox"
+                checked={cfg.lazy_enabled}
+                onChange={(e) => setCfg((c) => ({ ...c, lazy_enabled: e.target.checked }))}
+                className="h-3 w-3 rounded border-line"
+                data-testid="pm-lazy-enabled"
+              />
+              Reversal (lazy) leg — arm opposite side on a PRIMARY stop-out
+            </label>
+            {cfg.lazy_enabled && (
+              <div className="space-y-2">
+                <div>
+                  <label className={labelCls}>Lazy strike moneyness</label>
+                  <select value={cfg.lazy_moneyness} onChange={set("lazy_moneyness")} className={inputCls} data-testid="pm-lazy-moneyness">
+                    {["atm", "itm1", "itm2", "otm1", "otm2"].map((m) => <option key={m}>{m}</option>)}
+                  </select>
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  <div>
+                    <label className={labelCls}>Lazy momentum %</label>
+                    <input value={cfg.lazy_momentum_value} onChange={set("lazy_momentum_value")} className={inputCls} data-testid="pm-lazy-momentum" />
+                  </div>
+                  <div>
+                    <label className={labelCls}>Lazy stop %</label>
+                    <input value={cfg.lazy_stop_value} onChange={set("lazy_stop_value")} className={inputCls} data-testid="pm-lazy-stop" />
+                  </div>
+                  <div>
+                    <label className={labelCls}>Lazy target % (optional)</label>
+                    <input value={cfg.lazy_target_value} onChange={set("lazy_target_value")} className={inputCls} placeholder="blank = none" data-testid="pm-lazy-target" />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className={labelCls}>Lazy trail X % (optional)</label>
+                    <input value={cfg.lazy_trail_x_pct} onChange={set("lazy_trail_x_pct")} className={inputCls} placeholder="every X% up" data-testid="pm-lazy-trail-x-pct" />
+                  </div>
+                  <div>
+                    <label className={labelCls}>Lazy trail Y %</label>
+                    <input value={cfg.lazy_trail_y_pct} onChange={set("lazy_trail_y_pct")} className={inputCls} placeholder="raise SL by Y%" data-testid="pm-lazy-trail-y-pct" />
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="border-t border-line pt-2 space-y-2">
@@ -357,6 +472,16 @@ export default function PremiumMomentum() {
                   Excluded sessions shrink the sample — the P&L below rests only on the traded sessions.
                 </div>
               )}
+              {cfg.lazy_enabled && (
+                <div className="flex flex-wrap gap-2 text-[11px] font-mono mt-2 pt-2 border-t border-line" data-testid="pm-lazy-coverage">
+                  <span className="px-2 py-0.5 rounded bg-bg-2 border border-line">lazy armed {cov.lazy_armed ?? 0}</span>
+                  <span className="px-2 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/40 text-emerald-300">lazy entered {cov.lazy_entered ?? 0}</span>
+                  <span className="px-2 py-0.5 rounded bg-bg-2 border border-line text-dimmer">lazy blocked (cutoff) {cov.lazy_blocked_cutoff ?? 0}</span>
+                  <span className={`px-2 py-0.5 rounded border ${(cov.lazy_excluded_no_data ?? 0) > 0 ? "bg-amber-500/10 border-amber-500/40 text-warning" : "bg-bg-2 border-line"}`}>
+                    lazy excluded (no data) {cov.lazy_excluded_no_data ?? 0}
+                  </span>
+                </div>
+              )}
             </div>
           )}
 
@@ -402,6 +527,17 @@ export default function PremiumMomentum() {
                   </span>
                 </div>
               )}
+              {result?.summary?.by_leg && (
+                <div className="mt-2 flex flex-wrap gap-2 text-[11px] font-mono" data-testid="pm-by-leg">
+                  <span className="px-2 py-0.5 rounded bg-bg-2 border border-line text-dimmer">by leg —</span>
+                  <span className={`px-2 py-0.5 rounded border ${result.summary.by_leg.primary.net_pnl_rupees >= 0 ? "border-emerald-500/40 text-emerald-300" : "border-rose-500/40 text-rose-300"}`}>
+                    primary {result.summary.by_leg.primary.trades} tr · ₹{result.summary.by_leg.primary.net_pnl_rupees.toLocaleString("en-IN")}
+                  </span>
+                  <span className={`px-2 py-0.5 rounded border ${result.summary.by_leg.lazy.net_pnl_rupees >= 0 ? "border-emerald-500/40 text-emerald-300" : "border-rose-500/40 text-rose-300"}`}>
+                    lazy {result.summary.by_leg.lazy.trades} tr · ₹{result.summary.by_leg.lazy.net_pnl_rupees.toLocaleString("en-IN")}
+                  </span>
+                </div>
+              )}
               <div className="mt-3 flex flex-wrap gap-2 text-[11px] font-mono">
                 {Object.entries(byMonth).sort().map(([m, v]) => (
                   <span key={m} className={`px-2 py-0.5 rounded border ${v.sum >= 0 ? "border-emerald-500/40 text-emerald-300" : "border-rose-500/40 text-rose-300"}`}>
@@ -420,6 +556,7 @@ export default function PremiumMomentum() {
                   <thead className="text-dimmer text-left">
                     <tr>
                       <th className="pr-3 py-1">session</th>
+                      <th className="pr-3">leg</th>
                       <th className="pr-3">side</th>
                       <th className="pr-3">strike</th>
                       <th className="pr-3">expiry</th>
@@ -435,6 +572,7 @@ export default function PremiumMomentum() {
                     {trades.map((t, i) => (
                       <tr key={i} className="border-t border-line/50">
                         <td className="pr-3 py-1">{t.session_date}</td>
+                        <td className="pr-3 text-dimmer">{t.leg || "primary"}{t.leg === "lazy" && t.lazy_parent_side ? ` (${t.lazy_parent_side})` : ""}</td>
                         <td className="pr-3">{t.side}</td>
                         <td className="pr-3">{t.strike}</td>
                         <td className="pr-3 text-dimmer">{t.expiry_date || "—"}</td>

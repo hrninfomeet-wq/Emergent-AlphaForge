@@ -14,7 +14,24 @@ Stack: **React** (CRA + craco) frontend, **FastAPI** (Python) backend, **MongoDB
 
 ## 2. Current state
 
-**Latest (2026-07-14, v0.53.2)**: Phase 4 (**engine dispatch**) is now
+**Latest (2026-07-14, v0.54.0)**: **Phase 5A** — the full AlgoTest "EXP2"
+contingency shape (both-legs mode, one-shot lazy reversal leg with a fresh
+strike + snapshot at the stop-out bar, entry cutoff, hard exit time,
+%-of-entry stepped trail) is built and adversarially reviewed in the
+**backtest engine only**, reachable via the `/premium-momentum` page +
+backtest/tune routes. Backtest-only by mechanism, not promise: the plugin
+schema and `PremiumTriggerConfig` were deliberately NOT extended, so
+deployments structurally cannot carry the new params — live/general-Optimizer
+support is Phase 5B. **The 5B gate was run and FAILED at EXP2 defaults**
+(2026-H1 NIFTY, costs on): the lazy legs are gross-positive but net-negative
+after friction, and the full EXP2 config is worse than plain both-legs
+(−₹69.5k vs −₹60.6k on 2 lots); notable structural finding — both-legs mode
+massively outperforms first-to-trigger (−₹60.6k vs −₹140.2k), though all
+configs remain net-negative. Do NOT build Phase 5B live execution unless a
+tuned config first beats both-legs net-net out-of-sample through the honest
+tuner. See CHANGELOG 0.54.0.
+
+**Previous (2026-07-14, v0.53.2)**: Phase 4 (**engine dispatch**) is now
 functionally complete. `premium_momentum` runs through the standard Backtest
 Lab (single-run) AND the full multi-trial Optimizer search (Bayesian and
 Grid) exactly like any other strategy — `optimizer.py::_evaluate_premium_trigger`

@@ -27,7 +27,7 @@ from app.db import get_db
 from app.instruments import canonical_instrument_key
 from app.premium_momentum import lock_reference_strike
 from app.premium_momentum_backtest import (
-    _sides_for, expiry_for_session, run_premium_momentum_backtest,
+    _sides_for, expiry_for_session, preload_scope, run_premium_momentum_backtest,
 )
 from app.premium_momentum_tuner import MAX_CONFIGS_DEFAULT, tune_premium_momentum
 from app.premium_trigger_config import PremiumTriggerConfig, config_from_dict
@@ -43,8 +43,9 @@ api = APIRouter()
 TUNABLE_KEYS = {
     "momentum_pct", "momentum_pts", "stop_pct", "stop_pts",
     "target_pct", "target_pts", "trail_x", "trail_y", "moneyness",
+    "lazy_momentum_pct", "lazy_stop_pct", "lazy_target_pct",
+    "trail_x_pct", "trail_y_pct", "lazy_trail_x_pct", "lazy_trail_y_pct",
 }
-
 
 class PremiumMomentumBacktestReq(BaseModel):
     instrument: str
@@ -90,10 +91,17 @@ def _empty_result(params: Dict[str, Any]) -> Dict[str, Any]:
 
 async def _load_window(instrument: str, start_ts: int, end_ts: int, *,
                        ref_time: str, moneynesses: List[str],
-                       sides: List[str]) -> Optional[Tuple[pd.DataFrame, pd.DataFrame, List[Dict[str, Any]]]]:
+                       sides: List[str],
+                       lazy_enabled: bool = False) -> Optional[Tuple[pd.DataFrame, pd.DataFrame, List[Dict[str, Any]]]]:
     """Shared loader: (spot_df, option_candles, contracts) for the window, or None
     when there are no spot candles. Pre-locks the UNION of (session x side x
-    moneyness) strikes so every config a sweep evaluates finds its candles."""
+    moneyness) strikes so every config a sweep evaluates finds its candles.
+    When lazy_enabled, widens the preload to the full warehouse moneyness band
+    AND BOTH SIDES via the pure preload_scope helper -- the reversal leg is
+    opposite-side with a fresh strike locked from spot at an unknown future
+    bar; widening moneyness alone would leave a single-side run with zero
+    opposite-side candles and 100% lazy_excluded_no_data (review finding C1)."""
+    moneynesses, sides = preload_scope(moneynesses, sides, lazy_enabled)
     db = get_db()
     spot_df = await load_candles_df(instrument, start_ts, end_ts)
     if spot_df.empty:
@@ -151,6 +159,7 @@ async def premium_momentum_backtest(req: PremiumMomentumBacktestReq) -> Dict[str
         ref_time=str(params.get("reference_time") or "09:31"),
         moneynesses=[str(params.get("moneyness") or "itm1")],
         sides=_sides_for(params.get("side")),
+        lazy_enabled=bool(params.get("lazy_enabled") or False),
     )
     if loaded is None:
         return _empty_result(params)
@@ -176,6 +185,7 @@ async def premium_momentum_tune(req: PremiumMomentumTuneReq) -> Dict[str, Any]:
         ref_time=str(base_params.get("reference_time") or "09:31"),
         moneynesses=moneynesses,
         sides=_sides_for(base_params.get("side")),
+        lazy_enabled=bool(base_params.get("lazy_enabled") or False),
     )
     if loaded is None:
         raise HTTPException(400, "no spot candles in the window")

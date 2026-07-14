@@ -2,6 +2,83 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.54.0] — Phase 5A: full contingency ("lazy legs") in the backtest engine + the EXP2 edge verdict (2026-07-14)
+
+The AlgoTest "NF CE PE EXP2" contingency shape is now fully expressible and
+backtestable through the bespoke `/premium-momentum` page and its
+backtest/tune routes (plan: `docs/superpowers/plans/2026-07-14-premium-momentum-
+phase5a-backtest-contingency.md`). **Backtest-only by mechanism**: the plugin
+`parameter_schema` and `PremiumTriggerConfig` were deliberately NOT extended,
+and `merged_params` is a strict allow-list — a live deployment structurally
+cannot carry the new params. Live/general-Optimizer support is Phase 5B, gated
+on the edge verdict below.
+
+**New capability** (all params default OFF ⇒ byte-identical pre-5A engine,
+pinned by a parity test):
+
+- `leg_mode="both"` — CE and PE primaries fully independent (either, both, or
+  neither may enter), vs. the shipped first-to-trigger exclusivity.
+- `lazy_enabled` — the reversal leg: when a PRIMARY exits on STOP (never
+  TARGET/EOD), lock a FRESH opposite-side strike from spot at the stop-out
+  bar, snapshot that strike's premium at that bar (bar-close granularity —
+  the blueprint's "exact millisecond" remains out of reach, stated plainly),
+  and walk it with its own momentum/stop/target/trail params starting
+  strictly AFTER the snapshot bar. One shot per side per session; a lazy
+  leg's own STOP arms nothing (structural).
+- `entry_cutoff` / `exit_time` (IST HH:MM) — no primary entries, lazy
+  armings, or lazy entries at/after the cutoff; hard exit at the exit_time
+  bar close.
+- `trail_x_pct`/`trail_y_pct` (+ lazy variants) — the stepped ratchet in
+  %-of-entry mode (EXP2's "5%/5%" semantics; the existing trail was
+  points-only, so even the primary legs couldn't run EXP2 faithfully before).
+- Coverage counters (`lazy_armed`/`lazy_entered`/`lazy_blocked_cutoff`/
+  `lazy_excluded_no_data`), per-trade `leg`/`lazy_parent_side`/
+  `lazy_activated_ts`, `summary.by_leg` (primary vs lazy net split), UI for
+  all of it, 7 new TUNABLE_KEYS for the honest tuner.
+
+**Build quality**: TDD (23 new host tests incl. an 11-item contingency matrix
++ 3 behavioral preload tests); two-stage adversarial review. The Fable
+look-ahead review verified the engine clean on five lenses (lazy-leg
+look-ahead, cutoff/exit-time edges, pct-trail arithmetic, mis-fill risk,
+one-shot/independence — including 9 hand-built probes beyond the test suite)
+and CONFIRMED one real bug (C1): `_load_window` widened moneyness but not
+SIDES when lazy was enabled, so a CE-only lazy run would preload zero PE
+candles and silently count 100% of reversals as `lazy_excluded_no_data`.
+Fixed via a pure `preload_scope` helper (both sides + full warehouse
+moneyness band when lazy is on) with real behavioral tests replacing the
+string-pin the review flagged as weaker-than-it-looks. Full host suite:
+3381 passed, 0 failed.
+
+**THE EDGE VERDICT (the Phase-5B gate — real 2026-01-01→07-10 NIFTY warehouse
+data, 128 sessions, costs ON at 1% spread/side, 2 lots):**
+
+| Config | Trades | Net ₹ |
+|---|---|---|
+| A — today's single-leg first-to-trigger (15%/20%/5-5) | 127 | **−140,158** |
+| B — both legs, same params | 183 | **−60,586** |
+| C — EXP2 verbatim (B + lazy 10%/10%/5-5 + cutoff 14:40 + exit 15:13) | 276 | **−69,500** |
+
+- **The lazy-leg contingency FAILS the gate**: C is *worse* than B net-net.
+  The lazy legs are gross-POSITIVE on marks (+100.6 pts ≈ +₹15k — the
+  reversal idea has a trace of signal) but net-NEGATIVE (−₹12.5k) after
+  realistic friction: 100 extra round trips at ~2% cost each eat the edge.
+  Measurement is trustworthy: only 8/157 activations (5%) were excluded for
+  warehouse band limits.
+- **Real structural finding**: both-legs mode is dramatically better than
+  first-to-trigger at these params (gross −39.9 pts vs −780.7 pts; net
+  −₹60.6k vs −₹140.2k). First-to-trigger's "first cross wins" often picks
+  the whipsaw side and forfeits the real move. Still net-negative — this is
+  "less bad", not an edge.
+- Context: the EXP2 PDF's +₹2.79L (2024, ZERO slippage) does not survive
+  2026-H1 with honest friction — consistent with the strategy spec's own
+  §9 red flags (favorable-year sample, zero-slippage assumption).
+
+**Decision per the parent spec's hard gate**: Phase 5B (live execution for
+multi-leg/lazy) is NOT justified at EXP2 default parameters. The full tuning
+surface (7 new TUNABLE_KEYS through the honest costs-mandatory
+train/OOS tuner) is the sanctioned way to hunt for a parameter set where the
+contingency genuinely pays its friction before any live build.
+
 ## [0.53.2] — Phase 4 complete: Stage-1 Optimizer search now scores premium_momentum (2026-07-14)
 
 Closes the gap 0.53.1 found and documented: the full multi-trial Optimizer search

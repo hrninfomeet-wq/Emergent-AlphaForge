@@ -100,10 +100,19 @@ def walk_premium_momentum(*, ts, premium, ref_premium: float,
                           target_pts: Optional[float] = None,
                           stop_pct: Optional[float] = None,
                           stop_pts: Optional[float] = None,
-                          trail=None, low=None, open_=None, high=None) -> Dict[str, Any]:
+                          trail=None, low=None, open_=None, high=None,
+                          entry_cutoff_ts: Optional[int] = None) -> Dict[str, Any]:
     """Walk a single locked strike's premium series (ascending ts):
     1. find the FIRST bar whose premium (close) crosses the momentum trigger -> ENTRY;
     2. from the next bar, exit on premium stop / target, else at EOD.
+
+    ``entry_cutoff_ts`` (Phase 5A, EXP2 "no new entries after 14:40"): once the
+    entry SEARCH reaches a bar with ``ts[i] >= entry_cutoff_ts`` the search ends
+    with no entry (that bar and all later bars are never even checked for a
+    cross). Default None = today's behavior, byte-identical (the parity test
+    pins this). Exits are NOT cutoff-bound: an already-open position keeps
+    managing its stop/target/trail past the cutoff — only the ENTRY search is
+    gated.
 
     INTRA-BAR HONEST EXITS when the per-bar ``low``/``open_``/``high`` arrays are
     given (the real backtest path passes all three):
@@ -130,9 +139,11 @@ def walk_premium_momentum(*, ts, premium, ref_premium: float,
     op = [float(v) for v in open_] if open_ is not None else None
     hi = [float(v) for v in high] if high is not None else None
     n = len(premium)
-    # --- entry: first cross ---
+    # --- entry: first cross (cutoff ends the search, no entry beyond it) ---
     entry_i = None
     for i in range(n):
+        if entry_cutoff_ts is not None and ts[i] >= entry_cutoff_ts:
+            break
         if momentum_triggered(premium_now=premium[i], ref_premium=ref_premium,
                               pct=entry_pct, pts=entry_pts):
             entry_i = i
@@ -244,3 +255,21 @@ def stepped_trail_stop(*, entry_premium: float, running_high: float,
         return base_stop
     steps = int(favorable // float(x))
     return min(float(base_stop) + steps * float(y), float(running_high))
+
+
+def stepped_trail_stop_pct(*, entry_premium: float, running_high: float,
+                           base_stop: float, x_pct: float, y_pct: float) -> float:
+    """%-of-entry variant of ``stepped_trail_stop`` (Phase 5A / EXP2 rule 4:
+    "raise the SL by 5% of entry price" for every +5% favorable move — the step
+    size is a PERCENT OF ENTRY PRICE, not raw points, so it must be computed
+    fresh per trade from that trade's own entry_premium). Delegates to
+    ``stepped_trail_stop`` with x/y = entry_premium * pct/100; the delegate's
+    running-high cap still applies.
+
+    Pinned arithmetic: entry 100, x_pct=y_pct=5 (x=y=5.0 pts), high=112 ->
+    favorable 12 -> floor(12/5)=2 steps -> stop = base_stop + 10.0 pts (capped
+    at running_high)."""
+    x = float(entry_premium) * float(x_pct) / 100.0
+    y = float(entry_premium) * float(y_pct) / 100.0
+    return stepped_trail_stop(entry_premium=entry_premium, running_high=running_high,
+                              base_stop=base_stop, x=x, y=y)
