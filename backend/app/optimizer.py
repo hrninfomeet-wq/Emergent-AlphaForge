@@ -317,6 +317,84 @@ def _evaluate(get_enriched, strategy, params: Dict[str, Any], instrument: str, c
     return metrics, merged
 
 
+def _premium_zero_metrics() -> Dict[str, Any]:
+    """Zero-trade metrics for a premium trial whose config is invalid or whose
+    data window failed to preload — shaped so _objective_value's existing
+    trade_count==0 guard disqualifies it exactly like a real no-trade result."""
+    return {"trade_count": 0, "ce_count": 0, "pe_count": 0, "wins": 0, "losses": 0,
+            "win_rate": 0.0, "sharpe": 0.0, "profit_factor": None,
+            "total_pnl_pts": 0.0, "max_dd_pts": 0.0, "total_option_pnl_value": 0.0}
+
+
+def _evaluate_premium_trigger(
+    strategy, merged_params: Dict[str, Any], spot_df, option_candles, contracts,
+    instrument: str, objective: str, lot_size: int, min_trades: int,
+    min_direction_share: float,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """premium_momentum variant of the per-trial `_evaluate` (same return shape:
+    (metrics, merged_params), a drop-in). strategy.evaluate() is a deliberate
+    stub for this strategy (the real logic lives only in deployment_evaluator.py's
+    Track B branch), so the spot path scores EVERY trial trade_count=0 and
+    _objective_value's unconditional zero-trade guard disqualified all of them —
+    Stage 1 could never surface a candidate for the (already fixed) Stage-2
+    re-rank. Instead dispatch the trial straight to the option-native sim and
+    reshape its envelope into the metrics contract _objective_value /
+    _RESUME_METRIC_KEYS / _robustness_score / _heatmap already consume.
+
+    objective/lot_size/min_trades/min_direction_share carry the call site's
+    scoring context for signature parity with the evaluate closure's inputs;
+    the actual guarding/scoring still happens in _objective_value (the caller's
+    `obj`), so the guard rails behave identically to every other strategy.
+    """
+    from app.premium_trigger_dispatch import dispatch_full_backtest
+
+    if spot_df is None or getattr(spot_df, "empty", True):
+        # Preload failed (see run_optimization's _load_window block) — honest
+        # zero-trade disqualification, never a crash mid-trial-loop.
+        return _premium_zero_metrics(), merged_params
+    result = dispatch_full_backtest(
+        strategy_id=strategy.id, merged_params=merged_params,
+        spot_df=spot_df, option_candles=option_candles, contracts=contracts,
+        instrument=instrument)
+    if result is None:
+        # Invalid PremiumTriggerConfig (e.g. no entry trigger) — same honest path.
+        return _premium_zero_metrics(), merged_params
+
+    m = result.get("metrics") or {}
+    port = result.get("portfolio") or {}
+    paired = [t for t in result.get("trades", []) or [] if t.get("status") == "PAIRED"]
+    pnls = [float(t.get("option_pnl_value", 0.0) or 0.0) for t in paired]
+    gross_win = sum(p for p in pnls if p > 0)
+    gross_loss = abs(sum(p for p in pnls if p < 0))
+    if gross_loss > 0:
+        profit_factor = round(gross_win / gross_loss, 3)
+    elif gross_win > 0:
+        profit_factor = 999.0  # only wins: large-but-finite (inf breaks JSON/ranking)
+    else:
+        profit_factor = None   # no wins and no losses -> undefined (scored 0.0)
+    ce = sum(1 for t in paired if str(t.get("direction", "")).upper() == "CE")
+    sharpe = port.get("sharpe_daily")
+    metrics = {
+        "trade_count": int(m.get("paired_trade_count", 0) or 0),
+        "ce_count": int(ce),
+        "pe_count": int(len(paired) - ce),
+        "wins": int(m.get("wins", 0) or 0),
+        "losses": int(m.get("losses", 0) or 0),
+        # 0-100 scale — option_backtest._compute_metrics (wins/paired*100) matches
+        # backtest.py's spot win_rate scale, so the win_rate objective is comparable.
+        "win_rate": float(m.get("win_rate", 0.0) or 0.0),
+        "sharpe": float(sharpe) if sharpe is not None else 0.0,
+        "profit_factor": profit_factor,
+        "total_pnl_pts": float(m.get("total_option_pnl_pts", 0.0) or 0.0),
+        # NOT a true unit match: rupee max-drawdown substituted where the spot
+        # formula expects index points (a rupee-native premium strategy has no
+        # index-points drawdown concept) — an honest, documented proxy.
+        "max_dd_pts": abs(float(port.get("max_drawdown_value", 0.0) or 0.0)),
+        "total_option_pnl_value": float(m.get("total_option_pnl_value", 0.0) or 0.0),
+    }
+    return metrics, merged_params
+
+
 def _robustness_score(evaluate_fn, obj_fn, best_params: Dict[str, Any], space: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
     """Perturb each numeric param by ±10% and ±20%; count fraction that stay 'profitable'.
     Returns {score_0_100, perturbation_results}.
@@ -1057,8 +1135,62 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
         except Exception:
             pass
 
+        # premium_momentum Stage-1 fix: strategy.evaluate() is a deliberate stub
+        # (real logic lives only in deployment_evaluator.py's Track B branch), so
+        # the spot scorer returned trade_count=0 for EVERY trial and
+        # _objective_value's zero-trade guard disqualified all of them — Stage 1
+        # could never select a candidate even though Stage 2 (re-rank/survival)
+        # now scores correctly. Preload the shared warehouse window ONCE (same
+        # _load_window pattern as _option_rerank_premium_trigger) and score each
+        # trial through dispatch_full_backtest via _evaluate_premium_trigger.
+        pm_spot_df: Optional[pd.DataFrame] = None
+        pm_option_candles: Optional[pd.DataFrame] = None
+        pm_contracts: List[Dict[str, Any]] = []
+        if strategy.id == "premium_momentum":
+            from app.routers.premium_momentum_routes import _load_window
+
+            # NOTE: reference_time/moneyness are string params, and
+            # _build_param_space (above) skips non-int/float/bool params before
+            # it ever looks at param_overrides — so a "fixed" override on either
+            # field is structurally never honored by ANY trial's real params
+            # (true for every strategy, not just this one; _suggest() never
+            # emits these keys, so strategy.merged_params(params) always falls
+            # back to the schema default regardless of param_overrides). The
+            # preload must match what trials actually get, not what an override
+            # claims — derive both from strategy.merged_params({}) (the exact
+            # same source _option_rerank_premium_trigger already uses), not from
+            # param_overrides, or the preloaded candle window can silently
+            # mismatch every trial's real strike/ref-time and bias results
+            # toward whichever sessions happen to overlap by coincidence.
+            _pm_defaults = strategy.merged_params({})
+            _pm_ref = str(_pm_defaults.get("reference_time") or "09:31")
+            _pm_money = str(_pm_defaults.get("moneyness") or "itm1")
+            try:
+                _pm_loaded = await _load_window(
+                    instrument, int(raw_df["ts"].min()), int(raw_df["ts"].max()),
+                    ref_time=_pm_ref, moneynesses=[_pm_money], sides=["CE", "PE"])
+            except Exception as e:
+                log.warning(f"premium_momentum optimizer preload failed: {e}")
+                _pm_loaded = None
+            if _pm_loaded is None:
+                # Job still completes — every trial scores as an honest zero-trade
+                # result (disqualified), surfaced as a job-level warning, not a crash.
+                log.warning("premium_momentum: no spot/option window for %s — all trials will disqualify", instrument)
+                await _update_job(job_id, {
+                    "warning": ("premium_momentum: could not load the spot/option "
+                                "window — every trial scored as zero-trade")})
+            else:
+                pm_spot_df, pm_option_candles, pm_contracts = _pm_loaded
+
         # Guard-aware closures used by every trial / analysis below.
         def evaluate(params: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+            if strategy.id == "premium_momentum":
+                # Option-native Stage-1 scoring (the spot path is a stub — see
+                # the preload block above). Same (metrics, merged) contract.
+                return _evaluate_premium_trigger(
+                    strategy, strategy.merged_params(params), pm_spot_df,
+                    pm_option_candles, pm_contracts, instrument,
+                    objective, lot_size, min_trades, min_direction_share)
             if _OPT_TIMING:
                 import time as _t
                 _t0 = _t.perf_counter()
@@ -1114,7 +1246,12 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                     "optimize_indicator_periods": optimize_indicator_periods,
                 },
             })
-            _fresh_workers = effective_workers(opt_workers) if method == "bayesian" else 1
+            # premium_momentum is pinned sequential: the parallel path scores
+            # trials via parallel_backtest in worker processes (spot stub ->
+            # trade_count=0 -> every trial disqualified), bypassing the
+            # premium-native evaluate closure entirely.
+            _fresh_workers = (effective_workers(opt_workers)
+                              if method == "bayesian" and strategy.id != "premium_momentum" else 1)
             _sampler = (optuna.samplers.TPESampler(seed=42, n_startup_trials=10, constant_liar=True)
                         if _fresh_workers > 1 else _make_sampler(method))
             study = optuna.create_study(
@@ -1131,7 +1268,10 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
         early_stopped = False
 
         # Opt-in multi-core: bayesian-only; 1 = sequential (unchanged byte-identical path).
-        _workers = effective_workers(opt_workers) if method == "bayesian" else 1
+        # premium_momentum is pinned sequential — parallel_backtest's worker
+        # processes run the spot stub (see the preload block above).
+        _workers = (effective_workers(opt_workers)
+                    if method == "bayesian" and strategy.id != "premium_momentum" else 1)
 
         async def _maybe_pause() -> bool:
             """Persist progress and mark paused if the user paused the job.

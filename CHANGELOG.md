@@ -2,6 +2,78 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.53.2] — Phase 4 complete: Stage-1 Optimizer search now scores premium_momentum (2026-07-14)
+
+Closes the gap 0.53.1 found and documented: the full multi-trial Optimizer search
+(Bayesian/Grid, sweeping parameter combinations) could reach real Stage-2 re-rank
+scoring but never got there, because Stage 1's per-trial objective scorer
+(`optimizer.py::evaluate`) still called `strategy.evaluate()` — a deliberate stub
+for `premium_momentum` — so every trial had `trade_count=0` and
+`_objective_value`'s unconditional zero-trade guard disqualified all of them
+before Stage 2 was ever reached.
+
+**Three separable bugs, all fixed:**
+
+1. **`premium_momentum`'s `parameter_schema` had no `min`/`max` on its numeric
+   fields.** `optimizer.py::_suggest` silently defaulted missing bounds to
+   `(0.0, 1.0)`, so a "15%" momentum trigger was being sampled as `0.37`. Fixed:
+   `momentum_pct` → 5–50, `stop_pct` → 10–40; `momentum_pts`/`target_pct` marked
+   `"fixed": None` (excluded from the search — they're mutually exclusive with
+   the pct variants or off-by-default per the shipped blueprint; the dedicated
+   `/premium-momentum` tuner remains the place to sweep them). This same missing-
+   bounds bug is *also* what crashed the Grid method outright
+   (`_grid_combinations` assumed every float field had `min`/`max`) — one schema
+   fix closed both the crash and the degenerate-sampling bug.
+2. **Stage 1 never dispatched through the option-native sim.** New
+   `optimizer.py::_evaluate_premium_trigger` (host-safe, TDD, 10 new tests in
+   `tests/test_premium_trigger_optimizer_evaluate.py`) maps
+   `dispatch_full_backtest`'s real result onto every field `_objective_value` can
+   read (`trade_count`, `ce_count`/`pe_count`, `sharpe`, `profit_factor`,
+   `total_pnl_pts`, `win_rate`, `max_dd_pts`) for all 7 objective types — verified
+   field-by-field against the actual spot-metrics source (`backtest.py`,
+   `option_backtest.py`) so units genuinely match (win_rate 0–100 in both, not a
+   silent scale mismatch). `max_dd_pts` is an honestly-commented rupee-value
+   proxy (no true "points" concept exists for a premium-native strategy) — not
+   presented as equivalent. Contracts/option candles load ONCE before the trial
+   loop (same window for every trial), not per-trial. The opt-in parallel
+   Optuna path (`opt_workers>1`) bypasses this closure entirely via subprocess
+   workers still running the stub — pinned to `opt_workers=1` for this strategy
+   until that path gets its own fix (sequential is the documented default
+   anyway).
+3. **A subtler bug caught by adversarial review, not by testing**: the Stage-1
+   preload read a `param_overrides` `"fixed"` value for `reference_time`/
+   `moneyness` to decide which option-candle window to load — but
+   `_build_param_space` skips string-typed params (and therefore their
+   overrides) *before* any trial ever sees them, so every trial's real
+   `merged_params` silently fell back to the schema default regardless of what
+   the preload loaded. A user setting `param_overrides={"moneyness":
+   {"fixed":"atm"}}` would have had the preload quietly loading ATM strikes
+   while every trial actually simulated ITM1 — sessions would "pair" only by
+   coincidental strike overlap, silently biasing every trial's score with no
+   warning. Fixed: the preload now derives its window from
+   `strategy.merged_params({})` (the actual schema defaults every trial uses),
+   matching what `_option_rerank_premium_trigger` (0.53.1) already does
+   correctly. This class of bug — a string-param override that's silently never
+   applied — is pre-existing for every strategy, not new; only the option-window
+   preload made it possible to observe a *consequence*.
+
+**Verified live against real local warehouse data** (not synthetic fixtures):
+a real 15-trial Bayesian job now returns a genuine, non-disqualified best score
+(`0.0457`, 5 real trades, 60% win rate, net P&L +₹5,404.70); Grid method
+likewise (`0.0488`). A different strategy's optimizer job
+(`confluence_scalper`) run immediately after, to confirm zero regression:
+completes identically to before (`0.9157`, no error). Full host suite: 3358
+passed, 4 xfailed, 0 failed.
+
+**Phase 4 is now functionally complete**: `premium_momentum` runs through the
+standard Backtest Lab (single-run) and the full multi-trial Optimizer search
+(both Bayesian and Grid) exactly like any other strategy, with the same
+regression-safety guarantee (every other strategy's code path untouched,
+confirmed by a live side-by-side job and the unchanged full test suite).
+Remaining, deliberately out of scope: a declarative config-block *builder UI*
+(today's plugin-param form works fine as-is) and the `opt_workers>1` parallel
+path.
+
 ## [0.53.1] — Phase 4 engine dispatch: Optimizer/Backtest Lab wiring (2026-07-14)
 
 Completes the "engine dispatch" half of Phase 4 that the 0.53.0 Emergent session

@@ -38,13 +38,21 @@ class PremiumMomentum(StrategyBase):
                       "description": "atm | itm1 | itm2 | otm1 | otm2 (must be warehouse/stream covered)"},
         "side": {"type": "str", "default": "first_to_trigger",
                  "description": "first_to_trigger | ce | pe"},
-        "momentum_pct": {"type": "float", "default": 15.0,
+        "momentum_pct": {"type": "float", "min": 5.0, "max": 50.0, "default": 15.0,
                          "description": "enter when premium rises this % over its ref (None if using pts)"},
-        "momentum_pts": {"type": "float", "default": None,
+        # "fixed": None keeps this OUT of the Optimizer's numeric search space (any
+        # float type gets a search dimension by default — see _build_param_space in
+        # optimizer.py). momentum_pct/momentum_pts are mutually exclusive
+        # (PremiumTriggerConfig._entry_trigger_present raises if both are set), so
+        # the general Optimizer searches the pct variant only; the dedicated tuner's
+        # own grid logic (premium_momentum_tuner.py) is the place to sweep pts.
+        "momentum_pts": {"type": "float", "fixed": None, "default": None,
                          "description": "absolute premium-points trigger (exactly one of pct/pts)"},
-        "stop_pct": {"type": "float", "default": 20.0,
+        "stop_pct": {"type": "float", "min": 10.0, "max": 40.0, "default": 20.0,
                      "description": "premium stop % below entry (guard-enforced)"},
-        "target_pct": {"type": "float", "default": None,
+        # Fixed at None (matches the shipped blueprint default: no target, ride the
+        # trail to EOD) — not searched by the general Optimizer in this first pass.
+        "target_pct": {"type": "float", "fixed": None, "default": None,
                        "description": "premium target % above entry (None = ride to EOD)"},
         "late_lock_cutoff": {"type": "str", "default": "10:15",
                              "description": "no lock after this IST time -> session done (no_lock)"},

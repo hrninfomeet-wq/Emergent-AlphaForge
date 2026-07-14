@@ -14,23 +14,28 @@ Stack: **React** (CRA + craco) frontend, **FastAPI** (Python) backend, **MongoDB
 
 ## 2. Current state
 
-**Latest (2026-07-14, v0.53.1)**: Phase 4 **engine dispatch** is done —
-`premium_momentum` now runs through the general Backtest Lab
-(`/api/backtest/run`, `/api/backtest/start`) and the Optimizer's Stage-2
-re-rank + walk-forward survival check, instead of only the bespoke
-`/premium-momentum` page. `backend/app/premium_trigger_dispatch.py::
-dispatch_full_backtest` reshapes the option-native sim's trades into the
-standard paired-option-trade contract so every existing consumer reads it
-unchanged; returns `None` for every other strategy (zero regression risk —
-3347 host tests pass, 0 failed). Verified live against real local warehouse
-data (not just fixtures): identical net P&L across three independent routes
-for the same window. **Still open**: the *full multi-trial* Optimizer search
-(sweeping param combos via Bayesian/Grid) cannot yet score `premium_momentum`
-candidates — Stage 1's per-trial objective scorer disqualifies every trial
-before Stage 2 (now fixed) is reached, since Stage 1 still uses the stub
-`evaluate()`. Use Backtest Lab's single-run for one parameter set at a time,
-or the dedicated `/premium-momentum` page's own tuner for a real search. See
-CHANGELOG 0.53.1 for the full detail.
+**Latest (2026-07-14, v0.53.2)**: Phase 4 (**engine dispatch**) is now
+functionally complete. `premium_momentum` runs through the standard Backtest
+Lab (single-run) AND the full multi-trial Optimizer search (Bayesian and
+Grid) exactly like any other strategy — `optimizer.py::_evaluate_premium_trigger`
+closes the last gap (0.53.1's Stage-2 fix was reachable but Stage 1's
+per-trial scorer still used the stub `evaluate()`, unconditionally
+disqualifying every trial before Stage 2 was ever reached). Also fixed along
+the way: `premium_momentum`'s `parameter_schema` had no `min`/`max` on its
+numeric fields (silently sampled `momentum_pct` as `0.37` instead of `15`,
+and crashed the Grid method outright), and a subtler bug an adversarial
+review caught — the Stage-1 preload read a `param_overrides` `"fixed"` string
+value that no trial could ever actually receive (string params are excluded
+from the search space before overrides are applied), which could silently
+bias every trial's score against the wrong option window. **Verified live
+against real local warehouse data**: a real 15-trial Bayesian job returns a
+genuine non-disqualified best score (5 trades, 60% win rate, net P&L
++₹5,404.70); a different strategy's job run immediately after confirms zero
+regression (identical to before). Full host suite: 3358 passed, 0 failed. See
+CHANGELOG 0.53.2 for the full detail. Remaining, deliberately out of scope: a
+declarative config-block builder UI, and the `opt_workers>1` parallel Optuna
+path (pinned to sequential for this strategy — sequential is the documented
+default anyway).
 
 **Previous (2026-07-13, v0.53.0, Emergent handoff session)**: AI feasibility
 accepts premium-native rules (option-premium momentum, locked strike, stepped
