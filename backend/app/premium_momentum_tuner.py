@@ -76,11 +76,18 @@ def tune_premium_momentum(*, spot_df: pd.DataFrame, option_candles: pd.DataFrame
     train_s, test_s = split_sessions(sessions, train_frac)
 
     keys = sorted(grid.keys())
+    # Perf: split the (possibly multi-month) candle frame by instrument_key
+    # ONCE for the whole sweep — every config/session lookup was re-filtering
+    # the full frame, which made a 60-config 13-month tune time out.
+    # Byte-identical (see split_candles_by_key).
+    from app.premium_momentum_backtest import split_candles_by_key
+    by_key = split_candles_by_key(option_candles)
     results = []
     for combo in itertools.product(*(grid[k] for k in keys)):
         params = {**base_params, **dict(zip(keys, combo))}
         common = dict(option_candles=option_candles, contracts=contracts,
-                      instrument=instrument, params=params, vix_by_session=vix_by_session)
+                      instrument=instrument, params=params, vix_by_session=vix_by_session,
+                      candles_by_key=by_key)
         train = _run_slice(spot_df, train_s, **common)
         test = _run_slice(spot_df, test_s, **common)
         results.append({

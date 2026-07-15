@@ -62,7 +62,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from app.instruments import UNDERLYING_META
+from app.instruments import UNDERLYING_META, canonical_instrument_key
 from app.option_costs import CostConfig
 from app.premium_momentum import (
     apply_costs_to_trade, lock_reference_strike, premium_ohlc_for_key,
@@ -184,9 +184,32 @@ def _force_close_at_day_stop(trade: Dict[str, Any], oh: Dict[str, np.ndarray], b
     return apply_costs_to_trade(new_trade, cost_cfg=cost_cfg, lot_size=lot_size, lots=lots)
 
 
+def split_candles_by_key(option_candles: pd.DataFrame) -> Dict[str, pd.DataFrame]:
+    """One-time split of the (possibly multi-month) option-candle frame by
+    stored instrument_key. Pure performance: every per-(session x side)
+    premium_ohlc_for_key call re-filtered the FULL frame — O(total rows) per
+    lookup, quadratic across a tune sweep (a 60-config 13-month tune timed
+    out at 30 minutes). Byte-identical by construction: candles are stored
+    under canonical keys and premium_ohlc_for_key canonicalizes the LOOKUP
+    key, so grouping on the stored column partitions exactly the rows the
+    full-frame equality filter would select, and the helper still sorts by
+    ts itself."""
+    if option_candles is None or option_candles.empty:
+        return {}
+    return {str(k): g for k, g in option_candles.groupby("instrument_key", sort=False)}
+
+
+def _ohlc_for(candles_by_key: Dict[str, pd.DataFrame], instrument_key: str) -> Dict[str, np.ndarray]:
+    """premium_ohlc_for_key against the pre-split frame (same blank-shape
+    contract on a miss — premium_ohlc_for_key(empty) returns the blank)."""
+    sub = candles_by_key.get(canonical_instrument_key(str(instrument_key)))
+    return premium_ohlc_for_key(sub if sub is not None else pd.DataFrame(), instrument_key)
+
+
 def apply_session_day_stop(trades: List[Dict[str, Any]], option_candles: pd.DataFrame, *,
                            max_loss_rupees: Optional[float], max_profit_rupees: Optional[float],
                            cost_cfg: CostConfig, lot_size: int, lots: int,
+                           candles_by_key: Optional[Dict[str, pd.DataFrame]] = None,
                            ) -> Tuple[List[Dict[str, Any]], int, int]:
     """Session day-stop post-pass (Phase 5A.2) — see the module docstring's
     'session_max_loss_rupees / session_max_profit_rupees' section for the
@@ -195,6 +218,8 @@ def apply_session_day_stop(trades: List[Dict[str, Any]], option_candles: pd.Data
     returns ``trades`` unchanged) when both caps are None."""
     if max_loss_rupees is None and max_profit_rupees is None:
         return trades, 0, 0
+    if candles_by_key is None:
+        candles_by_key = split_candles_by_key(option_candles)
 
     by_session: Dict[str, List[int]] = {}
     for i, t in enumerate(trades):
@@ -225,7 +250,7 @@ def apply_session_day_stop(trades: List[Dict[str, Any]], option_candles: pd.Data
                 drop_idx.add(i)
                 continue
             # OPEN at breach: entry_ts <= breach_ts < exit_ts -- force-close.
-            oh = premium_ohlc_for_key(option_candles, t["instrument_key"])
+            oh = _ohlc_for(candles_by_key, t["instrument_key"])
             forced[i] = _force_close_at_day_stop(t, oh, breach_ts,
                                                  cost_cfg=cost_cfg, lot_size=lot_size, lots=lots)
 
@@ -244,7 +269,13 @@ def _leg_summary(leg_trades: List[Dict[str, Any]]) -> Dict[str, Any]:
 def run_premium_momentum_backtest(*, spot_df: pd.DataFrame, option_candles: pd.DataFrame,
                                   contracts: List[Dict[str, Any]], instrument: str,
                                   params: Dict[str, Any],
-                                  vix_by_session: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
+                                  vix_by_session: Optional[Dict[str, float]] = None,
+                                  candles_by_key: Optional[Dict[str, pd.DataFrame]] = None) -> Dict[str, Any]:
+    # Perf seam: a sweep (tuner) splits the candle frame ONCE and passes it to
+    # every config; a single run builds it here. Byte-identical either way —
+    # see split_candles_by_key.
+    if candles_by_key is None:
+        candles_by_key = split_candles_by_key(option_candles)
     ref_time = str(params.get("reference_time") or "09:31")
     moneyness = str(params.get("moneyness") or "itm1")
     sides = _sides_for(params.get("side"))
@@ -391,7 +422,7 @@ def run_premium_momentum_backtest(*, spot_df: pd.DataFrame, option_candles: pd.D
                 excluded = True
                 cov["exclude_reasons"]["no_contract"] = cov["exclude_reasons"].get("no_contract", 0) + 1
                 break
-            oh = premium_ohlc_for_key(option_candles, locked["instrument_key"])
+            oh = _ohlc_for(candles_by_key, locked["instrument_key"])
             mask = (oh["ts"] >= ref_ts) & (oh["ts"] <= exit_ts_bound)
             oh = {k: v[mask] for k, v in oh.items()}
             if len(oh["close"]) == 0:
@@ -472,7 +503,7 @@ def run_premium_momentum_backtest(*, spot_df: pd.DataFrame, option_candles: pd.D
                     cov["lazy_excluded_no_data"] += 1
                     continue
 
-                full_oh = premium_ohlc_for_key(option_candles, fresh_locked["instrument_key"])
+                full_oh = _ohlc_for(candles_by_key, fresh_locked["instrument_key"])
                 ref_idx = _find_asof_index(full_oh["ts"], stop_out_ts, LAZY_REF_ASOF_TOLERANCE_MS)
                 if ref_idx is None:
                     cov["lazy_excluded_no_data"] += 1
@@ -512,6 +543,7 @@ def run_premium_momentum_backtest(*, spot_df: pd.DataFrame, option_candles: pd.D
         trades, option_candles,
         max_loss_rupees=session_max_loss_rupees, max_profit_rupees=session_max_profit_rupees,
         cost_cfg=cost_cfg, lot_size=lot_size, lots=lots,
+        candles_by_key=candles_by_key,
     )
     cov["blocked_day_stop"] = blocked_day_stop
     cov["forced_day_stop_exits"] = forced_day_stop_exits
