@@ -18,7 +18,7 @@ in-process). No DB/tick I/O here.
 from __future__ import annotations
 
 import itertools
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -54,7 +54,8 @@ def tune_premium_momentum(*, spot_df: pd.DataFrame, option_candles: pd.DataFrame
                           contracts: List[Dict[str, Any]], instrument: str,
                           base_params: Dict[str, Any], grid: Dict[str, List[Any]],
                           train_frac: float = 0.7,
-                          max_configs: int = MAX_CONFIGS_DEFAULT) -> Dict[str, Any]:
+                          max_configs: int = MAX_CONFIGS_DEFAULT,
+                          vix_by_session: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
     cost_cfg = CostConfig.from_dict((base_params or {}).get("cost_config"))
     if not cost_cfg.enabled:
         raise ValueError(
@@ -79,7 +80,7 @@ def tune_premium_momentum(*, spot_df: pd.DataFrame, option_candles: pd.DataFrame
     for combo in itertools.product(*(grid[k] for k in keys)):
         params = {**base_params, **dict(zip(keys, combo))}
         common = dict(option_candles=option_candles, contracts=contracts,
-                      instrument=instrument, params=params)
+                      instrument=instrument, params=params, vix_by_session=vix_by_session)
         train = _run_slice(spot_df, train_s, **common)
         test = _run_slice(spot_df, test_s, **common)
         results.append({

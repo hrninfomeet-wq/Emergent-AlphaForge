@@ -21,8 +21,39 @@ docs/superpowers/plans/2026-07-14-premium-momentum-phase5a-backtest-contingency.
   - ``entry_cutoff`` / ``exit_time``: session-level entry gate and hard exit
     bound (both "HH:MM" IST), applied identically to primaries and lazies.
 
-All new params default OFF -> byte-identical to the pre-5A engine (pinned by
-the parity test in tests/test_premium_momentum_contingency.py)."""
+Phase 5A.2 (session day-stop + VIX gate, backtest-only -- see
+docs/superpowers/plans/2026-07-14-premium-momentum-phase5a2-overlays-edge-hunt.md):
+  - ``session_max_loss_rupees`` / ``session_max_profit_rupees``: a REALIZED,
+    bar-close-honest, per-SESSION day-stop. It is a ONE-PASS post-process over
+    that session's already-walked trades (primaries + lazies): sort completed
+    trades by (exit_ts, entry_ts, side), scan cumulative cost-adjusted
+    ``net_pnl_rupees``; the first trade whose cumulative breaches a cap
+    defines ``breach_ts``. Trades that share that same exit_ts stay realized
+    (they exited on the same bar -- not "blocked"). Any trade with
+    entry_ts > breach_ts is DROPPED (blocked entry, counted
+    ``blocked_day_stop``). Any trade OPEN at the breach
+    (entry_ts <= breach_ts < exit_ts) is FORCE-CLOSED at the first bar of ITS
+    OWN premium series with ts >= breach_ts, at that bar's CLOSE, reason
+    "DAY_STOP" (costs recomputed for the truncated fill; counted
+    ``forced_day_stop_exits``). This is exact for the breach decision because
+    it is defined on REALIZED exits only: a forced exit always realizes AT
+    breach_ts or later, so it can never move the breach earlier. This is
+    explicitly NOT a mark-to-market day-stop -- an open position's unrealized
+    loss cannot itself trigger the stop. A mark-to-market day-stop (catching
+    intraday MTM bleed on still-open legs) is a different, richer rule,
+    deferred.
+  - ``vix_min`` / ``vix_max`` with the new ``vix_by_session`` kwarg: a session
+    -level India VIX gate. The sim stays PURE -- it receives
+    ``vix_by_session: Optional[Dict[str, float]]`` (session_date -> gate
+    value), never fetches VIX itself. Gated at session start: a value outside
+    [vix_min, vix_max] skips the session (``sessions_excluded_vix_gate``); a
+    gate configured but the session missing from the map ALSO skips it
+    (``sessions_excluded_vix_missing`` -- trading an unverifiable gate would
+    be dishonest, never a silent pass).
+
+All new params default OFF -> byte-identical to the pre-5A / pre-5A.2 engine
+(pinned by the parity tests in tests/test_premium_momentum_contingency.py and
+tests/test_premium_momentum_overlays.py)."""
 from __future__ import annotations
 
 import functools
@@ -124,6 +155,84 @@ def _find_asof_index(ts_arr: np.ndarray, target_ts: int, tolerance_ms: int) -> O
     return None
 
 
+def _force_close_at_day_stop(trade: Dict[str, Any], oh: Dict[str, np.ndarray], breach_ts: int, *,
+                             cost_cfg: CostConfig, lot_size: int, lots: int) -> Dict[str, Any]:
+    """Force-close ONE open-at-breach trade at the first bar of ITS OWN
+    premium series with ts >= breach_ts, at that bar's CLOSE (day-stop step
+    5). The original entry stands; only the exit changes, and costs are
+    recomputed off the truncated fill."""
+    ts_arr = oh["ts"]
+    close_arr = oh["close"]
+    idxs = np.where((ts_arr >= breach_ts) & (ts_arr <= trade["exit_ts"]))[0]
+    if len(idxs) == 0:
+        # Should not happen: the trade's own original exit_ts is itself a bar
+        # in its own series with ts >= breach_ts (entry_ts <= breach_ts <
+        # exit_ts implies exit_ts qualifies). Defensive no-op fallback.
+        return trade
+    exit_i = int(idxs[0])
+    exit_ts = int(ts_arr[exit_i])
+    exit_premium = float(close_arr[exit_i])
+    entry_matches = np.where(ts_arr == trade["entry_ts"])[0]
+    bars_held = (exit_i - int(entry_matches[0])) if len(entry_matches) else trade.get("bars_held")
+    new_trade = {
+        **trade,
+        "exit_ts": exit_ts, "exit_premium": round(exit_premium, 4),
+        "exit_reason": "DAY_STOP",
+        "premium_pnl": round(exit_premium - float(trade["entry_premium"]), 4),
+        "bars_held": bars_held,
+    }
+    return apply_costs_to_trade(new_trade, cost_cfg=cost_cfg, lot_size=lot_size, lots=lots)
+
+
+def apply_session_day_stop(trades: List[Dict[str, Any]], option_candles: pd.DataFrame, *,
+                           max_loss_rupees: Optional[float], max_profit_rupees: Optional[float],
+                           cost_cfg: CostConfig, lot_size: int, lots: int,
+                           ) -> Tuple[List[Dict[str, Any]], int, int]:
+    """Session day-stop post-pass (Phase 5A.2) — see the module docstring's
+    'session_max_loss_rupees / session_max_profit_rupees' section for the
+    full semantics. Pure and one-pass: does not touch the walks that produced
+    ``trades``, only prunes/truncates the finished list. No-op (byte-identical,
+    returns ``trades`` unchanged) when both caps are None."""
+    if max_loss_rupees is None and max_profit_rupees is None:
+        return trades, 0, 0
+
+    by_session: Dict[str, List[int]] = {}
+    for i, t in enumerate(trades):
+        by_session.setdefault(str(t["session_date"]), []).append(i)
+
+    drop_idx: set = set()
+    forced: Dict[int, Dict[str, Any]] = {}
+    for _session, idxs in by_session.items():
+        session_trades = [(i, trades[i]) for i in idxs]
+        ordered = sorted(session_trades, key=lambda it: (it[1]["exit_ts"], it[1]["entry_ts"], it[1]["side"]))
+        cumulative = 0.0
+        breach_ts = None
+        for _i, t in ordered:
+            cumulative += float(t["net_pnl_rupees"])
+            if breach_ts is not None:
+                continue
+            if max_loss_rupees is not None and cumulative <= -abs(float(max_loss_rupees)):
+                breach_ts = t["exit_ts"]
+            elif max_profit_rupees is not None and cumulative >= abs(float(max_profit_rupees)):
+                breach_ts = t["exit_ts"]
+        if breach_ts is None:
+            continue
+
+        for i, t in session_trades:
+            if t["exit_ts"] <= breach_ts:
+                continue   # realized at/before breach -- stays as-is (same-bar ties included)
+            if t["entry_ts"] > breach_ts:
+                drop_idx.add(i)
+                continue
+            # OPEN at breach: entry_ts <= breach_ts < exit_ts -- force-close.
+            oh = premium_ohlc_for_key(option_candles, t["instrument_key"])
+            forced[i] = _force_close_at_day_stop(t, oh, breach_ts,
+                                                 cost_cfg=cost_cfg, lot_size=lot_size, lots=lots)
+
+    kept = [forced.get(i, t) for i, t in enumerate(trades) if i not in drop_idx]
+    return kept, len(drop_idx), len(forced)
+
+
 def _leg_summary(leg_trades: List[Dict[str, Any]]) -> Dict[str, Any]:
     return {
         "trades": len(leg_trades),
@@ -134,7 +243,8 @@ def _leg_summary(leg_trades: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 def run_premium_momentum_backtest(*, spot_df: pd.DataFrame, option_candles: pd.DataFrame,
                                   contracts: List[Dict[str, Any]], instrument: str,
-                                  params: Dict[str, Any]) -> Dict[str, Any]:
+                                  params: Dict[str, Any],
+                                  vix_by_session: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
     ref_time = str(params.get("reference_time") or "09:31")
     moneyness = str(params.get("moneyness") or "itm1")
     sides = _sides_for(params.get("side"))
@@ -166,6 +276,13 @@ def run_premium_momentum_backtest(*, spot_df: pd.DataFrame, option_candles: pd.D
     entry_cutoff = params.get("entry_cutoff")
     exit_time = params.get("exit_time")
 
+    # --- Phase 5A.2 params (all default OFF -> byte-identical) ---------------
+    session_max_loss_rupees = params.get("session_max_loss_rupees")
+    session_max_profit_rupees = params.get("session_max_profit_rupees")
+    vix_min = params.get("vix_min")
+    vix_max = params.get("vix_max")
+    vix_gate_configured = vix_min is not None or vix_max is not None
+
     # --- Fail-loud validation (BEFORE any session is processed — ambiguous or
     # incomplete config must never silently do something reasonable-looking). ---
     trail = _resolve_trail(trail_x, trail_y, trail_x_pct, trail_y_pct, label="trail")
@@ -176,6 +293,12 @@ def run_premium_momentum_backtest(*, spot_df: pd.DataFrame, option_candles: pd.D
             raise ValueError("lazy_enabled requires lazy_momentum_pct or lazy_momentum_pts")
         if lazy_entry_pct is not None and lazy_entry_pts is not None:
             raise ValueError("lazy_momentum_pct and lazy_momentum_pts are mutually exclusive")
+    if session_max_loss_rupees is not None and float(session_max_loss_rupees) < 0:
+        raise ValueError("session_max_loss_rupees must be non-negative (pass the loss magnitude)")
+    if session_max_profit_rupees is not None and float(session_max_profit_rupees) < 0:
+        raise ValueError("session_max_profit_rupees must be non-negative")
+    if vix_min is not None and vix_max is not None and float(vix_min) > float(vix_max):
+        raise ValueError("vix_min must be <= vix_max")
 
     # Cost model (Phase 1.2): the engine's option cost schedule, applied as a
     # post-step on each trade's fills. Disabled ⇒ net == gross (fields always
@@ -188,7 +311,9 @@ def run_premium_momentum_backtest(*, spot_df: pd.DataFrame, option_candles: pd.D
     cov = {"sessions_total": 0, "sessions_traded": 0, "sessions_excluded": 0,
            "sessions_no_signal": 0, "exclude_reasons": {},
            "lazy_armed": 0, "lazy_entered": 0, "lazy_blocked_cutoff": 0,
-           "lazy_excluded_no_data": 0}
+           "lazy_excluded_no_data": 0,
+           "blocked_day_stop": 0, "forced_day_stop_exits": 0,
+           "sessions_excluded_vix_gate": 0, "sessions_excluded_vix_missing": 0}
 
     # Per-session expiry resolution (the blueprint's "current weekly"): when the
     # contract universe carries expiry metadata, each session trades the nearest
@@ -199,6 +324,22 @@ def run_premium_momentum_backtest(*, spot_df: pd.DataFrame, option_candles: pd.D
     for session, sdf in spot_df.groupby("session_date"):
         cov["sessions_total"] += 1
         sdf = sdf.sort_values("ts")
+
+        # India VIX gate (Phase 5A.2) — gated at session start, BEFORE the
+        # reference bar / strike lock, so an excluded session costs nothing
+        # further. Configured-but-unverifiable (session missing from the
+        # map) is a DEDICATED counter, never a silent pass.
+        if vix_gate_configured:
+            vix_val = (vix_by_session or {}).get(str(session))
+            if vix_val is None:
+                cov["sessions_excluded_vix_missing"] += 1
+                continue
+            vix_val = float(vix_val)
+            if (vix_min is not None and vix_val < float(vix_min)) or \
+               (vix_max is not None and vix_val > float(vix_max)):
+                cov["sessions_excluded_vix_gate"] += 1
+                continue
+
         ref_rows = sdf[sdf["ist_time"] >= ref_time]
         if ref_rows.empty:
             cov["sessions_excluded"] += 1
@@ -365,6 +506,15 @@ def run_premium_momentum_backtest(*, spot_df: pd.DataFrame, option_candles: pd.D
                 }
                 trades.append(apply_costs_to_trade(lazy_trade, cost_cfg=cost_cfg,
                                                    lot_size=lot_size, lots=lots))
+
+    # --- Phase 5A.2: session day-stop post-pass ------------------------------
+    trades, blocked_day_stop, forced_day_stop_exits = apply_session_day_stop(
+        trades, option_candles,
+        max_loss_rupees=session_max_loss_rupees, max_profit_rupees=session_max_profit_rupees,
+        cost_cfg=cost_cfg, lot_size=lot_size, lots=lots,
+    )
+    cov["blocked_day_stop"] = blocked_day_stop
+    cov["forced_day_stop_exits"] = forced_day_stop_exits
 
     primary_trades = [t for t in trades if t.get("leg") == "primary"]
     lazy_trades = [t for t in trades if t.get("leg") == "lazy"]

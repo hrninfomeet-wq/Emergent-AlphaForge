@@ -21,6 +21,8 @@ from __future__ import annotations
 import bisect
 from typing import Any, Dict, List, Optional
 
+import pandas as pd
+
 from app.instruments import AUX_INSTRUMENT_KEYS
 
 VIX_INSTRUMENT = "INDIAVIX"
@@ -62,6 +64,42 @@ def vix_asof(index: Dict[str, List], ts_ms: Any, max_staleness_ms: Optional[int]
     if max_staleness_ms is not None and (t - ts_list[pos]) > max_staleness_ms:
         return None
     return round(index["close"][pos], 2)
+
+
+def vix_by_session_map(
+    spot_df: pd.DataFrame,
+    vix_candles: List[Dict[str, Any]],
+    *,
+    ref_time: str = "09:31",
+    max_staleness_ms: Optional[int] = None,
+) -> Dict[str, float]:
+    """Session-date -> VIX gate value (Phase 5A.2 VIX gate route wiring).
+
+    Per session: the VIX close as-of <= that session's REF BAR ts (the same
+    ref-bar convention the sim's own strike lock uses -- first spot bar with
+    ``ist_time >= ref_time``). ``max_staleness_ms`` bounds how far back the
+    as-of lookup may reach, so a session with NO VIX print reaching it (e.g.
+    a gap far longer than the fallback window) is simply ABSENT from the
+    returned map -- callers must treat "absent" as "unverifiable", never as
+    "pass" (see the VIX gate's ``sessions_excluded_vix_missing`` counter).
+
+    Pure (no I/O): the caller loads ``vix_candles`` (INDIAVIX candles_1m rows)
+    and passes them in. Ref-bar-time VIX is known at the lock moment, so this
+    introduces no look-ahead."""
+    if spot_df is None or spot_df.empty:
+        return {}
+    index = build_asof_index(vix_candles)
+    result: Dict[str, float] = {}
+    for session, sdf in spot_df.groupby("session_date"):
+        sdf = sdf.sort_values("ts")
+        ref_rows = sdf[sdf["ist_time"] >= str(ref_time)]
+        if ref_rows.empty:
+            continue
+        ref_ts = int(ref_rows.iloc[0]["ts"])
+        v = vix_asof(index, ref_ts, max_staleness_ms=max_staleness_ms)
+        if v is not None:
+            result[str(session)] = v
+    return result
 
 
 def annotate_trades_with_vix(
