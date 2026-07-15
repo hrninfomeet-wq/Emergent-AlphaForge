@@ -1,0 +1,1314 @@
+{
+ "stages": {
+  "s1": {
+   "no_trail": {
+    "n_configs": 60,
+    "split": {
+     "train_sessions": 192,
+     "test_sessions": 83,
+     "train_range": [
+      "2024-11-25",
+      "2025-09-01"
+     ],
+     "test_range": [
+      "2025-09-02",
+      "2025-12-31"
+     ],
+     "train_frac": 0.7
+    },
+    "top10": [
+     {
+      "grid": {
+       "momentum_pct": 10.0,
+       "stop_pct": 30.0,
+       "target_pct": 50.0
+      },
+      "train_net": -215430.38,
+      "test_net": 58609.95,
+      "test_trades": 122,
+      "test_win_rate": 48.4,
+      "family": "no_trail"
+     },
+     {
+      "grid": {
+       "momentum_pct": 10.0,
+       "stop_pct": 25.0,
+       "target_pct": 25.0
+      },
+      "train_net": -148297.45,
+      "test_net": 57521.69,
+      "test_trades": 122,
+      "test_win_rate": 57.4,
+      "family": "no_trail"
+     },
+     {
+      "grid": {
+       "momentum_pct": 10.0,
+       "stop_pct": 15.0,
+       "target_pct": 50.0
+      },
+      "train_net": -141714.1,
+      "test_net": 53424.49,
+      "test_trades": 122,
+      "test_win_rate": 36.1,
+      "family": "no_trail"
+     },
+     {
+      "grid": {
+       "momentum_pct": 20.0,
+       "stop_pct": 25.0,
+       "target_pct": 50.0
+      },
+      "train_net": -218515.31,
+      "test_net": 49939.48,
+      "test_trades": 97,
+      "test_win_rate": 47.4,
+      "family": "no_trail"
+     },
+     {
+      "grid": {
+       "momentum_pct": 25.0,
+       "stop_pct": 25.0,
+       "target_pct": 50.0
+      },
+      "train_net": -172832.89,
+      "test_net": 49829.65,
+      "test_trades": 89,
+      "test_win_rate": 48.3,
+      "family": "no_trail"
+     },
+     {
+      "grid": {
+       "momentum_pct": 20.0,
+       "stop_pct": 20.0,
+       "target_pct": 50.0
+      },
+      "train_net": -205389.3,
+      "test_net": 48341.97,
+      "test_trades": 97,
+      "test_win_rate": 42.3,
+      "family": "no_trail"
+     },
+     {
+      "grid": {
+       "momentum_pct": 25.0,
+       "stop_pct": 20.0,
+       "target_pct": 50.0
+      },
+      "train_net": -166394.3,
+      "test_net": 48224.47,
+      "test_trades": 89,
+      "test_win_rate": 43.8,
+      "family": "no_trail"
+     },
+     {
+      "grid": {
+       "momentum_pct": 10.0,
+       "stop_pct": 15.0,
+       "target_pct": null
+      },
+      "train_net": -208119.56,
+      "test_net": 47884.85,
+      "test_trades": 122,
+      "test_win_rate": 30.3,
+      "family": "no_trail"
+     },
+     {
+      "grid": {
+       "momentum_pct": 20.0,
+       "stop_pct": 15.0,
+       "target_pct": 50.0
+      },
+      "train_net": -182825.89,
+      "test_net": 46872.35,
+      "test_trades": 97,
+      "test_win_rate": 37.1,
+      "family": "no_trail"
+     },
+     {
+      "grid": {
+       "momentum_pct": 25.0,
+       "stop_pct": 30.0,
+       "target_pct": 50.0
+      },
+      "train_net": -218237.83,
+      "test_net": 45887.19,
+      "test_trades": 89,
+      "test_win_rate": 49.4,
+      "family": "no_trail"
+     }
+    ]
+   },
+   "with_trail": {
+    "n_configs": 120,
+    "split": {
+     "train_sessions": 192,
+     "test_sessions": 83,
+     "train_range": [
+      "2024-11-25",
+      "2025-09-01"
+     ],
+     "test_range": [
+      "2025-09-02",
+      "2025-12-31"
+     ],
+     "train_frac": 0.7
+    },
+    "top10": [
+     {
+      "grid": {
+       "momentum_pct": 25.0,
+       "stop_pct": 25.0,
+       "target_pct": 50.0,
+       "trail_x_pct": 10.0
+      },
+      "train_net": -144128.89,
+      "test_net": 55700.31,
+      "test_trades": 89,
+      "test_win_rate": 44.9,
+      "family": "with_trail"
+     },
+     {
+      "grid": {
+       "momentum_pct": 10.0,
+       "stop_pct": 30.0,
+       "target_pct": 25.0,
+       "trail_x_pct": 5.0
+      },
+      "train_net": -130033.22,
+      "test_net": 54311.57,
+      "test_trades": 122,
+      "test_win_rate": 57.4,
+      "family": "with_trail"
+     },
+     {
+      "grid": {
+       "momentum_pct": 20.0,
+       "stop_pct": 15.0,
+       "target_pct": 50.0,
+       "trail_x_pct": 10.0
+      },
+      "train_net": -127528.8,
+      "test_net": 53933.9,
+      "test_trades": 97,
+      "test_win_rate": 34.0,
+      "family": "with_trail"
+     },
+     {
+      "grid": {
+       "momentum_pct": 10.0,
+       "stop_pct": 25.0,
+       "target_pct": 25.0,
+       "trail_x_pct": 10.0
+      },
+      "train_net": -122876.08,
+      "test_net": 52323.73,
+      "test_trades": 122,
+      "test_win_rate": 55.7,
+      "family": "with_trail"
+     },
+     {
+      "grid": {
+       "momentum_pct": 10.0,
+       "stop_pct": 25.0,
+       "target_pct": null,
+       "trail_x_pct": 5.0
+      },
+      "train_net": -101021.89,
+      "test_net": 48390.9,
+      "test_trades": 122,
+      "test_win_rate": 42.6,
+      "family": "with_trail"
+     },
+     {
+      "grid": {
+       "momentum_pct": 10.0,
+       "stop_pct": 30.0,
+       "target_pct": null,
+       "trail_x_pct": 5.0
+      },
+      "train_net": -165493.81,
+      "test_net": 48029.48,
+      "test_trades": 122,
+      "test_win_rate": 42.6,
+      "family": "with_trail"
+     },
+     {
+      "grid": {
+       "momentum_pct": 20.0,
+       "stop_pct": 10.0,
+       "target_pct": null,
+       "trail_x_pct": 5.0
+      },
+      "train_net": -12534.72,
+      "test_net": 44435.75,
+      "test_trades": 97,
+      "test_win_rate": 37.1,
+      "family": "with_trail"
+     },
+     {
+      "grid": {
+       "momentum_pct": 10.0,
+       "stop_pct": 30.0,
+       "target_pct": 50.0,
+       "trail_x_pct": 5.0
+      },
+      "train_net": -147473.2,
+      "test_net": 44276.85,
+      "test_trades": 122,
+      "test_win_rate": 42.6,
+      "family": "with_trail"
+     },
+     {
+      "grid": {
+       "momentum_pct": 20.0,
+       "stop_pct": 10.0,
+       "target_pct": 50.0,
+       "trail_x_pct": 5.0
+      },
+      "train_net": -25133.68,
+      "test_net": 44177.41,
+      "test_trades": 97,
+      "test_win_rate": 37.1,
+      "family": "with_trail"
+     },
+     {
+      "grid": {
+       "momentum_pct": 20.0,
+       "stop_pct": 10.0,
+       "target_pct": 50.0,
+       "trail_x_pct": 10.0
+      },
+      "train_net": -70679.72,
+      "test_net": 44126.99,
+      "test_trades": 97,
+      "test_win_rate": 26.8,
+      "family": "with_trail"
+     }
+    ]
+   },
+   "overall_top10": [
+    {
+     "grid": {
+      "momentum_pct": 10.0,
+      "stop_pct": 30.0,
+      "target_pct": 50.0
+     },
+     "train_net": -215430.38,
+     "test_net": 58609.95,
+     "test_trades": 122,
+     "test_win_rate": 48.4,
+     "family": "no_trail"
+    },
+    {
+     "grid": {
+      "momentum_pct": 10.0,
+      "stop_pct": 25.0,
+      "target_pct": 25.0
+     },
+     "train_net": -148297.45,
+     "test_net": 57521.69,
+     "test_trades": 122,
+     "test_win_rate": 57.4,
+     "family": "no_trail"
+    },
+    {
+     "grid": {
+      "momentum_pct": 25.0,
+      "stop_pct": 25.0,
+      "target_pct": 50.0,
+      "trail_x_pct": 10.0
+     },
+     "train_net": -144128.89,
+     "test_net": 55700.31,
+     "test_trades": 89,
+     "test_win_rate": 44.9,
+     "family": "with_trail"
+    },
+    {
+     "grid": {
+      "momentum_pct": 10.0,
+      "stop_pct": 30.0,
+      "target_pct": 25.0,
+      "trail_x_pct": 5.0
+     },
+     "train_net": -130033.22,
+     "test_net": 54311.57,
+     "test_trades": 122,
+     "test_win_rate": 57.4,
+     "family": "with_trail"
+    },
+    {
+     "grid": {
+      "momentum_pct": 20.0,
+      "stop_pct": 15.0,
+      "target_pct": 50.0,
+      "trail_x_pct": 10.0
+     },
+     "train_net": -127528.8,
+     "test_net": 53933.9,
+     "test_trades": 97,
+     "test_win_rate": 34.0,
+     "family": "with_trail"
+    },
+    {
+     "grid": {
+      "momentum_pct": 10.0,
+      "stop_pct": 15.0,
+      "target_pct": 50.0
+     },
+     "train_net": -141714.1,
+     "test_net": 53424.49,
+     "test_trades": 122,
+     "test_win_rate": 36.1,
+     "family": "no_trail"
+    },
+    {
+     "grid": {
+      "momentum_pct": 10.0,
+      "stop_pct": 25.0,
+      "target_pct": 25.0,
+      "trail_x_pct": 10.0
+     },
+     "train_net": -122876.08,
+     "test_net": 52323.73,
+     "test_trades": 122,
+     "test_win_rate": 55.7,
+     "family": "with_trail"
+    },
+    {
+     "grid": {
+      "momentum_pct": 20.0,
+      "stop_pct": 25.0,
+      "target_pct": 50.0
+     },
+     "train_net": -218515.31,
+     "test_net": 49939.48,
+     "test_trades": 97,
+     "test_win_rate": 47.4,
+     "family": "no_trail"
+    },
+    {
+     "grid": {
+      "momentum_pct": 25.0,
+      "stop_pct": 25.0,
+      "target_pct": 50.0
+     },
+     "train_net": -172832.89,
+     "test_net": 49829.65,
+     "test_trades": 89,
+     "test_win_rate": 48.3,
+     "family": "no_trail"
+    },
+    {
+     "grid": {
+      "momentum_pct": 10.0,
+      "stop_pct": 25.0,
+      "target_pct": null,
+      "trail_x_pct": 5.0
+     },
+     "train_net": -101021.89,
+     "test_net": 48390.9,
+     "test_trades": 122,
+     "test_win_rate": 42.6,
+     "family": "with_trail"
+    }
+   ],
+   "elapsed_s": 151
+  },
+  "s2": {
+   "done_candidates": 5,
+   "top10_so_far": [
+    {
+     "grid": {
+      "entry_cutoff": "13:00",
+      "exit_time": "14:30"
+     },
+     "train_net": -125970.02,
+     "test_net": 103498.84,
+     "test_trades": 99,
+     "test_win_rate": 51.5,
+     "base": {
+      "reference_time": "10:01",
+      "moneyness": "itm1",
+      "side": "first_to_trigger",
+      "leg_mode": "both",
+      "momentum_pct": 10.0,
+      "stop_pct": 30.0,
+      "target_pct": 50.0
+     }
+    },
+    {
+     "grid": {
+      "entry_cutoff": "11:30",
+      "exit_time": "14:30"
+     },
+     "train_net": -172256.02,
+     "test_net": 94388.16,
+     "test_trades": 88,
+     "test_win_rate": 50.0,
+     "base": {
+      "reference_time": "10:01",
+      "moneyness": "itm1",
+      "side": "first_to_trigger",
+      "leg_mode": "both",
+      "momentum_pct": 10.0,
+      "stop_pct": 30.0,
+      "target_pct": 50.0
+     }
+    },
+    {
+     "grid": {
+      "entry_cutoff": "11:30",
+      "exit_time": null
+     },
+     "train_net": -177114.61,
+     "test_net": 93133.32,
+     "test_trades": 88,
+     "test_win_rate": 47.7,
+     "base": {
+      "reference_time": "10:01",
+      "moneyness": "itm1",
+      "side": "first_to_trigger",
+      "leg_mode": "both",
+      "momentum_pct": 10.0,
+      "stop_pct": 30.0,
+      "target_pct": 50.0
+     }
+    },
+    {
+     "grid": {
+      "entry_cutoff": "11:30",
+      "exit_time": "15:13"
+     },
+     "train_net": -181170.44,
+     "test_net": 91899.82,
+     "test_trades": 88,
+     "test_win_rate": 46.6,
+     "base": {
+      "reference_time": "10:01",
+      "moneyness": "itm1",
+      "side": "first_to_trigger",
+      "leg_mode": "both",
+      "momentum_pct": 10.0,
+      "stop_pct": 30.0,
+      "target_pct": 50.0
+     }
+    },
+    {
+     "grid": {
+      "entry_cutoff": null,
+      "exit_time": "14:30"
+     },
+     "train_net": -136109.9,
+     "test_net": 90673.73,
+     "test_trades": 109,
+     "test_win_rate": 49.5,
+     "base": {
+      "reference_time": "10:01",
+      "moneyness": "itm1",
+      "side": "first_to_trigger",
+      "leg_mode": "both",
+      "momentum_pct": 10.0,
+      "stop_pct": 30.0,
+      "target_pct": 50.0
+     }
+    },
+    {
+     "grid": {
+      "entry_cutoff": "14:40",
+      "exit_time": "14:30"
+     },
+     "train_net": -136109.9,
+     "test_net": 90673.73,
+     "test_trades": 109,
+     "test_win_rate": 49.5,
+     "base": {
+      "reference_time": "10:01",
+      "moneyness": "itm1",
+      "side": "first_to_trigger",
+      "leg_mode": "both",
+      "momentum_pct": 10.0,
+      "stop_pct": 30.0,
+      "target_pct": 50.0
+     }
+    },
+    {
+     "grid": {
+      "entry_cutoff": "13:00",
+      "exit_time": null
+     },
+     "train_net": -125553.4,
+     "test_net": 81625.71,
+     "test_trades": 99,
+     "test_win_rate": 46.5,
+     "base": {
+      "reference_time": "10:01",
+      "moneyness": "itm1",
+      "side": "first_to_trigger",
+      "leg_mode": "both",
+      "momentum_pct": 10.0,
+      "stop_pct": 30.0,
+      "target_pct": 50.0
+     }
+    },
+    {
+     "grid": {
+      "entry_cutoff": "13:00",
+      "exit_time": "15:13"
+     },
+     "train_net": -129815.92,
+     "test_net": 80288.88,
+     "test_trades": 99,
+     "test_win_rate": 45.5,
+     "base": {
+      "reference_time": "10:01",
+      "moneyness": "itm1",
+      "side": "first_to_trigger",
+      "leg_mode": "both",
+      "momentum_pct": 10.0,
+      "stop_pct": 30.0,
+      "target_pct": 50.0
+     }
+    },
+    {
+     "grid": {
+      "entry_cutoff": "14:40",
+      "exit_time": null
+     },
+     "train_net": -130260.16,
+     "test_net": 73782.28,
+     "test_trades": 110,
+     "test_win_rate": 46.4,
+     "base": {
+      "reference_time": "10:01",
+      "moneyness": "itm1",
+      "side": "first_to_trigger",
+      "leg_mode": "both",
+      "momentum_pct": 10.0,
+      "stop_pct": 30.0,
+      "target_pct": 50.0
+     }
+    },
+    {
+     "grid": {
+      "entry_cutoff": "13:00",
+      "exit_time": null
+     },
+     "train_net": -61901.19,
+     "test_net": 73131.25,
+     "test_trades": 66,
+     "test_win_rate": 43.9,
+     "base": {
+      "reference_time": "10:01",
+      "moneyness": "itm1",
+      "side": "first_to_trigger",
+      "leg_mode": "both",
+      "momentum_pct": 25.0,
+      "stop_pct": 25.0,
+      "target_pct": 50.0,
+      "trail_x_pct": 10.0,
+      "trail_y_pct": 5.0
+     }
+    }
+   ]
+  },
+  "s3": {
+   "done_candidates": 5,
+   "top10_so_far": [
+    {
+     "grid": {
+      "session_max_loss_rupees": 8000.0,
+      "session_max_profit_rupees": null
+     },
+     "train_net": -63634.38,
+     "test_net": 103498.84,
+     "test_trades": 99,
+     "test_win_rate": 51.5,
+     "base": {
+      "reference_time": "10:01",
+      "moneyness": "itm1",
+      "side": "first_to_trigger",
+      "leg_mode": "both",
+      "momentum_pct": 10.0,
+      "stop_pct": 30.0,
+      "target_pct": 50.0,
+      "entry_cutoff": "13:00",
+      "exit_time": "14:30"
+     },
+     "overlay": "day_stop"
+    },
+    {
+     "grid": {
+      "session_max_loss_rupees": 8000.0,
+      "session_max_profit_rupees": 8000.0
+     },
+     "train_net": -90043.48,
+     "test_net": 103498.84,
+     "test_trades": 99,
+     "test_win_rate": 51.5,
+     "base": {
+      "reference_time": "10:01",
+      "moneyness": "itm1",
+      "side": "first_to_trigger",
+      "leg_mode": "both",
+      "momentum_pct": 10.0,
+      "stop_pct": 30.0,
+      "target_pct": 50.0,
+      "entry_cutoff": "13:00",
+      "exit_time": "14:30"
+     },
+     "overlay": "day_stop"
+    },
+    {
+     "grid": {
+      "session_max_loss_rupees": 8000.0,
+      "session_max_profit_rupees": 4000.0
+     },
+     "train_net": -99773.47,
+     "test_net": 103498.84,
+     "test_trades": 99,
+     "test_win_rate": 51.5,
+     "base": {
+      "reference_time": "10:01",
+      "moneyness": "itm1",
+      "side": "first_to_trigger",
+      "leg_mode": "both",
+      "momentum_pct": 10.0,
+      "stop_pct": 30.0,
+      "target_pct": 50.0,
+      "entry_cutoff": "13:00",
+      "exit_time": "14:30"
+     },
+     "overlay": "day_stop"
+    },
+    {
+     "grid": {
+      "session_max_loss_rupees": null,
+      "session_max_profit_rupees": null
+     },
+     "train_net": -125970.02,
+     "test_net": 103498.84,
+     "test_trades": 99,
+     "test_win_rate": 51.5,
+     "base": {
+      "reference_time": "10:01",
+      "moneyness": "itm1",
+      "side": "first_to_trigger",
+      "leg_mode": "both",
+      "momentum_pct": 10.0,
+      "stop_pct": 30.0,
+      "target_pct": 50.0,
+      "entry_cutoff": "13:00",
+      "exit_time": "14:30"
+     },
+     "overlay": "day_stop"
+    },
+    {
+     "grid": {
+      "session_max_loss_rupees": null,
+      "session_max_profit_rupees": 8000.0
+     },
+     "train_net": -152379.12,
+     "test_net": 103498.84,
+     "test_trades": 99,
+     "test_win_rate": 51.5,
+     "base": {
+      "reference_time": "10:01",
+      "moneyness": "itm1",
+      "side": "first_to_trigger",
+      "leg_mode": "both",
+      "momentum_pct": 10.0,
+      "stop_pct": 30.0,
+      "target_pct": 50.0,
+      "entry_cutoff": "13:00",
+      "exit_time": "14:30"
+     },
+     "overlay": "day_stop"
+    },
+    {
+     "grid": {
+      "session_max_loss_rupees": null,
+      "session_max_profit_rupees": 4000.0
+     },
+     "train_net": -162109.11,
+     "test_net": 103498.84,
+     "test_trades": 99,
+     "test_win_rate": 51.5,
+     "base": {
+      "reference_time": "10:01",
+      "moneyness": "itm1",
+      "side": "first_to_trigger",
+      "leg_mode": "both",
+      "momentum_pct": 10.0,
+      "stop_pct": 30.0,
+      "target_pct": 50.0,
+      "entry_cutoff": "13:00",
+      "exit_time": "14:30"
+     },
+     "overlay": "day_stop"
+    },
+    {
+     "grid": {
+      "session_max_loss_rupees": 5000.0,
+      "session_max_profit_rupees": null
+     },
+     "train_net": -118825.6,
+     "test_net": 98289.96,
+     "test_trades": 98,
+     "test_win_rate": 52.0,
+     "base": {
+      "reference_time": "10:01",
+      "moneyness": "itm1",
+      "side": "first_to_trigger",
+      "leg_mode": "both",
+      "momentum_pct": 10.0,
+      "stop_pct": 30.0,
+      "target_pct": 50.0,
+      "entry_cutoff": "13:00",
+      "exit_time": "14:30"
+     },
+     "overlay": "day_stop"
+    },
+    {
+     "grid": {
+      "session_max_loss_rupees": 5000.0,
+      "session_max_profit_rupees": 8000.0
+     },
+     "train_net": -145234.7,
+     "test_net": 98289.96,
+     "test_trades": 98,
+     "test_win_rate": 52.0,
+     "base": {
+      "reference_time": "10:01",
+      "moneyness": "itm1",
+      "side": "first_to_trigger",
+      "leg_mode": "both",
+      "momentum_pct": 10.0,
+      "stop_pct": 30.0,
+      "target_pct": 50.0,
+      "entry_cutoff": "13:00",
+      "exit_time": "14:30"
+     },
+     "overlay": "day_stop"
+    },
+    {
+     "grid": {
+      "session_max_loss_rupees": 5000.0,
+      "session_max_profit_rupees": 4000.0
+     },
+     "train_net": -154964.69,
+     "test_net": 98289.96,
+     "test_trades": 98,
+     "test_win_rate": 52.0,
+     "base": {
+      "reference_time": "10:01",
+      "moneyness": "itm1",
+      "side": "first_to_trigger",
+      "leg_mode": "both",
+      "momentum_pct": 10.0,
+      "stop_pct": 30.0,
+      "target_pct": 50.0,
+      "entry_cutoff": "13:00",
+      "exit_time": "14:30"
+     },
+     "overlay": "day_stop"
+    },
+    {
+     "grid": {
+      "session_max_loss_rupees": 8000.0,
+      "session_max_profit_rupees": null
+     },
+     "train_net": -132449.96,
+     "test_net": 94388.16,
+     "test_trades": 88,
+     "test_win_rate": 50.0,
+     "base": {
+      "reference_time": "10:01",
+      "moneyness": "itm1",
+      "side": "first_to_trigger",
+      "leg_mode": "both",
+      "momentum_pct": 10.0,
+      "stop_pct": 30.0,
+      "target_pct": 50.0,
+      "entry_cutoff": "11:30",
+      "exit_time": "14:30"
+     },
+     "overlay": "day_stop"
+    }
+   ]
+  },
+  "s4": {
+   "done_candidates": 3,
+   "top6_so_far": [
+    {
+     "grid": {
+      "lazy_momentum_pct": 20.0,
+      "lazy_stop_pct": 10.0
+     },
+     "train_net": 25051.26,
+     "test_net": 49622.91,
+     "test_trades": 64,
+     "test_win_rate": 50.0,
+     "base": {
+      "reference_time": "10:01",
+      "moneyness": "itm1",
+      "side": "first_to_trigger",
+      "leg_mode": "both",
+      "momentum_pct": 10.0,
+      "stop_pct": 30.0,
+      "target_pct": 50.0,
+      "entry_cutoff": "13:00",
+      "exit_time": "14:30",
+      "session_max_loss_rupees": 8000.0,
+      "session_max_profit_rupees": null,
+      "lazy_enabled": true,
+      "lazy_moneyness": "itm1",
+      "lazy_trail_x_pct": 5.0,
+      "lazy_trail_y_pct": 5.0
+     },
+     "overlay": "day_stop"
+    },
+    {
+     "grid": {
+      "lazy_momentum_pct": 20.0,
+      "lazy_stop_pct": 10.0
+     },
+     "train_net": 26716.22,
+     "test_net": 49622.91,
+     "test_trades": 64,
+     "test_win_rate": 50.0,
+     "base": {
+      "reference_time": "10:01",
+      "moneyness": "itm1",
+      "side": "first_to_trigger",
+      "leg_mode": "both",
+      "momentum_pct": 10.0,
+      "stop_pct": 30.0,
+      "target_pct": 50.0,
+      "entry_cutoff": "13:00",
+      "exit_time": "14:30",
+      "session_max_loss_rupees": 8000.0,
+      "session_max_profit_rupees": 8000.0,
+      "lazy_enabled": true,
+      "lazy_moneyness": "itm1",
+      "lazy_trail_x_pct": 5.0,
+      "lazy_trail_y_pct": 5.0
+     },
+     "overlay": "day_stop"
+    },
+    {
+     "grid": {
+      "lazy_momentum_pct": 20.0,
+      "lazy_stop_pct": 10.0
+     },
+     "train_net": 21089.73,
+     "test_net": 49622.91,
+     "test_trades": 64,
+     "test_win_rate": 50.0,
+     "base": {
+      "reference_time": "10:01",
+      "moneyness": "itm1",
+      "side": "first_to_trigger",
+      "leg_mode": "both",
+      "momentum_pct": 10.0,
+      "stop_pct": 30.0,
+      "target_pct": 50.0,
+      "entry_cutoff": "13:00",
+      "exit_time": "14:30",
+      "session_max_loss_rupees": 8000.0,
+      "session_max_profit_rupees": 4000.0,
+      "lazy_enabled": true,
+      "lazy_moneyness": "itm1",
+      "lazy_trail_x_pct": 5.0,
+      "lazy_trail_y_pct": 5.0
+     },
+     "overlay": "day_stop"
+    },
+    {
+     "grid": {
+      "lazy_momentum_pct": 10.0,
+      "lazy_stop_pct": 15.0
+     },
+     "train_net": 42560.14,
+     "test_net": 47888.52,
+     "test_trades": 64,
+     "test_win_rate": 50.0,
+     "base": {
+      "reference_time": "10:01",
+      "moneyness": "itm1",
+      "side": "first_to_trigger",
+      "leg_mode": "both",
+      "momentum_pct": 10.0,
+      "stop_pct": 30.0,
+      "target_pct": 50.0,
+      "entry_cutoff": "13:00",
+      "exit_time": "14:30",
+      "session_max_loss_rupees": 8000.0,
+      "session_max_profit_rupees": null,
+      "lazy_enabled": true,
+      "lazy_moneyness": "itm1",
+      "lazy_trail_x_pct": 5.0,
+      "lazy_trail_y_pct": 5.0
+     },
+     "overlay": "day_stop"
+    },
+    {
+     "grid": {
+      "lazy_momentum_pct": 10.0,
+      "lazy_stop_pct": 15.0
+     },
+     "train_net": 44225.1,
+     "test_net": 47888.52,
+     "test_trades": 64,
+     "test_win_rate": 50.0,
+     "base": {
+      "reference_time": "10:01",
+      "moneyness": "itm1",
+      "side": "first_to_trigger",
+      "leg_mode": "both",
+      "momentum_pct": 10.0,
+      "stop_pct": 30.0,
+      "target_pct": 50.0,
+      "entry_cutoff": "13:00",
+      "exit_time": "14:30",
+      "session_max_loss_rupees": 8000.0,
+      "session_max_profit_rupees": 8000.0,
+      "lazy_enabled": true,
+      "lazy_moneyness": "itm1",
+      "lazy_trail_x_pct": 5.0,
+      "lazy_trail_y_pct": 5.0
+     },
+     "overlay": "day_stop"
+    },
+    {
+     "grid": {
+      "lazy_momentum_pct": 10.0,
+      "lazy_stop_pct": 15.0
+     },
+     "train_net": 41285.29,
+     "test_net": 47888.52,
+     "test_trades": 64,
+     "test_win_rate": 50.0,
+     "base": {
+      "reference_time": "10:01",
+      "moneyness": "itm1",
+      "side": "first_to_trigger",
+      "leg_mode": "both",
+      "momentum_pct": 10.0,
+      "stop_pct": 30.0,
+      "target_pct": 50.0,
+      "entry_cutoff": "13:00",
+      "exit_time": "14:30",
+      "session_max_loss_rupees": 8000.0,
+      "session_max_profit_rupees": 4000.0,
+      "lazy_enabled": true,
+      "lazy_moneyness": "itm1",
+      "lazy_trail_x_pct": 5.0,
+      "lazy_trail_y_pct": 5.0
+     },
+     "overlay": "day_stop"
+    }
+   ]
+  },
+  "s5": {
+   "baseline_both_legs_holdout_net": -135274.77,
+   "finalist_0": {
+    "params": {
+     "reference_time": "10:01",
+     "moneyness": "itm1",
+     "side": "first_to_trigger",
+     "leg_mode": "both",
+     "momentum_pct": 10.0,
+     "stop_pct": 30.0,
+     "target_pct": 50.0,
+     "entry_cutoff": "13:00",
+     "exit_time": "14:30",
+     "session_max_loss_rupees": 8000.0,
+     "session_max_profit_rupees": null
+    },
+    "search_test_net": 103498.84,
+    "spreads": {
+     "0.5": {
+      "net_pnl_rupees": -132686.38,
+      "trades": 178,
+      "sessions_traded": 125,
+      "by_leg": {
+       "primary": {
+        "trades": 178,
+        "gross_pnl_pts": -797.95,
+        "net_pnl_rupees": -132686.38
+       },
+       "lazy": {
+        "trades": 0,
+        "gross_pnl_pts": 0,
+        "net_pnl_rupees": 0
+       }
+      },
+      "blocked_day_stop": 1,
+      "vix_gate_excluded": 0
+     },
+     "1.0": {
+      "net_pnl_rupees": -153827.99,
+      "trades": 178,
+      "sessions_traded": 125,
+      "by_leg": {
+       "primary": {
+        "trades": 178,
+        "gross_pnl_pts": -797.95,
+        "net_pnl_rupees": -153827.99
+       },
+       "lazy": {
+        "trades": 0,
+        "gross_pnl_pts": 0,
+        "net_pnl_rupees": 0
+       }
+      },
+      "blocked_day_stop": 1,
+      "vix_gate_excluded": 0
+     },
+     "1.5": {
+      "net_pnl_rupees": -174969.43,
+      "trades": 178,
+      "sessions_traded": 125,
+      "by_leg": {
+       "primary": {
+        "trades": 178,
+        "gross_pnl_pts": -797.95,
+        "net_pnl_rupees": -174969.43
+       },
+       "lazy": {
+        "trades": 0,
+        "gross_pnl_pts": 0,
+        "net_pnl_rupees": 0
+       }
+      },
+      "blocked_day_stop": 1,
+      "vix_gate_excluded": 0
+     }
+    },
+    "beats_baseline_at_1pct": false,
+    "positive_at_1pct": false
+   },
+   "finalist_1": {
+    "params": {
+     "reference_time": "10:01",
+     "moneyness": "itm1",
+     "side": "first_to_trigger",
+     "leg_mode": "both",
+     "momentum_pct": 10.0,
+     "stop_pct": 30.0,
+     "target_pct": 50.0,
+     "entry_cutoff": "13:00",
+     "exit_time": "14:30",
+     "session_max_loss_rupees": 8000.0,
+     "session_max_profit_rupees": 8000.0
+    },
+    "search_test_net": 103498.84,
+    "spreads": {
+     "0.5": {
+      "net_pnl_rupees": -129855.1,
+      "trades": 176,
+      "sessions_traded": 125,
+      "by_leg": {
+       "primary": {
+        "trades": 176,
+        "gross_pnl_pts": -778.6,
+        "net_pnl_rupees": -129855.1
+       },
+       "lazy": {
+        "trades": 0,
+        "gross_pnl_pts": 0,
+        "net_pnl_rupees": 0
+       }
+      },
+      "blocked_day_stop": 3,
+      "vix_gate_excluded": 0
+     },
+     "1.0": {
+      "net_pnl_rupees": -150765.61,
+      "trades": 176,
+      "sessions_traded": 125,
+      "by_leg": {
+       "primary": {
+        "trades": 176,
+        "gross_pnl_pts": -778.6,
+        "net_pnl_rupees": -150765.61
+       },
+       "lazy": {
+        "trades": 0,
+        "gross_pnl_pts": 0,
+        "net_pnl_rupees": 0
+       }
+      },
+      "blocked_day_stop": 3,
+      "vix_gate_excluded": 0
+     },
+     "1.5": {
+      "net_pnl_rupees": -171675.98,
+      "trades": 176,
+      "sessions_traded": 125,
+      "by_leg": {
+       "primary": {
+        "trades": 176,
+        "gross_pnl_pts": -778.6,
+        "net_pnl_rupees": -171675.98
+       },
+       "lazy": {
+        "trades": 0,
+        "gross_pnl_pts": 0,
+        "net_pnl_rupees": 0
+       }
+      },
+      "blocked_day_stop": 3,
+      "vix_gate_excluded": 0
+     }
+    },
+    "beats_baseline_at_1pct": false,
+    "positive_at_1pct": false
+   },
+   "finalist_2": {
+    "params": {
+     "reference_time": "10:01",
+     "moneyness": "itm1",
+     "side": "first_to_trigger",
+     "leg_mode": "both",
+     "momentum_pct": 10.0,
+     "stop_pct": 30.0,
+     "target_pct": 50.0,
+     "entry_cutoff": "13:00",
+     "exit_time": "14:30",
+     "session_max_loss_rupees": 8000.0,
+     "session_max_profit_rupees": 4000.0
+    },
+    "search_test_net": 103498.84,
+    "spreads": {
+     "0.5": {
+      "net_pnl_rupees": -133903.97,
+      "trades": 174,
+      "sessions_traded": 125,
+      "by_leg": {
+       "primary": {
+        "trades": 174,
+        "gross_pnl_pts": -811.3,
+        "net_pnl_rupees": -133903.97
+       },
+       "lazy": {
+        "trades": 0,
+        "gross_pnl_pts": 0,
+        "net_pnl_rupees": 0
+       }
+      },
+      "blocked_day_stop": 5,
+      "vix_gate_excluded": 0
+     },
+     "1.0": {
+      "net_pnl_rupees": -154668.19,
+      "trades": 174,
+      "sessions_traded": 125,
+      "by_leg": {
+       "primary": {
+        "trades": 174,
+        "gross_pnl_pts": -811.3,
+        "net_pnl_rupees": -154668.19
+       },
+       "lazy": {
+        "trades": 0,
+        "gross_pnl_pts": 0,
+        "net_pnl_rupees": 0
+       }
+      },
+      "blocked_day_stop": 5,
+      "vix_gate_excluded": 0
+     },
+     "1.5": {
+      "net_pnl_rupees": -175432.25,
+      "trades": 174,
+      "sessions_traded": 125,
+      "by_leg": {
+       "primary": {
+        "trades": 174,
+        "gross_pnl_pts": -811.3,
+        "net_pnl_rupees": -175432.25
+       },
+       "lazy": {
+        "trades": 0,
+        "gross_pnl_pts": 0,
+        "net_pnl_rupees": 0
+       }
+      },
+      "blocked_day_stop": 5,
+      "vix_gate_excluded": 0
+     }
+    },
+    "beats_baseline_at_1pct": false,
+    "positive_at_1pct": false
+   }
+  }
+ },
+ "started": "2026-07-15 10:03:34",
+ "finalists": [
+  {
+   "grid": {
+    "session_max_loss_rupees": 8000.0,
+    "session_max_profit_rupees": null
+   },
+   "base": {
+    "reference_time": "10:01",
+    "moneyness": "itm1",
+    "side": "first_to_trigger",
+    "leg_mode": "both",
+    "momentum_pct": 10.0,
+    "stop_pct": 30.0,
+    "target_pct": 50.0,
+    "entry_cutoff": "13:00",
+    "exit_time": "14:30"
+   },
+   "overlay": "day_stop",
+   "test_net": 103498.84,
+   "test_trades": 99
+  },
+  {
+   "grid": {
+    "session_max_loss_rupees": 8000.0,
+    "session_max_profit_rupees": 8000.0
+   },
+   "base": {
+    "reference_time": "10:01",
+    "moneyness": "itm1",
+    "side": "first_to_trigger",
+    "leg_mode": "both",
+    "momentum_pct": 10.0,
+    "stop_pct": 30.0,
+    "target_pct": 50.0,
+    "entry_cutoff": "13:00",
+    "exit_time": "14:30"
+   },
+   "overlay": "day_stop",
+   "test_net": 103498.84,
+   "test_trades": 99
+  },
+  {
+   "grid": {
+    "session_max_loss_rupees": 8000.0,
+    "session_max_profit_rupees": 4000.0
+   },
+   "base": {
+    "reference_time": "10:01",
+    "moneyness": "itm1",
+    "side": "first_to_trigger",
+    "leg_mode": "both",
+    "momentum_pct": 10.0,
+    "stop_pct": 30.0,
+    "target_pct": 50.0,
+    "entry_cutoff": "13:00",
+    "exit_time": "14:30"
+   },
+   "overlay": "day_stop",
+   "test_net": 103498.84,
+   "test_trades": 99
+  }
+ ],
+ "verdict": "GATE FAILED: no finalist is net-positive on the untouched holdout at honest friction",
+ "elapsed_total_s": 680
+}

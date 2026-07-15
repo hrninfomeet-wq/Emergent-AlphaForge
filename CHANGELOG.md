@@ -2,6 +2,38 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.54.2] — Phase 5A.2 overlays + sweep perf + the edge-hunt verdict: GATE FAILED (2026-07-15)
+
+Three pieces, ending in the campaign this arc was building toward:
+
+1. **Session overlays (backtest-only)**: `session_max_loss_rupees` /
+   `session_max_profit_rupees` (realized-P&L day-stop: one-pass post-process,
+   breach on cost-adjusted net, entries after breach blocked, open legs
+   force-closed at the breach bar, explicitly NOT mark-to-market) and
+   `vix_min`/`vix_max` (session-level India VIX gate; sim stays pure via a
+   `vix_by_session` map; missing VIX with a configured gate skips with its own
+   counter, never a silent pass). Six new TUNABLE_KEYS. Built by the tiered
+   workflow (Sonnet implement, Fable honesty review — zero confirmed findings,
+   Sonnet parity review); two review coverage notes closed with real fixtures
+   including a discriminating costs-ON test proving the breach scan reads NET
+   rupees. 20 overlay tests; suite 3404 passed, 0 failed.
+2. **Sweep performance** (`5783dbb`): the campaign's first 60-config 13-month
+   tune call timed out at 30 minutes — every per-(session×side×config) lookup
+   re-filtered the FULL multi-month candle frame. `split_candles_by_key`
+   partitions once per sweep; byte-identical (pinned by the existing parity
+   suite). Measured: 12-config 13-month tune = 16.6s.
+3. **THE EDGE-HUNT VERDICT — GATE FAILED** (full report:
+   `docs/PREMIUM_MOMENTUM_EDGE_VERDICT_2026-07.md`): ~600 configs across
+   structure/time/overlays/lazy on a pre-registered three-way chronological
+   split (train 2024-11→2025-08, validation 2025-09→12, holdout 2026-H1
+   touched once by 3 finalists). The validation-best config (+₹103.5k on the
+   friendly slice) lost **−₹153.8k on the untouched holdout at 1%/side** —
+   worse than the untuned both-legs baseline (−₹135.3k). Train was already
+   negative for every top config; overlays never bound; lazy legs failed to
+   out-rank no-lazy even on validation. Robust three-period NO. **Phase 5B
+   (live multi-leg execution) is NOT justified on current evidence**; the
+   kill-criterion for reviving it is pre-registered in the verdict doc.
+
 ## [0.54.1] — Backtest Lab surfacing for premium-native runs (user-reported, 2026-07-15)
 
 User ran `premium_momentum` through the Backtest Lab (run "premium_momentum ·

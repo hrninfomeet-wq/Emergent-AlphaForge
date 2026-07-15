@@ -14,7 +14,23 @@ Stack: **React** (CRA + craco) frontend, **FastAPI** (Python) backend, **MongoDB
 
 ## 2. Current state
 
-**Latest (2026-07-14, v0.54.0)**: **Phase 5A** — the full AlgoTest "EXP2"
+**Latest (2026-07-15, v0.54.2)**: **the premium-momentum edge hunt is CLOSED
+with a failed gate.** Phase 5A.2 added the session day-stop + India VIX gate
+overlays (backtest-only) and a byte-identical sweep-perf fix, then the
+pre-registered ~600-config campaign ran on a three-way chronological split:
+the validation-best config (+₹103.5k on the friendly 2025-Q4 slice) lost
+−₹153.8k on the untouched 2026 holdout at 1%/side — worse than the untuned
+baseline. Robust three-period NO. **Phase 5B (live multi-leg execution) is
+NOT to be built on current evidence** — the revival kill-criterion is
+pre-registered in `PREMIUM_MOMENTUM_EDGE_VERDICT_2026-07.md` (read it before
+proposing any premium-momentum live work). The hunting tools remain in the
+app (16 tunable keys through the honest tuner). Also in 0.54.1: the Backtest
+Lab now surfaces premium-native results in the main view (they were hidden
+in the collapsed Advanced section), the option preflight reports honest
+per-session coverage for this strategy, and the option form's lots/costs
+reach the dispatch.
+
+**Previous (2026-07-14, v0.54.0)**: **Phase 5A** — the full AlgoTest "EXP2"
 contingency shape (both-legs mode, one-shot lazy reversal leg with a fresh
 strike + snapshot at the stop-out bar, entry cutoff, hard exit time,
 %-of-entry stepped trail) is built and adversarially reviewed in the
