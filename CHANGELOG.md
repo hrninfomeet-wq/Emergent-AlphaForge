@@ -2,6 +2,44 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.54.1] — Backtest Lab surfacing for premium-native runs (user-reported, 2026-07-15)
+
+User ran `premium_momentum` through the Backtest Lab (run "premium_momentum ·
+NIFTY · 2026-07-14 21:27:18") and the page looked dead: empty trade list, and
+the option-data preflight claimed 0% coverage. Diagnosis from the stored run
+doc: **the backend had worked perfectly** — 127 PAIRED trades with real P&L
+sat in `option_backtest.trades` — but every main-view pane (performance,
+chart, trade list) reads SPOT trades, which are structurally empty for this
+strategy (its `evaluate()` is a stub by design), and the only renderer of the
+option-native result (`OptionBacktestCard`) lived inside the collapsed
+Advanced-analytics section. Three fixes:
+
+1. **BacktestLab.jsx**: for runs with `option_backtest.dispatch ==
+   "premium_trigger_config"`, the Option Execution card + an explainer banner
+   ("entries/exits are evaluated on option premium — the spot panes above are
+   empty by design") are hoisted into the main results flow, visible without
+   expanding anything.
+2. **Preflight honesty** (`runtime._option_preflight_report`): a premium-native
+   branch reports per-SESSION locked-strike coverage by running the option-
+   native sim's own coverage gate (verified live: the user's exact window now
+   reports 128/128 sessions = 100%, was a misleading 0% derived from zero spot
+   trades). Toast wording says "sessions", not "signals", for these runs.
+3. **Form lots/costs now reach the dispatch** (`runtime.
+   _run_paired_option_backtest`): the plugin schema exposes neither `lots` nor
+   `cost_config`, so the option form is the user's only way to set them — the
+   user asked for 10 lots and silently got 1. Both now thread through
+   (raw-params value wins, else the form's). Also fixed en route: the dispatch
+   now applies the plugin's schema defaults via `merged_params` — a raw API
+   request with empty params previously failed config validation and fell
+   through to the always-empty generic path instead of using defaults.
+   Verified live: form lots=10 → quantity 650, net P&L exactly 10× the 1-lot
+   run. The form's *moneyness* remains deliberately ignored (the strategy
+   param governs the strike lock) — stated in the banner.
+
+3384 host tests pass (3 new pins). Also repaired a detached-HEAD git state
+(the 5A.2 plan-doc commit had landed off-branch; main fast-forwarded, nothing
+lost).
+
 ## [0.54.0] — Phase 5A: full contingency ("lazy legs") in the backtest engine + the EXP2 edge verdict (2026-07-14)
 
 The AlgoTest "NF CE PE EXP2" contingency shape is now fully expressible and

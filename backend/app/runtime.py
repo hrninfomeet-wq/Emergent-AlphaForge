@@ -960,17 +960,40 @@ async def _run_paired_option_backtest(req: BacktestReq, spot_trades: List[Dict[s
         from app.premium_trigger_dispatch import dispatch_full_backtest
         from app.routers.premium_momentum_routes import _load_window
 
+        # Apply the plugin's schema defaults (merged_params) so a raw/partial
+        # API request behaves like the UI's filled params panel — raw
+        # req.params with no momentum trigger would otherwise fail
+        # PremiumTriggerConfig validation and silently fall through to the
+        # generic (always-empty) spot path. merged_params is a strict
+        # allow-list, so `lots`/`cost_config` (not in the plugin schema) are
+        # re-applied AFTER the merge: raw-params value wins, else the Backtest
+        # Lab option form's value — the form is the only UI surface for them.
+        # moneyness is NOT taken from the option form: the strategy param
+        # governs the strike lock; the form's pairing-moneyness has no meaning
+        # for a premium-native run and is deliberately ignored.
+        _strategy = get_registry().get(req.strategy_id)
+        pm_params = _strategy.merged_params(req.params) if _strategy else dict(req.params)
+        pm_params["lots"] = int(req.params.get("lots") or config.lots or 1)
+        if req.params.get("cost_config") is not None:
+            pm_params["cost_config"] = req.params["cost_config"]
+        elif config.cost_config is not None:
+            pm_params["cost_config"] = config.cost_config
+
+        # NOTE: no lazy_enabled here — the general Backtest Lab path stays
+        # single-leg by design until Phase 5B (PremiumTriggerConfig deliberately
+        # has no lazy fields; dispatch would drop them anyway). The bespoke
+        # /premium-momentum page is the two-leg/lazy surface.
         loaded = await _load_window(
             underlying, req.start_ts, req.end_ts,
-            ref_time=str(req.params.get("reference_time") or "09:31"),
-            moneynesses=[str(req.params.get("moneyness") or "itm1")],
-            sides=_sides_for(req.params.get("side")),
+            ref_time=str(pm_params.get("reference_time") or "09:31"),
+            moneynesses=[str(pm_params.get("moneyness") or "itm1")],
+            sides=_sides_for(pm_params.get("side")),
         )
         if loaded is None:
             return None
         spot_df, option_candles, contracts = loaded
         pm_result = dispatch_full_backtest(
-            strategy_id=req.strategy_id, merged_params=req.params,
+            strategy_id=req.strategy_id, merged_params=pm_params,
             spot_df=spot_df, option_candles=option_candles, contracts=contracts,
             instrument=underlying,
         )
@@ -1226,6 +1249,56 @@ async def _option_preflight_report(req: BacktestReq) -> Dict[str, Any]:
     config = req.option_backtest
     if not config.enabled:
         return {"enabled": False, "note": "Option execution is off — nothing to check."}
+
+    # premium_momentum: the generic path below derives needed contracts from
+    # SPOT trades, but this strategy's evaluate() is a deliberate stub — zero
+    # spot trades made the preflight report a misleading 0% forever. Coverage
+    # for a premium-native run means "sessions whose locked strikes have
+    # premium candles", which is exactly what the option-native sim's own
+    # coverage gate measures — run it and report honestly (the sim is the same
+    # work the real run does; a preflight for this strategy costs one run).
+    if req.strategy_id == "premium_momentum" and req.start_ts and req.end_ts:
+        from app.premium_momentum_backtest import _sides_for, run_premium_momentum_backtest
+        from app.routers.premium_momentum_routes import _load_window
+
+        pm_params = strategy.merged_params(req.params)
+        if "lots" not in req.params and config.lots:
+            pm_params["lots"] = int(config.lots)
+        loaded = await _load_window(
+            req.instrument.upper(), req.start_ts, req.end_ts,
+            ref_time=str(pm_params.get("reference_time") or "09:31"),
+            moneynesses=[str(pm_params.get("moneyness") or "itm1")],
+            sides=_sides_for(pm_params.get("side")),
+        )
+        if loaded is None:
+            raise HTTPException(400, f"Insufficient spot candles for {req.instrument.upper()} in the window.")
+        spot_df, option_candles, contracts = loaded
+        pm = await asyncio.to_thread(
+            run_premium_momentum_backtest,
+            spot_df=spot_df, option_candles=option_candles, contracts=contracts,
+            instrument=req.instrument.upper(), params=pm_params,
+        )
+        cov = pm.get("coverage") or {}
+        total = int(cov.get("sessions_total", 0) or 0)
+        excluded = int(cov.get("sessions_excluded", 0) or 0)
+        covered = max(0, total - excluded)
+        pct = round(covered / total * 100.0, 1) if total else 0.0
+        return {
+            "enabled": True,
+            "dispatch": "premium_trigger_config",
+            "instrument": req.instrument.upper(),
+            # Panel-compatible fields — for a premium-native run these are
+            # SESSIONS, not per-signal pairings (one lock decision per session).
+            "total_spot_trades": total,
+            "would_pair": covered,
+            "coverage_pct": pct,
+            "missing_candle": excluded,
+            "missing_contract": 0,
+            "exclude_reasons": cov.get("exclude_reasons") or {},
+            "note": ("premium-native strategy: coverage = sessions whose "
+                     "reference-time locked strikes have premium candles "
+                     f"({covered}/{total} sessions)."),
+        }
 
     underlying = req.instrument.upper()
     df = await load_candles_df(underlying, req.start_ts, req.end_ts)

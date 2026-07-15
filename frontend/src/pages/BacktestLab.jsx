@@ -626,6 +626,10 @@ export default function BacktestLab() {
         toast.info("Option execution is off.");
       } else if (res.ingest?.status === "started") {
         toast.success(`Coverage ${res.coverage_pct}% · ingesting missing option data (run ${res.ingest.run_id.slice(0, 8)})`);
+      } else if (res.dispatch === "premium_trigger_config") {
+        // Premium-native strategy: coverage is per-SESSION (one strike-lock
+        // decision per session), not per-spot-signal.
+        toast.success(`Option data coverage: ${res.would_pair}/${res.total_spot_trades} sessions (${res.coverage_pct}%)`);
       } else {
         toast.success(`Option data coverage: ${res.would_pair}/${res.total_spot_trades} signals (${res.coverage_pct}%)`);
       }
@@ -1933,6 +1937,28 @@ function ResultsView({ result, onSaveAsPreset }) {
       {/* Performance: rupee-first hero + account/underlying chart + drawdown +
           high-value trade-quality metrics. The decision view, kept scannable. */}
       <PerformanceOverview result={result} />
+
+      {/* Premium-native runs (premium_momentum): the spot panes above are
+          empty BY DESIGN — this strategy's entries/exits are evaluated on
+          option premium, never on spot signals, so the real result is the
+          Option Execution card. Without this hoist it only lived inside the
+          collapsed Advanced-analytics section and runs looked dead. */}
+      {result.option_backtest?.dispatch === "premium_trigger_config" && (
+        <>
+          <div
+            className="rounded-md border border-sky-900 bg-sky-950 text-sky-200 p-2.5 text-[11px] leading-relaxed"
+            data-testid="premium-native-banner"
+          >
+            <span className="font-semibold">Premium-native strategy.</span> Entries and exits are
+            evaluated on <span className="font-semibold">option premium</span>, not spot — the spot
+            trade list, equity curve and chart markers above are empty by design. The full result is
+            the Option Execution card below (also in Advanced analytics). Strike selection follows the
+            <span className="font-mono"> moneyness</span>/<span className="font-mono">reference_time</span> strategy
+            params; the option-pairing form's moneyness is not used, while its lots &amp; cost model are honored.
+          </div>
+          <OptionBacktestCard optionBacktest={result.option_backtest} />
+        </>
+      )}
 
       {/* Price chart with the strategy's trades drawn on it — moved out of
           Advanced analytics to sit directly below the performance/trade-quality
