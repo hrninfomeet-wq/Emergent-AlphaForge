@@ -169,6 +169,7 @@ class LiveMonitorRegistry:
         deployment_id: Optional[str] = None,
         oco_al_id: Optional[str] = None,
         token: Optional[str] = None,
+        square_at_ist: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Register (or replace) a position to guard. ``state`` is a monitor state
         from ``live_sl_monitor.build_monitor_state``. ``key`` is the entry
@@ -204,6 +205,10 @@ class LiveMonitorRegistry:
             "source": str(source or "manual"),
             "deployment_id": deployment_id,
             "oco_al_id": oco_al_id,
+            # Phase 5B B5: optional per-entry hard square time (IST HH:MM),
+            # normalized + clamped at registration below. The 15:00 EOD square
+            # remains the universal backstop and always wins if earlier.
+            "square_at_ist": None,
             # Async-fill bookkeeping: a just-armed position may not be in the
             # position book yet. seen_filled flips True once we observe netqty!=0;
             # misses counts consecutive not-yet-filled cycles so a never-filling
@@ -248,6 +253,25 @@ class LiveMonitorRegistry:
                 "token": token,
             },
         }
+        # Phase 5B B5: normalize-or-drop the per-entry square time. normalize
+        # (review C1: raw HH:MM compares are fail-open for unpadded input),
+        # then clamp STRICTLY BEFORE the registry's EOD square — the EOD
+        # backstop always wins; a later/equal value is dropped with a log
+        # (the deploy-side advisory covers user-facing honesty). Invalid
+        # values are dropped too (an exit TIME must never break registration
+        # of the stop monitor itself).
+        if square_at_ist is not None:
+            try:
+                from app.premium_momentum import normalize_hhmm
+                _sq = normalize_hhmm(square_at_ist)
+                _eod = f"{self._eod_square_ist.hour:02d}:{self._eod_square_ist.minute:02d}"
+                if _sq is not None and _sq < _eod:
+                    item["square_at_ist"] = _sq
+                else:
+                    log.warning("register %s: square_at_ist %r >= EOD %s — dropped (EOD backstop wins)",
+                                key, square_at_ist, _eod)
+            except ValueError:
+                log.warning("register %s: invalid square_at_ist %r — dropped", key, square_at_ist)
         self._items[str(key)] = item
         return item
 
@@ -1029,13 +1053,30 @@ class LivePositionGuard:
         if len(self._registry) == 0:
             return
         ist_now = (now.astimezone(timezone.utc) + _IST).time()
-        if ist_now < self._eod_square_ist:
+        eod_reached = ist_now >= self._eod_square_ist
+        # Phase 5B B5: entries may carry an EARLIER per-entry square time
+        # (square_at_ist, normalized+clamped strictly before EOD at
+        # registration). Same semantics as EOD (ignore_square_stopped), reason
+        # "exit_time". Entries WITHOUT the field behave byte-identically to the
+        # pre-5B EOD-only flow.
+        ist_hhmm = f"{ist_now.hour:02d}:{ist_now.minute:02d}"
+        if not eod_reached and not any(
+            e.get("square_at_ist") and not e.get("squaring")
+            and ist_hhmm >= e["square_at_ist"]
+            for e in self._registry.snapshot()
+        ):
             return
         for entry in self._registry.snapshot():
             if entry.get("squaring"):
                 continue  # a square is already working (Layer 2 re-price escalates it)
+            if eod_reached:
+                reason = "eod_square"
+            elif entry.get("square_at_ist") and ist_hhmm >= entry["square_at_ist"]:
+                reason = "exit_time"
+            else:
+                continue
             await self._issue_square(
-                client, entry, "eod_square", "eod_square", exits, now,
+                client, entry, reason, reason, exits, now,
                 ignore_square_stopped=True)
 
     async def _evaluate_overall_basket(

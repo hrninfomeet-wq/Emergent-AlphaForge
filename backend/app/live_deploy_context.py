@@ -156,6 +156,10 @@ def arm_for(
             entry_ts=_now_iso(),
             source="auto_live",
             deployment_id=deployment_id,
+            # Phase 5B B5: per-deployment hard square time (evaluator clamped it
+            # strictly before 15:00 into risk_hints; register() re-clamps
+            # defensively). Absent for every pre-5B signal — inert.
+            square_at_ist=(signal_doc.get("risk_hints") or {}).get("square_at_ist"),
         )
         log.info("auto_live arm: registered %s with software guard (deployment=%s, stop_pct=%s)",
                  getattr(intent, "tsym", "?"), deployment_id, stop_pct)

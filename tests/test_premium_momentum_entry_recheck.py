@@ -329,3 +329,113 @@ def test_both_mode_entry_adopts_via_leg_fields_not_legacy():
     assert lock["entered_norenordno"] is None, \
         "legacy session-global entry fields must stay untouched in both-mode"
     assert lock["entry_premium"] is None
+
+
+# ====================== 5B B6: per-leg close finalize + lazy arming ============
+
+_B6_DEP = {"id": "D1", "strategy_id": "premium_momentum",
+           "params": {"leg_mode": "both", "lazy_enabled": True,
+                      "lazy_momentum_pct": 10.0, "lazy_stop_pct": 10.0,
+                      "momentum_pct": 15.0, "stop_pct": 20.0}}
+
+
+def _wire_hook_both(monkeypatch, lock_extra=None, dep=None):
+    pytest.importorskip("motor", reason="imports app.runtime (motor)")
+    import app.runtime as rt
+    import app.live.close_loop as cl
+    closed: List[str] = []
+
+    async def _fake_close(db, *, norenordno, exit_price, exit_reason, **kw):
+        closed.append(str(norenordno))
+        return True
+
+    monkeypatch.setattr(cl, "close_live_trade", _fake_close)
+    locks = _FakeLocks()
+    lock = {"deployment_id": "D1", "session_date": _today_ist(),
+            "done_for_day": False, "triggered_side": None,
+            "entered_norenordno": None, "entry_premium": None,
+            "ce_triggered": True, "ce_entered_norenordno": "N1",
+            "ce_entry_premium": 115.0,
+            **(lock_extra or {})}
+    run(locks.insert_one(lock))
+    db = _HookDB(locks, _Deployments([dep or dict(_B6_DEP)]))
+    monkeypatch.setattr(rt, "get_db", lambda: db)
+    return rt, db, closed
+
+
+_B6_ENTRY = {"id": "N1", "deployment_id": "D1", "source": "auto_live",
+             "qty": 130, "entry_price": 115.0}
+
+
+def test_b6_stop_close_marks_leg_exited_and_arms_opposite_lazy(monkeypatch):
+    """A STOP-class pce close: ce_exited set, lazy PE armed (OPPOSITE side —
+    a swapped mapping would re-buy the side that just stopped), session NOT
+    done (armed lazy pending + ppe never traded)."""
+    rt, db, closed = _wire_hook_both(monkeypatch)
+    run(rt._live_guard_on_close(dict(_B6_ENTRY), 92.0, "stop", dict(_CONFIRMED_FLAT)))
+    assert closed == ["N1"]
+    doc = run(db.premium_locks.find_one({"deployment_id": "D1"}))
+    assert doc.get("ce_exited") is True
+    assert doc.get("lazy_armed_pe") is True, "stopped CE primary must arm the LAZY PE"
+    assert "lazy_armed_ce" not in doc, "never the same side that just stopped"
+    assert doc["done_for_day"] is False, \
+        "armed lazy + never-triggered ppe must keep the session alive"
+
+
+def test_b6_target_close_never_arms_lazy(monkeypatch):
+    rt, db, closed = _wire_hook_both(monkeypatch)
+    run(rt._live_guard_on_close(dict(_B6_ENTRY), 140.0, "target", dict(_CONFIRMED_FLAT)))
+    doc = run(db.premium_locks.find_one({"deployment_id": "D1"}))
+    assert doc.get("ce_exited") is True
+    assert "lazy_armed_pe" not in doc and "lazy_armed_ce" not in doc
+    assert doc["done_for_day"] is False   # ppe still eligible
+
+
+def test_b6_overall_basket_and_eod_never_arm_lazy(monkeypatch):
+    for reason in ("overall_sl", "eod_square", "time_stop", "exit_time"):
+        rt, db, _ = _wire_hook_both(monkeypatch)
+        run(rt._live_guard_on_close(dict(_B6_ENTRY), 92.0, reason, dict(_CONFIRMED_FLAT)))
+        doc = run(db.premium_locks.find_one({"deployment_id": "D1"}))
+        assert "lazy_armed_pe" not in doc, f"reason {reason!r} must never arm a lazy leg"
+
+
+def test_b6_lazy_unconfigured_skips_arming(monkeypatch):
+    dep = {"id": "D1", "strategy_id": "premium_momentum",
+           "params": {"leg_mode": "both", "lazy_enabled": True,
+                      "momentum_pct": 15.0, "stop_pct": 20.0}}  # no lazy trigger
+    rt, db, _ = _wire_hook_both(monkeypatch, dep=dep)
+    run(rt._live_guard_on_close(dict(_B6_ENTRY), 92.0, "stop", dict(_CONFIRMED_FLAT)))
+    doc = run(db.premium_locks.find_one({"deployment_id": "D1"}))
+    assert doc.get("ce_exited") is True
+    assert "lazy_armed_pe" not in doc, \
+        "no lazy trigger configured -> arming must be skipped (never-triggering leg)"
+
+
+def test_b6_done_fires_only_when_both_primaries_exited_and_no_lazy_pending(monkeypatch):
+    """ppe already exited, lazy disabled: the pce close is the LAST unresolved
+    leg -> whole-doc done(reason exited)."""
+    dep = {"id": "D1", "strategy_id": "premium_momentum",
+           "params": {"leg_mode": "both", "lazy_enabled": False,
+                      "momentum_pct": 15.0, "stop_pct": 20.0}}
+    rt, db, _ = _wire_hook_both(
+        monkeypatch,
+        lock_extra={"pe_triggered": True, "pe_entered_norenordno": "N2",
+                    "pe_exited": True},
+        dep=dep)
+    run(rt._live_guard_on_close(dict(_B6_ENTRY), 92.0, "stop", dict(_CONFIRMED_FLAT)))
+    doc = run(db.premium_locks.find_one({"deployment_id": "D1"}))
+    assert doc.get("ce_exited") is True
+    assert doc["done_for_day"] is True and doc["done_reason"] == "exited"
+    assert "lazy_armed_pe" not in doc   # lazy disabled
+
+
+def test_b6_first_to_trigger_keeps_legacy_whole_doc_done(monkeypatch):
+    """Track B byte-identity: a first_to_trigger deployment's close still marks
+    the whole doc done immediately (single leg == session), via the legacy
+    path — regardless of any per-leg fields."""
+    dep = {"id": "D1", "strategy_id": "premium_momentum",
+           "params": {"momentum_pct": 15.0, "stop_pct": 20.0}}
+    rt, db, closed = _wire_hook_both(monkeypatch, dep=dep)
+    run(rt._live_guard_on_close(dict(_B6_ENTRY), 92.0, "stop", dict(_CONFIRMED_FLAT)))
+    doc = run(db.premium_locks.find_one({"deployment_id": "D1"}))
+    assert doc["done_for_day"] is True and doc["done_reason"] == "exited"

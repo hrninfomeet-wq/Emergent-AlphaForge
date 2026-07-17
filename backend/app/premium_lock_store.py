@@ -271,13 +271,20 @@ def legs_unresolved(lock: Dict[str, Any], params: Dict[str, Any]) -> List[str]:
     locked at session start regardless of mode."""
     lazy_enabled = bool((params or {}).get("lazy_enabled", False))
     candidate_legs = ["pce", "ppe"] + (["lce", "lpe"] if lazy_enabled else [])
+    #: an ARMED lazy leg counts as active even before its fresh strike lock /
+    #: trigger exists (B6 gap: the guard-close hook arms the lazy side and
+    #: checks this helper in the SAME call — without this, the freshly-armed
+    #: reversal read as "not in play" and the whole-doc done killed it
+    #: instantly).
+    _armed_flag = {"lce": "lazy_armed_ce", "lpe": "lazy_armed_pe"}
     unresolved: List[str] = []
     for leg in candidate_legs:
         prefix = _LEG_PREFIX[leg]
         triggered = lock.get(f"{prefix}_triggered")
         entered = lock.get(f"{prefix}_entered_norenordno")
         exited = lock.get(f"{prefix}_exited")
-        active = bool(triggered) or bool(entered)
+        armed = bool(lock.get(_armed_flag[leg])) if leg in _armed_flag else False
+        active = bool(triggered) or bool(entered) or armed
         if active and not exited:
             unresolved.append(leg)
     return unresolved

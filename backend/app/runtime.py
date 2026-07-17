@@ -236,22 +236,118 @@ async def _live_guard_on_close(entry, exit_price, reason, result) -> None:
         exit_price=exit_price,
         exit_reason=reason,
     )
-    # Track B: a premium-momentum deployment's confirmed-flat close also marks
-    # today's session lock done (done_for_day, reason="exited") so the evaluator
-    # holds 'done' instead of re-monitoring the session. NEVER raises.
+    # Track B / Phase 5B B6: a premium-momentum deployment's confirmed-flat
+    # close finalizes the session lock PER LEG. The closed leg is identified by
+    # matching the entry norenordno against the lock's <leg>_entered_norenordno
+    # fields (recon anchor 3: the guard entry has no side/direction of its own).
+    # The whole-doc done fires ONLY when no leg remains unresolved (recon
+    # correction 3: the old unconditional mark_done would silently kill a still
+    # -open sibling leg's session mid-day). A STOP-class primary close in
+    # both-mode ADDITIONALLY arms the opposite-side lazy leg (one shot,
+    # blueprint §4) — never on target/EOD/exit-time/time-stop/overall-basket
+    # squares (overall_* squares EVERYTHING for the deployment; arming a
+    # reversal into the operator's own basket stop would fight it), and never
+    # when the deployment has no lazy trigger configured (a silently
+    # never-triggering lazy leg pins subscriptions for nothing). NEVER raises.
     try:
         _dep_id = str((entry or {}).get("deployment_id") or "")
         if _dep_id:
             _db = get_db()
             _dep = await _db.strategy_deployments.find_one({"id": _dep_id})
             if str((_dep or {}).get("strategy_id") or "") == "premium_momentum":
-                from app.premium_lock_store import mark_done
+                from app.premium_lock_store import (
+                    get_lock, legs_unresolved, mark_done, mark_leg_exited,
+                    set_lazy_armed,
+                )
+                from app.strategies.base import get_registry as _get_strat_registry
                 _today = (datetime.now(timezone.utc)
                           + timedelta(hours=5, minutes=30)).strftime("%Y-%m-%d")
-                await mark_done(_db.premium_locks, deployment_id=_dep_id,
-                                session_date=_today, reason="exited")
+                _strat = _get_strat_registry().get("premium_momentum")
+                _params = (_strat.merged_params(dict(_dep.get("params") or {}))
+                           if _strat else dict(_dep.get("params") or {}))
+                _both = str(_params.get("leg_mode") or "first_to_trigger").lower() == "both"
+                _lock = await get_lock(_db.premium_locks, deployment_id=_dep_id,
+                                       session_date=_today)
+                if not _both or _lock is None:
+                    # first_to_trigger / no lock: today's observable behavior,
+                    # byte-identical (single leg resolved => session done).
+                    await mark_done(_db.premium_locks, deployment_id=_dep_id,
+                                    session_date=_today, reason="exited")
+                else:
+                    _ordno = str((entry or {}).get("id") or "")
+                    _leg = None
+                    for _cand, _prefix in (("pce", "ce"), ("ppe", "pe"),
+                                           ("lce", "lce"), ("lpe", "lpe")):
+                        if str(_lock.get(f"{_prefix}_entered_norenordno") or "") == _ordno and _ordno:
+                            _leg = _cand
+                            break
+                    if _leg:
+                        await mark_leg_exited(_db.premium_locks, deployment_id=_dep_id,
+                                              session_date=_today, leg=_leg)
+                        # Realized-only day-stop accumulator (best-effort: the
+                        # close-loop journals the authoritative realized figure
+                        # onto live_trades; the evaluator's day-stop gate reads
+                        # THAT, not this field — this is observability only).
+                        try:
+                            _qty = abs(int((entry or {}).get("qty") or 0))
+                            _ep = float((entry or {}).get("entry_price") or 0.0)
+                            _xp = float(exit_price) if exit_price is not None else _ep
+                            await _db.premium_locks.update_one(
+                                {"deployment_id": _dep_id, "session_date": _today},
+                                {"$set": {f"{_leg}_realized_estimate":
+                                          round((_xp - _ep) * _qty, 2)}})
+                        except Exception:
+                            pass
+                        # Lazy arming: STOP-class PRIMARY closes only.
+                        _STOP_CLASS = {"stop", "breakeven_stop", "trailing_stop",
+                                       "spot_stop_hit"}
+                        _lazy_trigger_set = (_params.get("lazy_momentum_pct") is not None
+                                             or _params.get("lazy_momentum_pts") is not None)
+                        _cutoff = None
+                        try:
+                            from app.premium_momentum import normalize_hhmm
+                            _cutoff = normalize_hhmm(_params.get("entry_cutoff"))
+                        except ValueError:
+                            _cutoff = None
+                        _now_hhmm = ((datetime.now(timezone.utc)
+                                      + timedelta(hours=5, minutes=30)).strftime("%H:%M"))
+                        if (_leg in ("pce", "ppe")
+                                and str(reason or "").lower() in _STOP_CLASS
+                                and bool(_params.get("lazy_enabled"))
+                                and _lazy_trigger_set
+                                and (_cutoff is None or _now_hhmm < _cutoff)):
+                            # The ARMED side is the OPPOSITE of the failed
+                            # primary (blueprint: a stopped CALL arms the lazy
+                            # PUT and vice versa). lazy_armed_<side> names the
+                            # side of the LAZY leg itself — the engine's pickup
+                            # maps lazy_armed_ce -> leg lce (a CE lazy leg).
+                            _lazy_side = "pe" if _leg == "pce" else "ce"
+                            armed = await set_lazy_armed(
+                                _db.premium_locks, deployment_id=_dep_id,
+                                session_date=_today, side=_lazy_side,
+                                parent_reason=str(reason or ""))
+                            if armed:
+                                log.info("premium 5B: lazy %s armed for deployment %s "
+                                         "(primary %s closed: %s)",
+                                         _lazy_side, _dep_id, _leg, reason)
+                    else:
+                        log.warning("premium 5B: confirmed-flat entry %s matched no "
+                                    "leg on the session lock (deployment %s)",
+                                    _ordno, _dep_id)
+                    # Whole-doc done ONLY when (a) no armed/entered leg remains
+                    # unresolved AND (b) both primaries actually traded and
+                    # exited. A never-triggered sibling primary keeps the
+                    # session MONITORING (it is still eligible to enter) — done
+                    # here would silently amputate it; an idle session simply
+                    # ages out at EOD with no done marker, which is safe.
+                    _lock = await get_lock(_db.premium_locks, deployment_id=_dep_id,
+                                           session_date=_today)
+                    if _lock is not None and not legs_unresolved(_lock, _params) \
+                            and bool(_lock.get("ce_exited")) and bool(_lock.get("pe_exited")):
+                        await mark_done(_db.premium_locks, deployment_id=_dep_id,
+                                        session_date=_today, reason="exited")
     except Exception:
-        log.exception("premium-momentum mark_done(exited) failed for entry %s",
+        log.exception("premium-momentum per-leg close finalize failed for entry %s",
                       (entry or {}).get("id"))
 
 
