@@ -363,7 +363,8 @@ live_position_guard = LivePositionGuard(
 )
 
 
-async def rehydrate_premium_momentum(db, registry, broker_positions_by_tsym) -> Dict[str, Any]:
+async def rehydrate_premium_momentum(db, registry, broker_positions_by_tsym,
+                                     *, noren_tsym_by_ordno=None) -> Dict[str, Any]:
     """Track B recovery: re-attach the guard to premium-momentum positions using
     the PERSISTED lock state (entry premium, deployment, exit plan) instead of
     the generic 50%-catastrophe rehydrate. Locks whose position is gone are
@@ -416,15 +417,22 @@ async def rehydrate_premium_momentum(db, registry, broker_positions_by_tsym) -> 
                 # treatment incl. the whole-doc exited_while_down close; per-leg
                 # (both-mode) docs are handled leg-by-leg with per-leg exit
                 # marks and NO premature whole-doc done (recon correction 3).
+                # 5B review Finding 1 (CONFIRMED): the persisted contract's
+                # trading_symbol is the UPSTOX symbol; the broker book is keyed
+                # by the NOREN tsym — matching those directly declared every
+                # genuinely open leg "gone" on a real restart and falsely
+                # finalized the session. The ONLY trusted symbol source here is
+                # the broker's own order book (norenordno -> Noren tsym),
+                # passed in by the caller. A leg whose ordno cannot be resolved
+                # is SKIPPED (left to the generic rehydrate) — never guessed at
+                # and NEVER marked exited on an unresolvable symbol.
+                _ord_map = dict(noren_tsym_by_ordno or {})
                 legs: list = []
                 if lock.get("entered_norenordno"):
-                    side = str(lock.get("triggered_side") or "").lower()
-                    contract = dict(lock.get(side) or {})
                     legs.append({
                         "legacy": True, "leg": None,
                         "ordno": str(lock["entered_norenordno"]),
-                        "tsym": str(contract.get("trading_symbol") or contract.get("tsym") or ""),
-                        "exch": str(contract.get("exch") or "NFO"),
+                        "exch": "NFO",
                         "entry": float(lock.get("entry_premium") or 0) or None,
                         "stop_pct": params.get("stop_pct") or 50.0,
                         "target_pct": params.get("target_pct"),
@@ -435,27 +443,21 @@ async def rehydrate_premium_momentum(db, registry, broker_positions_by_tsym) -> 
                     if not _ord or lock.get(f"{prefix}_exited"):
                         continue
                     if leg in ("pce", "ppe"):
-                        c = dict(lock.get(prefix) or {})
-                        _tsym = str(c.get("trading_symbol") or c.get("tsym") or "")
-                        _exch = str(c.get("exch") or "NFO")
                         _stop = params.get("stop_pct") or 50.0
                         _tgt = params.get("target_pct")
                     else:
-                        # lazy contract lives in flat {leg}_<field> keys (A3);
-                        # tsym may be absent when the fresh contract doc lacked
-                        # it — leave that leg to the generic rehydrate then.
-                        _tsym = str(lock.get(f"{prefix}_tsym") or "")
-                        _exch = "NFO"
                         _stop = (params.get("lazy_stop_pct")
                                  if params.get("lazy_stop_pct") is not None
                                  else (params.get("stop_pct") or 50.0))
                         _tgt = params.get("lazy_target_pct")
                     legs.append({
                         "legacy": False, "leg": leg, "ordno": str(_ord),
-                        "tsym": _tsym, "exch": _exch,
+                        "exch": "NFO",
                         "entry": float(lock.get(f"{prefix}_entry_premium") or 0) or None,
                         "stop_pct": _stop, "target_pct": _tgt,
                     })
+                for item in legs:
+                    item["tsym"] = str(_ord_map.get(item["ordno"]) or "")
 
                 # exit_time -> per-entry square time; register() re-clamps.
                 _sq_at = None
@@ -604,8 +606,31 @@ async def live_startup_recovery() -> bool:
                 continue
             if _nq and _ts:
                 _held_by_tsym[_ts] = _pos
+        # 5B review Finding 1: the lock's persisted contract carries the UPSTOX
+        # trading_symbol, but the position book above is keyed by the NOREN
+        # tsym — matching those directly reads every open leg as "gone" and
+        # falsely finalizes a session with real money open. The durable Noren
+        # symbol for an entered leg lives in the broker's own ORDER book row
+        # for its norenordno — build that join map here (same-day restart ⇒
+        # today's entries are in today's book). An unreadable order book ⇒
+        # empty map ⇒ the rehydrate SKIPS legs it cannot resolve (leaving them
+        # to the generic rehydrate) instead of guessing.
+        _ordno_tsym: Dict[str, str] = {}
+        try:
+            _pm_orders = await client.order_book()
+            if isinstance(_pm_orders, list):
+                for _row in _pm_orders:
+                    _no = str(_row.get("norenordno") or "")
+                    _rt = str(_row.get("tsym") or "")
+                    if _no and _rt:
+                        _ordno_tsym[_no] = _rt
+        except Exception as exc:
+            _log.warning("live startup recovery: premium rehydrate order-book "
+                         "read failed (%s) — unresolved legs left to the "
+                         "generic rehydrate", exc)
         pm_res = await rehydrate_premium_momentum(
-            get_db(), get_live_monitor_registry(), _held_by_tsym)
+            get_db(), get_live_monitor_registry(), _held_by_tsym,
+            noren_tsym_by_ordno=_ordno_tsym)
         _log.info("live startup recovery: premium-momentum rehydrate reattached=%s "
                   "closed=%s skipped=%s errors=%s", pm_res.get("reattached"),
                   pm_res.get("closed"), pm_res.get("skipped"), pm_res.get("errors"))

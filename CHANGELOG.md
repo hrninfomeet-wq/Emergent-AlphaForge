@@ -2,6 +2,64 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.55.0] — Phase 5B: live/paper multi-leg premium-momentum execution (capability build, 2026-07-17)
+
+**The full EXP2 contingency shape now executes live and paper** — both-legs
+mode (CE+PE as independent primaries), one-shot lazy reversal legs armed off
+the guard's confirmed-flat STOP-class exits, per-deployment `exit_time`
+squares, the realized-only session day-stop, and the VIX session gate — all
+riding the standard deployment/arm/guard rails with **no new arming gate**
+(standing rule). Built by user decision as a **pure capability** despite the
+failed edge gate: an informational `premium_edge_verdict` arm advisory
+travels with every multi-leg deployment (first-ever consumer of the
+arm-advisories surface), so the 0.54.2 verdict is visible at arm time.
+
+Cluster A (`b1b6f3c` + review closures `7af1af6`): per-leg lock-store
+primitives (new additive functions; the 8 Track-B functions source-pinned
+untouched), plugin schema extension (zero migration via the merged_params
+allow-list), both-mode session engine (per-leg terminal checks; the
+first_to_trigger branch byte-identical), evaluator/auto_live per-leg
+plumbing (per-leg latch/unlatch/entry-adoption in both-mode ONLY; Track B
+signal docs stay exact — an existing equality pin is the guarantee), the
+realized-only day-stop gate (atomic fire-once + one-time LIVE square via
+the existing deployment-stop path; paper block-only), and VIX resolution
+only when gated. Review found + fixed: lexicographic HH:MM compares were
+FAIL-OPEN for unpadded valid times (a cutoff that never fires — also latent
+in 5A.2's backtest overlays; new normalize-or-die helper at every gate) and
+the interim window where both-mode-live had entries but no exit/recovery
+halves (guarded until B6/B7 landed).
+
+Cluster B (`326bf6b`, `51fe155`, `d110a1e`, `19a1f52`): B5 guard
+`square_at_ist` (normalized, clamped strictly before the 15:00 EOD which
+always wins; reason `exit_time` is deliberately NOT lazy-arming
+STOP-class), B6 per-leg close finalize + opposite-side lazy arming
+(engine-verified side mapping; whole-doc done only when both primaries
+exited and nothing pending — a never-triggered sibling keeps monitoring;
+also fixed: an armed-but-not-yet-locked lazy leg counted as "not in play"
+and would have been finalized away in the same call that armed it), B7
+per-leg recovery rehydration (closes the review-flagged blind spot where
+both-mode entries — which never write the legacy entered field — were
+invisible to the old rehydrate query: an open position would have
+restarted with NO stop monitor) + interim guard removed, B8 advisory/UI
+(informational-only evidence grep-pinned; new strip refusal labels; leg
+chips honestly deferred with the exact threading a richer surface needs).
+
+Orchestration note (token-limit reality): A1–A3 and B8 were built by Sonnet
+subagents with Fable/Sonnet adversarial review; A4 and B5–B7 — the most
+safety-critical seams — were implemented by the orchestrator inline after
+repeated subagent session-limit deaths, then adversarially reviewed
+independently (Cluster A's review of the inline A4 found 2 real bugs, both
+fixed; Cluster B's review pass covers B5–B7 the same way). Full host suite:
+**3477 passed, 0 failed** (baseline 3404 pre-5B).
+
+**Honest caveats**: bar-cadence parity divergences are documented in the
+plan's parity table (same-bar double-cross → second leg next bar; lazy
+arming latency; live exit_time clamped below 15:00 — EXP2's 15:13 is
+backtest-only; paper day-stop is block-only). None of this has seen a real
+market-hours session. The edge verdict stands: this family failed its
+pre-registered gate — the capability exists so a future config that EARNS
+its way through the tuner can deploy without new engineering.
+
 ## [0.54.2] — Phase 5A.2 overlays + sweep perf + the edge-hunt verdict: GATE FAILED (2026-07-15)
 
 Three pieces, ending in the campaign this arc was building toward:

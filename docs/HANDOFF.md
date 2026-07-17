@@ -14,7 +14,20 @@ Stack: **React** (CRA + craco) frontend, **FastAPI** (Python) backend, **MongoDB
 
 ## 2. Current state
 
-**Latest (2026-07-15, v0.54.2)**: **the premium-momentum edge hunt is CLOSED
+**Latest (2026-07-17, v0.55.0)**: **Phase 5B — live/paper multi-leg
+premium-momentum execution is BUILT** (both-legs mode, one-shot lazy
+reversal off STOP-class guard exits, per-deployment exit_time squares
+clamped below the 15:00 EOD, realized-only session day-stop, VIX gate) as a
+**pure capability by explicit user decision** — the family's failed edge
+gate (0.54.2) travels with every multi-leg deployment as an informational
+`premium_edge_verdict` arm advisory (never a gate; there is still NO
+strategy-specific arming gate of any kind). first_to_trigger/single-leg
+deployments are byte-identical to Track B (source-pinned). Full suite 3477
+passed, 0 failed. NOT yet validated in a real market-hours session. See
+CHANGELOG 0.55.0 and the plan's parity-divergence table before touching any
+of these seams.
+
+**Previous (2026-07-15, v0.54.2)**: **the premium-momentum edge hunt is CLOSED
 with a failed gate.** Phase 5A.2 added the session day-stop + India VIX gate
 overlays (backtest-only) and a byte-identical sweep-perf fix, then the
 pre-registered ~600-config campaign ran on a three-way chronological split:

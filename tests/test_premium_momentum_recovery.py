@@ -95,10 +95,15 @@ class _Reg:
         return kw
 
 
-CE = {"trading_symbol": "NIFTY10JUL26C24000", "exch": "NFO",
+# Review Finding 1: the lock's persisted contract carries the UPSTOX symbol
+# (spaced format) while the broker book + order book use the NOREN tsym —
+# DIFFERENT strings on purpose so any direct match is caught by these tests.
+CE = {"trading_symbol": "NIFTY 24000 CE 10 JUL 26", "exch": "NFO",
       "instrument_key": "NSE_FO|1001"}
-PE = {"trading_symbol": "NIFTY10JUL26P24000", "exch": "NFO",
+PE = {"trading_symbol": "NIFTY 24000 PE 10 JUL 26", "exch": "NFO",
       "instrument_key": "NSE_FO|1002"}
+NOREN_CE = "NIFTY10JUL26C24000"
+NOREN_PE = "NIFTY10JUL26P24000"
 
 
 def _entered_lock(dep_id, side, contract, ordno, entry):
@@ -119,14 +124,15 @@ def test_reattaches_with_persisted_entry_and_stepped_xy_trail():
     }])
     reg = _Reg()
     # float-form netqty string: Noren can return "65.00" — must parse, not error
-    book = {CE["trading_symbol"]: {"tsym": CE["trading_symbol"], "netqty": "65.00",
-                                   "exch": "NFO", "lp": "118.0"}}
-    out = run(rehydrate_premium_momentum(db, reg, book))
+    book = {NOREN_CE: {"tsym": NOREN_CE, "netqty": "65.00",
+                       "exch": "NFO", "lp": "118.0"}}
+    out = run(rehydrate_premium_momentum(db, reg, book,
+                                         noren_tsym_by_ordno={"N1": NOREN_CE}))
     assert out == {"reattached": 1, "closed": 0, "skipped": 0, "errors": 0}
     assert len(reg.calls) == 1
     kw = reg.calls[0]
     assert kw["key"] == "N1"                      # keyed by the entry norenordno
-    assert kw["tsym"] == CE["trading_symbol"]
+    assert kw["tsym"] == NOREN_CE                 # the NOREN symbol, never Upstox
     assert kw["qty"] == 65
     assert kw["entry_price"] == 115.0             # PERSISTED entry, NOT a 50% default
     assert kw["source"] == "auto_live"
@@ -145,7 +151,10 @@ def test_dead_lock_marked_done_and_not_registered():
     run(locks.insert_one(_entered_lock("D2", "pe", PE, "N2", 90.0)))
     db = _DB(locks, [{"id": "D2", "params": {}, "risk": {}}])
     reg = _Reg()
-    out = run(rehydrate_premium_momentum(db, reg, {}))   # position GONE from book
+    # position GONE from book — but its ordno RESOLVES via the order book,
+    # so "gone" is a trusted determination (unresolved would SKIP instead).
+    out = run(rehydrate_premium_momentum(db, reg, {},
+                                         noren_tsym_by_ordno={"N2": NOREN_PE}))
     assert out == {"reattached": 0, "closed": 1, "skipped": 0, "errors": 0}
     assert reg.calls == []
     doc = run(locks.find_one({"deployment_id": "D2",
@@ -161,8 +170,9 @@ def test_missing_entry_premium_left_to_generic_rehydrate():
     run(locks.insert_one(_entered_lock("D3", "ce", CE, "N3", None)))
     db = _DB(locks, [{"id": "D3", "params": {}, "risk": {}}])
     reg = _Reg()
-    book = {CE["trading_symbol"]: {"tsym": CE["trading_symbol"], "netqty": 65}}
-    out = run(rehydrate_premium_momentum(db, reg, book))
+    book = {NOREN_CE: {"tsym": NOREN_CE, "netqty": 65}}
+    out = run(rehydrate_premium_momentum(db, reg, book,
+                                         noren_tsym_by_ordno={"N3": NOREN_CE}))
     assert out == {"reattached": 0, "closed": 0, "skipped": 0, "errors": 0}
     assert reg.calls == []
     doc = run(locks.find_one({"deployment_id": "D3",
@@ -181,10 +191,11 @@ def test_already_watched_tsym_skipped_never_double_registered():
     locks = _Locks()
     run(locks.insert_one(_entered_lock("D1", "ce", CE, "N1", 115.0)))
     db = _DB(locks, [{"id": "D1", "params": {"stop_pct": 30.0}, "risk": {}}])
-    reg = _Reg(preloaded=[{"id": CE["trading_symbol"],
-                           "tsym": CE["trading_symbol"]}])  # generic entry
-    book = {CE["trading_symbol"]: {"tsym": CE["trading_symbol"], "netqty": "65"}}
-    out = run(rehydrate_premium_momentum(db, reg, book))
+    reg = _Reg(preloaded=[{"id": NOREN_CE,
+                           "tsym": NOREN_CE}])  # generic entry (Noren-keyed)
+    book = {NOREN_CE: {"tsym": NOREN_CE, "netqty": "65"}}
+    out = run(rehydrate_premium_momentum(db, reg, book,
+                                         noren_tsym_by_ordno={"N1": NOREN_CE}))
     assert out == {"reattached": 0, "closed": 0, "skipped": 1, "errors": 0}
     assert reg.calls == []
     # the lock is NOT closed either — the position is alive and guarded
@@ -201,10 +212,11 @@ def test_already_watched_norenordno_skipped_mid_square_not_clobbered():
     locks = _Locks()
     run(locks.insert_one(_entered_lock("D1", "ce", CE, "N1", 115.0)))
     db = _DB(locks, [{"id": "D1", "params": {"stop_pct": 30.0}, "risk": {}}])
-    reg = _Reg(preloaded=[{"id": "N1", "tsym": CE["trading_symbol"],
+    reg = _Reg(preloaded=[{"id": "N1", "tsym": NOREN_CE,
                            "squaring": True}])  # run 1's own entry, mid-square
-    book = {CE["trading_symbol"]: {"tsym": CE["trading_symbol"], "netqty": "65"}}
-    out = run(rehydrate_premium_momentum(db, reg, book))
+    book = {NOREN_CE: {"tsym": NOREN_CE, "netqty": "65"}}
+    out = run(rehydrate_premium_momentum(db, reg, book,
+                                         noren_tsym_by_ordno={"N1": NOREN_CE}))
     assert out == {"reattached": 0, "closed": 0, "skipped": 1, "errors": 0}
     assert reg.calls == []
 
@@ -212,13 +224,29 @@ def test_already_watched_norenordno_skipped_mid_square_not_clobbered():
 # --- live_startup_recovery step-2 wiring (book read, filtering, ordering) ----
 
 class _Client:
-    def __init__(self, book):
+    def __init__(self, book, orders=None):
         self._book = book
+        self._orders = orders
 
     async def position_book(self):
         if isinstance(self._book, Exception):
             raise self._book
         return self._book
+
+    async def order_book(self):
+        if self._orders is None:
+            # Default: derive a same-tsym order row per position row, plus the
+            # well-known test ordnos (N1/N2) mapped to the Noren symbols.
+            rows = [{"norenordno": "N1", "tsym": NOREN_CE},
+                    {"norenordno": "N2", "tsym": NOREN_PE}]
+            if isinstance(self._book, list):
+                for p_ in self._book:
+                    if p_.get("tsym"):
+                        rows.append({"norenordno": "N1", "tsym": p_["tsym"]})
+            return rows
+        if isinstance(self._orders, Exception):
+            raise self._orders
+        return self._orders
 
 
 def _wire(monkeypatch, *, book, db, reg, events):
@@ -335,7 +363,7 @@ def test_startup_recovery_premium_errors_make_run_incomplete(monkeypatch):
     book = [{"tsym": CE["trading_symbol"], "netqty": "65", "exch": "NFO"}]
     _wire(monkeypatch, book=book, db=db, reg=reg, events=events)
 
-    async def _failing_rehydrate(_db, _reg, _held):
+    async def _failing_rehydrate(_db, _reg, _held, **_kw):
         return {"reattached": 0, "closed": 0, "skipped": 0, "errors": 1}
 
     monkeypatch.setattr(rt, "rehydrate_premium_momentum", _failing_rehydrate)
@@ -371,14 +399,16 @@ def test_b7_both_mode_two_legs_rehydrated_with_own_orders():
         pe_triggered=True, pe_entered_norenordno="N2", pe_entry_premium=95.0)))
     db = _DB(locks, list(_B7_DEP))
     reg = _Reg()
-    book = {CE["trading_symbol"]: {"tsym": CE["trading_symbol"], "netqty": "65",
-                                   "exch": "NFO", "lp": "118.0"},
-            PE["trading_symbol"]: {"tsym": PE["trading_symbol"], "netqty": "65",
-                                   "exch": "NFO", "lp": "96.0"}}
-    out = run(rehydrate_premium_momentum(db, reg, book))
+    book = {NOREN_CE: {"tsym": NOREN_CE, "netqty": "65",
+                       "exch": "NFO", "lp": "118.0"},
+            NOREN_PE: {"tsym": NOREN_PE, "netqty": "65",
+                       "exch": "NFO", "lp": "96.0"}}
+    out = run(rehydrate_premium_momentum(
+        db, reg, book, noren_tsym_by_ordno={"N1": NOREN_CE, "N2": NOREN_PE}))
     assert out == {"reattached": 2, "closed": 0, "skipped": 0, "errors": 0}
     keys = sorted(c["key"] for c in reg.calls)
     assert keys == ["N1", "N2"], "each leg registers under its OWN norenordno"
+    assert sorted(c["tsym"] for c in reg.calls) == sorted([NOREN_CE, NOREN_PE])
     for c in reg.calls:
         assert c["square_at_ist"] == "14:30", "exit_time must rehydrate too (B5)"
 
@@ -390,10 +420,12 @@ def test_b7_one_leg_gone_marks_only_that_leg_and_not_whole_doc():
         pe_triggered=True, pe_entered_norenordno="N2", pe_entry_premium=95.0)))
     db = _DB(locks, list(_B7_DEP))
     reg = _Reg()
-    # CE position gone from the broker book; PE still open.
-    book = {PE["trading_symbol"]: {"tsym": PE["trading_symbol"], "netqty": "65",
-                                   "exch": "NFO", "lp": "96.0"}}
-    out = run(rehydrate_premium_momentum(db, reg, book))
+    # CE position gone from the broker book; PE still open. Both ordnos
+    # RESOLVE via the order book, so gone is a trusted determination.
+    book = {NOREN_PE: {"tsym": NOREN_PE, "netqty": "65",
+                       "exch": "NFO", "lp": "96.0"}}
+    out = run(rehydrate_premium_momentum(
+        db, reg, book, noren_tsym_by_ordno={"N1": NOREN_CE, "N2": NOREN_PE}))
     assert out["closed"] == 1 and out["reattached"] == 1
     doc = locks.docs[0]
     assert doc.get("ce_exited") is True, "only the GONE leg is marked exited"
@@ -407,17 +439,21 @@ def test_b7_lazy_leg_rehydrates_with_lazy_params():
         ce_triggered=True, ce_entered_norenordno="N1", ce_entry_premium=115.0,
         ce_exited=True,
         lazy_armed_pe=True, lpe_instrument_key="NSE_FO|2002",
-        lpe_tsym="NIFTY10JUL26P23900", lpe_entered_norenordno="N3",
-        lpe_entry_premium=88.0)))
+        lpe_entered_norenordno="N3", lpe_entry_premium=88.0)))
+    # NOTE deliberately NO lpe_tsym: production never writes it (review
+    # Finding 2) — the Noren symbol comes ONLY from the order-book join.
     db = _DB(locks, list(_B7_DEP))
     reg = _Reg()
-    book = {"NIFTY10JUL26P23900": {"tsym": "NIFTY10JUL26P23900", "netqty": "65",
-                                   "exch": "NFO", "lp": "92.0"}}
-    out = run(rehydrate_premium_momentum(db, reg, book))
+    book = {"NIFTY10JUL26P23900N": {"tsym": "NIFTY10JUL26P23900N", "netqty": "65",
+                                    "exch": "NFO", "lp": "92.0"}}
+    out = run(rehydrate_premium_momentum(
+        db, reg, book, noren_tsym_by_ordno={"N3": "NIFTY10JUL26P23900N"}))
     assert out["reattached"] == 1 and out["errors"] == 0
     kw = reg.calls[0]
-    assert kw["key"] == "N3" and kw["tsym"] == "NIFTY10JUL26P23900"
+    assert kw["key"] == "N3" and kw["tsym"] == "NIFTY10JUL26P23900N"
     assert kw["entry_price"] == 88.0, "lazy leg rehydrates with ITS persisted entry"
+    # reviewer minor: pin that the LAZY stop actually reached the monitor state
+    assert kw["state"].get("stop_level") == 88.0 * (1 - 12.0 / 100.0),         "lazy_stop_pct (12%) must drive the rehydrated monitor state"
 
 
 def test_b7_legacy_single_leg_docs_rehydrate_byte_identically():
@@ -432,10 +468,35 @@ def test_b7_legacy_single_leg_docs_rehydrate_byte_identically():
                      {"id": "D2", "params": {"leg_mode": "both", "stop_pct": 30.0},
                       "risk": {}}])
     reg = _Reg()
-    book = {CE["trading_symbol"]: {"tsym": CE["trading_symbol"], "netqty": "65",
-                                   "exch": "NFO", "lp": "118.0"},
-            PE["trading_symbol"]: {"tsym": PE["trading_symbol"], "netqty": "65",
-                                   "exch": "NFO", "lp": "96.0"}}
-    out = run(rehydrate_premium_momentum(db, reg, book))
+    book = {NOREN_CE: {"tsym": NOREN_CE, "netqty": "65",
+                       "exch": "NFO", "lp": "118.0"},
+            NOREN_PE: {"tsym": NOREN_PE, "netqty": "65",
+                       "exch": "NFO", "lp": "96.0"}}
+    out = run(rehydrate_premium_momentum(
+        db, reg, book, noren_tsym_by_ordno={"N1": NOREN_CE, "N9": NOREN_PE}))
     assert out["reattached"] == 2 and out["errors"] == 0
     assert sorted(c["key"] for c in reg.calls) == ["N1", "N9"]
+
+
+
+def test_b7_unresolved_ordno_skips_never_falsely_exits():
+    """Review Finding 1's safety rule: a leg whose norenordno does NOT resolve
+    through the order-book join must be SKIPPED (left to the generic
+    rehydrate) — never matched by the (Upstox) contract symbol and NEVER
+    marked exited/done on an unresolvable symbol. Before the fix, the Upstox
+    trading_symbol was matched against the Noren-keyed book, every open leg
+    read \"gone\", and a session with real money open was falsely finalized."""
+    locks = _Locks()
+    run(locks.insert_one(_both_lock(
+        ce_triggered=True, ce_entered_norenordno="N1", ce_entry_premium=115.0)))
+    db = _DB(locks, list(_B7_DEP))
+    reg = _Reg()
+    # Position IS open at the broker (Noren-keyed) — but the join map is empty
+    # (order-book read failed): resolution is impossible.
+    book = {NOREN_CE: {"tsym": NOREN_CE, "netqty": "65"}}
+    out = run(rehydrate_premium_momentum(db, reg, book, noren_tsym_by_ordno={}))
+    assert out["reattached"] == 0 and out["closed"] == 0 and out["errors"] == 0
+    assert reg.calls == []
+    doc = locks.docs[0]
+    assert "ce_exited" not in doc, "unresolvable symbol must NEVER mark a leg exited"
+    assert doc["done_for_day"] is False
