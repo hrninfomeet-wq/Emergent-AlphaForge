@@ -236,16 +236,27 @@ async def capture_ref_leg(col: Any, *, deployment_id: str, session_date: str,
     return int(getattr(res, "matched_count", 0) or 0) == 1
 
 
-async def mark_day_stop(col: Any, *, deployment_id: str, session_date: str, reason: str) -> bool:
-    """Idempotent one-shot: record that this session's realized-only day-stop
-    gate (Phase 5B Task A4, ``deployment_evaluator.py``) breached. Filtered on
-    the flag being absent so a breach re-detected on a later bar (already
-    recorded) never re-marks -- the evaluator uses this same True/False to
-    fire its one-time-per-session deployment square exactly once."""
+async def mark_day_stop(col: Any, *, deployment_id: str, session_date: str,
+                        realized: float) -> bool:
+    """THE atomic day-stop fire-once (Phase 5B A4; single-writer resolution of
+    the review's "two parallel flags" hazard). ONE filtered update sets the
+    ``day_stop_fired`` claim AND the whole-session done state together, so a
+    crash can never land between "breach recorded" and "session done" (the
+    review's flag-vs-done crash window). Filtered on the flag being absent —
+    exactly one winner per session, evaluator restarts included (the flag
+    persists on the Mongo doc). The evaluator uses the returned True/False to
+    fire its one-time-per-session LIVE deployment square exactly once; the
+    square staying best-effort is safe because done_for_day is already latched
+    by this same write and the evaluator's gate re-blocks every bar."""
     res = await col.update_one(
         {"deployment_id": str(deployment_id), "session_date": str(session_date),
-         "day_stop_reason": {"$exists": False}},
-        {"$set": {"day_stop_reason": str(reason), "day_stop_at": _now_iso()}},
+         "day_stop_fired": {"$exists": False}},
+        {"$set": {"day_stop_fired": True,
+                  "day_stop_realized": float(realized),
+                  "day_stop_at": _now_iso(),
+                  "done_for_day": True,
+                  "done_reason": "day_stop",
+                  "done_at": _now_iso()}},
     )
     return int(getattr(res, "matched_count", 0) or 0) == 1
 

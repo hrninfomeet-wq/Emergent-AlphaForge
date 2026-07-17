@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field
 
 from app.db import get_db
 from app.instruments import canonical_instrument_key
-from app.premium_momentum import lock_reference_strike
+from app.premium_momentum import lock_reference_strike, normalize_hhmm
 from app.premium_momentum_backtest import (
     _sides_for, expiry_for_session, preload_scope, run_premium_momentum_backtest,
 )
@@ -112,6 +112,7 @@ async def _load_window(instrument: str, start_ts: int, end_ts: int, *,
     bar; widening moneyness alone would leave a single-side run with zero
     opposite-side candles and 100% lazy_excluded_no_data (review finding C1)."""
     moneynesses, sides = preload_scope(moneynesses, sides, lazy_enabled)
+    ref_time = normalize_hhmm(ref_time) or "09:31"   # review C1: unpadded fail-open
     db = get_db()
     spot_df = await load_candles_df(instrument, start_ts, end_ts)
     if spot_df.empty:

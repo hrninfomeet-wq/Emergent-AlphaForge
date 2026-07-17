@@ -257,6 +257,31 @@ def stepped_trail_stop(*, entry_premium: float, running_high: float,
     return min(float(base_stop) + steps * float(y), float(running_high))
 
 
+def normalize_hhmm(value) -> "Optional[str]":
+    """Zero-padded "HH:MM", or None for None/empty. Raises ValueError for
+    anything else. Review finding C1 (Cluster A safety review): every session
+    time gate compared raw strings, and "9:30" < "15:00" is False
+    lexicographically — an UNPADDED but perfectly valid time silently dropped
+    the exit-time hint and made entry_cutoff fail-OPEN (a risk gate that never
+    fires, no log). Risk-gate time inputs must normalize-or-die, never
+    silently no-op; call sites: live engine (reference_time/late_lock_cutoff/
+    entry_cutoff), evaluator (exit_time clamp), backtest sim (all three),
+    route loader (ref_time)."""
+    if value is None or str(value).strip() == "":
+        return None
+    s = str(value).strip()
+    parts = s.split(":")
+    if len(parts) != 2:
+        raise ValueError(f"expected HH:MM (24-hour), got {value!r}")
+    try:
+        h, m = int(parts[0]), int(parts[1])
+    except ValueError:
+        raise ValueError(f"expected HH:MM (24-hour), got {value!r}") from None
+    if not (0 <= h <= 23 and 0 <= m <= 59):
+        raise ValueError(f"expected HH:MM (24-hour), got {value!r}")
+    return f"{h:02d}:{m:02d}"
+
+
 def stepped_trail_stop_pct(*, entry_premium: float, running_high: float,
                            base_stop: float, x_pct: float, y_pct: float) -> float:
     """%-of-entry variant of ``stepped_trail_stop`` (Phase 5A / EXP2 rule 4:

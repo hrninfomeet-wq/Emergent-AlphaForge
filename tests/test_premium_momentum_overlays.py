@@ -579,3 +579,61 @@ def test_day_stop_breach_scan_uses_net_not_gross_rupees():
     )
     assert len(costs_off["trades"]) == 2, "mark-based 5200 under the 5300 cap -> no breach"
     assert costs_off["coverage"]["blocked_day_stop"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Review C1 closures (Cluster A safety review): HH:MM gates must normalize
+# unpadded-but-valid times (lexicographic "9:45" >= "10:30" was False -> a
+# risk gate that silently never fired) and die loudly on garbage.
+# ---------------------------------------------------------------------------
+def test_normalize_hhmm_contract():
+    from app.premium_momentum import normalize_hhmm
+    assert normalize_hhmm("9:45") == "09:45"
+    assert normalize_hhmm(" 09:45 ") == "09:45"
+    assert normalize_hhmm("15:00") == "15:00"
+    assert normalize_hhmm(None) is None
+    assert normalize_hhmm("") is None
+    import pytest as _pt
+    for bad in ("930", "25:00", "12:60", "ab:cd", "12:3:4"):
+        with _pt.raises(ValueError):
+            normalize_hhmm(bad)
+
+
+def test_backtest_unpadded_entry_cutoff_still_fires():
+    """'9:34' must gate identically to '09:34' — before the fix the unpadded
+    form compared lexicographically and the cutoff NEVER fired (fail-open)."""
+    spot = pd.DataFrame([
+        _spot_bar(1, "09:31", 24000.0), _spot_bar(2, "09:32", 24000.0),
+        _spot_bar(3, "09:33", 24000.0), _spot_bar(4, "09:34", 24000.0),
+        _spot_bar(5, "09:35", 24000.0),
+    ])
+    contracts = [
+        {"instrument_key": "CE|23950", "strike": 23950, "side": "CE", "expiry_date": "2026-07-17"},
+        {"instrument_key": "PE|24050", "strike": 24050, "side": "PE", "expiry_date": "2026-07-17"},
+    ]
+    opt = pd.DataFrame([
+        # CE crosses at ts4 (09:34) — exactly AT the cutoff -> must be blocked.
+        _opt("CE|23950", 1, 100.0), _opt("CE|23950", 2, 101.0),
+        _opt("CE|23950", 3, 102.0), _opt("CE|23950", 4, 130.0), _opt("CE|23950", 5, 140.0),
+        _opt("PE|24050", 1, 100.0), _opt("PE|24050", 2, 100.0),
+        _opt("PE|24050", 3, 100.0), _opt("PE|24050", 4, 100.0), _opt("PE|24050", 5, 100.0),
+    ])
+    base = {"reference_time": "09:31", "moneyness": "itm1", "momentum_pct": 15.0,
+            "stop_pct": 50.0}
+    padded = run_premium_momentum_backtest(
+        spot_df=spot, option_candles=opt, contracts=contracts, instrument="NIFTY",
+        params={**base, "entry_cutoff": "09:34"})
+    unpadded = run_premium_momentum_backtest(
+        spot_df=spot, option_candles=opt, contracts=contracts, instrument="NIFTY",
+        params={**base, "entry_cutoff": "9:34"})
+    assert padded["trades"] == [] and unpadded["trades"] == [], \
+        "unpadded cutoff must gate identically to the padded form"
+
+
+def test_backtest_garbage_entry_cutoff_raises():
+    spot = pd.DataFrame([_spot_bar(1, "09:31", 24000.0)])
+    with pytest.raises(ValueError):
+        run_premium_momentum_backtest(
+            spot_df=spot, option_candles=pd.DataFrame(), contracts=[],
+            instrument="NIFTY",
+            params={"momentum_pct": 15.0, "stop_pct": 20.0, "entry_cutoff": "930"})

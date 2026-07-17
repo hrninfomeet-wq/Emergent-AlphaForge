@@ -65,8 +65,9 @@ import pandas as pd
 from app.instruments import UNDERLYING_META, canonical_instrument_key
 from app.option_costs import CostConfig
 from app.premium_momentum import (
-    apply_costs_to_trade, lock_reference_strike, premium_ohlc_for_key,
-    stepped_trail_stop, stepped_trail_stop_pct, walk_premium_momentum,
+    apply_costs_to_trade, lock_reference_strike, normalize_hhmm,
+    premium_ohlc_for_key, stepped_trail_stop, stepped_trail_stop_pct,
+    walk_premium_momentum,
 )
 
 # The lazy reversal leg's reference bar is matched to the primary's stop-out
@@ -276,7 +277,9 @@ def run_premium_momentum_backtest(*, spot_df: pd.DataFrame, option_candles: pd.D
     # see split_candles_by_key.
     if candles_by_key is None:
         candles_by_key = split_candles_by_key(option_candles)
-    ref_time = str(params.get("reference_time") or "09:31")
+    # normalize-or-die on every HH:MM gate (review C1: unpadded times made
+    # string comparisons silently fail-open). ValueError -> route 400.
+    ref_time = normalize_hhmm(params.get("reference_time")) or "09:31"
     moneyness = str(params.get("moneyness") or "itm1")
     sides = _sides_for(params.get("side"))
     entry_pct = params.get("momentum_pct")
@@ -304,8 +307,8 @@ def run_premium_momentum_backtest(*, spot_df: pd.DataFrame, option_candles: pd.D
     lazy_trail_x_pct = params.get("lazy_trail_x_pct")
     lazy_trail_y_pct = params.get("lazy_trail_y_pct")
     lazy_moneyness = str(params.get("lazy_moneyness") or moneyness)
-    entry_cutoff = params.get("entry_cutoff")
-    exit_time = params.get("exit_time")
+    entry_cutoff = normalize_hhmm(params.get("entry_cutoff"))
+    exit_time = normalize_hhmm(params.get("exit_time"))
 
     # --- Phase 5A.2 params (all default OFF -> byte-identical) ---------------
     session_max_loss_rupees = params.get("session_max_loss_rupees")

@@ -291,20 +291,15 @@ async def _premium_day_stop_fire_once(db: Any, deployment: Dict[str, Any], *,
     path (routers.deployments._square_live_positions_for_deployment — the
     guard/auto_square machinery; never a new placement path). Paper/shadow:
     block-only, per the plan's parity table. Returns True only for the winner."""
-    from app.premium_lock_store import get_or_create_lock, mark_done
+    from app.premium_lock_store import get_or_create_lock, mark_day_stop
     dep_id = str(deployment.get("id") or "")
     await get_or_create_lock(db.premium_locks, deployment_id=dep_id, session_date=session_date)
-    res = await db.premium_locks.update_one(
-        {"deployment_id": dep_id, "session_date": session_date,
-         "day_stop_fired": {"$exists": False}},
-        {"$set": {"day_stop_fired": True,
-                  "day_stop_realized": float(realized),
-                  "day_stop_at": datetime.now(timezone.utc).isoformat()}},
-    )
-    if int(getattr(res, "matched_count", 0) or 0) != 1:
+    # ONE atomic store write claims the flag AND finalizes the session (see
+    # mark_day_stop's docstring — closes the review's flag-vs-done crash window
+    # and removes the parallel-flags divergence hazard).
+    if not await mark_day_stop(db.premium_locks, deployment_id=dep_id,
+                               session_date=session_date, realized=float(realized)):
         return False
-    await mark_done(db.premium_locks, deployment_id=dep_id,
-                    session_date=session_date, reason="day_stop")
     if str(deployment.get("mode") or "").lower() == "live":
         try:
             from app.routers.deployments import _square_live_positions_for_deployment
@@ -711,8 +706,9 @@ async def evaluate_deployment_on_close(
         # always wins (plan parity table: EXP2's 15:13 is backtest-only). The
         # guard-side honoring lands in Task B5; until then this hint is
         # journaled but inert.
-        _pm_exit_t = merged_params.get("exit_time")
-        if _pm_exit_t and str(_pm_exit_t) < "15:00":
+        from app.premium_momentum import normalize_hhmm as _norm_hhmm
+        _pm_exit_t = _norm_hhmm(merged_params.get("exit_time"))
+        if _pm_exit_t and _pm_exit_t < "15:00":
             signal_doc["risk_hints"]["square_at_ist"] = str(_pm_exit_t)
         signal_doc["premium_momentum"] = {
             "ref_premium": pm_result["ref_premium"],

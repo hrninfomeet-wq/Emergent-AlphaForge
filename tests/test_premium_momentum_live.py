@@ -548,3 +548,72 @@ def test_lazy_disabled_ignores_armed_flag():
     ))
     assert out["outcome"] == "monitoring"
     assert "lce_instrument_key" not in locks.docs[0]
+
+
+# ---------------------------------------------------------------------------
+# Review closures (Cluster A safety review, wf_784c52b4):
+#   C2 interim guard — both-mode LIVE blocked until B6/B7 land.
+#   C1 — entry_cutoff must fire for unpadded-but-valid HH:MM inputs.
+# ---------------------------------------------------------------------------
+def test_c2_interim_guard_blocks_both_mode_live_deployments():
+    locks = _FakeLocks()
+    dep = _dep({"leg_mode": "both"})
+    dep["mode"] = "live"
+    out = run(evaluate_premium_momentum_bar(
+        locks_col=locks, deployment=dep, instrument="NIFTY",
+        candle_ts=TS_0931, spot_close=24000.0, contracts=_CONTRACTS,
+        latest_tick_map=_tickmap({}), now_ts=TS_0931 / 1000 + 60,
+    ))
+    assert out["outcome"] == "blocked"
+    assert out["reason"] == "both_mode_live_pending_b6_b7"
+    assert locks.docs == [], "the interim guard must not create any lock state"
+
+
+def test_c2_interim_guard_leaves_both_mode_paper_and_first_to_trigger_live_alone():
+    # both-mode + shadow: proceeds to the normal ref-bar lock flow.
+    locks = _FakeLocks()
+    dep = _dep({"leg_mode": "both"})
+    dep["mode"] = "shadow"
+    ticks = {"CE|23950": {"last_price": 100.0, "ts": TS_0931 + 55_000},
+             "PE|24050": {"last_price": 110.0, "ts": TS_0931 + 55_000}}
+    out = run(evaluate_premium_momentum_bar(
+        locks_col=locks, deployment=dep, instrument="NIFTY",
+        candle_ts=TS_0931, spot_close=24000.0, contracts=_CONTRACTS,
+        latest_tick_map=_tickmap(ticks), now_ts=TS_0931 / 1000 + 60,
+    ))
+    assert out["outcome"] != "blocked" and len(locks.docs) == 1
+    # first_to_trigger + live: untouched by the guard (Track B shipped path).
+    locks2 = _FakeLocks()
+    dep2 = _dep({})
+    dep2["mode"] = "live"
+    out2 = run(evaluate_premium_momentum_bar(
+        locks_col=locks2, deployment=dep2, instrument="NIFTY",
+        candle_ts=TS_0931, spot_close=24000.0, contracts=_CONTRACTS,
+        latest_tick_map=_tickmap(ticks), now_ts=TS_0931 / 1000 + 60,
+    ))
+    assert out2["outcome"] != "blocked"
+
+
+def test_c1_unpadded_entry_cutoff_fires_in_live_engine():
+    """entry_cutoff '9:31' must block the 09:31+ bars exactly like '09:31' —
+    before the fix the lexicographic compare made it NEVER fire (fail-open)."""
+    for cutoff in ("09:31", "9:31"):
+        locks = _FakeLocks()
+        dep = _dep({"entry_cutoff": cutoff})
+        ticks = {"CE|23950": {"last_price": 100.0, "ts": TS_0931 + 55_000},
+                 "PE|24050": {"last_price": 110.0, "ts": TS_0931 + 55_000}}
+        run(evaluate_premium_momentum_bar(
+            locks_col=locks, deployment=dep, instrument="NIFTY",
+            candle_ts=TS_0931, spot_close=24000.0, contracts=_CONTRACTS,
+            latest_tick_map=_tickmap(ticks), now_ts=TS_0931 / 1000 + 60,
+        ))
+        ts2 = TS_0931 + 60_000
+        ticks2 = {"CE|23950": {"last_price": 120.0, "ts": ts2 + 55_000},
+                  "PE|24050": {"last_price": 111.0, "ts": ts2 + 55_000}}
+        out = run(evaluate_premium_momentum_bar(
+            locks_col=locks, deployment=dep, instrument="NIFTY",
+            candle_ts=ts2, spot_close=24000.0, contracts=_CONTRACTS,
+            latest_tick_map=_tickmap(ticks2), now_ts=ts2 / 1000 + 60,
+        ))
+        assert out["outcome"] != "triggered", \
+            f"cutoff {cutoff!r} must block the +20% cross at/after the cutoff bar"

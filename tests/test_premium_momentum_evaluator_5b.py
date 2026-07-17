@@ -278,3 +278,65 @@ def test_exit_time_at_or_after_eod_is_clamped_out():
     sig = _trigger_clean_signal(db)
     assert "square_at_ist" not in sig["risk_hints"], \
         "exit_time >= the 15:00 EOD square must be ignored (EOD backstop wins)"
+
+
+# --- Review closures (Cluster A safety review, wf_784c52b4) --------------------
+
+def test_c1_unpadded_exit_time_normalizes_into_the_hint():
+    """exit_time '9:30' must land as square_at_ist '09:30' — before the fix the
+    lexicographic clamp ('9:30' < '15:00' is False) silently DROPPED the hint
+    and the position rode to the 15:00 EOD with no log."""
+    db = _FakeDB()
+    seed_db(db, end_ts=TS_0931)
+    dep = _dep_from_db(db)
+    dep["params"]["exit_time"] = "9:30"
+    db.strategy_deployments.rows[0] = dict(dep)
+    _eval_with_ticks(db, dep, _fresh_ticks(100.0, 110.0))
+    sig = _trigger_clean_signal(db)
+    assert sig["risk_hints"]["square_at_ist"] == "09:30"
+
+
+def test_lazy_leg_signal_uses_lazy_risk_hints_and_carries_leg():
+    """Reviewer coverage note (a): no test drove a LAZY-leg signal through the
+    evaluator. A pre-seeded both-mode lock with both primaries resolved and
+    lazy_armed_ce set: bar 1 = lazy pickup (fresh lce lock + ref), bar 2 = the
+    lazy trigger. The signal must exit on the LAZY params (stop from
+    lazy_stop_pct, target from lazy_target_pct with NO fallback) and carry
+    leg='lce'; the latch must be the lce leg latch."""
+    db = _FakeDB()
+    seed_db(db, end_ts=TS_0931)
+    dep = _dep_from_db(db)
+    dep["params"].update({"leg_mode": "both", "lazy_enabled": True,
+                          "lazy_momentum_pct": 10.0, "lazy_stop_pct": 12.0,
+                          "lazy_moneyness": "itm1"})
+    db.strategy_deployments.rows[0] = dict(dep)
+    # Pre-seeded lock: primaries resolved (both triggered), lazy CE armed by
+    # what will be B6's guard hook. Refs present so no primary capture runs.
+    run(db.premium_locks.insert_one({
+        "deployment_id": dep["id"], "session_date": "2026-07-10",
+        "locked_at": "x", "done_for_day": False, "triggered_side": None,
+        "entered_norenordno": None, "entry_premium": None,
+        "spot_at_ref": 24000.0, "reference_bar_ts": TS_0931,
+        "ce": {"instrument_key": CE_KEY}, "pe": {"instrument_key": PE_KEY},
+        "ce_ref_premium": 100.0, "ce_ref_ts": TS_0931, "pe_ref_premium": 110.0,
+        "pe_ref_ts": TS_0931, "ce_triggered": True, "pe_triggered": True,
+        "lazy_armed_ce": True,
+    }))
+    # Bar 1 (09:32): lazy pickup — fresh lce strike from bar spot + tick ref 100.
+    _add_bar(db, TS_0932)
+    r1 = _eval_with_ticks(db, _dep_from_db(db), _fresh_ticks(100.0, 110.0))
+    assert r1["outcome"] == "no_setup"
+    lock = db.premium_locks.docs[0]
+    assert lock.get("lce_instrument_key") == CE_KEY or (lock.get("lce") or {}).get("instrument_key") == CE_KEY
+    assert lock.get("lce_ref_premium") == 100.0
+    # Bar 2 (09:33): +11% over the lazy ref crosses the 10% lazy trigger.
+    _add_bar(db, TS_0933)
+    _recent_tick(db, CE_KEY, 111.0)
+    r2 = _eval_with_ticks(db, _dep_from_db(db), _fresh_ticks(111.0, 110.0))
+    assert r2["outcome"] == "clean" and r2["direction"] == "CE"
+    sig = db.signals.rows[-1]
+    assert sig["premium_momentum"]["leg"] == "lce"
+    assert sig["risk_hints"]["stop_pct"] == 12.0, "lazy leg must exit on lazy_stop_pct"
+    assert sig["risk_hints"]["target_pct"] is None, "lazy_target_pct has NO primary fallback"
+    lock = db.premium_locks.docs[0]
+    assert lock.get("lce_triggered") is True, "the latch must be the lce LEG latch"

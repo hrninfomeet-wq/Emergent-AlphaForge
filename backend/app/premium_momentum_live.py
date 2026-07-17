@@ -42,7 +42,7 @@ from app.live.option_premium import resolve_premium
 from app.premium_lock_store import (
     capture_ref, capture_ref_leg, get_lock, get_or_create_lock, mark_done,
 )
-from app.premium_momentum import lock_reference_strike, momentum_triggered
+from app.premium_momentum import normalize_hhmm, lock_reference_strike, momentum_triggered
 
 log = logging.getLogger(__name__)
 
@@ -167,15 +167,34 @@ async def evaluate_premium_momentum_bar(
     gates on the value it is given, staying a pure function of its inputs."""
     dep_id = str(deployment.get("id") or "")
     params = dict(deployment.get("params") or {})
-    ref_time = str(params.get("reference_time") or "09:31")
-    cutoff = str(params.get("late_lock_cutoff") or "10:15")
+    # normalize-or-die on every HH:MM risk gate (review C1: unpadded valid
+    # times made lexicographic comparisons silently fail-OPEN - a cutoff
+    # that never fires). A ValueError here surfaces as an evaluator error,
+    # loud and visible, never a silent no-op gate.
+    ref_time = normalize_hhmm(params.get("reference_time")) or "09:31"
+    cutoff = normalize_hhmm(params.get("late_lock_cutoff")) or "10:15"
     moneyness = str(params.get("moneyness") or "itm1")
     sides = _sides(params)
     both_mode = _leg_mode(params) == "both"
+
+    # ---- INTERIM SAFETY GUARD (review finding C2) — remove in the commit
+    # that lands B6+B7. Cluster A ships the both-mode ENTRY path, but the
+    # exit-finalize (B6: per-leg mark_done — today the guard-close hook
+    # whole-doc-finalizes on the FIRST leg close) and recovery (B7: rehydrate
+    # selects on the legacy entered_norenordno that both-mode deliberately
+    # never writes) don't exist yet. A both-mode LIVE deployment could
+    # therefore hold an open broker position that a restart would leave with
+    # NO premium stop monitor. Until B6/B7: both-mode is paper/shadow-only.
+    # This is an incomplete-feature guard, NOT an arming gate — arming
+    # semantics are untouched.
+    if both_mode and str(deployment.get("mode") or "").lower() == "live":
+        return {"outcome": "blocked", "reason": "both_mode_live_pending_b6_b7",
+                "blockers": ["leg_mode=both live execution lands with tasks B6/B7 "
+                             "(exit finalize + recovery); use paper/shadow until then"]}
     lazy_enabled = bool(params.get("lazy_enabled") or False)
     lazy_moneyness = str(params.get("lazy_moneyness") or moneyness)
     lazy_mom_pct = params.get("lazy_momentum_pct")
-    entry_cutoff = params.get("entry_cutoff")
+    entry_cutoff = normalize_hhmm(params.get("entry_cutoff"))
     bar_hhmm = _ist_hhmm(candle_ts)
     session = _ist_session_date(candle_ts)
 
@@ -183,7 +202,7 @@ async def evaluate_premium_momentum_bar(
     # at/after it" -- distinct from late_lock_cutoff below, which gates only
     # the INITIAL reference-time strike lock). None (the pre-5B default) ->
     # always False -> zero behavior change for every existing configuration.
-    cutoff_reached = bool(entry_cutoff) and bar_hhmm >= str(entry_cutoff)
+    cutoff_reached = bool(entry_cutoff) and bar_hhmm >= entry_cutoff
 
     if bar_hhmm < ref_time:
         return {"outcome": "pre_reference"}
