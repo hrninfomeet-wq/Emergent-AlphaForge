@@ -555,21 +555,25 @@ def test_lazy_disabled_ignores_armed_flag():
 #   C2 interim guard — both-mode LIVE blocked until B6/B7 land.
 #   C1 — entry_cutoff must fire for unpadded-but-valid HH:MM inputs.
 # ---------------------------------------------------------------------------
-def test_c2_interim_guard_blocks_both_mode_live_deployments():
+def test_both_mode_live_deployments_proceed_after_b6_b7():
+    """The Cluster-A interim guard (both_mode_live_pending_b6_b7) was removed
+    once B6 (per-leg exit finalize + lazy arming) and B7 (per-leg recovery)
+    landed - a both-mode LIVE deployment now runs the normal session flow."""
     locks = _FakeLocks()
     dep = _dep({"leg_mode": "both"})
     dep["mode"] = "live"
+    ticks = {"CE|23950": {"last_price": 100.0, "ts": TS_0931 + 55_000},
+             "PE|24050": {"last_price": 110.0, "ts": TS_0931 + 55_000}}
     out = run(evaluate_premium_momentum_bar(
         locks_col=locks, deployment=dep, instrument="NIFTY",
         candle_ts=TS_0931, spot_close=24000.0, contracts=_CONTRACTS,
-        latest_tick_map=_tickmap({}), now_ts=TS_0931 / 1000 + 60,
+        latest_tick_map=_tickmap(ticks), now_ts=TS_0931 / 1000 + 60,
     ))
-    assert out["outcome"] == "blocked"
-    assert out["reason"] == "both_mode_live_pending_b6_b7"
-    assert locks.docs == [], "the interim guard must not create any lock state"
+    assert out["outcome"] != "blocked"
+    assert len(locks.docs) == 1, "normal ref-bar lock flow must run for both+live"
 
 
-def test_c2_interim_guard_leaves_both_mode_paper_and_first_to_trigger_live_alone():
+def test_both_mode_paper_and_first_to_trigger_live_normal_flow():
     # both-mode + shadow: proceeds to the normal ref-bar lock flow.
     locks = _FakeLocks()
     dep = _dep({"leg_mode": "both"})

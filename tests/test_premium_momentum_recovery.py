@@ -340,3 +340,102 @@ def test_startup_recovery_premium_errors_make_run_incomplete(monkeypatch):
 
     monkeypatch.setattr(rt, "rehydrate_premium_momentum", _failing_rehydrate)
     assert run(live_startup_recovery()) is False
+
+
+# ====================== 5B B7: per-leg (both-mode) rehydration =================
+
+def _both_lock(dep_id="D1", **extra):
+    """A both-mode lock: entries live in per-leg fields; the legacy
+    entered_norenordno is deliberately None (review C2's flagged blind spot —
+    the old $ne:None selection skipped these entirely)."""
+    return {
+        "deployment_id": dep_id, "session_date": _today_ist(),
+        "done_for_day": False, "triggered_side": None,
+        "entered_norenordno": None, "entry_premium": None,
+        "ce": dict(CE), "pe": dict(PE),
+        **extra,
+    }
+
+
+_B7_DEP = [{"id": "D1",
+            "params": {"leg_mode": "both", "stop_pct": 30.0, "target_pct": 60.0,
+                       "lazy_enabled": True, "lazy_momentum_pct": 10.0,
+                       "lazy_stop_pct": 12.0, "exit_time": "14:30"},
+            "risk": {}}]
+
+
+def test_b7_both_mode_two_legs_rehydrated_with_own_orders():
+    locks = _Locks()
+    run(locks.insert_one(_both_lock(
+        ce_triggered=True, ce_entered_norenordno="N1", ce_entry_premium=115.0,
+        pe_triggered=True, pe_entered_norenordno="N2", pe_entry_premium=95.0)))
+    db = _DB(locks, list(_B7_DEP))
+    reg = _Reg()
+    book = {CE["trading_symbol"]: {"tsym": CE["trading_symbol"], "netqty": "65",
+                                   "exch": "NFO", "lp": "118.0"},
+            PE["trading_symbol"]: {"tsym": PE["trading_symbol"], "netqty": "65",
+                                   "exch": "NFO", "lp": "96.0"}}
+    out = run(rehydrate_premium_momentum(db, reg, book))
+    assert out == {"reattached": 2, "closed": 0, "skipped": 0, "errors": 0}
+    keys = sorted(c["key"] for c in reg.calls)
+    assert keys == ["N1", "N2"], "each leg registers under its OWN norenordno"
+    for c in reg.calls:
+        assert c["square_at_ist"] == "14:30", "exit_time must rehydrate too (B5)"
+
+
+def test_b7_one_leg_gone_marks_only_that_leg_and_not_whole_doc():
+    locks = _Locks()
+    run(locks.insert_one(_both_lock(
+        ce_triggered=True, ce_entered_norenordno="N1", ce_entry_premium=115.0,
+        pe_triggered=True, pe_entered_norenordno="N2", pe_entry_premium=95.0)))
+    db = _DB(locks, list(_B7_DEP))
+    reg = _Reg()
+    # CE position gone from the broker book; PE still open.
+    book = {PE["trading_symbol"]: {"tsym": PE["trading_symbol"], "netqty": "65",
+                                   "exch": "NFO", "lp": "96.0"}}
+    out = run(rehydrate_premium_momentum(db, reg, book))
+    assert out["closed"] == 1 and out["reattached"] == 1
+    doc = locks.docs[0]
+    assert doc.get("ce_exited") is True, "only the GONE leg is marked exited"
+    assert doc["done_for_day"] is False, \
+        "whole-doc done must NOT fire while the sibling leg is still open"
+
+
+def test_b7_lazy_leg_rehydrates_with_lazy_params():
+    locks = _Locks()
+    run(locks.insert_one(_both_lock(
+        ce_triggered=True, ce_entered_norenordno="N1", ce_entry_premium=115.0,
+        ce_exited=True,
+        lazy_armed_pe=True, lpe_instrument_key="NSE_FO|2002",
+        lpe_tsym="NIFTY10JUL26P23900", lpe_entered_norenordno="N3",
+        lpe_entry_premium=88.0)))
+    db = _DB(locks, list(_B7_DEP))
+    reg = _Reg()
+    book = {"NIFTY10JUL26P23900": {"tsym": "NIFTY10JUL26P23900", "netqty": "65",
+                                   "exch": "NFO", "lp": "92.0"}}
+    out = run(rehydrate_premium_momentum(db, reg, book))
+    assert out["reattached"] == 1 and out["errors"] == 0
+    kw = reg.calls[0]
+    assert kw["key"] == "N3" and kw["tsym"] == "NIFTY10JUL26P23900"
+    assert kw["entry_price"] == 88.0, "lazy leg rehydrates with ITS persisted entry"
+
+
+def test_b7_legacy_single_leg_docs_rehydrate_byte_identically():
+    """The pre-5B doc shape must flow through the EXACT legacy path (whole-doc
+    exited_while_down close when gone; same registration otherwise) — pinned by
+    the pre-existing tests above; this adds the mixed-population case."""
+    locks = _Locks()
+    run(locks.insert_one(_entered_lock("D1", "ce", CE, "N1", 115.0)))
+    run(locks.insert_one(_both_lock("D2",
+        pe_triggered=True, pe_entered_norenordno="N9", pe_entry_premium=95.0)))
+    db = _DB(locks, [{"id": "D1", "params": {"stop_pct": 30.0}, "risk": {}},
+                     {"id": "D2", "params": {"leg_mode": "both", "stop_pct": 30.0},
+                      "risk": {}}])
+    reg = _Reg()
+    book = {CE["trading_symbol"]: {"tsym": CE["trading_symbol"], "netqty": "65",
+                                   "exch": "NFO", "lp": "118.0"},
+            PE["trading_symbol"]: {"tsym": PE["trading_symbol"], "netqty": "65",
+                                   "exch": "NFO", "lp": "96.0"}}
+    out = run(rehydrate_premium_momentum(db, reg, book))
+    assert out["reattached"] == 2 and out["errors"] == 0
+    assert sorted(c["key"] for c in reg.calls) == ["N1", "N9"]

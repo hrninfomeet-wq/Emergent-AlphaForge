@@ -177,20 +177,10 @@ async def evaluate_premium_momentum_bar(
     sides = _sides(params)
     both_mode = _leg_mode(params) == "both"
 
-    # ---- INTERIM SAFETY GUARD (review finding C2) — remove in the commit
-    # that lands B6+B7. Cluster A ships the both-mode ENTRY path, but the
-    # exit-finalize (B6: per-leg mark_done — today the guard-close hook
-    # whole-doc-finalizes on the FIRST leg close) and recovery (B7: rehydrate
-    # selects on the legacy entered_norenordno that both-mode deliberately
-    # never writes) don't exist yet. A both-mode LIVE deployment could
-    # therefore hold an open broker position that a restart would leave with
-    # NO premium stop monitor. Until B6/B7: both-mode is paper/shadow-only.
-    # This is an incomplete-feature guard, NOT an arming gate — arming
-    # semantics are untouched.
-    if both_mode and str(deployment.get("mode") or "").lower() == "live":
-        return {"outcome": "blocked", "reason": "both_mode_live_pending_b6_b7",
-                "blockers": ["leg_mode=both live execution lands with tasks B6/B7 "
-                             "(exit finalize + recovery); use paper/shadow until then"]}
+    # (The Cluster-A interim guard that blocked both-mode LIVE deployments was
+    # removed here once B6 — per-leg exit finalize + lazy arming in the guard
+    # close hook — and B7 — per-leg recovery rehydration — both landed; the
+    # full both-mode lifecycle now exists end to end.)
     lazy_enabled = bool(params.get("lazy_enabled") or False)
     lazy_moneyness = str(params.get("lazy_moneyness") or moneyness)
     lazy_mom_pct = params.get("lazy_momentum_pct")

@@ -381,13 +381,20 @@ async def rehydrate_premium_momentum(db, registry, broker_positions_by_tsym) -> 
     Never raises."""
     from app.live.kill_switch import _parse_netqty
     from app.live.live_sl_monitor import build_monitor_state
-    from app.premium_lock_store import mark_done
+    from app.premium_lock_store import legs_unresolved, mark_done, mark_leg_exited
     out = {"reattached": 0, "closed": 0, "skipped": 0, "errors": 0}
     try:
         today = (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).strftime("%Y-%m-%d")
+        # 5B B7: both-mode entries live in PER-LEG fields and deliberately never
+        # set the legacy entered_norenordno (review C2's flagged blind spot: the
+        # old $ne:None query would skip them and an open position restarted with
+        # NO stop monitor). Query broadly, branch per doc shape below.
         locks = await db.premium_locks.find(
-            {"session_date": today, "entered_norenordno": {"$ne": None},
-             "done_for_day": False}, {"_id": 0}).to_list(length=None)
+            {"session_date": today, "done_for_day": False},
+            {"_id": 0}).to_list(length=None)
+        locks = [l for l in locks
+                 if l.get("entered_norenordno")
+                 or any(l.get(f"{p}_entered_norenordno") for p in ("ce", "pe", "lce", "lpe"))]
         # Already-watched set: registry entries are keyed by entry norenordno
         # (auto_live / this function) OR by tsym (generic rehydrate), and the
         # guard matches broker positions to entries BY TSYM — collect both ids
@@ -399,42 +406,120 @@ async def rehydrate_premium_momentum(db, registry, broker_positions_by_tsym) -> 
         watched.discard("")
         for lock in locks:
             try:
-                side = str(lock.get("triggered_side") or "").lower()
-                contract = dict(lock.get(side) or {})
-                tsym = str(contract.get("trading_symbol") or contract.get("tsym") or "")
-                ordno = str(lock["entered_norenordno"])
-                if ordno in watched or (tsym and tsym in watched):
-                    out["skipped"] += 1
-                    continue  # already guarded (re-run / fresh arm) — never clobber
-                pos = broker_positions_by_tsym.get(tsym)
-                if not pos:
-                    await mark_done(db.premium_locks, deployment_id=lock["deployment_id"],
-                                    session_date=today, reason="exited_while_down")
-                    out["closed"] += 1
-                    continue
-                qty = _parse_netqty(pos.get("netqty"))
-                if not qty:
-                    continue  # flat/unparseable netqty — leave to the generic rehydrate
-                entry = float(lock.get("entry_premium") or 0) or None
-                if entry is None:
-                    continue  # no persisted entry -> leave to the generic rehydrate
                 dep = await db.strategy_deployments.find_one(
                     {"id": lock["deployment_id"]}, {"_id": 0})
                 params = dict((dep or {}).get("params") or {})
                 risk = dict((dep or {}).get("risk") or {})
-                state = build_monitor_state(
-                    entry, stop_pct=params.get("stop_pct") or 50.0,
-                    target_pct=params.get("target_pct"),
-                    trail=risk.get("exit_controls"))
-                registry.register(
-                    key=ordno, tsym=tsym,
-                    exch=str(contract.get("exch") or "NFO"),
-                    qty=abs(qty), prd="I",
-                    entry_price=entry, state=state, source="auto_live",
-                    deployment_id=str(lock["deployment_id"]))
-                watched.add(ordno)
-                watched.add(tsym)  # guard against duplicate locks on one tsym
-                out["reattached"] += 1
+
+                # ---- 5B B7: build the leg worklist for this lock doc. Legacy
+                # single-leg (first_to_trigger) docs keep their EXACT prior
+                # treatment incl. the whole-doc exited_while_down close; per-leg
+                # (both-mode) docs are handled leg-by-leg with per-leg exit
+                # marks and NO premature whole-doc done (recon correction 3).
+                legs: list = []
+                if lock.get("entered_norenordno"):
+                    side = str(lock.get("triggered_side") or "").lower()
+                    contract = dict(lock.get(side) or {})
+                    legs.append({
+                        "legacy": True, "leg": None,
+                        "ordno": str(lock["entered_norenordno"]),
+                        "tsym": str(contract.get("trading_symbol") or contract.get("tsym") or ""),
+                        "exch": str(contract.get("exch") or "NFO"),
+                        "entry": float(lock.get("entry_premium") or 0) or None,
+                        "stop_pct": params.get("stop_pct") or 50.0,
+                        "target_pct": params.get("target_pct"),
+                    })
+                for leg, prefix in (("pce", "ce"), ("ppe", "pe"),
+                                    ("lce", "lce"), ("lpe", "lpe")):
+                    _ord = lock.get(f"{prefix}_entered_norenordno")
+                    if not _ord or lock.get(f"{prefix}_exited"):
+                        continue
+                    if leg in ("pce", "ppe"):
+                        c = dict(lock.get(prefix) or {})
+                        _tsym = str(c.get("trading_symbol") or c.get("tsym") or "")
+                        _exch = str(c.get("exch") or "NFO")
+                        _stop = params.get("stop_pct") or 50.0
+                        _tgt = params.get("target_pct")
+                    else:
+                        # lazy contract lives in flat {leg}_<field> keys (A3);
+                        # tsym may be absent when the fresh contract doc lacked
+                        # it — leave that leg to the generic rehydrate then.
+                        _tsym = str(lock.get(f"{prefix}_tsym") or "")
+                        _exch = "NFO"
+                        _stop = (params.get("lazy_stop_pct")
+                                 if params.get("lazy_stop_pct") is not None
+                                 else (params.get("stop_pct") or 50.0))
+                        _tgt = params.get("lazy_target_pct")
+                    legs.append({
+                        "legacy": False, "leg": leg, "ordno": str(_ord),
+                        "tsym": _tsym, "exch": _exch,
+                        "entry": float(lock.get(f"{prefix}_entry_premium") or 0) or None,
+                        "stop_pct": _stop, "target_pct": _tgt,
+                    })
+
+                # exit_time -> per-entry square time; register() re-clamps.
+                _sq_at = None
+                try:
+                    from app.premium_momentum import normalize_hhmm as _nh
+                    _sq_at = _nh(params.get("exit_time"))
+                except ValueError:
+                    _sq_at = None
+
+                for item in legs:
+                    ordno, tsym = item["ordno"], item["tsym"]
+                    if ordno in watched or (tsym and tsym in watched):
+                        out["skipped"] += 1
+                        continue  # already guarded (re-run / fresh arm) — never clobber
+                    if not tsym:
+                        continue  # no symbol persisted — leave to the generic rehydrate
+                    pos = broker_positions_by_tsym.get(tsym)
+                    if not pos:
+                        if item["legacy"]:
+                            # single-leg: whole session done, exactly as before.
+                            await mark_done(db.premium_locks,
+                                            deployment_id=lock["deployment_id"],
+                                            session_date=today,
+                                            reason="exited_while_down")
+                        else:
+                            # per-leg: mark ONLY this leg exited; the whole doc
+                            # finalizes below only when nothing is unresolved.
+                            await mark_leg_exited(db.premium_locks,
+                                                  deployment_id=lock["deployment_id"],
+                                                  session_date=today, leg=item["leg"])
+                        out["closed"] += 1
+                        continue
+                    qty = _parse_netqty(pos.get("netqty"))
+                    if not qty:
+                        continue  # flat/unparseable netqty — generic rehydrate's job
+                    if item["entry"] is None:
+                        continue  # no persisted entry -> generic rehydrate's job
+                    state = build_monitor_state(
+                        item["entry"], stop_pct=item["stop_pct"],
+                        target_pct=item["target_pct"],
+                        trail=risk.get("exit_controls"))
+                    registry.register(
+                        key=ordno, tsym=tsym, exch=item["exch"],
+                        qty=abs(qty), prd="I",
+                        entry_price=item["entry"], state=state, source="auto_live",
+                        deployment_id=str(lock["deployment_id"]),
+                        square_at_ist=_sq_at)
+                    watched.add(ordno)
+                    watched.add(tsym)  # guard against duplicate locks on one tsym
+                    out["reattached"] += 1
+
+                # per-leg docs: finalize the whole session ONLY when no leg is
+                # unresolved AND both primaries exited (same rule as the B6
+                # close hook — a never-triggered sibling keeps monitoring).
+                if not lock.get("entered_norenordno"):
+                    fresh = await db.premium_locks.find_one(
+                        {"deployment_id": lock["deployment_id"], "session_date": today},
+                        {"_id": 0})
+                    if fresh and not fresh.get("done_for_day") \
+                            and not legs_unresolved(fresh, params) \
+                            and bool(fresh.get("ce_exited")) and bool(fresh.get("pe_exited")):
+                        await mark_done(db.premium_locks,
+                                        deployment_id=lock["deployment_id"],
+                                        session_date=today, reason="exited_while_down")
             except Exception:
                 out["errors"] += 1
                 log.exception("premium-momentum rehydrate failed for lock %s", lock.get("deployment_id"))
