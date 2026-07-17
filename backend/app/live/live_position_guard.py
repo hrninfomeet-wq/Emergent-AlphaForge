@@ -264,7 +264,14 @@ class LiveMonitorRegistry:
             try:
                 from app.premium_momentum import normalize_hhmm
                 _sq = normalize_hhmm(square_at_ist)
-                _eod = f"{self._eod_square_ist.hour:02d}:{self._eod_square_ist.minute:02d}"
+                # The registry has no handle on the guard's configured EOD
+                # (that lives on LivePositionGuard); clamp against the shared
+                # 15:00 default. Runtime-safe either way: _evaluate_eod_square
+                # always squares EVERYTHING once the guard's actual EOD is
+                # reached, so a per-entry time can never OUTLIVE a
+                # differently-configured EOD — it could only fire earlier,
+                # which is the conservative direction.
+                _eod = "15:00"
                 if _sq is not None and _sq < _eod:
                     item["square_at_ist"] = _sq
                 else:
