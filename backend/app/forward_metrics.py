@@ -286,6 +286,38 @@ def build_arm_advisories(forward: Optional[Dict[str, Any]]) -> List[Dict[str, st
     return adv
 
 
+PREMIUM_EDGE_VERDICT_MESSAGE = (
+    "This strategy family FAILED its pre-registered edge gate (validation-best lost "
+    "-Rs153.8k on the untouched 2026 holdout at 1%/side friction, worse than the "
+    "untuned baseline) - see docs/PREMIUM_MOMENTUM_EDGE_VERDICT_2026-07.md; multi-leg "
+    "execution is a capability build, not a validated edge"
+)
+
+
+def premium_edge_verdict_advisory(
+    strategy_id: Optional[str], merged_params: Optional[Dict[str, Any]]
+) -> Optional[Dict[str, str]]:
+    """NON-BLOCKING advisory (Phase 5B B8) for premium_momentum deployments that have
+    opted into multi-leg live/paper execution — `leg_mode == "both"` or
+    `lazy_enabled` truthy. The strategy family's pre-registered edge hunt CLOSED with
+    the gate FAILED (docs/PREMIUM_MOMENTUM_EDGE_VERDICT_2026-07.md): the validation-best
+    config lost money on the untouched 2026 holdout, worse than the untuned baseline.
+    Multi-leg execution is a capability build, not a validated edge — surface that
+    honestly wherever the operator is deciding whether to arm real money. Advisory
+    only: never blocks arming/creation. Pure + host-testable."""
+    if strategy_id != "premium_momentum" or not merged_params:
+        return None
+    leg_mode = str(merged_params.get("leg_mode") or "first_to_trigger").lower()
+    lazy_enabled = bool(merged_params.get("lazy_enabled"))
+    if leg_mode != "both" and not lazy_enabled:
+        return None
+    return {
+        "severity": "warning",
+        "id": "premium_edge_verdict",
+        "message": PREMIUM_EDGE_VERDICT_MESSAGE,
+    }
+
+
 async def compute_forward_metrics_for_deployments(
     db: Any,
     deployments: Iterable[Dict[str, Any]],

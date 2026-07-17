@@ -21,6 +21,7 @@ from app.forward_metrics import (
     build_arm_advisories,
     compute_forward_metrics_for_deployment,
     compute_forward_metrics_for_deployments,
+    premium_edge_verdict_advisory,
 )
 from app.deployment_evaluator import evaluate_active_deployments, evaluate_deployment_on_close
 from app.deployment_preflight import compute_data_realism
@@ -103,6 +104,24 @@ async def _broker_connected() -> bool:
 def _is_drift_paused(deployment: Dict[str, Any]) -> bool:
     """True iff the deployment carries the source-drift pause marker."""
     return str(deployment.get("drift_reason") or "") == "strategy_source_drift"
+
+
+def _premium_edge_verdict_advisory_for(deployment: Dict[str, Any]) -> Optional[Dict[str, str]]:
+    """Phase 5B B8: informational-only advisory for premium_momentum deployments that
+    opted into multi-leg execution (leg_mode=="both" or lazy_enabled). Resolves the
+    deployment's merged params via the strategy registry (same pattern as
+    deployment_evaluator.py) so a deployment created pre-5B (no leg_mode stored) still
+    reads the plugin-schema default honestly. NEVER read by the arm gating path
+    (arm/disarm decisions are made above this line in both call sites) — advisory
+    only, per S19's existing non-blocking convention."""
+    strategy_id = str(deployment.get("strategy_id") or "")
+    if strategy_id != "premium_momentum":
+        return None
+    strategy_obj = get_registry().get(strategy_id)
+    if strategy_obj is None:
+        return None
+    merged_params = strategy_obj.merged_params(deployment.get("params") or {})
+    return premium_edge_verdict_advisory(strategy_id, merged_params)
 
 
 def _utcnow() -> datetime:
@@ -580,6 +599,9 @@ async def get_deployment_metrics(deployment_id: str):
     fwd = await compute_forward_metrics_for_deployment(db, deployment)
     out = serialize_doc(fwd)
     out["arm_advisories"] = build_arm_advisories(fwd)
+    _pm_advisory = _premium_edge_verdict_advisory_for(deployment)
+    if _pm_advisory:
+        out["arm_advisories"].append(_pm_advisory)
     return out
 
 
@@ -916,6 +938,9 @@ async def arm_deployment_live(deployment_id: str, body: _LiveArmBody):
     except Exception:
         fwd = None
     out["arm_advisories"] = build_arm_advisories(fwd)
+    _pm_advisory = _premium_edge_verdict_advisory_for(deployment)
+    if _pm_advisory:
+        out["arm_advisories"].append(_pm_advisory)
     return serialize_doc(out)
 
 

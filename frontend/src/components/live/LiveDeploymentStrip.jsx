@@ -76,6 +76,15 @@ function entryErrorLabel(reason) {
     premium_trigger_not_met: "premium fell back below the trigger before placement",
     strike_lock_failed: "could not lock the strike at the reference time",
     ref_premium_unavailable: "no fresh option tick to capture the reference premium",
+    // Phase 5B B8: multi-leg/lazy gate + day-stop refusal reasons (A3/A4/deployment
+    // day-stop gate). vix_unverifiable/vix_gate/day_stop are LIVE reasons today;
+    // both_mode_live_pending_b6_b7 is the removed Cluster-A interim guard (B7,
+    // d110a1e) — kept here only so a historical journaled signal from before that
+    // removal still renders a readable label instead of the raw reason string.
+    vix_gate: "VIX gate blocked the session",
+    vix_unverifiable: "VIX unverifiable - session skipped",
+    day_stop: "session day-stop hit",
+    both_mode_live_pending_b6_b7: "multi-leg live was pending completion",
   };
   return map[reason] || String(reason).replace(/[_:]/g, " ").trim();
 }

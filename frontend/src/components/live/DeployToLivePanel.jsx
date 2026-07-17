@@ -31,6 +31,10 @@ export default function DeployToLivePanel({ dep, onArmed }) {
   // ── Phase 1: caps form ─────────────────────────────────────────────────────
   const [formOpen, setFormOpen] = useState(false);
   const [safetyConfig, setSafetyConfig] = useState(null);
+  // Non-blocking live-arm advisories (S19/B8) — e.g. thin forward record, or (for
+  // premium_momentum multi-leg deployments) the edge-hunt verdict. Advisory only:
+  // a fetch failure degrades silently, never blocks the arm flow.
+  const [armAdvisories, setArmAdvisories] = useState([]);
 
   // Caps form fields
   const [lots, setLots] = useState("1");
@@ -57,6 +61,18 @@ export default function DeployToLivePanel({ dep, onArmed }) {
       .catch(() => {});
     return () => { cancelled = true; };
   }, [formOpen]);
+
+  // Load live-arm advisories when the panel opens. Purely informational — on
+  // failure we just show none (arm_advisories is never required to proceed).
+  useEffect(() => {
+    if (!formOpen || !dep?.id) return;
+    let cancelled = false;
+    setArmAdvisories([]);
+    api.deploymentMetrics(dep.id)
+      .then((d) => { if (!cancelled) setArmAdvisories(d?.arm_advisories || []); })
+      .catch(() => { if (!cancelled) setArmAdvisories([]); });
+    return () => { cancelled = true; };
+  }, [formOpen, dep?.id]);
 
   // Focus the confirm input when the danger dialog opens.
   useEffect(() => {
@@ -355,6 +371,27 @@ export default function DeployToLivePanel({ dep, onArmed }) {
               onKeyDown={(e) => { if (e.key === "Enter" && confirmText === "ARM") handleArm(); }}
             />
           </div>
+
+          {/* Non-blocking arm advisories (S19/B8) — thin/negative forward record,
+              or (premium_momentum multi-leg) the edge-hunt verdict. Advisory only. */}
+          {armAdvisories.length > 0 && (
+            <div className="space-y-1.5" data-testid="arm-advisories">
+              {armAdvisories.map((adv) => (
+                <div
+                  key={adv.id}
+                  className={`flex items-start gap-2 rounded-md border px-2.5 py-1.5 text-[11px] ${
+                    adv.severity === "danger"
+                      ? "border-danger/40 bg-danger/10 text-danger"
+                      : "border-amber-500/40 bg-amber-500/10 text-warning"
+                  }`}
+                  data-testid={`arm-advisory-${adv.id}`}
+                >
+                  <AlertTriangle className="w-3 h-3 shrink-0 mt-0.5" />
+                  <span>{adv.message}</span>
+                </div>
+              ))}
+            </div>
+          )}
 
           <div className="flex gap-2 pt-1">
             <Button
