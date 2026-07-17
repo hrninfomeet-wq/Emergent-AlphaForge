@@ -55,6 +55,10 @@ class _FakeLocks:
         for d in self.docs:
             if self._matches(d, q):
                 d.update(upd.get("$set", {}))
+                # $unset genuinely REMOVES the field (5B's unlatch_trigger_leg
+                # relies on absence, not None, so a released latch can re-fire).
+                for k in upd.get("$unset", {}):
+                    d.pop(k, None)
                 return type("R", (), {"matched_count": 1, "modified_count": 1})()
         return type("R", (), {"matched_count": 0, "modified_count": 0})()
 

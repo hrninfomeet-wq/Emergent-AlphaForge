@@ -56,6 +56,40 @@ class PremiumMomentum(StrategyBase):
                        "description": "premium target % above entry (None = ride to EOD)"},
         "late_lock_cutoff": {"type": "str", "default": "10:15",
                              "description": "no lock after this IST time -> session done (no_lock)"},
+        # --- Phase 5B: live/paper multi-leg execution (additive; every field
+        # below defaults to the single-leg pre-5B shape, so a stored params
+        # dict with only the original 8 keys above merges to these defaults
+        # with zero migration — see merged_params, base.py:88-102). Multi-leg
+        # exposure is deliberately kept OUT of the general Optimizer's search
+        # space (see docs/superpowers/specs/2026-07-15-premium-momentum-
+        # phase5b-live-multileg-design.md §1 OUT-of-scope): "fixed" pins a
+        # float/bool value; str-typed params are excluded from that space
+        # unconditionally by optimizer.py's _build_param_space.
+        "leg_mode": {"type": "str", "default": "first_to_trigger",
+                     "description": "first_to_trigger | both — both runs CE+PE as independent primary legs (5B)"},
+        "lazy_enabled": {"type": "bool", "default": False, "fixed": False,
+                         "description": "one-shot lazy reversal leg armed after a primary STOP-class exit (5B); "
+                                        "fixed False keeps it OFF the general Optimizer's search space"},
+        "lazy_momentum_pct": {"type": "float", "min": 5.0, "max": 50.0, "default": None,
+                              "description": "lazy leg's own momentum trigger % off its fresh ref (only meaningful when lazy_enabled)"},
+        "lazy_stop_pct": {"type": "float", "min": 10.0, "max": 40.0, "default": None,
+                          "description": "lazy leg's own premium stop % (only meaningful when lazy_enabled)"},
+        "lazy_target_pct": {"type": "float", "fixed": None, "default": None,
+                            "description": "lazy leg premium target % (None = ride to EOD, mirrors target_pct's default)"},
+        "lazy_moneyness": {"type": "str", "default": "itm1",
+                           "description": "moneyness for the fresh lazy-leg strike lock (independent of the primary's moneyness)"},
+        "entry_cutoff": {"type": "str", "default": None,
+                         "description": "IST HH:MM — no NEW triggers or lazy armings at/after this time (None = no extra cutoff)"},
+        "exit_time": {"type": "str", "default": None,
+                     "description": "IST HH:MM per-deployment square time, clamped to no later than the system EOD square (None = EOD only)"},
+        "session_max_loss_rupees": {"type": "float", "fixed": None, "default": None,
+                                    "description": "realized-only session day-stop (rupees) — a risk control, not a search dimension"},
+        "session_max_profit_rupees": {"type": "float", "fixed": None, "default": None,
+                                      "description": "realized-only session day-stop (rupees) — a risk control, not a search dimension"},
+        "vix_min": {"type": "float", "fixed": None, "default": None,
+                   "description": "INDIAVIX gate lower bound (asof session start); unverifiable VIX with a configured gate = no_setup, never a silent pass"},
+        "vix_max": {"type": "float", "fixed": None, "default": None,
+                   "description": "INDIAVIX gate upper bound (asof session start)"},
     }
     is_builtin = False
 

@@ -252,3 +252,80 @@ def test_guard_on_close_lock_hook_never_raises(monkeypatch):
     assert closed == ["N1"]                             # journal still happened
     doc = run(db.premium_locks.find_one({"deployment_id": "D1"}))
     assert doc["done_for_day"] is False                 # and nothing exploded
+
+
+# ====================== 5B A4: both-mode per-leg lock writes ====================
+
+def _both_latched_lock(dep_id: str = "dep-1") -> Dict[str, Any]:
+    """A both-mode lock right after the evaluator leg-latched pce (ce_triggered
+    set, session-global triggered_side untouched/None)."""
+    return {
+        "deployment_id": dep_id, "session_date": _today_ist(),
+        "done_for_day": False, "triggered_side": None,
+        "entered_norenordno": None, "entry_premium": None,
+        "ce_triggered": True,
+        "pe_triggered": True,   # the OTHER leg's latch — must never be touched
+        "ce": {"instrument_key": KEY, "trading_symbol": "NIFTYTEST23950CE"},
+    }
+
+
+def _both_db() -> FakeDB:
+    db = FakeDB()
+    db.premium_locks = _FakeLocks()
+    run(db.premium_locks.insert_one(_both_latched_lock()))
+    return db
+
+
+def _both_signal(ref_premium: float = 100.0, leg: str = "pce") -> Dict[str, Any]:
+    sig = make_confirmed_signal()
+    sig["premium_momentum"] = {"ref_premium": ref_premium, "premium_now": 116.0,
+                               "leg": leg}
+    return sig
+
+
+def test_both_mode_recheck_refusal_unlatches_only_that_leg():
+    """Refusal must release ONLY the failing leg's latch (ce_triggered gone via
+    $unset) — the other leg's latch AND the legacy session-global field stay
+    exactly as they were (recon anchor #2's two-signal seam)."""
+    db = _both_db()
+    sig = _both_signal()
+    db.signals.rows.append(dict(sig))
+    calls: List[Dict[str, Any]] = []
+    dep = _pm_deployment(momentum_pct=15, leg_mode="both")
+    out = run(auto_live_trade_for_signal(
+        db, dep, sig,
+        latest_tick_lookup={KEY: _fresh_tick(114.0)}.get, now_utc=NOW,
+        place_fn=make_place_fn(_SUCCESS, calls),
+        arm_for=_arm_for_factory([]), account_max=20))
+    assert out["created"] is False and out["reason"] == "premium_trigger_not_met"
+    lock = run(db.premium_locks.find_one({"deployment_id": "dep-1",
+                                          "session_date": _today_ist()}))
+    assert "ce_triggered" not in lock, "the failing leg's latch must be $unset"
+    assert lock["pe_triggered"] is True, "the OTHER leg's latch must be untouched"
+    assert lock["triggered_side"] is None, \
+        "both-mode refusal must never touch the legacy session-global latch"
+
+
+def test_both_mode_entry_adopts_via_leg_fields_not_legacy():
+    """Success must adopt the order into the LEG's fields (ce_entered_norenordno
+    / ce_entry_premium via the pce->ce prefix) and leave the legacy
+    session-global entered_norenordno/entry_premium untouched (ambiguous with
+    two concurrent entries)."""
+    db = _both_db()
+    sig = _both_signal()
+    db.signals.rows.append(dict(sig))
+    calls: List[Dict[str, Any]] = []
+    dep = _pm_deployment(momentum_pct=15, leg_mode="both")
+    out = run(auto_live_trade_for_signal(
+        db, dep, sig,
+        latest_tick_lookup={KEY: _fresh_tick(116.0)}.get, now_utc=NOW,
+        place_fn=make_place_fn(_SUCCESS, calls),
+        arm_for=_arm_for_factory([]), account_max=20))
+    assert out["created"] is True
+    lock = run(db.premium_locks.find_one({"deployment_id": "dep-1",
+                                          "session_date": _today_ist()}))
+    assert lock["ce_entered_norenordno"] == "ABC"
+    assert lock["ce_entry_premium"] == 116.0
+    assert lock["entered_norenordno"] is None, \
+        "legacy session-global entry fields must stay untouched in both-mode"
+    assert lock["entry_premium"] is None

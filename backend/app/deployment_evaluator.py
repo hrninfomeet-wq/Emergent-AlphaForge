@@ -232,6 +232,92 @@ async def _has_recent_option_data(db: Any, instrument_key: str, *, max_age_minut
     return bool(doc)
 
 
+# ---------------------------------------------------------------------------
+# Phase 5B Task A4 — VIX asof resolution + realized-only day-stop accumulator.
+# Both are evaluator-side concerns (the premium engine stays a pure function of
+# an already-resolved vix value; the day-stop gate has no engine involvement at
+# all — a breach short-circuits BEFORE the engine is ever called this bar, so
+# no strike lock / ref capture / trigger can advance while it holds).
+# ---------------------------------------------------------------------------
+
+async def _resolve_vix_asof(db: Any, candle_ts: int) -> Optional[float]:
+    """Stored INDIAVIX close as-of ``candle_ts`` (5-day staleness), or None if
+    unverifiable. Reuses ``app.vix``'s asof helpers over the SAME candles_1m
+    warehouse VIX is stored in (an AUX instrument there) — same honesty
+    contract as the backtest's ``vix_by_session_map`` (recon anchor #5).
+    Callers must only invoke this when a VIX gate is actually configured
+    (vix_min/vix_max not None) so an ungated deployment never pays this query."""
+    from app.vix import build_asof_index, vix_asof, VIX_INSTRUMENT
+    lookback_ms = 7 * 24 * 60 * 60 * 1000
+    rows = await db.candles_1m.find(
+        {"instrument": VIX_INSTRUMENT, "ts": {"$gte": candle_ts - lookback_ms}},
+        {"_id": 0, "ts": 1, "close": 1},
+    ).sort("ts", -1).limit(2000).to_list(length=2000)
+    # Filter the upper bound in Python (not a $lte query) so this stays
+    # compatible with the repo's in-memory test fakes, which only implement
+    # $gte/$gt/$exists — real Mongo would accept $lte equally well here.
+    rows = [r for r in rows if int(r.get("ts") or 0) <= candle_ts]
+    if not rows:
+        return None
+    index = build_asof_index(rows)
+    return vix_asof(index, candle_ts, max_staleness_ms=5 * 24 * 60 * 60 * 1000)
+
+
+async def _resolve_realized_today_rupees(db: Any, deployment: Dict[str, Any], *, today_ist: str) -> float:
+    """Realized-ONLY session P&L for THIS deployment's own trades (Phase 5B
+    Task A4 day-stop accumulator). Recon correction #4: the existing
+    ``live_deploy_governor`` daily_loss_cap is mark-to-market (realized +
+    open-unrealized) and cannot be reused for a realized-only gate — this
+    reuses ONLY ``daily_realized_summary`` (the same net-P&L math the paper
+    kill switches already use), over live_trades for live-mode deployments and
+    paper_trades for every other mode (paper/shadow) — mirrors
+    ``check_deployment_kill_switches``'s query shape."""
+    from app.deployment_kill_switch import daily_realized_summary
+    dep_id = str(deployment.get("id") or "")
+    mode = str(deployment.get("mode") or "").lower()
+    col = db.live_trades if mode == "live" else db.paper_trades
+    rows = await col.find({"deployment_id": dep_id}, {"_id": 0}).to_list(length=None)
+    return float(daily_realized_summary(rows, today_ist)["net"])
+
+
+async def _premium_day_stop_fire_once(db: Any, deployment: Dict[str, Any], *,
+                                      session_date: str, realized: float) -> bool:
+    """Idempotent day-stop finalizer (5B A4). Atomically claims the lock doc's
+    ``day_stop_fired`` flag ($exists filter — one winner ever, evaluator
+    restarts included since the flag persists on the doc); the winner marks
+    the session done (reason "day_stop", which also terminates the session
+    engine on every later bar) and, for LIVE deployments only, squares this
+    deployment's open premium positions through the EXISTING deployment-stop
+    path (routers.deployments._square_live_positions_for_deployment — the
+    guard/auto_square machinery; never a new placement path). Paper/shadow:
+    block-only, per the plan's parity table. Returns True only for the winner."""
+    from app.premium_lock_store import get_or_create_lock, mark_done
+    dep_id = str(deployment.get("id") or "")
+    await get_or_create_lock(db.premium_locks, deployment_id=dep_id, session_date=session_date)
+    res = await db.premium_locks.update_one(
+        {"deployment_id": dep_id, "session_date": session_date,
+         "day_stop_fired": {"$exists": False}},
+        {"$set": {"day_stop_fired": True,
+                  "day_stop_realized": float(realized),
+                  "day_stop_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    if int(getattr(res, "matched_count", 0) or 0) != 1:
+        return False
+    await mark_done(db.premium_locks, deployment_id=dep_id,
+                    session_date=session_date, reason="day_stop")
+    if str(deployment.get("mode") or "").lower() == "live":
+        try:
+            from app.routers.deployments import _square_live_positions_for_deployment
+            await _square_live_positions_for_deployment(dep_id, reason="premium_day_stop")
+        except Exception:
+            # The square is best-effort here: the guard's own exits (stop/
+            # trail/EOD) still govern any open leg. The BLOCK on new entries
+            # (done_for_day) is already latched above and never depends on
+            # this square succeeding.
+            log.exception("premium day-stop square failed for deployment %s", dep_id)
+    return True
+
+
 async def evaluate_deployment_on_close(
     db: Any,
     deployment: Dict[str, Any],
@@ -381,6 +467,35 @@ async def evaluate_deployment_on_close(
     if strategy_id == "premium_momentum":
         from app.premium_momentum_live import evaluate_premium_momentum_bar
         from app.runtime import upstox_stream_manager
+
+        # ---- 5B A4: realized-only session day-stop gate. Checked BEFORE the
+        # session engine so a breached day stops immediately (no new triggers,
+        # no lazy armings). Realized-only by design (plan parity table): an
+        # open leg's unrealized bleed never trips this — that would be the
+        # deferred mark-to-market variant, not this rule.
+        _pm_sess = _ist_session_date_of_ts(candle_ts)
+        _max_loss = merged_params.get("session_max_loss_rupees")
+        _max_profit = merged_params.get("session_max_profit_rupees")
+        if _max_loss is not None or _max_profit is not None:
+            realized = await _resolve_realized_today_rupees(db, deployment, today_ist=_pm_sess)
+            breached = ((_max_loss is not None and realized <= -abs(float(_max_loss))) or
+                        (_max_profit is not None and realized >= abs(float(_max_profit))))
+            if breached:
+                fired = await _premium_day_stop_fire_once(
+                    db, deployment, session_date=_pm_sess, realized=realized)
+                await _mark_deployment_evaluated(db, deployment_id, candle_ts)
+                return {"deployment_id": deployment_id, "outcome": "day_stop",
+                        "reason": f"session realized {realized:.2f} breached the day-stop cap",
+                        "day_stop_squared": fired, "candle_ts": candle_ts}
+
+        # ---- 5B A4: VIX gate value resolution. Engine stays pure — it receives
+        # the value; unverifiable-with-a-configured-gate is decided IN the engine
+        # (honest blocked outcome, never a silent pass). Only queried when the
+        # gate is configured: zero overhead for every pre-5B deployment.
+        _pm_vix = None
+        if merged_params.get("vix_min") is not None or merged_params.get("vix_max") is not None:
+            _pm_vix = await _resolve_vix_asof(db, candle_ts)
+
         pm_contracts = await db.option_contracts.find(
             {"underlying": instrument,
              "expiry_date": {"$gte": _ist_session_date_of_ts(candle_ts)}},
@@ -397,6 +512,7 @@ async def evaluate_deployment_on_close(
             contracts=pm_contracts,
             latest_tick_map=upstox_stream_manager.latest_tick_map,
             now_ts=datetime.now(timezone.utc).timestamp(),
+            vix=_pm_vix,
         )
         if pm_result.get("outcome") != "triggered":
             await _mark_deployment_evaluated(db, deployment_id, candle_ts)
@@ -572,16 +688,41 @@ async def evaluate_deployment_on_close(
         # merged_params, NOT raw deployment params: a deployment whose params
         # omit stop_pct must journal the plugin-schema default (20.0), or the
         # live exit plan silently falls through to the 50% deep-default floor.
+        # 5B A4: lazy legs (lce/lpe) exit on their OWN params (blueprint §4);
+        # lazy_stop_pct falls back to the primary stop (a stop must always
+        # exist), lazy_target_pct does NOT fall back (None = ride to EOD,
+        # mirroring the schema's own default semantics).
+        _pm_leg = str(pm_result.get("leg") or "")
+        _pm_is_lazy = _pm_leg in ("lce", "lpe")
+        _pm_stop = merged_params.get("stop_pct")
+        _pm_target = merged_params.get("target_pct")
+        if _pm_is_lazy:
+            if merged_params.get("lazy_stop_pct") is not None:
+                _pm_stop = merged_params.get("lazy_stop_pct")
+            _pm_target = merged_params.get("lazy_target_pct")
         signal_doc["risk_hints"] = {
-            "target_pct": merged_params.get("target_pct"),
-            "stop_pct": merged_params.get("stop_pct"),
+            "target_pct": _pm_target,
+            "stop_pct": _pm_stop,
             "spot_target_pts": None, "spot_stop_pts": None,
             "time_stop_minutes": None,
         }
+        # 5B A4: per-deployment hard square time as a risk hint, clamped
+        # STRICTLY BEFORE the system 15:00 EOD square — the EOD backstop
+        # always wins (plan parity table: EXP2's 15:13 is backtest-only). The
+        # guard-side honoring lands in Task B5; until then this hint is
+        # journaled but inert.
+        _pm_exit_t = merged_params.get("exit_time")
+        if _pm_exit_t and str(_pm_exit_t) < "15:00":
+            signal_doc["risk_hints"]["square_at_ist"] = str(_pm_exit_t)
         signal_doc["premium_momentum"] = {
             "ref_premium": pm_result["ref_premium"],
             "premium_now": pm_result["premium_now"],
         }
+        # leg identity travels ONLY in both-mode: first_to_trigger signal docs
+        # stay byte-identical to Track B's shipped shape (an existing test pins
+        # the sub-dict with exact equality — that pin is the guarantee).
+        if str(merged_params.get("leg_mode") or "first_to_trigger").lower() == "both":
+            signal_doc["premium_momentum"]["leg"] = _pm_leg or None
 
     if all_blockers:
         # Record as SKIPPED via lifecycle: WATCHING -> AUDITED is allowed but we also need
@@ -627,11 +768,22 @@ async def evaluate_deployment_on_close(
             }
         raise
     if pm_result is not None and outcome == "clean":
-        from app.premium_lock_store import latch_trigger
-        latched = await latch_trigger(db.premium_locks,
-                                      deployment_id=deployment_id,
-                                      session_date=_ist_session_date_of_ts(candle_ts),
-                                      side=direction)
+        _latch_leg = str(pm_result.get("leg") or "")
+        if str(merged_params.get("leg_mode") or "first_to_trigger").lower() == "both" and _latch_leg:
+            # 5B A4: both-mode latches PER LEG (pce/ppe/lce/lpe) — one leg's
+            # latch never blocks the other's monitoring. first_to_trigger
+            # keeps the legacy session-global latch below, byte-identically.
+            from app.premium_lock_store import latch_trigger_leg
+            latched = await latch_trigger_leg(db.premium_locks,
+                                              deployment_id=deployment_id,
+                                              session_date=_ist_session_date_of_ts(candle_ts),
+                                              leg=_latch_leg)
+        else:
+            from app.premium_lock_store import latch_trigger
+            latched = await latch_trigger(db.premium_locks,
+                                          deployment_id=deployment_id,
+                                          session_date=_ist_session_date_of_ts(candle_ts),
+                                          side=direction)
         if not latched:
             # The lock store refused the latch (concurrent first-to-trigger win,
             # or done_for_day flipped mid-bar, e.g. the EOD backstop). Fail SAFE

@@ -376,12 +376,22 @@ async def auto_live_trade_for_signal(
                                             "premium_at_entry": float(ref_ltp)},
                           "updated_at": datetime.now(timezone.utc).isoformat()}},
             )
-            from app.premium_lock_store import unlatch_trigger
             from datetime import timedelta as _td
             _sess = (datetime.now(timezone.utc) + _td(hours=5, minutes=30)).strftime("%Y-%m-%d")
-            await unlatch_trigger(db.premium_locks,
-                                  deployment_id=str(deployment.get("id") or ""),
-                                  session_date=_sess)
+            _leg = str(pm.get("leg") or "")
+            if str(dep_params.get("leg_mode") or "first_to_trigger").lower() == "both" and _leg:
+                # 5B A4: release ONLY this leg's latch — a global unlatch here
+                # would silently release the OTHER leg's completed latch too
+                # (recon anchor #2 flagged exactly this two-signal seam).
+                from app.premium_lock_store import unlatch_trigger_leg
+                await unlatch_trigger_leg(db.premium_locks,
+                                          deployment_id=str(deployment.get("id") or ""),
+                                          session_date=_sess, leg=_leg)
+            else:
+                from app.premium_lock_store import unlatch_trigger
+                await unlatch_trigger(db.premium_locks,
+                                      deployment_id=str(deployment.get("id") or ""),
+                                      session_date=_sess)
             log.warning("auto-live refused for signal %s: premium %.2f fell back "
                         "below the trigger (ref %.2f)",
                         signal_id, float(ref_ltp), float(pm["ref_premium"]))
@@ -531,13 +541,27 @@ async def auto_live_trade_for_signal(
         # rehydrates with the PERSISTED entry premium (mark_entered no-ops when
         # the lock is gone). A lock-write failure must never fail a PLACED order.
         try:
-            from app.premium_lock_store import mark_entered
             from datetime import timedelta as _td
             _sess = (datetime.now(timezone.utc) + _td(hours=5, minutes=30)).strftime("%Y-%m-%d")
-            await mark_entered(db.premium_locks, deployment_id=dep_id,
-                               session_date=_sess,
-                               norenordno=str(result.get("norenordno") or ""),
-                               entry_premium=float(ref_ltp))
+            _leg = str(pm.get("leg") or "")
+            _both = str((deployment.get("params") or {}).get("leg_mode")
+                        or "first_to_trigger").lower() == "both"
+            if _both and _leg:
+                # 5B A4: per-leg entry adoption — the leg name keys recovery's
+                # per-leg rehydration (B7). The legacy session-global fields
+                # stay untouched in both-mode (they'd be ambiguous with two
+                # concurrent entries).
+                from app.premium_lock_store import mark_entered_leg
+                await mark_entered_leg(db.premium_locks, deployment_id=dep_id,
+                                       session_date=_sess, leg=_leg,
+                                       norenordno=str(result.get("norenordno") or ""),
+                                       entry_premium=float(ref_ltp))
+            else:
+                from app.premium_lock_store import mark_entered
+                await mark_entered(db.premium_locks, deployment_id=dep_id,
+                                   session_date=_sess,
+                                   norenordno=str(result.get("norenordno") or ""),
+                                   entry_premium=float(ref_ltp))
         except Exception:
             log.exception("premium-momentum mark_entered failed for signal %s", signal_id)
 

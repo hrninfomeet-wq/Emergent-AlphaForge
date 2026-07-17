@@ -271,3 +271,280 @@ def test_capture_ref_race_adopts_persisted_winner():
     assert locks.docs[0]["ce_ref_premium"] == 60.0
     assert out["outcome"] == "triggered" and out["direction"] == "CE"
     assert out["ref_premium"] == 60.0 and out["premium_now"] == 116.0
+
+
+# =============================================================================
+# Phase 5B (Task A3) — both-mode independent legs, lazy pickup, entry_cutoff,
+# VIX gate. See docs/superpowers/plans/2026-07-15-premium-momentum-phase5b-
+# execution.md Task A3 + the parity-divergence table in the design spec.
+# =============================================================================
+
+def test_first_to_trigger_mode_ignores_lazy_armed_flag_by_design():
+    """Documented, plan-directed limitation: the pinned first_to_trigger
+    terminal check returns holding_position unconditionally once any side
+    has latched — the lazy-pickup code below it is structurally unreachable
+    in this mode. lazy_enabled is intended to pair with leg_mode="both"."""
+    locks = _FakeLocks()
+    run(locks.insert_one({"deployment_id": "D1", "session_date": "2026-07-10",
+                          "triggered_side": "PE", "done_for_day": False,
+                          "entered_norenordno": "N1",
+                          "lazy_armed_ce": True}))   # simulate B6 arming (out of scope here)
+    dep = _dep({"lazy_enabled": True})   # leg_mode defaults to first_to_trigger
+    ts2 = TS_0931 + 120_000
+    ce_ticks = {"CE|23950": {"last_price": 100.0, "ts": ts2 + 55_000}}
+    out = run(evaluate_premium_momentum_bar(
+        locks_col=locks, deployment=dep, instrument="NIFTY",
+        candle_ts=ts2, spot_close=24000.0, contracts=_CONTRACTS,
+        latest_tick_map=_tickmap(ce_ticks), now_ts=ts2 / 1000 + 60,
+    ))
+    assert out["outcome"] == "holding_position"
+    assert "lce_instrument_key" not in locks.docs[0]
+
+
+def test_both_mode_independent_legs_across_bars():
+    locks = _FakeLocks()
+    dep = _dep({"leg_mode": "both"})
+    ticks = {"CE|23950": {"last_price": 100.0, "ts": TS_0931 + 55_000},
+             "PE|24050": {"last_price": 110.0, "ts": TS_0931 + 55_000}}
+    run(evaluate_premium_momentum_bar(              # bar 1: lock + refs, both sides
+        locks_col=locks, deployment=dep, instrument="NIFTY",
+        candle_ts=TS_0931, spot_close=24000.0, contracts=_CONTRACTS,
+        latest_tick_map=_tickmap(ticks), now_ts=TS_0931 / 1000 + 60,
+    ))
+    ts2 = TS_0931 + 60_000
+    ticks2 = {"CE|23950": {"last_price": 116.0, "ts": ts2 + 55_000},   # +16% > 15% -- CE fires
+              "PE|24050": {"last_price": 111.0, "ts": ts2 + 55_000}}   # +0.9% -- PE quiet
+    out = run(evaluate_premium_momentum_bar(
+        locks_col=locks, deployment=dep, instrument="NIFTY",
+        candle_ts=ts2, spot_close=24000.0, contracts=_CONTRACTS,
+        latest_tick_map=_tickmap(ticks2), now_ts=ts2 / 1000 + 60,
+    ))
+    assert out["outcome"] == "triggered" and out["direction"] == "CE" and out["leg"] == "pce"
+    # simulate the EVALUATOR's latch (this module never writes it itself)
+    locks.docs[0]["ce_triggered"] = True
+
+    ts3 = TS_0931 + 120_000
+    ticks3 = {"CE|23950": {"last_price": 120.0, "ts": ts3 + 55_000},   # CE resolved -- skipped
+              "PE|24050": {"last_price": 127.0, "ts": ts3 + 55_000}}   # +15.5% > 15% -- PE's turn
+    out = run(evaluate_premium_momentum_bar(
+        locks_col=locks, deployment=dep, instrument="NIFTY",
+        candle_ts=ts3, spot_close=24000.0, contracts=_CONTRACTS,
+        latest_tick_map=_tickmap(ticks3), now_ts=ts3 / 1000 + 60,
+    ))
+    assert out["outcome"] == "triggered" and out["direction"] == "PE" and out["leg"] == "ppe"
+
+
+def test_both_mode_same_bar_double_cross_ce_this_bar_pe_next_bar():
+    locks = _FakeLocks()
+    dep = _dep({"leg_mode": "both"})
+    ticks = {"CE|23950": {"last_price": 100.0, "ts": TS_0931 + 55_000},
+             "PE|24050": {"last_price": 110.0, "ts": TS_0931 + 55_000}}
+    run(evaluate_premium_momentum_bar(
+        locks_col=locks, deployment=dep, instrument="NIFTY",
+        candle_ts=TS_0931, spot_close=24000.0, contracts=_CONTRACTS,
+        latest_tick_map=_tickmap(ticks), now_ts=TS_0931 / 1000 + 60,
+    ))
+    ts2 = TS_0931 + 60_000
+    # BOTH sides cross their +15% threshold on the SAME bar.
+    ticks2 = {"CE|23950": {"last_price": 116.0, "ts": ts2 + 55_000},   # +16%
+              "PE|24050": {"last_price": 127.0, "ts": ts2 + 55_000}}   # +15.5%
+    out = run(evaluate_premium_momentum_bar(
+        locks_col=locks, deployment=dep, instrument="NIFTY",
+        candle_ts=ts2, spot_close=24000.0, contracts=_CONTRACTS,
+        latest_tick_map=_tickmap(ticks2), now_ts=ts2 / 1000 + 60,
+    ))
+    # ONE triggered leg per bar -- CE wins (CE-first loop order); PE's cross
+    # THIS bar is not reported (parity-divergence: live is later/fewer).
+    assert out["outcome"] == "triggered" and out["direction"] == "CE" and out["leg"] == "pce"
+    locks.docs[0]["ce_triggered"] = True   # simulate the evaluator's latch
+
+    ts3 = ts2 + 60_000
+    ticks3 = {"CE|23950": {"last_price": 118.0, "ts": ts3 + 55_000},
+              "PE|24050": {"last_price": 128.0, "ts": ts3 + 55_000}}   # still >= +15% -- fires NOW
+    out2 = run(evaluate_premium_momentum_bar(
+        locks_col=locks, deployment=dep, instrument="NIFTY",
+        candle_ts=ts3, spot_close=24000.0, contracts=_CONTRACTS,
+        latest_tick_map=_tickmap(ticks3), now_ts=ts3 / 1000 + 60,
+    ))
+    assert out2["outcome"] == "triggered" and out2["direction"] == "PE" and out2["leg"] == "ppe"
+
+
+def test_both_mode_all_resolved_returns_holding_position():
+    locks = _FakeLocks()
+    run(locks.insert_one({"deployment_id": "D1", "session_date": "2026-07-10",
+                          "done_for_day": False,
+                          "ce_triggered": True, "ce_entered_norenordno": "N1",
+                          "pe_triggered": True, "pe_entered_norenordno": "N2"}))
+    dep = _dep({"leg_mode": "both"})
+    ts2 = TS_0931 + 120_000
+    out = run(evaluate_premium_momentum_bar(
+        locks_col=locks, deployment=dep, instrument="NIFTY",
+        candle_ts=ts2, spot_close=24000.0, contracts=_CONTRACTS,
+        latest_tick_map=_tickmap({}), now_ts=ts2 / 1000 + 60,
+    ))
+    assert out["outcome"] == "holding_position"
+
+
+def test_entry_cutoff_blocks_new_trigger():
+    locks = _FakeLocks()
+    dep = _dep({"entry_cutoff": "10:00"})
+    ticks = {"CE|23950": {"last_price": 100.0, "ts": TS_0931 + 55_000},
+             "PE|24050": {"last_price": 110.0, "ts": TS_0931 + 55_000}}
+    run(evaluate_premium_momentum_bar(
+        locks_col=locks, deployment=dep, instrument="NIFTY",
+        candle_ts=TS_0931, spot_close=24000.0, contracts=_CONTRACTS,
+        latest_tick_map=_tickmap(ticks), now_ts=TS_0931 / 1000 + 60,
+    ))
+    ts2 = TS_0931 + 30 * 60_000   # 10:01 IST -- past entry_cutoff (10:00)
+    ticks2 = {"CE|23950": {"last_price": 116.0, "ts": ts2 + 55_000},   # would trigger otherwise
+              "PE|24050": {"last_price": 111.0, "ts": ts2 + 55_000}}
+    out = run(evaluate_premium_momentum_bar(
+        locks_col=locks, deployment=dep, instrument="NIFTY",
+        candle_ts=ts2, spot_close=24000.0, contracts=_CONTRACTS,
+        latest_tick_map=_tickmap(ticks2), now_ts=ts2 / 1000 + 60,
+    ))
+    assert out["outcome"] == "monitoring"     # NOT triggered -- cutoff blocks it
+
+
+def test_entry_cutoff_blocks_lazy_lock():
+    locks = _FakeLocks()
+    run(locks.insert_one({"deployment_id": "D1", "session_date": "2026-07-10",
+                          "triggered_side": None, "done_for_day": False,
+                          "ce_ref_premium": 100.0, "pe_ref_premium": 110.0,
+                          "ce": {"instrument_key": "CE|23950", "strike": 23950},
+                          "pe": {"instrument_key": "PE|24050", "strike": 24050},
+                          "lazy_armed_pe": True}))
+    dep = _dep({"leg_mode": "both", "lazy_enabled": True, "entry_cutoff": "10:00"})
+    ts2 = TS_0931 + 30 * 60_000   # 10:01 IST -- past entry_cutoff
+    ticks = {"CE|23950": {"last_price": 101.0, "ts": ts2 + 55_000},
+             "PE|24050": {"last_price": 111.0, "ts": ts2 + 55_000}}
+    out = run(evaluate_premium_momentum_bar(
+        locks_col=locks, deployment=dep, instrument="NIFTY",
+        candle_ts=ts2, spot_close=24000.0, contracts=_CONTRACTS,
+        latest_tick_map=_tickmap(ticks), now_ts=ts2 / 1000 + 60,
+    ))
+    assert out["outcome"] == "monitoring"
+    assert "lpe_instrument_key" not in locks.docs[0]   # lazy lock never attempted past cutoff
+
+
+def test_vix_gate_blocks_when_unverifiable():
+    locks = _FakeLocks()
+    dep = _dep({"vix_min": 12.0, "vix_max": 20.0})
+    out = run(evaluate_premium_momentum_bar(
+        locks_col=locks, deployment=dep, instrument="NIFTY",
+        candle_ts=TS_0931, spot_close=24000.0, contracts=_CONTRACTS,
+        latest_tick_map=_tickmap({}), now_ts=TS_0931 / 1000 + 60,
+        vix=None,
+    ))
+    assert out["outcome"] == "done" and out["reason"] == "vix_unverifiable"
+    assert locks.docs[0]["done_reason"] == "vix_unverifiable"
+
+
+def test_vix_gate_blocks_when_outside_range():
+    locks = _FakeLocks()
+    dep = _dep({"vix_min": 12.0, "vix_max": 20.0})
+    out = run(evaluate_premium_momentum_bar(
+        locks_col=locks, deployment=dep, instrument="NIFTY",
+        candle_ts=TS_0931, spot_close=24000.0, contracts=_CONTRACTS,
+        latest_tick_map=_tickmap({}), now_ts=TS_0931 / 1000 + 60,
+        vix=25.0,
+    ))
+    assert out["outcome"] == "done" and out["reason"] == "vix_gate"
+
+
+def test_vix_gate_allows_when_within_range():
+    locks = _FakeLocks()
+    dep = _dep({"vix_min": 12.0, "vix_max": 20.0})
+    ticks = {"CE|23950": {"last_price": 100.0, "ts": TS_0931 + 55_000},
+             "PE|24050": {"last_price": 110.0, "ts": TS_0931 + 55_000}}
+    out = run(evaluate_premium_momentum_bar(
+        locks_col=locks, deployment=dep, instrument="NIFTY",
+        candle_ts=TS_0931, spot_close=24000.0, contracts=_CONTRACTS,
+        latest_tick_map=_tickmap(ticks), now_ts=TS_0931 / 1000 + 60,
+        vix=15.0,
+    ))
+    assert out["outcome"] == "monitoring"
+
+
+def test_lazy_pickup_happy_path_locks_ref_then_triggers():
+    locks = _FakeLocks()
+    run(locks.insert_one({"deployment_id": "D1", "session_date": "2026-07-10",
+                          "triggered_side": None, "done_for_day": False,
+                          "ce_ref_premium": 100.0,
+                          "ce": {"instrument_key": "CE|23950", "strike": 23950},
+                          "pe_ref_premium": 110.0,
+                          "pe": {"instrument_key": "PE|24050", "strike": 24050},
+                          "lazy_armed_ce": True, "lazy_armed_ce_reason": "stop"}))
+    dep = _dep({"leg_mode": "both", "lazy_enabled": True,
+               "lazy_momentum_pct": 10.0, "lazy_stop_pct": 20.0})
+    ts2 = TS_0931 + 60_000
+    ticks = {"CE|23950": {"last_price": 90.0, "ts": ts2 + 55_000},
+             "PE|24050": {"last_price": 110.0, "ts": ts2 + 55_000}}
+    out = run(evaluate_premium_momentum_bar(   # bar: lazy pickup -- lock + ref capture
+        locks_col=locks, deployment=dep, instrument="NIFTY",
+        candle_ts=ts2, spot_close=24000.0, contracts=_CONTRACTS,
+        latest_tick_map=_tickmap(ticks), now_ts=ts2 / 1000 + 60,
+    ))
+    assert out["outcome"] == "monitoring"          # ref==premium_now this bar -- no trigger yet
+    doc = locks.docs[0]
+    assert doc["lce_instrument_key"] == "CE|23950"
+    assert doc["lce_ref_premium"] == 90.0
+
+    ts3 = ts2 + 60_000
+    ticks3 = {"CE|23950": {"last_price": 100.0, "ts": ts3 + 55_000},   # +11.1% > 10%
+              "PE|24050": {"last_price": 110.0, "ts": ts3 + 55_000}}
+    out2 = run(evaluate_premium_momentum_bar(
+        locks_col=locks, deployment=dep, instrument="NIFTY",
+        candle_ts=ts3, spot_close=24000.0, contracts=_CONTRACTS,
+        latest_tick_map=_tickmap(ticks3), now_ts=ts3 / 1000 + 60,
+    ))
+    assert out2["outcome"] == "triggered"
+    assert out2["direction"] == "CE" and out2["leg"] == "lce"
+    assert out2["contract"]["instrument_key"] == "CE|23950"
+    assert out2["ref_premium"] == 90.0 and out2["premium_now"] == 100.0
+
+
+def test_lazy_pickup_is_one_shot_after_entered():
+    locks = _FakeLocks()
+    run(locks.insert_one({"deployment_id": "D1", "session_date": "2026-07-10",
+                          "triggered_side": None, "done_for_day": False,
+                          "ce_ref_premium": 100.0,
+                          "ce": {"instrument_key": "CE|23950", "strike": 23950},
+                          "pe_ref_premium": 110.0,
+                          "pe": {"instrument_key": "PE|24050", "strike": 24050},
+                          "ce_triggered": True, "pe_triggered": True,   # primaries resolved
+                          "lazy_armed_ce": True,
+                          "lce_instrument_key": "CE|23950", "lce_ref_premium": 90.0,
+                          "lce_triggered": True, "lce_entered_norenordno": "N9"}))
+    dep = _dep({"leg_mode": "both", "lazy_enabled": True, "lazy_momentum_pct": 10.0})
+    ts2 = TS_0931 + 60_000
+    ticks = {"CE|23950": {"last_price": 130.0, "ts": ts2 + 55_000},   # would ALSO cross again
+             "PE|24050": {"last_price": 110.0, "ts": ts2 + 55_000}}
+    out = run(evaluate_premium_momentum_bar(
+        locks_col=locks, deployment=dep, instrument="NIFTY",
+        candle_ts=ts2, spot_close=24000.0, contracts=_CONTRACTS,
+        latest_tick_map=_tickmap(ticks), now_ts=ts2 / 1000 + 60,
+    ))
+    assert out["outcome"] == "holding_position"   # both primaries AND the lazy leg resolved
+
+
+def test_lazy_disabled_ignores_armed_flag():
+    locks = _FakeLocks()
+    run(locks.insert_one({"deployment_id": "D1", "session_date": "2026-07-10",
+                          "triggered_side": None, "done_for_day": False,
+                          "ce_ref_premium": 100.0,
+                          "ce": {"instrument_key": "CE|23950", "strike": 23950},
+                          "pe_ref_premium": 110.0,
+                          "pe": {"instrument_key": "PE|24050", "strike": 24050},
+                          "lazy_armed_ce": True}))
+    dep = _dep({"leg_mode": "both"})   # lazy_enabled NOT set -> False
+    ts2 = TS_0931 + 60_000
+    ticks = {"CE|23950": {"last_price": 100.0, "ts": ts2 + 55_000},
+             "PE|24050": {"last_price": 110.0, "ts": ts2 + 55_000}}
+    out = run(evaluate_premium_momentum_bar(
+        locks_col=locks, deployment=dep, instrument="NIFTY",
+        candle_ts=ts2, spot_close=24000.0, contracts=_CONTRACTS,
+        latest_tick_map=_tickmap(ticks), now_ts=ts2 / 1000 + 60,
+    ))
+    assert out["outcome"] == "monitoring"
+    assert "lce_instrument_key" not in locks.docs[0]
