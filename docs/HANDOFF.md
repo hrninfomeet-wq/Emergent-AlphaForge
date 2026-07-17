@@ -22,10 +22,15 @@ clamped below the 15:00 EOD, realized-only session day-stop, VIX gate) as a
 gate (0.54.2) travels with every multi-leg deployment as an informational
 `premium_edge_verdict` arm advisory (never a gate; there is still NO
 strategy-specific arming gate of any kind). first_to_trigger/single-leg
-deployments are byte-identical to Track B (source-pinned). Full suite 3477
-passed, 0 failed. NOT yet validated in a real market-hours session. See
-CHANGELOG 0.55.0 and the plan's parity-divergence table before touching any
-of these seams.
+deployments are byte-identical to Track B (source-pinned). The independent
+review of the recovery path caught and closed a HIGH defect before any
+live exposure: recovery matched Upstox trading_symbols against the
+Noren-keyed broker position book (different symbol spaces → every open leg
+reads "gone" on restart → false finalize with money open); the fix joins
+through the broker order book's norenordno→tsym and treats an unresolvable
+order as skip-never-exit. Full suite 3478 passed, 0 failed. NOT yet
+validated in a real market-hours session. See CHANGELOG 0.55.0 and the
+plan's parity-divergence table before touching any of these seams.
 
 **Previous (2026-07-15, v0.54.2)**: **the premium-momentum edge hunt is CLOSED
 with a failed gate.** Phase 5A.2 added the session day-stop + India VIX gate

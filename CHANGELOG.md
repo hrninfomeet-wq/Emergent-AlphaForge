@@ -44,13 +44,32 @@ restarted with NO stop monitor) + interim guard removed, B8 advisory/UI
 (informational-only evidence grep-pinned; new strip refusal labels; leg
 chips honestly deferred with the exact threading a richer surface needs).
 
+Cluster B review closure (`fa1432c`): the Fable review of the inline B5–B7
+confirmed 2 production defects, both fixed. (1) HIGH: recovery matched the
+lock's persisted UPSTOX trading_symbol against the NOREN-keyed broker
+position book — different symbol spaces, so a real restart would read every
+open leg as "gone" and falsely finalize the session with money open (latent
+in legacy Track-B recovery too). Fix: startup recovery builds a
+norenordno→Noren-tsym join from the broker's own order book and every leg's
+symbol resolves exclusively through it; an unresolvable ordno is SKIPPED to
+the generic rehydrate and NEVER marked exited. (2) lce_tsym/lpe_tsym were
+never persisted (contracts carry trading_symbol), so lazy rehydrate was
+dead code its test propped up by fabricating the field — the join removes
+the dependency entirely. All recovery fakes now model the two symbol spaces
+with deliberately different strings. Accepted-with-evidence, not fixed:
+mixed legacy+per-leg lock docs (needs a mid-session leg_mode flip; no API
+path) and the exit_time firing branch's direct test (verified by static
+trace; registration/clamp side is tested).
+
 Orchestration note (token-limit reality): A1–A3 and B8 were built by Sonnet
 subagents with Fable/Sonnet adversarial review; A4 and B5–B7 — the most
 safety-critical seams — were implemented by the orchestrator inline after
 repeated subagent session-limit deaths, then adversarially reviewed
 independently (Cluster A's review of the inline A4 found 2 real bugs, both
-fixed; Cluster B's review pass covers B5–B7 the same way). Full host suite:
-**3477 passed, 0 failed** (baseline 3404 pre-5B).
+fixed; Cluster B's review of the inline B5–B7 found the 2 confirmed defects
+closed in `fa1432c` — both hidden by self-consistent test fakes, which is
+exactly why the independent review pass exists). Full host suite:
+**3478 passed, 0 failed** (baseline 3404 pre-5B).
 
 **Honest caveats**: bar-cadence parity divergences are documented in the
 plan's parity table (same-bar double-cross → second leg next bar; lazy
