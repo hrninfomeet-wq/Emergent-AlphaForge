@@ -31,6 +31,10 @@ through the broker order book's norenordno→tsym and treats an unresolvable
 order as skip-never-exit. Full suite 3478 passed, 0 failed. NOT yet
 validated in a real market-hours session. See CHANGELOG 0.55.0 and the
 plan's parity-divergence table before touching any of these seams.
+**NEXT STEP (planned 2026-07-20)**: first market-hours validation, paper
+mode — follow `docs/phase5b-market-validation-runbook.md` exactly; it also
+scopes what paper CANNOT prove (the guard-side 5B exits: lazy arming,
+exit_time, recovery join — those need the later 1-lot live day).
 
 **Previous (2026-07-15, v0.54.2)**: **the premium-momentum edge hunt is CLOSED
 with a failed gate.** Phase 5A.2 added the session day-stop + India VIX gate
