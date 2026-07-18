@@ -2,6 +2,30 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.55.1] — Fix: option legs rendered on the wrong Trades-pane rows under a DTE filter (2026-07-18)
+
+**Backtest Lab / run journal display-correctness fix.** When a paired-option
+backtest ran with a DTE filter (e.g. `[0,1,2]`), `_run_paired_option_backtest`
+rebuilt `spot_trades` to the filtered subset and the sim enumerated THAT list —
+so every leg's `index_trade_id` was a filtered-list position, while the saved
+doc's `trades` (and the Trades pane, which joins by index) hold the FULL list.
+Result: every leg after the first dropped trade rendered on the wrong spot row
+(user repro: trade #4, CE @ 26108, showed another trade's `NIFTY 25850 PE` leg —
+that leg actually belongs to trade #9, PE @ 25843.2, for which 25850 IS the
+correct ATM). Contract selection itself was always correct (side + ATM strike
+verified against the DB); aggregate option metrics/P&L were unaffected — only
+the per-row attribution was wrong, and only when a DTE filter was active.
+
+- `runtime.py`: the DTE filter now records each kept trade's original position
+  and remaps every leg's `index_trade_id` back to the full-list position after
+  the sim. DTE-dropped trades correctly show no leg.
+- New regression test `tests/test_paired_option_index_remap.py` (fails pre-fix).
+- `backend/scripts/repair_option_leg_index.py`: one-off reversible repair for
+  already-saved journal docs (joins legs to spot trades on
+  `signal_entry_ts`+`direction`; original ids kept in `index_remap_backup`).
+  Applied 2026-07-18: 20 affected docs repaired (every DTE-filtered run since
+  2026-06-30), 162 clean docs untouched.
+
 ## [0.55.0] — Phase 5B: live/paper multi-leg premium-momentum execution (capability build, 2026-07-17)
 
 **The full EXP2 contingency shape now executes live and paper** — both-legs

@@ -1261,22 +1261,29 @@ async def _run_paired_option_backtest(req: BacktestReq, spot_trades: List[Dict[s
 
     # DTE filter: keep only spot trades whose entry session is the selected number
     # of trading days before the nearest expiry. Metadata-driven via stored
-    # expiry_date values; "all"/None keeps every trade. Applied before pairing so
-    # downstream indices, expiry resolution and option fetch all stay consistent.
+    # expiry_date values; "all"/None keeps every trade. The sim enumerates the
+    # FILTERED list, but the caller's response/UI joins option legs to the FULL
+    # spot trade list by index (index_trade_id) — so record each kept trade's
+    # original position and remap the legs after the sim. Without the remap,
+    # every leg after the first dropped trade renders on the wrong spot row
+    # (2026-07-18 root cause: a CE row showing another trade's PE leg).
     dte_target = normalize_dte_filter(config.dte_filter)
     dte_stats = {"filter": config.dte_filter, "input_trades": len(spot_trades)}
+    index_remap: Optional[List[int]] = None
     if dte_target is not None:
         expiry_dates_sorted = sorted({
             str(c.get("expiry_date")) for c in contracts if c.get("expiry_date")
         })
         kept: List[Dict[str, Any]] = []
-        for trade in spot_trades:
+        index_remap = []
+        for orig_pos, trade in enumerate(spot_trades):
             entry_ts = trade.get("entry_ts")
             if entry_ts is None:
                 continue
             trade_date = _ts_ms_to_ist_date_str(int(entry_ts))
             if compute_dte(trade_date, expiry_dates_sorted) in dte_target:
                 kept.append(trade)
+                index_remap.append(orig_pos)
         spot_trades = kept
         dte_stats["matched_trades"] = len(spot_trades)
 
@@ -1420,6 +1427,15 @@ async def _run_paired_option_backtest(req: BacktestReq, spot_trades: List[Dict[s
         daily_caps=config.daily_caps.model_dump() if config.daily_caps else None,
     )
     _trades = result.get("trades") or []
+    if index_remap is not None:
+        # Translate filtered-list positions back to full-list positions so
+        # index_trade_id always refers to the caller's spot trade list (the one
+        # the UI displays and joins against). Trades the DTE filter dropped
+        # simply have no leg — which is the honest rendering.
+        for t in _trades:
+            fi = t.get("index_trade_id")
+            if isinstance(fi, int) and 0 <= fi < len(index_remap):
+                t["index_trade_id"] = index_remap[fi]
     result["skipped_trades"] = [t for t in _trades if t.get("status") == "SKIPPED_DAILY_CAP"]
     result["trades"] = [t for t in _trades if t.get("status") != "SKIPPED_DAILY_CAP"]
     result["request"] = config.model_dump()
