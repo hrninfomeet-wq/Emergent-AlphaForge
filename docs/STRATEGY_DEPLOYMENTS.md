@@ -344,6 +344,47 @@ favorable premium move) — alongside the ordinary stop/target fields. On restar
 symbol the guard already has watched, so a recovery re-run can never double-watch (and
 double-square) one position.
 
+### Multi-leg mode (Phase 5B, v0.55.0)
+
+Everything above describes the default `leg_mode: "first_to_trigger"`, which is **byte-identical to
+the original Track-B behavior** (source-pinned by tests). Setting `leg_mode: "both"` in the
+deployment params switches the evaluator branch to the multi-leg engine, where CE and PE are
+**independent primaries** — each side latches, journals, and enters on its own (per-leg fields
+`pce_*`/`ppe_*` in the same `premium_locks` doc; per-leg atomic latch/unlatch/entered transitions in
+`premium_lock_store.py`). The other 5B params (all optional, all flowing through the standard
+`merged_params` allow-list — no schema migration):
+
+- `lazy_enabled` + `lazy_momentum_pct`/`lazy_stop_pct`/`lazy_target_pct`/`lazy_moneyness` — a
+  **one-shot lazy reversal leg**: when a primary leg exits via a STOP-class reason
+  (`stop`/`breakeven_stop`/`trailing_stop`/`spot_stop_hit` — never target/EOD/exit_time/basket
+  reasons), the **opposite** side arms a fresh strike lock with its own snapshot (`lce_*`/`lpe_*`
+  fields). Arming happens in the live guard's on-close hook, subject to `entry_cutoff`.
+- `entry_cutoff` (IST HH:MM) — no new triggers or lazy armings at/after this time.
+- `exit_time` (IST HH:MM) — per-deployment square time, **clamped strictly below the 15:00 system
+  EOD** (which always wins); registered per guard entry as `square_at_ist`. The resulting
+  `exit_time` exit reason is deliberately NOT STOP-class (it never arms a lazy leg).
+- `session_max_loss_rupees` / `session_max_profit_rupees` — a **realized-only** day-stop evaluated
+  before the engine each bar: on breach it atomically fires once (`mark_day_stop`: flag + done in
+  one write), **squares open live positions once** via the standard deployment-stop path, and
+  **blocks** further entries. In paper mode it blocks only (paper positions are left to their own
+  exits) — an intentional asymmetry.
+- `vix_min` / `vix_max` — an INDIAVIX session gate resolved as-of session start, **only when
+  configured**; an unverifiable VIX with a configured gate refuses with `vix_unverifiable` (visible
+  strip label), never a silent pass.
+
+Three things a maintainer must not un-learn: (1) **all HH:MM comparisons must pass through
+`normalize_hhmm`** (`premium_momentum.py`) — raw lexicographic compares are fail-open for unpadded
+input like `"9:30"`; (2) whole-doc session finalize (`done_for_day`) happens **only when both
+primaries have exited and no leg — including a freshly-armed lazy leg — is still in play**
+(`legs_unresolved`); (3) restart recovery resolves every leg's trading symbol **exclusively through
+the broker order book's `norenordno→tsym` join** — the lock's persisted `trading_symbol` is the
+UPSTOX symbol and must never be matched against the Noren-keyed broker position book; an
+unresolvable order number is skipped to the generic rehydrate, never marked exited.
+
+The failed edge verdict (`docs/PREMIUM_MOMENTUM_EDGE_VERDICT_2026-07.md`) travels with every
+multi-leg deployment as an **informational** `premium_edge_verdict` arm advisory (shown in the
+deploy/arm panel) — it never gates arming, per the same no-new-gates decision.
+
 ---
 
 ## Signal lifecycle

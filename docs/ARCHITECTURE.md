@@ -135,8 +135,8 @@ live in `app/schemas.py`; shared singletons/helpers in `app/runtime.py`; routes 
 | `deployment_kill_switch.py` | Per-deployment kill switches (consecutive-loss / daily-loss → PAUSE; max-open → soft BLOCK) |
 | `paper_auto.py` / `paper_trading.py` / `paper_open_positions.py` / `paper_squareoff.py` / `paper_analytics.py` | Auto paper trading (premium resolution: live tick → fresh candle → refuse; never spot), per-minute marker, 15:00 IST square-off, R-multiple/blotter analytics |
 | `forward_metrics.py` / `signal_lifecycle.py` / `preset_execution.py` | Session-gated deployment metrics; lifecycle state machine + audit events; preset replay |
-| `premium_momentum_live.py` | Per-bar session state machine for `premium_momentum` (`pre_reference → lock+ref-capture → monitoring → triggered/done`); called from a dedicated branch in `deployment_evaluator.py`, not the generic `strategy.evaluate()` path |
-| `premium_lock_store.py` | `premium_locks` collection accessor — create-once/duplicate-key-adopt lock, atomic trigger latch, entered/done state transitions, recovery source |
+| `premium_momentum_live.py` | Per-bar session state machine for `premium_momentum` (`pre_reference → lock+ref-capture → monitoring → triggered/done`); called from a dedicated branch in `deployment_evaluator.py`, not the generic `strategy.evaluate()` path. Since 5B also the both-legs engine (`leg_mode: "both"` — CE+PE independent primaries + lazy-leg lock pickup) |
+| `premium_lock_store.py` | `premium_locks` collection accessor — create-once/duplicate-key-adopt lock, atomic trigger latch, entered/done state transitions, recovery source. 5B adds per-leg primitives (`pce/ppe/lce/lpe` field groups: `latch_trigger_leg`/`unlatch_trigger_leg`/`mark_entered_leg`/`mark_leg_exited`/`set_lazy_armed`/`legs_unresolved`) + the atomic fire-once `mark_day_stop` |
 | `premium_pin.py` | `premium_pin_keys()` — today's locked option keys, unioned (cap-exempt) into every option-stream subscription rebuild so a locked strike never drops off the tick feed |
 
 ### Live execution (Flattrade) (`app/live/`)
@@ -245,7 +245,7 @@ Collection names verified against `app/db.py` (`ensure_indexes`) and code access
 | `strategy_deployments` | Forward-test deployment definitions (incl. `risk.live` arm block) |
 | `signals` | Lifecycle state, blockers, audit events, `risk_hints`, `paper_trade_claim`. Unique partial index `signals_deployment_bar_unique` over `(deployment_id, candle_ts)` |
 | `paper_trades` | Paper fills at option premium, MTM, realized/unrealized P&L, `risk`, `spot_exit`, source flag |
-| `premium_locks` | `premium_momentum` per-session strike lock + ref-premium capture + trigger-latch state. Unique `(deployment_id, session_date)` (`uniq_premium_lock_per_session`, created in `db.ensure_indexes`) |
+| `premium_locks` | `premium_momentum` per-session strike lock + ref-premium capture + trigger-latch state; in 5B both-mode also the per-leg (`pce/ppe/lce/lpe`) trigger/entry/exit fields, lazy-armed flags, and day-stop state. Unique `(deployment_id, session_date)` (`uniq_premium_lock_per_session`, created in `db.ensure_indexes`) |
 
 ### Live execution
 

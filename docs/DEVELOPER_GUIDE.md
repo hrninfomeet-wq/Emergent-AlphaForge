@@ -33,7 +33,7 @@ Start here, in order:
 
 1. **[docs/HANDOFF.md](HANDOFF.md)** — "START HERE": current state, orientation, and a where-to-go-deep index.
 2. **This guide** — the consolidated onboarding.
-3. **[CHANGELOG.md](../CHANGELOG.md)** — versioned history (0.1.0 → 0.52.x, newest first). The repo +
+3. **[CHANGELOG.md](../CHANGELOG.md)** — versioned history (0.1.0 → 0.55.x, newest first). The repo +
    `tests/` are the source of truth, not any prior chat — and check `git log` against the top
    changelog entry before trusting it; doc passes have lagged real commits before.
 4. **[docs/ARCHITECTURE.md](ARCHITECTURE.md)** — full module map, data flow, collections, the live gate chain.
@@ -403,6 +403,18 @@ too, or a locked strike can silently drop off the tick feed mid-session). Recove
 already in the registry's watched set — recovery/supervisor retries are routine, and without this
 guard a re-run could double-watch one position under two keys (two independent stop evaluations,
 two full-qty square orders on a fast gap).
+
+Since v0.55.0 the family also executes **multi-leg** (`leg_mode: "both"`: CE+PE independent
+primaries, one-shot lazy reversal leg off STOP-class guard exits, per-deployment `exit_time`
+squares, realized-only day-stop, VIX gate) — see `STRATEGY_DEPLOYMENTS.md` → "Multi-leg mode
+(Phase 5B)" for the config keys and the three load-bearing invariants (normalize_hhmm everywhere;
+whole-doc finalize only when nothing is unresolved incl. a freshly-armed lazy leg; recovery symbols
+come exclusively from the broker order-book join, never the persisted Upstox symbol). Two
+architectural facts worth internalizing: the 5B **exit** machinery (lazy arming, exit_time,
+per-leg finalize, recovery join) lives entirely in the **live guard** — paper exits ride the
+separate LiveExitMonitor and never touch premium locks — and the family **failed its pre-registered
+edge gate** (`docs/PREMIUM_MOMENTUM_EDGE_VERDICT_2026-07.md`); 5B exists as a user-decided pure
+capability, with the verdict surfaced as an informational arm advisory.
 
 ### The one invariant that never changes
 
