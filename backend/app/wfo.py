@@ -413,6 +413,13 @@ async def _pair_oos_with_options(
     ).to_list(length=None)
     expiry_dates_sorted = sorted({str(c.get("expiry_date")) for c in contracts if c.get("expiry_date")})
 
+    # NOTE: `trades` is FILTERED (null-entry_ts drop above, DTE filter here) before
+    # the sim, so the returned legs' index_trade_id values are positions in THIS
+    # throwaway list — NOT in oos_trades/oos_sorted. Today's only consumer
+    # (option_oos_summary) never joins legs back by index, which is what keeps
+    # this safe. If legs are ever surfaced next to a full trade list, remap
+    # index_trade_id to full-list positions first, as _run_paired_option_backtest
+    # does (runtime.py, 0.55.1 misalignment fix).
     if dte_target is not None:
         trades = [t for t in trades
                   if compute_dte(_ts_ms_to_ist_date(int(t["entry_ts"])), expiry_dates_sorted) in dte_target]

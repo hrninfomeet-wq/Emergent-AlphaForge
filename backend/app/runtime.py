@@ -1563,7 +1563,11 @@ async def _option_preflight_report(req: BacktestReq) -> Dict[str, Any]:
 
     expiry_by_trade = _resolve_option_expiry_by_trade(spot_trades, contracts, fixed_expiry_date=fixed_expiry_date)
 
-    # Resolve the needed contract per trade.
+    # Resolve the needed contract per trade. NOTE: per_trade "idx" values are
+    # positions in the DTE-FILTERED spot_trades list; they are consumed only
+    # inside this function (self-consistent) and only aggregates are returned.
+    # Never surface them joined to the caller's full trade list without a
+    # remap like _run_paired_option_backtest's (0.55.1 misalignment fix).
     needed: Dict[str, Dict[str, Any]] = {}
     no_contract = 0
     per_trade = []
