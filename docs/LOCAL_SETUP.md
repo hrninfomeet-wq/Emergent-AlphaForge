@@ -62,8 +62,9 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 #      GEMINI_API_KEY=...   (get one free at https://aistudio.google.com/apikey)
 #      # optional: ANTHROPIC_API_KEY=... for the Claude authoring path
 #
-#    Live trading stays OFF by default (LIVE_AUTOPLACE_ARMED=0 / LIVE_GUARD_ARMED=0).
-#    Leave those at 0 until you're actively armed to place real orders.
+#    Live trading stays OFF by default (LIVE_AUTOPLACE_ARMED=0). Leave it at 0 until
+#    you're actively trading live. (v0.56.0: LIVE_GUARD_ARMED is gone — the exit guard
+#    always transmits; going live is per-deployment via the app's Deploy-to-Live.)
 
 # 5. Launch
 docker compose up -d --build

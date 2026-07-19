@@ -26,9 +26,11 @@ The pipeline:
 2. Save it as a Preset, or keep the Backtest Run.
 3. Create a **deployment** from that artifact — quality gate + acknowledgment.
 4. The 1-minute-close **evaluator** journals signals every market minute.
-5. Depending on the deployment's **mode/arm state**, a clean signal opens a
-   **paper trade**, a **real broker order**, or **nothing** (signal-only).
-6. Review honest **forward metrics** before trusting — or arming — the strategy.
+5. Depending on the deployment's **mode**, a clean signal opens a
+   **paper trade**, a **real broker order** (`mode == "live"`), or **nothing**
+   (signal-only).
+6. Review honest **forward metrics** before trusting — or going live with — the
+   strategy.
 
 ---
 
@@ -48,8 +50,8 @@ The pipeline:
 | `timeframe` / `confirmation_mode` | `1m` / `1m_close` (`tick` reserved, not yet evaluated) |
 | `option_policy` | `{ moneyness: [atm/otm1/itm1], expiry_policy: "next_available", dte_filter }` — `dte_filter` default `[0..6]` |
 | `pretrade_profile` | Conservative / Balanced / Aggressive (or custom) |
-| `mode` | **`signal_only`** or **`paper`** (see below) |
-| `risk` | The whole risk block: `allow_overnight`, `default_lots`, `auto_paper`, the `auto_paper_*` premium exits, `friction`, the pinned `sizing` replay, the **kill-switch** fields, `daily_caps`, and the nested **`live`** arm sub-object |
+| `mode` | **`signal_only`**, **`paper`**, or **`live`** (real-money; reachable only via `POST /live/enable` — see below) |
+| `risk` | The whole risk block: `allow_overnight`, `default_lots`, `auto_paper`, the `auto_paper_*` premium exits, `friction`, the pinned `sizing` replay, the **kill-switch** fields, `daily_caps`, and the nested **`live`** sub-object — a pure CONFIG doc (caps + catastrophe band); it carries no authorization field, `mode` alone authorizes |
 | `manual_approval_required` | Always `false` (the legacy approval gate was retired) |
 | `status` | `ACTIVE` \| `PAUSED` \| `ARCHIVED` |
 | `quality_at_creation` / `acknowledged_warnings` | Quality snapshot + the user's ack |
@@ -70,10 +72,15 @@ so rupee-risk is held constant across instruments. No pin → `risk.default_lots
 
 ## Modes (the real enum)
 
-Two modes only — `ALLOWED_MODES = {"signal_only", "paper"}`. **The old
-`shadow` / `recommendation` / manual-approval framing is gone.** Legacy stored
-values map on read: `shadow → signal_only`, `recommendation → signal_only`
-(`LEGACY_MODE_MAP`). The evaluator only ever opens a trade when `mode == "paper"`.
+`ALLOWED_MODES = {"signal_only", "paper", "live"}` — but a deployment can never
+be **created** in live mode: `CREATABLE_MODES = {"signal_only", "paper"}` is the
+set `build_deployment_doc` accepts at creation time. `mode == "live"` is reached
+only by calling `POST /deployments/{id}/live/enable` on an existing deployment
+(v0.56.0 — no per-session ARM ceremony any more; see
+[Live path](#live-path-real-money) below). **The old `shadow` / `recommendation`
+/ manual-approval framing is gone.** Legacy stored values map on read:
+`shadow → signal_only`, `recommendation → signal_only` (`LEGACY_MODE_MAP`). The
+evaluator only ever opens a trade when `mode` is `"paper"` or `"live"`.
 
 ### `signal_only`
 The evaluator journals every clean and blocked signal for audit, but **never
@@ -86,11 +93,16 @@ Same journaling, plus — when `risk.auto_paper` is true (the wizard default) �
 premium (`paper_auto.auto_paper_trade_for_signal`). There is no manual
 Approve/Skip step; signal outcomes are auditable without an operator present.
 
-### The live overlay (not a mode)
-Real-money auto-placing is **not a third mode**. It is an **arm state** layered
-on top of a `paper` deployment via `risk.live` (the arm/disarm/stop routes). An
-armed deployment routes a clean signal to a **real order** and suppresses the
-paper path for that signal — see [Live path](#live-path-armed-real-money).
+### `live` (real-money — v0.56.0: deploying live IS the authorization)
+`mode == "live"` **is itself the authorization** — there is no separate
+per-session arm record and no arm expiry. A clean CONFIRMED signal from a live
+deployment routes to a **real order** through the executor chokepoint (and
+suppresses the paper path for that signal) whenever the broker is connected and
+it is before the daily 15:00 IST new-entry cutoff; `LIVE_AUTOPLACE_ARMED`
+remains the one env master switch on top. `mode` cannot be set to `"live"` at
+creation or via an ordinary update — the only writer is
+`POST /deployments/{id}/live/enable`, which runs the full preflight chain and
+requires risk caps. See [Live path](#live-path-real-money).
 
 ---
 
@@ -219,40 +231,62 @@ user resumes it.
 
 ---
 
-## Live path (armed, real-money)
+## Live path (real-money)
 
-Real-money auto-placing is **off by default and heavily gated**. Enabling it is a
-deliberate, session-scoped act with an env master gate on top.
+Real-money auto-placing is **off by default and heavily gated**. Enabling it
+(v0.56.0: `POST /live/enable`, replacing the old per-session ARM) is a
+deliberate, one-time-per-deployment act — it persists across sessions until
+explicitly disabled or stopped — with the env master gate (`LIVE_AUTOPLACE_ARMED`)
+still on top of it.
 
-### Arm / disarm / stop (`routers/deployments.py`)
+### Enable / disable / stop (`routers/deployments.py`)
 
-`POST /deployments/{id}/live/arm` writes `risk.live` **only** if every guard
-passes: deployment exists and is `ACTIVE`, strategy not retired, not drift-paused,
-**broker connected** (a Flattrade token is stored), the `LiveEngine.can_trade()`
-is True, and `confirm` is the literal boolean `True` (StrictBool). The body sets
-`lots`, `max_lots_per_day`, `max_concurrent`, `daily_loss_cap`, and optional
-catastrophe stop/target %. The arm **expires at 15:00 IST that same session**
-(`armed_until`, via `armed_until_today_ist`) — arming after 15:00 IST is rejected
-rather than silently no-op'd. The user's `lots` is stored verbatim; the executor
-clamps it to the account ceiling at place time.
+`POST /deployments/{id}/live/enable` sets `mode="live"` and writes `risk.live`
+**only** if every guard passes: deployment exists and is `ACTIVE`, strategy not
+retired, not drift-paused, **broker connected** (a Flattrade token is stored),
+the `LiveEngine.can_trade()` is True, and `confirm` is the literal boolean
+`True` (StrictBool) — the same seven-check preflight the old arm route ran. The
+body sets `lots`, `max_lots_per_day`, `max_concurrent`, `daily_loss_cap`, and
+optional catastrophe stop/target %; **all three lot caps are REQUIRED to be
+≥ 1** (`400` otherwise) — a live deployment without caps would trade unbounded.
+Unlike the old arm, **enabling does not expire** — there is no `armed_until`
+and no "cannot enable after 15:00" check: enabling in the evening simply means
+the deployment goes live at the next session's open (the daily 15:00 IST cutoff
+still applies to every individual entry, every day). The user's `lots` is
+stored verbatim; the executor clamps it to the account ceiling at place time.
 
-- `POST /deployments/{id}/live/disarm` — stop new placing; does **not** flatten.
+- `POST /deployments/{id}/live/disable` — revert `mode` to `"paper"`; stops new
+  live placing. Does **not** flatten open positions — they stay registered with
+  the guard and keep their stop/target/trail and the resting OCO. The live
+  config (`risk.live` caps + catastrophe band) is retained so re-enabling
+  doesn't require re-entering it.
 - `POST /deployments/{id}/live/stop` — flatten THIS deployment's open live
-  positions (margin-safe square path) **then** disarm.
-- `POST /deployments/stop-all` — square all paper, pause every ACTIVE deployment,
-  and disarm + flatten every armed live deployment.
-- `GET /deployments/{id}/live/status` (and the batched `?ids=`) reports arm state,
-  caps, today's counters, open positions, and the two transmit gates
-  (`autoplace_armed`, `guard_armed`).
+  positions (margin-safe square path), revert `mode` to `"paper"`, **and** set
+  `status="PAUSED"` — reverting mode alone would leave an ACTIVE deployment
+  free to re-enter on the very next confirmed signal; `status=PAUSED` is the
+  actual halt (`evaluate_all` only iterates `{"status": "ACTIVE"}`).
+- `POST /deployments/stop-all` — square all paper, pause every ACTIVE
+  deployment, and revert-to-paper + pause every `mode == "live"` deployment
+  (selector `{"mode": "live"}` — **not** the old `{"risk.live.armed": True}`,
+  which would now silently match zero documents and turn Stop-ALL into a
+  no-op for live positions).
+- `GET /deployments/{id}/live/status` (and the batched `?ids=`) reports live
+  state, caps, today's counters, open positions, and the transmit gate
+  (`autoplace_armed`; `guard_armed` is retained in the payload for
+  compatibility and is always `true`).
 
-### The two env gates
-`risk.live.armed` authorizes the deployment. Transmit is a **separate**
-env-level concern:
-- **`LIVE_AUTOPLACE_ARMED`** — the executor's transmit boundary. Unless set, an
-  armed deployment is **offline-first**: the executor validates and returns
+### The one remaining env gate
+`mode == "live"` authorizes the deployment — there is no `risk.live.armed`
+field any more. Transmit of a real **entry** is still a separate env-level
+concern:
+- **`LIVE_AUTOPLACE_ARMED`** — the executor's transmit boundary. Unless set, a
+  live deployment is **offline-first**: the executor validates and returns
   `dry_run=True` / `would_send`, transmitting **nothing** (journaled as
   `live_intended` on the signal).
-- **`LIVE_GUARD_ARMED`** — the software-guard transmit gate.
+
+**`LIVE_GUARD_ARMED` is REMOVED.** The software guard's squares (and its
+Layer-2 widening re-price) now always transmit — there is no exit-side env
+gate at all.
 
 ### Live sink (`auto_live.py`) — a structural clone of the paper sink
 Same claim / lifecycle / journaling as paper; the one difference is the success
@@ -325,9 +359,10 @@ the strategy's `evaluate()` (the plugin's is inert — it registers schema/metad
    `done_for_day` mid-bar), the signal's outcome is downgraded so the sink tee never routes a trade
    for a journaled-but-unlatched signal.
 
-From there it is **routed and armed exactly like every other deployment** — the same sink routing
-(armed+connected → `auto_live`, else `auto_paper`, else journal-only), the same per-deployment ARM +
-`LIVE_AUTOPLACE_ARMED`/`LIVE_GUARD_ARMED` + caps + EOD auto-disarm chain, the same executor
+From there it is **routed exactly like every other deployment** — the same sink routing
+(live-mode+connected → `auto_live`, else `auto_paper`, else journal-only), the same
+`mode == "live"` + `LIVE_AUTOPLACE_ARMED` + caps + 15:00 IST entry-cutoff authorization (v0.56.0 —
+no per-deployment ARM ceremony, no `LIVE_GUARD_ARMED`), the same executor
 chokepoint. **There is no premium-momentum-specific arming gate** — this was an explicit design
 decision (an earlier draft spec had a 10-paper-session validation gate; it was removed on request),
 and none should be added without being asked. `auto_live.py` adds one extra safety check specific to
@@ -430,7 +465,7 @@ Evidence: `GET /deployments/preflight`, `/deployments/quality`,
 `/deployments/readiness`, `/deployments/metrics`, `/deployments/{id}/metrics`,
 `/deployments/overview`.
 
-Live: `POST /deployments/{id}/live/arm|disarm|stop`,
+Live: `POST /deployments/{id}/live/enable|disable|stop`,
 `GET /deployments/{id}/live/status`, `GET /deployments/live/status?ids=`.
 
 See [API_REFERENCE.md](./API_REFERENCE.md) for the full route reference and the

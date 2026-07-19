@@ -70,6 +70,26 @@ the kill-switch tests that **hardcoded the old selector instead of applying the 
 would have kept passing against a selector matching nothing in production, the same failure
 mode as the Upstox/Noren fake that hid a real bug in 0.55.0.
 
+**Adversarial review closure (`d1dfae2`).** A five-lens review of the change confirmed 12 real
+findings — a whole class the paper-era code hid: making `mode == "live"` durable and
+session-independent meant every path that *pauses* or *resumes* a deployment had to become
+live-aware, and none were. Fixed: (1) the **re-authorization** hole — Stop→Resume and
+drift→Re-pin round-tripped a deployment back into real-money trading with no ceremony; now
+every transition out of ACTIVE demotes `mode` to paper (centralized in `_set_deployment_status`
++ the two evaluator auto-pause sites), so only `/live/enable` can ever produce live; (2) generic
+Stop and strategy Retire now **flatten real positions**, not just paper, on a live deployment;
+(3) `/live/status` derives `armed` from `mode` instead of the dead `armed`/`armed_until` fields
+that reported a live deployment as `armed:false`; (4) the arm-state count filters `status=="ACTIVE"`
+so a paused live deployment can't drive the banner to LIVE; (5) **`daily_loss_cap` is now mandatory
+to go live** — removing the per-session `armed_until` expiry turned "one session of unbounded loss"
+into indefinite, and the deployment kill switches are paper-only, so the day-stop is the one loss
+halt a live deployment has; (6) the inert `LIVE_GUARD_ARMED` was dropped from `.env.example`.
+Verified live against the running app: enable rejects a missing day-stop, and Stop→Resume returns
+paper, not live. One finding surfaced but **not** fixed here — `_square_live_positions_for_deployment`
+finalizes on place-ACCEPT not fill; it is pre-existing behavior shared by `/live/stop` + kill (chip
+`task_410e5605`) and deserves a focused confirm-flat pass, not bundling into this change. Suite
+**3492 passed, 0 failed**.
+
 **Not yet market-validated.** `docs/phase5b-market-validation-runbook.md` now leads with this
 model change and adds a section for validating the new control surface.
 

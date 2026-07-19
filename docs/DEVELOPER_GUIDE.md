@@ -250,24 +250,30 @@ functions and they share the **one and only** `client.place_order(...)` call sit
 (`_transmit_and_arm`, `executor.py`):
 
 - `place_live_test_order(...)` — the **manual** single-shot ticket path.
-- `place_deployed_order(...)` — the **armed-deployment** auto-place path.
+- `place_deployed_order(...)` — the **live-deployment** auto-place path.
 
 No other module may call `client.place_order` for an entry. If you add a live feature, route it
 through the executor — do not open a second placement path.
 
-### The two hard, offline-first env kills
+### The one hard, offline-first env kill (v0.56.0: down from two)
 
-Nothing transmits a real order unless the operator has explicitly flipped a host env var. Both
-default to OFF:
+Nothing transmits a real **entry** order unless the operator has explicitly flipped a host env var,
+which defaults to OFF:
 
 | Env var | Gates | Default | If unset |
 |---|---|---|---|
-| `LIVE_AUTOPLACE_ARMED` | **auto entries** (deployment path) | `0` | armed deployment still only **dry-runs** — builds + validates the full intent, transmits nothing |
-| `LIVE_GUARD_ARMED` | **auto squares** (software exit guard) | `0` | guard evaluates + logs intended squares but transmits nothing |
+| `LIVE_AUTOPLACE_ARMED` | **auto entries** (deployment path) | `0` | a live-mode deployment still only **dry-runs** — builds + validates the full intent, transmits nothing |
 
 `executor._autoplace_armed()` reads `LIVE_AUTOPLACE_ARMED` and accepts only `1/true/yes/on`;
-anything else (including unset) means dry-run. This is the "safe by default even if someone arms a
-deployment" backstop.
+anything else (including unset) means dry-run. This is the "safe by default even if a deployment is
+switched to live" backstop — and it is now the **sole** remaining transmit env gate.
+
+**`LIVE_GUARD_ARMED` is REMOVED.** The software exit guard (stop/target/trailing squares and its
+Layer-2 widening re-price) now **always transmits** — a deployed strategy's own exits are part of the
+strategy, not an opt-in extra. This closes a dangerous split (audit finding L20) where real entries
+could transmit while the automated exit guard only logged, leaving the broker OCO as the sole
+automated backstop. Any surviving reference to `LIVE_GUARD_ARMED` — in env files, code comments, or
+older docs — is stale: the variable no longer exists and nothing reads it.
 
 ### Manual path gate chain (`place_live_test_order`)
 
@@ -291,13 +297,19 @@ contact**:
    shot) → `arm`. If **any** post-fill step raises, `_abort_protect` drives a best-effort square +
    engine halt so **no unprotected live position can persist**.
 
-### Armed-deployment path gate chain (`place_deployed_order`)
+### Live-deployment path gate chain (`place_deployed_order`)
 
-Same skeleton, but authorized by the **per-deployment ARM** instead of the global single-shot:
+Same skeleton, but authorized by the deployment's **mode**, not a per-session arm record — the ARM
+ceremony was **removed in v0.56.0** by explicit user decision: deploying a strategy in live mode IS
+the authorization, and the strategy's own entry/exit/SL/TP/trailing logic drives execution with the
+resting broker OCO as the PC-down backstop.
 
 - **Authorization** = `mode.is_deployment_live_allowed(deployment, now, connected=…)` — requires
-  `risk.live.armed == True`, `now < risk.live.armed_until`, and broker connected. **Fail-closed**
-  on any missing/expired field.
+  `deployment.mode == "live"`, the broker connected, and `now` before the **15:00 IST daily
+  new-entry cutoff** (`mode.entry_cutoff_today_ist`, an alias for the pre-existing
+  `armed_until_today_ist`). **Fail-closed** on any missing/malformed field or an unresolvable
+  cutoff. There is no arm record and no arm expiry — `mode == "live"` persists across sessions
+  until a human disables/stops it; only the entry side is time-boxed per day.
 - **Lots** = `capped_lots`; `fat_finger_cap` = the **account ceiling** (`account_max_lots`, config
   default 20 via `max_lots_per_order`), and margin must cover the **full** `capped_lots * lot_size`.
   A broker `GetOrderMargin` pre-trade gate (`broker_margin_verdict`) fails **closed** on a broker
@@ -314,29 +326,44 @@ Same skeleton, but authorized by the **per-deployment ARM** instead of the globa
 
 Before a deployment opens a new live trade, `check_live_caps` enforces (first match wins):
 
-1. `daily_loss_cap` (₹ magnitude) → block **and pause** (auto-disarm with `disarmed_reason="daily_loss"`).
+1. `daily_loss_cap` (₹ magnitude) → block **and pause**: sets `status="PAUSED"`, reverts
+   `mode` to `"paper"`, and stamps `risk.live.last_block_reason="daily_loss"` — `status=PAUSED` is
+   what actually stops re-entry (`evaluate_all` only iterates `{"status": "ACTIVE"}`); the
+   mode/reason fields are audit trail, not authorization.
 2. `max_lots_per_day` (rolling IST day) → block.
 3. `max_concurrent` (open live trades) → block.
+
+**Fails CLOSED for `mode == "live"` with no caps configured** (`reason: "live_caps_missing"`)
+rather than the old allow-all fast path. `POST /live/enable` is the only route that can set
+`mode="live"` and it already REQUIRES `lots`/`max_lots_per_day`/`max_concurrent` ≥ 1, but the
+governor no longer trusts that as a given — a crafted or migrated doc with `mode == "live"` and no
+caps is refused rather than traded unbounded.
 
 `auto_live.py` calls the governor, then `is_deployment_live_allowed`, then
 `executor.place_deployed_order`.
 
-### EOD auto-disarm & kill switches
+### Daily entry cutoff & kill switches
 
-- **EOD auto-disarm**: `armed_until` is 15:00 IST on the arm date
-  (`mode.armed_until_today_ist`), so an ARM cannot survive past the day / square-off. Token expiry
-  also disarms.
-- **Manual kill**: `POST /deployments/{id}/live/stop` flattens that deployment's live positions +
-  disarms; `/deployments/stop-all` disarms + flattens all live. Paper deployments have their own
-  circuit breakers (`app/deployment_kill_switch.py`: `max_consecutive_losses`,
-  `daily_loss_cutoff_pct`, `max_open_paper_trades`).
+- **Daily new-entry cutoff**: `is_deployment_live_allowed` refuses a new entry from 15:00 IST
+  (`mode.entry_cutoff_today_ist`) — the same instant the EOD auto-square runs — so a live
+  deployment can never open a real position minutes before it would be squared. This replaces what
+  the old `risk.live.armed_until` expiry enforced as a side effect of the (now-removed) per-session
+  arm ceremony.
+- **Manual kill**: `POST /deployments/{id}/live/stop` flattens that deployment's live positions,
+  reverts `mode` to `"paper"`, and sets `status="PAUSED"` (the actual halt —
+  `evaluate_all` only iterates `ACTIVE`); `POST /deployments/stop-all` does the same for every
+  live deployment (selector `{"mode": "live"}`, not the old `{"risk.live.armed": True}`). Paper
+  deployments have their own circuit breakers (`app/deployment_kill_switch.py`:
+  `max_consecutive_losses`, `daily_loss_cutoff_pct`, `max_open_paper_trades`).
 
 ### The catastrophe backstop (PC-down)
 
 Because a resting SL-LMT on a short option margin-rejects, the software exit guard
 (`app/live/live_position_guard.py`, started in `server.py` lifespan) reads the **broker** position
-book ~1.5s and squares in software via a margin-safe cancel-all-then-close — but only transmits when
-`LIVE_GUARD_ARMED=1`. For the **PC-died** case, an **NRML resting GTT/OCO** (`app/live/gtt.py`,
+book ~1.5s and squares in software via a margin-safe cancel-all-then-close — and **always
+transmits** (the `LIVE_GUARD_ARMED` env gate was removed in v0.56.0: a deployed strategy's
+stop/target/trailing exits are part of the strategy, not an opt-in). For the **PC-died** case, an
+**NRML resting GTT/OCO** (`app/live/gtt.py`,
 schema from the vision-verified PiConnect catalog) sits at the broker with no margin cost:
 `GET /live-broker/gtt` lists it, `POST` builds + transmits **only on explicit `transmit=true`**,
 `DELETE` cancels. The `ai_t` values were confirmed by reading the user's own placed orders back.
@@ -355,9 +382,12 @@ must fail closed (hold / block / mark UNKNOWN) on `BrokerReadError`, never coerc
 ### The kill switch is a true stop-all, and exits are serialized against double-selling
 
 `kill_switch._run_kill_switch` trips the account-wide safety latch (`engine.can_trade()` goes false)
-**before** it does anything else, halts the engine, and disarms every armed deployment — only then
-does it flatten. All three exit paths (the software guard, the kill switch, and a manual/deployment
-square) funnel through `live/exit_claims.py`, a per-tsym asyncio-lock claim registry with a TTL: a
+**before** it does anything else, halts the engine, and takes every live deployment out of live mode
+(`_disarm_all_live_deployments`: selector `{"mode": "live"}`, sets `mode="paper"` +
+`status="PAUSED"` — not the old `{"risk.live.armed": True}` filter, which would now silently match
+nothing) — only then does it flatten. All three exit paths (the software guard, the kill switch,
+and a manual/deployment square) funnel through `live/exit_claims.py`, a per-tsym asyncio-lock claim
+registry with a TTL: a
 second path trying to exit a tsym another path already claimed gets `exit_in_flight_elsewhere`
 instead of racing a double-sell. Two additional double-sell windows were closed after being found
 by adversarial review (2026-07-11/12), and the pattern they establish should be followed by any new
@@ -420,9 +450,9 @@ through **shared pure helper functions** (`lock_reference_strike`, `momentum_tri
 precisely to avoid the two-stage engine's spot-re-resolution of a drifting strike.
 
 **There is no premium-momentum-specific arming gate.** It authorizes through the exact same
-per-deployment ARM + `LIVE_AUTOPLACE_ARMED`/`LIVE_GUARD_ARMED` + caps chain as every other strategy
-— this was an explicit user decision (an earlier spec draft had a 10-paper-session validation gate;
-it was removed on request). **Do not add one back "for safety."** Locked strikes are pinned into
+`mode == "live"` + `LIVE_AUTOPLACE_ARMED` + caps-governor chain as every other strategy — this was
+an explicit user decision (an earlier spec draft had a 10-paper-session validation gate; it was
+removed on request). **Do not add one back "for safety."** Locked strikes are pinned into
 every option subscription-stream rebuild (both the auto-follow path in `runtime.py` and the manual
 restart route in `routers/broker.py` — a new stream-rebuild site must union in `premium_pin_keys`
 too, or a locked strike can silently drop off the tick feed mid-session). Recovery
@@ -447,10 +477,10 @@ capability, with the verdict surfaced as an informational arm advisory.
 ### The one invariant that never changes
 
 **The assistant never personally transmits or squares a real order.** It builds 100% of the code,
-but arming (`LIVE_AUTOPLACE_ARMED` / `LIVE_GUARD_ARMED` / a per-deployment ARM / a manual Place
-click) is always a human action. Never bypass the executor, never remove a gate, never default an
-env kill to on. See [docs/live-readback-checklist.md](live-readback-checklist.md) before any live
-session.
+but authorizing real money — switching a deployment to `mode == "live"` via `POST
+/deployments/{id}/live/enable`, flipping `LIVE_AUTOPLACE_ARMED`, or a manual Place click — is always
+a human action. Never bypass the executor, never remove a gate, never default an env kill to on.
+See [docs/live-readback-checklist.md](live-readback-checklist.md) before any live session.
 
 ---
 
@@ -503,9 +533,9 @@ Warehouse (data)
    ▼
 Optimizer  ──► Backtest Lab  ──► Preset / run  ──► Deployment  ──► Paper  ──► Live (Flattrade)
    │               │                 │                 │            │           │
-   TPE/Grid/GA     honest ₹-first    saved config      signal_only  auto-open   ARMED auto-place
-   ± walk-forward  metrics + exit    (from a preset    | paper       at real     within caps
-   ± survival gate overlay           or a run)          modes        premium      (env + ARM + caps)
+   TPE/Grid/GA     honest ₹-first    saved config      signal_only  auto-open   auto-place within
+   ± walk-forward  metrics + exit    (from a preset    | paper       at real     caps (env gate +
+   ± survival gate overlay           or a run)          modes        premium      mode=="live")
 ```
 
 1. **Optimizer** (`optimizer.py` + `wfo.py`/`walkforward.py`): Optuna TPE / Grid / Genetic search,
@@ -520,17 +550,20 @@ Optimizer  ──► Backtest Lab  ──► Preset / run  ──► Deployment 
    (`exit_controls.py`: trailing / breakeven / daily caps). **Gate: does the ₹ equity curve survive
    OOS + full-window?**
 3. **Preset / run** → **Deployment** (`strategy_deployments`): a deployment is created only from a
-   saved preset or a backtest run; modes `signal_only | paper`. The strategy-source SHA is pinned;
-   the evaluator auto-pauses on drift.
+   saved preset or a backtest run; creatable modes are `signal_only | paper` (`live` can never be
+   requested at creation — it is reached only via the preflighted `/live/enable` route in step 5).
+   The strategy-source SHA is pinned; the evaluator auto-pauses on drift.
 4. **Paper** (`deployment_evaluator.py` + `paper_auto.py` + `live_exit_monitor.py`): runs on a
    1-minute-close scheduler in market hours; `risk.auto_paper` (default ON) opens a paper trade per
    clean CONFIRMED signal at real option premium; the live exit monitor (~1.5s) drives tick-level
    stop/target/spot-mirror/time-stop exits; 15:00 square-off. Forward metrics gate on ≥70%-covered
    10:00–15:00 sessions; low sample surfaces under an amber badge. **Gate: does forward P&L match
    the backtest?**
-5. **Live** (`auto_live.py` + `app/live/*`): only after paper earns confidence, a deployment can be
-   **armed** to route live signals through the executor chokepoint under the env gates + per-deployment
-   ARM + caps + EOD auto-disarm described in §E. **Gate: a human arms it; the assistant never does.**
+5. **Live** (`auto_live.py` + `app/live/*`): only after paper earns confidence, `POST
+   /deployments/{id}/live/enable` switches a deployment's `mode` to `"live"` — the preflighted,
+   caps-required route described in §E — so its own signals route through the executor chokepoint
+   under the env gate + caps governor + daily entry cutoff. **Gate: a human enables it; the
+   assistant never does.**
 
 **Premium-native strategies** (e.g. `premium_momentum`) follow the same 5-step flow but with their
 own backtest engine (`premium_momentum_backtest.py`, option-native self-contained sim rather than

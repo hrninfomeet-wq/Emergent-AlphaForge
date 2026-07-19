@@ -91,7 +91,7 @@ live in `app/schemas.py`; shared singletons/helpers in `app/runtime.py`; routes 
 | `research.py` | strategies list, warehouse ingest, backtest run/list, optimizer + WFO, presets, profiles, volatility audit |
 | `warehouse.py` | Upstox OAuth/stream, data-hygiene plan/execute, coverage/audit, OHLC resample, holiday calendar, live-candle roller, option contracts/candles |
 | `journals.py` | signals + paper-trades lifecycle (approve/skip/mark/close/square-off) |
-| `deployments.py` | forward-test deployments (create/pause/resume/archive), preflight, quality, metrics, **live-arm** toggle |
+| `deployments.py` | forward-test deployments (create/pause/resume/archive), preflight, quality, metrics, **live enable/disable/stop** (v0.56.0 deploy-to-live) |
 | `strategies_admin.py` | strategy library lifecycle (retire/delete) + AI authoring wizard endpoints |
 | `broker.py` | Flattrade OAuth/session, symbol resolution helpers |
 | `live_broker.py` | **live execution surface** — positions/orders/limits, dry-run + preview, approvals, mode gate, arm-state, guard-status, GTT/OCO book, square, Greeks, kill-switch |
@@ -154,15 +154,15 @@ The single-real-order chokepoint and its safety scaffolding. See §6 for the gat
 | Module | Responsibility |
 |---|---|
 | `executor.py` | **The SOLE `place_order` chokepoint** — `place_live_test_order` (manual single-shot) + `place_deployed_order` (armed deployment). No other module calls `client.place_order` for entry |
-| `mode.py` | Mode gate (L3.1): `PAPER` / `LIVE_OFFLINE` / `LIVE_TEST` / `LIVE_ARMED`; `is_live_order_allowed` is fail-closed; `is_deployment_live_allowed` per-deployment arm predicate |
-| `arm_state.py` | Pure `compute_arm_state` — collapses mode + per-deployment arm + the two env gates + connectivity into ONE verdict (`SAFE` / `DRY_RUN` / `LIVE`) |
+| `mode.py` | Mode gate (L3.1): `PAPER` / `LIVE_OFFLINE` / `LIVE_TEST` / `LIVE_ARMED`; `is_live_order_allowed` is fail-closed; `is_deployment_live_allowed` = `mode=="live"` + connected + before 15:00 IST entry cutoff (v0.56.0 — no arm record) |
+| `arm_state.py` | Pure `compute_arm_state` — collapses mode + `LIVE_AUTOPLACE_ARMED` + connectivity into ONE verdict (`SAFE` / `DRY_RUN` / `LIVE`); the guard exit gate is gone (always transmits) |
 | `safety.py` | Pure fail-closed checks: fat-finger cap (default-deny), price band, jdata validation (limit/SL-LMT only), `RateThrottle` (SEBI <10/s, cancels never throttled) |
 | `margin.py` | Local `margin_verdict` + broker `GetOrderMargin` pre-trade gate (`broker_margin_verdict`) |
 | `order_builder.py` / `broker_protocol.py` / `order_sm.py` | Server-side intent build (tick rounding, marketable buffer); `OrderIntent` + allowed prctyp/prd/ret; order state machine |
 | `gtt.py` / `oco_levels.py` | **PC-down catastrophe backstop** — NRML-only resting GTT / OCO builders (block no margin; survive a dead PC); catastrophe band strictly wider than the software guard's stop |
 | `kill_switch.py` | Account-level guardrails + `plan_squareoff` (pure) + `panic_squareoff` (executor, never raises) |
 | `exit_claims.py` | Per-tsym asyncio-lock claim registry (TTL) — serializes the guard/kill-switch/manual square paths against each other so two exit paths can never double-sell the same position |
-| `live_position_guard.py` / `live_sl_monitor.py` / `live_exit_monitor.py` / `auto_square.py` | In-process software SL guard (reads broker position book; transmits only when `LIVE_GUARD_ARMED=1`; `live_sl_monitor` trail modes incl. `stepped_xy` for premium-momentum); square execution (`auto_square` — no resting manual timer; EOD 15:00 IST is the sole time-based backstop for a manual position, see its module docstring) |
+| `live_position_guard.py` / `live_sl_monitor.py` / `live_exit_monitor.py` / `auto_square.py` | In-process software SL guard (reads broker position book; ALWAYS transmits its squares — the `LIVE_GUARD_ARMED` gate was removed in v0.56.0; `live_sl_monitor` trail modes incl. `stepped_xy` for premium-momentum); square execution (`auto_square` — no resting manual timer; EOD 15:00 IST is the sole time-based backstop for a manual position, see its module docstring) |
 | `close_loop.py` / `reboot_reconcile.py` / `reconcile.py` | Write realized P&L + CLOSED back to `live_trades` on a real square; reboot reconciliation (empty position-book = UNKNOWN, never false-close) |
 | `flattrade_client.py` / `flattrade_token.py` / `flattrade_symbol.py` / `mock_noren.py` | Real Noren client + daily OAuth + symbol resolve; `MockNoren` for tests |
 | `mcp_session_sync.py` | One-way mirror of the fresh jKey into the official Flattrade MCP binary's `~/.flattrade/session.json` after each OAuth (superset payload, atomic write, skip-if-unchanged, never raises). AlphaForge stays the sole OAuth owner; the MCP never logs in itself. Gated by `FLATTRADE_MCP_SESSION_DIR`; recovery via `backend/scripts/resync_mcp_session.py` |
@@ -321,18 +321,21 @@ transmit nothing.
 | Env var | Gates | Effect when OFF (default) |
 |---|---|---|
 | `LIVE_AUTOPLACE_ARMED` | deployed **entry** transmit boundary (`executor._autoplace_armed`, `deployments._live_autoplace_armed`) | Armed deployment DRY-RUNS: returns validated `would_send`, no real entry |
-| `LIVE_GUARD_ARMED` | automatic **square** transmit (`runtime`, `live_position_guard`, `close_loop`) | Software guard LOGS intended squares but transmits none; a dry-run square returns `{squared: False, dry_run: True}` and is NOT journaled CLOSED |
+| `mode == "live"` (deployment) | the deployed **entry** authorization (v0.56.0 — set only by `POST /live/enable`) | Non-live deployments route to paper; going live requires the preflighted enable route + caps |
 
-`arm_state.compute_arm_state` collapses mode + per-deployment arm + both env gates
+*(The `LIVE_GUARD_ARMED` env gate was removed in v0.56.0 — the software exit guard now always transmits its squares; the resting broker OCO is the PC-down backstop.)*
+
+`arm_state.compute_arm_state` collapses mode + the entry env gate + connectivity
 + broker connectivity into ONE UI verdict — `SAFE` (nothing armed), `DRY_RUN`
 (armed but env gate off), or `LIVE` (a real entry would transmit right now).
 
 ### Per-deployment arm & auto-disarm
 
 `mode.is_deployment_live_allowed` is fail-closed: a deployment transmits only when
-`risk.live.armed is True`, `now < risk.live.armed_until`, and the broker is
-connected. `armed_until` defaults to **15:00 IST** (the EOD square cutoff), so an
-arm self-expires the same trading day.
+`mode == "live"`, the broker is connected, and it is **before 15:00 IST** (the
+new-entry cutoff, the same instant the EOD square runs). `mode == "live"` is set only
+by `POST /live/enable` and demoted to paper by any pause/stop/retire (v0.56.0 — no arm
+record, no arm expiry).
 
 ### PC-down catastrophe backstop (GTT / OCO)
 
@@ -444,8 +447,8 @@ strategy_deployments
         ▼
      signals ──► auto-paper (premium resolution) ──► paper_trades ──► 15:00 IST square-off
         │                                                (per-minute marker: stop/target/spot-mirror)
-        └──► (risk.live armed + LIVE_AUTOPLACE_ARMED) ─► executor.place_deployed_order ─► live_trades
-                                                          (gate chain §6; arm = SL guard + resting OCO)
+        └──► (mode==live + LIVE_AUTOPLACE_ARMED + <15:00) ─► executor.place_deployed_order ─► live_trades
+                                                          (gate chain §6; always-on SL guard + resting OCO)
 ```
 
 ---
@@ -459,9 +462,9 @@ strategy_deployments
   blockers.
 - **Single real-order chokepoint.** One `place_order` site in `executor.py`; every
   other path is blocked from placing entries.
-- **Offline-first / default-DRY-RUN.** Two env gates (`LIVE_AUTOPLACE_ARMED`,
-  `LIVE_GUARD_ARMED`) default OFF; unless set, the system fully validates orders
-  and transmits nothing.
+- **Offline-first / default-DRY-RUN entries.** The `LIVE_AUTOPLACE_ARMED` env gate
+  defaults OFF; unless set, the system fully validates entries and transmits none.
+  (The software exit guard is not env-gated — it always transmits its squares.)
 - **Long-only live entries.** A sell entry would open an unprotected naked short
   (the SL backstop is always sell-to-close) — rejected before any broker contact.
 - **Option entries are premium, never spot.** Both the auto and approve paths
@@ -504,8 +507,8 @@ strategy_deployments
 - The live candle roller and live exit monitor auto-start after WS auto-start at
   boot (only if the Upstox token is valid) and flush on shutdown.
 - The live position guard starts unconditionally at boot (reads the broker
-  position book, not the Upstox stream); it no-ops offline and only transmits a
-  square when `LIVE_GUARD_ARMED=1`.
+  position book, not the Upstox stream); it no-ops offline and ALWAYS transmits its
+  squares when it has a position and a broker connection (no env gate as of v0.56.0).
 - Orphaned optimization jobs left `queued`/`running`/`analyzing` by a restart are
   reconciled to `interrupted` (resumable) on boot.
 - The unique partial index is created live and reapplied on boot via

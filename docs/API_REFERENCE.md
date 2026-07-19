@@ -208,8 +208,8 @@ gate chain) · [DEVELOPER_GUIDE.md](./DEVELOPER_GUIDE.md) · [USER_MANUAL.md](./
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/api/deployments/{deployment_id}/live/arm` | Authorize REAL-money auto-placing until 15:00 IST (guards: ACTIVE, not retired, not drift-paused, broker connected, engine can-trade, `confirm=true` StrictBool). |
-| POST | `/api/deployments/{deployment_id}/live/disarm` | Disarm live auto-placing (does NOT flatten open positions). |
+| POST | `/api/deployments/{deployment_id}/live/enable` | Switch to LIVE mode — real-money auto-placing (v0.56.0: no session ARM; persists until disabled). Guards: ACTIVE, not retired, not drift-paused, broker connected, engine can-trade, caps + `daily_loss_cap` required, `confirm=true` StrictBool. |
+| POST | `/api/deployments/{deployment_id}/live/disable` | Revert to paper mode (does NOT flatten open positions). |
 | POST | `/api/deployments/{deployment_id}/live/stop` | Flatten THIS deployment's open live positions, then disarm (user-initiated exit — transmits directly). |
 | GET | `/api/deployments/live/status` | Batched live status for many deployments in one call (`ids=` comma-separated). |
 | GET | `/api/deployments/{deployment_id}/live/status` | One deployment's live arm state, caps, today's counters, open live positions, transmit gates. |
@@ -288,7 +288,7 @@ via `/live-broker/order/place`. See the gate chain in
 |---|---|---|
 | GET | `/api/live-broker/mode` | Current mode doc (`PAPER` / `LIVE_OFFLINE` / `LIVE_TEST`, single-shot state). |
 | PUT | `/api/live-broker/mode` | Transition mode (LIVE_TEST needs `confirm=true` + connected broker + engine can-trade). |
-| GET | `/api/live-broker/arm-state` | The single "will a signal place a REAL order right now?" verdict (mode + per-deployment arm + env gates + connectivity). |
+| GET | `/api/live-broker/arm-state` | The single "will a signal place a REAL order right now?" verdict (live-mode deployment count + `LIVE_AUTOPLACE_ARMED` + connectivity; v0.56.0). |
 | GET | `/api/live-broker/safety-config` | Current live-trading guardrails (daily loss limit, profit lock, max open, max lots/order). |
 | PUT | `/api/live-broker/safety-config` | Update numeric guardrails. |
 | POST | `/api/live-broker/safety-config/reset-latch` | Explicitly reset the broker stop-loss latch. |
