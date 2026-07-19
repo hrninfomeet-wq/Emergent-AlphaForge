@@ -28,10 +28,14 @@ services:
       MONGO_URL: mongodb://mongo:27017
       DB_NAME: alphaforge
       CORS_ORIGINS: "http://localhost:3000"
+      # Flattrade MCP session auto-sync target (host ~/.flattrade bind below).
+      # Machine-specific by design — this compose file is single-machine.
+      FLATTRADE_MCP_SESSION_DIR: /host-flattrade
     ports:
       - "8001:8001"
     volumes:
       - ./backend/app/strategies/plugins:/app/app/strategies/plugins
+      - C:/Users/haroo/.flattrade:/host-flattrade
 
   frontend:
     build:

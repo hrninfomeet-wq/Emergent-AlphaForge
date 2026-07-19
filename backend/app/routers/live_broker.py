@@ -492,6 +492,16 @@ async def flattrade_auth_callback(
         if not jKey:
             return RedirectResponse(f"{frontend_url}?flattrade_error=missing_token_in_response")
         await save_token(DEFAULT_USER_ID, jKey=jKey, uid=uid, actid=actid)
+        # Mirror the fresh token into the Flattrade MCP's session file so the one
+        # daily login serves both consumers (one-key policy; see
+        # docs/superpowers/specs/2026-07-18-flattrade-mcp-token-share-design.md).
+        # Best-effort: a sync failure must never break the login flow.
+        try:
+            from app.live.mcp_session_sync import sync_session_file
+            sync_session_file(uid=uid, actid=actid, jkey=jKey,
+                              api_key=os.environ.get("FLATTRADE_API_KEY"))
+        except Exception as exc:
+            log.warning("flattrade MCP session sync failed (non-fatal): %s", exc)
         # Fire live recovery NOW that a token exists — the boot-time run is SKIPPED
         # when the PC boots before this daily login, so without this an overnight
         # position stays unguarded + unreconciled + the auto-square timer un-armed.
