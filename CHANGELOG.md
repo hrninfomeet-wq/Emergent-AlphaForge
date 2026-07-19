@@ -2,6 +2,54 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.55.2] — Flattrade MCP session sharing (single-key coexistence, 2026-07-19)
+
+**The official Flattrade Trading MCP server now runs alongside AlphaForge on one API
+key.** Flattrade's API V2 retail-algo policy (enforced 2026-01-12) allows exactly ONE
+API key per account for non-registered algos — a second key requires the paid
+registered-algo tier (₹5,000+GST per exchange, only relevant above 10 orders/sec, which
+AlphaForge is nowhere near and must never be pushed onto). That single key holds one
+registered redirect URI, which AlphaForge owns, so **the MCP binary can never complete
+its own OAuth**; and Flattrade is last-login-wins, so a second login would silently kill
+AlphaForge's live session. Resolution: AlphaForge stays the **sole OAuth owner** and
+hands its token to the MCP (stored-token reuse is explicitly sanctioned by the PiConnect
+docs, endpoints/02).
+
+- **New `backend/app/live/mcp_session_sync.py`** — writes the MCP's
+  `~/.flattrade/session.json` after each daily token exchange. Atomic temp+replace;
+  skips when the token is unchanged; **no-op unless `FLATTRADE_MCP_SESSION_DIR` is
+  set** (opt-in); **never raises** (a sync failure must never break the login flow).
+  The binary's session schema is not public, so the payload is a **superset** of every
+  field alias found in its string table (`jKey`/`jkey`/`token`/`susertoken`,
+  `uid`/`actid`/`user_id`/`client_id`, RFC3339 `saved_at`) — Go's `json.Unmarshal`
+  ignores unknown fields. `FLATTRADE_MCP_SESSION_TEMPLATE` is a schema escape hatch for
+  future binary versions. **The API secret is never written to the file.**
+- **Callback hook** (`routers/live_broker.py::flattrade_auth_callback`) — syncs right
+  after `save_token()`, before the redirect; wrapped so failures only log.
+- **`backend/scripts/resync_mcp_session.py`** — host-side manual/recovery sync from
+  Mongo; `--clean` deletes the session file first (the documented recovery for the MCP's
+  known stale-session lockout, flattrademcp issue #1).
+- **`docker-compose.yml`** — bind-mounts the host `.flattrade` dir to `/host-flattrade`
+  and sets `FLATTRADE_MCP_SESSION_DIR` (machine-specific by design; this compose file is
+  already single-machine).
+- **Tests** `tests/test_mcp_session_sync.py` (6): alias superset + no-secret pin,
+  template override, write→skip-same→rewrite + no temp-file residue, env-unset/empty-jKey
+  no-ops, never-raises, and a source pin that the callback syncs *after* `save_token`.
+
+**Live-validated 2026-07-19**: the callback wrote `session.json` at the login instant
+(mtime == Mongo `issued_at`, token byte-identical); the binary accepted the superset
+schema first try (`check_login` → authenticated); MCP `get_limits` and AlphaForge
+`/api/live-broker/limits` both returned `stat: Ok` on the same token seconds apart, with
+`/api/flattrade/status` still `connected: true`. Verified capability surface: **44 tools**
+(README claimed ~13) including order/position update streams, per-order margin probe,
+OCO/GTT lifecycle, alerts and `search_scrip`.
+
+**Operating rules** (see `docs/flattrade-mcp-integration.md`): never call the MCP's
+`login`/`logout` tools; the assistant never places/modifies/cancels orders through it;
+**MCP-placed positions are invisible to AlphaForge's guard/OCO/kill-switch** (explicit,
+user-accepted trade-off); the PiConnect rate budget (40 req/s, 200/min; orders 10/s,
+40/min) is shared per key, so keep MCP queries sparse while deployments are armed.
+
 ## [0.55.1] — Fix: option legs rendered on the wrong Trades-pane rows under a DTE filter (2026-07-18)
 
 **Backtest Lab / run journal display-correctness fix.** When a paired-option
@@ -23,8 +71,8 @@ the per-row attribution was wrong, and only when a DTE filter was active.
 - `backend/scripts/repair_option_leg_index.py`: one-off reversible repair for
   already-saved journal docs (joins legs to spot trades on
   `signal_entry_ts`+`direction`; original ids kept in `index_remap_backup`).
-  Applied 2026-07-18: 20 affected docs repaired (every DTE-filtered run since
-  2026-06-30), 162 clean docs untouched.
+  Applied 2026-07-18: 20 affected docs repaired (every DTE-filtered run in the
+  store, `created_at` spanning 2026-06-12 → 2026-07-15), 162 clean docs untouched.
 
 ## [0.55.0] — Phase 5B: live/paper multi-leg premium-momentum execution (capability build, 2026-07-17)
 

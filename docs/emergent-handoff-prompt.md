@@ -1,3 +1,7 @@
+> **HISTORICAL — do not use for a new takeover.** This prompt's objective (the Phase 4/5
+> premium-momentum work) has since been completed. The current, maintained takeover prompt is
+> [`agent-takeover-prompt.md`](agent-takeover-prompt.md). Kept for provenance only.
+
 # Handoff prompt for continuing development on Emergent.sh
 
 Copy everything below the line into the new agent session. It is written to be self-contained —

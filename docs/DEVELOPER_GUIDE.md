@@ -215,6 +215,34 @@ money orders**, but the system is **offline-first** and layered so a runaway ord
 impossible without a human deliberately arming it. Every guarantee below is enforced **in code** —
 the file/line is cited so you can verify it.
 
+### Who else holds the broker session: the Flattrade MCP (v0.55.2)
+
+Before anything else in this section, know that **AlphaForge is no longer the only thing on this
+broker account**. The user has the official **Flattrade Trading MCP** server installed (a separate,
+closed-source binary giving an AI assistant conversational read/write access to the live account).
+Because Flattrade's API V2 allows **one API key per account**, and that key holds the one redirect
+URI AlphaForge owns, the MCP **cannot complete its own OAuth** — so AlphaForge is the **sole OAuth
+owner** and mirrors its jKey into the MCP's session file after every login
+(`live/mcp_session_sync.py`, gated by `FLATTRADE_MCP_SESSION_DIR`, wrapped so a sync failure can
+never break the login).
+
+Three consequences that matter when you touch live code:
+
+1. **`live_broker_tokens` is now the session authority for two consumers.** If you change token
+   storage, expiry handling, or the callback, keep the sync call intact (pinned by
+   `tests/test_mcp_session_sync.py`) or the MCP silently goes stale.
+2. **Positions opened through the MCP are invisible to the guard, OCO backstop, SL monitor and
+   kill switch** — those reconcile against AlphaForge's own intent store, and a foreign order has
+   no intent record. This is an explicit, user-accepted trade-off; never assume a broker position
+   is AlphaForge-protected just because you can see it.
+3. **The PiConnect rate budget is per key and now shared** (40 req/s, 200/min; orders 10/s,
+   40/min). Guard/reconcile polling is safety-critical — MCP chatter competes with it.
+
+**Never call the MCP's `login`/`logout` tools** (login would invalidate AlphaForge's token —
+Flattrade is last-login-wins; logout wipes the shared session). Recovery is
+`backend/scripts/resync_mcp_session.py --clean`. Full detail:
+[`flattrade-mcp-integration.md`](flattrade-mcp-integration.md).
+
 ### The single order chokepoint
 
 **All real entries go through `app/live/executor.py`.** There are exactly two public entry
@@ -540,9 +568,31 @@ before touching that area.
   candles ⇒ the evaluator's new-bar gate never opens (root cause of "paper deployment ACTIVE all
   day, 0 trades"). Confirm the roller is running, not just the stream.
 
+**Trade↔option-leg joins (v0.55.1 — cost a whole debugging session):**
+- `simulate_paired_option_trades` sets `index_trade_id` from `enumerate()` over **the list it is
+  given**. Any caller that filters spot trades first (the DTE filter in
+  `runtime.py::_run_paired_option_backtest`, `wfo._pair_oos_with_options`,
+  `optimizer._option_rerank`) therefore produces leg ids in **filtered-list space**.
+- Surfacing those ids next to the **full** trade list — which the saved run doc and the Backtest
+  Lab Trades pane do — misattributes every leg after the first dropped trade. The visible symptom
+  is nonsense that looks like a *pairing* bug (a CE row showing a PE leg at a non-ATM strike) but
+  is purely a display join. **Suspect index alignment before you suspect the selector or the
+  warehouse.**
+- Rule: remap to full-list positions before returning (runtime.py does), and join by
+  `index_trade_id`/`signal_entry_ts`, **never by array position**. `wfo.py` and the option
+  preflight carry guard comments because they are safe only by not re-joining today.
+- Historical saved runs were repaired by `backend/scripts/repair_option_leg_index.py` (reversible
+  via `option_backtest.index_remap_backup`).
+
 **Contract correctness:**
 - Always filter `expiry_date >= today` when picking a live contract; `select_contract_for_signal`
   is exact-match-or-None (regression-pinned).
+- **NSE/BSE reuse exchange tokens across expiry cycles.** ~30 canonical 2-part keys
+  (`NSE_FO|46181`) in `options_1m` carry candles for two *different* contracts — verified
+  strictly time-disjoint, so time-windowed reads are always correct, but any lookup by 2-part key
+  that is NOT time-windowed or expiry-constrained can silently return the wrong strike. (Audited
+  2026-07-18: 63,868 contracts, zero symbol↔strike/side/expiry mismatches, zero orphan candle
+  keys — the warehouse itself is clean.)
 - Some Upstox expired strikes have outlier tokens with 0 candles and no alternative — genuinely
   **broker-empty, not a remap bug** (verified). Do not "fix" by re-keying.
 

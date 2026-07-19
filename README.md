@@ -36,7 +36,7 @@ MongoDB runs on `:27017`. First-time setup (copy `backend/.env.example` → `bac
 ├── tests/              Host + container test suite (pytest)
 ├── memory/             Local notes / secrets (gitignored)
 ├── docker-compose.yml  mongo + backend + frontend
-├── CHANGELOG.md        Versioned history (currently 0.48.x)
+├── CHANGELOG.md        Versioned history (currently 0.55.x)
 └── README.md
 ```
 
@@ -60,6 +60,8 @@ MongoDB runs on `:27017`. First-time setup (copy `backend/.env.example` → `bac
 | ["docs/Walk-forward (honest OOS) what it does exactly.md"](docs/Walk-forward%20%28honest%20OOS%29%20what%20it%20does%20exactly.md) | What walk-forward validation actually does |
 | [docs/live-readback-checklist.md](docs/live-readback-checklist.md) | Live market-hours readback runbook |
 | [docs/Resources/flattrade-pi-api/INDEX.md](docs/Resources/flattrade-pi-api/INDEX.md) | Decoded Flattrade (PiConnect/Noren) broker API reference |
+| [docs/flattrade-mcp-integration.md](docs/flattrade-mcp-integration.md) | Flattrade MCP server: shared broker session, capability surface, runbook, hard rules |
+| [docs/agent-takeover-prompt.md](docs/agent-takeover-prompt.md) | Copy-paste onboarding prompt for a new AI agent taking over the repo |
 | [CHANGELOG.md](CHANGELOG.md) | Versioned history |
 | [CLAUDE.md](CLAUDE.md) | Agent capabilities + always-loaded project notes |
 

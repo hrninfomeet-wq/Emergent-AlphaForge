@@ -5,8 +5,9 @@ walkthrough (run/build/test, safety model, research→deploy flow, gotchas), rea
 [DEVELOPER_GUIDE.md](./DEVELOPER_GUIDE.md) first — this file is the deep
 "where does X live and how does data move" companion.
 
-Updated: 2026-07-13 · Verified against local `main` (includes the live-safety-reconcile hardening
-and the premium-momentum strategy family — check `git log` if this is more than a couple of weeks
+Updated: 2026-07-19 · Verified against local `main` at `f67f463` (includes the live-safety-reconcile
+hardening, the premium-momentum family incl. Phase 5B multi-leg, the v0.55.1 option-leg index remap,
+and v0.55.2 Flattrade-MCP session sharing — check `git log` if this is more than a couple of weeks
 old, doc passes have lagged commits before).
 
 ---
@@ -60,11 +61,18 @@ through Flattrade.
   `APIRouter(prefix="/api")` in `backend/server.py`; per-domain routers add the
   full literal path).
 - `backend/.env` supplies `MONGO_URL`, `DB_NAME=alphaforge`, `CORS_ORIGINS`, and
-  the offline-first live-execution env gates (§6).
+  the offline-first live-execution env gates (§6). `FLATTRADE_MCP_SESSION_DIR`
+  (set in `docker-compose.yml`) enables the Flattrade-MCP session sync — unset ⇒
+  the sync is a no-op; optional `FLATTRADE_MCP_SESSION_TEMPLATE` overrides the
+  session payload shape.
 - The frontend is built with `REACT_APP_BACKEND_URL=http://localhost:8001`.
-- Only one volume mount survives rebuild: the strategy **plugins** dir
+- Two volume mounts survive rebuild: the strategy **plugins** dir
   (`./backend/app/strategies/plugins`) is bind-mounted so drop-in `.py`
-  strategies persist. Mongo data persists in the `mongo_data` named volume.
+  strategies persist, and the **host `.flattrade` dir** →`/host-flattrade` so the
+  backend can write the official Flattrade MCP binary's `session.json` (see
+  `docs/flattrade-mcp-integration.md`; the path is machine-specific by design —
+  this compose file is already single-machine). Mongo data persists in the
+  `mongo_data` named volume.
 - **Rebuild/run:** `docker compose up -d --build backend frontend`.
 
 ---
@@ -114,7 +122,7 @@ live in `app/schemas.py`; shared singletons/helpers in `app/runtime.py`; routes 
 | `regime.py` / `scenario_classifier.py` / `scenarios.py` | Regime detection (ADX/Choppiness/ATR); scenario-adaptive routing |
 | `market_context.py` / `context_signals.py` / `cpr.py` | Regime/ToD/DTE/VIX bucket tagging; S/R, round levels, divergence scores; CPR levels |
 | `backtest.py` | Strategy execution, metrics, statistical significance (materialized-records hot loop) |
-| `option_backtest.py` | Paired INDEX+OPTION leg simulation (`simulate_paired_option_trades`); spot_exit / option_levels exit modes |
+| `option_backtest.py` | Paired INDEX+OPTION leg simulation (`simulate_paired_option_trades`); spot_exit / option_levels exit modes. Emits `index_trade_id` = the enumerate position **within the list it was handed**; making that a FULL-list position is the caller's duty (`runtime.py::_run_paired_option_backtest` remaps after a DTE filter — v0.55.1) |
 | `exit_engine.py` / `exit_controls.py` / `exit_controls_level.py` / `execution_policy.py` | Shared intrabar exit; trailing/breakeven/daily-cap overlay; execution policy |
 | `costs.py` / `option_costs.py` / `slippage.py` / `portfolio.py` | Indian intraday cost models (spot points + rupee option); slippage config; premium-at-risk sizing + rupee equity |
 | `dte.py` / `volatility.py` / `vol_seasonality.py` | DTE filter; post-hoc realized-vol detector; vol seasonality |
@@ -157,6 +165,7 @@ The single-real-order chokepoint and its safety scaffolding. See §6 for the gat
 | `live_position_guard.py` / `live_sl_monitor.py` / `live_exit_monitor.py` / `auto_square.py` | In-process software SL guard (reads broker position book; transmits only when `LIVE_GUARD_ARMED=1`; `live_sl_monitor` trail modes incl. `stepped_xy` for premium-momentum); square execution (`auto_square` — no resting manual timer; EOD 15:00 IST is the sole time-based backstop for a manual position, see its module docstring) |
 | `close_loop.py` / `reboot_reconcile.py` / `reconcile.py` | Write realized P&L + CLOSED back to `live_trades` on a real square; reboot reconciliation (empty position-book = UNKNOWN, never false-close) |
 | `flattrade_client.py` / `flattrade_token.py` / `flattrade_symbol.py` / `mock_noren.py` | Real Noren client + daily OAuth + symbol resolve; `MockNoren` for tests |
+| `mcp_session_sync.py` | One-way mirror of the fresh jKey into the official Flattrade MCP binary's `~/.flattrade/session.json` after each OAuth (superset payload, atomic write, skip-if-unchanged, never raises). AlphaForge stays the sole OAuth owner; the MCP never logs in itself. Gated by `FLATTRADE_MCP_SESSION_DIR`; recovery via `backend/scripts/resync_mcp_session.py` |
 | `greeks.py` / `portfolio_greeks.py` / `option_premium.py` | Server-side Black-Scholes IV-from-premium + Greeks |
 | `session_store.py` / `arm_state` stores / `overall_settings_store.py` / `approval_store.py` / `idempotency.py` | Mode/session/settings/approval persistence; client-order-id idempotency |
 | `engine.py` (`app/live/`) / `auto_live.py` (`app/`) | `can_trade()` engine gate; the deployed auto-place entrypoint (env-gated transmit boundary) |
@@ -251,7 +260,7 @@ Collection names verified against `app/db.py` (`ensure_indexes`) and code access
 
 | Collection | Purpose |
 |---|---|
-| `live_broker_tokens` | Encrypted Flattrade OAuth/session token (daily) |
+| `live_broker_tokens` | Daily Flattrade OAuth/session token. **Stored in PLAINTEXT** — `flattrade_token.py::save_token` writes `jKey` raw (no Fernet); the doc was previously mislabelled "encrypted", corrected 2026-07-19. Treat this collection, and the `~/.flattrade/session.json` file mirrored from it, as live credentials. **Also the session authority for the Flattrade MCP**: the same jKey is mirrored one-way on each login (`live/mcp_session_sync.py`) — the MCP never mints a token |
 | `live_mode` | ModeStore singleton (`{mode, single_shot_consumed, test_session_id}`) |
 | `live_test_sessions` | LIVE_TEST session records |
 | `live_orders` | Recorded order intents + broker order-id linkage (idempotency) |

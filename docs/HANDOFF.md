@@ -14,7 +14,35 @@ Stack: **React** (CRA + craco) frontend, **FastAPI** (Python) backend, **MongoDB
 
 ## 2. Current state
 
-**Latest (2026-07-17, v0.55.0)**: **Phase 5B — live/paper multi-leg
+**Latest (2026-07-19, v0.55.2)**: **the official Flattrade Trading MCP server now
+shares AlphaForge's single Flattrade API key** — installed and live-validated. Flattrade's
+API V2 policy allows ONE key per account (a second needs the paid registered-algo tier,
+₹5,000+GST per exchange, only relevant above 10 orders/sec — **never push AlphaForge onto
+that tier**), and that key holds one redirect URI which AlphaForge owns, so the MCP binary
+structurally *cannot* complete its own OAuth; Flattrade is also last-login-wins, so a
+second login would silently kill AlphaForge's live session. Resolution: AlphaForge stays
+the **sole OAuth owner** and its auth callback mirrors the fresh jKey into the MCP's
+`~/.flattrade/session.json` (`live/mcp_session_sync.py`, opt-in via
+`FLATTRADE_MCP_SESSION_DIR`, never fails the login). One daily AlphaForge login now serves
+both. The MCP is a **separate closed-source product**, not part of AlphaForge's execution
+path — and **positions it opens are invisible to AlphaForge's guard/OCO/kill-switch** (an
+explicit, user-accepted trade-off). Read
+[`flattrade-mcp-integration.md`](flattrade-mcp-integration.md) **before using or touching
+it** — especially the never-call-`login`/`logout` rule. See CHANGELOG 0.55.2.
+
+**Previous (2026-07-18, v0.55.1)**: **fix — option legs rendered on the wrong
+Trades-pane rows whenever a DTE filter was active.** `_run_paired_option_backtest`
+rebuilt `spot_trades` to the filtered subset before the sim, so each leg's
+`index_trade_id` was a *filtered-list* position while the saved run doc's `trades[]` and
+the Backtest Lab's Trades pane join by *full-list* index — 168 of 171 legs in the
+reported run rendered against the wrong spot trade (a CE row showing another trade's
+25850 PE leg). **Contract selection was never wrong**: `select_contract_for_signal` is
+side- and ATM-exact, and a warehouse audit (63,868 contracts) found zero
+symbol↔strike/side/expiry mismatches and zero orphan candle keys. Fixed by remapping to
+full-list positions after the sim; 20 already-saved journal docs repaired in Mongo
+(reversible via `option_backtest.index_remap_backup`). See CHANGELOG 0.55.1.
+
+**Previous (2026-07-17, v0.55.0)**: **Phase 5B — live/paper multi-leg
 premium-momentum execution is BUILT** (both-legs mode, one-shot lazy
 reversal off STOP-class guard exits, per-deployment exit_time squares
 clamped below the 15:00 EOD, realized-only session day-stop, VIX gate) as a
@@ -101,24 +129,27 @@ Gemini 8000-token cutoff on Strategy Library AI actions is fixed
 (`DEFAULT_MAX_TOKENS` 8192 → 32768, `py_author.py`'s hard cap removed). See
 CHANGELOG 0.53.0 for the full detail.
 
-Everything of substance is integrated on **`main`**, which was fully pushed to `origin/main` at
-`54318e6` on 2026-07-18 (local may be a few docs commits ahead at any time — push only on explicit
-user request, see §4). `main` is currently the **sole branch**, but at any given time a parallel
-session may create **1-2 active WIP branches** that haven't landed yet — run `git branch -v` and
-don't assume main is the whole story before describing "current state" to anyone. The app has grown
-across `0.17.x → 0.55.x` (see [`../CHANGELOG.md`](../CHANGELOG.md) for versioned detail — if the top
-entry looks more than a week old, the changelog itself is probably behind `git log`; it has happened
-before). It runs in Docker; backend code is baked into the image, so **rebuild the container after
-backend edits**.
+Everything of substance is integrated on **`main`**, pushed to `origin/main` at `10f68d1` (v0.55.1)
+on 2026-07-18. **Local `main` is ahead** by the v0.55.2 Flattrade-MCP commit `f67f463` plus any docs
+commits — push only on explicit user request (see §4). `main` is currently the **sole branch**, but
+at any given time a parallel session may create **1-2 active WIP branches** that haven't landed yet
+— run `git branch -v` / `git log origin/main..main --oneline` and don't assume main is the whole
+story before describing "current state" to anyone. The app has grown across `0.17.x → 0.55.x` (see
+[`../CHANGELOG.md`](../CHANGELOG.md) for versioned detail — if the top entry looks more than a week
+old, the changelog itself is probably behind `git log`; it has happened before). It runs in Docker;
+backend code is baked into the image, so **rebuild the container after backend edits**.
+
+**Host test baseline: 3486 passed, 4 xfailed** (`.venv\Scripts\python.exe -m pytest tests -q` from
+the repo root; motor/route tests run inside the container instead — see §3).
 
 Built subsystems (all verified present in `backend/app/`):
 
 - **Data Warehouse** — `candles_1m` holds 1-minute OHLCV for the 3 indices (spot + ATM-band option contracts) + INDIAVIX. Daily ATM-band completeness model, holiday-aware NSE calendar, one-button Sync + auto-update. (`completeness.py`, `data_hygiene.py`, `nse_calendar.py`, `routers/warehouse.py`.)
-- **Backtest Lab** — spot backtests + paired real-option-candle backtests; honest rupee-first metrics; optional exit/risk-control overlay (trailing / breakeven / daily caps). (`backtest.py`, `option_backtest.py`, `exit_controls.py`, `execution_policy.py`.) The shared indicator enrichment (`indicators.py` / `indicator_groups.py`) re-warms the whole-frame indicators across intra-session warehouse gaps via a per-bar `gap_before` flag + `_reset_on_gap` wrapper (no-gap fast-path keeps gap-free windows byte-identical); see `docs/superpowers/specs/2026-07-05-intra-session-gap-indicator-reset-design.md`.
+- **Backtest Lab** — spot backtests + paired real-option-candle backtests; honest rupee-first metrics; optional exit/risk-control overlay (trailing / breakeven / daily caps). (`backtest.py`, `option_backtest.py`, `exit_controls.py`, `execution_policy.py`.) **Join contract (v0.55.1, load-bearing):** an option leg's `index_trade_id` must always be a position in the **full** spot-trade list the caller holds — never a filtered-list position. `simulate_paired_option_trades` enumerates whatever list it is given, so any caller that filters first (DTE filter, etc.) MUST remap afterwards, as `runtime.py::_run_paired_option_backtest` does; consumers should join by id or `signal_entry_ts`, never by array position. Pinned by `tests/test_paired_option_index_remap.py`; historical docs repaired by `backend/scripts/repair_option_leg_index.py`. The shared indicator enrichment (`indicators.py` / `indicator_groups.py`) re-warms the whole-frame indicators across intra-session warehouse gaps via a per-bar `gap_before` flag + `_reset_on_gap` wrapper (no-gap fast-path keeps gap-free windows byte-identical); see `docs/superpowers/specs/2026-07-05-intra-session-gap-indicator-reset-design.md`.
 - **Optimizer** — Optuna TPE / Grid / Genetic search; single vs walk-forward (honest OOS); spot vs option re-rank; capital-aware **survival gate**; exit-control search. (`optimizer.py`, `wfo.py`, `walkforward.py`, `survival.py`, `rerank_select.py`.)
 - **Strategy Library** — builtin + drop-in plugin strategies; retire / delete lifecycle; multi-provider AI authoring wizard (Anthropic + Gemini; Spec + capability-aware + full-Python tiers). (`strategies/*`, `routers/strategies_admin.py`, `ai/*`.)
 - **Paper Trading** — live-tick-driven realism (tick exits, poll-for-new-bar entries). (`paper_auto.py`, `paper_trading.py`, `live_exit_monitor.py`.)
-- **Live Trading (Flattrade)** — offline-first; L0–L3 gate chain; the executor is the **single real-order chokepoint**; margin pre-check; OCO/GTT catastrophe backstop; kill switches; per-token-latched recovery that re-runs on every fresh daily OAuth (not boot-only); exit executors resolve a raised-but-maybe-landed order against the broker book before ever blind-retrying; Greeks; ARMED auto-place only under an env gate **plus** per-deployment ARM **plus** caps **plus** EOD auto-disarm. **No resting manual-position timer** — the old 10-minute test-session auto-square was removed; 15:00 IST EOD square is the sole time-based backstop for a manual position (deployed strategies exit on their own rules + a resting OCO). (`live/executor.py`, `live/safety.py`, `live/margin.py`, `live/mode.py`, `live/arm_state.py`, `live/gtt.py`, `live/kill_switch.py`, `live/exit_claims.py`, `live/auto_square.py`, `routers/live_broker.py`.)
+- **Live Trading (Flattrade)** — offline-first; L0–L3 gate chain; the executor is the **single real-order chokepoint**; margin pre-check; OCO/GTT catastrophe backstop; kill switches; per-token-latched recovery that re-runs on every fresh daily OAuth (not boot-only); exit executors resolve a raised-but-maybe-landed order against the broker book before ever blind-retrying; Greeks; ARMED auto-place only under an env gate **plus** per-deployment ARM **plus** caps **plus** EOD auto-disarm. **No resting manual-position timer** — the old 10-minute test-session auto-square was removed; 15:00 IST EOD square is the sole time-based backstop for a manual position (deployed strategies exit on their own rules + a resting OCO). (`live/executor.py`, `live/safety.py`, `live/margin.py`, `live/mode.py`, `live/arm_state.py`, `live/gtt.py`, `live/kill_switch.py`, `live/exit_claims.py`, `live/auto_square.py`, `routers/live_broker.py`.) Since v0.55.2 the daily OAuth callback also mirrors the fresh jKey into the **official Flattrade MCP** binary's session file (`live/mcp_session_sync.py`; recovery `backend/scripts/resync_mcp_session.py`) — AlphaForge remains the sole OAuth owner; see [`flattrade-mcp-integration.md`](flattrade-mcp-integration.md).
 - **Premium-momentum strategy** (new) — a deployable strategy family driven by a **time-locked strike + real option-premium trigger** instead of a spot indicator: at a configurable reference time the evaluator locks the CE/PE strike from spot, captures each side's premium from fresh ticks, and the first side to cross a momentum threshold enters; exits use a new stepped X-Y trail guard mode alongside stop/target. Backtest is a self-contained option-native sim with a cost model and an honest (costs-mandatory, chronological-train/OOS-report) tuner; live/paper execution rides the *exact same* deploy/arm/guard rails as every other strategy — **there is no premium-momentum-specific arming gate, and none should ever be added** (a deliberate, explicit design decision — don't "helpfully" add one later). See [`STRATEGY_DEPLOYMENTS.md`](STRATEGY_DEPLOYMENTS.md) for the deployment-level detail. (`premium_momentum.py`, `premium_momentum_backtest.py`, `premium_momentum_tuner.py`, `premium_momentum_live.py`, `premium_lock_store.py`, `premium_pin.py`, `strategies/plugins/premium_momentum.py`, `routers/premium_momentum_routes.py`.) The shipped default (AlgoTest blueprint) parameters have **no edge** on 2026-H1 NIFTY — this is a capability, not (yet) a validated money-maker, and it has not been run through a real market-hours session. Since v0.55.0 the family also executes the **full multi-leg shape live/paper** (`leg_mode: "both"` CE+PE independent primaries; one-shot `lazy_enabled` reversal leg armed off STOP-class guard exits; `exit_time` per-deployment squares clamped below 15:00; `session_max_loss_rupees`/`session_max_profit_rupees` realized-only day-stop — live squares once, paper blocks only; `vix_min`/`vix_max` session gate) — the per-leg state lives in the same `premium_locks` doc (`pce/ppe/lce/lpe` field groups), exits/finalize/lazy-arming hang off the **live guard only** (paper exits ride the separate LiveExitMonitor and never touch locks), and restart recovery resolves leg symbols exclusively through the broker order book's `norenordno→tsym` join (never the persisted Upstox symbol — see CHANGELOG 0.55.0's review-closure note).
 
 Routers mounted under `/api`: `research`, `strategies_admin`, `warehouse`, `journals`, `deployments`, `broker`, `live_broker`. Frontend pages: Dashboard, DataWarehouse, BacktestLab, Optimizer, StrategyLibrary, SavedPresets, LiveSignals, SignalJournal, PaperTrading, LiveTrading, PreTradeChecklist, PremiumMomentum.
@@ -159,6 +190,14 @@ Frontend → `http://localhost:3000`, backend → `http://localhost:8001` (route
 - **A subagent panel that returns 0 completed agents is not a passed check.** If an adversarial-review
   or verification panel dies on a session/token limit with nothing completed, treat it as **unverified**,
   say so, and either retry, do the check yourself, or ask — never report it as a clean pass.
+- **Flattrade MCP: never call its `login` or `logout` tools.** The user's AlphaForge login is the
+  ONLY login (one API key ⇒ one redirect URI ⇒ the MCP cannot OAuth on its own, and a second login
+  would invalidate AlphaForge's live token). Recover a stale MCP session with
+  `backend/scripts/resync_mcp_session.py --clean`, never by logging in through the MCP. The
+  assistant also never places/modifies/cancels orders through it — same rule as the app's own
+  executor. Full rules: [`flattrade-mcp-integration.md`](flattrade-mcp-integration.md) §5.
+- **Never create a second Flattrade API key.** API V2 allows one per account; a second requires the
+  paid registered-algo tier (₹5,000+GST/exchange, for >10 orders/sec). The user has declined it.
 
 ## 5. Where to go deep
 
@@ -183,6 +222,7 @@ Start with the consolidated [`DEVELOPER_GUIDE.md`](DEVELOPER_GUIDE.md), then rea
 | Check whether premium-momentum live work is justified by evidence | [`PREMIUM_MOMENTUM_EDGE_VERDICT_2026-07.md`](PREMIUM_MOMENTUM_EDGE_VERDICT_2026-07.md) (failed gate + pre-registered revival criterion) |
 | Understand the 5B multi-leg design + its live↔backtest parity divergences | `superpowers/plans/2026-07-15-premium-momentum-phase5b-execution.md` |
 | Reference the Flattrade broker API | [`Resources/flattrade-pi-api/INDEX.md`](Resources/flattrade-pi-api/INDEX.md) (+ `catalog.json`, `endpoints/`) |
+| Use / debug the **Flattrade MCP** (44 tools, token sharing, runbook, hard rules) | [`flattrade-mcp-integration.md`](flattrade-mcp-integration.md) · design: `superpowers/specs/2026-07-18-flattrade-mcp-token-share-design.md` |
 | See versioned history / agent capabilities | [`../CHANGELOG.md`](../CHANGELOG.md) · [`../CLAUDE.md`](../CLAUDE.md) |
 | Decode an `L##`/`O##`/`S##` finding-ID cited in a commit message | [`audit-report-2026-07.md`](audit-report-2026-07.md) (historical — all 88 findings now resolved, kept for the ID cross-reference) |
 

@@ -3,6 +3,20 @@
 > Entry point for state & architecture is **`docs/HANDOFF.md`** + `CHANGELOG.md`. The notes
 > below are always-loaded capabilities/assets that every session should know about.
 
+## Flattrade MCP server — shared broker session (2026-07-19)
+The user has the **official Flattrade Trading MCP** installed (tools appear as `mcp__flattrade__*`).
+It talks to the **same live account** AlphaForge trades, sharing **one API key** — AlphaForge is the
+sole OAuth owner and syncs its token to the MCP (`backend/app/live/mcp_session_sync.py`).
+
+- **NEVER call `mcp__flattrade__login` / `logout`** — the MCP cannot OAuth on this key (one redirect
+  URI, owned by AlphaForge) and a second login would invalidate AlphaForge's live token
+  (last-login-wins). The user's AlphaForge login is the only login; recover a stale MCP session with
+  `backend/scripts/resync_mcp_session.py --clean`.
+- **Never place/modify/cancel orders** through it (read tools are fine and useful).
+- **MCP-placed positions are invisible** to AlphaForge's guard/OCO/kill-switch (accepted trade-off).
+- Rate budget is shared per key — keep queries sparse while deployments are armed.
+- Full detail: **`docs/flattrade-mcp-integration.md`**.
+
 ## PDF reading capability (set up 2026-06-25)
 This project has a reusable **PDF → Markdown** capability so any PDF can be read accurately.
 Tools installed in the default system Python (3.12): `pymupdf4llm`, `pymupdf`, `pdfplumber`, `pypdf`.
