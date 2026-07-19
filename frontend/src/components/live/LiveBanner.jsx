@@ -5,7 +5,9 @@ import { api } from "@/lib/api";
 /**
  * Bold top-of-page banner for the Live Trading page (L0).
  * Shows: LIVE / read-only notice / Flattrade connection chip / Login + Logout.
- * Also reflects armed live deployments count and autoplace_armed guard state.
+ * Also reflects the LIVE-mode deployment count and the LIVE_AUTOPLACE_ARMED master
+ * switch. "Live" here means mode=="live" — the per-deployment arm ceremony is gone,
+ * so a live deployment stays live across sessions until explicitly disabled.
  */
 export default function LiveBanner({ status, onRefresh, armedCount = 0, autoplaceArmed = null }) {
   const [busy, setBusy] = useState(false);
@@ -61,7 +63,7 @@ export default function LiveBanner({ status, onRefresh, armedCount = 0, autoplac
         {armedCount > 0 && (
           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-danger bg-danger/20 text-danger text-xs font-mono font-bold animate-pulse">
             <Zap className="w-3 h-3" />
-            {armedCount} deployment{armedCount !== 1 ? "s" : ""} ARMED live
+            {armedCount} deployment{armedCount !== 1 ? "s" : ""} LIVE
           </span>
         )}
         {armedCount > 0 && autoplaceArmed === false && (

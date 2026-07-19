@@ -310,12 +310,14 @@ export const api = {
   rejectOrder: (approvalId) =>
     apiClient.post(`/live-broker/order/approvals/${approvalId}/reject`, {}).then((r) => r.data),
 
-  // Deploy-to-Live: arm/disarm/stop/status per deployment + account safety config
+  // Deploy-to-Live: enable/disable/stop/status per deployment + account safety config.
+  // Authorization is simply deployment.mode === "live" — there is no per-session
+  // arm ceremony; enabling live mode persists until explicitly disabled.
   getSafetyConfig: () => apiClient.get("/live-broker/safety-config").then((r) => r.data),
-  liveArm: (id, body) =>
-    apiClient.post(`/deployments/${id}/live/arm`, body).then((r) => r.data),
-  liveDisarm: (id) =>
-    apiClient.post(`/deployments/${id}/live/disarm`).then((r) => r.data),
+  enableDeploymentLive: (id, body) =>
+    apiClient.post(`/deployments/${id}/live/enable`, body).then((r) => r.data),
+  disableDeploymentLive: (id) =>
+    apiClient.post(`/deployments/${id}/live/disable`).then((r) => r.data),
   liveStop: (id) =>
     apiClient.post(`/deployments/${id}/live/stop`).then((r) => r.data),
   liveStatus: (id) =>

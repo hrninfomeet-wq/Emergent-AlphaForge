@@ -21,7 +21,10 @@ export default function ExecutionStateStrip({ armState, onStandDown, standingDow
     mode,
     single_shot_consumed: latchConsumed,
     would_transmit_entry: entryTx,
-    would_transmit_exit: exitTx,
+    // Absent must NOT read as dry-run: the software guard always transmits now, so
+    // a missing field means "payload older than v0.56.0", not "exits are logs only".
+    // Rendering "auto-squares: dry-run" over live positions is the dangerous direction.
+    would_transmit_exit: exitTx = true,
     exit_gap: exitGap,
     warning,
     reasons,

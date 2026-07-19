@@ -12,20 +12,28 @@ import {
 } from "@/components/ui/dialog";
 
 /**
- * DeployToLivePanel — "Deploy to Live" action for a single deployment.
+ * DeployToLivePanel — "Enable live execution" action for a single deployment.
  *
  * Opens a caps form (lots/signal, max_lots_per_day, max_concurrent,
  * daily_loss_cap) validated against the account ceiling from getSafetyConfig().
- * The form's submit opens a DANGER typed-confirm dialog: the user must type ARM
- * exactly before the arm call goes through.
+ * The form's submit opens a DANGER typed-confirm dialog: the user must type
+ * ENABLE exactly before the enable call goes through.
  *
- * After arming:
- *   - If autoplace_armed === false: a prominent warning is shown.
+ * There is no per-session arm ceremony: authorization is simply
+ * deployment.mode === "live". Once enabled, the deployment trades on its own
+ * strategy logic across sessions until explicitly disabled — this panel (and
+ * its caps form) is the only place those caps and the catastrophe band are
+ * ever set, so the backend refuses to go live without them.
+ *
+ * After enabling:
+ *   - If autoplace_armed === false: a prominent warning is shown (entries are
+ *     still dry-run pending LIVE_AUTOPLACE_ARMED=1 — the auto-exit guard
+ *     always transmits regardless).
  *   - On success: onArmed() callback fires so the parent can refresh.
  *
  * Props:
  *   dep        – deployment object { id, name, strategy_id, … }
- *   onArmed    – called after a successful arm (parent refreshes the strip)
+ *   onArmed    – called after a successful enable (parent refreshes the strip)
  */
 export default function DeployToLivePanel({ dep, onArmed }) {
   // ── Phase 1: caps form ─────────────────────────────────────────────────────
@@ -112,7 +120,7 @@ export default function DeployToLivePanel({ dep, onArmed }) {
   };
 
   const handleArm = async () => {
-    if (confirmText !== "ARM") return;
+    if (confirmText !== "ENABLE") return;
     setBusy(true);
     setDryRunWarning(false);
     try {
@@ -127,17 +135,17 @@ export default function DeployToLivePanel({ dep, onArmed }) {
         ...(catStopPctNum != null ? { catastrophe_stop_pct: catStopPctNum } : {}),
         ...(catTargetPctNum != null ? { catastrophe_target_pct: catTargetPctNum } : {}),
       };
-      const res = await api.liveArm(dep.id, body);
+      const res = await api.enableDeploymentLive(dep.id, body);
       setConfirmOpen(false);
       setFormOpen(false);
       if (res?.autoplace_armed === false) {
         setDryRunWarning(true);
       } else {
-        toast.success(`"${dep.name || dep.id}" armed for live orders`);
+        toast.success(`"${dep.name || dep.id}" — live execution enabled`);
       }
       onArmed?.();
     } catch (e) {
-      toast.error(`Arm failed: ${e.response?.data?.detail || e.message}`);
+      toast.error(`Enable failed: ${e.response?.data?.detail || e.message}`);
     } finally {
       setBusy(false);
     }
@@ -166,7 +174,7 @@ export default function DeployToLivePanel({ dep, onArmed }) {
         data-testid="deploy-to-live-open"
       >
         <Zap className="w-3 h-3 mr-1" />
-        Deploy to Live
+        Enable Live Execution
       </Button>
 
       {/* ── Caps form dialog ──────────────────────────────────────────────── */}
@@ -175,14 +183,14 @@ export default function DeployToLivePanel({ dep, onArmed }) {
           <DialogHeader>
             <DialogTitle className="text-sm font-semibold text-foreground flex items-center gap-2">
               <Zap className="w-4 h-4 text-danger" />
-              Deploy to Live · {depLabel}
+              Enable Live Execution · {depLabel}
             </DialogTitle>
           </DialogHeader>
 
           <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-warning flex items-start gap-2">
             <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
             <span>
-              Live orders transmit <strong>real money</strong> trades to Flattrade. Set conservative caps — these cannot be changed while armed.
+              Live orders transmit <strong>real money</strong> trades to Flattrade. Set conservative caps — these cannot be changed while live (disable and re-enable to change them).
             </span>
           </div>
 
@@ -330,14 +338,15 @@ export default function DeployToLivePanel({ dep, onArmed }) {
           <DialogHeader>
             <DialogTitle className="text-sm font-semibold text-danger flex items-center gap-2">
               <AlertTriangle className="w-4 h-4" />
-              Authorize Live Orders
+              Enable Live Execution
             </DialogTitle>
           </DialogHeader>
 
           <div className="space-y-3 text-xs text-dim">
             <p>
-              You are about to arm <strong className="text-foreground">{depLabel}</strong> to place{" "}
-              <strong className="text-foreground">real-money orders</strong> via Flattrade.
+              You are about to go live on <strong className="text-foreground">{depLabel}</strong> — it will
+              trade <strong className="text-foreground">real money</strong> on its own strategy logic from
+              now on, across sessions, via Flattrade, until you disable it.
             </p>
             <div className="rounded-md border border-line bg-bg-2 px-3 py-2 font-mono text-[11px] space-y-1">
               <div>Lots/signal: <span className="text-foreground">{lotsNum}</span></div>
@@ -354,21 +363,21 @@ export default function DeployToLivePanel({ dep, onArmed }) {
               )}
             </div>
             <p className="text-dimmer">
-              Deployed entries arm as NRML with a resting OCO backstop; the catastrophe band is auto-widened to stay clear of the software guard stop.
+              Deployed entries go live as NRML with a resting OCO backstop; the catastrophe band is auto-widened to stay clear of the software guard stop.
             </p>
             <p className="text-dimmer">
-              Type <strong className="text-danger font-mono">ARM</strong> below to authorize live orders for{" "}
+              Type <strong className="text-danger font-mono">ENABLE</strong> below to go live for{" "}
               <em>{depLabel}</em>.
             </p>
             <Input
               ref={confirmInputRef}
               value={confirmText}
               onChange={(e) => setConfirmText(e.target.value)}
-              placeholder="Type ARM to confirm"
+              placeholder="Type ENABLE to confirm"
               className="bg-bg-2 border-danger/40 h-9 text-sm font-mono tracking-widest"
               data-testid="deploy-to-live-confirm-input"
               disabled={busy}
-              onKeyDown={(e) => { if (e.key === "Enter" && confirmText === "ARM") handleArm(); }}
+              onKeyDown={(e) => { if (e.key === "Enter" && confirmText === "ENABLE") handleArm(); }}
             />
           </div>
 
@@ -407,13 +416,13 @@ export default function DeployToLivePanel({ dep, onArmed }) {
             <Button
               type="button"
               size="sm"
-              disabled={confirmText !== "ARM" || busy}
+              disabled={confirmText !== "ENABLE" || busy}
               onClick={handleArm}
               className="h-8 text-xs flex-1 bg-danger text-white hover:bg-danger/80 disabled:opacity-40"
               data-testid="deploy-to-live-arm-submit"
             >
               {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" /> : <Zap className="w-3.5 h-3.5 mr-1" />}
-              {busy ? "Arming…" : "ARM — Transmit Live Orders"}
+              {busy ? "Enabling…" : "ENABLE — Go Live"}
             </Button>
           </div>
         </DialogContent>

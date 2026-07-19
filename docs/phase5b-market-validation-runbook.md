@@ -5,9 +5,26 @@
 
 This is the first real market-hours session for everything built since Track B merged
 (2026-07-12): the Layer-1/2 guard, kill-switch stop-all, recovery, and all of Phase 5B
-(v0.55.0). The full host suite (3478) proves internal consistency; this day proves the
+(v0.55.0). The full host suite proves internal consistency; this day proves the
 rails against the real broker/data world, where the worst historical bugs (candle-roller
 boot gap, Upstox-vs-Noren recovery symbol-space) lived invisible to tests.
+
+## ⚠ THE AUTHORIZATION MODEL CHANGED (v0.56.0) — read before anything else
+
+This runbook was written against the old ARM model. That model is **gone**:
+
+| Before | Now |
+|---|---|
+| Deploy (paper) → click ARM each session → armed until 15:00 IST | Deploy → **Enable live** once; it persists across sessions until disabled |
+| `LIVE_GUARD_ARMED=1` needed for the guard to transmit exits | **Removed** — the guard ALWAYS transmits stop/target/trail/EOD |
+| `risk.live.armed` was the live marker | `deployment.mode == "live"` is the authorization |
+| Disarm / Stop | **Disable** (back to paper, positions untouched) / **Stop** (flatten + disable + PAUSE) |
+
+`LIVE_AUTOPLACE_ARMED` **survives** as the single master switch for automated entries.
+
+**The consequence that matters today: there is no longer a "deployed but harmless" state.**
+A deployment in live mode with the broker connected trades real money on the next confirmed
+signal. Leave a deployment in **paper** mode for everything in sections 1-5 below.
 
 ## What day 1 (paper) can and cannot prove — read this first
 
@@ -17,7 +34,9 @@ both-legs locking/triggering, VIX gate, day-stop blocking, arm advisories.
 The 5B **exit** machinery lives entirely in the **live position guard**
 (`_live_guard_on_close` in `backend/app/runtime.py`, `square_at_ist` in
 `backend/app/live/live_position_guard.py`). Paper exits go through the separate
-`LiveExitMonitor`, which never touches premium locks. Therefore, **in paper mode**:
+`LiveExitMonitor`, which never touches premium locks. (The guard being always-armed
+now does NOT change this — an always-transmitting guard still only watches *broker*
+positions, and paper trades never create one.) Therefore, **in paper mode**:
 
 - **Lazy reversal legs will NOT arm** after a paper stop-out. This is expected, not a bug.
 - **`exit_time` squares will NOT fire** for paper positions (paper uses its own
@@ -88,6 +107,35 @@ write broker order numbers) — that specific proof only happens on the live day
 - Any silent non-event (no lock by ref time + a few minutes, trigger never fired despite a
   visible ≥ momentum% premium move) is a finding — capture the timestamp and logs.
 
+## 5b. Validate the NEW authorization model (no real money required)
+
+These checks exercise the v0.56.0 model itself. Everything here can be done with the
+broker connected but **`LIVE_AUTOPLACE_ARMED` unset**, so entries dry-run-log instead of
+transmitting — you are validating the control surface, not placing orders.
+
+- [ ] **Enable requires caps.** In Deploy-to-Live, try to enable with lots or
+      max_lots_per_day or max_concurrent set to 0 → must be **refused (400)**. This is the
+      guard against the old allow-all fast path that would have traded unbounded.
+- [ ] **Enable runs the preflight chain.** Try enabling a deployment that is PAUSED, or
+      whose strategy is retired, or with the broker disconnected → each must refuse with a
+      distinct, honest message. These seven checks moved from the arm route; if any now
+      passes silently, it is enforced nowhere.
+- [ ] **Enable is not session-scoped.** Enable after 15:00 IST → must **succeed** (the old
+      "cannot arm after 15:00" rejection is gone). Confirm the deployment shows LIVE and
+      stays LIVE — no expiry countdown anywhere in the UI.
+- [ ] **The entry cutoff still bites.** With a deployment live, confirm that after 15:00 IST
+      the arm-state/live strip stops counting it as able to transmit an entry
+      (reason `after_entry_cutoff`). This is the ONLY thing preventing a late entry now.
+- [ ] **Disable vs Stop are distinct.** Disable → deployment returns to paper, open
+      positions untouched. Stop → flattens, returns to paper, AND pauses.
+- [ ] **Stop-ALL and the kill switch find live deployments.** With ≥1 live deployment,
+      hit Stop-ALL: it must list that deployment in its response (`disarmed_live_deployment_ids`)
+      and leave it paper + PAUSED. Same for the kill switch. **If either reports an empty
+      list while a live deployment exists, stop immediately** — that is the exact
+      silent-vacuous-selector failure this release was fixing.
+- [ ] **A killed deployment cannot re-enter.** After a kill, confirm the deployment is
+      PAUSED and that a subsequent confirmed signal produces no live attempt.
+
 ## 6. Only after a clean paper day: the 1-lot live day (separate, later)
 
 Governed by `docs/live-readback-checklist.md` (static IP, `LIVE_AUTOPLACE_ARMED`,
@@ -95,3 +143,13 @@ Flattrade daily OAuth, smallest lot). That day — and only that day — proves 
 half of 5B: guard-driven per-leg exits + confirm-flat finalize, lazy reversal arming off a
 real STOP-class exit, the `exit_time` square, and (via a deliberate mid-session backend
 restart WITH a live position open) the recovery symbol-space join shipped in `fa1432c`.
+
+Under the v0.56.0 model the live day is reached by: enable live on ONE deployment with
+`lots: 1` and tight caps, set `LIVE_AUTOPLACE_ARMED=1`, rebuild, connect the broker.
+Two things to watch that are new:
+
+- **The guard's exits are now real from the first minute.** There is no dry-run rehearsal
+  of the exit path any more — the first stop/target/trail the guard computes will transmit.
+  Watch the first exit closely and be ready on the kill switch.
+- **Nothing expires.** The deployment stays live tomorrow unless you Disable or Stop it.
+  End the live day by explicitly disabling it; do not rely on an arm lapsing at 15:00.

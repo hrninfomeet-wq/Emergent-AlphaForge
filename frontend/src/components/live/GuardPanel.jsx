@@ -161,7 +161,11 @@ export default function GuardPanel() {
   }, [refetch]);
 
   // ── Defensive derivation ──────────────────────────────────────────────────
-  const armed = !!status?.armed;
+  // The software guard ALWAYS transmits (the LIVE_GUARD_ARMED env gate was removed).
+  // Default to TRUE when the field is absent: `!!undefined` would render "Dry-run ·
+  // logs only" over positions that are in fact being auto-exited for real — the
+  // fail-DANGEROUS direction. Only an explicit `false` from the server downgrades it.
+  const armed = status?.armed !== false;
   const mode = status?.mode;
   const guarded = Array.isArray(status?.guarded) ? status.guarded : [];
   // Trust the server count when sane; otherwise fall back to the list length.
@@ -178,12 +182,12 @@ export default function GuardPanel() {
         {armed ? (
           <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full border border-danger/60 bg-danger/15 text-danger text-[10px] font-mono font-bold uppercase tracking-wider">
             <ShieldAlert className="w-3 h-3 shrink-0" />
-            Armed · live auto-exit
+            Auto-exit live
           </span>
         ) : (
           <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full border border-amber-500/60 bg-amber-500/15 text-warning text-[10px] font-mono font-bold uppercase tracking-wider">
             <ShieldCheck className="w-3 h-3 shrink-0" />
-            Dry-run · logs only
+            Guard unreachable
           </span>
         )}
 
@@ -251,13 +255,17 @@ export default function GuardPanel() {
           </div>
         )}
 
-        {/* Dry-run footer hint */}
+        {/* Guard-unreachable hint. The old copy here told the operator to set
+            LIVE_GUARD_ARMED=1 — that variable no longer exists, so leaving it would
+            send someone chasing a useless env change while positions are live. The
+            only reason the guard can't transmit now is that it can't reach the
+            broker, which is an entirely different (and more urgent) problem. */}
         {!armed && (guarded.length > 0 || count > 0) && (
           <div className="flex items-start gap-1.5 text-[11px] font-mono text-dimmer pt-1 border-t border-line/60">
             <AlertTriangle className="w-3.5 h-3.5 shrink-0 text-warning mt-0.5" />
             <span>
-              Set <span className="text-dim font-semibold">LIVE_GUARD_ARMED=1</span> (env)
-              + rebuild to transmit real auto-exits.
+              Guard cannot reach the broker — auto-exits are NOT transmitting.
+              Re-connect Flattrade; the resting OCO is the only backstop meanwhile.
             </span>
           </div>
         )}
