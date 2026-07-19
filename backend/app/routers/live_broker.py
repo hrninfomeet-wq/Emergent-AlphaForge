@@ -308,11 +308,12 @@ _GUARD_DEFAULT_STOP_PCT = 50.0
 
 
 def _live_guard_armed() -> bool:
-    """True iff LIVE_GUARD_ARMED is affirmative — the software exit guard (premium
-    stop + 15:00 EOD square) will TRANSMIT real squares. Used to gate a real manual
-    LIVE_TEST entry: we refuse to open a real position the guard can't auto-close.
-    Mirrors runtime._live_guard_armed (kept local to avoid a route→runtime import)."""
-    return os.environ.get("LIVE_GUARD_ARMED", "0").strip().lower() in ("1", "true", "yes", "on")
+    """The software exit guard ALWAYS transmits — the LIVE_GUARD_ARMED env gate was
+    removed by explicit user decision (a deployed strategy's stop/target/trailing
+    exits are part of the strategy, not an opt-in). Retained as a function so the
+    executor's Gate 1.5 interlock and the guard-status route keep a single named
+    source of truth rather than a scatter of `True` literals."""
+    return True
 
 
 def _make_arm(
@@ -1421,11 +1422,11 @@ async def cancel_gtt(al_id: str, kind: str = "gtt"):
 
 @api.get("/live-broker/guard-status")
 async def guard_status():
-    """Report the software exit guard's state: armed/dry-run + each guarded
-    position's entry, stop/target levels, peak, and fill status."""
-    import os
+    """Report the software exit guard's state + each guarded position's entry,
+    stop/target levels, peak, and fill status. `armed` is always True now (the
+    LIVE_GUARD_ARMED gate is gone); the field is retained for payload compat."""
     reg = _get_live_registry()
-    armed = os.environ.get("LIVE_GUARD_ARMED", "0").strip().lower() in ("1", "true", "yes", "on")
+    armed = _live_guard_armed()   # always True: the guard is no longer env-gated
     guarded = []
     for e in reg.snapshot():
         st = e.get("state") or {}
@@ -1625,13 +1626,16 @@ async def get_arm_state():
     def _env(name: str) -> bool:
         return os.environ.get(name, "0").strip().lower() in ("1", "true", "yes", "on")
     autoplace_armed = _env("LIVE_AUTOPLACE_ARMED")
-    guard_armed = _env("LIVE_GUARD_ARMED")
-    # deployments armed-and-in-window for live
+    # LIVE deployments currently inside the entry window. Selector is mode=="live"
+    # (the arm field is gone); the predicate then applies connectivity + the 15:00
+    # IST entry cutoff, so a live deployment after the cutoff correctly stops
+    # counting toward "would transmit an entry right now".
     armed_n = 0
     try:
         from app.db import get_db
         now = datetime.now(timezone.utc)
-        cur = get_db().strategy_deployments.find({"risk.live.armed": True}, {"_id": 0, "id": 1, "risk": 1})
+        cur = get_db().strategy_deployments.find(
+            {"mode": "live"}, {"_id": 0, "id": 1, "mode": 1, "risk": 1})
         for dep in await cur.to_list(length=500):
             ok, _reason = is_deployment_live_allowed(dep, now, connected=connected)
             if ok:
@@ -1640,7 +1644,7 @@ async def get_arm_state():
         log.debug("arm-state: deployment scan failed: %s", exc)
     return compute_arm_state(
         mode_doc=mode_doc, connected=connected,
-        autoplace_armed=autoplace_armed, guard_armed=guard_armed,
+        autoplace_armed=autoplace_armed,
         armed_deployment_count=armed_n,
     )
 
@@ -2075,12 +2079,20 @@ _KILL_CLAIM_TTL_SECONDS: float = 900.0
 
 
 async def _disarm_all_live_deployments(db: Any, reason: str) -> List[str]:
-    """Disarm every armed live deployment (risk.live.armed True → False) so the
-    auto-live entry path and the UI both stop. The kill flatten is broker-wide, so
-    (unlike stop-all) we do NOT re-square per deployment here. Returns the ids."""
+    """Take every LIVE deployment out of live mode AND pause it, so the auto-live
+    entry path and the UI both stop. The kill flatten is broker-wide, so (unlike
+    stop-all) we do NOT re-square per deployment here. Returns the ids.
+
+    Selector is mode=="live" — the old {"risk.live.armed": True} filter would match
+    nothing now and silently reduce the kill switch to two legs. Those two legs (the
+    persistent SafetyConfig latch and the LiveEngine halt) DO still block entries at
+    the executor chokepoint, so this is defence-in-depth rather than the sole stop —
+    but it is what makes the stop visible in the deployment list and durable across
+    an engine restart.
+    """
     now = _utcnow_iso()
     armed = await db.strategy_deployments.find(
-        {"risk.live.armed": True}, {"_id": 0, "id": 1, "risk": 1}
+        {"mode": "live"}, {"_id": 0, "id": 1, "risk": 1}
     ).to_list(length=None)
     disarmed: List[str] = []
     for d in armed:
@@ -2089,12 +2101,16 @@ async def _disarm_all_live_deployments(db: Any, reason: str) -> List[str]:
             continue
         risk = dict(d.get("risk") or {})
         live = dict(risk.get("live") or {})
-        live["armed"] = False
-        live["disarmed_reason"] = reason
-        live["disarmed_at"] = now
+        live["last_block_reason"] = reason
+        live["disabled_at"] = now
         risk["live"] = live
+        # mode→paper stops live routing; status→PAUSED stops the evaluator reaching
+        # this deployment at all. A kill must not leave a deployment one manual
+        # un-pause away from re-entering with real money.
         await db.strategy_deployments.update_one(
-            {"id": dep_id}, {"$set": {"risk": risk, "updated_at": now}})
+            {"id": dep_id},
+            {"$set": {"mode": "paper", "status": "PAUSED",
+                      "risk": risk, "updated_at": now}})
         disarmed.append(dep_id)
     return disarmed
 

@@ -143,12 +143,15 @@ async def strategy_pipeline(strategy_id: str):
         db.strategy_deployments,
         {"strategy_id": strategy_id, "mode": {"$regex": "^paper$", "$options": "i"}},
         "created_at")
-    # "has been armed for live at least once" (risk.live is written on arm, retained
-    # on disarm) vs currently-armed (transient, expires 15:00 IST).
+    # "has been configured for live at least once" (risk.live is the live config
+    # sub-doc, retained after going back to paper) vs CURRENTLY live (mode=="live").
+    # The currently-live count must key off `mode` — the old {"risk.live.armed": True}
+    # filter would now match nothing and report a live-trading strategy as safe to
+    # retire/delete.
     live_ever = await db.strategy_deployments.count_documents(
         {"strategy_id": strategy_id, "risk.live": {"$exists": True}})
     live_armed = await db.strategy_deployments.count_documents(
-        {"strategy_id": strategy_id, "risk.live.armed": True})
+        {"strategy_id": strategy_id, "mode": "live"})
     return {
         "strategy_id": strategy_id,
         "backtests": backtests,

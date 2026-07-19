@@ -270,12 +270,13 @@ async def place_live_test_order(
 
     # ------------------------------------------------------------------
     # Gate 1.5 — never open a REAL manual position the guard can't auto-close.
-    # A LIVE_TEST entry transmits real, but its ONLY automated exits — the software
-    # guard stop and the 15:00 IST EOD square — both transmit through the
-    # LIVE_GUARD_ARMED-gated square_fn. With the 10-minute auto-square timer removed,
-    # a real entry placed while the guard is disarmed would have NO automated close
-    # (only manual Square/Kill). Refuse to open a real position we can't auto-close.
-    # The caller (route) injects the live LIVE_GUARD_ARMED state; tests default True.
+    # A LIVE_TEST entry transmits real, and its automated exits (software guard stop
+    # + the 15:00 IST EOD square) now ALWAYS transmit — the LIVE_GUARD_ARMED gate was
+    # removed, so in production this gate is structurally satisfied and callers pass
+    # True. It is RETAINED rather than deleted because it is the only interlock
+    # asserting "this real entry has an automated close", and a future caller that
+    # cannot guarantee a live guard must still be refused rather than silently
+    # opening an unclosable position.
     # ------------------------------------------------------------------
     if not guard_armed:
         return _blocked("guard_not_armed", verdicts)

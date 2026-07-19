@@ -100,8 +100,8 @@ def test_backend_exposes_strategy_deployment_routes_and_index():
         '@api.post("/deployments/{deployment_id}/archive")',
         '@api.get("/deployments/{deployment_id}/signals")',
         # Live control surface (strategy-deploy-to-live)
-        '@api.post("/deployments/{deployment_id}/live/arm")',
-        '@api.post("/deployments/{deployment_id}/live/disarm")',
+        '@api.post("/deployments/{deployment_id}/live/enable")',
+        '@api.post("/deployments/{deployment_id}/live/disable")',
         '@api.post("/deployments/{deployment_id}/live/stop")',
         '@api.get("/deployments/{deployment_id}/live/status")',
     ):

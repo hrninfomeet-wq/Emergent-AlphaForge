@@ -24,7 +24,6 @@ def compute_arm_state(
     mode_doc: Optional[Dict[str, Any]],
     connected: bool,
     autoplace_armed: bool,
-    guard_armed: bool,
     armed_deployment_count: int,
 ) -> Dict[str, Any]:
     """Collapse the five live-execution inputs into one verdict.
@@ -33,9 +32,9 @@ def compute_arm_state(
     ----------
     mode_doc:               the ModeStore singleton doc ({mode, single_shot_consumed}).
     connected:              a Flattrade token is stored (broker reachable).
-    autoplace_armed:        LIVE_AUTOPLACE_ARMED env — the AUTO-entry transmit gate.
-    guard_armed:            LIVE_GUARD_ARMED env — the AUTO-square transmit gate.
-    armed_deployment_count: deployments currently armed-and-in-window for live.
+    autoplace_armed:        LIVE_AUTOPLACE_ARMED env — the AUTO-entry transmit gate
+                            (the sole remaining master switch).
+    armed_deployment_count: LIVE-mode deployments currently inside the entry window.
 
     Returns a dict with the booleans + a single `verdict`/`label`.
     """
@@ -52,9 +51,10 @@ def compute_arm_state(
     #           AUTO env gate — it's a user-initiated click)
     #   auto:   a deployment is armed AND the auto-entry env gate is on
     would_transmit_entry = bool(connected and (manual_armed or (auto_armed and autoplace_armed)))
-    # Would an AUTOMATIC guard square reach the broker? (user-clicked squares always
-    # transmit; this is specifically the unattended software-guard exit.)
-    would_transmit_exit = bool(connected and guard_armed)
+    # Would an AUTOMATIC guard square reach the broker? The software guard is no
+    # longer env-gated — it ALWAYS transmits — so this is purely a question of
+    # broker reachability. (User-clicked squares always transmitted anyway.)
+    would_transmit_exit = bool(connected)
 
     reasons: List[str] = []
     if not connected:
@@ -65,21 +65,13 @@ def compute_arm_state(
         reasons.append(f"{armed_deployment_count} deployment(s) armed + LIVE_AUTOPLACE_ARMED on")
     elif auto_armed and not autoplace_armed:
         reasons.append(f"{armed_deployment_count} deployment(s) armed but LIVE_AUTOPLACE_ARMED off (dry-run)")
-    reasons.append("guard transmits squares" if guard_armed else "guard dry-run (no real squares)")
+    reasons.append("guard transmits squares" if connected else "guard cannot reach broker")
 
-    # DANGEROUS SPLIT (audit L20 gate-split): automated ENTRIES transmit for real
-    # but automated guard EXITS are dry-run — a deployment will OPEN real positions
-    # yet the unattended software guard only LOGS its squares. The broker OCO is
-    # then the sole automated backstop. Surface this loudly (the UI banners it).
-    exit_gap = bool(auto_armed and autoplace_armed and connected and not guard_armed)
+    # The old "DANGEROUS SPLIT" (real entries + dry-run guard exits) is structurally
+    # impossible now that the guard always transmits, so exit_gap is permanently
+    # False. The key is retained so existing consumers keep rendering.
+    exit_gap = False
     warning: Optional[str] = None
-    if exit_gap:
-        warning = (
-            "Real entries armed but guard squares are DRY-RUN "
-            "(LIVE_AUTOPLACE_ARMED=1, LIVE_GUARD_ARMED=0): deployed positions will "
-            "open for real, but the software guard will NOT auto-square them — only "
-            "the broker OCO protects them. Set LIVE_GUARD_ARMED=1 to arm auto-exits."
-        )
 
     if would_transmit_entry:
         verdict = "LIVE"
@@ -96,7 +88,7 @@ def compute_arm_state(
         "single_shot_consumed": single_shot_consumed,
         "connected": bool(connected),
         "autoplace_armed": bool(autoplace_armed),
-        "guard_armed": bool(guard_armed),
+        "guard_armed": True,  # retained for payload compat; the guard is always armed
         "armed_deployments": int(armed_deployment_count),
         "would_transmit_entry": would_transmit_entry,
         "would_transmit_exit": would_transmit_exit,

@@ -159,7 +159,17 @@ NOW = datetime(2026, 6, 25, 6, 0, tzinfo=timezone.utc)
 
 def make_live_deployment(*, lots: int = 2, armed: bool = True,
                          armed_until: str = ARMED_UNTIL, **live) -> Dict[str, Any]:
-    base = {"armed": armed, "armed_until": armed_until, "lots": lots}
+    base = {
+        "armed": armed, "armed_until": armed_until, "lots": lots,
+        # Realistic per-deployment caps. mode == "live" IS the authorization now
+        # (the per-session arm ceremony is gone — see is_deployment_live_allowed),
+        # so check_live_caps FAILS CLOSED for any live-mode deployment with no
+        # caps configured (live_deploy_governor.py). These defaults keep every
+        # generic fixture in this file a VALID, cap-bounded live deployment;
+        # test_orchestrator_live_no_caps_fails_closed below proves the fail-closed
+        # path directly with a caps-less fixture.
+        "max_concurrent": 5, "max_lots_per_day": 100,
+    }
     base.update(live)
     return {"id": "dep-1", "mode": "live", "risk": {"live": base}}
 
@@ -187,8 +197,12 @@ def test_auto_live_enabled_armed_connected_in_window():
     assert auto_live_enabled(make_live_deployment(), NOW, connected=True) is True
 
 
-def test_auto_live_enabled_false_when_not_armed():
-    assert auto_live_enabled(make_live_deployment(armed=False), NOW, connected=True) is False
+def test_auto_live_enabled_false_when_not_live_mode():
+    """mode is now THE authorization (the per-session arm ceremony is gone) — a
+    deployment whose mode isn't "live" is refused regardless of risk.live.armed."""
+    dep = make_live_deployment()
+    dep["mode"] = "paper"
+    assert auto_live_enabled(dep, NOW, connected=True) is False
 
 
 def test_auto_live_enabled_false_after_armed_until():
@@ -598,17 +612,48 @@ async def test_orchestrator_catastrophe_pct_default_none_when_unset():
 
 
 @pytest.mark.asyncio
-async def test_orchestrator_disabled_when_not_armed():
+async def test_orchestrator_disabled_when_not_live_mode():
+    """mode is now THE authorization — a paper-mode deployment never reaches the
+    live sink regardless of risk.live.armed."""
     db = FakeDB()
     sig = make_confirmed_signal()
     db.signals.rows.append(dict(sig))
+    dep = make_live_deployment()
+    dep["mode"] = "paper"
     out = await auto_live_trade_for_signal(
-        db, make_live_deployment(armed=False), sig,
+        db, dep, sig,
         latest_tick_lookup={KEY: _fresh_tick(151.5)}.get, now_utc=NOW,
         place_fn=make_place_fn(_SUCCESS, []))
     assert out["created"] is False
     assert out["reason"] == "auto_live_disabled"
     assert len(db.live_trades.rows) == 0
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_live_no_caps_fails_closed():
+    """PROVES the fail-closed behavior in check_live_caps: a live-mode deployment
+    with NO caps configured (max_concurrent / max_lots_per_day / daily_loss_cap
+    all absent) must be refused with reason "live_caps_missing" and PAUSED — never
+    allowed to trade unbounded just because mode == "live"."""
+    db = FakeDB()
+    sig = make_confirmed_signal()
+    db.signals.rows.append(dict(sig))
+    dep = {
+        "id": "dep-1", "mode": "live",
+        "risk": {"live": {"armed": True, "armed_until": ARMED_UNTIL, "lots": 2}},
+    }
+    db.strategy_deployments.rows.append(dict(dep))
+    calls: List[Dict[str, Any]] = []
+    out = await auto_live_trade_for_signal(
+        db, dep, sig, latest_tick_lookup={KEY: _fresh_tick(151.5)}.get,
+        now_utc=NOW, place_fn=make_place_fn(_SUCCESS, calls))
+    assert out["created"] is False
+    assert out["reason"] == "live_caps_missing"
+    assert out["paused"] is True
+    assert len(calls) == 0
+    assert len(db.live_trades.rows) == 0
+    stored_dep = db.strategy_deployments.rows[0]
+    assert stored_dep["status"] == "PAUSED"
 
 
 @pytest.mark.asyncio
@@ -691,7 +736,7 @@ async def test_orchestrator_governor_max_concurrent_skips_without_placing():
 
 
 @pytest.mark.asyncio
-async def test_orchestrator_daily_loss_cap_pauses_and_disarms_deployment():
+async def test_orchestrator_daily_loss_cap_pauses_deployment():
     db = FakeDB()
     sig = make_confirmed_signal()
     db.signals.rows.append(dict(sig))
@@ -711,11 +756,13 @@ async def test_orchestrator_daily_loss_cap_pauses_and_disarms_deployment():
     assert out["reason"] == "daily_loss_cap"
     assert out["paused"] is True
     assert len(calls) == 0
-    # deployment row updated: PAUSED + disarmed
+    # deployment row updated: status="PAUSED" is the load-bearing stop now
+    # (evaluate_all only iterates {"status": "ACTIVE"}); last_block_reason /
+    # disabled_at are audit-only fields, never read as authorization.
     stored_dep = db.strategy_deployments.rows[0]
     assert stored_dep["status"] == "PAUSED"
-    assert stored_dep["risk"]["live"]["armed"] is False
-    assert stored_dep["risk"]["live"]["disarmed_reason"] == "daily_loss"
+    assert stored_dep["risk"]["live"]["last_block_reason"] == "daily_loss"
+    assert stored_dep["risk"]["live"]["disabled_at"]
 
 
 @pytest.mark.asyncio

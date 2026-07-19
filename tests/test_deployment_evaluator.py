@@ -905,8 +905,18 @@ def _live_ctx(*, place_fn, connected: bool = True) -> Dict[str, Any]:
 
 @pytest.mark.asyncio
 async def test_tee_armed_deployment_routes_to_live_and_suppresses_paper():
+    """mode == "live" IS the authorization now (the per-session arm ceremony is
+    gone — is_deployment_live_allowed no longer reads risk.live.armed). Override
+    the shared paper-mode fixture to mode="live" with realistic caps (check_live_caps
+    fails closed for a live deployment with none configured) so this signal routes
+    to auto_live. auto_paper_enabled hard-requires mode=="paper", so the paper leg
+    of the if/elif can never fire for the same deployment — suppression is now
+    structural, not just a runtime race the if/elif happens to win."""
     db = FakeDB()
     deployment = _armed_live_deployment(lots=2)
+    deployment["mode"] = "live"
+    deployment["risk"]["live"]["max_concurrent"] = 5
+    deployment["risk"]["live"]["max_lots_per_day"] = 100
     key = _seed_clean_signal_setup(db, deployment)
     StubStrategy.set_next(Signal(direction="CE", score=80, reasons=["ok"],
                                  target_pct=40, stop_pct=30))

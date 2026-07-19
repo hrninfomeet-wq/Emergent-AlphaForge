@@ -259,31 +259,44 @@ def armed_until_today_ist(now_utc: "datetime") -> str:
     return (cutoff_ist - timedelta(hours=5, minutes=30)).replace(tzinfo=timezone.utc).isoformat()
 
 
+#: The daily NEW-ENTRY cutoff for live deployments — 15:00 IST, the same instant the
+#: EOD auto-square runs. A new real position opened after this point would be squared
+#: within minutes, so the entry is refused instead. This is the explicit replacement
+#: for the old ``risk.live.armed_until`` expiry, which enforced the same boundary as a
+#: side effect of the (now removed) per-session arm ceremony.
+entry_cutoff_today_ist = armed_until_today_ist
+
+
 def is_deployment_live_allowed(deployment: "Dict[str, Any]", now_utc: "datetime", *, connected: bool) -> "Tuple[bool, str]":
-    """(ok, reason) — True iff risk.live armed, now_utc < armed_until, and connected.
-    Fail-closed: any missing/malformed field or expired arm -> (False, reason)."""
+    """(ok, reason) — True iff the deployment is LIVE mode, the broker is connected,
+    and we are before the daily new-entry cutoff (15:00 IST).
+
+    This is THE authorization predicate for the auto-live entry path. Deploying a
+    strategy in live mode IS the authorization — there is no per-session arm
+    ceremony (removed by explicit user decision; see DEVELOPER_GUIDE §E). The
+    per-deployment risk caps and the halt/kill latches remain in force downstream.
+
+    Fail-closed: anything missing/malformed -> (False, reason).
+
+    The cutoff replaces what ``risk.live.armed_until`` used to do implicitly: it is
+    the ONLY thing preventing a late-session signal from opening a real position
+    minutes before the 15:00 EOD square runs. It is evaluated per call against the
+    clock, so it can never be stale the way a persisted arm-expiry could.
+    """
     from datetime import datetime, timezone
     if not isinstance(deployment, dict):
         return False, "no_deployment"
-    risk = deployment.get("risk")
-    live = risk.get("live") if isinstance(risk, dict) else None
-    if not isinstance(live, dict):
-        return False, "not_armed"
-    if live.get("armed") is not True:
-        return False, "not_armed"
-    raw = live.get("armed_until")
-    if not raw:
-        return False, "arm_expired"
-    try:
-        until = datetime.fromisoformat(str(raw))
-        if until.tzinfo is None:
-            until = until.replace(tzinfo=timezone.utc)
-    except (TypeError, ValueError):
-        return False, "arm_expired"
-    if now_utc >= until:
-        return False, "arm_expired"
+    if str(deployment.get("mode") or "").strip().lower() != "live":
+        return False, "not_live_mode"
     if connected is not True:
         return False, "not_connected"
+    try:
+        cutoff = datetime.fromisoformat(entry_cutoff_today_ist(now_utc))
+    except (TypeError, ValueError):
+        # Never fail OPEN on a broken cutoff — refuse the entry instead.
+        return False, "entry_cutoff_unresolvable"
+    if now_utc >= cutoff:
+        return False, "after_entry_cutoff"
     return True, "ok"
 
 

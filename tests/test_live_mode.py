@@ -569,25 +569,40 @@ from datetime import datetime, timezone, timedelta
 from app.live.mode import is_deployment_live_allowed, armed_until_today_ist
 
 
-def _dep(**live):
-    base = {"armed": True, "armed_until": "2026-06-25T09:30:00+00:00"}  # 15:00 IST
+def _dep(mode="live", **live):
+    """A LIVE-mode deployment. Authorization is `mode`, not an arm record — the
+    per-deployment arm ceremony was removed; risk.live is now pure config."""
+    base = {"lots": 1, "max_concurrent": 5, "max_lots_per_day": 100}
     base.update(live)
-    return {"risk": {"live": base}}
+    return {"mode": mode, "risk": {"live": base}}
 
 
-def test_live_allowed_when_armed_connected_before_until():
-    now = datetime(2026, 6, 25, 6, 0, tzinfo=timezone.utc)
+def test_live_allowed_when_live_mode_connected_before_cutoff():
+    now = datetime(2026, 6, 25, 6, 0, tzinfo=timezone.utc)   # 11:30 IST
     assert is_deployment_live_allowed(_dep(), now, connected=True) == (True, "ok")
 
 
-def test_live_blocked_when_not_armed():
+def test_live_blocked_when_not_live_mode():
+    """A paper/signal_only deployment never reaches the real-order path."""
     now = datetime(2026, 6, 25, 6, 0, tzinfo=timezone.utc)
-    assert is_deployment_live_allowed(_dep(armed=False), now, connected=True) == (False, "not_armed")
+    assert is_deployment_live_allowed(_dep(mode="paper"), now, connected=True) == (False, "not_live_mode")
+    assert is_deployment_live_allowed(_dep(mode="signal_only"), now, connected=True) == (False, "not_live_mode")
 
 
-def test_live_blocked_after_armed_until():
+def test_live_blocked_after_entry_cutoff():
+    """15:00 IST new-entry cutoff. This is the explicit replacement for the old
+    armed_until expiry and is the ONLY thing stopping a late-session real entry
+    from opening minutes before the EOD square runs."""
     now = datetime(2026, 6, 25, 10, 0, tzinfo=timezone.utc)  # 15:30 IST
-    assert is_deployment_live_allowed(_dep(), now, connected=True) == (False, "arm_expired")
+    assert is_deployment_live_allowed(_dep(), now, connected=True) == (False, "after_entry_cutoff")
+
+
+def test_live_allowed_immediately_before_cutoff_and_blocked_at_it():
+    """Boundary: the cutoff is inclusive-blocking at exactly 15:00 IST."""
+    just_before = datetime(2026, 6, 25, 9, 29, tzinfo=timezone.utc)   # 14:59 IST
+    exactly_at = datetime(2026, 6, 25, 9, 30, tzinfo=timezone.utc)    # 15:00 IST
+    assert is_deployment_live_allowed(_dep(), just_before, connected=True)[0] is True
+    assert is_deployment_live_allowed(_dep(), exactly_at, connected=True) == (False, "after_entry_cutoff")
 
 
 def test_live_blocked_when_not_connected():
@@ -598,18 +613,17 @@ def test_live_blocked_when_not_connected():
 def test_live_fail_closed_on_malformed():
     now = datetime(2026, 6, 25, 6, 0, tzinfo=timezone.utc)
     assert is_deployment_live_allowed({}, now, connected=True)[0] is False
+    assert is_deployment_live_allowed(None, now, connected=True)[0] is False
     assert is_deployment_live_allowed({"risk": {"live": "x"}}, now, connected=True)[0] is False
-    assert is_deployment_live_allowed({"risk": {"live": {"armed": True}}}, now, connected=True)[0] is False
 
 
-def test_live_blocked_when_armed_is_truthy_not_true():
-    """armed=1 is truthy but not the literal True — must be rejected (fail-closed)."""
+def test_legacy_armed_record_no_longer_authorizes():
+    """MIGRATION SAFETY: a pre-existing doc carrying the old arm record but not
+    mode=="live" must NOT trade. Fail-closed is the only safe direction here."""
     now = datetime(2026, 6, 25, 6, 0, tzinfo=timezone.utc)
-    assert is_deployment_live_allowed(
-        {"risk": {"live": {"armed": 1, "armed_until": "2026-06-25T09:30:00+00:00"}}},
-        now,
-        connected=True,
-    ) == (False, "not_armed")
+    legacy = {"mode": "paper",
+              "risk": {"live": {"armed": True, "armed_until": "2026-06-25T09:30:00+00:00"}}}
+    assert is_deployment_live_allowed(legacy, now, connected=True) == (False, "not_live_mode")
 
 
 def test_armed_until_today_ist_is_1500_ist_in_utc():

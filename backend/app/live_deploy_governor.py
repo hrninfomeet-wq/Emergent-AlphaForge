@@ -80,8 +80,18 @@ async def check_live_caps(
     risk = dict(deployment.get("risk") or {})
     live = dict(risk.get("live") or {})
 
-    # Fast path: no caps configured → skip DB entirely
+    # Fast path: no caps configured → skip DB entirely.
+    #
+    # FAIL-CLOSED FOR LIVE MODE. The allow-all fast path is only safe for a
+    # deployment that cannot reach the real-order path. Once `mode == "live"` is
+    # itself the authorization (the arm ceremony that used to guarantee caps were
+    # written is gone), a live deployment with no caps would otherwise trade
+    # UNBOUNDED — no lot ceiling, no concurrency ceiling, no daily loss stop.
+    # /live/enable requires the caps, so reaching here means the doc was crafted or
+    # migrated around that route: refuse rather than trade without limits.
     if not _live_caps_configured(live):
+        if str(deployment.get("mode") or "").strip().lower() == "live":
+            return {"allow": False, "reason": "live_caps_missing", "pause": True}
         return _allow
 
     # Resolve IST today

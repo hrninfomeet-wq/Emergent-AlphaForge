@@ -869,10 +869,21 @@ class _KillDeployCol:
         self.docs = docs
 
     def find(self, query, projection=None):
-        # the disarm helper queries {"risk.live.armed": True}
-        armed = [d for d in self.docs
-                 if ((d.get("risk") or {}).get("live") or {}).get("armed") is True]
-        return _KillDeployCursor(armed)
+        # Apply the query for real rather than hardcoding one selector's semantics.
+        # The previous version assumed {"risk.live.armed": True} and would have kept
+        # passing against ANY selector — including one that matches nothing in
+        # production. Honouring dotted paths means a future selector change fails
+        # here loudly instead of silently "working".
+        def _get(doc, dotted):
+            cur = doc
+            for part in dotted.split("."):
+                if not isinstance(cur, dict):
+                    return None
+                cur = cur.get(part)
+            return cur
+        matched = [d for d in self.docs
+                   if all(_get(d, k) == v for k, v in (query or {}).items())]
+        return _KillDeployCursor(matched)
 
     async def update_one(self, query, update):
         for d in self.docs:
@@ -894,9 +905,9 @@ def test_kill_switch_is_stop_all_trips_latch_halts_disarms():
     from app.live.kill_switch import is_entry_blocked
 
     deploys = [
-        {"id": "d1", "risk": {"live": {"armed": True, "lots": 2}}},
-        {"id": "d2", "risk": {"live": {"armed": True}}},
-        {"id": "d3", "risk": {"live": {"armed": False}}},  # already disarmed → untouched
+        {"id": "d1", "mode": "live", "risk": {"live": {"lots": 2}}},
+        {"id": "d2", "mode": "live", "risk": {"live": {}}},
+        {"id": "d3", "mode": "paper", "risk": {"live": {}}},  # already not live → untouched
     ]
     fake_db = _KillDb(deploys)
     cs = _make_config_store()
@@ -918,10 +929,11 @@ def test_kill_switch_is_stop_all_trips_latch_halts_disarms():
         # the persistent latch is set → is_entry_blocked True (executor Gate 6 reads this)
         assert is_entry_blocked(asyncio.run(cs.get_config())) is True
         # the two armed deployments are now disarmed with the reason
-        assert deploys[0]["risk"]["live"]["armed"] is False
-        assert deploys[0]["risk"]["live"]["disarmed_reason"] == "kill_switch"
-        assert deploys[1]["risk"]["live"]["armed"] is False
-        assert deploys[2]["risk"]["live"]["armed"] is False  # unchanged
+        assert deploys[0]["mode"] == "paper" and deploys[0]["status"] == "PAUSED"
+        assert deploys[0]["risk"]["live"]["last_block_reason"] == "kill_switch"
+        assert deploys[1]["mode"] == "paper" and deploys[1]["status"] == "PAUSED"
+        assert deploys[2]["mode"] == "paper"          # unchanged (never live)
+        assert "status" not in deploys[2]             # kill did not touch it
     finally:
         _stop_patches(tc)
 
@@ -931,7 +943,7 @@ def test_kill_switch_stops_all_even_on_token_expiry():
     (latch/halt/disarm) STILL runs — new entries are blocked regardless."""
     from app.live.kill_switch import is_entry_blocked
 
-    deploys = [{"id": "d1", "risk": {"live": {"armed": True}}}]
+    deploys = [{"id": "d1", "mode": "live", "risk": {"live": {}}}]
     fake_db = _KillDb(deploys)
     cs = _make_config_store()
     eng = FakeEngine()
@@ -947,7 +959,7 @@ def test_kill_switch_stops_all_even_on_token_expiry():
         assert body["stop_all"]["engine_halted"] is True
         assert body["stop_all"]["disarmed_deployment_ids"] == ["d1"]
         assert is_entry_blocked(asyncio.run(cs.get_config())) is True
-        assert deploys[0]["risk"]["live"]["armed"] is False
+        assert deploys[0]["mode"] == "paper" and deploys[0]["status"] == "PAUSED"
     finally:
         _stop_patches(tc)
 
@@ -959,7 +971,7 @@ def test_kill_switch_defers_tsym_already_being_exited():
     from app.live.exit_claims import registry, reset_exit_claims
 
     reset_exit_claims()
-    deploys = [{"id": "d1", "risk": {"live": {"armed": True}}}]
+    deploys = [{"id": "d1", "mode": "live", "risk": {"live": {}}}]
     fake_db = _KillDb(deploys)
     cs = _make_config_store()
     eng = FakeEngine()

@@ -80,23 +80,28 @@ def test_deployments_router_attaches_premium_advisory_at_both_arm_advisories_sit
 
 
 def test_premium_advisory_is_informational_only_arm_gate_untouched():
-    """The arm/disarm decision (arm_deployment_live) must be provably unaffected:
+    """The live-enable decision (enable_deployment_live — the per-session ARM
+    ceremony was removed; enabling live mode is now the one-time authorization,
+    see app/live/mode.py::is_deployment_live_allowed) must be provably unaffected:
     every HTTPException guard + the risk.live DB write happen BEFORE the
     arm_advisories line, and arm_advisories is never read as a condition anywhere
     in the router (only ever assigned/appended-to, never branched on)."""
     src = (_ROOT / "backend" / "app" / "routers" / "deployments.py").read_text(encoding="utf-8")
-    arm_i = src.index('@api.post("/deployments/{deployment_id}/live/arm")')
+    arm_i = src.index('@api.post("/deployments/{deployment_id}/live/enable")')
     advisories_i = src.index('out["arm_advisories"] = build_arm_advisories(fwd)', arm_i)
     arm_route_body = src[arm_i:advisories_i]
-    # All 6 documented arm guards + the risk.live persistence happen before the
-    # advisory line in THIS route.
-    assert "Deployment must be ACTIVE to arm" in arm_route_body
+    # All documented enable guards + the risk.live persistence happen before the
+    # advisory line in THIS route. The old per-session "Cannot arm after 15:00 IST"
+    # cutoff guard is GONE by design (see the route's own docstring): enabling live
+    # is a one-time, not per-session, act — the 15:00 entry cutoff is now enforced
+    # per-signal instead (is_deployment_live_allowed / after_entry_cutoff).
+    assert "Deployment must be ACTIVE to enable live execution." in arm_route_body
     assert "is retired" in arm_route_body
     assert "paused for strategy source drift" in arm_route_body
     assert "Flattrade not connected" in arm_route_body
     assert "Live engine cannot trade" in arm_route_body
-    assert "Cannot arm after 15:00 IST" in arm_route_body
-    assert '"risk": risk, "updated_at": now.isoformat()' in arm_route_body
+    assert "Cannot arm after 15:00 IST" not in arm_route_body
+    assert '"mode": "live", "risk": risk, "updated_at": now.isoformat()' in arm_route_body
     # No conditional anywhere in the router keys off arm_advisories (it is only
     # ever: imported, assigned, or appended-to — never read back as a branch
     # condition to gate behavior).

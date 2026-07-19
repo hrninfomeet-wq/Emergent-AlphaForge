@@ -594,7 +594,9 @@ class LivePositionGuard:
                 # Log-only guard (LIVE_GUARD_ARMED unset): once a dry-run square has
                 # surfaced this position's exit intent, KEEP it registered (so
                 # guard_status still shows it as watched) but don't re-fire the same
-                # dry-run every cycle. A real (armed) square never sets this flag.
+                # dry-run every cycle. A real transmitted square never sets this
+                # flag, and since the guard is always armed now, production never
+                # sets it at all (only an injected square_fn can).
                 # square_stopped (retry budget exhausted, audit L20) likewise stays
                 # registered — the OCO backstop + confirmed-flat finalize still
                 # apply — and its DISCRETIONARY squares (premium/spot/time) stop
@@ -722,11 +724,17 @@ class LivePositionGuard:
             # inflate the stat.
             self._stats["exits"] += 1
         elif dry_run:
-            # Log-only mode: surface the intent once; the loop-level skip keeps the
-            # entry registered + visible without re-firing every cycle.
+            # DEFENSIVE, not a production path. The LIVE_GUARD_ARMED gate is gone and
+            # neither _live_guard_square_fn nor _live_guard_reprice_fn can return a
+            # dry-run result any more — but an injected/custom square_fn (tests, and
+            # any future offline harness) still can. This branch is deliberately
+            # RETAINED rather than deleted: without it a {"squared": False,
+            # "dry_run": True} result would fall through to the retry/escalation
+            # `else` below and burn the square-retry budget against a position that
+            # was never actually transmitted for.
             entry["dry_run_exit_logged"] = True
-            log.info("guard DRY-RUN square for %s (%s) — LIVE_GUARD_ARMED off, "
-                     "nothing transmitted (logged once)", entry["tsym"], exit_reason)
+            log.info("guard DRY-RUN square for %s (%s) — injected square_fn "
+                     "transmitted nothing (logged once)", entry["tsym"], exit_reason)
         elif str(result.get("reason") or "") in _SOFT_RETRY_REASONS:
             # Placed NOTHING (contention / unpriced / cancel-unconfirmed). Retry
             # next cycle; never counts toward the retry budget — but surface it so

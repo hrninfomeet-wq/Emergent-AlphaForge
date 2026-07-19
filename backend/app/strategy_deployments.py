@@ -11,7 +11,16 @@ ALLOWED_SOURCE_TYPES = {"preset", "backtest_run"}
 # trading; "paper" auto-trades clean signals. Legacy values map on create:
 # "shadow" -> signal_only; "recommendation" was retired (treated as signal_only
 # on old stored docs — the evaluator only ever trades when mode == "paper").
-ALLOWED_MODES = {"signal_only", "paper"}
+# "live" is a REAL-MONEY mode: a live deployment's confirmed signals route to the
+# auto_live sink (auto_paper is suppressed) with no further per-session ceremony.
+# It is never reachable from the ordinary create/update body — POST
+# /deployments/{id}/live/enable is the only writer, and it runs the live preflight
+# chain (ACTIVE, not retired, not drift-paused, broker connected, engine can_trade)
+# plus the mandatory risk caps before flipping the mode.
+ALLOWED_MODES = {"signal_only", "paper", "live"}
+#: Modes an ordinary deployment create/update body may request. Live must go
+#: through the preflighted enable route, so it is deliberately excluded here.
+CREATABLE_MODES = {"signal_only", "paper"}
 LEGACY_MODE_MAP = {"shadow": "signal_only", "recommendation": "signal_only"}
 ALLOWED_CONFIRMATION_MODES = {"1m_close", "tick"}
 ALLOWED_MONEYNESS = {"atm", "otm1", "itm1"}
@@ -123,7 +132,10 @@ def build_deployment_doc(
     confirmation_mode = str(confirmation_mode or "1m_close").lower()
     if source_type not in ALLOWED_SOURCE_TYPES:
         raise ValueError("Deployment source_type must be preset or backtest_run")
-    if mode not in ALLOWED_MODES:
+    # Deliberately CREATABLE_MODES, not ALLOWED_MODES: a deployment can never be
+    # born live. Live is reached only via the preflighted live/enable route, so a
+    # crafted create body can't skip the caps + safety chain into real money.
+    if mode not in CREATABLE_MODES:
         raise ValueError("Deployment mode must be signal_only or paper")
     if confirmation_mode not in ALLOWED_CONFIRMATION_MODES:
         raise ValueError("Deployment confirmation_mode must be 1m_close or tick")

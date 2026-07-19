@@ -132,21 +132,14 @@ async def startup() -> None:
 
     # Live software exit guard — starts unconditionally (reads the BROKER position
     # book, not the Upstox stream). It no-ops when the guard registry is empty /
-    # outside market hours, and only TRANSMITS a square when LIVE_GUARD_ARMED=1.
+    # outside market hours. It ALWAYS transmits its squares: the old
+    # LIVE_GUARD_ARMED gate (and with it the dangerous "real entries + dry-run
+    # exits" split, audit L20) has been removed.
     try:
         await live_position_guard.start()
         _autoplace = os.environ.get("LIVE_AUTOPLACE_ARMED", "0").strip().lower() in ("1", "true", "yes", "on")
-        _guard = os.environ.get("LIVE_GUARD_ARMED", "0").strip().lower() in ("1", "true", "yes", "on")
-        log.info("Live position guard started (offline-first; guard_armed=%s)", _guard)
-        if _autoplace and not _guard:
-            # Dangerous gate-split (audit L20): real automated entries but the
-            # unattended guard only LOGS its squares — the broker OCO is the sole
-            # automated backstop for any position a deployment opens.
-            log.warning(
-                "LIVE GATE-SPLIT: LIVE_AUTOPLACE_ARMED=1 but LIVE_GUARD_ARMED=0 — "
-                "real entries will transmit while guard auto-squares are DRY-RUN. "
-                "Deployed positions rely on the broker OCO alone. Set "
-                "LIVE_GUARD_ARMED=1 to arm automated exits.")
+        log.info("Live position guard started (auto-exits always armed; "
+                 "LIVE_AUTOPLACE_ARMED=%s)", _autoplace)
     except Exception as exc:
         log.warning(f"Live position guard start skipped: {exc}")
 

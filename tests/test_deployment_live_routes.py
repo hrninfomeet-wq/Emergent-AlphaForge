@@ -1,11 +1,16 @@
 """TDD tests for the deployment live control-surface routes (strategy-deploy-to-live).
 
 Routes under test (in app/routers/deployments.py):
-  POST /deployments/{id}/live/arm      — authorize live auto-placing (guarded)
-  POST /deployments/{id}/live/disarm   — clear armed (no flatten)
-  POST /deployments/{id}/live/stop     — flatten THIS deployment's live positions + disarm
-  GET  /deployments/{id}/live/status   — armed state + caps + today + open positions
-  POST /deployments/stop-all           — ALSO disarms + flattens every armed live deployment
+  POST /deployments/{id}/live/enable   — switch deployment to mode="live" (guarded preflight)
+  POST /deployments/{id}/live/disable  — switch deployment back to mode="paper" (no flatten)
+  POST /deployments/{id}/live/stop     — flatten THIS deployment's live positions, mode="paper", status="PAUSED"
+  GET  /deployments/{id}/live/status   — live state + caps + today + open positions
+  POST /deployments/stop-all           — ALSO flattens + de-lives every mode="live" deployment
+
+The per-deployment ARM ceremony (armed/armed_at/armed_until/armed_by/disarmed_reason,
+the LIVE_GUARD_ARMED env gate, and the "cannot arm after 15:00 IST" window check) was
+REMOVED by explicit user decision. `mode` ("live" vs "paper") is now the SOLE
+authorization signal; risk.live is a pure config sub-doc (caps + catastrophe band).
 
 Harness: the deployments router reaches Mongo through the module-global
 ``app.routers.deployments.get_db`` and helper functions imported into that module.
@@ -196,17 +201,18 @@ def _install(monkeypatch, db, *, connected=True, can_trade=True, registry=None,
     else:
         monkeypatch.delenv("LIVE_GUARD_ARMED", raising=False)
 
-    # Pin 'now' to a deterministic MARKET-HOURS instant (11:30 IST = 06:00 UTC) so the
-    # arm-window guard (reject after 15:00 IST) is not subject to the test wall clock.
+    # Pin 'now' to a deterministic instant. Enabling live is no longer session-scoped
+    # (the old "reject after 15:00 IST" arm-window check was removed), but `enabled_at`
+    # is still stamped from `_utcnow()`, so keep the clock deterministic for that.
     monkeypatch.setattr(dep, "_utcnow",
                         lambda: datetime(2026, 6, 25, 6, 0, tzinfo=timezone.utc), raising=False)
 
     return reg, squared
 
 
-def _arm_body(confirm=True, lots=3, max_lots_per_day=20, max_concurrent=2, daily_loss_cap=5000.0,
-              catastrophe_stop_pct=None, catastrophe_target_pct=None):
-    return dep._LiveArmBody(
+def _enable_body(confirm=True, lots=3, max_lots_per_day=20, max_concurrent=2, daily_loss_cap=5000.0,
+                  catastrophe_stop_pct=None, catastrophe_target_pct=None):
+    return dep._LiveEnableBody(
         lots=lots, max_lots_per_day=max_lots_per_day, max_concurrent=max_concurrent,
         daily_loss_cap=daily_loss_cap, confirm=confirm,
         catastrophe_stop_pct=catastrophe_stop_pct, catastrophe_target_pct=catastrophe_target_pct,
@@ -214,165 +220,180 @@ def _arm_body(confirm=True, lots=3, max_lots_per_day=20, max_concurrent=2, daily
 
 
 # ===========================================================================
-# arm
+# enable  (was: arm)
 # ===========================================================================
 
-class TestArm:
-    def test_arm_success_writes_risk_live_and_caps(self, monkeypatch):
+class TestEnable:
+    def test_enable_success_sets_mode_live_and_writes_caps(self, monkeypatch):
         db = FakeDB()
         db.strategy_deployments.rows.append(_deployment())
         _install(monkeypatch, db)
-        out = asyncio.run(dep.arm_deployment_live("dep-1", _arm_body()))
-        assert out["armed"] is True
+        out = asyncio.run(dep.enable_deployment_live("dep-1", _enable_body()))
         assert out["lots"] == 3
         assert out["max_lots_per_day"] == 20
         assert out["max_concurrent"] == 2
         assert out["daily_loss_cap"] == 5000.0
-        assert out["armed_until"]            # EOD IST cutoff present
-        assert out["armed_by"] == "user"
-        assert out["disarmed_reason"] is None
+        assert out["enabled_by"] == "user"
+        assert out["last_block_reason"] is None
         assert out["autoplace_armed"] is False
         assert "note" in out                  # dry-run note when autoplace off
-        # persisted, and OTHER risk.* keys preserved
+        # persisted: `mode` is now the SOLE authorization signal (no risk.live.armed
+        # flag anymore), and OTHER risk.* keys are preserved untouched.
         stored = db.strategy_deployments.rows[0]
-        assert stored["risk"]["live"]["armed"] is True
+        assert stored["mode"] == "live"
+        assert stored["risk"]["live"]["lots"] == 3
         assert stored["risk"]["sizing"] == {"lots": 2}
         assert stored["risk"]["allow_overnight"] is False
 
-    def test_arm_persists_catastrophe_band_config(self, monkeypatch):
+    def test_enable_persists_catastrophe_band_config(self, monkeypatch):
         db = FakeDB()
         db.strategy_deployments.rows.append(_deployment())
         _install(monkeypatch, db)
-        asyncio.run(dep.arm_deployment_live(
-            "dep-1", _arm_body(catastrophe_stop_pct=48, catastrophe_target_pct=140)))
+        asyncio.run(dep.enable_deployment_live(
+            "dep-1", _enable_body(catastrophe_stop_pct=48, catastrophe_target_pct=140)))
         stored = db.strategy_deployments.rows[0]
         assert stored["risk"]["live"]["catastrophe_stop_pct"] == 48
         assert stored["risk"]["live"]["catastrophe_target_pct"] == 140
 
-    def test_arm_without_catastrophe_band_persists_none(self, monkeypatch):
+    def test_enable_without_catastrophe_band_persists_none(self, monkeypatch):
         db = FakeDB()
         db.strategy_deployments.rows.append(_deployment())
         _install(monkeypatch, db)
-        asyncio.run(dep.arm_deployment_live("dep-1", _arm_body()))
+        asyncio.run(dep.enable_deployment_live("dep-1", _enable_body()))
         stored = db.strategy_deployments.rows[0]
         assert stored["risk"]["live"]["catastrophe_stop_pct"] is None
         assert stored["risk"]["live"]["catastrophe_target_pct"] is None
 
-    def test_arm_autoplace_on_has_no_dry_run_note(self, monkeypatch):
+    def test_enable_autoplace_on_has_no_dry_run_note(self, monkeypatch):
         db = FakeDB()
         db.strategy_deployments.rows.append(_deployment())
         _install(monkeypatch, db, autoplace=True)
-        out = asyncio.run(dep.arm_deployment_live("dep-1", _arm_body()))
+        out = asyncio.run(dep.enable_deployment_live("dep-1", _enable_body()))
         assert out["autoplace_armed"] is True
         assert out.get("note") in (None, "")
 
-    def test_arm_requires_confirm_true(self, monkeypatch):
+    def test_enable_requires_confirm_true(self, monkeypatch):
         from fastapi import HTTPException
         db = FakeDB()
         db.strategy_deployments.rows.append(_deployment())
         _install(monkeypatch, db)
         with pytest.raises(HTTPException) as ei:
-            asyncio.run(dep.arm_deployment_live("dep-1", _arm_body(confirm=False)))
+            asyncio.run(dep.enable_deployment_live("dep-1", _enable_body(confirm=False)))
         assert ei.value.status_code == 400
 
-    def test_arm_rejects_missing_deployment(self, monkeypatch):
+    def test_enable_rejects_missing_deployment(self, monkeypatch):
         from fastapi import HTTPException
         db = FakeDB()
         _install(monkeypatch, db)
         with pytest.raises(HTTPException) as ei:
-            asyncio.run(dep.arm_deployment_live("nope", _arm_body()))
+            asyncio.run(dep.enable_deployment_live("nope", _enable_body()))
         assert ei.value.status_code == 404
 
-    def test_arm_rejects_non_active(self, monkeypatch):
+    def test_enable_rejects_non_active(self, monkeypatch):
         from fastapi import HTTPException
         db = FakeDB()
         db.strategy_deployments.rows.append(_deployment(status="PAUSED"))
         _install(monkeypatch, db)
         with pytest.raises(HTTPException) as ei:
-            asyncio.run(dep.arm_deployment_live("dep-1", _arm_body()))
+            asyncio.run(dep.enable_deployment_live("dep-1", _enable_body()))
         assert ei.value.status_code == 400
 
-    def test_arm_rejected_after_1500_ist_cutoff(self, monkeypatch):
-        """Arming after 15:00 IST (the session is over) must be rejected, not silently
-        write a born-expired arm. Nothing is persisted."""
-        from fastapi import HTTPException
+    def test_enable_not_session_scoped_evening_still_succeeds(self, monkeypatch):
+        """The old "cannot arm after 15:00 IST" rejection is GONE — enabling live
+        is a one-time act, not scoped to the current session. An evening instant
+        (18:30 IST = 13:00 UTC) must succeed exactly like a market-hours instant."""
         db = FakeDB()
         db.strategy_deployments.rows.append(_deployment())
         _install(monkeypatch, db)
-        # Override the pinned clock to an EVENING instant: 18:30 IST = 13:00 UTC, past
-        # today's 15:00 IST cutoff.
         monkeypatch.setattr(dep, "_utcnow",
                             lambda: datetime(2026, 6, 25, 13, 0, tzinfo=timezone.utc), raising=False)
-        with pytest.raises(HTTPException) as ei:
-            asyncio.run(dep.arm_deployment_live("dep-1", _arm_body()))
-        assert ei.value.status_code == 400
-        assert "15:00 IST" in str(ei.value.detail)
-        # nothing was written — the deployment is NOT armed
-        row = db.strategy_deployments.rows[0]
-        assert not ((row.get("risk") or {}).get("live") or {}).get("armed")
+        out = asyncio.run(dep.enable_deployment_live("dep-1", _enable_body()))
+        assert out["lots"] == 3
+        assert db.strategy_deployments.rows[0]["mode"] == "live"
 
-    def test_arm_rejects_retired_strategy(self, monkeypatch):
+    def test_enable_rejects_retired_strategy(self, monkeypatch):
         from fastapi import HTTPException
         db = FakeDB()
         db.strategy_deployments.rows.append(_deployment())
         _install(monkeypatch, db, retired=True)
-        with pytest.raises(HTTPException):
-            asyncio.run(dep.arm_deployment_live("dep-1", _arm_body()))
+        with pytest.raises(HTTPException) as ei:
+            asyncio.run(dep.enable_deployment_live("dep-1", _enable_body()))
+        assert ei.value.status_code == 409
 
-    def test_arm_rejects_drift_paused(self, monkeypatch):
+    def test_enable_rejects_drift_paused(self, monkeypatch):
         from fastapi import HTTPException
         db = FakeDB()
         db.strategy_deployments.rows.append(
             _deployment(status="ACTIVE", drift_reason="strategy_source_drift"))
         _install(monkeypatch, db)
         with pytest.raises(HTTPException):
-            asyncio.run(dep.arm_deployment_live("dep-1", _arm_body()))
+            asyncio.run(dep.enable_deployment_live("dep-1", _enable_body()))
 
-    def test_arm_rejects_not_connected(self, monkeypatch):
+    def test_enable_rejects_not_connected(self, monkeypatch):
         from fastapi import HTTPException
         db = FakeDB()
         db.strategy_deployments.rows.append(_deployment())
         _install(monkeypatch, db, connected=False)
         with pytest.raises(HTTPException):
-            asyncio.run(dep.arm_deployment_live("dep-1", _arm_body()))
+            asyncio.run(dep.enable_deployment_live("dep-1", _enable_body()))
 
-    def test_arm_rejects_engine_cannot_trade(self, monkeypatch):
+    def test_enable_rejects_engine_cannot_trade(self, monkeypatch):
         from fastapi import HTTPException
         db = FakeDB()
         db.strategy_deployments.rows.append(_deployment())
         _install(monkeypatch, db, can_trade=False)
         with pytest.raises(HTTPException):
-            asyncio.run(dep.arm_deployment_live("dep-1", _arm_body()))
+            asyncio.run(dep.enable_deployment_live("dep-1", _enable_body()))
 
-
-# ===========================================================================
-# disarm
-# ===========================================================================
-
-class TestDisarm:
-    def test_disarm_clears_armed_keeps_positions(self, monkeypatch):
+    @pytest.mark.parametrize("field", ["lots", "max_lots_per_day", "max_concurrent"])
+    def test_enable_rejects_cap_below_one(self, monkeypatch, field):
+        """A live deployment without caps would sail past `_live_caps_configured`'s
+        allow-all fast path and trade unbounded — lots / max_lots_per_day /
+        max_concurrent are each individually required to be >= 1."""
+        from fastapi import HTTPException
         db = FakeDB()
-        d = _deployment()
-        d["risk"]["live"] = {"armed": True, "lots": 3}
+        db.strategy_deployments.rows.append(_deployment())
+        _install(monkeypatch, db)
+        kwargs = {"lots": 3, "max_lots_per_day": 20, "max_concurrent": 2, field: 0}
+        with pytest.raises(HTTPException) as ei:
+            asyncio.run(dep.enable_deployment_live("dep-1", _enable_body(**kwargs)))
+        assert ei.value.status_code == 400
+        # nothing was written — the deployment did NOT go live
+        row = db.strategy_deployments.rows[0]
+        assert row.get("mode") != "live"
+
+
+# ===========================================================================
+# disable  (was: disarm)
+# ===========================================================================
+
+class TestDisable:
+    def test_disable_reverts_to_paper_keeps_positions(self, monkeypatch):
+        db = FakeDB()
+        d = _deployment(mode="live")
+        d["risk"]["live"] = {"lots": 3}
         db.strategy_deployments.rows.append(d)
         reg = LiveMonitorRegistry()
         reg.register(key="o1", tsym="NIFTY25000CE", exch="NFO", qty=65, prd="I",
                      entry_price=100.0, state=build_monitor_state(100.0, stop_pct=50),
                      deployment_id="dep-1")
         _install(monkeypatch, db, registry=reg)
-        out = asyncio.run(dep.disarm_deployment_live("dep-1"))
-        assert out["armed"] is False
-        assert out["disarmed_reason"] == "manual"
-        # positions untouched
+        out = asyncio.run(dep.disable_deployment_live("dep-1"))
+        assert out["mode"] == "paper"
+        assert out["deployment_id"] == "dep-1"
+        assert out["live"]["last_block_reason"] == "manual_disable"
+        # positions untouched — disable does NOT flatten (use /live/stop for that)
         assert len(reg) == 1
-        assert db.strategy_deployments.rows[0]["risk"]["live"]["armed"] is False
+        assert db.strategy_deployments.rows[0]["mode"] == "paper"
+        # live CONFIG (caps) is retained so re-enabling doesn't require re-entry
+        assert db.strategy_deployments.rows[0]["risk"]["live"]["lots"] == 3
 
-    def test_disarm_missing_deployment_404(self, monkeypatch):
+    def test_disable_missing_deployment_404(self, monkeypatch):
         from fastapi import HTTPException
         db = FakeDB()
         _install(monkeypatch, db)
         with pytest.raises(HTTPException) as ei:
-            asyncio.run(dep.disarm_deployment_live("nope"))
+            asyncio.run(dep.disable_deployment_live("nope"))
         assert ei.value.status_code == 404
 
 
@@ -381,10 +402,10 @@ class TestDisarm:
 # ===========================================================================
 
 class TestStop:
-    def test_stop_squares_only_this_deployments_positions_and_disarms(self, monkeypatch):
+    def test_stop_squares_only_this_deployments_positions_disables_and_pauses(self, monkeypatch):
         db = FakeDB()
-        d = _deployment()
-        d["risk"]["live"] = {"armed": True, "lots": 3}
+        d = _deployment(mode="live")
+        d["risk"]["live"] = {"lots": 3}
         db.strategy_deployments.rows.append(d)
         reg = LiveMonitorRegistry()
         reg.register(key="o1", tsym="NIFTY25000CE", exch="NFO", qty=65, prd="I",
@@ -396,10 +417,15 @@ class TestStop:
         reg, squared = _install(monkeypatch, db, registry=reg)
         out = asyncio.run(dep.stop_deployment_live("dep-1"))
         assert squared == ["NIFTY25000CE"]              # ONLY this deployment
-        assert out["disarmed"] is True
+        assert out["disabled"] is True
+        assert out["paused"] is True
         assert "NIFTY25000CE" in out["squared_tsyms"]
-        assert db.strategy_deployments.rows[0]["risk"]["live"]["armed"] is False
-        assert db.strategy_deployments.rows[0]["risk"]["live"]["disarmed_reason"] == "manual_stop"
+        # mode reverts to paper AND status is authoritatively PAUSED — an ACTIVE
+        # live deployment whose positions were just squared must not re-enter on
+        # the next confirmed signal.
+        assert db.strategy_deployments.rows[0]["mode"] == "paper"
+        assert db.strategy_deployments.rows[0]["status"] == "PAUSED"
+        assert db.strategy_deployments.rows[0]["risk"]["live"]["last_block_reason"] == "manual_stop"
         # the other deployment's position is still registered
         assert reg.get("o2") is not None
         assert reg.get("o1") is None                     # this one removed after square
@@ -409,8 +435,8 @@ class TestStop:
         loop: status→CLOSED + realized_pnl from the entry's last broker mark,
         linked by norenordno."""
         db = FakeDB()
-        d = _deployment()
-        d["risk"]["live"] = {"armed": True, "lots": 3}
+        d = _deployment(mode="live")
+        d["risk"]["live"] = {"lots": 3}
         db.strategy_deployments.rows.append(d)
         # OPEN live_trades doc for this deployment, keyed by norenordno "o1".
         db.live_trades.rows.append({
@@ -431,16 +457,19 @@ class TestStop:
         assert row["exit_reason"] == "manual_stop"
         assert row["realized_pnl"] == (130.0 - 100.0) * 65   # +1950 long-only buy
 
-    def test_stop_no_positions_still_disarms(self, monkeypatch):
+    def test_stop_no_positions_still_disables_and_pauses(self, monkeypatch):
         db = FakeDB()
-        d = _deployment()
-        d["risk"]["live"] = {"armed": True}
+        d = _deployment(mode="live")
+        d["risk"]["live"] = {}
         db.strategy_deployments.rows.append(d)
         reg, squared = _install(monkeypatch, db)
         out = asyncio.run(dep.stop_deployment_live("dep-1"))
         assert squared == []
-        assert out["disarmed"] is True
+        assert out["disabled"] is True
+        assert out["paused"] is True
         assert out["squared_tsyms"] == []
+        assert db.strategy_deployments.rows[0]["mode"] == "paper"
+        assert db.strategy_deployments.rows[0]["status"] == "PAUSED"
 
     def test_stop_missing_deployment_404(self, monkeypatch):
         from fastapi import HTTPException
@@ -484,8 +513,8 @@ class TestStopCancelsOco:
         """A deployed entry carrying oco_al_id="OCO1" → stopping the deployment
         cancels the resting broker OCO via client.cancel_oco("OCO1")."""
         db = FakeDB()
-        d = _deployment()
-        d["risk"]["live"] = {"armed": True, "lots": 3}
+        d = _deployment(mode="live")
+        d["risk"]["live"] = {"lots": 3}
         db.strategy_deployments.rows.append(d)
         reg = LiveMonitorRegistry()
         reg.register(key="o1", tsym="NIFTY25000CE", exch="NFO", qty=65, prd="I",
@@ -502,8 +531,8 @@ class TestStopCancelsOco:
     def test_stop_without_oco_al_id_does_not_cancel(self, monkeypatch):
         """An entry with NO oco_al_id → cancel_oco is never called."""
         db = FakeDB()
-        d = _deployment()
-        d["risk"]["live"] = {"armed": True, "lots": 3}
+        d = _deployment(mode="live")
+        d["risk"]["live"] = {"lots": 3}
         db.strategy_deployments.rows.append(d)
         reg = LiveMonitorRegistry()
         reg.register(key="o1", tsym="NIFTY25000CE", exch="NFO", qty=65, prd="I",
@@ -518,10 +547,10 @@ class TestStopCancelsOco:
         assert "NIFTY25000CE" in out["squared_tsyms"]
 
     def test_stop_all_cancels_resting_oco_for_flattened_position(self, monkeypatch):
-        """stop-all flattens armed live deployments and cancels each resting OCO."""
+        """stop-all flattens mode="live" deployments and cancels each resting OCO."""
         db = FakeDB()
-        armed = _deployment(dep_id="dep-1")
-        armed["risk"]["live"] = {"armed": True, "lots": 3}
+        armed = _deployment(dep_id="dep-1", mode="live")
+        armed["risk"]["live"] = {"lots": 3}
         db.strategy_deployments.rows.append(armed)
         reg = LiveMonitorRegistry()
         reg.register(key="o1", tsym="NIFTY25000CE", exch="NFO", qty=65, prd="I",
@@ -706,16 +735,16 @@ class TestStatusBatch:
 
 
 # ===========================================================================
-# stop-all (extended: paper stop-all + disarm/flatten armed live)
+# stop-all (extended: paper stop-all + disable/flatten mode="live" deployments)
 # ===========================================================================
 
 class TestStopAll:
-    def test_stop_all_disarms_and_flattens_armed_live(self, monkeypatch):
+    def test_stop_all_disables_and_flattens_live_mode_deployments(self, monkeypatch):
         db = FakeDB()
-        armed = _deployment(dep_id="dep-1")
-        armed["risk"]["live"] = {"armed": True, "lots": 3}
-        not_armed = _deployment(dep_id="dep-2")          # ACTIVE, paper-only
-        db.strategy_deployments.rows.extend([armed, not_armed])
+        live_dep = _deployment(dep_id="dep-1", mode="live")
+        live_dep["risk"]["live"] = {"lots": 3}
+        paper_dep = _deployment(dep_id="dep-2")          # ACTIVE, paper-only (no mode="live")
+        db.strategy_deployments.rows.extend([live_dep, paper_dep])
         reg = LiveMonitorRegistry()
         reg.register(key="o1", tsym="NIFTY25000CE", exch="NFO", qty=65, prd="I",
                      entry_price=100.0, state=build_monitor_state(100.0, stop_pct=50),
@@ -734,11 +763,13 @@ class TestStopAll:
         out = asyncio.run(dep.stop_all_deployments())
         # paper behaviour preserved: both ACTIVE deployments paused
         assert set(out["paused_deployment_ids"]) == {"dep-1", "dep-2"}
-        # live behaviour added: armed deployment disarmed + flattened
+        # live behaviour added: mode="live" deployment de-lived + flattened
         assert "dep-1" in out["disarmed_live_deployment_ids"]
         assert squared == ["NIFTY25000CE"]
-        assert db.strategy_deployments.rows[0]["risk"]["live"]["armed"] is False
-        # the non-armed deployment is not in the disarmed-live list
+        # `mode` (not risk.live.armed) is the authorization signal — selector +
+        # assertion both flip on it now.
+        assert db.strategy_deployments.rows[0]["mode"] == "paper"
+        # the paper-only deployment is not in the disarmed-live list
         assert "dep-2" not in out["disarmed_live_deployment_ids"]
 
 
@@ -750,8 +781,8 @@ def test_backend_exposes_live_deploy_routes():
     from tests.contract_corpus import backend_api_text
     server = backend_api_text()
     for needle in (
-        '@api.post("/deployments/{deployment_id}/live/arm")',
-        '@api.post("/deployments/{deployment_id}/live/disarm")',
+        '@api.post("/deployments/{deployment_id}/live/enable")',
+        '@api.post("/deployments/{deployment_id}/live/disable")',
         '@api.post("/deployments/{deployment_id}/live/stop")',
         '@api.get("/deployments/{deployment_id}/live/status")',
         '@api.get("/deployments/live/status")',

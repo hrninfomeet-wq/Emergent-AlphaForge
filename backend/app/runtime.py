@@ -113,14 +113,13 @@ def feed_supervisor_state() -> Dict[str, Any]:
 
 # ---------------------------------------------------------------------------
 # Live software exit guard (margin-free SL/TP/trailing) — replaces the always-
-# margin-rejected resting broker SL. OFFLINE-FIRST: the guard runs + detects +
-# LOGS breaches, but only TRANSMITS a real square when LIVE_GUARD_ARMED=1, so the
-# operator can validate it tracks correctly before arming real auto-exits.
+# margin-rejected resting broker SL. The guard ALWAYS TRANSMITS: a deployed
+# strategy's stop/target/trailing exits are part of the strategy, not an optional
+# extra, and the old LIVE_GUARD_ARMED env gate created a genuinely dangerous split
+# where real entries opened but automated exits only logged. Removed by explicit
+# user decision (see DEVELOPER_GUIDE §E); the resting broker OCO remains the
+# PC-down backstop underneath.
 # ---------------------------------------------------------------------------
-
-def _live_guard_armed() -> bool:
-    import os
-    return os.environ.get("LIVE_GUARD_ARMED", "0").strip().lower() in ("1", "true", "yes", "on")
 
 
 async def _live_token_doc() -> Optional[Dict[str, Any]]:
@@ -148,19 +147,12 @@ async def _live_guard_client_factory():
 
 
 async def _live_guard_square_fn(client, position, *, reason):
-    """Margin-safe square via auto_square.square_position — GATED by LIVE_GUARD_ARMED.
+    """Margin-safe square via auto_square.square_position. ALWAYS TRANSMITS.
 
-    When NOT armed (default), it logs the intended square and returns a dry-run
-    result WITHOUT transmitting, so the operator can confirm the guard would have
-    squared the right position at the right level before enabling real auto-exits.
+    No env gate: an automated exit that only logs would leave a real position open
+    past its stop. Failures surface through square_position's own result contract
+    (and the guard's retry/escalation path), never as a silent no-op.
     """
-    if not _live_guard_armed():
-        logging.getLogger(__name__).warning(
-            "LIVE GUARD (dry-run): WOULD square %s reason=%s netqty=%s lp=%s "
-            "— set LIVE_GUARD_ARMED=1 to transmit",
-            position.get("tsym"), reason, position.get("netqty"), position.get("lp"),
-        )
-        return {"squared": False, "dry_run": True, "reason": reason, "would_square": True}
     from app.live.auto_square import square_position
     doc = await _live_token_doc()
     uid = (doc or {}).get("uid", "")
@@ -170,19 +162,14 @@ async def _live_guard_square_fn(client, position, *, reason):
 
 async def _live_guard_reprice_fn(client, position, *, band_pct, prev_ordno, prev_qty, reason):
     """Layer 2: over-sell-safe widening re-price of a resting-unfilled guard exit via
-    auto_square.reprice_exit_leg — GATED by LIVE_GUARD_ARMED (same offline-first switch
-    as the square). When NOT armed, logs the intended escalation and transmits nothing.
+    auto_square.reprice_exit_leg. ALWAYS TRANSMITS — un-gated alongside the square.
+
+    Un-gating these two together is load-bearing: leaving the escalation gated while
+    the square transmits would let a resting unfilled exit sit un-widened forever.
 
     Distinct from _live_guard_square_fn: this cancels the TRACKED prior exit, re-reads
     its fillshares, and places ONLY the confirmed remaining qty at a wider bid-anchored,
     circuit-clamped price — never over-sells."""
-    if not _live_guard_armed():
-        logging.getLogger(__name__).warning(
-            "LIVE GUARD (dry-run): WOULD re-price %s at band=%s%% (prev=%s qty=%s) "
-            "— set LIVE_GUARD_ARMED=1 to transmit",
-            position.get("tsym"), band_pct, prev_ordno, prev_qty,
-        )
-        return {"squared": False, "dry_run": True, "reason": reason}
     from app.live.auto_square import reprice_exit_leg
     return await reprice_exit_leg(
         client, position, band_pct=band_pct,

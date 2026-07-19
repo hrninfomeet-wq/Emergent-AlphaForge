@@ -86,8 +86,10 @@ def _live_autoplace_armed() -> bool:
 
 
 def _live_guard_armed() -> bool:
-    """True iff LIVE_GUARD_ARMED is set affirmative (the software-guard transmit gate)."""
-    return os.environ.get("LIVE_GUARD_ARMED", "0").strip().lower() in ("1", "true", "yes", "on")
+    """The software exit guard ALWAYS transmits — the LIVE_GUARD_ARMED env gate was
+    removed by explicit user decision. Kept as a named constant-function so the
+    deployment live-status payload keeps a stable `guard_armed` field."""
+    return True
 
 
 async def _broker_connected() -> bool:
@@ -212,7 +214,18 @@ def _live_today_counters(rows: List[Dict[str, Any]], now_utc: datetime) -> Dict[
     return {"orders": orders, "lots": lots, "realized_pnl": realized}
 
 
-class _LiveArmBody(BaseModel):
+class _LiveEnableBody(BaseModel):
+    """Deploy-time live config. This body is the SOLE writer of the live risk caps
+    and the PC-down OCO catastrophe band — the fields the governor and the resting
+    OCO read on every entry. lots / max_lots_per_day / max_concurrent are REQUIRED:
+    a live deployment without caps would sail past `_live_caps_configured`'s
+    allow-all fast path and trade unbounded.
+
+    `confirm` survives the arm-ceremony removal deliberately. It is not a per-session
+    gate — enabling live is a ONE-TIME act per deployment that persists across
+    sessions — it only stops a stray API call from flipping a deployment to real
+    money by accident.
+    """
     lots: int
     max_lots_per_day: int
     max_concurrent: int
@@ -220,6 +233,10 @@ class _LiveArmBody(BaseModel):
     catastrophe_stop_pct: Optional[float] = None
     catastrophe_target_pct: Optional[float] = None
     confirm: StrictBool = False
+
+
+#: Back-compat alias — some tests/importers reference the old name.
+_LiveArmBody = _LiveEnableBody
 
 
 async def _gather_deployment_evidence(
@@ -788,23 +805,26 @@ async def stop_all_deployments():
         latest_tick_lookup=upstox_stream_manager.latest_tick_map().get,
         reason="manual_stop_all",
     )
-    # --- Disarm + flatten every armed live deployment (new) ---
-    armed = await db.strategy_deployments.find(
-        {"risk.live.armed": True}, {"_id": 0}
+    # --- Flatten + de-live every LIVE deployment ---
+    # Selector is `mode == "live"`, NOT the old {"risk.live.armed": True}. That field
+    # no longer exists, and a stale selector here would silently match zero documents
+    # and quietly turn Stop-ALL into a no-op that flattens nothing.
+    live_deps = await db.strategy_deployments.find(
+        {"mode": "live"}, {"_id": 0}
     ).to_list(length=None)
     disarmed_live_ids: list = []
-    for d in armed:
+    for d in live_deps:
         dep_id = d["id"]
         await _square_live_positions_for_deployment(dep_id, reason="manual_stop_all")
         risk = dict(d.get("risk") or {})
         live = dict(risk.get("live") or {})
-        live["armed"] = False
-        live["disarmed_reason"] = "manual_stop_all"
-        live["disarmed_at"] = datetime.now(timezone.utc).isoformat()
+        live["disabled_at"] = datetime.now(timezone.utc).isoformat()
+        live["last_block_reason"] = "manual_stop_all"
         risk["live"] = live
         await db.strategy_deployments.update_one(
             {"id": dep_id},
-            {"$set": {"risk": risk, "updated_at": datetime.now(timezone.utc).isoformat()}},
+            {"$set": {"mode": "paper", "risk": risk,
+                      "updated_at": datetime.now(timezone.utc).isoformat()}},
         )
         disarmed_live_ids.append(dep_id)
 
@@ -848,11 +868,20 @@ async def stop_deployment(deployment_id: str):
     })
 
 
-@api.post("/deployments/{deployment_id}/live/arm")
-async def arm_deployment_live(deployment_id: str, body: _LiveArmBody):
-    """Authorize REAL-money live auto-placing for this deployment until EOD IST.
+@api.post("/deployments/{deployment_id}/live/enable")
+async def enable_deployment_live(deployment_id: str, body: _LiveEnableBody):
+    """Switch this deployment to LIVE mode — real-money execution driven by the
+    strategy's own entry/exit/SL/TP/trailing logic, with the resting broker OCO as
+    the PC-down backstop.
 
-    Guards (all must pass, else HTTPException 400/404):
+    This REPLACES the old per-session arm ceremony (removed by explicit user
+    decision). Enabling is a one-time act that persists across sessions: from here
+    on, every confirmed signal from this deployment routes to the live sink while
+    the broker is connected and it is before the 15:00 IST entry cutoff.
+
+    The preflight chain below is the SAME chain the arm route used to run. It must
+    stay here: the auto-live path re-checks none of these, so anything dropped from
+    this list stops being enforced anywhere.
       - deployment exists (404);
       - status == "ACTIVE";
       - strategy not retired;
@@ -861,71 +890,69 @@ async def arm_deployment_live(deployment_id: str, body: _LiveArmBody):
       - the LiveEngine.can_trade() is True (not halted / latched);
       - confirm is the literal boolean True (StrictBool — truthy-non-True rejected).
 
-    On pass, writes risk.live = {armed, armed_at, armed_until (15:00 IST cutoff),
-    lots, max_lots_per_day, max_concurrent, daily_loss_cap, armed_by, disarmed_reason}.
-    The user's lots value is stored verbatim — the executor clamps it to the
-    account ceiling at place time. Response carries `autoplace_armed` (the env
-    transmit gate) plus a human `note` when it is False (backend dry-run-logs).
+    On pass, sets mode="live" and writes risk.live = {lots, max_lots_per_day,
+    max_concurrent, daily_loss_cap, catastrophe_stop_pct/target_pct, enabled_at,
+    enabled_by}. The user's lots value is stored verbatim — the executor clamps it
+    to the account ceiling at place time. Response carries `autoplace_armed` (the
+    env transmit gate, the one remaining master switch) plus a human `note` when it
+    is False (backend dry-run-logs).
+
+    NOTE there is deliberately NO "cannot enable after 15:00" check: unlike an arm,
+    a live deployment is not scoped to the current session, so enabling in the
+    evening simply means it goes live at the next session's open.
     """
     if body.confirm is not True:
-        raise HTTPException(400, "Arming live auto-placing requires confirm=True (literal boolean).")
+        raise HTTPException(400, "Enabling live execution requires confirm=True (literal boolean).")
+    if int(body.lots) < 1 or int(body.max_lots_per_day) < 1 or int(body.max_concurrent) < 1:
+        raise HTTPException(
+            400,
+            "lots, max_lots_per_day and max_concurrent must all be >= 1 — a live "
+            "deployment without caps would trade unbounded.",
+        )
     db = get_db()
     deployment = await db.strategy_deployments.find_one({"id": deployment_id}, {"_id": 0})
     if not deployment:
         raise HTTPException(404, "Deployment not found")
     if str(deployment.get("status") or "").upper() != "ACTIVE":
-        raise HTTPException(400, "Deployment must be ACTIVE to arm live auto-placing.")
+        raise HTTPException(400, "Deployment must be ACTIVE to enable live execution.")
     sid = str(deployment.get("strategy_id") or "")
     # local import avoids a circular dependency between the two routers
     from app.routers.strategies_admin import is_retired
     if sid and await is_retired(sid):
-        raise HTTPException(409, f"Strategy {sid} is retired — un-retire it before arming live.")
+        raise HTTPException(409, f"Strategy {sid} is retired — un-retire it before going live.")
     if _is_drift_paused(deployment):
-        raise HTTPException(400, "Deployment is paused for strategy source drift — re-pin it before arming.")
+        raise HTTPException(400, "Deployment is paused for strategy source drift — re-pin it before going live.")
     if not await _broker_connected():
-        raise HTTPException(400, "Flattrade not connected — complete OAuth before arming live.")
+        raise HTTPException(400, "Flattrade not connected — complete OAuth before going live.")
     try:
         ok, reason = await _live_l3_engine().can_trade()
     except Exception:
         ok, reason = False, "engine_unavailable"
     if ok is not True:
-        raise HTTPException(400, f"Live engine cannot trade ({reason}) — clear the halt/latch before arming.")
+        raise HTTPException(400, f"Live engine cannot trade ({reason}) — clear the halt/latch before going live.")
 
-    from app.live.mode import armed_until_today_ist
     now = _utcnow()
-    armed_until = armed_until_today_ist(now)
-    # Reject a born-expired arm: a live arm covers the CURRENT session and expires at
-    # 15:00 IST. Arming past that cutoff (e.g. an evening session) would write an arm
-    # that is already expired and would never place — fail loudly, don't silently no-op.
-    if now >= datetime.fromisoformat(armed_until):
-        ist_now = (now + timedelta(hours=5, minutes=30)).strftime("%H:%M")
-        raise HTTPException(
-            400,
-            f"Cannot arm after 15:00 IST — a live arm covers the current session and "
-            f"expires at 15:00 IST, but it is now {ist_now} IST. Arm during market hours "
-            f"(09:25–14:50 IST).",
-        )
     live = {
-        "armed": True,
-        "armed_at": now.isoformat(),
-        "armed_until": armed_until,
         "lots": int(body.lots),
         "max_lots_per_day": int(body.max_lots_per_day),
         "max_concurrent": int(body.max_concurrent),
         "daily_loss_cap": (float(body.daily_loss_cap) if body.daily_loss_cap is not None else None),
         "catastrophe_stop_pct": body.catastrophe_stop_pct,
         "catastrophe_target_pct": body.catastrophe_target_pct,
-        "armed_by": "user",
-        "disarmed_reason": None,
+        "enabled_at": now.isoformat(),
+        "enabled_by": "user",
+        "last_block_reason": None,
     }
     # Read-modify-write of the whole risk dict: set risk.live without clobbering
     # risk.sizing / risk.exit_controls / etc. (the FakeDB test harness applies a
     # single-level $set; production Mongo handles a full-risk $set the same way).
+    # risk.live survives the arm removal as a pure CONFIG sub-doc — it no longer
+    # carries any authorization field; `mode` alone authorizes.
     risk = dict(deployment.get("risk") or {})
     risk["live"] = live
     await db.strategy_deployments.update_one(
         {"id": deployment_id},
-        {"$set": {"risk": risk, "updated_at": now.isoformat()}},
+        {"$set": {"mode": "live", "risk": risk, "updated_at": now.isoformat()}},
     )
     autoplace = _live_autoplace_armed()
     out = {**live, "autoplace_armed": autoplace}
@@ -944,24 +971,34 @@ async def arm_deployment_live(deployment_id: str, body: _LiveArmBody):
     return serialize_doc(out)
 
 
-@api.post("/deployments/{deployment_id}/live/disarm")
-async def disarm_deployment_live(deployment_id: str):
-    """Disarm a deployment's live auto-placing (does NOT flatten open positions)."""
+@api.post("/deployments/{deployment_id}/live/disable")
+async def disable_deployment_live(deployment_id: str):
+    """Take a deployment OUT of live mode (does NOT flatten open positions).
+
+    This is the "stop placing new real orders but leave what's open alone" action —
+    the successor to disarm. The deployment reverts to `paper`, so its signals go
+    back to the paper sink exactly as an unarmed live deployment used to. Open live
+    positions stay registered with the guard and keep their stop/target/trail and
+    the resting OCO; use /live/stop to flatten them.
+
+    The live CONFIG (risk.live caps + catastrophe band) is retained so re-enabling
+    doesn't require re-entering it.
+    """
     db = get_db()
     deployment = await db.strategy_deployments.find_one({"id": deployment_id}, {"_id": 0})
     if not deployment:
         raise HTTPException(404, "Deployment not found")
+    now_iso = datetime.now(timezone.utc).isoformat()
     risk = dict(deployment.get("risk") or {})
     live = dict(risk.get("live") or {})
-    live["armed"] = False
-    live["disarmed_reason"] = "manual"
-    live["disarmed_at"] = datetime.now(timezone.utc).isoformat()
+    live["disabled_at"] = now_iso
+    live["last_block_reason"] = "manual_disable"
     risk["live"] = live
     await db.strategy_deployments.update_one(
         {"id": deployment_id},
-        {"$set": {"risk": risk, "updated_at": datetime.now(timezone.utc).isoformat()}},
+        {"$set": {"mode": "paper", "risk": risk, "updated_at": now_iso}},
     )
-    return serialize_doc(live)
+    return serialize_doc({"deployment_id": deployment_id, "mode": "paper", "live": live})
 
 
 @api.post("/deployments/{deployment_id}/live/stop")
@@ -979,21 +1016,26 @@ async def stop_deployment_live(deployment_id: str):
     if not deployment:
         raise HTTPException(404, "Deployment not found")
     squared = await _square_live_positions_for_deployment(deployment_id, reason="manual_stop")
+    now_iso = datetime.now(timezone.utc).isoformat()
     risk = dict(deployment.get("risk") or {})
     live = dict(risk.get("live") or {})
-    live["armed"] = False
-    live["disarmed_reason"] = "manual_stop"
-    live["disarmed_at"] = datetime.now(timezone.utc).isoformat()
+    live["disabled_at"] = now_iso
+    live["last_block_reason"] = "manual_stop"
     risk["live"] = live
+    # Flatten AND take it out of live AND pause it. Dropping out of live mode alone
+    # would not be enough: an ACTIVE live deployment whose positions were just
+    # squared would re-enter on the very next confirmed signal. status=PAUSED is the
+    # authoritative stop — evaluate_all only iterates {"status": "ACTIVE"}.
     await db.strategy_deployments.update_one(
         {"id": deployment_id},
-        {"$set": {"risk": risk, "updated_at": datetime.now(timezone.utc).isoformat()}},
+        {"$set": {"mode": "paper", "status": "PAUSED", "risk": risk, "updated_at": now_iso}},
     )
     return serialize_doc({
         "deployment_id": deployment_id,
         "squared_tsyms": squared,
         "squared_count": len(squared),
-        "disarmed": True,
+        "disabled": True,
+        "paused": True,
         "live": live,
     })
 

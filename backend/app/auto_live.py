@@ -307,8 +307,12 @@ async def auto_live_trade_for_signal(
             stored = await db.strategy_deployments.find_one({"id": dep_id})
             risk = dict((stored or deployment).get("risk") or {})
             live = dict(risk.get("live") or {})
-            live["armed"] = False
-            live["disarmed_reason"] = "daily_loss"
+            # `status: "PAUSED"` in the same write below is what actually stops
+            # re-entry — evaluate_all only iterates {"status": "ACTIVE"}. The old
+            # `armed = False` write was the belt to that braces; with the arm gone,
+            # this field is audit-only and must never be read as authorization.
+            live["last_block_reason"] = "daily_loss"
+            live["disabled_at"] = datetime.now(timezone.utc).isoformat()
             risk["live"] = live
             await db.strategy_deployments.update_one(
                 {"id": dep_id},

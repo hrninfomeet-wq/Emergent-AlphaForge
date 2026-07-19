@@ -440,36 +440,32 @@ def test_select_exch_mismatch_still_matches_sole_tsym():
 # gate-split — compute_arm_state flags real-entries + dry-run-exits loudly
 # ---------------------------------------------------------------------------
 
-def test_gate_split_warns_on_autoplace_without_guard():
-    st = compute_arm_state(
-        mode_doc={"mode": "PAPER"}, connected=True,
-        autoplace_armed=True, guard_armed=False, armed_deployment_count=1)
-    assert st["exit_gap"] is True
-    assert st["warning"] and "DRY-RUN" in st["warning"]
-    assert st["would_transmit_entry"] is True
-    assert st["would_transmit_exit"] is False
+def test_gate_split_cannot_occur_in_any_configuration():
+    """Audit L20 regression pin, strengthened.
 
+    L20 was the DANGEROUS SPLIT: LIVE_AUTOPLACE_ARMED=1 with LIVE_GUARD_ARMED=0 —
+    real automated entries opening while the unattended guard only LOGGED its
+    squares, leaving the broker OCO as the sole automated backstop.
 
-def test_no_gate_split_when_guard_armed():
-    st = compute_arm_state(
-        mode_doc={"mode": "PAPER"}, connected=True,
-        autoplace_armed=True, guard_armed=True, armed_deployment_count=1)
-    assert st["exit_gap"] is False
-    assert st["warning"] is None
-
-
-def test_no_gate_split_when_nothing_armed():
-    st = compute_arm_state(
-        mode_doc={"mode": "PAPER"}, connected=True,
-        autoplace_armed=True, guard_armed=False, armed_deployment_count=0)
-    assert st["exit_gap"] is False       # no armed deployment → no real entries
-
-
-def test_no_gate_split_when_disconnected():
-    st = compute_arm_state(
-        mode_doc={"mode": "PAPER"}, connected=False,
-        autoplace_armed=True, guard_armed=False, armed_deployment_count=1)
-    assert st["exit_gap"] is False       # broker not connected → nothing transmits
+    That gate is gone; the guard always transmits. So rather than asserting the
+    warning fires correctly, we now assert the far stronger property: there is NO
+    input combination that can produce the split at all. If someone ever re-adds an
+    exit-side gate, this test fails.
+    """
+    for connected in (True, False):
+        for autoplace in (True, False):
+            for n in (0, 1, 5):
+                st = compute_arm_state(
+                    mode_doc={"mode": "PAPER"}, connected=connected,
+                    autoplace_armed=autoplace, armed_deployment_count=n)
+                assert st["exit_gap"] is False
+                assert st["warning"] is None
+                # The only thing that can stop an auto-square is broker reachability,
+                # never a configuration flag.
+                assert st["would_transmit_exit"] is bool(connected)
+                # And entries must never transmit while exits cannot.
+                if st["would_transmit_entry"]:
+                    assert st["would_transmit_exit"] is True
 
 
 # ---------------------------------------------------------------------------
