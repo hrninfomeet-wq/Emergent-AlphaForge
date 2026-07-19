@@ -14,7 +14,30 @@ Stack: **React** (CRA + craco) frontend, **FastAPI** (Python) backend, **MongoDB
 
 ## 2. Current state
 
-**Latest (2026-07-19, v0.55.2)**: **the official Flattrade Trading MCP server now
+**Latest (2026-07-19, v0.56.0)**: **deploying a strategy in live mode IS the
+authorization — the per-deployment ARM ceremony and the `LIVE_GUARD_ARMED` env gate
+are GONE** (explicit user decision). A live deployment trades on its own strategy
+logic (entry / stop / target / trailing) with the resting broker OCO as the PC-down
+backstop; the software exit guard now **always transmits** (both the square and the
+Layer-2 re-price), which closes the old "dangerous gate split" where real entries
+opened while automated exits only logged. `LIVE_AUTOPLACE_ARMED` survives as the
+single set-once master switch for automated entries.
+
+This was **not** a deletion: `mode == "live"` did not previously exist (`ALLOWED_MODES`
+was `{signal_only, paper}`), so the arm record *was* the live marker. Authorization is
+now `mode == "live"` **and** broker connected **and** before a new explicit **15:00 IST
+entry cutoff** (`is_deployment_live_allowed`). `POST /deployments/{id}/live/enable` is
+the only writer of live mode — it runs the same seven preflight checks the arm route
+did and now **requires** the risk caps, because it is also their only writer. The caps
+governor **fails closed** for a live deployment with no caps rather than fast-pathing
+to allow-all. Emergency stops (`/live/stop`, stop-all, kill switch, daily-loss breaker)
+now write `status="PAUSED"` — the evaluator only iterates ACTIVE, so that is the real
+halt. **Read CHANGELOG 0.56.0 before touching any live seam**; it lists the four silent
+regressions a naive removal would have shipped. Suite 3489 passed, 0 failed.
+**Not market-validated** — see `phase5b-market-validation-runbook.md`, which now leads
+with this model change.
+
+**Previous (2026-07-19, v0.55.2)**: **the official Flattrade Trading MCP server now
 shares AlphaForge's single Flattrade API key** — installed and live-validated. Flattrade's
 API V2 policy allows ONE key per account (a second needs the paid registered-algo tier,
 ₹5,000+GST per exchange, only relevant above 10 orders/sec — **never push AlphaForge onto
@@ -149,7 +172,7 @@ Built subsystems (all verified present in `backend/app/`):
 - **Optimizer** — Optuna TPE / Grid / Genetic search; single vs walk-forward (honest OOS); spot vs option re-rank; capital-aware **survival gate**; exit-control search. (`optimizer.py`, `wfo.py`, `walkforward.py`, `survival.py`, `rerank_select.py`.)
 - **Strategy Library** — builtin + drop-in plugin strategies; retire / delete lifecycle; multi-provider AI authoring wizard (Anthropic + Gemini; Spec + capability-aware + full-Python tiers). (`strategies/*`, `routers/strategies_admin.py`, `ai/*`.)
 - **Paper Trading** — live-tick-driven realism (tick exits, poll-for-new-bar entries). (`paper_auto.py`, `paper_trading.py`, `live_exit_monitor.py`.)
-- **Live Trading (Flattrade)** — offline-first; L0–L3 gate chain; the executor is the **single real-order chokepoint**; margin pre-check; OCO/GTT catastrophe backstop; kill switches; per-token-latched recovery that re-runs on every fresh daily OAuth (not boot-only); exit executors resolve a raised-but-maybe-landed order against the broker book before ever blind-retrying; Greeks; ARMED auto-place only under an env gate **plus** per-deployment ARM **plus** caps **plus** EOD auto-disarm. **No resting manual-position timer** — the old 10-minute test-session auto-square was removed; 15:00 IST EOD square is the sole time-based backstop for a manual position (deployed strategies exit on their own rules + a resting OCO). (`live/executor.py`, `live/safety.py`, `live/margin.py`, `live/mode.py`, `live/arm_state.py`, `live/gtt.py`, `live/kill_switch.py`, `live/exit_claims.py`, `live/auto_square.py`, `routers/live_broker.py`.) Since v0.55.2 the daily OAuth callback also mirrors the fresh jKey into the **official Flattrade MCP** binary's session file (`live/mcp_session_sync.py`; recovery `backend/scripts/resync_mcp_session.py`) — AlphaForge remains the sole OAuth owner; see [`flattrade-mcp-integration.md`](flattrade-mcp-integration.md).
+- **Live Trading (Flattrade)** — offline-first; L0–L3 gate chain; the executor is the **single real-order chokepoint**; margin pre-check; OCO/GTT catastrophe backstop; kill switches; per-token-latched recovery that re-runs on every fresh daily OAuth (not boot-only); exit executors resolve a raised-but-maybe-landed order against the broker book before ever blind-retrying; Greeks; auto-place only under the `LIVE_AUTOPLACE_ARMED` env gate **plus** a live-mode deployment **plus** caps **plus** the 15:00 IST entry cutoff (v0.56.0 — the per-deployment ARM ceremony and its EOD auto-disarm were removed; `live/enable` carries the preflight chain and the caps). **No resting manual-position timer** — the old 10-minute test-session auto-square was removed; 15:00 IST EOD square is the sole time-based backstop for a manual position (deployed strategies exit on their own rules + a resting OCO). (`live/executor.py`, `live/safety.py`, `live/margin.py`, `live/mode.py`, `live/arm_state.py`, `live/gtt.py`, `live/kill_switch.py`, `live/exit_claims.py`, `live/auto_square.py`, `routers/live_broker.py`.) Since v0.55.2 the daily OAuth callback also mirrors the fresh jKey into the **official Flattrade MCP** binary's session file (`live/mcp_session_sync.py`; recovery `backend/scripts/resync_mcp_session.py`) — AlphaForge remains the sole OAuth owner; see [`flattrade-mcp-integration.md`](flattrade-mcp-integration.md).
 - **Premium-momentum strategy** (new) — a deployable strategy family driven by a **time-locked strike + real option-premium trigger** instead of a spot indicator: at a configurable reference time the evaluator locks the CE/PE strike from spot, captures each side's premium from fresh ticks, and the first side to cross a momentum threshold enters; exits use a new stepped X-Y trail guard mode alongside stop/target. Backtest is a self-contained option-native sim with a cost model and an honest (costs-mandatory, chronological-train/OOS-report) tuner; live/paper execution rides the *exact same* deploy/arm/guard rails as every other strategy — **there is no premium-momentum-specific arming gate, and none should ever be added** (a deliberate, explicit design decision — don't "helpfully" add one later). See [`STRATEGY_DEPLOYMENTS.md`](STRATEGY_DEPLOYMENTS.md) for the deployment-level detail. (`premium_momentum.py`, `premium_momentum_backtest.py`, `premium_momentum_tuner.py`, `premium_momentum_live.py`, `premium_lock_store.py`, `premium_pin.py`, `strategies/plugins/premium_momentum.py`, `routers/premium_momentum_routes.py`.) The shipped default (AlgoTest blueprint) parameters have **no edge** on 2026-H1 NIFTY — this is a capability, not (yet) a validated money-maker, and it has not been run through a real market-hours session. Since v0.55.0 the family also executes the **full multi-leg shape live/paper** (`leg_mode: "both"` CE+PE independent primaries; one-shot `lazy_enabled` reversal leg armed off STOP-class guard exits; `exit_time` per-deployment squares clamped below 15:00; `session_max_loss_rupees`/`session_max_profit_rupees` realized-only day-stop — live squares once, paper blocks only; `vix_min`/`vix_max` session gate) — the per-leg state lives in the same `premium_locks` doc (`pce/ppe/lce/lpe` field groups), exits/finalize/lazy-arming hang off the **live guard only** (paper exits ride the separate LiveExitMonitor and never touch locks), and restart recovery resolves leg symbols exclusively through the broker order book's `norenordno→tsym` join (never the persisted Upstox symbol — see CHANGELOG 0.55.0's review-closure note).
 
 Routers mounted under `/api`: `research`, `strategies_admin`, `warehouse`, `journals`, `deployments`, `broker`, `live_broker`. Frontend pages: Dashboard, DataWarehouse, BacktestLab, Optimizer, StrategyLibrary, SavedPresets, LiveSignals, SignalJournal, PaperTrading, LiveTrading, PreTradeChecklist, PremiumMomentum.
@@ -178,7 +201,7 @@ Frontend → `http://localhost:3000`, backend → `http://localhost:8001` (route
 ## 4. Standing conventions
 
 - **Per-changeset push approval.** Commit freely; **push only when the user explicitly says so.** Nothing is auto-pushed. On the default branch, branch first.
-- **Never place a real broker order unless explicitly armed.** The assistant never personally transmits or squares a real order. Real live entries require the env gate `LIVE_AUTOPLACE_ARMED=1` **and** a per-deployment ARM within caps; auto-squares require `LIVE_GUARD_ARMED=1`. Offline-first: unset ⇒ dry-run logs, no transmit.
+- **Never place a real broker order.** The assistant never personally transmits or squares a real order, and never flips a deployment to live mode. Real live entries require the env gate `LIVE_AUTOPLACE_ARMED=1` **and** a deployment in **live mode** (set only by the user via Deploy-to-Live) within its caps and before the 15:00 IST entry cutoff. Offline-first: `LIVE_AUTOPLACE_ARMED` unset ⇒ dry-run logs, no transmit. **Auto-squares are no longer gated** — the software guard always transmits its exits (v0.56.0).
 - **IST everywhere.** NSE session 09:15–15:30 IST with a 15:00 square-off; the system is **holiday-aware** (`nse_calendar.py`).
 - **Verify India-specific facts against the code** — lot sizes and expiry cadence live in `instruments.py` / `nse_calendar.py` / `dte.py` and have rotated over time; do not hard-code from memory.
 - **Never commit** `.env`, tokens, broker creds, or any credentials file.

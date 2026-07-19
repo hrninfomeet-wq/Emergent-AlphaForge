@@ -1,4 +1,4 @@
-# AI-agent takeover prompt (as of v0.55.2, 2026-07-19)
+# AI-agent takeover prompt (as of v0.56.0, 2026-07-19)
 
 _Copy-paste the block below as the first message to a new AI agent taking over this repo.
 It is self-contained; keep it in sync when the app state changes materially._
@@ -10,7 +10,7 @@ research + forward-test + live-execution app for Indian index options (NIFTY / B
 SENSEX). Repo: `Emergent-AlphaForge` (GitHub: `hrninfomeet-wq/Emergent-AlphaForge`).
 React (CRA) frontend :3000, FastAPI backend :8001 (all routes under `/api`), MongoDB
 (motor), Docker Compose. **Upstox** = market data; **Flattrade** (Noren/PiConnect) =
-live broker. This app can place REAL-MONEY orders when armed — treat every change to
+live broker. This app can place REAL-MONEY orders — treat every change to
 `backend/app/live/`, the deployment/guard/recovery seams, or the broker-token path as
 safety-critical.
 
@@ -21,11 +21,13 @@ safety-critical.
    warehouse model, India rules, **Gotchas (§H — read fully; every item was paid for)**.
 3. `docs/ARCHITECTURE.md` (module map, Mongo collections, L0–L3 gate chain) and
    `docs/STRATEGY_DEPLOYMENTS.md` (deployment/arm/guard model) as needed.
-4. `CHANGELOG.md` top entries (0.53.x → 0.55.2) for how the current state was reached.
+4. `CHANGELOG.md` top entries (0.53.x → 0.56.0) for how the current state was reached.
+   **0.56.0 is mandatory reading before touching any live seam** — it removed the ARM
+   ceremony and lists four silent regressions a naive removal would have shipped.
 5. `docs/flattrade-mcp-integration.md` **before touching the broker token path or using
    the Flattrade MCP tools** — the account is shared with a separate MCP server now.
 
-## Where the app stands (v0.55.2)
+## Where the app stands (v0.56.0)
 
 All subsystems are built and integrated on `main` (sole branch): data warehouse,
 Backtest Lab, Optimizer (honest OOS + survival gate), Strategy Library with AI authoring,
@@ -33,12 +35,22 @@ paper trading, gated live execution with a layered safety stack (confirm-flat gu
 switches, per-token recovery), the premium-momentum strategy family including Phase 5B
 multi-leg live/paper execution, and Flattrade-MCP session sharing.
 
-- **Host test baseline: 3486 passed, 4 xfailed** — `.venv\Scripts\python.exe -m pytest tests -q`
+**The live authorization model changed in v0.56.0.** Deploying a strategy in LIVE mode is
+itself the authorization — there is no per-deployment ARM and no `LIVE_GUARD_ARMED`.
+Authorization = `deployment.mode == "live"` AND broker connected AND before the 15:00 IST
+entry cutoff (`backend/app/live/mode.py::is_deployment_live_allowed`).
+`POST /deployments/{id}/live/enable` is the ONLY writer of live mode; it carries the seven
+preflight checks and REQUIRES the risk caps (it is also their only writer). The software
+exit guard ALWAYS transmits. `LIVE_AUTOPLACE_ARMED` remains the single master switch for
+automated entries.
+
+- **Host test baseline: 3489 passed, 4 xfailed** — `.venv\Scripts\python.exe -m pytest tests -q`
   from the repo root. Motor/route tests run **inside the backend container** instead
   (`docker cp tests/. alphaforge_backend:/app/tests` then `docker exec -w /app ... pytest`).
   Confirm this baseline on your machine before changing anything.
 - **Git state:** `origin/main` = `10f68d1` (v0.55.1). Local `main` is **ahead** with the
-  v0.55.2 Flattrade-MCP work (`f67f463`) plus docs commits — **unpushed by design**.
+  v0.55.2 Flattrade-MCP work (`f67f463`) and the v0.56.0 ARM-removal work plus docs
+  commits — **unpushed by design**.
   Always run `git log origin/main..main --oneline` before describing "current state".
 - **Nothing since 2026-07-12 has run in a real market-hours session.** The first paper
   validation follows `docs/phase5b-market-validation-runbook.md` — read it before
@@ -47,9 +59,9 @@ multi-leg live/paper execution, and Flattrade-MCP session sharing.
 
 ## Non-negotiable standing rules (user decisions — do not relitigate)
 
-- **Never place, square, modify or arm a real order yourself** — through the app OR the
-  Flattrade MCP's write tools. Arming is exclusively the user's manual act
-  (`LIVE_AUTOPLACE_ARMED` / `LIVE_GUARD_ARMED` + per-deployment ARM).
+- **Never place, square, modify or authorize a real order yourself** — through the app OR
+  the Flattrade MCP's write tools, and never flip a deployment to live mode. Going live is
+  exclusively the user's manual act (`LIVE_AUTOPLACE_ARMED` + Deploy-to-Live).
 - **Never call the Flattrade MCP's `login` / `logout` tools.** One API key ⇒ one redirect
   URI (AlphaForge owns it) ⇒ the MCP cannot OAuth on its own, and Flattrade is
   last-login-wins so a second login would silently kill AlphaForge's live session.
@@ -60,9 +72,12 @@ multi-leg live/paper execution, and Flattrade-MCP session sharing.
   The user has declined it, and AlphaForge is orders of magnitude below that threshold.
 - **Commit freely at green milestones; push ONLY on explicit user request.**
 - **Never commit** `.env`, tokens, credentials, or MCP client configs.
-- **Do not add any new live-arming gate** — ride the existing arm/gate/cap chain
-  (`DEVELOPER_GUIDE.md` §E). Extra "safety" gates were explicitly removed once on user
-  request. Propose, don't impose.
+- **Do not add any new live-arming gate** — ride the existing mode/env/cap chain
+  (`DEVELOPER_GUIDE.md` §E). Extra "safety" gates have now been explicitly removed TWICE on
+  user request (premium-momentum's spec amendment, then the whole ARM ceremony in 0.56.0).
+  Propose, don't impose.
+- **Never restore an authorization field to `risk.live`.** It is a pure CONFIG sub-doc now
+  (caps + catastrophe band). `mode` authorizes; anything else is a second source of truth.
 - **The premium-momentum edge verdict stands**: the family FAILED its pre-registered gate
   (`docs/PREMIUM_MOMENTUM_EDGE_VERDICT_2026-07.md`). 5B exists as a user-decided pure
   capability. Don't propose premium-momentum tuning work unless that doc's pre-registered
@@ -100,7 +115,16 @@ multi-leg live/paper execution, and Flattrade-MCP session sharing.
   must stay time-windowed or expiry-constrained.
 - Test fakes for broker interfaces must model the **real two-symbol-space world** (Upstox
   vs Noren strings deliberately different) — self-consistent fakes have hidden production
-  bugs here before.
+  bugs here before. Fakes must also APPLY the query they are given, not hardcode one
+  selector's semantics: a fake that assumes the old filter keeps passing against a selector
+  that matches nothing in production (found in the kill-switch tests, 0.56.0).
+- **A Mongo selector over a field that nothing writes any more returns empty SILENTLY.**
+  When a field's writer is removed, grep every selector, projection and index that reads it.
+  In 0.56.0 four such selectors would have disabled Stop-ALL's flatten, the kill switch's
+  third leg, the arm-state count, and the strategy-delete blast-radius gate.
+- **Emergency stops must write `status="PAUSED"`.** `evaluate_all` only iterates
+  `{"status": "ACTIVE"}`, so PAUSED is the authoritative halt; flattening alone lets the
+  next confirmed signal re-enter.
 
 ## Tips & tricks learned building this (save yourself the rediscovery)
 
@@ -159,7 +183,7 @@ multi-leg live/paper execution, and Flattrade-MCP session sharing.
    mandatory, untouched holdout, kill criteria written BEFORE running).
 
 Start by reading the docs in the order above, run the host test suite to confirm the
-**3486 passed / 4 xfailed** baseline on your machine, check `git log origin/main..main`,
+**3489 passed / 4 xfailed** baseline on your machine, check `git log origin/main..main`,
 and give the user a short readback of the current state plus your plan for their first
 request before changing anything.
 

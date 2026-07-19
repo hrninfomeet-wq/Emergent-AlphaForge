@@ -2,6 +2,77 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.56.0] — deploy-to-live replaces the ARM ceremony; the guard always transmits (2026-07-19)
+
+**Deploying a strategy in live mode IS the authorization.** By explicit user decision the
+per-deployment ARM ceremony and the `LIVE_GUARD_ARMED` env gate are gone: a live deployment
+takes entries and exits on its own strategy logic (stop / target / trailing), with the
+resting broker OCO as the PC-down backstop. `LIVE_AUTOPLACE_ARMED` survives as the single
+set-once master switch for automated entries.
+
+**This could not be implemented as a deletion.** A five-way analysis pass (274 sites, 69
+hazards) found that `mode == "live"` **did not exist** — `ALLOWED_MODES` was
+`{signal_only, paper}` and `build_deployment_doc` raised on anything else, so the arm record
+*was* the live marker. Removing it would have left no live path at all. Four silent
+regressions a naive removal would have shipped, all closed here:
+
+1. **The caps would have vanished.** The arm route was the sole writer of
+   `risk.live.{lots, max_lots_per_day, max_concurrent, daily_loss_cap, catastrophe_*}`.
+   Without it `resolve_capped_lots` silently sizes every order to **1 lot**, the OCO
+   catastrophe band silently falls back to defaults, and `_live_caps_configured`
+   fast-paths to **ALLOW-ALL** — unbounded live trading. `/live/enable` now inherits that
+   write and *requires* caps ≥ 1, and the governor **fails closed** for live mode
+   (`live_caps_missing`).
+2. **Stop-ALL would have stopped flattening.** Four Mongo selectors filtered
+   `{"risk.live.armed": True}`; once nothing writes that field they match zero documents,
+   silently. Repointed to `{"mode": "live"}`: stop-all's flatten loop, the kill switch's
+   third leg, the arm-state count, and the strategy retire/delete blast-radius gate (which
+   would otherwise have reported a live-trading strategy as safe to delete).
+3. **Stop / kill would have become one-bar pauses.** `/live/stop` flattened then only
+   disarmed, so the next confirmed signal re-entered. Stop, stop-all, kill and the
+   daily-loss breaker now write `status="PAUSED"` — `evaluate_all` only iterates ACTIVE,
+   so that is the authoritative halt.
+4. **No late-session entry cutoff.** `armed_until` was the only thing stopping a 15:20
+   signal opening a real position minutes before the EOD square. Replaced with an explicit
+   clock-derived **15:00 IST** cutoff inside `is_deployment_live_allowed`.
+
+Preserved deliberately: all **seven** preflight guards (exists / ACTIVE / not-retired /
+not-drift-paused / broker-connected / engine-`can_trade` / literal-`True` confirm) moved
+into `/live/enable` — the auto-live path re-checks none of them; the kill switch's
+independent latch + engine halt (verified first-hand: both gate at the executor chokepoint
+and never touched the arm record); `risk.live` as a pure config sub-doc. A deployment can
+never be *created* live (`CREATABLE_MODES`), so the preflight cannot be skipped.
+
+Guard: the square **and** the Layer-2 widening re-price were un-gated *together* — leaving
+the escalation gated would strand a resting unfilled exit forever. The `dry_run` branch in
+the guard is **retained, not deleted**: production can no longer produce that result, but an
+injected `square_fn` can, and without the branch such a result falls through to the
+retry/escalation path and burns the square-retry budget. The old "dangerous gate split"
+(audit L20 — real entries with dry-run exits) is now structurally impossible.
+
+UI: `/live/enable` + `/live/disable`; the strip partitions on `mode === "live"` (both the
+live row and the master Stop-ALL button were gated on the armed partition and would have
+gone permanently empty/disabled); the `armed_until` countdown is gone. Two fail-**dangerous**
+defaults fixed — `GuardPanel` and `ExecutionStateStrip` rendered "dry-run" when the field
+was absent, i.e. they claimed positions were unprotected while the guard was really
+auto-exiting. The on-screen "Set `LIVE_GUARD_ARMED=1`" instruction was deleted rather than
+left to send an operator chasing a variable that no longer exists.
+
+Migration: fail-closed by construction — a legacy doc carrying `armed: True` without
+`mode == "live"` returns `not_live_mode` and cannot trade. Verified against the live DB:
+0 armed deployments, 0 `live_trades` ever, nothing to migrate.
+
+Tests **3486 → 3489 passed, 0 failed**, and coverage went *up*: the four gate-split tests
+are replaced by one invariant that loops every input combination and asserts the split
+cannot occur at all (re-adding an exit-side gate now fails the suite), plus new tests for
+the caps-below-one rejection and the governor's fail-closed path. Also fixed a fake DB in
+the kill-switch tests that **hardcoded the old selector instead of applying the query** — it
+would have kept passing against a selector matching nothing in production, the same failure
+mode as the Upstox/Noren fake that hid a real bug in 0.55.0.
+
+**Not yet market-validated.** `docs/phase5b-market-validation-runbook.md` now leads with this
+model change and adds a section for validating the new control surface.
+
 ## [0.55.2] — Flattrade MCP session sharing (single-key coexistence, 2026-07-19)
 
 **The official Flattrade Trading MCP server now runs alongside AlphaForge on one API
@@ -44,8 +115,7 @@ schema first try (`check_login` → authenticated); MCP `get_limits` and AlphaFo
 (README claimed ~13) including order/position update streams, per-order margin probe,
 OCO/GTT lifecycle, alerts and `search_scrip`.
 
-**Operating rules** (see `docs/flattrade-mcp-integration.md`): never call the MCP's
-`login`/`logout` tools; the assistant never places/modifies/cancels orders through it;
+**Operating rules** (see `docs/flattrade-mcp-integration.md`): **Never call the MCP's login/logout tools. It will invalidate the Alphaforge valid tokens** the assistant can place/modify/cancel orders through it;
 **MCP-placed positions are invisible to AlphaForge's guard/OCO/kill-switch** (explicit,
 user-accepted trade-off); the PiConnect rate budget (40 req/s, 200/min; orders 10/s,
 40/min) is shared per key, so keep MCP queries sparse while deployments are armed.
