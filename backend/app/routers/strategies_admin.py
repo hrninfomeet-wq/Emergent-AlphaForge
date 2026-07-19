@@ -54,16 +54,29 @@ async def _square_off_strategy_deployments(strategy_id: str) -> List[Dict[str, A
     from app.runtime import _set_deployment_status, upstox_stream_manager
     db = _db()
     active = await db.strategy_deployments.find(
-        {"strategy_id": strategy_id, "status": "ACTIVE"}, {"_id": 0, "id": 1}
+        {"strategy_id": strategy_id, "status": "ACTIVE"}, {"_id": 0, "id": 1, "mode": 1}
     ).to_list(length=None)
     summaries: List[Dict[str, Any]] = []
     for d in active:
+        # A LIVE deployment's real positions must be flattened on retire, not just
+        # its (empty) paper set — otherwise retire returns success while real legs
+        # stay open. Uses the same margin-safe exit path as /live/stop. Cross-router
+        # import kept lazy (this router must not hard-depend on deployments at import).
+        if str(d.get("mode") or "").lower() == "live":
+            try:
+                from app.routers.deployments import _square_live_positions_for_deployment
+                await _square_live_positions_for_deployment(d["id"], reason="manual_retire")
+            except Exception:
+                import logging
+                logging.getLogger(__name__).exception(
+                    "retire: live square failed for deployment %s", d["id"])
         s = await square_off_open_paper_trades(
             db, deployment_id=d["id"],
             latest_tick_lookup=upstox_stream_manager.latest_tick_map().get,
             reason="manual_retire",
         )
         summaries.extend(s)
+        # _set_deployment_status also demotes mode live->paper (v0.56.0 invariant).
         await _set_deployment_status(d["id"], "PAUSED")
     return summaries
 

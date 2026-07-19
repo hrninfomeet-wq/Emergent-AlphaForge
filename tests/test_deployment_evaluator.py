@@ -699,6 +699,7 @@ async def test_evaluator_auto_pauses_on_strategy_source_drift(monkeypatch):
     candles = make_candles(n=80)
     deployment = make_deployment()
     deployment["strategy_source_sha"] = "PINNED_SHA_OLD"
+    deployment["mode"] = "live"   # a LIVE deployment that drifts (v0.56.0 pin)
     seed_db(db, candles=candles, deployment=deployment,
             contracts=make_contracts(), profiles=[make_profile(min_score=50)])
 
@@ -717,6 +718,10 @@ async def test_evaluator_auto_pauses_on_strategy_source_drift(monkeypatch):
     updated = db.strategy_deployments.rows[0]
     assert updated["status"] == "PAUSED"
     assert updated["drift_reason"] == "strategy_source_drift"
+    # v0.56.0 invariant: a live deployment that drifts is demoted to paper, so a
+    # subsequent re-pin (status→ACTIVE) cannot silently resume REAL trading against
+    # the changed, never-live-validated code that triggered the drift.
+    assert updated["mode"] == "paper"
     # No signal should have been journaled
     assert len(db.signals.rows) == 0
 

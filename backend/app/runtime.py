@@ -1763,6 +1763,20 @@ async def _set_deployment_status(deployment_id: str, status: str) -> Dict[str, A
     if not doc:
         raise HTTPException(404, "Deployment not found")
     doc["status"] = status
+    # SAFETY INVARIANT (v0.56.0): `mode == "live"` is the real-money authorization,
+    # and ONLY POST /live/enable (with its preflight + caps + confirm) may produce it.
+    # Any transition OUT of ACTIVE must therefore demote a live deployment back to
+    # paper — otherwise resume/re-pin/un-retire (which set status back to ACTIVE and
+    # inspect nothing else) would silently re-authorize real trading against a
+    # deployment the operator paused, retired, or whose code drifted. Going live again
+    # requires an explicit /live/enable. This is the one place that guarantee is
+    # enforced for every current and future pause/archive caller.
+    if status != "ACTIVE" and str(doc.get("mode") or "").lower() == "live":
+        doc["mode"] = "paper"
+        _live = dict(doc.get("risk", {}).get("live") or {})
+        _live["disabled_at"] = datetime.now(timezone.utc).isoformat()
+        _live["last_block_reason"] = f"status_{status.lower()}"
+        doc.setdefault("risk", {})["live"] = _live
     doc["updated_at"] = datetime.now(timezone.utc).isoformat()
     await db.strategy_deployments.replace_one({"id": deployment_id}, doc, upsert=False)
     return doc

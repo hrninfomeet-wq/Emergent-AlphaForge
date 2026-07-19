@@ -582,9 +582,8 @@ class TestStopCancelsOco:
 class TestStatus:
     def test_status_reports_armed_caps_today_and_open_positions(self, monkeypatch):
         db = FakeDB()
-        d = _deployment()
+        d = _deployment(mode="live")   # mode=="live" is the SOLE authorization signal
         d["risk"]["live"] = {
-            "armed": True, "armed_until": "2099-01-01T09:30:00+00:00",
             "lots": 3, "max_lots_per_day": 20, "max_concurrent": 2, "daily_loss_cap": 5000.0,
         }
         db.strategy_deployments.rows.append(d)
@@ -611,8 +610,9 @@ class TestStatus:
                      deployment_id="dep-2")
         _install(monkeypatch, db, registry=reg, autoplace=True, guard_armed=True)
         out = asyncio.run(dep.deployment_live_status("dep-1"))
-        assert out["armed"] is True
-        assert out["armed_until"] == "2099-01-01T09:30:00+00:00"
+        assert out["armed"] is True          # derived from mode=="live" now
+        assert out["live_mode"] is True
+        assert out["armed_until"] is None    # dead field: nothing writes an arm expiry
         assert out["caps"]["lots"] == 3
         assert out["caps"]["max_lots_per_day"] == 20
         assert out["caps"]["max_concurrent"] == 2
@@ -650,11 +650,10 @@ class TestStatus:
 class TestStatusBatch:
     def _two_deployments(self):
         db = FakeDB()
-        a = _deployment(dep_id="dep-1")
-        a["risk"]["live"] = {"armed": True, "armed_until": "2099-01-01T09:30:00+00:00",
-                             "lots": 3, "max_lots_per_day": 20, "max_concurrent": 2,
+        a = _deployment(dep_id="dep-1", mode="live")   # mode is the SOLE live signal
+        a["risk"]["live"] = {"lots": 3, "max_lots_per_day": 20, "max_concurrent": 2,
                              "daily_loss_cap": 5000.0}
-        b = _deployment(dep_id="dep-2")  # no risk.live → unarmed defaults
+        b = _deployment(dep_id="dep-2")  # mode="paper" default → not live
         db.strategy_deployments.rows.extend([a, b])
         return db
 
@@ -771,6 +770,90 @@ class TestStopAll:
         assert db.strategy_deployments.rows[0]["mode"] == "paper"
         # the paper-only deployment is not in the disarmed-live list
         assert "dep-2" not in out["disarmed_live_deployment_ids"]
+
+
+# ===========================================================================
+# Review-fix regression pins (v0.56.0): the durable-`mode` re-authorization class.
+# Every pause/stop/retire path must demote a live deployment to paper, so a later
+# resume/re-pin/un-retire (which set status=ACTIVE and inspect nothing else) can
+# never silently re-authorize real trading. Only /live/enable may produce live.
+# ===========================================================================
+
+class TestPauseDemotesLive:
+    def test_generic_stop_flattens_live_and_demotes_to_paper(self, monkeypatch):
+        """The generic Stop button reaches live deployments in the UI. It must
+        flatten the REAL positions (not just paper) and drop mode to paper so a
+        later Resume cannot re-authorize real money."""
+        db = FakeDB()
+        d = _deployment(dep_id="dep-1", mode="live")
+        d["risk"]["live"] = {"lots": 3, "max_concurrent": 2, "daily_loss_cap": 5000.0}
+        db.strategy_deployments.rows.append(d)
+        reg = LiveMonitorRegistry()
+        reg.register(key="o1", tsym="NIFTY25000CE", exch="NFO", qty=65, prd="I",
+                     entry_price=100.0, state=build_monitor_state(100.0, stop_pct=50),
+                     deployment_id="dep-1")
+        reg, squared = _install(monkeypatch, db, registry=reg)
+        import app.runtime as _rt
+        monkeypatch.setattr(_rt, "get_db", lambda: db)
+
+        async def _no_paper(db_, **kw):
+            return []
+        monkeypatch.setattr(dep, "square_off_open_paper_trades", _no_paper)
+
+        class _Stream:
+            def latest_tick_map(self):
+                return {}
+        monkeypatch.setattr(dep, "upstox_stream_manager", _Stream())
+
+        out = asyncio.run(dep.stop_deployment("dep-1"))
+        assert squared == ["NIFTY25000CE"]              # real leg flattened
+        assert out["squared_live_count"] == 1
+        assert db.strategy_deployments.rows[0]["mode"] == "paper"   # demoted
+        assert db.strategy_deployments.rows[0]["status"] == "PAUSED"
+
+    def test_resume_after_stop_cannot_restore_live(self, monkeypatch):
+        """End-to-end of the re-authorization hole: stop a live deployment, then
+        resume it — it must come back PAPER, requiring an explicit /live/enable to
+        go live again."""
+        db = FakeDB()
+        d = _deployment(dep_id="dep-1", mode="live")
+        d["risk"]["live"] = {"lots": 3, "max_concurrent": 2, "daily_loss_cap": 5000.0}
+        db.strategy_deployments.rows.append(d)
+        reg, squared = _install(monkeypatch, db)
+        import app.runtime as _rt
+        monkeypatch.setattr(_rt, "get_db", lambda: db)
+
+        async def _no_paper(db_, **kw):
+            return []
+        monkeypatch.setattr(dep, "square_off_open_paper_trades", _no_paper)
+
+        class _Stream:
+            def latest_tick_map(self):
+                return {}
+        monkeypatch.setattr(dep, "upstox_stream_manager", _Stream())
+
+        async def _no_stream():
+            return {}
+        monkeypatch.setattr(dep, "_auto_follow_option_stream", _no_stream, raising=False)
+
+        asyncio.run(dep.stop_deployment("dep-1"))
+        asyncio.run(dep.resume_deployment("dep-1"))
+        assert db.strategy_deployments.rows[0]["status"] == "ACTIVE"
+        assert db.strategy_deployments.rows[0]["mode"] == "paper"   # NOT re-authorized
+
+    def test_enable_requires_daily_loss_cap(self, monkeypatch):
+        """A live deployment's only day-level loss halt is daily_loss_cap (the
+        deployment kill switches are paper-only), and the removal of the per-session
+        arm expiry makes exposure indefinite — so it is mandatory to go live."""
+        from fastapi import HTTPException
+        db = FakeDB()
+        db.strategy_deployments.rows.append(_deployment())
+        _install(monkeypatch, db)
+        with pytest.raises(HTTPException) as ei:
+            asyncio.run(dep.enable_deployment_live("dep-1", _enable_body(daily_loss_cap=None)))
+        assert ei.value.status_code == 400
+        with pytest.raises(HTTPException):
+            asyncio.run(dep.enable_deployment_live("dep-1", _enable_body(daily_loss_cap=0)))
 
 
 # ===========================================================================

@@ -367,6 +367,12 @@ async def evaluate_deployment_on_close(
                 {"id": deployment_id},
                 {"$set": {
                     "status": "PAUSED",
+                    # Demote a live deployment to paper on drift (v0.56.0 invariant:
+                    # only /live/enable may authorize real money). Otherwise re-pin —
+                    # which sets status back to ACTIVE and inspects nothing else —
+                    # would resume real trading against the CHANGED, never-live-
+                    # validated strategy code that triggered the drift.
+                    "mode": "paper" if str(deployment.get("mode") or "").lower() == "live" else deployment.get("mode"),
                     "updated_at": datetime.now(timezone.utc).isoformat(),
                     "drift_detected_at": datetime.now(timezone.utc).isoformat(),
                     "drift_pinned_sha": pinned_sha,
@@ -397,6 +403,11 @@ async def evaluate_deployment_on_close(
             {"id": deployment_id},
             {"$set": {
                 "status": "PAUSED",
+                # Same v0.56.0 invariant as the drift pause above (defensive here —
+                # check_deployment_kill_switches early-returns clear for non-paper
+                # mode today, but a live deployment must never survive a kill-pause
+                # still authorized).
+                "mode": "paper" if str(deployment.get("mode") or "").lower() == "live" else deployment.get("mode"),
                 "updated_at": datetime.now(timezone.utc).isoformat(),
                 "kill_switch_paused_at": datetime.now(timezone.utc).isoformat(),
                 "kill_switch_reason": kill.get("pause_reason"),

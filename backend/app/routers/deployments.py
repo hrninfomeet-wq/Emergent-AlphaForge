@@ -847,13 +847,23 @@ async def stop_all_deployments():
 
 @api.post("/deployments/{deployment_id}/stop")
 async def stop_deployment(deployment_id: str):
-    """Stop a paper deployment: square off ITS open positions, then pause it
-    (no new entries until resume). Open positions close at the live tick price
-    when the market is open, else at a flagged estimate."""
+    """Stop a deployment: square off ITS open positions, then pause it (no new
+    entries until resume). Open PAPER positions close at the live tick price when the
+    market is open, else at a flagged estimate; a LIVE deployment's real positions
+    are flattened through the same margin-safe exit path as /live/stop. Pausing also
+    demotes a live deployment back to paper (via _set_deployment_status), so a later
+    Resume cannot silently re-authorize real trading."""
     db = get_db()
     deployment = await db.strategy_deployments.find_one({"id": deployment_id}, {"_id": 0})
     if not deployment:
         raise HTTPException(404, "Deployment not found")
+    # Flatten REAL positions first if this was a live deployment — the generic Stop
+    # button reaches live deployments in the UI, and squaring only paper_trades would
+    # leave real legs open while the response claims they were closed.
+    squared_live: List[str] = []
+    if str(deployment.get("mode") or "").lower() == "live":
+        squared_live = await _square_live_positions_for_deployment(
+            deployment_id, reason="manual_stop")
     summaries = await square_off_open_paper_trades(
         db,
         deployment_id=deployment_id,
@@ -865,6 +875,8 @@ async def stop_deployment(deployment_id: str):
         **doc,
         "squared_off": summaries,
         "squared_off_count": len(summaries),
+        "squared_live_tsyms": squared_live,
+        "squared_live_count": len(squared_live),
     })
 
 
@@ -908,6 +920,20 @@ async def enable_deployment_live(deployment_id: str, body: _LiveEnableBody):
             400,
             "lots, max_lots_per_day and max_concurrent must all be >= 1 — a live "
             "deployment without caps would trade unbounded.",
+        )
+    # daily_loss_cap is MANDATORY for live. It is the only day-level realized-loss
+    # halt a live deployment has: the deployment-level kill switches
+    # (check_deployment_kill_switches / check_soft_daily_governor) are paper-only by
+    # construction. Under the old per-session ARM this was less acute — a forgotten
+    # arm auto-expired at 15:00, bounding exposure to one session — but v0.56.0 live
+    # deployments persist across sessions, so an omitted cap means indefinite
+    # unbounded daily loss. Require a positive value; the governor pauses the
+    # deployment (and demotes it to paper) when realized+unrealized breaches it.
+    if body.daily_loss_cap is None or float(body.daily_loss_cap) <= 0:
+        raise HTTPException(
+            400,
+            "daily_loss_cap (a positive rupee amount) is required to go live — it is "
+            "the only day-level loss halt a live deployment has.",
         )
     db = get_db()
     deployment = await db.strategy_deployments.find_one({"id": deployment_id}, {"_id": 0})
@@ -1099,8 +1125,12 @@ async def _live_status_payload(db: Any, deployment_id: str) -> Optional[Dict[str
             "live_status: last-entry lookup failed for %s: %s", deployment_id, exc)
 
     return {
-        "armed": bool(live.get("armed")),
-        "armed_until": live.get("armed_until"),
+        # v0.56.0: "live" is the mode, not an arm record. The legacy `armed`/
+        # `armed_until` fields are never written any more — reading them would report
+        # a genuinely-live deployment as armed:false. Report the real state instead.
+        "armed": str(deployment.get("mode") or "").lower() == "live",
+        "live_mode": str(deployment.get("mode") or "").lower() == "live",
+        "armed_until": None,
         "caps": {
             "lots": live.get("lots"),
             "max_lots_per_day": live.get("max_lots_per_day"),

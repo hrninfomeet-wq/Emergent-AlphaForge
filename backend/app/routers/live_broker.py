@@ -1634,8 +1634,12 @@ async def get_arm_state():
     try:
         from app.db import get_db
         now = datetime.now(timezone.utc)
+        # status=="ACTIVE" as well as mode=="live": a PAUSED live deployment (e.g.
+        # daily-loss breaker fired) must NOT count toward "would transmit an entry
+        # now" or the banner would read LIVE while the deployment is actually halted.
+        # (The v0.56.0 invariant demotes mode on pause, so this is also defensive.)
         cur = get_db().strategy_deployments.find(
-            {"mode": "live"}, {"_id": 0, "id": 1, "mode": 1, "risk": 1})
+            {"mode": "live", "status": "ACTIVE"}, {"_id": 0, "id": 1, "mode": 1, "risk": 1})
         for dep in await cur.to_list(length=500):
             ok, _reason = is_deployment_live_allowed(dep, now, connected=connected)
             if ok:
