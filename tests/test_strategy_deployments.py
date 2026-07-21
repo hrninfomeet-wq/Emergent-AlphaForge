@@ -181,6 +181,85 @@ def test_direct_strategy_loader_rejects_invalid_parameter(monkeypatch):
         assert "period must be <= 50" in str(exc.detail)
 
 
+class _NullableParamStrategy(StrategyBase):
+    """Mirrors premium_momentum's nullable params: a float/str whose schema
+    default is None legitimately means 'not configured'."""
+    id = "nullable_param_test"
+    name = "Nullable Param Test"
+    version = "1.0.0"
+    supported_instruments = ["NIFTY"]
+    supported_timeframes = ["1m"]
+    parameter_schema = {
+        "stop_pct": {"type": "float", "min": 10.0, "max": 40.0, "default": 20.0},
+        "target_pct": {"type": "float", "default": None},   # nullable → ride to EOD
+        "momentum_pts": {"type": "float", "default": None},  # nullable
+        "exit_time": {"type": "str", "default": None},       # nullable str
+    }
+
+
+def _nullable_registry(monkeypatch):
+    registry = StrategyRegistry()
+    registry.register(_NullableParamStrategy())
+    import app.strategies.base as strategy_base
+    monkeypatch.setattr(strategy_base, "get_registry", lambda: registry)
+    return registry
+
+
+def test_direct_loader_accepts_nullable_defaults(monkeypatch):
+    """H4: a strategy with nullable params (default None) deploys directly with
+    those params left unset — they must NOT be rejected as 'must be numeric'."""
+    _nullable_registry(monkeypatch)
+    source = asyncio.run(_load_deployment_source(
+        object(), "strategy", "nullable_param_test",
+        strategy_config={"instrument": "NIFTY", "timeframe": "1m",
+                         "params": {"stop_pct": 25.0}},
+    ))
+    assert source["params"]["stop_pct"] == 25.0
+    assert source["params"]["target_pct"] is None
+    assert source["params"]["momentum_pts"] is None
+    assert source["params"]["exit_time"] is None
+
+
+def test_direct_loader_still_validates_explicit_nullable_value(monkeypatch):
+    """A non-None value for a nullable param is still fully type/range checked."""
+    from fastapi import HTTPException
+    _nullable_registry(monkeypatch)
+    source = asyncio.run(_load_deployment_source(
+        object(), "strategy", "nullable_param_test",
+        strategy_config={"instrument": "NIFTY", "timeframe": "1m",
+                         "params": {"target_pct": 30.0}},
+    ))
+    assert source["params"]["target_pct"] == 30.0
+    # a garbage value for the nullable float is still rejected
+    try:
+        asyncio.run(_load_deployment_source(
+            object(), "strategy", "nullable_param_test",
+            strategy_config={"instrument": "NIFTY", "timeframe": "1m",
+                             "params": {"momentum_pts": "abc"}},
+        ))
+        assert False, "expected HTTPException"
+    except HTTPException as exc:
+        assert exc.status_code == 400
+        assert "momentum_pts must be numeric" in str(exc.detail)
+
+
+def test_direct_loader_still_rejects_none_for_required_param(monkeypatch):
+    """A REQUIRED param (default not None) explicitly set to None is still
+    rejected — the nullable exemption keys off the schema default being None."""
+    from fastapi import HTTPException
+    _nullable_registry(monkeypatch)
+    try:
+        asyncio.run(_load_deployment_source(
+            object(), "strategy", "nullable_param_test",
+            strategy_config={"instrument": "NIFTY", "timeframe": "1m",
+                             "params": {"stop_pct": None}},
+        ))
+        assert False, "expected HTTPException"
+    except HTTPException as exc:
+        assert exc.status_code == 400
+        assert "stop_pct must be numeric" in str(exc.detail)
+
+
 def test_forward_config_hash_covers_execution_policy_but_not_post_promotion_live_caps():
     base = {
         "strategy_id": "s", "strategy_version": "1", "strategy_source_sha": "src",

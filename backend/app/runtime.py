@@ -1725,6 +1725,18 @@ async def _load_deployment_source(
         for param_name, spec in (strategy.parameter_schema or {}).items():
             value = params.get(param_name)
             value_type = str((spec or {}).get("type") or "")
+            # A param whose SCHEMA DEFAULT is None legitimately accepts None
+            # ("not configured"): premium_momentum's nullable float/str params
+            # (momentum_pts, target_pct, lazy_*, vix_min/max, entry_cutoff,
+            # exit_time, session_max_*) would otherwise be rejected here as "must
+            # be numeric"/"non-empty text" on a direct deploy through this general
+            # validator, even though the strategy treats None as a valid unset
+            # value (release-audit finding H4). A non-nullable param (default not
+            # None) whose value is None still falls through and is rejected, and
+            # any NON-None value is still fully type/range validated below.
+            if value is None and (spec or {}).get("default") is None:
+                params[param_name] = None
+                continue
             if value_type == "bool":
                 if not isinstance(value, bool):
                     raise HTTPException(400, f"Strategy parameter {param_name} must be boolean")
