@@ -285,30 +285,23 @@ async def _live_guard_on_close(entry, exit_price, reason, result) -> None:
                                           round((_xp - _ep) * _qty, 2)}})
                         except Exception:
                             pass
-                        # Lazy arming: STOP-class PRIMARY closes only.
-                        _STOP_CLASS = {"stop", "breakeven_stop", "trailing_stop",
-                                       "spot_stop_hit"}
-                        _lazy_trigger_set = (_params.get("lazy_momentum_pct") is not None
-                                             or _params.get("lazy_momentum_pts") is not None)
-                        _cutoff = None
-                        try:
-                            from app.premium_momentum import normalize_hhmm
-                            _cutoff = normalize_hhmm(_params.get("entry_cutoff"))
-                        except ValueError:
-                            _cutoff = None
+                        # Lazy arming: STOP-class PRIMARY closes only. The gate
+                        # (leg → armed side, both-mode/lazy/cutoff checks) is the
+                        # SHARED lazy_arm_side predicate so the live and paper
+                        # rails cannot drift; the live rail classifies its own
+                        # guard/SL-monitor stop reasons (LIVE_STOP_CLASS_REASONS).
+                        from app.premium_momentum_live import (
+                            lazy_arm_side, LIVE_STOP_CLASS_REASONS,
+                        )
                         _now_hhmm = ((datetime.now(timezone.utc)
                                       + timedelta(hours=5, minutes=30)).strftime("%H:%M"))
-                        if (_leg in ("pce", "ppe")
-                                and str(reason or "").lower() in _STOP_CLASS
-                                and bool(_params.get("lazy_enabled"))
-                                and _lazy_trigger_set
-                                and (_cutoff is None or _now_hhmm < _cutoff)):
-                            # The ARMED side is the OPPOSITE of the failed
-                            # primary (blueprint: a stopped CALL arms the lazy
-                            # PUT and vice versa). lazy_armed_<side> names the
-                            # side of the LAZY leg itself — the engine's pickup
-                            # maps lazy_armed_ce -> leg lce (a CE lazy leg).
-                            _lazy_side = "pe" if _leg == "pce" else "ce"
+                        _lazy_side = lazy_arm_side(
+                            _leg,
+                            is_stop_class=str(reason or "").lower() in LIVE_STOP_CLASS_REASONS,
+                            params=_params, now_hhmm=_now_hhmm)
+                        if _lazy_side:
+                            # lazy_armed_<side> names the side of the LAZY leg
+                            # itself — the engine's pickup maps lazy_armed_ce -> lce.
                             armed = await set_lazy_armed(
                                 _db.premium_locks, deployment_id=_dep_id,
                                 session_date=_today, side=_lazy_side,

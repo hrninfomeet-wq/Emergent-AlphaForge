@@ -113,6 +113,55 @@ def _leg_resolved(lock: Dict[str, Any], prefix: str) -> bool:
     return bool(lock.get(f"{prefix}_triggered")) or bool(lock.get(f"{prefix}_entered_norenordno"))
 
 
+#: Live-guard / SL-monitor stop-class exit reasons (runtime._live_guard_on_close).
+LIVE_STOP_CLASS_REASONS = frozenset(
+    {"stop", "breakeven_stop", "trailing_stop", "spot_stop_hit"})
+#: Paper exit-marker stop-class reasons. The premium stop (incl. a ratcheted
+#: breakeven/trailing stop, which all close via risk_exit_reason) resolves to
+#: ``stop_hit`` (execution_policy.tick_exit_reason). target_hit / time_stop / EOD
+#: are deliberately NOT here — the blueprint arms the lazy leg ONLY on an SL hit.
+PAPER_STOP_CLASS_REASONS = frozenset({"stop_hit"})
+
+
+def lazy_arm_side(
+    closed_leg: str,
+    *,
+    is_stop_class: bool,
+    params: Dict[str, Any],
+    now_hhmm: str,
+) -> Optional[str]:
+    """Decide whether a closing PRIMARY leg arms the opposite-side lazy leg, and
+    which side. PURE (no I/O) so it is the single source of truth for the arming
+    GATE across both rails: the live guard-close hook (runtime._live_guard_on_close)
+    and the paper exit marker (paper_auto.mark_open_deployment_trades) both call it.
+
+    Each rail classifies its OWN stop reasons — the live guard and the paper marker
+    emit different reason strings (see LIVE_/PAPER_STOP_CLASS_REASONS) — and passes
+    the result as ``is_stop_class``; keeping the reason sets per-rail while sharing
+    the gate is what prevents the paper/live arming decision from drifting.
+
+    Returns the LAZY leg's side ("ce"/"pe" = OPPOSITE the stopped primary), or
+    None when this close must not arm anything (blueprint §4: STOP-class primary
+    only, both-mode + lazy configured, before the entry cutoff)."""
+    if closed_leg not in ("pce", "ppe"):
+        return None
+    if not is_stop_class:
+        return None
+    if not bool(params.get("lazy_enabled")):
+        return None
+    # A silently never-triggering lazy leg would pin subscriptions for nothing.
+    if params.get("lazy_momentum_pct") is None and params.get("lazy_momentum_pts") is None:
+        return None
+    try:
+        cutoff = normalize_hhmm(params.get("entry_cutoff"))
+    except ValueError:
+        cutoff = None
+    if cutoff and str(now_hhmm) >= cutoff:
+        return None
+    # A stopped CALL (pce) arms the lazy PUT and vice versa.
+    return "pe" if closed_leg == "pce" else "ce"
+
+
 def _lazy_pending(lock: Dict[str, Any], params: Dict[str, Any]) -> bool:
     """True when a lazy leg has been armed (by the guard-close hook, B6) but
     hasn't yet been picked up/resolved. The both-mode terminal check must NOT

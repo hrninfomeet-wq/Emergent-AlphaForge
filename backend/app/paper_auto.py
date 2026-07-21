@@ -528,6 +528,13 @@ def build_auto_trade(
     # the signal doc at mark time.
     if signal_doc.get("risk_hints"):
         trade["risk_hints"] = signal_doc["risk_hints"]
+    # Carry the premium-momentum leg identity (pce/ppe/lce/lpe, both-mode only)
+    # so the paper exit marker can arm the opposite-side lazy leg when a PRIMARY
+    # leg stops out — the paper equivalent of the live guard-close arming hook.
+    # Absent for every non-premium-momentum / first_to_trigger signal (inert).
+    _pm_leg = (signal_doc.get("premium_momentum") or {}).get("leg")
+    if _pm_leg:
+        trade["pm_leg"] = _pm_leg
     # Seed the running-max at entry so the live trail ratchet has a starting peak.
     # Carry the exit_controls overlay so the live marker can ratchet the stop
     # without querying the deployment doc at mark time.
@@ -705,6 +712,57 @@ async def auto_paper_trade_for_signal(
             "spot_exit": trade.get("spot_exit")}
 
 
+async def _maybe_arm_paper_lazy_leg(db: Any, trade: Dict[str, Any]) -> None:
+    """Paper equivalent of ``runtime._live_guard_on_close``'s lazy arming.
+
+    When a PRIMARY premium-momentum PAPER leg (pce/ppe) closes on its stop, arm
+    the opposite-side one-shot lazy leg so the (mode-agnostic) session engine
+    ``evaluate_premium_momentum_bar`` picks it up on a later bar exactly as it
+    does live. This is the ONLY piece of the Phase-5B lazy contingency that was
+    live-only — arming rode the live guard-close hook, which paper never reaches
+    (no broker order / no live guard). The pickup, entry, latch and exits are all
+    already mode-agnostic. The arming GATE is the SHARED ``lazy_arm_side``
+    predicate (single source of truth vs. the live rail); paper classifies its
+    own stop reason (``stop_hit`` → PAPER_STOP_CLASS_REASONS).
+
+    Best-effort: never raises into the exit marker. No-op for every
+    non-premium-momentum / first_to_trigger / non-stop close (``pm_leg`` absent).
+    """
+    try:
+        leg = str(trade.get("pm_leg") or "")
+        if leg not in ("pce", "ppe"):
+            return
+        dep_id = str(trade.get("deployment_id") or "")
+        if not dep_id:
+            return
+        dep = await db.strategy_deployments.find_one({"id": dep_id})
+        if not dep or str(dep.get("strategy_id") or "") != "premium_momentum":
+            return
+        from app.premium_momentum_live import lazy_arm_side, PAPER_STOP_CLASS_REASONS
+        from app.strategies.base import get_registry
+        _strat = get_registry().get("premium_momentum")
+        _params = (_strat.merged_params(dict(dep.get("params") or {}))
+                   if _strat else dict(dep.get("params") or {}))
+        _now_ist = _now_utc() + timedelta(hours=5, minutes=30)
+        _reason = str(trade.get("exit_reason") or "").lower()
+        side = lazy_arm_side(
+            leg, is_stop_class=_reason in PAPER_STOP_CLASS_REASONS,
+            params=_params, now_hhmm=_now_ist.strftime("%H:%M"))
+        if not side:
+            return
+        from app.premium_lock_store import set_lazy_armed
+        armed = await set_lazy_armed(
+            db.premium_locks, deployment_id=dep_id,
+            session_date=_now_ist.strftime("%Y-%m-%d"), side=side,
+            parent_reason=_reason)
+        if armed:
+            log.info("premium 5B (paper): lazy %s armed for deployment %s "
+                     "(primary %s closed: %s)", side, dep_id, leg, _reason)
+    except Exception as exc:  # never break the exit marker
+        log.warning("paper lazy-arm skipped for trade %s: %s",
+                    trade.get("id"), exc)
+
+
 async def mark_open_deployment_trades(
     db: Any,
     *,
@@ -879,6 +937,9 @@ async def mark_open_deployment_trades(
             })
             if closed:
                 await _exit_linked_signal(updated)
+                # Arm the opposite lazy leg on a PRIMARY stop-out (paper parity
+                # with the live guard-close hook; no-op for everything else).
+                await _maybe_arm_paper_lazy_leg(db, updated)
         except Exception as exc:
             log.exception("mark failed for paper trade %s: %s", trade.get("id"), exc)
             summaries.append({"id": trade.get("id"), "error": str(exc)})
