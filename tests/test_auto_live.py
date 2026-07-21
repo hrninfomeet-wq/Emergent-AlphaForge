@@ -761,6 +761,9 @@ async def test_orchestrator_daily_loss_cap_pauses_deployment():
     # disabled_at are audit-only fields, never read as authorization.
     stored_dep = db.strategy_deployments.rows[0]
     assert stored_dep["status"] == "PAUSED"
+    # Breach also DEMOTES to paper: a later plain /resume must not re-authorize
+    # real money — going live again requires a fresh explicit /live/enable.
+    assert stored_dep["mode"] == "paper"
     assert stored_dep["risk"]["live"]["last_block_reason"] == "daily_loss"
     assert stored_dep["risk"]["live"]["disabled_at"]
 

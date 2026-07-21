@@ -20,6 +20,7 @@ If none of the three caps is configured, the DB is never queried.
 """
 from __future__ import annotations
 
+import math
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -93,6 +94,13 @@ async def check_live_caps(
         if str(deployment.get("mode") or "").strip().lower() == "live":
             return {"allow": False, "reason": "live_caps_missing", "pause": True}
         return _allow
+
+    # Poisoned-cap guard: json.loads accepts NaN/Infinity, and every comparison
+    # with NaN is False — a NaN daily_loss_cap would silently disable the loss
+    # breaker below. A non-finite cap is a misconfigured deployment: refuse.
+    _raw_cap = live.get("daily_loss_cap")
+    if isinstance(_raw_cap, float) and not math.isfinite(_raw_cap):
+        return {"allow": False, "reason": "invalid_daily_loss_cap", "pause": True}
 
     # Resolve IST today
     if now_utc is None:

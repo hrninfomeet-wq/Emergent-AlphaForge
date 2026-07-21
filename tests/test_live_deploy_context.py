@@ -400,3 +400,74 @@ async def test_build_context_never_raises_when_status_errors(monkeypatch):
 
     ctx = await ldc.build_live_deploy_context(db=MagicMock())
     assert ctx is None
+
+
+# --------------------------------------------------------------------------- #
+# build_live_deploy_context — the account ceiling is FAIL-CLOSED
+# --------------------------------------------------------------------------- #
+
+class _FakeConfigStore:
+    def __init__(self, cfg=None, exc=None):
+        self._cfg = cfg
+        self._exc = exc
+
+    async def get_config(self):
+        if self._exc is not None:
+            raise self._exc
+        return dict(self._cfg or {})
+
+
+def _wire_connected_broker(monkeypatch, config_store):
+    """Patch the status probe + every live_broker collaborator getter so the
+    build reaches the safety-config read using fakes (no real broker/token)."""
+    from app.routers import live_broker as lb
+
+    async def _status(_uid):
+        return {"connected": True, "expired": False}
+
+    async def _client():
+        return MagicMock()
+
+    async def _token_doc():
+        return {"uid": "u1", "actid": "a1"}
+
+    async def _search_fn(_client):
+        return lambda exch, query: []
+
+    monkeypatch.setattr(ldc, "get_status", _status)
+    monkeypatch.setattr(lb, "_get_client", _client)
+    monkeypatch.setattr(lb, "_get_token_doc", _token_doc)
+    monkeypatch.setattr(lb, "_intent_store", lambda: MagicMock())
+    monkeypatch.setattr(lb, "_l3_engine", lambda: MagicMock())
+    monkeypatch.setattr(lb, "_config_store", lambda: config_store)
+    monkeypatch.setattr(ldc, "_build_search_fn", _search_fn)
+
+
+@pytest.mark.asyncio
+async def test_build_context_reads_account_max_from_safety_config(monkeypatch):
+    """Control: with a readable safety config the context builds and carries the
+    configured ceiling (proves the fail-closed tests below fail for the right
+    reason, not because the wired happy path is broken)."""
+    _wire_connected_broker(monkeypatch, _FakeConfigStore(cfg={"max_lots_per_order": 3}))
+    ctx = await ldc.build_live_deploy_context(db=MagicMock())
+    assert ctx is not None
+    assert ctx["account_max"] == 3
+
+
+@pytest.mark.asyncio
+async def test_build_context_fails_closed_when_safety_config_unreadable(monkeypatch):
+    """Release-audit finding H3: an unreadable safety config must DISABLE live
+    for this cadence (None → evaluator falls through to paper), never default to
+    a guessed 20-lot ceiling."""
+    _wire_connected_broker(monkeypatch, _FakeConfigStore(exc=RuntimeError("mongo down")))
+    ctx = await ldc.build_live_deploy_context(db=MagicMock())
+    assert ctx is None
+
+
+@pytest.mark.asyncio
+async def test_build_context_fails_closed_on_invalid_ceiling(monkeypatch):
+    """A present-but-nonsensical ceiling (0 / None) is misconfiguration: refuse
+    rather than trade on a guessed limit."""
+    _wire_connected_broker(monkeypatch, _FakeConfigStore(cfg={"max_lots_per_order": 0}))
+    ctx = await ldc.build_live_deploy_context(db=MagicMock())
+    assert ctx is None

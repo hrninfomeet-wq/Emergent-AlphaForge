@@ -303,3 +303,36 @@ def test_daily_loss_cap_open_unrealized_only_counts_today_open():
     result = asyncio.run(check_live_caps(db, dep, capped_lots=1, now_utc=NOW_UTC))
     # realized_today=-100, open_unrealized_today=0 → total=-100 > -5000 → allow
     assert result["allow"] is True
+
+
+# ===========================================================================
+# 8. Poisoned daily_loss_cap (NaN / Infinity) — refuse, never silently uncapped
+# ===========================================================================
+
+def test_nan_daily_loss_cap_refuses_and_pauses():
+    """json.loads accepts a NaN literal and every NaN comparison is False —
+    without the guard a NaN cap silently disables the loss breaker
+    (release-audit finding H2)."""
+    db = _DB([])
+    dep = _dep_with(daily_loss_cap=float("nan"), max_concurrent=2)
+    result = asyncio.run(check_live_caps(db, dep, capped_lots=1, now_utc=NOW_UTC))
+    assert result == {"allow": False, "reason": "invalid_daily_loss_cap", "pause": True}
+
+
+def test_infinite_daily_loss_cap_refuses_and_pauses():
+    """An Infinity cap is an unbounded (= disabled) breaker: refuse it too."""
+    db = _DB([])
+    dep = _dep_with(daily_loss_cap=float("inf"), max_concurrent=2)
+    result = asyncio.run(check_live_caps(db, dep, capped_lots=1, now_utc=NOW_UTC))
+    assert result == {"allow": False, "reason": "invalid_daily_loss_cap", "pause": True}
+
+
+def test_nan_only_cap_on_live_mode_hits_caps_missing_fail_closed():
+    """If NaN is the ONLY configured cap, _live_caps_configured sees a cap-less
+    doc; a live-mode deployment then refuses via the existing live_caps_missing
+    fail-closed branch (never trades unbounded)."""
+    db = _DB([])
+    dep = {"id": "dep1", "mode": "live",
+           "risk": {"live": {"daily_loss_cap": float("nan")}}}
+    result = asyncio.run(check_live_caps(db, dep, capped_lots=1, now_utc=NOW_UTC))
+    assert result == {"allow": False, "reason": "live_caps_missing", "pause": True}

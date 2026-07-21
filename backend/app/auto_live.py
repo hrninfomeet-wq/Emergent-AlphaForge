@@ -314,10 +314,17 @@ async def auto_live_trade_for_signal(
             live["last_block_reason"] = "daily_loss"
             live["disabled_at"] = datetime.now(timezone.utc).isoformat()
             risk["live"] = live
+            # DEMOTE to paper in the same write: `mode` alone authorizes real
+            # orders, and /resume restores ACTIVE without inspecting why the
+            # deployment paused. Without the demotion an ordinary Resume after a
+            # daily-loss breach would re-authorize real money with no fresh
+            # /live/enable consent (release-audit blocker C4). Going live again
+            # after a breach must be an explicit /live/enable decision.
             await db.strategy_deployments.update_one(
                 {"id": dep_id},
                 {"$set": {
                     "status": "PAUSED",
+                    "mode": "paper",
                     "risk": risk,
                     "updated_at": datetime.now(timezone.utc).isoformat(),
                 }},

@@ -260,13 +260,21 @@ async def build_live_deploy_context(db: Any) -> Optional[Dict[str, Any]]:
         intent_store = lb._intent_store()
         engine = lb._l3_engine()
 
-        # account ceiling = the safety-config store's max_lots_per_order
-        account_max = 20
+        # account ceiling = the safety-config store's max_lots_per_order.
+        # FAIL CLOSED: an unreadable or invalid safety config disables live for
+        # this cadence (same degrade path as a broken broker connection) — never
+        # trade on a guessed ceiling.
         try:
             cfg = await lb._config_store().get_config()
-            account_max = int(cfg.get("max_lots_per_order") or 20)
+            account_max = int(cfg.get("max_lots_per_order") or 0)
         except Exception as exc:
-            log.warning("build_live_deploy_context: could not read max_lots_per_order (%s); default 20", exc)
+            log.warning("build_live_deploy_context: could not read max_lots_per_order (%s) "
+                        "— live disabled (fail closed)", exc)
+            return None
+        if account_max < 1:
+            log.warning("build_live_deploy_context: max_lots_per_order=%r invalid "
+                        "— live disabled (fail closed)", cfg.get("max_lots_per_order"))
+            return None
 
         # A shared module-level throttle so all deployed orders this cadence share
         # one token bucket (keeps the per-second SEBI cap honest across deployments).
