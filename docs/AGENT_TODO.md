@@ -44,12 +44,13 @@
 
 | # | Work item | Status | Notes |
 |---|-----------|--------|-------|
-| A | Commit Codex baseline (suite-gated) | 🔄 IN PROGRESS | Full host suite running; commit follows if green |
-| B1 | H2: reject non-finite monetary/param values | ⬜ NEXT | See §2 for exact plan |
-| B2 | H3: safety-config fail-closed (no 20-lot default) | ⬜ NEXT | |
-| B3 | C1-lite: loopback port bindings in docker-compose | ⬜ NEXT | |
-| B4 | C5: browser-verify the live activation dialog | ⬜ QUEUED | Hard-refresh first (known stale-bundle gotcha) |
-| C | Deferred pre-real-money fixes (C2, C4, H1, C3) | ⏸ DEFERRED | MUST land before first real-money session — §2 |
+| A | Commit Codex baseline (suite-gated) | ✅ DONE | `d301272` (3,524 passed) + docs `4b441fd` |
+| B1 | H2: reject non-finite monetary values | ✅ DONE | `f9a2482` governor `invalid_daily_loss_cap` guard; route checks pre-existed in the Codex diff (deployments.py:1029) |
+| B2 | H3: safety-config fail-closed (no 20-lot default) | ✅ DONE | `f9a2482` — unreadable/invalid config → live disabled for the cadence |
+| B3 | C1-lite: loopback port bindings in docker-compose | ✅ DONE | `f9a2482` — ⚠️ run `docker compose up -d` to apply |
+| B5 | C4: daily-loss breach demotes mode→paper | ✅ DONE | `f9a2482` (bonus — turned out to be a 1-line fix, not half a day; resume can no longer re-authorize live) |
+| B4 | C5: browser-verify the live activation dialog | ⬜ NEXT | Hard-refresh first (known stale-bundle gotcha); dialog code READS correct — see learning_log |
+| C | Deferred pre-real-money fixes (C2, H1, C3) | ⏸ DEFERRED | MUST land before first real-money session — §2 |
 | 2 | Lazy-leg contingency (Phase 5 design → ship) | ⬜ QUEUED | Design: `docs/superpowers/specs/2026-07-13-premium-momentum-phase4-5-full-contingency-design.md`; fold in H4 fix |
 | 3 | Strategy builder + AI authoring audit/completion | ⬜ QUEUED | Fold in H5 (preset-validation parity) |
 | 4 | Live-trading page redesign | ⬜ QUEUED | Incl. H8 (confirmation completeness), H6 UI surfacing |
@@ -234,5 +235,15 @@ Junior-agent prompt:
 ## 4. Session log
 
 - **2026-07-21 (Claude Fable 5):** Codex audit triaged; 11/13 findings verified inline
-  (evidence in learning_log.md). User interview locked decisions §0. Baseline commit +
-  quick wins in progress. Monthly spend limit hit — inline-only until reset.
+  (evidence in learning_log.md). User interview locked decisions §0. LANDED: Codex
+  baseline `d301272`, orchestrator docs `4b441fd`, safety quick wins `f9a2482`
+  (H3 fail-closed, H2 governor guard, C4 breach demotion, C1-lite loopback ports)
+  — suite 3,530 passed / 4 xfailed. Local main is 3 commits ahead of the last doc
+  state (`7ced6e6`) and 10 ahead of origin/main — UNPUSHED (per-changeset push
+  approval rule). KEY discoveries: the Codex diff itself already fixed H2 at the
+  route level and stop-demotion; its audit apparently reproduced C4/C5 against the
+  RUNNING CONTAINERS (old build), not the patched tree — so C5 needs a browser
+  retest after rebuild + hard refresh before treating it as a code bug. Deferred:
+  C2 (transmit fence), H1 (CAS transitions), C3 (account-global caps) — before
+  first real money. Next up: B4 (C5 browser check, needs Docker rebuild) then
+  item 2 (lazy-leg).

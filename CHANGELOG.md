@@ -2,6 +2,39 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.56.3] — live-safety quick wins from the release-audit triage (2026-07-21)
+
+**Outcome: four verified capital-safety gaps closed; the remaining audit
+blockers are triaged, planned, and tracked in `docs/AGENT_TODO.md`.**
+
+The 2026-07-20 external release audit's findings were adversarially re-verified
+against the actual code (evidence table in `learning_log.md`); the confirmed
+quick wins landed:
+
+- **Fail-closed account ceiling (H3):** when the live safety configuration
+  cannot be read — or holds an invalid `max_lots_per_order` — the live-deploy
+  context now disables live for that cadence (deployments fall through to
+  paper) instead of trading on a guessed 20-lot default.
+- **Poisoned-cap guard (H2):** the live caps governor refuses a non-finite
+  `daily_loss_cap` (`invalid_daily_loss_cap`, pause). A NaN cap would otherwise
+  silently disable the daily-loss breaker, because every NaN comparison is
+  False. Route-level finiteness validation already existed; this closes the
+  crafted/migrated-document path.
+- **Breach demotes to paper (C4):** a daily-loss breach now sets
+  `mode: "paper"` in the same write that pauses the deployment, so a later
+  plain Resume can no longer re-authorize real money. Going live again after a
+  breach requires a fresh explicit `/live/enable` with typed consent.
+- **Loopback-only ports (C1-lite):** `docker-compose.yml` now binds MongoDB,
+  the backend API, and the frontend to `127.0.0.1` — the credential-less Mongo
+  and the unauthenticated API are no longer reachable from the LAN. Full API
+  authentication + Mongo credentials are deliberately deferred to the VPS
+  migration. Run `docker compose up -d` to apply the new bindings.
+- Deferred (required before the first real-money session, tracked in
+  `docs/AGENT_TODO.md`): pre-transmit stop fence (C2), compare-and-swap
+  mode/status transitions (H1), account-global caps (C3).
+- **Verification:** 3,530 backend tests passed, 4 expected failures, 0
+  unexpected failures.
+
 ## [0.56.2] — deployment freedom with explicit real-money consent (2026-07-21)
 
 **Outcome: strategy selection is no longer vetoed by research evidence, while

@@ -68,6 +68,32 @@ critical claim (the "broken" activation dialog) looks likely to be a test artifa
 - Don't judge C5-class UI bugs from code reading alone; this project's frontend serves
   stale bundles after rebuilds (hard-refresh first, then test).
 
+### Addendum (same session, after fixes landed)
+
+- **The Codex audit tested the RUNNING CONTAINERS, not its own patched working
+  tree.** Its diff had already fixed H2 at the route level
+  (`deployments.py:1029` finite+positive `daily_loss_cap` mandatory) and made
+  stop demote live→paper — yet the audit reported both as broken. Corollary: C5
+  (the "broken" activation dialog) was very likely reproduced against the old
+  bundle; retest in a browser after rebuild + hard refresh before touching the
+  component.
+- **C4 was real but tiny:** the breach path paused without demoting `mode` —
+  while the enable route's docstring already CLAIMED "pauses and demotes". A
+  1-line `$set` addition + tests closed it (estimated half a day, took minutes).
+  Lesson: when code contradicts its own documented contract, the fix is usually
+  the missing line, not a redesign.
+- **Dead end:** adding a pydantic `field_validator` for finiteness broke the
+  existing test contract (tests construct the body model directly with NaN and
+  expect the ROUTE to raise 400). Route-level checks already existed; the right
+  defense-in-depth layer was the governor (protects against DB-crafted docs).
+  Reverted the validator, kept the governor guard.
+- **PowerShell gotcha:** a here-string commit message containing double quotes
+  got re-tokenized and split into bogus pathspecs. Write commit messages to a
+  temp file and use `git commit -F <file>`.
+- Landed: `d301272` (Codex baseline), `4b441fd` (orchestrator docs), `f9a2482`
+  (H3 fail-closed + H2 governor guard + C4 breach demotion + C1-lite loopback).
+  Suite 3,530/0. Unpushed.
+
 ### Open items carried forward
 
 1. Safety-fix sprint (pending user decision on scope): H2+H3 (trivial), C1 loopback
