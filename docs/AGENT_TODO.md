@@ -52,8 +52,8 @@
 | B4 | C5: live activation dialog — Continue didn't open confirm step | ✅ FIXED + browser-verified | REAL cause = HTML5 step validation: daily-loss input `min={1} step={100}` → default 4000 is stepMismatch-invalid → native form validation silently blocks submit → handleFormSubmit never runs (button looks enabled b/c the JS guard ignores step). Fix `step="any"` on loss + both catastrophe %-fields; ALSO collapsed the two sibling Radix dialogs into one stepped dialog (robustness). Verified E2E in Chrome (caps→Continue→typed-ENABLE renders; ENABLE gated; Back preserves values). Commit `3f3b457`. NOT the two-dialog theory the Codex audit guessed |
 | C | Deferred pre-real-money fixes (C2, H1, C3) | ⏸ DEFERRED | MUST land before first real-money session — §2 |
 | 2 | Lazy-leg contingency (Phase 5 design → ship) | ✅ DONE | Was already shipped in backtest+live; built the only gap = **paper-mode lazy arming** (`ab453fa`) + H4 nullable-param deploy fix (`3639009`). Suite 3,549/0. See §3 item 2 |
-| 3 | Strategy builder + AI authoring audit/completion | ⬜ NEXT | Fold in H5 (preset-validation parity); H4 already done |
-| 4 | Live-trading page redesign | ⬜ QUEUED | Incl. H8 (confirmation completeness), H6 UI surfacing |
+| 3 | Strategy builder + AI authoring audit/completion | ✅ DONE | H5 preset/backtest validation parity (`10f8ce7`) + AI-install file rollback (`6e8861d`); wizard audited = already robust. Suite 3,557/0. See §3 item 3 |
+| 4 | Live-trading page redesign | ⬜ NEXT | Incl. H8 (confirmation completeness), H6 UI surfacing |
 | 5 | New strategy plugins (candidates, honestly validated) | ⬜ QUEUED | |
 | 6 | Profit-leverage ideas write-up | ⬜ QUEUED | |
 | 7 | End-to-end deep audit | ⏸ BLOCKED | Needs multi-agent budget (spend-limit reset) or several lean sessions |
@@ -195,20 +195,33 @@ whose schema default is `None` (nullable), so premium_momentum (and any nullable
 strategy) deploys directly; required params + non-None values still fully validated.
 3 tests in `test_strategy_deployments.py`.
 
-### Item 3 — Strategy builder + AI authoring audit/completion
+### Item 3 — Strategy builder + AI authoring audit/completion ✅ DONE 2026-07-21
 
-Known state: wizard has capability-aware authoring (SP-0..SP-4), full-Python escape
-hatch (PR #6), multi-provider AI (Gemini-default, funded; Anthropic unfunded), Gemini
-truncation fixed (thinking off + 8192 tokens). Known weak spots: live-Gemini validation
-of the wizard is a manual step never fully done; H5 preset-validation parity unverified.
+**Audit result:** the authoring stack is in good shape; two concrete gaps fixed.
 
-Junior-agent prompt:
-> Audit `frontend/src/pages/StrategyLibrary.jsx` wizard flow + `backend/app` authoring
-> routes (`/author/*`). Map every step a user takes from "New Strategy" to a deployed
-> preset; list dead ends, silent failures, missing validation, and UX gaps. Verify H5:
-> create a preset referencing a nonexistent strategy/timeframe/unknown params and
-> attempt deployment; if it produces an active deployment doc, unify preset validation
-> with direct-strategy validation. Then fix the top gaps. Tests for every fix.
+1. **H5 — preset/backtest validation parity (`10f8ce7`).** `_load_deployment_source`
+   fully validated a `strategy` source (registry existence, 1m/timeframe + instrument
+   compat, unknown/invalid params) but returned `preset`/`backtest_run` sources straight
+   from the DB unvalidated → a preset referencing a deleted strategy / bad timeframe /
+   unknown params became a dead ACTIVE deployment. Fixed by extracting a shared
+   `_validate_strategy_deployment_config` chokepoint (carries the H4 nullable tolerance)
+   and running it for EVERY source type. 6 tests.
+2. **AI-install file rollback (`6e8861d`).** `author_install` (spec→code) left a broken
+   `.py` on disk when the generated strategy failed to load → broke every future
+   `reg.reload()` + next boot. `author_python_install` removed the orphan but destroyed a
+   working strategy on a failed overwrite. Fixed with a shared `_write_plugin_with_rollback`
+   (restore previous / remove orphan / reload clean / 500). 2 tests.
+3. **Frontend wizard (`components/strategy/AuthoringWizard.jsx`) audited — robust:**
+   persistent error panels (not vanishing toasts), provider-status gating
+   (`aiReady`/`configuredProviders`; AI buttons disabled + "set GEMINI_API_KEY…" hint when
+   unconfigured), capability-explainer panel, installedId next-step panel, spec+python
+   modes. No risky changes needed; the earlier authoring-UX work holds up.
+4. H4 (premium-momentum nullable-param direct deploy) — already fixed `3639009` (item-2 session).
+
+Residual (non-blocking, deferred): live-Gemini end-to-end wizard validation remains a
+user manual step (needs a funded key + real market). The H5 unknown-param check is a HARD
+reject for parity — if a legit old preset with schema-drifted params ever needs to deploy,
+consider softening unknown-params to a quality WARNING rather than a 400.
 
 ### Item 4 — Live-trading page redesign
 
@@ -259,6 +272,10 @@ Junior-agent prompt:
 
 ## 4. Session log
 
+- **2026-07-21 (Claude Opus 4.8, item 3):** item 3 DONE — H5 preset/backtest validation
+  parity (`10f8ce7`, 6 tests) + AI-install plugin-file rollback (`6e8861d`, 2 tests);
+  authoring wizard audited and found robust. Suite 3,557/0. Local main `6e8861d`.
+  NEXT: item 4 (live-page redesign).
 - **2026-07-21 (Claude Opus 4.8, cont.):** C5 dialog fixed + browser-verified (real
   cause = HTML5 step validation, `3f3b457`); item 2 lazy-leg gap-analysed then the
   paper-mode arming gap BUILT (`ab453fa`, 16 tests) + H4 nullable-param deploy fix

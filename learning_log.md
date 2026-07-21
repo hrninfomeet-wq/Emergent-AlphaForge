@@ -163,6 +163,27 @@ not trusting plausible theories (mine or another agent's) without instrumentatio
   into bogus pathspecs — AGAIN.** Always `git commit -F <tempfile>`. (Third time this
   session; it is now muscle-memory: never inline a quoted commit body in PowerShell.)
 
+### Item 3 (strategy builder + AI authoring) — audit findings
+
+- **H5 was a validation-parity gap, not a wizard bug.** The wizard itself is solid; the
+  hole was downstream: `_load_deployment_source` validated a `strategy` source thoroughly
+  but returned `preset`/`backtest_run` docs from the DB unvalidated. Lesson: when one code
+  path validates and a sibling doesn't, extract ONE shared chokepoint rather than copy the
+  checks — I made `_validate_strategy_deployment_config` the single validator for all three
+  source types (it also absorbed the H4 nullable tolerance for free).
+- **Two install paths, two different post-write-failure behaviors** — a classic drift bug.
+  `author_python_install` cleaned up the orphaned .py on load failure; `author_install`
+  (spec) did NOT. And neither restored the previous file on a failed overwrite (silent loss
+  of a working strategy). Unified into `_write_plugin_with_rollback`: snapshot → write →
+  reload → on failure restore-or-remove → reload → 500. General lesson: any "write file then
+  reload/validate" needs an explicit rollback, or one bad write poisons every future reload.
+- **Auditing ≠ rewriting.** The frontend AuthoringWizard turned out well-built (persistent
+  error panels, `aiReady` provider gating, capability panel). The right audit outcome was
+  "verified robust, no change" for the frontend + two precise backend fixes — not churning
+  a working 973-line component. Resisted scope creep.
+- `git commit -F <tempfile>` used for every commit body this session — zero PowerShell
+  here-string mangling incidents once I stopped inlining quoted messages.
+
 ### Open items carried forward
 
 1. Safety-fix sprint (pending user decision on scope): H2+H3 (trivial), C1 loopback

@@ -2,6 +2,34 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.56.5] — deployment-source validation parity + AI-install rollback (2026-07-21)
+
+**Outcome: a preset/backtest can no longer become a dead ACTIVE deployment, and
+a failed AI strategy install can no longer corrupt the plugin registry.**
+
+- **Preset/backtest validation parity (release-audit H5).** Deploying from a
+  saved preset or backtest result now runs the SAME validation as a direct
+  strategy deploy — the referenced strategy must exist in the registry, support
+  1m and the chosen instrument, and carry only known, in-range params.
+  Previously these sources were deployed straight from the database with no
+  validation, so a preset referencing a deleted/renamed strategy, an
+  unsupported timeframe, or unknown/invalid params produced an ACTIVE deployment
+  that could never emit a valid signal. The validation is now a single shared
+  chokepoint used by every source type (and carries the nullable-param
+  tolerance from 0.56.4).
+- **AI-install plugin-file rollback.** Installing an AI-authored strategy (spec
+  or full-Python) that compiles but fails to load no longer leaves a broken
+  `.py` on disk — which would have broken every subsequent registry reload and
+  the next app boot — and a failed `overwrite` re-install now restores the
+  previously-working strategy instead of destroying it. Both install paths share
+  one write-with-rollback helper.
+- The New Strategy / AI authoring wizard was audited end to end and found
+  robust (persistent error panels, provider-status gating with a clear
+  "configure a key" hint, capability explainer, next-step panel); no changes
+  were required there.
+- **Verification:** 3,557 backend tests passed, 4 expected failures, 0
+  unexpected failures.
+
 ## [0.56.4] — paper-mode lazy-leg arming + direct-deploy nullable params (2026-07-21)
 
 **Outcome: the Phase-5B lazy contingency can now be forward-tested by paper
