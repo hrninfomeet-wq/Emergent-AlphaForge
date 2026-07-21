@@ -155,20 +155,33 @@ evaluator cadence. Fix v2 (atomicity): reserve-then-place via a Mongo
 
 ### Item 2 — Lazy-leg contingency (opposite-side activation on primary-leg SL)
 
-Design doc: `docs/superpowers/specs/2026-07-13-premium-momentum-phase4-5-full-contingency-design.md`
-(committed, unshipped). Phase 5B (v0.55.0) already shipped: both-legs, lazy reversal,
-exit_time, day-stop, VIX. This item = the remaining "full contingency" slice.
+**GAP ANALYSIS DONE 2026-07-21 (verified against code, not memory/docs).** The design
+doc (`docs/superpowers/specs/2026-07-13-premium-momentum-phase4-5-full-contingency-design.md`)
+is STALE — its "nothing implemented" header predates the 2026-07-17 Phase 5B build. The
+lazy-leg contingency IS shipped on two of three rails:
 
-Junior-agent prompt:
-> Read the Phase 4-5 full-contingency design doc and the shipped Phase 5B code
-> (`backend/app/strategies/plugins/` premium momentum, `backend/app/paper_auto.py`,
-> `backend/app/auto_live.py` lazy-arm paths). Produce a gap list (designed vs shipped).
-> Implement the missing lazy-leg contingency on BOTH paper and live rails with tests,
-> following existing Phase 5B patterns (per-signal risk_hints, guard-side exits).
-> While there, verify finding H4: attempt a direct deploy of premium momentum via
-> POST /deployments; if nullable defaults are rejected as "must be numeric", fix the
-> validator to accept the plugin's declared-nullable params. Suite must stay green.
-> NB: guard-side 5B exits are LIVE-only and cannot fire in paper — expected, not a bug.
+| Rail | Lazy-leg status | Evidence |
+|------|-----------------|----------|
+| Backtest | ✅ FULL | `premium_momentum_backtest.py`: `leg_mode="both"`, `lazy_enabled`, fresh opposite-side strike lock at the stop-out bar, all `lazy_*` params, moneyness-band preload (C1 fix), 1 reversal/primary/session; adversarially reviewed |
+| Live | ✅ SHIPPED | `runtime.py::_live_guard_on_close` (~L288-319) arms `lazy_armed_<side>` on a STOP-class PRIMARY confirmed-flat close (never target/EOD/basket); `premium_momentum_live.py` does the fresh strike pickup + lazy monitor; `premium_lock_store.set_lazy_armed` is the idempotent one-shot |
+| **Paper** | ❌ **NOT SHIPPED** | Lazy arming rides the LIVE-guard close hook (`_live_guard_on_close`), which matches a broker `norenordno`. Paper trades have no broker order and no live guard, so a stopped PRIMARY in paper never arms a lazy leg. Paper CAN run both PRIMARY legs (`deployment_evaluator.py` L738/L786 `leg_mode=="both"`) — only the lazy contingency is absent. This matches the known limitation in memory ("guard-side 5B exits are LIVE-only in paper") |
+
+**So the ONLY real remaining work for item 2 = paper-mode lazy arming** — a paper-side
+trigger that, when a PRIMARY paper leg closes STOP-class, arms + enters the opposite lazy
+leg with a fresh snapshot, mirroring `_live_guard_on_close`. Value: lets the user
+forward-test the lazy contingency by paper trading BEFORE risking real money (directly
+serves the user's stated goal). **Caveat to state when deciding:** the premium-momentum
+edge hunt CLOSED / FAILED (validation +₹103.5k → −₹153.8k holdout; `forward_metrics.py:530`
+comment, `docs/PREMIUM_MOMENTUM_EDGE_VERDICT_2026-07.md`) — building paper-lazy is pure
+capability, not an edge bet (user already ratified capability-over-edge for 5B).
+
+**AWAITING USER DECISION (asked 2026-07-21):** (A) build paper-mode lazy arming +
+tests; (B) item 2 is effectively done — verify existing backtest+live lazy end-to-end
+and close; (C) a specific sub-behavior the user actually wants. Do NOT implement until
+answered — the premise ("unshipped") was wrong, so the scope must be re-confirmed.
+
+Also still open regardless: verify H4 (premium-momentum direct `POST /deployments` —
+nullable defaults rejected as "must be numeric"?) and fold its fix in wherever item 2 lands.
 
 ### Item 3 — Strategy builder + AI authoring audit/completion
 
