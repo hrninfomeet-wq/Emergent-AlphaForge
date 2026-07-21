@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import os
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException
 
@@ -315,6 +315,46 @@ def _write_plugin_file(strategy_id: str, code: str) -> str:
     return path
 
 
+def _write_plugin_with_rollback(strategy_id: str, code: str, reg: Any) -> None:
+    """Write the plugin file, reload the registry, and if the id fails to load
+    ROLL BACK cleanly: restore the previous file (overwrite case) or remove the
+    orphan (new-install case), reload again so the registry is left in a clean
+    state, then raise HTTPException(500).
+
+    Prevents two real failure modes of a naive write-then-reload:
+      (a) a broken generated .py left on disk breaks EVERY future reg.reload()
+          (and the next app boot), not just this install;
+      (b) a failed overwrite=True re-install silently destroys the
+          previously-working strategy whose file was just clobbered.
+    """
+    path = os.path.join(_plugins_dir(), f"{strategy_id}.py")
+    prev: Optional[str] = None
+    if os.path.isfile(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                prev = f.read()
+        except OSError:
+            prev = None
+    _write_plugin_file(strategy_id, code)
+    reg.reload()
+    if reg.get(strategy_id) is not None:
+        return
+    # Load failed — undo the write so nothing broken persists.
+    try:
+        if prev is not None:
+            _write_plugin_file(strategy_id, prev)   # restore the working version
+        else:
+            os.remove(path)                          # remove the orphan
+    except OSError:
+        pass
+    reg.reload()
+    raise HTTPException(
+        500,
+        f"Strategy '{strategy_id}' failed to load after install — check the "
+        "generated code. No changes were kept (a prior working version, if any, "
+        "was restored).")
+
+
 # ---------------------------------------------------------------------------
 # Strategy Authoring — endpoints (Phase 2A)
 # ---------------------------------------------------------------------------
@@ -355,10 +395,7 @@ async def author_install(req: StrategyAuthorReq):
     if reg.get(spec.id) is not None and not req.overwrite:
         raise HTTPException(409, f"Strategy id '{spec.id}' already exists — choose another id or set overwrite")
     code = compile_spec(spec)
-    _write_plugin_file(spec.id, code)
-    reg.reload()
-    if reg.get(spec.id) is None:
-        raise HTTPException(500, f"Strategy '{spec.id}' failed to load after install — check the generated code")
+    _write_plugin_with_rollback(spec.id, code, reg)
     now = datetime.now(timezone.utc).isoformat()
     code_sha = hashlib.sha256(code.encode("utf-8")).hexdigest()[:16]
     await _db().generated_strategies.update_one(
@@ -505,14 +542,7 @@ async def author_python_install(req: PythonInstallReq):
     smoke = smoke_test(req.code)
     if not smoke.get("ok"):
         raise HTTPException(422, f"smoke-test failed: {smoke.get('error')}")
-    _write_plugin_file(req.strategy_id, req.code)
-    reg.reload()
-    if reg.get(req.strategy_id) is None:
-        try:
-            os.remove(os.path.join(_plugins_dir(), f"{req.strategy_id}.py"))
-        except OSError:
-            pass
-        raise HTTPException(500, f"Strategy '{req.strategy_id}' failed to load after install")
+    _write_plugin_with_rollback(req.strategy_id, req.code, reg)
     now = datetime.now(timezone.utc).isoformat()
     code_sha = hashlib.sha256(req.code.encode("utf-8")).hexdigest()[:16]
     await _db().generated_strategies.update_one(

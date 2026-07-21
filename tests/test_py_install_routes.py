@@ -62,6 +62,58 @@ def test_install_rejects_id_mismatch():
     assert r.status_code == 400
 
 
+class _FailReg:
+    """Registry stand-in whose freshly-written plugin never loads."""
+    def reload(self):
+        pass
+
+    def get(self, sid):
+        return None
+
+
+def test_rollback_removes_orphan_on_new_install_load_failure():
+    """A generated plugin that writes but fails to load must be REMOVED, or the
+    orphaned .py breaks every future reg.reload() and the next app boot."""
+    import app.strategies.plugins as _pp
+    from fastapi import HTTPException
+    plugins_dir = Path(_pp.__file__).parent
+    tid = "rollback_orphan_test"
+    path = plugins_dir / f"{tid}.py"
+    path.unlink(missing_ok=True)
+    try:
+        raised = False
+        try:
+            sa._write_plugin_with_rollback(tid, VALID, _FailReg())
+        except HTTPException as exc:
+            raised = True
+            assert exc.status_code == 500
+        assert raised, "expected HTTPException(500) on load failure"
+        assert not path.exists(), "orphaned plugin file must be removed"
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_rollback_restores_previous_on_failed_overwrite():
+    """A failed overwrite=True re-install must RESTORE the previously-working
+    file, not clobber it — the user must never lose a working strategy."""
+    import app.strategies.plugins as _pp
+    from fastapi import HTTPException
+    plugins_dir = Path(_pp.__file__).parent
+    tid = "rollback_restore_test"
+    path = plugins_dir / f"{tid}.py"
+    prev_code = "# previous working version\n" + VALID
+    try:
+        path.write_text(prev_code, encoding="utf-8")
+        try:
+            sa._write_plugin_with_rollback(tid, "def broken(:\n", _FailReg())
+        except HTTPException:
+            pass
+        assert path.exists(), "previous file must be restored"
+        assert path.read_text(encoding="utf-8") == prev_code
+    finally:
+        path.unlink(missing_ok=True)
+
+
 def test_install_happy_path():
     import app.strategies.plugins as _plugins_pkg
     plugins_dir = Path(_plugins_pkg.__file__).parent
