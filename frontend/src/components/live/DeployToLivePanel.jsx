@@ -114,12 +114,12 @@ export default function DeployToLivePanel({ dep, onArmed }) {
     return () => { cancelled = true; };
   }, [formOpen, dep?.id]);
 
-  // Focus the confirm input when the danger dialog opens.
+  // Focus the confirm input when the dialog reaches the confirm step.
   useEffect(() => {
-    if (confirmOpen && confirmInputRef.current) {
+    if (formOpen && confirmOpen && confirmInputRef.current) {
       confirmInputRef.current.focus();
     }
-  }, [confirmOpen]);
+  }, [formOpen, confirmOpen]);
 
   const maxLots = safetyConfig?.max_lots_per_order ?? null;
   const maxOpen = safetyConfig?.max_open_positions ?? null;
@@ -156,6 +156,7 @@ export default function DeployToLivePanel({ dep, onArmed }) {
     setSafetyConfig(null);
     setSafetyLoaded(false);
     setSafetyError(false);
+    setConfirmOpen(false);   // always open on the caps step
     setFormOpen(true);
   };
 
@@ -163,7 +164,19 @@ export default function DeployToLivePanel({ dep, onArmed }) {
     e.preventDefault();
     if (!canProceedToConfirm) return;
     setConfirmText("");
+    // Advance to the confirm STEP inside the SAME dialog. The caps form and the
+    // typed-ENABLE confirm are two VIEWS of ONE Radix Dialog, never two stacked
+    // modals — stacking made the second dialog's dismissable layer swallow the
+    // submit's own click and close instantly (the "Continue does nothing" bug,
+    // C5 in the 2026-07-21 release audit).
     setConfirmOpen(true);
+  };
+
+  // "Back" returns to the caps view WITHOUT closing the dialog (entered values
+  // are preserved because it is the same open dialog, just a different step).
+  const closeConfirmBackToForm = () => {
+    setConfirmOpen(false);
+    setConfirmText("");
   };
 
   const handleArm = async () => {
@@ -238,8 +251,10 @@ export default function DeployToLivePanel({ dep, onArmed }) {
       </Button>
 
       {/* ── Caps form dialog ──────────────────────────────────────────────── */}
-      <Dialog open={formOpen} onOpenChange={setFormOpen}>
-        <DialogContent className="max-w-sm bg-bg-1 border-line">
+      <Dialog open={formOpen} onOpenChange={(o) => { if (!busy) { setFormOpen(o); if (!o) { setConfirmOpen(false); setConfirmText(""); } } }}>
+        <DialogContent className={`max-w-sm bg-bg-1 ${confirmOpen ? "border-danger/60" : "border-line"}`}>
+          {!confirmOpen && (
+          <>
           <DialogHeader>
             <DialogTitle className="text-sm font-semibold text-foreground flex items-center gap-2">
               <Zap className="w-4 h-4 text-danger" />
@@ -347,7 +362,13 @@ export default function DeployToLivePanel({ dep, onArmed }) {
               <Input
                 type="number"
                 min={1}
-                step={100}
+                // step="any" — NOT step={100}. With min={1}, step={100} makes the
+                // ONLY natively-valid values 1,101,201,…,4001, so the default 4000
+                // (and every round rupee amount a user types) fails HTML5 step
+                // validation. That silently blocks the <form> submit — the submit
+                // event never fires, handleFormSubmit never runs, and "Continue"
+                // does nothing even though the button looks enabled (C5, 2026-07-21).
+                step="any"
                 value={dailyLossCap}
                 onChange={(e) => setDailyLossCap(e.target.value)}
                 placeholder="e.g. 4000"
@@ -374,7 +395,7 @@ export default function DeployToLivePanel({ dep, onArmed }) {
                 <Input
                   type="number"
                   min={0.1}
-                  step={0.5}
+                  step="any"
                   value={catStopPct}
                   onChange={(e) => setCatStopPct(e.target.value)}
                   placeholder="default ~50"
@@ -390,7 +411,7 @@ export default function DeployToLivePanel({ dep, onArmed }) {
                 <Input
                   type="number"
                   min={0.1}
-                  step={0.5}
+                  step="any"
                   value={catTargetPct}
                   onChange={(e) => setCatTargetPct(e.target.value)}
                   placeholder="default ~135"
@@ -420,12 +441,12 @@ export default function DeployToLivePanel({ dep, onArmed }) {
               </Button>
             </div>
           </form>
-        </DialogContent>
-      </Dialog>
+          </>
+          )}
 
-      {/* ── Danger typed-confirm dialog ───────────────────────────────────── */}
-      <Dialog open={confirmOpen} onOpenChange={(o) => { if (!busy) { setConfirmOpen(o); setConfirmText(""); } }}>
-        <DialogContent className="max-w-sm bg-bg-1 border-danger/60">
+          {/* ── Step 2: danger typed-confirm (same dialog, second view) ──────── */}
+          {confirmOpen && (
+          <>
           <DialogHeader>
             <DialogTitle className="text-sm font-semibold text-danger flex items-center gap-2">
               <AlertTriangle className="w-4 h-4" />
@@ -517,11 +538,11 @@ export default function DeployToLivePanel({ dep, onArmed }) {
               type="button"
               variant="ghost"
               size="sm"
-              onClick={() => { setConfirmOpen(false); setConfirmText(""); }}
+              onClick={closeConfirmBackToForm}
               disabled={busy}
               className="h-8 text-xs flex-1"
             >
-              Cancel
+              Back
             </Button>
             <Button
               type="button"
@@ -535,6 +556,8 @@ export default function DeployToLivePanel({ dep, onArmed }) {
               {busy ? "Enabling…" : "ENABLE — Go Live"}
             </Button>
           </div>
+          </>
+          )}
         </DialogContent>
       </Dialog>
     </>
