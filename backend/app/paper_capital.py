@@ -175,7 +175,8 @@ async def check_capital_gate(
     dep_cfg = parse_capital_config((deployment.get("risk") or {}).get("capital"))
     acct_cfg = await load_account_capital_config(db)
     if dep_cfg is None and acct_cfg is None:
-        return {"allowed": True}
+        return {"allowed": True, "checks": []}
+    checks: List[Dict[str, Any]] = []
     if dep_cfg is not None:
         rows = await db.paper_trades.find(
             {"deployment_id": str(deployment.get("id") or "")}, _TRADE_PROJECTION,
@@ -184,10 +185,12 @@ async def check_capital_gate(
             dep_cfg, rows, new_exposure, scope="deployment", now=now)
         if not verdict["allowed"]:
             return verdict
+        checks.append(verdict)
     if acct_cfg is not None:
         rows = await db.paper_trades.find({}, _TRADE_PROJECTION).to_list(length=None)
         verdict = evaluate_capital_gate(
             acct_cfg, rows, new_exposure, scope="account", now=now)
         if not verdict["allowed"]:
             return verdict
-    return {"allowed": True}
+        checks.append(verdict)
+    return {"allowed": True, "checks": checks}

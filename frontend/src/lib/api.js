@@ -240,10 +240,22 @@ export const api = {
     apiClient.get(`/deployments/${id}/metrics`).then((r) => r.data),
   deploymentPreflight: (instrument, params = {}) =>
     apiClient.get("/deployments/preflight", { params: { instrument, ...params } }).then((r) => r.data),
-  deploymentQuality: (sourceType, sourceId) =>
-    apiClient.get("/deployments/quality", { params: { source_type: sourceType, source_id: sourceId } }).then((r) => r.data),
-  deploymentReadiness: (sourceType, sourceId) =>
-    apiClient.get("/deployments/readiness", { params: { source_type: sourceType, source_id: sourceId } }).then((r) => r.data),
+  deploymentQuality: (sourceType, sourceId, sourceConfig = {}) =>
+    apiClient.get("/deployments/quality", { params: {
+      source_type: sourceType,
+      source_id: sourceId,
+      ...(sourceConfig.source_instrument ? { source_instrument: sourceConfig.source_instrument } : {}),
+      ...(sourceConfig.source_timeframe ? { source_timeframe: sourceConfig.source_timeframe } : {}),
+      ...(sourceConfig.source_params ? { source_params_json: JSON.stringify(sourceConfig.source_params) } : {}),
+    } }).then((r) => r.data),
+  deploymentReadiness: (sourceType, sourceId, sourceConfig = {}) =>
+    apiClient.get("/deployments/readiness", { params: {
+      source_type: sourceType,
+      source_id: sourceId,
+      ...(sourceConfig.source_instrument ? { source_instrument: sourceConfig.source_instrument } : {}),
+      ...(sourceConfig.source_timeframe ? { source_timeframe: sourceConfig.source_timeframe } : {}),
+      ...(sourceConfig.source_params ? { source_params_json: JSON.stringify(sourceConfig.source_params) } : {}),
+    } }).then((r) => r.data),
 
   // Optimizer
   startOptimization: (payload) =>

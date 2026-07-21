@@ -1,6 +1,7 @@
 """Deployment quality / acknowledgment checks (slice 9; gate-rigor pass 2026-06-13).
 
-When a user creates a deployment from a saved preset or backtest_run, evaluate
+When a user creates a deployment from a Strategy Library snapshot, saved preset,
+or backtest_run, evaluate
 the source for known red flags. Surface them as warnings - never block.
 If any warning is present, the user must explicitly acknowledge before the
 deployment is created.
@@ -196,7 +197,7 @@ def evaluate_source_quality(
     evidence: Optional[Dict[str, Any]] = None,
     thresholds: Optional[QualityThresholds] = None,
 ) -> Dict[str, Any]:
-    """Evaluate a preset or backtest_run for deployment red flags.
+    """Evaluate a deployment source for red flags.
 
     Pure function - no DB, no network. The caller resolves the source doc first,
     and optionally supplies `evidence` (n_trials + honest-WFO + option-rupee OOS,

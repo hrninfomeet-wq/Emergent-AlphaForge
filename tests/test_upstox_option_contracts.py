@@ -123,7 +123,12 @@ def test_fetch_expired_historical_1m_for_key_uses_expired_endpoint(monkeypatch):
     )
 
     assert "/v2/expired-instruments/historical-candle/NSE_FO%7C42939%7C28-11-2024/1minute/2024-11-28/2024-11-28" in captured["url"]
-    assert df.iloc[0]["instrument_key"] == "NSE_FO|42939|28-11-2024"
+    # ``instrument_key`` remains the live routing token while the immutable,
+    # expiry-qualified identity is carried separately.  Keeping a dated URL
+    # key in the routing field would recreate the token-identity split that the
+    # provenance migration is designed to remove.
+    assert df.iloc[0]["instrument_key"] == "NSE_FO|42939"
+    assert df.iloc[0]["contract_key"] == "NSE_FO|42939|2024-11-28"
     assert df.iloc[0]["underlying"] == "NIFTY"
 
 

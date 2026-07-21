@@ -341,6 +341,13 @@ class DeploymentCreateReq(BaseModel):
     name: str
     source_type: str
     source_id: str
+    # Direct Strategy Library deployment.  Presets/backtest runs already carry
+    # these fields in their source document; a raw registered strategy needs an
+    # explicit immutable snapshot so later code/default changes cannot silently
+    # alter what the user selected.
+    source_instrument: Optional[str] = None
+    source_timeframe: Optional[str] = None
+    source_params: Dict[str, Any] = Field(default_factory=dict)
     mode: str = "signal_only"  # signal_only | paper (legacy shadow/recommendation map to signal_only)
     confirmation_mode: str = "1m_close"
     option_moneyness: List[str] = Field(default_factory=lambda: ["atm"])

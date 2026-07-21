@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, Loader2, Zap } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
+import { getApiErrorMessage } from "@/lib/apiError";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -39,16 +40,20 @@ export default function DeployToLivePanel({ dep, onArmed }) {
   // ── Phase 1: caps form ─────────────────────────────────────────────────────
   const [formOpen, setFormOpen] = useState(false);
   const [safetyConfig, setSafetyConfig] = useState(null);
-  // Non-blocking live-arm advisories (S19/B8) — e.g. thin forward record, or (for
-  // premium_momentum multi-leg deployments) the edge-hunt verdict. Advisory only:
-  // a fetch failure degrades silently, never blocks the arm flow.
+  const [safetyLoaded, setSafetyLoaded] = useState(false);
+  const [safetyError, setSafetyError] = useState(false);
+  // Evidence is advisory after explicit user consent.  We still load the exact
+  // failed checks so the irreversible decision is informed and auditable.
   const [armAdvisories, setArmAdvisories] = useState([]);
+  const [forwardValidation, setForwardValidation] = useState(null);
+  const [validationLoaded, setValidationLoaded] = useState(false);
+  const [acceptUnvalidated, setAcceptUnvalidated] = useState(false);
 
   // Caps form fields
   const [lots, setLots] = useState("1");
   const [maxDay, setMaxDay] = useState("10");
   const [maxConcurrent, setMaxConcurrent] = useState("2");
-  const [dailyLossCap, setDailyLossCap] = useState("");
+  const [dailyLossCap, setDailyLossCap] = useState("4000");
   // PC-down OCO backstop (catastrophe band) — optional; blank → backend default.
   const [catStopPct, setCatStopPct] = useState("");
   const [catTargetPct, setCatTargetPct] = useState("");
@@ -64,9 +69,20 @@ export default function DeployToLivePanel({ dep, onArmed }) {
   useEffect(() => {
     if (!formOpen) return;
     let cancelled = false;
+    setSafetyLoaded(false);
+    setSafetyError(false);
     api.getSafetyConfig()
-      .then((d) => { if (!cancelled) setSafetyConfig(d); })
-      .catch(() => {});
+      .then((d) => {
+        if (cancelled) return;
+        setSafetyConfig(d);
+        setSafetyLoaded(true);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setSafetyConfig(null);
+        setSafetyError(true);
+        setSafetyLoaded(true);
+      });
     return () => { cancelled = true; };
   }, [formOpen]);
 
@@ -76,9 +92,25 @@ export default function DeployToLivePanel({ dep, onArmed }) {
     if (!formOpen || !dep?.id) return;
     let cancelled = false;
     setArmAdvisories([]);
+    setForwardValidation(null);
+    setValidationLoaded(false);
     api.deploymentMetrics(dep.id)
-      .then((d) => { if (!cancelled) setArmAdvisories(d?.arm_advisories || []); })
-      .catch(() => { if (!cancelled) setArmAdvisories([]); });
+      .then((d) => {
+        if (cancelled) return;
+        setArmAdvisories(d?.arm_advisories || []);
+        setForwardValidation(d?.forward_validation || null);
+        setValidationLoaded(true);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setArmAdvisories([]);
+        setForwardValidation({
+          promotion_allowed: false,
+          phase: "unavailable",
+          failed_checks: ["forward_validation_unavailable"],
+        });
+        setValidationLoaded(true);
+      });
     return () => { cancelled = true; };
   }, [formOpen, dep?.id]);
 
@@ -90,6 +122,7 @@ export default function DeployToLivePanel({ dep, onArmed }) {
   }, [confirmOpen]);
 
   const maxLots = safetyConfig?.max_lots_per_order ?? null;
+  const maxOpen = safetyConfig?.max_open_positions ?? null;
   const lotsNum = Math.max(1, parseInt(lots, 10) || 1);
   const maxDayNum = Math.max(1, parseInt(maxDay, 10) || 1);
   const maxConcurrentNum = Math.max(1, parseInt(maxConcurrent, 10) || 1);
@@ -104,11 +137,25 @@ export default function DeployToLivePanel({ dep, onArmed }) {
     ? `Account ceiling is ${maxLots} lot${maxLots === 1 ? "" : "s"}/order`
     : null;
 
-  const canProceedToConfirm = !lotsError && lotsNum >= 1 && maxDayNum >= 1 && maxConcurrentNum >= 1;
+  const dailyLossError = dailyLossCapNum == null || !Number.isFinite(dailyLossCapNum) || dailyLossCapNum <= 0
+    ? "A positive daily loss cap is required for live execution"
+    : null;
+  const concurrentError = maxOpen != null && maxConcurrentNum > maxOpen
+    ? `Account ceiling is ${maxOpen} open position${maxOpen === 1 ? "" : "s"}`
+    : null;
+  const promotionReady = Boolean(forwardValidation?.promotion_allowed);
+  const unvalidated = validationLoaded && !promotionReady;
+  const canProceedToConfirm = validationLoaded && safetyLoaded && !safetyError
+    && !lotsError && !concurrentError && !dailyLossError
+    && lotsNum >= 1 && maxDayNum >= 1 && maxConcurrentNum >= 1;
 
   const openForm = () => {
     setConfirmText("");
     setDryRunWarning(false);
+    setAcceptUnvalidated(false);
+    setSafetyConfig(null);
+    setSafetyLoaded(false);
+    setSafetyError(false);
     setFormOpen(true);
   };
 
@@ -120,7 +167,7 @@ export default function DeployToLivePanel({ dep, onArmed }) {
   };
 
   const handleArm = async () => {
-    if (confirmText !== "ENABLE") return;
+    if (confirmText !== "ENABLE" || (unvalidated && !acceptUnvalidated)) return;
     setBusy(true);
     setDryRunWarning(false);
     try {
@@ -129,6 +176,7 @@ export default function DeployToLivePanel({ dep, onArmed }) {
         max_lots_per_day: maxDayNum,
         max_concurrent: maxConcurrentNum,
         confirm: true,
+        accept_unvalidated_live: Boolean(unvalidated && acceptUnvalidated),
         ...(dailyLossCapNum != null ? { daily_loss_cap: dailyLossCapNum } : {}),
         // PC-down OCO backstop — only sent when the operator entered a value;
         // a blank field omits the key so the backend default band applies.
@@ -145,7 +193,19 @@ export default function DeployToLivePanel({ dep, onArmed }) {
       }
       onArmed?.();
     } catch (e) {
-      toast.error(`Enable failed: ${e.response?.data?.detail || e.message}`);
+      const detail = e?.response?.data?.detail;
+      if (detail?.code === "explicit_unvalidated_live_consent_required") {
+        setForwardValidation(detail.forward_validation || {
+          promotion_allowed: false,
+          phase: "unavailable",
+          failed_checks: ["forward_validation_unavailable"],
+        });
+        setValidationLoaded(true);
+        setAcceptUnvalidated(false);
+        toast.error("Forward evidence changed. Review the failed checks and explicitly approve unvalidated live trading to continue.");
+        return;
+      }
+      toast.error(`Enable failed: ${getApiErrorMessage(e)}`);
     } finally {
       setBusy(false);
     }
@@ -194,6 +254,30 @@ export default function DeployToLivePanel({ dep, onArmed }) {
             </span>
           </div>
 
+          {validationLoaded && (
+            <div className={`rounded-md border px-3 py-2 text-xs ${promotionReady
+              ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
+              : "border-danger/50 bg-danger/10 text-danger"}`}
+              data-testid="live-forward-validation-status">
+              {promotionReady ? (
+                <span><strong>Forward validated.</strong> The evidence policy permits capital promotion.</span>
+              ) : (
+                <div className="space-y-1">
+                  <div><strong>Unvalidated live candidate.</strong> Evidence warnings do not prevent an explicit user-authorized deployment.</div>
+                  <div className="font-mono text-[10px] break-words">
+                    Failed: {(forwardValidation?.failed_checks || ["evidence unavailable"]).join(", ")}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {safetyError && (
+            <div className="rounded-md border border-danger/50 bg-danger/10 px-3 py-2 text-xs text-danger">
+              Account safety ceilings could not be loaded. Live activation is disabled until this check succeeds.
+            </div>
+          )}
+
           <form onSubmit={handleFormSubmit} className="space-y-3">
             {/* Lots per signal */}
             <div>
@@ -238,33 +322,40 @@ export default function DeployToLivePanel({ dep, onArmed }) {
             <div>
               <label className="text-[10px] uppercase tracking-wider text-dimmer mb-1 block">
                 Max concurrent positions
+                {maxOpen != null && (
+                  <span className="ml-2 text-warning">ceiling: {maxOpen}</span>
+                )}
               </label>
               <Input
                 type="number"
                 min={1}
+                max={maxOpen ?? undefined}
                 value={maxConcurrent}
                 onChange={(e) => setMaxConcurrent(e.target.value)}
                 className="bg-bg-2 border-line h-8 text-xs"
                 data-testid="live-caps-max-concurrent"
                 required
               />
+              {concurrentError && <p className="text-[10px] text-danger mt-1">{concurrentError}</p>}
             </div>
 
-            {/* Daily loss cap (optional) */}
+            {/* Daily loss cap — capital gate, always required */}
             <div>
               <label className="text-[10px] uppercase tracking-wider text-dimmer mb-1 block">
-                Daily loss cap ₹ <span className="text-dimmer/60">(optional — leave blank to disable)</span>
+                Daily loss cap ₹ <span className="text-warning">(required)</span>
               </label>
               <Input
                 type="number"
-                min={0}
+                min={1}
                 step={100}
                 value={dailyLossCap}
                 onChange={(e) => setDailyLossCap(e.target.value)}
-                placeholder="e.g. 5000"
+                placeholder="e.g. 4000"
                 className="bg-bg-2 border-line h-8 text-xs"
                 data-testid="live-caps-loss"
+                required
               />
+              {dailyLossError && <p className="text-[10px] text-danger mt-1">{dailyLossError}</p>}
             </div>
 
             {/* PC-down OCO backstop (catastrophe band) — optional overrides */}
@@ -282,7 +373,7 @@ export default function DeployToLivePanel({ dep, onArmed }) {
                 </label>
                 <Input
                   type="number"
-                  min={0}
+                  min={0.1}
                   step={0.5}
                   value={catStopPct}
                   onChange={(e) => setCatStopPct(e.target.value)}
@@ -298,7 +389,7 @@ export default function DeployToLivePanel({ dep, onArmed }) {
                 </label>
                 <Input
                   type="number"
-                  min={0}
+                  min={0.1}
                   step={0.5}
                   value={catTargetPct}
                   onChange={(e) => setCatTargetPct(e.target.value)}
@@ -365,6 +456,25 @@ export default function DeployToLivePanel({ dep, onArmed }) {
             <p className="text-dimmer">
               Deployed entries go live as NRML with a resting OCO backstop; the catastrophe band is auto-widened to stay clear of the software guard stop.
             </p>
+            <div className="rounded-md border border-line bg-bg-2 px-3 py-2 text-[11px] space-y-1">
+              <div>Strategy: <span className="text-foreground">{dep.strategy_id || "—"}</span></div>
+              <div>Instrument: <span className="text-foreground">{dep.instrument || "—"}</span></div>
+              <div>Option selection: <span className="text-foreground">{(dep.option_policy?.moneyness || []).join("/").toUpperCase() || "ATM"} · DTE {(dep.option_policy?.dte_filter || []).join(",") || "all"}</span></div>
+            </div>
+            {unvalidated && (
+              <label className="flex items-start gap-2 rounded-md border border-danger/60 bg-danger/10 px-3 py-2 text-[11px] text-danger" data-testid="accept-unvalidated-live">
+                <input
+                  type="checkbox"
+                  checked={acceptUnvalidated}
+                  onChange={(e) => setAcceptUnvalidated(e.target.checked)}
+                  className="mt-0.5 h-4 w-4 shrink-0"
+                />
+                <span>
+                  <strong>Yes, I explicitly approve unvalidated real-money trading.</strong>{" "}
+                  I understand the failed checks ({(forwardValidation?.failed_checks || ["evidence unavailable"]).join(", ")}) and accept the loss risk.
+                </span>
+              </label>
+            )}
             <p className="text-dimmer">
               Type <strong className="text-danger font-mono">ENABLE</strong> below to go live for{" "}
               <em>{depLabel}</em>.
@@ -416,7 +526,7 @@ export default function DeployToLivePanel({ dep, onArmed }) {
             <Button
               type="button"
               size="sm"
-              disabled={confirmText !== "ENABLE" || busy}
+              disabled={confirmText !== "ENABLE" || busy || (unvalidated && !acceptUnvalidated)}
               onClick={handleArm}
               className="h-8 text-xs flex-1 bg-danger text-white hover:bg-danger/80 disabled:opacity-40"
               data-testid="deploy-to-live-arm-submit"

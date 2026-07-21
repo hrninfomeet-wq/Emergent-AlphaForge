@@ -43,11 +43,11 @@ def test_optimizer_hint_content_is_present_and_grounded():
         "Bayesian (TPE) is the default",
         "Risk-Adjusted is the balanced default",
         "Verify a Single run with walk-forward before trusting it",
-        "Keep Option re-rank for any deploy decision",
+            "forward gates decide promotion",
         # trial controls + guards
         "becomes a ceiling, not a target",       # trial budget / early-stop
         "Keep 1 for a deploy decision",           # parallel workers
-        "Statistical-significance floor",         # min trades
+            "basic screen, not significance",         # min trades
         # option execution
         "Keep ATM unless you have a reason",      # moneyness
         "0DTE",                                   # dte filter

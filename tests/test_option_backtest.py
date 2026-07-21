@@ -10,6 +10,14 @@ sys.path.insert(0, str(ROOT / "backend"))
 from app import option_backtest  # noqa: E402
 
 
+def test_option_lookup_never_uses_a_bar_that_ends_after_the_decision():
+    rows = pd.DataFrame([
+        {"ts": 100_000, "bar_end_ts": 170_001, "close": 101.0},
+    ])
+    # A 100_000-labelled one-minute spot bar is decided at 160_000.
+    assert option_backtest._candle_at_or_before(rows, 100_000, 120_000) is None
+
+
 def test_simulate_paired_option_trades_selects_contract_and_uses_option_premium_pnl():
     spot_trades = [
         {
@@ -93,6 +101,42 @@ def test_prebuilt_candles_by_key_is_byte_identical_to_internal_build():
         candles_by_key=option_backtest.build_candles_by_key(option_rows), **kw)
     assert internal["trades"] == prebuilt["trades"]
     assert internal["metrics"] == prebuilt["metrics"]
+
+
+def test_reused_exchange_token_does_not_cross_pair_between_expiries():
+    """Regression: token 52526 represented unrelated contracts in two years."""
+    spot_trades = [{
+        "direction": "CE", "entry_ts": 100_000, "exit_ts": 220_000,
+        "entry_price": 57900.0, "exit_price": 57950.0,
+    }]
+    contracts = [
+        {"instrument_key": "NSE_FO|52526", "underlying": "NIFTY", "side": "PE",
+         "strike": 23850.0, "expiry_date": "2025-01-02", "lot_size": 65},
+        {"instrument_key": "NSE_FO|52526", "underlying": "NIFTY", "side": "CE",
+         "strike": 57900.0, "expiry_date": "2026-03-30", "lot_size": 65},
+    ]
+    option_rows = pd.DataFrame([
+        # Correct expiry is deliberately first; canonical-token grouping would
+        # let the unrelated later row win on a duplicate timestamp.
+        {"instrument_key": "NSE_FO|52526", "expiry_date": "2026-03-30",
+         "ts": 90_000, "close": 100.0, "high": 101.0, "low": 99.0},
+        {"instrument_key": "NSE_FO|52526", "expiry_date": "2025-01-02",
+         "ts": 90_000, "close": 999.0, "high": 1000.0, "low": 998.0},
+        {"instrument_key": "NSE_FO|52526", "expiry_date": "2026-03-30",
+         "ts": 220_000, "close": 110.0, "high": 111.0, "low": 109.0},
+        {"instrument_key": "NSE_FO|52526", "expiry_date": "2025-01-02",
+         "ts": 220_000, "close": 888.0, "high": 889.0, "low": 887.0},
+    ])
+    result = option_backtest.simulate_paired_option_trades(
+        spot_trades=spot_trades, contracts=contracts,
+        option_candles=option_rows, underlying="NIFTY", moneyness="atm",
+        fixed_expiry_date="2026-03-30", lots=1,
+        slippage_config={"atm_pts": 0},
+    )
+    trade = result["trades"][0]
+    assert trade["status"] == "PAIRED"
+    assert trade["raw_entry_option_price"] == 100.0
+    assert trade["raw_exit_option_price"] == 110.0
 
 
 def test_simulate_paired_option_trades_disables_slippage_when_pts_zero():

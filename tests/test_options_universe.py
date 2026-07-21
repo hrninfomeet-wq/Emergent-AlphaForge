@@ -96,8 +96,17 @@ def test_select_contract_requires_exact_strike_no_fallback():
 def test_canonical_instrument_key_strips_only_dated_suffix():
     from app.instruments import canonical_instrument_key as c
     assert c("NSE_FO|72171|26-05-2026") == "NSE_FO|72171"
+    assert c("NSE_FO|72171|2026-05-26") == "NSE_FO|72171"
     assert c("BSE_FO|823065|05-02-2026") == "BSE_FO|823065"
     assert c("NSE_FO|72171") == "NSE_FO|72171"
     assert c("NSE_INDEX|Nifty 50") == "NSE_INDEX|Nifty 50"
     assert c("") == ""
     assert c(None) == ""
+
+
+def test_contract_identity_key_keeps_reused_token_expiries_distinct():
+    from app.instruments import contract_identity_key as c
+    assert c("NSE_FO|52526", "2025-01-02") == "NSE_FO|52526|2025-01-02"
+    assert c("NSE_FO|52526", "2026-03-30") == "NSE_FO|52526|2026-03-30"
+    assert c("NSE_FO|52526|30-03-2026") == "NSE_FO|52526|2026-03-30"
+    assert c("NSE_FO|52526") == "NSE_FO|52526"

@@ -1,12 +1,14 @@
 """Strategy Deployment document builder and validation helpers."""
 from __future__ import annotations
 
+import hashlib
+import json
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional
 
 
-ALLOWED_SOURCE_TYPES = {"preset", "backtest_run"}
+ALLOWED_SOURCE_TYPES = {"strategy", "preset", "backtest_run"}
 # Two modes (user decision 2026-06-12): "signal_only" journals signals without
 # trading; "paper" auto-trades clean signals. Legacy values map on create:
 # "shadow" -> signal_only; "recommendation" was retired (treated as signal_only
@@ -24,6 +26,34 @@ CREATABLE_MODES = {"signal_only", "paper"}
 LEGACY_MODE_MAP = {"shadow": "signal_only", "recommendation": "signal_only"}
 ALLOWED_CONFIRMATION_MODES = {"1m_close", "tick"}
 ALLOWED_MONEYNESS = {"atm", "otm1", "itm1"}
+
+
+def compute_forward_config_hash(deployment: Dict[str, Any]) -> str:
+    """Fingerprint every decision-bearing field of a paper forward cohort.
+
+    ``strategy_hash`` intentionally identifies only strategy id/version/params
+    for signal audit compatibility.  Promotion needs a broader fingerprint:
+    option selection, execution/risk policy and pre-trade filtering must not be
+    changed while evidence is being collected.  ``risk.live`` is excluded
+    because those caps are written only after a cohort passes promotion.
+    """
+    risk = dict(deployment.get("risk") or {})
+    risk.pop("live", None)
+    payload = {
+        "strategy_id": str(deployment.get("strategy_id") or ""),
+        "strategy_version": str(deployment.get("strategy_version") or ""),
+        "strategy_source_sha": str(deployment.get("strategy_source_sha") or ""),
+        "params": deployment.get("params") or {},
+        "instrument": str(deployment.get("instrument") or ""),
+        "timeframe": str(deployment.get("timeframe") or ""),
+        "confirmation_mode": str(deployment.get("confirmation_mode") or ""),
+        "option_policy": deployment.get("option_policy") or {},
+        "pretrade_profile": str(deployment.get("pretrade_profile") or ""),
+        "pretrade_settings_snapshot": deployment.get("pretrade_settings_snapshot") or {},
+        "risk": risk,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:24]
 
 
 def _now_iso() -> str:
@@ -131,7 +161,7 @@ def build_deployment_doc(
     mode = LEGACY_MODE_MAP.get(mode, mode)
     confirmation_mode = str(confirmation_mode or "1m_close").lower()
     if source_type not in ALLOWED_SOURCE_TYPES:
-        raise ValueError("Deployment source_type must be preset or backtest_run")
+        raise ValueError("Deployment source_type must be strategy, preset or backtest_run")
     # Deliberately CREATABLE_MODES, not ALLOWED_MODES: a deployment can never be
     # born live. Live is reached only via the preflighted live/enable route, so a
     # crafted create body can't skip the caps + safety chain into real money.
@@ -153,6 +183,24 @@ def build_deployment_doc(
     timestamp = now or _now_iso()
     source_config = _source_config(source_doc)
     metrics = source_doc.get("metrics") if isinstance(source_doc.get("metrics"), dict) else {}
+    strategy_version = str(
+        source_doc.get("strategy_version")
+        or source_config.get("strategy_version")
+        or ""
+    )
+    params = _params(source_type, source_doc)
+    strategy_hash = str(
+        source_doc.get("strategy_hash")
+        or source_config.get("strategy_hash")
+        or ""
+    )
+    if not strategy_hash:
+        # A deployment is the boundary of a forward cohort.  Older presets did
+        # not persist this hash, so compute the same stable id/version/params
+        # fingerprint used by the evaluator at creation time.  Without it a
+        # brand-new cohort could collect forever but never satisfy config_frozen.
+        from app.deployment_evaluator import compute_strategy_hash
+        strategy_hash = compute_strategy_hash(strategy_id, strategy_version, params)
 
     # DTE filter: which days-to-expiry are eligible for the chosen contract.
     # User default 2026-05-27: 0-6 (full weekly window + a couple of days into next week).
@@ -167,7 +215,7 @@ def build_deployment_doc(
 
     sizing_pin = deployment_sizing_from_source(source_type, source_doc)
 
-    return {
+    doc = {
         "id": str(uuid.uuid4()),
         "name": str(name or f"{strategy_id} deployment"),
         "source_type": source_type,
@@ -179,12 +227,12 @@ def build_deployment_doc(
             "metrics": metrics,
         },
         "strategy_id": strategy_id,
-        "strategy_version": str(source_doc.get("strategy_version") or source_config.get("strategy_version") or ""),
-        "strategy_hash": str(source_doc.get("strategy_hash") or source_config.get("strategy_hash") or ""),
+        "strategy_version": strategy_version,
+        "strategy_hash": strategy_hash,
         "strategy_source_sha": str(strategy_source_sha or ""),
-        "params": _params(source_type, source_doc),
+        "params": params,
         "instrument": instrument,
-        "timeframe": "1m",
+        "timeframe": str(source_config.get("timeframe") or source_doc.get("timeframe") or "1m"),
         "confirmation_mode": confirmation_mode,
         "option_policy": {
             "moneyness": _clean_moneyness(option_moneyness),
@@ -208,6 +256,12 @@ def build_deployment_doc(
         "audit": {
             "created_from": source_type,
             "source_id": source_id,
-            "notes": "Created from saved preset/backtest result; no direct raw strategy deployment.",
+            "notes": (
+                "Created from an immutable Strategy Library snapshot."
+                if source_type == "strategy"
+                else "Created from saved preset/backtest result."
+            ),
         },
     }
+    doc["forward_config_hash"] = compute_forward_config_hash(doc)
+    return doc

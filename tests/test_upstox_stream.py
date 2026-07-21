@@ -55,6 +55,10 @@ def _ltpc(ltp: float, ltt: int, ltq: int, cp: float) -> bytes:
     return _double(1, ltp) + _int(2, ltt) + _int(3, ltq) + _double(4, cp)
 
 
+def _quote(bid_q: int, bid_p: float, ask_q: int, ask_p: float) -> bytes:
+    return _int(1, bid_q) + _double(2, bid_p) + _int(3, ask_q) + _double(4, ask_p)
+
+
 def _feed_map_entry(instrument_key: str, feed_payload: bytes) -> bytes:
     return _string(1, instrument_key) + _message(2, feed_payload)
 
@@ -111,6 +115,37 @@ def test_decode_market_data_feed_extracts_index_full_feed_ltpc():
     assert normalized[0]["last_price"] == 55123.5
     assert normalized[0]["close_price"] == 55200.0
     assert normalized[0]["mode"] == "full"
+
+
+def test_full_feed_retains_depth_oi_iv_and_greeks_for_forward_evidence():
+    market_level = _message(1, _quote(130, 100.0, 195, 100.5))
+    greeks = (_double(1, 0.51) + _double(2, -4.2) + _double(3, 0.001)
+              + _double(4, 12.3) + _double(5, 2.1))
+    market = (
+        _message(1, _ltpc(100.25, 1779774124000, 65, 99.0))
+        + _message(2, market_level)
+        + _message(3, greeks)
+        + _double(5, 100.1)
+        + _int(6, 5000)
+        + _double(7, 250000)
+        + _double(8, 0.18)
+        + _double(9, 10000)
+        + _double(10, 9000)
+    )
+    feed = _message(2, _message(1, market)) + _int(4, 1)
+    response = _int(1, 1) + _message(
+        2, _feed_map_entry("NSE_FO|12345", feed)) + _int(3, 1779774125000)
+
+    tick = normalize_feed_response(decode_market_data_feed(response))[0]
+
+    assert tick["mode"] == "full"
+    assert tick["best_bid_price"] == 100.0
+    assert tick["best_ask_price"] == 100.5
+    assert tick["best_ask_quantity"] == 195
+    assert tick["open_interest"] == 250000.0
+    assert tick["implied_volatility"] == 0.18
+    assert tick["option_greeks"]["delta"] == 0.51
+    assert tick["market_depth"][0]["bid_quantity"] == 130
 
 
 class FakeTicksCollection:
@@ -172,7 +207,7 @@ def test_stream_manager_status_is_sanitized_and_tracks_subscription():
 
     status = manager.status()
     assert status["session_id"] == "session-1"
-    assert status["mode"] == "ltpc"
+    assert status["mode"] == "full"
     assert status["instrument_count"] == 1
     assert status["persist"] is True
 

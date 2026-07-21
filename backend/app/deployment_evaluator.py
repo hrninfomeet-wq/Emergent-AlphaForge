@@ -547,9 +547,16 @@ async def evaluate_deployment_on_close(
         await _mark_deployment_evaluated(db, deployment_id, candle_ts)
         return {"deployment_id": deployment_id, "outcome": "no_setup", "candle_ts": candle_ts}
 
-    # Resolve pretrade profile at signal time, snapshot for audit
+    # New forward cohorts pin the resolved settings at deployment creation so
+    # editing a named global profile cannot silently change the experiment.
+    # Legacy deployments without a snapshot retain the historical lookup path.
     profile_name = str(deployment.get("pretrade_profile") or "Balanced")
-    pretrade_settings = await _resolve_pretrade_filters(db, profile_name)
+    pinned_pretrade = deployment.get("pretrade_settings_snapshot")
+    pretrade_settings = (
+        dict(pinned_pretrade)
+        if isinstance(pinned_pretrade, dict)
+        else await _resolve_pretrade_filters(db, profile_name)
+    )
     if pm_result is not None:
         # Track B: the premium engine IS the entry gate (ref capture, momentum
         # threshold, late-lock cutoff, tick-freshness HOLDs). The score/regime

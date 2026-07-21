@@ -144,7 +144,7 @@ export default function MarketHeader() {
     try {
       const data = streamStatus?.running
         ? await api.stopUpstoxStream()
-        : await api.startUpstoxStream({ mode: "ltpc", persist_ticks: true });
+        : await api.startUpstoxStream({ mode: "full", persist_ticks: true });
       setStreamStatus(data);
       const nextSnapshot = await api.marketHeader();
       setSnapshot(nextSnapshot || { items: [] });
@@ -257,7 +257,7 @@ function MarketTile({ item, compact = false }) {
  * Renders only when the quote carries a valid day high/low spread. The marker
  * position is the last price interpolated between low and high; an up/down
  * caret reflects the change direction. Degrades silently (renders nothing)
- * when high/low are unavailable, e.g. an ltpc-only WS tick.
+ * when high/low are unavailable, e.g. a partial/legacy WS tick.
  */
 function RangeBar({ item }) {
   const low = Number(item?.low);

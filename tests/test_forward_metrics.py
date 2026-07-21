@@ -78,9 +78,13 @@ def _ist_ms(day: str, hh: int, mm: int) -> int:
     return int(dt.astimezone(timezone.utc).timestamp() * 1000)
 
 
-def _session_candles(day: str, count: int, *, instrument: str = "NIFTY") -> List[Dict[str, Any]]:
+def _session_candles(
+    day: str, count: int, *, instrument: str = "NIFTY",
+    start_hh: int = 10, start_mm: int = 0,
+) -> List[Dict[str, Any]]:
     rows = []
-    start = datetime.fromisoformat(f"{day}T10:00:00+05:30")
+    start = datetime.fromisoformat(
+        f"{day}T{start_hh:02d}:{start_mm:02d}:00+05:30")
     for i in range(count):
         ist_dt = start + timedelta(minutes=i)
         rows.append({
@@ -146,6 +150,8 @@ def test_forward_metrics_uses_complete_sessions_for_trade_stats():
     assert result["session_completeness"]["complete_session_count"] == 10
     assert result["session_completeness"]["partial_session_count"] == 1
     assert result["session_completeness"]["threshold_minutes"] == 210
+    assert result["promotion_session_completeness"]["threshold_minutes"] == 357
+    assert result["promotion_session_completeness"]["complete_session_count"] == 0
     assert result["trade_count"] == 3
     assert result["excluded_incomplete_session_trade_count"] == 1
     assert result["win_rate"] == 66.67
@@ -193,6 +199,51 @@ def test_forward_metrics_hides_strategy_library_until_ten_complete_sessions():
         "min_complete_sessions": 10,
         "reason": "needs_10_complete_sessions",
     }
+
+
+def test_promotion_session_requires_95_percent_of_full_market_window():
+    from app.forward_metrics import (
+        PROMOTION_SESSION_END_IST, PROMOTION_SESSION_START_IST,
+        _session_counts, _summarize_sessions,
+    )
+
+    db = FakeDb()
+    db.candles_1m.rows.extend(
+        _session_candles("2026-05-18", 356, start_hh=9, start_mm=15))
+    db.candles_1m.rows.extend(
+        _session_candles("2026-05-19", 357, start_hh=9, start_mm=15))
+    days = ["2026-05-18", "2026-05-19"]
+    counts = asyncio.run(_session_counts(
+        db, instrument="NIFTY", session_days=days,
+        window_start=PROMOTION_SESSION_START_IST,
+        window_end=PROMOTION_SESSION_END_IST,
+    ))
+    summary = _summarize_sessions(
+        days, counts, window_start=PROMOTION_SESSION_START_IST,
+        window_end=PROMOTION_SESSION_END_IST,
+        expected_minutes=375, threshold_ratio=0.95,
+    )
+
+    assert summary["threshold_minutes"] == 357
+    assert summary["complete_session_count"] == 1
+    assert summary["partial_session_count"] == 1
+
+
+def test_option_surface_coverage_denominator_includes_unpriced_entry_attempts():
+    from app.forward_metrics import _count_option_entry_surface_misses
+
+    signals = [
+        {"created_at": "2026-05-18T10:00:00+05:30",
+         "paper_trade_error": "option_entry_price_unavailable (no tick)"},
+        {"created_at": "2026-05-18T10:01:00+05:30",
+         "paper_trade_error": "no_option_contract"},
+        {"created_at": "2026-05-18T10:02:00+05:30",
+         "paper_trade_error": "option_entry_price_unavailable",
+         "paper_trade_id": "eventually-opened"},
+        {"created_at": "2026-05-19T10:00:00+05:30",
+         "paper_trade_error": "option_entry_price_unavailable"},
+    ]
+    assert _count_option_entry_surface_misses(signals, {"2026-05-18"}) == 2
 
 
 def test_backend_and_frontend_expose_forward_metrics():

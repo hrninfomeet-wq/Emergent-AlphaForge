@@ -14,22 +14,24 @@ kill switch, and chokepoint on the way.
 
 ## Core principle
 
-A strategy cannot be deployed from a raw plugin file. A **deployment is always
-built from a saved, audited artifact** — a saved **Preset** or a saved
-**Backtest Run** (`source_type` ∈ `{preset, backtest_run}`,
-`build_deployment_doc` in `strategy_deployments.py`). The build fails with a
-`ValueError` if the source is missing a `strategy_id`, `instrument`, or id/name.
+A strategy cannot be deployed from an unregistered raw file. A **deployment is
+always an immutable snapshot** of a loaded, 1-minute-compatible **Strategy
+Library** entry, a saved **Preset**, or a saved **Backtest Run** (`source_type` ∈
+`{strategy, preset, backtest_run}`, `build_deployment_doc` in
+`strategy_deployments.py`). The build fails if the source is missing a
+`strategy_id`, supported instrument, 1-minute compatibility, or id/name.
 
 The pipeline:
 
-1. Backtest a strategy in the **Backtest Lab** (spot + paired-option).
-2. Save it as a Preset, or keep the Backtest Run.
-3. Create a **deployment** from that artifact — quality gate + acknowledgment.
-4. The 1-minute-close **evaluator** journals signals every market minute.
-5. Depending on the deployment's **mode**, a clean signal opens a
+1. Select a loaded Strategy Library entry directly, or backtest it in the
+   **Backtest Lab** (spot + paired-option) and save a Preset/Backtest Run.
+2. Create a **deployment** from that source — its selected parameters and source
+   SHA are frozen; quality warnings require acknowledgment but do not veto it.
+3. The 1-minute-close **evaluator** journals signals every market minute.
+4. Depending on the deployment's **mode**, a clean signal opens a
    **paper trade**, a **real broker order** (`mode == "live"`), or **nothing**
    (signal-only).
-6. Review honest **forward metrics** before trusting — or going live with — the
+5. Review honest **forward metrics** before trusting — or going live with — the
    strategy.
 
 ---
@@ -41,7 +43,7 @@ The pipeline:
 | Field | Purpose |
 |---|---|
 | `id` / `name` | Stable id + user-facing name |
-| `source_type` / `source_id` | `preset` \| `backtest_run` + preset name / run id |
+| `source_type` / `source_id` | `strategy` \| `preset` \| `backtest_run` + strategy id / preset name / run id |
 | `source_snapshot` | Frozen name/metrics of the source at creation |
 | `strategy_id` / `strategy_version` / `strategy_hash` | The plugin + audit hash |
 | `strategy_source_sha` | SHA of the plugin `.py` at creation — pinned for **drift detection** |
@@ -242,18 +244,28 @@ still on top of it.
 ### Enable / disable / stop (`routers/deployments.py`)
 
 `POST /deployments/{id}/live/enable` sets `mode="live"` and writes `risk.live`
-**only** if every guard passes: deployment exists and is `ACTIVE`, strategy not
-retired, not drift-paused, **broker connected** (a Flattrade token is stored),
-the `LiveEngine.can_trade()` is True, and `confirm` is the literal boolean
-`True` (StrictBool) — the same seven-check preflight the old arm route ran. The
-body sets `lots`, `max_lots_per_day`, `max_concurrent`, `daily_loss_cap`, and
-optional catastrophe stop/target %; **all three lot caps are REQUIRED to be
-≥ 1** (`400` otherwise) — a live deployment without caps would trade unbounded.
+**only** if every operational guard passes: deployment exists and is `ACTIVE`,
+strategy not retired, not drift-paused, **broker ready** (a current post-06:00
+Flattrade daily session is stored and static-IP metadata is configured), the
+`LiveEngine.can_trade()` is True, and `confirm` is the literal
+boolean `True` (StrictBool). The body sets `lots`, `max_lots_per_day`,
+`max_concurrent`, `daily_loss_cap`, and optional catastrophe stop/target %; all
+three count caps must be ≥1 and the daily loss cap must be positive. Lots and
+concurrent positions must also fit the current account-level safety ceilings.
+
+Forward evidence is presented before this activation. If
+`promotion_allowed=false` (including unavailable validation), the route returns
+`409 explicit_unvalidated_live_consent_required` unless the operator separately
+sets strict `accept_unvalidated_live=true`. The failed checks, evidence snapshot,
+user, and timestamp are persisted under `risk.live.evidence_consent`. That
+consent overrides only the research veto; none of the operational, broker,
+capital, order-safety, idempotency, or protection gates above are bypassed.
 Unlike the old arm, **enabling does not expire** — there is no `armed_until`
 and no "cannot enable after 15:00" check: enabling in the evening simply means
 the deployment goes live at the next session's open (the daily 15:00 IST cutoff
-still applies to every individual entry, every day). The user's `lots` is
-stored verbatim; the executor clamps it to the account ceiling at place time.
+still applies to every individual entry, every day). The accepted account
+ceilings are snapshotted at activation, and the executor re-applies the current
+ceiling at order time.
 
 - `POST /deployments/{id}/live/disable` — revert `mode` to `"paper"`; stops new
   live placing. Does **not** flatten open positions — they stay registered with
@@ -482,5 +494,6 @@ Flattrade broker endpoints in [`Resources/flattrade-pi-api/`](./Resources/flattr
 - Everything is IST; the NSE session is 09:15–15:30 with a 15:00 square-off;
   holidays and expiry dates come from the calendar / `option_contracts`, never a
   hardcoded weekday.
-- No signals from unsaved/unreviewed strategy files — a deployment is always from
-  an audited Preset or Backtest Run.
+- No signals from an unregistered file — a deployment is always an immutable
+  snapshot of a loaded 1m-compatible Strategy Library entry, saved Preset, or
+  Backtest Run, with the current strategy source SHA pinned.

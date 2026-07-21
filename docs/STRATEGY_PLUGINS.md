@@ -2,7 +2,7 @@
 
 Drop a single Python file into `backend/app/strategies/plugins/`. It will be auto-discovered on backend restart and appear in the **Strategy Library** + **Backtest Lab** + **Optimizer** automatically.
 
-Important: a plugin becoming available does not make it deployable for forward testing. Strategy Deployments are created only from saved presets or saved backtest results so the exact parameters, source run, and audit context are preserved. The deployment also pins the plugin file's SHA — editing a deployed plugin auto-pauses its deployments (drift detection). See [Strategy Deployments](STRATEGY_DEPLOYMENTS.md).
+Important: a successfully loaded, non-retired plugin that supports the current `1m` evaluator can be deployed directly from Strategy Library. AlphaForge freezes the selected instrument, timeframe, complete parameter set, strategy version, and source SHA into an immutable deployment snapshot. Saving a preset/backtest first is still the recommended evidence workflow but is no longer a technical prerequisite. An unregistered, failed-to-load, retired, or non-1m plugin is not compatible. Editing deployed plugin code later auto-pauses its deployments through drift detection. See [Strategy Deployments](STRATEGY_DEPLOYMENTS.md).
 
 ## Template
 

@@ -186,7 +186,7 @@ gate chain) · [DEVELOPER_GUIDE.md](./DEVELOPER_GUIDE.md) · [USER_MANUAL.md](./
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/api/deployments` | List deployments (`status`, `limit` filters). |
-| POST | `/api/deployments` | Create a deployment (freezes params + `strategy_source_sha`; runs the quality gate; auto-paper defaults). |
+| POST | `/api/deployments` | Create a signal-only/paper deployment from `strategy`, `preset`, or `backtest_run` (freezes params + `strategy_source_sha`; runs the warning/ack gate; auto-paper defaults). Direct strategy requests use `source_instrument`, `source_timeframe=1m`, and `source_params`. |
 | GET | `/api/deployments/preflight` | Pre-flight: spot coverage, upcoming expiries, active vs expired contracts, Upstox token, structural-break notes. |
 | GET | `/api/deployments/quality` | Quality evaluation vs the source (severity-colored warnings). |
 | GET | `/api/deployments/readiness` | Deployment-readiness evidence (latest WFO + option-rupee proof; informational, never blocks). |
@@ -208,7 +208,7 @@ gate chain) · [DEVELOPER_GUIDE.md](./DEVELOPER_GUIDE.md) · [USER_MANUAL.md](./
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/api/deployments/{deployment_id}/live/enable` | Switch to LIVE mode — real-money auto-placing (v0.56.0: no session ARM; persists until disabled). Guards: ACTIVE, not retired, not drift-paused, broker connected, engine can-trade, caps + `daily_loss_cap` required, `confirm=true` StrictBool. |
+| POST | `/api/deployments/{deployment_id}/live/enable` | Switch to persistent LIVE mode. Requires ACTIVE/not-retired/no-drift, a current post-06:00 Flattrade session with static-IP config, engine can-trade, positive deployment caps + `daily_loss_cap`, account lot/position ceilings, and strict `confirm=true`. Failed/missing forward evidence returns a consent challenge unless strict `accept_unvalidated_live=true`; the decision and evidence snapshot are persisted. |
 | POST | `/api/deployments/{deployment_id}/live/disable` | Revert to paper mode (does NOT flatten open positions). |
 | POST | `/api/deployments/{deployment_id}/live/stop` | Flatten THIS deployment's open live positions, then disarm (user-initiated exit — transmits directly). |
 | GET | `/api/deployments/live/status` | Batched live status for many deployments in one call (`ids=` comma-separated). |

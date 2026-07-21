@@ -258,6 +258,7 @@ def option_oos_summary(
             "option_stop_pct": option_cfg.get("option_stop_pct"),
             "costs_enabled": bool((option_cfg.get("cost_config") or {}).get("enabled")),
         },
+        "data_integrity": sim_result.get("data_integrity"),
     }
 
 
@@ -460,7 +461,7 @@ async def _pair_oos_with_options(
         if rows:
             candles_df = pd.DataFrame(rows)
 
-    return await asyncio.to_thread(
+    sim = await asyncio.to_thread(
         simulate_paired_option_trades,
         spot_trades=trades, contracts=contracts, option_candles=candles_df,
         underlying=instrument, moneyness=moneyness, lots=lots,
@@ -476,6 +477,9 @@ async def _pair_oos_with_options(
         exit_controls=option_cfg.get("exit_controls"),
         daily_caps=option_cfg.get("daily_caps"),
     )
+    from app.option_data_integrity import assess_option_research_integrity
+    sim["data_integrity"] = assess_option_research_integrity(contracts, candles_df)
+    return sim
 
 
 async def run_wfo(job_id: str, payload: Dict[str, Any], resume: bool = False) -> None:

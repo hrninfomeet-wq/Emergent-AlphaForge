@@ -1,3 +1,4 @@
+import asyncio
 import sys
 from pathlib import Path
 
@@ -5,7 +6,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 
-from app.strategy_deployments import build_deployment_doc, deployment_sizing_from_source  # noqa: E402
+from app.strategy_deployments import (  # noqa: E402
+    build_deployment_doc, compute_forward_config_hash,
+    deployment_sizing_from_source,
+)
+from app.deployment_evaluator import compute_strategy_hash  # noqa: E402
+from app.runtime import _load_deployment_source  # noqa: E402
+from app.strategies.base import StrategyBase, StrategyRegistry  # noqa: E402
 from tests.contract_corpus import backend_api_text
 
 
@@ -38,11 +45,158 @@ def test_build_deployment_from_preset_freezes_auditable_config():
     assert doc["strategy_id"] == "confluence_scalper"
     assert doc["instrument"] == "NIFTY"
     assert doc["params"] == {"ema_fast": 9, "ema_slow": 21}
+    assert doc["strategy_hash"] == compute_strategy_hash(
+        "confluence_scalper", "", {"ema_fast": 9, "ema_slow": 21})
+    assert doc["forward_config_hash"] == compute_forward_config_hash(doc)
     assert doc["confirmation_mode"] == "1m_close"
     assert doc["option_policy"]["moneyness"] == ["atm", "otm1"]
     assert doc["mode"] == "signal_only"  # legacy "shadow" mapped
     assert doc["manual_approval_required"] is False  # approval flow retired
     assert doc["status"] == "ACTIVE"
+
+
+def test_build_deployment_from_strategy_library_freezes_selected_snapshot():
+    source = {
+        "id": "confluence_scalper",
+        "name": "Confluence Scalper",
+        "strategy_id": "confluence_scalper",
+        "strategy_version": "1.2.3",
+        "instrument": "NIFTY",
+        "timeframe": "1m",
+        "params": {"ema_fast": 8, "ema_slow": 24},
+        "config": {
+            "strategy_id": "confluence_scalper",
+            "strategy_version": "1.2.3",
+            "instrument": "NIFTY",
+            "timeframe": "1m",
+            "params": {"ema_fast": 8, "ema_slow": 24},
+        },
+    }
+
+    doc = build_deployment_doc(
+        source_type="strategy",
+        source_doc=source,
+        name="Direct library deployment",
+        mode="paper",
+        option_moneyness=["atm"],
+        now="2026-07-21T10:00:00+00:00",
+    )
+
+    assert doc["source_type"] == "strategy"
+    assert doc["source_id"] == "confluence_scalper"
+    assert doc["strategy_version"] == "1.2.3"
+    assert doc["instrument"] == "NIFTY"
+    assert doc["timeframe"] == "1m"
+    assert doc["params"] == {"ema_fast": 8, "ema_slow": 24}
+    assert doc["audit"]["notes"] == "Created from an immutable Strategy Library snapshot."
+    assert doc["forward_config_hash"] == compute_forward_config_hash(doc)
+
+
+class _DirectDeployStrategy(StrategyBase):
+    id = "direct_deploy_test"
+    name = "Direct Deploy Test"
+    version = "2.0.0"
+    supported_instruments = ["NIFTY", "BANKNIFTY"]
+    supported_timeframes = ["1m", "5m"]
+    parameter_schema = {
+        "period": {"type": "int", "min": 2, "max": 50, "default": 10},
+        "threshold": {"type": "float", "min": 0.1, "max": 2.0, "default": 0.5},
+        "enabled": {"type": "bool", "default": True},
+        "entry_cutoff_hhmm": {"type": "str", "default": "14:00"},
+    }
+
+
+def _direct_registry(monkeypatch):
+    registry = StrategyRegistry()
+    registry.register(_DirectDeployStrategy())
+    import app.strategies.base as strategy_base
+    monkeypatch.setattr(strategy_base, "get_registry", lambda: registry)
+    return registry
+
+
+def test_direct_strategy_loader_freezes_exact_compatible_config(monkeypatch):
+    _direct_registry(monkeypatch)
+    source = asyncio.run(_load_deployment_source(
+        object(),
+        "strategy",
+        "direct_deploy_test",
+        strategy_config={
+            "instrument": "BANKNIFTY",
+            "timeframe": "1m",
+            "params": {
+                "period": 12,
+                "threshold": 0.75,
+                "enabled": False,
+                "entry_cutoff_hhmm": "13:45",
+            },
+        },
+    ))
+
+    assert source["source_kind"] == "strategy_library_snapshot"
+    assert source["instrument"] == "BANKNIFTY"
+    assert source["timeframe"] == "1m"
+    assert source["params"] == {
+        "period": 12,
+        "threshold": 0.75,
+        "enabled": False,
+        "entry_cutoff_hhmm": "13:45",
+    }
+
+
+def test_direct_strategy_loader_rejects_unsupported_live_timeframe(monkeypatch):
+    from fastapi import HTTPException
+
+    _direct_registry(monkeypatch)
+    try:
+        asyncio.run(_load_deployment_source(
+            object(),
+            "strategy",
+            "direct_deploy_test",
+            strategy_config={"instrument": "NIFTY", "timeframe": "5m"},
+        ))
+        assert False, "expected HTTPException"
+    except HTTPException as exc:
+        assert exc.status_code == 400
+        assert "require timeframe=1m" in str(exc.detail)
+
+
+def test_direct_strategy_loader_rejects_invalid_parameter(monkeypatch):
+    from fastapi import HTTPException
+
+    _direct_registry(monkeypatch)
+    try:
+        asyncio.run(_load_deployment_source(
+            object(),
+            "strategy",
+            "direct_deploy_test",
+            strategy_config={
+                "instrument": "NIFTY",
+                "timeframe": "1m",
+                "params": {"period": 99},
+            },
+        ))
+        assert False, "expected HTTPException"
+    except HTTPException as exc:
+        assert exc.status_code == 400
+        assert "period must be <= 50" in str(exc.detail)
+
+
+def test_forward_config_hash_covers_execution_policy_but_not_post_promotion_live_caps():
+    base = {
+        "strategy_id": "s", "strategy_version": "1", "strategy_source_sha": "src",
+        "params": {"p": 1}, "instrument": "NIFTY", "timeframe": "1m",
+        "confirmation_mode": "1m_close", "option_policy": {"moneyness": ["atm"]},
+        "pretrade_profile": "Balanced",
+        "pretrade_settings_snapshot": {"min_confidence_score": 60},
+        "risk": {"default_lots": 1, "friction": {"enabled": True}},
+    }
+    initial = compute_forward_config_hash(base)
+    changed_execution = {**base, "risk": {**base["risk"], "default_lots": 2}}
+    assert compute_forward_config_hash(changed_execution) != initial
+    changed_filter = {**base, "pretrade_settings_snapshot": {"min_confidence_score": 70}}
+    assert compute_forward_config_hash(changed_filter) != initial
+    with_live_caps = {**base, "risk": {**base["risk"], "live": {"lots": 1}}}
+    assert compute_forward_config_hash(with_live_caps) == initial
 
 
 def test_build_deployment_from_backtest_uses_applied_params_and_metrics():
@@ -124,8 +278,15 @@ def test_frontend_exposes_strategy_deployment_panel():
         assert needle in api
     # Deployments command center (2026-06-12): cards + 3-step deploy wizard + undeploy.
     for needle in ("deployments-page", "deployment-card", "open-deploy-wizard",
-                   "wizard-preset-select", "wizard-mode-select", "undeploy-button"):
+                   "wizard-preset-select", "wizard-strategy-select", "wizard-mode-select",
+                   "undeploy-button"):
         assert needle in live
+
+    live_panel = (ROOT / "frontend" / "src" / "components" / "live" /
+                  "DeployToLivePanel.jsx").read_text(encoding="utf-8")
+    for needle in ("accept_unvalidated_live", "accept-unvalidated-live",
+                   "explicitly approve unvalidated real-money trading"):
+        assert needle in live_panel
 
 
 def test_deployment_sizing_from_backtest_run_extracts_policy():

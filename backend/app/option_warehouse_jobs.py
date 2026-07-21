@@ -56,29 +56,32 @@ def option_fetch_tasks_from_plan(plan: Dict[str, Any], fetch_missing_only: bool 
     return [task for task in tasks if task.get("instrument_key")]
 
 
-async def persist_option_candles_bulk(db: Any, df: pd.DataFrame) -> Dict[str, int]:
-    """Bulk upsert option candles keyed by instrument_key and timestamp."""
+async def persist_option_candles_bulk(
+    db: Any, df: pd.DataFrame, *, retrieval_run_id: str | None = None
+) -> Dict[str, int]:
+    """Bulk upsert candles by immutable contract identity and timestamp."""
     from pymongo import UpdateOne
 
     if df is None or df.empty:
         return {"candles_added": 0, "candles_updated": 0, "matched_existing": 0}
 
-    from app.instruments import canonical_instrument_key
+    from app.instruments import canonical_instrument_key, contract_identity_key
 
     ops: List[UpdateOne] = []
+    refreshed_at = datetime.now(timezone.utc)
     for row in df.to_dict(orient="records"):
+        expiry = row.get("expiry_date", "")
         doc = {
-            # Always store under the canonical 2-part broker key — expired
-            # fetches arrive with dated 3-part keys for the SAME contract the
-            # current-sync stored plain, and split keys fragment every
-            # exact-key lookup downstream (root cause #3, 2026-06-12).
             "instrument_key": canonical_instrument_key(row["instrument_key"]),
+            "contract_key": row.get("contract_key") or contract_identity_key(
+                row["instrument_key"], expiry),
             "underlying": row.get("underlying", ""),
             "expiry_date": row.get("expiry_date", ""),
             "strike": float(row.get("strike") or 0),
             "side": str(row.get("side", "")).upper(),
             "trading_symbol": row.get("trading_symbol", ""),
             "ts": int(row["ts"]),
+            "bar_end_ts": int(row.get("bar_end_ts") or int(row["ts"]) + 60_000),
             "datetime": str(row.get("datetime", "")),
             "open": float(row.get("open") or 0),
             "high": float(row.get("high") or 0),
@@ -87,11 +90,15 @@ async def persist_option_candles_bulk(db: Any, df: pd.DataFrame) -> Dict[str, in
             "volume": float(row.get("volume") or 0),
             "oi": float(row.get("oi") or 0),
             "source": row.get("source", "upstox"),
+            "source_endpoint": row.get("source_endpoint", "historical-candle-v3"),
+            "last_retrieved_at": refreshed_at,
+            "retrieval_run_id": retrieval_run_id or row.get("retrieval_run_id"),
         }
         ops.append(
             UpdateOne(
-                {"instrument_key": doc["instrument_key"], "ts": doc["ts"]},
-                {"$set": doc},
+                {"instrument_key": doc["instrument_key"],
+                 "expiry_date": doc["expiry_date"], "ts": doc["ts"]},
+                {"$set": doc, "$setOnInsert": {"first_ingested_at": refreshed_at}},
                 upsert=True,
             )
         )
@@ -149,7 +156,8 @@ async def run_option_warehouse_fetch_job(
                 contract=task["contract"],
             )
             df = result["df"]
-            persist_result = await persist_option_candles_bulk(db, df)
+            persist_result = await persist_option_candles_bulk(
+                db, df, retrieval_run_id=run_id)
             fetched_count = int(len(df))
             totals["total_fetched"] += fetched_count
             if fetched_count <= 0:

@@ -43,16 +43,18 @@ def test_candles_to_df_normalizes_option_rows_with_oi_and_contract_metadata():
 
     row = df.to_dict(orient="records")[0]
     assert row["instrument_key"] == "NSE_FO|123"
+    assert row["contract_key"] == "NSE_FO|123|2026-05-26"
     assert row["underlying"] == "NIFTY"
     assert row["expiry_date"] == "2026-05-26"
     assert row["strike"] == 26000.0
     assert row["side"] == "CE"
+    assert row["bar_end_ts"] == row["ts"] + 60_000
     assert row["open"] == 100.0
     assert row["volume"] == 1234.0
     assert row["oi"] == 555.0
 
 
-def test_persist_option_candles_upserts_by_instrument_key_and_ts():
+def test_persist_option_candles_upserts_by_full_contract_identity_and_ts():
     db = FakeDb()
     df = option_candles.candles_to_df(
         [["2026-05-26T09:15:00+05:30", 100, 110, 95, 105, 1234, 555]],
@@ -64,7 +66,14 @@ def test_persist_option_candles_upserts_by_instrument_key_and_ts():
 
     assert result == {"candles_added": 1, "candles_updated": 0}
     call = db.options_1m.calls[0]
-    assert call["query"] == {"instrument_key": "NSE_FO|123", "ts": int(df.iloc[0]["ts"])}
+    assert call["query"] == {
+        "instrument_key": "NSE_FO|123",
+        "expiry_date": "2026-05-26",
+        "ts": int(df.iloc[0]["ts"]),
+    }
+    assert call["update"]["$set"]["contract_key"] == "NSE_FO|123|2026-05-26"
+    assert call["update"]["$set"]["bar_end_ts"] == int(df.iloc[0]["ts"]) + 60_000
+    assert "first_ingested_at" in call["update"]["$setOnInsert"]
     assert call["update"]["$set"]["underlying"] == "NIFTY"
     assert call["update"]["$set"]["oi"] == 555.0
     assert call["upsert"] is True

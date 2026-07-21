@@ -289,6 +289,58 @@ class LiveMonitorRegistry:
     def get(self, key: str) -> Optional[Dict[str, Any]]:
         return self._items.get(str(key))
 
+    def mark_square_pending(
+        self,
+        key: str,
+        result: Dict[str, Any],
+        *,
+        exit_reason: str,
+        now: Optional[datetime] = None,
+    ) -> bool:
+        """Track a real, broker-accepted flatten attempt until confirmed flat.
+
+        This is the shared transition used by the background guard and by
+        user-initiated deployment Stop.  ``square_position`` returning
+        ``squared=True`` means that an exit was accepted (or that a fresh broker
+        read found/cancelled a flat position); it does *not* prove a fill.  The
+        registry entry and any resting OCO therefore stay in place until the
+        guard obtains its normal consecutive authenticated flat reads and calls
+        ``_finalize_flat``.
+        """
+        entry = self.get(key)
+        if entry is None or not result.get("squared") or result.get("dry_run"):
+            return False
+        # Older/injected square executors returned only ``squared=True``.  Treat
+        # that established contract as an accepted exit order; production's
+        # auto_square supplies the explicit ``via`` discriminator.
+        via = str(result.get("via") or "exit_order")
+        if via not in {"exit_order", "already_flat", "cancel"}:
+            return False
+
+        entry["seen_filled"] = True
+        entry["squaring"] = True
+        if not entry.get("square_reason"):
+            entry["square_reason"] = str(exit_reason)
+        entry["square_retries"] = 0
+        entry["square_stopped"] = False
+        entry["reprice_exhausted"] = False
+        entry["reprice_stopped"] = False
+        entry["square_last_ts"] = now or datetime.now(timezone.utc)
+        if via == "exit_order":
+            entry["square_band_idx"] = 1
+            entry["square_ordno"] = result.get("norenordno")
+            try:
+                entry["square_qty"] = int(
+                    result.get("qty")
+                    or abs(int(entry["position"].get("netqty") or 0))
+                )
+            except (TypeError, ValueError):
+                entry["square_qty"] = 0
+        else:
+            entry["square_ordno"] = None
+            entry["square_qty"] = 0
+        return True
+
     def remove(self, key: str) -> None:
         self._items.pop(str(key), None)
 
@@ -698,27 +750,8 @@ class LivePositionGuard:
         squared_ok = bool(result.get("squared"))
         dry_run = bool(result.get("dry_run"))
         if squared_ok and not dry_run:
-            entry["squaring"] = True
-            entry["square_reason"] = exit_reason        # written ONCE (never by a re-price)
-            # A broker-ACCEPTED square proves the path works again — clear the
-            # failure bookkeeping so an earlier bad spell can't linger.
-            entry["square_retries"] = 0
-            entry["square_stopped"] = False
-            # Seed the Layer 2 escalation state: the NEXT band, when this exit was
-            # issued (interval gate), and the resting exit's id/qty (so a re-price
-            # can cancel exactly it and _finalize_flat can cancel it on flat).
-            entry["square_band_idx"] = 1
-            entry["square_last_ts"] = now
-            entry["square_ordno"] = result.get("norenordno")
-            # Prefer the qty the executor ACTUALLY placed (it re-confirms and
-            # clamps to the fresh book truth post-cancel); fall back to the
-            # last-seen netqty. A later re-price sizes off this, so recording the
-            # pre-clamp qty could over-sell on a book-unreadable re-price.
-            try:
-                entry["square_qty"] = int(result.get("qty")
-                                          or abs(int(entry["position"].get("netqty") or 0)))
-            except (TypeError, ValueError):
-                entry["square_qty"] = 0
+            self._registry.mark_square_pending(
+                entry["id"], result, exit_reason=exit_reason, now=now)
             # "exits" counts squares the broker ACCEPTED — a dry-run intent or a
             # failed attempt is recorded in the cycle's exits list but must not
             # inflate the stat.

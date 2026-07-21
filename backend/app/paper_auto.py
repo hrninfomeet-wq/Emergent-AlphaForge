@@ -78,28 +78,71 @@ def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
-async def resolve_option_entry_price(
+def _tick_market_snapshot(tick: Dict[str, Any], *, now_ms: int) -> Dict[str, Any]:
+    """Bounded, decision-time market evidence safe to persist on a trade."""
+    age_ref = tick.get("received_ts") or tick.get("ts")
+    age_ms = None
+    if age_ref is not None:
+        try:
+            age_ms = max(0, now_ms - int(age_ref))
+        except (TypeError, ValueError):
+            age_ms = None
+    fields = (
+        "ts", "received_ts", "source", "mode", "last_price",
+        "last_trade_quantity", "best_bid_price", "best_bid_quantity",
+        "best_ask_price", "best_ask_quantity", "market_depth",
+        "open_interest", "implied_volatility", "option_greeks",
+        "volume_traded_today", "total_buy_quantity", "total_sell_quantity",
+    )
+    out = {field: tick.get(field) for field in fields if tick.get(field) is not None}
+    out["age_ms"] = age_ms
+    out["timestamp_verified"] = (
+        age_ms is not None and age_ms <= MARK_TICK_MAX_AGE_SECONDS * 1000
+    )
+    out["point_in_time_surface_complete"] = bool(
+        out["timestamp_verified"]
+        and str(out.get("mode") or "").lower() in {"full", "full_d30"}
+        and _positive_float(out.get("best_bid_price")) is not None
+        and _positive_float(out.get("best_ask_price")) is not None
+    )
+    return out
+
+
+def _positive_float(value: Any) -> Optional[float]:
+    try:
+        parsed = float(value)
+        return parsed if parsed > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
+async def resolve_option_entry_quote(
     db: Any,
     instrument_key: str,
     *,
     latest_tick_lookup: Optional[TickLookup] = None,
     max_candle_age_minutes: int = ENTRY_CANDLE_MAX_AGE_MINUTES,
     now_utc: Optional[datetime] = None,
-) -> Optional[float]:
-    """Best available option PREMIUM for the contract, or None when nothing
-    trustworthy exists (never falls back to spot)."""
+) -> Optional[Dict[str, Any]]:
+    """Best option premium plus its point-in-time provenance."""
     if not instrument_key:
         return None
+    now = now_utc or _now_utc()
+    now_ms = int(now.timestamp() * 1000)
     if latest_tick_lookup is not None:
         tick = latest_tick_lookup(instrument_key)
         if tick and tick.get("last_price") not in (None, ""):
-            try:
-                price = float(tick["last_price"])
-                if price > 0:
-                    return price
-            except (TypeError, ValueError):
-                pass
-    now = now_utc or _now_utc()
+            price = _positive_float(tick.get("last_price"))
+            if price is not None:
+                market_data = _tick_market_snapshot(tick, now_ms=now_ms)
+                # A manager-resident tick without a timestamp remains usable for
+                # backward compatibility but is explicitly ineligible as
+                # point-in-time promotion evidence.
+                if market_data.get("timestamp_verified") or market_data.get("age_ms") is None:
+                    return {
+                        "price": price, "source": "live_tick",
+                        "market_data": market_data,
+                    }
     cutoff_ms = int((now - timedelta(minutes=int(max_candle_age_minutes))).timestamp() * 1000)
     cursor = (
         db.options_1m
@@ -112,10 +155,78 @@ async def resolve_option_entry_price(
         try:
             price = float(rows[0]["close"])
             if price > 0:
-                return price
+                return {
+                    "price": price,
+                    "source": "stored_candle",
+                    "market_data": {
+                        "ts": rows[0].get("ts"),
+                        "source": "options_1m",
+                        "timestamp_verified": False,
+                        "point_in_time_surface_complete": False,
+                    },
+                }
         except (TypeError, ValueError):
             pass
     return None
+
+
+async def resolve_option_entry_price(
+    db: Any,
+    instrument_key: str,
+    *,
+    latest_tick_lookup: Optional[TickLookup] = None,
+    max_candle_age_minutes: int = ENTRY_CANDLE_MAX_AGE_MINUTES,
+    now_utc: Optional[datetime] = None,
+) -> Optional[float]:
+    """Backward-compatible price-only facade over the provenance-aware resolver."""
+    quote = await resolve_option_entry_quote(
+        db, instrument_key, latest_tick_lookup=latest_tick_lookup,
+        max_candle_age_minutes=max_candle_age_minutes, now_utc=now_utc,
+    )
+    return float(quote["price"]) if quote else None
+
+
+def _attach_execution_surface_evidence(
+    opened: Dict[str, Any], closed: Dict[str, Any], exit_market: Dict[str, Any]
+) -> None:
+    """Price a one-lot paper round trip at observed top-of-book touch."""
+    entry_market = opened.get("entry_market_data") or {}
+    quantity = int(opened.get("quantity") or 0)
+    entry_ask = _positive_float(entry_market.get("best_ask_price"))
+    exit_bid = _positive_float(exit_market.get("best_bid_price"))
+    try:
+        entry_qty = int(entry_market.get("best_ask_quantity") or 0)
+        exit_qty = int(exit_market.get("best_bid_quantity") or 0)
+    except (TypeError, ValueError):
+        entry_qty = exit_qty = 0
+    complete = bool(
+        quantity > 0
+        and entry_market.get("point_in_time_surface_complete")
+        and exit_market.get("point_in_time_surface_complete")
+        and entry_ask is not None and exit_bid is not None
+        and entry_qty >= quantity and exit_qty >= quantity
+    )
+    evidence = {
+        "point_in_time_surface_complete": complete,
+        "quantity": quantity,
+        "entry_best_ask": entry_ask,
+        "entry_ask_quantity": entry_qty,
+        "exit_best_bid": exit_bid,
+        "exit_bid_quantity": exit_qty,
+        "entry_received_ts": entry_market.get("received_ts"),
+        "exit_received_ts": exit_market.get("received_ts"),
+    }
+    if complete:
+        from app.option_costs import CostConfig, round_trip_charges
+        charges = round_trip_charges(
+            entry_premium=entry_ask, exit_premium=exit_bid,
+            quantity=quantity, cfg=CostConfig(enabled=True),
+        )
+        touch_pnl = round((exit_bid - entry_ask) * quantity - charges["total_charges"], 2)
+        closed["execution_realized_pnl"] = touch_pnl
+        evidence["round_trip_charges"] = charges["total_charges"]
+        evidence["execution_realized_pnl"] = touch_pnl
+    closed["execution_evidence"] = evidence
 
 
 def compute_auto_risk_levels(
@@ -478,6 +589,15 @@ async def auto_paper_trade_for_signal(
     contract = signal_doc.get("option_contract") or {}
     instrument_key = str(contract.get("instrument_key") or "")
     if not instrument_key:
+        signals = getattr(db, "signals", None)
+        if signals is not None:
+            await signals.update_one(
+                {"id": signal_id},
+                {"$set": {
+                    "paper_trade_error": "no_option_contract",
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }},
+            )
         return {"created": False, "reason": "no_option_contract"}
 
     # Atomic claim BEFORE any trade-creating work — closes the race with the
@@ -486,12 +606,12 @@ async def auto_paper_trade_for_signal(
     if not await claim_signal_for_paper_trade(db, signal_id, "auto_paper"):
         return {"created": False, "reason": "signal_claimed_elsewhere"}
 
-    entry_price = await resolve_option_entry_price(
+    entry_quote = await resolve_option_entry_quote(
         db, instrument_key,
         latest_tick_lookup=latest_tick_lookup,
         now_utc=now_utc,
     )
-    if entry_price is None:
+    if entry_quote is None:
         error = ("option_entry_price_unavailable "
                  f"(no live tick or options_1m candle within {ENTRY_CANDLE_MAX_AGE_MINUTES}m for {instrument_key})")
         await release_paper_trade_claim(db, signal_id)
@@ -502,6 +622,7 @@ async def auto_paper_trade_for_signal(
         )
         log.warning("auto-paper skipped for signal %s: %s", signal_id, error)
         return {"created": False, "error": error}
+    entry_price = float(entry_quote["price"])
 
     # Honest capital constraint (paper account realism): the trade's premium
     # outlay must fit the deployment's configured capital (and the opt-in
@@ -533,6 +654,9 @@ async def auto_paper_trade_for_signal(
     trade["deployment_id"] = str(deployment.get("id") or "")
     trade["source"] = "paper_auto_on_signal"
     trade["auto_created"] = True
+    trade["entry_price_source"] = entry_quote.get("source")
+    trade["entry_market_data"] = entry_quote.get("market_data") or {}
+    trade["capital_gate_evidence"] = list(gate.get("checks") or [])
     await db.paper_trades.insert_one(trade)
 
     # The booked entry is the friction-adjusted fill when the deployment opted
@@ -596,7 +720,7 @@ async def mark_open_deployment_trades(
 
     now_ms = int(_now_utc().timestamp() * 1000)
 
-    def _tick_price(key: str) -> Optional[float]:
+    def _tick_quote(key: str) -> Optional[Dict[str, Any]]:
         """Latest tick price for a key, but ONLY when fresh — a tick older than
         MARK_TICK_MAX_AGE_SECONDS is treated as absent so the marker never books a
         fill (or fires a stop/target) on a minutes-old premium. Ticks with no
@@ -619,7 +743,12 @@ async def mark_open_deployment_trades(
                     return None
             except (TypeError, ValueError):
                 pass
-        return price
+        market_data = _tick_market_snapshot(tick, now_ms=now_ms)
+        return {"price": price, "market_data": market_data}
+
+    def _tick_price(key: str) -> Optional[float]:
+        quote = _tick_quote(key)
+        return float(quote["price"]) if quote else None
 
     async def _exit_linked_signal(trade_doc: Dict[str, Any]) -> None:
         if not trade_doc.get("signal_id"):
@@ -642,7 +771,8 @@ async def mark_open_deployment_trades(
     summaries: List[Dict[str, Any]] = []
     for trade in open_trades:
         try:
-            option_price = _tick_price(str(trade.get("instrument_key") or ""))
+            option_quote = _tick_quote(str(trade.get("instrument_key") or ""))
+            option_price = float(option_quote["price"]) if option_quote else None
             updated = trade
             wrote = False
 
@@ -725,6 +855,12 @@ async def mark_open_deployment_trades(
 
             if not wrote:
                 continue  # no tick on either leg — leave untouched (no stale marks)
+
+            if (str(updated.get("status") or "").upper() == "CLOSED"
+                    and option_quote is not None):
+                updated["exit_market_data"] = option_quote.get("market_data") or {}
+                _attach_execution_surface_evidence(
+                    trade, updated, updated["exit_market_data"])
 
             # Conditional on status=OPEN so a concurrent manual close is never
             # clobbered by this stale-read replacement.

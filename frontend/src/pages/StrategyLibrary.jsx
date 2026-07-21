@@ -270,9 +270,16 @@ function ForwardMetricsBlock({ metrics }) {
       </div>
       <div className="space-y-2">
         {visible.map((item) => {
-          const lowSample = !(item.library_gate?.visible);
-          const sessions = item.session_completeness?.complete_session_count || 0;
           const minSessions = item.library_gate?.min_complete_sessions || 10;
+          const sessions = item.promotion_session_completeness?.complete_session_count
+            ?? item.session_completeness?.complete_session_count
+            ?? 0;
+          const lowSample = sessions < minSessions;
+          const validation = item.forward_validation || {};
+          const policy = validation.policy || {};
+          const promotionReady = Boolean(validation.promotion_allowed);
+          const validationLabel = promotionReady ? "promotion ready"
+            : validation.phase === "plumbing_ready" ? "plumbing ready" : "collecting";
           return (
             <div key={item.deployment_id} className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px]">
               <div className="min-w-0">
@@ -286,8 +293,17 @@ function ForwardMetricsBlock({ metrics }) {
                       low sample
                     </span>
                   )}
+                  <span
+                    className={`text-[9px] uppercase tracking-wide px-1 py-px rounded border shrink-0 ${promotionReady ? "bg-emerald-950 text-emerald-300 border-emerald-900" : "bg-slate-950 text-dimmer border-line"}`}
+                    title={promotionReady ? "All pre-registered forward gates passed." : `Failed: ${(validation.failed_checks || []).join(", ") || "evidence not available"}`}
+                  >
+                    {validationLabel}
+                  </span>
                 </div>
-                <div className="text-dimmer font-mono">{sessions}/{minSessions} sessions · {item.trade_count || 0} trades</div>
+                <div className="text-dimmer font-mono">
+                  {sessions}/{policy.min_forward_sessions || 60} sessions · {item.trade_count || 0}/{policy.min_forward_trades || 120} trades
+                  {lowSample ? ` · visibility ${minSessions}` : ""}
+                </div>
               </div>
               <Metric label="WR" value={fmtPct(item.win_rate)} />
               <Metric label="Avg PnL" value={fmtSigned(item.avg_pnl)} tone={item.avg_pnl} />

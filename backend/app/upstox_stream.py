@@ -25,7 +25,11 @@ except ModuleNotFoundError:  # Local unit-test fallback; Docker installs pymongo
 
 log = logging.getLogger(__name__)
 
-DEFAULT_STREAM_MODE = "ltpc"
+# AlphaForge's forward-evidence cohort needs the decision-time executable
+# surface, not only the last trade.  Upstox Full is comfortably within the
+# documented 1,500-key combined limit for our ATM-band universe and supplies
+# five depth levels, OI/IV and Greeks.  Callers may still request ltpc explicitly.
+DEFAULT_STREAM_MODE = "full"
 ALLOWED_STREAM_MODES = {"ltpc", "full", "option_greeks", "full_d30"}
 _MODE_TO_REQUEST_MODE = {
     0: "ltpc",
@@ -441,6 +445,55 @@ def _day_ohlc_from_feed(feed: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return {"open": open_, "high": high, "low": low}
 
 
+def _market_surface_from_feed(feed: Dict[str, Any]) -> Dict[str, Any]:
+    """Flatten the auditable option surface already decoded from the V3 feed."""
+    first = feed.get("firstLevelWithGreeks") or {}
+    market = ((feed.get("fullFeed") or {}).get("marketFF") or {})
+    depth = list(((market.get("marketLevel") or {}).get("bidAskQuote") or []))
+    if not depth and first.get("firstDepth"):
+        depth = [first["firstDepth"]]
+    clean_depth = []
+    for level in depth:
+        clean = {
+            "bid_quantity": _to_int(level.get("bidQ")),
+            "bid_price": _to_float(level.get("bidP")),
+            "ask_quantity": _to_int(level.get("askQ")),
+            "ask_price": _to_float(level.get("askP")),
+        }
+        if any(value is not None for value in clean.values()):
+            clean_depth.append(clean)
+    out: Dict[str, Any] = {}
+    if clean_depth:
+        out["market_depth"] = clean_depth
+        out.update({
+            "best_bid_quantity": clean_depth[0].get("bid_quantity"),
+            "best_bid_price": clean_depth[0].get("bid_price"),
+            "best_ask_quantity": clean_depth[0].get("ask_quantity"),
+            "best_ask_price": clean_depth[0].get("ask_price"),
+        })
+    greeks = market.get("optionGreeks") or first.get("optionGreeks") or {}
+    clean_greeks = {
+        key: _to_float(greeks.get(key))
+        for key in ("delta", "theta", "gamma", "vega", "rho")
+        if _to_float(greeks.get(key)) is not None
+    }
+    if clean_greeks:
+        out["option_greeks"] = clean_greeks
+    numeric_fields = {
+        "average_trade_price": market.get("atp"),
+        "volume_traded_today": market.get("vtt", first.get("vtt")),
+        "open_interest": market.get("oi", first.get("oi")),
+        "implied_volatility": market.get("iv", first.get("iv")),
+        "total_buy_quantity": market.get("tbq"),
+        "total_sell_quantity": market.get("tsq"),
+    }
+    for name, value in numeric_fields.items():
+        parsed = _to_float(value)
+        if parsed is not None:
+            out[name] = parsed
+    return out
+
+
 def normalize_feed_response(decoded: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Normalize decoded feed response into sanitized tick documents."""
     ticks: List[Dict[str, Any]] = []
@@ -463,6 +516,7 @@ def normalize_feed_response(decoded: Dict[str, Any]) -> List[Dict[str, Any]]:
             "source": "upstox_ws_v3",
             "mode": str((feed or {}).get("requestMode") or DEFAULT_STREAM_MODE),
         }
+        tick.update(_market_surface_from_feed(feed or {}))
         day_ohlc = _day_ohlc_from_feed(feed or {})
         if day_ohlc:
             tick.update({
@@ -479,7 +533,10 @@ async def persist_ticks(db: Any, ticks: List[Dict[str, Any]], session_id: str) -
     if not ticks:
         return {"upserted": 0, "modified": 0, "matched": 0, "operations": []}
     operations = []
-    stored_at = _now_iso()
+    # BSON datetime supports the TTL index.  The durable evidence needed for a
+    # promotion cohort is copied onto paper trades; the high-frequency raw tick
+    # tape is operational audit data with bounded retention.
+    stored_at = datetime.now(timezone.utc)
     for tick in ticks:
         doc = dict(tick)
         doc["session_id"] = session_id

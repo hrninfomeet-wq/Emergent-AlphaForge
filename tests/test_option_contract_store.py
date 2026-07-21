@@ -40,12 +40,14 @@ def test_upsert_option_contracts_uses_instrument_key_and_stamps_sync_time():
             "update": {
                 "$set": {
                     "instrument_key": "NSE_FO|1",
+                    "contract_key": "NSE_FO|1|2026-05-26",
                     "underlying": "NIFTY",
                     "expiry_date": "2026-05-26",
                     "strike": 26000,
                     "side": "CE",
                     "last_synced_at": fetched_at,
-                }
+                },
+                "$setOnInsert": {"first_seen_at": fetched_at},
             },
             "upsert": True,
         }

@@ -98,14 +98,14 @@ const DEFAULT_SETUP = {
   early_stop: true,
   // Run type: "single" (one optimization over the whole window) or
   // "walkforward" (re-optimize per train window, stitch OOS — honest result).
-  run_kind: "single",
+  run_kind: "walkforward",
   wf_train_days: 60,
   wf_test_days: 20,
   wf_step_days: "",
   wf_mode: "rolling",
   wf_trials_per_window: 40,
   wf_max_windows: 12,
-  // WFO v2: pair the stitched OOS trades with real option candles (rupee
+  // WFO v2: pair the stitched OOS trades with historical option candles (rupee
   // reality check). Uses the same option sub-panel config as the re-rank.
   wfo_option_aware: true,
   costs_enabled: true,
@@ -114,7 +114,7 @@ const DEFAULT_SETUP = {
   param_overrides: {},
   optimize_indicator_periods: false,
   guards_enabled: true,
-  min_trades: 10,
+  min_trades: 30,
   min_direction_pct: 0,
   // Evaluation mode: "option_rerank" (DEFAULT — re-rank top-K by REAL
   // paired-option net rupee, the number you actually trade) or "spot" (fast,
@@ -126,7 +126,7 @@ const DEFAULT_SETUP = {
   rerank_diversity: false,
   // Analyzing budget (minutes). Caps the option re-rank / survival-check phase;
   // on hit the backend returns the best evaluated so far. 0 = unlimited.
-  analyze_budget_min: 30,
+  analyze_budget_min: 0,
   option_moneyness: "atm",
   option_dte_filter: [], // multi-select ints; empty = all
   option_lots: 1,
@@ -144,10 +144,10 @@ const DEFAULT_SETUP = {
   option_capital: 200000,
   survival_config: {
     enabled: false,
-    min_equity: 0,
-    max_drawdown_pct: 35,
-    max_ror_pct: 5,
-    ruin_floor: 0,
+    min_equity: 100000,
+    max_drawdown_pct: 25,
+    max_ror_pct: 30,
+    ruin_floor: 100000,
     objective: "calmar",
     min_oos_folds: "all",
   },
@@ -165,6 +165,30 @@ const DEFAULT_SETUP = {
   name: "Optimization run",
   start_date: "",
   end_date: "",
+};
+
+const CAPITAL_2L_EVIDENCE_PROFILE = {
+  run_kind: "walkforward",
+  method: "bayesian",
+  objective: "risk_adjusted",
+  opt_workers: 1,
+  wf_train_days: 60,
+  wf_test_days: 20,
+  wf_step_days: 20,
+  wf_trials_per_window: 40,
+  wf_max_windows: 6,
+  wfo_option_aware: true,
+  costs_enabled: true,
+  guards_enabled: true,
+  min_trades: 30,
+  min_direction_pct: 0,
+  optimize_indicator_periods: false,
+  evaluation_mode: "option_rerank",
+  analyze_budget_min: 0,
+  option_lots: 1,
+  option_costs_enabled: true,
+  option_capital: 200000,
+  search_exit_controls: false,
 };
 
 function loadSetup() {
@@ -228,6 +252,22 @@ export default function Optimizer() {
   // transition into a terminal state — not when re-attaching to a job that had
   // already finished while we were on another page.
   const prevStatusRef = useRef(null);
+
+  const applyCapitalEvidenceProfile = () => {
+    setConfig((current) => ({
+      ...current,
+      ...CAPITAL_2L_EVIDENCE_PROFILE,
+      survival_config: {
+        ...current.survival_config,
+        enabled: false,
+        min_equity: 100000,
+        max_drawdown_pct: 25,
+        max_ror_pct: 30,
+        ruin_floor: 100000,
+      },
+    }));
+    toast.success("₹2 lakh evidence profile applied — walk-forward, one lot, deterministic workers, full analysis.");
+  };
 
   // Persist setup config on every change (transient run state lives in separate
   // state and is never written here). Storage failures are swallowed so a full
@@ -661,6 +701,21 @@ export default function Optimizer() {
       <aside className="space-y-3">
         <Panel title="Optimization Setup" testid="opt-setup-panel">
           <div className="space-y-3">
+            <div className="rounded-md border border-sky-500/30 bg-sky-500/5 p-2 space-y-1.5">
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                className="h-7 w-full text-xs"
+                onClick={applyCapitalEvidenceProfile}
+                data-testid="opt-capital-evidence-profile"
+              >
+                Apply ₹2L evidence profile
+              </Button>
+              <div className="text-[10px] text-dimmer leading-snug">
+                Sets deterministic walk-forward, six OOS windows, one option lot, costs on, full analysis, and your ₹2,00,000 / ₹1,00,000 impairment thresholds. This is a research profile—not permission to trade live.
+              </div>
+            </div>
             <div>
               <Label className="text-xs text-dim">Run name<Hint label="Run name">Labels this run in Job History. Leave it blank and it auto-stamps <code>strategy · instrument · objective · timestamp</code> so every run stays unique; type your own only when you want a memorable tag. A duplicate typed name prompts before starting.</Hint></Label>
               <Input
@@ -836,25 +891,25 @@ export default function Optimizer() {
                     data-testid="opt-wfo-option-aware"
                   />
                   <span className="text-[11px] text-dim">
-                    <b>Option-aware OOS (₹)</b><Hint label="Option-aware OOS">After stitching the out-of-sample windows, re-pairs those OOS trades with <b>real option candles</b> and reports net rupee plus per-window rupee consistency beside the spot stitch — the check that your spot edge survives in actual option ₹. Uses the option sub-panel below (moneyness/DTE/lots/exit); it only reports, never fails or re-ranks the run, and data gaps degrade to a low-pairing note. <b>Suggested: ON.</b></Hint> — after stitching, pair the OOS trades with real option candles and report net rupee + per-window rupee consistency
+                    <b>Option-aware OOS (₹)</b><Hint label="Option-aware OOS">After stitching the unseen windows, pairs those trades with <b>historical one-minute option bars</b> and reports modelled net rupee. It can reject a spot edge that fails in option behaviour, but it only reports, never re-ranks, and current history is not point-in-time/execution certified. <b>Suggested: ON for research; forward validation decides promotion.</b></Hint> — model option ₹ on the stitched OOS trades (research screen)
                   </span>
                 </div>
               </div>
             )}
 
             {config.run_kind !== "walkforward" && (
-            <Row label="Evaluation" hint={<>How candidates are scored. <b>Option re-rank (default)</b> takes the top spot configs and re-scores them on REAL paired-option net rupee (delta/theta/costs) — the number you actually trade. <b>Spot points</b> ranks on the index backtest only (fast, but spot P&L can badly mislead for option buying — a run can score +289k on spot while losing 2 lakh on real options). <b>Keep Option re-rank for any deploy decision.</b></>}>
+            <Row label="Evaluation" hint={<>How candidates are scored. <b>Option re-rank</b> takes the top spot configs and re-scores them on paired historical option bars with modelled costs. It is much more relevant than spot points for option buying, but it is still research-only until data provenance and forward gates pass. <b>Spot points</b> is faster and useful only for early hypothesis search.</>}>
               <Select value={config.evaluation_mode} onValueChange={(v) => setConfig({ ...config, evaluation_mode: v })}>
                 <SelectTrigger className="bg-bg-2 border-line h-8" data-testid="opt-eval-mode-select"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="option_rerank">Option re-rank (realistic · default)</SelectItem>
+                  <SelectItem value="option_rerank">Option-bar re-rank (research default)</SelectItem>
                   <SelectItem value="spot">Spot points (fast, spot-only)</SelectItem>
                 </SelectContent>
               </Select>
               <div className="text-[10px] text-dimmer mt-1">
                 {config.evaluation_mode === "option_rerank"
                   ? "Default. Searches on spot, then re-ranks the top-K by REAL paired-option net rupee (delta/theta/costs) — the winner is chosen by what you actually trade."
-                  : "Scores the index backtest only. Faster, but spot P&L can mislead for option buying — the winner may lose on real options."}
+                  : "Scores the index backtest only. Faster, but spot P&L can mislead for option buying — the winner may lose after option behaviour and friction."}
               </div>
             </Row>
             )}
@@ -868,7 +923,7 @@ export default function Optimizer() {
                 <div className="grid grid-cols-2 gap-2">
                   {config.run_kind !== "walkforward" && (
                   <div>
-                    <Label className="text-[11px] text-dim">Re-rank top-K<Hint label="Re-rank top-K">How many top spot candidates get fully option-backtested (and survival-checked, if enabled) on real option P&L — every extra one costs Analyzing time. <b>~50 is plenty</b> (the default); above 80 turns amber and is slow. Clamped 1-500.</Hint></Label>
+                    <Label className="text-[11px] text-dim">Re-rank top-K<Hint label="Re-rank top-K">How many top spot candidates get option-bar backtested (and stress-screened, if enabled). Every extra one costs analysis time. <b>~50 is plenty</b>; above 80 is slow. This is a top-K heuristic, not an exhaustive option-native search.</Hint></Label>
                     <Input type="number" min={1} max={500} value={config.rerank_top_k}
                       onChange={(e) => setConfig({ ...config, rerank_top_k: e.target.value })}
                       className="bg-bg-2 border-line h-8 text-xs font-mono mt-1" data-testid="opt-rerank-k" />
@@ -886,7 +941,7 @@ export default function Optimizer() {
                   )}
                   {config.run_kind !== "walkforward" && (
                   <div>
-                    <Label className="text-[11px] text-dim">Analyzing budget (min)<Hint label="Analyzing budget">Time cap (minutes) on the option re-rank + survival phase only. <b>0 = unlimited</b>; default is 30. On a hit it stops and returns the best evaluated so far (flagged), so a high Re-rank top-K can be cut short — leave headroom or set 0.</Hint></Label>
+                    <Label className="text-[11px] text-dim">Analyzing budget (min)<Hint label="Analyzing budget">Time cap on option re-rank + stress analysis. <b>0 = complete every finalist</b> and is the evidence-profile default. A capped run can return only the best candidate evaluated before timeout, so it is useful for exploration but cannot support promotion.</Hint></Label>
                     <Input type="number" min={0} max={240} value={config.analyze_budget_min}
                       onChange={(e) => setConfig({ ...config, analyze_budget_min: e.target.value })}
                       className="bg-bg-2 border-line h-8 text-xs font-mono mt-1" data-testid="opt-analyze-budget" />
@@ -1005,7 +1060,7 @@ export default function Optimizer() {
                   <Hint label="Apply option costs">Charges plus a spread % on the option leg, giving net (not gross) rupee. <b>Keep ON</b> (default) for realistic ranking — the survival gate also expects costs ON, so its survivors are judged AFTER costs per OOS fold. Turning Survivability on force-locks this switch.</Hint>
                 </div>
                 <div className="text-[10px] text-dimmer leading-snug">
-                  Higher top-K = more candidates re-ranked on real option P&L (slower). Option candles are loaded once per run.
+                  Higher top-K = more candidates re-ranked on modelled option-bar P&L (slower). Option candles are loaded once per run.
                 </div>
               </div>
             )}
@@ -1017,7 +1072,7 @@ export default function Optimizer() {
               }));
               return (
                 <div className="rounded-md border border-purple-500/30 bg-purple-500/5 p-2 space-y-2" data-testid="opt-survival-panel">
-                  <div className="text-[10px] uppercase tracking-wider text-purple-400">Survivability</div>
+                  <div className="text-[10px] uppercase tracking-wider text-purple-400">Survivability stress screen</div>
                   <label className="flex items-center gap-2 text-[11px] text-dim">
                     <input
                       type="checkbox"
@@ -1026,12 +1081,12 @@ export default function Optimizer() {
                       className="h-3 w-3 rounded border-line"
                       data-testid="opt-survival-enabled"
                     />
-                    Enable survival gating<Hint label="Enable survival gating">Re-scores each finalist on its actual rupee equity curve, per walk-forward OOS fold, and keeps only the ones that stay alive AND end profitable — the spot-points score can look great while the option ₹ curve quietly ruins you. <b>Requires Option re-rank; needs costs ON</b> (it's the rupee curve being judged). <b>Suggested: ON</b> for any deploy decision.</Hint>
+                    Enable stress screen<Hint label="Enable survival stress screen">Re-scores each finalist on its modelled rupee curve and filters obvious blow-ups. It is useful for triage, but finalists were selected on the same history and the current bootstrap is not a 252-session annual ruin estimate. <b>Do not use this as deployment certification.</b> Requires Option re-rank and costs ON.</Hint>
                   </label>
                   {config.survival_config?.enabled && (
                     <>
                       <div className="text-[10px] text-dimmer leading-snug">
-                        Requires option execution + costs ON. Gates finalists on the rupee equity curve, evaluated per walk-forward OOS fold.
+                        Requires modelled option execution + costs ON. This is an observed-history stress screen; the separate forward policy decides promotion.
                       </div>
                       <div>
                         <Label className="text-[11px] text-dim">Trading capital (₹)<Hint label="Trading capital">The account size the gate scales drawdown % and risk-of-ruin against — DD% is a fraction of THIS, and RoR paths start from it. <b>Default ₹2,00,000.</b> Set it to your real deployable capital: a smaller account makes every % gate stricter (a ₹35k drawdown is 70% of ₹50k but only 17.5% of ₹200k). Equity floor / ruin floor must be below it.</Hint></Label>
@@ -1049,7 +1104,7 @@ export default function Optimizer() {
                       </div>
                       <div className="grid grid-cols-2 gap-2">
                         <div>
-                          <Label className="text-[11px] text-dim">Equity floor (₹)<Hint label="Equity floor">Hard-reject any finalist whose account ₹ ever touches or drops to this level (the primary, first-checked gate, applied each OOS fold). <b>Default 0</b> = reject only if equity hits zero or goes negative. Set it to the smallest balance you could stomach mid-run, e.g. starting capital minus your max tolerable loss.</Hint></Label>
+                          <Label className="text-[11px] text-dim">Equity floor (₹)<Hint label="Equity floor">Hard-reject any finalist whose modelled account touches this level. The ₹2L evidence profile uses <b>₹1,00,000</b> as the formal ruin/impairment boundary. This does not replace the tighter ₹50,000 monthly emergency stop.</Hint></Label>
                           <Input
                             type="number"
                             value={config.survival_config?.min_equity ?? 0}
@@ -1059,7 +1114,7 @@ export default function Optimizer() {
                           />
                         </div>
                         <div>
-                          <Label className="text-[11px] text-dim">Max drawdown %<Hint label="Max drawdown %">Reject a finalist if its worst peak-to-trough drop on the rupee curve exceeds this percent (magnitude). Lower = stricter. <b>Default 35.</b> Checked after the equity floor and before risk-of-ruin, on every OOS fold.</Hint></Label>
+                          <Label className="text-[11px] text-dim">Max drawdown %<Hint label="Max drawdown %">Reject a finalist if its modelled peak-to-trough drop exceeds this percentage. The ₹2L profile uses your <b>25%</b> maximum (₹50,000), but operational trading should freeze earlier at 10% while the cause is reviewed.</Hint></Label>
                           <Input
                             type="number"
                             min={0} max={100} step={1}
@@ -1070,7 +1125,7 @@ export default function Optimizer() {
                           />
                         </div>
                         <div>
-                          <Label className="text-[11px] text-dim">Max risk-of-ruin %<Hint label="Max risk-of-ruin %">Reject if the modelled chance of blowing the account (Monte-Carlo bootstrap of daily ₹, judged on its <i>upper</i> 95% bound — fail-closed) exceeds this. <b>Default 5; lower = stricter.</b> Needs ≥100 stitched-OOS paired option trades, else the finalist is flagged insufficient-sample (not passed).</Hint></Label>
+                          <Label className="text-[11px] text-dim">Max stress RoR %<Hint label="Max stress risk-of-ruin %">Current model: an IID bootstrap over the observed daily ₹ series, with an upper confidence bound. The ₹2L profile uses your <b>30%</b> ceiling, but this number is <b>not annualized</b>. Promotion requires the forward policy's 252-session block-bootstrap upper bound to be below 30%. Needs ≥100 paired trades.</Hint></Label>
                           <Input
                             type="number"
                             min={0} max={100} step={1}
@@ -1221,7 +1276,7 @@ export default function Optimizer() {
                 <>
                   <div className="grid grid-cols-2 gap-2">
                     <div>
-                      <Label className="text-[11px] text-dim">Min trades<Hint label="Min trades">Statistical-significance floor: any trial taking fewer trades than this is disqualified (so a lucky 2-trade run can't win). <b>Default 10.</b> Needs <b>Guard rails ON</b>.</Hint></Label>
+                      <Label className="text-[11px] text-dim">Min trades<Hint label="Min trades">Basic few-trade screen: any trial taking fewer trades is disqualified so a lucky handful cannot win. <b>Default 30.</b> This is not statistical significance; the promotion cohort still needs at least 120 closed forward trades. Needs <b>Guard rails ON</b>.</Hint></Label>
                       <Input
                         type="number" min={0}
                         value={config.min_trades}
@@ -1242,7 +1297,7 @@ export default function Optimizer() {
                     </div>
                   </div>
                   <div className="text-[10px] text-dimmer mt-1.5 leading-snug">
-                    Disqualifies degenerate solutions: fewer than <b>{config.min_trades || 0}</b> trades (statistical-significance floor), or where the minority side (CE vs PE) is below <b>{config.min_direction_pct || 0}%</b> of trades (0 = off).
+                    Disqualifies degenerate solutions: fewer than <b>{config.min_trades || 0}</b> trades (basic screen, not significance), or where the minority side (CE vs PE) is below <b>{config.min_direction_pct || 0}%</b> of trades (0 = off).
                   </div>
                 </>
               ) : (
@@ -1382,6 +1437,10 @@ function CurrentJobView({ job, onApply, onStop, onPause, onResume, onOpenBest })
     || (isWfo && job.best_params && Object.keys(job.best_params).length > 0);
   const showResults = finished || cancelled || resumable;
   const isOptionRerank = (job.evaluation_mode || job.config?.evaluation_mode) === "option_rerank";
+  const dataIntegrity = job.research_eligibility
+    || job.rerank?.data_integrity
+    || job.wfo?.option_oos?.data_integrity;
+  const researchOnly = dataIntegrity && dataIntegrity.promotion_allowed === false;
   const optionPnl = job.best_option_pnl_value ?? job.best_metrics?.option_pnl_value ?? job.rerank?.ranked?.[0]?.option_pnl_value ?? null;
   // The SPOT search objective (the live "best so far" value during the trial loop).
   // NOT job.best_value, which for a survivor becomes the survival objective (e.g. calmar).
@@ -1431,8 +1490,9 @@ function CurrentJobView({ job, onApply, onStop, onPause, onResume, onOpenBest })
                   </Button>
                 )}
                 {hasBest && (
-                  <Button size="sm" onClick={() => onApply(job.id)} className="h-7 text-xs bg-info text-bg-0 hover:bg-info/90" data-testid="opt-apply-preset-button">
-                    <Save className="w-3.5 h-3.5 mr-1" /> Save as Preset
+                  <Button size="sm" onClick={() => onApply(job.id)} className="h-7 text-xs bg-info text-bg-0 hover:bg-info/90" data-testid="opt-apply-preset-button"
+                    title={researchOnly ? "Saves a research preset only; option-data and forward gates still block promotion" : "Save the result as a preset"}>
+                    <Save className="w-3.5 h-3.5 mr-1" /> {researchOnly ? "Save Research Preset" : "Save as Preset"}
                   </Button>
                 )}
               </>
@@ -1480,6 +1540,20 @@ function CurrentJobView({ job, onApply, onStop, onPause, onResume, onOpenBest })
           </div>
         )}
       </div>
+
+      {researchOnly && (
+        <div className="rounded-lg border border-rose-500/40 bg-rose-500/5 p-3 text-xs text-rose-200 leading-relaxed" data-testid="opt-research-only-gate">
+          <div className="font-semibold uppercase tracking-wider mb-1">Research only — promotion blocked</div>
+          <div>
+            This result may help rank hypotheses, but it cannot justify paper-to-live promotion. The loaded option history lacks point-in-time certification and executable bid/ask evidence.
+          </div>
+          {(dataIntegrity.blockers || []).length > 0 && (
+            <ul className="list-disc pl-4 mt-1 text-[11px] text-rose-200/90">
+              {dataIntegrity.blockers.slice(0, 4).map((b) => <li key={b.code}>{b.label}</li>)}
+            </ul>
+          )}
+        </div>
+      )}
 
       {/* No usable result — every trial took no trades or failed the guard rails */}
       {(finished || cancelled) && !hasBest && (
@@ -1648,8 +1722,8 @@ function WfoResults({ job }) {
         return (
           <div className="rounded-lg border border-info/30 bg-bg-1 p-3" data-testid="wfo-option-oos">
             <div className="text-xs font-semibold uppercase tracking-wider text-dim mb-2">
-              Option OOS (₹ on real options)
-              <span className="text-dimmer normal-case font-normal"> — same stitched trades, paired with {String(oo.config?.moneyness || "atm").toUpperCase()} option candles{oo.config?.costs_enabled ? ", costs on" : ", costs off"}</span>
+              Option OOS (₹ model on minute bars)
+              <span className="text-dimmer normal-case font-normal"> — same stitched trades, paired with {String(oo.config?.moneyness || "atm").toUpperCase()} historical option candles{oo.config?.costs_enabled ? ", modelled costs on" : ", costs off"}</span>
             </div>
             <div className="grid grid-cols-3 lg:grid-cols-5 gap-2 text-xs mb-2">
               <div className="rounded-md bg-bg-2 border border-line p-2">
@@ -1675,7 +1749,7 @@ function WfoResults({ job }) {
             )}
             <div className="text-[11px] text-dim">
               Rupee consistency: <b className="text-foreground">{rc.positive_windows ?? 0}/{rc.windows_with_trades ?? 0}</b> windows ₹-positive.
-              <span className="text-dimmer"> A spot-positive stitch with a negative rupee result means theta/spread/costs eat the edge — do not deploy on the spot number alone. Low pairing % means option data is missing for part of the OOS span.</span>
+              <span className="text-dimmer"> A spot-positive stitch with a negative rupee result means option behaviour and modelled friction eat the edge — reject the hypothesis. A positive result is still research-only until the provenance and forward gates pass. Low pairing % means option data is missing.</span>
             </div>
           </div>
         );
@@ -2140,7 +2214,7 @@ function RerankResults({ rerank, survivalSummary, jobStatus }) {
           <div className="text-xs font-semibold uppercase tracking-wider text-dim">Option Re-rank · top {rerank.evaluated} by net ₹</div>
         </div>
         <div className="px-3 py-2 text-[10px] text-dimmer leading-snug border-b border-line">
-          Each candidate's spot signals were paired with real {String(rerank.option_config?.moneyness || "ATM").toUpperCase()} option candles and scored on net rupee P&L (delta/theta/costs). Ranked best-first — this is the realistic ranking.
+          Each candidate's spot signals were paired with historical {String(rerank.option_config?.moneyness || "ATM").toUpperCase()} option minute bars and scored on modelled net rupee P&L. Ranked best-first for research; the data-integrity and forward gates decide promotion.
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-xs">

@@ -4,6 +4,8 @@ Moved verbatim from backend/server.py (quality-hardening Slice C).
 """
 from __future__ import annotations
 
+import json
+import math
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
@@ -13,7 +15,7 @@ from pydantic import BaseModel, StrictBool
 
 from app.db import get_db, serialize_doc
 from app.strategies.base import get_registry
-from app.strategy_deployments import build_deployment_doc
+from app.strategy_deployments import build_deployment_doc, compute_forward_config_hash
 from app.live_friction import FrictionConfig
 from app.strategy_source_hash import hash_strategy_source, build_repin_update
 from app.deployment_quality import evaluate_source_quality, QualityThresholds
@@ -61,10 +63,22 @@ async def _live_get_token_doc():
     return await _get_token_doc()
 
 
+async def _live_broker_status() -> Dict[str, Any]:
+    """Return local daily-session/static-IP readiness. Tests patch this seam."""
+    from app.live.flattrade_token import DEFAULT_USER_ID, get_status
+    return await get_status(DEFAULT_USER_ID)
+
+
 def _live_l3_engine():
     """Return the LiveEngine singleton (real or fail-closed). Tests patch this."""
     from app.routers.live_broker import _l3_engine
     return _l3_engine()
+
+
+async def _live_safety_config() -> Dict[str, Any]:
+    """Return current account-level capital ceilings. Tests patch this seam."""
+    from app.routers.live_broker import _config_store
+    return await _config_store().get_config()
 
 
 def _live_registry():
@@ -92,15 +106,25 @@ def _live_guard_armed() -> bool:
     return True
 
 
-async def _broker_connected() -> bool:
-    """True iff a Flattrade token is stored (the broker is connected)."""
+async def _broker_readiness() -> tuple[bool, str]:
+    """Validate the stored credential's daily lifetime and static-IP config."""
     try:
+        status = await _live_broker_status()
+        if not status.get("configured"):
+            return False, "Flattrade API credentials are not configured"
+        if not status.get("connected"):
+            return False, "Flattrade is not connected — complete OAuth"
+        if status.get("expired") or status.get("regenerate_after_6am"):
+            return False, "Flattrade daily session is expired — complete today's OAuth"
+        if not (str(status.get("static_ip_primary") or "").strip()
+                or str(status.get("static_ip_secondary") or "").strip()):
+            return False, "Flattrade static IP is not configured"
         await _live_get_token_doc()
-        return True
-    except HTTPException:
-        return False
-    except Exception:
-        return False
+        return True, "ok"
+    except HTTPException as exc:
+        return False, str(exc.detail)
+    except Exception as exc:
+        return False, f"Flattrade readiness check failed: {str(exc)[:160]}"
 
 
 def _is_drift_paused(deployment: Dict[str, Any]) -> bool:
@@ -133,15 +157,26 @@ def _utcnow() -> datetime:
 
 async def _square_live_positions_for_deployment(
     deployment_id: str, *, reason: str
-) -> List[str]:
-    """Flatten THIS deployment's registered live positions via the margin-safe
-    square path, removing each from the guard registry first (so a slow square is
-    never re-issued). Returns the list of squared tsyms. Best-effort: a per-
-    position square failure is swallowed (the registry entry is still removed)."""
+) -> Dict[str, List[str]]:
+    """Submit flatten attempts for this deployment and keep guarding to flat.
+
+    A broker place-acceptance is not a fill.  Every accepted/deferred/failed
+    position therefore remains in the live registry with its OCO intact.  The
+    background guard is the sole owner of irreversible finalization after its
+    consecutive authenticated flat reads.
+    """
     reg = _live_registry()
+    report: Dict[str, List[str]] = {
+        "exit_submitted_tsyms": [],
+        "already_flat_tsyms": [],
+        "cancel_confirmed_tsyms": [],
+        "flat_confirmation_pending_tsyms": [],
+        "deferred_tsyms": [],
+        "failed_tsyms": [],
+    }
     targets = [e for e in reg.snapshot() if str(e.get("deployment_id") or "") == str(deployment_id)]
     if not targets:
-        return []
+        return report
     # Resolve a broker client + uid/actid (best-effort). This is a USER-INITIATED
     # flatten over the SAME margin-safe exit path as the manual square / kill switch,
     # so it transmits the exit directly — it is NOT auto-place-env-gated (the user is
@@ -159,9 +194,8 @@ async def _square_live_positions_for_deployment(
         actid = token.get("actid", uid)
     except Exception:
         pass  # square_position tolerates a None/limited client
-    from app.live.close_loop import should_journal_close, close_live_trade
-    squared: List[str] = []
     for entry in targets:
+        tsym = str(entry.get("tsym") or "")
         position = dict(entry.get("position") or {})
         position.setdefault("tsym", entry.get("tsym"))
         result: Dict[str, Any] = {"squared": False}
@@ -170,37 +204,20 @@ async def _square_live_positions_for_deployment(
                 client, position, reason=reason, uid=uid, actid=actid) or {"squared": False}
         except Exception:
             pass
-        squared.append(entry.get("tsym"))
-        # Drop the guard entry + cancel the resting OCO ONLY after a CONFIRMED square.
-        # square_position now serializes per-tsym exits and returns squared=False when
-        # another path is already flattening this scrip (reason=exit_in_flight_elsewhere)
-        # — in that case we must NOT strip the OCO or stop watching, or a competing
-        # square that then fails would leave the position naked and unwatched. On
-        # squared=False the entry + OCO stay intact (the other path / the guard handles
-        # it; the broker OCO remains the PC-down backstop).
-        if result.get("squared") and not result.get("dry_run"):
-            reg.remove(entry["id"])
-            if entry.get("oco_al_id") and client is not None and hasattr(client, "cancel_oco"):
-                try:
-                    await client.cancel_oco(entry["oco_al_id"])
-                except Exception:
-                    import logging
-                    logging.getLogger(__name__).exception(
-                        "deployment-stop cancel_oco failed for %s (al_id=%s)",
-                        entry.get("tsym"), entry.get("oco_al_id"))
-        # Close-loop: journal realized P&L for this deployment position, but ONLY
-        # on a real fill (should_journal_close skips a failed/dry-run square and
-        # manual-source entries). Linked by the entry norenordno; never raises.
-        try:
-            if should_journal_close(entry, result):
-                await close_live_trade(
-                    get_db(), norenordno=entry.get("id"),
-                    exit_price=position.get("lp"), exit_reason=reason)
-        except Exception:
-            import logging
-            logging.getLogger(__name__).exception(
-                "deployment-stop close-loop failed for %s", entry.get("tsym"))
-    return squared
+        via = str(result.get("via") or "exit_order")
+        if reg.mark_square_pending(entry["id"], result, exit_reason=reason):
+            report["flat_confirmation_pending_tsyms"].append(tsym)
+            if via == "exit_order":
+                report["exit_submitted_tsyms"].append(tsym)
+            elif via == "already_flat":
+                report["already_flat_tsyms"].append(tsym)
+            elif via == "cancel":
+                report["cancel_confirmed_tsyms"].append(tsym)
+        elif str(result.get("reason") or "") == "exit_in_flight_elsewhere":
+            report["deferred_tsyms"].append(tsym)
+        else:
+            report["failed_tsyms"].append(tsym)
+    return report
 
 
 def _live_today_counters(rows: List[Dict[str, Any]], now_utc: datetime) -> Dict[str, Any]:
@@ -233,6 +250,9 @@ class _LiveEnableBody(BaseModel):
     catastrophe_stop_pct: Optional[float] = None
     catastrophe_target_pct: Optional[float] = None
     confirm: StrictBool = False
+    # Explicit user authority to use real capital despite missing/failed forward
+    # evidence.  StrictBool prevents truthy strings or accidental form values.
+    accept_unvalidated_live: StrictBool = False
 
 
 #: Back-compat alias — some tests/importers reference the old name.
@@ -371,7 +391,16 @@ async def list_deployments(status: Optional[str] = Query(None), limit: int = Que
 @api.post("/deployments")
 async def create_deployment(req: DeploymentCreateReq):
     db = get_db()
-    source = await _load_deployment_source(db, req.source_type, req.source_id)
+    source = await _load_deployment_source(
+        db,
+        req.source_type,
+        req.source_id,
+        strategy_config={
+            "instrument": req.source_instrument,
+            "timeframe": req.source_timeframe,
+            "params": req.source_params,
+        },
+    )
     # Quality gate (slice 9 + gate-rigor pass): warn but never silently allow
     # problematic backtests. The gate now also consumes out-of-sample evidence
     # (selection-bias-adjusted Sharpe over the optimizer search + option-rupee
@@ -482,6 +511,13 @@ async def create_deployment(req: DeploymentCreateReq):
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
+    profile_doc = await db.pretrade_profiles.find_one(
+        {"name": str(req.pretrade_profile or "Balanced")},
+        {"_id": 0, "settings": 1},
+    )
+    doc["pretrade_settings_snapshot"] = dict(
+        (profile_doc or {}).get("settings") or {})
+    doc["forward_config_hash"] = compute_forward_config_hash(doc)
     # Record the quality snapshot + acknowledgment on the deployment for full audit
     doc["quality_at_creation"] = quality
     doc["acknowledged_warnings"] = bool(req.acknowledged_warnings) if quality["acknowledgment_required"] else None
@@ -510,8 +546,11 @@ async def deployment_preflight_route(
 
 @api.get("/deployments/quality")
 async def deployment_quality_route(
-    source_type: str = Query(..., description="preset or backtest_run"),
-    source_id: str = Query(..., description="preset name or backtest run id"),
+    source_type: str = Query(..., description="strategy, preset or backtest_run"),
+    source_id: str = Query(..., description="strategy id, preset name or backtest run id"),
+    source_instrument: Optional[str] = Query(None, description="direct strategy snapshot instrument"),
+    source_timeframe: Optional[str] = Query(None, description="direct strategy snapshot timeframe"),
+    source_params_json: Optional[str] = Query(None, description="JSON parameters for a direct strategy snapshot"),
     min_sharpe: Optional[float] = Query(None, description="override weak-Sharpe threshold"),
     min_trade_count: Optional[int] = Query(None, description="override low-trade-count threshold"),
     selection_bias_min_trials: Optional[int] = Query(None, description="trials before selection-bias is assessed"),
@@ -527,7 +566,22 @@ async def deployment_quality_route(
     the gate at stricter/looser settings.
     """
     db = get_db()
-    source = await _load_deployment_source(db, source_type, source_id)
+    try:
+        source_params = json.loads(source_params_json) if source_params_json else {}
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise HTTPException(400, "source_params_json must be a JSON object") from exc
+    if not isinstance(source_params, dict):
+        raise HTTPException(400, "source_params_json must decode to an object")
+    source = await _load_deployment_source(
+        db,
+        source_type,
+        source_id,
+        strategy_config={
+            "instrument": source_instrument,
+            "timeframe": source_timeframe,
+            "params": source_params,
+        },
+    )
     cfg = source.get("config") or {}
     evidence = await _gather_deployment_evidence(
         db,
@@ -547,8 +601,11 @@ async def deployment_quality_route(
 
 @api.get("/deployments/readiness")
 async def deployment_readiness(
-    source_type: str = Query("preset", description="preset or backtest_run"),
-    source_id: str = Query(..., description="preset name or backtest run id"),
+    source_type: str = Query("preset", description="strategy, preset or backtest_run"),
+    source_id: str = Query(..., description="strategy id, preset name or backtest run id"),
+    source_instrument: Optional[str] = Query(None, description="direct strategy snapshot instrument"),
+    source_timeframe: Optional[str] = Query(None, description="direct strategy snapshot timeframe"),
+    source_params_json: Optional[str] = Query(None, description="JSON parameters for a direct strategy snapshot"),
 ):
     """Deployment-readiness evidence for a source — the canonical pipeline check.
 
@@ -559,7 +616,22 @@ async def deployment_readiness(
     spread, and costs?). Informational only; never blocks creation.
     """
     db = get_db()
-    source = await _load_deployment_source(db, source_type, source_id)
+    try:
+        source_params = json.loads(source_params_json) if source_params_json else {}
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise HTTPException(400, "source_params_json must be a JSON object") from exc
+    if not isinstance(source_params, dict):
+        raise HTTPException(400, "source_params_json must decode to an object")
+    source = await _load_deployment_source(
+        db,
+        source_type,
+        source_id,
+        strategy_config={
+            "instrument": source_instrument,
+            "timeframe": source_timeframe,
+            "params": source_params,
+        },
+    )
     cfg = source.get("config") or {}
     strategy_id = cfg.get("strategy_id") or source.get("strategy_id")
     instrument = (cfg.get("instrument") or source.get("instrument") or "").upper()
@@ -813,9 +885,11 @@ async def stop_all_deployments():
         {"mode": "live"}, {"_id": 0}
     ).to_list(length=None)
     disarmed_live_ids: list = []
+    live_exit_reports: Dict[str, Dict[str, List[str]]] = {}
     for d in live_deps:
         dep_id = d["id"]
-        await _square_live_positions_for_deployment(dep_id, reason="manual_stop_all")
+        live_exit_reports[dep_id] = await _square_live_positions_for_deployment(
+            dep_id, reason="manual_stop_all")
         risk = dict(d.get("risk") or {})
         live = dict(risk.get("live") or {})
         live["disabled_at"] = datetime.now(timezone.utc).isoformat()
@@ -842,6 +916,7 @@ async def stop_all_deployments():
         "squared_off_count": len(summaries),
         "paused_deployment_ids": paused_ids,
         "disarmed_live_deployment_ids": disarmed_live_ids,
+        "live_exit_reports": live_exit_reports,
     })
 
 
@@ -860,9 +935,13 @@ async def stop_deployment(deployment_id: str):
     # Flatten REAL positions first if this was a live deployment — the generic Stop
     # button reaches live deployments in the UI, and squaring only paper_trades would
     # leave real legs open while the response claims they were closed.
-    squared_live: List[str] = []
+    live_exit_report: Dict[str, List[str]] = {
+        "exit_submitted_tsyms": [], "already_flat_tsyms": [],
+        "cancel_confirmed_tsyms": [], "flat_confirmation_pending_tsyms": [],
+        "deferred_tsyms": [], "failed_tsyms": [],
+    }
     if str(deployment.get("mode") or "").lower() == "live":
-        squared_live = await _square_live_positions_for_deployment(
+        live_exit_report = await _square_live_positions_for_deployment(
             deployment_id, reason="manual_stop")
     summaries = await square_off_open_paper_trades(
         db,
@@ -875,8 +954,10 @@ async def stop_deployment(deployment_id: str):
         **doc,
         "squared_off": summaries,
         "squared_off_count": len(summaries),
-        "squared_live_tsyms": squared_live,
-        "squared_live_count": len(squared_live),
+        # Deprecated honesty-preserving aliases: exit submission is not a fill.
+        "squared_live_tsyms": [],
+        "squared_live_count": 0,
+        "live_exit": live_exit_report,
     })
 
 
@@ -902,10 +983,17 @@ async def enable_deployment_live(deployment_id: str, body: _LiveEnableBody):
       - the LiveEngine.can_trade() is True (not halted / latched);
       - confirm is the literal boolean True (StrictBool — truthy-non-True rejected).
 
+    Forward validation remains the recommended capital-promotion path.  When it
+    is missing or failed, the route returns an explicit-consent challenge unless
+    ``accept_unvalidated_live`` is the literal boolean True.  That user decision
+    is persisted with the failed checks and evidence snapshot; broker/session,
+    engine, cap and order-safety gates are never bypassed by this consent.
+
     On pass, sets mode="live" and writes risk.live = {lots, max_lots_per_day,
     max_concurrent, daily_loss_cap, catastrophe_stop_pct/target_pct, enabled_at,
-    enabled_by}. The user's lots value is stored verbatim — the executor clamps it
-    to the account ceiling at place time. Response carries `autoplace_armed` (the
+    enabled_by}. Requested lots/concurrency must fit the current account-level
+    safety ceilings; the executor re-applies the current ceilings at place time.
+    Response carries `autoplace_armed` (the
     env transmit gate, the one remaining master switch) plus a human `note` when it
     is False (backend dry-run-logs).
 
@@ -929,12 +1017,20 @@ async def enable_deployment_live(deployment_id: str, body: _LiveEnableBody):
     # deployments persist across sessions, so an omitted cap means indefinite
     # unbounded daily loss. Require a positive value; the governor pauses the
     # deployment (and demotes it to paper) when realized+unrealized breaches it.
-    if body.daily_loss_cap is None or float(body.daily_loss_cap) <= 0:
+    if (body.daily_loss_cap is None
+            or not math.isfinite(float(body.daily_loss_cap))
+            or float(body.daily_loss_cap) <= 0):
         raise HTTPException(
             400,
             "daily_loss_cap (a positive rupee amount) is required to go live — it is "
             "the only day-level loss halt a live deployment has.",
         )
+    for field_name, value in (
+        ("catastrophe_stop_pct", body.catastrophe_stop_pct),
+        ("catastrophe_target_pct", body.catastrophe_target_pct),
+    ):
+        if value is not None and (not math.isfinite(float(value)) or float(value) <= 0):
+            raise HTTPException(400, f"{field_name} must be a positive finite percentage when provided")
     db = get_db()
     deployment = await db.strategy_deployments.find_one({"id": deployment_id}, {"_id": 0})
     if not deployment:
@@ -948,8 +1044,9 @@ async def enable_deployment_live(deployment_id: str, body: _LiveEnableBody):
         raise HTTPException(409, f"Strategy {sid} is retired — un-retire it before going live.")
     if _is_drift_paused(deployment):
         raise HTTPException(400, "Deployment is paused for strategy source drift — re-pin it before going live.")
-    if not await _broker_connected():
-        raise HTTPException(400, "Flattrade not connected — complete OAuth before going live.")
+    broker_ready, broker_reason = await _broker_readiness()
+    if not broker_ready:
+        raise HTTPException(400, f"{broker_reason} before going live.")
     try:
         ok, reason = await _live_l3_engine().can_trade()
     except Exception:
@@ -957,7 +1054,91 @@ async def enable_deployment_live(deployment_id: str, body: _LiveEnableBody):
     if ok is not True:
         raise HTTPException(400, f"Live engine cannot trade ({reason}) — clear the halt/latch before going live.")
 
+    # Capital freedom is intentionally bounded by the account-level guardrails.
+    # This is independent of research evidence: the operator may change these
+    # ceilings explicitly on Live Trading, but a single deployment cannot bypass
+    # them by crafting an API request. The executor checks them again at order time.
+    try:
+        account_safety = await _live_safety_config()
+        account_max_lots = max(1, int(account_safety.get("max_lots_per_order") or 1))
+        account_max_open = max(1, int(account_safety.get("max_open_positions") or 1))
+    except Exception as exc:
+        raise HTTPException(
+            503,
+            "Account-level live safety configuration is unavailable; cannot verify capital ceilings.",
+        ) from exc
+    if int(body.lots) > account_max_lots:
+        raise HTTPException(
+            400,
+            detail={
+                "code": "account_lot_ceiling_exceeded",
+                "message": (
+                    f"lots={int(body.lots)} exceeds the account ceiling of {account_max_lots}. "
+                    "Change the account safety setting first or choose a lower value."
+                ),
+                "max_lots_per_order": account_max_lots,
+            },
+        )
+    if int(body.max_concurrent) > account_max_open:
+        raise HTTPException(
+            400,
+            detail={
+                "code": "account_position_ceiling_exceeded",
+                "message": (
+                    f"max_concurrent={int(body.max_concurrent)} exceeds the account ceiling "
+                    f"of {account_max_open}. Change the account safety setting first or choose a lower value."
+                ),
+                "max_open_positions": account_max_open,
+            },
+        )
+
+    # Evidence is a warning/consent gate, not an irrevocable capital veto.  The
+    # user explicitly requested freedom to authorize a compatible strategy even
+    # when its frozen cohort is incomplete or negative.  A compute failure is
+    # treated exactly like failed evidence: no silent pass, but explicit informed
+    # consent can proceed.  All operational/broker/capital gates above remain hard.
+    validation_error = None
+    try:
+        fwd = await compute_forward_metrics_for_deployment(db, deployment)
+    except Exception as exc:
+        validation_error = str(exc)[:240]
+        fwd = {
+            "forward_validation": {
+                "promotion_allowed": False,
+                "phase": "unavailable",
+                "failed_checks": ["forward_validation_unavailable"],
+                "error": validation_error,
+            },
+            "arm_advisories": [],
+        }
+    promotion = (fwd or {}).get("forward_validation") or {}
+    promotion_allowed = bool(promotion.get("promotion_allowed"))
+    override_used = not promotion_allowed
+    if override_used and body.accept_unvalidated_live is not True:
+        raise HTTPException(
+            409,
+            detail={
+                "code": "explicit_unvalidated_live_consent_required",
+                "message": (
+                    "This deployment has not passed forward validation. Review the failed "
+                    "checks and explicitly approve unvalidated real-money execution to proceed."
+                ),
+                "forward_validation": promotion,
+                "consent_field": "accept_unvalidated_live",
+            },
+        )
+
     now = _utcnow()
+    evidence_consent = {
+        "status": "user_override" if override_used else "forward_validated",
+        "accepted": bool(body.accept_unvalidated_live) if override_used else False,
+        "accepted_at": now.isoformat() if override_used else None,
+        "accepted_by": "user" if override_used else None,
+        "failed_checks": list(promotion.get("failed_checks") or []),
+        "phase": promotion.get("phase"),
+        "validation_error": validation_error,
+        "forward_validation_snapshot": promotion,
+    }
     live = {
         "lots": int(body.lots),
         "max_lots_per_day": int(body.max_lots_per_day),
@@ -967,6 +1148,12 @@ async def enable_deployment_live(deployment_id: str, body: _LiveEnableBody):
         "catastrophe_target_pct": body.catastrophe_target_pct,
         "enabled_at": now.isoformat(),
         "enabled_by": "user",
+        "evidence_consent": evidence_consent,
+        "account_safety_snapshot": {
+            "max_lots_per_order": account_max_lots,
+            "max_open_positions": account_max_open,
+            "daily_loss_limit": account_safety.get("daily_loss_limit"),
+        },
         "last_block_reason": None,
     }
     # Read-modify-write of the whole risk dict: set risk.live without clobbering
@@ -984,12 +1171,9 @@ async def enable_deployment_live(deployment_id: str, body: _LiveEnableBody):
     out = {**live, "autoplace_armed": autoplace}
     if not autoplace:
         out["note"] = "backend will dry-run-log, not transmit real orders (LIVE_AUTOPLACE_ARMED is off)"
-    # S19: arming has NO performance gate — echo the forward evidence + non-blocking
-    # advisories so the operator sees whether the paper record actually supports this.
-    try:
-        fwd = await compute_forward_metrics_for_deployment(db, deployment)
-    except Exception:
-        fwd = None
+    # Echo the qualifying record and any residual operational advisories.
+    out["forward_validation"] = promotion
+    out["evidence_override_used"] = override_used
     out["arm_advisories"] = build_arm_advisories(fwd)
     _pm_advisory = _premium_edge_verdict_advisory_for(deployment)
     if _pm_advisory:
@@ -1041,7 +1225,8 @@ async def stop_deployment_live(deployment_id: str):
     deployment = await db.strategy_deployments.find_one({"id": deployment_id}, {"_id": 0})
     if not deployment:
         raise HTTPException(404, "Deployment not found")
-    squared = await _square_live_positions_for_deployment(deployment_id, reason="manual_stop")
+    exit_report = await _square_live_positions_for_deployment(
+        deployment_id, reason="manual_stop")
     now_iso = datetime.now(timezone.utc).isoformat()
     risk = dict(deployment.get("risk") or {})
     live = dict(risk.get("live") or {})
@@ -1058,8 +1243,10 @@ async def stop_deployment_live(deployment_id: str):
     )
     return serialize_doc({
         "deployment_id": deployment_id,
-        "squared_tsyms": squared,
-        "squared_count": len(squared),
+        # Deprecated honesty-preserving aliases: exit submission is not a fill.
+        "squared_tsyms": [],
+        "squared_count": 0,
+        **exit_report,
         "disabled": True,
         "paused": True,
         "live": live,

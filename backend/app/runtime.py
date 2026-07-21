@@ -1672,14 +1672,105 @@ _ENRICHED_CSV_COLUMNS = [
 ]
 
 
-async def _load_deployment_source(db: Any, source_type: str, source_id: str) -> Dict[str, Any]:
+async def _load_deployment_source(
+    db: Any,
+    source_type: str,
+    source_id: str,
+    *,
+    strategy_config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     source_type = str(source_type or "").lower()
     if source_type == "preset":
         doc = await db.presets.find_one({"name": source_id}, {"_id": 0})
     elif source_type == "backtest_run":
         doc = await db.backtest_runs.find_one({"id": source_id}, {"_id": 0, "trades": 0, "equity_curve": 0})
+    elif source_type == "strategy":
+        # A library strategy is converted to the same immutable source shape as
+        # a preset.  This is deliberately a snapshot, not a pointer to mutable
+        # class defaults.  build_deployment_doc additionally pins the source SHA.
+        from app.strategies.base import get_registry
+
+        strategy = get_registry().get(str(source_id or ""))
+        if strategy is None:
+            raise HTTPException(404, f"Strategy {source_id} not found")
+        cfg = dict(strategy_config or {})
+        supported_instruments = [str(v).upper() for v in strategy.supported_instruments]
+        supported_timeframes = [str(v) for v in strategy.supported_timeframes]
+        instrument = str(cfg.get("instrument") or (supported_instruments[0] if supported_instruments else "")).upper()
+        # The deployment evaluator consumes closed candles_1m directly and does
+        # not resample. A library strategy is live-compatible only when it
+        # explicitly supports 1m; otherwise the snapshot would be misleading.
+        if "1m" not in supported_timeframes:
+            raise HTTPException(
+                400,
+                f"Strategy {strategy.id} is not deployment-compatible: live signals currently require 1m support",
+            )
+        timeframe = str(cfg.get("timeframe") or "1m")
+        if instrument not in supported_instruments:
+            raise HTTPException(
+                400,
+                f"Strategy {strategy.id} does not support {instrument}; allowed: {supported_instruments}",
+            )
+        if timeframe not in supported_timeframes:
+            raise HTTPException(
+                400,
+                f"Strategy {strategy.id} does not support {timeframe}; allowed: {supported_timeframes}",
+            )
+        if timeframe != "1m":
+            raise HTTPException(
+                400,
+                "Strategy deployments currently require timeframe=1m; 3m/5m live resampling is not implemented",
+            )
+        requested_params = dict(cfg.get("params") or {})
+        unknown_params = sorted(set(requested_params) - set(strategy.parameter_schema or {}))
+        if unknown_params:
+            raise HTTPException(
+                400,
+                f"Strategy {strategy.id} received unknown parameter(s): {unknown_params}",
+            )
+        params = strategy.merged_params(requested_params)
+        for param_name, spec in (strategy.parameter_schema or {}).items():
+            value = params.get(param_name)
+            value_type = str((spec or {}).get("type") or "")
+            if value_type == "bool":
+                if not isinstance(value, bool):
+                    raise HTTPException(400, f"Strategy parameter {param_name} must be boolean")
+            elif value_type == "int":
+                if isinstance(value, bool) or not isinstance(value, (int, float)) or int(value) != value:
+                    raise HTTPException(400, f"Strategy parameter {param_name} must be an integer")
+                value = int(value)
+            elif value_type == "float":
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    raise HTTPException(400, f"Strategy parameter {param_name} must be numeric")
+                value = float(value)
+            elif value_type == "str":
+                if not isinstance(value, str) or not value.strip():
+                    raise HTTPException(400, f"Strategy parameter {param_name} must be non-empty text")
+            if value_type in ("int", "float"):
+                if spec.get("min") is not None and value < spec["min"]:
+                    raise HTTPException(400, f"Strategy parameter {param_name} must be >= {spec['min']}")
+                if spec.get("max") is not None and value > spec["max"]:
+                    raise HTTPException(400, f"Strategy parameter {param_name} must be <= {spec['max']}")
+                params[param_name] = value
+        doc = {
+            "id": strategy.id,
+            "name": strategy.name,
+            "strategy_id": strategy.id,
+            "strategy_version": strategy.version,
+            "instrument": instrument,
+            "timeframe": timeframe,
+            "params": params,
+            "config": {
+                "strategy_id": strategy.id,
+                "strategy_version": strategy.version,
+                "instrument": instrument,
+                "timeframe": timeframe,
+                "params": params,
+            },
+            "source_kind": "strategy_library_snapshot",
+        }
     else:
-        raise HTTPException(400, "Deployment source_type must be preset or backtest_run")
+        raise HTTPException(400, "Deployment source_type must be strategy, preset or backtest_run")
     if not doc:
         raise HTTPException(404, f"Deployment source not found: {source_type} {source_id}")
     return doc

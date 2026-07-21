@@ -121,9 +121,9 @@ The Optimizer page runs automated parameter searches to find the best strategy c
 - **Strategy + Method + Objective + Trial budget:** pick your strategy, search method (Bayesian TPE recommended), objective, and how many trials to run (10–5000; note: more trials can increase overfitting risk for small parameter spaces). Walk-forward does not support Grid — Bayesian is used.
 - **Evaluation mode:** the key decision.
   - **Spot points (fast)** — the original mode. Searches quickly by maximizing index-point P&L. Useful for exploration, but can give misleading results for option buying because it ignores theta/spread/costs.
-  - **Option re-rank (realistic)** — the recommended mode. Stage 1 runs the fast spot search; Stage 2 loads the window's option candles *once* and re-scores the top-K candidates by **real paired-option net rupee** (costs + spread + DTE). Picks the option-best params. Use this before deploying or trusting a result.
+  - **Option re-rank (research)** — Stage 1 runs the fast spot search; Stage 2 loads historical option minute bars once and re-scores a top-K shortlist by modelled net rupee (costs + spread + DTE). It is a valuable rejection screen, but the legacy option warehouse is not point-in-time/execution certified and the shortlist is not an option-native exhaustive search. A positive result may nominate a paper cohort; it cannot by itself establish forward validation or live readiness.
 - **Option sub-panel** (shown when re-rank mode is active): moneyness, DTE filter, lots, exit mode (premium SL/target supports points or percent of premium — points take precedence), costs toggle.
-- **Guard rails** (toggle, default ON): `Min trades` prevents statistically meaningless results; `Min CE/PE side %` prevents all-one-direction solutions (default 0 = off). Turn guard rails OFF to let the optimizer purely maximize your chosen objective.
+- **Guard rails** (toggle, default ON): `Min trades` rejects obvious few-trade winners but is not a statistical-significance test; `Min CE/PE side %` prevents all-one-direction solutions when that matches the thesis (default 0 = off).
 - **Optimize indicator periods:** also tunes RSI/MACD/ATR/EMA/ADX lengths. Slower but searches the real space.
 - **Pre-trade profile:** apply the same filter you use in live trading so optimized params reflect what you'll actually trade.
 - **Walk-forward windows** (shown when Run type is Walk-forward): train days (default 60), test days (default 20), step days (default = test days), rolling vs anchored, trials per window (default 40), max windows (default 12 — with more, the oldest are dropped so deployable params always come from the newest data).
@@ -143,7 +143,7 @@ The Optimizer page runs automated parameter searches to find the best strategy c
 - Top-10 alternatives table.
 
 ### Results (Option re-rank mode)
-- **Re-rank table:** shows each candidate's net rupee P&L on real options, option win-rate, paired/total trade count, spot objective, and option-data coverage %. Sorted by option net rupee — this is the realistic ranking.
+- **Re-rank table:** shows each candidate's modelled net rupee P&L on historical option bars, option win-rate, paired/total trade count, spot objective, and option-data coverage. Sorted by modelled option net rupee for research only.
 - The "best" params and saved backtest run reflect the option-best selection, not the spot-best.
 
 ### Results (Walk-forward)
@@ -153,11 +153,11 @@ The Optimizer page runs automated parameter searches to find the best strategy c
 - **Parameter Stability bars:** red bars mark parameters that wander window-to-window — a sign they are fitted to noise, not structure.
 - **Per-window table:** each window's chosen params and IS/OOS results.
 - The deployable `best_params` come from the most recent train window, saved with a full backtest run, so Save-as-Preset / View-Best-in-Lab / deployments work exactly as for single runs. Job History tags these runs `walk-fwd`.
-- **Option OOS (₹) block** (when "Option-aware OOS" is on, default): the same stitched OOS trades paired with real option candles — net rupee after charges, win rate, pairing %, per-window rupee chips, and rupee consistency. A spot-positive stitch with a negative rupee result means theta/spread/costs eat the edge — do not deploy on the spot number alone. Window re-optimization itself still searches on spot points.
+- **Option OOS (₹) block** (when "Option-aware OOS" is on): the stitched OOS trades paired with historical option minute bars—modelled net rupee after charges, pairing, and per-window consistency. A negative result rejects the spot edge. A positive result remains research-only because window re-optimization still searches on spot and legacy option history lacks point-in-time execution provenance.
 - **Save as Preset stores the execution policy** (moneyness, DTE, exit mode, premium levels, costs) with the params. Loading the preset in Backtest Lab re-applies it; the deployment form prefills from it. The Rocket button on a preset row jumps straight to the deployment form with that preset preselected.
 
 ### After the run
-- **Trust scorecard** — on a completed run the promoted "best" carries the same advisory verdict as the Backtest Lab (see *Backtest Lab → Read results carefully*): it flags a **fragile** survivor (positive out-of-sample but negative full-window option-₹), a ruin/equity-floor breach, and low coverage. The optimizer now also runs the promoted config's **full-window option backtest** and stores it on the saved best, so the deploy wizard's quality gate reads the *honest exact-params* option-₹ number (not a base-config approximation). Advisory only — nothing is blocked.
+- **Research/promotion evidence** — completed option runs carry a provenance verdict. Legacy option history yields `research_only`, so the button honestly saves a **Research Preset** rather than claiming live readiness. Any compatible preset can still be deployed for signals/paper immediately and can be explicitly enabled for real money through the separate unvalidated-live consent; the consent is audited and does not turn research-only evidence into validation.
 - **View Best in Lab** — opens the saved best-result full backtest (with trades, equity curve, walk-forward) in the Backtest Lab.
 - **Save as Preset** — saves the best params as a Preset (available in Backtest Lab and deployments). Works for completed, cancelled, paused, and interrupted jobs.
 - **Clone config** — the copy icon on any Job History row repopulates the Setup panel with that job's configuration for re-running with tweaks.
@@ -171,7 +171,7 @@ Three profiles ship: Conservative, Balanced, Aggressive. Each has 10+ filters. T
 
 Browse built-in strategies and parameter schemas. For drop-in custom plugins, see `docs/STRATEGY_PLUGINS.md`.
 
-Strategy cards with closed paper trades show a **Forward** block per deployment: win rate, average P&L, total P&L, profit factor, and the complete-session count. Deployments with fewer than 10 complete sessions carry an amber **"low sample"** badge (n/10 sessions) — shown immediately so you can monitor a trial from day one, but treat it as preliminary, not evidence.
+Strategy cards with closed paper trades show a **Forward** block per deployment plus the pre-registered phase: collecting, plumbing ready, or promotion ready. The UI shows complete sessions out of 60 and eligible trades out of 120. The old 10-session visibility badge is only a plumbing checkpoint. Passing every gate in [`forward-validation-policy.md`](forward-validation-policy.md) earns the forward-validated label; it is strongly recommended but can be overridden only through the explicit unvalidated real-money consent.
 
 ## Volatility Audit
 
@@ -188,9 +188,24 @@ console were removed.
 ### 1. Deploy a strategy (3-step wizard)
 
 1. Click **Deploy strategy** (or use the rocket button on a preset in the Optimizer — it lands here preselected).
-2. **Step 1 — Preset:** pick the saved preset and name the deployment. The Validation evidence card shows whether the honest pipeline ran (latest walk-forward efficiency/consistency + option-rupee proof, flagged when params differ).
+2. **Step 1 — Source:** choose either a saved preset or any loaded, non-retired Strategy Library entry compatible with the 1-minute deployment evaluator. A direct library selection exposes its instrument and complete parameter schema and freezes those choices into an immutable deployment snapshot. The Validation evidence card shows whether the honest pipeline ran (latest walk-forward efficiency/consistency + option-rupee proof, flagged when params differ).
 3. **Step 2 — Execution** (prefilled from the preset's execution policy): mode — **Paper (auto-trade every clean signal)** or **Signal only** — plus moneyness, multi-select DTE filter, lots, and (paper mode) the auto-paper toggle with fallback exits in ₹ points or % of premium (used only when the strategy gives no exit hints).
 4. **Step 3 — Risk & go:** kill switches (max consecutive losses / daily loss cutoff % → auto-PAUSE; max open trades → soft block), allow-overnight, and the quality-warning acknowledgment when the preset has warnings. Click **Deploy** — signals start with the next market minute, and the live option stream re-aligns its strikes to your deployments automatically.
+
+### Enable real-money execution
+
+Every compatible deployment appears on **Live Trading**. Click **Enable Live
+Execution**, choose lots/signal, lots/day, concurrent positions, the mandatory
+positive daily-loss cap, and optional catastrophe OCO band. Values must fit the
+account lot and open-position ceilings shown in the dialog.
+
+If the forward policy passes, review the summary and type `ENABLE`. If it has not
+passed (including missing evidence), the dialog shows the failed checks and also
+requires **Yes, I explicitly approve unvalidated real-money trading** before the
+typed confirmation is accepted. This evidence override is persisted. Broker OAuth,
+engine/kill-switch, capital ceilings, order safety, and exit protection remain hard
+gates. `LIVE_AUTOPLACE_ARMED=1` is also required for automatic entries to transmit;
+otherwise the backend dry-runs them.
 
 ### 2. Read the cards
 
@@ -250,6 +265,6 @@ For a fresh study:
 
 - Do not trust a strategy from one backtest. Use walk-forward optimization (the honest OOS mode), forward testing, and paper trading.
 - The system warns about walk-forward divergence; do not silence the ack checkbox blindly.
-- Auto paper trading exists to audit signal quality without manual clicking — it never places broker orders, and nothing in this app ever will. Signal-only mode journals without trading.
+- Auto paper trading never places broker orders; signal-only mode only journals. A deployment in `live` mode can place real Flattrade orders when `LIVE_AUTOPLACE_ARMED=1`, so use the explicit confirmation and capital ceilings deliberately.
 - Options can lose money quickly. Use strict per-trade risk and the per-deployment kill switches (max consecutive losses, daily loss cutoff, max open trades).
 - Forward P&L is trustworthy only for deployments created after 2026-06-11; older approval-created trades entered at the spot index level (a since-fixed bug) and their P&L should be ignored.

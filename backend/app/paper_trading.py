@@ -97,6 +97,8 @@ def paper_trade_from_signal(
     trade = {
         "id": str(uuid.uuid4()),
         "signal_id": signal.get("id"),
+        "decision_ts": signal.get("bar_ts"),
+        "decision_recorded_at": signal.get("updated_at") or signal.get("created_at"),
         "instrument": signal.get("instrument"),
         "direction": signal.get("direction"),
         "strategy_id": signal.get("strategy_id"),

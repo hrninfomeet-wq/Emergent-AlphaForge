@@ -8,13 +8,87 @@ _Entry point for the next engineer or AI agent. This is the shortest useful orie
 
 ## 1. Orientation
 
-**AlphaForge Trading Lab** is a **local-first research + forward-test app for Indian index options** (NIFTY / BANKNIFTY / SENSEX). The loop: warehouse 1-minute spot + option candles → backtest / optimize strategies → save as presets → deploy for signal generation, paper trading, and (under hard gates) live Flattrade execution.
+**AlphaForge Trading Lab** is a **local-first research + forward-test app for Indian index options** (NIFTY / BANKNIFTY / SENSEX). The loop: warehouse 1-minute spot + option candles → select a compatible Strategy Library entry directly or backtest/optimize and save a preset → deploy for signal generation, paper trading, and (after explicit user consent plus hard operational/capital gates) live Flattrade execution.
 
 Stack: **React** (CRA + craco) frontend, **FastAPI** (Python) backend, **MongoDB** (motor), all in **Docker Compose**. Frontend `:3000`, backend `:8001` (**every route under `/api`**), mongo `:27017`. **Upstox** = market data feed; **Flattrade** (Noren / PiConnect OMS) = live broker execution.
 
 ## 2. Current state
 
-**Latest (2026-07-19, v0.56.0)**: **deploying a strategy in live mode IS the
+**Latest (2026-07-21, v0.56.2)**: **deployment selection is free, real-money
+authority is explicit, and capital remains gated.** The `/live` wizard accepts a
+saved preset or any loaded, non-retired Strategy Library entry that supports the
+current 1-minute evaluator. A direct library choice exposes its instrument and full
+parameter schema and becomes an immutable deployment snapshot with version, params,
+and source SHA pinned. Ordinary creation remains signal-only or paper; every
+compatible deployment then appears on Live Trading.
+
+`POST /deployments/{id}/live/enable` no longer treats failed/incomplete forward
+evidence as an absolute veto. The UI displays the exact failed checks and requires
+a separate **unvalidated real-money** checkbox plus typed `ENABLE`; the backend
+requires strict `accept_unvalidated_live=true` and audits the evidence snapshot,
+failed checks, user, and timestamp under `risk.live.evidence_consent`. Passing the
+pre-registered policy still earns the forward-validated label and is the recommended
+path. The consent bypasses evidence only: broker/engine/drift/retirement checks,
+positive daily loss cap, account lot/open-position ceilings, exchange/order safety,
+margin, idempotency, fresh premium, and OCO/guard protection remain hard. The exact
+one-lot/one-per-day/one-open/₹4,000 initial contract is now a recommendation rather
+than a code veto; selected positive caps may vary within account ceilings.
+
+Verification baseline for v0.56.2: **3,524 passed, 4 xfailed, 0 failed** and the
+optimized frontend production build completed without compile/ESLint warnings
+(2026-07-21).
+
+**Previous (2026-07-20, v0.56.1)**: **research evidence can no longer masquerade as
+live permission.** The user fixed the capital contract at ₹2,00,000, a 25% monthly
+drawdown ceiling, and a one-sided 95% annual impairment-risk upper bound below 30%.
+`forward_validation.py` pre-registers the minimum cohort: fixed hash, account capital
+enforced, one lot, no overnight violation, ≥60 complete sessions + ≥120 closed trades,
+≥95% fresh Full-feed execution surfaces, lower block-bootstrap daily-mean CI > 0,
+≥4/6 positive 10-session blocks, ≤25% monthly and whole-record drawdown, and the
+252-session five-day-block impairment bound. In that release `/live/enable` failed
+closed unless the whole record passed and enforced an exact initial live cap; v0.56.2
+retains the evidence verdict while replacing that absolute veto with explicit audited
+operator consent and account-level capital ceilings.
+
+For new deployments, "fixed hash" means `forward_config_hash`, covering strategy
+source/parameters plus option policy, pre-trade profile, sizing, friction and paper
+exit/risk controls. Promotion recomputes it and requires an exact match. The capital
+gate also requires the fixed account-wide ₹2,00,000 contract exactly; a per-deployment,
+cumulative, or differently sized budget does not qualify.
+
+Historical option results are explicitly **research only**. The warehouse audit found
+8,714 reusable two-part tokens spanning identities and 2,551,919 candles on 2,423
+collision tokens; legacy rows lack first-ingest/run provenance, master snapshots, and
+explicit bar-end decision time. New ingestion stamps token+expiry `contract_key` and
+retrieval provenance; pairing refuses ambiguous token aliases. Upstox streaming now
+defaults to Full and retains five-level depth, OI/IV/Greeks and timestamps. Paper trades
+persist entry/exit surfaces and a top-of-book-after-charges `execution_realized_pnl`.
+Read [`option-data-provenance.md`](option-data-provenance.md) before treating any option
+backtest as evidence and [`forward-validation-policy.md`](forward-validation-policy.md)
+before creating a cohort.
+
+Live close semantics were also repaired: Stop/Stop-all/kill no longer remove the guard,
+cancel OCO, or journal CLOSED on broker **place acceptance**. They report submitted /
+deferred / failed symbols and retain protection until the normal consecutive
+authenticated broker-flat reads finalize. See `live-readback-checklist.md`.
+
+The existing ten-lot confluence paper deployment is **legacy/non-comparable** despite
+large realized P&L: it had no enforced account capital until 2026-07-20 and still had
+overnight-open positions. The account-wide fixed ₹2,00,000 gate is now enabled for new
+paper entries, but a fresh one-lot deployment/hash is required; old trades are not
+retroactively promoted.
+
+The approved durable-host design is documented in
+[`durable-static-ip-deployment.md`](durable-static-ip-deployment.md): reserved
+IPv4 VPS, application ports kept private behind SSH/WireGuard, Full-feed paper
+capture first, and no public exposure of the current unauthenticated app. The
+existing Windows Compose file is not a production manifest and must not be
+copied unchanged to a public host.
+
+Verification baseline for v0.56.1: **3,516 passed, 4 xfailed, 0 failed** and the
+optimized frontend production build completed successfully (2026-07-20).
+
+**Previous (2026-07-19, v0.56.0)**: **deploying a strategy in live mode IS the
 authorization — the per-deployment ARM ceremony and the `LIVE_GUARD_ARMED` env gate
 are GONE** (explicit user decision). A live deployment trades on its own strategy
 logic (entry / stop / target / trailing) with the resting broker OCO as the PC-down
@@ -169,9 +243,9 @@ Built subsystems (all verified present in `backend/app/`):
 
 - **Data Warehouse** — `candles_1m` holds 1-minute OHLCV for the 3 indices (spot + ATM-band option contracts) + INDIAVIX. Daily ATM-band completeness model, holiday-aware NSE calendar, one-button Sync + auto-update. (`completeness.py`, `data_hygiene.py`, `nse_calendar.py`, `routers/warehouse.py`.)
 - **Backtest Lab** — spot backtests + paired real-option-candle backtests; honest rupee-first metrics; optional exit/risk-control overlay (trailing / breakeven / daily caps). (`backtest.py`, `option_backtest.py`, `exit_controls.py`, `execution_policy.py`.) **Join contract (v0.55.1, load-bearing):** an option leg's `index_trade_id` must always be a position in the **full** spot-trade list the caller holds — never a filtered-list position. `simulate_paired_option_trades` enumerates whatever list it is given, so any caller that filters first (DTE filter, etc.) MUST remap afterwards, as `runtime.py::_run_paired_option_backtest` does; consumers should join by id or `signal_entry_ts`, never by array position. Pinned by `tests/test_paired_option_index_remap.py`; historical docs repaired by `backend/scripts/repair_option_leg_index.py`. The shared indicator enrichment (`indicators.py` / `indicator_groups.py`) re-warms the whole-frame indicators across intra-session warehouse gaps via a per-bar `gap_before` flag + `_reset_on_gap` wrapper (no-gap fast-path keeps gap-free windows byte-identical); see `docs/superpowers/specs/2026-07-05-intra-session-gap-indicator-reset-design.md`.
-- **Optimizer** — Optuna TPE / Grid / Genetic search; single vs walk-forward (honest OOS); spot vs option re-rank; capital-aware **survival gate**; exit-control search. (`optimizer.py`, `wfo.py`, `walkforward.py`, `survival.py`, `rerank_select.py`.)
+- **Optimizer** — Optuna TPE / Grid / Genetic search; Single exploration vs spot-fitted walk-forward OOS; historical option re-rank/OOS is research-only under a provenance gate; Single-run survivability is a stress screen, not annual certification. The UI includes a deterministic ₹2L evidence profile. (`optimizer.py`, `wfo.py`, `walkforward.py`, `survival.py`, `rerank_select.py`, `option_data_integrity.py`.)
 - **Strategy Library** — builtin + drop-in plugin strategies; retire / delete lifecycle; multi-provider AI authoring wizard (Anthropic + Gemini; Spec + capability-aware + full-Python tiers). (`strategies/*`, `routers/strategies_admin.py`, `ai/*`.)
-- **Paper Trading** — live-tick-driven realism (tick exits, poll-for-new-bar entries). (`paper_auto.py`, `paper_trading.py`, `live_exit_monitor.py`.)
+- **Paper Trading** — Full-feed point-in-time surfaces on entries/exits, top-of-book executable P&L after charges, fixed account-capital gate, session-complete forward metrics, and pre-registered promotion policy. (`paper_auto.py`, `paper_trading.py`, `forward_metrics.py`, `forward_validation.py`, `live_exit_monitor.py`.)
 - **Live Trading (Flattrade)** — offline-first; L0–L3 gate chain; the executor is the **single real-order chokepoint**; margin pre-check; OCO/GTT catastrophe backstop; kill switches; per-token-latched recovery that re-runs on every fresh daily OAuth (not boot-only); exit executors resolve a raised-but-maybe-landed order against the broker book before ever blind-retrying; Greeks; auto-place only under the `LIVE_AUTOPLACE_ARMED` env gate **plus** a live-mode deployment **plus** caps **plus** the 15:00 IST entry cutoff (v0.56.0 — the per-deployment ARM ceremony and its EOD auto-disarm were removed; `live/enable` carries the preflight chain and the caps). **No resting manual-position timer** — the old 10-minute test-session auto-square was removed; 15:00 IST EOD square is the sole time-based backstop for a manual position (deployed strategies exit on their own rules + a resting OCO). (`live/executor.py`, `live/safety.py`, `live/margin.py`, `live/mode.py`, `live/arm_state.py`, `live/gtt.py`, `live/kill_switch.py`, `live/exit_claims.py`, `live/auto_square.py`, `routers/live_broker.py`.) Since v0.55.2 the daily OAuth callback also mirrors the fresh jKey into the **official Flattrade MCP** binary's session file (`live/mcp_session_sync.py`; recovery `backend/scripts/resync_mcp_session.py`) — AlphaForge remains the sole OAuth owner; see [`flattrade-mcp-integration.md`](flattrade-mcp-integration.md).
 - **Premium-momentum strategy** (new) — a deployable strategy family driven by a **time-locked strike + real option-premium trigger** instead of a spot indicator: at a configurable reference time the evaluator locks the CE/PE strike from spot, captures each side's premium from fresh ticks, and the first side to cross a momentum threshold enters; exits use a new stepped X-Y trail guard mode alongside stop/target. Backtest is a self-contained option-native sim with a cost model and an honest (costs-mandatory, chronological-train/OOS-report) tuner; live/paper execution rides the *exact same* deploy/arm/guard rails as every other strategy — **there is no premium-momentum-specific arming gate, and none should ever be added** (a deliberate, explicit design decision — don't "helpfully" add one later). See [`STRATEGY_DEPLOYMENTS.md`](STRATEGY_DEPLOYMENTS.md) for the deployment-level detail. (`premium_momentum.py`, `premium_momentum_backtest.py`, `premium_momentum_tuner.py`, `premium_momentum_live.py`, `premium_lock_store.py`, `premium_pin.py`, `strategies/plugins/premium_momentum.py`, `routers/premium_momentum_routes.py`.) The shipped default (AlgoTest blueprint) parameters have **no edge** on 2026-H1 NIFTY — this is a capability, not (yet) a validated money-maker, and it has not been run through a real market-hours session. Since v0.55.0 the family also executes the **full multi-leg shape live/paper** (`leg_mode: "both"` CE+PE independent primaries; one-shot `lazy_enabled` reversal leg armed off STOP-class guard exits; `exit_time` per-deployment squares clamped below 15:00; `session_max_loss_rupees`/`session_max_profit_rupees` realized-only day-stop — live squares once, paper blocks only; `vix_min`/`vix_max` session gate) — the per-leg state lives in the same `premium_locks` doc (`pce/ppe/lce/lpe` field groups), exits/finalize/lazy-arming hang off the **live guard only** (paper exits ride the separate LiveExitMonitor and never touch locks), and restart recovery resolves leg symbols exclusively through the broker order book's `norenordno→tsym` join (never the persisted Upstox symbol — see CHANGELOG 0.55.0's review-closure note).
 
@@ -205,7 +279,11 @@ Frontend → `http://localhost:3000`, backend → `http://localhost:8001` (route
 - **IST everywhere.** NSE session 09:15–15:30 IST with a 15:00 square-off; the system is **holiday-aware** (`nse_calendar.py`).
 - **Verify India-specific facts against the code** — lot sizes and expiry cadence live in `instruments.py` / `nse_calendar.py` / `dte.py` and have rotated over time; do not hard-code from memory.
 - **Never commit** `.env`, tokens, broker creds, or any credentials file.
-- **Don't add a new live-arming gate without being asked.** The default posture for a new strategy or
+- **Don't add a new strategy-specific live-arming gate without being asked.** The user explicitly
+  changed the global frozen-forward gate in v0.56.2: it determines validation status, while a
+  separate explicit unvalidated-live consent may authorize any technically compatible strategy.
+  This must not be confused with the ordinary creation-warning acknowledgment. The default posture
+  for a new strategy or
   feature is to ride the *existing* arm/gate/cap chain (§E in `DEVELOPER_GUIDE.md`), not to invent a
   parallel one "for safety" — extra gates that weren't requested have already had to be explicitly
   removed once (premium-momentum's spec amendment). If a feature genuinely needs new protection,
@@ -231,7 +309,7 @@ Start with the consolidated [`DEVELOPER_GUIDE.md`](DEVELOPER_GUIDE.md), then rea
 | Onboard deep: run/build/test, safety model, warehouse model, India rules, research→deploy, gotchas | [`DEVELOPER_GUIDE.md`](DEVELOPER_GUIDE.md) |
 | See capabilities + the end-to-end workflow at a glance | [`PROJECT_OVERVIEW.md`](PROJECT_OVERVIEW.md) |
 | Understand the data-warehouse completeness model | [`DEVELOPER_GUIDE.md`](DEVELOPER_GUIDE.md) (model) · [`ARCHITECTURE.md`](ARCHITECTURE.md) (technical) |
-| Understand the **live-trading safety model** (gate chain, ARM, kill switches) | [`DEVELOPER_GUIDE.md`](DEVELOPER_GUIDE.md) · [`STRATEGY_DEPLOYMENTS.md`](STRATEGY_DEPLOYMENTS.md) · [`ARCHITECTURE.md`](ARCHITECTURE.md) |
+| Understand the **live-trading safety model** (promotion, live mode, kill switches) | [`forward-validation-policy.md`](forward-validation-policy.md) · [`DEVELOPER_GUIDE.md`](DEVELOPER_GUIDE.md) · [`STRATEGY_DEPLOYMENTS.md`](STRATEGY_DEPLOYMENTS.md) · [`ARCHITECTURE.md`](ARCHITECTURE.md) |
 | See the India trading rules (session, DTE, holidays, lots) | [`DEVELOPER_GUIDE.md`](DEVELOPER_GUIDE.md) · code: `nse_calendar.py` |
 | Trace the module map, data flow, Mongo collections, live-execution gate chain | [`ARCHITECTURE.md`](ARCHITECTURE.md) |
 | Look up a backend HTTP route | [`API_REFERENCE.md`](API_REFERENCE.md) |
@@ -239,7 +317,7 @@ Start with the consolidated [`DEVELOPER_GUIDE.md`](DEVELOPER_GUIDE.md), then rea
 | Write a custom strategy plugin | [`STRATEGY_PLUGINS.md`](STRATEGY_PLUGINS.md) |
 | Understand the deployment model (modes, gates, kill switches, live) | [`STRATEGY_DEPLOYMENTS.md`](STRATEGY_DEPLOYMENTS.md) |
 | Install / launch the app | [`LOCAL_SETUP.md`](LOCAL_SETUP.md) · [`STARTUP_MANUAL.md`](STARTUP_MANUAL.md) |
-| Drive the optimizer / read walk-forward OOS | [`optimizer-user-guide.md`](optimizer-user-guide.md) · [`Walk-forward (honest OOS) what it does exactly.md`](<Walk-forward (honest OOS) what it does exactly.md>) |
+| Drive the optimizer / decide which controls add value | [`optimizer-user-guide.md`](optimizer-user-guide.md) · [`optimizer-decision-guide.md`](optimizer-decision-guide.md) · [`Walk-forward (honest OOS) what it does exactly.md`](<Walk-forward (honest OOS) what it does exactly.md>) |
 | Run a live-money readback | [`live-readback-checklist.md`](live-readback-checklist.md) |
 | Run the first market-hours validation of Phase 5B (paper day → live day) | [`phase5b-market-validation-runbook.md`](phase5b-market-validation-runbook.md) |
 | Check whether premium-momentum live work is justified by evidence | [`PREMIUM_MOMENTUM_EDGE_VERDICT_2026-07.md`](PREMIUM_MOMENTUM_EDGE_VERDICT_2026-07.md) (failed gate + pre-registered revival criterion) |

@@ -60,12 +60,24 @@ def _coverage() -> Dict[str, int]:
 
 
 def _candle_at_or_before(rows: pd.DataFrame, target_ts: int, max_age_ms: int) -> Optional[Dict[str, Any]]:
+    """Latest completed option bar knowable at a one-minute spot decision.
+
+    Both spot and option bars are labelled by interval *start*.  The strategy's
+    decision at ``target_ts`` therefore occurs at ``target_ts + 60s``.  New rows
+    persist bar_end_ts explicitly; legacy rows derive the same boundary here.
+    """
     if rows.empty:
         return None
-    eligible = rows[(rows["ts"] <= target_ts) & ((target_ts - rows["ts"]) <= max_age_ms)]
+    decision_ts = int(target_ts) + 60_000
+    bar_ends = (
+        pd.to_numeric(rows["bar_end_ts"], errors="coerce").fillna(rows["ts"] + 60_000)
+        if "bar_end_ts" in rows.columns else rows["ts"] + 60_000
+    )
+    eligible = rows[(bar_ends <= decision_ts) & ((decision_ts - bar_ends) <= max_age_ms)]
     if eligible.empty:
         return None
-    return eligible.sort_values("ts").iloc[-1].to_dict()
+    return eligible.assign(_bar_end=bar_ends.loc[eligible.index]).sort_values(
+        ["_bar_end", "ts"], kind="mergesort").iloc[-1].drop(labels=["_bar_end"]).to_dict()
 
 
 def _has_candle_at_or_before(sorted_ts: List[int], target_ts: int, max_age_ms: int) -> bool:
@@ -438,7 +450,7 @@ def build_option_equity_curve(trades: List[Dict[str, Any]]) -> List[Dict[str, An
 
 
 def build_candles_by_key(option_candles: Optional[pd.DataFrame]) -> Dict[str, pd.DataFrame]:
-    """Group an option-candle frame into per-(canonical)-instrument_key sorted slices.
+    """Group candles by immutable token+expiry contract identity.
 
     This is the SINGLE definition of the grouping that ``simulate_paired_option_trades``
     consumes; the optimizer calls it ONCE per re-rank and passes the result into
@@ -446,21 +458,48 @@ def build_candles_by_key(option_candles: Optional[pd.DataFrame]) -> Dict[str, pd
     ~150x). Output is byte-identical to the inlined groupby it replaced: ts cast
     to int, sorted by (instrument_key, ts), canonical-keyed, concatenated +
     ts-sorted on key collision. Returns {} for an empty/None frame."""
-    from app.instruments import canonical_instrument_key
+    from app.instruments import canonical_instrument_key, contract_identity_key
     candles = option_candles.copy() if option_candles is not None else pd.DataFrame()
     if candles.empty:
         return {}
     candles["ts"] = candles["ts"].astype(int)
     # stable sort: deterministic order on duplicate ts (default quicksort was non-deterministic on ties)
-    candles = candles.sort_values(["instrument_key", "ts"], kind="mergesort").reset_index(drop=True)
+    expiries = candles["expiry_date"] if "expiry_date" in candles.columns else [None] * len(candles)
+    explicit = candles["contract_key"] if "contract_key" in candles.columns else [None] * len(candles)
+    candles["_contract_key"] = [
+        str(ck) if ck else contract_identity_key(ik, expiry)
+        for ik, expiry, ck in zip(candles["instrument_key"], expiries, explicit)
+    ]
+    candles = candles.sort_values(["_contract_key", "ts"], kind="mergesort").reset_index(drop=True)
     grouped: Dict[str, List[pd.DataFrame]] = {}
-    for k, g in candles.groupby("instrument_key", sort=False):
-        grouped.setdefault(canonical_instrument_key(str(k)), []).append(g)
-    return {
+    for k, g in candles.groupby("_contract_key", sort=False):
+        grouped.setdefault(str(k), []).append(g.drop(columns=["_contract_key"]))
+    result = {
         # stable sort: deterministic order on duplicate ts (default quicksort was non-deterministic on ties)
         key: (frames[0] if len(frames) == 1 else pd.concat(frames).sort_values("ts", kind="mergesort"))
         for key, frames in grouped.items()
     }
+    # Compatibility for old/fixture rows with no expiry metadata and for a
+    # single contract split across plain + dated key forms.  Add a token alias
+    # only when that token maps to at most ONE dated identity.  Reused tokens
+    # spanning multiple expiries deliberately get no canonical alias, so they
+    # can never be cross-paired.
+    by_token: Dict[str, List[str]] = {}
+    for identity in result:
+        by_token.setdefault(canonical_instrument_key(identity), []).append(identity)
+    for token, identities in by_token.items():
+        dated = {identity for identity in identities if identity != token}
+        if len(dated) <= 1:
+            frames = [result[identity] for identity in identities]
+            result[token] = (
+                frames[0] if len(frames) == 1
+                else pd.concat(frames).sort_values("ts", kind="mergesort")
+            )
+        elif token in result:
+            # An undated legacy slice is ambiguous beside multiple dated
+            # identities. Do not expose it through the research lookup.
+            result.pop(token, None)
+    return result
 
 
 def simulate_paired_option_trades(
@@ -518,7 +557,7 @@ def simulate_paired_option_trades(
     exit_cfg = ExitControlsConfig.from_dict(exit_controls)
     caps_cfg = DailyCapsConfig.from_dict(daily_caps)
     session_ledger: Dict[str, Dict[str, float]] = {}
-    from app.instruments import canonical_instrument_key
+    from app.instruments import canonical_instrument_key, contract_identity_key
     # Pre-group candles by instrument_key ONCE. The pairing loop below looks up
     # the candles for a contract on every trade; scanning the full frame per
     # trade is O(trades x candles) and becomes the bottleneck when the optimizer
@@ -617,7 +656,13 @@ def simulate_paired_option_trades(
             continue
 
         instrument_key = selected["instrument_key"]
-        rows = candles_by_key.get(canonical_instrument_key(str(instrument_key)), pd.DataFrame()) if candles_by_key else pd.DataFrame()
+        if candles_by_key:
+            identity = contract_identity_key(instrument_key, selected.get("expiry_date"))
+            rows = candles_by_key.get(identity)
+            if rows is None:
+                rows = candles_by_key.get(canonical_instrument_key(instrument_key), pd.DataFrame())
+        else:
+            rows = pd.DataFrame()
         entry = _candle_at_or_before(rows, int(spot_trade.get("entry_ts", 0)), entry_max_age_ms)
         if not entry:
             coverage["missing_entry_candle"] += 1
@@ -739,7 +784,9 @@ def simulate_paired_option_trades(
             "status": "PAIRED",
             "atm_at_entry": selected.get("atm"),
             "option_entry_ts": int(entry["ts"]),
+            "option_entry_decision_ts": int(spot_trade.get("entry_ts", 0)) + 60_000,
             "option_exit_ts": exit_candle_ts,
+            "option_exit_decision_ts": int(exit_ts) + 60_000,
             "raw_entry_option_price": round(raw_entry_price, 3),
             "raw_exit_option_price": round(raw_exit_price, 3),
             "entry_option_price": round(entry_price, 3),

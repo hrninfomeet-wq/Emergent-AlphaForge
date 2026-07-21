@@ -29,6 +29,7 @@ from app.paper_auto import (  # noqa: E402
     compute_auto_risk_levels,
     mark_open_deployment_trades,
     resolve_deployment_lots,
+    resolve_option_entry_quote,
     resolve_option_entry_price,
 )
 from app.signal_lifecycle import create_signal_doc, transition_signal  # noqa: E402
@@ -187,6 +188,22 @@ async def test_entry_price_invalid_tick_falls_through_to_candle():
 @pytest.mark.asyncio
 async def test_entry_price_empty_key_is_none():
     assert await resolve_option_entry_price(FakeDB(), "") is None
+
+
+@pytest.mark.asyncio
+async def test_entry_quote_retains_full_point_in_time_surface():
+    tick = {
+        "last_price": 100.25, "received_ts": now_ms(), "ts": now_ms(),
+        "source": "upstox_ws_v3", "mode": "full",
+        "best_bid_price": 100.0, "best_bid_quantity": 130,
+        "best_ask_price": 100.5, "best_ask_quantity": 195,
+        "open_interest": 250000, "implied_volatility": 0.18,
+    }
+    quote = await resolve_option_entry_quote(
+        FakeDB(), KEY, latest_tick_lookup={KEY: tick}.get)
+    assert quote["source"] == "live_tick"
+    assert quote["market_data"]["point_in_time_surface_complete"] is True
+    assert quote["market_data"]["best_ask_price"] == 100.5
 
 
 # ---------- compute_auto_risk_levels --------------------------------------------
@@ -505,6 +522,38 @@ async def test_marker_auto_closes_on_target_and_exits_signal():
     assert trade["exit_reason"] == "target_hit"
     assert trade["realized_pnl"] == round((125.0 - 100.0) * 75, 2)
     assert db.signals.rows[0]["state"] == "EXITED"
+
+
+@pytest.mark.asyncio
+async def test_marker_computes_top_of_book_execution_pnl_for_complete_surface():
+    db = FakeDB()
+    sig = make_confirmed_signal()
+    db.signals.rows.append(dict(sig))
+    entry_tick = {
+        "last_price": 100.0, "received_ts": now_ms(), "ts": now_ms(),
+        "source": "upstox_ws_v3", "mode": "full",
+        "best_bid_price": 99.5, "best_bid_quantity": 200,
+        "best_ask_price": 100.5, "best_ask_quantity": 200,
+    }
+    await auto_paper_trade_for_signal(
+        db, make_paper_deployment(), sig,
+        latest_tick_lookup={KEY: entry_tick}.get)
+    db.paper_trades.rows[0]["risk"]["target_price"] = 104.0
+    exit_tick = {
+        "last_price": 105.0, "received_ts": now_ms(), "ts": now_ms(),
+        "source": "upstox_ws_v3", "mode": "full",
+        "best_bid_price": 104.5, "best_bid_quantity": 200,
+        "best_ask_price": 105.0, "best_ask_quantity": 200,
+    }
+
+    await mark_open_deployment_trades(
+        db, latest_tick_lookup={KEY: exit_tick}.get)
+
+    trade = db.paper_trades.rows[0]
+    assert trade["execution_evidence"]["point_in_time_surface_complete"] is True
+    assert trade["execution_evidence"]["entry_best_ask"] == 100.5
+    assert trade["execution_evidence"]["exit_best_bid"] == 104.5
+    assert trade["execution_realized_pnl"] < (104.5 - 100.5) * 75
 
 
 @pytest.mark.asyncio

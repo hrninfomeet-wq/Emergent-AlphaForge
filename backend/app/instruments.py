@@ -1,5 +1,7 @@
 """Shared instrument metadata for supported index underlyings."""
 
+from datetime import date, datetime
+
 INSTRUMENT_KEYS = {
     "NIFTY": "NSE_INDEX|Nifty 50",
     "BANKNIFTY": "NSE_INDEX|Nifty Bank",
@@ -36,6 +38,46 @@ def canonical_instrument_key(instrument_key) -> str:
     parts = key.split("|")
     if len(parts) >= 3:
         tail = parts[-1]
-        if len(tail) == 10 and tail[2] == "-" and tail[5] == "-":
-            return "|".join(parts[:-1])
+        if len(tail) == 10:
+            for fmt in ("%d-%m-%Y", "%Y-%m-%d"):
+                try:
+                    datetime.strptime(tail, fmt)
+                    return "|".join(parts[:-1])
+                except ValueError:
+                    continue
     return key
+
+
+def contract_identity_key(instrument_key, expiry_date=None) -> str:
+    """Immutable option-contract identity used by research storage/lookups.
+
+    Exchange tokens are reusable across expiries, so ``SEGMENT|TOKEN`` is a
+    streaming-address key, not a historical contract identity.  Research must
+    pair it with the dated expiry.  Dated broker keys use ``DD-MM-YYYY`` while
+    AlphaForge metadata uses ``YYYY-MM-DD``; both normalize to the latter.
+
+    If no expiry is available we deliberately fall back to the canonical token
+    for backward-compatible non-option fixtures.  Such rows remain ineligible
+    for promotion under the option-data integrity gate.
+    """
+    raw = str(instrument_key or "")
+    parts = raw.split("|")
+    expiry = expiry_date
+    if not expiry and len(parts) >= 3:
+        tail = parts[-1]
+        if len(tail) == 10 and tail[2] == "-" and tail[5] == "-":
+            expiry = tail
+
+    normalized = ""
+    if isinstance(expiry, (datetime, date)):
+        normalized = expiry.date().isoformat() if isinstance(expiry, datetime) else expiry.isoformat()
+    elif expiry:
+        text = str(expiry).strip()
+        for fmt in ("%Y-%m-%d", "%d-%m-%Y"):
+            try:
+                normalized = datetime.strptime(text[:10], fmt).date().isoformat()
+                break
+            except ValueError:
+                continue
+    base = canonical_instrument_key(raw)
+    return f"{base}|{normalized}" if normalized else base

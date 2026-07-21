@@ -1,10 +1,10 @@
 # Project Overview
 
-Updated: 2026-06-12
+Updated: 2026-07-21
 
 ## What AlphaForge Is
 
-AlphaForge is a local-first research and forward-testing terminal for Indian index options on NIFTY 50, BANKNIFTY, and SENSEX. It stores market data on disk, audits coverage, runs backtests, optimizes strategy parameters (including honest walk-forward optimization), and runs strategies forward against live 1-minute closes. Deployed strategies run independently and concurrently: paper-mode deployments auto-trade every clean signal at real option premiums, signal-only deployments journal without trading, and nothing ever places a broker order (approval flow retired 2026-06-12).
+AlphaForge is a local-first research, forward-testing, and supervised live-execution terminal for Indian index options on NIFTY 50, BANKNIFTY, and SENSEX. It stores market data on disk, audits coverage, runs backtests, optimizes strategy parameters (including honest walk-forward optimization), and runs strategies against live 1-minute closes. Deployed strategies run independently and concurrently: paper mode auto-trades at real option premiums, signal-only mode journals, and a user-confirmed live deployment can route long-option orders through the guarded Flattrade executor when the master transmit gate is on.
 
 It is not a guaranteed-profit system. It is the disciplined research and execution-prep stack a serious systematic options trader would build for themselves.
 
@@ -19,7 +19,7 @@ End-to-end quant workflow:
 5. Paper-trade signals automatically on clean signals (paper mode), or journal-only (signal_only mode) — multiple strategies concurrently and independently.
 6. Review forward profitability per deployment before trusting a strategy with capital.
 
-## Status Snapshot (2026-06-12)
+## Status Snapshot (2026-07-21)
 
 | Area | Status |
 |---|---|
@@ -52,7 +52,8 @@ End-to-end quant workflow:
 | Phase 5 probability engine | Deferred until ≥6 months forward signal history |
 | Phase 6 swing extension | Not started |
 
-453 backend tests pass. The local stack is healthy.
+Verification baseline: 3,524 backend tests pass, 4 expected failures, 0 unexpected
+failures; the optimized frontend build completes successfully (2026-07-21).
 
 ## Capabilities Summary
 
@@ -87,7 +88,7 @@ End-to-end quant workflow:
 
 ### Forward testing
 
-- Strategy Deployments persisted in `strategy_deployments`, created only from saved presets or saved backtest runs.
+- Strategy Deployments persisted in `strategy_deployments`, created from immutable snapshots of compatible Strategy Library entries, saved presets, or saved backtest runs.
 - Strategy source SHA pinned at creation; auto-pause on drift.
 - Pre-flight check (spot coverage, upcoming expiries, active vs expired contracts, Upstox token state).
 - Deployment quality warnings (missing walk-forward, divergence, low trade count, weak Sharpe, large drawdown) with required user acknowledgment.
@@ -143,20 +144,18 @@ Day-to-day this is automatic: the warehouse catches up to yesterday's close on b
 ### 3. Deploy for forward testing
 
 1. From Live Signals, click Create Deployment.
-2. Choose source: a saved Preset or a saved Backtest Run.
+2. Choose source: a compatible Strategy Library entry or a saved Preset (the API also accepts a saved Backtest Run).
 3. The Pre-flight badge highlights data realism warnings.
 4. The Quality badge surfaces walk-forward, trade-count, Sharpe, and drawdown warnings.
 5. Tick the acknowledgment checkbox if any warnings are present (HTTP 400 otherwise).
-6. Choose mode (`shadow`, `paper`, `recommendation`), DTE filter, default lots, and `allow_overnight` if desired. In paper mode, the "Auto paper trade on every clean signal" block is checked by default; optional fallback target/stop as % of premium apply only when the strategy provides no risk hints. Kill-switch fields (max consecutive losses, daily loss cutoff %, max open trades) are also set here.
+6. Choose mode (`signal_only` or `paper`), DTE filter, lots/capital, and `allow_overnight` if desired. In paper mode, auto-paper is on by default; optional fallback exits apply only when the strategy provides no risk hints. Kill-switch fields are also set here.
 7. Save. The deployment is `ACTIVE`. The scheduler picks it up on the next minute boundary +10s during market hours.
 
-### 4. Let signals trade (or approve them manually)
+### 4. Let deployments run
 
 1. With auto-paper ON (paper mode), clean signals appear in the Signal Journal already ACTIVE with a `paper_trade_id`, and the trade shows in Paper Trading at a realistic premium entry. Nothing to click.
-2. The Pending Approval panel (auto-refreshes every 15 seconds) shows remaining CONFIRMED signals — shadow/recommendation deployments, auto-paper-off deployments, or auto-trade refusals.
-3. Approve transitions CONFIRMED → TRIGGERED → ACTIVE and (in paper mode) creates the paper trade at option premium.
-4. Skip transitions CONFIRMED → SKIPPED → AUDITED.
-5. Mark Blocked moves any non-AUDITED signal to AUDITED with the supplied note as a blocker.
+2. Signal-only deployments journal without opening a trade. Refused paper/live entries remain visible with an auditable blocker/error reason.
+3. To use real money, enable the existing deployment on Live Trading, configure positive caps within account ceilings, and complete the typed confirmation. Failed or missing forward evidence additionally requires the explicit unvalidated-live consent; the evidence decision is persisted.
 
 ### 5. Review forward performance
 
@@ -175,7 +174,7 @@ Day-to-day this is automatic: the warehouse catches up to yesterday's close on b
 - Phase 5 — probability engine (Kaplan–Meier survival), meta-model, Kelly sizing, Telegram alerts. Deferred until ≥6 months forward history exists.
 - Phase 6 — swing/positional extension on 1H/1D timeframes. Not started.
 - Online hosting / always-on uptime. Local PC is the runtime.
-- No automatic broker order placement. The manual approval gate is intentional and must remain.
+- Automated broker entry exists only for a user-confirmed `mode=live` deployment with `LIVE_AUTOPLACE_ARMED=1`; it has not yet completed the market-hours validation runbook and must not be described as capital-ready merely because it is implemented.
 
 ## Recommendations And Tips Discovered During Development
 

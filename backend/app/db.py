@@ -63,7 +63,18 @@ async def ensure_indexes() -> None:
     await db.strategy_deployments.create_index([("source_type", 1), ("source_id", 1)])
     await db.option_contracts.create_index([("underlying", 1), ("expiry_date", 1), ("strike", 1), ("side", 1)])
     await db.option_contracts.create_index([("instrument_key", 1)], unique=True)
+    # Shadow identity index for the controlled token+expiry migration.  It is
+    # intentionally non-unique until duplicate legacy plain/dated rows have
+    # been reconciled and the old instrument_key-unique index is retired.
+    await db.option_contracts.create_index([("contract_key", 1)], sparse=True)
     await db.options_1m.create_index([("instrument_key", 1), ("ts", 1)], unique=True)
+    # New immutable research identity. Partial during the controlled legacy
+    # rebuild because historical rows created before v0.56.1 have no contract_key.
+    await db.options_1m.create_index(
+        [("contract_key", 1), ("ts", 1)], unique=True,
+        name="options_contract_key_ts_unique",
+        partialFilterExpression={"contract_key": {"$exists": True, "$type": "string"}},
+    )
     await db.options_1m.create_index([("underlying", 1), ("expiry_date", 1), ("strike", 1), ("side", 1), ("ts", 1)])
     await db.option_coverage_cache.create_index([("underlying", 1)], unique=True)
     # Broker-empty ledger: band pairs a clean fetch proved Upstox has no data
@@ -75,6 +86,10 @@ async def ensure_indexes() -> None:
     )
     await db.ticks.create_index([("session_id", 1), ("ts", 1)])
     await db.ticks.create_index([("instrument_key", 1), ("ts", 1)])
+    await db.ticks.create_index(
+        [("stored_at", 1)], expireAfterSeconds=30 * 24 * 60 * 60,
+        name="ticks_30d_ttl",
+    )
     await db.chain_snapshots.create_index([("created_at", -1)])
     await db.paper_trades.create_index([("created_at", -1)])
     await db.paper_trades.create_index([("status", 1), ("updated_at", -1)])

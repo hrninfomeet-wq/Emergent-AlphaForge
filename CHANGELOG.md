@@ -2,6 +2,104 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.56.2] — deployment freedom with explicit real-money consent (2026-07-21)
+
+**Outcome: strategy selection is no longer vetoed by research evidence, while
+capital and broker safety remain hard boundaries.**
+
+- The deployment wizard can now create an immutable deployment directly from any
+  loaded, non-retired Strategy Library entry compatible with the current 1-minute
+  evaluator, or from a saved preset. Instrument, full strategy parameter schema,
+  option selection, execution, paper-capital, friction, exits, and risk settings
+  are user-selectable and frozen with the strategy version and source SHA.
+- Every compatible deployment can start immediately in signal-only or paper mode
+  and appears on Live Trading. Direct creation in live mode remains impossible, so
+  a crafted create request cannot skip the real-money confirmation path.
+- Forward validation now determines the **forward-validated label and recommended
+  promotion path**, not absolute strategy eligibility. A failed, incomplete, or
+  unavailable record shows its failed checks and requires both a dedicated
+  unvalidated-real-money checkbox and typed `ENABLE`. The backend independently
+  requires strict `accept_unvalidated_live=true` and persists the full evidence
+  snapshot, failed checks, user, and timestamp in `risk.live.evidence_consent`.
+- The override cannot bypass an invalid broker session, engine/kill-switch halt,
+  retired or drifted code, incompatible timeframe, required positive daily loss
+  cap, account lot/open-position ceilings, exchange/order constraints,
+  idempotency, fresh-option-price checks, margin, or OCO/guard protection.
+  Account ceilings are snapshotted at activation and re-applied by the executor.
+- The old forced initial-live contract (exactly one lot, one lot/day, one open
+  position, and daily loss ≤₹4,000) was removed. Those values remain the strongly
+  recommended first-live drill, but the user may choose any positive deployment
+  caps within the separately configured account-level ceilings.
+- Documentation now distinguishes evidence status, operator authority, technical
+  compatibility, and capital safety instead of calling research-only results an
+  absolute live prohibition.
+- **Verification:** 3,524 backend tests passed, 4 expected failures, 0 unexpected
+  failures; the optimized frontend production build completed without compile or
+  ESLint warnings.
+
+## [0.56.1] — research integrity, forward promotion, and confirm-flat Stop (2026-07-20)
+
+**Outcome: the app is safer and more honest, but no strategy is currently ready for
+automated live promotion.** This release implements the user's ₹2,00,000 capital and
+evidence contract instead of treating an optimizer winner or legacy paper profit as
+permission to trade.
+
+- **Broker-accepted exit is no longer reported as flat.** Deployment Stop, Stop-all,
+  generic Stop, and kill-triggered paths keep the live registry entry and resting OCO
+  after an exit submission. The guard owns finalization after consecutive authenticated
+  broker-flat reads; only then are OCO and close-loop records finalized. Stop responses
+  now separate submitted, already-flat, cancel-confirmed, pending-confirmation, deferred,
+  and failed symbols. Deprecated `squared_*` response aliases remain empty on submission.
+- **Immutable option history identity.** `contract_key` combines the canonical routing
+  token with expiry. New candle/contract ingestion stamps retrieval run, first/last
+  retrieval, source endpoint and dated master evidence. Pairing groups by immutable
+  identity and exposes a plain-token alias only when unambiguous. A partial shadow index
+  supports new rows; the 7.2M-row legacy collection still requires the controlled rebuild
+  in `docs/option-data-provenance.md`.
+- **Historical option evidence is gated research.** Re-rank and WFO option-OOS outputs
+  carry `data_integrity`; the optimizer labels legacy results research-only and saves a
+  Research Preset rather than implying deployment evidence.
+- **Forward evidence uses the trading session as the unit.** The pre-registered policy
+  requires 60 complete sessions + 120 trades, one lot, fixed ₹2L capital, a frozen hash,
+  no EOD violations, ≥95% execution-surface coverage, positive lower 95% block-bootstrap
+  daily expectancy, ≥4/6 profitable 10-session blocks, monthly and whole-record DD ≤25%,
+  and a one-sided 95% upper bound on ₹1L impairment over 252 sessions below 30%.
+  New deployments persist a broader `forward_config_hash`; promotion recomputes it and
+  rejects a cohort if strategy source, parameters, option selection, filters, sizing,
+  friction, or paper exit/risk controls changed. The capital check requires the exact
+  fixed account-wide ₹2L gate, not a deployment-only or differently sized budget.
+  Promotion-day completeness is ≥357/375 bars across 09:15-15:30 IST; the older
+  10:00-15:00 70% threshold remains only for preliminary Strategy Library visibility.
+  Unpriced/no-contract entry attempts are included as option-surface coverage misses.
+- **Automated live-enable now fails closed** unless the forward policy passes. The first
+  live cohort is capped to one lot, one lot/day, one concurrent trade, and ≤₹4,000 daily
+  loss. Warning acknowledgment cannot override this gate; paper deployments remain free
+  to collect evidence and the manual ticket remains the staged operational readback.
+- **Forward market capture upgraded.** Upstox Full is now the default stream mode and
+  normalized/persisted ticks retain five depth levels, best bid/ask and quantities,
+  OI, IV, Greeks, volume, total buy/sell quantity, exchange/receive timestamps and mode.
+  Paper round trips persist bounded entry/exit surfaces and compute after-charge
+  top-of-book `execution_realized_pnl` when one-lot depth is sufficient.
+- **Optimizer decision value clarified.** Default run type is walk-forward, minimum
+  trial trades is 30, analysis timeout is unlimited, and an **Apply ₹2L evidence
+  profile** button selects deterministic one-worker, six-window, one-lot, costs-on
+  settings. Single-run survival is explicitly an IID stress screen; exit-control and
+  indicator searches remain optional exploration layers.
+- **Paper account gate enabled in the running DB** at fixed ₹2,00,000 for new entries.
+  Existing ten-lot/open legacy trades were preserved and remain ineligible; no trade was
+  closed, paused, or sent to a broker.
+- **Durable-host boundary documented.** The approved forward-capture topology is a
+  reserved-IPv4 Linux VPS with the app private behind SSH/WireGuard. The local Windows
+  Compose manifest must not be exposed publicly; the current app has no suitable
+  application-wide public authentication boundary.
+- **Verification:** 3,516 backend tests passed, 4 expected failures, 0 unexpected
+  failures; the optimized frontend production build completed successfully.
+
+Decision guides: `docs/forward-validation-policy.md`,
+`docs/optimizer-decision-guide.md`, `docs/option-data-provenance.md`, and the rebuilt
+`docs/live-readback-checklist.md`. VPS deployment boundaries are in
+`docs/durable-static-ip-deployment.md`.
+
 ## [0.56.0] — deploy-to-live replaces the ARM ceremony; the guard always transmits (2026-07-19)
 
 **Deploying a strategy in live mode IS the authorization.** By explicit user decision the

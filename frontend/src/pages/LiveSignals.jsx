@@ -16,7 +16,7 @@ import { Input } from "@/components/ui/input";
  *
  * One card per deployed strategy: what is deployed, what it did today, and
  * lifetime paper results — with pause / resume / undeploy controls. New
- * deployments are created through a 3-step wizard (preset → execution → risk).
+ * deployments are created through a 3-step wizard (library/preset → execution → risk).
  * The old Pending Approval panel and manual research-signal console were
  * retired: deployments journal and auto-trade their own signals.
  */
@@ -54,15 +54,20 @@ export default function LiveSignals() {
   const [busy, setBusy] = useState(false);
   const [wizardOpen, setWizardOpen] = useState(false);
   const [presets, setPresets] = useState([]);
+  const [strategies, setStrategies] = useState([]);
 
   const refresh = useCallback(async () => {
     try {
-      const [ov, presetList] = await Promise.all([
+      const [ov, presetList, strategyList] = await Promise.all([
         api.deploymentsOverview(),
         api.listPresets().catch(() => ({ items: [] })),
+        api.listStrategies().catch(() => ({ items: [] })),
       ]);
       setOverview(ov);
       setPresets(presetList.items || []);
+      setStrategies((strategyList.items || []).filter(
+        (s) => !s.is_retired && s.is_loaded !== false && (s.supported_timeframes || []).includes("1m"),
+      ));
     } catch (e) {
       toast.error(`Load failed: ${getApiErrorMessage(e, "Load failed")}`);
     } finally {
@@ -202,6 +207,7 @@ export default function LiveSignals() {
       {wizardOpen && (
         <DeployWizard
           presets={presets}
+          strategies={strategies}
           initialPreset={wizardPreset}
           onClose={() => setWizardOpen(false)}
           onCreated={() => { setWizardOpen(false); refresh(); }}
@@ -313,12 +319,16 @@ function CardStat({ label, value, tone }) {
 }
 
 /* ------------------------------------------------------------------------ */
-/* Deploy wizard: preset → execution → risk & go                            */
+/* Deploy wizard: library/preset → execution → risk & go                    */
 /* ------------------------------------------------------------------------ */
 
 const WIZARD_DEFAULTS = {
   name: "",
+  source_type: "preset",
   source_id: "",
+  source_instrument: "",
+  source_timeframe: "1m",
+  source_params: {},
   mode: "paper",
   option_moneyness: "atm",
   dte_filter: [],
@@ -363,9 +373,13 @@ const WIZARD_DEFAULTS = {
   daily_cap_max_trades: "",
 };
 
-function DeployWizard({ presets, initialPreset, onClose, onCreated }) {
+function DeployWizard({ presets, strategies, initialPreset, onClose, onCreated }) {
   const [step, setStep] = useState(1);
-  const [form, setForm] = useState({ ...WIZARD_DEFAULTS, source_id: initialPreset || "" });
+  const [form, setForm] = useState({
+    ...WIZARD_DEFAULTS,
+    source_type: "preset",
+    source_id: initialPreset || "",
+  });
   const [busy, setBusy] = useState(false);
   const [readiness, setReadiness] = useState(null);
   const [readinessBusy, setReadinessBusy] = useState(false);
@@ -374,8 +388,15 @@ function DeployWizard({ presets, initialPreset, onClose, onCreated }) {
   const [preflightBusy, setPreflightBusy] = useState(false);
   const set = (k, v) => setForm((prev) => ({ ...prev, [k]: v }));
 
-  const preset = presets.find((p) => p.name === form.source_id);
-  const instrument = (preset?.config?.instrument || "").toUpperCase();
+  const preset = form.source_type === "preset"
+    ? presets.find((p) => p.name === form.source_id)
+    : null;
+  const libraryStrategy = form.source_type === "strategy"
+    ? strategies.find((s) => s.id === form.source_id)
+    : null;
+  const instrument = (form.source_type === "strategy"
+    ? form.source_instrument
+    : preset?.config?.instrument || "").toUpperCase();
   const execSizing = preset?.config?.execution?.sizing_config;
   const sizingSummary = execSizing?.enabled
     ? `premium-at-risk · ${execSizing.risk_per_trade_pct ?? 1}% · ₹${fmtNum(execSizing.capital ?? 200000, 0)} · max ${execSizing.max_lots ?? 10}`
@@ -396,27 +417,61 @@ function DeployWizard({ presets, initialPreset, onClose, onCreated }) {
     return () => { cancelled = true; };
   }, [instrument]);
 
-  // Evidence + quality for the chosen preset.
+  // Evidence + quality for the exact selected source snapshot. Direct library
+  // parameters are included so the acknowledgment preview cannot accidentally
+  // describe defaults while creation evaluates a different custom config.
   useEffect(() => {
     let cancelled = false;
     if (!form.source_id) { setReadiness(null); setQuality(null); return () => {}; }
     setReadinessBusy(true);
     setForm((prev) => ({ ...prev, acknowledged_warnings: false }));
+    const sourceConfig = form.source_type === "strategy" ? {
+      source_instrument: form.source_instrument,
+      source_timeframe: form.source_timeframe,
+      source_params: form.source_params,
+    } : {};
     Promise.all([
-      api.deploymentReadiness("preset", form.source_id).catch(() => null),
-      api.deploymentQuality("preset", form.source_id).catch(() => null),
+      api.deploymentReadiness(form.source_type, form.source_id, sourceConfig).catch(() => null),
+      api.deploymentQuality(form.source_type, form.source_id, sourceConfig).catch(() => null),
     ]).then(([r, q]) => {
       if (cancelled) return;
       setReadiness(r);
       setQuality(q);
     }).finally(() => { if (!cancelled) setReadinessBusy(false); });
     return () => { cancelled = true; };
-  }, [form.source_id]);
+  }, [form.source_id, form.source_type, form.source_instrument,
+    form.source_timeframe, form.source_params]);
+
+  // Turn a registered Strategy Library entry into an editable immutable
+  // snapshot.  This gives direct-deploy freedom without making later changes to
+  // class defaults silently mutate an existing deployment.
+  const libraryPrefillRef = useRef(null);
+  useEffect(() => {
+    if (form.source_type !== "strategy" || !libraryStrategy) return;
+    if (libraryPrefillRef.current === libraryStrategy.id) return;
+    libraryPrefillRef.current = libraryStrategy.id;
+    const defaults = Object.fromEntries(
+      Object.entries(libraryStrategy.parameter_schema || {}).map(([name, spec]) => [name, spec?.default]),
+    );
+    const supportedInstruments = libraryStrategy.supported_instruments || [];
+    // The current deployment evaluator consumes closed 1m candles directly.
+    // Only expose the execution-compatible timeframe instead of implying that
+    // a selected 3m/5m strategy will be resampled live.
+    const supportedTimeframes = (libraryStrategy.supported_timeframes || []).filter((v) => v === "1m");
+    setForm((prev) => ({
+      ...prev,
+      name: `${libraryStrategy.name || libraryStrategy.id} deployment`,
+      source_instrument: supportedInstruments.includes("NIFTY") ? "NIFTY" : (supportedInstruments[0] || ""),
+      source_timeframe: supportedTimeframes.includes("1m") ? "1m" : (supportedTimeframes[0] || ""),
+      source_params: defaults,
+      acknowledged_warnings: false,
+    }));
+  }, [form.source_type, libraryStrategy]);
 
   // Execution policy travels with the preset: prefill once per preset choice.
   const prefillRef = useRef(null);
   useEffect(() => {
-    if (!form.source_id || prefillRef.current === form.source_id) return;
+    if (form.source_type !== "preset" || !form.source_id || prefillRef.current === form.source_id) return;
     const ex = preset?.config?.execution;
     prefillRef.current = form.source_id;
     setForm((prev) => ({
@@ -454,15 +509,18 @@ function DeployWizard({ presets, initialPreset, onClose, onCreated }) {
       } : {}),
     }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [form.source_id, preset]);
+  }, [form.source_id, form.source_type, preset]);
 
   const create = async () => {
     setBusy(true);
     try {
       const payload = {
         name: form.name || `${form.source_id} deployment`,
-        source_type: "preset",
+        source_type: form.source_type,
         source_id: form.source_id,
+        source_instrument: form.source_type === "strategy" ? form.source_instrument : null,
+        source_timeframe: form.source_type === "strategy" ? form.source_timeframe : null,
+        source_params: form.source_type === "strategy" ? form.source_params : {},
         mode: form.mode,
         confirmation_mode: "1m_close",
         option_moneyness: [form.option_moneyness],
@@ -537,7 +595,22 @@ function DeployWizard({ presets, initialPreset, onClose, onCreated }) {
   };
 
   const needAck = Boolean(quality?.acknowledgment_required);
-  const canNext1 = Boolean(form.source_id);
+  const libraryParamsValid = form.source_type !== "strategy" || !libraryStrategy
+    ? true
+    : Object.entries(libraryStrategy.parameter_schema || {}).every(([name, spec]) => {
+        const value = form.source_params?.[name];
+        if (spec?.type === "bool") return typeof value === "boolean";
+        if (spec?.type === "str") return typeof value === "string" && value.trim() !== "";
+        const numeric = Number(value);
+        if (!Number.isFinite(numeric)) return false;
+        if (spec?.type === "int" && !Number.isInteger(numeric)) return false;
+        if (spec?.min != null && numeric < Number(spec.min)) return false;
+        if (spec?.max != null && numeric > Number(spec.max)) return false;
+        return true;
+      });
+  const canNext1 = Boolean(form.source_id)
+    && (form.source_type !== "strategy" || Boolean(form.source_instrument && form.source_timeframe))
+    && libraryParamsValid;
   const canCreate = canNext1 && (!needAck || form.acknowledged_warnings);
 
   return (
@@ -548,8 +621,8 @@ function DeployWizard({ presets, initialPreset, onClose, onCreated }) {
           <div className="text-sm font-semibold">Deploy strategy</div>
           <div className="ml-3 flex items-center gap-1 text-[10px] font-mono text-dimmer">
             {[1, 2, 3].map((n) => (
-              <span key={n} className={`px-1.5 py-0.5 rounded ${step === n ? "bg-info text-bg-0" : "bg-bg-2"}`}>
-                {n}. {n === 1 ? "Preset" : n === 2 ? "Execution" : "Risk & go"}
+                <span key={n} className={`px-1.5 py-0.5 rounded ${step === n ? "bg-info text-bg-0" : "bg-bg-2"}`}>
+                  {n}. {n === 1 ? "Source" : n === 2 ? "Execution" : "Risk & go"}
               </span>
             ))}
           </div>
@@ -561,22 +634,119 @@ function DeployWizard({ presets, initialPreset, onClose, onCreated }) {
         <div className="p-4 space-y-3 text-xs">
           {step === 1 && (
             <>
-              <label className="block text-[11px] text-dim">
-                Strategy preset (optimized + saved in the Optimizer)
-                <select
-                  value={form.source_id}
-                  onChange={(e) => set("source_id", e.target.value)}
-                  className="mt-1 h-8 w-full rounded-md border border-input bg-bg-2 px-2 text-xs"
-                  data-testid="wizard-preset-select"
-                >
-                  <option value="">— choose a preset —</option>
-                  {presets.map((p) => (
-                    <option key={p.name} value={p.name}>
-                      {p.name} ({p.config?.strategy_id} · {p.config?.instrument}{p.config?.execution ? " · exec policy" : ""})
-                    </option>
-                  ))}
-                </select>
-              </label>
+              <div className="flex rounded-md border border-line overflow-hidden w-fit" data-testid="wizard-source-type">
+                {[{ key: "preset", label: "Saved preset" }, { key: "strategy", label: "Strategy Library" }].map((choice) => (
+                  <button
+                    key={choice.key}
+                    type="button"
+                    onClick={() => {
+                      prefillRef.current = null;
+                      libraryPrefillRef.current = null;
+                      setForm({ ...WIZARD_DEFAULTS, source_type: choice.key });
+                      setReadiness(null);
+                      setQuality(null);
+                    }}
+                    className={`px-3 py-1.5 text-[11px] ${form.source_type === choice.key ? "bg-info text-bg-0" : "bg-bg-2 text-dim hover:text-foreground"}`}
+                  >
+                    {choice.label}
+                  </button>
+                ))}
+              </div>
+
+              {form.source_type === "preset" ? (
+                <label className="block text-[11px] text-dim">
+                  Saved strategy preset
+                  <select
+                    value={form.source_id}
+                    onChange={(e) => set("source_id", e.target.value)}
+                    className="mt-1 h-8 w-full rounded-md border border-input bg-bg-2 px-2 text-xs"
+                    data-testid="wizard-preset-select"
+                  >
+                    <option value="">— choose a preset —</option>
+                    {presets.map((p) => (
+                      <option key={p.name} value={p.name}>
+                        {p.name} ({p.config?.strategy_id} · {p.config?.instrument}{p.config?.execution ? " · exec policy" : ""})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : (
+                <>
+                  <label className="block text-[11px] text-dim">
+                    Compatible Strategy Library entry
+                    <select
+                      value={form.source_id}
+                      onChange={(e) => set("source_id", e.target.value)}
+                      className="mt-1 h-8 w-full rounded-md border border-input bg-bg-2 px-2 text-xs"
+                      data-testid="wizard-strategy-select"
+                    >
+                      <option value="">— choose a strategy —</option>
+                      {strategies.map((s) => (
+                        <option key={s.id} value={s.id}>{s.name} ({s.id})</option>
+                      ))}
+                    </select>
+                  </label>
+                  {libraryStrategy && (
+                    <div className="rounded-md border border-line bg-bg-2/40 p-3 space-y-3" data-testid="wizard-strategy-config">
+                      <div className="grid grid-cols-2 gap-2">
+                        <label className="text-[11px] text-dim">
+                          Instrument
+                          <select value={form.source_instrument} onChange={(e) => set("source_instrument", e.target.value)}
+                            className="mt-1 h-8 w-full rounded-md border border-input bg-bg-2 px-2 text-xs">
+                            {(libraryStrategy.supported_instruments || []).map((v) => <option key={v} value={v}>{v}</option>)}
+                          </select>
+                        </label>
+                        <label className="text-[11px] text-dim">
+                          Timeframe
+                          <select value={form.source_timeframe} onChange={(e) => set("source_timeframe", e.target.value)}
+                            className="mt-1 h-8 w-full rounded-md border border-input bg-bg-2 px-2 text-xs">
+                            {(libraryStrategy.supported_timeframes || []).filter((v) => v === "1m").map((v) => <option key={v} value={v}>{v}</option>)}
+                          </select>
+                        </label>
+                      </div>
+                      <div>
+                        <div className="text-[10px] uppercase tracking-wider text-dimmer mb-1">Frozen strategy parameters</div>
+                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-52 overflow-y-auto pr-1">
+                          {Object.entries(libraryStrategy.parameter_schema || {}).map(([name, spec]) => (
+                            spec?.type === "bool" ? (
+                              <label key={name} className="flex items-center gap-2 text-[10px] text-dim border border-line rounded px-2 h-8">
+                                <input type="checkbox" checked={Boolean(form.source_params?.[name])}
+                                  onChange={(e) => set("source_params", { ...form.source_params, [name]: e.target.checked })} />
+                                <span className="truncate" title={name}>{name}</span>
+                              </label>
+                            ) : spec?.type === "str" ? (
+                              <label key={name} className="text-[10px] text-dim">
+                                <span className="block truncate" title={name}>{name}</span>
+                                <Input type="text" required
+                                  value={form.source_params?.[name] ?? spec?.default ?? ""}
+                                  onChange={(e) => set("source_params", {
+                                    ...form.source_params,
+                                    [name]: e.target.value,
+                                  })}
+                                  className="mt-1 bg-bg-2 border-line h-8 text-[10px]" />
+                              </label>
+                            ) : (
+                              <label key={name} className="text-[10px] text-dim">
+                                <span className="block truncate" title={name}>{name}</span>
+                                <Input type="number" min={spec?.min} max={spec?.max} required
+                                  step={spec?.type === "int" ? 1 : "any"}
+                                  value={form.source_params?.[name] ?? spec?.default ?? ""}
+                                  onChange={(e) => set("source_params", {
+                                    ...form.source_params,
+                                    [name]: e.target.value === ""
+                                      ? ""
+                                      : spec?.type === "int" ? parseInt(e.target.value, 10) : Number(e.target.value),
+                                  })}
+                                  className="mt-1 bg-bg-2 border-line h-8 text-[10px]" />
+                              </label>
+                            )
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
               <label className="block text-[11px] text-dim">
                 Deployment name
                 <Input value={form.name} onChange={(e) => set("name", e.target.value)}
@@ -587,9 +757,14 @@ function DeployWizard({ presets, initialPreset, onClose, onCreated }) {
               {readiness && <ReadinessSummary readiness={readiness} />}
               {preflightBusy && <div className="text-dimmer text-[11px]">Checking data realism…</div>}
               {preflight && <PreflightSummary preflight={preflight} />}
-              {form.source_id && preset?.config?.execution == null && (
+              {form.source_type === "preset" && form.source_id && preset?.config?.execution == null && (
                 <div className="text-[10px] text-dimmer">
                   This preset carries no execution policy (older preset or spot-only run) — review step 2 manually.
+                </div>
+              )}
+              {form.source_type === "strategy" && libraryStrategy && (
+                <div className="text-[10px] text-warning">
+                  A direct library deployment has no backtest execution policy. Review every option, exit, cost and risk setting in the next steps; your selections are frozen into the deployment snapshot.
                 </div>
               )}
             </>
@@ -621,7 +796,7 @@ function DeployWizard({ presets, initialPreset, onClose, onCreated }) {
                   </div>
                 </label>
               </div>
-              {form.source_id && !execSizing && (
+              {form.source_type === "preset" && form.source_id && !execSizing && (
                 <div className="mt-1 text-[10px] leading-snug text-dimmer">
                   Fixed {form.default_lots} lot(s) — this source predates sizing-policy capture; re-save the preset
                   (or deploy from the backtest run) to inherit premium-at-risk sizing.
@@ -961,7 +1136,7 @@ function DeployWizard({ presets, initialPreset, onClose, onCreated }) {
               {needAck && (
                 <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-2 space-y-1">
                   <div className="text-[11px] text-warning font-semibold">
-                    Quality warnings on this preset — acknowledge to deploy:
+                    Quality warnings on this source — acknowledge to deploy:
                   </div>
                   <ul className="text-[11px] text-warning list-disc pl-4">
                     {(quality?.warnings || []).map((w) => <li key={w.id}>{w.label}{w.detail ? ` — ${w.detail}` : ""}</li>)}

@@ -1,102 +1,84 @@
 # AlphaForge Auto-Optimizer — User Guide
 
-*A guide for a new user of the Optimizer page (`/optimizer`). Last updated 2026-06-16.*
+*Beginner guide for `/optimizer`. Updated 2026-07-20.*
 
-## What this page does
-The Optimizer searches a strategy's **parameter space** to find settings that performed well over your chosen history — *without manual tuning*. Its most powerful mode goes further: it re-scores the best candidates on **real paired-option rupees** (not just index points), runs them through a **survival gate** that rejects account-destroying configs out-of-sample, and can **auto-tune the exit controls** for each survivor. The output is a parameter set you can save as a preset and deploy for paper trading.
+## What the optimizer can and cannot do
 
-**Mental model — three escalating layers:**
-1. **Spot search** (fast): score the index-points backtest across many parameter combos.
-2. **Option re-rank** (realistic): take the top-K and re-score them on actual CE/PE premium P&L after costs/slippage — because the spot edge often dies on premium decay.
-3. **Survival gate** (honest): keep only candidates that stay solvent out-of-sample (per walk-forward fold), then optionally auto-tune their exits.
+The optimizer searches a strategy's parameter bounds and ranks settings on historical
+results. It is valuable for rejecting weak hypotheses, studying sensitivity, and
+nominating a frozen one-lot paper candidate.
 
-> Rule of thumb: spot-only optimization tells you a strategy *signals* well; option re-rank + survival tells you it would *make money you could survive trading*. Always reach for layers 2–3 before trusting a result.
+It does **not** prove profitability. Historical option bars are currently research-
+only, a Single run is in-sample, and the Single-run Survivability panel is a stress
+screen rather than the annual promotion model. The durable setting-by-setting audit
+is in [`optimizer-decision-guide.md`](optimizer-decision-guide.md); the paper-to-live
+contract is in [`forward-validation-policy.md`](forward-validation-policy.md).
 
-## The settings, top to bottom
+## Recommended first run
 
-**Run name** — auto-generated label (strategy · instrument · objective). Leave it; it keeps your Job History readable.
+1. Click **Apply ₹2L evidence profile**.
+2. Select the instrument and the strategy hypothesis you actually intend to test.
+3. Keep the intended pre-trade profile and date range fixed before running.
+4. Keep ATM, one lot, option costs on, workers at one, and the 09:25–14:50 entry
+   window unless the deployment contract deliberately differs.
+5. Run the walk-forward job. It uses 60 training sessions, 20 unseen test sessions,
+   20-session non-overlapping steps, 40 Bayesian trials per window, and at most six
+   windows.
+6. Treat the option-OOS result as a **rejection screen**. Negative option ₹ rejects
+   the hypothesis. Positive option ₹ only nominates a research preset.
+7. Save a qualifying result as a **Research Preset**, freeze its strategy hash, and
+   collect a new one-lot paper cohort. Do not deploy it live from the optimizer.
 
-**Instrument** — NIFTY / BANKNIFTY / SENSEX. Pick what you have warehouse data for and intend to trade.
+## The two run types
 
-**Strategy** — the signal logic to optimize. Each strategy exposes its own tunable parameters.
+- **Single optimization** searches and scores on one historical window. Use it for
+  cheap exploration and parameter plots, never as promotion evidence.
+- **Walk-forward** repeatedly fits on an earlier train window and scores the winner
+  on the next unseen window. It is the correct research screen. Its window search is
+  still spot-based; Option-aware OOS then models the stitched trades on historical
+  option minute bars and reports the result without re-ranking the windows.
 
-**Method**
-- **Bayesian (Optuna TPE)** — *recommended default.* Smart; focuses trials on promising regions. Best for ≥3 parameters.
-- **Grid** — exhaustive over a coarse grid; predictable but explodes with parameters. Use only for 1–2 params or a final fine sweep.
-- **Genetic** — evolutionary; occasionally better on rugged spaces, slower.
+Walk-forward converts Grid to Bayesian. The saved `final_params` come from the most
+recent training window, so parameter stability matters as much as the stitched total.
 
-**Objective** — what the *spot search* maximizes:
-- `Net P&L (pts)` / `Total P&L pts` — raw index points; ignores risk.
-- `net_pnl_inr` — points × lot size (a rupee proxy, still spot-based).
-- `Sharpe` / `risk_adjusted` (Calmar-like) — reward-per-risk; prefer these to avoid one-big-trade winners.
-- `Profit factor`, `Win rate`, `neg_max_dd` — single-facet objectives; useful as secondary checks.
+## Reading results
 
-> **Recommendation:** use `risk_adjusted`/`Sharpe` for the spot search, and let the **Survivability objective** (below) make the real rupee decision. The spot objective only shortlists; survival selects.
+Check in this order:
 
-**Pre-trade profile** — Conservative / Balanced / Aggressive / **None**. This applies the *same* signal filter you'd trade/deploy with, so optimized params match live behavior. **Important:** if you optimize with a profile, deploy with the *same* profile, or live results won't match. Use **None** to optimize the strategy's raw signals (and then deploy with None).
+1. **Data-integrity gate:** `research_only` means the result cannot justify promotion.
+2. **Option OOS net ₹:** a spot winner that loses after option behaviour and costs is
+   rejected.
+3. **Per-window consistency:** require at least four of six option-positive windows
+   in the later forward cohort; do not trust one lucky block.
+4. **Pairing coverage:** missing candles can change the result. Research promotion
+   later requires at least 95% point-in-time execution coverage.
+5. **Parameter stability:** large window-to-window movement is evidence of regime
+   fit or noise.
+6. **Trade count:** the optimizer minimum of 30 is only a few-trade screen. Forward
+   promotion requires 60 complete sessions and 120 closed trades.
 
-**Run type**
-- **Single optimization** — one search over the whole window. Fast, but in-sample — *verify with walk-forward before trusting.*
-- **Walk-forward** — re-optimizes per train window and evaluates on the unseen test window. Slower, far more honest about generalization.
+## Single-run advanced controls
 
-**Evaluation**
-- **Spot** — score the index backtest only. Fast, but blind to premium decay/costs — a spot winner can be an option loser.
-- **Option re-rank (realistic)** — *strongly recommended.* Searches on spot, then re-ranks the top-K on real paired-option net rupees. This is the only mode that reflects what you'd actually earn buying options. **Survivability and Exit-Control Search require this mode.**
+- **Option re-rank** re-scores a spot-selected top-K on historical option bars. Use
+  25–50 candidates for research. It is a heuristic, not an exhaustive option-native
+  optimization.
+- **Analyzing budget** should be 0 for a complete comparison. A timed partial result
+  is exploration-only.
+- **Survivability stress screen** can filter obvious modelled account blow-ups. For
+  this account use ₹2,00,000 capital, ₹1,00,000 impairment floor, 25% maximum
+  drawdown, and 30% maximum stress RoR. The panel's IID observed-horizon RoR is not
+  the 252-session block-bootstrap promotion statistic.
+- **Exit-control search** reuses the same history and adds selection bias. Keep it
+  off until a base exit policy has independent forward evidence; then test the new
+  exit policy as a new frozen cohort.
+- **Indicator-period search** substantially expands the search space. Keep it off
+  for the primary run and name any later experiment separately.
+- **Parallel workers >1** make Bayesian results nondeterministic. Keep one for any
+  decision record.
 
-### Option Execution (under re-rank)
-- **Re-rank top-K** — how many spot finalists get the expensive option re-score. Higher = more thorough, slower (option candles load once). 25–50 is a sensible range.
-- **Moneyness** — ATM (default; matches the warehouse's maintained band), or OTM/ITM.
-- **Diversity shortlist** — broadens the top-K with a diversity sample so an option-profitable-but-spot-mediocre config can surface. Leave on for re-rank.
-- **DTE filter** — restrict to specific days-to-expiry (e.g. 0–2 for the expiry-week buying window). "All" = every weekly expiry.
-- **Lots / sizing** — fixed lots, or premium-at-risk sizing (size so each trade risks a fixed % of capital).
-- **Option exit + Level unit + Target/Stop (% of premium)** — the per-trade premium exit the re-rank simulates (e.g. target +60% / stop −40% of premium). **Level unit = Percent means fractions in the current convention** (0.60 = 60%).
-- **Apply option costs** — charges + bid-ask spread. **Keep ON** — gross option P&L is fiction for index-option scalping, and ₹ caps/survival require it.
+## Current decision
 
-### Survivability (the survival gate)
-Gates each finalist on the **rupee equity curve**, evaluated **per walk-forward OOS fold** — so it rejects configs that look great in-sample but blow up the account out-of-sample.
-- **Enable survival gating** — turn on for any result you intend to deploy.
-- **Equity floor (₹)** — reject if realized equity ever falls to/below this (default ₹0 = "never let the account go negative"). The primary, deterministic guard.
-- **Max drawdown %** — reject if peak-to-trough drawdown exceeds this (e.g. 45%).
-- **Max risk-of-ruin %** — reject if the Monte-Carlo upper-CI probability of hitting the ruin floor exceeds this (fail-closed: "can't prove safe" = rejected).
-- **Objective** — how *survivors* are ranked: **Calmar** (return ÷ drawdown, risk-adjusted — recommended) or **Total ₹** (raw rupees).
-- If **zero survivors**, the page says **"NO SURVIVOR"** and promotes nothing — that's the gate protecting you, not a bug. (Loosen the caps, widen bounds, **extend the date range**, or accept the strategy isn't survivable.)
-
-> **Caution — OOS vs full-window.** A "profitable survivor" is profitable on the stitched *out-of-sample* folds. A candidate can be OOS-positive yet lose money over the full window (the recent folds carried it). Prefer survivors whose **full-window option P&L is also positive** — they're far more trustworthy than ones that profited only on the recent slice.
-
-### Exit-Control Search (auto-tune exits)
-*Requires Survivability ON + Option re-rank.* For each surviving finalist, sweeps a small grid of **trailing-stop distances** and **breakeven triggers** and keeps the **best-surviving** exit config (shown as "auto-tuned exit" on the result). Leave the grid bounds blank to use the safe defaults (trail 0.20/0.35, breakeven 0.0/0.30 — **fractions**). This can turn a marginal strategy survivable by cutting its losing tail. Costs more time (survivors × folds × grid), so it only runs on already-surviving finalists.
-
-**Trial budget** — 10–5000 trials. More ≠ better: gains flatten after a few hundred for small spaces and over-fit risk rises. Scale to how many parameters you're searching (≈ 40–80 for 3–5 params, more if you also optimize indicator periods).
-
-**Apply realistic costs** — spot-side costs. Keep on.
-
-**Optimize indicator periods** — also tune RSI/MACD/ATR/EMA/ADX lengths (recomputed per trial — slower, but searches the real space). Turn on when you want the indicators themselves tuned, not just thresholds.
-
-**Guard rails**
-- **Min trades** — reject degenerate 1–2-trade "winners". Set ≥ 30 for a meaningful sample; ≥ 100 if you want the risk-of-ruin statistic to be reliable.
-- **Min CE/PE side %** — force a minimum share of the minority direction, rejecting all-PE/all-CE flukes.
-
-## Recommended workflow
-1. Strategy + Instrument; **Method = Bayesian**; **Objective = risk_adjusted**.
-2. **Pre-trade profile = None** (and deploy with None later), unless you have a profile you'll always trade with.
-3. **Evaluation = Option re-rank**; ATM; **costs ON**; sensible target/stop (e.g. +60% / −40%).
-4. **Survivability ON** — floor ₹0, max DD ~40–45%, max RoR ~10–15%, **objective Calmar**.
-5. **Exit-Control Search ON** (default grid).
-6. **Trial budget ~40**, **Min trades ≥ 30**.
-7. **Use a date range with complete option data and enough OOS trades** — a clean ~12-month window is the sweet spot (long enough for ≥100 OOS paired trades, short enough to avoid the long-range load limit). *Too short → `insufficient_sample`; an over-long range can drop the newest months on the plain backtest.*
-8. Run → read the result. If **survivors**, the best one's params + chosen exit are promoted; **Apply as preset** → deploy. If **NO SURVIVOR**, follow the on-screen suggestions (loosen caps / extend range / widen bounds) or accept the strategy isn't survivable here.
-
-## Reading the results
-- **Job History** shows status (`DONE`, **`NO SURVIVOR`**, `ANALYZING`, `FAILED`), trials, and best objective.
-- A survivor result shows, per finalist: **Survived/Disqualified (+reason)**, OOS **return %**, **max DD %**, **min equity ₹**, **risk-of-ruin**, **Calmar**, option ₹ P&L, and any **auto-tuned exit**. The reasons matter:
-  - `insufficient_sample` = too few OOS trades (extend range / lower the bar).
-  - `max_drawdown` / `equity_floor` / `risk_of_ruin` = genuinely unsafe.
-  - `ok` but excluded = survived safety but wasn't profitable.
-
-## Common pitfalls
-- **Trusting a spot-only result** — it ignores premium decay; always re-rank on options before deploying.
-- **Optimizing with one profile, deploying with another** — results won't match.
-- **Too-short a window** → `insufficient_sample` no-survivor; **too-long** → the plain-backtest load cap can drop the newest months (a known issue — keep ranges ≤ ~12 months for now).
-- **Reading "NO SURVIVOR" as failure** — it's the gate refusing to hand you a money-loser.
-- **Promoting an OOS-positive but full-window-negative survivor** — check the full-window option P&L too; prefer survivors positive on both.
-- **Cranking the trial budget** expecting better results — past a few hundred it mostly adds over-fit risk.
+No current optimizer result is promotion-ready. The best available VWAP-pullback WFO
+record is spot-positive but loses ₹1,03,157 in modelled option OOS with only one of
+six option-positive windows. SMC loses in both spot and option OOS. More trials on the
+same evidence would increase selection pressure, not fix the missing edge.

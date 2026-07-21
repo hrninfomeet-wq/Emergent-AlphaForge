@@ -1654,6 +1654,9 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                 "survival_summary": survival_summary,
                 "spot_option_correlation": spot_option_corr,
             }
+            from app.option_data_integrity import assess_option_research_integrity
+            rerank_info["data_integrity"] = assess_option_research_integrity(
+                rerank_contracts, rerank_candles)
 
         # Heatmap + robustness — spot-objective analyses; skipped on cancellation
         # and in option re-rank mode (the re-rank table is the relevant analysis).
@@ -1717,6 +1720,9 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
             "heatmap": heatmap,
             "robustness": robustness,
             "rerank": rerank_info,
+            "research_eligibility": (
+                rerank_info.get("data_integrity") if rerank_info else None
+            ),
             "survival_summary": survival_summary,
             "best_exit_controls": best_so_far.get("exit_controls"),
             "best_daily_caps": best_so_far.get("daily_caps"),

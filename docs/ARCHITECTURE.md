@@ -251,7 +251,7 @@ Collection names verified against `app/db.py` (`ensure_indexes`) and code access
 
 | Collection | Purpose |
 |---|---|
-| `strategy_deployments` | Forward-test deployment definitions (incl. `risk.live` arm block) |
+| `strategy_deployments` | Signal/paper/live deployment definitions (incl. `risk.live` caps, account-safety snapshot, and evidence consent audit) |
 | `signals` | Lifecycle state, blockers, audit events, `risk_hints`, `paper_trade_claim`. Unique partial index `signals_deployment_bar_unique` over `(deployment_id, candle_ts)` |
 | `paper_trades` | Paper fills at option premium, MTM, realized/unrealized P&L, `risk`, `spot_exit`, source flag |
 | `premium_locks` | `premium_momentum` per-session strike lock + ref-premium capture + trigger-latch state; in 5B both-mode also the per-leg (`pce/ppe/lce/lpe`) trigger/entry/exit fields, lazy-armed flags, and day-stop state. Unique `(deployment_id, session_date)` (`uniq_premium_lock_per_session`, created in `db.ensure_indexes`) |
@@ -433,10 +433,11 @@ Upstox WS ticks ────────┘   options_1m    └─► option_cov
 
 ```
 candles_1m ─► backtest.py ─► backtest_runs ─┐
-options_1m ─► option_backtest.py            ├─► (preset OR backtest_run)
-              optimizer.py / wfo.py ────────┘         │  strict provenance
-                                                       ▼
-                                          strategy_deployments (source SHA pinned)
+options_1m ─► option_backtest.py            ├─► preset / backtest_run ─┐
+              optimizer.py / wfo.py ────────┘                          │
+Strategy Registry ─► direct immutable 1m-compatible snapshot ─────────┤
+                                                                      ▼
+                                             strategy_deployments (source SHA pinned)
 ```
 
 ### Deploy → paper (default) or live (armed)
@@ -471,8 +472,10 @@ strategy_deployments
   resolve a real option premium (live tick → fresh stored candle); if none is
   available the trade is refused and journaled. An atomic per-signal claim
   prevents double-trades.
-- **Strict source provenance.** Deployments can be created only from saved presets
-  or saved backtest runs; direct deployment from a raw plugin is blocked.
+- **Strict source provenance.** Deployments can be created from a loaded,
+  1m-compatible Strategy Library entry, saved preset, or saved backtest run. A
+  library selection becomes an immutable config snapshot; an unregistered raw
+  file remains blocked.
 - **Strategy source SHA pinned.** Drift between pinned and current SHA auto-pauses
   the deployment with full audit.
 - **Idempotent journaling.** Unique partial index on `(deployment_id, candle_ts)`

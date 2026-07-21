@@ -162,7 +162,9 @@ class _FakeEngine:
 
 
 def _install(monkeypatch, db, *, connected=True, can_trade=True, registry=None,
-             retired=False, autoplace=False, guard_armed=False):
+             retired=False, autoplace=False, guard_armed=False,
+             promotion_allowed=True, account_max_lots=20,
+             account_max_open=5, broker_expired=False, static_ip="1.2.3.4"):
     """Patch all module-level seams the routes touch."""
     monkeypatch.setattr(dep, "get_db", lambda: db)
 
@@ -174,7 +176,26 @@ def _install(monkeypatch, db, *, connected=True, can_trade=True, registry=None,
         raise HTTPException(400, "not connected")
     monkeypatch.setattr(dep, "_live_get_token_doc", _token_doc, raising=False)
 
+    async def _broker_status():
+        return {
+            "configured": True,
+            "connected": connected,
+            "expired": broker_expired,
+            "regenerate_after_6am": broker_expired,
+            "static_ip_primary": static_ip,
+            "static_ip_secondary": "",
+        }
+    monkeypatch.setattr(dep, "_live_broker_status", _broker_status, raising=False)
+
     monkeypatch.setattr(dep, "_live_l3_engine", lambda: _FakeEngine(can_trade), raising=False)
+
+    async def _safety_config():
+        return {
+            "max_lots_per_order": account_max_lots,
+            "max_open_positions": account_max_open,
+            "daily_loss_limit": 5000,
+        }
+    monkeypatch.setattr(dep, "_live_safety_config", _safety_config, raising=False)
 
     reg = registry if registry is not None else LiveMonitorRegistry()
     monkeypatch.setattr(dep, "_live_registry", lambda: reg, raising=False)
@@ -207,15 +228,30 @@ def _install(monkeypatch, db, *, connected=True, can_trade=True, registry=None,
     monkeypatch.setattr(dep, "_utcnow",
                         lambda: datetime(2026, 6, 25, 6, 0, tzinfo=timezone.utc), raising=False)
 
+    async def _forward(_db, _deployment):
+        return {
+            "trade_count": 120, "total_pnl": 10_000,
+            "session_completeness": {"complete_session_count": 60},
+            "library_gate": {"min_complete_sessions": 10},
+            "forward_validation": {
+                "promotion_allowed": promotion_allowed,
+                "phase": "promotion_ready" if promotion_allowed else "collecting",
+                "failed_checks": [] if promotion_allowed else ["forward_sessions"],
+            },
+        }
+    monkeypatch.setattr(dep, "compute_forward_metrics_for_deployment", _forward)
+
     return reg, squared
 
 
-def _enable_body(confirm=True, lots=3, max_lots_per_day=20, max_concurrent=2, daily_loss_cap=5000.0,
-                  catastrophe_stop_pct=None, catastrophe_target_pct=None):
+def _enable_body(confirm=True, lots=1, max_lots_per_day=1, max_concurrent=1, daily_loss_cap=4000.0,
+                  catastrophe_stop_pct=None, catastrophe_target_pct=None,
+                  accept_unvalidated_live=False):
     return dep._LiveEnableBody(
         lots=lots, max_lots_per_day=max_lots_per_day, max_concurrent=max_concurrent,
         daily_loss_cap=daily_loss_cap, confirm=confirm,
         catastrophe_stop_pct=catastrophe_stop_pct, catastrophe_target_pct=catastrophe_target_pct,
+        accept_unvalidated_live=accept_unvalidated_live,
     )
 
 
@@ -229,10 +265,10 @@ class TestEnable:
         db.strategy_deployments.rows.append(_deployment())
         _install(monkeypatch, db)
         out = asyncio.run(dep.enable_deployment_live("dep-1", _enable_body()))
-        assert out["lots"] == 3
-        assert out["max_lots_per_day"] == 20
-        assert out["max_concurrent"] == 2
-        assert out["daily_loss_cap"] == 5000.0
+        assert out["lots"] == 1
+        assert out["max_lots_per_day"] == 1
+        assert out["max_concurrent"] == 1
+        assert out["daily_loss_cap"] == 4000.0
         assert out["enabled_by"] == "user"
         assert out["last_block_reason"] is None
         assert out["autoplace_armed"] is False
@@ -241,9 +277,12 @@ class TestEnable:
         # flag anymore), and OTHER risk.* keys are preserved untouched.
         stored = db.strategy_deployments.rows[0]
         assert stored["mode"] == "live"
-        assert stored["risk"]["live"]["lots"] == 3
+        assert stored["risk"]["live"]["lots"] == 1
         assert stored["risk"]["sizing"] == {"lots": 2}
         assert stored["risk"]["allow_overnight"] is False
+        assert stored["risk"]["live"]["evidence_consent"]["status"] == "forward_validated"
+        assert stored["risk"]["live"]["account_safety_snapshot"]["max_lots_per_order"] == 20
+        assert out["evidence_override_used"] is False
 
     def test_enable_persists_catastrophe_band_config(self, monkeypatch):
         db = FakeDB()
@@ -263,6 +302,28 @@ class TestEnable:
         stored = db.strategy_deployments.rows[0]
         assert stored["risk"]["live"]["catastrophe_stop_pct"] is None
         assert stored["risk"]["live"]["catastrophe_target_pct"] is None
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"catastrophe_stop_pct": 0},
+            {"catastrophe_target_pct": -1},
+            {"daily_loss_cap": float("nan")},
+        ],
+    )
+    def test_enable_rejects_non_positive_or_non_finite_risk_values(
+        self, monkeypatch, overrides,
+    ):
+        from fastapi import HTTPException
+
+        db = FakeDB()
+        db.strategy_deployments.rows.append(_deployment())
+        _install(monkeypatch, db)
+        with pytest.raises(HTTPException) as ei:
+            asyncio.run(dep.enable_deployment_live(
+                "dep-1", _enable_body(**overrides)))
+        assert ei.value.status_code == 400
+        assert db.strategy_deployments.rows[0].get("mode") != "live"
 
     def test_enable_autoplace_on_has_no_dry_run_note(self, monkeypatch):
         db = FakeDB()
@@ -308,7 +369,7 @@ class TestEnable:
         monkeypatch.setattr(dep, "_utcnow",
                             lambda: datetime(2026, 6, 25, 13, 0, tzinfo=timezone.utc), raising=False)
         out = asyncio.run(dep.enable_deployment_live("dep-1", _enable_body()))
-        assert out["lots"] == 3
+        assert out["lots"] == 1
         assert db.strategy_deployments.rows[0]["mode"] == "live"
 
     def test_enable_rejects_retired_strategy(self, monkeypatch):
@@ -337,6 +398,27 @@ class TestEnable:
         with pytest.raises(HTTPException):
             asyncio.run(dep.enable_deployment_live("dep-1", _enable_body()))
 
+    @pytest.mark.parametrize(
+        ("install_overrides", "message"),
+        [
+            ({"broker_expired": True}, "daily session is expired"),
+            ({"static_ip": ""}, "static IP is not configured"),
+        ],
+    )
+    def test_enable_rejects_invalid_broker_operational_readiness(
+        self, monkeypatch, install_overrides, message,
+    ):
+        from fastapi import HTTPException
+
+        db = FakeDB()
+        db.strategy_deployments.rows.append(_deployment())
+        _install(monkeypatch, db, **install_overrides)
+        with pytest.raises(HTTPException) as ei:
+            asyncio.run(dep.enable_deployment_live("dep-1", _enable_body()))
+        assert ei.value.status_code == 400
+        assert message in str(ei.value.detail)
+        assert db.strategy_deployments.rows[0].get("mode") != "live"
+
     def test_enable_rejects_engine_cannot_trade(self, monkeypatch):
         from fastapi import HTTPException
         db = FakeDB()
@@ -354,13 +436,76 @@ class TestEnable:
         db = FakeDB()
         db.strategy_deployments.rows.append(_deployment())
         _install(monkeypatch, db)
-        kwargs = {"lots": 3, "max_lots_per_day": 20, "max_concurrent": 2, field: 0}
+        kwargs = {"lots": 1, "max_lots_per_day": 1, "max_concurrent": 1, field: 0}
         with pytest.raises(HTTPException) as ei:
             asyncio.run(dep.enable_deployment_live("dep-1", _enable_body(**kwargs)))
         assert ei.value.status_code == 400
         # nothing was written — the deployment did NOT go live
         row = db.strategy_deployments.rows[0]
         assert row.get("mode") != "live"
+
+    def test_enable_requires_explicit_consent_without_forward_promotion(self, monkeypatch):
+        from fastapi import HTTPException
+        db = FakeDB()
+        db.strategy_deployments.rows.append(_deployment())
+        _install(monkeypatch, db, promotion_allowed=False)
+        with pytest.raises(HTTPException) as ei:
+            asyncio.run(dep.enable_deployment_live("dep-1", _enable_body()))
+        assert ei.value.status_code == 409
+        assert ei.value.detail["code"] == "explicit_unvalidated_live_consent_required"
+        assert ei.value.detail["consent_field"] == "accept_unvalidated_live"
+        assert db.strategy_deployments.rows[0].get("mode") != "live"
+
+    def test_enable_allows_unvalidated_candidate_after_explicit_consent(self, monkeypatch):
+        db = FakeDB()
+        db.strategy_deployments.rows.append(_deployment())
+        _install(monkeypatch, db, promotion_allowed=False)
+
+        out = asyncio.run(dep.enable_deployment_live(
+            "dep-1",
+            _enable_body(
+                lots=2,
+                max_lots_per_day=5,
+                max_concurrent=2,
+                daily_loss_cap=5000,
+                accept_unvalidated_live=True,
+            ),
+        ))
+
+        stored_live = db.strategy_deployments.rows[0]["risk"]["live"]
+        assert db.strategy_deployments.rows[0]["mode"] == "live"
+        assert stored_live["lots"] == 2
+        assert stored_live["max_lots_per_day"] == 5
+        assert stored_live["max_concurrent"] == 2
+        assert stored_live["daily_loss_cap"] == 5000.0
+        assert stored_live["evidence_consent"]["status"] == "user_override"
+        assert stored_live["evidence_consent"]["accepted"] is True
+        assert stored_live["evidence_consent"]["failed_checks"] == ["forward_sessions"]
+        assert out["evidence_override_used"] is True
+
+    @pytest.mark.parametrize(
+        ("body_overrides", "install_overrides", "code"),
+        [
+            ({"lots": 3}, {"account_max_lots": 2}, "account_lot_ceiling_exceeded"),
+            ({"max_concurrent": 3}, {"account_max_open": 2}, "account_position_ceiling_exceeded"),
+        ],
+    )
+    def test_enable_keeps_account_capital_ceilings_hard(
+        self, monkeypatch, body_overrides, install_overrides, code,
+    ):
+        from fastapi import HTTPException
+
+        db = FakeDB()
+        db.strategy_deployments.rows.append(_deployment())
+        _install(monkeypatch, db, **install_overrides)
+
+        with pytest.raises(HTTPException) as ei:
+            asyncio.run(dep.enable_deployment_live(
+                "dep-1", _enable_body(**body_overrides)))
+
+        assert ei.value.status_code == 400
+        assert ei.value.detail["code"] == code
+        assert db.strategy_deployments.rows[0].get("mode") != "live"
 
 
 # ===========================================================================
@@ -419,7 +564,9 @@ class TestStop:
         assert squared == ["NIFTY25000CE"]              # ONLY this deployment
         assert out["disabled"] is True
         assert out["paused"] is True
-        assert "NIFTY25000CE" in out["squared_tsyms"]
+        assert out["squared_tsyms"] == []              # submission is not a fill
+        assert out["exit_submitted_tsyms"] == ["NIFTY25000CE"]
+        assert out["flat_confirmation_pending_tsyms"] == ["NIFTY25000CE"]
         # mode reverts to paper AND status is authoritatively PAUSED — an ACTIVE
         # live deployment whose positions were just squared must not re-enter on
         # the next confirmed signal.
@@ -428,12 +575,13 @@ class TestStop:
         assert db.strategy_deployments.rows[0]["risk"]["live"]["last_block_reason"] == "manual_stop"
         # the other deployment's position is still registered
         assert reg.get("o2") is not None
-        assert reg.get("o1") is None                     # this one removed after square
+        # Place-accept is pending: keep watching and keep the OCO until the guard
+        # obtains two authenticated flat reads.
+        assert reg.get("o1") is not None
+        assert reg.get("o1")["squaring"] is True
 
-    def test_stop_closes_loop_journals_realized_pnl(self, monkeypatch):
-        """A user stop of a deployment with an OPEN live_trades doc closes the
-        loop: status→CLOSED + realized_pnl from the entry's last broker mark,
-        linked by norenordno."""
+    def test_stop_defers_close_loop_until_broker_confirms_flat(self, monkeypatch):
+        """Place acceptance must not close the journal or manufacture P&L."""
         db = FakeDB()
         d = _deployment(mode="live")
         d["risk"]["live"] = {"lots": 3}
@@ -451,11 +599,13 @@ class TestStop:
         reg.get("o1")["position"]["lp"] = 130.0   # last broker mark → exit estimate
         _install(monkeypatch, db, registry=reg)
         out = asyncio.run(dep.stop_deployment_live("dep-1"))
-        assert "NIFTY25000CE" in out["squared_tsyms"]
+        assert out["exit_submitted_tsyms"] == ["NIFTY25000CE"]
+        assert out["flat_confirmation_pending_tsyms"] == ["NIFTY25000CE"]
         row = db.live_trades.rows[0]
-        assert row["status"] == "CLOSED"
-        assert row["exit_reason"] == "manual_stop"
-        assert row["realized_pnl"] == (130.0 - 100.0) * 65   # +1950 long-only buy
+        assert row["status"] == "OPEN"
+        assert row.get("exit_reason") is None
+        assert row["realized_pnl"] is None
+        assert reg.get("o1")["squaring"] is True
 
     def test_stop_no_positions_still_disables_and_pauses(self, monkeypatch):
         db = FakeDB()
@@ -509,9 +659,8 @@ def _patch_get_client(monkeypatch, client):
 
 
 class TestStopCancelsOco:
-    def test_stop_cancels_resting_oco_for_flattened_position(self, monkeypatch):
-        """A deployed entry carrying oco_al_id="OCO1" → stopping the deployment
-        cancels the resting broker OCO via client.cancel_oco("OCO1")."""
+    def test_stop_keeps_resting_oco_until_flat_confirmed(self, monkeypatch):
+        """An accepted exit leaves the broker OCO resting until confirmed flat."""
         db = FakeDB()
         d = _deployment(mode="live")
         d["risk"]["live"] = {"lots": 3}
@@ -525,8 +674,10 @@ class TestStopCancelsOco:
         _patch_get_client(monkeypatch, client)
         out = asyncio.run(dep.stop_deployment_live("dep-1"))
         assert squared == ["NIFTY25000CE"]
-        assert client.cancel_oco_calls == ["OCO1"]
-        assert "NIFTY25000CE" in out["squared_tsyms"]
+        assert client.cancel_oco_calls == []
+        assert out["squared_tsyms"] == []
+        assert out["exit_submitted_tsyms"] == ["NIFTY25000CE"]
+        assert reg.get("o1")["squaring"] is True
 
     def test_stop_without_oco_al_id_does_not_cancel(self, monkeypatch):
         """An entry with NO oco_al_id → cancel_oco is never called."""
@@ -544,10 +695,11 @@ class TestStopCancelsOco:
         out = asyncio.run(dep.stop_deployment_live("dep-1"))
         assert squared == ["NIFTY25000CE"]
         assert client.cancel_oco_calls == []          # no OCO to cancel
-        assert "NIFTY25000CE" in out["squared_tsyms"]
+        assert out["squared_tsyms"] == []
+        assert out["exit_submitted_tsyms"] == ["NIFTY25000CE"]
 
-    def test_stop_all_cancels_resting_oco_for_flattened_position(self, monkeypatch):
-        """stop-all flattens mode="live" deployments and cancels each resting OCO."""
+    def test_stop_all_reports_exit_pending_and_keeps_oco(self, monkeypatch):
+        """stop-all submits exits but does not claim or finalize fills."""
         db = FakeDB()
         armed = _deployment(dep_id="dep-1", mode="live")
         armed["risk"]["live"] = {"lots": 3}
@@ -572,7 +724,11 @@ class TestStopCancelsOco:
         out = asyncio.run(dep.stop_all_deployments())
         assert "dep-1" in out["disarmed_live_deployment_ids"]
         assert squared == ["NIFTY25000CE"]
-        assert client.cancel_oco_calls == ["OCO1"]
+        assert client.cancel_oco_calls == []
+        report = out["live_exit_reports"]["dep-1"]
+        assert report["exit_submitted_tsyms"] == ["NIFTY25000CE"]
+        assert report["flat_confirmation_pending_tsyms"] == ["NIFTY25000CE"]
+        assert reg.get("o1")["squaring"] is True
 
 
 # ===========================================================================
@@ -807,7 +963,11 @@ class TestPauseDemotesLive:
 
         out = asyncio.run(dep.stop_deployment("dep-1"))
         assert squared == ["NIFTY25000CE"]              # real leg flattened
-        assert out["squared_live_count"] == 1
+        assert out["squared_live_count"] == 0
+        assert out["squared_live_tsyms"] == []
+        assert out["live_exit"]["exit_submitted_tsyms"] == ["NIFTY25000CE"]
+        assert out["live_exit"]["flat_confirmation_pending_tsyms"] == ["NIFTY25000CE"]
+        assert reg.get("o1")["squaring"] is True
         assert db.strategy_deployments.rows[0]["mode"] == "paper"   # demoted
         assert db.strategy_deployments.rows[0]["status"] == "PAUSED"
 

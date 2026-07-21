@@ -98,7 +98,8 @@ def test_premium_advisory_is_informational_only_arm_gate_untouched():
     assert "Deployment must be ACTIVE to enable live execution." in arm_route_body
     assert "is retired" in arm_route_body
     assert "paused for strategy source drift" in arm_route_body
-    assert "Flattrade not connected" in arm_route_body
+    assert "_broker_readiness()" in arm_route_body
+    assert "broker_reason" in arm_route_body
     assert "Live engine cannot trade" in arm_route_body
     assert "Cannot arm after 15:00 IST" not in arm_route_body
     assert '"mode": "live", "risk": risk, "updated_at": now.isoformat()' in arm_route_body
@@ -107,6 +108,7 @@ def test_premium_advisory_is_informational_only_arm_gate_untouched():
     # condition to gate behavior).
     allowed_line_shapes = (
         "build_arm_advisories,",                                  # import
+        '"arm_advisories": [],',                                  # validation-unavailable fallback
         'out["arm_advisories"] = build_arm_advisories(fwd)',      # assignment (x2)
         'out["arm_advisories"].append(_pm_advisory)',              # append (x2)
     )

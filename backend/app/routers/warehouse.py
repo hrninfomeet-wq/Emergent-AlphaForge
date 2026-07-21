@@ -486,7 +486,8 @@ async def upstox_option_warehouse_fetch(req: OptionWarehousePlanReq):
                 contract=contract,
             )
             df = result["df"]
-            persist_result = await persist_option_candles_df(db, df)
+            persist_result = await persist_option_candles_df(
+                db, df, retrieval_run_id=run_id)
             fetched_count = int(len(df))
             total_fetched += fetched_count
             candles_added += int(persist_result["candles_added"])
@@ -995,7 +996,8 @@ async def upstox_option_candles_ingest(req: UpstoxOptionCandleIngestReq):
         )
         df = result["df"]
         failed_chunks = result["failed_chunks"]
-        persist_result = await persist_option_candles_df(db, df)
+        persist_result = await persist_option_candles_df(
+            db, df, retrieval_run_id=run_id)
     except Exception as e:
         log.exception("upstox option candle ingest failed")
         await db.warehouse_runs.update_one(
