@@ -51,8 +51,8 @@
 | B5 | C4: daily-loss breach demotes mode→paper | ✅ DONE | `f9a2482` (bonus — turned out to be a 1-line fix, not half a day; resume can no longer re-authorize live) |
 | B4 | C5: live activation dialog — Continue didn't open confirm step | ✅ FIXED + browser-verified | REAL cause = HTML5 step validation: daily-loss input `min={1} step={100}` → default 4000 is stepMismatch-invalid → native form validation silently blocks submit → handleFormSubmit never runs (button looks enabled b/c the JS guard ignores step). Fix `step="any"` on loss + both catastrophe %-fields; ALSO collapsed the two sibling Radix dialogs into one stepped dialog (robustness). Verified E2E in Chrome (caps→Continue→typed-ENABLE renders; ENABLE gated; Back preserves values). Commit `3f3b457`. NOT the two-dialog theory the Codex audit guessed |
 | C | Deferred pre-real-money fixes (C2, H1, C3) | ⏸ DEFERRED | MUST land before first real-money session — §2 |
-| 2 | Lazy-leg contingency (Phase 5 design → ship) | ⬜ QUEUED | Design: `docs/superpowers/specs/2026-07-13-premium-momentum-phase4-5-full-contingency-design.md`; fold in H4 fix |
-| 3 | Strategy builder + AI authoring audit/completion | ⬜ QUEUED | Fold in H5 (preset-validation parity) |
+| 2 | Lazy-leg contingency (Phase 5 design → ship) | ✅ DONE | Was already shipped in backtest+live; built the only gap = **paper-mode lazy arming** (`ab453fa`) + H4 nullable-param deploy fix (`3639009`). Suite 3,549/0. See §3 item 2 |
+| 3 | Strategy builder + AI authoring audit/completion | ⬜ NEXT | Fold in H5 (preset-validation parity); H4 already done |
 | 4 | Live-trading page redesign | ⬜ QUEUED | Incl. H8 (confirmation completeness), H6 UI surfacing |
 | 5 | New strategy plugins (candidates, honestly validated) | ⬜ QUEUED | |
 | 6 | Profit-leverage ideas write-up | ⬜ QUEUED | |
@@ -175,13 +175,25 @@ edge hunt CLOSED / FAILED (validation +₹103.5k → −₹153.8k holdout; `forw
 comment, `docs/PREMIUM_MOMENTUM_EDGE_VERDICT_2026-07.md`) — building paper-lazy is pure
 capability, not an edge bet (user already ratified capability-over-edge for 5B).
 
-**AWAITING USER DECISION (asked 2026-07-21):** (A) build paper-mode lazy arming +
-tests; (B) item 2 is effectively done — verify existing backtest+live lazy end-to-end
-and close; (C) a specific sub-behavior the user actually wants. Do NOT implement until
-answered — the premise ("unshipped") was wrong, so the scope must be re-confirmed.
+**RESOLVED 2026-07-21 — user chose (A): build paper-mode lazy arming. DONE.**
 
-Also still open regardless: verify H4 (premium-momentum direct `POST /deployments` —
-nullable defaults rejected as "must be numeric"?) and fold its fix in wherever item 2 lands.
+Implementation (`ab453fa`): the pickup/entry/latch/exit are all mode-agnostic
+(`deployment_evaluator` + `evaluate_premium_momentum_bar` run for paper); the ONLY
+live-only piece was arming (it rode `_live_guard_on_close`). Fix:
+- `premium_momentum_live.lazy_arm_side()` — PURE shared arming-gate predicate; both
+  rails call it so they can't drift. Each rail classifies its own stop reasons
+  (`LIVE_STOP_CLASS_REASONS` = stop/breakeven_stop/trailing_stop/spot_stop_hit;
+  `PAPER_STOP_CLASS_REASONS` = stop_hit) and passes `is_stop_class` in.
+- `runtime._live_guard_on_close` refactored to call it (behavior-identical; live suite green).
+- `paper_auto.build_auto_trade` stamps `pm_leg`; `_maybe_arm_paper_lazy_leg` hook in
+  `mark_open_deployment_trades` arms the opposite lazy leg on a PRIMARY paper stop-out.
+- Tests: `tests/test_premium_momentum_paper_lazy.py` (16). Best-effort — never breaks the
+  exit marker; no-op for non-pm / first_to_trigger / non-stop closes.
+
+**H4 DONE (`3639009`):** `runtime._load_deployment_source` now accepts `None` for a param
+whose schema default is `None` (nullable), so premium_momentum (and any nullable-param
+strategy) deploys directly; required params + non-None values still fully validated.
+3 tests in `test_strategy_deployments.py`.
 
 ### Item 3 — Strategy builder + AI authoring audit/completion
 
@@ -247,6 +259,12 @@ Junior-agent prompt:
 
 ## 4. Session log
 
+- **2026-07-21 (Claude Opus 4.8, cont.):** C5 dialog fixed + browser-verified (real
+  cause = HTML5 step validation, `3f3b457`); item 2 lazy-leg gap-analysed then the
+  paper-mode arming gap BUILT (`ab453fa`, 16 tests) + H4 nullable-param deploy fix
+  (`3639009`, 3 tests). Full suite 3,549/0. Local main `3639009`, ~13 ahead of
+  origin, UNPUSHED. Checkpoint per user ("one more item then checkpoint"). NEXT: item 3
+  (strategy-builder + AI authoring audit; fold in H5 preset-validation parity).
 - **2026-07-21 (Claude Fable 5):** Codex audit triaged; 11/13 findings verified inline
   (evidence in learning_log.md). User interview locked decisions §0. LANDED: Codex
   baseline `d301272`, orchestrator docs `4b441fd`, safety quick wins `f9a2482`

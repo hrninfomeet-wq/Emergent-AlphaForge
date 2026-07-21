@@ -136,6 +136,33 @@ not trusting plausible theories (mine or another agent's) without instrumentatio
   OneDrive path while a direct `docker build` from `frontend/` read fresh — build directly
   from `frontend/` and verify the served bundle hash + `.map`, not a minified grep.
 
+### Item 2 (lazy-leg) — the premise was wrong; verify against code, not docs/memory
+
+- The user (and the committed design doc dated 2026-07-13) said lazy-leg was "not yet
+  shipped." **It was shipped in backtest + live** (the doc predates the 2026-07-17 build).
+  Only PAPER arming was missing. Lesson (again): a design doc's "nothing implemented"
+  header is a point-in-time claim — grep the actual code before scoping "finish it" work.
+- **Architecture insight that shrank the task 5×:** the lazy pickup/entry/latch/exits are
+  all mode-agnostic (`evaluate_premium_momentum_bar` + `deployment_evaluator` run for paper
+  too); leg-resolution gates on `<prefix>_triggered` which the evaluator latches for paper.
+  The ONLY live-only piece was ARMING (`set_lazy_armed`), called from the live guard-close
+  hook `_live_guard_on_close` (matches a broker `norenordno` paper never has). So "build
+  paper lazy contingency" reduced to "call set_lazy_armed when a paper primary stops out."
+- **Reason strings differ per rail** — a real trap. Live guard emits
+  stop/breakeven_stop/trailing_stop/spot_stop_hit; the paper marker's premium stop is
+  `stop_hit` (execution_policy.tick_exit_reason default). A naive shared STOP-class set
+  would have silently never armed in paper. Fix: shared PURE gate predicate
+  (`lazy_arm_side`), per-rail reason classification passed in as `is_stop_class`.
+- Refactoring the working LIVE hook to call the shared predicate was de-risked by the full
+  suite (existing premium-momentum + live arming tests) — green after = safe. Single source
+  of truth beats duplicated gate logic that can drift.
+- **H4 fix pattern:** a general numeric validator that rejects `None` breaks any strategy
+  with nullable params. The principled signal for "nullable" is `schema default is None`.
+  Gate on that, not on a param-name allowlist.
+- **PowerShell here-string commit messages with embedded double-quotes get re-tokenized
+  into bogus pathspecs — AGAIN.** Always `git commit -F <tempfile>`. (Third time this
+  session; it is now muscle-memory: never inline a quoted commit body in PowerShell.)
+
 ### Open items carried forward
 
 1. Safety-fix sprint (pending user decision on scope): H2+H3 (trivial), C1 loopback

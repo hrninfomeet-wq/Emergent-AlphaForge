@@ -2,6 +2,31 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.56.4] — paper-mode lazy-leg arming + direct-deploy nullable params (2026-07-21)
+
+**Outcome: the Phase-5B lazy contingency can now be forward-tested by paper
+trading (it was backtest + live only), and premium-momentum deploys directly.**
+
+- **Paper-mode lazy-leg arming.** The opposite-side "lazy" reversal leg that
+  arms when a primary leg stops out was shipped in backtest and live but not in
+  paper — arming rode the live guard-close hook that paper trades never reach.
+  The pickup, entry, latch and exits were already mode-agnostic, so only arming
+  was missing. A shared pure predicate (`lazy_arm_side`) now gates arming for
+  both rails (each classifies its own stop reasons), and a paper exit-marker
+  hook arms the opposite leg on a primary paper stop-out. A stopped CALL arms
+  the lazy PUT and vice versa; one shot per primary side; respects the entry
+  cutoff; never fires on target/time-stop/EOD closes. 16 new tests.
+- **Direct deploy of nullable-param strategies (release-audit H4).** The general
+  strategy-deploy validator rejected any float/str param whose value was `None`
+  as "must be numeric". premium-momentum's many legitimately-nullable params
+  (default `None` = "not configured") made it undeployable through the standard
+  path despite showing as compatible. `None` is now accepted for a param whose
+  schema default is `None`; required params and non-`None` values are still
+  fully validated. 3 new tests.
+- **Verification:** 3,549 backend tests passed, 4 expected failures, 0
+  unexpected failures. NB: the premium-momentum edge hunt previously
+  CLOSED/FAILED — this is a pure-capability completion, not an edge claim.
+
 ## [0.56.3] — live-safety quick wins from the release-audit triage (2026-07-21)
 
 **Outcome: four verified capital-safety gaps closed; the remaining audit
