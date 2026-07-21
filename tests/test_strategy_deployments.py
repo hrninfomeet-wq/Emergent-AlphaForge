@@ -260,6 +260,116 @@ def test_direct_loader_still_rejects_none_for_required_param(monkeypatch):
         assert "stop_pct must be numeric" in str(exc.detail)
 
 
+class _FakeDeployDB:
+    """Minimal db exposing presets/backtest_runs.find_one for the source loader."""
+    def __init__(self, presets=None, runs=None):
+        self._presets = dict(presets or {})
+        self._runs = dict(runs or {})
+
+    class _Coll:
+        def __init__(self, docs):
+            self._docs = docs
+
+        async def find_one(self, query, projection=None):
+            key = query.get("name") or query.get("id")
+            d = self._docs.get(key)
+            return dict(d) if d else None
+
+    @property
+    def presets(self):
+        return self._Coll(self._presets)
+
+    @property
+    def backtest_runs(self):
+        return self._Coll(self._runs)
+
+
+def _preset(**over):
+    base = {"name": "p1", "strategy_id": "direct_deploy_test", "instrument": "NIFTY",
+            "config": {"timeframe": "1m", "params": {"period": 12, "threshold": 0.5}}}
+    base.update(over)
+    return base
+
+
+def test_preset_source_rejects_nonexistent_strategy(monkeypatch):
+    """H5: a preset referencing an unregistered strategy is rejected (404), not
+    turned into a dead ACTIVE deployment."""
+    from fastapi import HTTPException
+    _direct_registry(monkeypatch)
+    db = _FakeDeployDB(presets={"p1": _preset(strategy_id="ghost_strategy")})
+    try:
+        asyncio.run(_load_deployment_source(db, "preset", "p1"))
+        assert False, "expected HTTPException"
+    except HTTPException as exc:
+        assert exc.status_code == 404
+        assert "ghost_strategy" in str(exc.detail)
+
+
+def test_preset_source_rejects_unsupported_timeframe(monkeypatch):
+    """H5: a preset with a non-1m timeframe is rejected, same as a direct deploy."""
+    from fastapi import HTTPException
+    _direct_registry(monkeypatch)
+    db = _FakeDeployDB(presets={"p1": _preset(
+        config={"timeframe": "5m", "params": {"period": 12}})})
+    try:
+        asyncio.run(_load_deployment_source(db, "preset", "p1"))
+        assert False, "expected HTTPException"
+    except HTTPException as exc:
+        assert exc.status_code == 400
+        assert "timeframe" in str(exc.detail).lower()
+
+
+def test_preset_source_rejects_unknown_param(monkeypatch):
+    """H5: a preset carrying a param the strategy no longer declares is rejected."""
+    from fastapi import HTTPException
+    _direct_registry(monkeypatch)
+    db = _FakeDeployDB(presets={"p1": _preset(
+        config={"timeframe": "1m", "params": {"period": 12, "ghost_param": 1}})})
+    try:
+        asyncio.run(_load_deployment_source(db, "preset", "p1"))
+        assert False, "expected HTTPException"
+    except HTTPException as exc:
+        assert exc.status_code == 400
+        assert "unknown parameter" in str(exc.detail).lower()
+
+
+def test_preset_source_rejects_out_of_range_param(monkeypatch):
+    from fastapi import HTTPException
+    _direct_registry(monkeypatch)
+    db = _FakeDeployDB(presets={"p1": _preset(
+        config={"timeframe": "1m", "params": {"period": 999}})})
+    try:
+        asyncio.run(_load_deployment_source(db, "preset", "p1"))
+        assert False, "expected HTTPException"
+    except HTTPException as exc:
+        assert exc.status_code == 400
+        assert "period must be <= 50" in str(exc.detail)
+
+
+def test_preset_source_accepts_valid_config(monkeypatch):
+    """A legitimate preset (registered strategy, 1m, supported instrument, valid
+    params) still loads — the parity check must not break good presets."""
+    _direct_registry(monkeypatch)
+    db = _FakeDeployDB(presets={"p1": _preset()})
+    doc = asyncio.run(_load_deployment_source(db, "preset", "p1"))
+    assert doc["strategy_id"] == "direct_deploy_test"
+    assert doc["instrument"] == "NIFTY"
+
+
+def test_backtest_run_source_rejects_nonexistent_strategy(monkeypatch):
+    """H5 parity also covers backtest_run sources."""
+    from fastapi import HTTPException
+    _direct_registry(monkeypatch)
+    run = {"id": "r1", "strategy_id": "ghost_strategy", "instrument": "NIFTY",
+           "config": {"timeframe": "1m", "params": {}}}
+    db = _FakeDeployDB(runs={"r1": run})
+    try:
+        asyncio.run(_load_deployment_source(db, "backtest_run", "r1"))
+        assert False, "expected HTTPException"
+    except HTTPException as exc:
+        assert exc.status_code == 404
+
+
 def test_forward_config_hash_covers_execution_policy_but_not_post_promotion_live_caps():
     base = {
         "strategy_id": "s", "strategy_version": "1", "strategy_source_sha": "src",

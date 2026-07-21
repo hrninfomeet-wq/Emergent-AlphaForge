@@ -1665,6 +1665,83 @@ _ENRICHED_CSV_COLUMNS = [
 ]
 
 
+def _validate_strategy_deployment_config(
+    strategy: Any,
+    *,
+    instrument: Optional[str],
+    timeframe: Optional[str],
+    requested_params: Optional[Dict[str, Any]],
+) -> tuple:
+    """Validate + type-coerce a strategy deployment config against the strategy's
+    declared capabilities and parameter schema. Returns
+    ``(instrument, timeframe, coerced_params)``; raises HTTPException(400) on any
+    mismatch.
+
+    THE single validation chokepoint for EVERY deployment source. A preset or
+    backtest_run whose stored config references an unsupported timeframe /
+    instrument or unknown/invalid params is rejected here exactly like a direct
+    strategy deploy, instead of silently producing a dead ACTIVE deployment
+    (release-audit finding H5). A nullable param (schema default None) accepts
+    None (finding H4)."""
+    supported_instruments = [str(v).upper() for v in strategy.supported_instruments]
+    supported_timeframes = [str(v) for v in strategy.supported_timeframes]
+    instrument = str(instrument or (supported_instruments[0] if supported_instruments else "")).upper()
+    timeframe = str(timeframe or "1m")
+    # The deployment evaluator consumes closed candles_1m directly (no resample):
+    # a library strategy is live-compatible only when it explicitly supports 1m.
+    if "1m" not in supported_timeframes:
+        raise HTTPException(
+            400,
+            f"Strategy {strategy.id} is not deployment-compatible: live signals currently require 1m support")
+    if instrument not in supported_instruments:
+        raise HTTPException(
+            400,
+            f"Strategy {strategy.id} does not support {instrument}; allowed: {supported_instruments}")
+    if timeframe not in supported_timeframes:
+        raise HTTPException(
+            400,
+            f"Strategy {strategy.id} does not support {timeframe}; allowed: {supported_timeframes}")
+    if timeframe != "1m":
+        raise HTTPException(
+            400,
+            "Strategy deployments currently require timeframe=1m; 3m/5m live resampling is not implemented")
+    requested = dict(requested_params or {})
+    unknown_params = sorted(set(requested) - set(strategy.parameter_schema or {}))
+    if unknown_params:
+        raise HTTPException(
+            400,
+            f"Strategy {strategy.id} received unknown parameter(s): {unknown_params}")
+    params = strategy.merged_params(requested)
+    for param_name, spec in (strategy.parameter_schema or {}).items():
+        value = params.get(param_name)
+        value_type = str((spec or {}).get("type") or "")
+        # A param whose schema default is None legitimately accepts None (H4).
+        if value is None and (spec or {}).get("default") is None:
+            params[param_name] = None
+            continue
+        if value_type == "bool":
+            if not isinstance(value, bool):
+                raise HTTPException(400, f"Strategy parameter {param_name} must be boolean")
+        elif value_type == "int":
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or int(value) != value:
+                raise HTTPException(400, f"Strategy parameter {param_name} must be an integer")
+            value = int(value)
+        elif value_type == "float":
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise HTTPException(400, f"Strategy parameter {param_name} must be numeric")
+            value = float(value)
+        elif value_type == "str":
+            if not isinstance(value, str) or not value.strip():
+                raise HTTPException(400, f"Strategy parameter {param_name} must be non-empty text")
+        if value_type in ("int", "float"):
+            if spec.get("min") is not None and value < spec["min"]:
+                raise HTTPException(400, f"Strategy parameter {param_name} must be >= {spec['min']}")
+            if spec.get("max") is not None and value > spec["max"]:
+                raise HTTPException(400, f"Strategy parameter {param_name} must be <= {spec['max']}")
+            params[param_name] = value
+    return instrument, timeframe, params
+
+
 async def _load_deployment_source(
     db: Any,
     source_type: str,
@@ -1687,76 +1764,12 @@ async def _load_deployment_source(
         if strategy is None:
             raise HTTPException(404, f"Strategy {source_id} not found")
         cfg = dict(strategy_config or {})
-        supported_instruments = [str(v).upper() for v in strategy.supported_instruments]
-        supported_timeframes = [str(v) for v in strategy.supported_timeframes]
-        instrument = str(cfg.get("instrument") or (supported_instruments[0] if supported_instruments else "")).upper()
-        # The deployment evaluator consumes closed candles_1m directly and does
-        # not resample. A library strategy is live-compatible only when it
-        # explicitly supports 1m; otherwise the snapshot would be misleading.
-        if "1m" not in supported_timeframes:
-            raise HTTPException(
-                400,
-                f"Strategy {strategy.id} is not deployment-compatible: live signals currently require 1m support",
-            )
-        timeframe = str(cfg.get("timeframe") or "1m")
-        if instrument not in supported_instruments:
-            raise HTTPException(
-                400,
-                f"Strategy {strategy.id} does not support {instrument}; allowed: {supported_instruments}",
-            )
-        if timeframe not in supported_timeframes:
-            raise HTTPException(
-                400,
-                f"Strategy {strategy.id} does not support {timeframe}; allowed: {supported_timeframes}",
-            )
-        if timeframe != "1m":
-            raise HTTPException(
-                400,
-                "Strategy deployments currently require timeframe=1m; 3m/5m live resampling is not implemented",
-            )
-        requested_params = dict(cfg.get("params") or {})
-        unknown_params = sorted(set(requested_params) - set(strategy.parameter_schema or {}))
-        if unknown_params:
-            raise HTTPException(
-                400,
-                f"Strategy {strategy.id} received unknown parameter(s): {unknown_params}",
-            )
-        params = strategy.merged_params(requested_params)
-        for param_name, spec in (strategy.parameter_schema or {}).items():
-            value = params.get(param_name)
-            value_type = str((spec or {}).get("type") or "")
-            # A param whose SCHEMA DEFAULT is None legitimately accepts None
-            # ("not configured"): premium_momentum's nullable float/str params
-            # (momentum_pts, target_pct, lazy_*, vix_min/max, entry_cutoff,
-            # exit_time, session_max_*) would otherwise be rejected here as "must
-            # be numeric"/"non-empty text" on a direct deploy through this general
-            # validator, even though the strategy treats None as a valid unset
-            # value (release-audit finding H4). A non-nullable param (default not
-            # None) whose value is None still falls through and is rejected, and
-            # any NON-None value is still fully type/range validated below.
-            if value is None and (spec or {}).get("default") is None:
-                params[param_name] = None
-                continue
-            if value_type == "bool":
-                if not isinstance(value, bool):
-                    raise HTTPException(400, f"Strategy parameter {param_name} must be boolean")
-            elif value_type == "int":
-                if isinstance(value, bool) or not isinstance(value, (int, float)) or int(value) != value:
-                    raise HTTPException(400, f"Strategy parameter {param_name} must be an integer")
-                value = int(value)
-            elif value_type == "float":
-                if isinstance(value, bool) or not isinstance(value, (int, float)):
-                    raise HTTPException(400, f"Strategy parameter {param_name} must be numeric")
-                value = float(value)
-            elif value_type == "str":
-                if not isinstance(value, str) or not value.strip():
-                    raise HTTPException(400, f"Strategy parameter {param_name} must be non-empty text")
-            if value_type in ("int", "float"):
-                if spec.get("min") is not None and value < spec["min"]:
-                    raise HTTPException(400, f"Strategy parameter {param_name} must be >= {spec['min']}")
-                if spec.get("max") is not None and value > spec["max"]:
-                    raise HTTPException(400, f"Strategy parameter {param_name} must be <= {spec['max']}")
-                params[param_name] = value
+        instrument, timeframe, params = _validate_strategy_deployment_config(
+            strategy,
+            instrument=cfg.get("instrument"),
+            timeframe=cfg.get("timeframe"),
+            requested_params=cfg.get("params"),
+        )
         doc = {
             "id": strategy.id,
             "name": strategy.name,
@@ -1778,6 +1791,34 @@ async def _load_deployment_source(
         raise HTTPException(400, "Deployment source_type must be strategy, preset or backtest_run")
     if not doc:
         raise HTTPException(404, f"Deployment source not found: {source_type} {source_id}")
+    # H5 parity: a preset / backtest_run source is validated against the SAME
+    # strategy-capability + parameter-schema rules as a direct strategy deploy.
+    # Without this a stored config referencing a deleted/renamed strategy, an
+    # unsupported timeframe/instrument, or unknown/invalid params would silently
+    # produce a dead ACTIVE deployment that can never emit a valid signal.
+    if source_type in ("preset", "backtest_run"):
+        from app.strategies.base import get_registry
+        from app.strategy_deployments import (
+            _strategy_id as _extract_sid,
+            _instrument as _extract_instrument,
+            _params as _extract_params,
+            _source_config as _extract_config,
+        )
+        _sid = _extract_sid(doc)
+        _strat = get_registry().get(_sid) if _sid else None
+        if _strat is None:
+            raise HTTPException(
+                404,
+                f"Strategy '{_sid or '(missing)'}' referenced by this {source_type} is not "
+                "registered — it may have been deleted or renamed. Re-create the "
+                "preset/backtest from a current strategy before deploying.")
+        _tf = str(_extract_config(doc).get("timeframe") or doc.get("timeframe") or "1m")
+        _validate_strategy_deployment_config(
+            _strat,
+            instrument=_extract_instrument(doc),
+            timeframe=_tf,
+            requested_params=_extract_params(source_type, doc),
+        )
     return doc
 
 
