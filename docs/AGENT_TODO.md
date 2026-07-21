@@ -1,0 +1,238 @@
+# AGENT TODO — live plan, status, and takeover state
+
+> **Purpose:** the single continuously-updated source of truth for the current work
+> program, so ANY agent (Claude, Codex, Gemini, human) can take over with zero loss of
+> context. **Update this file after every completed work unit** — flip statuses, add
+> notes, never delete history (strike through instead).
+>
+> Companion files: [`learning_log.md`](../learning_log.md) (lessons per session, verified
+> audit-finding evidence table) · [`docs/HANDOFF.md`](HANDOFF.md) (architecture/state
+> entry point) · `CHANGELOG.md`.
+
+**Last updated:** 2026-07-21 (Claude Fable 5 session — Codex audit triage + quick wins)
+
+---
+
+## 0. Standing decisions (user-confirmed 2026-07-21 — do NOT relitigate)
+
+1. **Deployment freedom is policy.** Any saved/optimized preset may be deployed to paper
+   or live after express consent + warning acknowledgment. Evidence gates (forward
+   validation, quality warnings) are ADVISORY ONLY — never hard blocks. This is already
+   implemented: consent override at `backend/app/routers/deployments.py` (~line 1095,
+   `accept_unvalidated_live`); paper create gated only by `acknowledged_warnings`.
+2. **The Codex diff is the baseline.** The ~2.7k-line uncommitted ChatGPT/Codex session
+   work (consent-override live gate, forward-validation advisory, option-data
+   provenance/integrity, docs, tests) is committed as-is, fixes land on top. No revert.
+3. **Safety-fix scope now = quick wins only** (H2 NaN-reject, H3 fail-closed, C1 loopback
+   binding). The remaining confirmed blockers (C2, C4, H1, C3) are REQUIRED BEFORE THE
+   FIRST REAL-MONEY SESSION but deferred until then — see §2.
+4. **Priorities after fixes (all four, in this order):** item 2 lazy-leg contingency →
+   item 3 strategy-builder audit → item 4 live-page redesign → item 5 new strategy
+   plugins. Items 6 (ideas), 7 (deep audit), 8 (docs) are cross-cutting/closing work.
+5. **Work inline, single-threaded.** The monthly AI spend limit was hit 2026-07-21;
+   multi-agent fan-outs FAIL until it resets/raises. Keep sessions lean.
+6. **Push policy:** commit locally; push only with per-changeset user approval
+   (long-standing project rule).
+7. **Broker safety (permanent):** never call the Flattrade MCP login/logout; never
+   place/modify/cancel broker orders from an agent; AlphaForge's own OAuth is the only
+   login. Do not refresh Flattrade OAuth while `LIVE_AUTOPLACE_ARMED` is on until §2
+   fixes land.
+
+---
+
+## 1. Master status board
+
+| # | Work item | Status | Notes |
+|---|-----------|--------|-------|
+| A | Commit Codex baseline (suite-gated) | 🔄 IN PROGRESS | Full host suite running; commit follows if green |
+| B1 | H2: reject non-finite monetary/param values | ⬜ NEXT | See §2 for exact plan |
+| B2 | H3: safety-config fail-closed (no 20-lot default) | ⬜ NEXT | |
+| B3 | C1-lite: loopback port bindings in docker-compose | ⬜ NEXT | |
+| B4 | C5: browser-verify the live activation dialog | ⬜ QUEUED | Hard-refresh first (known stale-bundle gotcha) |
+| C | Deferred pre-real-money fixes (C2, C4, H1, C3) | ⏸ DEFERRED | MUST land before first real-money session — §2 |
+| 2 | Lazy-leg contingency (Phase 5 design → ship) | ⬜ QUEUED | Design: `docs/superpowers/specs/2026-07-13-premium-momentum-phase4-5-full-contingency-design.md`; fold in H4 fix |
+| 3 | Strategy builder + AI authoring audit/completion | ⬜ QUEUED | Fold in H5 (preset-validation parity) |
+| 4 | Live-trading page redesign | ⬜ QUEUED | Incl. H8 (confirmation completeness), H6 UI surfacing |
+| 5 | New strategy plugins (candidates, honestly validated) | ⬜ QUEUED | |
+| 6 | Profit-leverage ideas write-up | ⬜ QUEUED | |
+| 7 | End-to-end deep audit | ⏸ BLOCKED | Needs multi-agent budget (spend-limit reset) or several lean sessions |
+| 8 | Handover documentation refresh | 🔄 ROLLING | This file + learning_log.md updated continuously; final pass at end |
+
+Legend: ⬜ not started · 🔄 in progress · ⏸ deferred/blocked · ✅ done
+
+---
+
+## 2. Safety fixes — verified findings and exact implementation plans
+
+Full verification evidence (file:line, verdict per finding): `learning_log.md` §2026-07-21.
+Paper trading in live market hours is NOT blocked by any of these — the paper path
+transmits no broker orders. These matter for real money.
+
+### Quick wins (doing now)
+
+**B1 — H2 non-finite values (~30 min).**
+- `backend/app/routers/deployments.py` `_LiveEnableBody` (~line 246): add a pydantic
+  `field_validator` on `daily_loss_cap`, `catastrophe_stop_pct`, `catastrophe_target_pct`
+  rejecting non-finite floats (`math.isfinite`). Python's json parser ACCEPTS `NaN`.
+- Defense in depth: `backend/app/live_deploy_governor.py` `_float_or_none` → return
+  `None` for non-finite input, AND treat a live deployment whose configured
+  `daily_loss_cap` is non-finite as `live_caps_missing` (refuse, pause) rather than
+  silently uncapped (`NaN > 0` is False — that's the bug).
+- Tests: NaN/Infinity daily_loss_cap → 422 on `/live/enable`; governor with NaN cap
+  refuses entry.
+
+**B2 — H3 fail-closed safety config (~30 min).**
+- `backend/app/live_deploy_context.py` (~line 263): on `get_config()` failure, do NOT
+  default `account_max = 20`; log + `return None` (live disabled this cadence — same
+  fail-soft-to-paper path as a broken connection). Test: config store raising →
+  `build_live_deploy_context` returns None.
+
+**B3 — C1-lite loopback binding (~15 min).**
+- `docker-compose.yml`: `"127.0.0.1:27017:27017"`, `"127.0.0.1:8001:8001"`,
+  `"127.0.0.1:3000:3000"`. Container-to-container networking unaffected (backend reaches
+  `mongo:27017` internally). Cuts LAN exposure of credential-less Mongo + unauthenticated
+  API. `docker compose up -d` to apply. Full API auth + Mongo credentials: only needed at
+  VPS migration (do together with H7 then).
+
+**B4 — C5 dialog verification (browser, ~15 min).**
+- Rebuild frontend if needed, HARD refresh (Ctrl+Shift+R — stale-bundle gotcha), open
+  Live page → Deploy panel → fill form → Continue. If the typed-ENABLE dialog opens:
+  Codex's C5 was a stale-bundle artifact; record and close. Either way, consider making
+  the two dialogs sequential (`setFormOpen(false)` before `setConfirmOpen(true)` in
+  `handleFormSubmit`, reopen form on confirm-cancel) — sibling modals both-open is
+  fragile in Radix.
+
+### Deferred — REQUIRED before first real-money session (est. 2–4 days total)
+
+**C2 — transmit fence (~1 day).** `backend/app/live/executor.py` Gate 1 (~line 459)
+checks `allow_fn()` once; `backend/app/auto_live.py` (~line 409) builds `allow_fn` over a
+STALE deployment doc + frozen `now`. Fix: immediately before the actual `place_order`
+transmit, re-fetch the deployment doc from Mongo and re-evaluate
+`is_deployment_live_allowed` with a fresh `now`; abort as `blocked:stale_authorization`
+if it no longer allows. Also re-check after every await that can take >~1s (margin call,
+throttle wait). Test: flip deployment to stopped between margin gate and transmit (mock
+broker) → order NOT sent.
+
+**C4 — breaker re-consent (~half day).** `resume` endpoint
+(`routers/deployments.py` ~852) must check WHY the deployment paused: if
+`risk.live.last_block_reason == "daily_loss_cap"` (or any breaker pause) AND
+`mode == "live"`, resume must either (a) demote to `mode: "paper"` + require a fresh
+`/live/enable`, or (b) require an explicit `acknowledge_loss_breaker: true` body flag.
+Option (a) is cleaner and matches stop-all semantics. Test: breach → PAUSED → plain
+resume → deployment is ACTIVE but mode==paper.
+
+**H1 — compare-and-swap transitions (~half day).** All mode/status transitions
+(`/live/enable`, `/live/disable`, `stop`, `pause`, `resume`, `stop-all`) currently do
+plain `$set` by id. Fix: conditional `update_one({"id": id, "mode": expected_mode,
+"status": expected_status}, ...)` and 409 on zero matched count. Test: concurrent
+stop-during-enable → one of the two gets 409, final state is stopped.
+
+**C3 — account-global caps (~1–2 days, pragmatic version).** Governor
+(`live_deploy_governor.py` ~105) counts only its own deployment's trades. Fix v1:
+add an account-scope pass (query live_trades WITHOUT deployment filter) enforcing the
+account-level `max_open_positions` + `daily_loss_limit` from the safety config store;
+wire `engine.guardrail_tick` (currently test-only, `live/engine.py:264`) into the
+evaluator cadence. Fix v2 (atomicity): reserve-then-place via a Mongo
+`findOneAndUpdate` reservation doc so two concurrent entries can't both pass
+`max_concurrent`. Single-deployment usage makes v1 the priority.
+
+### Explicitly neglected (user-ratified)
+
+- H7 server-verifiable consent — moot until an auth layer exists (VPS phase).
+- H8 confirmation completeness — fold into item 4 redesign.
+- H6 OCO-failure tolerance — deliberate design; add loud "no broker backstop" UI badge
+  in item 4; do NOT unwind filled entries on OCO reject.
+- Codex promotion-gate regime (60 sessions/120 trades/bootstrap) — advisory panel only.
+- npm build-chain CVEs (prod image = nginx, no node_modules) — revisit at VPS phase.
+- H4 (Premium-Momentum deploy rejected: nullable defaults vs "must be numeric") and
+  H5 (preset validation parity) — UNVERIFIED claims; verify + fix inside items 2 and 3
+  respectively.
+
+---
+
+## 3. Feature items — plans and junior-agent prompts
+
+### Item 2 — Lazy-leg contingency (opposite-side activation on primary-leg SL)
+
+Design doc: `docs/superpowers/specs/2026-07-13-premium-momentum-phase4-5-full-contingency-design.md`
+(committed, unshipped). Phase 5B (v0.55.0) already shipped: both-legs, lazy reversal,
+exit_time, day-stop, VIX. This item = the remaining "full contingency" slice.
+
+Junior-agent prompt:
+> Read the Phase 4-5 full-contingency design doc and the shipped Phase 5B code
+> (`backend/app/strategies/plugins/` premium momentum, `backend/app/paper_auto.py`,
+> `backend/app/auto_live.py` lazy-arm paths). Produce a gap list (designed vs shipped).
+> Implement the missing lazy-leg contingency on BOTH paper and live rails with tests,
+> following existing Phase 5B patterns (per-signal risk_hints, guard-side exits).
+> While there, verify finding H4: attempt a direct deploy of premium momentum via
+> POST /deployments; if nullable defaults are rejected as "must be numeric", fix the
+> validator to accept the plugin's declared-nullable params. Suite must stay green.
+> NB: guard-side 5B exits are LIVE-only and cannot fire in paper — expected, not a bug.
+
+### Item 3 — Strategy builder + AI authoring audit/completion
+
+Known state: wizard has capability-aware authoring (SP-0..SP-4), full-Python escape
+hatch (PR #6), multi-provider AI (Gemini-default, funded; Anthropic unfunded), Gemini
+truncation fixed (thinking off + 8192 tokens). Known weak spots: live-Gemini validation
+of the wizard is a manual step never fully done; H5 preset-validation parity unverified.
+
+Junior-agent prompt:
+> Audit `frontend/src/pages/StrategyLibrary.jsx` wizard flow + `backend/app` authoring
+> routes (`/author/*`). Map every step a user takes from "New Strategy" to a deployed
+> preset; list dead ends, silent failures, missing validation, and UX gaps. Verify H5:
+> create a preset referencing a nonexistent strategy/timeframe/unknown params and
+> attempt deployment; if it produces an active deployment doc, unify preset validation
+> with direct-strategy validation. Then fix the top gaps. Tests for every fix.
+
+### Item 4 — Live-trading page redesign
+
+User verdict: current page "not-so-helpful for a trader". Goals: modern UI, easy
+deployment control, market context at a glance, Flattrade MCP read-tools as data
+sources, optional price-based analysis aids. Constraints: read-only broker calls only;
+keep rate budget sparse while deployments armed; include H8 (show complete frozen
+config in the enable confirmation) and an H6 "no broker backstop" badge.
+
+Junior-agent prompt:
+> Redesign `frontend/src/pages/LiveSignals.jsx` (and `components/live/*`) into a
+> trader-first cockpit: (1) deployment cards with mode/status/caps/last-block-reason and
+> one-click enable/disable/stop with the consent flow; (2) positions + OCO/backstop
+> status with a loud "software-guard-only" badge when oco_al_id is null; (3) market
+> context strip (spot, VIX, expiry countdown) from existing backend endpoints; (4) an
+> account panel (funds/margin via existing Flattrade read endpoints); (5) the enable
+> confirmation must display the complete frozen config that will trade (params,
+> timeframe, source SHA, sizing, friction, exits — H8). Do not add new broker-mutating
+> endpoints. Chrome-verify with hard refresh.
+
+### Item 5 — New strategy plugins
+
+Honest framing (standing project verdict): no current strategy has proven edge;
+optimizer optimizes spot unless option-net mode is used; survival gates exist. Candidate
+directions from prior research: regime-routing (EV-positive but sample-starved), ORB
+variants, VWAP mean-reversion with option-net objective, IV-crush/theta-aware entries.
+
+Junior-agent prompt:
+> Build 2-3 new strategy plugins on the standard StrategyBase rails (registry,
+> capability_report, optimizer-compatible params, paper/live deployable). For each:
+> backtest 2025-11→latest warehouse, optimizer run with option-net objective, WFO, and
+> an untouched holdout check. Report results HONESTLY (edge or no edge) in a verdict
+> doc. Do not promise profitability; the deliverable is deployable candidates +
+> truthful evidence.
+
+### Items 6/7/8 — cross-cutting
+
+- **6 (ideas):** brainstorm doc — leverage angles: regime router as meta-strategy,
+  paper-cohort A/B harness, MCP-fed morning briefing, signal-quality dashboards,
+  option-flow features from Full feed (five-level depth + Greeks now captured).
+- **7 (deep audit):** wait for spend-limit reset (multi-agent) or run as several lean
+  single-file passes; seed list = learning_log.md findings table + Codex remediation
+  order §"Required remediation order" in the transcript.
+- **8 (docs):** rolling — this file + learning_log.md; final pass = HANDOFF/CHANGELOG/
+  takeover-prompt refresh once items land.
+
+---
+
+## 4. Session log
+
+- **2026-07-21 (Claude Fable 5):** Codex audit triaged; 11/13 findings verified inline
+  (evidence in learning_log.md). User interview locked decisions §0. Baseline commit +
+  quick wins in progress. Monthly spend limit hit — inline-only until reset.
