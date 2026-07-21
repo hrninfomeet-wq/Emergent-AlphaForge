@@ -29,11 +29,22 @@ quick wins landed:
   and the unauthenticated API are no longer reachable from the LAN. Full API
   authentication + Mongo credentials are deliberately deferred to the VPS
   migration. Run `docker compose up -d` to apply the new bindings.
+- **Live activation dialog repaired (C5):** the daily-loss-cap input used
+  `min=1 step=100`, so the default ₹4,000 (and virtually every round amount a
+  user types) failed HTML5 step validation — silently blocking the form submit,
+  so "Continue" never opened the typed-`ENABLE` consent step even though the
+  button looked enabled. Fixed with `step="any"` on the loss and both
+  catastrophe %-fields, and collapsed the two stacked Radix dialogs into a
+  single stepped dialog. Browser-verified end to end (caps → Continue →
+  typed-`ENABLE` → Back preserves values); the `ENABLE`-typed consent gate is
+  intact. The external audit had guessed a dialog-state race; the real cause was
+  native input validation.
 - Deferred (required before the first real-money session, tracked in
   `docs/AGENT_TODO.md`): pre-transmit stop fence (C2), compare-and-swap
   mode/status transitions (H1), account-global caps (C3).
 - **Verification:** 3,530 backend tests passed, 4 expected failures, 0
-  unexpected failures.
+  unexpected failures; 74 frontend-source contract tests passed; live activation
+  dialog verified in Chrome without enabling any deployment or sending any order.
 
 ## [0.56.2] — deployment freedom with explicit real-money consent (2026-07-21)
 

@@ -94,6 +94,48 @@ critical claim (the "broken" activation dialog) looks likely to be a test artifa
   (H3 fail-closed + H2 governor guard + C4 breach demotion + C1-lite loopback).
   Suite 3,530/0. Unpushed.
 
+### C5 — TWO wrong diagnoses before the browser gave the real one
+
+The activation dialog's "Continue does nothing" bug took THREE hypotheses. Only the
+last, forced by direct browser event-inspection, was correct. A cautionary tale in
+not trusting plausible theories (mine or another agent's) without instrumentation.
+
+- **Hypothesis 1 (mine, wrong):** "stale bundle — the code reads correct." Killed by a
+  fresh rebuild that still reproduced.
+- **Hypothesis 2 (Codex's + mine, wrong):** "two sibling Radix `<Dialog>`s; the confirm
+  layer eats the submit's pointerup." Plausible, and I even refactored to a single
+  stepped dialog to fix it — but after that refactor the confirm step STILL didn't open.
+  If I'd stopped at "it compiles + looks right," I'd have shipped a non-fix.
+- **Hypothesis 3 (correct, found by instrumenting the DOM event):** attached a capture
+  `submit` listener + `click` listener to the form/button → **`click-fired` but
+  `submit-fired` NEVER fired.** A type=submit click that doesn't submit ⇒ native HTML5
+  form validation is blocking it. `form.checkValidity()` = false; the daily-loss input
+  (`min={1} step={100}`, value 4000) reported `stepMismatch:true` — "nearest valid values
+  3901 and 4001." Valid values are 1+100n, so 4000 (and every round rupee amount) is
+  natively invalid. Submit never fires → `handleFormSubmit` never runs. The button looks
+  enabled because `canProceedToConfirm` (JS) checks `>0`, not step validity.
+- **Fix:** `step="any"` on the loss field + both catastrophe %-fields (same latent trap:
+  `min={0.1} step={0.5}` → "50" invalid). Kept the single-dialog refactor as a genuine
+  robustness win. Verified E2E in Chrome. Commit `3f3b457`.
+- **Lessons:**
+  1. When a `type="submit"` button "does nothing," check `form.checkValidity()` and each
+     input's `.validity.*` FIRST — native validation silently swallows the submit with no
+     console error. A capture-phase `submit`-vs-`click` listener pair localizes it in one probe.
+  2. `<input type="number" step={X}>` with a `min` that isn't a multiple of `X` makes most
+     human-entered values invalid. Use `step="any"` unless you truly want a discrete grid.
+  3. A JS "can I proceed" guard that gates a button's `disabled` does NOT replace native
+     form validity — the two can disagree, and native wins at submit time.
+  4. Don't stop at "compiles + looks right." My dialog refactor was correct code that
+     fixed the WRONG bug; only re-running the real user action proved it insufficient.
+- Contract tests grepping the JSX (`accept_unvalidated_live`, `api.deploymentMetrics(dep.id)`,
+  `armAdvisories`, the consent label) still pass (74) — consent strings untouched.
+- **Docker/OneDrive footnote:** three "FIX-ABSENT" scares were ALSO measurement errors —
+  I grepped the *minified* `main.*.js` for the original identifier `closeConfirmBackToForm`,
+  which CRA renames in production. The `.js.map` (original names preserved) is the correct
+  check. And `docker compose build` from the repo root read a stale build-context for this
+  OneDrive path while a direct `docker build` from `frontend/` read fresh — build directly
+  from `frontend/` and verify the served bundle hash + `.map`, not a minified grep.
+
 ### Open items carried forward
 
 1. Safety-fix sprint (pending user decision on scope): H2+H3 (trivial), C1 loopback

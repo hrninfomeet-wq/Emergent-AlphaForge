@@ -49,7 +49,7 @@
 | B2 | H3: safety-config fail-closed (no 20-lot default) | ✅ DONE | `f9a2482` — unreadable/invalid config → live disabled for the cadence |
 | B3 | C1-lite: loopback port bindings in docker-compose | ✅ DONE | `f9a2482` — ⚠️ run `docker compose up -d` to apply |
 | B5 | C4: daily-loss breach demotes mode→paper | ✅ DONE | `f9a2482` (bonus — turned out to be a 1-line fix, not half a day; resume can no longer re-authorize live) |
-| B4 | C5: browser-verify the live activation dialog | ⬜ NEXT | Hard-refresh first (known stale-bundle gotcha); dialog code READS correct — see learning_log |
+| B4 | C5: live activation dialog — Continue didn't open confirm step | ✅ FIXED + browser-verified | REAL cause = HTML5 step validation: daily-loss input `min={1} step={100}` → default 4000 is stepMismatch-invalid → native form validation silently blocks submit → handleFormSubmit never runs (button looks enabled b/c the JS guard ignores step). Fix `step="any"` on loss + both catastrophe %-fields; ALSO collapsed the two sibling Radix dialogs into one stepped dialog (robustness). Verified E2E in Chrome (caps→Continue→typed-ENABLE renders; ENABLE gated; Back preserves values). Commit `3f3b457`. NOT the two-dialog theory the Codex audit guessed |
 | C | Deferred pre-real-money fixes (C2, H1, C3) | ⏸ DEFERRED | MUST land before first real-money session — §2 |
 | 2 | Lazy-leg contingency (Phase 5 design → ship) | ⬜ QUEUED | Design: `docs/superpowers/specs/2026-07-13-premium-momentum-phase4-5-full-contingency-design.md`; fold in H4 fix |
 | 3 | Strategy builder + AI authoring audit/completion | ⬜ QUEUED | Fold in H5 (preset-validation parity) |
