@@ -184,6 +184,31 @@ not trusting plausible theories (mine or another agent's) without instrumentatio
 - `git commit -F <tempfile>` used for every commit body this session — zero PowerShell
   here-string mangling incidents once I stopped inlining quoted messages.
 
+### Item 4 (live cockpit) Phase 1 — build lessons
+
+- **Brainstorm-before-build paid off.** The FIRST mockup (tabbed cockpit) was rejected by
+  the user ("rethink the layout") — tabs hid positions/market behind clicks. Iterating the
+  mockup 3× (tabbed → always-on-core+drawer → +broker module +account tabs +compact regime)
+  BEFORE writing code saved a large wasted implementation. The design skill's hard gate
+  (no code until approved) is worth the ceremony for a page redesign.
+- **Fast host build beats Docker for the edit loop.** The frontend uses **craco** (not raw
+  react-scripts) — `node_modules/.bin/craco build` on the host compiles in ~30s and resolves
+  the `@/` alias (raw react-scripts does NOT — it fails on `@/App`). Use craco for the
+  compile loop, Docker rebuild only for the final Chrome verify. Confirm the served bundle
+  hash matches the host build hash to prove freshness (dodges the OneDrive stale-context trap).
+- **CRA/CI treats unused vars + bad imports as errors.** Removed unused state/imports
+  proactively; verified lucide icon names against the installed version (`node -e "'X' in
+  require('lucide-react')"`) before relying on them — cheaper than a failed build.
+- **Retiring a component means repointing its source-contract tests.** LiveDashboard.jsx was
+  pinned by 3 grep-the-JSX tests (degraded banner, kill switch, trade stats). Deleting it
+  without repointing = 3 red tests. Moved the assertions to the new homes (AlertRail,
+  liveHelpers, LiveCockpit, AccountTabs) and confirmed the asserted safety features actually
+  moved (caught that I'd dropped the `live-hero-asof` STALE stamp — restored it).
+- **`git add <deleted-and-git-rm'd path>` aborts the whole add** ("did not match any files"),
+  silently leaving new files unstaged. Don't re-add a path already staged for deletion; amend
+  if the first commit came out partial.
+- Phase 1 on branch `feat/live-cockpit` (`3511874`), suite 3,564/0, Chrome-verified.
+
 ### Open items carried forward
 
 1. Safety-fix sprint (pending user decision on scope): H2+H3 (trivial), C1 loopback

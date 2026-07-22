@@ -2,6 +2,35 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.57.0-phase1] — Live Cockpit redesign, Phase 1 shell (2026-07-22)
+
+**Outcome: the Live Trading page is re-organised from a long vertical scroll into
+a trader cockpit — market context, risk, positions and quick actions all in view,
+with set-and-forget config tucked into a drawer.**
+
+- **Always-on cockpit.** A persistent command bar (a live MARKET OPEN/CLOSED
+  pill, the full market ticker, and a compact Upstox/Flattrade connection module),
+  an always-on core (live-risk KPIs, open positions, kill switch, software guard,
+  one-click quick-trade, and a deployments summary), a slide-out **Configure**
+  drawer holding deployment control, the GTT/OCO backstop, and basket overall
+  controls, and a professional tabbed **account panel** (Funds & Margin,
+  Holdings, Order book, Trade book).
+- **Broker connection module.** Upstox (data) and Flattrade (execution) chips
+  show connection state and offer Reconnect / Disconnect / Login through the
+  existing OAuth endpoints — never the shared MCP.
+- **Reuse, not rewrite.** Every panel is an existing component, re-organised; the
+  previous LiveDashboard was retired and its helpers moved verbatim to a shared
+  module. The real-money consent flow and all safety banners (degraded, unguarded,
+  no-broker-backstop, the stale-data stamp) are preserved.
+- Market Pulse (regime + multi-timeframe trend + support/resistance) and Market
+  Analysis (PCR, max-pain, IV rank, straddle, greeks + option chain) show
+  "coming online" placeholders — they light up in Phase 2 when the read-only
+  `/market/analysis` engine lands. No broker-mutating endpoints; no backend
+  change in this phase.
+- **Verification:** host build compiles; 3,564 backend tests passed, 4 xfailed,
+  0 failed (incl. 7 new cockpit contract tests); cockpit verified end-to-end in
+  Chrome (drawer, tabs, broker popover, no console errors).
+
 ## [0.56.5] — deployment-source validation parity + AI-install rollback (2026-07-21)
 
 **Outcome: a preset/backtest can no longer become a dead ACTIVE deployment, and
