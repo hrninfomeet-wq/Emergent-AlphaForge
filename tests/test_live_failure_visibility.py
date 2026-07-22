@@ -27,7 +27,11 @@ USEPOLL = _read("frontend/src/hooks/usePoll.js")
 PROVIDER = _read("frontend/src/components/live/LiveDataProvider.jsx")
 BOUNDARY = _read("frontend/src/components/live/LiveErrorBoundary.jsx")
 LIVE_PAGE = _read("frontend/src/pages/LiveTrading.jsx")
-DASH = _read("frontend/src/components/live/LiveDashboard.jsx")
+# The old LiveDashboard was retired for the LiveCockpit (2026-07-22 redesign);
+# its safety surfaces moved to the cockpit + alert rail + shared helpers.
+COCKPIT = _read("frontend/src/components/live/LiveCockpit.jsx")
+ALERTRAIL = _read("frontend/src/components/live/cockpit/AlertRail.jsx")
+HELPERS = _read("frontend/src/components/live/liveHelpers.js")
 KILL = _read("frontend/src/components/live/KillSwitchPanel.jsx")
 TICKET = _read("frontend/src/components/live/LiveOrderTicket.jsx")
 STRIP = _read("frontend/src/components/live/LiveDeploymentStrip.jsx")
@@ -56,17 +60,19 @@ def test_error_boundary_keeps_kill_switch():
 
 
 def test_dashboard_degraded_banner_and_as_of():
-    assert 'data-testid="live-degraded-banner"' in DASH
-    assert 'data-testid="live-hero-asof"' in DASH
-    assert "health" in DASH
-    assert "lastSuccess" in DASH
-    assert "STALE" in DASH
+    # Degraded banner lives on the alert rail; the as-of / STALE stamp on the cockpit.
+    assert 'data-testid="live-degraded-banner"' in ALERTRAIL
+    assert "STALE" in ALERTRAIL
+    assert 'data-testid="live-hero-asof"' in COCKPIT
+    assert "health" in COCKPIT
+    assert "lastSuccess" in COCKPIT
+    assert "STALE" in COCKPIT
 
 
 def test_dashboard_reconcile_chip_formats_mismatches():
     # must NOT join objects directly (that renders [object Object])
-    assert "fmtMismatch" in DASH
-    assert "m?.detail?.tsym" in DASH
+    assert "fmtMismatch" in HELPERS
+    assert "m?.detail?.tsym" in HELPERS
 
 
 def test_kill_switch_always_renders_and_handles_unknown():

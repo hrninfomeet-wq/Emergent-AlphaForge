@@ -12,7 +12,9 @@ import pathlib
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 BROKER_SRC = (ROOT / "backend/app/routers/live_broker.py").read_text(encoding="utf-8")
 API_SRC = (ROOT / "frontend/src/lib/api.js").read_text(encoding="utf-8")
-DASH_SRC = (ROOT / "frontend/src/components/live/LiveDashboard.jsx").read_text(encoding="utf-8")
+# LiveDashboard retired for LiveCockpit (2026-07-22) — the trade-stats card is
+# rendered in the cockpit's tabbed account panel (Trade book tab).
+DASH_SRC = (ROOT / "frontend/src/components/live/cockpit/AccountTabs.jsx").read_text(encoding="utf-8")
 CARD_SRC = (ROOT / "frontend/src/components/live/LiveTradeStats.jsx").read_text(encoding="utf-8")
 
 

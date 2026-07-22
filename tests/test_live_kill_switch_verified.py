@@ -303,8 +303,10 @@ def test_frontend_kill_switch_panel_is_wired():
     assert "kill-switch-report" in panel
     assert "kill-switch-residual" in panel
     assert "PLACED_UNCONFIRMED" in panel
+    # LiveDashboard retired for LiveCockpit (2026-07-22 redesign) — the kill panel
+    # is rendered in the cockpit's always-on right column.
     dash = (root / "frontend" / "src" / "components" / "live" /
-            "LiveDashboard.jsx").read_text(encoding="utf-8")
+            "LiveCockpit.jsx").read_text(encoding="utf-8")
     assert "<KillSwitchPanel />" in dash
     # The old session-gated one-click kill button is gone from PositionMonitor.
     pm = (root / "frontend" / "src" / "components" / "live" /
