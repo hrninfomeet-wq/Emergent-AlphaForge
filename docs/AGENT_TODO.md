@@ -53,7 +53,7 @@
 | C | Deferred pre-real-money fixes (C2, H1, C3) | ⏸ DEFERRED | MUST land before first real-money session — §2 |
 | 2 | Lazy-leg contingency (Phase 5 design → ship) | ✅ DONE | Was already shipped in backtest+live; built the only gap = **paper-mode lazy arming** (`ab453fa`) + H4 nullable-param deploy fix (`3639009`). Suite 3,549/0. See §3 item 2 |
 | 3 | Strategy builder + AI authoring audit/completion | ✅ DONE | H5 preset/backtest validation parity (`10f8ce7`) + AI-install file rollback (`6e8861d`); wizard audited = already robust. Suite 3,557/0. See §3 item 3 |
-| 4 | Live-trading page redesign | ⬜ NEXT | Incl. H8 (confirmation completeness), H6 UI surfacing |
+| 4 | Live-trading page redesign | 🔄 DESIGN+PLAN DONE | Brainstormed → spec `docs/superpowers/specs/2026-07-22-live-cockpit-redesign-design.md` + mockup + **plan `docs/superpowers/plans/2026-07-22-live-cockpit-redesign.md`** (18 tasks, 2 phases), all user-approved & committed (`c524ddf`+plan). READY TO BUILD: Phase 1 = cockpit shell (frontend, reuse existing data); Phase 2 = `/market/analysis` engine + `/live-broker/holdings`. No broker-mutating endpoints; H8 preserved |
 | 5 | New strategy plugins (candidates, honestly validated) | ⬜ QUEUED | |
 | 6 | Profit-leverage ideas write-up | ⬜ QUEUED | |
 | 7 | End-to-end deep audit | ⏸ BLOCKED | Needs multi-agent budget (spend-limit reset) or several lean sessions |
