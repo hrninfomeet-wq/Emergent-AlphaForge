@@ -163,6 +163,19 @@ class FlattradeClient:
         data = await self._post("PositionBook", jdata)
         return _parse_book("PositionBook", data)
 
+    async def holdings(self, prd: str = "C") -> List[Dict[str, Any]]:
+        """Return DP/demat holdings for a product as a list of holding dicts.
+
+        READ-ONLY. ``prd`` defaults to "C" (CNC/delivery), the product that
+        carries long-term holdings. Empty demat → [] (Noren emsg ~ "no data");
+        a real read failure (e.g. an expired daily token) → ``BrokerReadError``
+        — the same never-infer-empty-from-a-failed-read rule the other books
+        follow.
+        """
+        jdata: Dict[str, Any] = {"uid": self._uid, "actid": self._actid, "prd": str(prd or "C")}
+        data = await self._post("Holdings", jdata)
+        return _parse_book("Holdings", data)
+
     async def limits(self) -> Dict[str, Any]:
         """Return account limits/margin as a flat dict.
 

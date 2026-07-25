@@ -557,6 +557,31 @@ async def live_broker_positions():
         raise HTTPException(400, f"Flattrade position_book error: {str(exc)[:300]}") from exc
 
 
+@api.get("/live-broker/holdings")
+async def live_broker_holdings(prd: str = "C"):
+    """Return the broker DP/demat holdings book. READ-ONLY; 400 if not connected.
+
+    Feeds the cockpit account panel's Holdings tab. ``prd`` defaults to "C"
+    (CNC/delivery) — the product that carries long-term holdings. Mirrors
+    /live-broker/positions: a genuinely-empty demat is [], while a failed read
+    raises rather than masquerading as "no holdings".
+    """
+    try:
+        client = await _get_client()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(400, f"Could not build Flattrade client: {exc}") from exc
+    try:
+        holdings = await client.holdings(prd)
+        return {"holdings": holdings, "count": len(holdings)}
+    except BrokerReadError as exc:
+        raise _broker_read_400(exc, "holdings") from exc
+    except Exception as exc:
+        log.exception("live_broker_holdings failed")
+        raise HTTPException(400, f"Flattrade holdings error: {str(exc)[:300]}") from exc
+
+
 @api.get("/live-broker/orders")
 async def live_broker_orders():
     """Return the broker order book. Returns 400 if not connected."""

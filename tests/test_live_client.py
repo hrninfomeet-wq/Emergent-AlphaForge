@@ -781,3 +781,61 @@ def test_flattrade_client_has_all_protocol_methods():
     assert asyncio.iscoroutinefunction(client.position_book)
     assert asyncio.iscoroutinefunction(client.limits)
     assert asyncio.iscoroutinefunction(client.search_scrip)
+
+
+# ---------------------------------------------------------------------------
+# holdings() — DP/demat book for the cockpit account panel (read-only)
+# ---------------------------------------------------------------------------
+
+def test_holdings_parses_list():
+    client = _client()
+    rows = [{"stat": "Ok", "exch_tsym": [{"exch": "NSE", "tsym": "ABB-EQ", "token": "13"}],
+             "holdqty": "15", "upldprc": "2840.00"}]
+    mock_httpx, _ = _make_httpx_mock(200, rows)
+    with patch("app.live.flattrade_client.httpx.AsyncClient", return_value=mock_httpx):
+        result = run(client.holdings())
+    assert len(result) == 1
+    assert result[0]["holdqty"] == "15"
+
+
+def test_holdings_returns_empty_on_no_data():
+    """An empty demat is [] — the documented Noren 'no data' emsg."""
+    client = _client()
+    mock_httpx, _ = _make_httpx_mock(
+        200, {"stat": "Not_Ok", "emsg": 'Error Occurred : 5 "no data"'})
+    with patch("app.live.flattrade_client.httpx.AsyncClient", return_value=mock_httpx):
+        result = run(client.holdings())
+    assert result == []
+
+
+def test_holdings_raises_on_session_expired():
+    """Never infer an empty demat from a failed read (same rule as the books)."""
+    client = _client()
+    mock_httpx, _ = _make_httpx_mock(
+        200, {"stat": "Not_Ok", "emsg": "Session Expired : Invalid Session Key"})
+    with patch("app.live.flattrade_client.httpx.AsyncClient", return_value=mock_httpx):
+        with pytest.raises(BrokerReadError) as ei:
+            run(client.holdings())
+    assert ei.value.is_session_expired
+    assert ei.value.route == "Holdings"
+
+
+def test_holdings_sends_product_in_jdata():
+    """Noren Holdings requires uid/actid/prd; default product is C (CNC)."""
+    client = _client()
+    mock_httpx, resp = _make_httpx_mock(200, [])
+    captured_url, captured_body = [], []
+
+    async def fake_post(url, *, content=None, **kw):
+        captured_url.append(url)
+        captured_body.append(content)
+        return resp
+
+    mock_httpx.post = AsyncMock(side_effect=fake_post)
+    with patch("app.live.flattrade_client.httpx.AsyncClient", return_value=mock_httpx):
+        run(client.holdings())
+
+    assert "Holdings" in captured_url[0]
+    body = captured_body[0]
+    assert '"prd"' in body and '"C"' in body
+    assert '"uid"' in body and '"actid"' in body
