@@ -2,6 +2,31 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.57.0] — Live Cockpit: market-analysis engine (2026-07-22)
+
+**Outcome: the cockpit's market-intelligence panels are live — regime, trend,
+support/resistance and option analytics, all computed deterministically and
+reported honestly.**
+
+- **Market Pulse** now shows the market's **structure/regime** (Bearish → Strong
+  on a 5-segment meter) with a confidence bar and a plain-English rationale, the
+  **trend on four timeframes** (intraday, daily, weekly, monthly), and a
+  **support/resistance range bar** showing where spot sits between the nearest
+  levels, with the day pivot.
+- **Market Analysis** shows put/call ratio, max pain, IV rank, the ATM straddle
+  with its implied move, net delta/theta, and the ATM option chain.
+- **New read-only endpoints:** `GET /market/analysis` (server-cached ~8s) and
+  `GET /live-broker/holdings`, which fills the account panel's Holdings tab. No
+  broker-mutating endpoints were added.
+- **Honest by construction.** Every figure is computed from data the app already
+  has, and anything that cannot be computed is reported as "—" with a plain
+  explanation rather than a guess: the put/call ratio and max pain are withheld
+  when the feed carries no open interest, and IV rank states when it is derived
+  from India VIX instead of the option chain's own IV history.
+- **Verification:** 3,610 backend tests passed, 4 expected failures, 0 unexpected
+  failures; frontend build compiles; the endpoint and both panels were verified
+  against live market data in Chrome.
+
 ## [0.57.0-phase1] — Live Cockpit redesign, Phase 1 shell (2026-07-22)
 
 **Outcome: the Live Trading page is re-organised from a long vertical scroll into

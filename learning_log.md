@@ -209,6 +209,55 @@ not trusting plausible theories (mine or another agent's) without instrumentatio
   if the first commit came out partial.
 - Phase 1 on branch `feat/live-cockpit` (`3511874`), suite 3,564/0, Chrome-verified.
 
+### Item 4 Phase 2 (market-analysis engine) — the orchestration lesson
+
+**Core lesson: delegate the specified, keep the integrated — and NEVER accept a
+subagent's self-report as verification.** Both juniors reported clean passes; both
+had a real defect that only my own adversarial probe found. The review step is not
+ceremony, it is where the bugs are caught.
+
+**Confirmed approaches (repeat these):**
+- **Tiering by risk worked.** Pure, fully-specified TDD functions and pure
+  presentational components → junior agents (Sonnet). Anything touching the broker
+  client, live routes, shared provider state, or real-money paths → me. Zero rework
+  was needed on the delegated slices beyond the two review fixes.
+- **Recon-first delegation.** Dispatching a READ-ONLY Explore agent to produce an
+  exact reference sheet (signatures, collection names, row shapes, cache patterns)
+  BEFORE writing the endpoint corrected three wrong assumptions in my own plan:
+  there is no daily candle collection (resample or aggregate), the indicator columns
+  are `ema9/21/50` (no `ema_20`), and the "option chain" is assembled client-side
+  from two calls — but full-mode ticks DO carry `open_interest`. Writing the endpoint
+  against guesses would have cost far more than the recon.
+- **Parallel juniors + my own work.** Recon and the UI components ran in background
+  while I built the broker holdings path — three work streams, no file conflicts
+  (they were scoped to disjoint files, and I told each agent exactly which files it owned).
+- **Give juniors the failure semantics, not just the happy path.** The prompts that
+  specified "never raise / return this sentinel / declare provenance" produced code
+  that degrades honestly; the one gap (below) was where I under-specified.
+
+**Defects the review caught (both would have shipped):**
+1. `put_call_ratio` raised `ValueError` on a non-numeric OI — inside an endpoint that
+   renders a live risk surface, one malformed chain row would have 500'd it. Fixed
+   with a shared `_f()` coercion + 4 regression tests.
+2. Live output showed `label: "CHOPPY"` with `kind: "trending"` — a self-contradiction
+   on screen, plus an unrounded `ADX=27.904506321486576` in the human "why" string.
+   Only visible by calling the real endpoint against real data, not from tests.
+
+**Dead ends / traps to avoid:**
+- **Testing a rebuilt frontend against a stale backend.** I rebuilt the backend, THEN
+  fixed the ADX rounding, and the browser still showed the old string. Rebuild the
+  container for the tier you just changed, and re-verify the value you actually fixed.
+- **Case-sensitive text probes against CSS-uppercased UI.** My verification probe
+  reported `Intraday: false` / `Confidence: false` purely because Tailwind's
+  `uppercase` makes `innerText` return `INTRADAY`. Dump the surrounding text before
+  concluding a panel failed to render.
+- Don't recompute what the page already polls: net greeks come from the existing
+  `/live-broker/greeks` slice merged client-side, avoiding a duplicate broker read
+  and keeping the panel alive while disconnected.
+
+Landed `e0fb250` (primitives) + `df6ebe3` (holdings) + `afbd24b` (engine+wiring);
+suite 3,610/0; endpoint + cockpit verified against live market data.
+
 ### Open items carried forward
 
 1. Safety-fix sprint (pending user decision on scope): H2+H3 (trivial), C1 loopback
