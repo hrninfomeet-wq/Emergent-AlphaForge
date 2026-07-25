@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useLiveData } from "@/components/live/LiveDataProvider";
 import {
   SectionCard, ReconcileChip, PositionsBlotter, fmtAsOf,
@@ -33,6 +33,7 @@ export default function LiveCockpit() {
   const {
     status, limits, positions, orders, reconcile, armState, blotter, guard, gtt,
     refetch, feedHealth, deployments, health, lastSuccess,
+    marketAnalysis, holdings, greeks,
   } = useLiveData();
   const fetchAll = refetch.all;
 
@@ -69,6 +70,22 @@ export default function LiveCockpit() {
 
   const openDrawer = useCallback(() => setDrawerOpen(true), []);
 
+  // The analysis endpoint deliberately leaves net greeks null (they are
+  // position-driven, already polled at /live-broker/greeks, and would cost a
+  // duplicate broker read). Merge that slice in here so MarketAnalysis renders
+  // one coherent payload — and so the panel still works when disconnected.
+  const analysis = useMemo(() => {
+    if (!marketAnalysis) return null;
+    return {
+      ...marketAnalysis,
+      options: {
+        ...(marketAnalysis.options || {}),
+        net_delta_rupee: greeks?.net_delta_rupees_per_point ?? null,
+        net_theta_rupee: greeks?.net_theta_rupees_per_day ?? null,
+      },
+    };
+  }, [marketAnalysis, greeks]);
+
   return (
     <div className="space-y-4">
       <CommandBar flattradeStatus={status} onConfigure={openDrawer} onChanged={fetchAll} />
@@ -102,8 +119,8 @@ export default function LiveCockpit() {
       <div className="grid grid-cols-1 lg:grid-cols-[1.55fr_1fr] gap-4">
         {/* LEFT — market intelligence */}
         <div className="space-y-4">
-          <MarketPulse analysis={null} />
-          <MarketAnalysis analysis={null} />
+          <MarketPulse analysis={analysis} />
+          <MarketAnalysis analysis={analysis} />
           <GreeksCard />
         </div>
 
@@ -121,7 +138,7 @@ export default function LiveCockpit() {
       </div>
 
       {/* Tabbed account panel */}
-      <AccountTabs limits={limits} orders={orders} blotter={blotter} gtt={gtt} holdings={null} />
+      <AccountTabs limits={limits} orders={orders} blotter={blotter} gtt={gtt} holdings={holdings} />
 
       <ConfigDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} onArmedSummaryChange={() => {}} />
     </div>

@@ -31,6 +31,53 @@ function FundCell({ label, value, tone }) {
   );
 }
 
+/**
+ * DP/demat holdings from GET /live-broker/holdings. Noren nests the symbol in an
+ * `exch_tsym` array and reports quantity/price across several fields, so read
+ * them defensively — a missing field renders "—" rather than a guessed 0.
+ */
+function HoldingsTable({ holdings }) {
+  if (holdings == null) {
+    return <div className="text-xs text-dimmer font-mono py-6 text-center">Loading holdings&hellip;</div>;
+  }
+  const rows = Array.isArray(holdings) ? holdings : (holdings.holdings ?? holdings.data ?? []);
+  if (!rows.length) {
+    return <div className="text-xs text-dimmer font-mono py-6 text-center">No holdings</div>;
+  }
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-xs font-mono tabular-nums">
+        <thead>
+          <tr className="border-b border-line text-dimmer uppercase tracking-wider text-[10px]">
+            <th className="text-left py-2 pr-3 pl-0">Symbol</th>
+            <th className="text-left py-2 px-3">Exch</th>
+            <th className="text-right py-2 px-3">Qty</th>
+            <th className="text-right py-2 px-3">Avg price</th>
+            <th className="text-right py-2 pl-3 pr-0">Value</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((h, i) => {
+            const sym = h?.exch_tsym?.[0] ?? {};
+            const qty = firstNum(h?.holdqty, h?.dpqty, h?.npoadqty, h?.benqty);
+            const avg = firstNum(h?.upldprc);
+            const value = qty != null && avg != null ? qty * avg : null;
+            return (
+              <tr key={sym.tsym ?? i} className="border-b border-line/50 hover:bg-bg-2/40 transition-colors">
+                <td className="py-2 pr-3 pl-0 text-foreground font-semibold">{sym.tsym ?? "—"}</td>
+                <td className="py-2 px-3 text-dim">{sym.exch ?? "—"}</td>
+                <td className="py-2 px-3 text-right text-foreground">{qty ?? "—"}</td>
+                <td className="py-2 px-3 text-right text-dim">{avg != null ? fmtINR(avg) : "—"}</td>
+                <td className="py-2 pl-3 pr-0 text-right text-foreground">{value != null ? fmtINR(value) : "—"}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 const TABS = [
   { k: "fund", label: "Funds & Margin" },
   { k: "hold", label: "Holdings" },
@@ -101,11 +148,7 @@ export default function AccountTabs({ limits, orders, blotter, gtt, holdings }) 
           )
         )}
 
-        {tab === "hold" && (
-          <div className="text-xs text-dimmer font-mono py-6 text-center">
-            {holdings == null ? "Holdings come online with the /live-broker/holdings read (Phase 2)." : "No holdings."}
-          </div>
-        )}
+        {tab === "hold" && <HoldingsTable holdings={holdings} />}
 
         {tab === "ord" && <OrdersBlotter orders={orders} allStatuses />}
 

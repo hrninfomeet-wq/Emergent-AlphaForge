@@ -21,6 +21,10 @@ export const api = {
   // Health/Summary
   summary: () => apiClient.get("/dashboard/summary").then((r) => r.data),
   marketHeader: () => apiClient.get("/market/header").then((r) => r.data),
+  // Deterministic market analysis for the live cockpit (read-only, server-cached
+  // ~8s): structure/regime, multi-timeframe trend, S/R, and option analytics.
+  marketAnalysis: (instrument = "NIFTY") =>
+    apiClient.get("/market/analysis", { params: { instrument } }).then((r) => r.data),
 
   // Strategies
   listStrategies: () => apiClient.get("/strategies").then((r) => r.data),
@@ -283,6 +287,7 @@ export const api = {
   disconnectFlattrade: () => apiClient.post("/flattrade/disconnect").then((r) => r.data),
   liveBrokerLimits: () => apiClient.get("/live-broker/limits").then((r) => r.data),
   liveBrokerPositions: () => apiClient.get("/live-broker/positions").then((r) => r.data),
+  liveBrokerHoldings: () => apiClient.get("/live-broker/holdings").then((r) => r.data),
   liveBrokerOrders: () => apiClient.get("/live-broker/orders").then((r) => r.data),
   liveBrokerReconcile: () => apiClient.get("/live-broker/reconcile").then((r) => r.data),
   getLiveBlotter: (limit = 100) =>

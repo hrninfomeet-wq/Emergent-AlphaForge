@@ -280,3 +280,14 @@ def test_levels_from_sr_never_raises_on_malformed_levels():
                          spot="24187.7")
     assert 24135.0 in out["supports"]
     assert 24240.0 in out["resistances"]
+
+
+def test_high_adx_with_flat_direction_is_not_labelled_trending():
+    """Live-output finding (2026-07-22): NIFTY returned label CHOPPY with
+    kind "trending" — a self-contradiction on screen. A strong ADX with no net
+    direction means the move reversed inside the window: report transitional."""
+    out = classify_structure(closes=[100, 103, 106, 103, 100, 103, 100], adx=36.8)
+    assert out["regime_bucket"] == 2          # still the flat/middle bucket
+    assert out["kind"] == "transitional"      # NOT "trending"
+    assert "36.8" in out["why"]               # ADX is rounded for display
+    assert "36.83506" not in out["why"]

@@ -64,8 +64,13 @@ def classify_structure(*, closes: List[float], adx: Optional[float]) -> Dict[str
 
     if adx is None:
         kind = "transitional"
-    elif adx >= 25:
+    elif adx >= 25 and direction != "flat":
         kind = "trending"
+    elif adx >= 25:
+        # Strong ADX but no net direction over the window: the move reversed
+        # inside it. Calling that "trending" would contradict the flat label
+        # the UI shows next to it, so report it as transitional.
+        kind = "transitional"
     elif adx < 20 and direction == "flat":
         kind = "choppy"
     elif adx < 20:
@@ -101,7 +106,8 @@ def classify_structure(*, closes: List[float], adx: Optional[float]) -> Dict[str
     confidence = max(0.0, min(1.0, adx_component + ret_component))
     confidence = round(confidence, 2)
 
-    why = f"direction={direction} · ADX={adx} · net {total_return * 100:.2f}%"
+    adx_txt = "n/a" if adx is None else f"{float(adx):.1f}"
+    why = f"direction={direction} · ADX={adx_txt} · net {total_return * 100:.2f}%"
 
     return {
         "label": label,

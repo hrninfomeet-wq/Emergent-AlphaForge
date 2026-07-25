@@ -26,6 +26,8 @@ const SLOW_MS = 15_000; // broker book / arm-state / blotter / deployments
 const FAST_MS = 3_000; // software guard + the 10-min live session (exit visibility)
 const GTT_MS = 6_000; // resting GTT/OCO backstop
 const DEPLOY_MS = 10_000; // batched per-deployment live status
+const ANALYSIS_MS = 10_000; // market analysis (server-cached ~8s, so this is cheap)
+const HOLDINGS_MS = 30_000; // DP/demat holdings — changes slowly
 
 const LiveDataContext = createContext(null);
 
@@ -59,6 +61,15 @@ export function LiveDataProvider({ children }) {
 
   // ── GTT/OCO backstop (6s). ───────────────────────────────────────────────────
   const { data: gtt, error: eGtt, refetch: rGtt } = usePoll(() => api.listGtt(), GTT_MS);
+
+  // ── Cockpit market intelligence + demat holdings (read-only, additive). ──────
+  // marketAnalysis is server-cached ~8s so a 10s poll costs almost nothing; a
+  // failure here is NON-money (it degrades the analysis panels to "—") and so is
+  // deliberately kept OUT of the `health.degraded` money-slice set below.
+  const { data: marketAnalysis, error: eMarketAnalysis, refetch: rMarketAnalysis } =
+    usePoll(() => api.marketAnalysis("NIFTY"), ANALYSIS_MS);
+  const { data: holdings, error: eHoldings, refetch: rHoldings } =
+    usePoll(() => api.liveBrokerHoldings(), HOLDINGS_MS);
 
   // Non-archived deployments drive the strip rows AND the fan-out key set.
   const deployments = useMemo(
@@ -98,7 +109,9 @@ export function LiveDataProvider({ children }) {
     rGtt();
     rDeployLive();
     rFeedHealth();
-  }, [refetchSlow, rGuard, rSession, rGtt, rDeployLive, rFeedHealth]);
+    rMarketAnalysis();
+    rHoldings();
+  }, [refetchSlow, rGuard, rSession, rGtt, rDeployLive, rFeedHealth, rMarketAnalysis, rHoldings]);
 
   const refetch = useMemo(
     () => ({
@@ -130,14 +143,14 @@ export function LiveDataProvider({ children }) {
     () => ({
       // data (null until the first successful fetch — consumers treat null = loading)
       status, limits, positions, orders, reconcile, armState, blotter, deployments,
-      guard, session, gtt, greeks, feedHealth,
+      guard, session, gtt, greeks, feedHealth, marketAnalysis, holdings,
       deployLive: deployLiveData || {},
       // per-slice last error (null when the latest call succeeded)
       errors: {
         status: eStatus, limits: eLimits, positions: ePositions, orders: eOrders,
         reconcile: eReconcile, armState: eArmState, blotter: eBlotter, deployments: eDeployments,
         guard: eGuard, session: eSession, gtt: eGtt, deployLive: eDeployLive, greeks: eGreeks,
-        feedHealth: eFeedHealth,
+        feedHealth: eFeedHealth, marketAnalysis: eMarketAnalysis, holdings: eHoldings,
       },
       // epoch-ms of the last successful fetch for the money slices (null until first)
       lastSuccess: { limits: lsLimits, positions: lsPositions, orders: lsOrders },
@@ -146,9 +159,9 @@ export function LiveDataProvider({ children }) {
     }),
     [
       status, limits, positions, orders, reconcile, armState, blotter, deployments,
-      guard, session, gtt, greeks, feedHealth, deployLiveData,
+      guard, session, gtt, greeks, feedHealth, deployLiveData, marketAnalysis, holdings,
       eStatus, eLimits, ePositions, eOrders, eReconcile, eArmState, eBlotter, eDeployments,
-      eGuard, eSession, eGtt, eDeployLive, eGreeks, eFeedHealth,
+      eGuard, eSession, eGtt, eDeployLive, eGreeks, eFeedHealth, eMarketAnalysis, eHoldings,
       lsLimits, lsPositions, lsOrders, health, refetch,
     ],
   );

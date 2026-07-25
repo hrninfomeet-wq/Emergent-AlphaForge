@@ -42,6 +42,39 @@ async def market_header_snapshot():
     return await build_market_header_snapshot(latest_ticks=upstox_stream_manager.latest_tick_map())
 
 
+@api.get("/market/analysis")
+async def market_analysis_snapshot(instrument: str = Query("NIFTY")):
+    """Deterministic market analysis for the live cockpit — READ-ONLY.
+
+    Composes what the app already stores/streams into one payload: market
+    structure/regime + confidence, multi-timeframe trend (intraday/daily/weekly/
+    monthly), swing-cluster support/resistance with the spot's position in
+    range, and option analytics (PCR, max pain, IV rank, ATM straddle) from the
+    live chain. Server-cached ~8s so cockpit polling is cheap.
+
+    Degrades honestly: any stage that cannot be computed yields nulls plus a
+    code in `warnings` — it never fabricates a number. Portfolio greeks are
+    intentionally absent here; the cockpit merges the separately-polled
+    /live-broker/greeks so this endpoint stays useful while disconnected.
+    """
+    from app.market_analysis_build import cached_market_analysis
+    try:
+        return await cached_market_analysis(get_db(), instrument)
+    except Exception as exc:  # a analysis read must never 500 the cockpit
+        log.warning("market_analysis route failed: %s", exc)
+        return {
+            "instrument": str(instrument or "NIFTY").upper(),
+            "as_of": None, "spot": None, "structure": None,
+            "trend": {"intraday": None, "daily": None, "weekly": None, "monthly": None},
+            "levels": None,
+            "options": {"pcr_oi": None, "max_pain": None, "iv_rank_30d": None,
+                        "iv_rank_source": "unavailable", "atm_straddle": None,
+                        "implied_move_pct": None, "net_delta_rupee": None,
+                        "net_theta_rupee": None, "expiry": None, "chain": []},
+            "warnings": ["analysis_unavailable"],
+        }
+
+
 @api.get("/market/header/stream")
 async def market_header_sse(request: Request):
     """Server-Sent Events feed of market header snapshots.

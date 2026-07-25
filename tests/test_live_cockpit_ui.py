@@ -63,3 +63,43 @@ def test_helpers_extracted_verbatim():
     for needle in ("deriveDayPnl", "deriveCash", "PositionsBlotter",
                    "OrdersBlotter", "ReconcileChip", "fmtMismatch"):
         assert needle in helpers, needle
+
+
+# --------------------------------------------------------------------------- #
+# Phase 2 — market analysis + holdings wiring
+# --------------------------------------------------------------------------- #
+
+def test_api_exposes_analysis_and_holdings_helpers():
+    api = _src("lib/api.js")
+    assert "marketAnalysis" in api and '"/market/analysis"' in api
+    assert "liveBrokerHoldings" in api and '"/live-broker/holdings"' in api
+
+
+def test_provider_polls_analysis_and_holdings():
+    prov = _src("components/live/LiveDataProvider.jsx")
+    for needle in ("marketAnalysis", "holdings", "ANALYSIS_MS", "HOLDINGS_MS"):
+        assert needle in prov, needle
+    # a failed analysis read must NOT trip the money-degraded banner
+    i = prov.index("const moneyErrors")
+    block = prov[i:i + 400]
+    assert "marketAnalysis" not in block
+
+
+def test_cockpit_feeds_analysis_and_merges_greeks():
+    ck = _src("components/live/LiveCockpit.jsx")
+    assert "MarketPulse analysis={analysis}" in ck
+    assert "MarketAnalysis analysis={analysis}" in ck
+    # net greeks come from the already-polled slice, not a duplicate broker read
+    assert "net_delta_rupees_per_point" in ck and "net_theta_rupees_per_day" in ck
+    assert "holdings={holdings}" in ck
+
+
+def test_analysis_panels_render_real_fields():
+    pulse = _src("components/live/cockpit/MarketPulse.jsx")
+    for needle in ("regime_bucket", "confidence", "position_in_range", "intraday", "monthly"):
+        assert needle in pulse, needle
+    ma = _src("components/live/cockpit/MarketAnalysis.jsx")
+    for needle in ("pcr_oi", "max_pain", "iv_rank_30d", "iv_rank_source", "atm_straddle", "chain"):
+        assert needle in ma, needle
+    # honest degradation must be surfaced, not hidden
+    assert "option_oi_unavailable" in ma and "vix_proxy" in ma
