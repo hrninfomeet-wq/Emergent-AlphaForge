@@ -56,7 +56,7 @@ function defaultRulesFor(underlying) {
 const FAT_FINGER_CAP = 50;
 const BUFFER_PCT = 0.5;
 
-export default function LiveOrderTicket({ mode, disabled, onQueued }) {
+export default function LiveOrderTicket({ mode, disabled, onQueued, onPlaced }) {
   // ── Form state ──────────────────────────────────────────────────────────
   const [underlying, setUnderlying] = useState("NIFTY");
   const [strike, setStrike] = useState("");
@@ -348,7 +348,13 @@ export default function LiveOrderTicket({ mode, disabled, onQueued }) {
       const placed = await api.approveOrder(created.approval_id, created.token);
       setPlaceResult(placed);
       placedOk = !!placed?.placed;
-      if (placedOk) setPreviewResult(null); // clear so it can't double-fire
+      if (placedOk) {
+        setPreviewResult(null); // clear so it can't double-fire
+        // Pull the shared broker slices immediately: without this a real fill
+        // left the page's positions / orders / P&L showing the PRE-trade state
+        // until the next 15s poll.
+        onPlaced?.();
+      }
     } catch (e) {
       setQueueError(getApiErrorMessage(e, "Place failed"));
     } finally {

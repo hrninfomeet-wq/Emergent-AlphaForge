@@ -97,21 +97,20 @@ export function LiveDataProvider({ children }) {
     if (depIdsKey) rDeployLive();
   }, [depIdsKey, rDeployLive]);
 
-  const refetchSlow = useCallback(() => {
-    rStatus(); rLimits(); rPositions(); rOrders();
-    rReconcile(); rArmState(); rBlotter(); rDeployments(); rGreeks();
-  }, [rStatus, rLimits, rPositions, rOrders, rReconcile, rArmState, rBlotter, rDeployments, rGreeks]);
+  // These RETURN their promises: callers do `await refetch.all()` before clearing
+  // a busy flag (LiveDeploymentStrip does exactly this). Returning undefined made
+  // that await resolve instantly, so the UI un-greyed before the refreshed broker
+  // data had landed and briefly showed the pre-action state as if it were current.
+  const refetchSlow = useCallback(() => Promise.all([
+    rStatus(), rLimits(), rPositions(), rOrders(),
+    rReconcile(), rArmState(), rBlotter(), rDeployments(), rGreeks(),
+  ]), [rStatus, rLimits, rPositions, rOrders, rReconcile, rArmState, rBlotter, rDeployments, rGreeks]);
 
-  const refetchAll = useCallback(() => {
-    refetchSlow();
-    rGuard();
-    rSession();
-    rGtt();
-    rDeployLive();
-    rFeedHealth();
-    rMarketAnalysis();
-    rHoldings();
-  }, [refetchSlow, rGuard, rSession, rGtt, rDeployLive, rFeedHealth, rMarketAnalysis, rHoldings]);
+  const refetchAll = useCallback(() => Promise.all([
+    refetchSlow(),
+    rGuard(), rSession(), rGtt(), rDeployLive(), rFeedHealth(),
+    rMarketAnalysis(), rHoldings(),
+  ]), [refetchSlow, rGuard, rSession, rGtt, rDeployLive, rFeedHealth, rMarketAnalysis, rHoldings]);
 
   const refetch = useMemo(
     () => ({

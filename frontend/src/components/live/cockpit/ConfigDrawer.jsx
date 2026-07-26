@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { X } from "lucide-react";
 import LiveDeploymentStrip from "@/components/live/LiveDeploymentStrip";
 import GttBook from "@/components/live/GttBook";
@@ -28,11 +28,26 @@ function DrawerSection({ title, badge, children }) {
 }
 
 export default function ConfigDrawer({ open, onClose, onArmedSummaryChange }) {
+  const panelRef = useRef(null);
+  const restoreFocusRef = useRef(null);
+
   useEffect(() => {
     function onEsc(e) { if (e.key === "Escape") onClose?.(); }
     if (open) document.addEventListener("keydown", onEsc);
     return () => document.removeEventListener("keydown", onEsc);
   }, [open, onClose]);
+
+  // Move focus into the drawer on open and hand it back to whatever opened it on
+  // close. Without this, keyboard focus stays on the page behind the drawer.
+  useEffect(() => {
+    if (open) {
+      restoreFocusRef.current = document.activeElement;
+      panelRef.current?.focus();
+    } else if (restoreFocusRef.current instanceof HTMLElement) {
+      restoreFocusRef.current.focus();
+      restoreFocusRef.current = null;
+    }
+  }, [open]);
 
   return (
     <>
@@ -42,8 +57,18 @@ export default function ConfigDrawer({ open, onClose, onArmedSummaryChange }) {
         aria-hidden="true"
       />
       <aside
+        ref={panelRef}
+        tabIndex={-1}
+        role="dialog"
+        aria-modal="true"
         aria-label="Configure and deploy"
-        className={`fixed top-0 right-0 h-full w-[min(460px,94vw)] bg-bg-1 border-l border-line z-50 flex flex-col transition-transform motion-reduce:transition-none ${open ? "translate-x-0" : "translate-x-full"}`}
+        // A closed drawer is only translated off-screen, so without aria-hidden +
+        // pointer-events-none every control inside stays in the tab order and the
+        // accessibility tree — keyboard users could tab into an invisible panel
+        // and operate deployment controls they cannot see.
+        aria-hidden={!open}
+        {...(!open ? { inert: "" } : {})}
+        className={`fixed top-0 right-0 h-full w-[min(460px,94vw)] bg-bg-1 border-l border-line z-50 flex flex-col transition-transform motion-reduce:transition-none focus:outline-none ${open ? "translate-x-0" : "translate-x-full pointer-events-none"}`}
       >
         <div className="flex items-center justify-between px-4 py-3 border-b border-line bg-bg-2/50">
           <span className="text-sm font-semibold text-foreground">⚙ Configure &amp; deploy</span>

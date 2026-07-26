@@ -27,14 +27,16 @@ export default function CommandBar({ flattradeStatus, onConfigure, onChanged, op
   return (
     <div className="sticky top-0 z-20 flex items-center gap-3 flex-wrap rounded-lg border border-line bg-bg-1/90 backdrop-blur px-3 py-2">
       <span className="font-semibold tracking-wide text-foreground whitespace-nowrap">LIVE COCKPIT</span>
+      {/* Theme tokens, not raw palette values: the app has a light theme and
+          emerald-300-on-emerald-500/10 is unreadable on a white ground. */}
       <span
         className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold border ${
-          open ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
+          open ? "border-success/40 bg-success/10 text-success"
                : "border-line bg-bg-2 text-dimmer"
         }`}
         title={open ? "NSE cash/F&O open 09:15–15:30 IST" : "Market closed"}
       >
-        <span className={`w-1.5 h-1.5 rounded-full ${open ? "bg-emerald-400 animate-pulse" : "bg-dimmer"}`} />
+        <span className={`w-1.5 h-1.5 rounded-full ${open ? "bg-success animate-pulse" : "bg-dimmer"}`} />
         {open ? "MARKET OPEN · 15:30 close" : "MARKET CLOSED"}
       </span>
 
@@ -55,7 +57,7 @@ export default function CommandBar({ flattradeStatus, onConfigure, onChanged, op
       <button
         type="button"
         onClick={onConfigure}
-        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-sky-500/50 bg-sky-500/10 text-sky-300 text-xs font-semibold hover:bg-sky-500/20"
+        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-info/50 bg-info/10 text-info text-xs font-semibold hover:bg-info/20"
       >
         <Settings2 className="w-3.5 h-3.5" /> Configure
       </button>

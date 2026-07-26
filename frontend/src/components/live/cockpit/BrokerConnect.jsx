@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
 
@@ -18,24 +18,31 @@ function tokenHint(s) {
   return typeof raw === "string" ? raw : "";
 }
 
-function BrokerChip({ name, purpose, status, onReconnect, onDisconnect, openPositions = 0 }) {
-  const [open, setOpen] = useState(false);
+function BrokerChip({ name, purpose, status, onReconnect, onDisconnect, openPositions = 0, open, onToggle, onClose }) {
   const [busy, setBusy] = useState(false);
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
   const ref = useRef(null);
 
+  // `open` is owned by the parent so only ONE chip can be open at a time. The
+  // old per-chip state + stopPropagation meant the other chip's outside-click
+  // handler never fired, leaving both popovers open and overlapping.
   useEffect(() => {
-    function onDoc(e) { if (ref.current && !ref.current.contains(e.target)) setOpen(false); }
-    function onEsc(e) { if (e.key === "Escape") setOpen(false); }
+    function onDoc(e) { if (ref.current && !ref.current.contains(e.target)) onClose(); }
+    function onEsc(e) { if (e.key === "Escape") onClose(); }
     document.addEventListener("click", onDoc);
     document.addEventListener("keydown", onEsc);
     return () => { document.removeEventListener("click", onDoc); document.removeEventListener("keydown", onEsc); };
-  }, []);
+  }, [onClose]);
+
+  // Reset the disconnect confirmation whenever the popover closes.
+  useEffect(() => { if (!open) setConfirmDisconnect(false); }, [open]);
 
   const connected = !!status?.connected && !status?.expired;
   const expired = !!status?.expired;
   const dot = connected ? "bg-success" : expired ? "bg-warning" : "bg-danger";
   const stateLabel = connected ? "connected" : expired ? "token expired" : "disconnected";
+  // Colour alone must not carry the state (colour-blind users, and the dot is 6px).
+  const stateGlyph = connected ? "✓" : expired ? "!" : "×";
   const hint = tokenHint(status);
 
   const doReconnect = async () => {
@@ -46,7 +53,7 @@ function BrokerChip({ name, purpose, status, onReconnect, onDisconnect, openPosi
   };
   const doDisconnect = async () => {
     setBusy(true);
-    try { await onDisconnect(); setOpen(false); }
+    try { await onDisconnect(); onClose(); }
     catch (e) { toast.error(`${name} disconnect failed: ${e?.response?.data?.detail || e?.message || "error"}`); }
     finally { setBusy(false); }
   };
@@ -55,14 +62,20 @@ function BrokerChip({ name, purpose, status, onReconnect, onDisconnect, openPosi
     <div className="relative" ref={ref}>
       <button
         type="button"
-        onClick={(e) => { e.stopPropagation(); setOpen((o) => !o); }}
+        onClick={(e) => { e.stopPropagation(); onToggle(); }}
         className="inline-flex items-center gap-2 px-2.5 py-1.5 rounded-lg border border-line bg-bg-2 hover:border-dim text-xs font-semibold text-foreground"
         title={`${name} · ${stateLabel}`}
+        aria-expanded={open}
+        aria-haspopup="dialog"
       >
-        <span className={`w-1.5 h-1.5 rounded-full ${dot}`} />
+        <span className={`w-1.5 h-1.5 rounded-full ${dot}`} aria-hidden="true" />
         <span className="tracking-wide">{name}</span>
-        <span className="font-mono text-[10px] text-dim">{purpose}{hint ? ` · ${hint}` : ""}</span>
-        <span className="text-dimmer text-[9px]">▾</span>
+        <span className="font-mono text-[10px] text-dim">
+          {purpose}{hint ? ` · ${hint}` : ""}
+          <span className={connected ? "text-success" : expired ? "text-warning" : "text-danger"}> {stateGlyph}</span>
+        </span>
+        <span className="sr-only">{stateLabel}</span>
+        <span className="text-dimmer text-[9px]" aria-hidden="true">▾</span>
       </button>
       {open && (
         <div className="absolute top-full right-0 mt-1.5 w-56 rounded-lg border border-line bg-bg-1 shadow-xl p-3 z-30">
@@ -128,6 +141,8 @@ async function redirectToAuth(startFn) {
 
 export default function BrokerConnect({ flattradeStatus, onChanged, openPositions = 0 }) {
   const [upstox, setUpstox] = useState(null);
+  const [openChip, setOpenChip] = useState(null);   // "upstox" | "flattrade" | null
+  const closeChips = useCallback(() => setOpenChip(null), []);
 
   useEffect(() => {
     let cancelled = false;
@@ -141,12 +156,18 @@ export default function BrokerConnect({ flattradeStatus, onChanged, openPosition
     <div className="flex gap-1.5">
       <BrokerChip
         name="Upstox" purpose="data" status={upstox}
+        open={openChip === "upstox"}
+        onToggle={() => setOpenChip((c) => (c === "upstox" ? null : "upstox"))}
+        onClose={closeChips}
         onReconnect={() => redirectToAuth(api.upstoxAuthStart)}
         onDisconnect={() => api.disconnectUpstox().then(() => onChanged?.())}
       />
       <BrokerChip
         name="Flattrade" purpose="exec" status={flattradeStatus}
         openPositions={openPositions}
+        open={openChip === "flattrade"}
+        onToggle={() => setOpenChip((c) => (c === "flattrade" ? null : "flattrade"))}
+        onClose={closeChips}
         onReconnect={() => redirectToAuth(api.flattradeAuthStart)}
         onDisconnect={() => api.disconnectFlattrade().then(() => onChanged?.())}
       />

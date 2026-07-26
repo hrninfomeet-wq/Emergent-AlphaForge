@@ -16,7 +16,6 @@ import DeploymentSummary from "@/components/live/cockpit/DeploymentSummary";
 import AccountTabs from "@/components/live/cockpit/AccountTabs";
 import ConfigDrawer from "@/components/live/cockpit/ConfigDrawer";
 
-import MarketHeader from "@/components/MarketHeader";
 import ExecutionStateStrip from "@/components/live/ExecutionStateStrip";
 import KillSwitchPanel from "@/components/live/KillSwitchPanel";
 import GuardPanel from "@/components/live/GuardPanel";
@@ -138,8 +137,10 @@ export default function LiveCockpit() {
         standingDown={standDownBusy}
       />
 
-      {/* Full market ticker — the existing header, now on the trading page too. */}
-      <MarketHeader />
+      {/* NOTE: no <MarketHeader/> here — the app shell (Layout.jsx) already
+          renders one on every route. Mounting a second copy duplicated ~270px of
+          ticker, opened a second SSE connection, and gave the page two
+          independent Upstox Start/Stop stream toggles that could disagree. */}
 
       <AlertRail
         health={health}
