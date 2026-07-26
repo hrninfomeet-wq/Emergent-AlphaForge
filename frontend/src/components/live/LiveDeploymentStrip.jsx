@@ -291,12 +291,17 @@ export default function LiveDeploymentStrip({ onArmedSummaryChange }) {
       className="rounded-lg border border-line bg-bg-1"
       data-testid="live-deploy-strip"
     >
-      {/* Header — always visible regardless of collapsed state */}
-      <div className="px-3 py-2 border-b border-line flex items-center gap-2">
+      {/* Header — always visible regardless of collapsed state.
+          flex-wrap + shrink-0 are load-bearing: this strip also renders inside the
+          ~460px config drawer, where an unwrapped row shrank each item below its
+          content and the "Live Deployments" label overflowed its crushed box and
+          painted ON TOP of the summary text. Items now keep their natural width
+          and wrap to a second line instead of overlapping. */}
+      <div className="px-3 py-2 border-b border-line flex flex-wrap items-center gap-x-2 gap-y-1.5">
         <button
           type="button"
           onClick={toggleCollapsed}
-          className="flex items-center gap-2 min-w-0 hover:opacity-80"
+          className="flex items-center gap-2 min-w-0 shrink-0 hover:opacity-80"
           data-testid="live-deploy-strip-toggle"
           title={collapsed ? "Expand" : "Collapse"}
           aria-expanded={!collapsed}
@@ -313,23 +318,28 @@ export default function LiveDeploymentStrip({ onArmedSummaryChange }) {
         </button>
 
         {/* Compact summary — visible whether expanded or collapsed */}
-        <span className="text-[11px] text-dimmer font-mono whitespace-nowrap" data-testid="live-deploy-strip-summary">
+        <span className="text-[11px] text-dimmer font-mono whitespace-nowrap shrink-0" data-testid="live-deploy-strip-summary">
           {liveDeps.length} live · {notLiveDeps.length} not live
           {todayRealisedTotal != null && (
             <> · <span className={todayRealisedTotal >= 0 ? "text-success" : "text-danger"}>{fmtINR(todayRealisedTotal)}</span></>
           )}
         </span>
 
+        {/* Decorative hint — the first thing to give up room in a narrow container. */}
         {!collapsed && (
-          <span className="text-[11px] text-dimmer">enable / disable / stop real orders</span>
+          <span className="text-[11px] text-dimmer truncate hidden min-[420px]:inline">
+            enable / disable / stop real orders
+          </span>
         )}
-        {busy && <Loader2 className="w-3.5 h-3.5 animate-spin text-dimmer ml-1" />}
+        {busy && <Loader2 className="w-3.5 h-3.5 animate-spin text-dimmer ml-1 shrink-0" />}
         <Button
           variant="outline"
           size="sm"
           disabled={busy || !hasLive}
           onClick={doStopAll}
-          className="ml-auto h-7 text-xs border-rose-500/40 text-rose-300 hover:text-rose-200"
+          // Theme tokens, not raw rose-*: rose-300 on the light theme's white
+          // ground is washed out to near-illegible for a destructive control.
+          className="ml-auto shrink-0 h-7 text-xs border-danger/40 text-danger hover:bg-danger/10"
           data-testid="live-deploy-stop-all"
           title="Disable live execution and square off every live deployment"
         >
