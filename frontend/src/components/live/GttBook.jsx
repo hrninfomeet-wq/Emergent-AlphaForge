@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Loader2, RefreshCw, ShieldAlert, XCircle } from "lucide-react";
 import { api } from "@/lib/api";
 import { fmtNum } from "@/lib/fmt";
@@ -76,6 +76,18 @@ function Leg({ label, trigger, limit }) {
 function GttRow({ row, onCancelled }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
+  // Two-step confirm. Cancelling here removes the ONLY protection that survives
+  // this app (or the whole PC) dying, and the button sits inches from the benign
+  // "Refresh" in the same panel — a single misclick used to strip a live
+  // position's broker-side catastrophe exit silently.
+  const [confirming, setConfirming] = useState(false);
+
+  // Auto-disarm so a half-pressed confirm can't sit hot on screen indefinitely.
+  useEffect(() => {
+    if (!confirming) return undefined;
+    const t = window.setTimeout(() => setConfirming(false), 6000);
+    return () => window.clearTimeout(t);
+  }, [confirming]);
 
   // Tolerate the Noren response casing (Al_id/al_id, Qty/qty, Prc/prc, …).
   const alId = row?.al_id ?? row?.Al_id ?? row?.AL_id;
@@ -97,6 +109,7 @@ function GttRow({ row, onCancelled }) {
 
   const handleCancel = async () => {
     if (!alId || busy) return;
+    setConfirming(false);
     setBusy(true);
     setError(null);
     try {
@@ -201,23 +214,61 @@ function GttRow({ row, onCancelled }) {
           )}
         </div>
 
-        {/* Cancel action */}
+        {/* Cancel action — two-step. Styled with danger tokens so it can never be
+            confused with the neutral "Refresh" button in the panel header. */}
         <div className="flex items-center gap-2 flex-wrap">
-          <button
-            type="button"
-            disabled={!alId || busy}
-            onClick={handleCancel}
-            title={alId ? "Cancel this resting GTT/OCO order" : "Missing al_id — cannot cancel"}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-line bg-bg-2 text-dim text-xs font-mono hover:bg-bg-3 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-          >
-            {busy ? (
-              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-            ) : (
-              <XCircle className="w-3.5 h-3.5" />
-            )}
-            {busy ? "Cancelling…" : "Cancel"}
-          </button>
+          {!confirming ? (
+            <button
+              type="button"
+              disabled={!alId || busy}
+              onClick={() => setConfirming(true)}
+              title={alId ? "Cancel this resting GTT/OCO order" : "Missing al_id — cannot cancel"}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-danger/40 bg-transparent text-danger text-xs font-mono hover:bg-danger/10 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              data-testid="gtt-cancel-arm"
+            >
+              {busy ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <XCircle className="w-3.5 h-3.5" />
+              )}
+              {busy ? "Cancelling…" : "Cancel backstop"}
+            </button>
+          ) : (
+            <>
+              <button
+                type="button"
+                disabled={!alId || busy}
+                onClick={handleCancel}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-danger bg-danger/15 text-danger text-xs font-mono font-bold hover:bg-danger/25 disabled:opacity-50 transition-colors"
+                data-testid="gtt-cancel-confirm"
+              >
+                <XCircle className="w-3.5 h-3.5" />
+                Confirm — remove backstop
+              </button>
+              <button
+                type="button"
+                onClick={() => setConfirming(false)}
+                className="inline-flex items-center px-3 py-1.5 rounded-md border border-line bg-bg-2 text-dim text-xs font-mono hover:bg-bg-3 transition-colors"
+              >
+                Keep it
+              </button>
+            </>
+          )}
         </div>
+
+        {confirming && (
+          <div
+            className="text-[11px] font-mono text-warning border border-amber-500/40 bg-amber-500/10 rounded-md px-3 py-2 flex items-start gap-2"
+            data-testid="gtt-cancel-warning"
+          >
+            <ShieldAlert className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+            <span>
+              Removes the PC-down {isOco ? "OCO" : "GTT"} backstop for{" "}
+              <b className="text-foreground">{row?.tsym ?? "this position"}</b>. It will keep
+              only the software guard, which protects it <b>only while this app is running</b>.
+            </span>
+          </div>
+        )}
 
         {/* Per-row error */}
         {error && (
