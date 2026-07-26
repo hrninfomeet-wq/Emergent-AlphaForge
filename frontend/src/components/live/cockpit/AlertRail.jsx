@@ -10,7 +10,7 @@ import { SLICE_LABEL } from "@/components/live/liveHelpers";
  */
 export default function AlertRail({
   health, unguardedPositions = [], noBackstopPositions = [],
-  feedHealth, activeCount, authMsg,
+  feedHealth, activeCount, authMsg, rehydratedPositions = [],
 }) {
   return (
     <div className="space-y-3">
@@ -52,6 +52,25 @@ export default function AlertRail({
             {noBackstopPositions.map((p) => p.tsym).filter(Boolean).slice(0, 4).join(", ")}
             {noBackstopPositions.length > 4 ? "…" : ""}. The software guard protects
             {noBackstopPositions.length !== 1 ? " these" : " this"} while the app is running, but there is NO PC-down net. Square manually or re-place the OCO if the app may go offline.
+          </span>
+        </div>
+      )}
+
+      {rehydratedPositions.length > 0 && (
+        <div
+          className="text-sm font-mono px-3 py-2.5 rounded-lg border-2 border-amber-500 bg-amber-500/15 text-warning flex items-start gap-2"
+          data-testid="rehydrated-positions-banner"
+        >
+          <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+          <span>
+            <span className="font-bold">
+              {rehydratedPositions.length} guarded position
+              {rehydratedPositions.length !== 1 ? "s" : ""} running on a DEFAULT stop
+            </span>{" "}
+            — {rehydratedPositions.map((p) => p.tsym).filter(Boolean).slice(0, 4).join(", ")}
+            {rehydratedPositions.length > 4 ? "…" : ""} {rehydratedPositions.length !== 1 ? "were" : "was"} re-attached
+            after a restart, so the original stop/target you set were lost and a deep
+            catastrophe default is in force. Re-set them in the software guard.
           </span>
         </div>
       )}

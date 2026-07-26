@@ -82,12 +82,18 @@ function GuardRow({ pos }) {
   const target = fin(pos?.target_level);
   const peak = fin(pos?.peak);
   const filled = !!pos?.seen_filled;
+  // source === "rehydrated": this position was re-attached after a restart with a
+  // DEEP-DEFAULT catastrophe stop — the trader's original stop/target were lost.
+  // The backend emits this field precisely so the UI can say so; rendering it
+  // identically to a normally-guarded position lets someone believe protection
+  // they set earlier is still in force.
+  const rehydrated = String(pos?.source ?? "") === "rehydrated";
 
   const stopPct = pctFromEntry(stop, entry);
   const targetPct = pctFromEntry(target, entry);
 
   return (
-    <div className="rounded-lg border border-line bg-bg-2/50 px-3 py-2.5">
+    <div className={`rounded-lg border bg-bg-2/50 px-3 py-2.5 ${rehydrated ? "border-amber-500/50" : "border-line"}`}>
       {/* Header: symbol + qty + fill chip */}
       <div className="flex items-center gap-2 flex-wrap mb-2.5">
         <span className="text-sm font-semibold text-foreground font-mono truncate">
@@ -110,6 +116,19 @@ function GuardRow({ pos }) {
           )}
         </span>
       </div>
+
+      {rehydrated && (
+        <div
+          className="mb-2.5 flex items-start gap-2 rounded-md border border-amber-500/50 bg-amber-500/10 px-2.5 py-1.5 text-[11px] font-mono text-warning"
+          data-testid="guard-rehydrated-badge"
+        >
+          <ShieldAlert className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+          <span>
+            <b>DEFAULT STOP</b> — re-attached after a restart, so the levels below are a
+            deep catastrophe default, <b>not</b> the stop/target you set. Re-set them.
+          </span>
+        </div>
+      )}
 
       {/* Levels grid */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-2">
@@ -171,6 +190,13 @@ export default function GuardPanel() {
   // Trust the server count when sane; otherwise fall back to the list length.
   const rawCount = Number(status?.count);
   const count = Number.isFinite(rawCount) ? rawCount : guarded.length;
+  // Positions re-attached after a restart carry DEEP-DEFAULT catastrophe stops,
+  // not the operator's original levels. Surface the count in the header so it is
+  // visible without reading every row.
+  const rawRehydrated = Number(status?.rehydrated_count);
+  const rehydratedCount = Number.isFinite(rawRehydrated)
+    ? rawRehydrated
+    : guarded.filter((g) => String(g?.source ?? "") === "rehydrated").length;
 
   return (
     <div className="rounded-lg border border-line bg-bg-1 overflow-hidden">
@@ -200,6 +226,17 @@ export default function GuardPanel() {
         <span className="text-[10px] font-mono text-dim tabular-nums">
           {count} guarded
         </span>
+
+        {rehydratedCount > 0 && (
+          <span
+            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full border border-amber-500/50 bg-amber-500/10 text-warning text-[10px] font-mono font-bold uppercase tracking-wider"
+            title="Re-attached after a restart with a deep-default catastrophe stop — the original stop/target were lost"
+            data-testid="guard-rehydrated-count"
+          >
+            <ShieldAlert className="w-3 h-3 shrink-0" />
+            {rehydratedCount} default-stop
+          </span>
+        )}
 
         <button
           type="button"

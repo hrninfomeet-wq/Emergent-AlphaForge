@@ -101,6 +101,13 @@ export default function LiveCockpit() {
     .filter((r) => r?.oco_error && String(r?.status ?? "").toUpperCase() === "LIVE")
     .map((r) => ({ tsym: r?.trading_symbol }))
     .filter((p) => p.tsym);
+  // Positions re-attached after a restart carry a DEEP-DEFAULT catastrophe stop,
+  // not the levels the operator set — surface that at the top, not only inside
+  // the guard panel.
+  const rehydratedPositions = (guard?.guarded ?? [])
+    .filter((g) => String(g?.source ?? "") === "rehydrated")
+    .map((g) => ({ tsym: g?.tsym }))
+    .filter((p) => p.tsym);
 
   const openDrawer = useCallback(() => setDrawerOpen(true), []);
 
@@ -146,6 +153,7 @@ export default function LiveCockpit() {
         health={health}
         unguardedPositions={unguardedPositions}
         noBackstopPositions={noBackstopPositions}
+        rehydratedPositions={rehydratedPositions}
         feedHealth={feedHealth}
         activeCount={activeCount}
         authMsg={authMsg}
