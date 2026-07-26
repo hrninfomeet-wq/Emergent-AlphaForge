@@ -103,3 +103,49 @@ def test_analysis_panels_render_real_fields():
         assert needle in ma, needle
     # honest degradation must be surfaced, not hidden
     assert "option_oi_unavailable" in ma and "vix_proxy" in ma
+
+
+# --------------------------------------------------------------------------- #
+# Real-money safety fixes (audit items 2-4, 2026-07-25)
+# --------------------------------------------------------------------------- #
+
+def test_gtt_cancel_requires_confirmation():
+    """Item 2: cancelling a resting OCO/GTT removes the only PC-down protection,
+    so it must be a two-step action that names the symbol + consequence."""
+    src = _src("components/live/GttBook.jsx")
+    assert "gtt-cancel-arm" in src and "gtt-cancel-confirm" in src
+    assert "confirming" in src
+    assert "gtt-cancel-warning" in src
+    # the warning must state the software-guard-only consequence
+    assert "only while this app is running" in src
+    # arming must NOT call the API directly
+    i = src.index('data-testid="gtt-cancel-arm"')
+    assert "handleCancel" not in src[i - 400:i]
+
+
+def test_guard_flags_rehydrated_default_stops():
+    """Item 3: positions re-attached after a restart carry DEEP-DEFAULT stops —
+    the backend emits source/rehydrated_count precisely so the UI can say so."""
+    panel = _src("components/live/GuardPanel.jsx")
+    assert '"rehydrated"' in panel
+    assert "rehydrated_count" in panel
+    assert "guard-rehydrated-badge" in panel and "guard-rehydrated-count" in panel
+    assert "DEFAULT STOP" in panel
+    # and it is surfaced at the cockpit level, not only inside the panel
+    rail = _src("components/live/cockpit/AlertRail.jsx")
+    assert "rehydrated-positions-banner" in rail
+    ck = _src("components/live/LiveCockpit.jsx")
+    assert "rehydratedPositions" in ck
+
+
+def test_overall_settings_fails_closed_on_unreadable_config():
+    """Item 4: a failed (non-404) GET must not present defaults as the saved
+    config, and Save must be blocked so it cannot overwrite the real controls."""
+    src = _src("components/live/OverallSettingsPanel.jsx")
+    assert "loadFailed" in src
+    assert "overall-load-failed" in src
+    # a genuine 404 still means "nothing saved yet" and stays editable
+    assert "status === 404" in src or "=== 404" in src
+    # Save is gated both in the button and inside the handler
+    assert "saveBusy || loadFailed" in src
+    assert "if (loadFailed)" in src

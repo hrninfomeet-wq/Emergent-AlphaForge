@@ -347,6 +347,9 @@ export default function OverallSettingsPanel({ scope = "overall" }) {
   const [loaded, setLoaded] = useState(() => defaultConfig()); // last-loaded snapshot (for Reset)
   const [loading, setLoading] = useState(true);
   const [loadNote, setLoadNote] = useState(null); // shown when GET fell back to defaults
+  // True only when the GET failed for a reason OTHER than 404 — i.e. the saved
+  // config is UNKNOWN, so what is on screen must not be written back.
+  const [loadFailed, setLoadFailed] = useState(false);
 
   const [saveBusy, setSaveBusy] = useState(false);
   const [saveOk, setSaveOk] = useState(false);
@@ -360,39 +363,60 @@ export default function OverallSettingsPanel({ scope = "overall" }) {
   const closeChip = useCallback(() => setOpenChip(null), []);
 
   // ── Load on mount + whenever scope changes ────────────────────────────────
-  useEffect(() => {
-    let cancelled = false;
+  //
+  // A 404 genuinely means "nothing saved yet" → defaults ARE the truth, so the
+  // form is editable and Save is allowed (unchanged behaviour).
+  //
+  // ANY OTHER failure (network, timeout, 5xx) means the saved config is UNKNOWN.
+  // Previously that also silently produced an all-disabled config as both the
+  // form value AND the Reset baseline, visually identical to a genuinely-off
+  // configuration — so editing one field and hitting Save would overwrite the
+  // real basket SL/target/trailing with disabled ones. Now it fails CLOSED:
+  // loud warning, Save blocked, explicit Retry.
+  const loadSettings = useCallback((signal) => {
     setLoading(true);
     setLoadNote(null);
+    setLoadFailed(false);
     setSaveOk(false);
     setSaveError(null);
-    api
+    return api
       .getOverallSettings(scopeKey)
       .then((res) => {
-        if (cancelled) return;
+        if (signal?.cancelled) return;
         const norm = normaliseConfig(res);
         setConfig(norm);
         setLoaded(norm);
       })
       .catch((e) => {
-        if (cancelled) return;
-        // 404 / not wired yet / network → start from a fully-disabled default.
+        if (signal?.cancelled) return;
+        const status = e?.response?.status;
+        const notConfigured = status === 404;
         const norm = defaultConfig();
         setConfig(norm);
         setLoaded(norm);
-        setLoadNote(
-          e?.response?.data?.detail ??
-            e?.message ??
-            "no saved settings — starting from defaults"
-        );
+        if (notConfigured) {
+          setLoadNote(
+            e?.response?.data?.detail ?? "no saved settings — starting from defaults",
+          );
+        } else {
+          setLoadFailed(true);
+          setLoadNote(
+            e?.response?.data?.detail ?? e?.message ?? "could not read the saved settings",
+          );
+        }
       })
       .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (!signal?.cancelled) setLoading(false);
       });
-    return () => {
-      cancelled = true;
-    };
   }, [scopeKey]);
+
+  useEffect(() => {
+    const signal = { cancelled: false };
+    loadSettings(signal);
+    return () => {
+      signal.cancelled = true;
+    };
+  }, [loadSettings]);
 
   // ── Granular updaters (any edit clears a stale save confirmation) ─────────
   const markDirty = useCallback(() => {
@@ -451,6 +475,13 @@ export default function OverallSettingsPanel({ scope = "overall" }) {
 
   const handleSave = useCallback(async () => {
     if (saveBusy) return;
+    // Defence in depth: the button is already disabled while the saved config is
+    // unknown, but never let a stale render or a keyboard path write defaults
+    // over the operator's real risk controls.
+    if (loadFailed) {
+      setSaveError("Saved settings could not be read — retry the load before saving.");
+      return;
+    }
     setSaveBusy(true);
     setSaveOk(false);
     setSaveError(null);
@@ -464,7 +495,7 @@ export default function OverallSettingsPanel({ scope = "overall" }) {
     } finally {
       setSaveBusy(false);
     }
-  }, [saveBusy, buildConfig, scopeKey]);
+  }, [saveBusy, loadFailed, buildConfig, scopeKey]);
 
   // ── Derived flags ─────────────────────────────────────────────────────────
   const sl = config.sl;
@@ -516,13 +547,39 @@ export default function OverallSettingsPanel({ scope = "overall" }) {
         <span className="inline-flex items-center px-2 py-0.5 rounded-md border border-line bg-bg-3 text-foreground font-semibold">
           {SCOPE_LABEL[scopeKey] ?? scopeKey}
         </span>
-        {loadNote && (
+        {loadNote && !loadFailed && (
           <span className="inline-flex items-center gap-1 text-warning" title={loadNote}>
             <AlertTriangle className="w-3 h-3 shrink-0" />
             defaults
           </span>
         )}
       </div>
+
+      {/* Load FAILED (not a 404): the values below are NOT the live config, so
+          they must not be written back. Save is blocked until a successful read. */}
+      {loadFailed && (
+        <div
+          className="rounded-md border-2 border-danger bg-danger/10 px-3 py-2.5 text-xs font-mono text-danger flex items-start gap-2"
+          data-testid="overall-load-failed"
+        >
+          <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+          <span className="flex-1">
+            <b>Could not read your saved overall controls.</b> The values below are
+            defaults, <b>not</b> your live configuration — saving them would overwrite
+            your real basket SL / target / trailing. Saving is disabled until a
+            successful read.
+            {loadNote ? <span className="block text-dimmer mt-0.5">{loadNote}</span> : null}
+          </span>
+          <button
+            type="button"
+            onClick={() => loadSettings()}
+            disabled={loading}
+            className="shrink-0 px-2 py-1 rounded-md border border-danger/60 bg-danger/15 text-danger text-[11px] font-semibold hover:bg-danger/25 disabled:opacity-50"
+          >
+            {loading ? "Retrying…" : "Retry"}
+          </button>
+        </div>
+      )}
 
       {/* ── Compact summary row — one chip per section; click to edit ──────── */}
       <div className="flex items-center gap-2 flex-wrap">
@@ -793,8 +850,13 @@ export default function OverallSettingsPanel({ scope = "overall" }) {
       <div className="flex items-center gap-2 flex-wrap pt-1">
         <button
           type="button"
-          disabled={saveBusy}
+          // Blocked while the saved config is UNKNOWN: writing the on-screen
+          // defaults back would silently wipe the real risk controls.
+          disabled={saveBusy || loadFailed}
           onClick={handleSave}
+          title={loadFailed
+            ? "Saving is disabled — the saved settings could not be read, so these values are not your live configuration"
+            : undefined}
           className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-md border border-info/50 bg-info/10 text-info text-xs font-mono font-semibold hover:bg-info/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
           {saveBusy ? (
