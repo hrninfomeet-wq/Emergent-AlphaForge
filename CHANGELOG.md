@@ -2,6 +2,46 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.57.1] — Live Cockpit page audit: functionality & UX fixes (2026-07-25)
+
+**Outcome: the reported drawer bug is fixed, a lost safety surface is restored,
+and the page's dead/misleading states now tell the truth.**
+
+- **Configure drawer is usable again.** Its sections were being squashed and
+  silently clipping their own content (measured: 231px shown of 653px) while the
+  panel itself could never scroll — which is why deployments and settings could
+  neither be reached nor edited. Sections now keep their height and the drawer
+  body scrolls.
+- **Restored the execution-state verdict.** The cockpit rewrite had dropped it,
+  so the page no longer showed whether a signal would transmit a REAL order, the
+  exit-gap warning, or the Stand-down control. All three are back, directly under
+  the command bar.
+- **Removed a duplicated market ticker** (the app shell already renders one), which
+  had been pushing the trading panels below the fold and opening a second data
+  connection with a second Start/Stop stream toggle.
+- **Dialogs can no longer be clipped.** Tall dialogs — including the real-money
+  "Enable Live Execution" form — are now scrollable on short screens instead of
+  losing their confirm button off-screen.
+- **Honest states instead of dead ones:** Funds, Holdings and the Order book now
+  say the broker session is not active rather than spinning "Loading…" forever;
+  the Day Stop tile shows the real daily-loss cap and how much is used; the
+  reconciliation badge no longer shows a green "Reconciled ✓" while that check is
+  failing; and the post-login banner clears itself instead of claiming success
+  hours later.
+- **Safer controls:** Disconnect now asks for confirmation and names the open
+  positions it would strand; the command bar's Kill control reads "Kill switch ↓"
+  so it can't be mistaken for a fire button; the Guard tile now fails safe
+  (matching the guard panel) instead of reporting "DRY-RUN" on a partial read.
+- **Accessibility & theme:** the closed drawer is no longer keyboard-reachable,
+  gained proper dialog semantics and focus handling, broker status no longer
+  relies on colour alone, only one broker popover can be open at a time, and the
+  command bar uses theme tokens so it stays readable in the light theme.
+- A real-money fill now refreshes positions/orders/P&L immediately rather than
+  showing pre-trade values until the next poll.
+- **Verification:** 3,610 backend tests passed, 4 expected failures, 0 unexpected
+  failures; frontend build compiles; every fix confirmed in the browser against
+  the running app.
+
 ## [0.57.0] — Live Cockpit: market-analysis engine (2026-07-22)
 
 **Outcome: the cockpit's market-intelligence panels are live — regime, trend,

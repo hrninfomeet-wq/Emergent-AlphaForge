@@ -42,11 +42,28 @@ export default function ConfigDrawer({ open, onClose, onArmedSummaryChange }) {
   useEffect(() => {
     if (open) {
       restoreFocusRef.current = document.activeElement;
-      panelRef.current?.focus();
-    } else if (restoreFocusRef.current instanceof HTMLElement) {
+      // Deferred: focusing in the same commit races the inert effect below (a
+      // still-inert element silently refuses focus) and the slide transition.
+      const raf = window.requestAnimationFrame(() => panelRef.current?.focus());
+      return () => window.cancelAnimationFrame(raf);
+    }
+    if (restoreFocusRef.current instanceof HTMLElement) {
       restoreFocusRef.current.focus();
       restoreFocusRef.current = null;
     }
+    return undefined;
+  }, [open]);
+
+  // `inert` must be set on the DOM node directly — passing it as a JSX attribute
+  // is silently dropped by this React version (verified in the browser: the
+  // closed drawer still had 16 tabbable controls). Setting the property removes
+  // the whole subtree from the tab order and the accessibility tree.
+  useEffect(() => {
+    const el = panelRef.current;
+    if (!el) return;
+    if ("inert" in el) el.inert = !open;
+    else if (!open) el.setAttribute("inert", "");
+    else el.removeAttribute("inert");
   }, [open]);
 
   return (
@@ -67,7 +84,6 @@ export default function ConfigDrawer({ open, onClose, onArmedSummaryChange }) {
         // accessibility tree — keyboard users could tab into an invisible panel
         // and operate deployment controls they cannot see.
         aria-hidden={!open}
-        {...(!open ? { inert: "" } : {})}
         className={`fixed top-0 right-0 h-full w-[min(460px,94vw)] bg-bg-1 border-l border-line z-50 flex flex-col transition-transform motion-reduce:transition-none focus:outline-none ${open ? "translate-x-0" : "translate-x-full pointer-events-none"}`}
       >
         <div className="flex items-center justify-between px-4 py-3 border-b border-line bg-bg-2/50">

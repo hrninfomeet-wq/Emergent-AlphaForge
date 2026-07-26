@@ -258,6 +258,52 @@ ceremony, it is where the bugs are caught.
 Landed `e0fb250` (primitives) + `df6ebe3` (holdings) + `afbd24b` (engine+wiring);
 suite 3,610/0; endpoint + cockpit verified against live market data.
 
+### Live Cockpit page audit (2026-07-25) — measure the bug, don't theorise it
+
+**Core lesson: reproduce a UI bug with MEASUREMENTS in the real browser before
+touching code.** The user reported "the Configure drawer can't be scrolled or
+modified". Reading the code suggested the classic missing `min-h-0`. The actual
+DOM said something more specific: the drawer body had `scrollHeight === clientHeight`
+(so no scrollbar could ever appear) while each section reported
+`clientHeight 231 / scrollHeight 653` — the sections were flex children with the
+default `flex-shrink:1` AND `overflow-hidden`, so they SQUASHED and silently
+clipped 422px of their own content instead of the body scrolling. The user
+"couldn't modify" because the editor chips were inside the clipped region. Fix =
+`shrink-0` on the sections + `flex-1` + inline `minHeight:0` on the body.
+Verified after: sections at full height, `scrollHeight 1215 > client 507`, editor
+opens (+1 input).
+
+**Confirmed approaches:**
+- A 20-line browser probe that prints `clientHeight/scrollHeight/computed flex`
+  per node localises a layout bug in one shot. Ship the probe, not a hypothesis.
+- Re-run the SAME probe after the fix as the acceptance test — before/after
+  numbers are the proof.
+- `git commit` immediately after each verified batch. Two spend-limit interrupts
+  hit mid-session and cost nothing because the work was already committed.
+- Recovering a dead workflow's output from `journal.jsonl` salvaged 20
+  critical/high findings from agents that completed before the limit — a killed
+  workflow is not necessarily lost work.
+
+**Dead ends / traps:**
+- **A workflow that dies on the spend limit reports `survived: []` and a nonzero
+  `refuted_count` — that is NOT a clean bill of health.** The "refutations" were
+  verify agents that errored. Always check the failures list before believing a
+  green summary.
+- **React silently drops the `inert` JSX attribute** (verified: the closed drawer
+  still had 16 tabbable controls with `inert=""` in JSX). Set `el.inert = true`
+  on the node in an effect instead.
+- Focusing an element in the same commit that un-inerts it silently fails —
+  defer with `requestAnimationFrame`.
+- **Case-sensitive text probes lie** against Tailwind `uppercase` (innerText
+  returns "INTRADAY"); and a self-reported "N passed" from a subagent is not
+  verification — my own adversarial probe found the crash its 27 tests missed.
+
+**Regression worth remembering:** replacing LiveDashboard with LiveCockpit
+dropped `ExecutionStateStrip` entirely — the page lost its "will a signal
+transmit a REAL order right now" verdict, the exit-gap warning and Stand-down.
+When retiring a container component, enumerate what it RENDERED, not just what it
+computed.
+
 ### Open items carried forward
 
 1. Safety-fix sprint (pending user decision on scope): H2+H3 (trivial), C1 loopback
