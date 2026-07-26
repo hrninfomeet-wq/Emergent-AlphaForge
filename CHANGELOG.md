@@ -2,6 +2,25 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.57.2] — transmit fence: Stop now reliably fences an in-flight order (2026-07-25)
+
+**Outcome: the first of the three pre-real-money blockers is closed.**
+
+- **Stopping a deployment now stops orders that are already in flight.** The
+  executor authorised an entry once, then made several broker round-trips
+  (margin checks, engine check) before transmitting — a window of seconds in
+  which a Stop, Disable, pause or daily-loss halt would report success while the
+  order still went to the broker. Authorization is now re-checked against
+  freshly-read state immediately before the send, with no further waiting in
+  between, and the order is refused if anything changed.
+- The re-check reads the deployment again and re-decides against the current
+  clock, and treats a *paused* deployment as unauthorised (pausing previously
+  left the live flag untouched). If the deployment cannot be re-read, the order
+  is refused rather than sent.
+- **Verification:** 3,623 backend tests passed, 4 expected failures, 0
+  unexpected failures, including a test proving nothing reaches the broker when
+  authorization goes stale mid-flight. Not yet validated in live market hours.
+
 ## [0.57.1] — Live Cockpit page audit: functionality & UX fixes (2026-07-25)
 
 **Outcome: the reported drawer bug is fixed, a lost safety surface is restored,
