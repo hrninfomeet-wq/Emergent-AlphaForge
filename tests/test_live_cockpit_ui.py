@@ -149,3 +149,32 @@ def test_overall_settings_fails_closed_on_unreadable_config():
     # Save is gated both in the button and inside the handler
     assert "saveBusy || loadFailed" in src
     assert "if (loadFailed)" in src
+
+
+def test_place_distinguishes_rejected_from_unconfirmed():
+    """Item 1: a place that CANNOT be proven un-sent must not read as 'failed'.
+
+    A 4xx is our backend refusing BEFORE transmitting (a genuine rejection); no
+    HTTP response at all, or a 5xx, means the request reached the thing that
+    transmits and the outcome is unknown — the order may be live.
+    """
+    src = _src("components/live/LiveOrderTicket.jsx")
+    # the distinction is made on WHICH step threw, not just the error class
+    assert "redeemAttempted" in src
+    assert "cannotProveUnsent" in src
+    assert "status >= 500" in src and "!e?.response" in src
+    # unconfirmed surfaces its own state + UI, separate from queueError
+    assert "placeUnconfirmed" in src
+    assert "place-unconfirmed" in src
+    assert "Transmission unconfirmed" in src or "TRANSMISSION UNCONFIRMED" in src.upper()
+
+
+def test_unconfirmed_place_blocks_replacing_and_does_not_stand_down():
+    """The two behaviours that prevent a duplicate live position."""
+    src = _src("components/live/LiveOrderTicket.jsx")
+    # placing is blocked while unconfirmed
+    assert "placeUnconfirmed == null" in src
+    # and the auto stand-down is suppressed (it would imply nothing was sent)
+    assert "!placedOk && !unconfirmed" in src
+    # the operator can only re-enable deliberately
+    assert "place-unconfirmed-dismiss" in src

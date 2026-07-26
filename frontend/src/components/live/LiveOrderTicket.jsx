@@ -96,6 +96,11 @@ export default function LiveOrderTicket({ mode, disabled, onQueued, onPlaced }) 
   const [queueBusy, setQueueBusy] = useState(false);  // "placing…" busy flag
   const [queueResult, setQueueResult] = useState(null); // { ok:false, verdicts } re-check failure
   const [queueError, setQueueError] = useState(null);
+  // Set when the REDEEM step (the one that actually transmits) failed in a way
+  // that cannot prove the order never reached the broker — transport failure or
+  // a 5xx from our own backend. NOT the same as a rejection: a 4xx means the
+  // backend refused BEFORE transmitting. While set, placing is blocked.
+  const [placeUnconfirmed, setPlaceUnconfirmed] = useState(null);
   const [queuedConfirm, setQueuedConfirm] = useState(false);
   const [showPlaceConfirm, setShowPlaceConfirm] = useState(false);
   const [placeResult, setPlaceResult] = useState(null); // executor result {placed, norenordno, reason, ...}
@@ -307,9 +312,12 @@ export default function LiveOrderTicket({ mode, disabled, onQueued, onPlaced }) 
     }
   };
 
-  // Place is only enabled after a preview that returned ok === true.
+  // Place is only enabled after a preview that returned ok === true — and NEVER
+  // while a previous place is unconfirmed (re-placing then risks a duplicate
+  // live position).
   const canPlace =
-    previewResult != null && previewResult.ok === true && !queueBusy && !disabled;
+    previewResult != null && previewResult.ok === true && !queueBusy && !disabled
+    && placeUnconfirmed == null;
 
   // DIRECT PLACE (no separate approval-queue / mode-switch step): on confirm we
   // auto-arm LIVE_TEST, then create + redeem a one-shot approval in one shot. The
@@ -329,6 +337,11 @@ export default function LiveOrderTicket({ mode, disabled, onQueued, onPlaced }) 
     // (the executor consumes the single-shot), so we only revert on non-placement.
     let armed = false;
     let placedOk = false;
+    // Which step threw matters more than the error class: a failure while CREATING
+    // the approval means nothing was ever transmitted, but a failure while
+    // REDEEMING it can happen after the executor already sent the order.
+    let redeemAttempted = false;
+    let unconfirmed = false;
     try {
       // 1. arm LIVE_TEST (single-shot)
       try {
@@ -344,7 +357,9 @@ export default function LiveOrderTicket({ mode, disabled, onQueued, onPlaced }) 
         setQueueResult(created ?? { ok: false, verdicts: [] });
         return;
       }
-      // 3. redeem the one-shot token → place via the executor chokepoint
+      // 3. redeem the one-shot token → place via the executor chokepoint.
+      // From here on a failure CANNOT prove the order never reached the broker.
+      redeemAttempted = true;
       const placed = await api.approveOrder(created.approval_id, created.token);
       setPlaceResult(placed);
       placedOk = !!placed?.placed;
@@ -356,11 +371,30 @@ export default function LiveOrderTicket({ mode, disabled, onQueued, onPlaced }) 
         onPlaced?.();
       }
     } catch (e) {
-      setQueueError(getApiErrorMessage(e, "Place failed"));
+      // A 4xx carries a decision from our backend: it refused BEFORE transmitting,
+      // so "Place failed" is accurate. No HTTP response at all (timeout, dropped
+      // connection, browser offline) or a 5xx means the request DID reach the
+      // thing that transmits and we simply never heard the outcome.
+      const status = e?.response?.status;
+      const cannotProveUnsent = !e?.response || status >= 500;
+      if (redeemAttempted && cannotProveUnsent) {
+        unconfirmed = true;
+        setPlaceUnconfirmed({
+          detail: getApiErrorMessage(e, "no response from the server"),
+        });
+        setPreviewResult(null);   // block re-fire from stale preview state
+        // Pull fresh broker data so the order book below reflects reality ASAP.
+        onPlaced?.();
+      } else {
+        setQueueError(getApiErrorMessage(e, "Place failed"));
+      }
     } finally {
       setShowPlaceConfirm(false);
       // Stand down: armed but nothing placed → revert to a safe mode (best-effort).
-      if (armed && !placedOk) {
+      // NEVER when the place is unconfirmed: reverting to LIVE_OFFLINE while an
+      // order may be working at the broker reads as "nothing happened", which is
+      // the very impression that causes a duplicate re-place.
+      if (armed && !placedOk && !unconfirmed) {
         try {
           await api.setLiveMode("LIVE_OFFLINE");
         } catch {
@@ -991,6 +1025,50 @@ export default function LiveOrderTicket({ mode, disabled, onQueued, onPlaced }) 
       {queueError && (
         <div className="text-xs text-danger font-mono px-2 py-1 rounded border border-danger/30 bg-danger/10">
           {queueError}
+        </div>
+      )}
+
+      {/* TRANSMISSION UNCONFIRMED — deliberately NOT styled as a failure. The
+          order may be working at the broker right now; the one thing the trader
+          must not do is assume it failed and place it again. */}
+      {placeUnconfirmed && (
+        <div
+          className="rounded-md border-2 border-amber-500 bg-amber-500/15 px-3 py-2.5 text-xs font-mono text-warning space-y-2"
+          data-testid="place-unconfirmed"
+        >
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+            <span>
+              <b className="uppercase tracking-wider">Transmission unconfirmed</b> — the
+              order was sent but no confirmation came back, so it{" "}
+              <b>may already be live at the broker</b>. Do NOT re-place it. Check the
+              Order book / positions first; placing again risks a duplicate position.
+              <span className="block text-dimmer mt-1">
+                Execution mode was left as-is on purpose — standing down here would
+                imply nothing was sent.
+              </span>
+              {placeUnconfirmed.detail ? (
+                <span className="block text-dimmer mt-1">({placeUnconfirmed.detail})</span>
+              ) : null}
+            </span>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              type="button"
+              onClick={() => onPlaced?.()}
+              className="px-2.5 py-1 rounded-md border border-amber-500/60 bg-amber-500/10 text-warning text-[11px] font-semibold hover:bg-amber-500/20"
+            >
+              Refresh order book
+            </button>
+            <button
+              type="button"
+              onClick={() => setPlaceUnconfirmed(null)}
+              className="px-2.5 py-1 rounded-md border border-line bg-bg-2 text-dim text-[11px] hover:bg-bg-3"
+              data-testid="place-unconfirmed-dismiss"
+            >
+              I've checked — re-enable placing
+            </button>
+          </div>
         </div>
       )}
     </div>
