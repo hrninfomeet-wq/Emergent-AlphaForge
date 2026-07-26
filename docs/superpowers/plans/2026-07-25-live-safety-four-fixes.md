@@ -1,5 +1,11 @@
 # Four real-money safety fixes — implementation plan (2026-07-25)
 
+> **STATUS 2026-07-25:** Items **2, 3 and 4 are IMPLEMENTED and pushed**
+> (`8519ae4`, `596d190`, `041459f`; suite 3,610/0, frontend compiles, 3 contract
+> tests added). **Item 1 is deferred by the user to live-market time** — it needs a
+> real transmit to exercise honestly, so it is the one fix that should be built and
+> validated while the market is open.
+
 > Deferred from the Live Cockpit page audit. Findings register:
 > `docs/live-cockpit-audit-2026-07-25.md`. Each item below was re-verified against
 > the code before planning (no speculative work).

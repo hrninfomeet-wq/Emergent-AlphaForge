@@ -57,7 +57,7 @@ Legend — **STATUS**: FIXED (landed + verified) · OPEN (verified real, not yet
 
 ### frontend/src/components/live/GttBook.jsx:206
 
-- **STATUS:** OPEN — DEFERRED ITEM 2 — unconfirmed one-click cancel of the PC-down backstop.
+- **STATUS:** FIXED (8519ae4) — two-step confirm naming the symbol + software-guard-only consequence; danger styling distinct from Refresh; 6s auto-disarm.
 - **Defect:** The Cancel button removes a resting broker OCO/GTT — the only PC-down protection on a real position — on a single click with no confirmation, and it is styled `border-line bg-bg-2 text-dim`, identical to the benign Refresh button in the same panel.
 - **Failure:** In the config drawer's "GTT / OCO backstop" section, the panel header Refresh button (line 261-274) and each row's Cancel button (line 206-219) share the same neutral grey treatment and sit a few dozen pixels apart. A trader intending to refresh the book clicks Cancel on a row; `handleCancel` fires `api.cancelGtt` immediately (line 98-103), the row vanishes on the next poll with no warning, and the NRML position it protected is left with software-guard-only cover — i.e. nothing if the PC dies. Nothing on the page then says that position lost its backstop (AlertRail's no-backstop banner is driven by blotter `oco_error`, not by a manual cancel).
 - **Fix:** Give Cancel danger styling distinct from Refresh and require an inline confirm ("Cancel the PC-down backstop for <tsym>? The position will have no broker-side protection.") before calling the API.
@@ -71,7 +71,7 @@ Legend — **STATUS**: FIXED (landed + verified) · OPEN (verified real, not yet
 
 ### frontend/src/components/live/GuardPanel.jsx:77
 
-- **STATUS:** OPEN — DEFERRED ITEM 3 — rehydrated positions carry default stops with no badge.
+- **STATUS:** FIXED (596d190) — per-row DEFAULT STOP badge + amber row border, "N default-stop" header count, and a cockpit AlertRail banner naming the symbols.
 - **Defect:** `GuardRow` never reads the guard payload's `source` field (nor the payload's `rehydrated_count`), so a position re-attached after a restart with a DEEP-DEFAULT catastrophe stop renders identically to one carrying the trader's original stop/target.
 - **Failure:** The backend emits these fields specifically for this UI: live_broker.py:1466-1471 ("source == 'rehydrated' ⇒ re-attached after a restart with a DEEP-DEFAULT catastrophe stop (the original per-position levels were lost); the UI can flag 'levels reset to default — re-set your stop/target'") and live_position_guard.py:1213-1215. Grep shows no frontend file reads `rehydrated` or `source` from guard status. Scenario: trader has a live NIFTY CE with a 20% stop; the backend restarts mid-session; the guard rehydrates the position with the ~50% default band. GuardPanel shows a normal row with a Stop level, a "Filled" chip and "1 guarded", and RiskKpis shows Guard=ARMED. The trader believes their tight stop is still live and walks away; the position runs to the default deep stop instead.
 - **Fix:** Render a loud per-row badge when `pos.source === "rehydrated"` (e.g. amber "LEVELS RESET TO DEFAULT — re-set your stop/target") and a header-level count from `status.rehydrated_count`; consider also surfacing it in AlertRail.
@@ -99,7 +99,7 @@ Legend — **STATUS**: FIXED (landed + verified) · OPEN (verified real, not yet
 
 ### frontend/src/components/live/LiveOrderTicket.jsx:353
 
-- **STATUS:** OPEN — DEFERRED ITEM 1 — transmission-unconfirmed on a timed-out place.
+- **STATUS:** OPEN — ITEM 1, deferred by the user to LIVE MARKET TIME (needs a real transmit to exercise honestly). Plan: docs/superpowers/plans/2026-07-25-live-safety-four-fixes.md
 - **Defect:** A transport/timeout failure of `approveOrder` (which may occur AFTER the order reached the broker) is reported as a flat "Place failed" with no "order may have been transmitted" warning, and `previewResult` is left intact so the red "Place order — REAL MONEY" button re-enables immediately.
 - **Failure:** Trader clicks Confirm — Place Order; the backend transmits to Flattrade but the HTTP response is lost (timeout/proxy drop). `catch` at line 352-354 sets `queueError = "Place failed"`; `placedOk` stays false so `setPreviewResult(null)` at line 351 is skipped and the finally block reverts to LIVE_OFFLINE. The UI now reads as an unambiguous non-placement with the Place button live again. The trader clicks it again and buys a second lot on top of a position that is already open at the broker. Contrast KillSwitchPanel, which has an explicit `PLACED_UNCONFIRMED` / "UNFILLED · WORKING" outcome for exactly this case.
 - **Fix:** On a thrown place error, render a distinct amber "TRANSMISSION UNCONFIRMED — the order may already be live; check the Order book before retrying" state, clear/disable the Place button until the order book is refetched, and force a `refetch.all()`.
@@ -113,7 +113,7 @@ Legend — **STATUS**: FIXED (landed + verified) · OPEN (verified real, not yet
 
 ### frontend/src/components/live/OverallSettingsPanel.jsx:377
 
-- **STATUS:** OPEN — DEFERRED ITEM 4 — failed GET silently yields an all-disabled config that Save writes back.
+- **STATUS:** FIXED (041459f) — 404 stays editable; any other failure fails closed: loud banner, Save disabled (button + handler), Retry.
 - **Defect:** A failed GET of the overall controls silently substitutes a fully-disabled config (SL off, Target off, Trail off) that is visually identical to a genuinely-off config, and Save then writes that all-disabled config back to the server.
 - **Failure:** Trader opens the Config drawer during a transient backend blip while a live basket is open. The catch at line 377 sets `defaultConfig()` into both `config` and `loaded`, so the chips read "SL off · Target off · Trail off" — the only difference from reality is a 10px amber "defaults" chip at line 519. The trader, believing nothing is configured, toggles Target on and clicks Save (line 452, always enabled). `putOverallSettings` posts `sl.enabled:false`, wiping the previously-saved basket stop-loss while real positions are open. Nothing warns that the payload being saved was never loaded from the server.
 - **Fix:** On load failure, do not present an editable form: render an explicit "Could not read the saved overall controls — values below are NOT your live config" error state and disable Save until a successful GET (or an explicit "start from scratch" acknowledgement) has occurred.
