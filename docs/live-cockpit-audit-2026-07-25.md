@@ -481,3 +481,43 @@ Legend — **STATUS**: FIXED (landed + verified) · OPEN (verified real, not yet
 - **Failure:** `GET /live-broker/reconcile` raises HTTP 400 when the Flattrade client can't be built (live_broker.py:681-692) and `usePoll` never clears `data` on error, so after a token expiry the "Open Positions" header keeps its emerald "Reconciled ✓" chip from the last good read. Simultaneously `LiveCockpit`'s `unguardedPositions` derivation (line 62) freezes, so the UNGUARDED-positions danger banner cannot appear for a position opened after the failure. The trader reads a green reconciled badge over a frozen positions table and concludes everything is watched.
 - **Fix:** Render an explicit grey "reconcile: NO DATA" chip when `reconcile == null`, and grey/amber the "Reconciled ✓" chip whenever `errors.reconcile` is set.
 
+
+
+## DATA-NULL-SAFETY (dimension completed inline 2026-07-25)
+
+The auditor for this dimension never ran — both workflow attempts were killed by
+the usage limit. Completed by hand against the authoritative Noren Limits spec
+(`docs/Resources/flattrade-pi-api/endpoints/25-limits.md`).
+
+### liveHelpers.js — deriveCash()
+
+- **STATUS:** FIXED — `cash ?? net` only; the used-margin fallback removed.
+- **Defect:** fell back to `limits.marginusedtoday` for the "Available Cash" /
+  "Avail Margin" KPI. Per the Noren spec `cash` is "Cash Margin **available**"
+  while `marginused` is "Total margin / fund **used** today" — the fallback is a
+  SEMANTIC INVERSION, and `marginusedtoday` is not even a documented field.
+- **Failure:** on any payload lacking `cash`/`net`, the money KPI reports the
+  amount already CONSUMED as if it were spendable; a trader sizing a position off
+  it over-commits. Absent data must render "—", never the opposite number.
+
+### AccountTabs.jsx — usedMargin
+
+- **STATUS:** FIXED — uses the documented total `marginused` only.
+- **Defect:** fell back to `premium` / `span`, which are COMPONENTS of margin
+  used, not the total.
+- **Failure:** understates margin used and makes the utilisation bar read far
+  lower than reality (a partial figure presented as the total). Now renders "—"
+  when the total is absent.
+
+### Swept and found CLEAN (no defect)
+
+- Falsy-vs-nullish: the only `||` uses on numerics are bar widths and additive
+  sums where 0 is harmless; `MetricCard` renders a genuine 0 (only
+  null/undefined/"" become "–"), so no legitimate zero is swallowed.
+- KPI counts vs the tables they label: both use the shared `isOpenPosition` /
+  `isWorkingOrder` predicates, so they cannot disagree.
+- Utilisation math cannot divide by zero (`total ? ... : null`).
+- `deriveDayPnl` sums unrealised + realised per position with a `pnl` fallback —
+  no double count.
+- Stale-as-fresh is covered by the as-of stamp + degraded banner, and the
+  reconcile chip now reports NO DATA when its slice errors.

@@ -113,7 +113,11 @@ export default function AccountTabs({ limits, orders, blotter, gtt, holdings, er
   const [tab, setTab] = useState("fund");
 
   const availMargin = deriveCash(limits);
-  const usedMargin = firstNum(limits?.marginused, limits?.premium, limits?.span);
+  // `marginused` is Noren's documented TOTAL "margin / fund used today". premium
+  // and span are COMPONENTS of it — falling back to one of them would understate
+  // usage and make the utilisation bar read far lower than reality. No total, no
+  // number: render "—" instead of a partial figure dressed up as the total.
+  const usedMargin = firstNum(limits?.marginused);
   const cash = firstNum(limits?.cash);
   const payin = firstNum(limits?.payin);
   const collateral = firstNum(limits?.brkcollamt, limits?.collateral);

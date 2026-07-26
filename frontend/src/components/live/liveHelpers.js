@@ -85,8 +85,18 @@ export function deriveDayPnl(positions) {
 
 // ── Available cash — defensive across Noren limits field names ───────────────
 export function deriveCash(limits) {
-  const v = limits?.cash ?? limits?.net ?? limits?.marginusedtoday ?? null;
-  return v == null ? null : Number(v);
+  // `cash` is Noren's documented "Cash Margin available" (Limits, PiConnect docs
+  // endpoint 25). `net` is kept for wrapper payloads that flatten to it.
+  //
+  // The old `marginusedtoday` fallback was a SEMANTIC INVERSION: margin *used* is
+  // the opposite of cash available, so on any payload lacking cash/net the KPI
+  // would report the amount already consumed as if it were spendable — a trader
+  // sizing off that number over-commits. (It also isn't a documented Noren field.)
+  // Absent data must render "—", never a number that means the opposite.
+  const v = limits?.cash ?? limits?.net ?? null;
+  if (v == null) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
 }
 
 // ── Section card wrapper ─────────────────────────────────────────────────────
