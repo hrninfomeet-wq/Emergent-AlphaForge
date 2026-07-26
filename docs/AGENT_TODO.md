@@ -105,7 +105,10 @@ transmits no broker orders. These matter for real money.
   `handleFormSubmit`, reopen form on confirm-cancel) — sibling modals both-open is
   fragile in Radix.
 
-### Deferred — REQUIRED before first real-money session (est. 2–4 days total)
+### Deferred — REQUIRED before first real-money session (C2 + H1 + C3; est. 2–3 days)
+
+> These are THE gate to real money. Items 5-8 of the user program are optional
+> until these land. C4 in this list is already fixed; C2/H1/C3 are not.
 
 **C2 — transmit fence (~1 day).** `backend/app/live/executor.py` Gate 1 (~line 459)
 checks `allow_fn()` once; `backend/app/auto_live.py` (~line 409) builds `allow_fn` over a
@@ -116,7 +119,7 @@ if it no longer allows. Also re-check after every await that can take >~1s (marg
 throttle wait). Test: flip deployment to stopped between margin gate and transmit (mock
 broker) → order NOT sent.
 
-**C4 — breaker re-consent (~half day).** `resume` endpoint
+**C4 — breaker re-consent — ✅ ALREADY DONE (`f9a2482`, see board row B5).** Kept for history: `resume` endpoint
 (`routers/deployments.py` ~852) must check WHY the deployment paused: if
 `risk.live.last_block_reason == "daily_loss_cap"` (or any breaker pause) AND
 `mode == "live"`, resume must either (a) demote to `mode: "paper"` + require a fresh
