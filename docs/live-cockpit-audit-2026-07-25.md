@@ -99,7 +99,7 @@ Legend — **STATUS**: FIXED (landed + verified) · OPEN (verified real, not yet
 
 ### frontend/src/components/live/LiveOrderTicket.jsx:353
 
-- **STATUS:** OPEN — ITEM 1, deferred by the user to LIVE MARKET TIME (needs a real transmit to exercise honestly). Plan: docs/superpowers/plans/2026-07-25-live-safety-four-fixes.md
+- **STATUS:** FIXED (3da45b6) — rejected vs UNCONFIRMED split on which step threw; unconfirmed blocks re-placing and suppresses the stand-down. NOTE: still wants a live-market validation pass against a real transmit.
 - **Defect:** A transport/timeout failure of `approveOrder` (which may occur AFTER the order reached the broker) is reported as a flat "Place failed" with no "order may have been transmitted" warning, and `previewResult` is left intact so the red "Place order — REAL MONEY" button re-enables immediately.
 - **Failure:** Trader clicks Confirm — Place Order; the backend transmits to Flattrade but the HTTP response is lost (timeout/proxy drop). `catch` at line 352-354 sets `queueError = "Place failed"`; `placedOk` stays false so `setPreviewResult(null)` at line 351 is skipped and the finally block reverts to LIVE_OFFLINE. The UI now reads as an unambiguous non-placement with the Place button live again. The trader clicks it again and buys a second lot on top of a position that is already open at the broker. Contrast KillSwitchPanel, which has an explicit `PLACED_UNCONFIRMED` / "UNFILLED · WORKING" outcome for exactly this case.
 - **Fix:** On a thrown place error, render a distinct amber "TRANSMISSION UNCONFIRMED — the order may already be live; check the Order book before retrying" state, clear/disable the Place button until the order book is refetched, and force a `refetch.all()`.
