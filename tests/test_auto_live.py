@@ -828,3 +828,92 @@ async def test_orchestrator_ref_ltp_is_option_premium_not_spot():
     assert out["entry_price"] == 151.5
     assert calls[0]["ref_ltp"] == 151.5
     assert db.live_trades.rows[0]["entry_price"] == 151.5
+
+
+# ===================== C2 — transmit fence wiring ==============================
+# auto_live must hand the executor a recheck that reads CURRENT state, so a Stop
+# landing during the executor's broker round-trips actually fences the order.
+
+@pytest.mark.asyncio
+async def test_auto_live_supplies_a_transmit_fence_recheck():
+    """The executor is always given a recheck_fn — without it the fence is inert."""
+    db = FakeDB()
+    sig = make_confirmed_signal()
+    db.signals.rows.append(dict(sig))
+    dep = make_live_deployment()
+    dep["status"] = "ACTIVE"
+    db.strategy_deployments.rows.append(dict(dep))
+    calls: List[Dict[str, Any]] = []
+    await auto_live_trade_for_signal(
+        db, dep, sig, latest_tick_lookup={KEY: _fresh_tick(151.5)}.get,
+        now_utc=NOW, place_fn=make_place_fn(_SUCCESS, calls))
+    assert calls, "executor was never called"
+    assert callable(calls[0].get("recheck_fn")), "no transmit fence handed to the executor"
+
+
+@pytest.mark.asyncio
+async def test_transmit_fence_refuses_when_deployment_stopped_mid_flight():
+    """THE C2 scenario: the deployment is stopped AFTER the entry was authorised.
+    The fence reads the CURRENT doc, so it must refuse."""
+    db = FakeDB()
+    sig = make_confirmed_signal()
+    db.signals.rows.append(dict(sig))
+    dep = make_live_deployment()
+    dep["status"] = "ACTIVE"
+    db.strategy_deployments.rows.append(dict(dep))
+    calls: List[Dict[str, Any]] = []
+    await auto_live_trade_for_signal(
+        db, dep, sig, latest_tick_lookup={KEY: _fresh_tick(151.5)}.get,
+        now_utc=NOW, place_fn=make_place_fn(_SUCCESS, calls))
+    recheck = calls[0]["recheck_fn"]
+
+    # still ACTIVE + live → authorised
+    ok, _ = await recheck()
+    assert ok is True
+
+    # a Stop lands: it demotes to paper AND pauses
+    db.strategy_deployments.rows[0]["mode"] = "paper"
+    db.strategy_deployments.rows[0]["status"] = "PAUSED"
+    ok, why = await recheck()
+    assert ok is False
+    assert "status_paused" in why or "not_live_mode" in why
+
+
+@pytest.mark.asyncio
+async def test_transmit_fence_refuses_a_paused_but_still_live_deployment():
+    """pause writes ONLY status — mode stays 'live', so is_deployment_live_allowed
+    alone would still say yes. The explicit status check is load-bearing."""
+    db = FakeDB()
+    sig = make_confirmed_signal()
+    db.signals.rows.append(dict(sig))
+    dep = make_live_deployment()
+    dep["status"] = "ACTIVE"
+    db.strategy_deployments.rows.append(dict(dep))
+    calls: List[Dict[str, Any]] = []
+    await auto_live_trade_for_signal(
+        db, dep, sig, latest_tick_lookup={KEY: _fresh_tick(151.5)}.get,
+        now_utc=NOW, place_fn=make_place_fn(_SUCCESS, calls))
+    recheck = calls[0]["recheck_fn"]
+
+    db.strategy_deployments.rows[0]["status"] = "PAUSED"   # mode still "live"
+    ok, why = await recheck()
+    assert ok is False and "status_paused" in why
+
+
+@pytest.mark.asyncio
+async def test_transmit_fence_fails_closed_when_deployment_vanishes():
+    db = FakeDB()
+    sig = make_confirmed_signal()
+    db.signals.rows.append(dict(sig))
+    dep = make_live_deployment()
+    dep["status"] = "ACTIVE"
+    db.strategy_deployments.rows.append(dict(dep))
+    calls: List[Dict[str, Any]] = []
+    await auto_live_trade_for_signal(
+        db, dep, sig, latest_tick_lookup={KEY: _fresh_tick(151.5)}.get,
+        now_utc=NOW, place_fn=make_place_fn(_SUCCESS, calls))
+    recheck = calls[0]["recheck_fn"]
+
+    db.strategy_deployments.rows.clear()
+    ok, why = await recheck()
+    assert ok is False and why == "deployment_missing"

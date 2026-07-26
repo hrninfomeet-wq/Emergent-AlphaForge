@@ -519,3 +519,82 @@ def test_deployed_arm_raises_aborts(monkeypatch):
     assert "post_place_protection_failed" in engine.halt_calls
     canceled = [o for o in _book(client) if o.get("status") == "CANCELED"]
     assert len(canceled) >= 1, "entry must be squared when arm fails"
+
+
+# ---------------------------------------------------------------------------
+# C2 — transmit fence: authorization is re-checked against FRESH state
+# immediately before transmitting.
+#
+# Gate 1 runs once at the top, then the chain awaits client.limits(),
+# client.order_margin() and engine.can_trade() — seconds of broker round-trips.
+# A Stop landing in that window used to report success while an already-in-flight
+# entry still transmitted. allow_fn cannot catch this: it closes over a STALE
+# deployment doc and a FROZEN `now`, so re-calling it returns the same answer.
+# ---------------------------------------------------------------------------
+
+def test_deployed_recheck_blocks_transmit_when_authorization_went_stale(monkeypatch):
+    """Deployment stopped mid-flight → NOTHING is transmitted."""
+    monkeypatch.setenv("LIVE_AUTOPLACE_ARMED", "1")
+    client = MockNoren(limits_data={"cash": "99999999"})
+    arm_calls: List[Any] = []
+
+    async def tracking_arm(intent, norenordno):
+        arm_calls.append((intent, norenordno))
+
+    async def stopped_recheck():
+        return False, "not_live_mode"
+
+    result = _run(_place_deployed(
+        client=client, capped_lots=2, arm=tracking_arm, recheck_fn=stopped_recheck,
+    ))
+
+    assert result["placed"] is False
+    assert "stale_authorization" in result["reason"]
+    assert "not_live_mode" in result["reason"]
+    # THE assertion that matters: no order reached the broker, nothing was armed.
+    assert _book(client) == [], "an order was transmitted after authorization went stale"
+    assert arm_calls == []
+
+
+def test_deployed_recheck_allows_transmit_when_still_authorized(monkeypatch):
+    """Control: a passing recheck must not disturb the normal armed transmit."""
+    monkeypatch.setenv("LIVE_AUTOPLACE_ARMED", "1")
+    client = MockNoren(limits_data={"cash": "99999999"})
+
+    async def ok_recheck():
+        return True, "ok"
+
+    result = _run(_place_deployed(client=client, capped_lots=2, recheck_fn=ok_recheck))
+
+    assert result["placed"] is True
+    assert len(_book(client)) == 1
+
+
+def test_deployed_recheck_runs_after_the_slow_gates(monkeypatch):
+    """The fence must sit AFTER the broker round-trips — checking early would
+    leave exactly the window it exists to close."""
+    monkeypatch.setenv("LIVE_AUTOPLACE_ARMED", "1")
+    client = MockNoren(limits_data={"cash": "99999999"})
+    order: List[str] = []
+
+    class _OrderedClient(MockNoren):
+        async def limits(self):
+            order.append("limits")
+            return await MockNoren.limits(self)
+
+    async def recording_recheck():
+        order.append("recheck")
+        return True, "ok"
+
+    c = _OrderedClient(limits_data={"cash": "99999999"})
+    _run(_place_deployed(client=c, capped_lots=2, recheck_fn=recording_recheck))
+    assert order.index("limits") < order.index("recheck"), order
+
+
+def test_deployed_without_recheck_still_places(monkeypatch):
+    """Back-compat: recheck_fn omitted → unchanged behaviour (the fence is opt-in
+    at the executor; auto_live always supplies it — pinned separately)."""
+    monkeypatch.setenv("LIVE_AUTOPLACE_ARMED", "1")
+    client = MockNoren(limits_data={"cash": "99999999"})
+    result = _run(_place_deployed(client=client, capped_lots=2))
+    assert result["placed"] is True

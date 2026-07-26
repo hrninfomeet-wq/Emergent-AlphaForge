@@ -439,6 +439,25 @@ async def auto_live_trade_for_signal(
         from app.live import executor as _executor_mod
         place_fn = _executor_mod.place_deployed_order
 
+    # TRANSMIT FENCE (C2). `allow_fn` above closed over the deployment doc read at
+    # signal time and a frozen `now`; the executor then awaits several broker
+    # round-trips before transmitting. Re-read the deployment and re-decide with a
+    # CURRENT clock immediately before the send, so a Stop / Disable / pause /
+    # daily-loss demotion that lands mid-flight actually fences the order.
+    #
+    # `status` is checked explicitly: pause writes ONLY status (mode stays "live"),
+    # so is_deployment_live_allowed alone would still say yes for a paused
+    # deployment. Fail CLOSED — a doc we cannot re-read must not transmit.
+    async def _recheck_authorization():
+        fresh = await db.strategy_deployments.find_one({"id": dep_id}, {"_id": 0})
+        if not fresh:
+            return False, "deployment_missing"
+        status_now = str(fresh.get("status") or "").strip().upper()
+        if status_now != "ACTIVE":
+            return False, f"status_{status_now.lower() or 'unknown'}"
+        return is_deployment_live_allowed(
+            fresh, datetime.now(timezone.utc), connected=connected)
+
     result = await place_fn(
         contract,
         side="B",
@@ -452,6 +471,7 @@ async def auto_live_trade_for_signal(
         search_fn=search_fn,
         arm=arm,
         allow_fn=allow_fn,
+        recheck_fn=_recheck_authorization,
         throttle=throttle,
         account_max_lots=account_max,
         deployment_id=dep_id,

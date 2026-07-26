@@ -33,6 +33,7 @@ not a crash.  There is no way for a caller to inject qty > lot_size.
 """
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any, Callable, Dict, List, Optional
 
@@ -40,6 +41,8 @@ from app.live.broker_protocol import BrokerReadError
 from app.live.mode import is_live_order_allowed
 from app.live.order_builder import build_intent
 from app.live.margin import broker_margin_verdict, margin_verdict
+
+log = logging.getLogger(__name__)
 
 
 def _limits_read_error_verdict(exc: "BrokerReadError") -> dict:
@@ -411,6 +414,12 @@ async def place_deployed_order(
     search_fn: Callable,
     arm: Callable,
     allow_fn: Callable,
+    #: Async ``() -> (ok, reason)`` re-evaluating authorization against FRESH
+    #: state (re-read deployment doc + current clock), called immediately before
+    #: the transmit. See the Gate-7 transmit fence below. None → no fence (the
+    #: executor's own unit tests and any non-deployment caller); auto_live ALWAYS
+    #: supplies one.
+    recheck_fn: Optional[Callable[[], Any]] = None,
     throttle: Any,
     account_max_lots: Any,
     deployment_id: str,
@@ -544,6 +553,39 @@ async def place_deployed_order(
             "would_send": _would_send(intent, uid, actid),
             "verdicts": verdicts,
         }
+
+    # ------------------------------------------------------------------
+    # Gate 7 — TRANSMIT FENCE: re-check authorization against FRESH state.
+    #
+    # Gate 1 ran once, before ~three awaits: client.limits(), client.order_margin()
+    # and engine.can_trade() — broker round-trips that can take seconds. A Stop /
+    # Disable / pause / daily-loss demotion landing in that window used to report
+    # success while THIS already-in-flight entry still transmitted. `allow_fn`
+    # cannot catch it: it closes over the deployment doc read at signal time and a
+    # frozen `now`, so re-calling it returns the same stale answer.
+    #
+    # Deliberately placed AFTER the armed check and BEFORE the throttle: the
+    # throttle is a synchronous token-bucket call, so NO await remains between this
+    # fence and the transmit — the tightest window achievable — and an aborted
+    # entry never burns a SEBI rate token.
+    # ------------------------------------------------------------------
+    if recheck_fn is not None:
+        try:
+            still_ok, why_now = await recheck_fn()
+        except Exception as exc:
+            # Fail CLOSED: if we cannot re-confirm authorization we must not send.
+            log.warning("transmit fence: recheck failed (%s) — refusing to transmit", exc)
+            return _blocked("stale_authorization:recheck_failed", verdicts)
+        if not still_ok:
+            log.warning("transmit fence: authorization went stale before transmit (%s) "
+                        "— order NOT sent for deployment %s", why_now, deployment_id)
+            return _blocked(f"stale_authorization:{why_now}", verdicts)
+    elif armed:
+        # Not fatal (the manual/unit paths legitimately omit it), but an armed
+        # transmit with no fence is worth saying out loud.
+        log.warning("transmit fence: no recheck_fn supplied for an ARMED deployed "
+                    "order (deployment %s) — transmitting on the Gate-1 decision alone",
+                    deployment_id)
 
     # ------------------------------------------------------------------
     # Gate 8 — rate throttle (real-transmit path only).  is_cancel=False (this
