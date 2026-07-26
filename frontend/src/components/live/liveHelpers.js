@@ -222,7 +222,19 @@ export function OrdersBlotter({ orders, allStatuses = false }) {
 }
 
 // ── Reconciliation chip (verbatim) ───────────────────────────────────────────
-export function ReconcileChip({ reconcile }) {
+export function ReconcileChip({ reconcile, error }) {
+  // A failing reconcile poll keeps the LAST-GOOD payload (usePoll never clears
+  // data on error), so without this an expired token would keep showing a green
+  // "Reconciled ✓" over a book nobody has actually checked. Say NO DATA instead.
+  if (error) {
+    return (
+      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-line bg-bg-3 text-dimmer text-xs font-mono"
+            title="The reconcile read is failing — broker/guard agreement is unverified.">
+        <AlertTriangle className="w-3.5 h-3.5" />
+        reconcile: NO DATA
+      </span>
+    );
+  }
   if (!reconcile) return null;
   if (reconcile.ok) {
     return (

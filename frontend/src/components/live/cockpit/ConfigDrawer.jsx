@@ -13,7 +13,11 @@ import OverallSettingsPanel from "@/components/live/OverallSettingsPanel";
  */
 function DrawerSection({ title, badge, children }) {
   return (
-    <div className="border border-line rounded-lg overflow-hidden">
+    // shrink-0 is load-bearing: as a flex child these sections default to
+    // flex-shrink:1, so with overflow-hidden they SQUASH and silently clip their
+    // own content (measured: 231px shown of 653px) instead of letting the body
+    // scroll. The user could not reach the deployment controls at all.
+    <div className="border border-line rounded-lg overflow-hidden shrink-0">
       <div className="flex items-center justify-between px-3.5 py-2.5 border-b border-line bg-bg-2/50">
         <span className="text-xs font-semibold text-foreground">{title}</span>
         {badge}
@@ -47,7 +51,11 @@ export default function ConfigDrawer({ open, onClose, onArmedSummaryChange }) {
             <X className="w-4 h-4" />
           </button>
         </div>
-        <div className="p-4 overflow-auto flex flex-col gap-4">
+        {/* flex-1 + inline minHeight:0 make THIS the scroll container. Tailwind's
+            min-h-0 is unreliable on flex children in this codebase (documented
+            gotcha), so the inline style is deliberate — without it the body
+            cannot shrink below its content and no scrollbar ever appears. */}
+        <div className="p-4 overflow-y-auto flex-1 flex flex-col gap-4" style={{ minHeight: 0 }}>
           <p className="text-[11px] text-dimmer">Set-and-forget controls — you don't watch these tick by tick, so they live off the main cockpit.</p>
           <DrawerSection title="Deployment control" badge={<span className="text-[9px] uppercase tracking-wider text-dimmer border border-line bg-bg-3 rounded-full px-2 py-0.5">enable / disable / stop</span>}>
             <LiveDeploymentStrip onArmedSummaryChange={onArmedSummaryChange} />

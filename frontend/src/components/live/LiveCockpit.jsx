@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { api } from "@/lib/api";
 import { useLiveData } from "@/components/live/LiveDataProvider";
 import {
   SectionCard, ReconcileChip, PositionsBlotter, fmtAsOf,
+  asPositionRows, isOpenPosition,
 } from "@/components/live/liveHelpers";
 
 import CommandBar from "@/components/live/cockpit/CommandBar";
@@ -15,6 +17,7 @@ import AccountTabs from "@/components/live/cockpit/AccountTabs";
 import ConfigDrawer from "@/components/live/cockpit/ConfigDrawer";
 
 import MarketHeader from "@/components/MarketHeader";
+import ExecutionStateStrip from "@/components/live/ExecutionStateStrip";
 import KillSwitchPanel from "@/components/live/KillSwitchPanel";
 import GuardPanel from "@/components/live/GuardPanel";
 import GreeksCard from "@/components/live/GreeksCard";
@@ -33,12 +36,28 @@ export default function LiveCockpit() {
   const {
     status, limits, positions, orders, reconcile, armState, blotter, guard, gtt,
     refetch, feedHealth, deployments, health, lastSuccess,
-    marketAnalysis, holdings, greeks,
+    marketAnalysis, holdings, greeks, errors, deployLive,
   } = useLiveData();
   const fetchAll = refetch.all;
 
   const [authMsg, setAuthMsg] = useState(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [standDownBusy, setStandDownBusy] = useState(false);
+
+  // Stand down: revert the MANUAL ticket path to LIVE_OFFLINE. Restored with
+  // ExecutionStateStrip below — dropping it in the cockpit rewrite removed the
+  // only one-click way to neutralise an armed manual ticket.
+  const handleStandDown = useCallback(async () => {
+    setStandDownBusy(true);
+    try {
+      await api.setLiveMode("LIVE_OFFLINE");
+    } catch {
+      /* surfaced by the unchanged strip state on the next poll */
+    } finally {
+      setStandDownBusy(false);
+      fetchAll();
+    }
+  }, [fetchAll]);
 
   // OAuth post-redirect (Flattrade bounces to /live-trading?flattrade_connected=1).
   useEffect(() => {
@@ -54,8 +73,24 @@ export default function LiveCockpit() {
     }
   }, [fetchAll]);
 
+  // Auto-dismiss the OAuth banner. Left pinned it would still claim "login
+  // successful" hours later, after the token has expired or been disconnected —
+  // a stale green banner contradicting a red broker chip.
+  useEffect(() => {
+    if (!authMsg) return undefined;
+    const t = window.setTimeout(() => setAuthMsg(null), 8000);
+    return () => window.clearTimeout(t);
+  }, [authMsg]);
+
+  // ...and drop it immediately if the session actually goes away.
+  useEffect(() => {
+    if (authMsg?.ok && status && !(status.connected && !status.expired)) setAuthMsg(null);
+  }, [authMsg, status]);
+
   const mode = armState?.mode ?? null;
   const activeCount = (deployments || []).filter((d) => String(d?.status || "").toUpperCase() === "ACTIVE").length;
+  // Real open broker exposure — used to warn before a Flattrade disconnect.
+  const openPositionCount = (asPositionRows(positions) || []).filter(isOpenPosition).length;
 
   // UNGUARDED broker positions (server reconcile diff) + NO-BACKSTOP live positions
   // (blotter rows carrying oco_error) — same derivations the old dashboard used.
@@ -88,7 +123,20 @@ export default function LiveCockpit() {
 
   return (
     <div className="space-y-4">
-      <CommandBar flattradeStatus={status} onConfigure={openDrawer} onChanged={fetchAll} />
+      <CommandBar
+        flattradeStatus={status} onConfigure={openDrawer} onChanged={fetchAll}
+        openPositions={openPositionCount}
+      />
+
+      {/* THE execution-state verdict: will a signal transmit a REAL order right
+          now? Also carries the backend's exit_gap/warning banner and the
+          Stand-down control. Kept directly under the command bar — it is the
+          single most consequential line on the page. */}
+      <ExecutionStateStrip
+        armState={armState}
+        onStandDown={handleStandDown}
+        standingDown={standDownBusy}
+      />
 
       {/* Full market ticker — the existing header, now on the trading page too. */}
       <MarketHeader />
@@ -126,11 +174,16 @@ export default function LiveCockpit() {
 
         {/* RIGHT — book & actions */}
         <div className="space-y-4">
-          <RiskKpis limits={limits} positions={positions} orders={orders} guard={guard} />
-          <SectionCard title="Open Positions" badge={<ReconcileChip reconcile={reconcile} />}>
+          <RiskKpis
+            limits={limits} positions={positions} orders={orders} guard={guard}
+            deployments={deployments} deployLive={deployLive}
+          />
+          <SectionCard title="Open Positions" badge={<ReconcileChip reconcile={reconcile} error={errors?.reconcile} />}>
             <PositionsBlotter positions={positions} />
           </SectionCard>
-          <div id="kill-switch"><KillSwitchPanel /></div>
+          {/* scroll-margin-top clears the sticky command bar, so jumping here
+              from it doesn't land with the panel header hidden underneath. */}
+          <div id="kill-switch" style={{ scrollMarginTop: "72px" }}><KillSwitchPanel /></div>
           <GuardPanel />
           <QuickTrade mode={mode} />
           <DeploymentSummary deployments={deployments} onManage={openDrawer} />
@@ -138,7 +191,10 @@ export default function LiveCockpit() {
       </div>
 
       {/* Tabbed account panel */}
-      <AccountTabs limits={limits} orders={orders} blotter={blotter} gtt={gtt} holdings={holdings} />
+      <AccountTabs
+        limits={limits} orders={orders} blotter={blotter} gtt={gtt}
+        holdings={holdings} errors={errors}
+      />
 
       <ConfigDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} onArmedSummaryChange={() => {}} />
     </div>

@@ -32,11 +32,35 @@ function FundCell({ label, value, tone }) {
 }
 
 /**
+ * Shown when a broker read FAILED (as opposed to still loading). The broker
+ * routes 400 whenever the daily Flattrade session is expired, so this is the
+ * normal out-of-session state — name it plainly and point at the fix.
+ */
+function Unavailable({ what, error }) {
+  const detail = error?.response?.data?.detail || error?.message || "";
+  const expired = /session|token|not connected|expired/i.test(String(detail));
+  return (
+    <div className="py-6 text-center">
+      <div className="text-xs text-dim font-mono">{what} unavailable</div>
+      <div className="text-[11px] text-dimmer mt-1">
+        {expired
+          ? "Broker session is not active — log in to Flattrade from the command bar."
+          : String(detail).slice(0, 160) || "The broker read failed."}
+      </div>
+    </div>
+  );
+}
+
+/**
  * DP/demat holdings from GET /live-broker/holdings. Noren nests the symbol in an
  * `exch_tsym` array and reports quantity/price across several fields, so read
  * them defensively — a missing field renders "—" rather than a guessed 0.
  */
-function HoldingsTable({ holdings }) {
+function HoldingsTable({ holdings, error }) {
+  // A failed read leaves `holdings` null exactly like a first load does — without
+  // this branch the tab shows "Loading…" forever whenever the broker session is
+  // expired (every read 400s). Say what is actually wrong instead.
+  if (holdings == null && error) return <Unavailable what="Holdings" error={error} />;
   if (holdings == null) {
     return <div className="text-xs text-dimmer font-mono py-6 text-center">Loading holdings&hellip;</div>;
   }
@@ -85,7 +109,7 @@ const TABS = [
   { k: "trd", label: "Trade book" },
 ];
 
-export default function AccountTabs({ limits, orders, blotter, gtt, holdings }) {
+export default function AccountTabs({ limits, orders, blotter, gtt, holdings, errors = {} }) {
   const [tab, setTab] = useState("fund");
 
   const availMargin = deriveCash(limits);
@@ -122,7 +146,9 @@ export default function AccountTabs({ limits, orders, blotter, gtt, holdings }) 
 
       <div className="p-4">
         {tab === "fund" && (
-          limits == null ? (
+          limits == null && errors.limits ? (
+            <Unavailable what="Funds &amp; margin" error={errors.limits} />
+          ) : limits == null ? (
             <div className="text-xs text-dimmer font-mono py-6 text-center">Loading funds&hellip;</div>
           ) : (
             <>
@@ -148,9 +174,13 @@ export default function AccountTabs({ limits, orders, blotter, gtt, holdings }) 
           )
         )}
 
-        {tab === "hold" && <HoldingsTable holdings={holdings} />}
+        {tab === "hold" && <HoldingsTable holdings={holdings} error={errors.holdings} />}
 
-        {tab === "ord" && <OrdersBlotter orders={orders} allStatuses />}
+        {tab === "ord" && (
+          orders == null && errors.orders
+            ? <Unavailable what="Order book" error={errors.orders} />
+            : <OrdersBlotter orders={orders} allStatuses />
+        )}
 
         {tab === "trd" && (
           <div className="space-y-4">

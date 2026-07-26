@@ -22,7 +22,7 @@ function marketOpen() {
   return weekday && mins >= 555 && mins <= 930;      // 09:15–15:30 IST
 }
 
-export default function CommandBar({ flattradeStatus, onConfigure, onChanged }) {
+export default function CommandBar({ flattradeStatus, onConfigure, onChanged, openPositions = 0 }) {
   const open = marketOpen();
   return (
     <div className="sticky top-0 z-20 flex items-center gap-3 flex-wrap rounded-lg border border-line bg-bg-1/90 backdrop-blur px-3 py-2">
@@ -40,14 +40,17 @@ export default function CommandBar({ flattradeStatus, onConfigure, onChanged }) 
 
       <div className="flex-1" />
 
-      <BrokerConnect flattradeStatus={flattradeStatus} onChanged={onChanged} />
+      <BrokerConnect flattradeStatus={flattradeStatus} onChanged={onChanged} openPositions={openPositions} />
 
+      {/* NAVIGATION, not a fire button. Styled as a quiet outline with a "↓" so
+          it cannot be mistaken for the real kill control — firing still requires
+          the typed confirmation inside KillSwitchPanel. */}
       <a
         href="#kill-switch"
-        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-danger/50 bg-danger/10 text-danger text-xs font-semibold hover:bg-danger/20"
-        title="Jump to the kill switch"
+        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-danger/40 text-danger text-xs font-semibold hover:bg-danger/10"
+        title="Scroll to the kill switch (does not fire it)"
       >
-        <Zap className="w-3.5 h-3.5" /> Kill
+        <Zap className="w-3.5 h-3.5" /> Kill switch ↓
       </a>
       <button
         type="button"

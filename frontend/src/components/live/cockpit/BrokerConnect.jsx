@@ -18,9 +18,10 @@ function tokenHint(s) {
   return typeof raw === "string" ? raw : "";
 }
 
-function BrokerChip({ name, purpose, status, onReconnect, onDisconnect }) {
+function BrokerChip({ name, purpose, status, onReconnect, onDisconnect, openPositions = 0 }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [confirmDisconnect, setConfirmDisconnect] = useState(false);
   const ref = useRef(null);
 
   useEffect(() => {
@@ -72,7 +73,26 @@ function BrokerChip({ name, purpose, status, onReconnect, onDisconnect }) {
             {connected ? (
               <>
                 <button type="button" disabled={busy} onClick={doReconnect} className="flex-1 border border-line bg-bg-2 rounded-md px-2 py-1 text-[11px] hover:border-dim disabled:opacity-50">Reconnect</button>
-                <button type="button" disabled={busy} onClick={doDisconnect} className="flex-1 border border-danger/50 bg-danger/10 text-danger rounded-md px-2 py-1 text-[11px] hover:bg-danger/20 disabled:opacity-50">Disconnect</button>
+                {/* Disconnect is destructive: for Flattrade it severs the session
+                    the software guard, auto-exits and kill switch all depend on.
+                    Two-step, and it names the exposure it would strand. */}
+                {!confirmDisconnect ? (
+                  <button
+                    type="button" disabled={busy}
+                    onClick={() => setConfirmDisconnect(true)}
+                    className="flex-1 border border-line text-dim rounded-md px-2 py-1 text-[11px] hover:border-danger/50 hover:text-danger disabled:opacity-50"
+                  >
+                    Disconnect
+                  </button>
+                ) : (
+                  <button
+                    type="button" disabled={busy}
+                    onClick={doDisconnect}
+                    className="flex-1 border border-danger bg-danger/15 text-danger font-semibold rounded-md px-2 py-1 text-[11px] hover:bg-danger/25 disabled:opacity-50"
+                  >
+                    {busy ? "Disconnecting…" : "Confirm disconnect"}
+                  </button>
+                )}
               </>
             ) : (
               <button type="button" disabled={busy} onClick={doReconnect} className="flex-1 border border-success/50 bg-success/10 text-success rounded-md px-2 py-1 text-[11px] font-semibold hover:bg-success/20 disabled:opacity-50">
@@ -80,7 +100,16 @@ function BrokerChip({ name, purpose, status, onReconnect, onDisconnect }) {
               </button>
             )}
           </div>
-          {name === "Flattrade" && (
+          {confirmDisconnect && (
+            <div className="text-danger text-[10px] mt-2 leading-snug">
+              {name === "Flattrade"
+                ? `Ends the execution session${openPositions > 0 ? ` with ${openPositions} position${openPositions !== 1 ? "s" : ""} OPEN` : ""} — auto-exits and the kill switch stop working until you log in again.`
+                : "Stops the market-data feed; live premiums and the option chain go stale."}
+              {" "}
+              <button type="button" onClick={() => setConfirmDisconnect(false)} className="underline hover:text-foreground">Cancel</button>
+            </div>
+          )}
+          {name === "Flattrade" && !confirmDisconnect && (
             <div className="text-dimmer text-[9.5px] mt-2">Token clears ~06:00 IST daily; log in via AlphaForge (never the shared MCP).</div>
           )}
         </div>
@@ -97,7 +126,7 @@ async function redirectToAuth(startFn) {
   else toast.error("Could not start login — no authorize URL returned.");
 }
 
-export default function BrokerConnect({ flattradeStatus, onChanged }) {
+export default function BrokerConnect({ flattradeStatus, onChanged, openPositions = 0 }) {
   const [upstox, setUpstox] = useState(null);
 
   useEffect(() => {
@@ -117,6 +146,7 @@ export default function BrokerConnect({ flattradeStatus, onChanged }) {
       />
       <BrokerChip
         name="Flattrade" purpose="exec" status={flattradeStatus}
+        openPositions={openPositions}
         onReconnect={() => redirectToAuth(api.flattradeAuthStart)}
         onDisconnect={() => api.disconnectFlattrade().then(() => onChanged?.())}
       />
