@@ -225,7 +225,6 @@ def _first_signal_for_scenario(enriched_df, orr, want):
         scen = classify_scenario(
             regime=row.get("regime"), orb_width_pct=row.get("orb_width_pct_partial"),
             day_type=row.get("day_type"), nr7=row.get("nr7"),
-            atr_ratio=orr._atr_ratio(row),
             narrow_thr=float(params["narrow_thr"]), wide_thr=float(params["wide_thr"]))
         if scen != want:
             continue

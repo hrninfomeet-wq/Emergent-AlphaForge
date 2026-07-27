@@ -5,7 +5,6 @@ it trades, asks the concrete `_route` for a direction, then attaches the
 per-scenario exit plan (via scenarios.exit_plan). Trusted core infra."""
 from __future__ import annotations
 from typing import Any, Dict, List, Tuple
-import pandas as pd
 from app.strategies.base import StrategyBase, Signal
 from app.strategies.session_features import gap_by_session
 from app.scenario_classifier import classify_scenario, SCENARIOS
@@ -39,16 +38,11 @@ class ScenarioRoutedStrategyBase(StrategyBase):
         classified+admitted by the base. Concrete strategies override."""
         raise NotImplementedError
 
-    @staticmethod
-    def _atr_ratio(row) -> float:
-        atr, atr_avg = row.get("atr"), row.get("atr_avg")
-        try:
-            a, av = float(atr), float(atr_avg)
-            if not pd.isna(a) and not pd.isna(av) and av != 0.0:
-                return a / av
-        except (TypeError, ValueError):
-            pass
-        return 1.0
+    # NOTE: `_atr_ratio` used to live here. Its ONLY caller was the
+    # classify_scenario() call below, feeding an `atr_ratio` argument that no
+    # classifier rule ever read — so the helper ran on every pre-cutoff bar to
+    # produce a value that was discarded. Both were removed together; see
+    # app/scenario_classifier.py's docstring.
 
     def session_precompute(self, df, params):
         # Per-session day-open (+ prior-session close), computed once so the hot
@@ -82,7 +76,7 @@ class ScenarioRoutedStrategyBase(StrategyBase):
             return Signal(direction="NONE", blockers=["time gate"])
         scenario = classify_scenario(
             regime=row.get("regime"), orb_width_pct=row.get("orb_width_pct_partial"),
-            day_type=row.get("day_type"), nr7=row.get("nr7"), atr_ratio=self._atr_ratio(row),
+            day_type=row.get("day_type"), nr7=row.get("nr7"),
             narrow_thr=float(params.get("narrow_thr", 0.30)),
             wide_thr=float(params.get("wide_thr", 0.60)))
         if scenario not in self.scenarios_traded:
