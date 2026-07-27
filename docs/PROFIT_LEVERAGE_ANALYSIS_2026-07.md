@@ -1,6 +1,6 @@
 # Profit-leverage analysis — where AlphaForge's edge could actually come from
 
-**Date:** 2026-07-27 · **Item 6 of the user program** · Status: DRAFT (agent inventories pending)
+**Date:** 2026-07-27 · **Item 6 of the user program** · Status: **COMPLETE** — all three inventories measured and merged
 
 > **Scope note.** This is an engineering and research-design document about what *the
 > software* can and cannot express, and about what its own accumulated backtest evidence
@@ -168,56 +168,172 @@ against them.
   what the AI wizard permits, so it may be **falsely refusing rules against data that exists.**
   Needs a measured answer, not a code reading — see §3c.
 
+## 3c. The warehouse, measured — and the finding that settles direction A
+
+Queried directly against Mongo (`alphaforge` db, read-only aggregations over the full
+history — not sampled, not read off a manifest).
+
+**Coverage is excellent, and larger than the research has used:**
+
+| | NIFTY | BANKNIFTY | SENSEX | Pooled |
+|---|---|---|---|---|
+| Spot sessions | 413 | 411 | 411 | 1,235 |
+| Option sessions | 408 | 392 | 410 | **1,210** |
+| Option candles | 2.04M | 2.34M | 2.92M | 7.30M |
+
+Spot is essentially complete — 374.2 candles/session against an expected 375. Range is
+2024-11-25 → today.
+
+**But the option chain is far too thin for spreads. Two measured facts kill direction A:**
+
+1. **Every single day, for every index, stores exactly ONE expiry — 100% of 408/392/410
+   days.** There is not one day in the entire two-year history with two concurrent
+   expiries. **Calendar spreads are untestable, period.**
+2. **Median distinct strikes per day (CE+PE combined) is 6 / 8 / 9** — roughly 3–5 per
+   side — spanning about ±1–1.5% of spot. A vertical spread's further-OTM leg exists only
+   when it happens to land inside that narrow near-ATM band. Wide verticals and genuine
+   tail-hedge legs are **not testable with this data**.
+
+This is the answer to the question §3 left open, and it is decisive:
+
+> **The only defensible form of the short-side experiment (defined-risk spreads) is the one
+> the data cannot support. The form the data *can* support (a naked single-leg short) is the
+> one §3 argues is indefensible on tail risk — and which the executor already blocks by
+> design.**
+
+So direction A is not merely a large build. It is a large build (~20 files, ~30 functions),
+*plus* a novel offline margin model, *plus* multi-leg representation, *plus* a historical
+data-ingestion campaign for a wider strike band that may not even be purchasable. Four
+serial dependencies before the first honest result. **Do not start it.** The cheap,
+correctly-scoped first step is a scoped question, not a build: *can a wider strike band and
+a second expiry be obtained historically at all, and at what cost?* Everything else stays
+blocked behind that answer.
+
+**Two further measured facts that redirect the other options:**
+
+- **India VIX exists for 280 sessions (2025-06-09 → 2026-07-24), gap-free within its
+  window — covering the most recent 67.6% of history**, with the first ~13 months blacked
+  out. This **confirms the manifest is wrong**: `capability.py:27` says
+  `has_vix_history: False` against 104,685 stored VIX candles. The AI wizard is refusing
+  VIX rules against data that demonstrably exists.
+- **BANKNIFTY has a real, index-specific option gap**: one isolated day (2024-11-27), then
+  nothing for ~16 trading days until 2024-12-20. Not present in NIFTY or SENSEX, and not
+  present in BANKNIFTY's own spot data. Any pooled study must exclude that window
+  explicitly rather than silently averaging over it.
+
 ## 4. Candidate directions, ranked by information per rupee of build
 
-*(Ranking pending the warehouse measurement in §3c, which determines whether direction A is
-testable at all.)*
+The ranking below is what the measurements support, not what is most interesting.
 
-### A. Express the short side, as defined-risk spreads only — **strategic, largest build**
-The single untested structural hypothesis, and the only one that attacks the *named*
-bottleneck ("directional signal quality") by not requiring directional accuracy at all.
-See §3 for why this must be spreads and why the kill criterion must be tail-aware.
+### 1st — **B. Un-starve regime routing by pooling all three indices** *(cheapest decisive test)*
+Regime routing is the one signal the project has already judged **"option-+EV yet
+sample-starved"** — promising-unproven. The reflex fix (tune harder) makes overfitting
+worse; the correct fix for a sample problem is more sample. Pooling gives **1,210 option
+index-days against 408 for NIFTY alone — 2.97×** — and requires **zero engine changes**:
+the harness, the three-way split and the cost model all already exist.
 
-### B. Un-starve regime routing by pooling all three indices — **cheapest decisive test**
-Regime routing was judged "option-+EV yet **sample-starved**" — promising-unproven. The
-standard reflex (tune harder) makes overfitting worse. The actual fix for a sample problem
-is more sample, and BANKNIFTY + SENSEX data is already in the warehouse and barely used by
-past research. No new engine capability required; the harness already exists.
+*Honest caveat, and it must be pre-registered:* the three indices differ in strike step
+(50/100/100), lot size (65/35/20) and volatility regime, and they share market-wide
+regimes. Pooling triples the raw day count but does **not** produce three i.i.d. copies.
+The criterion below is written to catch exactly that.
 
-### C. Measure and reduce realized friction — **the only guaranteed return**
-Friction was decisive, not incidental: it is what moved configs from marginal to dead, and
-sensitivity was probed at 0.5 / 1.0 / 1.5% per side. Every basis point of realized
-slippage removed is a permanent, compounding improvement to *every future strategy* — and
-it is the one improvement that requires predicting nothing. The app already places limit
-orders; what is missing is measurement of realized fill vs. model.
+### 2nd — **C. Measure and reduce realized friction** *(the only guaranteed return)*
+Friction was decisive rather than incidental in every campaign — it is what moved configs
+from marginal to dead, which is why the verdict probed 0.5 / 1.0 / 1.5% per side. Every
+basis point of *realized* slippage removed is a permanent improvement to **every future
+strategy**, and it is the one improvement that requires predicting nothing. The app already
+places limit orders and already models friction (`live_friction.fill_premium`); what is
+missing is measurement of **realized fill versus model**. Paper and live journals already
+record entry/exit prices — the comparison is largely an analysis job, not a build.
 
-### D. Non-directional expiry structure — **second experiment, moderate build**
-NIFTY Tue / SENSEX Thu / BANKNIFTY monthly last-Tue expiries. Max-pain is already computed
-in the market-analysis primitives. A structural, non-directional thesis rather than another
-directional signal.
+### 3rd — **D. Non-directional expiry structure** *(the data limitation is not a limitation here)*
+Worth a reframe: the warehouse stores **only the front expiry** — fatal for calendars, but
+that *is* the expiry a 0DTE/expiry-day study trades. The data is well-matched to this
+question, and max-pain is already implemented (`market_analysis.py:139`). Expiries are
+staggered across the week (NIFTY Tue / SENSEX Thu / BANKNIFTY monthly last-Tue), so the
+three indices give three partly-independent expiry-day samples rather than one.
 
-### E. Recognise loss avoidance as realized value — **already banked, worth stating**
+### 4th — **F. Wire the signal that already exists** *(cheap, unblocks everything above)*
+Before hunting new edges, make the existing inputs reachable. VIX is stored for 280
+sessions and is **never a per-bar column**; OI is written on every option candle and **read
+by nothing**; six ICT/SMC structural features have **zero consumers**. This is not a
+strategy — it is removing the reason a whole class of hypotheses is currently unaskable,
+and it fixes a live defect (the dead `vix_boost_threshold` knob) on the way.
+
+### Deferred — **A. Short side via defined-risk spreads**
+Blocked on data (§3c). Reduce to the scoped procurement question first.
+
+### Standing — **E. Loss avoidance is realized value, not a consolation prize**
 The survival gate and three-way split have now refused three families, including one
 sourced from a vendor PDF claiming +₹2.79L that assumed **zero slippage**. Deploying that
-on its face was the counterfactual. This is not a consolation prize: a research instrument
-whose main output is "don't" is doing its job.
+at face value was the live counterfactual. A research instrument whose main output is
+"don't" is working correctly.
 
 ---
 
 ## 5. What is explicitly NOT recommended
 
 - **A fourth parameter sweep of a refuted family.** The premium-momentum kill criterion is
-  already pre-registered and unchanged: a config net-positive on a NEVER-TOUCHED forward
-  window at ≥1%/side friction that also beats plain both-legs there. Until that fires, the
-  family stays dead. The tuner remains in the app; that is enough.
+  pre-registered and unchanged: net-positive on a NEVER-TOUCHED forward window at ≥1%/side
+  that also beats plain both-legs there. Until that fires, the family stays dead. The tuner
+  stays in the app; that is enough.
+- **A naked short-premium strategy**, testable though a single leg technically is. The tail
+  is unbounded, the 20-month sample contains too few genuine tail days to price it, and the
+  executor's buy-only gate is a deliberate safety invariant that should not be relaxed for
+  an experiment.
 - **Building live capability for an unproven edge.** Phase 5B was built as pure capability
-  by explicit user decision, with the edge verdict as an advisory — that trade-off is
-  already made and is not reopened here.
+  by explicit user decision with the edge verdict as advisory — that trade-off is already
+  made and is not reopened here.
 
 ---
 
 ## 6. Pre-registered kill criteria
 
-*(To be completed — each direction gets a criterion written BEFORE the experiment runs,
-following the discipline that made the premium-momentum verdict trustworthy: three-way
-chronological split, holdout touched exactly once, friction mandatory throughout.)*
+Written **before** each experiment runs, following the discipline that made the
+premium-momentum verdict trustworthy: three-way chronological split, holdout touched
+exactly once, friction mandatory throughout.
+
+**B — pooled regime routing.** Split by **date, not by index**, so no index leaks across
+time. Exclude BANKNIFTY 2024-11-28 → 2024-12-19 (measured option gap) explicitly.
+*Killed unless* the pooled-best config is net-positive on the untouched holdout at
+≥1%/side **and** beats both the untuned baseline **and** the NIFTY-only version there.
+**Additionally report per-index holdout separately: if the result is positive on only one
+index, that is not a pooled edge — it is the old sample-starved result wearing a larger n,
+and it is killed.**
+
+**C — friction.** Not an edge test, so no P&L criterion. Success = a measured distribution
+of realized-fill-minus-model slippage from the paper/live journals. *Stopped* if realized
+slippage is already at or below the 1%/side model — then there is nothing to harvest and
+the work ends there rather than becoming a project.
+
+**D — expiry structure.** Same three-way split and friction floor. *Killed unless* the
+effect appears on **at least two of the three indices' expiry days** on the holdout. A
+single-index effect on ~50 expiry days is indistinguishable from noise and is killed.
+
+**F — wiring.** Not an edge test. Success = the features are reachable, causal (a bar at
+time T sees only data at or before T), and byte-identical for strategies that do not
+request them. Any lookahead found = revert.
+
+**A — short side.** No experiment is authorised. Gate: a written answer on whether a wider
+historical strike band and a second expiry are obtainable, and at what cost. Only if that
+answer is yes does the build question reopen.
+
+---
+
+## 7. Recommendation
+
+Run **F then B**, in that order, and treat **C** as a parallel analysis task since it needs
+no engine work.
+
+F first because it is cheap, it fixes a live defect, and it makes VIX- and OI-conditioned
+hypotheses askable at all — including inside B. Then B, because it is the only remaining
+signal the project has already measured as +EV, its stated weakness (sample starvation) has
+a measured 2.97× remedy sitting unused in the warehouse, and it needs no new engine
+capability. C in parallel because reducing realized friction pays into every future
+strategy regardless of which edge, if any, survives.
+
+If B fails its criterion, that is a real result and should be published to the same
+standard as the premium-momentum verdict — at which point the honest conclusion is that
+this app's value is as a research and risk-control instrument rather than as a source of
+directional alpha, and the next question becomes procurement (direction A's data gate)
+rather than another sweep.
