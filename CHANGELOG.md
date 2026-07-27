@@ -2,6 +2,28 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.57.4] — one account, one set of limits (2026-07-27)
+
+**Outcome: the last of the pre-real-money blockers is closed. All four are done.**
+
+- **Your account-wide safety limits now actually stop trades.** Each deployment
+  policed only its own trades, so "max 5 open positions" and the daily loss limit
+  meant *per strategy*, not per account: five strategies could each open five
+  positions, and losses in one were invisible to the others. Entries are now
+  checked against the WHOLE account first — every open position and every rupee
+  won or lost today, across every deployment.
+- **A daily-loss breach now stops the desk, not just one strategy.** Hitting the
+  account loss limit trips the safety latch and halts the engine, so no other
+  deployment can keep trading into the same bad day. Clearing it takes an
+  explicit reset, as before.
+- **A corrupt trade record can no longer halt your whole account.** Unreadable
+  P&L in a single journal row is treated as "I don't know the number" — the
+  entry is refused, but the desk keeps running. Only a real, measured breach
+  stops trading.
+- **Verification:** 3,639 backend tests passed, 4 expected failures, 0 unexpected
+  failures — including tests that drive the real entry path with the account at
+  its limit. Not yet validated in live market hours.
+
 ## [0.57.3] — a concurrent Stop now beats a late Enable (2026-07-25)
 
 **Outcome: the second of the three pre-real-money blockers is closed.**
