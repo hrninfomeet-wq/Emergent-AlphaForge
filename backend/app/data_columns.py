@@ -39,9 +39,8 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
-from app.vix import VIX_INSTRUMENT, build_asof_index
+from app.vix import VIX_ASOF_STALENESS_MS, VIX_INSTRUMENT, build_asof_index
 
-_MS_PER_DAY = 24 * 60 * 60 * 1000
 
 
 @dataclass(frozen=True)
@@ -67,12 +66,14 @@ DATA_COLUMN_REGISTRY: Dict[str, DataColumn] = {
         name="vix",
         column="vix",
         instrument=VIX_INSTRUMENT,
-        # India VIX prints every minute alongside spot, so a same-session print
-        # is the norm. Four calendar days lets the first bar of a session reach
-        # the previous session's close across a long weekend or holiday cluster,
-        # without ever reaching back far enough to pass off a stale regime as
-        # current.
-        max_staleness_ms=4 * _MS_PER_DAY,
+        # Deliberately the SAME bound the two shipped VIX consumers already use
+        # (deployment_evaluator._resolve_vix_asof and premium_momentum_routes).
+        # An adversarial pass caught this at 4 days: a session whose newest print
+        # was 4.5 days old — reachable across a long holiday cluster — would have
+        # PASSED the live session-start VIX gate while the per-bar column read
+        # NaN, i.e. two different answers about the same market state inside one
+        # deployment. One quantity, one staleness bound.
+        max_staleness_ms=VIX_ASOF_STALENESS_MS,
         description=(
             "India VIX (INDIAVIX) close, as-of this bar's timestamp. The "
             "implied-volatility regime an options buyer is paying into. NaN "
@@ -147,15 +148,22 @@ def asof_series(
     if not src_ts:
         return pd.Series(np.nan, index=ts.index, dtype="float64")
 
-    left = pd.DataFrame({
-        "_ts": pd.to_numeric(ts, errors="coerce").astype("Int64"),
-        "_pos": np.arange(len(ts)),
-    })
+    nums = pd.to_numeric(ts, errors="coerce")
+    left = pd.DataFrame({"_ts": nums, "_pos": np.arange(len(ts))})
     # merge_asof requires a sorted key and rejects NaN keys; hold bad rows out
     # and reinstate them as NaN afterwards so a malformed ts can never silently
     # borrow a neighbour's value.
     good = left.dropna(subset=["_ts"]).copy()
-    good["_ts"] = good["_ts"].astype("int64")
+    if pd.api.types.is_integer_dtype(good["_ts"]):
+        good["_ts"] = good["_ts"].astype("int64")
+    else:
+        # TRUNCATE toward zero rather than hard-casting. app.vix.vix_asof does
+        # `int(ts_ms)`, which floors a fractional ts instead of raising, and a
+        # strict Int64 cast would raise ("cannot safely cast non-equivalent
+        # object to int64") — a real backtest-vs-live split on the same input.
+        # Truncation is also the semantically correct answer for an at-or-before
+        # join: a bar stamped 4999.7ms may legitimately see a print at 4999.
+        good["_ts"] = np.trunc(good["_ts"].astype("float64")).astype("int64")
     good = good.sort_values("_ts", kind="mergesort")
 
     right = pd.DataFrame({

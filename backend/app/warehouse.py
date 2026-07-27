@@ -380,6 +380,11 @@ async def attach_required_data(df: pd.DataFrame, required: Any,
         # Upper bound filtered in Python, not via $lte: the repo's in-memory test
         # fakes implement only $gte/$gt/$exists (same reason app.deployment_
         # evaluator._resolve_vix_asof does this). Real Mongo would accept $lte.
+        # NOTE this trim is a MEMORY bound, not the causality guarantee. Every bar
+        # is <= hi by construction, and asof_series only ever looks backward, so a
+        # post-window print could never be selected even if it were left in. A
+        # mutation run confirmed removing this line changes no observable result —
+        # do not mistake it for the thing that prevents lookahead.
         sources[spec.name] = [r for r in rows if int(r.get("ts") or 0) <= hi]
 
     out, coverage = attach_data_columns(df, specs, sources)

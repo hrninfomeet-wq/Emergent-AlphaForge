@@ -155,8 +155,13 @@ def test_query_uses_gte_only_so_repo_test_fakes_keep_working():
     assert set(q["ts"].keys()) == {"$gte"}
 
 
-def test_prints_after_the_window_are_excluded_in_python():
-    """The upper bound is enforced even though the query does not carry $lte."""
+def test_a_post_window_print_can_never_reach_a_bar():
+    """Defense in depth, stated honestly. `attach_required_data` trims rows past
+    the window in Python, but that trim is a MEMORY bound: every bar is <= hi by
+    construction and the join only looks backward, so the result is the same with
+    or without it. A mutation run confirmed removing the trim kills no test — so
+    this asserts the invariant that IS real (a later print never reaches an
+    earlier bar) rather than pretending the filter is what enforces it."""
     df = pd.DataFrame({"ts": [10_000]})
     db = _FakeDB(_vix_rows((10_000, 14.0), (99_000, 88.0)))
     out, _ = asyncio.run(attach_required_data(df, ["vix"], db=db))

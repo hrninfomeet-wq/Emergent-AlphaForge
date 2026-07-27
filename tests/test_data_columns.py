@@ -65,6 +65,24 @@ def test_vix_is_registered_against_the_aux_instrument():
     assert spec.max_staleness_ms > 0
 
 
+def test_vix_staleness_matches_every_other_vix_consumer():
+    """One quantity, one staleness bound. The live session-start gate
+    (deployment_evaluator._resolve_vix_asof) and the premium-momentum route both
+    reach back 5 days; if the per-bar column used a different bound, the same
+    session could PASS the gate while reading NaN per bar — two answers about the
+    same market state inside one deployment."""
+    from app.vix import VIX_ASOF_STALENESS_MS
+    assert DATA_COLUMN_REGISTRY["vix"].max_staleness_ms == VIX_ASOF_STALENESS_MS
+
+    evaluator = (ROOT / "backend/app/deployment_evaluator.py").read_text(encoding="utf-8")
+    routes = (ROOT / "backend/app/routers/premium_momentum_routes.py").read_text(encoding="utf-8")
+    # Both still hardcode the same number; pinned here so migrating them onto the
+    # shared constant stays a no-op, and changing one alone breaks this test.
+    assert "max_staleness_ms=5 * 24 * 60 * 60 * 1000" in evaluator
+    assert "VIX_ASOF_STALENESS_MS = 5 * 24 * 3600 * 1000" in routes
+    assert VIX_ASOF_STALENESS_MS == 5 * 24 * 60 * 60 * 1000
+
+
 def test_resolve_empty_is_empty():
     assert resolve_data_columns([]) == []
     assert resolve_data_columns(None) == []
@@ -160,6 +178,32 @@ def test_malformed_bar_ts_yields_nan_and_never_borrows_a_neighbour():
     assert out.iloc[0] == 10.0
     assert pd.isna(out.iloc[1])
     assert out.iloc[2] == 30.0
+
+
+def test_fractional_bar_ts_is_truncated_exactly_as_the_scalar_path_does():
+    """Regression: a strict Int64 cast RAISED on a fractional ts while
+    `vix_asof` (the live scalar path) floors it via `int(ts_ms)` — a genuine
+    backtest-vs-live split on identical input. Truncation is also the right
+    as-of answer: a bar at 4999.7ms may see a print stamped 4999."""
+    src = _rows((4_999, 15.0))
+    assert asof_series(pd.Series([4_999.7]), src, None).iloc[0] == 15.0
+    assert vix_asof(build_asof_index(src), 4_999.7) == 15.0
+    # and a fractional ts must NOT reach forward to a later print
+    assert pd.isna(asof_series(pd.Series([4_999.7]), _rows((5_000, 99.0)), None).iloc[0])
+
+
+@pytest.mark.parametrize("index", [
+    pd.RangeIndex(3),                 # default
+    pd.Index([7, 2, 11]),             # left over from a boolean filter
+    pd.Index([0, 0, 0]),              # concat without ignore_index
+    pd.Index([9, 8, 7]),              # descending
+])
+def test_alignment_survives_any_frame_index_shape(index):
+    """The join maps results back by POSITION; a non-default, duplicated or
+    descending index label set must not scramble it."""
+    ts = pd.Series([9_000, 1_000, 5_000], index=index)
+    out = asof_series(ts, _rows((1_000, 1.0), (5_000, 5.0), (9_000, 9.0)), DAY)
+    assert list(out) == [9.0, 1.0, 5.0]
 
 
 def test_unsorted_bar_frame_keeps_positional_alignment():

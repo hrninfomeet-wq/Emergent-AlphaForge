@@ -27,6 +27,16 @@ from app.instruments import AUX_INSTRUMENT_KEYS
 
 VIX_INSTRUMENT = "INDIAVIX"
 
+# How far back an as-of VIX lookup may reach before the value is considered
+# unverifiable. CANONICAL HOME for this bound — two shipped consumers already
+# hardcode the same 5 days and should be migrated onto this constant:
+#   * app/deployment_evaluator.py  (_resolve_vix_asof, live session-start gate)
+#   * app/routers/premium_momentum_routes.py (VIX_ASOF_STALENESS_MS)
+# They must not drift: the same session reaching the gate but yielding NaN on a
+# per-bar column (or vice versa) would be two different answers about the same
+# market state inside one deployment.
+VIX_ASOF_STALENESS_MS = 5 * 24 * 60 * 60 * 1000
+
 
 def vix_instrument_key() -> str:
     return AUX_INSTRUMENT_KEYS[VIX_INSTRUMENT]
