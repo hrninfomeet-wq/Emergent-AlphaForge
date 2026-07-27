@@ -76,7 +76,11 @@ def main():
             return _result(result_path, {"ok": False, "error": f"expected exactly one strategy class, found {len(strat_classes)}"})
         inst = strat_classes[0]()
 
-        cols = sorted(allowed_columns(getattr(inst, "required_features", ())))
+        # required_data MUST be threaded too: without it the smoke frame lacks the
+        # declared warehouse column and a strategy that reads row["vix"] — the exact
+        # use case required_data exists for — is REJECTED at install with KeyError.
+        cols = sorted(allowed_columns(getattr(inst, "required_features", ()),
+                                      getattr(inst, "required_data", ())))
         return _result(result_path, run_smoke(inst, cols))
     except Exception:
         return _result(result_path, {"ok": False, "error": "evaluate/import raised:\n" + traceback.format_exc()[-1500:]})

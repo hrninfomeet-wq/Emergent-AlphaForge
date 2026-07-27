@@ -305,6 +305,108 @@ def test_capability_report_carries_data_columns():
     assert any(d["name"] == "vix" for d in capability_report()["data_columns"])
 
 
+# ---------------------------------------------------------------------------
+# the DECLARING path — end to end through AI authoring
+# ---------------------------------------------------------------------------
+
+class _AuthoredVixStrategy(StrategyBase):
+    """Stands in for a full-Python authored strategy: declares the column and
+    actually reads it, which is the whole point of required_data."""
+    id = "_test_authored_vix"
+    required_data = ["vix"]
+    parameter_schema = {"thr": {"type": "float", "min": 8, "max": 30, "default": 15.0}}
+
+    def evaluate(self, row, prev, params, ctx) -> Signal:
+        return Signal(direction="CE" if row["vix"] >= params["thr"] else "NONE", score=60)
+
+
+def test_install_smoke_frame_contains_declared_data_columns():
+    """REGRESSION. The install-time smoke driver built its frame from
+    `allowed_columns(required_features)` only, so a strategy declaring
+    required_data=["vix"] and reading row["vix"] — the exact use case this
+    feature exists for — was REJECTED at install with KeyError: 'vix'. The
+    `required_data` parameter existed on allowed_columns but NO production caller
+    passed it; only a test did."""
+    from app.ai._py_smoke_driver import run_smoke
+
+    inst = _AuthoredVixStrategy()
+    cols = sorted(allowed_columns(getattr(inst, "required_features", ()),
+                                  getattr(inst, "required_data", ())))
+    assert "vix" in cols
+    result = run_smoke(inst, cols)
+    assert result.get("ok") is True, result
+
+
+def test_smoke_driver_source_threads_required_data():
+    """Pinned at the source, because the failure is silent: without this the
+    driver still builds a frame and still runs — it just omits the column."""
+    src = (BACKEND / "app/ai/_py_smoke_driver.py").read_text(encoding="utf-8")
+    assert 'getattr(inst, "required_data", ())' in src
+
+
+def test_undeclared_vix_rule_is_buildable_with_declaration_not_impossible():
+    """The wizard must not report `vix` as missing data — the warehouse holds it
+    for the full spot window. It is buildable; it just needs the declaration."""
+    from app.ai.capability import FeasibilityClass, RuleTokens, classify_rule
+
+    v = classify_rule(RuleTokens(cols=frozenset({"vix"}), barspan=1))
+    assert v.feasibility is FeasibilityClass.BUILDABLE_WITH_FEATURE
+    assert v.feature == "vix"
+    assert v.live_feasible is True
+    assert "required_data" in v.message
+
+
+def test_declared_vix_rule_is_buildable_now():
+    from app.ai.capability import FeasibilityClass, RuleTokens, classify_rule
+
+    v = classify_rule(RuleTokens(cols=frozenset({"vix", "close"}), barspan=1),
+                      required_data=("vix",))
+    assert v.feasibility is FeasibilityClass.BUILDABLE_NOW
+
+
+def test_spec_can_declare_required_data_and_it_survives_codegen():
+    """Declaring must reach the INSTALLED class — without it the engine never
+    joins the column and every read is NaN forever."""
+    from app.ai.compiler import compile_spec, validate_spec
+    from app.ai.spec_schema import Condition, ExitSpec, StrategySpec
+
+    spec = StrategySpec(
+        id="vix_spec_demo", name="VIX Spec Demo", description="declares vix",
+        entry_ce=[Condition(left="vix", op=">", right=15.0)],
+        exits=ExitSpec(spot_target_pts=30, spot_stop_pts=15),
+        required_data=["vix"],
+    )
+    assert validate_spec(spec) == []
+    assert "required_data = ['vix']" in compile_spec(spec)
+
+
+def test_spec_referencing_vix_without_declaring_it_is_rejected():
+    """Advertise != allow, enforced at compile time too."""
+    from app.ai.compiler import validate_spec
+    from app.ai.spec_schema import Condition, ExitSpec, StrategySpec
+
+    spec = StrategySpec(
+        id="vix_undeclared", name="Undeclared", description="reads vix without asking",
+        entry_ce=[Condition(left="vix", op=">", right=15.0)],
+        exits=ExitSpec(spot_target_pts=30, spot_stop_pts=15),
+    )
+    assert any("vix" in e for e in validate_spec(spec))
+
+
+def test_unknown_data_column_in_a_spec_is_a_clean_validation_error():
+    from app.ai.compiler import validate_spec
+    from app.ai.spec_schema import Condition, ExitSpec, StrategySpec
+
+    spec = StrategySpec(
+        id="bad_data", name="Bad", description="asks for something that does not exist",
+        entry_ce=[Condition(left="close", op=">", right="100")],
+        exits=ExitSpec(spot_target_pts=30, spot_stop_pts=15),
+        required_data=["not_a_column"],
+    )
+    errors = validate_spec(spec)
+    assert any("required_data" in e and "not_a_column" in e for e in errors)
+
+
 def test_manifest_no_longer_denies_vix_history():
     """It was False while the warehouse held 280 sessions of it, which made the
     authoring wizard refuse rules against real data. Backfilled 2026-07-27 to

@@ -83,7 +83,19 @@ def validate_spec(spec: StrategySpec) -> List[str]:
             f"available: {sorted(FEATURE_REGISTRY)}"
         )
     known_feats = [f for f in spec.required_features if f in FEATURE_REGISTRY]
-    cols = allowed_columns(known_feats)
+    # Same treatment for warehouse-backed data columns: an unknown name is a
+    # clean validation error (resolve_data_columns would otherwise raise), and a
+    # KNOWN one widens the column allow-list — declaring is what makes the engine
+    # join it, so a Spec may only reference `vix` once it has asked for it.
+    from app.data_columns import DATA_COLUMN_REGISTRY
+    unknown_data = [d for d in spec.required_data if d not in DATA_COLUMN_REGISTRY]
+    if unknown_data:
+        errors.append(
+            f"required_data: unknown data column(s) {unknown_data}; "
+            f"available: {sorted(DATA_COLUMN_REGISTRY)}"
+        )
+    known_data = [d for d in spec.required_data if d in DATA_COLUMN_REGISTRY]
+    cols = allowed_columns(known_feats, known_data)
     pnames = _param_names(spec)
 
     # id must be a clean slug (it becomes a Python identifier + a filename).
@@ -304,6 +316,10 @@ def compile_spec(spec: StrategySpec) -> str:
     # references columns that never get computed and silently never fires).
     if spec.required_features:
         lines.append(f"    required_features = {list(spec.required_features)!r}")
+    # Same for warehouse-backed columns — without this line on the installed
+    # class, attach_required_data never runs for it and every read is NaN.
+    if spec.required_data:
+        lines.append(f"    required_data = {list(spec.required_data)!r}")
     # cooldown_bars is declared in the schema (the engine handles cooldown; the
     # generated evaluate() does NOT, mirroring builtins).
     schema_src = _param_schema_literal(spec)

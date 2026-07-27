@@ -54,3 +54,4 @@ class StrategySpec(BaseModel):
     cooldown_bars: int = 0
     exits: ExitSpec = Field(default_factory=ExitSpec)
     required_features: List[str] = Field(default_factory=list)  # opt-in structural features
+    required_data: List[str] = Field(default_factory=list)      # opt-in warehouse columns (vix)

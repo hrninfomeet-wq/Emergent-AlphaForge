@@ -375,19 +375,45 @@ def _feature_live_feasible(name: str) -> Optional[bool]:
     return None if g is None else feature_live_feasible(g)
 
 
-def classify_rule(tokens: RuleTokens, *, required_features=()) -> Verdict:
+def classify_rule(tokens: RuleTokens, *, required_features=(), required_data=()) -> Verdict:
     """Pure R1-R9 first-match-wins feasibility classification of one rule.
 
     The LLM (SP-4) fills `tokens`; this function makes the deterministic call.
     """
     from app.ai.compiler import allowed_columns
+    from app.data_columns import DATA_COLUMN_REGISTRY, data_column_names
 
     # R1 — every referenced column is already available (incl. declared
-    # features) AND the rule fits Spec's 2-bar window AND no extra concept.
+    # features and declared data columns) AND the rule fits Spec's 2-bar window
+    # AND no extra concept.
     if tokens.cols and not tokens.concepts and tokens.barspan <= 2:
-        if tokens.cols <= allowed_columns(required_features):
+        if tokens.cols <= allowed_columns(required_features, required_data):
             return Verdict(FeasibilityClass.BUILDABLE_NOW,
                            "Buildable now from existing columns.")
+
+    # R1b — a warehouse-backed DATA column the rule uses but has not DECLARED.
+    # Neither "impossible" nor "data we don't have": the warehouse HAS it, the
+    # strategy just has to opt in via required_data, which is what makes the
+    # engine join it as-of each bar at load time. Sits after R1 so a DECLARED
+    # column is buildable-now, and before R2 so it can never be mis-reported as
+    # missing data — which is exactly what WAREHOUSE_MANIFEST["has_vix_history"]
+    # used to claim while 280 sessions of VIX sat in the warehouse.
+    try:
+        already = set(data_column_names(list(required_data or ())))
+    except Exception:
+        already = set()
+    undeclared = (tokens.cols & {d.column for d in DATA_COLUMN_REGISTRY.values()}) - already
+    if undeclared:
+        col = sorted(undeclared)[0]
+        spec = next(d for d in DATA_COLUMN_REGISTRY.values() if d.column == col)
+        return Verdict(
+            FeasibilityClass.BUILDABLE_WITH_FEATURE,
+            f"'{col}' IS stored in the warehouse (instrument {spec.instrument}) but "
+            f"must be opted into: declare required_data=[{spec.name!r}] and the engine "
+            "joins it as-of each bar at load time (causal — a bar only ever sees a "
+            "print at or before its own timestamp).",
+            feature=spec.name, live_feasible=True,
+        )
 
     # R2 — needs data the warehouse does not store.
     blocked = tokens.concepts & DATA_BLOCKED_CONCEPTS
