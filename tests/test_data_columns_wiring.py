@@ -87,6 +87,24 @@ def test_attach_is_called_on_the_raw_frame_before_enrichment():
             assert attach < enrich, f"{rel} joins data columns after enrichment"
 
 
+@pytest.mark.parametrize("rel,pool_call", [
+    ("app/optimizer.py", "start_pool(raw_df"),
+    ("app/wfo.py", "start_pool(df"),
+])
+def test_worker_pool_is_seeded_after_the_join_not_before(rel, pool_call):
+    """`parallel_eval.start_pool` ships the frame to worker PROCESSES, which then
+    evaluate trials against that copy. Seed it before the join and parallel trials
+    would see an all-NaN column while sequential trials saw real values — an
+    optimization result silently corrupted on only some paths, and invisible
+    because both produce plausible numbers. The ordering is correct today; this
+    pins it, because nothing else would catch the call being moved."""
+    src = (BACKEND / rel).read_text(encoding="utf-8")
+    assert src.index("attach_required_data(df") < src.index(pool_call), (
+        f"{rel} seeds the worker pool from a frame captured before "
+        "attach_required_data — declared data columns would be missing in workers"
+    )
+
+
 # ---------------------------------------------------------------------------
 # async seam
 # ---------------------------------------------------------------------------
