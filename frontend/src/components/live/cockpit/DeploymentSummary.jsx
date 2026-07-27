@@ -32,13 +32,29 @@ export default function DeploymentSummary({ deployments, onManage }) {
         )}
         {rows.slice(0, 4).map((d) => {
           const p = statusPill(d);
+          // WHY it is paused is the actionable part. Without it a deployment that
+          // auto-paused (source drift, kill switch) looks identical to one the
+          // operator paused deliberately — and a drift pause needs "Re-pin &
+          // resume", not plain Resume, so a silent pill sends them in circles.
+          const pausedReason = d.kill_switch_reason || d.drift_reason;
+          const isDriftPaused = d.drift_reason === "strategy_source_drift";
           return (
-            <div key={d.id} className="flex items-center justify-between px-3 py-2 rounded-md bg-bg-2 border border-line/60">
-              <span className="text-xs text-foreground truncate mr-2">
-                {d.name || d.strategy_id}
-                {d.instrument ? <span className="text-dimmer"> · {d.instrument}</span> : null}
-              </span>
-              <span className={`text-[9px] uppercase tracking-wide px-2 py-0.5 rounded-full border ${p.cls}`}>{p.label}</span>
+            <div key={d.id} className="px-3 py-2 rounded-md bg-bg-2 border border-line/60">
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-foreground truncate mr-2">
+                  {d.name || d.strategy_id}
+                  {d.instrument ? <span className="text-dimmer"> · {d.instrument}</span> : null}
+                </span>
+                <span className={`text-[9px] uppercase tracking-wide px-2 py-0.5 rounded-full border shrink-0 ${p.cls}`}>{p.label}</span>
+              </div>
+              {pausedReason && (
+                <div className="mt-1 text-[10.5px] text-warning font-mono truncate" title={pausedReason}>
+                  auto-paused: {pausedReason}
+                  {isDriftPaused && (
+                    <span className="text-dimmer"> — needs “Re-pin &amp; resume”</span>
+                  )}
+                </div>
+              )}
             </div>
           );
         })}
