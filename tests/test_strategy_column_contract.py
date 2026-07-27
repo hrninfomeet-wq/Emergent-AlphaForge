@@ -39,6 +39,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 
 from app.ai.grounding import build_grounding_catalog          # noqa: E402
+from app.data_columns import DATA_COLUMN_REGISTRY            # noqa: E402
 from app.features.registry import FEATURE_REGISTRY            # noqa: E402
 from app.indicator_groups import SHARED_INDICATOR_PARAM_KEYS  # noqa: E402
 from app.strategies.base import StrategyBase, get_registry    # noqa: E402
@@ -158,6 +159,14 @@ def _allowed_columns_for(strategy: StrategyBase) -> set:
         group = FEATURE_REGISTRY.get(name)
         if group is not None:
             allowed.update(group.columns)
+    # Warehouse-backed load-time columns are legal ONLY to a strategy that
+    # declares them — declaring is what makes the engine actually join them
+    # (app.warehouse.attach_required_data). An undeclared read stays a hard
+    # failure, which is what caught the original dead `vix` read.
+    for name in getattr(strategy, "required_data", ()) or ():
+        spec = DATA_COLUMN_REGISTRY.get(name)
+        if spec is not None:
+            allowed.add(spec.column)
     return allowed
 
 
@@ -183,10 +192,18 @@ def test_strategies_read_only_columns_the_engine_builds():
                     continue
                 owner = next((g.name for g in FEATURE_REGISTRY.values()
                               if column in g.columns), None)
-                why = (f"column belongs to feature {owner!r}, which "
-                       f"{strategy.id!r} does not declare in required_features"
-                       if owner else
-                       "no engine path builds this column")
+                data_owner = next((d.name for d in DATA_COLUMN_REGISTRY.values()
+                                   if column == d.column), None)
+                if owner:
+                    why = (f"column belongs to feature {owner!r}, which "
+                           f"{strategy.id!r} does not declare in required_features")
+                elif data_owner:
+                    why = (f"column is the warehouse-backed data column "
+                           f"{data_owner!r}, which {strategy.id!r} does not declare "
+                           f"in required_data — without that the engine never joins "
+                           f"it and the read yields None")
+                else:
+                    why = "no engine path builds this column"
                 violations.append(
                     f"{strategy.id}: {mod.replace('.', '/')}.py:{lineno} reads "
                     f"row[{column!r}] — {why}"

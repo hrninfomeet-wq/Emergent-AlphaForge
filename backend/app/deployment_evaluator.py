@@ -436,6 +436,12 @@ async def evaluate_deployment_on_close(
             "reason": f"insufficient_candles ({len(df)} < {MIN_BARS_FOR_EVALUATION})",
         }
 
+    # Warehouse-backed columns (VIX, ...) join onto the RAW rolling window before
+    # enrichment, so a live bar sees the SAME columns a backtest bar does. Lazy
+    # import mirrors _resolve_vix_asof. No declaration => frame unchanged.
+    from app.warehouse import attach_required_data
+    df, _ = await attach_required_data(df, strategy.required_data, db=db)
+
     # Strategy needs indicator-enriched + regime-classified frame.
     merged_params = strategy.merged_params(params)
     df_enriched = precompute_all_indicators(df, merged_params)

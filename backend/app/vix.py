@@ -32,13 +32,18 @@ def vix_instrument_key() -> str:
     return AUX_INSTRUMENT_KEYS[VIX_INSTRUMENT]
 
 
-def build_asof_index(vix_candles: List[Dict[str, Any]]) -> Dict[str, List]:
+def build_asof_index(vix_candles: List[Dict[str, Any]], *,
+                     value_field: str = "close") -> Dict[str, List]:
     """Build a sorted (ts, close) index for fast as-of lookups.
 
     Returns {"ts": [...sorted...], "close": [...aligned...]}.
+
+    `value_field` lets `app.data_columns` reuse this exact sort/parse/dedup
+    path for other warehouse-backed series; at its default this is
+    byte-identical to the original VIX-only behaviour.
     """
     rows = sorted(
-        ((int(c["ts"]), float(c.get("close", c.get("vix", 0.0)))) for c in vix_candles if c.get("ts") is not None),
+        ((int(c["ts"]), float(c.get(value_field, c.get("vix", 0.0)))) for c in vix_candles if c.get("ts") is not None),
         key=lambda x: x[0],
     )
     return {"ts": [r[0] for r in rows], "close": [r[1] for r in rows]}

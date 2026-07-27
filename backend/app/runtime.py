@@ -53,7 +53,7 @@ from app.data_hygiene import (
 )
 from app.warehouse_autoupdate import run_autoupdate_once
 from app.paper_squareoff import is_square_off_due, square_off_open_paper_trades
-from app.warehouse import audit_integrity, load_candles_df, persist_candles_df
+from app.warehouse import attach_required_data, audit_integrity, load_candles_df, persist_candles_df
 from app import upstox_client
 from app.option_candles import persist_option_candles_df
 from app.option_contract_store import upsert_option_contracts
@@ -1507,6 +1507,7 @@ async def _option_preflight_report(req: BacktestReq) -> Dict[str, Any]:
     if df.empty or len(df) < 50:
         raise HTTPException(400, f"Insufficient spot candles for {underlying} in the window.")
     params = strategy.merged_params(req.params)
+    df, _ = await attach_required_data(df, strategy.required_data)
     df_enriched = precompute_all_indicators(df, params)
     df_enriched["regime"] = classify_regime_series(df_enriched)
     res = run_backtest(

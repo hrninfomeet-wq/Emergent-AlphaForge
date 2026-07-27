@@ -84,6 +84,13 @@ class StrategyBase:
     parameter_schema: Dict[str, Any] = {}
     is_builtin: bool = True
     required_features: List[str] = []
+    # Warehouse-backed columns joined AS-OF the bar ts at LOAD time, before
+    # indicator enrichment (see app.data_columns). Separate from
+    # `required_features` because these need I/O the pure feature registry is
+    # forbidden by contract. Empty => no join runs and the frame is
+    # byte-identical. Declaring a name the engine cannot supply is a clean
+    # DataColumnError, not a silent NaN column.
+    required_data: List[str] = []
 
     def default_params(self) -> Dict[str, Any]:
         return {k: v.get("default") for k, v in self.parameter_schema.items()}
@@ -126,6 +133,7 @@ class StrategyBase:
             "parameter_schema": self.parameter_schema,
             "is_builtin": self.is_builtin,
             "required_features": self.required_features,
+            "required_data": self.required_data,
             "origin": _origin_from_module(type(self).__module__),
         }
 

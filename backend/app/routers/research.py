@@ -20,7 +20,7 @@ from app.backtest import run_backtest, stat_significance
 from app.option_warehouse_jobs import run_option_warehouse_fetch_job
 from app.preset_execution import execution_from_option_config
 from app.walkforward import walk_forward
-from app.warehouse import load_candles_df
+from app.warehouse import attach_required_data, load_candles_df
 from app.optimizer import (
     create_job as optimizer_create_job,
     resume_optimization as optimizer_resume_job,
@@ -209,6 +209,10 @@ async def backtest_run(req: BacktestReq):
     # Merge default + user params (strict allow-list)
     params = strategy.merged_params(req.params)
 
+    # Warehouse-backed columns (VIX, ...) join onto the RAW frame, before
+    # indicator enrichment. No declaration => frame unchanged (byte-identical).
+    df, data_coverage = await attach_required_data(df, strategy.required_data)
+
     # Compute indicators + regime
     df_enriched = precompute_all_indicators(df, params)
     df_enriched["regime"] = classify_regime_series(df_enriched)
@@ -258,6 +262,10 @@ async def backtest_run(req: BacktestReq):
         "walkforward": wf,
         "significance": sig,
         "candle_count": int(len(df_enriched)),
+        # Empty for every strategy that declares no `required_data`. When
+        # non-empty it reports per-column coverage over THIS window, so a result
+        # can never quietly rest on a column that was absent for part of it.
+        "data_coverage": data_coverage,
         "regime_distribution": regime_dist,
         "signal_funnel": res["signal_funnel"],
         "instrument": req.instrument.upper(),
@@ -292,6 +300,9 @@ async def run_backtest_job(run_id: str, req: BacktestReq) -> None:
                 "error": f"Insufficient candles for {req.instrument}. Ingest data first via /api/warehouse/ingest."}})
             return
         params = strategy.merged_params(req.params)
+        # Warehouse-backed columns join on the RAW frame while we are still on the
+        # event loop — the _compute closure below is sync and cannot await.
+        df, _ = await attach_required_data(df, strategy.required_data)
 
         # All CPU-bound work (indicators + spot backtest + optional walk-forward)
         # runs inside ONE worker thread so the event loop stays responsive.

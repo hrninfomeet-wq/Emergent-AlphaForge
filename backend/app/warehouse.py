@@ -343,6 +343,60 @@ async def load_candles_df(instrument: str, start_ts: Optional[int] = None, end_t
     return df.sort_values("ts").reset_index(drop=True)
 
 
+async def attach_required_data(df: pd.DataFrame, required: Any,
+                               *, db: Any = None) -> tuple:
+    """Join a strategy's declared `required_data` columns onto `df`, as-of each
+    bar's own ts. Returns (df, coverage).
+
+    THE seam that makes warehouse-backed series (India VIX today) readable by a
+    strategy AT DECISION TIME rather than only as a post-hoc trade tag. Call it
+    on the RAW frame, right after `load_candles_df` and BEFORE indicator
+    enrichment: `precompute_all_indicators`, `enrich_with_cache` and
+    `materialize_features` all copy-and-add, so an extra raw column flows
+    through every path untouched and — importantly — is neutral to the
+    optimizer's indicator-param cache key.
+
+    No declaration => returns the frame unchanged, so every existing strategy
+    stays byte-identical. The heavy lifting (and the causality guarantee) lives
+    in the pure `app.data_columns`; this function only does the I/O.
+    """
+    from app.data_columns import attach_data_columns, resolve_data_columns
+
+    specs = resolve_data_columns(list(required or ()))
+    if not specs or df is None or df.empty or "ts" not in df.columns:
+        return df, {}
+
+    db = db if db is not None else get_db()
+    lo = int(pd.to_numeric(df["ts"], errors="coerce").min())
+    hi = int(pd.to_numeric(df["ts"], errors="coerce").max())
+
+    sources: Dict[str, List[Dict[str, Any]]] = {}
+    for spec in specs:
+        rows = await db.candles_1m.find(
+            {"instrument": spec.instrument,
+             "ts": {"$gte": lo - int(spec.max_staleness_ms)}},
+            {"_id": 0, "ts": 1, spec.source_field: 1},
+        ).sort("ts", 1).to_list(length=500000)
+        # Upper bound filtered in Python, not via $lte: the repo's in-memory test
+        # fakes implement only $gte/$gt/$exists (same reason app.deployment_
+        # evaluator._resolve_vix_asof does this). Real Mongo would accept $lte.
+        sources[spec.name] = [r for r in rows if int(r.get("ts") or 0) <= hi]
+
+    out, coverage = attach_data_columns(df, specs, sources)
+    # Degrade LOUDLY. A partially-covered column is the exact failure mode that
+    # made the old vix_boost_threshold knob worthless: a strategy scoring zero
+    # on the missing bars looks identical to one scoring zero on real data.
+    for col, info in coverage.items():
+        if info.get("coverage_pct", 0.0) < 100.0:
+            log.warning(
+                "data column %r covers only %.2f%% of this window (%d/%d bars, "
+                "%d session(s) missing) — any rule reading it is INERT on the rest",
+                col, info.get("coverage_pct", 0.0), info.get("present", 0),
+                info.get("bars", 0), info.get("sessions_missing_count", 0),
+            )
+    return out, coverage
+
+
 async def candle_sample(instrument: str, limit: int = 200) -> List[Dict[str, Any]]:
     """Return latest N candles for the price chart preview."""
     db = get_db()

@@ -39,7 +39,8 @@ _PARAM_PREFIX = "param:"
 _EXIT_REQUIRED_MODES = {"SCALP", "INTRADAY"}
 
 
-def allowed_columns(required_features: "list | tuple" = ()) -> Set[str]:
+def allowed_columns(required_features: "list | tuple" = (),
+                    required_data: "list | tuple" = ()) -> Set[str]:
     """Whitelist of columns a Condition may reference.
 
     = grounding-catalog indicator columns (computed indicators + regime) + raw
@@ -56,6 +57,12 @@ def allowed_columns(required_features: "list | tuple" = ()) -> Set[str]:
         from app.features.registry import resolve_features
         for g in resolve_features(list(required_features)):
             cols |= set(g.columns)
+    if required_data:
+        # Same advertise-!=-allow rule for warehouse-backed columns: a Spec may
+        # reference `vix` only once the strategy declares required_data=["vix"],
+        # which is what makes the engine actually join it at load time.
+        from app.data_columns import data_column_names
+        cols |= set(data_column_names(list(required_data)))
     return cols
 
 

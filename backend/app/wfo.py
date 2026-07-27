@@ -504,7 +504,7 @@ async def run_wfo(job_id: str, payload: Dict[str, Any], resume: bool = False) ->
             _worker_evaluate_wfo,
         )
         from app.strategies.base import get_registry
-        from app.warehouse import load_candles_df
+        from app.warehouse import attach_required_data, load_candles_df
 
         instrument = str(payload["instrument"]).upper()
         strategy_id = payload["strategy_id"]
@@ -549,6 +549,9 @@ async def run_wfo(job_id: str, payload: Dict[str, Any], resume: bool = False) ->
                                        "error": f"Insufficient candles for {instrument} ({len(df)})",
                                        "finished_at": datetime.now(timezone.utc).isoformat()})
             return
+        # Warehouse-backed columns (VIX, ...) join onto the RAW frame here, before
+        # indicator enrichment. No declaration => frame unchanged (byte-identical).
+        df, _ = await attach_required_data(df, strategy.required_data)
 
         # Per-row IST session date (sorted ascending because ts is sorted; ISO
         # strings sort chronologically) → row ranges per window via searchsorted.

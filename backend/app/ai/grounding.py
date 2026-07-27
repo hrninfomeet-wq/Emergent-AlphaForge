@@ -58,12 +58,25 @@ def build_grounding_catalog() -> Dict[str, Any]:
     feature_columns = sorted(
         set().union(*(set(g.columns) for g in FEATURE_REGISTRY.values()))
     ) if FEATURE_REGISTRY else []
-    all_columns = sorted(set(indicator_columns) | set(feature_columns))
+    # Warehouse-backed load-time columns (India VIX today). Advertised so the AI
+    # layer knows they EXIST; still only allowed to a strategy that declares them
+    # in required_data (see ai.compiler.allowed_columns).
+    from app.data_columns import DATA_COLUMN_REGISTRY
+    data_column_entries = [
+        {"name": d.name, "column": d.column, "instrument": d.instrument,
+         "needs_declaration": True, "causal": d.causal,
+         "max_staleness_ms": d.max_staleness_ms, "description": d.description}
+        for d in DATA_COLUMN_REGISTRY.values()
+    ]
+    data_columns = sorted(d.column for d in DATA_COLUMN_REGISTRY.values())
+    all_columns = sorted(set(indicator_columns) | set(feature_columns) | set(data_columns))
 
     return {
         "indicator_columns": indicator_columns,
         "feature_columns": feature_columns,
         "feature_entries": feature_entries,
+        "data_columns": data_columns,
+        "data_column_entries": data_column_entries,
         "all_columns_including_features": all_columns,
         "signal_fields": signal_fields,
         "strategies": strategies,

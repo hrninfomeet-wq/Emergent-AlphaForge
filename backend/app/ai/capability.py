@@ -25,7 +25,10 @@ WAREHOUSE_MANIFEST: Dict[str, Any] = {
     "has_oi_history": False,
     "has_l2_depth": False,
     "has_tick_orderflow": False,
-    "has_vix_history": False,
+    # TRUE since the 2026-07-27 backfill: INDIAVIX 1m spans the full spot window
+    # (2024-11-25 onward, 412/413 NIFTY sessions). Readable per-bar only by a
+    # strategy declaring required_data=["vix"] — see app.data_columns.
+    "has_vix_history": True,
     "date_range": {"start": _DATA_START, "end": None},
     "instruments": ["NIFTY", "BANKNIFTY", "SENSEX"],
 }
@@ -50,6 +53,7 @@ def capability_report() -> Dict[str, Any]:
     return {
         "columns": columns,
         "features": cat["feature_entries"],
+        "data_columns": cat.get("data_column_entries", []),
         "warehouse": WAREHOUSE_MANIFEST,
     }
 

@@ -35,7 +35,7 @@ from app.db import get_db
 from app.indicator_groups import enrich_with_cache
 from app.parallel_eval import effective_workers, start_pool, shutdown_pool, parallel_backtest
 from app.strategies.base import get_registry
-from app.warehouse import load_candles_df
+from app.warehouse import attach_required_data, load_candles_df
 from app.option_backtest import simulate_paired_option_trades, build_candles_by_key
 from app.options_universe import select_contract_for_signal
 from app.deployment_quality import compute_spot_option_correlation
@@ -1088,6 +1088,10 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
         if df.empty or len(df) < 100:
             await _update_job(job_id, {"status": "failed", "error": f"Insufficient candles for {instrument} ({len(df)})", "finished_at": datetime.now(timezone.utc).isoformat()})
             return
+        # Warehouse-backed columns (VIX, ...) join onto the RAW frame, so they
+        # ride through `enrich_with_cache` untouched and stay neutral to the
+        # indicator-param cache key below. No declaration => unchanged frame.
+        df, _ = await attach_required_data(df, strategy.required_data)
 
         # Indicators depend on params (rsi_length, macd_*, atr_length, …). We
         # therefore enrich LAZILY per indicator-period combination and cache the
