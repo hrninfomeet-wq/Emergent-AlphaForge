@@ -2,6 +2,24 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.57.3] — a concurrent Stop now beats a late Enable (2026-07-25)
+
+**Outcome: the second of the three pre-real-money blockers is closed.**
+
+- **Stopping a deployment while it is being enabled now wins.** Enabling live
+  execution runs a preflight (broker readiness, engine check, evidence compute)
+  before it writes. A Stop, Disable, pause or archive that landed during that
+  window used to be silently overwritten by the late write, re-authorizing real
+  money on a deployment you had just stopped. Enabling now refuses with a clear
+  409 if the deployment changed underneath it, naming its current state.
+- **Safety actions no longer revert unrelated changes.** Pause/stop/archive
+  previously wrote the entire deployment document back from a stale read, which
+  could undo a concurrent update. They now write only the fields they own — and
+  remain unconditional, so a safety action always lands.
+- **Verification:** 3,628 backend tests passed, 4 expected failures, 0
+  unexpected failures, including a test proving a mid-preflight Stop is no
+  longer overwritten. Not yet validated in live market hours.
+
 ## [0.57.2] — transmit fence: Stop now reliably fences an in-flight order (2026-07-25)
 
 **Outcome: the first of the three pre-real-money blockers is closed.**
