@@ -371,3 +371,59 @@ that proportionate to what could have caused it?"
 blocker list is CODE-complete. What now stands between the app and real money is
 VALIDATION, not implementation: none of these four has been exercised against a live
 broker, because the current IP is not registered with Flattrade.
+
+---
+
+## Session 2026-07-27 (cont.) — Item 6: what a capability inventory is actually for
+
+**Core lesson: before searching harder inside a family, check whether the tool can express
+anything outside it. Three expensive campaigns had a shared cause that no parameter sweep
+could ever reach.**
+
+`direction: "CE"|"PE"|"NONE"` (no side), `pnl_pts = exit - entry`, `side="B"` always. Every
+one of ~600 premium-momentum configs, and the three families before it, was a variant
+inside the single family the engine can express: PAY premium. The verdict's own line —
+"gross points on the holdout are −798 **before a single rupee of friction**" — reads as a
+scorecard but is really a *measurement*, taken from one side only.
+
+**Confirmed approaches:**
+- **State the counter-argument before the idea.** The naive inference from "long premium
+  loses" is "so short it", and that inference is wrong: friction is two-sided, short gamma
+  inverts the distribution into the many-small-wins/rare-ruin shape that specifically
+  flatters a 20-month backtest, margin replaces premium outlay, and the risk machinery
+  assumes max-loss = premium paid. Writing that *first* is what made the next step
+  (defined-risk spreads only) forced rather than optional — and it is what made the
+  warehouse measurement decisive instead of merely interesting.
+- **Measure the load-bearing fact; never accept a manifest for it.** The whole
+  recommendation hinged on strike depth. `capability.py` documents "ATM ±1 band" — and the
+  same inventory had already caught that file being wrong about two other fields. Querying
+  Mongo directly gave the decisive number (exactly ONE expiry per day, 100% of days;
+  median 6/8/9 strikes) *and* proved `has_vix_history: False` false against 104,685 stored
+  VIX candles. A stale manifest is not a cheap error here: it drives what the AI authoring
+  wizard permits, so it was silently refusing rules against data that exists.
+- **Let the measurement overturn the ranking.** The short side was the most interesting
+  idea and it finished LAST — deferred to a procurement question — because the only
+  defensible form of the experiment is the one the data cannot support. The cheapest
+  option (pool three indices: 2.97× sample, zero engine changes) finished first. Ranking
+  before measuring would have inverted this.
+- **Delegate inventory, keep synthesis.** Three Sonnet agents did file-and-line and
+  database inventory well and flagged their own uncertainty honestly (one explicitly said
+  "recommend checking a live sample before relying on either claim" — and it was right).
+  The judgement calls — what the counter-argument is, what the ranking should be, what to
+  refuse — stayed with me. Two of their concrete claims I re-verified myself before
+  building on them; both held.
+
+**Dead ends / traps:**
+- **Editing a doc by replacing a section HEADER leaves the old body stranded.** Replacing
+  "## 4 …header + pending note" inserted new §4-§7 *above* the old §4 body, producing two
+  §5s and two §6s. The first cleanup fixed only half of it. When restructuring a document,
+  cut to the next *sibling* boundary, and re-`grep "^## "` afterwards — the header list is
+  the cheap proof the structure is right.
+- Assert on the boundary before deleting text (`assert "…" in s[:i]`) — a wrong index
+  silently destroys the new work instead of the old.
+
+**Standing conclusion recorded in the deliverable:** if pooled regime routing fails its
+pre-registered criterion, that is a real result and the honest reading is that this app's
+value is as a research and risk-control instrument rather than a source of directional
+alpha. Loss avoidance is already banked: the survival gate has refused three families,
+one of them sourced from a vendor PDF claiming +₹2.79L that assumed ZERO slippage.
