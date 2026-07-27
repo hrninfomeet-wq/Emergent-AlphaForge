@@ -72,11 +72,12 @@ export default function LiveCockpit() {
     }
   }, [fetchAll]);
 
-  // Auto-dismiss the OAuth banner. Left pinned it would still claim "login
-  // successful" hours later, after the token has expired or been disconnected —
-  // a stale green banner contradicting a red broker chip.
+  // Auto-dismiss the SUCCESS banner only. Left pinned it would still claim
+  // "login successful" hours later, after the token expired — a stale green
+  // banner contradicting a red broker chip. An OAuth ERROR must NOT vanish: it
+  // is the only diagnostic the operator gets when a login round-trip fails.
   useEffect(() => {
-    if (!authMsg) return undefined;
+    if (!authMsg?.ok) return undefined;
     const t = window.setTimeout(() => setAuthMsg(null), 8000);
     return () => window.clearTimeout(t);
   }, [authMsg]);
