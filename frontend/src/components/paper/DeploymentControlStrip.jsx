@@ -3,7 +3,8 @@ import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
 import { fmtNum, colorPnL } from "@/lib/fmt";
-import { Pause, Play, Square, OctagonX, Activity, SlidersHorizontal } from "lucide-react";
+import { Pause, Play, Square, OctagonX, Activity, SlidersHorizontal, Pin } from "lucide-react";
+import { isDriftPaused, pauseReasonOf, driftTooltip } from "@/lib/deploymentState";
 import { deploymentLiveness } from "@/lib/deploymentLiveness";
 import { getApiErrorMessage } from "@/lib/apiError";
 
@@ -89,10 +90,14 @@ function CapsEditor({ dep, onSaved }) {
 
 // One row of the Live Deployments strip: status dot + strategy/name, live open
 // count + MTM, and the Pause/Resume + Stop controls.
-function DeploymentControlRow({ dep, open, busy, feedHealth, onPause, onResume, onStop, onCapsSaved }) {
+function DeploymentControlRow({ dep, open, busy, feedHealth, onPause, onResume, onStop, onRepin, onCapsSaved }) {
   const status = String(dep.status || "").toUpperCase();
   const isActive = status === "ACTIVE";
   const isPaused = status === "PAUSED";
+  // A drift pause cannot be cleared by Resume — the next bar re-pauses it. The
+  // recovery action has to live HERE, next to the strategy it applies to.
+  const driftPaused = isDriftPaused(dep);
+  const pausedReason = pauseReasonOf(dep);
   const live = deploymentLiveness(dep, feedHealth);
   const openCount = open?.openCount || 0;
   const openMtm = open?.openMtm || 0;
@@ -122,7 +127,14 @@ function DeploymentControlRow({ dep, open, busy, feedHealth, onPause, onResume, 
             <Pause className="w-3 h-3 mr-1" /> Pause
           </Button>
         )}
-        {isPaused && (
+        {driftPaused && (
+          <Button variant="ghost" size="sm" disabled={busy} onClick={() => onRepin?.(dep)}
+            className="h-7 text-xs text-info hover:text-foreground" data-testid="paper-deploy-repin"
+            title={driftTooltip(dep)}>
+            <Pin className="w-3 h-3 mr-1" /> Re-pin &amp; resume
+          </Button>
+        )}
+        {isPaused && !driftPaused && (
           <Button variant="ghost" size="sm" disabled={busy} onClick={() => onResume(dep)}
             className="h-7 text-xs text-emerald-300 hover:text-emerald-200" data-testid="paper-deploy-resume">
             <Play className="w-3 h-3 mr-1" /> Resume
@@ -134,6 +146,14 @@ function DeploymentControlRow({ dep, open, busy, feedHealth, onPause, onResume, 
         </Button>
       </div>
     </div>
+    {pausedReason && (
+      <div className="px-3 pb-2 -mt-1 text-[10.5px] font-mono text-warning truncate"
+           title={driftPaused ? driftTooltip(dep) : pausedReason}
+           data-testid="paper-deploy-pause-reason">
+        auto-paused: {pausedReason}
+        {driftPaused && <span className="text-dimmer"> — the strategy code changed; use “Re-pin &amp; resume”</span>}
+      </div>
+    )}
     {capsOpen && <CapsEditor dep={dep} onSaved={onCapsSaved} />}
     </div>
   );
@@ -141,7 +161,7 @@ function DeploymentControlRow({ dep, open, busy, feedHealth, onPause, onResume, 
 
 // Live Deployments control strip: master Stop-all + per-deployment Pause/Resume/Stop.
 // Presentational only — the page owns the doPause/doResume/doStop/doStopAll handlers.
-export default function DeploymentControlStrip({ liveDeployments, perDeployOpen, busy, feedHealth, onPause, onResume, onStop, onStopAll, onCapsSaved }) {
+export default function DeploymentControlStrip({ liveDeployments, perDeployOpen, busy, feedHealth, onPause, onResume, onStop, onRepin, onStopAll, onCapsSaved }) {
   return (
     <div className="rounded-lg border border-line bg-bg-1" data-testid="paper-deploy-strip">
       <div className="px-3 py-2 border-b border-line flex items-center gap-2">
@@ -168,6 +188,7 @@ export default function DeploymentControlStrip({ liveDeployments, perDeployOpen,
               onPause={onPause}
               onResume={onResume}
               onStop={onStop}
+              onRepin={onRepin}
               onCapsSaved={onCapsSaved}
             />
           ))}

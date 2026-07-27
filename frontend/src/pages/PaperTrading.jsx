@@ -417,6 +417,18 @@ export default function PaperTrading() {
     catch (e) { toast.error(e.response?.data?.detail || e.message); }
     finally { setBusy(false); }
   };
+  // Re-pin to the strategy's CURRENT source, which is the only way out of a
+  // drift pause — a plain Resume is auto-paused again on the very next bar.
+  const doRepin = async (dep) => {
+    setBusy(true);
+    try {
+      await api.repinDeploymentSource(dep.id);
+      toast.success(`Re-pinned "${dep.name || dep.id}" to the current strategy code`);
+      await refreshAll();
+    }
+    catch (e) { toast.error(e.response?.data?.detail || e.message); }
+    finally { setBusy(false); }
+  };
   const doStop = async (dep) => {
     const oc = perDeployOpen[dep.id]?.openCount || 0;
     const offHours = (livePos.items || []).length === 0;
@@ -491,6 +503,7 @@ export default function PaperTrading() {
         onPause={doPause}
         onResume={doResume}
         onStop={doStop}
+        onRepin={doRepin}
         onStopAll={doStopAll}
         onCapsSaved={refreshAll}
       />

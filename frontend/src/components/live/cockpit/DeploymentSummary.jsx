@@ -5,6 +5,7 @@ import { api } from "@/lib/api";
 import { getApiErrorMessage } from "@/lib/apiError";
 import { SectionCard } from "@/components/live/liveHelpers";
 import { useLiveData } from "@/components/live/LiveDataProvider";
+import { isDriftPaused, pauseReasonOf, driftTooltip, statusPillOf } from "@/lib/deploymentState";
 
 /**
  * Deployments panel for the cockpit core.
@@ -15,14 +16,9 @@ import { useLiveData } from "@/components/live/LiveDataProvider";
  * shows its state and sends the operator to the ⚙ drawer, where the consent flow
  * lives. Enabling live is a decision, not a quick action.
  */
-function statusPill(dep) {
-  const mode = String(dep?.mode || "").toLowerCase();
-  const status = String(dep?.status || "").toUpperCase();
-  if (mode === "live") return { label: "Live", cls: "bg-danger/10 text-danger border-danger/40" };
-  if (status === "PAUSED") return { label: "Paused", cls: "bg-amber-500/10 text-warning border-amber-500/40" };
-  if (status === "ACTIVE") return { label: "Paper · running", cls: "bg-success/10 text-success border-success/40" };
-  return { label: status || "—", cls: "bg-bg-3 text-dim border-line" };
-}
+// Status/pause/drift semantics come from lib/deploymentState so this panel, the
+// /paper control strip and the /live card can never disagree about what a
+// deployment's state means or what action clears it.
 
 function DeploymentRow({ dep, onDone }) {
   const [busy, setBusy] = useState(false);
@@ -31,8 +27,8 @@ function DeploymentRow({ dep, onDone }) {
   const active = String(dep?.status || "").toUpperCase() === "ACTIVE";
   // WHY it paused is the actionable part: a drift pause needs a RE-PIN, not a
   // plain resume — resuming alone just gets auto-paused again on the next bar.
-  const pausedReason = dep?.kill_switch_reason || dep?.drift_reason;
-  const isDriftPaused = paused && dep?.drift_reason === "strategy_source_drift";
+  const pausedReason = pauseReasonOf(dep);
+  const driftPaused = isDriftPaused(dep);
 
   const run = async (fn, okMsg) => {
     setBusy(true);
@@ -47,7 +43,7 @@ function DeploymentRow({ dep, onDone }) {
     }
   };
 
-  const p = statusPill(dep);
+  const p = statusPillOf(dep);
   const btn = "inline-flex items-center gap-1 px-2 py-1 rounded-md border text-[11px] font-medium disabled:opacity-50";
 
   return (
@@ -74,18 +70,18 @@ function DeploymentRow({ dep, onDone }) {
       ) : (
         <div className="flex items-center gap-1.5 flex-wrap">
           {busy && <Loader2 className="w-3 h-3 animate-spin text-dimmer" />}
-          {isDriftPaused && (
+          {driftPaused && (
             <button
               type="button" disabled={busy}
               onClick={() => run(() => api.repinDeploymentSource(dep.id), "Re-pinned to the current strategy code — resuming")}
-              title={`The strategy file changed since this was deployed (pinned ${dep.drift_pinned_sha || "?"} → current ${dep.drift_current_sha || "?"}). Re-pin to the current code, then it can run again.`}
+              title={driftTooltip(dep)}
               className={`${btn} border-info/50 bg-info/10 text-info hover:bg-info/20`}
               data-testid="cockpit-repin"
             >
               <Pin className="w-3 h-3" /> Re-pin &amp; resume
             </button>
           )}
-          {paused && !isDriftPaused && (
+          {paused && !driftPaused && (
             <button
               type="button" disabled={busy}
               onClick={() => run(() => api.resumeDeployment(dep.id), "Resumed — paper trading again")}
