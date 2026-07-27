@@ -11,7 +11,36 @@
 
 ---
 
-## ⚠ Read first — today's risk posture
+## 🚧 REVISED 2026-07-27 09:10 IST — operating from an UNREGISTERED IP
+
+The operator is out of town on an IP that is **not** registered against the
+Flattrade API key. Flattrade binds the key to registered static IPs for BOTH
+token generation and order requests, so **no Flattrade session can be
+established today**. Verified: the stored token is from 07-22, every read returns
+`Session Expired : Invalid Session Key`, and no `/auth/callback` ever lands.
+This is a broker-side constraint, not an app defect — nothing to fix.
+
+**Consequence — today's scope:**
+
+| Runs today (Upstox only) | Deferred to a registered-IP day |
+|---|---|
+| Phase-5B **paper validation** (the main event) — signals, entries, exits | Everything Flattrade: funds/margin, holdings, positions, order/trade book, greeks |
+| Market Pulse: regime, confidence, multi-TF trend, S/R range bar | Enabling any deployment to live |
+| Market Analysis: PCR, max-pain, IV rank, straddle, option chain | **Item 1** (unconfirmed place) + **C2** transmit fence — both need a real transmit |
+| Account tabs showing honest **"unavailable — session not active"** states (a real test of that fix) | **Item 3** DEFAULT-STOP badge — guard rehydrate reads the BROKER position book |
+| The paper mid-session restart drill (paper recovery half) | Live readback checklist |
+
+**Scheduling constraint to remember: the 1-lot live day MUST be run from the
+registered static IP (103.76.102.148 / .149).** Plan travel accordingly.
+
+**Pre-open actions already taken by the agent:** Upstox verified connected (valid
+to 22:00 UTC); market-data stream started in full mode. At 09:10 IST the stream
+was connecting and delivering bursts but not holding — expected pre-open.
+**At 09:15+, confirm the stream is running and the option universe is
+subscribed**, otherwise PCR/max-pain stay correctly suppressed as
+`option_oi_unavailable`.
+
+## ⚠ Original risk posture (still valid)
 
 | Fact | Consequence |
 |---|---|
