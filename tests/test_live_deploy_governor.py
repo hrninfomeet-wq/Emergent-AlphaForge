@@ -336,3 +336,128 @@ def test_nan_only_cap_on_live_mode_hits_caps_missing_fail_closed():
            "risk": {"live": {"daily_loss_cap": float("nan")}}}
     result = asyncio.run(check_live_caps(db, dep, capped_lots=1, now_utc=NOW_UTC))
     assert result == {"allow": False, "reason": "live_caps_missing", "pause": True}
+
+
+# ===========================================================================
+# C3 — ACCOUNT-GLOBAL caps.
+#
+# check_live_caps counts only the deployment's OWN trades, so exposure opened by
+# a sibling deployment was invisible: five open positions or a large loss
+# elsewhere could not block a new entry, and the account-level guardrails
+# (max_open_positions / daily_loss_limit) had no production caller at all.
+# ===========================================================================
+
+from app.live_deploy_governor import check_account_caps  # noqa: E402
+
+
+class _AcctDB:
+    """live_trades across MANY deployments (the account view)."""
+    def __init__(self, rows):
+        self.live_trades = _LiveColl(rows)
+
+
+_ACCT_CONFIG = {
+    "daily_loss_limit": 5000,
+    "profit_lock_target": 10000,
+    "max_open_positions": 5,
+    "max_lots_per_order": 20,
+    "blocked_until_reset": False,
+}
+
+
+def test_account_caps_allow_when_account_is_clean():
+    db = _AcctDB([_trade(deployment_id="dep1", status="OPEN", created_at=_TODAY_AT)])
+    out = asyncio.run(check_account_caps(db, config=_ACCT_CONFIG, now_utc=NOW_UTC))
+    assert out["allow"] is True
+
+
+def test_account_open_positions_in_OTHER_deployments_block_a_new_entry():
+    """THE C3 scenario: this deployment has none open, but the ACCOUNT is at the
+    cap because of sibling deployments."""
+    rows = [_trade(deployment_id=f"other{i}", status="OPEN", created_at=_TODAY_AT) for i in range(5)]
+    db = _AcctDB(rows)
+    out = asyncio.run(check_account_caps(db, config=_ACCT_CONFIG, now_utc=NOW_UTC))
+    assert out["allow"] is False
+    assert out["reason"] == "account_max_open_block"
+
+
+def test_account_daily_loss_across_deployments_halts_entries():
+    """Losses in sibling deployments count toward the ACCOUNT daily-loss limit."""
+    rows = [
+        _trade(deployment_id="other1", status="CLOSED", realized_pnl=-3000,
+               created_at=_TODAY_AT, closed_at=_TODAY_AT),
+        _trade(deployment_id="other2", status="CLOSED", realized_pnl=-2500,
+               created_at=_TODAY_AT, closed_at=_TODAY_AT),
+    ]
+    db = _AcctDB(rows)
+    out = asyncio.run(check_account_caps(db, config=_ACCT_CONFIG, now_utc=NOW_UTC))
+    assert out["allow"] is False
+    assert out["reason"] == "account_broker_stop_loss"
+    assert out["pause"] is True
+
+
+def test_account_loss_breach_trips_the_engine_latch():
+    """A loss breach must HALT the account, not just refuse this one entry —
+    this is guardrail_tick's first production caller."""
+    calls = []
+
+    class _Engine:
+        async def guardrail_tick(self, mtm, open_count):
+            calls.append((mtm, open_count))
+            return "broker_stop_loss"
+
+    rows = [_trade(deployment_id="o1", status="CLOSED", realized_pnl=-9000,
+                   created_at=_TODAY_AT, closed_at=_TODAY_AT)]
+    db = _AcctDB(rows)
+    out = asyncio.run(check_account_caps(db, config=_ACCT_CONFIG, engine=_Engine(), now_utc=NOW_UTC))
+    assert out["allow"] is False
+    assert len(calls) == 1, "guardrail_tick was not invoked on an account loss breach"
+
+
+def test_account_latch_blocks_every_entry():
+    """Once the safety latch is tripped, nothing enters until an explicit reset."""
+    db = _AcctDB([])
+    cfg = {**_ACCT_CONFIG, "blocked_until_reset": True}
+    out = asyncio.run(check_account_caps(db, config=cfg, now_utc=NOW_UTC))
+    assert out["allow"] is False
+    assert out["reason"] == "account_latched"
+
+
+def test_account_caps_fail_closed_on_unreadable_trades():
+    """If the account exposure cannot be read we must NOT trade blind."""
+    class _Boom:
+        def find(self, *a, **k):
+            raise RuntimeError("mongo down")
+
+    class _DB:
+        live_trades = _Boom()
+
+    out = asyncio.run(check_account_caps(_DB(), config=_ACCT_CONFIG, now_utc=NOW_UTC))
+    assert out["allow"] is False
+    assert "unavailable" in out["reason"]
+
+
+def test_account_poisoned_pnl_refuses_entry_WITHOUT_latching_the_account():
+    """A NaN in one journal row must not escalate into an account-wide halt.
+
+    json.loads accepts NaN, so a single malformed live_trades row can make the
+    account MTM non-finite. evaluate_guardrails' fail-safe maps that to
+    "broker_stop_loss" — correct for "don't trade on unknown P&L", but if we
+    forwarded it to guardrail_tick a DATA DEFECT would trip the sticky latch and
+    halt the engine until a human reset it. Refuse the entry; do not stop the desk.
+    """
+    calls = []
+
+    class _Engine:
+        async def guardrail_tick(self, mtm, open_count):
+            calls.append((mtm, open_count))
+            return "broker_stop_loss"
+
+    db = _AcctDB([_trade(deployment_id="o1", status="OPEN", created_at=_TODAY_AT,
+                         unrealized_pnl=float("nan"))])
+    out = asyncio.run(check_account_caps(db, config=_ACCT_CONFIG, engine=_Engine(),
+                                         now_utc=NOW_UTC))
+    assert out["allow"] is False
+    assert "exposure_invalid" in out["reason"]
+    assert out["pause"] is False
+    assert calls == [], "a malformed row must never trip the account latch"

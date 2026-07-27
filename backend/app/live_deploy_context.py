@@ -307,6 +307,10 @@ async def build_live_deploy_context(db: Any) -> Optional[Dict[str, Any]]:
         "actid": actid,
         "band_pct": _DEFAULT_BAND_PCT,
         "arm_for": bound_arm_for,
+        # The WHOLE safety config, not just max_lots_per_order — the C3
+        # account-wide gate needs max_open_positions / daily_loss_limit /
+        # blocked_until_reset from the same doc the engine enforces.
+        "account_safety_config": dict(cfg or {}),
     }
 
 

@@ -917,3 +917,104 @@ async def test_transmit_fence_fails_closed_when_deployment_vanishes():
     db.strategy_deployments.rows.clear()
     ok, why = await recheck()
     assert ok is False and why == "deployment_missing"
+
+
+# --------------------------------------------------------------------------- #
+# C3 — ACCOUNT-WIDE caps are enforced on the real entry path
+#
+# The per-deployment governor is blind to sibling deployments. These tests bind
+# the account gate to the orchestrator so a breach elsewhere in the account
+# stops THIS deployment from opening anything new. Without the wiring the gate
+# would exist but never run — the exact failure mode C3 is about.
+# --------------------------------------------------------------------------- #
+
+_ACCT_CFG = {
+    "daily_loss_limit": 5000,
+    "profit_lock_target": 10000,
+    "max_open_positions": 5,
+    "max_lots_per_order": 20,
+    "blocked_until_reset": False,
+}
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_blocks_entry_when_ACCOUNT_open_limit_is_hit_elsewhere():
+    """5 open trades all belong to OTHER deployments — the entry must still be refused."""
+    db = FakeDB()
+    sig = make_confirmed_signal()
+    db.signals.rows.append(dict(sig))
+    for i in range(5):
+        db.live_trades.rows.append({
+            "id": f"t{i}", "deployment_id": f"other-{i}", "status": "OPEN",
+            "created_at": NOW.isoformat(), "lots": 1, "unrealized_pnl": 0.0,
+        })
+    calls: List[Dict[str, Any]] = []
+    out = await auto_live_trade_for_signal(
+        db, make_live_deployment(lots=2), sig,
+        latest_tick_lookup={KEY: _fresh_tick(151.5)}.get,
+        now_utc=NOW,
+        place_fn=make_place_fn(_SUCCESS, calls),
+        arm_for=_arm_for_factory([]),
+        account_max=20,
+        account_safety_config=dict(_ACCT_CFG),
+    )
+    assert out["created"] is False
+    assert out["reason"] == "account_max_open_block"
+    assert out.get("account_blocked") is True
+    assert calls == [], "no order may be transmitted once the account cap is hit"
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_still_places_when_account_is_within_caps():
+    """Control: the gate must not become a blanket refusal."""
+    db = FakeDB()
+    sig = make_confirmed_signal()
+    db.signals.rows.append(dict(sig))
+    calls: List[Dict[str, Any]] = []
+    out = await auto_live_trade_for_signal(
+        db, make_live_deployment(lots=2), sig,
+        latest_tick_lookup={KEY: _fresh_tick(151.5)}.get,
+        now_utc=NOW,
+        place_fn=make_place_fn(_SUCCESS, calls),
+        arm_for=_arm_for_factory([]),
+        account_max=20,
+        account_safety_config=dict(_ACCT_CFG),
+    )
+    assert out["created"] is True
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_unaffected_when_no_account_config_supplied():
+    """No config => account caps not evaluated; per-deployment caps still govern."""
+    db = FakeDB()
+    sig = make_confirmed_signal()
+    db.signals.rows.append(dict(sig))
+    for i in range(9):
+        db.live_trades.rows.append({
+            "id": f"t{i}", "deployment_id": f"other-{i}", "status": "OPEN",
+            "created_at": NOW.isoformat(), "lots": 1, "unrealized_pnl": 0.0,
+        })
+    calls: List[Dict[str, Any]] = []
+    out = await auto_live_trade_for_signal(
+        db, make_live_deployment(lots=2), sig,
+        latest_tick_lookup={KEY: _fresh_tick(151.5)}.get,
+        now_utc=NOW,
+        place_fn=make_place_fn(_SUCCESS, calls),
+        arm_for=_arm_for_factory([]),
+        account_max=20,
+    )
+    assert out["created"] is True
+
+
+def test_live_deploy_context_exports_the_account_safety_config():
+    """The gate is dead code unless the context ships the whole safety doc."""
+    import inspect
+    from app import live_deploy_context as ctx
+    src = inspect.getsource(ctx.build_live_deploy_context)
+    assert '"account_safety_config"' in src, (
+        "build_live_deploy_context must export account_safety_config or the C3 "
+        "account gate never runs in production")
+    from app import deployment_evaluator as de
+    assert "account_safety_config" in inspect.getsource(de.evaluate_active_deployments), (
+        "the evaluator's live_kwargs allowlist must forward account_safety_config")

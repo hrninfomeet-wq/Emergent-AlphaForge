@@ -267,6 +267,10 @@ async def auto_live_trade_for_signal(
     band_pct: float = 5.0,
     uid: str = "",
     actid: str = "",
+    #: Account-level safety config (the SafetyConfigStore doc) used by the C3
+    #: account-wide gate. None => not supplied, account caps not evaluated (the
+    #: per-deployment governor still applies).
+    account_safety_config: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Place a REAL order for a clean CONFIRMED signal on an armed deployment.
 
@@ -293,6 +297,22 @@ async def auto_live_trade_for_signal(
     if signal_doc.get("live_trade_id"):
         return {"created": False, "reason": "live_trade_already_exists",
                 "trade_id": signal_doc.get("live_trade_id")}
+
+    # (c0) ACCOUNT-WIDE caps (C3). Checked BEFORE the per-deployment governor
+    # because it is the broader constraint: this deployment can be well within
+    # its own caps while the ACCOUNT is already at its open-position limit or
+    # past its daily loss limit because of sibling deployments. Skipped only when
+    # no safety config is available (the caller passes it in; None = not
+    # configured, and the per-deployment caps below still apply).
+    if account_safety_config is not None:
+        from app.live_deploy_governor import check_account_caps
+        acct = await check_account_caps(
+            db, config=account_safety_config, engine=engine, now_utc=now)
+        if not acct.get("allow"):
+            log.warning("auto-live refused signal %s on ACCOUNT caps: %s",
+                        signal_id, acct.get("reason"))
+            return {"created": False, "reason": acct.get("reason"),
+                    "account_blocked": True}
 
     # (c) per-deployment caps governor
     from app.live_deploy_governor import check_live_caps

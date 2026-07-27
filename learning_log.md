@@ -313,3 +313,61 @@ computed.
    strategy plugins, profit-leverage ideas, end-to-end audit, handover docs.
 3. Uncommitted Codex diff (~2.7k lines, 50 files) needs a commit decision + full suite run.
 4. H4/H5 verification.
+
+---
+
+## Session 2026-07-27 (cont.) — C3 account-global caps: the last real-money blocker
+
+**Core lesson: when you delegate a verdict to an existing shared function, you inherit
+its fail-safe — and a fail-safe that was proportionate at its original call site can be
+wildly disproportionate at a new one.**
+
+`evaluate_guardrails` returns `broker_stop_loss` for a genuine loss breach AND for
+non-finite inputs ("don't trade on an unknown P&L"). Reusing it was right — account
+semantics should live in one place. But I also forwarded its verdict to
+`engine.guardrail_tick`, which *persists* the latch and halts the engine until a human
+resets it. So a single NaN in one `live_trades` row — and `json.loads` accepts `NaN` —
+would have escalated a DATA DEFECT into an account-wide, manual-reset halt. The fix is a
+two-way split the shared function can't make for me, because only the caller knows what
+its side effect costs:
+
+- numbers **unknown** (non-finite) → refuse THIS entry (`account_exposure_invalid`), no latch
+- numbers **known and breaching** → refuse AND halt the desk (the real stop)
+
+Generalised: reuse the *judgement*, but decide the *escalation* at the call site. Ask of
+every delegated verdict, "what does this function's worst-case answer make me DO, and is
+that proportionate to what could have caused it?"
+
+**Confirmed approaches:**
+- **A gate is not done when it works; it's done when it can't become dead code.** The
+  gate was correct and fully green while still being unreachable in production — the
+  config never left `build_live_deploy_context`. Three behavioural wiring tests through
+  the real orchestrator plus one source-contract test (`inspect.getsource` asserting the
+  evaluator's `live_kwargs` allowlist forwards `account_safety_config`) close that gap.
+  The allowlist is the trap: adding a key to the context dict does nothing unless the
+  copy loop also names it, and nothing fails when you forget.
+- **Order the gates by breadth, not by convenience.** The account check runs BEFORE the
+  per-deployment governor: a deployment can be well inside its own caps while the account
+  is already at its limit because of siblings.
+- **Verify the semantics you're relying on, don't infer them from a passing test.** I read
+  `evaluate_guardrails` (`>=` on open count, `mtm <= -abs(limit)`, priority order) and
+  `guardrail_tick` (`trip()` + `_halt`) before trusting either. The staleness question
+  ("is my per-cadence config snapshot safe?") only resolved by finding that the executor
+  re-reads the latch fresh via `can_trade()` at the chokepoint — a snapshot that can only
+  under-block, behind a fresh authoritative check, is fine. That reasoning is now a
+  docstring, so the next reader doesn't re-litigate it.
+
+**Dead ends / traps:**
+- Source-contract tests must name the *enclosing* function: the `live_kwargs` allowlist is
+  in `evaluate_active_deployments`, not `evaluate_deployment_on_close`. Two wrong guesses
+  before grepping the `def` line numbers.
+- `tests/test_live_deploy_governor.py` is `asyncio.run`-style, not `pytest.mark.asyncio` —
+  appending in the wrong idiom breaks *collection* for the whole file, so every other test
+  in it disappears rather than failing loudly.
+- `_float()` does NOT sanitise non-finite values: `_float(float("nan")) == nan`. Any sum
+  built from journal rows can be NaN.
+
+**Status:** suite 3639 passed / 0 failed. C2, C4, H1, C3 are all closed — the pre-real-money
+blocker list is CODE-complete. What now stands between the app and real money is
+VALIDATION, not implementation: none of these four has been exercised against a live
+broker, because the current IP is not registered with Flattrade.

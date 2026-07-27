@@ -34,6 +34,96 @@ from app.deployment_kill_switch import (
 )
 
 
+async def check_account_caps(
+    db: Any,
+    *,
+    config: Dict[str, Any],
+    engine: Any = None,
+    now_utc: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """ACCOUNT-WIDE entry gate (C3) — the caps that span every deployment.
+
+    ``check_live_caps`` below is per-deployment: it queries ``live_trades``
+    filtered by ``deployment_id``, so exposure opened by a SIBLING deployment is
+    invisible to it. Five open positions or a large realised loss elsewhere could
+    not block a new entry, and the account-level guardrails in the safety config
+    (``max_open_positions`` / ``daily_loss_limit``) had no production caller at
+    all. This closes that hole.
+
+    The verdict is delegated to the existing pure
+    :func:`app.live.kill_switch.evaluate_guardrails`, so account semantics —
+    including its fail-safe on non-finite inputs — live in exactly one place and
+    cannot drift from what the engine enforces.
+
+    Side effect: on a loss breach it calls ``engine.guardrail_tick(...)``, which
+    trips the safety latch and halts the engine. A daily-loss breach is an
+    ACCOUNT event; refusing only the current entry while leaving every other
+    deployment free to trade would not be a stop.
+
+    Returns ``{"allow": bool, "reason": str, "pause": bool}``. Fails CLOSED: if
+    the account's exposure cannot be read, we refuse rather than trade blind.
+
+    Config freshness: *config* is the per-cadence snapshot taken by
+    ``build_live_deploy_context``, so a threshold edited mid-cadence is applied
+    on the next pass, not this one. That is safe because it can only ever
+    under-block here: the authoritative latch check is re-read fresh downstream
+    at the executor chokepoint (``engine.can_trade()``), which no order can skip.
+    The exposure numbers themselves are always read fresh from ``live_trades``.
+    """
+    from app.live.kill_switch import evaluate_guardrails, is_entry_blocked
+
+    cfg = dict(config or {})
+
+    # The latch is deliberate and sticky — only an explicit reset clears it.
+    if is_entry_blocked(cfg):
+        return {"allow": False, "reason": "account_latched", "pause": True}
+
+    if now_utc is None:
+        now_utc = datetime.now(timezone.utc)
+    if now_utc.tzinfo is None:
+        now_utc = now_utc.replace(tzinfo=timezone.utc)
+    today: str = now_utc.astimezone(IST).date().isoformat()
+
+    try:
+        # NO deployment filter — this is the whole account.
+        rows: List[Dict[str, Any]] = await db.live_trades.find({}).to_list(length=None)
+    except Exception as exc:
+        return {"allow": False, "reason": f"account_exposure_unavailable:{str(exc)[:60]}",
+                "pause": False}
+
+    open_count = sum(1 for r in rows if str(r.get("status") or "").upper() == "OPEN")
+    realized_today = daily_realized_summary(rows, today)["net"]
+    mtm = realized_today + _open_unrealized_today(rows, today)
+
+    # Separate "the numbers are UNKNOWN" from "the numbers say STOP" before
+    # delegating. json.loads accepts NaN, so one malformed live_trades row makes
+    # the account MTM non-finite; evaluate_guardrails' fail-safe maps that to
+    # "broker_stop_loss", which we would forward to guardrail_tick — tripping the
+    # sticky latch and halting the engine until a human reset it. Refusing the
+    # entry is right (never trade on an unknown P&L); escalating a DATA DEFECT
+    # into an account-wide halt is not.
+    if not math.isfinite(mtm):
+        return {"allow": False, "reason": "account_exposure_invalid", "pause": False}
+
+    action = evaluate_guardrails(mtm, open_count, cfg)
+    if action == "none":
+        return {"allow": True, "reason": "ok", "pause": False}
+
+    if action == "broker_stop_loss" and engine is not None:
+        # Halt the ACCOUNT, don't just decline this entry. Never let a failure
+        # here mask the refusal we are already returning.
+        try:
+            await engine.guardrail_tick(mtm, open_count)
+        except Exception:
+            pass
+
+    return {
+        "allow": False,
+        "reason": f"account_{action}",
+        "pause": action == "broker_stop_loss",
+    }
+
+
 def _live_caps_configured(live: Dict[str, Any]) -> bool:
     """Return True if at least one live cap is set to an actionable value."""
     if not live:

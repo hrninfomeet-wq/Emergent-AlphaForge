@@ -891,7 +891,8 @@ async def evaluate_active_deployments(
     if live_ctx:
         for k in ("place_fn", "arm_for", "client", "intent_store", "engine",
                   "search_fn", "throttle", "account_max", "connected",
-                  "band_pct", "uid", "actid", "allow_fn"):
+                  "band_pct", "uid", "actid", "allow_fn",
+                  "account_safety_config"):
             if k in live_ctx:
                 live_kwargs[k] = live_ctx[k]
     now = now_utc or datetime.now(timezone.utc)
