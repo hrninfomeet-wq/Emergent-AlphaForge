@@ -1031,3 +1031,112 @@ def test_backend_exposes_live_deploy_routes():
         '@api.get("/deployments/live/status")',
     ):
         assert needle in server
+
+
+# ===========================================================================
+# H1 — compare-and-swap: a concurrent Stop must WIN over a late-landing Enable
+#
+# /live/enable reads the deployment, then runs a long preflight (broker
+# readiness, engine.can_trade, forward-metrics compute) before writing
+# mode="live". A Stop landing inside that window used to be silently overwritten
+# by the late $set — re-authorizing real money on a deployment the operator had
+# just stopped. The write is now conditional on the deployment being untouched.
+# ===========================================================================
+
+class TestEnableCompareAndSwap:
+    def test_enable_refuses_when_deployment_changed_during_preflight(self, monkeypatch):
+        """A Stop lands mid-preflight → enable must 409 and NOT set mode=live."""
+        from fastapi import HTTPException
+        db = FakeDB()
+        db.strategy_deployments.rows.append(_deployment())
+        _install(monkeypatch, db)
+
+        # Simulate the operator stopping the deployment WHILE the preflight runs:
+        # forward-metrics is the slowest awaited step in the route.
+        async def _racing_metrics(_db, _dep):
+            row = db.strategy_deployments.rows[0]
+            row["status"] = "PAUSED"
+            row["mode"] = "paper"
+            row["updated_at"] = "2026-06-25T09:99:99+00:00"   # any concurrent write
+            return {"forward_validation": {"promotion_allowed": True}, "arm_advisories": []}
+
+        monkeypatch.setattr(dep, "compute_forward_metrics_for_deployment", _racing_metrics)
+
+        with pytest.raises(HTTPException) as ei:
+            asyncio.run(dep.enable_deployment_live("dep-1", _enable_body()))
+        assert ei.value.status_code == 409
+        row = db.strategy_deployments.rows[0]
+        assert row.get("mode") != "live", "a stopped deployment was re-authorized for real money"
+        assert row.get("status") == "PAUSED"
+
+    def test_enable_succeeds_when_nothing_changed(self, monkeypatch):
+        """Control: the CAS must not break the normal enable path."""
+        db = FakeDB()
+        db.strategy_deployments.rows.append(_deployment())
+        _install(monkeypatch, db)
+        out = asyncio.run(dep.enable_deployment_live("dep-1", _enable_body()))
+        assert out["lots"] == 1
+        assert db.strategy_deployments.rows[0]["mode"] == "live"
+
+    def test_enable_refuses_if_status_left_active_mid_preflight(self, monkeypatch):
+        """Archive/retire during the preflight is equally unsafe to overwrite."""
+        from fastapi import HTTPException
+        db = FakeDB()
+        db.strategy_deployments.rows.append(_deployment())
+        _install(monkeypatch, db)
+
+        async def _racing_metrics(_db, _dep):
+            db.strategy_deployments.rows[0]["status"] = "ARCHIVED"
+            return {"forward_validation": {"promotion_allowed": True}, "arm_advisories": []}
+
+        monkeypatch.setattr(dep, "compute_forward_metrics_for_deployment", _racing_metrics)
+        with pytest.raises(HTTPException) as ei:
+            asyncio.run(dep.enable_deployment_live("dep-1", _enable_body()))
+        assert ei.value.status_code == 409
+        assert db.strategy_deployments.rows[0].get("mode") != "live"
+
+
+class TestSafetyTransitionsDoNotClobber:
+    """Safety transitions must ALWAYS land (never CAS-refused), but must not
+    write back a whole stale document over a concurrent change."""
+
+    def test_pause_preserves_fields_it_does_not_own(self, monkeypatch):
+        db = FakeDB()
+        d = _deployment()
+        d["last_evaluated_ts"] = 111                     # owned by the evaluator
+        db.strategy_deployments.rows.append(d)
+        _install(monkeypatch, db)
+        import app.runtime as _rt
+        monkeypatch.setattr(_rt, "get_db", lambda: db)
+
+        # a concurrent writer touches an unrelated field AFTER our read but before
+        # the write — the old replace_one reverted it
+        original_find_one = db.strategy_deployments.find_one
+
+        async def racing_find_one(query, projection=None):
+            row = await original_find_one(query, projection)
+            db.strategy_deployments.rows[0]["last_evaluated_ts"] = 222
+            return row
+
+        db.strategy_deployments.find_one = racing_find_one
+        asyncio.run(dep.pause_deployment("dep-1"))
+
+        row = db.strategy_deployments.rows[0]
+        assert row["status"] == "PAUSED"                 # the transition landed
+        assert row["last_evaluated_ts"] == 222, "a concurrent update was clobbered"
+
+    def test_pause_of_a_live_deployment_still_demotes_to_paper(self, monkeypatch):
+        """The v0.56.0 safety invariant must survive the write change."""
+        db = FakeDB()
+        d = _deployment(mode="live")
+        d["risk"]["live"] = {"lots": 1, "daily_loss_cap": 4000.0}
+        db.strategy_deployments.rows.append(d)
+        _install(monkeypatch, db)
+        import app.runtime as _rt
+        monkeypatch.setattr(_rt, "get_db", lambda: db)
+
+        asyncio.run(dep.pause_deployment("dep-1"))
+        row = db.strategy_deployments.rows[0]
+        assert row["status"] == "PAUSED"
+        assert row["mode"] == "paper"
+        assert row["risk"]["live"]["last_block_reason"] == "status_paused"

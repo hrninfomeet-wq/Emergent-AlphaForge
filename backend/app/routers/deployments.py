@@ -1163,10 +1163,36 @@ async def enable_deployment_live(deployment_id: str, body: _LiveEnableBody):
     # carries any authorization field; `mode` alone authorizes.
     risk = dict(deployment.get("risk") or {})
     risk["live"] = live
-    await db.strategy_deployments.update_one(
-        {"id": deployment_id},
+    # COMPARE-AND-SWAP (H1). Everything above — broker readiness, engine.can_trade,
+    # the forward-metrics compute — happened AFTER this deployment was read, and a
+    # Stop / Disable / pause / archive can land inside that window. A blind
+    # `$set` by id would silently overwrite it and re-authorize REAL MONEY on a
+    # deployment the operator had just stopped.
+    #
+    # `updated_at` is the optimistic-concurrency token: every writer bumps it, so
+    # matching on the value we read proves nothing changed underneath us. The
+    # status is pinned to ACTIVE for the same reason. A spurious miss is the SAFE
+    # direction (we simply do not go live) and the operator can retry.
+    res = await db.strategy_deployments.update_one(
+        {"id": deployment_id, "status": "ACTIVE", "updated_at": deployment.get("updated_at")},
         {"$set": {"mode": "live", "risk": risk, "updated_at": now.isoformat()}},
     )
+    if int(getattr(res, "matched_count", 0) or 0) != 1:
+        current = await db.strategy_deployments.find_one({"id": deployment_id}, {"_id": 0}) or {}
+        raise HTTPException(
+            409,
+            detail={
+                "code": "deployment_changed_during_enable",
+                "message": (
+                    "This deployment changed while the live preflight was running "
+                    "(it may have been stopped, paused or archived), so it was NOT "
+                    "switched to live. Re-check its state and enable again if you "
+                    "still intend to."
+                ),
+                "current_status": current.get("status"),
+                "current_mode": current.get("mode"),
+            },
+        )
     autoplace = _live_autoplace_armed()
     out = {**live, "autoplace_armed": autoplace}
     if not autoplace:

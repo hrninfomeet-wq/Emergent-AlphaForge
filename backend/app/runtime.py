@@ -1915,7 +1915,28 @@ async def _set_deployment_status(deployment_id: str, status: str) -> Dict[str, A
         _live["last_block_reason"] = f"status_{status.lower()}"
         doc.setdefault("risk", {})["live"] = _live
     doc["updated_at"] = datetime.now(timezone.utc).isoformat()
-    await db.strategy_deployments.replace_one({"id": deployment_id}, doc, upsert=False)
+    # Write ONLY the fields this transition owns (H1). The previous
+    # read-modify-replace_one wrote the WHOLE document back, so any field a
+    # concurrent writer had changed between our read and our write was silently
+    # reverted — a lost update on a doc that carries real-money authorization.
+    #
+    # Deliberately UNCONDITIONAL (no compare-and-swap): this is the safety
+    # direction — pause / stop / archive must ALWAYS land, even under a race. Only
+    # the dangerous transition (/live/enable) is CAS-guarded, so a concurrent Stop
+    # beats a late-landing Enable rather than the other way round.
+    #
+    # `risk` is set as a whole sub-document rather than a dotted `risk.live` key:
+    # the in-memory FakeDB used by the route tests does not interpret dotted $set
+    # paths, and production Mongo handles the full-subdoc $set identically.
+    _update: Dict[str, Any] = {
+        "status": doc["status"],
+        "updated_at": doc["updated_at"],
+    }
+    if doc.get("mode") is not None:
+        _update["mode"] = doc["mode"]
+    if doc.get("risk") is not None:
+        _update["risk"] = doc["risk"]
+    await db.strategy_deployments.update_one({"id": deployment_id}, {"$set": _update})
     return doc
 
 
