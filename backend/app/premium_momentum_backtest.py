@@ -62,7 +62,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from app.instruments import UNDERLYING_META, canonical_instrument_key
+from app.instruments import canonical_instrument_key, resolve_lot_size
 from app.option_costs import CostConfig
 from app.premium_momentum import (
     apply_costs_to_trade, lock_reference_strike, normalize_hhmm,
@@ -339,7 +339,10 @@ def run_premium_momentum_backtest(*, spot_df: pd.DataFrame, option_candles: pd.D
     # present so results are shape-stable and comparable).
     cost_cfg = CostConfig.from_dict(params.get("cost_config"))
     lots = max(1, int(params.get("lots") or 1))
-    lot_size = int(UNDERLYING_META.get(str(instrument).upper(), {}).get("lot_size", 1))
+    # Lot size comes from the CONTRACT DATA, not the static map — exchanges
+    # revise lots and the map goes stale (BANKNIFTY: contracts say 30, the map
+    # said 35). Warnings are surfaced in the result, never swallowed.
+    lot_size, lot_warnings = resolve_lot_size(contracts, instrument)
 
     trades: List[Dict[str, Any]] = []
     cov = {"sessions_total": 0, "sessions_traded": 0, "sessions_excluded": 0,
@@ -555,6 +558,10 @@ def run_premium_momentum_backtest(*, spot_df: pd.DataFrame, option_candles: pd.D
     lazy_trades = [t for t in trades if t.get("leg") == "lazy"]
     summary = {
         "lot_size": lot_size, "lots": lots, "costs_enabled": bool(cost_cfg.enabled),
+        # Non-empty ⇒ the lot could not be resolved cleanly from contract data,
+        # so every rupee figure below is only approximately right. Surfaced, not
+        # swallowed.
+        "lot_size_warnings": list(lot_warnings),
         "gross_pnl_pts": round(sum(t["premium_pnl"] for t in trades), 2),
         "net_pnl_pts": round(sum(t["net_pnl_pts"] for t in trades), 2),
         "net_pnl_rupees": round(sum(t["net_pnl_rupees"] for t in trades), 2),

@@ -864,7 +864,12 @@ async def test_transmit_fence_refuses_when_deployment_stopped_mid_flight():
     calls: List[Dict[str, Any]] = []
     await auto_live_trade_for_signal(
         db, dep, sig, latest_tick_lookup={KEY: _fresh_tick(151.5)}.get,
-        now_utc=NOW, place_fn=make_place_fn(_SUCCESS, calls))
+        now_utc=NOW, place_fn=make_place_fn(_SUCCESS, calls),
+        # Pin the fence's clock. It deliberately uses a FRESH clock in production
+        # (re-checking the time is half the point of the fence), so without this
+        # the test only passes before the 15:00 IST late-entry cutoff and fails
+        # every afternoon.
+        clock_fn=lambda: NOW)
     recheck = calls[0]["recheck_fn"]
 
     # still ACTIVE + live → authorised

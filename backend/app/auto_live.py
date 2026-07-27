@@ -271,6 +271,12 @@ async def auto_live_trade_for_signal(
     #: account-wide gate. None => not supplied, account caps not evaluated (the
     #: per-deployment governor still applies).
     account_safety_config: Optional[Dict[str, Any]] = None,
+    #: Clock used by the transmit fence's re-authorization check. Defaults to the
+    #: real current UTC time, which is what production must use — the fence exists
+    #: to catch authorization that went stale DURING the broker round-trips, so it
+    #: cannot reuse the frozen `now_utc` of this evaluation pass. Injectable purely
+    #: so tests are not wall-clock dependent.
+    clock_fn: Optional[Callable[[], datetime]] = None,
 ) -> Dict[str, Any]:
     """Place a REAL order for a clean CONFIRMED signal on an armed deployment.
 
@@ -468,6 +474,10 @@ async def auto_live_trade_for_signal(
     # `status` is checked explicitly: pause writes ONLY status (mode stays "live"),
     # so is_deployment_live_allowed alone would still say yes for a paused
     # deployment. Fail CLOSED — a doc we cannot re-read must not transmit.
+    if clock_fn is None:
+        def clock_fn():  # noqa: E306 - real wall clock, the production default
+            return datetime.now(timezone.utc)
+
     async def _recheck_authorization():
         fresh = await db.strategy_deployments.find_one({"id": dep_id}, {"_id": 0})
         if not fresh:
@@ -475,8 +485,12 @@ async def auto_live_trade_for_signal(
         status_now = str(fresh.get("status") or "").strip().upper()
         if status_now != "ACTIVE":
             return False, f"status_{status_now.lower() or 'unknown'}"
-        return is_deployment_live_allowed(
-            fresh, datetime.now(timezone.utc), connected=connected)
+        # A FRESH clock, deliberately — NOT the frozen `now_utc` this pass was
+        # evaluated with. Re-checking the time is half the point of the fence: a
+        # deployment that crossed its late-entry cutoff while we were doing
+        # broker round-trips must be refused. Injectable only so tests can be
+        # deterministic; production always gets the real current time.
+        return is_deployment_live_allowed(fresh, clock_fn(), connected=connected)
 
     result = await place_fn(
         contract,

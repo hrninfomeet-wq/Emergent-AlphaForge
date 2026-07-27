@@ -51,7 +51,7 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
-from app.instruments import UNDERLYING_META
+from app.instruments import resolve_lot_size
 from app.option_backtest import _compute_metrics, build_context_breakdown, build_option_equity_curve
 from app.portfolio import build_rupee_equity_curve
 from app.premium_momentum_backtest import run_premium_momentum_backtest
@@ -191,7 +191,8 @@ def dispatch_full_backtest(
         spot_df=spot_df, option_candles=option_candles, contracts=contracts,
         instrument=instrument, params=cfg.to_backtest_params(),
     )
-    lot_size = int(UNDERLYING_META.get(str(instrument).upper(), {}).get("lot_size", 1))
+    # Data-driven lot (see instruments.resolve_lot_size) — the static map is stale.
+    lot_size, _lot_warnings = resolve_lot_size(contracts, instrument)
     paired_trades = _adapt_premium_trades_to_paired(
         pm_result.get("trades", []), instrument=instrument, lots=int(cfg.lots), lot_size=lot_size,
     )

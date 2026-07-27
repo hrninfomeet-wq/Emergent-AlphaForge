@@ -15,11 +15,74 @@ AUX_INSTRUMENT_KEYS = {
     "INDIAVIX": "NSE_INDEX|India VIX",
 }
 
+#: Static metadata. ``strike_step`` is authoritative here.
+#:
+#: ``lot_size`` is a LAST-RESORT FALLBACK ONLY — exchanges revise lot sizes and
+#: this map goes stale. Resolve lots from contract data via
+#: :func:`resolve_lot_size`; do not read ``lot_size`` from here directly.
+#: (Measured 2026-07-27: every stored BANKNIFTY expiry from 2026-01 through
+#: 2027-06 carries lot 30, while this map still said 35 — a 16.7% error in every
+#: quantity and rupee figure produced by the paths that trusted it.)
 UNDERLYING_META = {
     "NIFTY": {"strike_step": 50, "lot_size": 65},
     "BANKNIFTY": {"strike_step": 100, "lot_size": 35},
     "SENSEX": {"strike_step": 100, "lot_size": 20},
 }
+
+
+def resolve_lot_size(contracts, instrument):
+    """Resolve the option lot size from CONTRACT DATA, with a noisy fallback.
+
+    The project's stated design is that expiries and lots come from
+    ``option_contracts``/the broker and are never hardcoded, precisely because
+    exchanges revise them. ``option_backtest`` already honours this (it uses the
+    selected contract's own ``lot_size``); this helper lets the other paths do
+    the same instead of reading the static :data:`UNDERLYING_META` map.
+
+    Args:
+        contracts:  option-contract dicts for the run (each may carry ``lot_size``
+                    and ``expiry_date``).
+        instrument: underlying name, used only for the fallback.
+
+    Returns:
+        ``(lot_size, warnings)``. *warnings* is a list of short codes; it is
+        EMPTY on the clean path. Callers should surface any warnings rather than
+        drop them — each one means the rupee figures are only approximately right.
+
+    A lot change inside the window is reported, not hidden: BANKNIFTY really did
+    carry 35 for the Jul–Dec 2025 expiries and 30 afterwards, so a run spanning
+    that boundary cannot be sized by a single number. We take the most recent
+    expiry's lot (matching the live convention) and say so.
+    """
+    warnings = []
+
+    by_expiry = {}
+    for c in contracts or []:
+        raw = (c or {}).get("lot_size")
+        try:
+            lot = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if lot <= 0:
+            continue
+        by_expiry[str((c or {}).get("expiry_date") or "")] = lot
+
+    if not by_expiry:
+        meta = UNDERLYING_META.get(str(instrument).upper(), {})
+        fallback = int(meta.get("lot_size") or 0)
+        if fallback > 0:
+            warnings.append("lot_size_fallback_hardcoded")
+            return fallback, warnings
+        warnings.append("lot_size_unknown_instrument")
+        return 1, warnings
+
+    distinct = set(by_expiry.values())
+    # Most recent expiry wins — ISO dates sort lexicographically.
+    latest = max(by_expiry.items(), key=lambda kv: kv[0])[1]
+    if len(distinct) > 1:
+        warnings.append(
+            "lot_size_changed_in_window:" + ",".join(str(x) for x in sorted(distinct)))
+    return latest, warnings
 
 
 def canonical_instrument_key(instrument_key) -> str:
