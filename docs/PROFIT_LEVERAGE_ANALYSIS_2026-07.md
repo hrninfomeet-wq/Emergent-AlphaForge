@@ -88,10 +88,90 @@ Points 2 and 4 together dictate the only defensible form of the experiment:
 **defined-risk spreads only — never a naked short** — and a kill criterion that judges the
 *tail*, not just the net.
 
+## 3a. What it would actually cost to express the short side (measured)
+
+A file-and-line inventory of the change surface. **Headline: ~20 files, ~30 functions for
+shorts alone**, and defined-risk spreads add materially more on top.
+
+**The block is deliberate, not accidental.** `backend/app/live/executor.py:264,461` reject
+`side != "B"` with a documented rationale:
+
+> "a sell entry would open an unprotected naked short; the SL backstop (always a
+> sell-to-close) would then GROW the short instead of closing it."
+
+**Three genuinely hard problems** (design work, not parameter-threading):
+
+1. **There is no offline margin model, and one cannot be borrowed.** `broker_margin_verdict`
+   (`live/margin.py:196-265`) uses the broker's real SPAN+exposure figure — but
+   `GetOrderMargin` is a live, authenticated, real-time call (verified against
+   `docs/Resources/flattrade-pi-api/endpoints/08-order-margin.md`) and **cannot be replayed
+   against historical dates**. A repo-wide search for `SPAN`/`span_margin`/`exposure_margin`
+   found no estimator. So a short-side backtest cannot honestly size a position or state
+   return-on-capital without building a new margin approximation — itself unvalidated
+   quantitative work that gates sizing, the capital gate, and every "capital required" number.
+2. **The live trailing state machine would need a hand-mirrored twin.**
+   `live/live_sl_monitor.py:75-254` implements five trailing modes
+   (`breakeven/lock/lock_trail/trail/stepped_xy`), each hard-wired to "peak only rises, stop
+   only rises" with a documented monotonic-non-decreasing invariant. Every mode needs its
+   mirror, and both variants must then coexist per position.
+3. **Multi-leg does not exist — and the codebase's own attempt proves it.**
+   `premium_momentum`'s `leg_mode="both"` is **not** a spread: `premium_momentum_backtest.py:440-478`
+   runs `walk_premium_momentum` independently per side and keeps both results as separate
+   trades, each with its own `apply_costs_to_trade`. No shared position, no netting, no
+   combined P&L. A real spread needs either linked legs with a `combo_id` stitched together
+   at *every* read site (equity curve, journals, open positions, kill-switch flatten) or a
+   new first-class multi-leg document.
+
+**Also found — a latent hazard worth fixing regardless of any of this:** the long P&L
+convention `(price - entry) * qty` is **independently reimplemented in four places**
+(`option_backtest.py:749`, `premium_momentum.py:208`, `paper_trading.py:146`,
+`paper_open_positions.py:36`). There is no P&L chokepoint. That duplication is both a
+blast-radius multiplier and a standing correctness risk.
+
+**Already there (would not need building):** `exit_engine.intrabar_exit:24-51` already has a
+working `is_long=False` branch — the exact formula a short premium walk needs, just never
+invoked that way. `live_friction.fill_premium` is already side-parameterized.
+`gtt.build_oco_intent` already takes `trantype` as a real parameter. The whole
+flatten/kill-switch/EOD layer is **already sign-aware** (`trantype = "S" if netqty > 0 else "B"`,
+read off the broker's real position book) — an accidental short would already be squared
+correctly. `evaluate_guardrails` is sign-agnostic. And `execution_policy.spot_mirror_levels`
+already implements a complete long/short mirror (`sign = 1.0 if CE else -1.0`) for the
+spot-mirror exit mode — proof the authors know the pattern; it simply never reached the
+option-premium engine.
+
+## 3b. Signal that already exists but no strategy can see
+
+A second inventory asked what the app computes that a strategy cannot use. The answer is
+"a lot", and the codebase already documents its own gap: `app/ai/capability.py:213-217`
+lists `oi`, `pcr`, `max_pain`, `iv`, `iv_rank`, `theta`, `vega`, `gamma`, `delta` as
+`NEEDS_NEW_DATA` — the AI authoring wizard actively refuses to let users write rules
+against them.
+
+| Quantity | Computed at | Why no strategy can use it |
+|---|---|---|
+| IV, delta/gamma/theta/vega | `live/greeks.py:43-124` (full BS solve) | Consumed only by the cockpit Greeks card; needs live broker positions + quote. No historical IV series is stored at all. |
+| PCR, max pain, ATM straddle | `market_analysis.py:122-194` | Assembled only from live Upstox full-mode tick OI (`market_analysis_build.py:111-146`). Cockpit display only — never reaches a strategy or backtest. |
+| IV rank | `market_analysis.py:197` | Always called with `current_iv=None, iv_history=[]` — in practice a **VIX-percentile proxy**, not an IV rank. |
+| Open interest | stored per candle (`option_candles.py:53`) | **Written on ingestion and read by nothing.** |
+| India VIX | stored as `candles_1m` / `INDIAVIX`; join helpers at `vix.py:47-119` | Used only to tag already-closed trades post-hoc, plus one session-start gate on the premium-momentum path. Never a per-bar column. |
+| 6 ICT/SMC structural features | `features/structures.py` (swing levels, premium/discount, displacement, CHoCH, FVG zones, order blocks) | Fully built, registered and adversarially reviewed — **declared by zero shipped strategies.** |
+
+**Two defects surfaced by this inventory and verified directly:**
+
+- **A dead optimizer knob.** `explosive_reversal.py:93` reads `row.get("vix")` — a column
+  `indicators.py`/`indicator_groups.py` never create. Its `vix_boost_threshold` parameter is
+  tunable, appears in saved presets, and **does nothing**. Same class as the `early_stop`
+  dead-knob found in the earlier architecture audit. Spun off as a separate task.
+- **The capability manifest contradicts the ingestion code.** `capability.py:25,27` declare
+  `has_oi_history: False` and `has_vix_history: False`, while `option_candles.py:53` writes
+  `oi` per candle and `warehouse_autoupdate.py` runs a daily VIX top-up. The manifest drives
+  what the AI wizard permits, so it may be **falsely refusing rules against data that exists.**
+  Needs a measured answer, not a code reading — see §3c.
+
 ## 4. Candidate directions, ranked by information per rupee of build
 
-*(Build-cost estimates and the data facts they depend on are pending the three inventory
-agents; this section is the reasoning, and will be completed with measured numbers.)*
+*(Ranking pending the warehouse measurement in §3c, which determines whether direction A is
+testable at all.)*
 
 ### A. Express the short side, as defined-risk spreads only — **strategic, largest build**
 The single untested structural hypothesis, and the only one that attacks the *named*
