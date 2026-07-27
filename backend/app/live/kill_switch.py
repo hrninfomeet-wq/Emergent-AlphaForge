@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.live.broker_protocol import OrderIntent
@@ -60,6 +61,12 @@ DEFAULT_SAFETY_CONFIG: Dict[str, Any] = {
     "max_open_positions": 5,        # hard cap on concurrent open positions
     "max_lots_per_order": 20,       # account-level ceiling on lots per order
     "blocked_until_reset": False,   # latch; only explicit reset_latch clears it
+    # Provenance for the latch above. A halted desk must be able to answer WHY
+    # and WHEN, not just THAT — without these an operator sees "trading halted"
+    # and has no way to tell a fresh loss-limit breach from a days-old one.
+    # Written ONLY by trip()/reset(), never by put_config (see _PUT_CONFIG_WHITELIST).
+    "latched_at": None,             # ISO-8601 UTC instant the latch tripped
+    "latched_reason": None,         # short machine code, e.g. "broker_stop_loss"
 }
 
 #: Keys that PUT /safety-config is allowed to touch.
@@ -1260,22 +1267,39 @@ class SafetyConfigStore:
         )
         return await self.get_config()
 
-    async def _write_latch(self, value: bool) -> Dict[str, Any]:
-        """Internal: persist the latch directly, bypassing put_config whitelist."""
+    async def _write_latch(self, value: bool, reason: Optional[str] = None) -> Dict[str, Any]:
+        """Internal: persist the latch directly, bypassing put_config whitelist.
+
+        Provenance is written in the SAME update as the flag, so the latch and
+        its explanation can never disagree.
+        """
         # F3: coerce to strict bool so 0/""/None can't leak in.
+        latched = bool(value)
+        updates: Dict[str, Any] = {"blocked_until_reset": latched}
+        if latched:
+            updates["latched_at"] = datetime.now(timezone.utc).isoformat()
+            # The time is always knowable; the reason may not be. Never invent one.
+            updates["latched_reason"] = str(reason) if reason else "unspecified"
+        else:
+            # Clear the provenance on reset. A stale reason left behind would tell
+            # the NEXT operator the desk is halted for a cause that no longer applies.
+            updates["latched_at"] = None
+            updates["latched_reason"] = None
         await self._col.update_one(
             {"_id": self._SINGLETON_ID},
-            {"$set": {"blocked_until_reset": bool(value)}},
+            {"$set": updates},
             upsert=True,
         )
         return await self.get_config()
 
-    async def trip(self) -> Dict[str, Any]:
-        """Persist the blocked_until_reset=True latch.
+    async def trip(self, reason: Optional[str] = None) -> Dict[str, Any]:
+        """Persist the blocked_until_reset=True latch, recording why and when.
 
-        This is the ONLY authorised way to set the latch to True.
+        This is the ONLY authorised way to set the latch to True. *reason* is a
+        short machine code (e.g. ``"broker_stop_loss"``) surfaced to the operator
+        so a halt can be triaged instead of merely observed.
         """
-        return await self._write_latch(True)
+        return await self._write_latch(True, reason=reason)
 
     async def reset(self) -> Dict[str, Any]:
         """Persist the blocked_until_reset=False latch (explicit operator reset).

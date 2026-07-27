@@ -17,6 +17,7 @@ import AccountTabs from "@/components/live/cockpit/AccountTabs";
 import ConfigDrawer from "@/components/live/cockpit/ConfigDrawer";
 
 import ExecutionStateStrip from "@/components/live/ExecutionStateStrip";
+import SafetyLatchBanner from "@/components/live/SafetyLatchBanner";
 import KillSwitchPanel from "@/components/live/KillSwitchPanel";
 import GuardPanel from "@/components/live/GuardPanel";
 import GreeksCard from "@/components/live/GreeksCard";
@@ -144,6 +145,12 @@ export default function LiveCockpit() {
         onStandDown={handleStandDown}
         standingDown={standDownBusy}
       />
+
+      {/* A tripped broker-stop-loss latch halts EVERY new live entry and never
+          self-clears. It sits directly under the execution verdict because it is
+          the one condition that silently overrides everything above it, and
+          until now it had no in-app exit at all. */}
+      <SafetyLatchBanner onChanged={fetchAll} />
 
       {/* NOTE: no <MarketHeader/> here — the app shell (Layout.jsx) already
           renders one on every route. Mounting a second copy duplicated ~270px of

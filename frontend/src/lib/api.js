@@ -331,6 +331,10 @@ export const api = {
   // Authorization is simply deployment.mode === "live" — there is no per-session
   // arm ceremony; enabling live mode persists until explicitly disabled.
   getSafetyConfig: () => apiClient.get("/live-broker/safety-config").then((r) => r.data),
+  // Clear the broker-stop-loss latch. This is the ONLY way back from a
+  // blocked_until_reset halt — the latch never self-clears by design.
+  resetSafetyLatch: () =>
+    apiClient.post("/live-broker/safety-config/reset-latch").then((r) => r.data),
   enableDeploymentLive: (id, body) =>
     apiClient.post(`/deployments/${id}/live/enable`, body).then((r) => r.data),
   disableDeploymentLive: (id) =>

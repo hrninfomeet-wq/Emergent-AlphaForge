@@ -289,7 +289,9 @@ class LiveEngine:
 
         if action == "broker_stop_loss":
             # Persist the latch
-            await self._config_store.trip()
+            # Pass the CAUSE through: the operator-facing banner must name why
+            # the desk halted, and that fact belongs to this event, not the UI.
+            await self._config_store.trip(reason=action)
             # Halt the engine
             self._halt(
                 f"guardrail:{action}",
