@@ -335,6 +335,13 @@ export const api = {
   // blocked_until_reset halt — the latch never self-clears by design.
   resetSafetyLatch: () =>
     apiClient.post("/live-broker/safety-config/reset-latch").then((r) => r.data),
+  // Did overnight-position recovery run for the CURRENT broker token? Until it
+  // succeeds, an open live position may not be guarded/OCO-backed.
+  getRecoveryStatus: () =>
+    apiClient.get("/live-broker/recovery-status").then((r) => r.data),
+  // authored->backtested->optimized->preset->paper->live stage state for one strategy.
+  getStrategyPipeline: (id) =>
+    apiClient.get(`/strategies/${encodeURIComponent(id)}/pipeline`).then((r) => r.data),
   enableDeploymentLive: (id, body) =>
     apiClient.post(`/deployments/${id}/live/enable`, body).then((r) => r.data),
   disableDeploymentLive: (id) =>

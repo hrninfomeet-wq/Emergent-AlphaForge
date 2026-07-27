@@ -55,16 +55,21 @@ export default function LiveSignals() {
   const [wizardOpen, setWizardOpen] = useState(false);
   const [presets, setPresets] = useState([]);
   const [strategies, setStrategies] = useState([]);
+  const [backtestRuns, setBacktestRuns] = useState([]);
 
   const refresh = useCallback(async () => {
     try {
-      const [ov, presetList, strategyList] = await Promise.all([
+      const [ov, presetList, strategyList, runList] = await Promise.all([
         api.deploymentsOverview(),
         api.listPresets().catch(() => ({ items: [] })),
         api.listStrategies().catch(() => ({ items: [] })),
+        // Deploying straight from a run is supported server-side; listing the
+        // runs is what makes it reachable without a preset detour.
+        api.listBacktestRuns(50).catch(() => ({ items: [] })),
       ]);
       setOverview(ov);
       setPresets(presetList.items || []);
+      setBacktestRuns(runList.items || []);
       setStrategies((strategyList.items || []).filter(
         (s) => !s.is_retired && s.is_loaded !== false && (s.supported_timeframes || []).includes("1m"),
       ));
@@ -94,6 +99,7 @@ export default function LiveSignals() {
   const [searchParams] = useSearchParams();
   const deepLinkRef = useRef(false);
   const [wizardPreset, setWizardPreset] = useState("");
+  const [wizardBacktestRun, setWizardBacktestRun] = useState("");
   useEffect(() => {
     const name = searchParams.get("preset");
     if (!name || deepLinkRef.current || presets.length === 0) return;
@@ -102,6 +108,18 @@ export default function LiveSignals() {
     setWizardPreset(name);
     setWizardOpen(true);
   }, [searchParams, presets]);
+
+  // Deep-link /live?backtest=RUN_ID (Backtest Lab's Deploy button). Same
+  // once-per-load discipline as ?preset=, and it only fires once the run is
+  // actually in the list, so the wizard never opens on a stale id.
+  useEffect(() => {
+    const runId = searchParams.get("backtest");
+    if (!runId || deepLinkRef.current || backtestRuns.length === 0) return;
+    if (!backtestRuns.some((r) => r.id === runId)) return;
+    deepLinkRef.current = true;
+    setWizardBacktestRun(runId);
+    setWizardOpen(true);
+  }, [searchParams, backtestRuns]);
 
   const act = async (fn, okMsg) => {
     setBusy(true);
@@ -208,7 +226,9 @@ export default function LiveSignals() {
         <DeployWizard
           presets={presets}
           strategies={strategies}
+          backtestRuns={backtestRuns}
           initialPreset={wizardPreset}
+          initialBacktestRun={wizardBacktestRun}
           onClose={() => setWizardOpen(false)}
           onCreated={() => { setWizardOpen(false); refresh(); }}
         />
@@ -373,12 +393,12 @@ const WIZARD_DEFAULTS = {
   daily_cap_max_trades: "",
 };
 
-function DeployWizard({ presets, strategies, initialPreset, onClose, onCreated }) {
+function DeployWizard({ presets, strategies, backtestRuns = [], initialPreset, initialBacktestRun, onClose, onCreated }) {
   const [step, setStep] = useState(1);
   const [form, setForm] = useState({
     ...WIZARD_DEFAULTS,
-    source_type: "preset",
-    source_id: initialPreset || "",
+    source_type: initialBacktestRun ? "backtest_run" : "preset",
+    source_id: initialBacktestRun || initialPreset || "",
   });
   const [busy, setBusy] = useState(false);
   const [readiness, setReadiness] = useState(null);
@@ -635,7 +655,9 @@ function DeployWizard({ presets, strategies, initialPreset, onClose, onCreated }
           {step === 1 && (
             <>
               <div className="flex rounded-md border border-line overflow-hidden w-fit" data-testid="wizard-source-type">
-                {[{ key: "preset", label: "Saved preset" }, { key: "strategy", label: "Strategy Library" }].map((choice) => (
+                {[{ key: "preset", label: "Saved preset" },
+                  { key: "backtest_run", label: "Backtest run" },
+                  { key: "strategy", label: "Strategy Library" }].map((choice) => (
                   <button
                     key={choice.key}
                     type="button"
@@ -653,7 +675,28 @@ function DeployWizard({ presets, strategies, initialPreset, onClose, onCreated }
                 ))}
               </div>
 
-              {form.source_type === "preset" ? (
+              {form.source_type === "backtest_run" ? (
+                <label className="block text-[11px] text-dim">
+                  Backtest run
+                  <select
+                    value={form.source_id}
+                    onChange={(e) => set("source_id", e.target.value)}
+                    className="mt-1 h-8 w-full rounded-md border border-input bg-bg-2 px-2 text-xs"
+                    data-testid="wizard-backtest-select"
+                  >
+                    <option value="">— choose a backtest run —</option>
+                    {backtestRuns.map((r) => (
+                      <option key={r.id} value={r.id}>
+                        {r.name || r.id?.slice(0, 8)} ({r.strategy_id} · {r.instrument})
+                      </option>
+                    ))}
+                  </select>
+                  <span className="block mt-1 text-[10.5px] text-dimmer">
+                    Deploys the run&apos;s exact saved config. Saving a preset first is optional —
+                    it is only needed if you want to reuse the config elsewhere.
+                  </span>
+                </label>
+              ) : form.source_type === "preset" ? (
                 <label className="block text-[11px] text-dim">
                   Saved strategy preset
                   <select

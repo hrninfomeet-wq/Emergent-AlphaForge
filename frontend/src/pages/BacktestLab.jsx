@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { fmtInt, fmtNum, fmtPct, fmtPnL, colorPnL, tsToTime } from "@/lib/fmt";
@@ -24,7 +24,7 @@ import { ResetLayoutButton } from "@/components/common/ResetLayoutButton";
 import { buildPerformanceSeries } from "@/lib/backtestMetrics";
 import { NumberSliderInput } from "@/components/NumberSliderInput";
 import BacktestRunJournal from "@/components/BacktestRunJournal";
-import { Play, Save, Filter, ChevronDown, ChevronRight, ChevronsUpDown, ArrowUp, ArrowDown, Download, FileJson, FileText, FolderOpen, ShieldCheck, Loader2, AlertTriangle, HelpCircle } from "lucide-react";
+import { Play, Save, Filter, ChevronDown, ChevronRight, ChevronsUpDown, ArrowUp, ArrowDown, Download, FileJson, FileText, FolderOpen, ShieldCheck, Loader2, AlertTriangle, HelpCircle, Rocket } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { dateToMs, msToDate } from "@/lib/time";
 
@@ -88,6 +88,7 @@ const splitIndicatorParams = (params, catalog, schema) => {
 const LAST_RUN_KEY = "alphaforge.backtest.lastRunId";
 
 export default function BacktestLab() {
+  const navigate = useNavigate();
   const [strategies, setStrategies] = useState([]);
   // Global indicator-period catalog (ema_fast, rsi_length, ...), sourced from
   // GET /strategies (single source of truth — backend/app/optimizer.py
@@ -1548,7 +1549,11 @@ export default function BacktestLab() {
         ) : !result ? (
           <EmptyResults />
         ) : (
-          <ResultsView result={result} onSaveAsPreset={() => savePresetFromResult(result)} />
+          <ResultsView
+            result={result}
+            onSaveAsPreset={() => savePresetFromResult(result)}
+            onDeploy={() => navigate(`/live?backtest=${encodeURIComponent(result.id)}`)}
+          />
         )}
       </section>
     </div>
@@ -1829,7 +1834,7 @@ function RunningResults({ progress, config }) {
   );
 }
 
-function ResultsView({ result, onSaveAsPreset }) {
+function ResultsView({ result, onSaveAsPreset, onDeploy }) {
   const m = result.metrics || {};
   const regimeDist = result.regime_distribution || {};
   const totalRegime = Object.values(regimeDist).reduce((s, v) => s + v, 0);
@@ -1896,12 +1901,28 @@ function ResultsView({ result, onSaveAsPreset }) {
           {onSaveAsPreset && (
             <Button
               size="sm"
-              className="h-7 text-xs bg-info text-bg-0 hover:bg-info/90 font-semibold"
+              variant="secondary"
+              className="h-7 text-xs"
               onClick={onSaveAsPreset}
               data-testid="result-save-preset"
-              title="Save THIS result's exact strategy params + option execution as a preset — deploy it to paper trading as-is, or re-test it"
+              title="Save THIS result's exact strategy params + option execution as a preset — for reuse elsewhere. Not required in order to deploy."
             >
               <Save className="w-3 h-3 mr-1" /> Save as preset
+            </Button>
+          )}
+          {/* Deploy straight from the run. The backend has always accepted
+              source_type="backtest_run" (with the same validation parity as a
+              preset); the wizard simply never offered it, so every deployment
+              was forced through a save-a-preset detour first. */}
+          {onDeploy && result?.id && (
+            <Button
+              size="sm"
+              className="h-7 text-xs bg-info text-bg-0 hover:bg-info/90 font-semibold"
+              onClick={onDeploy}
+              data-testid="result-deploy"
+              title="Deploy THIS run's exact config to paper or live — no preset needed"
+            >
+              <Rocket className="w-3 h-3 mr-1" /> Deploy
             </Button>
           )}
         </div>

@@ -18,6 +18,7 @@ import ConfigDrawer from "@/components/live/cockpit/ConfigDrawer";
 
 import ExecutionStateStrip from "@/components/live/ExecutionStateStrip";
 import SafetyLatchBanner from "@/components/live/SafetyLatchBanner";
+import RecoveryStatusBanner from "@/components/live/RecoveryStatusBanner";
 import KillSwitchPanel from "@/components/live/KillSwitchPanel";
 import GuardPanel from "@/components/live/GuardPanel";
 import GreeksCard from "@/components/live/GreeksCard";
@@ -151,6 +152,14 @@ export default function LiveCockpit() {
           the one condition that silently overrides everything above it, and
           until now it had no in-app exit at all. */}
       <SafetyLatchBanner onChanged={fetchAll} />
+
+      {/* Overnight recovery: until it succeeds for the CURRENT token, a carried-over
+          position may have no guard and no resting OCO backstop. Boot-before-OAuth is
+          the usual cause. Severity follows exposure. */}
+      <RecoveryStatusBanner
+        connected={!!(status?.connected && !status?.expired)}
+        openPositions={openPositionCount}
+      />
 
       {/* NOTE: no <MarketHeader/> here — the app shell (Layout.jsx) already
           renders one on every route. Mounting a second copy duplicated ~270px of

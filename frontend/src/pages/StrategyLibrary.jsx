@@ -8,6 +8,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { toast } from "sonner";
 import AuthoringWizard from "@/components/strategy/AuthoringWizard";
+import PipelineChips from "@/components/strategy/PipelineChips";
 import {
   Library, CheckCircle2, AlertCircle, TrendingUp, MoreVertical,
   PauseCircle, PlayCircle, Trash2, Search, Plus,
@@ -204,6 +205,9 @@ function StrategyCard({ s, metrics, onRetire, onUnretire, onDelete }) {
         <StrategyMenu s={s} isCustom={isCustom} onRetire={onRetire} onUnretire={onUnretire} onDelete={onDelete} />
       </div>
       <div className="text-xs text-dim leading-snug mb-3">{s.description}</div>
+      {/* How far this strategy has actually got. The endpoint existed for this
+          exact purpose and had no caller, so the Library was a flat list. */}
+      <PipelineChips strategyId={s.id} />
       <ForwardMetricsBlock metrics={metrics} />
       {!loaded && s.error && (
         <div className="text-[11px] text-rose-300 bg-rose-950/50 border border-rose-900 rounded-md p-2 mb-2 font-mono">
