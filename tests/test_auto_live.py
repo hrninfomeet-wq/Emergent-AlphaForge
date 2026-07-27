@@ -885,6 +885,39 @@ async def test_transmit_fence_refuses_when_deployment_stopped_mid_flight():
 
 
 @pytest.mark.asyncio
+async def test_transmit_fence_refuses_when_entry_cutoff_passes_mid_flight():
+    """THE reason the fence re-reads the clock rather than reusing `now_utc`.
+
+    The deployment is untouched — still ACTIVE, still live — but the 15:00 IST
+    late-entry cutoff is crossed while the executor is doing its broker
+    round-trips. A frozen `now_utc` would still answer "authorised" and open a
+    real position minutes before the EOD square runs.
+
+    Both clocks are pinned (signal-time AND fence-time), so this is deterministic
+    at any hour of the day — it does not care when the suite is run.
+    """
+    db = FakeDB()
+    sig = make_confirmed_signal()
+    db.signals.rows.append(dict(sig))
+    dep = make_live_deployment()
+    dep["status"] = "ACTIVE"
+    db.strategy_deployments.rows.append(dict(dep))
+    calls: List[Dict[str, Any]] = []
+
+    # 15:30 IST — past the cutoff. The signal itself was authorised at NOW
+    # (11:30 IST); nothing about the deployment doc changes in between.
+    after_cutoff = datetime(2026, 6, 25, 10, 0, tzinfo=timezone.utc)
+    await auto_live_trade_for_signal(
+        db, dep, sig, latest_tick_lookup={KEY: _fresh_tick(151.5)}.get,
+        now_utc=NOW, place_fn=make_place_fn(_SUCCESS, calls),
+        clock_fn=lambda: after_cutoff)
+
+    ok, why = await calls[0]["recheck_fn"]()
+    assert ok is False, "fence authorised an entry after the 15:00 IST cutoff"
+    assert "after_entry_cutoff" in why
+
+
+@pytest.mark.asyncio
 async def test_transmit_fence_refuses_a_paused_but_still_live_deployment():
     """pause writes ONLY status — mode stays 'live', so is_deployment_live_allowed
     alone would still say yes. The explicit status check is load-bearing."""

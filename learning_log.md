@@ -476,3 +476,50 @@ and a suite that runs green all morning is not evidence against it.**
   real-money session, itself blocked on a registered IP. Recorded rather than faked.
 - Patching a test body by exact-match string replace failed twice on indentation. Read the
   real lines first; do not reconstruct them from memory.
+
+---
+
+## Session 2026-07-27 (cont.) — a deterministic test is not a tested property
+
+**Core lesson: fixing a flaky test removes the symptom; it does not add the coverage the
+flakiness was pointing at. Ask what the flaky assertion was *failing to assert*.**
+
+The entry above recorded pinning the C2 fence's clock so the test stopped failing every
+afternoon. Re-examining it showed the pin closed the symptom and left a hole: the suite
+asserted only the *authorised* case (clock pinned PRE-cutoff), and **nothing anywhere
+asserted that the fence refuses once the 15:00 IST cutoff passes** — which is the entire
+reason the fence re-reads the clock instead of reusing `now_utc`.
+
+Proved by mutation rather than by argument: reverting `auto_live.py:493` to the frozen
+`now_utc` is caught by exactly **one** test — the new one. The other 54 in the file stay
+green. So the C2 safety property could have regressed silently, opening a real position
+minutes before the EOD square, with a fully green suite.
+
+- **Mutation-test the safety-critical line, not just the failing one.** "The suite is
+  green" says nothing until you have broken the code on purpose and watched it go red.
+- **A pinned clock cuts both ways.** Pin it on BOTH sides of the boundary and assert each
+  branch; pinning only the convenient side is how the untested half hides.
+
+**Sweep for the same class — no other instance found.** `test_live_mode.py`'s cutoff tests
+all pin fixed datetimes; the wall-clock read at `live_broker.py:1661` feeds a deployment
+scan no test exercises (tests target the pure `compute_arm_state`); the three *duplicated*
+`_in_market_hours` gates (`live_exit_monitor.py:23`, `live/live_position_guard.py:97`,
+`live/live_sl_monitor.py:55`) are reachable only from `run()` poll loops that **no test
+drives at all**; `resolve_token_expiry`'s fixture JWT `exp` is already two months past but
+benign (returned verbatim, never compared against now). The **date-rollover** class is
+empirically excluded: fixtures hardcode `2026-06-25` and still pass on `2026-07-27`, so no
+hardcoded-fixture-vs-floating-clock coupling survives anywhere the suite touches.
+
+Verified **3,649 passed / 0 failed at 15:52 IST** — i.e. with the after-cutoff AND the
+outside-market-hours (>15:30) branches both live. The weekend path takes the same
+`_in_market_hours` False branch. NB the docs baseline of "3,639" is stale: HEAD was 3,648
+before this test.
+
+**Dead end, recorded so it is not retried:** I tried to prove "green at any hour" by running
+the suite under a faked process clock. Swapping `datetime.date` stack-overflows through
+zoneinfo/pandas C paths; swapping `datetime` alone still crashes. The safe narrow variant —
+rebinding only `app.*` module globals — would silently miss the function-level
+`from datetime import datetime` that `mode.py` itself uses, so a green run would have been
+false assurance. Abandoned rather than reported as proof. There is **no `freezegun` /
+`time_machine` in the venv**; if an hour-sweep is ever genuinely needed, install one rather
+than hand-rolling it.
