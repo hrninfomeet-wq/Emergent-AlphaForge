@@ -90,7 +90,16 @@ BASELINE = {"trend_target_atr": 4.0, "trend_stop_atr": 1.2, "fade_stop_atr": 1.5
 #: premium-momentum campaign's own failure mode (a favourable validation window
 #: ranked a config that the holdout destroyed).
 GRID = {
-    "trend_target_atr": [3.0, 4.0, 6.0],
+    # AMENDMENT 1 (2026-07-27, declared BEFORE the holdout was touched, and with
+    # the holdout still untouched at the time of writing): the original grid was
+    # [3.0, 4.0, 6.0] and EVERY net-positive config in both train and validation
+    # landed on 6.0 — the boundary — while the strategy's own parameter_schema
+    # allows up to 8.0. An edge-of-grid winner means the search found the edge of
+    # the box, not an optimum, so killing the hypothesis on that grid would be
+    # unfair to it. 8.0 (the schema max) is added ONCE. This is the only
+    # amendment permitted: extending a grid repeatedly until something survives
+    # is exactly the luck-mining the three-way split exists to prevent.
+    "trend_target_atr": [3.0, 4.0, 6.0, 8.0],
     "trend_stop_atr":   [0.8, 1.2, 1.6],
     "fade_stop_atr":    [1.0, 1.5, 2.0],
 }

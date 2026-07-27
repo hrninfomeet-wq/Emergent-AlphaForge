@@ -232,6 +232,16 @@ worse; the correct fix for a sample problem is more sample. Pooling gives **1,21
 index-days against 408 for NIFTY alone — 2.97×** — and requires **zero engine changes**:
 the harness, the three-way split and the cost model all already exist.
 
+> **CORRECTION (2026-07-27, on first contact with the code): the multiplier for this
+> strategy is 2.0×, not 2.97×.** `opening_range_regime_router` declares
+> `supported_instruments = ["NIFTY", "SENSEX"]`, and that exclusion is principled rather
+> than an oversight: BANKNIFTY is **monthly**-expiry — 21 expiries in the window against
+> NIFTY's 87 and SENSEX's 88 — so its DTE range is 0–30 rather than 0–6. Pooling it with
+> weekly indices would blend two different option regimes and call the mixture a bigger
+> sample. Real pooled sample: **818 option index-days vs 408 NIFTY-only.** The 2.97×
+> figure in §3c remains correct as a statement about the *warehouse*; it was wrong as a
+> statement about *this strategy's* usable sample.
+
 *Honest caveat, and it must be pre-registered:* the three indices differ in strike step
 (50/100/100), lot size (65/35/20) and volatility regime, and they share market-wide
 regimes. Pooling triples the raw day count but does **not** produce three i.i.d. copies.
