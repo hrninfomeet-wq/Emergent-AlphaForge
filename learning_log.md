@@ -427,3 +427,52 @@ pre-registered criterion, that is a real result and the honest reading is that t
 value is as a research and risk-control instrument rather than a source of directional
 alpha. Loss avoidance is already banked: the survival gate has refused three families,
 one of them sourced from a vendor PDF claiming +₹2.79L that assumed ZERO slippage.
+
+---
+
+## Session 2026-07-27 (cont.) — pre-flight checks before a research campaign
+
+**Core lesson: before running a campaign on a new instrument, verify the constants that
+silently scale every number it produces. A wrong lot size does not fail — it reports.**
+
+Heading into the pooled-index campaign, my stored memory and an inventory agent disagreed
+on lot sizes (BANKNIFTY 30 vs 35). Checking resolved more than the disagreement: there were
+**two independent lot-size sources in the codebase**, and they disagreed with each other.
+`option_backtest.py:750` reads the selected contract's `lot_size` (data-driven, correct);
+`premium_momentum_backtest.py:342` and `premium_trigger_dispatch.py:194` read the hardcoded
+`UNDERLYING_META`. NIFTY (65) and SENSEX (20) agree in both, so the bug was invisible for
+two of three instruments — it only showed on the one nobody had ever backtested
+(**BANKNIFTY: 0 backtest runs ever**, vs NIFTY 225).
+
+**Confirmed approaches:**
+- **Fix the architecture, don't assert the number.** I could not confirm the true current
+  NSE lot: the broker MCP is unauthenticated on this IP and its login must never be called.
+  So instead of hardcoding a different constant, I removed the hardcoding — both paths now
+  resolve from contract data and agree *by construction*, and they track reality as the
+  exchange revises lots. Being unable to verify a value is an argument for deleting the
+  hardcode, not for guessing a better one.
+- **Don't paper over the genuinely hard case.** BANKNIFTY really did carry 35 (Jul–Dec 2025)
+  and 30 after, so a run spanning that boundary cannot be sized by any single number. The
+  resolver takes the most recent expiry's lot *and returns a warning*, surfaced in the
+  backtest summary. A silent "pick one" would have made every rupee figure in such a run
+  quietly approximate.
+- **Ask what a disagreement between two sources means, not just which is right.** The
+  valuable finding was not "30 vs 35" — it was that two sources existed at all.
+
+**A defect I introduced, caught by the clock:** my C2 transmit-fence test asserted the
+*authorised* case while the fence deliberately uses a **fresh wall clock** (re-checking the
+time is half its purpose — a deployment can cross its 15:00 IST late-entry cutoff during
+broker round-trips). So the test passed when written and failed every afternoon. It
+surfaced only because this run happened to be at 15:30 IST. The production behaviour was
+correct and stayed unchanged; the clock is now injectable and only the test pins it.
+**Any test whose subject reads `datetime.now()` is time-dependent until proven otherwise —
+and a suite that runs green all morning is not evidence against it.**
+
+**Dead ends / traps:**
+- `live_trades` is EMPTY — zero real fills ever. So direction **C** (realized fill vs
+  model friction) from the profit-leverage analysis is **not measurable**: paper trades
+  carry `entry_slippage_pts`/`entry_spread_pts`, which are the friction model's own
+  outputs, so measuring them against the model is circular. C is blocked behind a
+  real-money session, itself blocked on a registered IP. Recorded rather than faked.
+- Patching a test body by exact-match string replace failed twice on indentation. Read the
+  real lines first; do not reconstruct them from memory.
