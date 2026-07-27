@@ -80,3 +80,5 @@ Strategy_note_self/
 
 # Brainstorming visual-companion mockups
 .superpowers/
+backend/scripts/_*.log
+backend/scripts/pooled_regime_*.json
