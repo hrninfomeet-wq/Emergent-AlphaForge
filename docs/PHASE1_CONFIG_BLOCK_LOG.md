@@ -67,3 +67,41 @@ Three read-only agents dispatched in parallel:
   in to actually deploy, not merely backtest.
 
 _(results appended below as they land)_
+
+### ⚠️ Step 0 finding — the 5F DATA-column work landed DURING Phase 0, and it changes this phase
+
+`af59f50` → `a301cc0` landed directly on top of my `c3d6388` (Phase 0 complete),
+i.e. while Phase 0 was being verified in the browser. Two of my earlier statements
+are now **obsolete and must not be carried forward**:
+
+| I said (earlier this session) | Actual state now |
+|---|---|
+| "`capability.py` still declares `has_vix_history: False` — the wizard may be refusing rules against data that exists" | **FIXED.** `capability.py` now sets `has_vix_history: True`, with a comment citing the 2026-07-27 backfill (412/413 NIFTY sessions) |
+| "VIX is still not available as a per-bar signal — wire first, then unlock" | **DONE, correctly, in that order.** `backend/app/data_columns.py` joins warehouse-backed series onto the bar frame; a strategy opts in via `required_data=["vix"]` |
+
+**This is a precedent, not just a fix.** `DataColumn` is exactly the shape the
+`config_block` work should follow, and it already solved the hard problems:
+
+- **Opt-in.** No declaration ⇒ the module never runs and the frame is
+  byte-identical. Same guarantee `app.features` gives for structural features.
+- **Causal by construction.** As-of join at-or-before the bar's own timestamp,
+  bounded by `max_staleness_ms` — "not a convention callers must remember, it is
+  the only join this module implements".
+- **Honest about absence.** Missing ⇒ NaN, never a filled default, plus per-column
+  coverage so a caller can say "present for 68% of your window" instead of letting
+  a strategy silently score zero. The module's own docstring names the
+  `vix_boost_threshold` dead knob as the failure mode it exists to prevent.
+- **One staleness bound per quantity.** An adversarial pass caught a 4-day bound
+  that would let the live session-start VIX gate PASS while the per-bar column read
+  NaN — two different answers about one market state inside one deployment.
+- Already threaded through the authoring path: `capability.classify_rule(...,
+  required_data=())`, `compiler` validates against `DATA_COLUMN_REGISTRY` and
+  refuses unknown columns.
+
+**Consequences for Phase 1:**
+1. VIX-conditioned authored rules are **already served** — drop that from scope.
+2. `config_block` should mirror `required_data`'s contract: opt-in, registry-validated,
+   refuse-unknown, byte-identical when absent. Invariant #4 in this doc is already
+   the house pattern rather than something new to argue for.
+3. Re-verify the promise inventory (agent B) against the CURRENT `capability.py`,
+   not the version I read earlier in the session.
