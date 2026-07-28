@@ -698,4 +698,33 @@ produces, which is exactly backwards from what the UI implies.
 knows which rules were judged unbuildable (→ `fidelity.couldnt_map`, never
 invented), which were ambiguous, and what the user clarified.
 
-Status: ⬜ 8.1 · ⬜ 8.2 · ⬜ 8.3
+Status: ✅ 8.1 · ✅ 8.2 · ✅ 8.3 — all landed (suite 3911/0)
+
+### ✅ Step 8 landed (suite 3911/0, frontend clean)
+
+**8.1** The two shipped Phase-5B capabilities are out of the "future" list, and a
+test now cross-checks that list against the **shipped plugin's declared params**
+(`leg_mode`, `lazy_*`) so it cannot rot again. The genuinely-unbuilt item
+(session-level config as *declared strategy* config) stays, reworded to say the
+deployment-layer form does work — over-correcting would swap one false statement
+for another.
+
+**8.2** Real answer channel: an answers box on an ASK verdict, sent with the
+source to `/author/converse`. The old copy told users to answer questions through
+a channel that did not exist.
+
+**8.3** Feasibility now feeds generation. `_augmented_user_message(source,
+ruleset, answers)` appends the classifier's per-rule verdicts and the user's
+clarifications to the generation request, and explicitly instructs that
+INFEASIBLE/NEEDS_NEW_DATA rules go to `fidelity.couldnt_map` rather than being
+approximated with a substitute indicator. Appended to the USER message, not the
+system prompt — it is per-request data, and the system prompt must stay stable.
+
+**Byte-identical when unused:** `_augmented_user_message` returns the source
+UNCHANGED when there is no ruleset and no answers, so skipping the feasibility
+step behaves exactly as before. Pinned by a test, and by the pre-existing route
+test updated to assert `ruleset=None, answers=None`.
+
+**Recurring self-inflicted trap, now three times:** writing Python containing
+`\n` through a bash heredoc converts the escape into a literal newline and breaks
+the f-string. Use Edit for anything containing escape sequences.

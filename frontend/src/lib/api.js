@@ -41,10 +41,13 @@ export const api = {
   authorInstall: (spec, overwrite = false) =>
     apiClient.post("/strategies/author/install", { spec, overwrite }).then((r) => r.data),
   getAuthorProviders: () => apiClient.get("/strategies/author/providers").then((r) => r.data),
-  authorFromSource: (source, provider) =>
-    apiClient.post("/strategies/author/from-source", { source, provider }, { timeout: LONG_TIMEOUT_MS }).then((r) => r.data),
-  authorConverse: (source, provider) =>
-    apiClient.post("/strategies/author/converse", { source, provider }, { timeout: LONG_TIMEOUT_MS }).then((r) => r.data),
+  // ruleset + answers carry the prior feasibility verdict and the user's
+  // clarifications forward, so running "Check feasibility" measurably improves
+  // what "Generate" produces instead of being a dead-end display.
+  authorFromSource: (source, provider, ruleset, answers) =>
+    apiClient.post("/strategies/author/from-source", { source, provider, ruleset, answers }, { timeout: LONG_TIMEOUT_MS }).then((r) => r.data),
+  authorConverse: (source, provider, answers) =>
+    apiClient.post("/strategies/author/converse", { source, provider, answers }, { timeout: LONG_TIMEOUT_MS }).then((r) => r.data),
   authorPythonFromSource: (source, provider) =>
     apiClient.post("/strategies/author/python-from-source", { source, provider }, { timeout: LONG_TIMEOUT_MS }).then((r) => r.data),
   validatePython: (code) =>

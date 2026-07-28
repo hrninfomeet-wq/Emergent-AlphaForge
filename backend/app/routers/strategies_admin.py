@@ -441,11 +441,33 @@ async def author_from_source(req: StrategyFromSourceReq):
     except RuntimeError as e:
         raise HTTPException(502, f"Transcript fetch failed: {e}")
     try:
-        out = map_source_to_spec(ing["text"], provider=req.provider)
+        # Feed the prior verdict + the user's clarifications forward, so a
+        # feasibility run measurably improves what generation produces.
+        out = map_source_to_spec(ing["text"], provider=req.provider,
+                                 ruleset=req.ruleset, answers=req.answers)
     except RuntimeError as e:
         raise HTTPException(502, f"AI mapping failed: {e}")
     out["source_kind"] = ing["kind"]
     return out
+
+
+def _with_answers(source_text: str, answers) -> str:
+    """Append the user's clarifications to the source for a re-check.
+
+    The ASK verdict told users to "answer the clarifying question(s), then
+    re-check" while /author/converse accepted only the source text — there was no
+    channel at all. Appending keeps the classifier a pure function of one text
+    blob (no schema change to the agent) while making the answers actually count.
+    """
+    answers = (answers or "").strip()
+    if not answers:
+        return source_text
+    return (
+        f"{source_text}\n\n"
+        "# CLARIFICATIONS FROM THE USER\n"
+        "(answers to earlier questions — treat as part of the description)\n"
+        f"{answers}"
+    )
 
 
 @api.post("/strategies/author/converse")
@@ -470,7 +492,8 @@ async def author_converse(req: ConverseReq):
     except RuntimeError as e:
         raise HTTPException(502, f"Transcript fetch failed: {e}")
     try:
-        return map_source_to_ruleset(ing["text"], provider=req.provider)
+        return map_source_to_ruleset(_with_answers(ing["text"], req.answers),
+                                     provider=req.provider)
     except RuntimeError as e:
         raise HTTPException(503, detail=str(e))
     except Exception as e:

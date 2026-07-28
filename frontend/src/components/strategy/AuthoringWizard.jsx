@@ -87,6 +87,9 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
   const [ruleSet, setRuleSet] = useState(null);   // { decision, rules, summary }
   const [conversing, setConversing] = useState(false);
   const [converseError, setConverseError] = useState(null); // persistent (not a flash toast)
+  // Answers to an ASK verdict's clarifying questions. The UI told users to
+  // "answer the question(s), then re-check" and offered no channel to do it.
+  const [answers, setAnswers] = useState("");
   const [genError, setGenError] = useState(null);           // persistent generate error
   const [showCaps, setShowCaps] = useState(false);          // engine-capabilities panel
 
@@ -248,7 +251,7 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
     setConversing(true);
     setConverseError(null);
     try {
-      const res = await api.authorConverse(aiSource, provider);
+      const res = await api.authorConverse(aiSource, provider, answers);
       setRuleSet(res);
     } catch (e) {
       // Persist the error in a panel the user can read — NOT a flash toast that
@@ -266,7 +269,8 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
     setAiBusy(true);
     setGenError(null);
     try {
-      const res = await api.authorFromSource(aiSource, provider || undefined);
+      // Carry the verdict + answers so generation is informed by the check.
+      const res = await api.authorFromSource(aiSource, provider || undefined, ruleSet, answers);
       loadFromSpec(res.spec);
       setFidelity(res.fidelity);
       setAiErrors(res.errors || []);
@@ -561,13 +565,38 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
             </div>
           )}
 
+          {/* ASK — a REAL answer channel. Previously this said "answer the
+              clarifying question(s), then re-check" while offering nowhere to
+              answer: /author/converse took only the source text. The answers now
+              feed BOTH the re-check and generation. */}
+          {ruleSet && ruleSet.decision === "ASK" && (
+            <div className="rounded-md border border-sky-500/30 bg-sky-500/5 p-2 space-y-1.5"
+                 data-testid="author-answers-panel">
+              <div className="text-[11px] text-sky-300 font-medium">
+                Answer the question(s) above
+              </div>
+              <textarea
+                value={answers}
+                onChange={(e) => setAnswers(e.target.value)}
+                rows={3}
+                placeholder={'e.g. "By strong I mean the option premium, not the index price."'}
+                className="w-full text-xs px-2 py-1.5 rounded-md bg-bg-2 border border-line text-foreground focus:outline-none focus:ring-1 focus:ring-info"
+                data-testid="author-answers"
+              />
+              <div className="text-[10.5px] text-dimmer">
+                Your answers are sent with the description to both “Check feasibility”
+                and “Generate with AI” — you don’t need to rewrite the description.
+              </div>
+            </div>
+          )}
+
           {/* Install gate caveat note */}
           {ruleSet && ruleSet.decision !== "BUILD" && (
             <div className="text-[11px] text-warning" data-testid="install-gate-note">
               {ruleSet.decision === "REJECT"
                 ? "Can't install — a core rule isn't buildable. See Feasibility above."
                 : ruleSet.decision === "ASK"
-                ? "Answer the clarifying question(s) above, then re-check."
+                ? "Answer the question(s) in the box above, then re-check or generate."
                 : "Installing with caveats (some rules are backtest-only)."}
             </div>
           )}

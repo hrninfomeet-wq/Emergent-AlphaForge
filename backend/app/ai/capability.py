@@ -150,13 +150,18 @@ def capability_summary() -> Dict[str, Any]:
                 "Stepped X-Y premium trail (backtest + live parity via stepped_xy)",
                 "Single-leg first-to-trigger CE+PE lock (either side may fire)",
             ],
+            # SHIPPED in Phase 5B (2026-07-17) and therefore NOT future work:
+            # simultaneous two-leg entry (`leg_mode="both"`) and the lazy-leg
+            # contingency (`lazy_enabled` + the four `lazy_*` knobs). They sat in
+            # this list for months afterwards, so a user reading the feasibility
+            # report designed AROUND capability they already had.
+            # tests/test_authoring_loop_feedback.py cross-checks this list against
+            # the shipped plugin's declared params so it cannot rot again.
             "future": [
-                "Phase 5: simultaneous two-leg entry (both CE and PE may enter)",
-                "Phase 5: lazy-leg contingency — on primary SL, arm the dormant "
-                "opposite side with a fresh premium snapshot",
-                "Phase 5: session-level max positions / re-entry cutoff / "
-                "global target-SL as declared strategy config (today they're "
-                "deployment-layer configuration)",
+                "Session-level max positions / re-entry cutoff / global target-SL "
+                "as DECLARED STRATEGY config (today they are deployment-layer "
+                "configuration, which does work — it is only the strategy-declared "
+                "form that is unbuilt)",
             ],
             "concepts": sorted(PREMIUM_TRIGGER_CONCEPTS),
             "session_gates": sorted(

@@ -151,7 +151,65 @@ faithful subset and be honest about the gaps than to produce a spec that misrepr
 source."""
 
 
-def map_source_to_spec(source_text: str, provider: str | None = None) -> Dict[str, Any]:
+
+def _augmented_user_message(source_text: str, ruleset=None, answers=None) -> str:
+    """Fold a prior feasibility verdict + the user's clarifications into the
+    generation request.
+
+    Feasibility and generation used to be two INDEPENDENT calls over the same
+    text: the verdict was rendered and thrown away, so running "Check feasibility"
+    did not improve what "Generate with AI" produced — backwards from what the UI
+    implies. This is what makes the loop an actual loop.
+
+    Returns *source_text* UNCHANGED when there is nothing to add, so a user who
+    skips the feasibility step gets byte-identical behaviour to before.
+
+    The analysis is appended to the USER message, not the system prompt: it is
+    per-request data, and the system prompt must stay a stable, cacheable
+    description of the fixed vocabulary.
+    """
+    rules = list((ruleset or {}).get("rules") or [])
+    answers = (answers or "").strip()
+    if not rules and not answers:
+        return source_text
+
+    parts = [source_text, "", "# PRIOR FEASIBILITY ANALYSIS (authoritative — do not re-litigate)"]
+    if rules:
+        parts.append(
+            "A deterministic classifier already judged each rule below. Honour these "
+            "verdicts: they come from the engine's real capabilities, not from a model."
+        )
+        for r in rules:
+            cls = str(r.get("decision_class") or "")
+            text = str(r.get("text") or "").strip()
+            note = str(r.get("question") or r.get("message") or "").strip()
+            parts.append(f"- [{cls}] {text}" + (f" — {note}" if note else ""))
+
+        blocked = [str(r.get("text") or "").strip() for r in rules
+                   if str(r.get("decision_class") or "") in
+                   ("INFEASIBLE", "NEEDS_NEW_DATA", "REJECT")]
+        if blocked:
+            parts += [
+                "",
+                "These rules are NOT buildable. Do NOT approximate them with a "
+                "different indicator or invent a proxy — put each one verbatim in "
+                "fidelity.couldnt_map and encode the rest:",
+            ] + [f"- {b}" for b in blocked]
+
+    if answers:
+        parts += [
+            "",
+            "# THE USER'S ANSWERS to the clarifying questions",
+            "These resolve the AMBIGUOUS rules above. Treat them as the user's own "
+            "words and encode accordingly — do not ask again.",
+            answers,
+        ]
+    return "\n".join(parts)
+
+
+def map_source_to_spec(source_text: str, provider: str | None = None, *,
+                       ruleset: Dict[str, Any] | None = None,
+                       answers: str | None = None) -> Dict[str, Any]:
     """Sonnet maps the text to {spec, fidelity}. Returns plain dicts. The grounding
     catalog + validate are derived from live code so the AI can't hallucinate columns.
 
@@ -168,7 +226,7 @@ def map_source_to_spec(source_text: str, provider: str | None = None) -> Dict[st
     mapped: MappedSpec = llm_client.complete_structured(
         tier=llm_client.FAST,
         system=_system_prompt(catalog),
-        user=source_text,
+        user=_augmented_user_message(source_text, ruleset, answers),
         output_model=MappedSpec,
         provider=provider,
     )

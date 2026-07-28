@@ -304,8 +304,12 @@ def test_from_source_youtube_ingestion():
         assert body["errors"] == []
         # ingest_source was called with the raw URL
         mock_ingest.assert_called_once_with("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
-        # map_source_to_spec was called with the transcript text (not the URL)
-        mock_map.assert_called_once_with("enter long when rsi above 60", provider=None)
+        # map_source_to_spec was called with the transcript text (not the URL).
+        # ruleset/answers are the feasibility-feedback channel; a request that ran
+        # no feasibility check must pass them as None, i.e. generation behaves
+        # exactly as it did before that channel existed.
+        mock_map.assert_called_once_with(
+            "enter long when rsi above 60", provider=None, ruleset=None, answers=None)
     finally:
         _stop(tc)
 
