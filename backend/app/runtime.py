@@ -1479,11 +1479,22 @@ async def _option_preflight_report(req: BacktestReq) -> Dict[str, Any]:
     # premium candles", which is exactly what the option-native sim's own
     # coverage gate measures — run it and report honestly (the sim is the same
     # work the real run does; a preflight for this strategy costs one run).
-    if req.strategy_id == "premium_momentum" and req.start_ts and req.end_ts:
+    from app.premium_trigger_dispatch import (
+        _CONFIG_FIELDS as _PF_CONFIG_FIELDS,
+        is_premium_trigger_strategy,
+    )
+    if is_premium_trigger_strategy(strategy) and req.start_ts and req.end_ts:
         from app.premium_momentum_backtest import _sides_for, run_premium_momentum_backtest
         from app.routers.premium_momentum_routes import _load_window
 
+        # Same allow-list caveat as the paired-backtest path: merged_params is
+        # keyed on parameter_schema, which omits several config fields, so
+        # re-apply them from the RAW request or the preflight would measure
+        # coverage for a different config than the run will use.
         pm_params = strategy.merged_params(req.params)
+        for _k in _PF_CONFIG_FIELDS:
+            if req.params.get(_k) is not None:
+                pm_params[_k] = req.params[_k]
         if "lots" not in req.params and config.lots:
             pm_params["lots"] = int(config.lots)
         loaded = await _load_window(

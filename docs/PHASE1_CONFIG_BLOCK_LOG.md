@@ -283,3 +283,55 @@ fix; the wording corrections alone would have re-rotted.
 5. `moneyness_selection` routes to premium-trigger, but a *generic*
    `option_moneyness` already exists on `DeploymentCreateReq` for any deployment
    — the broader, working mechanism is invisible in the promise text.
+
+---
+
+## ✅ STEP 1b COMPLETE — the backtest domain stops asking for an id (suite 3851/0)
+
+New predicate `is_premium_trigger_strategy(strategy)` in
+`premium_trigger_dispatch.py`. Six sites converted:
+
+| Site | Was |
+|---|---|
+| `optimizer` OOS survival | `getattr(strategy, "id", None) == "premium_momentum"` |
+| `optimizer` Stage-2 re-rank | same |
+| `optimizer` Stage-1 preload | `strategy.id == "premium_momentum"` |
+| `optimizer` Stage-1 evaluate closure | same |
+| `optimizer` worker pinning ×2 | `strategy.id != "premium_momentum"` |
+| `runtime` coverage preflight | `req.strategy_id == "premium_momentum"` |
+
+**`"premium_momentum"` literal count in `optimizer.py`: 6 → 0.**
+
+All six meant the same thing — *this strategy's `evaluate()` is a stub, so the
+spot path would score it as zero trades* — and none actually cared about the id.
+
+**Regression safety, measured not assumed:** the predicate is judged from the
+strategy's DECLARED DEFAULTS (a stable property, so it cannot flip between
+optimizer trials as params vary), and across all 12 shipped strategies it matches
+exactly the one strategy the string matched:
+
+```
+premium_momentum -> PREMIUM-TRIGGER;  the other 11 -> absent
+```
+
+A partial/invalid config is deliberately NOT premium-native — hijacking the
+option-native path with a config that cannot drive the sim would score a strategy
+through machinery its own configuration never described.
+
+The preflight also picked up the same raw-params re-apply as Step 1, or it would
+have measured coverage for a *different* config than the run then uses.
+
+**One pre-existing test updated, intent preserved.**
+`test_preflight_report_has_premium_native_branch` pinned the literal string. Its
+own docstring says the intent is "the preflight has a premium-native branch
+reporting per-session locked-strike coverage (never the spot-derived 0%)" — that
+is intact. The assertion now checks for the branch via the predicate AND adds a
+new one forbidding re-acquisition of a hardcoded id gate, so it is strictly
+stronger than before rather than relaxed.
+
+### Remaining hooks (deployment domain — Step 3, safety-critical)
+`deployment_evaluator.py:479` (Track B) and its nested day-stop / VIX / 
+`square_at_ist` / exit-plan blocks, plus `runtime.py:244` (live guard-close lazy
+arm) and `paper_auto.py:739` (paper lazy arm). These are the ones that make a
+strategy actually TRADE, and the original design doc flagged them as needing
+their own dedicated session — treated accordingly.

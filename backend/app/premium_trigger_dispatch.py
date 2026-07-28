@@ -117,6 +117,39 @@ def extract_premium_trigger_config(
         return None, f"invalid:{str(exc)[:200]}"
 
 
+def is_premium_trigger_strategy(strategy: Any) -> bool:
+    """True when *strategy* is premium-native, i.e. driven by a premium-trigger
+    config rather than by per-bar ``evaluate()``.
+
+    This is the capability question the backtest domain actually needs answered.
+    Six call sites used to ask ``strategy.id == "premium_momentum"`` instead —
+    the optimizer's OOS survival, Stage-2 re-rank, Stage-1 preload, Stage-1
+    evaluate closure and its two worker-pinning decisions, plus the coverage
+    preflight. All of them mean "this strategy's ``evaluate()`` is a deliberate
+    stub, so the spot path would score it as zero trades"; none of them actually
+    cares about the id.
+
+    Judged from the strategy's DECLARED DEFAULTS, not from a caller's params, so
+    the answer is a stable property of the strategy itself and cannot flip
+    between trials as the optimizer varies parameters.
+
+    Byte-identical today: across all 12 shipped strategies this matches exactly
+    the one the literal string matched. What it adds is that an AI-authored
+    strategy declaring the same config stops being silently scored as a
+    zero-trade dud.
+
+    A partial or invalid config is NOT premium-native — hijacking the
+    option-native path with a config that cannot drive the sim would score the
+    strategy through machinery its own configuration never described.
+    """
+    try:
+        defaults = strategy.default_params()
+    except Exception:
+        return False
+    cfg, _reason = extract_premium_trigger_config(defaults)
+    return cfg is not None
+
+
 def _adapt_premium_trades_to_paired(
     trades: List[Dict[str, Any]], *, instrument: str, lots: int, lot_size: int,
 ) -> List[Dict[str, Any]]:

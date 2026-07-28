@@ -728,7 +728,7 @@ async def _survival_eval_oos(
     """Evaluate one finalist's survival on each walk-forward OOS slice. Floor + DD%
     must hold per fold (per sc.min_oos_folds); RoR runs on the stitched OOS rupee
     series. Returns the survival_verdict dict augmented with folds_ok/fold_pass."""
-    if getattr(strategy, "id", None) == "premium_momentum":
+    if is_premium_trigger_strategy(strategy):
         return await _survival_eval_oos_premium_trigger(
             strategy, df_enriched, merged_params, contracts, candles_df,
             instrument, option_cfg, sc, n_folds=n_folds, train_pct=train_pct,
@@ -884,7 +884,7 @@ async def _option_rerank(
     rupee. Option contracts + candles are loaded from the DB ONCE (over the
     union of all candidates' needed strikes), then each candidate is simulated
     in-memory. Returns candidates ranked by option net-rupee P&L."""
-    if getattr(strategy, "id", None) == "premium_momentum":
+    if is_premium_trigger_strategy(strategy):
         return await _option_rerank_premium_trigger(candidates, get_enriched, strategy, instrument)
 
     moneyness = str(option_cfg.get("moneyness") or "atm")
@@ -1150,7 +1150,7 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
         pm_spot_df: Optional[pd.DataFrame] = None
         pm_option_candles: Optional[pd.DataFrame] = None
         pm_contracts: List[Dict[str, Any]] = []
-        if strategy.id == "premium_momentum":
+        if is_premium_trigger_strategy(strategy):
             from app.routers.premium_momentum_routes import _load_window
 
             # NOTE: reference_time/moneyness are string params, and
@@ -1188,7 +1188,7 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
 
         # Guard-aware closures used by every trial / analysis below.
         def evaluate(params: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-            if strategy.id == "premium_momentum":
+            if is_premium_trigger_strategy(strategy):
                 # Option-native Stage-1 scoring (the spot path is a stub — see
                 # the preload block above). Same (metrics, merged) contract.
                 return _evaluate_premium_trigger(
@@ -1255,7 +1255,7 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
             # trade_count=0 -> every trial disqualified), bypassing the
             # premium-native evaluate closure entirely.
             _fresh_workers = (effective_workers(opt_workers)
-                              if method == "bayesian" and strategy.id != "premium_momentum" else 1)
+                              if method == "bayesian" and not is_premium_trigger_strategy(strategy) else 1)
             _sampler = (optuna.samplers.TPESampler(seed=42, n_startup_trials=10, constant_liar=True)
                         if _fresh_workers > 1 else _make_sampler(method))
             study = optuna.create_study(
@@ -1275,7 +1275,7 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
         # premium_momentum is pinned sequential — parallel_backtest's worker
         # processes run the spot stub (see the preload block above).
         _workers = (effective_workers(opt_workers)
-                    if method == "bayesian" and strategy.id != "premium_momentum" else 1)
+                    if method == "bayesian" and not is_premium_trigger_strategy(strategy) else 1)
 
         async def _maybe_pause() -> bool:
             """Persist progress and mark paused if the user paused the job.

@@ -42,7 +42,14 @@ def test_preflight_report_has_premium_native_branch():
     src = (_ROOT / "backend" / "app" / "runtime.py").read_text(encoding="utf-8")
     i = src.index("async def _option_preflight_report")
     body = src[i:i + 6000]
-    assert 'req.strategy_id == "premium_momentum"' in body
+    # The branch must still exist — but it is now gated on CONFIG PRESENCE
+    # rather than the literal id, so ANY strategy declaring a premium-trigger
+    # config gets an honest coverage report instead of the spot-derived 0%.
+    # (Byte-identical today: the predicate matches exactly the one strategy the
+    # string matched. See tests/test_premium_trigger_predicate.py.)
+    assert "is_premium_trigger_strategy(strategy)" in body
+    assert 'req.strategy_id == "premium_momentum"' not in body, (
+        "the preflight must not re-acquire a hardcoded strategy-id gate")
     assert "run_premium_momentum_backtest" in body
     # Panel-compat fields must be present in the premium report.
     for field in ('"total_spot_trades"', '"would_pair"', '"coverage_pct"', '"missing_candle"'):
