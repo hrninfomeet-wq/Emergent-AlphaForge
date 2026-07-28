@@ -105,3 +105,46 @@ are now **obsolete and must not be carried forward**:
    the house pattern rather than something new to argue for.
 3. Re-verify the promise inventory (agent B) against the CURRENT `capability.py`,
    not the version I read earlier in the session.
+
+### Step 0 · Agent A — `PremiumTriggerConfig` surface (LANDED)
+
+**The guard lives in TWO places, and `dispatch_backtest` is already generic.**
+
+| Function | `strategy_id` guard? | Notes |
+|---|---|---|
+| `dispatch_backtest` (`premium_trigger_dispatch.py:235`) | **NONE — already strategy-agnostic** | This is what the parity test targets. **Do not modify it.** |
+| `dispatch_full_backtest` (`:161`) | `if strategy_id != "premium_momentum": return None` at **`:181-182`** | builds the config itself from `merged_params` via `_CONFIG_FIELDS` |
+| `runtime._run_paired_option_backtest` | **DUPLICATE guard** at **`runtime.py:1144`** | `if req.strategy_id == "premium_momentum" and ...` |
+
+So "route on config presence" = change **two caller-side guards**, and leave
+`dispatch_backtest` / `to_backtest_params` / `PremiumTriggerConfig` untouched —
+precisely the three things the parity test protects.
+
+**🐞 BLOCKING BUG FOUND — silent field loss (verified empirically, not just read).**
+`StrategyBase.merged_params` is a strict allow-list keyed on the plugin's
+`parameter_schema`. `premium_momentum`'s schema is missing **6 of the config's 14
+fields**. Reproduced directly:
+
+```
+MISSING from plugin parameter_schema: ['cost_config','lots','stop_pts','target_pts','trail_x','trail_y']
+SILENTLY DROPPED by merged_params:    ['cost_config','lots','stop_pts','target_pts','trail_x','trail_y']
+```
+
+`runtime.py:1149-1166` rescues only `lots` and `cost_config` (with a comment
+acknowledging the allow-list). **`stop_pts`, `target_pts`, `trail_x`, `trail_y`
+get no rescue** — configure a point-based stop/target or an X-Y trail and the
+backtest silently runs WITHOUT it and reports the numbers as if it had. Same
+class as the `vix_boost_threshold` dead knob and the `early_stop` no-op.
+
+**This is a prerequisite, not a side quest:** the moment any authored strategy can
+carry a config block, this drop hits every one of them. Fix it in Step 1.
+
+**Also:** `_CONFIG_FIELDS` (`:73-77`) is a hand-maintained literal mirror of the
+14 field names — no introspection. Derive it from `PremiumTriggerConfig.model_fields`
+so it cannot drift.
+
+**Parity test locks (must stay green, untouched):** byte-identical `trades` +
+`coverage` + `summary` across 3 scenarios; dispatch only ADDS `dispatch` +
+`premium_trigger_config` keys; validation still fails loudly (extra=forbid, both/
+neither momentum, lone trail, bad HH:MM); `side`/`moneyness` case-folding;
+config defaults still match the shipped plugin (`09:31`/`itm1`/`first_to_trigger`/`1`).
