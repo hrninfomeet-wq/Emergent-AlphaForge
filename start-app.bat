@@ -172,10 +172,15 @@ if errorlevel 1 (
 echo.
 
 echo Step 6 of 6 - waiting for services to become ready...
-call :WaitForBackend
-set "BACKEND_READY=%ERRORLEVEL%"
-call :WaitForFrontend
-set "FRONTEND_READY=%ERRORLEVEL%"
+call :WaitForServices
+set "BACKEND_READY=1"
+set "FRONTEND_READY=1"
+if "%READY_CODE%"=="0" (
+  set "BACKEND_READY=0"
+  set "FRONTEND_READY=0"
+)
+if "%READY_CODE%"=="2" set "BACKEND_READY=0"
+if "%READY_CODE%"=="3" set "FRONTEND_READY=0"
 
 echo.
 echo Final container status:
@@ -270,21 +275,19 @@ if not defined UPSTOX_CLIENT_SECRET_VALUE (
 )
 exit /b 0
 
-:WaitForBackend
-for /L %%I in (1,1,60) do (
-  powershell -NoProfile -ExecutionPolicy Bypass -Command "try { $r = Invoke-RestMethod -Uri 'http://localhost:8001/api/health' -TimeoutSec 2; if ($r.db -eq 'ok') { exit 0 } else { exit 1 } } catch { exit 1 }" >nul 2>nul
-  if not errorlevel 1 exit /b 0
-  timeout /t 2 /nobreak >nul
-)
-exit /b 1
-
-:WaitForFrontend
-for /L %%I in (1,1,60) do (
-  powershell -NoProfile -ExecutionPolicy Bypass -Command "try { $r = Invoke-WebRequest -Uri 'http://localhost:3000' -UseBasicParsing -TimeoutSec 2; if ($r.StatusCode -ge 200 -and $r.StatusCode -lt 500) { exit 0 } else { exit 1 } } catch { exit 1 }" >nul 2>nul
-  if not errorlevel 1 exit /b 0
-  timeout /t 2 /nobreak >nul
-)
-exit /b 1
+:WaitForServices
+rem Polls BOTH services from ONE PowerShell process and sets READY_CODE:
+rem   0 = both ready, 2 = backend only, 3 = frontend only, 1 = neither.
+rem
+rem The URLs use 127.0.0.1, NOT localhost. docker-compose.yml publishes the
+rem ports IPv4-only (127.0.0.1:8001, 127.0.0.1:3000) while Windows resolves
+rem localhost to ::1 first. Nothing listens on ::1, and that dead IPv6 attempt
+rem stalls ~2s before .NET falls back to IPv4 -- which blew the old -TimeoutSec 2
+rem on EVERY poll, so the check could never pass. Both 60-iteration loops then
+rem ran to exhaustion (~8.5 min) and reported "not ready" on a healthy stack.
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$d=(Get-Date).AddSeconds(180); $b=$false; $f=$false; while((Get-Date) -lt $d){ if(-not $b){ try{ if((Invoke-RestMethod -Uri 'http://127.0.0.1:8001/api/health' -TimeoutSec 3).db -eq 'ok'){ $b=$true; Write-Host '  Backend ready.' } }catch{} }; if(-not $f){ try{ if((Invoke-WebRequest -Uri 'http://127.0.0.1:3000' -UseBasicParsing -TimeoutSec 3).StatusCode -lt 500){ $f=$true; Write-Host '  Frontend ready.' } }catch{} }; if($b -and $f){ exit 0 }; Start-Sleep -Milliseconds 500 }; if($b){ exit 2 }; if($f){ exit 3 }; exit 1"
+set "READY_CODE=%ERRORLEVEL%"
+exit /b 0
 
 :help
 echo AlphaForge startup assistant

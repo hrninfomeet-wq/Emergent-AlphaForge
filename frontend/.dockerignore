@@ -1,0 +1,17 @@
+# Keep the host tree out of the build context.
+#
+# node_modules is not just slow to ship -- Dockerfile line 11 runs `COPY . .`
+# AFTER `yarn install` on line 9, so a host node_modules would overwrite the
+# clean --frozen-lockfile install with Windows-built artifacts.
+node_modules
+build
+
+.env
+.env.local
+.env.*.local
+
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+.DS_Store

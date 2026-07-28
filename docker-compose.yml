@@ -10,9 +10,14 @@ services:
       - mongo_data:/data/db
     healthcheck:
       test: ["CMD", "mongosh", "--quiet", "--eval", "db.runCommand({ping:1}).ok"]
-      interval: 15s
+      # start_period + a short interval matter because backend gates on
+      # `condition: service_healthy`. Without start_period Docker defers the
+      # FIRST probe by a full interval, so a recreated Mongo (ready in ~1-2s)
+      # still held the backend back for 15s.
+      interval: 5s
       timeout: 5s
       retries: 5
+      start_period: 10s
 
   backend:
     build:

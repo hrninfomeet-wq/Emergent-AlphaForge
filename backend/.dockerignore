@@ -1,0 +1,17 @@
+# Keep the host tree out of the build context.
+__pycache__
+**/__pycache__
+*.py[cod]
+
+.venv
+venv
+
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+# Secrets: the container gets these via env_file at RUN time, never baked in.
+.env
+.env.local
+
+.DS_Store

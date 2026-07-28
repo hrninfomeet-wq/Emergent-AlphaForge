@@ -60,6 +60,55 @@ def test_windows_startup_assistant_documents_safe_startup_flow():
         assert phrase in manual
 
 
+def test_startup_readiness_probe_uses_ipv4_loopback_not_localhost():
+    """The step-6 readiness probe must dial 127.0.0.1, never localhost.
+
+    docker-compose publishes the ports IPv4-only (127.0.0.1:8001, 127.0.0.1:3000)
+    while Windows resolves `localhost` to ::1 first. Nothing listens on ::1, and
+    that dead attempt stalls ~2s before .NET falls back to IPv4 — which silently
+    blew the probe's own timeout on EVERY poll. Both wait loops then ran to
+    exhaustion (~8.5 min) and reported "not ready" on a perfectly healthy stack.
+    """
+    launcher = (ROOT / "start-app.bat").read_text(encoding="utf-8")
+
+    assert ":WaitForServices" in launcher
+    assert "http://127.0.0.1:8001/api/health" in launcher
+    assert "http://127.0.0.1:3000" in launcher
+
+    # The echoed URLs stay human-friendly `localhost`; only the probes are pinned.
+    for banned in (
+        "Invoke-RestMethod -Uri 'http://localhost:",
+        "Invoke-WebRequest -Uri 'http://localhost:",
+    ):
+        assert banned not in launcher, f"readiness probe regressed to localhost: {banned}"
+
+
+def test_mongo_healthcheck_declares_start_period():
+    """Without start_period Docker defers Mongo's FIRST probe by a full interval.
+
+    backend gates on `condition: service_healthy`, so a Mongo that is actually
+    ready in ~1-2s still held the whole stack back for the interval.
+    """
+    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    assert "start_period:" in compose
+
+
+def test_build_contexts_exclude_host_artifacts():
+    """frontend/Dockerfile runs `COPY . .` AFTER `yarn install`.
+
+    Without a .dockerignore the host's Windows-built node_modules overwrites the
+    clean --frozen-lockfile install inside the image — a correctness hazard, not
+    just a slow build. Both ignore files also keep `.env` secrets out of layers.
+    """
+    for rel in ("frontend/.dockerignore", "backend/.dockerignore"):
+        path = ROOT / rel
+        assert path.exists(), f"missing {rel}"
+        assert ".env" in path.read_text(encoding="utf-8"), f"{rel} must exclude .env"
+
+    frontend_ignore = (ROOT / "frontend" / ".dockerignore").read_text(encoding="utf-8")
+    assert "node_modules" in frontend_ignore
+
+
 def test_requirements_include_imported_runtime_dependencies():
     requirements = (ROOT / "backend" / "requirements.txt").read_text(encoding="utf-8")
 
