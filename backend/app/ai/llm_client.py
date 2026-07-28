@@ -25,7 +25,16 @@ OPUS = "claude-opus-4-8"
 # Per-provider tier -> default model. Each id is overridable via env (see _ENV_OVERRIDE).
 _MODELS = {
     "anthropic": {FAST: SONNET, POWERFUL: OPUS},
-    "gemini": {FAST: "gemini-2.5-flash", POWERFUL: "gemini-2.5-pro"},
+    # FAST drives Spec-mode generation AND the feasibility gate — the authoring
+    # paths that matter most. gemini-3.6-flash went GA 2026-07-21 and is the newest
+    # generally-available Gemini: stronger on complex agentic/structured tasks than
+    # 3.5 Flash, cheaper, 64k output cap.
+    #
+    # There is deliberately no "Gemini 3 Pro" here: the only 3.x Pro is
+    # gemini-3.1-pro-preview, and a path that writes installable strategy code
+    # should not default to a preview model. POWERFUL stays on gemini-2.5-pro,
+    # which remains supported. Both are overridable via the env vars below.
+    "gemini": {FAST: "gemini-3.6-flash", POWERFUL: "gemini-2.5-pro"},
 }
 _ENV_OVERRIDE = {
     ("anthropic", FAST): "ANTHROPIC_FAST_MODEL",

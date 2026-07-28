@@ -43,10 +43,19 @@ def _base_config(system: str, model: str, max_tokens: int) -> dict:
         "response_mime_type": "application/json",
         "max_output_tokens": max_tokens,
     }
-    # gemini-2.5-flash lets you spend the whole budget on the answer (thinking off);
-    # 2.5-pro requires some thinking, so only disable it on flash. Best-effort: if the
-    # installed SDK/model rejects the key, the primary try/except falls back cleanly.
-    if "flash" in model:
+    # Thinking-off is a MEASURED workaround for the 2.5 generation, where thinking
+    # tokens were drawn from max_output_tokens and truncated structured JSON
+    # mid-string. gemini-2.5-flash allows spending the whole budget on the answer;
+    # 2.5-pro requires some thinking, so it was scoped to flash.
+    #
+    # Deliberately NOT a bare `"flash" in model` test any more. That matched on the
+    # NAME, so a newer generation (e.g. gemini-3.6-flash, GA 2026-07-21, 64k output)
+    # would have been silently gagged the moment it was selected — upgrading the
+    # model while switching off the reasoning that motivated the upgrade. Newer
+    # generations keep their own defaults; this stays pinned to the era it was
+    # measured on. Best-effort either way: if the installed SDK/model rejects the
+    # key, the primary try/except falls back cleanly.
+    if model.startswith("gemini-2.5-") and "flash" in model:
         cfg["thinking_config"] = {"thinking_budget": 0}
     return cfg
 

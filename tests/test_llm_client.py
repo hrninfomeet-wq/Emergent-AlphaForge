@@ -76,7 +76,10 @@ def test_complete_structured_routes_to_resolved_backend(monkeypatch):
     monkeypatch.setattr(_gemini, "call", fake_call)
     out = llm_client.complete_structured(tier=llm_client.FAST, system="s", user="u", output_model=str)
     assert out == "OK"
-    assert seen["model"] == "gemini-2.5-flash"
+    # Derived, not hardcoded: this test is about ROUTING to the resolved backend
+    # with the tier's model — pinning a literal id meant every model upgrade broke
+    # a test that has nothing to do with which model is current.
+    assert seen["model"] == llm_client._MODELS["gemini"][llm_client.FAST]
 
 
 def test_complete_structured_routes_to_anthropic_backend(monkeypatch):
