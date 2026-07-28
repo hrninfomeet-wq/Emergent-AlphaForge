@@ -525,3 +525,43 @@ set, so ordinary specs are untouched — pinned by a test.
 ### Remaining Phase 1
 Step 5 (teach both generators the mechanism exists), Step 6 (wizard config-block
 UI), Step 7 (paper `square_at_ist` parity + sizing replay — agent C risks #2/#3).
+
+---
+
+## ✅ STEP 5 COMPLETE — the generators know the mechanism exists (3890/0)
+
+Steps 1-4 built complete rails; neither prompt mentioned any of it, so the LLM
+would never emit a config — the mechanism existed and was **unreachable from
+plain English**, which is the whole gap Phase 1 set out to close.
+
+**Two different fixes, because the two modes have genuinely different answers:**
+
+*Spec mode CAN express it* — the prompt now teaches `premium_trigger`, its
+fields, the compiler's enforced rules (momentum XOR, trail pairing, zero-padded
+HH:MM), and that exits live in the config rather than in `exits`. It also states
+the mutual exclusion with `entry_ce`/`entry_pe`, because the compiler REFUSES
+both together and a model that isn't told would produce specs that fail with no
+idea why.
+
+*Full-Python mode CANNOT* — and the prompt now says so. A premium-native strategy
+is run by the session engine, which replaces `evaluate()` entirely, so any
+`evaluate()` the LLM writes for that description is **dead code that never
+runs and a strategy that appears to work while trading nothing**. The prompt
+instructs it to put this in `fidelity.couldnt_map` and route to Spec mode rather
+than invent per-bar logic that approximates it.
+
+**The anti-drift rule, applied.** The field list is DERIVED from
+`PremiumTriggerConfig.model_fields`, never hand-typed — hand-copying is exactly
+what produced the phantom `expiry` in `capability.py`, and a prompt advertising a
+nonexistent field induces the LLM to emit it, killing the build against
+`extra="forbid"` with an error the user cannot act on. A test asserts the prompt
+advertises no field the model lacks.
+
+Rendering was reviewed, not assumed: the first version emitted
+`momentum_pct (Optional)`, which teaches the model nothing. `Optional[X]` is now
+unwrapped to `float, optional`, and `Literal`s render as their real values
+(`'ce' | 'pe' | 'first_to_trigger'`) so the model cannot invent one.
+
+### Remaining Phase 1
+Step 6 (wizard config-block UI), Step 7 (paper `square_at_ist` parity + sizing
+replay — agent C risks #2/#3).

@@ -19,6 +19,43 @@ class MappedSpec(BaseModel):
     fidelity: Fidelity
 
 
+
+def _premium_trigger_field_doc() -> str:
+    """Enumerate the premium-trigger config fields FROM THE MODEL.
+
+    Never hand-typed. A hand-copied list is exactly what produced the phantom
+    `expiry` field that shipped in ai/capability.py for months: a prompt that
+    advertises a nonexistent field induces the LLM to emit it, and it then dies
+    against PremiumTriggerConfig's extra="forbid" with an error the user cannot
+    act on. Deriving it means the prompt cannot drift from the schema.
+    """
+    from app.premium_trigger_config import PremiumTriggerConfig
+
+    import typing
+
+    parts = []
+    for name, field in PremiumTriggerConfig.model_fields.items():
+        ann = field.annotation
+        args = typing.get_args(ann)
+
+        # Literal choices are surfaced verbatim so the model cannot invent a value.
+        literals = [a for a in args if isinstance(a, str)]
+        if literals:
+            parts.append(f"`{name}` ({' | '.join(repr(a) for a in literals)})")
+            continue
+
+        # Unwrap Optional[X] -> X. Rendering the bare word "Optional" would tell
+        # the model nothing about the value it should produce: `momentum_pct
+        # (Optional)` gives no hint that it is a percentage float.
+        inner = [a for a in args if a is not type(None)]
+        target = inner[0] if inner else ann
+        text = getattr(target, "__name__", None) or str(target)
+        if type(None) in args:
+            text += ", optional"
+        parts.append(f"`{name}` ({text})")
+    return ", ".join(parts)
+
+
 def _system_prompt(catalog: Dict[str, Any]) -> str:
     """Build the grounding system prompt: the FIXED vocabulary the AI must map into.
 
@@ -63,6 +100,22 @@ EMA gap), declare it in `params` as {{"name": <lower_snake>, "type": "int"|"floa
 "min": <num>, "max": <num>, "default": <num>}} and reference it from a condition's `right` \
 as "param:NAME". Otherwise just put the literal number in `right`. Prefer literals when the \
 text gives a fixed number and does not ask for tuning.
+
+# Premium-trigger strategies (the `premium_trigger` object) — READ THIS FIRST
+Some strategies do NOT decide from per-bar indicator conditions at all. They lock an option strike at a reference time and enter when the OPTION PREMIUM ITSELF moves by a threshold (e.g. "at 09:31 note the ITM1 call and put premium; buy whichever rises 15% first; stop 20%"). That family is expressed with the `premium_trigger` object, NOT with entry_ce/entry_pe.
+
+If the source describes that shape, set `premium_trigger` and leave entry_ce/entry_pe EMPTY. Setting both is REJECTED by the compiler: a premium-trigger strategy is run by the premium session engine, which replaces the per-bar evaluate entirely, so entry conditions could never fire and you would be describing rules the engine ignores.
+
+Fields (use ONLY these exact names; anything else is rejected):
+{_premium_trigger_field_doc()}
+
+Rules the compiler enforces — violating them fails the build:
+- Exactly ONE of `momentum_pct` or `momentum_pts` (the entry trigger). Never both, never neither.
+- `trail_x` and `trail_y` are set together or not at all.
+- Times are "HH:MM" 24-hour, zero-padded (e.g. "09:31", not "9:31").
+- A premium-trigger strategy's exits live HERE (stop_pct/stop_pts/target_pct/target_pts), not in the `exits` object. Leaving target unset means "ride to end of day", which is valid.
+
+If the source is an ordinary indicator strategy, ignore this section entirely and leave `premium_trigger` null.
 
 # Exits (the `exits` object)
 Set ONLY the fields the source actually specifies; leave the rest null:

@@ -52,6 +52,17 @@ should set at least one exit on the Signal (spot_target_pts/spot_stop_pts/target
 direction ("CE" buy-call / "PE" buy-put / "NONE"), score, reasons, blockers, target_pct, stop_pct, \
 time_stop_minutes, spot_target_pts, spot_stop_pts.
 
+# What this mode CANNOT express — do not attempt it here
+A PREMIUM-TRIGGER strategy (lock an option strike at a reference time, then enter when the \
+OPTION PREMIUM ITSELF rises by a threshold — e.g. "at 09:31 note the ITM1 premium, buy \
+whichever side gains 15% first, stop 20%") is run by the premium session engine, which \
+REPLACES evaluate() entirely. Any evaluate() you write for such a description would be dead \
+code that is never called, and the strategy would appear to work while trading nothing.
+
+If the source describes that shape, do NOT invent per-bar logic to approximate it. Say so in \
+fidelity.couldnt_map and state that it belongs in Spec mode's `premium_trigger` config block, \
+which expresses it natively.
+
 # fidelity (be honest): captured (what you encoded), couldnt_map (rules with no column/representation), \
 ambiguous (needs clarification). suggested_id: the id slug you chose."""
 
