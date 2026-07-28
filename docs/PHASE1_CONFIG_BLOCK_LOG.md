@@ -660,3 +660,42 @@ strategy, which was invariant #1.
 **Not yet done:** none of this has been exercised against a live broker (the
 standing IP constraint), and no AI-authored premium strategy has been generated
 end-to-end with a real LLM call. Both are validation, not implementation.
+
+---
+
+## 🔄 STEP 8 (user-reported, 2026-07-28) — the authoring loop is not a loop
+
+User built an option-trigger strategy, ran Check feasibility, and hit three real
+problems. All three are honesty/UX defects of the same class Phase 0-1 has been
+closing.
+
+### 8.1 — the "future work" list advertises capability that SHIPPED
+`ai/capability.py`'s `capability_summary()["future"]` still lists:
+- "Phase 5: simultaneous two-leg entry (both CE and PE may enter)"
+- "Phase 5: lazy-leg contingency — on primary SL, arm the dormant opposite side"
+
+Both shipped (Phase 5B, 2026-07-17). Verified directly against the registry:
+`leg_mode: True | lazy_*: ['lazy_enabled','lazy_momentum_pct','lazy_moneyness',
+'lazy_stop_pct','lazy_target_pct']` — and Step 3 wired the lazy-arm hooks for live
+AND paper. A user reads this and designs AROUND a capability they already have.
+**Fix + a test that cross-checks the future list against the shipped plugin's
+declared params**, so it cannot rot again (same anti-drift rule as Step 5's prompt
+and Step 6's panel).
+
+### 8.2 — "Answer the clarifying question(s) above, then re-check" with no channel
+`POST /author/converse` takes ONLY the source text. There is no answer field, no
+follow-up input, and `useEffect(() => setRuleSet(null), [aiSource])` clears the
+verdict on every keystroke. The endpoint is *named* converse; it is one-shot. The
+message implies a dialogue that does not exist.
+**Fix:** a real answers box shown on an ASK verdict, threaded to the re-check.
+
+### 8.3 — feasibility and generation never talk (user's main ask)
+`map_source_to_ruleset` (converse) and `map_source_to_spec` (generate) are two
+independent LLM calls over the same text. The verdict is displayed and then
+**thrown away** — running Check feasibility does not improve what Generate
+produces, which is exactly backwards from what the UI implies.
+**Fix:** pass the ruleset + the user's answers into generation, so the generator
+knows which rules were judged unbuildable (→ `fidelity.couldnt_map`, never
+invented), which were ambiguous, and what the user clarified.
+
+Status: ⬜ 8.1 · ⬜ 8.2 · ⬜ 8.3
