@@ -374,3 +374,56 @@ exit-plan blocks, then the live (`runtime.py:244`) and paper
 (`paper_auto.py:739`) lazy-arm sites. This is the step that makes an authored
 config actually TRADE, and the original design doc flagged it as needing its own
 session. It now has a validated, single-source resolver to route on.
+
+---
+
+## 🔄 STEP 3 — Track B routes on capability (SAFETY-CRITICAL) — design pinned first
+
+### The hazard that dictates the design
+
+Track B **replaces** `strategy.evaluate()` entirely — the branch runs a session
+state machine and the plugin's `evaluate()` is never called. That is correct for
+`premium_momentum` (its `evaluate()` is a deliberate stub returning
+`direction="NONE"`).
+
+So the naive generalization — *"any deployment carrying a premium_trigger block
+takes Track B"* — is **dangerous**: attaching a block to, say,
+`confluence_scalper` would silently disable that strategy's real logic and run a
+completely different engine, with no error. The strategy would appear to work
+while trading on rules the user never chose.
+
+### The split that avoids it
+
+| Question | Answered by | Why |
+|---|---|---|
+| **WHO** takes Track B | `is_premium_trigger_strategy(strategy)` — the STRATEGY's own declared defaults | Only a strategy that declares itself premium-native (i.e. whose `evaluate()` is a stub) may have `evaluate()` bypassed. A deployment block can never hijack an ordinary strategy. |
+| **WHAT** config it runs | `resolve_deployment_premium_trigger(deployment)` — block wins, `params` fallback | Configuration is a per-deployment concern; capability is a per-strategy one. |
+
+This is the same predicate Step 1b uses for the backtest domain, so backtest and
+deployment agree on what "premium-native" means — one definition, two domains.
+
+It also sets the contract Step 4 must satisfy: an AI-authored strategy becomes
+premium-native by emitting premium-trigger **defaults in its own
+`parameter_schema`**, not merely by having a block attached at deploy time.
+
+### Sites (in dependency order)
+
+1. `deployment_evaluator.py:479` — the branch condition itself
+2. nested inside it: day-stop (`:489-501`), VIX gate (`:507-509`)
+3. `deployment_evaluator.py:706-727` — exit-plan / lazy-leg risk-hint shaping
+4. `deployment_evaluator.py:733-736` — `square_at_ist` population
+5. `runtime.py:244` — live guard-close finalize + lazy arm
+6. `paper_auto.py:739` — paper exit-marker lazy arm
+
+### Invariants for this step
+- `premium_momentum` behaviour must stay byte-identical (it is the only strategy
+  the predicate matches today — measured, all 12 checked).
+- No safety control weakened: caps, guard, kill switch, account caps and the
+  transmit fence are untouched and continue to apply to Track B signals.
+- An **invalid** config must refuse the bar, never fall through to the ordinary
+  path — the deployment would otherwise trade on rules its config never described.
+
+### Status
+- [ ] 3a — branch + config source (sites 1-2)
+- [ ] 3b — exit-plan + `square_at_ist` (sites 3-4)
+- [ ] 3c — live + paper lazy arm (sites 5-6)
