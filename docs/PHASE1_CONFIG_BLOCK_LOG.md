@@ -565,3 +565,41 @@ unwrapped to `float, optional`, and `Literal`s render as their real values
 ### Remaining Phase 1
 Step 6 (wizard config-block UI), Step 7 (paper `square_at_ist` parity + sizing
 replay — agent C risks #2/#3).
+
+---
+
+## ✅ STEP 6 COMPLETE — the wizard carries and shows the config (3896/0)
+
+**This closed a silent DATA-LOSS bug, not a missing pretty panel.**
+`loadFromSpec` populated form state from the AI's spec but never read
+`spec.premium_trigger`, and `buildSpec` reconstructs the spec from that form
+state on Install. So a premium-trigger strategy would have:
+
+1. come back from the AI with a config and EMPTY entry conditions,
+2. rendered as a blank rule row (`loadFromSpec` substitutes `[emptyCond()]` when
+   the entry list is empty) — looking like generation had failed, and
+3. **lost the config entirely at Install**, because `buildSpec` never re-emitted it.
+
+The user would author a premium strategy, see an empty rules panel, install, and
+receive an ordinary strategy that cannot trade — with no error at any point.
+
+**Fixed:** the config is captured into state, re-emitted verbatim by `buildSpec`
+(which also clears `entry_ce`/`entry_pe`, since the compiler refuses a spec
+carrying both), and rendered in a dedicated panel that replaces the entry-condition
+editors. Showing editable entry rows for a premium strategy would invite the user
+to build something that cannot install.
+
+**The panel renders every field DYNAMICALLY** (`Object.entries`), and that is the
+point rather than an implementation detail: a hardcoded field list silently stops
+showing any field added to `PremiumTriggerConfig` later, so the user would review
+an incomplete config while believing they had seen all of it. Same anti-drift rule
+as the Step 5 prompt. My first test asserted hardcoded field names — the test was
+wrong, not the code, and was corrected to assert the dynamic property.
+
+There is an explicit escape hatch ("Convert to a per-bar rule strategy") so a user
+who disagrees with the AI's classification is never trapped in premium mode.
+
+## PHASE 1 — 6 of 7 steps complete
+Remaining: **Step 7** — paper `square_at_ist` parity and sizing replay
+(agent C risks #2/#3), the two known asymmetries where a config promises something
+live honours and paper silently ignores.
