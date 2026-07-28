@@ -603,3 +603,60 @@ who disagrees with the AI's classification is never trapped in premium mode.
 Remaining: **Step 7** — paper `square_at_ist` parity and sizing replay
 (agent C risks #2/#3), the two known asymmetries where a config promises something
 live honours and paper silently ignores.
+
+---
+
+## ✅ STEP 7 COMPLETE — paper/live parity closed. **PHASE 1 DONE** (3902/0)
+
+Both were cases where a strategy's own config promises something LIVE honours and
+PAPER silently ignores — the worst shape for a paper-then-live workflow, because
+paper is supposed to be the rehearsal.
+
+**Risk #2 — `exit_time`/`square_at_ist`.** The evaluator stamps it; only
+`live/live_position_guard.py` read it (zero paper readers). A config promising
+"square at 14:30" squared at 14:30 live and rode to the 15:00 EOD sweep on paper,
+so a user validating on paper measured a **different strategy** from the one they
+would deploy. Now honoured in `mark_open_deployment_trades`, mirroring the
+established `time_stop_minutes` block right below it. **Fails OPEN** on an
+unparseable value — squaring a real position because a string could not be parsed
+is worse than ignoring it, and the EOD sweep still backstops.
+
+**Risk #3 — sizing replay.** `dispatch_full_backtest` returned
+`"sizing_config": None`, and `deployment_sizing_from_source` reads exactly that key
+to pin sizing. Deploying from a premium-native backtest therefore fell back to
+`default_lots` and **traded a different size than the backtest that justified it**.
+Now reports the policy the walk actually uses (`fixed_lots` at `cfg.lots`), which
+`_adapt_premium_trades_to_paired` was already stamping per trade.
+
+**A test-fixture bug worth recording:** my first fixture put the tick `ts` in
+epoch SECONDS while the marker's freshness gate compares epoch MILLIseconds, so
+the tick read as ancient, `option_price` was `None`, and **no exit branch could
+run at all** — the test failed for a reason unrelated to the change. Same ms/s
+class as audit item #2.
+
+---
+
+# 🏁 PHASE 1 COMPLETE — all 7 steps
+
+`classify_rule` promised BUILDABLE_NOW for premium-trigger concepts and nothing
+could build them. Now, end to end:
+
+| Step | What landed |
+|---|---|
+| 1 | dispatch routes on CONFIG PRESENCE (+ silent 6-field loss fixed; absent≠invalid) |
+| 1b | optimizer ×5 + coverage preflight route on capability (`"premium_momentum"` literal 6→0 in optimizer) |
+| 1c | classifier stops promising fields that do not exist; promises pinned to schemas |
+| 2 | deployment carries a validated `premium_trigger` block, refused at CREATION |
+| 3 | Track B routes on capability, configured by the deployment (entry strict / exit permissive) |
+| 4 | `StrategySpec` emits a config; generated plugin IS premium-native (end-to-end test) |
+| 5 | both generators taught; field list DERIVED from the model |
+| 6 | wizard carries + displays the config (silent data-loss at Install fixed) |
+| 7 | paper honours `exit_time`; sizing replays the config's lots |
+
+**Suite 3,902 / 0.** The `premium_momentum` parity test stayed green and untouched
+throughout — every change preserved byte-identical behaviour for the shipped
+strategy, which was invariant #1.
+
+**Not yet done:** none of this has been exercised against a live broker (the
+standing IP constraint), and no AI-authored premium strategy has been generated
+end-to-end with a real LLM call. Both are validation, not implementation.

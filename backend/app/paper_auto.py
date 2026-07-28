@@ -864,6 +864,32 @@ async def mark_open_deployment_trades(
                     updated["exit_price_source"] = "live_tick"
                     updated["exit_price_stale"] = False
 
+            # 2a. Per-deployment exit time (`risk_hints.square_at_ist`, stamped
+            #     by the evaluator from a premium-native strategy's `exit_time`).
+            #     LIVE has always honoured this via live_position_guard; PAPER
+            #     read it nowhere, so a config promising "square at 14:30" squared
+            #     at 14:30 live and rode to the 15:00 EOD sweep on paper. A user
+            #     validating on paper would measure a different strategy from the
+            #     one they later deploy.
+            #
+            #     Fails OPEN on an unparseable value: squaring a real position
+            #     because a string could not be parsed would be worse than
+            #     ignoring it, and the EOD sweep still backstops it.
+            if str(updated.get("status") or "").upper() == "OPEN":
+                _sq = (updated.get("risk_hints") or {}).get("square_at_ist")
+                if _sq and option_price is not None:
+                    try:
+                        _sq_h, _sq_m = (int(x) for x in str(_sq).split(":", 1))
+                        _now_ist = _now_utc() + timedelta(hours=5, minutes=30)
+                        if (_now_ist.hour, _now_ist.minute) >= (_sq_h, _sq_m):
+                            updated = close_trade(updated, exit_price=option_price,
+                                                  reason="exit_time", at=at)
+                            updated["exit_price_source"] = "live_tick"
+                            updated["exit_price_stale"] = False
+                            wrote = True
+                    except (TypeError, ValueError):
+                        pass
+
             # 2. Tick-level time-stop: close at the live premium when the
             #    strategy's time_stop_minutes has elapsed (parity with the
             #    backtest's time exit).  Uses created_at as the entry timestamp

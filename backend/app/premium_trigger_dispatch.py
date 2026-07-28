@@ -300,7 +300,17 @@ def dispatch_full_backtest(
         },
         "slippage_config": None,
         "cost_config": cfg.cost_config,
-        "sizing_config": None,
+        # The premium-native walk sizes at a FIXED lot count (see
+        # _adapt_premium_trades_to_paired's sizing_mode="fixed_lots"), so report
+        # that policy rather than None. `deployment_sizing_from_source` reads this
+        # key to pin a deployment's sizing: with None, deploying from a
+        # premium-native backtest silently fell back to `default_lots` and traded
+        # a different size than the backtest that justified it.
+        "sizing_config": {
+            "mode": "fixed_lots",
+            "fixed_lots": int(cfg.lots),
+            "enabled": True,
+        },
         "coverage": coverage,
         "metrics": metrics,
         "equity_curve": equity_curve,
