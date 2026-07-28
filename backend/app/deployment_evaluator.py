@@ -31,6 +31,8 @@ from app.regime import classify_regime_series
 from app.features import materialize_features
 from app.signal_lifecycle import create_signal_doc, transition_signal
 from app.strategies.base import StrategyBase, get_registry, build_live_eval_ctx
+from app.premium_trigger_dispatch import is_premium_trigger_strategy
+from app.strategy_deployments import resolve_deployment_premium_trigger
 from app.deployment_kill_switch import check_deployment_kill_switches
 
 log = logging.getLogger(__name__)
@@ -313,6 +315,27 @@ async def _premium_day_stop_fire_once(db: Any, deployment: Dict[str, Any], *,
     return True
 
 
+
+def _effective_premium_params(deployment: Dict[str, Any]) -> Dict[str, Any]:
+    """The params the premium session engine should actually run.
+
+    The deployment's ``premium_trigger`` block, when present, is MERGED OVER
+    ``params`` — never substituted for them. The engine reads several fields that
+    do not exist on ``PremiumTriggerConfig`` at all (``leg_mode``, the five
+    ``lazy_*`` fields, ``entry_cutoff``, ``exit_time``, the session P&L caps,
+    ``vix_min``/``vix_max``), so replacing the dict would silently erase every 5B
+    setting the deployment carries.
+
+    No block ⇒ the params dict is returned unchanged, so every deployment created
+    before the block existed behaves byte-identically.
+    """
+    params = dict((deployment or {}).get("params") or {})
+    cfg, source = resolve_deployment_premium_trigger(deployment)
+    if source == "premium_trigger" and cfg is not None:
+        params.update(cfg.model_dump(exclude_none=True))
+    return params
+
+
 async def evaluate_deployment_on_close(
     db: Any,
     deployment: Dict[str, Any],
@@ -476,9 +499,29 @@ async def evaluate_deployment_on_close(
     # branch REJOINS the shared signal pipeline below (audit/lifecycle/dedupe all
     # apply). See docs/superpowers/specs/2026-07-10-premium-momentum-track-b-*.md
     pm_result = None
-    if strategy_id == "premium_momentum":
+    # Routes on CAPABILITY (the strategy's own declared defaults), NOT on the
+    # deployment's block. Track B replaces strategy.evaluate() entirely, so only
+    # a strategy that declares itself premium-native may have its evaluate()
+    # bypassed — otherwise attaching a premium_trigger block to an ordinary
+    # strategy would silently disable that strategy's real logic and run a
+    # different engine, appearing to work while trading rules the user never
+    # chose. Configuration is separate: see _effective_premium_params.
+    if is_premium_trigger_strategy(strategy):
         from app.premium_momentum_live import evaluate_premium_momentum_bar
         from app.runtime import upstox_stream_manager
+
+        # A config that is PRESENT but does not validate must refuse the bar.
+        # Falling through would run the ORDINARY path — trading on rules this
+        # deployment's own configuration never described.
+        _pm_cfg, _pm_cfg_source = resolve_deployment_premium_trigger(deployment)
+        if _pm_cfg_source == "invalid":
+            await _mark_deployment_evaluated(db, deployment_id, candle_ts)
+            return {"deployment_id": deployment_id, "outcome": "config_invalid",
+                    "reason": "premium_trigger config is present but does not validate",
+                    "candle_ts": candle_ts}
+        # The block wins over params; params-only 5B fields are preserved.
+        _pm_deployment = {**deployment, "params": _effective_premium_params(deployment)}
+        merged_params = {**merged_params, **_pm_deployment["params"]}
 
         # ---- 5B A4: realized-only session day-stop gate. Checked BEFORE the
         # session engine so a breached day stops immediately (no new triggers,
@@ -519,7 +562,7 @@ async def evaluate_deployment_on_close(
         if _expiries:
             pm_contracts = [c for c in pm_contracts if str(c.get("expiry_date")) == _expiries[0]]
         pm_result = await evaluate_premium_momentum_bar(
-            locks_col=db.premium_locks, deployment=deployment, instrument=instrument,
+            locks_col=db.premium_locks, deployment=_pm_deployment, instrument=instrument,
             candle_ts=candle_ts, spot_close=float(last_bar["close"]),
             contracts=pm_contracts,
             latest_tick_map=upstox_stream_manager.latest_tick_map,

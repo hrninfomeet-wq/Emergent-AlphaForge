@@ -424,6 +424,28 @@ premium-native by emitting premium-trigger **defaults in its own
   path — the deployment would otherwise trade on rules its config never described.
 
 ### Status
-- [ ] 3a — branch + config source (sites 1-2)
+- [x] **3a DONE** — branch routes on capability; config from the resolver (suite 3870/0)
 - [ ] 3b — exit-plan + `square_at_ist` (sites 3-4)
 - [ ] 3c — live + paper lazy arm (sites 5-6)
+
+### ✅ 3a landed (suite 3870/0)
+
+`deployment_evaluator.py` — `strategy_id == "premium_momentum"` is gone.
+
+- Branch condition: `is_premium_trigger_strategy(strategy)` — **capability, from
+  the strategy's own declared defaults.** A `premium_trigger` block attached to
+  an ordinary strategy can NEVER flip its capability, so it cannot silently
+  bypass that strategy's `evaluate()`. Asserted on real registry objects, not
+  just source text.
+- Config values: `resolve_deployment_premium_trigger(deployment)`.
+- New `_effective_premium_params(deployment)` merges the block **over** params
+  rather than replacing them — the engine reads `leg_mode`, the five `lazy_*`
+  fields, `entry_cutoff`, `exit_time`, session P&L caps and `vix_min`/`vix_max`
+  from params, and **none of those exist on `PremiumTriggerConfig`**, so a
+  replace would have silently erased every 5B setting. No block ⇒ params returned
+  unchanged ⇒ byte-identical for every pre-existing deployment.
+- `_pm_deployment` (the effective view) is what the session engine receives, so
+  the engine stays pure and its own `deployment["params"]` read is untouched.
+- **Invalid config refuses the bar** with `outcome: "config_invalid"` instead of
+  falling through to the ordinary path — falling through would trade on rules the
+  deployment's own configuration never described.
