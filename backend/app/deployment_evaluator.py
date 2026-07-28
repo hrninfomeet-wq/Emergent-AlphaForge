@@ -32,7 +32,10 @@ from app.features import materialize_features
 from app.signal_lifecycle import create_signal_doc, transition_signal
 from app.strategies.base import StrategyBase, get_registry, build_live_eval_ctx
 from app.premium_trigger_dispatch import is_premium_trigger_strategy
-from app.strategy_deployments import resolve_deployment_premium_trigger
+from app.strategy_deployments import (
+    effective_premium_params,
+    resolve_deployment_premium_trigger,
+)
 from app.deployment_kill_switch import check_deployment_kill_switches
 
 log = logging.getLogger(__name__)
@@ -317,23 +320,10 @@ async def _premium_day_stop_fire_once(db: Any, deployment: Dict[str, Any], *,
 
 
 def _effective_premium_params(deployment: Dict[str, Any]) -> Dict[str, Any]:
-    """The params the premium session engine should actually run.
-
-    The deployment's ``premium_trigger`` block, when present, is MERGED OVER
-    ``params`` — never substituted for them. The engine reads several fields that
-    do not exist on ``PremiumTriggerConfig`` at all (``leg_mode``, the five
-    ``lazy_*`` fields, ``entry_cutoff``, ``exit_time``, the session P&L caps,
-    ``vix_min``/``vix_max``), so replacing the dict would silently erase every 5B
-    setting the deployment carries.
-
-    No block ⇒ the params dict is returned unchanged, so every deployment created
-    before the block existed behaves byte-identically.
-    """
-    params = dict((deployment or {}).get("params") or {})
-    cfg, source = resolve_deployment_premium_trigger(deployment)
-    if source == "premium_trigger" and cfg is not None:
-        params.update(cfg.model_dump(exclude_none=True))
-    return params
+    """See strategy_deployments.effective_premium_params — kept as a thin alias so
+    the evaluator, the live guard-close hook and the paper exit hook all resolve a
+    deployment's effective config through exactly one implementation."""
+    return effective_premium_params(deployment)
 
 
 async def evaluate_deployment_on_close(

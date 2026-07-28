@@ -317,3 +317,62 @@ def resolve_deployment_premium_trigger(deployment):
     if cfg is not None:
         return cfg, "params"
     return (None, None) if reason == "absent" else (None, "invalid")
+
+
+def effective_premium_params(deployment):
+    """The params a premium-native deployment should actually run.
+
+    The deployment's ``premium_trigger`` block is MERGED OVER ``params``, never
+    substituted for them: the session engine reads ``leg_mode``, the five
+    ``lazy_*`` fields, ``entry_cutoff``, ``exit_time``, the session P&L caps and
+    ``vix_min``/``vix_max`` from params, and none of those exist on
+    ``PremiumTriggerConfig`` — replacing would silently erase every 5B setting.
+
+    Reads params RAW (never ``merged_params``), so the plugin allow-list cannot
+    drop ``stop_pts``/``target_pts``/``trail_x``/``trail_y``/``lots``/``cost_config``.
+
+    No block ⇒ the params dict unchanged ⇒ byte-identical for every deployment
+    created before the block existed.
+    """
+    params = dict((deployment or {}).get("params") or {})
+    cfg, source = resolve_deployment_premium_trigger(deployment)
+    if source == "premium_trigger" and cfg is not None:
+        params.update(cfg.model_dump(exclude_none=True))
+    return params
+
+
+def is_premium_native_deployment(deployment, strategy=None) -> bool:
+    """Is this DEPLOYMENT driven by the premium session engine?
+
+    Used by the POST-EXIT hooks (live guard-close finalize, paper exit marker)
+    that finalize a leg and arm a lazy one. Deliberately more permissive than
+    :func:`app.premium_trigger_dispatch.is_premium_trigger_strategy`, which gates
+    whether ``strategy.evaluate()`` may be BYPASSED and must therefore key
+    strictly off the strategy's own declared capability.
+
+    **Entry paths are strict; exit paths are permissive — on purpose.** Refusing
+    an exit-side hook because a config is incomplete or unresolvable would leave
+    a leg un-finalized and a lazy leg unarmed with money still open. The failure
+    modes are not symmetric: a too-strict ENTRY gate declines a trade, while a
+    too-strict EXIT gate strands one.
+
+    So this answers "does this deployment carry premium-trigger configuration at
+    all", not "does it validate": a deployment's stored ``params`` are frequently
+    a PARTIAL config completed by the plugin's schema defaults (``momentum_pct``
+    among them), so requiring validity against the raw dict would reject real
+    premium deployments. It also tolerates an unresolvable strategy, because the
+    registry does not self-populate and the previous code fell back to raw params
+    on a failed lookup.
+    """
+    from app.premium_trigger_dispatch import (
+        extract_premium_trigger_config, is_premium_trigger_strategy,
+    )
+
+    if strategy is not None and is_premium_trigger_strategy(strategy):
+        return True
+    for source in (deployment or {}).get("premium_trigger"), (deployment or {}).get("params"):
+        if source:
+            _cfg, reason = extract_premium_trigger_config(source)
+            if reason != "absent":
+                return True
+    return False

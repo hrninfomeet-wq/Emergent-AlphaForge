@@ -736,13 +736,16 @@ async def _maybe_arm_paper_lazy_leg(db: Any, trade: Dict[str, Any]) -> None:
         if not dep_id:
             return
         dep = await db.strategy_deployments.find_one({"id": dep_id})
-        if not dep or str(dep.get("strategy_id") or "") != "premium_momentum":
+        from app.strategies.base import get_registry
+        from app.strategy_deployments import (
+            effective_premium_params, is_premium_native_deployment,
+        )
+        # Capability, not identity — see the live guard-close hook in runtime.py.
+        _strat = get_registry().get(str((dep or {}).get("strategy_id") or ""))
+        if not dep or not is_premium_native_deployment(dep, _strat):
             return
         from app.premium_momentum_live import lazy_arm_side, PAPER_STOP_CLASS_REASONS
-        from app.strategies.base import get_registry
-        _strat = get_registry().get("premium_momentum")
-        _params = (_strat.merged_params(dict(dep.get("params") or {}))
-                   if _strat else dict(dep.get("params") or {}))
+        _params = effective_premium_params(dep)
         _now_ist = _now_utc() + timedelta(hours=5, minutes=30)
         _reason = str(trade.get("exit_reason") or "").lower()
         side = lazy_arm_side(

@@ -425,8 +425,8 @@ premium-native by emitting premium-trigger **defaults in its own
 
 ### Status
 - [x] **3a DONE** — branch routes on capability; config from the resolver (suite 3870/0)
-- [ ] 3b — exit-plan + `square_at_ist` (sites 3-4)
-- [ ] 3c — live + paper lazy arm (sites 5-6)
+- [x] **3b DONE** — sites 3-4 are nested inside the branch converted in 3a
+- [x] **3c DONE** — live + paper lazy arm route on `is_premium_native_deployment`
 
 ### ✅ 3a landed (suite 3870/0)
 
@@ -449,3 +449,37 @@ premium-native by emitting premium-trigger **defaults in its own
 - **Invalid config refuses the bar** with `outcome: "config_invalid"` instead of
   falling through to the ordinary path — falling through would trade on rules the
   deployment's own configuration never described.
+
+### ✅ 3c landed — and it surfaced a real safety principle (suite 3870/0)
+
+Live guard-close (`runtime.py`) and paper exit-marker (`paper_auto.py`) lazy-arm
+hooks now route on capability. **`"premium_momentum"` as a routing gate is gone
+from every module**; the 3 remaining occurrences are the signal-doc FIELD NAME
+`signal_doc["premium_momentum"]`, which is data, not routing.
+
+**A regression my first attempt introduced, caught by the suite.** The old code
+looked up the plugin by name and *tolerated a failed lookup*, falling back to raw
+params. My first version returned early when the strategy was unresolvable — and
+`get_registry()` does NOT self-populate, so lazy arming would have silently
+stopped working in any context where the registry was not loaded. Verified
+directly: in the test context `registry resolved strategy? False`.
+
+**The principle that came out of it: entry paths strict, exit paths permissive.**
+The failure modes are not symmetric — a too-strict ENTRY gate declines a trade,
+while a too-strict EXIT gate **strands** one with money open. So:
+
+| Path | Gate | Rationale |
+|---|---|---|
+| Track B entry (`deployment_evaluator`) | `is_premium_trigger_strategy(strategy)` + refuse on `invalid` | It BYPASSES `evaluate()`; must key off declared capability, and an invalid config must not trade |
+| Exit hooks (live finalize, paper lazy arm) | `is_premium_native_deployment(dep, strategy)` — "carries premium config at all" | No `evaluate()` to bypass; refusing would strand a leg |
+
+`is_premium_native_deployment` is deliberately permissive: it accepts a PARTIAL
+config (a deployment's stored `params` are routinely completed by the plugin's
+schema defaults — `momentum_pct` among them, so validity against the raw dict
+would reject real premium deployments) and tolerates an unresolvable strategy.
+
+## ✅ STEP 3 COMPLETE
+
+Remaining Phase 1 work: Step 4 (`config_block` on `StrategySpec` + compiler),
+Step 5 (teach both generators), Step 6 (wizard UI), Step 7 (paper `square_at_ist`
+parity + sizing replay — agent C risks #2/#3).

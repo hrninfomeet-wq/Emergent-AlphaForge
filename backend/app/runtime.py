@@ -241,17 +241,25 @@ async def _live_guard_on_close(entry, exit_price, reason, result) -> None:
         if _dep_id:
             _db = get_db()
             _dep = await _db.strategy_deployments.find_one({"id": _dep_id})
-            if str((_dep or {}).get("strategy_id") or "") == "premium_momentum":
+            from app.strategies.base import get_registry as _get_strat_registry
+            from app.strategy_deployments import (
+                effective_premium_params, is_premium_native_deployment,
+            )
+            # Capability, not identity: resolve THIS deployment's own strategy
+            # and ask whether it is premium-native. The old form looked up the
+            # one shipped plugin by name, so an authored premium-native strategy
+            # never got its legs finalized or its lazy leg armed.
+            _strat = _get_strat_registry().get(str((_dep or {}).get("strategy_id") or ""))
+            if _dep and is_premium_native_deployment(_dep, _strat):
                 from app.premium_lock_store import (
                     get_lock, legs_unresolved, mark_done, mark_leg_exited,
                     set_lazy_armed,
                 )
-                from app.strategies.base import get_registry as _get_strat_registry
                 _today = (datetime.now(timezone.utc)
                           + timedelta(hours=5, minutes=30)).strftime("%Y-%m-%d")
-                _strat = _get_strat_registry().get("premium_momentum")
-                _params = (_strat.merged_params(dict(_dep.get("params") or {}))
-                           if _strat else dict(_dep.get("params") or {}))
+                # Effective params: the premium_trigger block wins over params,
+                # and reading RAW avoids the plugin allow-list drop.
+                _params = effective_premium_params(_dep)
                 _both = str(_params.get("leg_mode") or "first_to_trigger").lower() == "both"
                 _lock = await get_lock(_db.premium_locks, deployment_id=_dep_id,
                                        session_date=_today)
