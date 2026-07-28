@@ -154,6 +154,7 @@ def build_deployment_doc(
     dte_filter: Optional[Iterable[int]] = None,
     allow_overnight: bool = False,
     strategy_source_sha: Optional[str] = None,
+    premium_trigger: Optional[Dict[str, Any]] = None,
     now: Optional[str] = None,
 ) -> Dict[str, Any]:
     source_type = str(source_type or "").lower()
@@ -169,6 +170,19 @@ def build_deployment_doc(
         raise ValueError("Deployment mode must be signal_only or paper")
     if confirmation_mode not in ALLOWED_CONFIRMATION_MODES:
         raise ValueError("Deployment confirmation_mode must be 1m_close or tick")
+
+    # Validate the declarative premium-trigger block AT CREATION. Without this a
+    # malformed config is accepted cleanly and only manifests as a silent no-op
+    # on the first evaluated bar — a deployment that can never trade should not
+    # be creatable. extra="forbid" also surfaces here, which is exactly the error
+    # an authoring LLM produces when it invents a field name.
+    premium_trigger_block: Optional[Dict[str, Any]] = None
+    if premium_trigger:
+        from app.premium_trigger_config import PremiumTriggerConfig
+        try:
+            premium_trigger_block = PremiumTriggerConfig(**dict(premium_trigger)).model_dump()
+        except Exception as exc:
+            raise ValueError(f"Invalid premium_trigger block: {exc}") from exc
 
     source_id = _source_id(source_type, source_doc)
     strategy_id = _strategy_id(source_doc)
@@ -250,6 +264,9 @@ def build_deployment_doc(
             "allow_overnight": bool(allow_overnight),
             **({"sizing": sizing_pin} if sizing_pin else {}),
         },
+        # Present ONLY when configured. Omission is meaningful: a null would look
+        # like a configured-but-empty block to every downstream reader.
+        **({"premium_trigger": premium_trigger_block} if premium_trigger_block else {}),
         "status": "ACTIVE",
         "created_at": timestamp,
         "updated_at": timestamp,
@@ -265,3 +282,38 @@ def build_deployment_doc(
     }
     doc["forward_config_hash"] = compute_forward_config_hash(doc)
     return doc
+
+
+def resolve_deployment_premium_trigger(deployment):
+    """Resolve a deployment's premium-trigger config: ``(config, source)``.
+
+    Precedence — **the deployment's ``premium_trigger`` block wins, the
+    strategy's own ``params`` are the fallback.** Every premium-trigger
+    deployment created before the block existed carries its config in ``params``,
+    so absence of a block must resolve exactly as it always did; this is what
+    keeps those deployments byte-identical.
+
+    ``source`` is one of ``"premium_trigger"``, ``"params"``, ``"invalid"`` or
+    ``None`` (an ordinary strategy). ``"invalid"`` is deliberately distinct from
+    ``None``: a malformed config must never be mistaken for "this strategy has
+    none", or the deployment silently runs down a different path.
+
+    Reads ``params`` RAW — never through ``strategy.merged_params()``, whose
+    allow-list is keyed on the plugin's ``parameter_schema`` and drops 6 of the
+    config's 14 fields (``stop_pts``, ``target_pts``, ``trail_x``, ``trail_y``,
+    ``lots``, ``cost_config``).
+    """
+    from app.premium_trigger_dispatch import extract_premium_trigger_config
+
+    dep = deployment or {}
+    block = dep.get("premium_trigger")
+    if block:
+        cfg, reason = extract_premium_trigger_config(block)
+        if cfg is not None:
+            return cfg, "premium_trigger"
+        return None, "invalid"
+
+    cfg, reason = extract_premium_trigger_config(dep.get("params") or {})
+    if cfg is not None:
+        return cfg, "params"
+    return (None, None) if reason == "absent" else (None, "invalid")

@@ -508,6 +508,10 @@ async def create_deployment(req: DeploymentCreateReq):
             dte_filter=req.dte_filter,
             allow_overnight=req.allow_overnight,
             strategy_source_sha=pinned_source_sha,
+            # Validated inside the builder; an invalid block raises ValueError
+            # and surfaces as a 400 rather than creating a deployment that can
+            # never trade.
+            premium_trigger=req.premium_trigger,
         )
     except ValueError as e:
         raise HTTPException(400, str(e))

@@ -335,3 +335,42 @@ stronger than before rather than relaxed.
 arm) and `paper_auto.py:739` (paper lazy arm). These are the ones that make a
 strategy actually TRADE, and the original design doc flagged them as needing
 their own dedicated session — treated accordingly.
+
+---
+
+## ✅ STEP 2 COMPLETE — the deployment has the block it already promised (3862/0)
+
+`capability.py:174,438` told users *and the authoring LLM* to "configure on the
+deployment's premium_trigger block". That field existed nowhere. Now it does:
+
+* `DeploymentCreateReq.premium_trigger: Optional[Dict]`
+* `build_deployment_doc(premium_trigger=...)` validates it against
+  `PremiumTriggerConfig` **at creation** and raises → the route returns 400
+* stored on the doc, and **omitted entirely when absent** (a null would read as
+  "configured but empty" downstream)
+* `resolve_deployment_premium_trigger(deployment) -> (cfg, source)`
+
+**Precedence: block wins, `params` is the fallback.** Every premium-trigger
+deployment created before the block existed carries its config in `params`, so
+absence resolves exactly as before — those deployments are byte-identical.
+
+**`source` distinguishes four states**, and `"invalid"` is deliberately NOT
+`None`: a malformed config must never be mistaken for "this strategy has none",
+or the deployment silently runs a different path.
+
+**Creation-time validation closes agent C's risk #4.** Previously
+`build_deployment_doc` never validated `params` against anything, so a malformed
+config was accepted cleanly and only manifested as a silent no-op on the first
+evaluated bar. `extra="forbid"` now surfaces at creation — which is precisely the
+error an authoring LLM produces when it invents a field name, so it lands where
+the user can act on it.
+
+The resolver reads `params` **RAW**, so Step 1's allow-list drop
+(`stop_pts`/`target_pts`/`trail_x`/`trail_y`) cannot reappear on this path.
+
+### Next: Step 3 — Track B routes on the resolver (SAFETY-CRITICAL)
+`deployment_evaluator.py:479` plus the nested day-stop / VIX / `square_at_ist` /
+exit-plan blocks, then the live (`runtime.py:244`) and paper
+(`paper_auto.py:739`) lazy-arm sites. This is the step that makes an authored
+config actually TRADE, and the original design doc flagged it as needing its own
+session. It now has a validated, single-source resolver to route on.

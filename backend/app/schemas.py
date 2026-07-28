@@ -389,6 +389,14 @@ class DeploymentCreateReq(BaseModel):
     # editor's post-deploy lots_override): overrides the pinned sizing replay.
     lots_override: Optional[int] = None
     acknowledged_warnings: bool = False
+    # Declarative premium-trigger config for this deployment (locked strike +
+    # premium momentum + stepped trail). ai/capability.py has always told users
+    # AND the authoring LLM to "configure on the deployment's premium_trigger
+    # block" — this is that block; until now it did not exist, so the promise
+    # was unkeepable and the only route was to set strategy_id to the one
+    # shipped plugin verbatim. Validated against PremiumTriggerConfig at
+    # creation; absent => the strategy's own params remain the source.
+    premium_trigger: Optional[Dict[str, Any]] = None
 
 
 # ---------------------------------------------------------------------------
