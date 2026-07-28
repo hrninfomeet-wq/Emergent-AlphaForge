@@ -483,3 +483,45 @@ would reject real premium deployments) and tolerates an unresolvable strategy.
 Remaining Phase 1 work: Step 4 (`config_block` on `StrategySpec` + compiler),
 Step 5 (teach both generators), Step 6 (wizard UI), Step 7 (paper `square_at_ist`
 parity + sizing replay — agent C risks #2/#3).
+
+---
+
+## ✅ STEP 4 COMPLETE — a spec can EMIT a config; the loop closes (3881/0)
+
+`StrategySpec.premium_trigger` + compiler support. **The end-to-end proof is a
+test**: compile a spec carrying a config, `exec` the generated source, and assert
+`is_premium_trigger_strategy(instance) is True` — the same predicate every runtime
+path (Track B, the optimizer's five decision points, the coverage preflight, both
+exit hooks) now routes on.
+
+**The config is emitted as `parameter_schema` DEFAULTS, and that is load-bearing,
+not cosmetic.** `is_premium_trigger_strategy` reads a strategy's declared
+defaults; emitting the config anywhere else would produce a plugin that looks
+configured and is never routed. This is exactly the contract Step 3 set: a
+strategy is premium-native because of its OWN declaration, never because a block
+was attached at deploy time — which is what stops a block from silently bypassing
+an ordinary strategy's `evaluate()`.
+
+**Generated `evaluate()` is deliberately INERT** (mirrors the shipped plugin),
+with a docstring saying why and warning a future reader not to "fix" it into a
+real evaluate — that would create a second, silently-ignored decision path.
+
+**Two refusals, both "fail closed rather than install a silent no-op":**
+- config + `entry_ce`/`entry_pe` together → refused as self-contradictory. Track B
+  bypasses `evaluate()`, so those conditions could never fire and the user would
+  watch a strategy ignore rules it displays.
+- invalid/unknown-field config → rejected at compile time. `extra="forbid"`
+  surfaces here, which is precisely what an LLM emits when it invents a field
+  name — it invented `expiry` once already (Step 1c).
+
+**Two pre-existing validations had to become premium-aware**, and both were
+genuinely wrong for this shape rather than merely inconvenient: "at least one of
+entry_ce/entry_pe" (a premium-native entry IS the momentum trigger) and "SCALP/
+INTRADAY needs an exit" (its exits live in the config and are enforced by the
+session engine; `PremiumTriggerConfig` legitimately permits a ride-to-EOD position
+with no target). Both waivers are scoped strictly to `spec.premium_trigger` being
+set, so ordinary specs are untouched — pinned by a test.
+
+### Remaining Phase 1
+Step 5 (teach both generators the mechanism exists), Step 6 (wizard config-block
+UI), Step 7 (paper `square_at_ist` parity + sizing replay — agent C risks #2/#3).

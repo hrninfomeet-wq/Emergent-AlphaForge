@@ -7,7 +7,7 @@ here references the engine — it is pure host-safe data.
 """
 from __future__ import annotations
 
-from typing import List, Optional, Union, Literal
+from typing import Any, Dict, List, Optional, Union, Literal
 
 from pydantic import BaseModel, Field
 
@@ -55,3 +55,12 @@ class StrategySpec(BaseModel):
     exits: ExitSpec = Field(default_factory=ExitSpec)
     required_features: List[str] = Field(default_factory=list)  # opt-in structural features
     required_data: List[str] = Field(default_factory=list)      # opt-in warehouse columns (vix)
+    #: Declarative premium-trigger config (locked strike + premium momentum +
+    #: stepped trail). When present the compiler emits these as the plugin's
+    #: parameter_schema DEFAULTS, which is what makes the generated strategy
+    #: premium-native to `is_premium_trigger_strategy` — the predicate every
+    #: runtime path routes on. Validated against PremiumTriggerConfig.
+    #:
+    #: Mutually exclusive with entry_ce/entry_pe: the premium session engine
+    #: replaces evaluate() entirely, so per-bar entry conditions could never fire.
+    premium_trigger: Optional[Dict[str, Any]] = None

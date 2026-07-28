@@ -98,6 +98,26 @@ def validate_spec(spec: StrategySpec) -> List[str]:
     cols = allowed_columns(known_feats, known_data)
     pnames = _param_names(spec)
 
+    # Premium-trigger config: validated against the SAME model the deployment
+    # and the dispatcher use, so a spec cannot describe a config those would
+    # reject. extra="forbid" surfaces here — which is precisely what an LLM
+    # produces when it invents a field name.
+    if spec.premium_trigger:
+        from app.premium_trigger_config import PremiumTriggerConfig
+        try:
+            PremiumTriggerConfig(**dict(spec.premium_trigger))
+        except Exception as exc:
+            errors.append(f"premium_trigger: {exc}")
+        # A premium-native strategy's evaluate() is never called (Track B runs
+        # the session engine instead), so entry conditions alongside a config are
+        # self-contradictory — they would be displayed to the user and silently
+        # ignored by the engine. Refuse rather than install that.
+        if spec.entry_ce or spec.entry_pe:
+            errors.append(
+                "premium_trigger cannot be combined with entry_ce/entry_pe: the "
+                "premium session engine replaces evaluate(), so those entry "
+                "conditions would never fire")
+
     # id must be a clean slug (it becomes a Python identifier + a filename).
     if not _SLUG_RE.match(spec.id or ""):
         errors.append(
@@ -114,8 +134,11 @@ def validate_spec(spec: StrategySpec) -> List[str]:
         if p.type not in ("int", "float", "bool"):
             errors.append(f"param {p.name!r} has invalid type {p.type!r}")
 
-    # at least one entry list non-empty
-    if not spec.entry_ce and not spec.entry_pe:
+    # at least one entry list non-empty — EXCEPT for a premium-native spec,
+    # whose entry is the config's momentum trigger, not a per-bar condition.
+    # (Requiring both would make every premium-native spec unbuildable, and the
+    # check just above refuses combining them.)
+    if not spec.entry_ce and not spec.entry_pe and not spec.premium_trigger:
         errors.append("at least one of entry_ce / entry_pe must be non-empty")
 
     # validate every condition in both entry lists
@@ -128,7 +151,12 @@ def validate_spec(spec: StrategySpec) -> List[str]:
         getattr(spec.exits, f) is not None
         for f in ("spot_target_pts", "spot_stop_pts", "target_pct", "stop_pct", "time_stop_minutes")
     )
-    if not has_exit and (set(spec.supported_modes) & _EXIT_REQUIRED_MODES):
+    # A premium-native strategy's exits live in its config (stop_pct/stop_pts/
+    # target_pct/target_pts/trail), enforced by the premium session engine — not
+    # in ExitSpec, which the generated (inert) evaluate never consults. Leaving
+    # them unset there is legitimate: PremiumTriggerConfig permits a
+    # ride-to-EOD position with no target at all.
+    if not has_exit and not spec.premium_trigger and (set(spec.supported_modes) & _EXIT_REQUIRED_MODES):
         errors.append(
             "no exits set: a SCALP/INTRADAY strategy needs at least one exit "
             "(spot_target_pts/spot_stop_pts/target_pct/stop_pct/time_stop_minutes)"
@@ -278,6 +306,17 @@ def _reasons_literal(conds: List[Condition]) -> str:
     return repr(labels)
 
 
+def _schema_type_for(value) -> str:
+    """parameter_schema type tag for a literal config default."""
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, int):
+        return "int"
+    if isinstance(value, float):
+        return "float"
+    return "str"
+
+
 def compile_spec(spec: StrategySpec) -> str:
     """Validate, then return source for a StrategyBase subclass.
 
@@ -339,8 +378,44 @@ def compile_spec(spec: StrategySpec) -> str:
                 + f'\n        "cooldown_bars": {{"type": "int", "default": {spec.cooldown_bars!r}}},'
                 + "\n    }"
             )
+    # A premium-trigger strategy declares its config as parameter_schema
+    # DEFAULTS. That is not cosmetic: `is_premium_trigger_strategy` reads a
+    # strategy's declared defaults, and it is the single predicate every runtime
+    # path routes on (Track B in the evaluator, the optimizer's five decision
+    # points, the coverage preflight). Emitting the config anywhere else would
+    # produce a plugin that looks configured and is never routed.
+    if spec.premium_trigger:
+        _nl_indent = "\n        "
+        _close = "\n    }"
+        _pt_entries = "".join(
+            f'{_nl_indent}{k!r}: {{"type": {_schema_type_for(v)!r}, "default": {v!r}}},'
+            for k, v in spec.premium_trigger.items() if v is not None
+        )
+        if schema_src == "{}":
+            schema_src = "{" + _pt_entries + _close
+        else:
+            schema_src = schema_src.rstrip()
+            assert schema_src.endswith("}")
+            schema_src = schema_src[: -len(_close)] + _pt_entries + _close
+
     lines.append(f"    parameter_schema = {schema_src}")
     lines.append("")
+
+    if spec.premium_trigger:
+        # Deliberately INERT — mirrors the shipped premium_momentum plugin.
+        # Track B (the premium session engine) replaces evaluate() entirely for a
+        # premium-native strategy, so anything returned here is dead code. A
+        # plausible-looking evaluate would be a lie about what actually runs, and
+        # validate_spec refuses entry conditions alongside a config for the same
+        # reason.
+        lines.append("    def evaluate(self, row: pd.Series, prev: pd.Series, params, ctx) -> Signal:")
+        lines.append('        """Inert by design: this strategy is premium-native, so the premium')
+        lines.append("        session engine (Track B) decides entries and this method is never")
+        lines.append("        called. Do NOT 'fix' it into a real evaluate — that would create a")
+        lines.append('        second, silently-ignored decision path."""')
+        lines.append('        return Signal(direction="NONE", blockers=["premium-native: driven by the premium session engine"])')
+        return "\n".join(lines) + "\n"
+
     lines.append("    def evaluate(self, row: pd.Series, prev: pd.Series, params, ctx) -> Signal:")
     # Emit with double-quoted column literals (each already whitelist-validated)
     # to match the documented generated-code shape.
