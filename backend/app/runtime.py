@@ -1141,7 +1141,29 @@ async def _run_paired_option_backtest(req: BacktestReq, spot_trades: List[Dict[s
     # pass in here. Dispatch to the option-native sim directly instead of pairing an
     # empty list. Every other strategy_id is unaffected (dispatch_full_backtest
     # returns None immediately with zero side effects for any other id).
-    if req.strategy_id == "premium_momentum" and req.start_ts is not None and req.end_ts is not None:
+    from app.premium_trigger_dispatch import (
+        _CONFIG_FIELDS as _PM_CONFIG_FIELDS,
+        extract_premium_trigger_config,
+    )
+
+    # Route on CONFIG PRESENCE, not on a hardcoded strategy id. An AI-authored
+    # strategy carrying a valid premium-trigger config must run it — that is the
+    # promise ai.capability.classify_rule already makes to the user.
+    #
+    # Defaults still get filled first (a partial API request must behave like the
+    # UI's filled params panel), but every config field is then re-applied from
+    # the RAW request: merged_params is an allow-list keyed on the plugin's
+    # parameter_schema, and premium_momentum's schema omits 6 of the config's 14
+    # fields — so stop_pts / target_pts / trail_x / trail_y were being dropped and
+    # the run reported numbers as though the stop/target/trail had been applied.
+    _strategy = get_registry().get(req.strategy_id)
+    pm_params = dict(_strategy.merged_params(req.params)) if _strategy else dict(req.params)
+    for _k in _PM_CONFIG_FIELDS:
+        if req.params.get(_k) is not None:
+            pm_params[_k] = req.params[_k]
+    _pm_cfg, _pm_reason = extract_premium_trigger_config(pm_params)
+
+    if _pm_cfg is not None and req.start_ts is not None and req.end_ts is not None:
         from app.premium_momentum_backtest import _sides_for
         from app.premium_trigger_dispatch import dispatch_full_backtest
         from app.routers.premium_momentum_routes import _load_window
@@ -1157,8 +1179,6 @@ async def _run_paired_option_backtest(req: BacktestReq, spot_trades: List[Dict[s
         # moneyness is NOT taken from the option form: the strategy param
         # governs the strike lock; the form's pairing-moneyness has no meaning
         # for a premium-native run and is deliberately ignored.
-        _strategy = get_registry().get(req.strategy_id)
-        pm_params = _strategy.merged_params(req.params) if _strategy else dict(req.params)
         pm_params["lots"] = int(req.params.get("lots") or config.lots or 1)
         if req.params.get("cost_config") is not None:
             pm_params["cost_config"] = req.params["cost_config"]

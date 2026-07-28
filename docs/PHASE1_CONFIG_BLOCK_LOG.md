@@ -148,3 +148,84 @@ so it cannot drift.
 `premium_trigger_config` keys; validation still fails loudly (extra=forbid, both/
 neither momentum, lone trail, bad HH:MM); `side`/`moneyness` case-folding;
 config defaults still match the shipped plugin (`09:31`/`itm1`/`first_to_trigger`/`1`).
+
+---
+
+## ✅ STEP 1 COMPLETE — routing on config presence (suite 3839/0, parity green)
+
+`extract_premium_trigger_config(params) -> (cfg, reason)` in
+`premium_trigger_dispatch.py`. Three fixes in one change:
+
+1. **Routes on config presence.** `dispatch_full_backtest`'s
+   `strategy_id != "premium_momentum"` guard and `runtime.py`'s duplicate are both
+   gone. `strategy_id` is retained for logging only. `dispatch_backtest`,
+   `to_backtest_params` and `PremiumTriggerConfig` were NOT touched — they are what
+   the parity test protects.
+2. **Silent field loss fixed.** Extraction reads RAW params. `runtime` still fills
+   plugin defaults first (a partial API request must behave like the filled UI
+   panel) but then re-applies every config field from the raw request, so
+   `stop_pts`/`target_pts`/`trail_x`/`trail_y` survive.
+3. **Absent ≠ invalid.** A present-but-invalid config now returns
+   `invalid:<detail>` and is REFUSED with a warning, instead of silently
+   degrading to a different execution path that reports plausible numbers.
+
+`_CONFIG_FIELDS` is now `tuple(PremiumTriggerConfig.model_fields)` — cannot drift.
+
+### Step 0 · Agent C — the deployment hook map (LANDED)
+
+**16 hook points gate on the literal string `strategy_id == "premium_momentum"`.**
+Step 1 closed #12 (both halves). The rest, in priority order:
+
+| # | Hook | Site | Domain |
+|---|---|---|---|
+| 1 | **Track B evaluator branch** | `deployment_evaluator.py:479` | **deployment — THE one that makes it trade** |
+| 4 | session engine | `premium_momentum_live.py:204-450` | called only from #1 |
+| 2,3,7,9 | day-stop / VIX gate / `square_at_ist` / exit-plan shaping | nested inside #1 | deployment |
+| 5 | live guard-close finalize + lazy arm | `runtime.py:244` | live |
+| 6 | paper exit-marker lazy arm | `paper_auto.py:739` | paper |
+| 13 | coverage preflight | `runtime.py:1462` | backtest |
+| 14 | optimizer survival/re-rank | `optimizer.py:731,887,1153,1191` | backtest |
+| 10,11 | edge-verdict advisories | `routers/deployments.py:135`, `forward_metrics.py:528` | advisory only |
+
+**Already generic — reusable with no new hooks:** both sinks
+(`auto_live_trade_for_signal` / `auto_paper_trade_for_signal`), `exit_controls`,
+the per-deployment kill switches, `risk_hints`/`blockers`/lifecycle, and
+`square_at_ist` *enforcement* in the live guard (it is simply never populated for
+a non-premium strategy).
+
+### 🔴 Four risks agent C surfaced that change scope
+
+1. **`capability.py` tells users to "configure on the deployment's
+   `premium_trigger` block" — that field does not exist anywhere.** Confirmed
+   absent from `strategy_deployments.py` and `routers/deployments.py`. The only
+   way to actually trade this today is to set `strategy_id = "premium_momentum"`
+   verbatim and put the knobs in ordinary `params`. This is the promise/reality
+   gap at its sharpest, and it means **Step 2 must add a real
+   `premium_trigger` block to the deployment doc**, not only to `StrategySpec`.
+2. **Paper silently ignores `exit_time`/`square_at_ist`.** Populated into
+   `risk_hints`, enforced only on the LIVE path (`live_position_guard`);
+   `paper_auto` never reads it. A config promising an early square-off is honoured
+   live and silently ignored on paper — a real parity gap that would carry over.
+3. **Sizing replay is dropped for the premium-native path.**
+   `dispatch_full_backtest` returns `"sizing_config": None`, so a deployment
+   created from such a run silently falls back to `default_lots` instead of
+   replaying the config's own `lots`.
+4. **`build_deployment_doc` never validates `params` against the strategy's
+   `parameter_schema`** — a malformed authored config passes creation cleanly and
+   only no-ops at evaluation time.
+
+### Revised step order (was: spec first)
+
+Agent C's risk #1 inverts it: the deployment doc needs the config block before
+the spec is worth emitting one, otherwise authored configs still cannot trade.
+
+| Step | What | Status |
+|---|---|---|
+| 1 | dispatch routes on config presence | ✅ DONE |
+| 1b | optimizer + coverage-preflight guards (#13, #14) — same class as Step 1 | ⬜ NEXT |
+| 2 | `premium_trigger` block on the DEPLOYMENT doc + validation (risk #1, #4) | ⬜ |
+| 3 | Track B evaluator routes on config presence (#1-#4,#7,#9) — safety-critical, own step | ⬜ |
+| 4 | `config_block` on `StrategySpec` + compiler | ⬜ |
+| 5 | teach both generators | ⬜ |
+| 6 | wizard config-block builder UI | ⬜ |
+| 7 | paper `square_at_ist` parity (risk #2) + sizing replay (risk #3) | ⬜ |

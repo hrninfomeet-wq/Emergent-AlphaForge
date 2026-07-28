@@ -47,7 +47,8 @@ Still deferred to a follow-up session:
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+import logging
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -56,6 +57,8 @@ from app.option_backtest import _compute_metrics, build_context_breakdown, build
 from app.portfolio import build_rupee_equity_curve
 from app.premium_momentum_backtest import run_premium_momentum_backtest
 from app.premium_trigger_config import PremiumTriggerConfig
+
+log = logging.getLogger(__name__)
 
 #: premium_momentum_backtest's exit_reason vocabulary -> option_backtest.py's
 #: _compute_metrics bucket vocabulary. An unmapped raw string would silently
@@ -70,11 +73,48 @@ _EXIT_REASON_MAP = {
 #: from strategy.merged_params() may carry registry bookkeeping fields (id, name,
 #: description, ...) outside this set; filter to these before constructing so a
 #: legitimate deployment param dict never raises a spurious ValidationError.
-_CONFIG_FIELDS = (
-    "reference_time", "moneyness", "side", "momentum_pct", "momentum_pts",
-    "stop_pct", "stop_pts", "target_pct", "target_pts", "trail_x", "trail_y",
-    "lots", "late_lock_cutoff", "cost_config",
-)
+#: DERIVED from the model, never hand-copied. A literal list silently stops
+#: extracting any field added to PremiumTriggerConfig later — the extraction
+#: would just quietly ignore it, which is the same failure shape as the dropped
+#: fields this module already had to work around.
+_CONFIG_FIELDS = tuple(PremiumTriggerConfig.model_fields)
+
+
+def extract_premium_trigger_config(
+    params: Optional[Dict[str, Any]],
+) -> Tuple[Optional[PremiumTriggerConfig], Optional[str]]:
+    """Build a PremiumTriggerConfig from RAW strategy params.
+
+    Returns ``(config, reason)``:
+
+      * ``(cfg, None)``        — a valid config block is present
+      * ``(None, "absent")``   — no premium-trigger fields at all; this is an
+                                 ordinary strategy and callers must no-op
+      * ``(None, "invalid:…")``— fields ARE present but do not validate
+
+    **Absent and invalid are deliberately different answers.** Collapsing them
+    (which the old inline extraction did, by swallowing every ValidationError
+    into ``None``) means a typo'd config silently falls through to a completely
+    different execution path and reports plausible numbers for a strategy the
+    user never configured.
+
+    **Reads the RAW params, never ``strategy.merged_params()``.** That merge is a
+    strict allow-list keyed on the plugin's ``parameter_schema``, and the shipped
+    ``premium_momentum`` schema omits 6 of this config's 14 fields — so
+    ``stop_pts``, ``target_pts``, ``trail_x`` and ``trail_y`` were being dropped
+    on the way in, and the run reported numbers as though the stop/target/trail
+    had been applied. The allow-list exists to bound the OPTIMIZER's search
+    space; it has no business filtering a declarative execution config.
+    """
+    src = dict(params or {})
+    present = {k: src[k] for k in _CONFIG_FIELDS if src.get(k) is not None}
+    if not present:
+        return None, "absent"
+    try:
+        return PremiumTriggerConfig(**present), None
+    except Exception as exc:  # pydantic ValidationError (and anything else)
+        log.warning("premium-trigger config present but invalid: %s", exc)
+        return None, f"invalid:{str(exc)[:200]}"
 
 
 def _adapt_premium_trades_to_paired(
@@ -168,23 +208,30 @@ def dispatch_full_backtest(
     instrument: str,
     capital: float = 200_000.0,
 ) -> Optional[Dict[str, Any]]:
-    """Full paired-option-backtest envelope for a premium-trigger strategy, or
-    None for any other strategy (the entire regression-safety mechanism — every
-    other strategy's existing run_backtest + simulate_paired_option_trades path
-    is completely untouched by this function's existence).
+    """Full paired-option-backtest envelope for ANY strategy carrying a valid
+    premium-trigger config, or None for a strategy that carries none (the entire
+    regression-safety mechanism — every ordinary strategy's existing run_backtest
+    + simulate_paired_option_trades path is completely untouched).
+
+    Routes on **CONFIG PRESENCE, not on ``strategy_id``** — which is what this
+    module's docstring always said the design was. The old
+    ``strategy_id != "premium_momentum"`` guard meant an AI-authored strategy
+    could carry a perfectly valid config and still be refused, even though
+    ``ai.capability.classify_rule`` tells the user such a rule is BUILDABLE_NOW.
+
+    ``strategy_id`` is retained for logging/traceability only; it no longer gates
+    anything.
 
     Returns None (never raises) when:
-      - strategy_id != "premium_momentum"
-      - merged_params doesn't validate as a PremiumTriggerConfig (e.g. no entry
-        trigger set) — the caller's normal error-handling path takes over.
+      - no premium-trigger fields are present at all (an ordinary strategy), or
+      - fields ARE present but do not validate — refused rather than silently
+        falling through to a different execution path that would report numbers
+        the user's config never described.
     """
-    if strategy_id != "premium_momentum":
-        return None
-
-    cfg_fields = {k: merged_params.get(k) for k in _CONFIG_FIELDS if merged_params.get(k) is not None}
-    try:
-        cfg = PremiumTriggerConfig(**cfg_fields)
-    except Exception:
+    cfg, reason = extract_premium_trigger_config(merged_params)
+    if cfg is None:
+        if reason and reason != "absent":
+            log.warning("dispatch refused for %s: %s", strategy_id, reason)
         return None
 
     pm_result = run_premium_momentum_backtest(
