@@ -82,9 +82,14 @@ def test_gemini_shape_mismatch_gives_actionable_message(monkeypatch):
     # fallback gets WELL-FORMED but wrong-shape JSON -> not a truncation, a shape error.
     _install_fake_genai(monkeypatch, raise_convert=True, text='{"x": "not-an-int"}')
     from app.ai import _gemini
-    with pytest.raises(RuntimeError) as ei:
+    from app.ai.llm_client import StructuredOutputError
+    # Must be the REPAIRABLE type, not a bare RuntimeError: that is what earns the
+    # one bounded repair attempt in complete_structured. Asserting the type rather
+    # than a phrase also stops this test breaking on wording changes.
+    with pytest.raises(StructuredOutputError) as ei:
         _gemini.call(model="m", system="s", user="u", output_model=Toy)
-    assert "didn't match" in str(ei.value)
+    msg = str(ei.value).lower()
+    assert "match" in msg and "shape" in msg
 
 
 def test_gemini_truncated_json_gives_cutoff_message(monkeypatch):

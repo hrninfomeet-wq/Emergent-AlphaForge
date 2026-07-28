@@ -7,6 +7,7 @@ without anthropic or google-genai installed. Tests patch the seams.
 """
 from __future__ import annotations
 
+import logging
 import os
 from typing import Optional, Type, TypeVar
 
@@ -46,6 +47,9 @@ _KEY_ENV = {"anthropic": "ANTHROPIC_API_KEY", "gemini": "GEMINI_API_KEY"}
 _LABELS = {"anthropic": "Anthropic Claude", "gemini": "Google Gemini"}
 # Preference order when no explicit arg and no AI_PROVIDER (anthropic-first = legacy behavior).
 _PREFERENCE = ("anthropic", "gemini")
+
+
+_log = logging.getLogger(__name__)
 
 
 def provider_configured(provider: str) -> bool:
@@ -91,6 +95,36 @@ def providers_status() -> dict:
     return {"providers": providers, "active": active}
 
 
+
+class StructuredOutputError(RuntimeError):
+    """The model replied, but its output could not be parsed into the schema.
+
+    Deliberately distinct from a plain RuntimeError so `complete_structured` can
+    tell REPAIRABLE failures apart from ones where retrying is wrong:
+
+      * malformed / shape-mismatched JSON  -> this type, worth one repair attempt
+      * truncation (MAX_TOKENS)            -> plain RuntimeError; the same budget
+        produces the same cut-off, so retrying burns tokens and latency to fail
+        identically. The truncation message already gives the right advice.
+      * API errors (auth / quota / rate limit) and refusals -> plain RuntimeError;
+        retrying a rate-limit makes it worse and a bad key never fixes itself.
+    """
+
+
+#: Repair attempts after a malformed response. ONE, by design: a persistently
+#: broken model costs a fixed two calls rather than an unbounded loop.
+MAX_REPAIR_ATTEMPTS = 1
+
+_REPAIR_INSTRUCTION = (
+    "\n\n# YOUR PREVIOUS REPLY COULD NOT BE PARSED — FIX IT\n"
+    "The parser reported:\n{error}\n\n"
+    "Re-answer the SAME request, obeying every instruction above. Output ONE "
+    "valid JSON object and nothing else: no markdown fences, no commentary, no "
+    "trailing text, and exactly balanced braces. Do not change the substance of "
+    "your answer — only make it parseable."
+)
+
+
 def complete_structured(
     *,
     tier: str,
@@ -111,10 +145,34 @@ def complete_structured(
     (there's a host-safe test — test_gemini_token_budget.py — that pins the invariant)."""
     prov = resolve_provider(provider)
     model = model_for(prov, tier)
-    if prov == "anthropic":
-        from app.ai import _anthropic
-        return _anthropic.call(model=model, system=system, user=user,
-                               output_model=output_model, max_tokens=max_tokens)
-    from app.ai import _gemini
-    return _gemini.call(model=model, system=system, user=user,
-                        output_model=output_model, max_tokens=max_tokens)
+
+    def _dispatch(sys_prompt: str):
+        if prov == "anthropic":
+            from app.ai import _anthropic
+            return _anthropic.call(model=model, system=sys_prompt, user=user,
+                                   output_model=output_model, max_tokens=max_tokens)
+        from app.ai import _gemini
+        return _gemini.call(model=model, system=sys_prompt, user=user,
+                            output_model=output_model, max_tokens=max_tokens)
+
+    try:
+        return _dispatch(system)
+    except StructuredOutputError as first:
+        # Repairable: the model replied but produced unparseable output. Re-ask
+        # ONCE with the parser's own error attached — a blind re-ask is a coin
+        # flip, whereas showing the model its mistake is what makes the second
+        # attempt genuinely different. The USER message is never altered: their
+        # description must reach the model verbatim.
+        last = first
+        for _ in range(MAX_REPAIR_ATTEMPTS):
+            _log.info("structured output unparseable (%s) — one repair attempt",
+                      str(first)[:160])
+            try:
+                return _dispatch(system + _REPAIR_INSTRUCTION.format(error=str(last)[:400]))
+            except StructuredOutputError as again:
+                last = again
+            except RuntimeError:
+                raise  # a non-repairable failure on retry: surface it as-is
+        raise RuntimeError(
+            f"{last} (retried once with the parse error fed back; still unparseable)"
+        ) from last

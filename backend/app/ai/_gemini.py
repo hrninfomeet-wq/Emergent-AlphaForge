@@ -20,6 +20,10 @@ from typing import Type, TypeVar
 
 from pydantic import BaseModel
 
+# Imported lazily-safe: llm_client imports the backends INSIDE its dispatch
+# function, so there is no import cycle at module load.
+from app.ai.llm_client import StructuredOutputError
+
 _log = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
@@ -135,7 +139,12 @@ def call(*, model: str, system: str, user: str, output_model: Type[T],
         looks_truncated = not stripped.endswith("}") or stripped.count("{") > stripped.count("}")
         if looks_truncated:
             raise RuntimeError(_truncated_msg(model, max_tokens))
-        raise RuntimeError(
-            "The AI returned JSON that didn't match the expected strategy shape "
-            f"({str(e)[:200]}). Try rephrasing the rules more explicitly."
+        # StructuredOutputError => complete_structured gets ONE repair attempt with
+        # this parser error fed back. The old copy advised "try rephrasing the rules
+        # more explicitly", which was actively wrong for the real failure that
+        # motivated this: a single extra closing brace, on a perfectly good
+        # description. Rephrasing could not have helped.
+        raise StructuredOutputError(
+            "The AI returned JSON that did not match the expected strategy shape "
+            f"({str(e)[:200]})."
         )
