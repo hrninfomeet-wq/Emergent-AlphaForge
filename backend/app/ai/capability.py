@@ -299,7 +299,7 @@ HOLDING_PERIOD_CONCEPTS: FrozenSet[str] = frozenset({
 
 # NEW (Phase 4.1) — Leg-identity / option-kind declarations. "For the CE leg,
 # the option type is CE" (FILTER/CORE) is a descriptive shape statement; the
-# actual behavior is a `side: CE|PE|BOTH` field on the premium_trigger_config
+# actual behavior: `side` is ce|pe|first_to_trigger on the premium_trigger_config
 # block. Same for lazy-leg identity ("Lazy Leg 1 is a PE").
 OPTION_KIND_CONCEPTS: FrozenSet[str] = frozenset({
     "option_kind", "option_type_selection",
@@ -496,9 +496,12 @@ def classify_rule(tokens: RuleTokens, *, required_features=(), required_data=())
         overlap = sorted(tokens.concepts & OPTION_KIND_CONCEPTS)[0]
         return Verdict(
             FeasibilityClass.BUILDABLE_NOW,
-            f"'{overlap}' is a leg-identity declaration mapped to the "
-            "premium_trigger_config's `side` field (CE|PE|BOTH) on the deployment. "
-            "Configure via the config block, not in the strategy.",
+            f"'{overlap}' is a leg-identity declaration. In a Spec/Full-Python "
+            "strategy it is already expressed directly by which of entry_ce / "
+            "entry_pe you populate (or Signal(direction=...)). On a premium-trigger "
+            "config it is the `side` field, whose values are ce | pe | "
+            "first_to_trigger; running both legs is a separate `leg_mode` setting, "
+            "not a `side` value.",
             feature="premium_trigger_config", live_feasible=True,
         )
 
@@ -510,9 +513,11 @@ def classify_rule(tokens: RuleTokens, *, required_features=(), required_data=())
         overlap = sorted(tokens.concepts & EXPIRY_SELECTION_CONCEPTS)[0]
         return Verdict(
             FeasibilityClass.BUILDABLE_NOW,
-            f"'{overlap}' is a contract-selection declaration mapped to the "
-            "premium_trigger_config's `expiry` field on the deployment. Weekly "
-            "expiry is fully supported today; monthly is future work.",
+            f"'{overlap}' is a contract-selection declaration, set on the "
+            "DEPLOYMENT (not in the strategy) via dte_filter — days-to-expiry "
+            "integers, e.g. [0] for expiry-day only. The warehouse stores the "
+            "front expiry's ATM-band candles, so weekly selection is supported "
+            "today; there is no weekly-vs-monthly toggle.",
             feature="premium_trigger_config", live_feasible=True,
         )
 

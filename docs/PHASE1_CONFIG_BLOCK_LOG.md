@@ -229,3 +229,57 @@ the spec is worth emitting one, otherwise authored configs still cannot trade.
 | 5 | teach both generators | ⬜ |
 | 6 | wizard config-block builder UI | ⬜ |
 | 7 | paper `square_at_ist` parity (risk #2) + sizing replay (risk #3) | ⬜ |
+
+---
+
+## ✅ STEP 1c — the classifier's promises are now checkable (suite 3844/0)
+
+### Step 0 · Agent B — promise inventory (LANDED), and it found FALSE promises
+
+`classify_rule` messages are read by two audiences that both act on them: the
+human in the wizard, and **the authoring LLM itself** (they are fed back as
+grounding). A message naming a field that does not exist therefore induces the
+LLM to emit a config referencing it, which dies against `extra="forbid"` with an
+error the user cannot act on.
+
+**Two shipped false, verified directly against the model:**
+
+| Message said | Reality |
+|---|---|
+| "mapped to the premium_trigger_config's **`expiry`** field" | `PremiumTriggerConfig` has **no `expiry` field**. Real mechanism is the deployment's `dte_filter` (days-to-expiry ints). |
+| "the premium_trigger_config's `side` field **(CE\|PE\|BOTH)**" | `side` is `Literal["ce","pe","first_to_trigger"]` — **no `BOTH`**. Running both legs is `leg_mode="both"`, a different field on a different schema. |
+
+**Why they shipped:** ~51 tests touch `classify_rule` and **not one pins message
+text against the schema it cites** — every assertion is verdict-only or a loose
+`"premium" in msg.lower()` substring. The classifier was verified to be
+internally consistent, never to be *truthful*.
+
+**Fixed:** both messages now name mechanisms that exist, plus
+`tests/test_capability_promises_are_real.py` — any field a message attributes to
+`premium_trigger_config` or to the deployment must exist on that model, and any
+advertised `side` value list must match the real `Literal`. That is the durable
+fix; the wording corrections alone would have re-rotted.
+
+### 🔴 Scope corrections from agent B (these change Step 4's schema)
+
+1. **`PremiumTriggerConfig` is NOT the surface to generalize.** The shipped
+   `premium_momentum` plugin's real parameter surface is much richer:
+   `leg_mode`, `lazy_enabled`, `lazy_momentum_pct`, `lazy_stop_pct`,
+   `lazy_target_pct`, `lazy_moneyness`, `entry_cutoff`, `exit_time`,
+   `session_max_loss_rupees`, `session_max_profit_rupees`, `vix_min`, `vix_max`
+   — **none of which are on `PremiumTriggerConfig`**. A config block modelled on
+   the Session-2 subset would under-serve the promises by a wide margin.
+2. **Session gates are largely UNSERVED as literally promised.** There is *no*
+   configurable time-of-day entry/exit window for an ordinary deployment —
+   only a fixed 15:00 IST new-entry cutoff and a fixed 15:00 EOD square. A user
+   cannot express "enter only 09:30–10:00" today; the `entry_cutoff`/`exit_time`
+   that do exist are `premium_momentum`-plugin params.
+3. **Live has no profit-target kill.** Paper gets both target and loss via
+   `daily_caps`; live's `daily_loss_cap` is loss-only. "session_target" is a
+   half-truth for live.
+4. **Group G is stale in the opposite direction** — lazy-leg/two-leg is
+   advertised as "Phase 5 future work, not yet shipped", but Phase 5B shipped
+   2026-07-17. `capability_summary()`'s "future" list needs the same treatment.
+5. `moneyness_selection` routes to premium-trigger, but a *generic*
+   `option_moneyness` already exists on `DeploymentCreateReq` for any deployment
+   — the broader, working mechanism is invisible in the promise text.
