@@ -184,28 +184,41 @@ def test_position_size_maps_to_deployment_layer():
 # --------------------------------------------------------------------------
 def test_lazy_leg_contingency_is_honestly_scoped():
     """The blueprint's 'if primary CE hits SL, arm dormant PE with a fresh
-    snapshot' is genuinely NEW behavior (Phase 5). It should NOT return
-    INFEASIBLE (that mis-frames it as impossible) — it's buildable, it's just
-    not shipped yet. Honest verdict: BUILDABLE_WITH_FEATURE, live-gated."""
+    snapshot'.
+
+    UPDATED 2026-07-29. This test previously asserted the OPPOSITE — that the
+    capability was unshipped and not live-feasible — and that was correct when
+    written. **Phase 5B shipped it on 2026-07-17** (`leg_mode` + the five
+    `lazy_*` params; lazy-arm hooks wired for live and paper), so the old
+    assertions pinned a fact that had changed underneath them.
+
+    The test's real intent is unchanged and still enforced: be HONEST about the
+    scope. It must never come back INFEASIBLE (that mis-frames it as impossible),
+    and it must not under-promise either — a stale `live_feasible=False` here
+    propagates through `aggregate_gate` and drags the whole strategy to ADVISE
+    ("installing with caveats") for a capability that fully works.
+    """
     v = classify_rule(_T(concepts={"lazy_leg_contingency"}))
-    assert v.feasibility == FC.BUILDABLE_WITH_FEATURE
-    # Feature name points at the future Phase-5 spec, not a shipped feature.
+    assert v.feasibility == FC.BUILDABLE_NOW
     assert v.feature == "lazy_leg_contingency"
-    # Not yet live-feasible — must not be silently promised.
-    assert v.live_feasible is False
+    assert v.live_feasible is True
     msg = v.message.lower()
-    assert "phase 5" in msg or "not yet" in msg or "future" in msg
+    assert "shipped" in msg
+    assert "future work" not in msg and "not yet shipped" not in msg
+    # and it must tell the user HOW to configure it
+    assert "lazy_enabled" in v.message
 
 
 # --------------------------------------------------------------------------
 # 5. Full blueprint sanity: the AlgoTest blueprint rules from the handoff spec
-#    must produce NO blanket rejects. Some may be ADVISE/backtest-only
-#    (lazy_leg_contingency), but nothing that already-shipped code handles
-#    should come back INFEASIBLE.
+#    must produce NO blanket rejects. Nothing that already-shipped code handles
+#    should come back INFEASIBLE. (lazy_leg_contingency USED to be the
+#    ADVISE/backtest-only exception here; Phase 5B shipped it 2026-07-17 and it
+#    is now BUILDABLE_NOW + live-feasible like the rest.)
 # --------------------------------------------------------------------------
 def test_full_algotest_blueprint_produces_no_blanket_rejects_on_shipped_behavior():
     """The blueprint rules that map to ALREADY-SHIPPED behavior must accept.
-    (Lazy-leg contingency is Phase-5 future work and is checked separately.)"""
+    (Lazy-leg contingency is also shipped now — checked separately above.)"""
     # Rules the shipped premium_momentum + deployment layer already covers.
     shipped_rule_concepts = [
         {"entry_time_gate"},           # global entry time 09:31

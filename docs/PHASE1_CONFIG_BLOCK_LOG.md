@@ -728,3 +728,38 @@ test updated to assert `ruleset=None, answers=None`.
 **Recurring self-inflicted trap, now three times:** writing Python containing
 `\n` through a bash heredoc converts the escape into a literal newline and breaks
 the f-string. Use Edit for anything containing escape sequences.
+
+---
+
+## ✅ STEP 8b — my Step-8.1 fix was INCOMPLETE (user caught it) — 3918/0
+
+I corrected `capability_summary()["future"]` but left `classify_rule`'s own
+PHASE-5 branch (`capability.py:471-481`), and **that** is what renders in the
+feasibility report. It still said lazy-leg contingency "is Phase 5 future work …
+not yet shipped … Not-yet live-feasible", and cited a design spec as if the
+design were unbuilt.
+
+**It was not cosmetic — it changed the verdict.** `aggregate_gate` returns
+`ADVISE` when any rule is `BUILDABLE_WITH_FEATURE` with `live_feasible is False`.
+So the stale branch *forced* the user's whole strategy to ADVISE ("installing with
+caveats") for a capability that is shipped and live-capable. One stale boolean,
+three visible symptoms.
+
+Now: `BUILDABLE_NOW`, `live_feasible=True`, and a message that names the real
+knobs — **derived from the shipped plugin's `parameter_schema`**, so it cannot
+drift into another phantom:
+
+> Lazy-leg contingency … SHIPPED in Phase 5B and works in backtest, paper and
+> live. Configure it on the premium-trigger strategy: lazy_enabled,
+> lazy_momentum_pct, lazy_moneyness, lazy_stop_pct, lazy_target_pct. Run both legs
+> simultaneously with leg_mode='both'.
+
+**A pre-existing test asserted the opposite** and was correct when written —
+Phase 5B shipped after it. Rewritten to assert the new truth with its real intent
+preserved (never INFEASIBLE, and now also never under-promised), plus a comment
+explaining why it flipped.
+
+**Answering the user's other question:** the answer box was correctly absent. It
+keys on `ASK`, and `aggregate_gate` only returns ASK when a rule is genuinely
+`AMBIGUOUS`. Their verdict was ADVISE — caused by this stale flag — so there was
+never a question to answer. Fixing the flag removes the ADVISE.

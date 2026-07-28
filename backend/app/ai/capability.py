@@ -380,6 +380,27 @@ def _feature_live_feasible(name: str) -> Optional[bool]:
     return None if g is None else feature_live_feasible(g)
 
 
+
+def _lazy_leg_field_doc() -> str:
+    """Name the lazy-leg knobs FROM THE SHIPPED PLUGIN, never hand-typed.
+
+    This message used to claim the capability was unshipped future work. Telling
+    a user it is buildable without naming the fields would be only half a fix, and
+    hand-typing the names is how the phantom `expiry` field survived for months —
+    so they are read off the registered strategy's own parameter_schema.
+    """
+    try:
+        from app.strategies.base import get_registry
+        reg = get_registry()
+        if reg.get("premium_momentum") is None:
+            reg.auto_discover()
+        schema = reg.get("premium_momentum").parameter_schema or {}
+    except Exception:
+        return "lazy_enabled + the lazy_* knobs"
+    names = sorted(k for k in schema if k.startswith("lazy"))
+    return ", ".join(names) if names else "lazy_enabled + the lazy_* knobs"
+
+
 def classify_rule(tokens: RuleTokens, *, required_features=(), required_data=()) -> Verdict:
     """Pure R1-R9 first-match-wins feasibility classification of one rule.
 
@@ -471,13 +492,13 @@ def classify_rule(tokens: RuleTokens, *, required_features=(), required_data=())
         if c in PHASE5_FUTURE_CONCEPTS:
             feat = PHASE5_FUTURE_CONCEPTS[c]
             return Verdict(
-                FeasibilityClass.BUILDABLE_WITH_FEATURE,
-                "Lazy-leg contingency (opposite-side activation on primary-leg "
-                "SL) is Phase 5 future work — the design is committed "
-                "(docs/superpowers/specs/2026-07-13-premium-momentum-phase4-5-"
-                "full-contingency-design.md) but not yet shipped. Not-yet live-"
-                "feasible; today the single-leg first-to-trigger shape ships.",
-                feature=feat, live_feasible=False,
+                FeasibilityClass.BUILDABLE_NOW,
+                "Lazy-leg contingency (opposite-side activation on a primary "
+                "leg's stop) SHIPPED in Phase 5B and works in backtest, paper "
+                "and live. Configure it on the premium-trigger strategy: "
+                + _lazy_leg_field_doc()
+                + ". Run both legs simultaneously with leg_mode='both'.",
+                feature=feat, live_feasible=True,
             )
 
     # NEW (Phase 4.1): Holding-period declarations (intraday / same-day-exit) —
