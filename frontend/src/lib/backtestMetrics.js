@@ -317,6 +317,19 @@ export function computeKeyMetrics(result) {
   const minAccountValue = accVals.length ? Math.min(...accVals) : null;
   const maxAccountValue = accVals.length ? Math.max(...accVals) : null;
 
+  // Peak cash a SINGLE trade would have tied up — entry premium x quantity plus
+  // round-trip charges, i.e. the Trades table's "Buy ₹" column, maximised. Net
+  // P&L and return % say nothing about the cash that must be free at the worst
+  // moment, and a strategy whose peak outlay exceeds the account cannot be
+  // traded at all however good the backtest looks. Uses `tradeBuyValue` so the
+  // card and the column can never disagree. Null (not 0) in points mode: a
+  // spot-only run has no premium outlay, and 0 would read as "costs nothing".
+  const buyValues = (ob?.trades || [])
+    .filter((t) => t.status === "PAIRED")
+    .map((t) => tradeBuyValue(t))
+    .filter((v) => Number.isFinite(v));
+  const maxBuyValue = series.currency && buyValues.length ? Math.max(...buyValues) : null;
+
   const tradingDays = portfolio?.trading_days
     || new Set((result?.trades || []).map((t) => String(t.exit_datetime || "").slice(0, 10)).filter(Boolean)).size
     || 0;
@@ -335,7 +348,7 @@ export function computeKeyMetrics(result) {
     maxWinStreak: maxWin, maxLossStreak: maxLoss,
     ddDurationDays: dd.days, recovered: dd.recovered,
     returnOverMaxDd, sharpe,
-    minAccountValue, maxAccountValue,
+    minAccountValue, maxAccountValue, maxBuyValue,
     cagr, calmar, years, tradingDays, avgTradesPerDay,
     tradeCount: n,
   };

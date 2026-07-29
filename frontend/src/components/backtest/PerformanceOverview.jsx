@@ -92,6 +92,19 @@ export function PerformanceOverview({ result }) {
                 : "the test ended — it had NOT returned to that peak (still underwater at the end).")
             }
           />
+          <Stat
+            label="Max capital / trade"
+            value={k.maxBuyValue == null ? "—" : `₹${fmtInt(k.maxBuyValue)}`}
+            sub={k.capital != null && k.maxBuyValue != null
+              ? `${fmtNum((k.maxBuyValue / k.capital) * 100, 1)}% of capital`
+              : undefined}
+            title={
+              "The largest amount a SINGLE trade would have tied up — entry premium "
+              + "x quantity plus round-trip charges (the biggest 'Buy ₹' in the Trades "
+              + "table). This is the cash that must actually be free to take every "
+              + "trade in this run; net P&L and return % do not tell you that."
+            }
+          />
           <Stat label="Trading days" value={fmtInt(k.tradingDays)} />
           <Stat label="Avg trades / day" value={k.avgTradesPerDay == null ? "—" : fmtNum(k.avgTradesPerDay, 1)} />
           {cur && (

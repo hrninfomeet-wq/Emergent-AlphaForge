@@ -59,7 +59,14 @@ def test_preflight_report_has_premium_native_branch():
 def test_paired_backtest_threads_form_lots_and_costs_into_dispatch():
     src = (_ROOT / "backend" / "app" / "runtime.py").read_text(encoding="utf-8")
     i = src.index("async def _run_paired_option_backtest")
-    body = src[i:i + 7000]
+    # Bounded by the NEXT top-level def rather than a byte count: the function
+    # has grown (capital passthrough, lazy preload, market-context sources) and
+    # a fixed 7000-char window silently pushed `merged_params=pm_params` out of
+    # scope, failing on the window rather than on the property under test.
+    _next = src.find("\nasync def ", i + 1)
+    _next2 = src.find("\ndef ", i + 1)
+    _end = min(x for x in (_next, _next2, len(src)) if x > 0)
+    body = src[i:_end]
     # Precedence moved into `resolve_premium_lots` on 2026-07-29 and INVERTED:
     # the Option Execution form now wins over the strategy's declared default.
     # A user set the form to 5 and every trade still showed 2, because the old

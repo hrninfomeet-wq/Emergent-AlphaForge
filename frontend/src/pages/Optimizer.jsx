@@ -2362,7 +2362,34 @@ function TopAlternatives({ items }) {
 function JobHistory({ jobs, onLoad, onClone, onResume, onDelete, onRefresh }) {
   const { panelRef, maximized, toggleMaximize } = useMaximize();
   const [filter, setFilter] = useState("");
+  const [selected, setSelected] = useState(new Set());
   const { sort, onSort, sortRows } = useTableSort();
+
+  // Multi-select delete, mirroring BacktestRunJournal so the two history panes
+  // behave identically. Reuses the existing per-job DELETE endpoint — no new
+  // backend surface.
+  const toggleSelected = (id, e) => {
+    e.stopPropagation();
+    setSelected((s) => {
+      const n = new Set(s);
+      if (n.has(id)) n.delete(id); else n.add(id);
+      return n;
+    });
+  };
+
+  const bulkDelete = async () => {
+    if (selected.size === 0) return;
+    if (!confirm(`Delete ${selected.size} selected optimization job(s)?`)) return;
+    try {
+      await Promise.all([...selected].map((id) => api.deleteOptJob(id)));
+      toast.success(`Deleted ${selected.size} jobs`);
+      setSelected(new Set());
+      onRefresh?.();
+    } catch (e) {
+      toast.error("Bulk delete failed");
+    }
+  };
+
   const matches = (j) => {
     if (!filter) return true;
     const q = filter.toLowerCase();
@@ -2387,6 +2414,11 @@ function JobHistory({ jobs, onLoad, onClone, onResume, onDelete, onRefresh }) {
             <Input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Filter strategy, instrument, status…" className="bg-bg-2 border-line h-7 text-xs pl-7 w-60" data-testid="opt-history-filter" />
             {filter && <button onClick={() => setFilter("")} className="absolute right-1.5 top-1/2 -translate-y-1/2 text-dimmer hover:text-foreground"><X className="w-3 h-3" /></button>}
           </div>
+          {selected.size > 0 && (
+            <Button onClick={bulkDelete} size="sm" variant="destructive" className="h-7 text-xs" data-testid="opt-history-bulk-delete">
+              <Trash2 className="w-3 h-3 mr-1" /> Delete {selected.size}
+            </Button>
+          )}
           <Button variant="ghost" size="sm" onClick={onRefresh} className="h-7 text-xs"><RefreshCw className="w-3 h-3" /></Button>
           <MaximizeButton maximized={maximized} onToggle={toggleMaximize} label="job history" testid="opt-job-history-maximize" />
         </div>
@@ -2395,6 +2427,7 @@ function JobHistory({ jobs, onLoad, onClone, onResume, onDelete, onRefresh }) {
         <table className="w-full text-xs">
           <thead>
             <tr className="text-dim border-b border-line">
+              <th className="p-2 w-8"></th>
               <th className="text-right p-2 w-10">#</th>
               <SortHeader col={{ key: "created", label: "Created", align: "left" }} sort={sort} onSort={onSort} testidPrefix="opt-history-sort" />
               <SortHeader col={{ key: "status", label: "Status", align: "left" }} sort={sort} onSort={onSort} testidPrefix="opt-history-sort" />
@@ -2409,13 +2442,22 @@ function JobHistory({ jobs, onLoad, onClone, onResume, onDelete, onRefresh }) {
           </thead>
           <tbody>
             {jobs.length === 0 && (
-              <tr><td colSpan="10" className="p-4 text-center text-dimmer">No optimizations yet.</td></tr>
+              <tr><td colSpan="11" className="p-4 text-center text-dimmer">No optimizations yet.</td></tr>
             )}
             {jobs.length > 0 && view.length === 0 && (
-              <tr><td colSpan="10" className="p-4 text-center text-dimmer">No jobs match filter.</td></tr>
+              <tr><td colSpan="11" className="p-4 text-center text-dimmer">No jobs match filter.</td></tr>
             )}
             {view.map((j, idx) => (
-              <tr key={j.id} className="border-b border-line hover:bg-bg-2 cursor-pointer" onClick={() => onLoad(j.id)} data-testid="opt-history-row">
+              <tr key={j.id} className={`border-b border-line hover:bg-bg-2 cursor-pointer ${selected.has(j.id) ? "bg-bg-2" : ""}`} onClick={() => onLoad(j.id)} data-testid="opt-history-row">
+                <td className="p-2" onClick={(e) => e.stopPropagation()}>
+                  <input
+                    type="checkbox"
+                    checked={selected.has(j.id)}
+                    onChange={(e) => toggleSelected(j.id, e)}
+                    className="w-3.5 h-3.5 accent-info cursor-pointer"
+                    data-testid={`opt-history-select-${j.id.slice(0, 8)}`}
+                  />
+                </td>
                 <td className="p-2 font-mono text-dimmer text-right">{idx + 1}</td>
                 <td className="p-2 font-mono text-dim">{isoToFull(j.created_at)}</td>
                 <td className="p-2"><StatusBadge status={j.status} /></td>

@@ -284,8 +284,66 @@ def is_premium_trigger_strategy(strategy: Any) -> bool:
     return cfg is not None
 
 
+def _ist_session_date(ts_ms: Any) -> Optional[str]:
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    try:
+        return (_dt.fromtimestamp(int(ts_ms) / 1000, tz=_tz.utc)
+                + _td(hours=5, minutes=30)).strftime("%Y-%m-%d")
+    except Exception:
+        return None
+
+
+def _premium_trade_context(
+    entry_ts: Any, expiry_date: Any, *,
+    expiries_sorted: List[str],
+    regime_by_ts: Optional[Dict[int, str]],
+    vix_index: Any,
+) -> Dict[str, Any]:
+    """Market-context snapshot for one premium trade.
+
+    Built through the SAME `build_trade_context` the ordinary paired path uses,
+    so the two strategy families cannot drift into different bucket vocabularies
+    in the "Context Edge" panel.
+
+    `time_of_day` and `dte` are derived from the trade's own entry timestamp and
+    the contract expiries this module already receives — always available.
+    `regime` and `vix` cannot be derived here (the dispatch sees raw OHLCV, and
+    India VIX lives in Mongo), so they are optional injections from the caller.
+    A dimension with no source stays UNKNOWN rather than being guessed: this
+    panel exists for deciding where to switch a strategy OFF, so a fabricated
+    bucket would be worse than an absent one.
+    """
+    from app.dte import compute_dte
+    from app.market_context import build_trade_context
+
+    session = _ist_session_date(entry_ts)
+    dte = None
+    if session and expiries_sorted:
+        try:
+            dte = compute_dte(session, expiries_sorted)
+        except Exception:
+            dte = None
+    regime = None
+    if regime_by_ts and entry_ts is not None:
+        try:
+            regime = regime_by_ts.get(int(entry_ts))
+        except (TypeError, ValueError):
+            regime = None
+    vix = None
+    if vix_index is not None and entry_ts is not None:
+        try:
+            from app.vix import vix_asof
+            vix = vix_asof(vix_index, entry_ts)
+        except Exception:
+            vix = None
+    return build_trade_context(regime=regime, ts_ms=entry_ts, dte=dte, vix=vix)
+
+
 def _adapt_premium_trades_to_paired(
     trades: List[Dict[str, Any]], *, instrument: str, lots: int, lot_size: int,
+    expiries_sorted: Optional[List[str]] = None,
+    regime_by_ts: Optional[Dict[int, str]] = None,
+    vix_index: Any = None,
 ) -> List[Dict[str, Any]]:
     """Reshape run_premium_momentum_backtest's trade dicts into option_backtest.py's
     canonical PAIRED-trade contract, so the existing pure aggregators
@@ -322,7 +380,12 @@ def _adapt_premium_trades_to_paired(
             "index_exit_price": None,
             "moneyness": t.get("moneyness", ""),
             "resolved_expiry_date": t.get("expiry_date"),
-            "context": {},
+            # Was `{}`, which made every "Context Edge" dimension a single
+            # UNKNOWN bucket for premium-native runs (user-reported 2026-07-30).
+            "context": _premium_trade_context(
+                entry_ts, t.get("expiry_date"),
+                expiries_sorted=expiries_sorted or [],
+                regime_by_ts=regime_by_ts, vix_index=vix_index),
             "instrument_key": t.get("instrument_key"),
             "trading_symbol": "",
             "underlying": str(instrument),
@@ -374,6 +437,8 @@ def dispatch_full_backtest(
     contracts: List[Dict[str, Any]],
     instrument: str,
     capital: Optional[float] = None,
+    regime_by_ts: Optional[Dict[int, str]] = None,
+    vix_rows: Optional[List[Dict[str, Any]]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Full paired-option-backtest envelope for ANY strategy carrying a valid
     premium-trigger config, or None for a strategy that carries none (the entire
@@ -417,8 +482,22 @@ def dispatch_full_backtest(
         return None
     # Data-driven lot (see instruments.resolve_lot_size) — the static map is stale.
     lot_size, _lot_warnings = resolve_lot_size(contracts, instrument)
+    # Context sources. `expiries` comes from the contracts already in hand;
+    # regime/VIX are caller-injected because this module cannot derive them (raw
+    # OHLCV in, and India VIX lives in Mongo).
+    expiries_sorted = sorted({
+        str(c.get("expiry_date")) for c in (contracts or []) if c.get("expiry_date")
+    })
+    vix_index = None
+    if vix_rows:
+        try:
+            from app.vix import build_asof_index
+            vix_index = build_asof_index(vix_rows)
+        except Exception:
+            vix_index = None  # context is descriptive; never fail a run over it
     paired_trades = _adapt_premium_trades_to_paired(
         pm_result.get("trades", []), instrument=instrument, lots=int(cfg.lots), lot_size=lot_size,
+        expiries_sorted=expiries_sorted, regime_by_ts=regime_by_ts, vix_index=vix_index,
     )
     metrics = _compute_metrics(paired_trades)
     # `None` (not a literal default in the signature) so callers can forward an

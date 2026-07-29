@@ -229,7 +229,7 @@ async def backtest_run(req: BacktestReq):
         trade_window_end=req.trade_window_end,
     )
     metrics = res["metrics"]
-    option_result = await _run_paired_option_backtest(req, res["trades"])
+    option_result = await _run_paired_option_backtest(req, res["trades"], context_df=df_enriched)
 
     # A premium-native run has no spot trades by construction, so the spot
     # walk-forward measured 0 trades in every fold and then reported
@@ -353,7 +353,7 @@ async def run_backtest_job(run_id: str, req: BacktestReq) -> None:
 
         res, wf, regime_dist, candle_count = await asyncio.to_thread(_compute)
         metrics = res["metrics"]
-        option_result = await _run_paired_option_backtest(req, res["trades"])
+        option_result = await _run_paired_option_backtest(req, res["trades"], context_df=df_enriched)
         sig = stat_significance(metrics["trade_count"], metrics["win_rate"], metrics.get("profit_factor"))
 
         await db.backtest_runs.update_one({"id": run_id}, {"$set": {

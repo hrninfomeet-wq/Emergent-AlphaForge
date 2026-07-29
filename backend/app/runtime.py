@@ -1160,7 +1160,13 @@ def resolve_premium_lots(*, strategy_lots: Any, form_lots: Any) -> int:
     return 1
 
 
-async def _run_paired_option_backtest(req: BacktestReq, spot_trades: List[Dict[str, Any]], validate: bool = True) -> Optional[Dict[str, Any]]:
+async def _run_paired_option_backtest(
+    req: BacktestReq, spot_trades: List[Dict[str, Any]], validate: bool = True,
+    context_df: Optional[Any] = None,
+) -> Optional[Dict[str, Any]]:
+    """`context_df` is the caller's ENRICHED spot frame (ts + regime). Optional
+    and used only to annotate a premium-native run's market context — the
+    ordinary paired path already carries regime on its spot trades."""
     config = req.option_backtest
     if not config.enabled:
         return None
@@ -1262,10 +1268,38 @@ async def _run_paired_option_backtest(req: BacktestReq, spot_trades: List[Dict[s
         except (TypeError, ValueError):
             _capital = None  # malformed -> documented default, never a crash
 
+        # Context sources for the "Context Edge" panel. The dispatch derives
+        # time-of-day and DTE itself but cannot know the regime (its spot_df is
+        # raw OHLCV) or the VIX (Mongo), so both are supplied here. Best-effort
+        # throughout: context is descriptive, and a missing source must leave a
+        # dimension UNKNOWN rather than fail the run or invent a bucket.
+        _regime_by_ts: Dict[int, Any] = {}
+        if context_df is not None and not getattr(context_df, "empty", True) \
+                and "regime" in getattr(context_df, "columns", []):
+            try:
+                _regime_by_ts = {
+                    int(ts): str(rg)
+                    for ts, rg in zip(context_df["ts"], context_df["regime"])
+                    if rg is not None
+                }
+            except Exception:
+                _regime_by_ts = {}
+        _vix_rows: List[Dict[str, Any]] = []
+        try:
+            _t0, _t1 = int(req.start_ts), int(req.end_ts)
+            _vix_rows = await db.candles_1m.find(
+                {"instrument": VIX_INSTRUMENT,
+                 "ts": {"$gte": _t0 - 7 * 24 * 3600 * 1000, "$lte": _t1}},
+                {"_id": 0, "ts": 1, "close": 1},
+            ).sort("ts", 1).to_list(length=1000000)
+        except Exception:
+            _vix_rows = []
+
         pm_result = dispatch_full_backtest(
             strategy_id=req.strategy_id, merged_params=pm_params,
             spot_df=spot_df, option_candles=option_candles, contracts=contracts,
             instrument=underlying, capital=_capital,
+            regime_by_ts=_regime_by_ts, vix_rows=_vix_rows,
         )
         if pm_result is not None:
             pm_result["skipped_trades"] = []
