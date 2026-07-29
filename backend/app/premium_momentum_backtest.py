@@ -83,6 +83,32 @@ LAZY_REF_ASOF_TOLERANCE_MS = 180_000
 FULL_MONEYNESS_BAND = ["itm2", "itm1", "atm", "otm1", "otm2"]
 
 
+#: EVERY parameter this sim accepts. Declared next to where they are read, and
+#: cross-checked against the module's own `params.get(...)` calls by
+#: tests/test_engine_params_are_declared.py so it cannot drift.
+#:
+#: This exists because the plugin's `parameter_schema` was INCOMPLETE relative to
+#: the engine: the lazy-leg trail knobs, the points-variants and the percent
+#: trails were all read here but declared nowhere, so an authored strategy could
+#: not express them and the AI honestly reported them as "couldn't map". Deriving
+#: the authoring surface from a declaration only helps if the declaration is
+#: complete — this is that declaration.
+ENGINE_PARAM_KEYS = frozenset({
+    "reference_time", "moneyness", "side", "leg_mode", "lots", "cost_config",
+    "momentum_pct", "momentum_pts",
+    "stop_pct", "stop_pts", "target_pct", "target_pts",
+    "trail_x", "trail_y", "trail_x_pct", "trail_y_pct",
+    "entry_cutoff", "exit_time",
+    "session_max_loss_rupees", "session_max_profit_rupees",
+    "vix_min", "vix_max",
+    "lazy_enabled", "lazy_moneyness",
+    "lazy_momentum_pct", "lazy_momentum_pts",
+    "lazy_stop_pct", "lazy_stop_pts",
+    "lazy_target_pct", "lazy_target_pts",
+    "lazy_trail_x", "lazy_trail_y", "lazy_trail_x_pct", "lazy_trail_y_pct",
+})
+
+
 def preload_scope(moneynesses: List[str], sides: List[str],
                   lazy_enabled: bool) -> Tuple[List[str], List[str]]:
     """(moneynesses, sides) the warehouse preload must cover.

@@ -136,7 +136,13 @@ def premium_trigger_allowed_keys() -> set:
     what the byte-identical parity test protects and what the sim consumes, so
     adding fields there would put the shipped strategy's numbers at risk.
     """
-    keys = set(PremiumTriggerConfig.model_fields)
+    # The SIM's own declaration is the deepest truth: the plugin's
+    # parameter_schema was incomplete relative to what the engine actually reads
+    # (the lazy trail knobs, the points variants, the percent trails), so
+    # deriving only from the schema left shipped capability inexpressible.
+    from app.premium_momentum_backtest import ENGINE_PARAM_KEYS
+
+    keys = set(PremiumTriggerConfig.model_fields) | set(ENGINE_PARAM_KEYS)
     try:
         from app.strategies.base import get_registry
         reg = get_registry()
