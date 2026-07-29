@@ -12,6 +12,104 @@ function toSec(ts) {
   return Math.floor(Number(ts) / 1000);
 }
 
+/**
+ * True when the run was produced by the premium session engine rather than by
+ * per-bar evaluate() -> spot trades -> option pairing.
+ *
+ * For such a run `result.trades` and `result.metrics` are EMPTY BY CONSTRUCTION:
+ * the strategy's evaluate() is a deliberate inert stub, so the spot path yields
+ * nothing. Everything real lives in `result.option_backtest`. Reading the spot
+ * objects is what left the user's Trades pane empty and the Trades / Win Rate /
+ * Profit Factor / Net P&L cards blank while "Highest Acct Value" — which already
+ * went through buildPerformanceSeries -> option_backtest.portfolio — showed a
+ * large number.
+ */
+export function isPremiumNative(result) {
+  return result?.option_backtest?.dispatch === "premium_trigger_config";
+}
+
+/**
+ * The trade rows the Trades table should render.
+ *
+ * Ordinary runs: unchanged, the spot trades. Premium-native runs: the executed
+ * option trades reshaped into the same row contract, so the existing table,
+ * sorting, filters and CSV export all work with no special-casing. The option
+ * columns join by `index_trade_id === row index`, which the reshape preserves.
+ *
+ * Prices/points here are OPTION PREMIUM, which is what a premium-native strategy
+ * actually trades — there is no index-points leg to report.
+ */
+export function displayTrades(result) {
+  if (!isPremiumNative(result)) return result?.trades || [];
+  return (result?.option_backtest?.trades || [])
+    .filter((t) => t.status === "PAIRED")
+    .map((t, i) => {
+      const entry = Number(t.entry_option_price);
+      const exit = Number(t.exit_option_price);
+      return {
+        index_trade_id: t.index_trade_id ?? i,
+        direction: t.direction || t.side || "",
+        entry_ts: t.option_entry_ts ?? t.signal_entry_ts ?? null,
+        exit_ts: t.option_exit_ts ?? t.signal_exit_ts ?? null,
+        entry_datetime: t.signal_entry_datetime || "",
+        exit_datetime: t.signal_exit_datetime || "",
+        entry_price: Number.isFinite(entry) ? entry : null,
+        exit_price: Number.isFinite(exit) ? exit : null,
+        exit_reason: t.option_exit_reason || "",
+        score: null,
+        pnl_pts: t.option_pnl_pts ?? null,
+        pnl_pct: Number.isFinite(entry) && Number.isFinite(exit) && entry !== 0
+          ? ((exit - entry) / entry) * 100
+          : null,
+      };
+    });
+}
+
+/**
+ * The headline KPIs, read from whichever envelope actually describes the run.
+ *
+ * Returns a unit-tagged object rather than raw metrics because the two families
+ * are in DIFFERENT UNITS: a spot run is index points, a premium-native run is
+ * rupee-native (premium x quantity). Rendering a rupee figure under the existing
+ * "Net P&L (pts)" heading would be the same units lie this audit found in
+ * optimizer.py, where a rupee drawdown is stored as `max_dd_pts`.
+ *
+ * `profitFactor` is COMPUTED for premium runs: option_backtest.metrics has no
+ * profit_factor key at all, so that card could never have shown anything.
+ */
+export function resultKpis(result) {
+  if (!isPremiumNative(result)) {
+    const m = result?.metrics || {};
+    return {
+      currency: false,
+      unit: "pts",
+      tradeCount: m.trade_count ?? null,
+      winRate: m.win_rate ?? null,
+      profitFactor: m.profit_factor ?? null,
+      netPnl: m.total_pnl_pts ?? null,
+      maxDd: m.max_dd_pts ?? null,
+      sharpe: m.sharpe ?? null,
+    };
+  }
+  const ob = result.option_backtest || {};
+  const m = ob.metrics || {};
+  const port = ob.portfolio || {};
+  const paired = (ob.trades || []).filter((t) => t.status === "PAIRED");
+  const pnls = paired.map((t) => Number(t.option_pnl_value)).filter((v) => Number.isFinite(v));
+  const grossWin = pnls.filter((p) => p > 0).reduce((s, v) => s + v, 0);
+  const grossLoss = Math.abs(pnls.filter((p) => p < 0).reduce((s, v) => s + v, 0));
+  return {
+    currency: true,
+    unit: "₹",
+    tradeCount: m.paired_trade_count ?? paired.length,
+    winRate: m.win_rate ?? null,
+    profitFactor: grossLoss > 0 ? grossWin / grossLoss : (grossWin > 0 ? null : null),
+    netPnl: port.net_pnl_value ?? m.total_option_pnl_value ?? null,
+    maxDd: port.max_drawdown_value ?? null,
+    sharpe: port.sharpe_daily ?? null,
+  };
+}
+
 function dedupeAscending(points) {
   const seen = new Set();
   const out = [];

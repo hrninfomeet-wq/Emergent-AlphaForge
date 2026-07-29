@@ -85,7 +85,14 @@ def test_recovered_is_explained():
 
 def test_trades_table_has_lots_buy_sell_columns():
     page = _read("pages", "BacktestLab.jsx")
-    assert 'label: "Lots (Qty)"' in page
+    # Lots and Qty are now SEPARATE columns (2026-07-29). The single
+    # `label: "Lots (Qty)"` column rendered `quantity` — lots x lot size — so a
+    # 2-lot NIFTY trade displayed 130 under a heading containing the word
+    # "Lots", which a user reported as their lot count being wrong. Asserted as
+    # two distinct columns bound to two distinct fields rather than as a literal
+    # label, so the units cannot silently re-merge.
+    assert 'label: "Lots"' in page and 'label: "Qty"' in page
+    assert 'key: "opt_lots"' in page and 'key: "opt_qty"' in page
     assert 'label: "Buy ₹"' in page and 'label: "Sell ₹"' in page
     assert "opt_buy_value" in page and "opt_sell_value" in page
 

@@ -21,7 +21,7 @@ import { TrustScorecard } from "@/components/TrustScorecard";
 import { useMaximize, MaximizeButton } from "@/components/MaximizeButton";
 import { useInteractiveColumns } from "@/components/common/useInteractiveColumns";
 import { ResetLayoutButton } from "@/components/common/ResetLayoutButton";
-import { buildPerformanceSeries } from "@/lib/backtestMetrics";
+import { buildPerformanceSeries, displayTrades, isPremiumNative, resultKpis } from "@/lib/backtestMetrics";
 import { NumberSliderInput } from "@/components/NumberSliderInput";
 import BacktestRunJournal from "@/components/BacktestRunJournal";
 import { Play, Save, Filter, ChevronDown, ChevronRight, ChevronsUpDown, ArrowUp, ArrowDown, Download, FileJson, FileText, FolderOpen, ShieldCheck, Loader2, AlertTriangle, HelpCircle, Rocket } from "lucide-react";
@@ -1836,6 +1836,9 @@ function RunningResults({ progress, config }) {
 
 function ResultsView({ result, onSaveAsPreset, onDeploy }) {
   const m = result.metrics || {};
+  const kpi = useMemo(() => resultKpis(result), [result]);
+  const premiumNative = isPremiumNative(result);
+  const tradeRows = useMemo(() => displayTrades(result), [result]);
   const regimeDist = result.regime_distribution || {};
   const totalRegime = Object.values(regimeDist).reduce((s, v) => s + v, 0);
   const funnel = result.signal_funnel || {};
@@ -1928,14 +1931,30 @@ function ResultsView({ result, onSaveAsPreset, onDeploy }) {
         </div>
       </div>
 
-      {/* KPI grid */}
+      {/* KPI grid. Reads whichever envelope actually describes the run: a
+          premium-native strategy's evaluate() is an inert stub, so result.metrics
+          is a zero-filled stub and every card here rendered blank while the
+          account-value card (which already went through the option portfolio)
+          showed a large number. Units follow the family — a premium run is
+          rupee-native, so the labels switch too rather than reporting rupees
+          under a "(pts)" heading. */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <MetricCard label="Trades" value={fmtInt(m.trade_count)} testid="result-trades" />
-        <MetricCard label="Win Rate" value={fmtPct(m.win_rate)} testid="result-winrate" />
-        <MetricCard label="Profit Factor" value={fmtNum(m.profit_factor, 2)} testid="result-pf" />
-        <MetricCard label="Net P&L (pts)" value={fmtPnL(m.total_pnl_pts)} accent={colorPnL(m.total_pnl_pts)} testid="result-pnl" />
-        <MetricCard label="Max DD (pts)" value={fmtPnL(m.max_dd_pts)} accent="text-danger" testid="result-dd" />
-        <MetricCard label="Sharpe" value={fmtNum(m.sharpe, 2)} testid="result-sharpe" />
+        <MetricCard label="Trades" value={fmtInt(kpi.tradeCount)} testid="result-trades" />
+        <MetricCard label="Win Rate" value={fmtPct(kpi.winRate)} testid="result-winrate" />
+        <MetricCard label="Profit Factor" value={fmtNum(kpi.profitFactor, 2)} testid="result-pf" />
+        <MetricCard
+          label={kpi.currency ? "Net P&L (₹)" : "Net P&L (pts)"}
+          value={kpi.currency ? `₹${fmtInt(kpi.netPnl)}` : fmtPnL(kpi.netPnl)}
+          accent={colorPnL(kpi.netPnl)}
+          testid="result-pnl"
+        />
+        <MetricCard
+          label={kpi.currency ? "Max DD (₹)" : "Max DD (pts)"}
+          value={kpi.currency ? `₹${fmtInt(Math.abs(kpi.maxDd ?? 0))}` : fmtPnL(kpi.maxDd)}
+          accent="text-danger"
+          testid="result-dd"
+        />
+        <MetricCard label="Sharpe" value={fmtNum(kpi.sharpe, 2)} testid="result-sharpe" />
         <MetricCard
           label={acctRange.currency ? "Lowest Acct Value" : "Lowest Equity"}
           value={acctRange.min == null ? "—" : (acctRange.currency ? `₹${fmtInt(acctRange.min)}` : fmtNum(acctRange.min, 0))}
@@ -1971,12 +1990,39 @@ function ResultsView({ result, onSaveAsPreset, onDeploy }) {
             data-testid="premium-native-banner"
           >
             <span className="font-semibold">Premium-native strategy.</span> Entries and exits are
-            evaluated on <span className="font-semibold">option premium</span>, not spot — the spot
-            trade list, equity curve and chart markers above are empty by design. The full result is
-            the Option Execution card below (also in Advanced analytics). Strike selection follows the
-            <span className="font-mono"> moneyness</span>/<span className="font-mono">reference_time</span> strategy
-            params; the option-pairing form's moneyness is not used, while its lots &amp; cost model are honored.
+            evaluated on <span className="font-semibold">option premium</span>, not spot, so there is
+            no index-price leg — the Trades table below lists the actual option trades, and its
+            prices are premium. The spot equity curve and chart markers stay empty by design.
+            Strike selection follows the <span className="font-mono">moneyness</span>/
+            <span className="font-mono">reference_time</span> strategy params; the option-pairing
+            form's moneyness is not used.{" "}
+            <span className="font-semibold">Sizing:</span> the strategy's own{" "}
+            <span className="font-mono">lots</span> param wins whenever it declares one — the option
+            form's Lots applies only if it does not. Check the params panel, not the form, to see the
+            size that actually ran.
           </div>
+          {/* Configured capabilities this backtest did NOT simulate. The
+              deployment path DOES honour these, so staying silent would let a
+              user judge a two-leg strategy by single-leg numbers. */}
+          {(result.option_backtest.dropped_params || []).length > 0 && (
+            <div
+              className="rounded-md border border-amber-900 bg-amber-950 text-amber-200 p-2.5 text-[11px] leading-relaxed"
+              data-testid="premium-dropped-params-warning"
+            >
+              <span className="font-semibold">
+                <AlertTriangle className="w-3 h-3 inline mr-1 -mt-0.5" />
+                These configured settings were NOT simulated:
+              </span>{" "}
+              <span className="font-mono">
+                {(result.option_backtest.dropped_params || []).join(", ")}
+              </span>
+              . The Backtest Lab's premium engine runs the single-leg
+              momentum/stop/target/trail config only. Live and paper deployments
+              DO apply them — so these results describe a different strategy from
+              the one you would deploy. Treat them as a lower bound on behaviour,
+              not a validation of the full configuration.
+            </div>
+          )}
           <OptionBacktestCard optionBacktest={result.option_backtest} />
         </>
       )}
@@ -2002,8 +2048,15 @@ function ResultsView({ result, onSaveAsPreset, onDeploy }) {
         </div>
       </AdvancedAnalytics>
 
-      {/* Trades table */}
-      <TradesTable trades={result.trades || []} optionBacktest={result.option_backtest} />
+      {/* Trades table. `tradeRows` is the spot list for an ordinary run and the
+          executed OPTION trades for a premium-native one — otherwise the pane
+          iterated an empty spot list and told the user "No trades were taken"
+          while option_backtest.trades held every fill. */}
+      <TradesTable
+        trades={tradeRows}
+        optionBacktest={result.option_backtest}
+        premiumNative={premiumNative}
+      />
     </div>
   );
 }
@@ -2659,7 +2712,7 @@ function SortHeader({ col, sort, onSort, headerProps, resizeHandleProps, width }
   );
 }
 
-function TradesTable({ trades, optionBacktest }) {
+function TradesTable({ trades, optionBacktest, premiumNative = false }) {
   const { panelRef, maximized, toggleMaximize } = useMaximize();
   const [sort, setSort] = useState({ key: "idx", dir: "asc" });
   const [dirFilter, setDirFilter] = useState("ALL");
@@ -2755,21 +2808,41 @@ function TradesTable({ trades, optionBacktest }) {
   // width/order layout onto — by key, dropping stale keys, appending new ones.
   // Computed (and the hook below called) unconditionally, before the "no
   // trades" early return, to satisfy the Rules of Hooks.
-  const columns = optionEnabled
-    ? [
-        ...TRADE_COLUMNS,
-        { key: "opt_symbol", label: "Opt Leg", align: "left", sortable: true, defaultWidth: 110 },
-        { key: "opt_qty", label: "Lots (Qty)", align: "right", sortable: true, defaultWidth: 100 },
-        { key: "opt_entry", label: "Opt Entry", align: "right", sortable: true, defaultWidth: 90 },
-        { key: "opt_exit", label: "Opt Exit", align: "right", sortable: true, defaultWidth: 90 },
-        { key: "opt_pnl_pct", label: "Opt P&L%", align: "right", sortable: true, defaultWidth: 90 },
-        { key: "opt_buy_value", label: "Buy ₹", align: "right", sortable: true, defaultWidth: 90 },
-        { key: "opt_sell_value", label: "Sell ₹", align: "right", sortable: true, defaultWidth: 90 },
-        { key: "opt_charges", label: "Charges ₹", align: "right", sortable: true, defaultWidth: 90 },
-        { key: "opt_exit_reason", label: "Opt Exit", align: "left", sortable: true, defaultWidth: 100 },
-        { key: "opt_pnl_value", label: "Opt P&L (₹)", align: "right", sortable: true, defaultWidth: 100 },
-      ]
+  // "Lots" and "Qty" are SPLIT deliberately. One column labelled "Lots (Qty)"
+  // rendered `quantity` (lots x lot size), so a 2-lot NIFTY trade displayed 130
+  // under a heading containing the word "Lots" — which is how a user reading the
+  // Option Execution pane came away believing their lot count was wrong.
+  const optionColumns = [
+    { key: "opt_symbol", label: "Opt Leg", align: "left", sortable: true, defaultWidth: 110 },
+    { key: "opt_strike", label: "Strike", align: "right", sortable: true, defaultWidth: 80 },
+    { key: "opt_lots", label: "Lots", align: "right", sortable: true, defaultWidth: 60 },
+    { key: "opt_qty", label: "Qty", align: "right", sortable: true, defaultWidth: 70 },
+    // For a premium-native run the base columns ALREADY carry the option premium
+    // (there is no spot leg), so repeating entry/exit/P&L% here would show the
+    // same number twice under two different headings.
+    ...(premiumNative ? [] : [
+      { key: "opt_entry", label: "Opt Entry", align: "right", sortable: true, defaultWidth: 90 },
+      { key: "opt_exit", label: "Opt Exit", align: "right", sortable: true, defaultWidth: 90 },
+      { key: "opt_pnl_pct", label: "Opt P&L%", align: "right", sortable: true, defaultWidth: 90 },
+      { key: "opt_exit_reason", label: "Opt Exit", align: "left", sortable: true, defaultWidth: 100 },
+    ]),
+    { key: "opt_buy_value", label: "Buy ₹", align: "right", sortable: true, defaultWidth: 90 },
+    { key: "opt_sell_value", label: "Sell ₹", align: "right", sortable: true, defaultWidth: 90 },
+    { key: "opt_charges", label: "Charges ₹", align: "right", sortable: true, defaultWidth: 90 },
+    { key: "opt_pnl_value", label: "Opt P&L (₹)", align: "right", sortable: true, defaultWidth: 100 },
+  ];
+  // A premium-native run has no spot leg at all: its "prices" ARE option premium,
+  // so the base columns are relabelled rather than left implying an index level.
+  const baseColumns = premiumNative
+    ? TRADE_COLUMNS.map((c) => (
+        c.key === "entry_price" ? { ...c, label: "Entry Prem" }
+        : c.key === "exit_price" ? { ...c, label: "Exit Prem" }
+        : c.key === "pnl_pts" ? { ...c, label: "P&L (prem pts)" }
+        : c.key === "score" ? null
+        : c))
+      .filter(Boolean)
     : TRADE_COLUMNS;
+  const columns = optionEnabled ? [...baseColumns, ...optionColumns] : baseColumns;
 
   const { orderedColumns, getHeaderProps, getResizeHandleProps, resetLayout, isCustomized } = useInteractiveColumns({
     tableId: "backtest-trades",
@@ -2879,9 +2952,18 @@ function TradesTable({ trades, optionBacktest }) {
                       : <span className="text-dimmer">{t.opt_status ? t.opt_status.replace(/_/g, " ").toLowerCase() : "—"}</span>}
                   </td>
                 ),
+                opt_strike: <td className="p-2 text-right font-mono text-[10px]">{t.opt_strike != null ? fmtInt(t.opt_strike) : "—"}</td>,
+                // Lots and Qty are separate cells: one column showing `quantity`
+                // under a heading containing "Lots" is what made a 2-lot trade
+                // read as though the lot count were the contract quantity.
+                opt_lots: (
+                  <td className="p-2 text-right font-mono text-[10px]" title="Lots traded (contracts = lots x lot size)">
+                    {t.opt_lots != null ? fmtInt(t.opt_lots) : "—"}
+                  </td>
+                ),
                 opt_qty: (
-                  <td className="p-2 text-right font-mono text-[10px]" title={t.opt_qty != null ? `${fmtInt(t.opt_qty)} qty` : ""}>
-                    {t.opt_lots != null ? `${fmtInt(t.opt_lots)} (${fmtInt(t.opt_qty)})` : "—"}
+                  <td className="p-2 text-right font-mono text-[10px]" title="Contract quantity = lots x lot size">
+                    {t.opt_qty != null ? fmtInt(t.opt_qty) : "—"}
                   </td>
                 ),
                 opt_entry: <td className="p-2 text-right font-mono">{t.opt_entry != null ? fmtNum(t.opt_entry) : "—"}</td>,

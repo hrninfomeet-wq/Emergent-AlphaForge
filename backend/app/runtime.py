@@ -1206,10 +1206,26 @@ async def _run_paired_option_backtest(req: BacktestReq, spot_trades: List[Dict[s
         if loaded is None:
             return None
         spot_df, option_candles, contracts = loaded
+        # Starting capital comes from the option form's sizing block. Omitting it
+        # left dispatch_full_backtest on its 200_000 default, so the Account
+        # (rupee) card, Return %, Max DD % and the Highest/Lowest Acct Value KPIs
+        # were all computed off a base the user never chose.
+        _sizing = getattr(config, "sizing_config", None)
+        if isinstance(_sizing, dict):
+            _capital = _sizing.get("capital")
+        else:
+            _capital = getattr(_sizing, "capital", None)
+        try:
+            _capital = float(_capital) if _capital is not None else None
+            if _capital is not None and _capital <= 0:
+                _capital = None
+        except (TypeError, ValueError):
+            _capital = None  # malformed -> documented default, never a crash
+
         pm_result = dispatch_full_backtest(
             strategy_id=req.strategy_id, merged_params=pm_params,
             spot_df=spot_df, option_candles=option_candles, contracts=contracts,
-            instrument=underlying,
+            instrument=underlying, capital=_capital,
         )
         if pm_result is not None:
             pm_result["skipped_trades"] = []

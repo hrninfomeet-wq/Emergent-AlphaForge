@@ -338,6 +338,79 @@ def _schema_type_for(value) -> str:
     return "str"
 
 
+def _shipped_premium_schema() -> Dict[str, Any]:
+    """The hand-curated `premium_momentum` parameter_schema, or {} if the
+    registry is unavailable (host-only contexts). Empty is the SAFE direction:
+    every numeric key then compiles pinned rather than unbounded."""
+    try:
+        from app.strategies.base import get_registry
+        reg = get_registry()
+        if reg.get("premium_momentum") is None:
+            reg.auto_discover()
+        return dict(reg.get("premium_momentum").parameter_schema or {})
+    except Exception:
+        return {}
+
+
+def premium_param_schema_entry(key: str, value: Any) -> Dict[str, Any]:
+    """The `parameter_schema` entry for one authored premium-trigger key.
+
+    Three outcomes, in order:
+
+      1. **Sizing / risk knob** (`optimizer.NON_ALPHA_PARAM_NAMES`) -> pinned.
+         Every rupee objective is monotonic in `lots`, so leaving it searchable
+         makes the optimizer a leverage maximizer. A user hit exactly this on
+         2026-07-29: `lots` was tuned to 100 (the invented range ceiling, which
+         happens to equal `PremiumTriggerConfig.lots`'s `le=100`), inflating the
+         reported account curve 50x over their configured 2 lots.
+
+      2. **Curated bounds exist on the shipped `premium_momentum` plugin** ->
+         copy its `min`/`max`. DERIVED, never hardcoded, so the authored plugin
+         cannot drift away from the ranges the shipped one considers sane.
+
+      3. **No curated bounds** -> pinned. Refusing to search is honest; inventing
+         a range is not. The old bare `{type, default}` let `_suggest`
+         substitute `[0,100]` for an int and `[0.0,1.0]` for a float, which is
+         how the user's run produced `trail_y_pct=78` and `lazy_trail_y_pct=97`.
+
+    A pinned param is NOT dropped — it keeps its declared default and still
+    reaches the engine. It simply stops being a search dimension.
+    """
+    from app.optimizer import NON_ALPHA_PARAM_NAMES
+
+    entry: Dict[str, Any] = {"type": _schema_type_for(value), "default": value}
+    if entry["type"] == "str":
+        return entry
+    if entry["type"] == "bool":
+        # A bool's domain is exhaustive — there is no range to invent.
+        return entry
+    if key in NON_ALPHA_PARAM_NAMES:
+        entry["fixed"] = value
+        return entry
+    shipped = _shipped_premium_schema().get(key) or {}
+    if shipped.get("min") is not None and shipped.get("max") is not None:
+        # The shipped plugin types these knobs float; an authored spec may have
+        # written an integral literal ("15" not "15.0"). Coerce the bounds to the
+        # entry's own type so the schema is internally consistent.
+        cast = int if entry["type"] == "int" else float
+        entry["min"] = cast(shipped["min"])
+        entry["max"] = cast(shipped["max"])
+        return entry
+    entry["fixed"] = value
+    return entry
+
+
+def _premium_entry_literal(key: str, value: Any) -> str:
+    """Render one premium_trigger schema entry as source, keys in a stable order."""
+    entry = premium_param_schema_entry(key, value)
+    parts = [f'"type": {entry["type"]!r}']
+    for opt in ("min", "max", "fixed"):
+        if opt in entry:
+            parts.append(f'"{opt}": {entry[opt]!r}')
+    parts.append(f'"default": {entry["default"]!r}')
+    return "{" + ", ".join(parts) + "}"
+
+
 def compile_spec(spec: StrategySpec) -> str:
     """Validate, then return source for a StrategyBase subclass.
 
@@ -408,8 +481,11 @@ def compile_spec(spec: StrategySpec) -> str:
     if spec.premium_trigger:
         _nl_indent = "\n        "
         _close = "\n    }"
+        # Each entry carries curated bounds or an explicit pin — see
+        # `premium_param_schema_entry`. A bare {type, default} let the optimizer
+        # invent a range and tune position size.
         _pt_entries = "".join(
-            f'{_nl_indent}{k!r}: {{"type": {_schema_type_for(v)!r}, "default": {v!r}}},'
+            f'{_nl_indent}{k!r}: {_premium_entry_literal(k, v)},'
             for k, v in spec.premium_trigger.items() if v is not None
         )
         if schema_src == "{}":

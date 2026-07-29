@@ -186,6 +186,37 @@ def _indicator_key(merged: Dict[str, Any]) -> Tuple:
     return tuple((k, merged.get(k)) for k in INDICATOR_PARAM_KEYS)
 
 
+#: Params that SIZE or POLICE a position rather than express alpha.
+#:
+#: Optimizing these is not tuning, it is leverage-seeking: every rupee objective
+#: is monotonic in `lots`, so a search pins it to whatever ceiling it is handed
+#: and reports the resulting number as if it were edge. A user optimized an
+#: AI-authored premium strategy on 2026-07-29 and got `lots: 100` — exactly the
+#: old invented [0,100] ceiling — inflating the account curve 50x over their
+#: configured 2 lots.
+#:
+#: The shipped `premium_momentum` plugin encodes the same judgement by hand: it
+#: never declares `lots`, and hand-writes `"fixed"` on its session risk caps.
+#: This set is what gives an AUTHORED plugin the same protection, since the AI
+#: compiler emits a bare {type, default} for every config key.
+NON_ALPHA_PARAM_NAMES = frozenset({
+    "lots", "max_lots", "fixed_lots", "quantity", "capital",
+    "session_max_loss_rupees", "session_max_profit_rupees",
+})
+
+
+def resolve_indicator_period_search(requested: bool, *, premium_native: bool) -> bool:
+    """Whether to inject the standard indicator-period dimensions.
+
+    Forced OFF for a premium-native strategy. Its ``evaluate()`` is a deliberate
+    inert stub and the premium session engine reads no indicator, so every
+    injected period is provably a no-op — but Optuna cannot know that and spends
+    real trials varying them. The user's 2026-07-29 job searched 22 dimensions,
+    TEN of which were indicator periods that could not move the objective.
+    """
+    return bool(requested) and not premium_native
+
+
 def _build_param_space(
     parameter_schema: Dict[str, Any],
     overrides: Dict[str, Any] | None,
@@ -196,7 +227,22 @@ def _build_param_space(
 
     When include_indicator_periods=True, inject the standard indicator-period
     params (RSI/MACD/ATR/EMA/ADX/CHOP/swing) that the strategy doesn't already
-    declare, so they become tunable (their changes trigger indicator recompute)."""
+    declare, so they become tunable (their changes trigger indicator recompute).
+
+    **Bounds are never invented.** A numeric param that does not declare BOTH
+    `min` and `max` is pinned to its declared default (`fixed`) instead of being
+    searched over a made-up range. Two call sites used to improvise different
+    answers for the same schema — `_suggest` substituted [0,100] for an int and
+    [0.0,1.0] for a float, while `_grid_combinations` read `info["min"]` and
+    raised `KeyError: 'min'`, failing the whole job with a one-character error.
+    Neither invented range means anything: a percent knob written `20.0` rather
+    than `20` silently became a 0-1% search.
+
+    Pinning rather than dropping is deliberate — the param still flows into
+    `merged_params`, so the strategy runs with its configured value; it just
+    stops being a search dimension. `_suggest` and `_grid_combinations` both
+    already honour `fixed`, so this needs no new machinery downstream.
+    """
     overrides = overrides or {}
     space: Dict[str, Dict[str, Any]] = {}
     for name, defn in parameter_schema.items():
@@ -212,6 +258,16 @@ def _build_param_space(
             info["min"] = ov["min"]
         if "max" in ov:
             info["max"] = ov["max"]
+        if "fixed" not in info:
+            # An explicit min+max override is the user deliberately opting in —
+            # including for a sizing param, which is their call to make.
+            explicit_bounds = "min" in ov and "max" in ov
+            if name in NON_ALPHA_PARAM_NAMES and not explicit_bounds:
+                info["fixed"] = info.get("default")
+            elif t in ("int", "float") and not ("min" in info and "max" in info):
+                # bool is exempt: its domain is exhaustive, so there is nothing
+                # to invent.
+                info["fixed"] = info.get("default")
         space[name] = info
 
     if include_indicator_periods:
@@ -1220,7 +1276,10 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
 
         space = _build_param_space(
             strategy.parameter_schema, param_overrides,
-            include_indicator_periods=optimize_indicator_periods,
+            include_indicator_periods=resolve_indicator_period_search(
+                optimize_indicator_periods,
+                premium_native=is_premium_trigger_strategy(strategy),
+            ),
         )
         if resume:
             # Rehydrate prior progress and continue from the last saved stage.

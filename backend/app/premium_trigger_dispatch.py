@@ -79,6 +79,11 @@ _EXIT_REASON_MAP = {
 #: fields this module already had to work around.
 _CONFIG_FIELDS = tuple(PremiumTriggerConfig.model_fields)
 
+#: Fallback starting capital for the rupee equity curve, used only when a caller
+#: supplies none. Defined here (not as a signature literal) so the one caller that
+#: forwards a possibly-unset form value cannot accidentally pin a second default.
+DEFAULT_BACKTEST_CAPITAL = 200_000.0
+
 
 def extract_premium_trigger_config(
     params: Optional[Dict[str, Any]],
@@ -154,6 +159,37 @@ def premium_trigger_allowed_keys() -> set:
         # safe floor — narrower, never wider, so nothing invalid slips through.
         pass
     return keys
+
+
+def premium_dropped_params(params: Optional[Dict[str, Any]]) -> List[str]:
+    """Premium capabilities the caller CONFIGURED that this backtest will ignore.
+
+    ``dispatch_full_backtest`` drives the sim from ``PremiumTriggerConfig`` alone,
+    but a strategy may legitimately declare more than that model carries — the
+    lazy-leg contingency, ``leg_mode``, ``entry_cutoff``/``exit_time``, the
+    percent trail pair, the session P&L caps, the VIX gate. Those are real,
+    shipped, live-honoured capabilities (Phase 5B, 2026-07-17), and the
+    deployment path DOES apply them.
+
+    Dropping them quietly means the backtest measures a different strategy from
+    the one configured and from the one that would trade — the user reported
+    exactly this on 2026-07-29 after authoring a two-leg lazy strategy whose
+    second leg was never simulated, while the optimizer separately burned trials
+    tuning the same inert knobs.
+
+    Scope is deliberately the KNOWN premium surface
+    (:func:`premium_trigger_allowed_keys`) minus what the config carries, so
+    registry bookkeeping (``id``/``name``/``description``) and unrelated keys can
+    never be mistaken for a dropped capability. ``None`` values are excluded: a
+    field the user left unset was never promised anything.
+    """
+    src = dict(params or {})
+    known = premium_trigger_allowed_keys()
+    honoured = set(_CONFIG_FIELDS)
+    return sorted(
+        k for k, v in src.items()
+        if v is not None and k in known and k not in honoured
+    )
 
 
 def is_premium_trigger_strategy(strategy: Any) -> bool:
@@ -278,7 +314,7 @@ def dispatch_full_backtest(
     option_candles: pd.DataFrame,
     contracts: List[Dict[str, Any]],
     instrument: str,
-    capital: float = 200_000.0,
+    capital: Optional[float] = None,
 ) -> Optional[Dict[str, Any]]:
     """Full paired-option-backtest envelope for ANY strategy carrying a valid
     premium-trigger config, or None for a strategy that carries none (the entire
@@ -316,7 +352,12 @@ def dispatch_full_backtest(
         pm_result.get("trades", []), instrument=instrument, lots=int(cfg.lots), lot_size=lot_size,
     )
     metrics = _compute_metrics(paired_trades)
-    portfolio = build_rupee_equity_curve(paired_trades, capital=capital)
+    # `None` (not a literal default in the signature) so callers can forward an
+    # unset form value explicitly and the fallback stays defined in ONE place.
+    portfolio = build_rupee_equity_curve(
+        paired_trades,
+        capital=DEFAULT_BACKTEST_CAPITAL if capital is None else float(capital),
+    )
     equity_curve = build_option_equity_curve(paired_trades)
     context_breakdown = build_context_breakdown(paired_trades)
     paired_count = sum(1 for t in paired_trades if t["status"] == "PAIRED")
@@ -357,6 +398,9 @@ def dispatch_full_backtest(
         "context_breakdown": context_breakdown,
         "trades": paired_trades,
         "premium_trigger_config": cfg.model_dump(mode="json"),
+        # Configured capabilities this run did NOT simulate. Always present (an
+        # empty list, never a missing key) so a consumer's check is unambiguous.
+        "dropped_params": premium_dropped_params(merged_params),
         "dispatch": "premium_trigger_config",
     }
 

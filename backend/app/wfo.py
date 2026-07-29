@@ -612,8 +612,15 @@ async def run_wfo(job_id: str, payload: Dict[str, Any], resume: bool = False) ->
             return _objective_value(metrics, objective, lot_size=lot_size,
                                     min_trades=min_trades, min_direction_share=min_direction_share)
 
-        space = _build_param_space(strategy.parameter_schema, param_overrides,
-                                   include_indicator_periods=optimize_indicator_periods)
+        from app.optimizer import resolve_indicator_period_search
+        from app.premium_trigger_dispatch import is_premium_trigger_strategy
+
+        space = _build_param_space(
+            strategy.parameter_schema, param_overrides,
+            include_indicator_periods=resolve_indicator_period_search(
+                optimize_indicator_periods,
+                premium_native=is_premium_trigger_strategy(strategy),
+            ))
 
         completed_windows: List[Dict[str, Any]] = []
         oos_trades_all: List[Dict[str, Any]] = []
