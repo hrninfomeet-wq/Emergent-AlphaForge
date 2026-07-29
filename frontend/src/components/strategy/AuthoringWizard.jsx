@@ -25,6 +25,21 @@ const EXIT_FIELDS = [
 const emptyParam = () => ({ name: "", type: "float", min: "", max: "", default: "" });
 const emptyCond = () => ({ left: "", op: "", right: "", label: "" });
 
+
+// Turn any human title into a valid strategy id. The id becomes a Python
+// identifier AND the plugin's filename, so spaces/capitals genuinely cannot work
+// — but restating the regex at a user who typed "ALGOTEST Options Buying NIFTY"
+// makes them derive the answer the app already knows.
+// Guarantees a string matching ^[a-z][a-z0-9_]*$ for ANY input, including ones
+// that start with a digit or contain nothing usable — an invalid suggestion
+// would be worse than none.
+function slugify(raw) {
+  let s = String(raw || "").toLowerCase().replace(/[^a-z0-9]+/g, "_");
+  s = s.replace(/^_+|_+$/g, "");
+  if (!s || !/^[a-z]/.test(s)) s = ("strategy_" + s).replace(/_+$/g, "");
+  return s;
+}
+
 function extractIdFromCode(code) {
   const m = /id\s*=\s*["']([a-z][a-z0-9_]*)["']/.exec(code || "");
   return m ? m[1] : "";
@@ -725,8 +740,25 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
                 data-testid="author-id"
               />
               {!idValid && (
-                <div className="text-[10px] text-rose-300 mt-1">
-                  must match ^[a-z][a-z0-9_]* (lowercase, start with a letter)
+                <div className="mt-1 space-y-1" data-testid="author-id-error">
+                  <div className="text-[10px] text-rose-300">
+                    The id becomes a Python identifier and the plugin&apos;s filename,
+                    so it can&apos;t contain spaces or capitals.
+                  </div>
+                  {slugify(id) && (
+                    <button
+                      type="button"
+                      onClick={() => { if (!name.trim()) setName(id); setId(slugify(id)); }}
+                      className="text-[10.5px] px-1.5 py-0.5 rounded border border-info/50 bg-info/10 text-info hover:bg-info/20"
+                      data-testid="author-id-suggest"
+                    >
+                      Use <span className="font-mono">{slugify(id)}</span>
+                    </button>
+                  )}
+                  <div className="text-[10px] text-dimmer">
+                    Keep your title — it belongs in <strong>Name</strong> beside this
+                    field, which is what the Strategy Library displays.
+                  </div>
                 </div>
               )}
             </div>

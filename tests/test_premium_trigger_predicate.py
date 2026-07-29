@@ -52,8 +52,26 @@ def test_predicate_matches_exactly_what_the_string_matched_today():
         sid = entry["id"] if isinstance(entry, dict) else entry.id
         if is_premium_trigger_strategy(reg.get(sid)):
             matched.add(sid)
-    assert matched == {"premium_momentum"}, (
-        f"predicate must match exactly the strategies the literal string matched; got {matched}")
+
+    # The shipped premium strategy must still classify as premium-native...
+    assert "premium_momentum" in matched
+
+    # ...and every ordinary shipped strategy must still NOT.
+    #
+    # Deliberately NOT `matched == {"premium_momentum"}` any more. That held when
+    # written, but an AI-AUTHORED premium strategy legitimately matching is the
+    # entire point of the Phase 1 work — the first real authored one
+    # (algotest_option_buy_nifty) turned this assertion red purely by succeeding.
+    # The invariant that actually matters is that no ORDINARY strategy silently
+    # acquired premium routing.
+    for sid in ("confluence_scalper", "vwap_pullback_scalp", "vwap_mean_reversion",
+                "opening_range_breakout", "opening_range_regime_router",
+                "smc_liquidity_sweep_fvg", "explosive_reversal", "gap_fade",
+                "fibonacci_pullback", "squeeze_expansion_breakout",
+                "adaptive_regime_scalper"):
+        if reg.get(sid) is not None:
+            assert sid not in matched, (
+                f"{sid} is an ordinary strategy and must not be premium-native")
 
 
 def test_an_authored_strategy_declaring_the_config_is_recognised():
