@@ -34,6 +34,12 @@ from app.backtest import run_backtest
 from app.db import get_db
 from app.indicator_groups import enrich_with_cache
 from app.parallel_eval import effective_workers, start_pool, shutdown_pool, parallel_backtest
+# Module level, NOT inside a function: six call sites below use this at module
+# scope (the survival gate, the Stage-2 re-rank, the Stage-1 preload + evaluate
+# closure, and both worker-pinning decisions). It was previously only imported
+# LOCALLY inside dispatch helpers, so every optimization run raised
+# "name 'is_premium_trigger_strategy' is not defined".
+from app.premium_trigger_dispatch import is_premium_trigger_strategy
 from app.strategies.base import get_registry
 from app.warehouse import attach_required_data, load_candles_df
 from app.option_backtest import simulate_paired_option_trades, build_candles_by_key

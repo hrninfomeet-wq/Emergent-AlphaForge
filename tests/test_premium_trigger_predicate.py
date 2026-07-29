@@ -110,7 +110,12 @@ def test_optimizer_no_longer_gates_on_the_literal_strategy_id():
     assert '"premium_momentum"' not in src, (
         "optimizer must ask whether the strategy declares a premium-trigger "
         "config, not whether it has one specific id")
-    assert "is_premium_trigger_strategy" in src
+    # RESOLUTION, not mere presence. `"is_premium_trigger_strategy" in src` was
+    # the original assertion and it passed while the name was unbound — a grep
+    # cannot tell a USE from a DEFINITION, so six call sites with zero imports
+    # satisfied it and every optimization run raised NameError for the user.
+    assert hasattr(optimizer, "is_premium_trigger_strategy"), (
+        "optimizer references the predicate but never binds it")
 
 
 def test_runtime_preflight_no_longer_gates_on_the_literal_strategy_id():
