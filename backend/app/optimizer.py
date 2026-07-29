@@ -205,6 +205,32 @@ NON_ALPHA_PARAM_NAMES = frozenset({
 })
 
 
+def premium_preload_needs_lazy(strategy: Any) -> bool:
+    """Whether the optimizer's premium preload must widen for the lazy leg.
+
+    True when ANY trial could turn the lazy reversal leg on — i.e. the strategy
+    declares `lazy_enabled` and it is not pinned off. The leg locks a FRESH
+    opposite-side strike mid-session from a moved spot, so a narrow preload
+    leaves it with no candles and every activation degrades to
+    `lazy_excluded_no_data`: `lazy_enabled=True` trials then score identically to
+    `False` and the search concludes the leg does not help, having never actually
+    measured it.
+
+    Judged from the SCHEMA, not from the defaults, because the optimizer varies
+    the value. Widening only ever adds candles, so a non-lazy trial is unaffected.
+    """
+    try:
+        schema = dict(getattr(strategy, "parameter_schema", None) or {})
+    except Exception:
+        return False
+    entry = schema.get("lazy_enabled")
+    if not isinstance(entry, dict):
+        return False
+    if "fixed" in entry:
+        return bool(entry["fixed"])
+    return True
+
+
 def restrict_space_to_engine_params(
     space: Dict[str, Dict[str, Any]], *, premium_native: bool,
 ) -> Dict[str, Dict[str, Any]]:
@@ -423,7 +449,7 @@ def _premium_zero_metrics() -> Dict[str, Any]:
 def _evaluate_premium_trigger(
     strategy, merged_params: Dict[str, Any], spot_df, option_candles, contracts,
     instrument: str, objective: str, lot_size: int, min_trades: int,
-    min_direction_share: float,
+    min_direction_share: float, cost_config: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """premium_momentum variant of the per-trial `_evaluate` (same return shape:
     (metrics, merged_params), a drop-in). strategy.evaluate() is a deliberate
@@ -446,6 +472,14 @@ def _evaluate_premium_trigger(
         # Preload failed (see run_optimization's _load_window block) — honest
         # zero-trade disqualification, never a crash mid-trial-loop.
         return _premium_zero_metrics(), merged_params
+    # `merged_params` is a strict allow-list keyed on the plugin's
+    # parameter_schema, and `cost_config` is not a schema param — so it was never
+    # present and every premium trial was scored on GROSS P&L, while the Backtest
+    # Lab injects the option form's cost model and reports NET. Ranking under the
+    # more forgiving regime than the one used to verify the winner.
+    if cost_config is not None and merged_params.get("cost_config") is None:
+        merged_params = dict(merged_params)
+        merged_params["cost_config"] = cost_config
     result = dispatch_full_backtest(
         strategy_id=strategy.id, merged_params=merged_params,
         spot_df=spot_df, option_candles=option_candles, contracts=contracts,
@@ -1264,9 +1298,14 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
             _pm_ref = str(_pm_defaults.get("reference_time") or "09:31")
             _pm_money = str(_pm_defaults.get("moneyness") or "itm1")
             try:
+                # Widen when ANY trial could enable the lazy leg — it locks a
+                # fresh opposite-side strike mid-session, so the narrow band
+                # would make every lazy activation `lazy_excluded_no_data` and
+                # the search would "discover" that lazy never helps.
                 _pm_loaded = await _load_window(
                     instrument, int(raw_df["ts"].min()), int(raw_df["ts"].max()),
-                    ref_time=_pm_ref, moneynesses=[_pm_money], sides=["CE", "PE"])
+                    ref_time=_pm_ref, moneynesses=[_pm_money], sides=["CE", "PE"],
+                    lazy_enabled=premium_preload_needs_lazy(strategy))
             except Exception as e:
                 log.warning(f"premium_momentum optimizer preload failed: {e}")
                 _pm_loaded = None
@@ -1288,7 +1327,8 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                 return _evaluate_premium_trigger(
                     strategy, strategy.merged_params(params), pm_spot_df,
                     pm_option_candles, pm_contracts, instrument,
-                    objective, lot_size, min_trades, min_direction_share)
+                    objective, lot_size, min_trades, min_direction_share,
+                    cost_config=(option_cfg or {}).get("cost_config"))
             if _OPT_TIMING:
                 import time as _t
                 _t0 = _t.perf_counter()
