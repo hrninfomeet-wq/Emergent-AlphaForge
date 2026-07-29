@@ -466,8 +466,20 @@ def build_candles_by_key(option_candles: Optional[pd.DataFrame]) -> Dict[str, pd
     # stable sort: deterministic order on duplicate ts (default quicksort was non-deterministic on ties)
     expiries = candles["expiry_date"] if "expiry_date" in candles.columns else [None] * len(candles)
     explicit = candles["contract_key"] if "contract_key" in candles.columns else [None] * len(candles)
+    # `contract_key` arrived in v0.56.1 and only ~2.3% of options_1m docs carry
+    # it, so a loaded frame routinely MIXES both shapes. pandas then materialises
+    # the column and the absent entries become NaN — and `bool(float("nan"))` is
+    # True, so a bare `if ck` accepted it and keyed those rows as the literal
+    # string "nan". Every legacy candle collapsed into one bogus bucket and its
+    # real identity disappeared: a Confluence backtest paired 10 of 253 signals
+    # while all 243 misses had candles sitting in the warehouse, reported as
+    # `no_candles_for_strike` (i.e. it looked like a DATA gap, sending the user
+    # to re-fetch what was already there).
+    #
+    # Only a genuine non-blank STRING is an identity. Nothing else — NaN, None,
+    # empty, whitespace — may substitute for the derived one.
     candles["_contract_key"] = [
-        str(ck) if ck else contract_identity_key(ik, expiry)
+        ck.strip() if isinstance(ck, str) and ck.strip() else contract_identity_key(ik, expiry)
         for ik, expiry, ck in zip(candles["instrument_key"], expiries, explicit)
     ]
     candles = candles.sort_values(["_contract_key", "ts"], kind="mergesort").reset_index(drop=True)

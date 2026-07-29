@@ -211,6 +211,35 @@ significance badge next to a number built on 4% of the sample.
 never sets it (C1 shows `measured: None`). Not a live defect (the UI falls through
 correctly) but the two paths report different shapes for the same panel.
 
+## FIXES (user approved all six, 2026-07-30)
+
+### FIX 1 — contract_key NaN collapse — LANDED
+`option_backtest.py` `build_candles_by_key`: only a genuine non-blank **string**
+may substitute for the derived identity.
+```python
+ck.strip() if isinstance(ck, str) and ck.strip() else contract_identity_key(ik, expiry)
+```
+`tests/test_candles_by_key_mixed_contract_key.py` — 10 tests (mixed frame, blank/
+whitespace/None ck, explicit ck still authoritative, token-reuse separation
+preserved, and the sim's real lookup expression end-to-end).
+
+**Measured impact on the SAME Confluence config/window:**
+
+| | before | after |
+|---|---|---|
+| paired | **10 / 253** | **253 / 253** |
+| missing_entry_candle | 243 | **0** |
+| net | ₹13,007.09 | **₹290,443.22** |
+| return | +6.50% | **+145.22%** |
+| max DD | −6.80% | −21.28% |
+| trading days | 7 | 138 |
+| win rate | 50.0% (n=10) | 45.45% (n=253) |
+
+Suite 4115 passed / 0 failed.
+
+⚠️ **Every previously saved paired-option run is suspect** and should be re-run —
+including `Confluence_507% DD 26.10%`. Premium-native runs are unaffected.
+
 ## Status
 - [x] Reference runs inspected, anomalies 1-2
 - [x] Premium re-runs P1/P2 + anomalies 3-6
