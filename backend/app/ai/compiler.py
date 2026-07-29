@@ -104,8 +104,29 @@ def validate_spec(spec: StrategySpec) -> List[str]:
     # produces when it invents a field name.
     if spec.premium_trigger:
         from app.premium_trigger_config import PremiumTriggerConfig
+        from app.premium_trigger_dispatch import premium_trigger_allowed_keys
+
+        block = dict(spec.premium_trigger)
+        # 1. Unknown keys are refused against the FULL shipped surface (the
+        #    config's fields UNION the plugin's declared params). Validating
+        #    against the config alone made 12 shipped capabilities — the lazy-leg
+        #    knobs, leg_mode, entry_cutoff/exit_time, the session P&L caps and the
+        #    VIX bounds — inexpressible, so an authored lazy-leg strategy came back
+        #    as "couldn't map" while classify_rule correctly called it BUILDABLE_NOW.
+        allowed = premium_trigger_allowed_keys()
+        unknown = sorted(set(block) - allowed)
+        if unknown:
+            errors.append(
+                f"premium_trigger: unknown field(s) {unknown}; allowed: {sorted(allowed)}")
+        # 2. The CORE subset still goes through PremiumTriggerConfig, so its
+        #    cross-field rules (momentum_pct XOR momentum_pts, paired trail,
+        #    HH:MM shape) keep applying. Widening the surface must not weaken
+        #    validation — the extra params travel around this model, the core
+        #    never does.
+        core = {k: v for k, v in block.items()
+                if k in PremiumTriggerConfig.model_fields}
         try:
-            PremiumTriggerConfig(**dict(spec.premium_trigger))
+            PremiumTriggerConfig(**core)
         except Exception as exc:
             errors.append(f"premium_trigger: {exc}")
         # A premium-native strategy's evaluate() is never called (Track B runs

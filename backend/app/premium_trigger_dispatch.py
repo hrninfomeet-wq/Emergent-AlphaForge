@@ -117,6 +117,39 @@ def extract_premium_trigger_config(
         return None, f"invalid:{str(exc)[:200]}"
 
 
+def premium_trigger_allowed_keys() -> set:
+    """Every key an AUTHORED premium-trigger config block may carry.
+
+    The union of ``PremiumTriggerConfig``'s fields and the shipped
+    ``premium_momentum`` plugin's own declared params — DERIVED, so it widens
+    automatically as the plugin gains capability.
+
+    Why the union rather than just the config model: the config is the narrower
+    Session-2 subset the *dispatcher* passes to the sim, while the plugin also
+    ships ``leg_mode``, the five ``lazy_*`` knobs, ``entry_cutoff``,
+    ``exit_time``, the session P&L caps and the VIX bounds. Validating a spec
+    against the config alone made those twelve shipped capabilities
+    inexpressible, so an authored strategy asking for a lazy leg came back as
+    "couldn't map" even though `classify_rule` correctly called it BUILDABLE_NOW.
+
+    ``PremiumTriggerConfig`` is deliberately NOT widened to close that gap: it is
+    what the byte-identical parity test protects and what the sim consumes, so
+    adding fields there would put the shipped strategy's numbers at risk.
+    """
+    keys = set(PremiumTriggerConfig.model_fields)
+    try:
+        from app.strategies.base import get_registry
+        reg = get_registry()
+        if reg.get("premium_momentum") is None:
+            reg.auto_discover()
+        keys |= set(reg.get("premium_momentum").parameter_schema or {})
+    except Exception:
+        # Registry unavailable (host-only context): the config fields alone are a
+        # safe floor — narrower, never wider, so nothing invalid slips through.
+        pass
+    return keys
+
+
 def is_premium_trigger_strategy(strategy: Any) -> bool:
     """True when *strategy* is premium-native, i.e. driven by a premium-trigger
     config rather than by per-bar ``evaluate()``.

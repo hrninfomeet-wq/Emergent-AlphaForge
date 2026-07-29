@@ -64,7 +64,13 @@ def test_spec_prompt_advertises_NO_field_that_does_not_exist():
     # the prompt lists config fields as `name` in a dedicated section
     section = prompt[prompt.index("premium_trigger"):]
     advertised = set(re.findall(r"`([a-z_]{3,})`", section))
-    real = set(PremiumTriggerConfig.model_fields)
+    # Truth set is the FULL shipped surface (config UNION the plugin's declared
+    # params), not the narrow config alone. The prompt legitimately teaches
+    # leg_mode / lazy_* / exit_time / session caps / VIX bounds — those are
+    # shipped capabilities, and teaching only the config subset is exactly why an
+    # authored lazy-leg strategy came back as "couldn't map".
+    from app.premium_trigger_dispatch import premium_trigger_allowed_keys
+    real = premium_trigger_allowed_keys()
     # only judge tokens that look like config fields (ignore prose backticks)
     suspects = {a for a in advertised if a in real or a.endswith("_pct")
                 or a.endswith("_pts") or a.startswith("momentum")}

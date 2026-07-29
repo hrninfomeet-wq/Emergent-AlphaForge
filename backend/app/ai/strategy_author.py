@@ -30,6 +30,7 @@ def _premium_trigger_field_doc() -> str:
     act on. Deriving it means the prompt cannot drift from the schema.
     """
     from app.premium_trigger_config import PremiumTriggerConfig
+    from app.premium_trigger_dispatch import premium_trigger_allowed_keys
 
     import typing
 
@@ -53,6 +54,25 @@ def _premium_trigger_field_doc() -> str:
         if type(None) in args:
             text += ", optional"
         parts.append(f"`{name}` ({text})")
+
+    # The plugin ships MORE than the core config: leg_mode, the five lazy_* knobs,
+    # entry_cutoff/exit_time, the session P&L caps and the VIX bounds. Teaching
+    # only the core is exactly why an authored lazy-leg strategy came back as
+    # "couldn't map" — the model had no field to put it in. Derived from the
+    # shipped plugin's own schema, so it widens automatically with the plugin.
+    extra = sorted(premium_trigger_allowed_keys() - set(PremiumTriggerConfig.model_fields))
+    if extra:
+        try:
+            from app.strategies.base import get_registry
+            reg = get_registry()
+            if reg.get("premium_momentum") is None:
+                reg.auto_discover()
+            schema = reg.get("premium_momentum").parameter_schema or {}
+        except Exception:
+            schema = {}
+        for name in extra:
+            t = str((schema.get(name) or {}).get("type") or "value")
+            parts.append(f"`{name}` ({t})")
     return ", ".join(parts)
 
 
@@ -114,6 +134,13 @@ Rules the compiler enforces — violating them fails the build:
 - `trail_x` and `trail_y` are set together or not at all.
 - Times are "HH:MM" 24-hour, zero-padded (e.g. "09:31", not "9:31").
 - A premium-trigger strategy's exits live HERE (stop_pct/stop_pts/target_pct/target_pts), not in the `exits` object. Leaving target unset means "ride to end of day", which is valid.
+
+Multi-leg and session controls (ALL supported — never report these as unmappable):
+- `leg_mode`: "first_to_trigger" (one leg wins) or "both" (CE and PE may both enter).
+- Lazy-leg contingency — when a primary leg stops out, arm the OPPOSITE side with a fresh premium snapshot: set `lazy_enabled` true plus `lazy_momentum_pct` / `lazy_stop_pct` / `lazy_target_pct` / `lazy_moneyness` as the source specifies.
+- `entry_cutoff`: no NEW entries at/after this IST time. `exit_time`: square any open position at this IST time.
+- `session_max_loss_rupees` / `session_max_profit_rupees`: realized-only day stop for the whole session.
+- `vix_min` / `vix_max`: only trade the session when India VIX is inside this band.
 
 If the source is an ordinary indicator strategy, ignore this section entirely and leave `premium_trigger` null.
 
