@@ -449,6 +449,29 @@ def build_option_equity_curve(trades: List[Dict[str, Any]]) -> List[Dict[str, An
     return curve
 
 
+def candle_contract_identity(instrument_key: Any, expiry_date: Any,
+                             contract_key: Any = None) -> str:
+    """The identity a candle row is grouped under — the SINGLE definition.
+
+    Shared by ``build_candles_by_key`` and the backtest preflight so the two can
+    never disagree. They did on 2026-07-30: the preflight indexed by
+    ``canonical_instrument_key(instrument_key)`` and reported 100% coverage while
+    the real run paired 10/253, because it never exercised the grouping that was
+    broken. A certification tool that cannot reproduce the lookup it certifies is
+    worse than no tool — its green answer sent the user to re-fetch data that was
+    already stored.
+
+    Only a genuine non-blank STRING ``contract_key`` is authoritative. NaN (what
+    pandas puts in the column for legacy rows in a MIXED frame), None, empty and
+    whitespace all fall back to the derived token+expiry identity.
+    """
+    from app.instruments import contract_identity_key
+
+    if isinstance(contract_key, str) and contract_key.strip():
+        return contract_key.strip()
+    return contract_identity_key(instrument_key, expiry_date)
+
+
 def build_candles_by_key(option_candles: Optional[pd.DataFrame]) -> Dict[str, pd.DataFrame]:
     """Group candles by immutable token+expiry contract identity.
 
@@ -479,7 +502,7 @@ def build_candles_by_key(option_candles: Optional[pd.DataFrame]) -> Dict[str, pd
     # Only a genuine non-blank STRING is an identity. Nothing else — NaN, None,
     # empty, whitespace — may substitute for the derived one.
     candles["_contract_key"] = [
-        ck.strip() if isinstance(ck, str) and ck.strip() else contract_identity_key(ik, expiry)
+        candle_contract_identity(ik, expiry, ck)
         for ik, expiry, ck in zip(candles["instrument_key"], expiries, explicit)
     ]
     candles = candles.sort_values(["_contract_key", "ts"], kind="mergesort").reset_index(drop=True)

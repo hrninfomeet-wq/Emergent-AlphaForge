@@ -16,7 +16,7 @@ import pandas as pd
 from fastapi import HTTPException
 
 from app.db import get_db
-from app.instruments import canonical_instrument_key
+from app.instruments import canonical_instrument_key, contract_identity_key
 from app.chunking import chunk_guidance_for_index, chunk_guidance_for_options
 from app.indicators import precompute_all_indicators
 from app.regime import classify_regime_series
@@ -1713,20 +1713,40 @@ async def _option_preflight_report(req: BacktestReq) -> Dict[str, Any]:
     key_ts_index: Dict[str, list] = {}
     if needed:
         all_ts = [t for v in needed.values() for pair in v["ts"] for t in pair]
+        # Group through the REAL grouper, keyed by contract identity — not by the
+        # bare canonical token. Two reasons, both learned the hard way on
+        # 2026-07-30:
+        #  1. A token-keyed ts list merges every expiry that ever reused that
+        #     exchange token, so a trade could be certified against candles from
+        #     a different contract.
+        #  2. Querying Mongo directly meant the preflight never exercised
+        #     `build_candles_by_key`, so it reported 100% coverage on a config
+        #     the real run paired 10/253 on. A check that cannot reproduce the
+        #     lookup it certifies is worse than none — its green answer sent the
+        #     user to re-fetch candles that were already stored.
+        # expiry_date + contract_key are REQUIRED in the projection: without them
+        # no identity can be derived at all.
         rows = await db.options_1m.find(
             {"instrument_key": {"$in": _both_key_forms(list(needed.keys()))},
              "ts": {"$gte": min(all_ts) - entry_age_ms, "$lte": max(all_ts)}},
-            {"_id": 0, "instrument_key": 1, "ts": 1},
+            {"_id": 0, "instrument_key": 1, "ts": 1, "expiry_date": 1, "contract_key": 1},
         ).sort("ts", 1).to_list(length=2000000)
-        for r in rows:
-            key_ts_index.setdefault(canonical_instrument_key(str(r["instrument_key"])), []).append(int(r["ts"]))
-    import bisect
+        from app.option_backtest import build_candles_by_key
+
+        _cbk = build_candles_by_key(pd.DataFrame(rows))
+        for _ident, _frame in _cbk.items():
+            key_ts_index[_ident] = [int(t) for t in _frame["ts"].tolist()]
     missing_keys_set = set()
     for pt in per_trade:
         if pt["status"] != "needs_candle":
             continue
         key = pt["key"]
-        ts_list = key_ts_index.get(canonical_instrument_key(str(key)), [])
+        # Same identity-then-canonical-fallback order the sim uses
+        # (option_backtest.py:660-663).
+        _ident = contract_identity_key(str(key), pt.get("expiry"))
+        ts_list = key_ts_index.get(_ident)
+        if ts_list is None:
+            ts_list = key_ts_index.get(canonical_instrument_key(str(key)), [])
         entry_ts = int(spot_trades[pt["idx"]].get("entry_ts", 0))
         exit_ts = int(spot_trades[pt["idx"]].get("exit_ts") or entry_ts)
         # A trade only pairs if BOTH the entry AND the exit candle exist within

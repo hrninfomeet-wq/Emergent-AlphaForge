@@ -39,6 +39,20 @@ SHARED_HELPERS: Set[str] = {
     "ENGINE_PARAM_KEYS",
     "StructuredOutputError",
     "resolve_lot_size",
+    # Added 2026-07-30: the preflight rewire used `contract_identity_key` in
+    # runtime.py while only `canonical_instrument_key` was imported. The
+    # accompanying tests were source contracts, which do not execute the path —
+    # the same blind spot that shipped the original NameError.
+    "contract_identity_key",
+    "canonical_instrument_key",
+    "build_candles_by_key",
+    "candle_contract_identity",
+    "premium_walk_forward",
+    "resolve_premium_lots",
+    "build_engine_params",
+    "premium_dropped_params",
+    "restrict_space_to_engine_params",
+    "premium_preload_needs_lazy",
 }
 
 

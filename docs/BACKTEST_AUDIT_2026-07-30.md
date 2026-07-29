@@ -247,3 +247,29 @@ including `Confluence_507% DD 26.10%`. Premium-native runs are unaffected.
 - [x] ★ CRITICAL root cause isolated and proven (contract_key NaN collapse)
 - [x] Anomalies 7-9
 - [ ] USER DECISION on what to fix (no code changed — as instructed)
+
+### FIX 2 — preflight now certifies against the REAL lookup — LANDED
+`candle_contract_identity(instrument_key, expiry_date, contract_key)` in
+`option_backtest.py` is now the SINGLE definition of a candle's identity, used by
+`build_candles_by_key` AND by `_option_preflight_report`. The preflight groups
+through `build_candles_by_key` itself and looks up identity-then-canonical in the
+same order the sim does, instead of indexing by bare canonical token.
+
+Two defects closed:
+ * it could not detect the Fix-1 class at all (never called the grouper);
+ * a token-keyed ts list merged every expiry that reused an exchange token, so a
+   trade could be certified against a different contract's candles.
+
+The projection now includes `expiry_date` + `contract_key` — without them no
+identity can be derived.
+
+Verified live: preflight 253/253 AND the real run 253/253 — they agree.
+
+⚠️ Caught during this fix: `contract_identity_key` was used in `runtime.py` while
+only `canonical_instrument_key` was imported. The accompanying tests were SOURCE
+CONTRACTS, which never execute the path — the identical blind spot that shipped
+the original `is_premium_trigger_strategy` NameError. Import added, and TEN more
+shared helpers added to `tests/test_no_unbound_helper_names.py`'s AST guard so
+this class is structurally covered rather than spotted by luck.
+
+Suite 4123 passed / 0 failed.
