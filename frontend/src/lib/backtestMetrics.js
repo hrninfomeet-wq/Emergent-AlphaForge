@@ -330,6 +330,42 @@ export function computeKeyMetrics(result) {
     .filter((v) => Number.isFinite(v));
   const maxBuyValue = series.currency && buyValues.length ? Math.max(...buyValues) : null;
 
+  // PEAK CONCURRENT outlay — the number that actually decides whether an account
+  // can run this strategy. The single-trade max understates it whenever legs
+  // overlap, and `leg_mode: "both"` opens CE and PE together plus a lazy
+  // re-entry, so overlap is the normal case, not the exception. Sweep line over
+  // (entry, exit) with +buy / -buy events; ties release before they acquire, so a
+  // position closing on the same bar another opens does not double-count.
+  let peakConcurrentCapital = null;
+  if (series.currency) {
+    const events = [];
+    for (const t of (ob?.trades || [])) {
+      if (t.status !== "PAIRED") continue;
+      const v = tradeBuyValue(t);
+      const a = Number(t.option_entry_ts ?? t.signal_entry_ts);
+      const b = Number(t.option_exit_ts ?? t.signal_exit_ts);
+      if (!Number.isFinite(v) || !Number.isFinite(a)) continue;
+      events.push({ t: a, d: v });
+      events.push({ t: Number.isFinite(b) ? b : a, d: -v });
+    }
+    if (events.length) {
+      events.sort((x, y) => (x.t - y.t) || (x.d - y.d));
+      let cur = 0;
+      let peak = 0;
+      for (const e of events) {
+        cur += e.d;
+        if (cur > peak) peak = cur;
+      }
+      peakConcurrentCapital = peak;
+    }
+  }
+  // Does the configured account actually cover it? A return computed on a base
+  // that could not have funded the trades is not a return.
+  const capitalShortfall = (series.currency && peakConcurrentCapital != null
+    && series.capital > 0)
+    ? peakConcurrentCapital > series.capital
+    : false;
+
   const tradingDays = portfolio?.trading_days
     || new Set((result?.trades || []).map((t) => String(t.exit_datetime || "").slice(0, 10)).filter(Boolean)).size
     || 0;
@@ -349,6 +385,7 @@ export function computeKeyMetrics(result) {
     ddDurationDays: dd.days, recovered: dd.recovered,
     returnOverMaxDd, sharpe,
     minAccountValue, maxAccountValue, maxBuyValue,
+    peakConcurrentCapital, capitalShortfall,
     cagr, calmar, years, tradingDays, avgTradesPerDay,
     tradeCount: n,
   };

@@ -7,6 +7,32 @@ from typing import Any, Dict, List
 from app.strategies.base import StrategyBase
 from app.backtest import run_backtest, build_equity_curve, compute_metrics, Trade
 
+#: Win-rate decay (IS minus OOS, percentage POINTS) that raises a CAUTION.
+#: Twice in two days a real signal hid just under the hard cut — 9.44 and 9.65
+#: points, each followed by an out-of-sample failure — because the panel only
+#: ever showed a boolean. The hard thresholds are deliberately NOT retuned:
+#: doing so would rewrite what every already-saved run meant. This softer band,
+#: plus the signed delta, make the decay impossible to miss.
+SOFT_DIVERGENCE_PTS = 5.0
+#: The premium hard cut. NB the spot path historically uses a two-sided 15-point
+#: rule (`abs(delta) > 15`), so the same decay is judged differently by family —
+#: recorded in docs/BACKTEST_AUDIT_2026-07-30.md rather than silently unified.
+HARD_DIVERGENCE_PTS = 10.0
+
+
+def _divergence_fields(avg_is_wr, avg_oos_wr, hard: bool) -> Dict[str, Any]:
+    """The signed decay + both flags, shared by the two engines so the panel
+    needs no per-family special case."""
+    if avg_is_wr is None or avg_oos_wr is None:
+        return {"avg_win_rate_delta": None, "divergence_soft": None,
+                "divergence_warning": None}
+    delta = round(float(avg_is_wr) - float(avg_oos_wr), 2)
+    return {
+        "avg_win_rate_delta": delta,
+        "divergence_soft": bool(delta >= SOFT_DIVERGENCE_PTS),
+        "divergence_warning": bool(hard),
+    }
+
 
 def _ist_session(ts_ms: Any) -> str:
     """Epoch-ms -> IST session date. Sessions are the atomic unit for a premium
@@ -55,6 +81,7 @@ def _unmeasured(note: str) -> Dict[str, Any]:
         "folds": [],
         "is_vs_oos": {"avg_is_win_rate": None, "avg_oos_win_rate": None,
                       "avg_is_profit_factor": None, "avg_oos_profit_factor": None,
+                      "avg_win_rate_delta": None, "divergence_soft": None,
                       "divergence_warning": None, "fold_count": 0},
         "stitched_oos_equity": [],
         "stitched_oos_trade_count": 0,
@@ -160,7 +187,7 @@ def premium_walk_forward(
             "avg_oos_win_rate": avg_oos_wr,
             "avg_is_profit_factor": _avg("profit_factor", "is_metrics"),
             "avg_oos_profit_factor": _avg("profit_factor", "oos_metrics"),
-            "divergence_warning": diverging,
+            **_divergence_fields(avg_is_wr, avg_oos_wr, diverging),
             "fold_count": len(folds),
         },
         "stitched_oos_equity": curve,
@@ -237,7 +264,10 @@ def walk_forward(
             "avg_oos_win_rate": round(avg_oos_wr, 2),
             "avg_is_profit_factor": round(avg_is_pf, 3),
             "avg_oos_profit_factor": round(avg_oos_pf, 3),
-            "divergence_warning": abs(avg_is_wr - avg_oos_wr) > 15,
+            # Two-sided 15-point rule preserved verbatim; the signed delta and
+            # the soft band are additive.
+            **_divergence_fields(avg_is_wr, avg_oos_wr,
+                                 abs(avg_is_wr - avg_oos_wr) > 15),
             "fold_count": len(folds),
         },
         "stitched_oos_equity": stitched_curve,

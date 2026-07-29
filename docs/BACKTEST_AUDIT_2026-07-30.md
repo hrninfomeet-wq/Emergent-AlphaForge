@@ -273,3 +273,64 @@ shared helpers added to `tests/test_no_unbound_helper_names.py`'s AST guard so
 this class is structurally covered rather than spotted by luck.
 
 Suite 4123 passed / 0 failed.
+
+### FIX 3+4 — cost disclosure — LANDED
+`_compute_metrics` now also reports `total_spread_cost_value` and
+`total_cost_value`. The cost summary shows `gross · spread · charges · TOTAL COST ·
+net`, with a tooltip stating that gross is measured at spread-adjusted fills.
+When there is NO option cost model the panel used to render nothing at all; it now
+shows an amber "these figures are GROSS" warning that also explains why the
+run-level *Apply realistic costs* toggle does not cover it (index-side slippage
+only; a premium-native strategy has no index leg).
+Measured on the re-run: spread **₹38,239** + charges **₹14,385** = **₹52,625** true
+cost, against ₹14,385 previously displayed — the 3.7× understatement confirmed.
+`tests/test_cost_disclosure.py` — 11 tests.
+
+### FIX 5 — walk-forward reports the decay — LANDED
+`SOFT_DIVERGENCE_PTS = 5.0` / `HARD_DIVERGENCE_PTS = 10.0` and a shared
+`_divergence_fields()` used by BOTH engines, adding signed `avg_win_rate_delta`
+(positive = OOS worse) and `divergence_soft`. Hard thresholds deliberately
+unchanged — retuning them would rewrite what every saved run meant. The panel now
+always shows the decay, colour-coded, plus a soft-caution block.
+The 10-vs-15 / one-sided-vs-two-sided discrepancy between the engines is recorded
+here rather than silently unified. `tests/test_walkforward_delta_reporting.py` — 15.
+
+### FIX 6 — capital feasibility + live entry parity — LANDED
+* `clamp_entry_cutoff_to_live()` pulls the effective entry cutoff back to the live
+  block, read from `deployment_evaluator.BLOCK_CLOSE_FROM` so it cannot drift.
+  An ABSENT cutoff is clamped too ("no cutoff" silently meant "trade to 15:30").
+  Disclosed as `entry_cutoff_clamped` / `live_entry_cutoff` on the result.
+* `computeKeyMetrics` gains `peakConcurrentCapital` (sweep line over overlapping
+  positions — the real funding requirement) and `capitalShortfall`, with a new
+  "Peak capital needed" card and a red not-fundable warning.
+`tests/test_capital_and_live_entry_parity.py` — 14 tests.
+
+## Post-fix re-run (premium preset, 2026-01-01 → 2026-07-24, 5 lots)
+
+| | before fixes | after fixes |
+|---|---|---|
+| trades | 116 | **112** (4 live-blocked entries removed) |
+| net (costed) | 339,760.82 | 343,768.84 |
+| return | +169.88% | +171.88% |
+| WFO decay | 9.65 pts → **False** | 13.19 pts → **True** |
+| true cost shown | ₹14,924 of ₹54,618 | **₹52,625 of ₹52,625** |
+
+Removing the 4 undeployable entries made the decay LARGER and the hard warning now
+fires correctly — the strategy is flagged as overfit, which the holdout already
+proved.
+
+**Correction to an earlier speculation in this doc**: I assumed `leg_mode: both`
+would need 2–3× the single-leg capital. Measured peak concurrent =
+**₹168,006 = the single-leg max**, i.e. legs did NOT overlap in this run, and there
+is no shortfall at ₹200,000. The claim was mine, unmeasured, and wrong.
+
+Suite 4163 passed / 0 failed. Containers rebuilt and verified live.
+
+## Status — ALL SIX FIXES LANDED
+- [x] 1 contract_key NaN collapse (CRITICAL)
+- [x] 2 preflight certifies against the real lookup
+- [x] 3 spread shown as a cost
+- [x] 4 gross-run warning
+- [x] 5 walk-forward delta + soft band
+- [x] 6 capital feasibility + live entry parity
+- [ ] USER: re-run every saved paired-option preset (Confluence_507% especially)

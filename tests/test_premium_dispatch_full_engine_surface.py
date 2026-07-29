@@ -74,8 +74,16 @@ def test_leg_mode_reaches_the_engine():
 
 
 def test_the_session_times_reach_the_engine():
+    """`entry_cutoff` now arrives CLAMPED to the live entry block (2026-07-30).
+    The authored 15:09 let the backtest take 4 of 116 entries at/after 14:50 —
+    trades `deployment_evaluator._is_blocked_by_window` refuses live and the
+    optimizer already excludes. The point of this test is that the field REACHES
+    the engine (it used to be dropped entirely); the clamp is asserted in
+    tests/test_capital_and_live_entry_parity.py."""
+    from app.premium_trigger_dispatch import LIVE_ENTRY_BLOCK_FROM
+
     p = build_engine_params(_cfg(AUTHORED), AUTHORED)
-    assert p.get("entry_cutoff") == "15:09"
+    assert p.get("entry_cutoff") == LIVE_ENTRY_BLOCK_FROM == "14:50"
     assert p.get("exit_time") == "15:13"
 
 

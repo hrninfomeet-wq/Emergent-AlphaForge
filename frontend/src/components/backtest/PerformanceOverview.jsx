@@ -73,6 +73,19 @@ export function PerformanceOverview({ result }) {
       {/* High-value, decision-critical metrics — kept tight on purpose. */}
       <div className="rounded-lg border border-line bg-bg-1 p-3" data-testid="perf-key-metrics">
         <div className="text-[11px] font-semibold uppercase tracking-wider text-dim mb-2">Trade quality</div>
+        {/* A return computed on a base that could not have funded the trades is
+            not a return. Nothing checked this before: the audited run showed
+            +197% on Rs 200,000 while one leg alone needed Rs 167,229. */}
+        {k.capitalShortfall && (
+          <div className="mb-2 rounded-md border border-rose-900 bg-rose-950 text-rose-200 p-2 text-[11px] leading-relaxed" data-testid="capital-shortfall-warning">
+            <span className="font-semibold">This run was not fundable.</span> It needed
+            up to <span className="font-mono">₹{fmtInt(k.peakConcurrentCapital)}</span> at
+            once but the configured capital is <span className="font-mono">₹{fmtInt(k.capital)}</span>.
+            Positions overlap, so the shortfall is real — the P&L and return %
+            assume trades your account could not have taken. Reduce lots or raise
+            the capital and re-run.
+          </div>
+        )}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
           <Stat label={`Avg win`} value={cur ? moneySigned(k.avgWin) : `+${fmtNum(k.avgWin, 2)}`} accent="text-success" />
           <Stat label={`Avg loss`} value={cur ? moneySigned(k.avgLoss) : fmtNum(k.avgLoss, 2)} accent="text-danger" />
@@ -103,6 +116,20 @@ export function PerformanceOverview({ result }) {
               + "x quantity plus round-trip charges (the biggest 'Buy ₹' in the Trades "
               + "table). This is the cash that must actually be free to take every "
               + "trade in this run; net P&L and return % do not tell you that."
+            }
+          />
+          <Stat
+            label="Peak capital needed"
+            value={k.peakConcurrentCapital == null ? "—" : `₹${fmtInt(k.peakConcurrentCapital)}`}
+            sub={k.capital != null && k.peakConcurrentCapital != null
+              ? `${fmtNum((k.peakConcurrentCapital / k.capital) * 100, 1)}% of capital`
+              : undefined}
+            accent={k.capitalShortfall ? "text-danger" : undefined}
+            title={
+              "The most capital tied up AT ONCE across overlapping positions. This "
+              + "is the funding requirement — the single-trade max understates it "
+              + "whenever legs overlap, and leg_mode 'both' opens CE and PE together "
+              + "plus a lazy re-entry, so overlap is normal."
             }
           />
           <Stat label="Trading days" value={fmtInt(k.tradingDays)} />

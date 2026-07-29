@@ -2192,16 +2192,47 @@ function OptionBacktestCard({ optionBacktest }) {
         </div>
       )}
 
-      {/* Cost summary: gross vs net after rupee charges + spread. */}
+      {/* Cost summary. The SPREAD is applied to the fills, so it is already
+          absorbed by "gross" — showing only charges understated the true cost of
+          the model 3.7x on the audited run. Both lines plus a combined total. */}
       {optionBacktest.cost_config?.enabled && (
         <div className="mb-3 rounded-md border border-line bg-bg-2 p-2 flex flex-wrap items-center gap-3 text-[11px]" data-testid="option-cost-summary">
           <span className="text-dim">Costs: <span className="font-mono text-foreground">on</span></span>
-          <span className="font-mono text-dimmer">gross {fmtPnL(metrics.total_gross_option_pnl_value)}</span>
+          <span
+            className="font-mono text-dimmer"
+            title="P&L at the SPREAD-ADJUSTED fills, before statutory charges — the spread is already deducted here, which is why it is listed separately below."
+          >
+            gross {fmtPnL(metrics.total_gross_option_pnl_value)}
+          </span>
+          <span className="font-mono text-rose-300" title="Bid-ask spread paid on entry + exit, already inside 'gross'">
+            spread -{fmtNum(metrics.total_spread_cost_value, 2)}
+          </span>
           <span className="font-mono text-rose-300">charges -{fmtNum(metrics.total_charges, 2)}</span>
+          <span className="font-mono text-rose-200 font-semibold" title="Spread + charges — everything the cost model took">
+            total cost -{fmtNum(metrics.total_cost_value, 2)}
+          </span>
           <span className={`font-mono ${colorPnL(metrics.total_option_pnl_value)}`}>net {fmtPnL(metrics.total_option_pnl_value)}</span>
           <span className="text-dimmer font-mono ml-auto">
             brokerage ₹{optionBacktest.cost_config.brokerage_per_order}/order · spread {optionBacktest.cost_config.spread_pct_of_premium}%
           </span>
+        </div>
+      )}
+
+      {/* No option cost model => the headline is 100% GROSS. This block used to
+          render nothing at all, so a fully-gross result looked identical to a
+          costed one. The run-level "Apply realistic costs" toggle does NOT cover
+          this: it applies index-side slippage, which a premium-native strategy
+          has none of, so it can be ON while option costs are entirely absent. */}
+      {!optionBacktest.cost_config?.enabled && (
+        <div className="mb-3 rounded-md border border-amber-900 bg-amber-950 text-amber-200 p-2.5 text-[11px] leading-relaxed" data-testid="option-costs-off-warning">
+          <AlertTriangle className="w-3 h-3 inline mr-1 -mt-0.5" />
+          <span className="font-semibold">No option cost model — these figures are GROSS.</span>{" "}
+          No brokerage, no STT, no bid-ask spread. Turn on{" "}
+          <span className="font-mono">Apply rupee costs</span> in the Option
+          Execution panel to see tradeable numbers. The run-level{" "}
+          <span className="font-mono">Apply realistic costs</span> switch does not
+          cover this — it adds index-side slippage only, and a premium-native
+          strategy has no index leg, so it can be ON while option costs are zero.
         </div>
       )}
 
@@ -2636,7 +2667,30 @@ function WalkForwardCard({ wf }) {
         <div className="flex justify-between"><span className="text-dim">Avg IS PF</span><span className="font-mono">{fmtNum(iv.avg_is_profit_factor)}</span></div>
         <div className="flex justify-between"><span className="text-dim">Avg OOS PF</span><span className="font-mono">{fmtNum(iv.avg_oos_profit_factor)}</span></div>
         <div className="flex justify-between"><span className="text-dim">OOS Trades</span><span className="font-mono">{fmtInt(wf.stitched_oos_trade_count)}</span></div>
+        {/* The DECAY itself. A boolean at 10 points hid 9.44- and 9.65-point
+            decays on two strategies that then failed out of sample, each
+            rendering as a clean pass. */}
+        <div className="flex justify-between">
+          <span className="text-dim">Win-rate decay (IS→OOS)</span>
+          <span
+            className={`font-mono ${iv.avg_win_rate_delta == null ? "text-dimmer"
+              : iv.divergence_warning ? "text-danger"
+              : iv.divergence_soft ? "text-warning" : "text-success"}`}
+            title="Average in-sample win rate minus average out-of-sample win rate, in percentage points. Positive = the strategy did WORSE out of sample, which is the overfitting direction."
+          >
+            {iv.avg_win_rate_delta == null ? "—" : `${iv.avg_win_rate_delta > 0 ? "+" : ""}${fmtNum(iv.avg_win_rate_delta, 2)} pts`}
+          </span>
+        </div>
       </div>
+      {iv.divergence_soft && !iv.divergence_warning && (
+        <div className="mt-2 rounded-md border border-amber-900 bg-amber-950 text-amber-200 p-2 text-[11px] leading-relaxed" data-testid="walkforward-soft-caution">
+          <AlertTriangle className="w-3 h-3 inline mr-1 -mt-0.5" />
+          Out-of-sample win rate is <span className="font-mono">{fmtNum(iv.avg_win_rate_delta, 2)}</span> points
+          below in-sample. That is below the hard warning threshold but it is the
+          overfitting direction — two strategies with a ~9.5-point decay passed
+          this panel and then failed a real holdout. Treat as unproven.
+        </div>
+      )}
     </Panel>
   );
 }

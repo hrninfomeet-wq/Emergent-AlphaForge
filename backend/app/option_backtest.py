@@ -376,6 +376,16 @@ def _compute_metrics(trades: List[Dict[str, Any]]) -> Dict[str, Any]:
         "total_option_pnl_pts": round(float(pnls_pts.sum()), 3),
         "total_option_pnl_value": round(float(pnls_value.sum()), 2),
         "total_charges": round(float(sum(float(t.get("total_charges") or 0.0) for t in paired)), 2),
+        # Spread is deducted inside the FILLS, so it is already absorbed by
+        # `total_gross_option_pnl_value` and was invisible in the cost summary —
+        # a user reading "charges -14,924" was missing a further ~39,694 of
+        # spread on the same trades (audit 2026-07-30, understated 3.7x).
+        # Reported explicitly so "gross - charges = net" stops implying that
+        # charges are the whole cost.
+        "total_spread_cost_value": round(float(sum(
+            _spread_cost_value(t) for t in paired)), 2),
+        "total_cost_value": round(float(sum(
+            _spread_cost_value(t) + _safe_num(t.get("total_charges")) for t in paired)), 2),
         "total_gross_option_pnl_value": round(float(sum(float(t.get("gross_option_pnl_value", t.get("option_pnl_value", 0.0))) for t in paired)), 2),
         "avg_option_pnl_pts": round(float(pnls_pts.mean()), 3),
         "best_option_pnl_pts": round(float(pnls_pts.max()), 3),
@@ -447,6 +457,28 @@ def build_option_equity_curve(trades: List[Dict[str, Any]]) -> List[Dict[str, An
             "pnl_value": round(float(trade.get("option_pnl_value", 0.0)), 2),
         })
     return curve
+
+
+def _safe_num(value: Any) -> float:
+    """Numeric or 0.0. Cost reporting must never crash a completed backtest, and
+    a malformed row must not poison the total via NaN."""
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return out if out == out else 0.0  # NaN check
+
+
+def _spread_cost_value(trade: Dict[str, Any]) -> float:
+    """Rupee bid-ask spread paid on one round trip.
+
+    Both engines store the spread as POSITIVE points on each side
+    (entry_fill - raw_entry, raw_exit - exit_fill) and apply it to the fills, so
+    this is the cost already buried inside the reported "gross".
+    """
+    qty = _safe_num(trade.get("quantity"))
+    pts = _safe_num(trade.get("entry_spread_pts")) + _safe_num(trade.get("exit_spread_pts"))
+    return pts * qty
 
 
 def candle_contract_identity(instrument_key: Any, expiry_date: Any,

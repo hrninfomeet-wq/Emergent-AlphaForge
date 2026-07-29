@@ -161,6 +161,42 @@ def premium_trigger_allowed_keys() -> set:
     return keys
 
 
+def _live_entry_block_from() -> str:
+    """The live entry cutoff, read from the evaluator so it cannot drift.
+
+    `deployment_evaluator._is_blocked_by_window` blocks every bar at/after
+    `BLOCK_CLOSE_FROM`, and it runs BEFORE the Track B branch — so it applies to
+    premium deployments too.
+    """
+    try:
+        from app.deployment_evaluator import BLOCK_CLOSE_FROM
+        return BLOCK_CLOSE_FROM.strftime("%H:%M")
+    except Exception:
+        return "14:50"   # documented fallback; keep in step with the evaluator
+
+
+LIVE_ENTRY_BLOCK_FROM = _live_entry_block_from()
+
+
+def clamp_entry_cutoff_to_live(entry_cutoff: Any) -> Tuple[str, bool]:
+    """Effective entry cutoff, never later than live will actually accept.
+
+    Returns ``(cutoff, was_clamped)``. The audited config asked for 15:09 and the
+    backtest duly took 4 of 116 entries at/after 14:50 — trades live refuses, and
+    which the OPTIMIZER already excludes (it defaults `trade_window_end` to
+    14:50). Backtest, optimizer and live must agree, or the backtest is measuring
+    a strategy that cannot be deployed.
+
+    An ABSENT cutoff is clamped too: "no cutoff" in a backtest silently means
+    "trade until the 15:30 close", which live never does.
+    """
+    live = LIVE_ENTRY_BLOCK_FROM
+    raw = str(entry_cutoff or "").strip()
+    if len(raw) == 5 and raw[2] == ":" and raw[:2].isdigit() and raw[3:].isdigit():
+        return (raw, False) if raw <= live else (live, True)
+    return live, True
+
+
 def _lazy_is_usable(params: Dict[str, Any]) -> bool:
     """The sim raises ``ValueError('lazy_enabled requires lazy_momentum_pct or
     lazy_momentum_pts')``. ``dispatch_full_backtest`` documents that it never
@@ -205,6 +241,10 @@ def build_engine_params(
         extras.pop("lazy_enabled", None)
     # core last: a raw param must never overwrite a validated config field.
     extras.update(core)
+    # Entry window must match what live will actually accept — see
+    # clamp_entry_cutoff_to_live. Applied AFTER the merge so neither the config
+    # nor a raw param can reintroduce a later cutoff.
+    extras["entry_cutoff"], _ = clamp_entry_cutoff_to_live(extras.get("entry_cutoff"))
     return extras
 
 
@@ -553,6 +593,11 @@ def dispatch_full_backtest(
         # Configured capabilities this run did NOT simulate. Always present (an
         # empty list, never a missing key) so a consumer's check is unambiguous.
         "dropped_params": premium_dropped_params(merged_params),
+        # True when the configured entry cutoff was later than live accepts and
+        # was pulled back, so the user can see why entry counts changed.
+        "entry_cutoff_clamped": clamp_entry_cutoff_to_live(
+            (merged_params or {}).get("entry_cutoff"))[1],
+        "live_entry_cutoff": LIVE_ENTRY_BLOCK_FROM,
         "dispatch": "premium_trigger_config",
     }
 
