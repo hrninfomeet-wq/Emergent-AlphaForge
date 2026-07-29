@@ -1134,6 +1134,32 @@ def _resolve_option_expiry_by_trade(
     return expiry_by_trade
 
 
+def resolve_premium_lots(*, strategy_lots: Any, form_lots: Any) -> int:
+    """Effective lot count for a premium-native backtest run.
+
+    **The Option Execution form wins.** For every ordinary strategy that field is
+    already the one and only sizing control, so a premium strategy quietly
+    ignoring it is the surprising case — a user set it to 5 on 2026-07-29 and
+    every trade still showed 2, because the resolution was
+    ``req.params.get("lots") or config.lots``, i.e. strategy-param-first.
+
+    The strategy's declared ``lots`` is the fallback for a request that carries
+    no option-execution block at all (a raw API call). A non-positive or
+    unparseable form value falls back rather than trading zero quantity.
+
+    Sizing is a pinned, non-optimizable param (``NON_ALPHA_PARAM_NAMES``), so
+    honouring the form here cannot reintroduce the lots=100 leverage search.
+    """
+    for candidate in (form_lots, strategy_lots):
+        try:
+            n = int(float(candidate))
+        except (TypeError, ValueError):
+            continue
+        if n > 0:
+            return n
+    return 1
+
+
 async def _run_paired_option_backtest(req: BacktestReq, spot_trades: List[Dict[str, Any]], validate: bool = True) -> Optional[Dict[str, Any]]:
     config = req.option_backtest
     if not config.enabled:
@@ -1187,21 +1213,35 @@ async def _run_paired_option_backtest(req: BacktestReq, spot_trades: List[Dict[s
         # moneyness is NOT taken from the option form: the strategy param
         # governs the strike lock; the form's pairing-moneyness has no meaning
         # for a premium-native run and is deliberately ignored.
-        pm_params["lots"] = int(req.params.get("lots") or config.lots or 1)
+        pm_params["lots"] = resolve_premium_lots(
+            strategy_lots=req.params.get("lots"), form_lots=config.lots)
         if req.params.get("cost_config") is not None:
             pm_params["cost_config"] = req.params["cost_config"]
         elif config.cost_config is not None:
             pm_params["cost_config"] = config.cost_config
 
-        # NOTE: no lazy_enabled here — the general Backtest Lab path stays
-        # single-leg by design until Phase 5B (PremiumTriggerConfig deliberately
-        # has no lazy fields; dispatch would drop them anyway). The bespoke
-        # /premium-momentum page is the two-leg/lazy surface.
+        # 2026-07-29: the Backtest Lab is NO LONGER single-leg. It used to drop
+        # leg_mode, the lazy block, entry_cutoff/exit_time and the percent trails
+        # because dispatch filtered params through PremiumTriggerConfig's 14
+        # fields — even though the sim declares and implements 34
+        # (ENGINE_PARAM_KEYS). A user enabled the lazy leg and got byte-identical
+        # results. `build_engine_params` now forwards the full surface, so this
+        # path and the bespoke /premium-momentum page run the same strategy.
+        # The preload MUST widen when the lazy reversal leg can run: that leg
+        # locks a fresh OPPOSITE-side strike mid-session from a moved spot, so a
+        # single-side/single-moneyness preload leaves it with zero candles and
+        # every activation degrades to `lazy_excluded_no_data` — a silent zero
+        # rather than a visible failure. `_load_window` already implements the
+        # widening via `preload_scope`; this call simply never asked for it.
+        from app.premium_trigger_dispatch import build_engine_params
+
+        _engine_params = build_engine_params(_pm_cfg, pm_params)
         loaded = await _load_window(
             underlying, req.start_ts, req.end_ts,
             ref_time=str(pm_params.get("reference_time") or "09:31"),
             moneynesses=[str(pm_params.get("moneyness") or "itm1")],
             sides=_sides_for(pm_params.get("side")),
+            lazy_enabled=bool(_engine_params.get("lazy_enabled")),
         )
         if loaded is None:
             return None

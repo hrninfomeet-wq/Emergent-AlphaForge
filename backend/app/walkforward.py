@@ -1,10 +1,171 @@
 """Walk-forward validation — rolling train/test splits, OOS stitching, divergence detection."""
 from __future__ import annotations
+import math
 import numpy as np
 import pandas as pd
 from typing import Any, Dict, List
 from app.strategies.base import StrategyBase
 from app.backtest import run_backtest, build_equity_curve, compute_metrics, Trade
+
+
+def _ist_session(ts_ms: Any) -> str:
+    """Epoch-ms -> IST session date. Sessions are the atomic unit for a premium
+    walk-forward: each locks its strikes once at `reference_time`, so a fold
+    boundary must never cut one in half."""
+    return (pd.to_datetime(int(ts_ms), unit="ms", utc=True)
+            .tz_convert("Asia/Kolkata").strftime("%Y-%m-%d"))
+
+
+def _premium_fold_metrics(trades: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Same metric contract the spot folds report, computed on RUPEE option P&L
+    (a premium run is rupee-native; a points win-rate would be a second units lie)."""
+    n = len(trades)
+    if n == 0:
+        return {"trade_count": 0, "wins": 0, "losses": 0, "win_rate": 0.0,
+                "profit_factor": None, "total_pnl_pts": 0.0, "max_dd_pts": 0.0,
+                "sharpe": None}
+    pnl = np.array([float(t.get("option_pnl_value", 0.0) or 0.0) for t in trades])
+    wins = pnl[pnl > 0]
+    losses = pnl[pnl <= 0]
+    gross_loss = abs(float(losses.sum())) if len(losses) else 0.0
+    eq = np.cumsum(pnl)
+    peak = np.maximum.accumulate(eq)
+    return {
+        "trade_count": n,
+        "wins": int(len(wins)),
+        "losses": int(len(losses)),
+        "win_rate": round(len(wins) / n * 100, 2),
+        "profit_factor": (round(float(wins.sum()) / gross_loss, 3)
+                          if gross_loss > 0 else None),
+        "total_pnl_pts": round(float(np.sum(
+            [float(t.get("option_pnl_pts", 0.0) or 0.0) for t in trades])), 3),
+        "max_dd_pts": round(float((eq - peak).min()), 2) if len(eq) else 0.0,
+        "sharpe": (round(float(pnl.mean() / pnl.std() * math.sqrt(252)), 3)
+                   if pnl.std() > 0 else None),
+    }
+
+
+def _unmeasured(note: str) -> Dict[str, Any]:
+    """A walk-forward that measured nothing must SAY so. Reporting
+    `divergence_warning: False` off zero trades reads as a pass — which is what a
+    user saw next to a +41.87% headline on 2026-07-29."""
+    return {
+        "measured": False,
+        "note": note,
+        "folds": [],
+        "is_vs_oos": {"avg_is_win_rate": None, "avg_oos_win_rate": None,
+                      "avg_is_profit_factor": None, "avg_oos_profit_factor": None,
+                      "divergence_warning": None, "fold_count": 0},
+        "stitched_oos_equity": [],
+        "stitched_oos_trade_count": 0,
+    }
+
+
+def premium_walk_forward(
+    option_trades: List[Dict[str, Any]],
+    n_folds: int = 3,
+    train_pct: float = 0.6,
+) -> Dict[str, Any]:
+    """Walk-forward for a premium-native run, over its OPTION trades.
+
+    `walk_forward` runs the SPOT path, whose `evaluate()` is a deliberate inert
+    stub for these strategies — so it produced 0 trades in every fold and then
+    reported "no divergence".
+
+    This is a faithful equivalent rather than a new method: the spot version
+    never re-optimizes either, it re-runs the SAME params on time slices. Since
+    premium sessions are independent (strikes lock once per session at
+    `reference_time`), partitioning the produced trades by session date gives
+    exactly the trades those slices would have produced.
+
+    Returns the same shape as `walk_forward`, plus `measured`/`note`, so the UI
+    needs no special case.
+    """
+    paired = [t for t in (option_trades or []) if t.get("status") == "PAIRED"]
+    if not paired:
+        return _unmeasured("0 trades — nothing to validate out of sample.")
+
+    by_session: Dict[str, List[Dict[str, Any]]] = {}
+    for t in paired:
+        ts = t.get("option_exit_ts") or t.get("option_entry_ts")
+        if ts is None:
+            continue
+        by_session.setdefault(_ist_session(ts), []).append(t)
+    sessions = sorted(by_session)
+
+    fold_size = len(sessions) // max(1, int(n_folds))
+    if fold_size < 2:
+        return _unmeasured(
+            f"only {len(sessions)} trading sessions — too few to split into "
+            f"{n_folds} train/test folds.")
+
+    folds: List[Dict[str, Any]] = []
+    stitched: List[Dict[str, Any]] = []
+    for k in range(int(n_folds)):
+        start = k * fold_size
+        end = min((k + 1) * fold_size, len(sessions)) if k < n_folds - 1 else len(sessions)
+        chunk = sessions[start:end]
+        if len(chunk) < 2:
+            continue
+        cut = max(1, int(len(chunk) * train_pct))
+        if cut >= len(chunk):
+            cut = len(chunk) - 1
+        train_days, test_days = chunk[:cut], chunk[cut:]
+        tr = [t for d in train_days for t in by_session[d]]
+        te = [t for d in test_days for t in by_session[d]]
+        if not tr or not te:
+            continue
+        folds.append({
+            "fold": k + 1,
+            "train_range": [train_days[0], train_days[-1]],
+            "test_range": [test_days[0], test_days[-1]],
+            "train_sessions": train_days,
+            "test_sessions": test_days,
+            "is_metrics": _premium_fold_metrics(tr),
+            "oos_metrics": _premium_fold_metrics(te),
+        })
+        stitched.extend(te)
+
+    if not folds:
+        return _unmeasured("could not form a single train/test fold with trades on both sides.")
+
+    def _avg(key, which):
+        vals = [f[which].get(key) for f in folds]
+        vals = [float(v) for v in vals if v is not None]
+        return round(float(np.mean(vals)), 3) if vals else None
+
+    avg_is_wr = _avg("win_rate", "is_metrics")
+    avg_oos_wr = _avg("win_rate", "oos_metrics")
+    # Same rule the spot version uses: a materially lower OOS win rate is the
+    # overfitting signal. Only assertable because folds really were measured.
+    diverging = bool(avg_is_wr is not None and avg_oos_wr is not None
+                     and (avg_is_wr - avg_oos_wr) >= 10.0)
+
+    eq = 0.0
+    peak = 0.0
+    curve = []
+    for t in sorted(stitched, key=lambda x: int(x.get("option_exit_ts") or 0)):
+        eq += float(t.get("option_pnl_value", 0.0) or 0.0)
+        peak = max(peak, eq)
+        curve.append({"ts": t.get("option_exit_ts"),
+                      "equity_pts": round(eq, 2),
+                      "drawdown_pts": round(eq - peak, 2)})
+
+    return {
+        "measured": True,
+        "note": None,
+        "folds": folds,
+        "is_vs_oos": {
+            "avg_is_win_rate": avg_is_wr,
+            "avg_oos_win_rate": avg_oos_wr,
+            "avg_is_profit_factor": _avg("profit_factor", "is_metrics"),
+            "avg_oos_profit_factor": _avg("profit_factor", "oos_metrics"),
+            "divergence_warning": diverging,
+            "fold_count": len(folds),
+        },
+        "stitched_oos_equity": curve,
+        "stitched_oos_trade_count": len(stitched),
+    }
 
 
 def walk_forward(

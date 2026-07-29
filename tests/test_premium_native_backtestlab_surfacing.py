@@ -60,7 +60,11 @@ def test_paired_backtest_threads_form_lots_and_costs_into_dispatch():
     src = (_ROOT / "backend" / "app" / "runtime.py").read_text(encoding="utf-8")
     i = src.index("async def _run_paired_option_backtest")
     body = src[i:i + 7000]
-    assert 'pm_params["lots"] = int(req.params.get("lots") or config.lots or 1)' in body
+    # Precedence moved into `resolve_premium_lots` on 2026-07-29 and INVERTED:
+    # the Option Execution form now wins over the strategy's declared default.
+    # A user set the form to 5 and every trade still showed 2, because the old
+    # expression here put `req.params` first. See test_premium_lots_precedence.py.
+    assert "resolve_premium_lots" in body
     assert 'pm_params["cost_config"] = config.cost_config' in body
     # Plugin schema defaults must be applied (a raw request with empty params
     # must behave like the UI's filled panel, not fail config validation and

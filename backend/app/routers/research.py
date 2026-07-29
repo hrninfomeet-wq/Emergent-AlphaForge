@@ -19,7 +19,7 @@ from app.strategies.base import get_registry
 from app.backtest import run_backtest, stat_significance
 from app.option_warehouse_jobs import run_option_warehouse_fetch_job
 from app.preset_execution import execution_from_option_config
-from app.walkforward import walk_forward
+from app.walkforward import premium_walk_forward, walk_forward
 from app.warehouse import attach_required_data, load_candles_df
 from app.optimizer import (
     create_job as optimizer_create_job,
@@ -231,22 +231,47 @@ async def backtest_run(req: BacktestReq):
     metrics = res["metrics"]
     option_result = await _run_paired_option_backtest(req, res["trades"])
 
+    # A premium-native run has no spot trades by construction, so the spot
+    # walk-forward measured 0 trades in every fold and then reported
+    # `divergence_warning: False` — a green light derived from nothing, shown
+    # next to a large headline return (user-reported 2026-07-29). Route it to the
+    # option-trade walk-forward, which measures the trades that actually happened.
+    _premium = bool((option_result or {}).get("dispatch") == "premium_trigger_config")
     wf = None
-    if req.walkforward and len(df_enriched) >= 200:
-        wf = walk_forward(
-            df_enriched,
-            strategy,
-            params,
-            instrument=req.instrument.upper(),
-            costs_enabled=req.costs_enabled,
-            pretrade_filters=req.pretrade_filters,
-            train_pct=req.train_pct,
-            n_folds=req.n_folds,
-            trade_window_start=req.trade_window_start,
-            trade_window_end=req.trade_window_end,
-        )
+    if req.walkforward:
+        if _premium:
+            wf = premium_walk_forward(
+                (option_result or {}).get("trades") or [],
+                n_folds=req.n_folds, train_pct=req.train_pct,
+            )
+        elif len(df_enriched) >= 200:
+            wf = walk_forward(
+                df_enriched,
+                strategy,
+                params,
+                instrument=req.instrument.upper(),
+                costs_enabled=req.costs_enabled,
+                pretrade_filters=req.pretrade_filters,
+                train_pct=req.train_pct,
+                n_folds=req.n_folds,
+                trade_window_start=req.trade_window_start,
+                trade_window_end=req.trade_window_end,
+            )
 
-    sig = stat_significance(metrics["trade_count"], metrics["win_rate"], metrics.get("profit_factor"))
+    # Significance likewise: the spot metrics are a zero-filled stub for a
+    # premium run, so every one of them was badged on "0 trades".
+    if _premium:
+        _om = (option_result or {}).get("metrics") or {}
+        _paired = [t for t in ((option_result or {}).get("trades") or [])
+                   if t.get("status") == "PAIRED"]
+        _pnls = [float(t.get("option_pnl_value", 0.0) or 0.0) for t in _paired]
+        _gl = abs(sum(p for p in _pnls if p < 0))
+        _pf = (sum(p for p in _pnls if p > 0) / _gl) if _gl > 0 else None
+        sig = stat_significance(int(_om.get("paired_trade_count", 0) or 0),
+                                float(_om.get("win_rate", 0.0) or 0.0), _pf)
+    else:
+        sig = stat_significance(metrics["trade_count"], metrics["win_rate"],
+                                metrics.get("profit_factor"))
     regime_dist = df_enriched["regime"].value_counts().to_dict()
     regime_dist = {str(k): int(v) for k, v in regime_dist.items()}
 

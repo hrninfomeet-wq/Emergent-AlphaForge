@@ -205,6 +205,38 @@ NON_ALPHA_PARAM_NAMES = frozenset({
 })
 
 
+def restrict_space_to_engine_params(
+    space: Dict[str, Dict[str, Any]], *, premium_native: bool,
+) -> Dict[str, Dict[str, Any]]:
+    """Pin any dimension the premium engine does not actually read.
+
+    A premium-native strategy is driven by ``run_premium_momentum_backtest``,
+    which consumes exactly ``ENGINE_PARAM_KEYS``. A declared param outside that
+    set cannot move the objective no matter how it is varied, so searching it
+    fits noise: the user's 2026-07-29 job spent trials on knobs the dispatcher
+    discarded and reported a confident verdict for them.
+
+    Tracks what the engine really consumes rather than a hand-written denylist,
+    so widening the engine automatically re-enables the corresponding dimensions.
+    Ordinary strategies are untouched — their params flow through ``evaluate()``.
+    """
+    if not premium_native:
+        return space
+    try:
+        from app.premium_momentum_backtest import ENGINE_PARAM_KEYS
+    except Exception:
+        return space  # unknown surface -> change nothing
+    out: Dict[str, Dict[str, Any]] = {}
+    for name, info in space.items():
+        if name in ENGINE_PARAM_KEYS or "fixed" in info:
+            out[name] = info
+            continue
+        pinned = dict(info)
+        pinned["fixed"] = pinned.get("default")
+        out[name] = pinned
+    return out
+
+
 def resolve_indicator_period_search(requested: bool, *, premium_native: bool) -> bool:
     """Whether to inject the standard indicator-period dimensions.
 
@@ -1274,12 +1306,15 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                 min_trades=min_trades, min_direction_share=min_direction_share,
             )
 
-        space = _build_param_space(
-            strategy.parameter_schema, param_overrides,
-            include_indicator_periods=resolve_indicator_period_search(
-                optimize_indicator_periods,
-                premium_native=is_premium_trigger_strategy(strategy),
+        _premium_native = is_premium_trigger_strategy(strategy)
+        space = restrict_space_to_engine_params(
+            _build_param_space(
+                strategy.parameter_schema, param_overrides,
+                include_indicator_periods=resolve_indicator_period_search(
+                    optimize_indicator_periods, premium_native=_premium_native,
+                ),
             ),
+            premium_native=_premium_native,
         )
         if resume:
             # Rehydrate prior progress and continue from the last saved stage.

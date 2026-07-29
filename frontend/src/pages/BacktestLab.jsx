@@ -2594,6 +2594,22 @@ function MonteCarloCard({ trades, optionBacktest }) {
 }
 
 function WalkForwardCard({ wf }) {
+  // `measured: false` means no fold could be evaluated. That is NOT the same as
+  // "in-sample and out-of-sample agree" — the old code reached the render path
+  // with zero trades in every fold and displayed divergence_warning=false, i.e.
+  // a green light computed from nothing, beside a large headline return.
+  if (wf && wf.measured === false) {
+    return (
+      <Panel title="Walk-Forward Split Check (same params, IS vs OOS)" testid="walkforward-panel">
+        <div className="rounded-md border border-amber-900 bg-amber-950 text-amber-200 p-2.5 text-[11px] leading-relaxed" data-testid="walkforward-unmeasured">
+          <AlertTriangle className="w-3 h-3 inline mr-1 -mt-0.5" />
+          <span className="font-semibold">Not validated out of sample.</span>{" "}
+          {wf.note || "No folds could be measured."} This is an absence of
+          evidence, not a pass — treat the headline numbers as in-sample only.
+        </div>
+      </Panel>
+    );
+  }
   if (!wf || !wf.folds || wf.folds.length === 0) {
     return (
       <Panel title="Walk-Forward Split Check (same params, IS vs OOS)" testid="walkforward-panel">

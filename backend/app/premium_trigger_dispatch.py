@@ -161,6 +161,53 @@ def premium_trigger_allowed_keys() -> set:
     return keys
 
 
+def _lazy_is_usable(params: Dict[str, Any]) -> bool:
+    """The sim raises ``ValueError('lazy_enabled requires lazy_momentum_pct or
+    lazy_momentum_pts')``. ``dispatch_full_backtest`` documents that it never
+    raises, so the condition is checked here instead — and reported, never
+    silently absorbed."""
+    if not params.get("lazy_enabled"):
+        return False
+    return (params.get("lazy_momentum_pct") is not None
+            or params.get("lazy_momentum_pts") is not None)
+
+
+def build_engine_params(
+    cfg: PremiumTriggerConfig, merged_params: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """The param dict actually handed to ``run_premium_momentum_backtest``.
+
+    ``PremiumTriggerConfig`` carries 14 fields; the sim declares 34 in
+    ``ENGINE_PARAM_KEYS`` and genuinely implements them — ``leg_mode="both"``,
+    the lazy reversal leg, ``entry_cutoff``/``exit_time``, the percent trails,
+    the session P&L caps, the VIX gate. Filtering the caller's params through the
+    config alone meant a user could enable the lazy leg and see byte-identical
+    results, which is what was reported on 2026-07-29.
+
+    The config stays AUTHORITATIVE for the fields it owns: it is validated
+    (cross-field rules, HH:MM shape) and is what the byte-identical parity test
+    protects. The extra engine keys travel around it rather than widening it, so
+    the shipped strategy's numbers stay pinned.
+    """
+    from app.premium_momentum_backtest import ENGINE_PARAM_KEYS
+
+    core = cfg.to_backtest_params()
+    src = dict(merged_params or {})
+    lazy_ok = _lazy_is_usable(src)
+    extras: Dict[str, Any] = {}
+    for k, v in src.items():
+        if k not in ENGINE_PARAM_KEYS or v is None or k in core:
+            continue
+        if k.startswith("lazy_") and not lazy_ok:
+            continue  # an unusable lazy block is dropped whole, and reported
+        extras[k] = v
+    if not lazy_ok:
+        extras.pop("lazy_enabled", None)
+    # core last: a raw param must never overwrite a validated config field.
+    extras.update(core)
+    return extras
+
+
 def premium_dropped_params(params: Optional[Dict[str, Any]]) -> List[str]:
     """Premium capabilities the caller CONFIGURED that this backtest will ignore.
 
@@ -178,18 +225,30 @@ def premium_dropped_params(params: Optional[Dict[str, Any]]) -> List[str]:
     tuning the same inert knobs.
 
     Scope is deliberately the KNOWN premium surface
-    (:func:`premium_trigger_allowed_keys`) minus what the config carries, so
-    registry bookkeeping (``id``/``name``/``description``) and unrelated keys can
-    never be mistaken for a dropped capability. ``None`` values are excluded: a
-    field the user left unset was never promised anything.
+    (:func:`premium_trigger_allowed_keys`) minus what the RUN actually consumes,
+    so registry bookkeeping (``id``/``name``/``description``) and unrelated keys
+    can never be mistaken for a dropped capability. ``None`` values are excluded:
+    a field the user left unset was never promised anything.
+
+    Since the dispatcher started forwarding the full ``ENGINE_PARAM_KEYS``
+    surface this is normally EMPTY — which is the point. It still fires for a
+    lazy block that cannot run (``lazy_enabled`` without a lazy momentum
+    trigger), because disabling that silently is the exact failure this whole
+    mechanism exists to prevent.
     """
+    from app.premium_momentum_backtest import ENGINE_PARAM_KEYS
+
     src = dict(params or {})
     known = premium_trigger_allowed_keys()
-    honoured = set(_CONFIG_FIELDS)
-    return sorted(
+    consumed = set(_CONFIG_FIELDS) | set(ENGINE_PARAM_KEYS)
+    out = sorted(
         k for k, v in src.items()
-        if v is not None and k in known and k not in honoured
+        if v is not None and k in known and k not in consumed
     )
+    if src.get("lazy_enabled") and not _lazy_is_usable(src):
+        out.append("lazy_enabled (incomplete: needs lazy_momentum_pct or "
+                   "lazy_momentum_pts — the lazy leg did NOT run)")
+    return out
 
 
 def is_premium_trigger_strategy(strategy: Any) -> bool:
@@ -342,10 +401,20 @@ def dispatch_full_backtest(
             log.warning("dispatch refused for %s: %s", strategy_id, reason)
         return None
 
-    pm_result = run_premium_momentum_backtest(
-        spot_df=spot_df, option_candles=option_candles, contracts=contracts,
-        instrument=instrument, params=cfg.to_backtest_params(),
-    )
+    # The FULL engine surface, not just the config's 14 fields — see
+    # build_engine_params. Enabling the lazy leg used to change nothing.
+    engine_params = build_engine_params(cfg, merged_params)
+    try:
+        pm_result = run_premium_momentum_backtest(
+            spot_df=spot_df, option_candles=option_candles, contracts=contracts,
+            instrument=instrument, params=engine_params,
+        )
+    except ValueError as exc:
+        # Documented contract: this function never raises. build_engine_params
+        # already pre-empts the known case (unusable lazy block); anything else
+        # is refused rather than silently reported as a different strategy.
+        log.warning("premium engine refused params for %s: %s", strategy_id, exc)
+        return None
     # Data-driven lot (see instruments.resolve_lot_size) — the static map is stale.
     lot_size, _lot_warnings = resolve_lot_size(contracts, instrument)
     paired_trades = _adapt_premium_trades_to_paired(
@@ -398,6 +467,10 @@ def dispatch_full_backtest(
         "context_breakdown": context_breakdown,
         "trades": paired_trades,
         "premium_trigger_config": cfg.model_dump(mode="json"),
+        # The EXACT dict that drove the sim. The config echo above is the
+        # validated core only, so it cannot show whether the lazy leg, leg_mode
+        # or the session times actually ran.
+        "engine_params": dict(engine_params),
         # Configured capabilities this run did NOT simulate. Always present (an
         # empty list, never a missing key) so a consumer's check is unambiguous.
         "dropped_params": premium_dropped_params(merged_params),

@@ -192,6 +192,145 @@ larger piece of work; disclosure is the honest interim.
       with costs OFF while the Backtest Lab applies them — claim J)
 - [ ] OPEN QUESTION for the user: should the Backtest Lab SIMULATE lazy legs?
 
+## Round 2 — audit of the user's 2026-07-29 23:03 run (`1c80bd04`)
+
+Run: `algotest_option_buy_nifty · NIFTY · 2026-07-29 23:03:50`, window
+**2026-01-01 09:15 → 2026-07-06 15:30 IST**, 124 sessions.
+
+Result: 124 trades, 49.19% WR, net **₹83,738.69** on ₹200,000 (+41.87%),
+max DD **−21.48%** (−₹68,110), Sharpe 1.288. Exits 38 target / 51 stop / 35 EOD.
+`lots: 2` — **the pin holds; no repeat of lots=100.**
+
+### K. THE DISCLAIMER IS A PLUMBING GAP, NOT A CAPABILITY GAP — corrects my
+### earlier statement to the user that this needed "real work in the premium engine"
+`premium_momentum_backtest.ENGINE_PARAM_KEYS` (34 keys) already includes EVERY
+field in the disclaimer, and the sim really implements them:
+`leg_mode=="both"` (:486), lazy arming on STOP (:514-522, with `lazy_armed` /
+`lazy_entered` / `lazy_blocked_cutoff` coverage counters), `entry_cutoff` (:421),
+`exit_time` (:426), percent trails, session P&L caps, VIX gate.
+
+The ONLY reason they are dropped: `dispatch_full_backtest` filters `merged_params`
+through `PremiumTriggerConfig` (14 fields) before calling a sim that accepts 34.
+Additionally `runtime.py:1200` calls `_load_window(...)` WITHOUT `lazy_enabled=`,
+so the preload never widens — and `_load_window` ALREADY takes that arg and
+already applies `preload_scope`. The bespoke `/premium-momentum` page passes it;
+the Backtest Lab does not.
+
+**Fix is small**: (1) forward `lazy_enabled` to `_load_window`; (2) pass
+`ENGINE_PARAM_KEYS`-filtered extras alongside `cfg.to_backtest_params()`;
+(3) handle the sim's `ValueError("lazy_enabled requires lazy_momentum_pct|pts")`.
+
+### L. NO TRAIL RAN AT ALL — the warning's own wording is wrong — HIGH
+Config used carries `trail_x: null, trail_y: null` (the config has only the POINTS
+pair; the user configured the PERCENT pair, which is dropped). Empirically
+confirmed: `option_trail_exits: 0`. But my warning says the engine "runs the
+single-leg momentum/stop/target/**trail** config only". False for this user.
+
+### M. "Treat them as a lower bound on behaviour" is UNJUSTIFIED — my text — HIGH
+Adding a second primary leg plus a lazy re-entry adds EXPOSURE. It can easily be
+worse, not better. The honest claim is "a different, simpler strategy — not a
+bound in either direction."
+
+### N. Walk-forward reports 0 trades in all 3 folds and says NO DIVERGENCE — HIGH
+`walkforward.is_vs_oos` = `{avg_is_win_rate: 0, avg_oos_win_rate: 0,
+divergence_warning: **false**, fold_count: 3}`, `stitched_oos_trade_count: 0`,
+every fold `trade_count: 0` IS and OOS. It runs the SPOT path (inert stub) so it
+measures nothing — and then renders as reassurance. `significance` at least
+degrades honestly (`badge: INSUFFICIENT, note: "0 trades"`); walk-forward does
+not. Same bug class as the KPI grid, but worse: silence would be safer than a
+green "no divergence".
+
+### O. The run is 100% IN-SAMPLE — HIGH (methodology, not code)
+Optimization job window == backtest window, byte-identical
+(`1767239100000 → 1783332000000`). +41.87% IS the optimizer's training score.
+`survival_summary: null`, `robustness: null` — no robustness evidence at all.
+
+### P. 3 of 5 searched dimensions are still inert
+Post-fix space searched `momentum_pct`, `stop_pct`, `lazy_enabled`,
+`lazy_momentum_pct`, `lazy_stop_pct`. The last three are DROPPED by the
+dispatcher, so the optimizer's `lazy_enabled: false` verdict is noise. Audit
+finding [4] (search space must intersect what the dispatcher consumes) is
+confirmed by real data and still UNFIXED.
+
+### Q. Objective rewards over-trading
+`net_pnl_inr` is monotonic in trade COUNT the same way it was in `lots`.
+`momentum_pct` was driven to **6**, near the 5 floor → 124 trades in 124 sessions
+(enters essentially every day). Prefer Sharpe / profit factor / return-over-maxDD.
+
+### R. Brokerage not modelled
+`cost_config.brokerage_per_order: 0`, 124 trades x 2 legs = 248 orders. At ₹20/order
+that is ~₹4,960 ≈ 5.9% of the reported profit. Spread (1%) and STT are modelled.
+
+## Round 3 — fixes 1-3 + two user-reported issues (2026-07-29, later)
+
+User confirmed brokerage ₹0 is correct for their account and STT/other charges
+are normal => **finding R is CLOSED, not a defect.**
+
+### Fix 9 — dispatch forwards the FULL engine surface (retires the disclaimer)
+`build_engine_params(cfg, merged_params)` in `premium_trigger_dispatch.py`: core
+config (validated, authoritative for what it owns) + every other
+`ENGINE_PARAM_KEYS` key present in merged_params. `PremiumTriggerConfig` was NOT
+widened — it is what the byte-identical parity test protects; the extras travel
+around it. Envelope now also carries `engine_params` (the exact dict that drove
+the sim) for traceability.
+`runtime.py` now passes `lazy_enabled=` to `_load_window`, so `preload_scope`
+widens to the full moneyness band + BOTH sides. Without that a lazy leg finds no
+opposite-side candles and every activation degrades to `lazy_excluded_no_data` —
+a silent zero. An unusable lazy block (no `lazy_momentum_pct|pts`) is pre-empted
+and REPORTED rather than raising or silently running single-leg.
+**Result for the user's config: `dropped_params == []` — the 12-item banner is
+gone, and all 19 params reach the engine (leg_mode='both', lazy_enabled=True,
+entry_cutoff, exit_time, trail_x_pct/trail_y_pct all confirmed present).**
+`tests/test_premium_dispatch_full_engine_surface.py` — 13 tests.
+
+### Fix 10 — walk-forward stops reporting a pass it did not earn
+`premium_walk_forward(option_trades, n_folds, train_pct)` in `walkforward.py`
+partitions the OPTION trades by IST session into the same fold geometry. Faithful,
+not a new method: the spot version never re-optimizes either, and premium sessions
+are independent (strikes lock once at `reference_time`), so no signal straddles a
+boundary. `_unmeasured()` returns `measured: False` + a human note and
+`divergence_warning: None` — never `False`. `research.py` routes premium runs
+here, and also computes `significance` from the OPTION metrics (it was badging
+every premium run INSUFFICIENT/"0 trades"). Frontend renders an amber
+"Not validated out of sample — absence of evidence, not a pass" panel.
+`tests/test_premium_walkforward_honesty.py` — 12 tests.
+
+### Fix 11 — search space restricted to what the engine consumes
+`restrict_space_to_engine_params(space, premium_native=)` pins any dimension
+outside `ENGINE_PARAM_KEYS`. Tracks the engine, not a denylist, so widening the
+engine re-enables dimensions automatically. Wired at both call sites.
+
+### Fix 12 — the Option Execution form's Lots now wins (user-reported)
+Their run `... 23:12:05`: form `lots: 5`, plugin default `lots: 2`, **2 traded**
+(Qty 130 = 2 x 65). `runtime.py` resolved `req.params.get("lots") or config.lots`,
+i.e. strategy-param-first, making the form field inert for any strategy declaring
+`lots` — which every AI-authored premium strategy now does. New
+`resolve_premium_lots(strategy_lots=, form_lots=)`: **form wins**, strategy is the
+fallback for a request with no option-execution block, non-positive/malformed
+falls back rather than trading zero quantity. Consistency argument: for every
+ORDINARY strategy that field is already the sole sizing control.
+Safe because sizing is pinned/non-optimizable, so this cannot reintroduce
+lots=100. `tests/test_premium_lots_precedence.py` — 7 tests.
+
+### Also user-reported: "enabling lazy leg changes nothing"
+Same root cause as the disclaimer; closed by Fix 9. Confirmed empirically before
+the fix: their two runs (23:03:50 lazy off-effective, 23:12:05 lazy on) produced
+byte-identical net P&L ₹83,738.69.
+
+### Test-suite changes that were INVERTIONS, not regressions
+`test_premium_dropped_params_are_surfaced.py` asserted the fields WERE dropped;
+rewritten to assert they are not, while keeping the unusable-lazy case firing.
+`test_premium_native_backtestlab_surfacing.py` pinned the old lots expression.
+
+Suite **4058 passed / 0 failed**.
+
+## STILL OPEN (methodology — needs the user)
+- The 2026-07-29 runs are 100% in-sample (optimize window == backtest window).
+- Objective `net_pnl_inr` is monotonic in trade COUNT; `momentum_pct` was driven
+  to 6 against a floor of 5 => 124 trades in 124 sessions. Prefer Sharpe /
+  profit factor / return-over-maxDD.
+- Re-validate: optimize on Jan-Apr, judge on May-Jul untouched.
+
 ## Known-pre-existing failures (NOT caused by this work)
 `tests/test_premium_momentum_route.py` x2 — `ServerSelectionTimeoutError` on
 localhost:27017. Verified identical on a stashed baseline. This is the documented

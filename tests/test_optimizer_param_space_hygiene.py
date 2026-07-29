@@ -184,3 +184,42 @@ def test_the_user_opting_out_is_still_respected_for_ordinary_strategies():
     from app.optimizer import resolve_indicator_period_search
 
     assert resolve_indicator_period_search(False, premium_native=False) is False
+
+
+# --------------------------------------------------------------------------- #
+# a searched dimension must be one the engine actually consumes
+# --------------------------------------------------------------------------- #
+
+def test_a_param_the_engine_never_reads_is_not_searched():
+    """The user's 2026-07-29 job searched `lazy_enabled`, `lazy_momentum_pct` and
+    `lazy_stop_pct` while the dispatcher discarded all three — so its
+    `lazy_enabled: false` verdict was noise fitted to an unchanging result.
+    Tuning a knob that cannot move the objective is never valid, however cheap."""
+    from app.optimizer import restrict_space_to_engine_params
+
+    space = {"momentum_pct": {"type": "int", "min": 5, "max": 50, "default": 15},
+             "phantom_knob": {"type": "int", "min": 1, "max": 9, "default": 3}}
+    out = restrict_space_to_engine_params(space, premium_native=True)
+    assert "momentum_pct" in out and "fixed" not in out["momentum_pct"]
+    assert "fixed" in out["phantom_knob"], "an inert dimension must be pinned"
+
+
+def test_the_shipped_lazy_knobs_ARE_consumed_now_and_stay_searchable():
+    """After the dispatch widening they reach the engine, so they are legitimate
+    search dimensions again — the restriction must track reality, not a denylist."""
+    from app.optimizer import restrict_space_to_engine_params
+
+    space = {k: {"type": "int", "min": 5, "max": 40, "default": 10}
+             for k in ("lazy_momentum_pct", "lazy_stop_pct")}
+    out = restrict_space_to_engine_params(space, premium_native=True)
+    for k in space:
+        assert "fixed" not in out[k], f"{k} is engine-consumed and must stay tunable"
+
+
+def test_ordinary_strategies_are_untouched():
+    """Their params go through evaluate(), not the premium engine."""
+    from app.optimizer import restrict_space_to_engine_params
+
+    space = {"ema_fast": {"type": "int", "min": 3, "max": 20, "default": 9}}
+    out = restrict_space_to_engine_params(space, premium_native=False)
+    assert out == space
