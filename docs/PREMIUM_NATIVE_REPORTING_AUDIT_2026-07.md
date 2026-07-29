@@ -324,6 +324,98 @@ rewritten to assert they are not, while keeping the unusable-lazy case firing.
 
 Suite **4058 passed / 0 failed**.
 
+## Round 4 — the train/holdout study (user-approved 2026-07-29)
+
+### Two pre-flight defects, both found BEFORE launching (commit `1835c8a`)
+* **S. Optimizer preload never widened for the lazy leg — HIGH.**
+  `optimizer.py` called `_load_window(..., sides=["CE","PE"])` with no
+  `lazy_enabled=`, so the moneyness band stayed narrow. Since `lazy_enabled` is a
+  searched bool, every lazy-ON trial would have degraded to
+  `lazy_excluded_no_data` and scored identically to lazy-OFF — the search would
+  have "discovered" the lazy leg does not help without ever measuring it.
+  `premium_preload_needs_lazy(strategy)` reads the SCHEMA (the optimizer
+  overrides defaults) and widens unless lazy is pinned off. Missed earlier
+  because this call site already hardcodes both sides, which looked complete.
+* **T. Premium trials scored on GROSS P&L — HIGH (audit finding J, now fixed).**
+  `merged_params` is an allow-list on `parameter_schema`; `cost_config` is not a
+  schema param, so it was never present and costs were off. The Backtest Lab
+  injects it, so the optimizer ranked gross and the winner was then verified net.
+  Job `option_config.cost_config` is now threaded in.
+
+### Study design
+Window split of the previously all-in-sample range:
+* TRAIN   2026-01-01 09:15 → 2026-04-30 15:30 (`1767239100000 → 1777543200000`)
+* HOLDOUT 2026-05-01 09:15 → 2026-07-06 15:30 (`1777607100000 → 1783332000000`)
+
+Objective **`sharpe`** (scale-invariant and NOT monotonic in trade count, unlike
+`net_pnl_inr` which drove `momentum_pct` to its floor). bayesian, n_trials 200
+(ceiling; early-stop on), `min_trades: 20`, `opt_workers: 1`, lots 2, costs on
+(brokerage ₹0 + 1% spread, per the account owner).
+
+Train job `99e8d19c-eede-4290-9eeb-49db760e94b6`.
+
+### Observations during the run
+* **The lazy fix is live**: trials differing only in `lazy_enabled` now yield
+  different trade counts (124/125/128). Pre-fix they were byte-identical.
+* **Sharpe selects a different regime**: converged on `momentum_pct: 49`
+  (selective, 70 trades) vs `net_pnl_inr`'s `momentum_pct: 6` (124 trades, one
+  per session). The over-trading bias was objective-driven, as suspected.
+* Search early-stopped at 110/200 trials (converged).
+* ⚠️ A lazy-ON vs lazy-OFF average-Sharpe gap appeared (1.60 vs 0.70) but is
+  CONFOUNDED — TPE allocates trials toward what already scores well (36 vs 14
+  samples). Not a causal read; would need lazy pinned across two separate runs.
+
+### RESULT — the strategy FAILS the holdout
+
+Winner (train, `sharpe` = 4.49, converged at 110/200 trials):
+`momentum_pct: 49, stop_pct: 30, lazy_enabled: true, lazy_momentum_pct: 8,
+lazy_stop_pct: 26` (target_pct/trails/lots pinned).
+
+| | TRAIN Jan 1–Apr 30 | HOLDOUT May 1–Jul 6 |
+|---|---|---|
+| trades | 70 | 33 |
+| win rate | 48.57% | 42.42% |
+| net P&L | **+₹121,654.61** | **−₹3,299.89** |
+| return | **+60.83%** | **−1.65%** |
+| max DD | −9.49% | −14.41% |
+| Sharpe (daily) | **4.49** | **−0.27** |
+| exits target:stop | 19:31 | 7:17 |
+
+Data coverage is NOT the explanation: 80 train sessions / 44 holdout sessions,
+trade frequency consistent (0.88 vs 0.75 per session).
+
+**Verdict: no demonstrated edge.** Not degradation — disappearance. This is the
+SECOND independent holdout failure for this strategy family (see
+`docs/PREMIUM_MOMENTUM_EDGE_VERDICT_2026-07.md`, 2026-07-15).
+
+Notes that matter more than the numbers:
+* **Sharpe 4.49 over 50 trading days was itself the tell.** A daily Sharpe that
+  high for a directional option-buying strategy is a window artifact, not an edge.
+  Treat any train Sharpe > ~2.5 here as a red flag rather than a result.
+* **The train run's OWN walk-forward already warned and was ignored by the
+  threshold**: IS 53.00% → OOS 43.56%, a 9.44-point decay — just under the
+  hardcoded 10-point `divergence_warning` cut. The boolean hid a real signal.
+  **TODO: report the delta, not just a boolean, and reconsider 10 points.**
+* **On the holdout the new walk-forward fired correctly** (IS 68.81% vs OOS
+  17.78%, `divergence: True`). The instrument built in Round 3 earned its keep —
+  the old one measured 0 trades and always said "no divergence".
+* `dropped_params: NONE` and `engine got leg_mode='both' lazy=True cutoff='15:09'
+  exit='15:13' trail_x_pct=5` on BOTH runs — the full configured strategy really ran.
+
+### U. `option_trail_exits` is structurally always 0 here — corrects my own earlier claim
+The premium leg walker's exit vocabulary is only `STOP` / `TARGET` / `EOD`
+(`premium_momentum.py:176,184,187`) plus `DAY_STOP`
+(`premium_momentum_backtest.py:207`). A trail exit is reported as `STOP`, so
+`option_trail_exits` (which counts `OPTION_TRAIL_STOP`) can never be non-zero for
+a premium-native run. I previously cited `option_trail_exits: 0` as evidence that
+"no trail ran" — the conclusion happened to be true then (the percent pair was
+being dropped and the points pair was null) but the INSTRUMENT was invalid.
+The percent trail IS implemented (`stepped_trail_stop_pct`, XOR-resolved by
+`_resolve_trail`) and did run in this study.
+**Also unfixed: `DAY_STOP` is absent from `_EXIT_REASON_MAP`, so a session P&L cap
+exit is silently bucketed as `OPTION_SIGNAL_EXIT`.** No caps were configured here,
+so it did not fire — but it is a live mislabel.
+
 ## STILL OPEN (methodology — needs the user)
 - The 2026-07-29 runs are 100% in-sample (optimize window == backtest window).
 - Objective `net_pnl_inr` is monotonic in trade COUNT; `momentum_pct` was driven
