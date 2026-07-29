@@ -90,6 +90,12 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
   // Answers to an ASK verdict's clarifying questions. The UI told users to
   // "answer the question(s), then re-check" and offered no channel to do it.
   const [answers, setAnswers] = useState("");
+  // ONE signal for "something needs answering", from EITHER source. Keying the
+  // panel on the feasibility verdict alone left a BUILD strategy with
+  // generate-time fidelity.ambiguous items and no channel at all — the same
+  // dead-end the ASK channel was built to remove, arriving through the other door.
+  const hasOpenQuestions =
+    ruleSet?.decision === "ASK" || (fidelity?.ambiguous || []).length > 0;
   const [genError, setGenError] = useState(null);           // persistent generate error
   const [showCaps, setShowCaps] = useState(false);          // engine-capabilities panel
 
@@ -569,11 +575,13 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
               clarifying question(s), then re-check" while offering nowhere to
               answer: /author/converse took only the source text. The answers now
               feed BOTH the re-check and generation. */}
-          {ruleSet && ruleSet.decision === "ASK" && (
+          {hasOpenQuestions && (
             <div className="rounded-md border border-sky-500/30 bg-sky-500/5 p-2 space-y-1.5"
                  data-testid="author-answers-panel">
               <div className="text-[11px] text-sky-300 font-medium">
-                Answer the question(s) above
+                {ruleSet?.decision === "ASK"
+                  ? "Answer the question(s) above"
+                  : "Answer the ambiguous point(s) above"}
               </div>
               <textarea
                 value={answers}
@@ -586,6 +594,8 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
               <div className="text-[10.5px] text-dimmer">
                 Your answers are sent with the description to both “Check feasibility”
                 and “Generate with AI” — you don’t need to rewrite the description.
+                After answering an ambiguity, click <strong>Generate with AI</strong> again
+                for it to take effect.
               </div>
             </div>
           )}
@@ -596,7 +606,7 @@ export default function AuthoringWizard({ open, onOpenChange, onInstalled }) {
               {ruleSet.decision === "REJECT"
                 ? "Can't install — a core rule isn't buildable. See Feasibility above."
                 : ruleSet.decision === "ASK"
-                ? "Answer the question(s) in the box above, then re-check or generate."
+                ? "Answer the question(s) in the box above, then re-check or generate again."
                 : "Installing with caveats (some rules are backtest-only)."}
             </div>
           )}
