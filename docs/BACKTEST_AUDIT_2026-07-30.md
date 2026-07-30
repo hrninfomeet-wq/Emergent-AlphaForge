@@ -750,3 +750,55 @@ engine stopped again — `docker` itself cannot connect), not a regression.
 Batch b4 (claims 17, 18, 20, 22 — 21 refuted by hand) and the
 **result-persistence-display** dimension. Both agents died on the spend limit; the
 workflow was resumed (`w5bmdnw90`) so only those two re-run.
+
+## Round 8 FINAL — 8/8 agents, 0 errors; end-to-end verified
+
+### CORRECTION — claim 21 was CONFIRMED, my earlier refutation was WRONG
+I refuted it after checking `_flush_trial_log` and the finish payload, both of
+which guard `> -1e8 else None`. I missed that there are **five** writers of
+`best_so_far`: the three high-cadence `% 5` progress updates inside the grid,
+sequential-bayesian and parallel trial loops wrote
+`round(best_so_far["value"], 4)` with **no guard**.
+
+`best_so_far["value"]` starts at `-float("inf")` and is only replaced by
+`if val > best_so_far["value"]`. In the GRID path a raising combo appends an error
+record and `continue`s WITHOUT touching it — so a job whose first 5 combinations
+all raise wrote `-Infinity` into Mongo (`round(-inf, 4)` is still `-inf`). FastAPI
+serialises with `allow_nan=False`, so that value 500s the ENTIRE job-history
+endpoint, not just its own job.
+
+FIXED: one `best_so_far_doc()` sanitiser is now the only way the field is written
+(all 5 sites), mapping non-finite and at/below-sentinel values to None. `best_value`
+routes through it too — its old `> -1e8` guard let **+inf** through, since
+`inf > -1e8` is True. `tests/test_best_so_far_is_json_safe.py` — 12 tests, including
+a writer-shape contract that no hand-built `"best_so_far": {` literal remains.
+
+### End-to-end verification, fresh job `07f55967` (post-rebuild)
+```
+best_so_far == best_params : true
+best_value 142636.01        metric: option_pnl_value
+winner paired trades: 215   (min_trades=30 now enforced in Stage 2)
+saved-run window: 09:25 -> 14:50
+spot counts agree: 222 == 222
+```
+Suite **4233 passed / 0 failed** (the 2 Mongo tests pass again now Docker is up —
+they were only ever infra).
+
+### Verification totals
+23 claims verified, **0 disputed**. My apparent conflict on claim 21 was an artifact
+of my own de-duplication, not a real disagreement — the agents were right and I was
+wrong.
+
+### NEW — result-persistence-display (dimension audited for the first time)
+9 findings → `docs/ROUND8_VERIFICATION.md`. Three HIGH, and the first two are the
+SAME class already fixed for the KPI grid (premium-native runs reading the empty
+SPOT metrics stub):
+1. **Run journal shows every premium-native run as 0 trades / 0.00% win rate.**
+2. **Trust scorecard reads the spot stub, so premium runs get a false verdict.**
+3. **A backtest interrupted by a restart stays `status: running` forever** — there
+   is no reconcile for backtest_runs (optimization_jobs HAS one in server.py).
+MEDIUM: list endpoint strips the small spot trades but returns the larger option
+trades; preset-from-a-displayed-run drops sizing_config / trade window /
+spread_min_pts; premium runs persist a hardcoded `candles_capped: false` never
+actually computed; a failed or still-running run can be chosen as a deployment
+source; Monte Carlo silently resamples only the first 1000 trades.

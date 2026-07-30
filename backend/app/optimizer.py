@@ -191,6 +191,42 @@ def _objective_value(
     return sharpe / max(1.0, dd / 100.0)
 
 
+def best_so_far_doc(best_so_far: Dict[str, Any]) -> Dict[str, Any]:
+    """The persisted shape of ``best_so_far`` — the ONLY way it may be written.
+
+    ``value`` starts at ``-float("inf")`` and is replaced only by
+    ``if val > best_so_far["value"]``. In the GRID path a raising combo appends an
+    error record and ``continue``s WITHOUT touching it, so a job whose first
+    combinations all raise still held ``-inf`` at the ``completed % 5 == 0``
+    progress update — which wrote ``round(-inf, 4)``, i.e. ``-inf``, into Mongo.
+    FastAPI serialises with ``allow_nan=False``, so that one value then 500s the
+    ENTIRE job-history endpoint, not just its own job.
+
+    ``_flush_trial_log`` and the finish payload always guarded this; the three
+    high-cadence trial-loop updates did not. One helper now, so a sixth writer
+    cannot drift out of step.
+
+    Anything non-finite, or at/below the disqualification sentinel, becomes
+    ``None`` — "no usable result yet" — which is exactly what the UI already
+    renders as a dash.
+    """
+    raw = (best_so_far or {}).get("value")
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        v = None
+    if v is None or v != v or v in (float("inf"), -float("inf")) or v <= -1e8:
+        v = None
+    else:
+        v = round(v, 4)
+    return {
+        "value": v,
+        "params": (best_so_far or {}).get("params"),
+        "metrics": (best_so_far or {}).get("metrics"),
+        "trial_num": (best_so_far or {}).get("trial_num"),
+    }
+
+
 def stage2_rank_key(cand: Dict[str, Any], *, min_trades: int) -> Tuple:
     """Sort key for the Stage-2 option re-rank.
 
@@ -728,11 +764,7 @@ async def _flush_trial_log(job_id: str, trial_history: List[Dict[str, Any]], bes
     await _update_job(job_id, {
         "trial_log": [_compact_trial(t) for t in trial_history],
         "n_trials_completed": completed,
-        "best_so_far": {
-            "value": round(best_so_far["value"], 4) if best_so_far["value"] > -1e8 else None,
-            "params": best_so_far["params"], "metrics": best_so_far["metrics"],
-            "trial_num": best_so_far["trial_num"],
-        },
+        "best_so_far": best_so_far_doc(best_so_far),
     })
 
 
@@ -1590,7 +1622,7 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                 if completed % 5 == 0:
                     await _update_job(job_id, {
                         "n_trials_completed": completed,
-                        "best_so_far": {"value": round(best_so_far["value"], 4), "params": best_so_far["params"], "metrics": best_so_far["metrics"], "trial_num": best_so_far["trial_num"]},
+                        "best_so_far": best_so_far_doc(best_so_far),
                     })
                 if completed % 50 == 0:
                     await _flush_trial_log(job_id, trial_history, best_so_far, completed)
@@ -1637,7 +1669,7 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                 if completed % 5 == 0 or completed == n_trials:
                     await _update_job(job_id, {
                         "n_trials_completed": completed,
-                        "best_so_far": {"value": round(best_so_far["value"], 4), "params": best_so_far["params"], "metrics": best_so_far["metrics"], "trial_num": best_so_far["trial_num"]},
+                        "best_so_far": best_so_far_doc(best_so_far),
                     })
                 if completed % 50 == 0:
                     await _flush_trial_log(job_id, trial_history, best_so_far, completed)
@@ -1692,7 +1724,7 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                     if (completed // 5) > (prior // 5) or completed >= n_trials:
                         await _update_job(job_id, {
                             "n_trials_completed": completed,
-                            "best_so_far": {"value": round(best_so_far["value"], 4), "params": best_so_far["params"], "metrics": best_so_far["metrics"], "trial_num": best_so_far["trial_num"]},
+                            "best_so_far": best_so_far_doc(best_so_far),
                         })
                     if (completed // 50) > (prior // 50):
                         await _flush_trial_log(job_id, trial_history, best_so_far, completed)
@@ -1993,7 +2025,9 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
             "n_trials_completed": completed,
             "evaluation_mode": evaluation_mode,
             "best_params": best_so_far["params"],
-            "best_value": round(best_so_far["value"], 4) if best_so_far["value"] > -1e8 else None,
+            # Same sanitiser as best_so_far: the old guard let +inf through
+            # (inf > -1e8 is True), which would 500 the job-history endpoint.
+            "best_value": best_so_far_doc(best_so_far)["value"],
             "best_metrics": best_so_far["metrics"],
             # RE-PERSIST best_so_far. Its only other writer is `_flush_trial_log`,
             # called from the trial loops — so when Stage 2 (option re-rank)
@@ -2004,12 +2038,7 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
             # read one configuration on screen and saved a different one. Measured
             # on job fd40ecff: card showed ema 6/43/74 @ Sharpe 1.499, preset
             # saved ema 5/57/79 @ Sharpe 1.168.
-            "best_so_far": {
-                "value": best_so_far["value"] if best_so_far["value"] > -1e8 else None,
-                "params": best_so_far["params"],
-                "metrics": best_so_far["metrics"],
-                "trial_num": best_so_far.get("trial_num"),
-            },
+            "best_so_far": best_so_far_doc(best_so_far),
             # What `best_value` actually MEASURES. After an option re-rank it is the
             # Stage-2 option rupee P&L, not the requested objective — verified
             # `best_value = 134864.61` on a job whose `objective` read "sharpe".
