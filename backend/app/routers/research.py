@@ -183,6 +183,52 @@ async def backtest_option_preflight(req: BacktestReq, ingest_missing: bool = Que
     return serialize_doc(report)
 
 
+def resolve_wf_and_significance(
+    *,
+    option_result,
+    spot_wf,
+    spot_metrics,
+    n_folds: int,
+    train_pct: float,
+    walkforward_requested: bool = True,
+):
+    """The walk-forward + significance a run should REPORT, routed by family.
+
+    ONE definition, used by both `/backtest/run` and `run_backtest_job`. They are
+    two separate handlers over the same pipeline, and on 2026-07-29 this routing
+    was added to the sync one only — while the Backtest Lab calls the ASYNC one
+    (`api.startBacktest`). So every UI run kept the exact defect that had been
+    reported fixed: 3 folds, 0 trades each, `divergence_warning: false`, and
+    `significance: INSUFFICIENT "0 trades"`, next to a large headline return.
+    My own verification had used the sync path, which is why I did not see it.
+
+    A premium-native run has no spot trades by construction, so:
+      * its walk-forward must be measured on the OPTION trades, and
+      * its significance must be computed from the OPTION metrics.
+    An ordinary run keeps its spot walk-forward object untouched (identity-
+    preserved, so nothing downstream can tell the difference).
+    """
+    premium = bool((option_result or {}).get("dispatch") == "premium_trigger_config")
+    if not premium:
+        return spot_wf, stat_significance(
+            spot_metrics["trade_count"], spot_metrics["win_rate"],
+            spot_metrics.get("profit_factor"))
+
+    wf = None
+    if walkforward_requested:
+        wf = premium_walk_forward((option_result or {}).get("trades") or [],
+                                  n_folds=n_folds, train_pct=train_pct)
+    om = (option_result or {}).get("metrics") or {}
+    paired = [t for t in ((option_result or {}).get("trades") or [])
+              if t.get("status") == "PAIRED"]
+    pnls = [float(t.get("option_pnl_value", 0.0) or 0.0) for t in paired]
+    gross_loss = abs(sum(p for p in pnls if p < 0))
+    pf = (sum(p for p in pnls if p > 0) / gross_loss) if gross_loss > 0 else None
+    sig = stat_significance(int(om.get("paired_trade_count", 0) or 0),
+                            float(om.get("win_rate", 0.0) or 0.0), pf)
+    return wf, sig
+
+
 @api.post("/backtest/run")
 async def backtest_run(req: BacktestReq):
     registry = get_registry()
@@ -231,47 +277,25 @@ async def backtest_run(req: BacktestReq):
     metrics = res["metrics"]
     option_result = await _run_paired_option_backtest(req, res["trades"], context_df=df_enriched)
 
-    # A premium-native run has no spot trades by construction, so the spot
-    # walk-forward measured 0 trades in every fold and then reported
-    # `divergence_warning: False` — a green light derived from nothing, shown
-    # next to a large headline return (user-reported 2026-07-29). Route it to the
-    # option-trade walk-forward, which measures the trades that actually happened.
-    _premium = bool((option_result or {}).get("dispatch") == "premium_trigger_config")
-    wf = None
-    if req.walkforward:
-        if _premium:
-            wf = premium_walk_forward(
-                (option_result or {}).get("trades") or [],
-                n_folds=req.n_folds, train_pct=req.train_pct,
-            )
-        elif len(df_enriched) >= 200:
-            wf = walk_forward(
-                df_enriched,
-                strategy,
-                params,
-                instrument=req.instrument.upper(),
-                costs_enabled=req.costs_enabled,
-                pretrade_filters=req.pretrade_filters,
-                train_pct=req.train_pct,
-                n_folds=req.n_folds,
-                trade_window_start=req.trade_window_start,
-                trade_window_end=req.trade_window_end,
-            )
-
-    # Significance likewise: the spot metrics are a zero-filled stub for a
-    # premium run, so every one of them was badged on "0 trades".
-    if _premium:
-        _om = (option_result or {}).get("metrics") or {}
-        _paired = [t for t in ((option_result or {}).get("trades") or [])
-                   if t.get("status") == "PAIRED"]
-        _pnls = [float(t.get("option_pnl_value", 0.0) or 0.0) for t in _paired]
-        _gl = abs(sum(p for p in _pnls if p < 0))
-        _pf = (sum(p for p in _pnls if p > 0) / _gl) if _gl > 0 else None
-        sig = stat_significance(int(_om.get("paired_trade_count", 0) or 0),
-                                float(_om.get("win_rate", 0.0) or 0.0), _pf)
-    else:
-        sig = stat_significance(metrics["trade_count"], metrics["win_rate"],
-                                metrics.get("profit_factor"))
+    _spot_wf = None
+    if req.walkforward and len(df_enriched) >= 200:
+        _spot_wf = walk_forward(
+            df_enriched,
+            strategy,
+            params,
+            instrument=req.instrument.upper(),
+            costs_enabled=req.costs_enabled,
+            pretrade_filters=req.pretrade_filters,
+            train_pct=req.train_pct,
+            n_folds=req.n_folds,
+            trade_window_start=req.trade_window_start,
+            trade_window_end=req.trade_window_end,
+        )
+    wf, sig = resolve_wf_and_significance(
+        option_result=option_result, spot_wf=_spot_wf, spot_metrics=metrics,
+        n_folds=req.n_folds, train_pct=req.train_pct,
+        walkforward_requested=req.walkforward,
+    )
     regime_dist = df_enriched["regime"].value_counts().to_dict()
     regime_dist = {str(k): int(v) for k, v in regime_dist.items()}
 
@@ -349,12 +373,24 @@ async def run_backtest_job(run_id: str, req: BacktestReq) -> None:
                     trade_window_start=req.trade_window_start, trade_window_end=req.trade_window_end,
                 )
             rd = {str(k): int(v) for k, v in de["regime"].value_counts().to_dict().items()}
-            return r, w, rd, int(len(de))
+            # `de` is returned so the caller can forward it as the market-context
+            # frame (regime/VIX annotation). It used to stay trapped in this
+            # closure while the call below referenced a non-existent
+            # `df_enriched` — every async run died with NameError.
+            return r, w, rd, int(len(de)), de
 
-        res, wf, regime_dist, candle_count = await asyncio.to_thread(_compute)
+        res, spot_wf, regime_dist, candle_count, df_enriched = await asyncio.to_thread(_compute)
         metrics = res["metrics"]
-        option_result = await _run_paired_option_backtest(req, res["trades"], context_df=df_enriched)
-        sig = stat_significance(metrics["trade_count"], metrics["win_rate"], metrics.get("profit_factor"))
+        option_result = await _run_paired_option_backtest(
+            req, res["trades"], context_df=df_enriched)
+        # Shared with /backtest/run — see resolve_wf_and_significance. Routing the
+        # family in only one of the two handlers is what left every UI run with a
+        # walk-forward that measured nothing and reported "no divergence".
+        wf, sig = resolve_wf_and_significance(
+            option_result=option_result, spot_wf=spot_wf, spot_metrics=metrics,
+            n_folds=req.n_folds, train_pct=req.train_pct,
+            walkforward_requested=req.walkforward,
+        )
 
         await db.backtest_runs.update_one({"id": run_id}, {"$set": {
             "params_applied": params,

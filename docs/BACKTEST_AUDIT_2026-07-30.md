@@ -334,3 +334,69 @@ Suite 4163 passed / 0 failed. Containers rebuilt and verified live.
 - [x] 5 walk-forward delta + soft band
 - [x] 6 capital feasibility + live entry parity
 - [ ] USER: re-run every saved paired-option preset (Confluence_507% especially)
+
+## Round 5 — user-reported: "Backtest failed: name 'df_enriched' is not defined"
+
+### V. THE REPORTED BUG — my `sed`, two call sites, one verified
+A `sed -i 's|..._run_paired_option_backtest(req, res["trades"])|...(..., context_df=df_enriched)|g'`
+hit BOTH call sites in `research.py`. In `backtest_run` that local exists; in
+`run_backtest_job` the enriched frame is a local named `de` INSIDE the `_compute()`
+closure and was never returned. Every async run raised NameError.
+Fix: `_compute` now returns `de`; the caller forwards it.
+
+### W. THE WORSE ONE — my Round-3 fix never reached the path the UI uses (HIGH)
+The Backtest Lab calls `api.startBacktest` -> **`POST /backtest/start`** ->
+`run_backtest_job`. The premium walk-forward + option-based significance added
+2026-07-29 were applied ONLY to the sync `/backtest/run` handler — which is the
+path my own verification scripts used. **Confirmed on the user's own UI run
+`... 00:16:06`**: 3 folds, every fold 0 trades, `divergence_warning: false`,
+`significance: INSUFFICIENT "0 trades"` — the exact defect I had reported fixed.
+
+Cure is structural, not another parallel edit: both handlers now call ONE
+`resolve_wf_and_significance(...)`, so a family-routing decision cannot land on one
+path and not the other. `tests/test_backtest_paths_are_equivalent.py` asserts both
+delegate to it and that neither routes inline again.
+
+**Verified through `/backtest/start` after the fix:**
+* premium — `measured: True`, delta **16.26 pts**, soft AND hard warnings firing,
+  significance on 108 trades (was "0 trades").
+* confluence — delta −0.85 (OOS better), no warning; costs shown
+  spread 59,348 + charges 22,220 = **81,568 total**.
+
+### X. A REAL pre-existing NameError found by pyflakes (HIGH, live code)
+`routers/deployments.py:1341` calls `logging.getLogger(__name__).debug(...)` inside
+an `except Exception` handler with **no `logging` import**. A benign last-entry
+lookup failure therefore raised NameError *from the error handler* and 500'd the
+**live-status endpoint**. Import added.
+
+### Y. Guard: pyflakes undefined-name scan over `backend/app`
+Third NameError shipped in a week (`is_premium_trigger_strategy`,
+`contract_identity_key`, `df_enriched`). `test_no_unbound_helper_names.py` only
+watched a hand-maintained SHARED_HELPERS set, so it could never have caught
+`df_enriched` — an ordinary local. Widening that list per incident is chasing
+instances. `tests/test_no_undefined_names.py` now runs pyflakes with a small,
+explicitly VERIFIED baseline (7 entries, every one a false positive on a string
+annotation or a `Literal[...]` member) plus a test that the baseline cannot rot.
+Also fixed my own `compiler.py` `Dict`/`Any` (used in annotations, never imported).
+
+**Why the source-contract tests kept missing this class**: they assert a STRING
+appears in a file, and a string appears in a *use* — so a use with no binding
+satisfies them. Only real analysis or executing the path distinguishes the two.
+
+### Z. Run-to-run variance is a DATA effect, not a code one (MEDIUM)
+Sync vs async runs showed premium 112 vs 108 and confluence 253 vs 246. Not a path
+difference — `option_contracts` grew **63,868 -> 64,848** between the runs while
+`options_1m` stayed at 7,354,037. Contract METADATA arrived without candles.
+Expiry resolution picks the nearest expiry >= the session from metadata, so a newly
+known-but-uningested expiry is selected and then has no data:
+```
+expiry 2026-07-07  200 contracts   33/120 sampled keys have candles
+expiry 2026-07-14   94 contracts   18/120 have candles
+expiry 2026-07-21  354 contracts    0/120 have candles
+```
+The 7 new confluence misses are all early-July trades resolving to 2026-07-14.
+**Consequence for the user: a contract sync can silently REDUCE backtest coverage,
+and two identical backtests minutes apart can differ.** Run the option preflight
+before trusting a comparison. Not fixed here — flagged for a decision.
+
+Suite **4179 passed / 0 failed**.

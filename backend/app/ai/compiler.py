@@ -22,7 +22,7 @@ the spec is invalid, so a caller can never get code from a bad spec.
 from __future__ import annotations
 
 import re
-from typing import List, Set
+from typing import Any, Dict, List, Set
 
 from app.ai.spec_schema import CMP_OPS, Condition, StrategySpec
 
