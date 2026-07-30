@@ -699,3 +699,54 @@ trials are EXCLUDED rather than mapped to -inf, so a failed trial cannot occupy 
 Top-N slot (which would render params with no metrics). `_DISQUALIFY` is still
 included — it is a real float and is how the guard rails say "valid run, unusable
 result". `tests/test_optimizer_failed_trial_does_not_kill_job.py` — 10 tests.
+
+## Round 8 results — 18 verdicts recovered, three more HIGH defects fixed
+
+Workflow `wf_85678c6e-c17`: 5 of 7 agents completed (2 died on the spend limit).
+Recovered from the journal: **15 CONFIRMED, 3 REFUTED** →
+`docs/ROUND8_VERIFICATION.md`. Four verdicts (4/9/12, 5, 10, 29) independently
+match the orchestrator's own hand-verification — the cross-check that matters given
+the Round-6 workflow lost every verifier.
+
+### Fixed this round
+* **Claims 4/9/12 — grid None-sort kills a completed job.** Fixed in `ad850d3`.
+  The agent added two things I had missed: the poison SURVIVES Resume
+  (`_compact_trial` keeps the null score, resume rehydrates it, and
+  `resume_optimization` explicitly allows status `failed`), and `_rebuild_study`
+  ALREADY guards against a None objective at `optimizer.py:681-682` — so the hazard
+  was known at one site and missed at the sort.
+* **Claim 24 — `profit_factor` objective punished a flawless strategy.**
+  `backtest.py:297` returns None when there are no losing trades; `optimizer.py`
+  mapped that to `0.0`, the WORST score, below a mediocre PF of 1.05. Now returns
+  the finite 999.0 sentinel the premium path already used when there are wins, and
+  0.0 only when nothing won. The two families also stop disagreeing.
+* **Claim 10 — `min_trades` never reached Stage 2.** `stage2_rank_key(cand,
+  min_trades=)` puts candidates meeting the sample floor above every candidate
+  below it; ordering within a band is unchanged. Nothing is dropped, so an
+  all-weak field still yields a deterministic best rather than a crash. Threaded
+  through both re-rank paths (ordinary + premium).
+* **Claim 6 — Resume could skip up to 49 trials.** `n_trials_completed` is written
+  every 5 trials, `trial_log` every 50, and `server.py` flips a running job to
+  `interrupted` on restart with no flush. `resolve_resume_completed` now resumes
+  from the LOG (the evidence), not the counter. Re-running a few trials is strictly
+  better than never evaluating them.
+
+`tests/test_optimizer_confirmed_high_fixes.py` — 16 tests.
+Suite **4219 passed**; 2 failures are the known host→Mongo trap (Docker Desktop's
+engine stopped again — `docker` itself cannot connect), not a regression.
+
+### Refuted (do not re-raise)
+* **5** — zero-survivor refusal holds: `done_no_survivor` is not in
+  apply-as-preset's accepted-status tuple, so it 400s. My own `best_so_far`
+  re-persist from `588208b` tightens it further (the branch empties `best_so_far`,
+  so the fallback yields `{}` → falsy → 400).
+* **13** — `search_exit_controls` no-op grid.
+* **21** — `-Infinity` into `best_so_far.value`: already guarded by
+  `_flush_trial_log` (`> -1e8 else None`), and my new finish-payload copy uses the
+  same guard.
+* **31** — `net_pnl_inr` lots/lot-size claim.
+
+### STILL NOT COVERED
+Batch b4 (claims 17, 18, 20, 22 — 21 refuted by hand) and the
+**result-persistence-display** dimension. Both agents died on the spend limit; the
+workflow was resumed (`w5bmdnw90`) so only those two re-run.

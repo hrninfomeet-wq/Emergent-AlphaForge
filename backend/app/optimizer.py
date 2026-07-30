@@ -163,7 +163,17 @@ def _objective_value(
         return float(v) if v is not None else _DISQUALIFY
     if objective == "profit_factor":
         v = metrics.get("profit_factor")
-        return float(v) if v is not None else 0.0
+        if v is not None:
+            return float(v)
+        # `profit_factor` is None when there were NO LOSING TRADES
+        # (backtest.py:297 returns None unless gross_loss < 0). Mapping that to
+        # 0.0 made a flawless config the WORST possible score — below a mediocre
+        # PF of 1.05 — so the objective steered away from strictly-profitable
+        # configs. Distinguish "no losses because it only won" (best) from "no
+        # profit factor because nothing won" (worst). 999.0 mirrors the sentinel
+        # the premium path already uses, and stays finite so JSON and ranking
+        # both survive.
+        return 999.0 if int(metrics.get("wins", 0) or 0) > 0 else 0.0
     if objective == "total_pnl_pts":
         return float(metrics.get("total_pnl_pts", 0) or 0)
     if objective == "net_pnl_inr":
@@ -179,6 +189,47 @@ def _objective_value(
     sharpe = float(metrics.get("sharpe") or 0)
     dd = abs(float(metrics.get("max_dd_pts") or 1))
     return sharpe / max(1.0, dd / 100.0)
+
+
+def stage2_rank_key(cand: Dict[str, Any], *, min_trades: int) -> Tuple:
+    """Sort key for the Stage-2 option re-rank.
+
+    Stage 2 previously ranked on ``(paired_trade_count > 0, option_pnl_value)``,
+    whose only sample guard is "more than zero" — so a candidate with ONE paired
+    option trade could be promoted on that single trade's rupee P&L. ``min_trades``
+    is enforced in ``_objective_value`` against ``metrics["trade_count"]``, which
+    for an ORDINARY strategy is the SPOT count, so a config with 120 spot trades
+    and 1 paired trade sailed through Stage 1 and won Stage 2.
+
+    Candidates meeting the sample floor now outrank every candidate below it;
+    within each band the ordering is unchanged (rupee P&L). Nothing is dropped —
+    an all-under-the-floor job still produces a deterministic best rather than
+    failing — because "the best of a weak field" is a reportable answer while a
+    crash is not.
+    """
+    paired = int(cand.get("paired_trade_count", 0) or 0)
+    pnl = float(cand.get("option_pnl_value", 0.0) or 0.0)
+    floor = int(min_trades or 0)
+    return (paired > 0, paired >= floor if floor > 0 else True, pnl)
+
+
+def resolve_resume_completed(*, n_trials_completed: Any, trial_log_len: int) -> int:
+    """How many trials a resumed job may treat as already done.
+
+    ``n_trials_completed`` is persisted every 5 trials but ``trial_log`` only every
+    50, and ``server.py`` flips a ``running`` job to ``interrupted`` on restart
+    with no flush. Resume then skipped by the counter (``combos[completed:]``,
+    ``range(completed, n_trials)``), so up to 49 combinations were never evaluated
+    yet were reported as completed.
+
+    The LOG is the evidence and the counter is only a hint, so the answer is
+    simply "how many trials were actually recorded". Re-running a handful is
+    strictly better than silently skipping them, and costs only time.
+
+    ``n_trials_completed`` is accepted (and ignored) to keep the call site
+    self-documenting about which of the two values was previously trusted.
+    """
+    return max(0, int(trial_log_len or 0))
 
 
 def scored_trials(trial_history: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
@@ -989,6 +1040,7 @@ async def _survival_eval_oos(
 
 async def _option_rerank_premium_trigger(
     candidates: List[Dict[str, Any]], get_enriched, strategy, instrument: str,
+    *, min_trades: int = 0,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Any, bool]:
     """premium_momentum's Stage-2 re-rank. `strategy.evaluate()` is a deliberate
     stub (real logic lives only in deployment_evaluator.py's dedicated branch), so
@@ -1047,7 +1099,9 @@ async def _option_rerank_premium_trigger(
             "spot_trade_count": int(m.get("paired_trade_count", 0) or 0),
             "coverage": pm_result["coverage"],
         })
-    ranked.sort(key=lambda r: (r["paired_trade_count"] > 0, r["option_pnl_value"]), reverse=True)
+    # Sample floor now applies here too — one paired trade could otherwise win
+    # on its single rupee P&L (min_trades only gates the SPOT count upstream).
+    ranked.sort(key=lambda r: stage2_rank_key(r, min_trades=min_trades), reverse=True)
     return ranked, contracts, option_candles, False
 
 
@@ -1056,13 +1110,15 @@ async def _option_rerank(
     instrument: str, costs: bool, pretrade: Dict[str, Any], option_cfg: Dict[str, Any],
     *, analyze_t0: Optional[float] = None, analyze_budget_sec: int = 0, progress_cb=None,
     trade_window_start: Optional[str] = None, trade_window_end: Optional[str] = None,
+    min_trades: int = 0,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Any, bool]:  # (ranked, contracts, candles_df, budget_hit)
     """Stage 2: re-score the top-K spot candidates on REAL paired-option net
     rupee. Option contracts + candles are loaded from the DB ONCE (over the
     union of all candidates' needed strikes), then each candidate is simulated
     in-memory. Returns candidates ranked by option net-rupee P&L."""
     if is_premium_trigger_strategy(strategy):
-        return await _option_rerank_premium_trigger(candidates, get_enriched, strategy, instrument)
+        return await _option_rerank_premium_trigger(candidates, get_enriched, strategy, instrument,
+                                                   min_trades=min_trades)
 
     moneyness = str(option_cfg.get("moneyness") or "atm")
     lots = int(option_cfg.get("lots") or 1)
@@ -1214,7 +1270,9 @@ async def _option_rerank(
             budget_hit = True
             break
     # Rank by option net rupee; candidates with no paired trades sink to the bottom.
-    ranked.sort(key=lambda r: (r["paired_trade_count"] > 0, r["option_pnl_value"]), reverse=True)
+    # Sample floor now applies here too — one paired trade could otherwise win
+    # on its single rupee P&L (min_trades only gates the SPOT count upstream).
+    ranked.sort(key=lambda r: stage2_rank_key(r, min_trades=min_trades), reverse=True)
     # Also return the loaded contracts + candle frame so the survival evaluator can
     # reuse the single (multi-million-row) option-candle load instead of re-querying.
     return ranked, contracts, candles_df, budget_hit
@@ -1422,7 +1480,14 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                 {"id": job_id}, {"trial_log": 1, "best_so_far": 1, "n_trials_completed": 1}
             ) or {}
             trial_history = list(rdoc.get("trial_log") or [])
-            completed = int(rdoc.get("n_trials_completed") or len(trial_history))
+            # Resume from the EVIDENCE, not the counter. `n_trials_completed` is
+            # persisted every 5 trials but `trial_log` only every 50, and
+            # server.py flips a running job to `interrupted` on restart with no
+            # flush — so trusting the counter skipped up to 49 combinations that
+            # were never evaluated yet were reported as done.
+            completed = resolve_resume_completed(
+                n_trials_completed=rdoc.get("n_trials_completed"),
+                trial_log_len=len(trial_history))
             bsf = rdoc.get("best_so_far") or {}
             best_so_far = {
                 "value": bsf.get("value") if bsf.get("value") is not None else -float("inf"),
@@ -1740,7 +1805,8 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                         analyze_t0=_an_t0, analyze_budget_sec=analyze_budget_sec,
                         progress_cb=_an_progress,
                         trade_window_start=trade_window_start,
-                        trade_window_end=trade_window_end)
+                        trade_window_end=trade_window_end,
+                        min_trades=min_trades)
                     analyze_budget_hit = analyze_budget_hit or _rr_hit
                 except Exception as e:
                     log.warning(f"option re-rank failed: {e}")
