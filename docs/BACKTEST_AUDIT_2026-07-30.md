@@ -607,3 +607,36 @@ From `docs/ROUND6_OPTIMIZER_AUDIT_RAW.md`, none verified by me:
 * `profit_factor` objective scores a zero-loss config 0.0 (worst possible).
 * Parallel trial path can attach the PREVIOUS best's metrics to NEW best params.
 * `result-persistence-display` dimension was never audited (agent died).
+
+## Round 8 — verifying the unverified claims
+
+Workflow `wf_85678c6e-c17`: 6 verification batches (claims 4,5,6 / 9,10,11 /
+12-15 / 17,18,20,21,22 / 23-26 / 28-31) + the never-audited
+`result-persistence-display` dimension with its own adversarial verifier.
+Claims 1,2,3,7,8,16,19,27 excluded — they are the two defects fixed in `588208b`.
+
+### Orchestrator-verified independently (redundancy against agent loss)
+
+**Claim 10 — CONFIRMED, HIGH.** `min_trades` never reaches Stage 2.
+`optimizer.py:1183` (and the twin at `:1016`):
+```python
+ranked.sort(key=lambda r: (r["paired_trade_count"] > 0, r["option_pnl_value"]), reverse=True)
+```
+The ONLY sample guard is `paired_trade_count > 0` — one paired trade is enough to be
+promoted. `min_trades` is enforced in `_objective_value` against
+`metrics["trade_count"]`, which for an ORDINARY strategy is the SPOT count. So a
+candidate with 100 spot trades (passing `min_trades=30`) and 1 paired option trade
+can be ranked #1 on that single trade's rupee P&L.
+Exposure note: BEFORE the `contract_key` NaN fix, pairing routinely failed
+(10 of 253), so low paired counts were common and this was live. Post-fix pairing is
+~100%, which shrinks the practical exposure but does not close the guard.
+
+**Claim 21 — REFUTED.** The claim is that `-Infinity` is persisted into
+`best_so_far.value` and then 500s the job-history endpoint via
+`allow_nan=False`. `_flush_trial_log` (`optimizer.py:646-650`) already guards it:
+```python
+"value": round(best_so_far["value"], 4) if best_so_far["value"] > -1e8 else None,
+```
+`-inf` becomes `None`, never reaches JSON. `_update_job` is the only writer. The new
+`finished["best_so_far"]` added in `588208b` uses the identical guard, so that fix
+did not open a hole either.
