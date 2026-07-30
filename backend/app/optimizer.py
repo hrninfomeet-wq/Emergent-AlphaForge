@@ -181,6 +181,40 @@ def _objective_value(
     return sharpe / max(1.0, dd / 100.0)
 
 
+def scored_trials(trial_history: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    """Trials that actually produced a comparable score.
+
+    The grid path records a raising combo as
+    ``{"metrics": None, "objective_value": None, "error": ...}`` specifically so one
+    bad combination does not kill the job. But the analyze stage then sorted the
+    history on that key, and in Python 3 comparing ``None`` with a float raises
+    ``TypeError`` — defeating the handler and failing the job AFTER every trial had
+    completed, losing the whole search. Param importance read the same key into
+    numeric work.
+
+    Unscored trials are EXCLUDED rather than treated as the worst value: a failed
+    trial has no result, so it must not occupy a Top-N alternatives slot (which
+    would render params with no metrics) or skew an importance correlation.
+
+    ``_DISQUALIFY`` is deliberately still included — it is a real, very negative
+    float, and it is how the guard rails express "the run was valid, the result is
+    unusable". Only None/NaN/missing means "never scored".
+    """
+    out: List[Dict[str, Any]] = []
+    for t in trial_history or []:
+        v = t.get("objective_value")
+        if v is None:
+            continue
+        try:
+            fv = float(v)
+        except (TypeError, ValueError):
+            continue
+        if fv != fv:      # NaN — unorderable, and invalid JSON on the way out
+            continue
+        out.append(t)
+    return out
+
+
 def _indicator_key(merged: Dict[str, Any]) -> Tuple:
     """Cache key capturing only the params that change indicator computation."""
     return tuple((k, merged.get(k)) for k in INDICATOR_PARAM_KEYS)
@@ -1648,8 +1682,11 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                 "eta_sec": eta_seconds(done=done, total=total, per_item_sec=per_item)}}
             await _update_job(job_id, upd)
 
-        # Top-N alternatives
-        sorted_trials = sorted(trial_history, key=lambda t: t["objective_value"], reverse=True)
+        # Top-N alternatives. `scored_trials` drops trials that never produced a
+        # comparable value — a single raising grid combo put None here and this
+        # sort then raised TypeError, failing the job after every trial had run.
+        sorted_trials = sorted(scored_trials(trial_history),
+                               key=lambda t: t["objective_value"], reverse=True)
         top_n = sorted_trials[:10]
 
         # Param importance (only for Bayesian/Genetic)
@@ -1663,8 +1700,12 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
         if not importance and len(trial_history) > 5:
             try:
                 axis_var = {}
+                # Same exclusion as the Top-N sort: an unscored trial cannot
+                # contribute to a variance/importance figure, and None would break
+                # the arithmetic below.
+                _scored = scored_trials(trial_history)
                 for name in space:
-                    vals = [(t["params"].get(name), t["objective_value"]) for t in trial_history if name in t["params"]]
+                    vals = [(t["params"].get(name), t["objective_value"]) for t in _scored if name in t["params"]]
                     if not vals:
                         continue
                     # Bin by param value to compute response variance

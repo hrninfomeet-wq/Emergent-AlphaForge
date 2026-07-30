@@ -640,3 +640,62 @@ Exposure note: BEFORE the `contract_key` NaN fix, pairing routinely failed
 `-inf` becomes `None`, never reaches JSON. `_update_job` is the only writer. The new
 `finished["best_so_far"]` added in `588208b` uses the identical guard, so that fix
 did not open a hole either.
+
+**Claim 5 — REFUTED as stated, but it points at a narrower real gap.**
+Claim: "zero-survivor refusal is defeated: apply-as-preset falls back to the stale
+spot best that the survival gate rejected."
+`optimizer.py:1877-1879`:
+```python
+if survival.enabled and survival_summary is not None and survival_summary.get("survivors") == 0:
+    final_status = "done_no_survivor"
+```
+and `research.py:705` gates on
+`("done", "cancelled", "paused", "interrupted", "failed")` — `done_no_survivor` is
+NOT in that list, so apply-as-preset returns **400**. The refusal holds.
+
+REAL residual gap (narrower than the claim): if `survival_summary is None` — the
+survival stage was truncated by the analyze budget or raised — the status falls
+through to plain `"done"` and apply-as-preset ACCEPTS it, saving a spot best that
+was never survival-validated. It is disclosed (`validation.stage` reads
+`option_ranked`, not `survival_passed`) but not refused. Severity MEDIUM: the user
+must read the stage field to notice.
+
+**Claim 29 — CONFIRMED (both halves), MEDIUM.**
+`risk_adjusted` is the DEFAULT objective (`optimizer.py:178-181`):
+```python
+sharpe = float(metrics.get("sharpe") or 0)
+dd = abs(float(metrics.get("max_dd_pts") or 1))
+return sharpe / max(1.0, dd / 100.0)
+```
+(a) `max_dd_pts` is index POINTS on the ordinary path (`backtest.py:300`) and
+RUPEES on the premium path (`optimizer.py:398`, a documented proxy). Real values
+from this session's two jobs: confluence `max_dd_pts = -698.18` (points) vs premium
+`max_dd_pts = 37518.11` (rupees) — a ~54x scale difference in the denominator for
+the same objective. Intra-job ranking is still monotonic (one family per job), so
+this does NOT corrupt a single search; what it breaks is any cross-job or
+cross-family comparison of `best_value`, and the field name is simply wrong on the
+premium path.
+(b) The `max(1.0, dd / 100.0)` clamp means **any ordinary run whose drawdown is
+under 100 points gets NO risk penalty at all** — it scores as pure Sharpe. That is
+a real flaw in the default objective, independent of (a).
+Minimal fix: rename the premium field (e.g. `max_dd_value`) or carry an explicit
+unit, and replace the clamp with a small epsilon so the penalty is continuous.
+
+**Claims 4 / 9 / 12 — CONFIRMED (all three are one root cause), HIGH. FIXED.**
+The grid path records a raising combo to keep the job alive
+(`optimizer.py:1468-1477`, comment: "disqualify + continue") and then the analyze
+stage sorted on that key (`optimizer.py:1652`):
+```python
+sorted_trials = sorted(trial_history, key=lambda t: t["objective_value"], reverse=True)
+```
+`None < float` raises `TypeError` in Python 3, so the handler written specifically
+to survive one bad combo was defeated by the sort — and it fires AFTER every trial
+has completed, so the whole search is lost and the job persists as `failed`.
+Param importance (`optimizer.py:1667`) read the same key into numeric work.
+
+FIX: `scored_trials(trial_history)` excludes trials with None/NaN/missing
+`objective_value`; both the Top-N sort and the importance fallback use it. Unscored
+trials are EXCLUDED rather than mapped to -inf, so a failed trial cannot occupy a
+Top-N slot (which would render params with no metrics). `_DISQUALIFY` is still
+included — it is a real float and is how the guard rails say "valid run, unusable
+result". `tests/test_optimizer_failed_trial_does_not_kill_job.py` — 10 tests.
