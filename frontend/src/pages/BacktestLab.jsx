@@ -280,6 +280,12 @@ export default function BacktestLab() {
           option_brokerage_per_order: ex.cost_config.brokerage_per_order ?? 0,
           option_spread_pct: ex.cost_config.spread_pct_of_premium ?? 1.0,
         } : {}),
+        // Restore the ENTRY WINDOW the preset was validated under. The optimizer
+        // scores 09:25-14:50 (live-effective) while this page defaults to 15:00,
+        // so without this a loaded optimizer preset replayed a WIDER window than
+        // the optimizer scored — measured 5.4% net difference on one winner.
+        ...(ex.trade_window_start ? { trade_window_start: ex.trade_window_start } : {}),
+        ...(ex.trade_window_end ? { trade_window_end: ex.trade_window_end } : {}),
         // Exit/risk overlay travels with the preset -> prefill the panel (fractions,
         // no conversion). Same null-tolerant shape the deploy wizard reads.
         exit_controls_enabled: Boolean(ex.exit_controls?.enabled),

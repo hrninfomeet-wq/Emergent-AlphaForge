@@ -44,6 +44,15 @@ def execution_from_option_config(option_cfg: Optional[Dict[str, Any]]) -> Option
         val = _num(option_cfg.get(key))
         if val is not None:
             execution[key] = val
+    # The ENTRY WINDOW the result was validated under. Carried because the
+    # optimizer scores 09:25-14:50 (the live-effective window) while the Backtest
+    # Lab defaults to 15:00 — so replaying an optimizer preset used a WIDER window
+    # than the optimizer did. Measured on one winner: 5.4% net difference.
+    # Omitted when unknown, so "absent" stays distinguishable from a guessed value.
+    for key in ("trade_window_start", "trade_window_end"):
+        val = option_cfg.get(key)
+        if val:
+            execution[key] = str(val)
     cost_cfg = option_cfg.get("cost_config") or {}
     if cost_cfg.get("enabled"):
         execution["cost_config"] = {
@@ -51,6 +60,10 @@ def execution_from_option_config(option_cfg: Optional[Dict[str, Any]]) -> Option
             "brokerage_per_order": float(cost_cfg.get("brokerage_per_order") or 0.0),
             "spread_pct_of_premium": float(cost_cfg.get("spread_pct_of_premium") or 0.0),
         }
+        # Was dropped, silently losing a configured minimum-spread floor.
+        _min_pts = _num(cost_cfg.get("spread_min_pts"))
+        if _min_pts is not None:
+            execution["cost_config"]["spread_min_pts"] = _min_pts
     exit_controls = (option_cfg or {}).get("exit_controls")
     if exit_controls is not None:
         execution["exit_controls"] = exit_controls

@@ -805,7 +805,10 @@ async def run_wfo(job_id: str, payload: Dict[str, Any], resume: bool = False) ->
             df_final = get_enriched(merged_final)
             best_backtest_run_id = await _save_best_as_backtest(
                 job_id, payload, strategy, df_final, final_params,
-                instrument, costs, pretrade, run_walkforward=True, option_config=None)
+                instrument, costs, pretrade, run_walkforward=True, option_config=None,
+                # WFO defaults to the same live-effective window (WfoStartReq).
+                trade_window_start=trade_window_start,
+                trade_window_end=trade_window_end)
 
         # ---- Option-aware OOS (v2): rupee reality check on the stitch ----
         # Pair the stitched OOS trades with real option candles once and report

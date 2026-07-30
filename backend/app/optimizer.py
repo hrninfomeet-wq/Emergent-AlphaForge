@@ -686,7 +686,7 @@ def _rebuild_study(method: str, space: Dict[str, Dict[str, Any]], trial_history:
     return study
 
 
-async def _save_best_as_backtest(job_id: str, payload: Dict[str, Any], strategy, df_enriched: pd.DataFrame, best_params: Dict[str, Any], instrument: str, costs_enabled: bool, pretrade: Dict[str, Any], run_walkforward: bool = True, option_config: Optional[Dict[str, Any]] = None, n_trials: Optional[int] = None) -> Optional[str]:
+async def _save_best_as_backtest(job_id: str, payload: Dict[str, Any], strategy, df_enriched: pd.DataFrame, best_params: Dict[str, Any], instrument: str, costs_enabled: bool, pretrade: Dict[str, Any], run_walkforward: bool = True, option_config: Optional[Dict[str, Any]] = None, n_trials: Optional[int] = None, trade_window_start: Optional[str] = None, trade_window_end: Optional[str] = None) -> Optional[str]:
     """Run a final full backtest with best params and persist as a backtest_run.
     Returns the new backtest_run_id (or None on failure). When run_walkforward
     is False (e.g. on cancellation) the slow multi-fold walk-forward is skipped
@@ -695,11 +695,18 @@ async def _save_best_as_backtest(job_id: str, payload: Dict[str, Any], strategy,
         from app.walkforward import walk_forward
         from app.backtest import stat_significance
         merged = strategy.merged_params(best_params)
-        res = await asyncio.to_thread(run_backtest, df_enriched, strategy, merged, instrument=instrument, costs_enabled=costs_enabled, pretrade_filters=pretrade)
+        # The promoted run MUST use the window the job optimized on. Without it
+        # this defaulted to run_backtest's 15:00 while the job scored 09:25-14:50,
+        # so the saved "Optimized ·" run — the artifact the job reports and the
+        # user reopens — was a different backtest from the one that won. The
+        # values were already available in `payload`.
+        _tw = ({"trade_window_start": trade_window_start, "trade_window_end": trade_window_end}
+               if trade_window_start and trade_window_end else {})
+        res = await asyncio.to_thread(run_backtest, df_enriched, strategy, merged, instrument=instrument, costs_enabled=costs_enabled, pretrade_filters=pretrade, **_tw)
         metrics = res["metrics"]
         wf = None
         if run_walkforward and len(df_enriched) >= 200:
-            wf = await asyncio.to_thread(walk_forward, df_enriched, strategy, merged, instrument=instrument, costs_enabled=costs_enabled, pretrade_filters=pretrade)
+            wf = await asyncio.to_thread(walk_forward, df_enriched, strategy, merged, instrument=instrument, costs_enabled=costs_enabled, pretrade_filters=pretrade, **_tw)
         sig = stat_significance(metrics["trade_count"], metrics["win_rate"], metrics.get("profit_factor"))
         regime_dist = df_enriched["regime"].value_counts().to_dict()
         regime_dist = {str(k): int(v) for k, v in regime_dist.items()}
@@ -738,6 +745,13 @@ async def _save_best_as_backtest(job_id: str, payload: Dict[str, Any], strategy,
                 "start_ts": payload.get("start_ts"),
                 "end_ts": payload.get("end_ts"),
                 "pretrade_filters": pretrade,
+                # Persisted so reopening this run in the Backtest Lab restores the
+                # window it was scored on. BacktestLab.jsx rehydrates
+                # `r.config?.trade_window_end || "15:00"`, so an absent key
+                # silently became a WIDER window than the optimizer used.
+                **({"trade_window_start": trade_window_start,
+                    "trade_window_end": trade_window_end}
+                   if trade_window_start and trade_window_end else {}),
                 "source": "auto-from-optimizer",
                 "optimization_job_id": job_id,
                 **({"option_backtest": {**option_config, "enabled": True}} if option_config else {}),
@@ -1007,6 +1021,7 @@ async def _option_rerank(
     db, strategy, get_enriched, candidates: List[Dict[str, Any]],
     instrument: str, costs: bool, pretrade: Dict[str, Any], option_cfg: Dict[str, Any],
     *, analyze_t0: Optional[float] = None, analyze_budget_sec: int = 0, progress_cb=None,
+    trade_window_start: Optional[str] = None, trade_window_end: Optional[str] = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Any, bool]:  # (ranked, contracts, candles_df, budget_hit)
     """Stage 2: re-score the top-K spot candidates on REAL paired-option net
     rupee. Option contracts + candles are loaded from the DB ONCE (over the
@@ -1030,6 +1045,16 @@ async def _option_rerank(
     opt_tpct, opt_spct = option_cfg.get("option_target_pct"), option_cfg.get("option_stop_pct")
 
     # 1. Spot backtest each candidate (fast post Slice-1) to get its trades.
+    #
+    # The entry window MUST match Stage 1 and the survival gate. Without it this
+    # re-run defaulted to run_backtest's 15:00 while trials scored 09:25-14:50, so
+    # Stage 2 ranked candidates on a trade set the search never evaluated — and
+    # `trade_window_end` gates the forced close as well as entries, so trades open
+    # at 14:50 also got a different exit, a different exit candle and a different
+    # premium. Measured on one winner: 222 spot/net Rs 142,636 at 14:50 vs
+    # 227 spot/net Rs 134,865 at 15:00 (5.4%).
+    _tw = ({"trade_window_start": trade_window_start, "trade_window_end": trade_window_end}
+           if trade_window_start and trade_window_end else {})
     cand_trades: List[List[Dict[str, Any]]] = []
     for cand in candidates:
         merged = strategy.merged_params(cand["params"])
@@ -1037,6 +1062,7 @@ async def _option_rerank(
         res = await asyncio.to_thread(
             run_backtest, enr, strategy, merged,
             instrument=instrument, costs_enabled=costs, pretrade_filters=pretrade,
+            **_tw,
         )
         cand_trades.append(res.get("trades", []) or [])
 
@@ -1671,7 +1697,9 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                         get_db(), strategy, get_enriched, candidates,
                         instrument, costs, pretrade, option_cfg,
                         analyze_t0=_an_t0, analyze_budget_sec=analyze_budget_sec,
-                        progress_cb=_an_progress)
+                        progress_cb=_an_progress,
+                        trade_window_start=trade_window_start,
+                        trade_window_end=trade_window_end)
                     analyze_budget_hit = analyze_budget_hit or _rr_hit
                 except Exception as e:
                     log.warning(f"option re-rank failed: {e}")
@@ -1840,6 +1868,8 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                                "exit_controls": best_so_far.get("exit_controls"),
                                "daily_caps": best_so_far.get("daily_caps")} if evaluation_mode == "option_rerank" else None,
                 n_trials=n_trials,
+                trade_window_start=trade_window_start,
+                trade_window_end=trade_window_end,
             )
 
         # Determine final status — cancelled if user cancelled before completion;
@@ -1858,6 +1888,29 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
             "best_params": best_so_far["params"],
             "best_value": round(best_so_far["value"], 4) if best_so_far["value"] > -1e8 else None,
             "best_metrics": best_so_far["metrics"],
+            # RE-PERSIST best_so_far. Its only other writer is `_flush_trial_log`,
+            # called from the trial loops — so when Stage 2 (option re-rank)
+            # promotes a different candidate it reassigns the LOCAL and the stored
+            # field stays frozen at the Stage-1 winner. The UI renders the stored
+            # field (Optimizer.jsx:1426, and Job History's "Best" column) while
+            # apply-as-preset uses `best_params` (research.py:707), so the user
+            # read one configuration on screen and saved a different one. Measured
+            # on job fd40ecff: card showed ema 6/43/74 @ Sharpe 1.499, preset
+            # saved ema 5/57/79 @ Sharpe 1.168.
+            "best_so_far": {
+                "value": best_so_far["value"] if best_so_far["value"] > -1e8 else None,
+                "params": best_so_far["params"],
+                "metrics": best_so_far["metrics"],
+                "trial_num": best_so_far.get("trial_num"),
+            },
+            # What `best_value` actually MEASURES. After an option re-rank it is the
+            # Stage-2 option rupee P&L, not the requested objective — verified
+            # `best_value = 134864.61` on a job whose `objective` read "sharpe".
+            # A field that holds a Sharpe on one job and rupees on another cannot
+            # be rendered or compared without this.
+            "best_value_metric": ("option_pnl_value"
+                                  if evaluation_mode == "option_rerank"
+                                  else objective),
             "best_backtest_run_id": best_backtest_run_id,
             "top_n_alternatives": [{"params": t["params"], "metrics": t["metrics"], "objective_value": t["objective_value"]} for t in top_n],
             "parameter_importance": importance,

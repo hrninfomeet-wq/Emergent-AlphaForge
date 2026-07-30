@@ -758,6 +758,14 @@ async def apply_opt_as_preset(job_id: str, name: str = Query(...)):
         _oc["exit_controls"] = job.get("best_exit_controls")
     if job.get("best_daily_caps") is not None:
         _oc["daily_caps"] = job.get("best_daily_caps")
+    # Carry the ENTRY WINDOW into the execution block, not just into
+    # `validation` (which is metadata nothing applies). The optimizer scores
+    # 09:25-14:50; the Backtest Lab defaults to 15:00, so loading a preset
+    # replayed a wider window than the optimizer used — a measured 5.4% net
+    # difference on one winner. The value was already known here.
+    for _k in ("trade_window_start", "trade_window_end"):
+        if _cfg.get(_k) and not _oc.get(_k):
+            _oc[_k] = _cfg[_k]
     execution = execution_from_option_config(_oc)
     if execution:
         config["execution"] = execution

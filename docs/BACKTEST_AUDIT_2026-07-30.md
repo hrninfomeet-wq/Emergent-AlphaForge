@@ -551,3 +551,59 @@ ALL verifiers and the `apply-preset-roundtrip` + `result-persistence-display`
 dimensions entirely (I audited apply-preset-roundtrip by hand instead → AA–DD, EE).
 Verified by me so far: EE, CC, AA(corrected), BB, DD.
 Everything else in that file is an unverified claim.
+
+## Round 7 — fixes landed and VERIFIED on a fresh real job (`d9b1076f`)
+
+### FIX EE — `best_so_far` re-persisted at finish
+`optimizer.py` `finished` payload now carries `best_so_far` (value/params/metrics/
+trial_num) built from the SAME local the `best_params` key reads, so the stored
+field can no longer freeze at the Stage-1 winner. Also added
+`best_value_metric` so a consumer can tell whether `best_value` is the requested
+objective or the Stage-2 option rupee P&L.
+
+### FIX CC — ONE entry window through every stage
+* `_option_rerank` gained `trade_window_start/end` and splats the same `_tw` dict
+  `_survival_eval_oos` already used — Stage 2 no longer ranks on a trade set
+  Stage 1 never scored.
+* `_save_best_as_backtest` gained them, passes them to BOTH `run_backtest` and
+  `walk_forward`, and PERSISTS them in the saved run's `config`.
+* Threaded from both call sites (`optimizer.py`, `wfo.py`).
+* `execution_from_option_config` carries the window (omitted when unknown, so
+  absent stays distinguishable from a guess) and no longer drops `spread_min_pts`.
+* `apply-as-preset` puts the window in the execution block, not only in
+  `validation`.
+* `BacktestLab.jsx` restores it when a preset is applied.
+
+### Verified end-to-end, fresh job `d9b1076f` (same config as `fd40ecff`)
+```
+FIX 1  best_so_far.value 142636.01 == best_value 142636.01
+       params MATCH: true          sharpe 1.168 == 1.168
+       best_value_metric: "option_pnl_value"
+FIX 2  saved run config tw: 09:25 -> 14:50          (was absent)
+       saved run spot trades 222 == best_metrics.trade_count 222  (was 227 vs 222)
+FIX 3  preset execution carries trade_window_start/end: true      (was absent)
+```
+**The reported best moved 134,864.61 -> 142,636.01** — i.e. exactly the 14:50
+figure that Round 6 measured as "what nothing reports". The optimizer now reports
+the number it actually scored.
+
+`tests/test_optimizer_result_coherence.py` — 16 tests. Suite **4195 passed / 0**.
+
+Two of my own test assertions were wrong at first (they looked for a literal
+`trade_window_start=` kwarg where the code uses a `**_tw` splat). Implementation
+was correct; the assertions now check the splat, which is the real property.
+
+### STILL OPEN (unverified agent claims worth triaging next)
+From `docs/ROUND6_OPTIMIZER_AUDIT_RAW.md`, none verified by me:
+* `min_trades` guards the SPOT trade count only — a config with 100 spot trades and
+  3 paired ones passes the statistical guard.
+* Grid search: one raising combo recorded with `objective_value=None` then poisons
+  the analyze stage.
+* Option re-rank / WFO analyze stages read no cancel/pause flag.
+* Zero-survivor refusal defeated: apply-as-preset falls back to the stale spot best.
+* Resume can skip up to 49 grid combos it then counts as completed.
+* `_robustness_score` counts no-op perturbations (integer rounding, bound clamps)
+  as passes, and its pass test inverts when the best objective is negative.
+* `profit_factor` objective scores a zero-loss config 0.0 (worst possible).
+* Parallel trial path can attach the PREVIOUS best's metrics to NEW best params.
+* `result-persistence-display` dimension was never audited (agent died).
