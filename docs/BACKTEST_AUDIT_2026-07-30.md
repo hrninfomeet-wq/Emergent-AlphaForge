@@ -400,3 +400,154 @@ and two identical backtests minutes apart can differ.** Run the option preflight
 before trusting a comparison. Not fixed here — flagged for a decision.
 
 Suite **4179 passed / 0 failed**.
+
+## Round 6 — re-optimize BOTH strategies, then backtest, then audit the process
+
+User asked: optimize both strategies again, load into backtest, audit the
+optimization AND backtest functionality/process for abnormalities, gaps, technical
+issues.
+
+### Setup (deliberate choices)
+Window **2026-01-01 → 2026-07-24** — the same one the user has been using, so the
+audit reflects their real workflow. **IN-SAMPLE by construction; the point of this
+round is process/functionality, not edge.**
+Objective `sharpe` for both (scale-invariant, not monotonic in trade count —
+unlike `net_pnl_inr`, which drove `momentum_pct` to its floor in Round 4).
+Costs: brokerage ₹0 (per the account owner) + 0.5% spread, both strategies, so the
+two are cost-matched.
+* confluence_scalper — `evaluation_mode: option_rerank`, top-K 25, lots 5, ATM,
+  option_levels 28%/18%. Chose the two-stage mode ON PURPOSE: the documented
+  weakness of `spot` mode is that it optimises the index leg, not the option net.
+  Job `fd40ecff-9027-4d80-b0c0-58b465db25b4`.
+* algotest_option_buy_nifty — `evaluation_mode: spot` (Stage-1 is already
+  option-native for premium), lots 5, itm1, spot_exit.
+
+Parallel code audit: workflow `wf_2f23df6d-0a6`, 5 dimensions x adversarial verify
+(apply-preset round-trip, option_rerank Stage-2, job lifecycle, objective/metric
+integrity on the ORDINARY path, result persistence/display across both endpoints).
+
+### Status
+- [x] Confluence optimization started
+- [ ] Confluence optimization finished
+- [ ] Premium optimization
+- [ ] Backtest replay of both winners
+- [ ] Audit synthesis
+
+### Confluence optimization result (job `fd40ecff`)
+`objective: sharpe`, `evaluation_mode: option_rerank`, early-stopped 68/150,
+25 candidates re-ranked, budget not hit.
+```
+best_value            : 134864.61      <-- rupee P&L, NOT a Sharpe
+best_option_pnl_value : 134864.61
+best_metrics.sharpe   : 1.168          <-- Stage-1 best was 1.499 (trial 37)
+best_metrics          : trade_count 222, paired 220, option_win_rate 43.18
+saved best run        : spot 227 trades, paired 220/227, net 134,864.61,
+                        spread 50,982 + charges 19,023, ret +67.43%, DD -28.16%
+survival_summary/robustness: null
+```
+
+### AA. `best_value` holds a RUPEE amount while `objective` says "sharpe" — HIGH
+After an `option_rerank`, `best_value` is overwritten with the Stage-2 option
+rupee P&L, but `objective` still reads `sharpe`. The Job History "Best" column
+therefore shows `134864.61` for a Sharpe objective. Two different quantities in
+one field, distinguished nowhere.
+
+### BB. `option_rerank` silently OVERRIDES the chosen objective — HIGH
+Stage 1's best was **Sharpe 1.499** (trial 37). The finally-selected config has
+**Sharpe 1.168** — Stage 2 re-ranked on option ₹ and picked a different candidate.
+That is the documented purpose of the mode, but it means **choosing
+`objective: sharpe` does not give you the highest-Sharpe configuration**. The
+objective selector governs Stage-1 shortlisting only; final selection is always
+option-₹. Nothing in the UI says so.
+
+### CC. ★ The optimizer's best is NOT reproducible in the Backtest Lab — HIGH
+The optimizer scores with `trade_window_end: 14:50` (`schemas.py`
+`OptimizerStartReq`, deliberate: "so the optimizer never rewards 14:50–15:00
+entries that live can never take (O6)"). But:
+* `preset_execution.execution_from_option_config` carries moneyness / dte_filter /
+  exit_mode / lots / target / stop / cost_config / exit_controls / daily_caps —
+  **not the trade window**;
+* `apply-as-preset` stores it ONLY under `config.validation.*`, i.e. as metadata;
+* `BacktestLab.jsx:121-122` defaults `trade_window_end: "15:00"`, and preset load
+  does not override it.
+
+Verified on the real preset (`AUDIT-ROUNDTRIP-conf`):
+```
+validation.trade_window_end : "14:50"     <-- known
+execution                   : no trade window field at all
+top-level config            : no trade_window_* key
+```
+⇒ **Optimize at 14:50, replay at 15:00.** The app HAS the right value and does not
+apply it. Measured effect on this job: optimizer `best_metrics.trade_count` 222 vs
+its own saved run's 227 spot trades (+5, +2.3%) — and the extra entries are exactly
+the 14:50–15:00 ones live refuses. Direction is systematically optimistic.
+NB `_save_best_as_backtest` writes `trade_window_start/end: None`, so even the
+optimizer's OWN saved run disagrees with its own scoring.
+Premium strategies are protected (entry_cutoff clamped in Round 4/5); this gap is
+ORDINARY-strategy-specific.
+
+### DD. `execution.cost_config` drops `spread_min_pts` — LOW
+`execution_from_option_config` emits only `{enabled, brokerage_per_order,
+spread_pct_of_premium}`. A configured `spread_min_pts` is silently lost on
+apply-as-preset.
+
+### Premium optimization result (job `d085b8ab`) — CLEAN
+`objective: sharpe`, `evaluation_mode: spot`, early-stopped 134/150.
+`best_value: 3.402` (a REAL Sharpe), `best_so_far.params == best_params` ✓.
+best_params: momentum_pct 49, stop_pct 33, lazy_enabled true, lazy_momentum_pct 5,
+lazy_stop_pct 31. best_metrics: 109 trades, WR 44.95, PF 1.544, option ₹140,328.
+⇒ The defects below are specific to **`option_rerank` mode**, not to optimization
+in general. Premium (spot mode) round-trips consistently.
+
+### EE. ★★ The Optimizer UI shows one set of params and SAVES ANOTHER — HIGH
+Verified end-to-end on job `fd40ecff` (real data + real source):
+```
+best_so_far.params   ema_fast/ema_slow/signal_threshold = 6/43/74   sharpe 1.499
+best_params          ema_fast/ema_slow/signal_threshold = 5/57/79   sharpe 1.168
+SAME PARAMS? -> false
+```
+* `Optimizer.jsx:1426` `const bsf = job.best_so_far || {}` — the results card renders
+  `best_so_far` params + metrics. Job History's "Best" column also reads
+  `best_so_far?.value` (`Optimizer.jsx:2402, 2471`).
+* `research.py:707` `best_params = job.get("best_params") or ...` — apply-as-preset
+  saves `best_params`.
+
+After an `option_rerank` promotes a Stage-2 winner, only `best_params`/`best_value`/
+`best_metrics` are written; `best_so_far` is never refreshed (its only writer is
+`_flush_trial_log`, called from the trial loops). **So the user reads config A on
+screen and saves config B to the preset.** Independently found by 3 of 3 surviving
+audit dimensions and confirmed here with real job data.
+
+### CORRECTION to finding AA (mine, wrong)
+I claimed the Job History "Best" column displays the rupee `best_value` under a
+Sharpe objective. It does not — it reads `best_so_far?.value`, which IS a Sharpe
+(1.499). What remains true: **`best_value` itself stores a rupee amount while
+`objective` says `sharpe`** (a data-model inconsistency, verified: `best_value =
+134864.61`), and it disagrees with the Sharpe the UI shows. The specific
+"history shows rupees" claim was mine and unfounded.
+
+### CC — MEASURED (window round-trip gap), and my direction claim was wrong
+Same winning params, same everything except the entry window:
+
+| window | spot | paired | wr% | net | ret% | maxDD% |
+|---|---|---|---|---|---|---|
+| **14:50** (what the optimizer scored) | 222 | 215 | 42.79 | **₹142,636.01** | +71.32% | −29.40% |
+| **15:00** (BacktestLab default) | 227 | 220 | 43.18 | **₹134,864.61** | +67.43% | −28.16% |
+
+Delta: **+5 spot trades, net −₹7,771.40 (−5.4%)**.
+
+I previously wrote that the direction is "systematically optimistic" for the
+backtest. **Wrong** — here the extra 14:50–15:00 trades LOST money, so the replay
+UNDERSTATES. The direction is not predictable; the point is only that it is a
+DIFFERENT trade set.
+Also note the optimizer's reported `best_option_pnl_value` (134,864.61) matches the
+**15:00** run, not the 14:50 one — so the promoted/saved run also dropped the
+window. The 14:50 figure (₹142,636) is what nothing reports.
+
+### Agent findings — 31 raw, UNVERIFIED
+`docs/ROUND6_OPTIMIZER_AUDIT_RAW.md`. Workflow `wf_2f23df6d-0a6`: 3 of 5 audit
+dimensions completed, **5 of 8 agents died on the account spend limit** including
+ALL verifiers and the `apply-preset-roundtrip` + `result-persistence-display`
+dimensions entirely (I audited apply-preset-roundtrip by hand instead → AA–DD, EE).
+Verified by me so far: EE, CC, AA(corrected), BB, DD.
+Everything else in that file is an unverified claim.
