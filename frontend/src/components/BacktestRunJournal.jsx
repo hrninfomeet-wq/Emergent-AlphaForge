@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { fmtInt, fmtNum, fmtPct, fmtPnL, colorPnL, isoToFull } from "@/lib/fmt";
+import { resultKpis } from "@/lib/backtestMetrics";
 import { SignificanceBadge } from "@/components/SignificanceBadge";
 import RunComparison from "@/components/RunComparison";
 import { Trash2, RefreshCw, BookOpen, Play, Search, X, ChevronDown, ChevronRight, GitCompare } from "lucide-react";
@@ -100,13 +101,22 @@ export default function BacktestRunJournal({ onLoadRun, refreshKey = 0, defaultO
     );
   });
 
-  const sortValue = (r, key) => ({
-    created: r.created_at, name: r.name, instrument: r.instrument,
-    strategy: r.strategy_id, mode: r.config?.mode,
-    trades: r.metrics?.trade_count, winrate: r.metrics?.win_rate,
-    pf: r.metrics?.profit_factor, netpts: r.metrics?.total_pnl_pts,
-    maxdd: r.metrics?.max_dd_pts,
-  }[key]);
+  // Family-aware, exactly as ResultsView does. A premium-native run's spot
+  // metrics are a zero stub by construction, so reading them rendered EVERY
+  // premium row as Trades 0 / WR 0.00% / PF – / Net Pts +0.00 — next to a green
+  // SIGNIFICANT badge computed from those same (real) option trades. Sorting is
+  // routed through the same helper, otherwise the columns would show real values
+  // while the sort still ranked every premium run last.
+  const sortValue = (r, key) => {
+    const k = resultKpis(r);
+    return {
+      created: r.created_at, name: r.name, instrument: r.instrument,
+      strategy: r.strategy_id, mode: r.config?.mode,
+      trades: k.tradeCount, winrate: k.winRate,
+      pf: k.profitFactor, netpts: k.netPnl,
+      maxdd: k.maxDd,
+    }[key];
+  };
   const sortedVisible = sortRows(visible, sortValue);
 
   return (
@@ -190,7 +200,9 @@ export default function BacktestRunJournal({ onLoadRun, refreshKey = 0, defaultO
                     {runs.length === 0 ? "No backtest runs yet. Run one above." : "No runs match filter."}
                   </td></tr>
                 )}
-                {!loading && sortedVisible.map((r, idx) => (
+                {!loading && sortedVisible.map((r, idx) => {
+                  const rk = resultKpis(r);
+                  return (
                   <tr
                     key={r.id}
                     className={`border-b border-line hover:bg-bg-2 cursor-pointer ${selected.has(r.id) ? "bg-bg-2" : ""}`}
@@ -212,11 +224,18 @@ export default function BacktestRunJournal({ onLoadRun, refreshKey = 0, defaultO
                     <td className="p-2 font-mono">{r.instrument}</td>
                     <td className="p-2 font-mono text-dim">{r.strategy_id}</td>
                     <td className="p-2 font-mono">{r.config?.mode}</td>
-                    <td className="p-2 font-mono text-right">{fmtInt(r.metrics?.trade_count)}</td>
-                    <td className="p-2 font-mono text-right">{fmtPct(r.metrics?.win_rate)}</td>
-                    <td className="p-2 font-mono text-right">{fmtNum(r.metrics?.profit_factor, 2)}</td>
-                    <td className={`p-2 font-mono text-right ${colorPnL(r.metrics?.total_pnl_pts)}`}>{fmtPnL(r.metrics?.total_pnl_pts)}</td>
-                    <td className="p-2 font-mono text-right text-danger">{fmtPnL(r.metrics?.max_dd_pts)}</td>
+                    <td className="p-2 font-mono text-right">{fmtInt(rk.tradeCount)}</td>
+                    <td className="p-2 font-mono text-right">{fmtPct(rk.winRate)}</td>
+                    <td className="p-2 font-mono text-right">{fmtNum(rk.profitFactor, 2)}</td>
+                    {/* Unit tagged per row: a premium run is rupee-native, so a
+                        bare number under "Net Pts" would be a units lie. */}
+                    <td className={`p-2 font-mono text-right ${colorPnL(rk.netPnl)}`}
+                        title={rk.currency ? "rupees" : "index points"}>
+                      {rk.currency ? `₹${fmtInt(rk.netPnl)}` : fmtPnL(rk.netPnl)}
+                    </td>
+                    <td className="p-2 font-mono text-right text-danger">
+                      {rk.currency ? `₹${fmtInt(Math.abs(rk.maxDd ?? 0))}` : fmtPnL(rk.maxDd)}
+                    </td>
                     <td className="p-2"><SignificanceBadge significance={r.significance} /></td>
                     <td className="p-2" onClick={(e) => e.stopPropagation()}>
                       <div className="flex gap-1 justify-end">
@@ -241,7 +260,8 @@ export default function BacktestRunJournal({ onLoadRun, refreshKey = 0, defaultO
                       </div>
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>

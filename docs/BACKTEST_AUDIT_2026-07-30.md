@@ -802,3 +802,49 @@ trades; preset-from-a-displayed-run drops sizing_config / trade window /
 spread_min_pts; premium runs persist a hardcoded `candles_capped: false` never
 actually computed; a failed or still-running run can be chosen as a deployment
 source; Monte Carlo silently resamples only the first 1000 trades.
+
+## Round 9 — the three HIGH result-persistence-display defects, FIXED
+
+### 1. Run journal rendered every premium-native run as a dud
+`BacktestRunJournal.jsx` read only `r.metrics?.*` — a zero-filled stub for a
+premium-native run — so every row showed Trades 0 / WR 0.00% / PF – / Net Pts
++0.00, **beside a green SIGNIFICANT badge whose CI came from those same real
+option trades**. Sorting by Trades/PF/Net Pts ranked every premium run last.
+`BacktestLab.jsx`'s "Load past run" label had the identical defect.
+
+FIX: both now use `resultKpis(r)` — the same family-aware helper the detail view
+already used. Sorting routes through it too (otherwise the columns would show real
+values while the sort still ranked them last), and the Net-P&L / MaxDD cells are
+unit-tagged (₹ vs pts) so a rupee figure is never rendered under "Net Pts".
+**Measured on the live list payload: 29 premium rows affected**, e.g. one showing
+`spot trade_count 0` where the option envelope holds `paired 108` and
+`net_pnl_value ₹286,817.38`. The list payload already carried
+`option_backtest.portfolio`, so no API change was needed.
+
+### 2. Trust scorecard read the spot stub → false verdict, three checks skipped
+`evaluate_source_quality` resolved `trade_count`/`sharpe` from the SPOT envelope
+while already holding the option envelope one line above. For a premium run that
+fired a factually-wrong "Trade count not available" AND silently skipped
+weak_sharpe, large_drawdown and the selection-bias/deflated-Sharpe check.
+
+FIX: routed on the same `dispatch == "premium_trigger_config"` predicate
+`research.py` uses, taking `trade_count` from `paired_trade_count`, `sharpe` from
+`portfolio.sharpe_daily`, and the pnl/dd pair from the portfolio. Ordinary runs
+keep the spot reads and their verdicts are unchanged.
+**Verified live through the API on a real premium run**: `missing_trade_count` no
+longer fires, and the warnings are now `['walk_forward_divergence',
+'large_drawdown']` — `large_drawdown` being a check that could never have run
+before.
+
+### 3. A backtest orphaned by a restart stayed `running` forever
+`run_backtest_job` is a fire-and-forget asyncio task, so a container rebuild left
+the row polling forever and rendering as a blank results page. `optimization_jobs`
+has had a boot reconcile in `server.py` for exactly this; `backtest_runs` never did.
+
+FIX: a matching reconcile that marks orphaned `queued`/`running` runs **failed**
+with "Interrupted by a server restart — re-run this backtest." Failed, not
+`interrupted`, because a backtest has no resume mechanism — the honest terminal
+state is one the user can act on.
+
+`tests/test_journal_premium_rows.py` (10) + `tests/test_premium_trust_and_stuck_runs.py`
+(11). Suite **4254 passed / 0 failed**. Containers rebuilt and verified live.

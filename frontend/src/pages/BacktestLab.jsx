@@ -850,7 +850,7 @@ export default function BacktestLab() {
                   <SelectContent>
                     {pastRuns.slice(0, 30).map((r) => (
                       <SelectItem key={r.id} value={r.id}>
-                        {r.name} · {r.instrument} · {r.strategy_id?.slice(0, 16)} · WR {fmtPct(r.metrics?.win_rate)}
+                        {r.name} · {r.instrument} · {r.strategy_id?.slice(0, 16)} · WR {fmtPct(resultKpis(r).winRate)}
                       </SelectItem>
                     ))}
                   </SelectContent>

@@ -211,6 +211,28 @@ def evaluate_source_quality(
     om = source_doc.get("option_backtest")   # self-contained option result (Fix-B); also drives the dedup
     warnings: List[Dict[str, Any]] = []
 
+    # A premium-native run's SPOT metrics are a zero-filled stub by construction
+    # (its evaluate() is an inert stub, so compute_metrics([]) yields
+    # trade_count 0 / sharpe None / pnl 0). Reading them here fired a factually
+    # wrong "Trade count not available" AND silently skipped three real checks:
+    # weak_sharpe (guarded on sharpe_val is not None), large_drawdown (guarded on
+    # total_pnl > 0) and the selection-bias/deflated-Sharpe test (needs
+    # trade_count > 0). The option envelope was already in hand one line above.
+    # Routed on the same `dispatch` predicate research.py uses, so the two cannot
+    # disagree; ordinary runs keep the spot reads and their verdicts are unchanged.
+    if isinstance(om, dict) and om.get("dispatch") == "premium_trigger_config":
+        _om_metrics = om.get("metrics") or {}
+        _port = om.get("portfolio") or {}
+        metrics = dict(metrics)
+        metrics["trade_count"] = _safe_float(_om_metrics.get("paired_trade_count"))
+        metrics["win_rate"] = _safe_float(_om_metrics.get("win_rate"))
+        if _port.get("sharpe_daily") is not None:
+            metrics["sharpe"] = _port.get("sharpe_daily")
+        # Rupee-native pair, but the ratio the drawdown check computes is
+        # dimensionless so the comparison stays valid.
+        metrics["total_pnl_pts"] = _safe_float(_port.get("net_pnl_value"))
+        metrics["max_dd_pts"] = _safe_float(_port.get("max_drawdown_value"))
+
     sharpe = metrics.get("sharpe")
     sharpe_val = _safe_float(sharpe) if sharpe is not None else None
     trade_count = int(_safe_float(metrics.get("trade_count")))

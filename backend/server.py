@@ -95,6 +95,26 @@ async def startup() -> None:
     except Exception as exc:
         log.warning("Optimization job reconciliation failed: %s", exc)
 
+    # Reconcile orphaned BACKTEST runs. `run_backtest_job` is the same
+    # fire-and-forget asyncio task shape, so a container rebuild orphans any row
+    # left "queued"/"running" — and unlike an optimization job there is no resume
+    # mechanism, so the honest terminal state is FAILED with a reason rather than
+    # "interrupted". Without this the row polled forever and rendered as a blank
+    # results page with no explanation.
+    try:
+        stale_runs = await db.backtest_runs.update_many(
+            {"status": {"$in": ["queued", "running"]}},
+            {"$set": {
+                "status": "failed",
+                "error": "Interrupted by a server restart — re-run this backtest.",
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+            }},
+        )
+        if stale_runs.modified_count:
+            log.info("Reconciled %d orphaned backtest run(s) as failed", stale_runs.modified_count)
+    except Exception as exc:
+        log.warning("Backtest run reconciliation failed: %s", exc)
+
     # Warm the option-coverage cache in the background so the first Data Warehouse
     # page load is fast. The persisted cache from the previous run is still valid
     # at boot (the backend is the only writer to options_1m and refreshes the
