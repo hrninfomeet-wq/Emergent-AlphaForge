@@ -129,3 +129,21 @@ def test_30_runner_saves_and_scores_actual_trials_and_ui_explains_stop():
         ui = handle.read()
     assert "effectiveTrialTotal" in ui
     assert "Auto-stopped at" in ui
+
+
+def test_25_noop_or_duplicate_perturbations_do_not_inflate_robustness():
+    def evaluate(params):
+        return {"trade_count": 10, "objective": 100.0}, params
+
+    out = optimizer._robustness_score(
+        evaluate,
+        lambda metrics: metrics["objective"],
+        {"x": 1},
+        {"x": {"type": "int", "min": 1, "max": 10}},
+    )
+
+    assert out["tested_count"] == 1
+    assert out["skipped_count"] == 3
+    assert len(out["perturbations"]) == 1
+    assert out["perturbations"][0]["value"] == 2
+    assert out["score"] == 100.0

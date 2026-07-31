@@ -785,17 +785,42 @@ def _robustness_score(evaluate_fn, obj_fn, best_params: Dict[str, Any], space: D
     n_total = 0
     n_ok = 0
     perturbations = []
+    skipped = []
     for name, info in space.items():
         if "fixed" in info or info["type"] == "bool":
             continue
         if name not in best_params:
             continue
         base_v = float(best_params[name])
+        # Different percentage requests can resolve to the SAME tested config
+        # after integer rounding or bound clamping. They are one piece of
+        # evidence, not four independent passes. Seed with the base so a no-op
+        # can never inflate the denominator or the ROBUST verdict.
+        seen_values = {int(base_v) if info["type"] == "int" else round(base_v, 12)}
         for pct in (-0.20, -0.10, 0.10, 0.20):
             t_v = base_v * (1 + pct)
             t_v = max(float(info["min"]), min(float(info["max"]), t_v))
             if info["type"] == "int":
                 t_v = int(round(t_v))
+                # A percentage shift on a small integer often rounds straight
+                # back to the base. Try the smallest real step in the requested
+                # direction before deciding the bound makes it untestable.
+                if t_v == int(base_v):
+                    t_v = int(base_v) + (-1 if pct < 0 else 1)
+                    t_v = max(int(math.ceil(float(info["min"]))),
+                              min(int(math.floor(float(info["max"]))), t_v))
+                resolved_key = int(t_v)
+            else:
+                resolved_key = round(float(t_v), 12)
+            if resolved_key in seen_values:
+                skipped.append({
+                    "param": name,
+                    "shift_pct": int(pct * 100),
+                    "value": t_v,
+                    "reason": "noop_or_duplicate_after_bounds",
+                })
+                continue
+            seen_values.add(resolved_key)
             test_params = dict(best_params)
             test_params[name] = t_v
             metrics, _ = evaluate_fn(test_params)
@@ -810,7 +835,14 @@ def _robustness_score(evaluate_fn, obj_fn, best_params: Dict[str, Any], space: D
                 "trades": metrics.get("trade_count", 0), "ok": bool(ok),
             })
     score = round((n_ok / n_total * 100) if n_total > 0 else 0, 1)
-    return {"score": score, "perturbations": perturbations, "base_objective": round(base_val, 4)}
+    return {
+        "score": score,
+        "perturbations": perturbations,
+        "base_objective": round(base_val, 4),
+        "tested_count": n_total,
+        "skipped_count": len(skipped),
+        "skipped_perturbations": skipped,
+    }
 
 
 def _param_importance(study: optuna.Study, space: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
