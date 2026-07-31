@@ -643,3 +643,28 @@ internally plausible.
 - Backend-container source-contract tests that read `/frontend` or `/backend/server.py` are
   repository-layout checks, not container behavior. Keep them green on the host and deselect
   only those exact cases from the container behavioral gate.
+
+---
+
+## Session 2026-08-01 (handoff refresh) — a milestone is not complete until the resume path agrees
+
+**Core lesson:** updating an audit row and changelog is insufficient when the normal takeover
+prompt still carries a now-false operational warning or a conflicting priority. A resumable
+milestone needs one session checkpoint plus links from every entry point.
+
+**Confirmed approaches:**
+- Verify drift-prone state directly before documenting it: Git heads/ahead count/stashes,
+  Docker service health, `/api/health`, `live_trades`, and live-mode deployment count.
+- Separate permanent truth (`BACKTEST_INTEGRITY_AUDIT.md`) from time-specific session state
+  (`STAGE1_INTEGRITY_SESSION_HANDOFF_2026-08-01.md`) and the mutable queue
+  (`AGENT_TODO.md`). This gives the next agent one file for evidence without turning a
+  snapshot into an evergreen claim.
+- Reconcile all next-action lists. Gate A is the next validation during market hours;
+  Dashboard Stage 2 is the productive alternative when that gate cannot run.
+
+**Dead ends / traps:**
+- Do not preserve a stale warning merely because it once prevented a real bug. The takeover
+  claim that optimizer analysis ignored pause/cancel became harmful after #17/#20 fixed it.
+- Do not record a commit-ahead count without accounting for the documentation checkpoint
+  itself. Re-run `git rev-list --count origin/main..main` after committing.
+- Do not describe after-hours healthy containers as market-hours or broker validation.

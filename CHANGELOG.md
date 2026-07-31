@@ -34,6 +34,11 @@ are closed without restoring research qualification as a deployment veto.**
   compileall, host/Docker frontend builds, rebuilt service health, runtime summary/spot
   checks and canonical-`localhost` browser interaction pass. A cosmetic favicon 404 remains
   outside Stage 1. No Flattrade call, order mutation, live-mode change or push occurred.
+- Added a consolidated next-agent checkpoint at
+  `docs/STAGE1_INTEGRITY_SESSION_HANDOFF_2026-08-01.md`: current runtime/safety state,
+  eight-finding closure map, implementation files, verification ledger, residual risks,
+  ordered roadmap and exact takeover commands. Normal entry points now link to it, and a
+  stale claim that optimizer analysis ignored pause/cancel was removed.
 
 ### Promotion freedom with finite-config safety
 

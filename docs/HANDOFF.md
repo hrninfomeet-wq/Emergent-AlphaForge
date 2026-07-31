@@ -2,7 +2,7 @@
 
 _Entry point for the next engineer or AI agent. This is the shortest useful orientation; the repository and `tests/` are the source of truth, not any prior chat._
 
-**Read order:** this file → [`DEVELOPER_GUIDE.md`](DEVELOPER_GUIDE.md) (the consolidated deep onboarding — run/build/test, live-trading safety model, warehouse model, India rules, research→deploy, gotchas) → [`ARCHITECTURE.md`](ARCHITECTURE.md) (technical reference). Use the ["Where to go deep"](#5-where-to-go-deep) table below to jump straight to a topic.
+**Read order:** this file → [`BACKTEST_INTEGRITY_AUDIT.md`](BACKTEST_INTEGRITY_AUDIT.md) (before trusting any result) → [`STAGE1_INTEGRITY_SESSION_HANDOFF_2026-08-01.md`](STAGE1_INTEGRITY_SESSION_HANDOFF_2026-08-01.md) (latest completed-session checkpoint) → [`DEVELOPER_GUIDE.md`](DEVELOPER_GUIDE.md) (the consolidated deep onboarding — run/build/test, live-trading safety model, warehouse model, India rules, research→deploy, gotchas) → [`ARCHITECTURE.md`](ARCHITECTURE.md) (technical reference). Use the ["Where to go deep"](#5-where-to-go-deep) table below to jump straight to a topic.
 
 ---
 
@@ -14,7 +14,7 @@ Stack: **React** (CRA + craco) frontend, **FastAPI** (Python) backend, **MongoDB
 
 ## 2. Current state
 
-> **As of 2026-08-01 · v0.58.0 + unreleased Stage-1 integrity work · `main` is 14 local commits ahead of `origin/main`; not pushed.**
+> **As of 2026-08-01 · v0.58.0 + unreleased Stage-1 integrity work · `main` is 15 local commits ahead of `origin/main` after the documentation checkpoint; not pushed.**
 > Verification baseline: **4,354 passed, 4 xfailed, 0 failed** (4,358 collected).
 
 ### 2.0 The 60-second orientation
@@ -78,6 +78,10 @@ copy/config warnings are actionable, and Backtest Lab has read-only Check → sh
 → automatic recheck for spot data. The full verification record is in
 [`BACKTEST_INTEGRITY_AUDIT.md`](BACKTEST_INTEGRITY_AUDIT.md) §5. Only disputed LOW #31
 remains separate; it was not silently promoted into this milestone.
+
+The session-specific commit map, runtime snapshot, verification ledger, file routing and
+exact next-agent startup sequence are consolidated in
+[`STAGE1_INTEGRITY_SESSION_HANDOFF_2026-08-01.md`](STAGE1_INTEGRITY_SESSION_HANDOFF_2026-08-01.md).
 
 ### 2.3 Release history (newest first — archival, read only what you need)
 
@@ -374,6 +378,7 @@ Start with the consolidated [`DEVELOPER_GUIDE.md`](DEVELOPER_GUIDE.md), then rea
 | I need to… | Go to |
 |---|---|
 | **Trust a backtest / optimizer number** (read before relying on any result) | [`BACKTEST_INTEGRITY_AUDIT.md`](BACKTEST_INTEGRITY_AUDIT.md) |
+| Resume from the completed Stage 1 checkpoint | [`STAGE1_INTEGRITY_SESSION_HANDOFF_2026-08-01.md`](STAGE1_INTEGRITY_SESSION_HANDOFF_2026-08-01.md) |
 | Know what to work on next | [`AGENT_TODO.md`](AGENT_TODO.md) §1 board · [`CAPABILITY_PHASE_PLAN_2026-07.md`](CAPABILITY_PHASE_PLAN_2026-07.md) |
 | Avoid a trap a previous agent already hit | [`../learning_log.md`](../learning_log.md) · [`BACKTEST_INTEGRITY_AUDIT.md`](BACKTEST_INTEGRITY_AUDIT.md) §7 |
 | Onboard deep: run/build/test, safety model, warehouse model, India rules, research→deploy, gotchas | [`DEVELOPER_GUIDE.md`](DEVELOPER_GUIDE.md) |

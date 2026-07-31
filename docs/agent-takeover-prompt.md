@@ -23,16 +23,18 @@ safety-critical.
    `premium_trigger_dispatch.py`.** Its four verified HIGH findings are fixed in the
    current working tree; all 8 confirmed MED findings are also closed locally. One
    disputed LOW remains separate.
-3. `docs/AGENT_TODO.md` — the live board. Its ★ START HERE block names the three
+3. `docs/STAGE1_INTEGRITY_SESSION_HANDOFF_2026-08-01.md` — the latest session's commit
+   map, verification ledger, runtime snapshot, file routing and exact resume sequence.
+4. `docs/AGENT_TODO.md` — the live board. Its ★ START HERE block names the three
    highest-value next actions.
-4. `docs/DEVELOPER_GUIDE.md` — run/build/test, live-safety model (§E, read twice),
+5. `docs/DEVELOPER_GUIDE.md` — run/build/test, live-safety model (§E, read twice),
    warehouse model, India rules, **Gotchas (§H — read fully; every item was paid for)**.
-5. `docs/ARCHITECTURE.md` (module map, Mongo collections, L0–L3 gate chain) and
+6. `docs/ARCHITECTURE.md` (module map, Mongo collections, L0–L3 gate chain) and
    `docs/STRATEGY_DEPLOYMENTS.md` (deployment/guard model) as needed.
-6. `CHANGELOG.md` top entries. **0.56.0 is mandatory before touching any live seam** — it
+7. `CHANGELOG.md` top entries. **0.56.0 is mandatory before touching any live seam** — it
    removed the ARM ceremony and lists four silent regressions a naive removal would have
    shipped. **0.58.0** is mandatory before touching backtest reporting.
-7. `docs/flattrade-mcp-integration.md` **before touching the broker token path or using the
+8. `docs/flattrade-mcp-integration.md` **before touching the broker token path or using the
    Flattrade MCP tools** — the broker account is shared with a separate MCP server.
 
 ## Where the app stands (v0.58.0 + unreleased Stage-1 integrity, 2026-08-01)
@@ -43,7 +45,7 @@ trading, gated live execution with a layered safety stack (confirm-flat guard, k
 switches, per-token recovery), the premium-momentum family including Phase 5B multi-leg
 execution, and Flattrade-MCP session sharing.
 
-- **Git:** `origin/main` remains `aedbf42`; local `main` is 14 green-milestone commits
+- **Git:** `origin/main` remains `aedbf42`; local `main` is 15 green-milestone commits
   ahead, containing the HIGH fixes, promotion-freedom policy, next-stage roadmap and
   completed Stage-1 integrity work; not pushed. One branch, zero stashes.
   Two archive tags preserve retired work (`archive/live-deploy-wip-2026-06-25`,
@@ -193,24 +195,26 @@ automated entries.
 - **Tailwind `min-h-0` loses the cascade on flex children** — use inline `style={{minHeight: 0}}`.
 - **sklearn is load-bearing** via optuna's lazy import even though nothing imports it
   directly — don't "clean it up".
-- **Run one optimizer instrument at a time**; the analyzing stage ignores pause/cancel (needs
-  a backend restart), and heavy option re-ranks want `opt_workers=1`.
-- **Multi-agent verifier runs die on spend limits.** Findings without a verifier are
-  UNVERIFIED claims. Recover partial work from
+- **Optimizer analysis now honors pause/cancel/budget** during option re-rank and WFO final
+  analysis, retaining completed finite evidence. Heavy option re-ranks still want
+  `opt_workers=1`; do not restart the backend merely to apply a requested stop.
+- **Multi-agent verifier runs can die on spend limits.** A panel with no completed reviewer
+  is UNVERIFIED, not passed. Recover partial work from
   `.../subagents/workflows/<run>/journal.jsonl` — the result key is `result`, not `value`.
 - **Windows/Docker:** host probes must dial `127.0.0.1`; `localhost` resolves to `::1` first
   and stalls ~2s against IPv4-only Docker.
 
 ## Current next steps (priority order, unless the user redirects)
 
-1. **Audit the deploy → paper → live handoff** — the one pipeline dimension never covered by
-   the 2026-07 audit cycle, and the seam that carries real money.
+1. **Market-hours Gate A** from `docs/phase5b-market-validation-runbook.md` in strict
+   **PAPER + READ-ONLY** posture. Do not enable live. This is the highest-value remaining
+   validation and cannot be completed while the market is closed.
 2. **Stage 2 Dashboard decision surface** from `docs/NEXT_STAGE_ROADMAP_2026-07.md`,
    after reviewing the completed Stage-1 evidence. Do not add live order controls to it.
-3. **Market-hours validation** per `docs/phase5b-market-validation-runbook.md`. Posture:
-   **PAPER + READ-ONLY**. Use the Flattrade MCP's read tools as an independent broker-truth
-   witness against AlphaForge's own blotter and guard state.
-4. After a clean paper day: the **1-lot live validation day** (`docs/live-readback-checklist.md`
+3. **Real-LLM authoring acceptance** after the capability work is accepted: author →
+   install → backtest → optimize → paper. Do not spend an untouched holdout or enable live
+   merely to prove plumbing.
+4. After a clean paper day and registered static IP: the **1-lot live validation day** (`docs/live-readback-checklist.md`
    + runbook §6) — the user performs all arming. Blocked on a Flattrade-registered static IP;
    the approved host design is `docs/durable-static-ip-deployment.md`.
 5. Continue the **capability phase** (`docs/CAPABILITY_PHASE_PLAN_2026-07.md`): the remaining

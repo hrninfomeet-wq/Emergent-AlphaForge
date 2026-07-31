@@ -7,15 +7,16 @@
 >
 > Companion files: [`learning_log.md`](../learning_log.md) (lessons per session, verified
 > audit-finding evidence table) · [`docs/HANDOFF.md`](HANDOFF.md) (architecture/state
-> entry point) · `CHANGELOG.md`.
+> entry point) · [`STAGE1_INTEGRITY_SESSION_HANDOFF_2026-08-01.md`](STAGE1_INTEGRITY_SESSION_HANDOFF_2026-08-01.md)
+> (latest completed-session checkpoint) · `CHANGELOG.md`.
 
-**Last updated:** 2026-08-01 (Codex — Stage 1 integrity complete)
+**Last updated:** 2026-08-01 (Codex — Stage 1 integrity complete; takeover package refreshed)
 
 ---
 
 ## ★ START HERE — the state of play on 2026-08-01
 
-**Repo:** `main` is 14 local green-milestone commits ahead of `origin/main`; not pushed, one branch, zero stashes.
+**Repo:** `main` is 15 local green-milestone commits ahead of `origin/main` after this documentation checkpoint; not pushed, one branch, zero stashes.
 **Suite:** 4,354 passed · 4 xfailed · 0 failed (4,358 collected).
 **Version:** v0.58.0 + unreleased Stage-1 integrity work.
 
@@ -71,20 +72,21 @@ stale audit rows already subsumed by HIGH #18/#28; disputed LOW #31 remains sepa
 2. **The Codex diff is the baseline.** The ~2.7k-line uncommitted ChatGPT/Codex session
    work (consent-override live gate, forward-validation advisory, option-data
    provenance/integrity, docs, tests) is committed as-is, fixes land on top. No revert.
-3. **Safety-fix scope now = quick wins only** (H2 NaN-reject, H3 fail-closed, C1 loopback
-   binding). The remaining confirmed blockers (C2, C4, H1, C3) are REQUIRED BEFORE THE
-   FIRST REAL-MONEY SESSION but deferred until then — see §2.
-4. **Priorities after fixes (all four, in this order):** item 2 lazy-leg contingency →
-   item 3 strategy-builder audit → item 4 live-page redesign → item 5 new strategy
-   plugins. Items 6 (ideas), 7 (deep audit), 8 (docs) are cross-cutting/closing work.
-5. **Work inline, single-threaded.** The monthly AI spend limit was hit 2026-07-21;
-   multi-agent fan-outs FAIL until it resets/raises. Keep sessions lean.
+3. **The pre-real-money code blockers are closed.** H2/H3/C1/C2/C4/H1/C3 have landed;
+   do not treat green code as broker validation. The remaining prerequisite is operational:
+   registered static IP, market-hours PAPER/read-only Gate A, then a user-authorized live
+   readback if the user decides — see §2 and the Stage 1 session handoff.
+4. **Current priorities:** market-hours PAPER/read-only Gate A → Stage 2 Dashboard decision
+   surface when Gate A cannot run → real-LLM author/install/backtest/optimize/paper acceptance.
+   Edge research and live activation remain explicitly decision-gated.
+5. **Checkpoint work into small green commits.** Use scoped parallel review only when the
+   user requests orchestration and the work units are independent; review every delegated
+   result against source and isolated tests before accepting it.
 6. **Push policy:** commit locally; push only with per-changeset user approval
    (long-standing project rule).
 7. **Broker safety (permanent):** never call the Flattrade MCP login/logout; never
    place/modify/cancel broker orders from an agent; AlphaForge's own OAuth is the only
-   login. Do not refresh Flattrade OAuth while `LIVE_AUTOPLACE_ARMED` is on until §2
-   fixes land.
+   login. Never refresh Flattrade OAuth while `LIVE_AUTOPLACE_ARMED` is on.
 
 ---
 
@@ -121,7 +123,7 @@ stale audit rows already subsumed by HIGH #18/#28; disputed LOW #31 remains sepa
 | C-blocked | Friction measurement (analysis direction C) | ⛔ NOT MEASURABLE | `live_trades` is EMPTY — zero real fills ever. Paper trades carry `entry_slippage_pts`/`entry_spread_pts` which ARE the friction model's own outputs, so measuring them against the model is circular. Blocked behind a real-money session → blocked on a registered IP. Do not fake it. |
 | 6 | Profit-leverage ideas write-up | ✅ DONE 2026-07-27 (`bb06e9f`) | Deliverable **`docs/PROFIT_LEVERAGE_ANALYSIS_2026-07.md`**. Structural finding: the app is LONG-PREMIUM ONLY by construction (`base.py:21` no side; `option_backtest.py:749` long P&L; `auto_live.py:483` `side="B"` always), so all three failed campaigns searched ONE family — the one that PAYS the variance premium. **Decisive measurement (Mongo, not the manifest): every day for every index stores exactly ONE expiry (100% of 408/392/410 days); median strikes/day 6/8/9 spanning ~±1-1.5% of spot.** → calendars untestable, verticals barely; the only DEFENSIBLE short experiment (defined-risk spreads) is the one the data can't support, and the one it can (naked) the executor blocks by design. Direction A = ~20 files + novel offline margin model (`GetOrderMargin` is live-only, unreplayable) + multi-leg (doesn't exist — premium_momentum's "both" is two independent trades) + a data campaign. **Reduced to a scoped procurement question; no experiment authorised.** **RANKING: F (wire existing signal) → B (pool 3 indices: 1,210 option index-days vs 408 = 2.97×, ZERO engine changes, the one signal already judged +EV-but-sample-starved), C (realized-fill vs model) in parallel.** D reframed — front-expiry-only storage is fatal for calendars but is exactly what 0DTE trades. Kill criteria pre-registered for all. Side findings: VIX exists for 280 sessions (67.6% of history) so `capability.py:27 has_vix_history: False` is PROVABLY WRONG (AI wizard refusing rules against real data); BANKNIFTY option gap 2024-11-28→19 must be excluded from any pooled study; long P&L convention reimplemented in FOUR places with no chokepoint; OI written per candle and read by NOTHING; six ICT/SMC structural features have ZERO consumers; `explosive_reversal`'s `vix_boost_threshold` is a DEAD optimizer knob → chip `task_ff707a16`. |
 | 7 | End-to-end deep audit | ⏸ BLOCKED | Needs multi-agent budget (spend-limit reset) or several lean sessions |
-| 8 | Handover documentation refresh | 🔄 ROLLING | This file + learning_log.md updated continuously; final pass at end |
+| 8 | Handover documentation refresh | ✅ CURRENT 2026-08-01 | Consolidated Stage 1 checkpoint added at `docs/STAGE1_INTEGRITY_SESSION_HANDOFF_2026-08-01.md`; HANDOFF, takeover prompt, live board, changelog and learning log agree. Continue updating after each future work unit. |
 
 Legend: ⬜ not started · 🔄 in progress · ⏸ deferred/blocked · ✅ done
 
@@ -341,6 +343,12 @@ Junior-agent prompt:
 
 ## 4. Session log
 
+- **2026-08-01 (Codex) — Stage 1 takeover package refreshed.** Added the authoritative
+  session checkpoint with the eight-finding closure map, commit/file/test routing, verified
+  runtime and real-money state, residual risks, ordered roadmap and exact resume commands.
+  Reconciled the live board/HANDOFF/takeover prompt and removed stale claims that optimizer
+  analysis ignored pause/cancel or that completed pre-real-money blockers were still
+  deferred. Documentation contracts 33/33; no source/runtime/broker mutation and no push.
 - **2026-08-01 (Codex + three scoped reviewers) — Stage 1 integrity complete.**
   Classified all eight MED optimizer rows before editing: #14/#23 were already fully
   subsumed by HIGH #18/#28; the other six received isolated fixes and red regressions.
