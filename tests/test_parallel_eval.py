@@ -5,6 +5,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 
 from app import parallel_eval as pe
+from app.indicator_groups import enrich_with_cache
+from app.optimizer import _evaluate
 from app.strategies.base import get_registry
 from tests._adaptive_testutil import make_sessions
 
@@ -40,6 +42,29 @@ def test_worker_never_raises_returns_merged():
     metrics, merged = pe._worker_evaluate("confluence_scalper", {"ema_fast": -5}, None, "NIFTY", True, {})
     assert merged == {"ema_fast": -5}
     assert metrics is None or isinstance(metrics, dict)
+
+
+def test_single_run_worker_matches_serial_optimizer_metrics():
+    """Risk objectives require the exact same unitless drawdown basis in both paths."""
+    get_registry().auto_discover()
+    raw_df = _fixture_df()
+    strategy = get_registry().get("confluence_scalper")
+    merged = strategy.merged_params({})
+    serial, serial_merged = _evaluate(
+        lambda params: enrich_with_cache(raw_df, params, {}),
+        strategy, merged, "NIFTY", True, {},
+    )
+    assert serial["trade_count"] > 0
+
+    pe._RAW_DF = raw_df
+    pe._WORKER_CACHES = {}
+    worker, worker_merged = pe._worker_evaluate(
+        "confluence_scalper", merged, None, "NIFTY", True, {},
+    )
+
+    assert worker_merged == serial_merged
+    assert worker == serial
+    assert worker["pnl_abs_sum"] > 0
 
 
 def test_parallel_backtest_sequential_fallback_in_order():

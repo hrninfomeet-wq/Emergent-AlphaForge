@@ -46,7 +46,7 @@ log = logging.getLogger(__name__)
 # Compact metric set persisted per window (bounds job-doc size).
 _WINDOW_METRIC_KEYS = (
     "trade_count", "win_rate", "profit_factor", "total_pnl_pts",
-    "max_dd_pts", "sharpe", "ce_count", "pe_count",
+    "max_dd_pts", "pnl_abs_sum", "sharpe", "ce_count", "pe_count",
 )
 
 _MAX_STITCHED_EQUITY_POINTS = 5000
