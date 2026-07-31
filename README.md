@@ -57,7 +57,8 @@ MongoDB runs on `:27017`. First-time setup (copy `backend/.env.example` → `bac
 | [docs/LOCAL_SETUP.md](docs/LOCAL_SETUP.md) | Install (Docker + native) |
 | [docs/STARTUP_MANUAL.md](docs/STARTUP_MANUAL.md) | Daily launch + troubleshooting |
 | [docs/optimizer-user-guide.md](docs/optimizer-user-guide.md) | Using the optimizer |
-| ["docs/Walk-forward (honest OOS) what it does exactly.md"](docs/Walk-forward%20%28honest%20OOS%29%20what%20it%20does%20exactly.md) | What walk-forward validation actually does |
+| [docs/optimizer-decision-guide.md](docs/optimizer-decision-guide.md) | What walk-forward does; which optimizer controls earn their cost |
+| [docs/BACKTEST_INTEGRITY_AUDIT.md](docs/BACKTEST_INTEGRITY_AUDIT.md) | **Read before trusting any backtest number** — known-good vs known-broken |
 | [docs/live-readback-checklist.md](docs/live-readback-checklist.md) | Live market-hours readback runbook |
 | [docs/Resources/flattrade-pi-api/INDEX.md](docs/Resources/flattrade-pi-api/INDEX.md) | Decoded Flattrade (PiConnect/Noren) broker API reference |
 | [docs/flattrade-mcp-integration.md](docs/flattrade-mcp-integration.md) | Flattrade MCP server: shared broker session, capability surface, runbook, hard rules |

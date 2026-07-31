@@ -46,10 +46,10 @@ Then, by task:
 | The UI, per page | [docs/USER_MANUAL.md](USER_MANUAL.md) |
 | A custom strategy | [docs/STRATEGY_PLUGINS.md](STRATEGY_PLUGINS.md) |
 | Deployments / forward test | [docs/STRATEGY_DEPLOYMENTS.md](STRATEGY_DEPLOYMENTS.md) |
-| The optimizer | [docs/optimizer-user-guide.md](optimizer-user-guide.md), [docs/Walk-forward (honest OOS) what it does exactly.md](<Walk-forward (honest OOS) what it does exactly.md>) |
+| The optimizer | [docs/optimizer-user-guide.md](optimizer-user-guide.md), [docs/optimizer-decision-guide.md](optimizer-decision-guide.md) |
 | Live broker execution | This guide §E, [docs/live-readback-checklist.md](live-readback-checklist.md), [docs/Resources/flattrade-pi-api/INDEX.md](Resources/flattrade-pi-api/INDEX.md) |
 | Install / daily launch | [docs/LOCAL_SETUP.md](LOCAL_SETUP.md), [docs/STARTUP_MANUAL.md](STARTUP_MANUAL.md) |
-| Continuing from the 2026-07-13 Emergent handoff session | [docs/EMERGENT_SESSION_NOTES.md](EMERGENT_SESSION_NOTES.md) — what landed, what's deferred, non-negotiables preserved |
+| **Trusting a backtest/optimizer number** | [docs/BACKTEST_INTEGRITY_AUDIT.md](BACKTEST_INTEGRITY_AUDIT.md) — read before relying on any result |
 | Agent capabilities / PDF tooling | [CLAUDE.md](../CLAUDE.md) |
 
 **Golden rule:** ground every change in the actual code. Verify routes exist, module names are

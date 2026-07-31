@@ -10,6 +10,22 @@ Everything cited is file:line-verified.
 
 ---
 
+## ▸ STATUS as of 2026-07-31 (read this before using the plan below)
+
+| Phase | Status |
+|---|---|
+| **Phase 0** — unlock what is already built | ✅ **COMPLETE** 2026-07-27 (`e1bfd4c`, `6d89370`) — all four capabilities now have UI paths |
+| **Phase 1** — config-block generalization | ✅ **COMPLETE** 2026-07-28/29 (`1abc3a9` + the authoring-loop fixes in v0.57.5) — a plain-words premium-trigger strategy now generates, installs, backtests, optimizes and deploys |
+| **Phase 2** — remove the remaining friction | ➡ **NEXT.** Still open: spot-data preflight · async backtest error parity · **optimizer cancel honesty (now tracked as finding #17 in [`BACKTEST_INTEGRITY_AUDIT.md`](BACKTEST_INTEGRITY_AUDIT.md) §5, with #20 as its WFO twin)** · nav badges still read "P4"/"L0" (`Layout.jsx:36,39`) · `FERNET_KEY` still fails silently (`encryption.py:9-14` carries a comment, not a boot warning) · static-IP guidance. **Resolved since the plan was written:** `PositionMonitor.jsx` is wired (imported by `LiveDataProvider.jsx`) — do not delete it. |
+| **Phase 3** — live-readiness | ⛔ still blocked on a Flattrade-registered static IP; `live_trades` is still empty. The scripted-readback prep is NOT blocked and has not been built. |
+
+**One correction to the framing below:** the plan's premise that the backtest/optimizer
+surface was merely *high-friction* was optimistic. The 2026-07-29→31 audit found it was
+also **wrong in places** — see [`BACKTEST_INTEGRITY_AUDIT.md`](BACKTEST_INTEGRITY_AUDIT.md).
+Phase 2 should be sequenced after that register's 4 remaining HIGH findings.
+
+---
+
 ## The one-line answer
 
 > **Next step = Phase 0: unlock what is already built.** Four fully-implemented, tested

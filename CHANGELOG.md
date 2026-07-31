@@ -2,6 +2,70 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [0.58.0] — the numbers you see are finally the numbers that happened (2026-07-31)
+
+**Outcome: a whole class of reporting defects is closed, and one critical bug means
+every paired-option backtest saved before 2026-07-30 was wrong and must be re-run.**
+Full technical register: [`docs/BACKTEST_INTEGRITY_AUDIT.md`](docs/BACKTEST_INTEGRITY_AUDIT.md).
+
+- **⚠ Re-run any saved backtest you rely on.** Options candles are grouped by contract.
+  A newer field (`contract_key`) is present on only ~2% of stored candles, and the
+  missing ones were silently collapsed into a single bogus group — so most option
+  legs could not be matched to their signal. One Confluence config paired **10 of 253**
+  signals before the fix and **253 of 253** after: net ₹13,007 → ₹2,90,443. Any paired
+  backtest saved before 2026-07-30 understated its trade count, and therefore every
+  number derived from it. Premium-native runs were never affected.
+- **Premium strategies now show their trades and their KPIs.** These strategies keep
+  their real result in a different place than ordinary ones, and the results page was
+  reading the empty one — hence blank Trades / Win rate / Profit factor / Net P&L next
+  to a large "Highest account value". The KPI grid, Trades pane, Run Journal and trust
+  scorecard all read the right envelope now, labelled in ₹ rather than points.
+- **The optimizer stopped tuning your position size.** It had invented a 0–100 range for
+  `lots` and maximised it, which is why a run set up with 5 lots reported 100. Sizing and
+  risk knobs are pinned to what you entered; parameter ranges are never invented — they
+  come from the strategy itself or are pinned explicitly.
+- **Costs are no longer understated.** The bid/ask spread is now reported as its own
+  line (`total_spread_cost_value`) and included in the total; a run with costs disabled
+  says so. Measured understatement on a real run: 3.7×.
+- **Walk-forward reports the size of the decay, not just pass/fail.** A boolean cut at
+  10 points was hiding 9.4- and 9.7-point decays on strategies that then failed out of
+  sample. Premium runs now get a real walk-forward over their option trades instead of
+  an automatic pass, and an unmeasurable split says `measured: false` rather than
+  claiming success.
+- **The optimizer reports the configuration it actually chose.** One entry window is now
+  used across trial scoring, re-ranking, the saved run and the applied preset; the best
+  result is re-persisted at finish; and `best_value_metric` records which objective
+  produced the number. A single failing parameter combination no longer destroys an
+  otherwise-complete search, and an out-of-range value no longer makes the job-history
+  page fail to load.
+- **Coverage preflight tells the truth.** It certified 100% coverage on a run that paired
+  4%, because it queried the database directly instead of using the same lookup the
+  backtest uses. It now runs through the real one.
+- **Saved runs got 97.8% smaller** (155.3 MB → 3.5 MB) by not sending every trade and
+  candle to the results list; Monte Carlo now samples across the whole run instead of
+  its first 1,000 trades and discloses when it truncates; failed runs can no longer be
+  deployed; and a "Max capital deployed" card plus a real Context Edge breakdown replace
+  what used to read UNKNOWN.
+- **Live entry parity:** premium backtests stop taking entries after 14:50, matching the
+  live cutoff, so a backtest cannot count trades live would refuse.
+- **Verification:** 4,271 passed, 4 xfailed, 0 failed. A new `tests/test_no_undefined_names.py`
+  runs pyflakes across the backend — three `NameError`s reached users this cycle because
+  the older tests asserted that a name *appeared* in a file, which cannot tell a use from
+  a definition.
+
+## [0.57.5] — plain-English strategies reach the optimizer (2026-07-29)
+
+- **Phase 1 of the strategy builder is complete.** A strategy described in words can now
+  become a premium-native plugin end to end: both generators know the mechanism, the
+  wizard carries and displays the generated config instead of discarding it at install,
+  paper trading honours its exit time, and the backtest replays its sizing.
+- **The authoring loop answers back.** When the model needs a decision it opens the
+  answer box (previously only at one of the two points it could happen); an invalid
+  strategy id is offered as a valid suggestion rather than the regex that rejected it;
+  the capability verdict stopped reporting the lazy leg as unavailable when it ships;
+  and unparseable model output gets one bounded repair attempt before failing.
+- **Spec mode moved to `gemini-3.6-flash`** and no longer caps newer models' output.
+
 ## [0.57.4] — one account, one set of limits (2026-07-27)
 
 **Outcome: the last of the pre-real-money blockers is closed. All four are done.**

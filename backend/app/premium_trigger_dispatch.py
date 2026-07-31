@@ -13,7 +13,7 @@ This is a LIFT of the existing bespoke path, not a rewrite. The parity invariant
       ==  dispatch_backtest(cfg, ..., inputs) [byte-identical `trades`]
 
 Session 3 adds `dispatch_full_backtest` — the Optimizer/Backtest Lab wiring that was
-deferred at the end of session 2 (see docs/EMERGENT_SESSION_NOTES.md and
+deferred at the end of session 2 (see
 docs/superpowers/specs/2026-07-13-premium-momentum-phase4-5-full-contingency-design.md
 §3.2). Running the shipped `premium_momentum` plugin through the general Optimizer or
 Backtest Lab called `strategy.evaluate()` (a deliberate stub — the real logic lives only

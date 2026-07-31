@@ -16,7 +16,7 @@ from app.backtest import run_backtest, build_equity_curve, compute_metrics, Trad
 SOFT_DIVERGENCE_PTS = 5.0
 #: The premium hard cut. NB the spot path historically uses a two-sided 15-point
 #: rule (`abs(delta) > 15`), so the same decay is judged differently by family —
-#: recorded in docs/BACKTEST_AUDIT_2026-07-30.md rather than silently unified.
+#: recorded in docs/BACKTEST_INTEGRITY_AUDIT.md rather than silently unified.
 HARD_DIVERGENCE_PTS = 10.0
 
 

@@ -527,7 +527,7 @@ strategy_deployments
 - [STRATEGY_DEPLOYMENTS.md](./STRATEGY_DEPLOYMENTS.md) — deployment modes, gates,
   kill switches, live
 - [STRATEGY_PLUGINS.md](./STRATEGY_PLUGINS.md) — writing a custom strategy plugin
-- [Walk-forward (honest OOS) what it does exactly.md](./Walk-forward%20%28honest%20OOS%29%20what%20it%20does%20exactly.md)
+- [optimizer-decision-guide.md](./optimizer-decision-guide.md) — what walk-forward actually does, and which optimizer controls earn their cost
   — WFO deep dive
 - [live-readback-checklist.md](./live-readback-checklist.md) — real-money readback runbook
 - [Resources/flattrade-pi-api/INDEX.md](./Resources/flattrade-pi-api/INDEX.md) —

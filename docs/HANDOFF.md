@@ -14,7 +14,57 @@ Stack: **React** (CRA + craco) frontend, **FastAPI** (Python) backend, **MongoDB
 
 ## 2. Current state
 
-**Latest (2026-07-21, v0.56.2)**: **deployment selection is free, real-money
+> **As of 2026-07-31 · v0.58.0 · `main` == `origin/main` · one branch, clean tree.**
+> Verification baseline: **4,271 passed, 4 xfailed, 0 failed** (4,275 collected).
+
+### 2.0 The 60-second orientation
+
+| Question | Answer |
+|---|---|
+| Is it running real money? | **No.** Zero real fills have ever happened — `live_trades` is empty. |
+| What stops it? | Not code. All four pre-real-money blockers (C2/C4/H1/C3) are **fixed**; what's missing is a **Flattrade-registered static IP** and a market-hours validation session. |
+| Does any strategy have a proven edge? | **No.** Three independent campaigns have failed a holdout. See [`BACKTEST_INTEGRITY_AUDIT.md`](BACKTEST_INTEGRITY_AUDIT.md) §6 and [`PREMIUM_MOMENTUM_EDGE_VERDICT_2026-07.md`](PREMIUM_MOMENTUM_EDGE_VERDICT_2026-07.md). Do not re-litigate without new data. |
+| Can I trust a saved backtest? | **Only if it was run on/after 2026-07-30.** Every paired-option backtest saved before then is wrong — see the ⚠ below. |
+| What is the active work program? | The **capability phase**: make backtest/paper/live fully usable, and make a plain-English strategy deployable. Edge hunting is explicitly parked. [`AGENT_TODO.md`](AGENT_TODO.md) is the live board. |
+| Where do I look first when a number looks wrong? | [`BACKTEST_INTEGRITY_AUDIT.md`](BACKTEST_INTEGRITY_AUDIT.md) — it names the defect class, the reproduction commands, and 13 verified-but-unfixed findings. |
+
+### 2.1 ⚠ Two things that will bite you immediately
+
+1. **Every paired-option backtest saved before 2026-07-30 is wrong.** Option candles were
+   grouped by a `contract_key` present on only ~2.3% of stored rows; the absent ones became
+   pandas `NaN`, and **`bool(float("nan")) is True`**, so every legacy candle was keyed as the
+   literal string `"nan"`. One Confluence config paired **10 of 253** signals before the fix and
+   **253 of 253** after. Re-run anything you intend to rely on. Premium-native runs were never
+   affected. Fixed in `dcaf722`.
+2. **A backtest result has TWO envelopes and reading the wrong one gives a plausible wrong
+   answer.** For an ORDINARY strategy the truth is in `result.metrics` / `result.trades`; for a
+   **PREMIUM-NATIVE** one those are a deliberate **zero-filled stub** (its `evaluate()` is inert)
+   and the entire real result lives in `result.option_backtest.*`. Route on
+   `option_backtest.dispatch == "premium_trigger_config"` (backend: `is_premium_trigger_strategy`;
+   frontend: `isPremiumNative()` / `resultKpis()` in `lib/backtestMetrics.js`). This single mistake
+   produced eight separate user-visible defects.
+
+### 2.2 What landed most recently (2026-07-28 → 07-31, v0.57.5 + v0.58.0)
+
+A full reporting-integrity audit of the backtest → optimizer → results → journal chain.
+Twenty-plus fixes, ~300 new tests, all merged and pushed. Highlights: the `contract_key`
+collapse above; premium KPIs/Trades/Journal/trust-scorecard read the right envelope; the
+optimizer stopped inventing a 0–100 range for `lots` and maximising it (the reported
+`lots: 100` from a form that said 5); spread cost disclosed (was understated 3.7×); real
+premium walk-forward with a **signed decay** instead of a boolean that hid 9.4pt decays;
+one entry window across trial/re-rank/saved-run/preset; saved runs **155.3 MB → 3.5 MB**;
+coverage preflight now certifies through the real lookup it had been bypassing.
+
+**Still open and verified — 4 HIGH, 8 MED, 1 disputed**, all in the optimizer, all listed
+with severity and minimal fix in [`BACKTEST_INTEGRITY_AUDIT.md`](BACKTEST_INTEGRITY_AUDIT.md) §5.
+The HIGHs: a disqualified config can still be promoted and applied (#11); a truncated
+survival sweep reports un-evaluated finalists as evaluated (#18); a concurrent job's
+`finally` tears down another job's fork pool (#22); the parallel path can attach the
+PREVIOUS best's metrics to the NEW best params when the space has a pinned dimension (#28).
+
+### 2.3 Release history (newest first — archival, read only what you need)
+
+**Previous (2026-07-21, v0.56.2)**: **deployment selection is free, real-money
 authority is explicit, and capital remains gated.** The `/live` wizard accepts a
 saved preset or any loaded, non-retired Strategy Library entry that supports the
 current 1-minute evaluator. A direct library choice exposes its instrument and full
@@ -306,6 +356,9 @@ Start with the consolidated [`DEVELOPER_GUIDE.md`](DEVELOPER_GUIDE.md), then rea
 
 | I need to… | Go to |
 |---|---|
+| **Trust a backtest / optimizer number** (read before relying on any result) | [`BACKTEST_INTEGRITY_AUDIT.md`](BACKTEST_INTEGRITY_AUDIT.md) |
+| Know what to work on next | [`AGENT_TODO.md`](AGENT_TODO.md) §1 board · [`CAPABILITY_PHASE_PLAN_2026-07.md`](CAPABILITY_PHASE_PLAN_2026-07.md) |
+| Avoid a trap a previous agent already hit | [`../learning_log.md`](../learning_log.md) · [`BACKTEST_INTEGRITY_AUDIT.md`](BACKTEST_INTEGRITY_AUDIT.md) §7 |
 | Onboard deep: run/build/test, safety model, warehouse model, India rules, research→deploy, gotchas | [`DEVELOPER_GUIDE.md`](DEVELOPER_GUIDE.md) |
 | See capabilities + the end-to-end workflow at a glance | [`PROJECT_OVERVIEW.md`](PROJECT_OVERVIEW.md) |
 | Understand the data-warehouse completeness model | [`DEVELOPER_GUIDE.md`](DEVELOPER_GUIDE.md) (model) · [`ARCHITECTURE.md`](ARCHITECTURE.md) (technical) |
@@ -317,7 +370,7 @@ Start with the consolidated [`DEVELOPER_GUIDE.md`](DEVELOPER_GUIDE.md), then rea
 | Write a custom strategy plugin | [`STRATEGY_PLUGINS.md`](STRATEGY_PLUGINS.md) |
 | Understand the deployment model (modes, gates, kill switches, live) | [`STRATEGY_DEPLOYMENTS.md`](STRATEGY_DEPLOYMENTS.md) |
 | Install / launch the app | [`LOCAL_SETUP.md`](LOCAL_SETUP.md) · [`STARTUP_MANUAL.md`](STARTUP_MANUAL.md) |
-| Drive the optimizer / decide which controls add value | [`optimizer-user-guide.md`](optimizer-user-guide.md) · [`optimizer-decision-guide.md`](optimizer-decision-guide.md) · [`Walk-forward (honest OOS) what it does exactly.md`](<Walk-forward (honest OOS) what it does exactly.md>) |
+| Drive the optimizer / decide which controls add value | [`optimizer-user-guide.md`](optimizer-user-guide.md) · [`optimizer-decision-guide.md`](optimizer-decision-guide.md) |
 | Run a live-money readback | [`live-readback-checklist.md`](live-readback-checklist.md) |
 | Run the first market-hours validation of Phase 5B (paper day → live day) | [`phase5b-market-validation-runbook.md`](phase5b-market-validation-runbook.md) |
 | Check whether premium-momentum live work is justified by evidence | [`PREMIUM_MOMENTUM_EDGE_VERDICT_2026-07.md`](PREMIUM_MOMENTUM_EDGE_VERDICT_2026-07.md) (failed gate + pre-registered revival criterion) |

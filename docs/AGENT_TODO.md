@@ -9,9 +9,56 @@
 > audit-finding evidence table) · [`docs/HANDOFF.md`](HANDOFF.md) (architecture/state
 > entry point) · `CHANGELOG.md`.
 
-**Last updated:** 2026-07-21 (Claude Fable 5 session — Codex audit triage + quick wins)
+**Last updated:** 2026-07-31 (Claude Opus 5 — backtest/optimizer integrity audit + docs refresh)
 
 ---
+
+## ★ START HERE — the state of play on 2026-07-31
+
+**Repo:** `main` == `origin/main` == `23ccfed`, clean tree, one branch, zero stashes.
+**Suite:** 4,271 passed · 4 xfailed · 0 failed (4,275 collected).
+**Version:** v0.58.0.
+
+### Where the project actually is
+
+The **capability phase** (board item 9) is the active program: make backtesting, paper
+and live fully usable, and make a plain-English strategy deployable end to end. Phase 0
+(unlock built-but-unreachable features) and Phase 1 (config-block generalization) are
+COMPLETE. **Edge hunting is parked by explicit user decision** — do not start a new
+strategy search.
+
+Real money is blocked on **operations, not code**: all four pre-real-money blockers
+(C2/C4/H1/C3) are fixed, but nothing has ever been validated against a live broker
+because the current IP is not registered with Flattrade, and `live_trades` is empty.
+
+### The three highest-value things to do next
+
+1. **Close the 4 verified HIGH optimizer defects** — full text, severity and minimal fix
+   in [`BACKTEST_INTEGRITY_AUDIT.md`](BACKTEST_INTEGRITY_AUDIT.md) §5. These are
+   independently verified against source and ready to implement:
+   **#11** a disqualified config is still promoted, saved and applied (the "no usable
+   result" banner never fires) · **#18** a truncated survival sweep reports every finalist
+   as evaluated · **#22** one job's `finally` tears down a concurrent job's fork pool ·
+   **#28** the parallel path attaches the PREVIOUS best's metrics to the NEW best params
+   whenever the space contains a pinned dimension. Then the 8 MEDs in the same table.
+2. **Audit the deploy → paper → live handoff.** It is the one dimension of the pipeline
+   this audit cycle never covered, and it is the seam that carries real money.
+3. **Market-hours validation** (board row V) — still pending, still the main event, and
+   the only thing that converts "the code is correct" into evidence. Posture stays
+   **PAPER + READ-ONLY**.
+
+### Non-negotiables a new agent must not rediscover the hard way
+
+* **Never** call `mcp__flattrade__login` / `logout`, and never place/modify/cancel an
+  order through the MCP. It shares AlphaForge's single API key; last-login-wins would
+  invalidate the app's own token. Read tools are fine. Recover a stale MCP session with
+  `backend/scripts/resync_mcp_session.py --clean`.
+* **Push only with per-changeset user approval.** Commit freely; ask before pushing.
+* **A saved backtest from before 2026-07-30 is not evidence.** Re-run it.
+* **Read `result.option_backtest.*` for premium-native runs** — `result.metrics` is a
+  deliberate zero stub and reading it produces a plausible wrong answer.
+* No strategy has a demonstrated edge. Three campaigns have failed a holdout. Report
+  results honestly; never promise profitability.
 
 ## 0. Standing decisions (user-confirmed 2026-07-21 — do NOT relitigate)
 
@@ -59,11 +106,11 @@
 | 4b | ↳ Page audit + fixes (2026-07-25) | ✅ AUDIT COMPLETE | All 5 dimensions done (4 by agents, data-null-safety inline after both workflow runs died on the usage limit). Register: `docs/live-cockpit-audit-2026-07-25.md` (66 findings, 23 fixed). Landed `3007f7d`,`58c158d`,`91fa367`,`bbafd54`: drawer clipping (the reported bug), ExecutionStateStrip regression, duplicate ticker, clipped dialogs app-wide, drawer a11y/inert, honest unavailable states, Day-Stop wiring, guard fail-safe, 2 money-figure semantic inversions. **4 deferred safety items planned**: `docs/superpowers/plans/2026-07-25-live-safety-four-fixes.md` |
 | 4 | Live-trading page redesign | ✅ DONE (both phases) | **Phase 2 landed 2026-07-22**: read-only `GET /market/analysis` engine (`market_analysis.py` pure primitives + `market_analysis_build.py` assembly, ~8s single-flight cache) + `GET /live-broker/holdings`; MarketPulse (structure/regime meter/confidence/multi-TF trend/S-R range bar), MarketAnalysis (PCR·max-pain·IV-rank·straddle·net Δ,Θ + chain) and the Holdings tab all wired. Honest degradation everywhere (PCR suppressed without OI; IV rank declares `vix_proxy`). Commits `e0fb250`,`df6ebe3`,`afbd24b`. Suite 3,610/0; verified against live data. Phase-1 detail below |
 | 4a | ↳ Phase 1 (shell) | ✅ DONE | Design+plan approved+committed (`c524ddf`,`e94d9cc`). **Phase 1 SHELL BUILT + Chrome-verified** on branch `feat/live-cockpit` (`3511874`): always-on cockpit (command bar + market-status pill + Upstox/Flattrade connection module + MarketHeader ticker), always-on core (risk KPIs, positions, kill, guard, quick-trade, deployment summary), config drawer (deployments/backstop/overall), tabbed account panel (Funds/Holdings/Orders/Trades). LiveDashboard retired→liveHelpers.js; 3 tests repointed; 7 new contract tests; suite 3,564/0. **Phase 2 PENDING**: `/market/analysis` engine (regime/trend/structure/S-R/PCR/max-pain/IV-rank/straddle/greeks) + `/live-broker/holdings` → wires MarketPulse/MarketAnalysis (placeholders now). Plan tasks 10-18 |
-| V | **Market-hours validation (2026-07-27)** | 🔄 TODAY | Plan: `docs/market-session-plan-2026-07-27.md`. Monday's Phase-5B paper validation is STILL PENDING and is the main event. Posture: **PAPER + READ-ONLY, do NOT enable any live deployment** — `LIVE_AUTOPLACE_ARMED=1` and C3 is still open; 0 live deployments is the only thing preventing transmission. Tier A = cockpit/analysis panels on live data (PCR + max-pain should stop being suppressed once the stream runs in FULL mode). Tier D deferred to the 1-lot live day: Item 1 + the C2 fence both need a real transmit. |
+| V | **Market-hours validation (2026-07-27)** | 🔄 TODAY | Plan (deleted after the session; recover with `git show 23ccfed:docs/market-session-plan-2026-07-27.md`). Monday's Phase-5B paper validation is STILL PENDING and is the main event. Posture: **PAPER + READ-ONLY, do NOT enable any live deployment** — `LIVE_AUTOPLACE_ARMED=1` and C3 is still open; 0 live deployments is the only thing preventing transmission. Tier A = cockpit/analysis panels on live data (PCR + max-pain should stop being suppressed once the stream runs in FULL mode). Tier D deferred to the 1-lot live day: Item 1 + the C2 fence both need a real transmit. |
 | 5 | New strategy plugins / edge hunting | ⏸ **PARKED BY USER 2026-07-27** | Direction B ran and was **KILLED AT VALIDATION** (`docs/POOLED_REGIME_VERDICT_2026-07.md`, `d6ef472`): 0/36 NIFTY configs had positive GROSS on train; every survivor was SENSEX-only; holdout NEVER touched and stays clean. **User decision: stop going deeper on edge findings.** Strategy hunting (incl. internet research for an index-option-BUYING edge) is deferred to a LATER phase, explicitly after the capability work below. The one open research question — whether to spend the clean holdout on a SENSEX-only retest — stays OPEN and my recommendation stands: DON'T (a survivor is ~₹380/month on 1 lot; friction is a % of premium so lots scale reward and cost together). |
 | **9** | **CAPABILITY PHASE (new user priority 2026-07-27)** | ➡ **ACTIVE** | User's stated goal, verbatim intent: (a) make **backtesting, paper trading and live trading fully usable WITHOUT CONSTRAINTS** and fit to hand to a user; (b) build the **strategy builder** so a strategy defined in PLAIN WORDS becomes a plugin that backtests, optimizes, and deploys to paper and/or live. Edge hunting comes AFTER. Focus = high-value additions. Plan being assembled from two audits (authoring pipeline end-to-end; backtest/paper/live friction). |
 | 9.0 | **Phase 0 — unlock built-but-unreachable capability** | ✅ **COMPLETE** 2026-07-27 (`e1bfd4c`, `6d89370`) | Four backend features were fully built + tested with **ZERO frontend callers**. **0.1 safety-latch reset** — `blocked_until_reset` halts ALL live entries and never self-clears; the reset endpoint had no caller, so the only exit was a raw API call. **Newly urgent because C3 gave `guardrail_tick` its FIRST production caller that same day** — the latch became trippable and I opened that reachability. Backend now records `latched_at`+`latched_reason` in the SAME write as the flag (they can never disagree); `reset()` clears provenance so a stale cause can't mislead the next operator; `put_config` still refuses all three keys so a halt can't be relabelled. Banner is two-step (clearing re-authorises real money). **0.2 recovery banner** — `/live-broker/recovery-status` existed to drive a UI strip per its own docstring; severity now follows exposure (unrecovered + open positions = danger). **0.3 deploy from a backtest run** — backend always accepted `source_type="backtest_run"` with full H5 validation parity; the wizard never offered it, forcing a save-a-preset detour on EVERY deploy. Now a third source + Deploy button + guarded `?backtest=` deep link. **0.4 pipeline chips** — `/strategies/{id}/pipeline` was built to power exactly these; distinguishes `live_ever_count` from `live_armed_count`. All contract tests assert components are **MOUNTED, not merely imported** (how `ExecutionStateStrip` was silently dropped). Suite **3682/0**, frontend build clean. |
-| 9.1 | Phase 1 — config-block generalization (strategy builder) | ✅ **COMPLETE** 2026-07-28 (`1abc3a9`) | All 7 steps. `classify_rule` promised BUILDABLE_NOW for premium-trigger concepts and NOTHING could build them; now end-to-end. **1** dispatch routes on CONFIG PRESENCE + fixed a silent 6-field loss (`stop_pts`/`target_pts`/`trail_x`/`trail_y` were dropped by `merged_params`' allow-list while the run reported numbers as if applied) + split absent-vs-invalid. **1b** optimizer ×5 + coverage preflight route on `is_premium_trigger_strategy` (literal count in optimizer 6→0; predicate matches exactly the 1 strategy the string did, measured across all 12). **1c** classifier stopped promising fields that don't exist (`expiry` never existed; `side` had no `BOTH`) — ~51 tests touched `classify_rule` and none pinned message text to the schema it cites. **2** deployment carries a validated `premium_trigger` block, refused at CREATION. **3** Track B routes on capability, configured by the deployment — a block can NEVER flip a strategy's capability, which is what stops it silently bypassing an ordinary `evaluate()`; principle recorded: **entry strict / exit permissive** (a too-strict exit gate STRANDS a position). **4** `StrategySpec` emits a config; end-to-end test proves the generated plugin IS premium-native. **5** both generators taught; field list DERIVED from the model. **6** wizard carries + displays it (fixed silent data-loss: the config was discarded at Install). **7** paper honours `exit_time`; sizing replays the config's lots. **Suite 3902/0; the `premium_momentum` parity test stayed green and untouched throughout (invariant #1).** NOT yet validated against a live broker, and no AI-authored premium strategy generated end-to-end with a real LLM call — both are validation, not implementation. Log: `docs/PHASE1_CONFIG_BLOCK_LOG.md`. |
+| 9.1 | Phase 1 — config-block generalization (strategy builder) | ✅ **COMPLETE** 2026-07-28 (`1abc3a9`) | All 7 steps. `classify_rule` promised BUILDABLE_NOW for premium-trigger concepts and NOTHING could build them; now end-to-end. **1** dispatch routes on CONFIG PRESENCE + fixed a silent 6-field loss (`stop_pts`/`target_pts`/`trail_x`/`trail_y` were dropped by `merged_params`' allow-list while the run reported numbers as if applied) + split absent-vs-invalid. **1b** optimizer ×5 + coverage preflight route on `is_premium_trigger_strategy` (literal count in optimizer 6→0; predicate matches exactly the 1 strategy the string did, measured across all 12). **1c** classifier stopped promising fields that don't exist (`expiry` never existed; `side` had no `BOTH`) — ~51 tests touched `classify_rule` and none pinned message text to the schema it cites. **2** deployment carries a validated `premium_trigger` block, refused at CREATION. **3** Track B routes on capability, configured by the deployment — a block can NEVER flip a strategy's capability, which is what stops it silently bypassing an ordinary `evaluate()`; principle recorded: **entry strict / exit permissive** (a too-strict exit gate STRANDS a position). **4** `StrategySpec` emits a config; end-to-end test proves the generated plugin IS premium-native. **5** both generators taught; field list DERIVED from the model. **6** wizard carries + displays it (fixed silent data-loss: the config was discarded at Install). **7** paper honours `exit_time`; sizing replays the config's lots. **Suite 3902/0; the `premium_momentum` parity test stayed green and untouched throughout (invariant #1).** NOT yet validated against a live broker, and no AI-authored premium strategy generated end-to-end with a real LLM call — both are validation, not implementation. Log deleted after completion; recover with `git show 23ccfed:docs/PHASE1_CONFIG_BLOCK_LOG.md`. |
 | P1 | Lot-size single source of truth | ✅ DONE 2026-07-27 (`da4e85b`) | **Pre-flight for the pooled campaign.** Two independent lot sources disagreed: `option_backtest.py:750` reads the CONTRACT's lot (correct, data-driven) while `premium_momentum_backtest.py:342` + `premium_trigger_dispatch.py:194` read hardcoded `UNDERLYING_META`. NIFTY(65)/SENSEX(20) agree so it was invisible; **BANKNIFTY contracts say 30, the map said 35 → 16.7% error in every quantity/₹ figure** on those (backtest-only, not live placement). New `instruments.resolve_lot_size()` resolves from contract data + returns warnings; surfaces `lot_size_changed_in_window` (BANKNIFTY really was 35 Jul-Dec-2025, 30 after) instead of silently picking. Did NOT assert a number — broker MCP unauthenticated on this IP and its login must never be called — removed the hardcode so both paths agree by construction. Closes the long-standing BANKNIFTY lot OPEN ITEM. **Context: BANKNIFTY has had 0 backtest runs EVER (NIFTY 225, SENSEX 31)** — the untested path is where the bug lived. |
 | P2 | C2 fence test was wall-clock dependent | ✅ DONE 2026-07-27 (`da4e85b`) | My own C2 test asserted the authorised case while the fence deliberately uses a FRESH clock (re-checking the time IS half the fence's purpose — a deployment can cross the 15:00 IST cutoff during broker round-trips). Passed when written, failed every afternoon; surfaced only because this run was at 15:30 IST. Production behaviour UNCHANGED and correct; clock now injectable, only the test pins it. |
 | P3 | C2 fence: the post-cutoff branch was never tested | ✅ DONE 2026-07-27 | **P2 made the test deterministic but never tested the property the fresh clock exists FOR.** The suite had NO assertion that the fence *refuses* after 15:00 IST — the only `clock_fn` use pinned it PRE-cutoff and asserted the authorised case. Proved by mutation: reverting `auto_live.py:493` to the frozen `now_utc` is caught by exactly ONE test (the new one) while the other 54 in the file stay green — so production could have regressed to the frozen clock, opening a real position minutes before the EOD square, with a green suite. Added `test_transmit_fence_refuses_when_entry_cutoff_passes_mid_flight` (both clocks pinned → deterministic at any hour). **Suite 3,649/0 verified at 15:52 IST**, i.e. after-cutoff AND outside-market-hours branches live; docs' "3,639" baseline is stale (HEAD was 3,648). Swept the rest of the suite for the same class — none found; details + the faked-clock dead end in `learning_log.md`. Residual (not a bomb, but untested): `_in_market_hours` is triplicated across `live_exit_monitor.py:23` / `live/live_position_guard.py:97` / `live/live_sl_monitor.py:55` and is only reachable from `run()` loops NO test drives. |
@@ -289,6 +336,23 @@ Junior-agent prompt:
 ---
 
 ## 4. Session log
+
+- **2026-07-29 → 07-31 (Claude Opus 5) — backtest & optimizer integrity audit.**
+  Triggered by a user report: an optimized premium strategy showed `lots: 100` for a form
+  that said 5, blank KPI cards, an empty Trades pane and a +197% headline. Root cause was a
+  **defect class** — one surface reading another's data envelope — found in eight places,
+  plus one critical bug (`contract_key` NaN collapse) that had invalidated **every saved
+  paired-option backtest in the database**. ~20 fixes across `option_backtest.py`,
+  `optimizer.py`, `premium_trigger_dispatch.py`, `walkforward.py`, `routers/research.py`
+  and the results/journal frontend; suite 3,972 → 4,271. A train/holdout study
+  (train Jan–Apr, holdout May–Jul) proved `algotest_option_buy_nifty` has **no edge**:
+  +60.83% / Sharpe 4.49 in train → **−1.65% / Sharpe −0.27** out of sample. A full
+  claim-verification pass (23 claims, 0 disputed) plus the never-audited
+  `result-persistence-display` dimension (9 findings, all fixed) closed the cycle.
+  Register: [`BACKTEST_INTEGRITY_AUDIT.md`](BACKTEST_INTEGRITY_AUDIT.md) — including
+  **13 verified-but-unfixed findings** and 10 generalisable lessons. Documentation audited
+  and consolidated the same session (40 → 29 doc files; four running logs replaced by the
+  one register). All work merged and **pushed** to `origin/main`.
 
 - **2026-07-21 (Claude Opus 4.8, item 3):** item 3 DONE — H5 preset/backtest validation
   parity (`10f8ce7`, 6 tests) + AI-install plugin-file rollback (`6e8861d`, 2 tests);
