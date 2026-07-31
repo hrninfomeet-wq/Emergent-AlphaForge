@@ -601,3 +601,45 @@ prospective-evidence loop and a truthful decision surface, not another strategy 
 - More optimizer objectives, charts or strategy plugins cannot turn in-sample selection
   into evidence. Historical option coverage also cannot manufacture point-in-time spread,
   depth or IV data that was never recorded.
+
+---
+
+## Session 2026-08-01 — a normalized metric is a cross-path contract
+
+**Core lesson: changing an optimizer metric is incomplete until serial evaluation, every
+parallel worker, persisted/resume evidence and the UI all carry the same definition.** The
+unitless drawdown fix passed its new direct test but the full suite caught WFO worker parity:
+the serial evaluator emitted `pnl_abs_sum` while both fork workers dropped it. That omission
+would have ranked risk objectives differently by execution mode even though each path looked
+internally plausible.
+
+**Confirmed approaches:**
+- Classify audit rows against current source before editing. MED #14/#23 were not open
+  defects; they were stale descriptions already covered by the HIGH #18/#28 regressions.
+  Documentation closure was the correct fix.
+- Keep surviving defects in isolated commits with their own red/green proof. It made the
+  full-suite parity regression attributable to #29 without entangling controls, robustness
+  or early-stop behavior.
+- Use an inclusion projection for bounded API summaries. Excluding known root arrays missed
+  premium-native nested arrays; selecting only scalar fields reduced the live response from
+  62,924 to 1,857 bytes and preserved the authoritative option envelope.
+- Reuse the production ingestion helper in preflight. Check is read-only; Ingest calls the
+  same audit → fill → re-audit function as sync/async backtests, so a certification panel
+  cannot silently diverge from the workflow it certifies.
+- Review delegated changes from a clean repo-root command. One delegated dashboard test
+  passed only when another test had already modified `sys.path`; isolated execution exposed
+  the hidden dependency before commit.
+
+**Dead ends / traps:**
+- Do not stop at a new objective's unit test. Run serial/parallel exact-dict parity and the
+  whole suite; execution-mode-dependent rankings are more dangerous than an obvious crash.
+- Do not guess test filenames. Two guessed WFO files did not exist and caused zero tests to
+  run; enumerate with `rg --files` and then invoke only returned paths.
+- Run repo-root commands from the repo root. A compile command launched from `frontend/`
+  could not resolve `.venv`; this was command-context failure, not source evidence.
+- Browser origin is part of the test. Opening `127.0.0.1:3000` while the bundle targets
+  `localhost:8001` creates a CORS failure and fake empty Dashboard. Re-run on the configured
+  canonical origin before diagnosing product behavior.
+- Backend-container source-contract tests that read `/frontend` or `/backend/server.py` are
+  repository-layout checks, not container behavior. Keep them green on the host and deselect
+  only those exact cases from the container behavioral gate.

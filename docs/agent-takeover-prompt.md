@@ -1,4 +1,4 @@
-# AI-agent takeover prompt (as of v0.58.0 + unreleased optimizer fixes, 2026-07-31)
+# AI-agent takeover prompt (as of v0.58.0 + unreleased Stage-1 integrity, 2026-08-01)
 
 _Copy-paste the block below as the first message to a new AI agent taking over this repo.
 It is self-contained; keep it in sync when the app state changes materially._
@@ -21,7 +21,8 @@ safety-critical.
 2. `docs/BACKTEST_INTEGRITY_AUDIT.md` — **read before trusting any backtest or optimizer
    number, and before touching `optimizer.py`, `option_backtest.py`, `runtime.py` or
    `premium_trigger_dispatch.py`.** Its four verified HIGH findings are fixed in the
-   current working tree; 8 MED findings and one disputed LOW remain.
+   current working tree; all 8 confirmed MED findings are also closed locally. One
+   disputed LOW remains separate.
 3. `docs/AGENT_TODO.md` — the live board. Its ★ START HERE block names the three
    highest-value next actions.
 4. `docs/DEVELOPER_GUIDE.md` — run/build/test, live-safety model (§E, read twice),
@@ -34,7 +35,7 @@ safety-critical.
 7. `docs/flattrade-mcp-integration.md` **before touching the broker token path or using the
    Flattrade MCP tools** — the broker account is shared with a separate MCP server.
 
-## Where the app stands (v0.58.0 + unreleased optimizer fixes, 2026-07-31)
+## Where the app stands (v0.58.0 + unreleased Stage-1 integrity, 2026-08-01)
 
 All subsystems are built and integrated on `main` (sole branch): data warehouse, Backtest
 Lab, Optimizer (honest OOS + survival gate), Strategy Library with AI authoring, paper
@@ -42,13 +43,13 @@ trading, gated live execution with a layered safety stack (confirm-flat guard, k
 switches, per-token recovery), the premium-momentum family including Phase 5B multi-leg
 execution, and Flattrade-MCP session sharing.
 
-- **Git:** `main` == `origin/main` == `aedbf42`; the current working tree contains the
-  one local green-milestone commit containing the four verified HIGH optimizer fixes
-  and promotion-freedom policy; not pushed. One branch, zero stashes.
+- **Git:** `origin/main` remains `aedbf42`; local `main` is 14 green-milestone commits
+  ahead, containing the HIGH fixes, promotion-freedom policy, next-stage roadmap and
+  completed Stage-1 integrity work; not pushed. One branch, zero stashes.
   Two archive tags preserve retired work (`archive/live-deploy-wip-2026-06-25`,
   `archive/journal-wip-2026-06-21`). Always run `git log origin/main..main --oneline`
   before describing "current state".
-- **Host test baseline: 4,293 passed, 4 xfailed, 0 failed** (4,297 collected) —
+- **Host test baseline: 4,354 passed, 4 xfailed, 0 failed** (4,358 collected) —
   `.venv\Scripts\python.exe -m pytest tests -q` from the repo root. Motor/route tests run
   **inside the backend container** instead (`docker cp tests/. alphaforge_backend:/app/tests`
   then `docker exec -w /app alphaforge_backend python -m pytest tests/<file> -q`).
@@ -204,8 +205,8 @@ automated entries.
 
 1. **Audit the deploy → paper → live handoff** — the one pipeline dimension never covered by
    the 2026-07 audit cycle, and the seam that carries real money.
-2. **Close the 8 verified MED optimizer defects** in
-   `docs/BACKTEST_INTEGRITY_AUDIT.md` §5; keep disputed #31 separate.
+2. **Stage 2 Dashboard decision surface** from `docs/NEXT_STAGE_ROADMAP_2026-07.md`,
+   after reviewing the completed Stage-1 evidence. Do not add live order controls to it.
 3. **Market-hours validation** per `docs/phase5b-market-validation-runbook.md`. Posture:
    **PAPER + READ-ONLY**. Use the Flattrade MCP's read tools as an independent broker-truth
    witness against AlphaForge's own blotter and guard state.
@@ -225,7 +226,7 @@ automated entries.
    2024-11-25.
 
 Start by reading the docs in the order above, run the host test suite to confirm the
-**4,293 passed / 4 xfailed** baseline on your machine, check `git log origin/main..main`,
+**4,354 passed / 4 xfailed** baseline on your machine, check `git log origin/main..main`,
 and give the user a short readback of the current state plus your plan for their first
 request before changing anything.
 

@@ -2,7 +2,40 @@
 
 All notable changes to AlphaForge Trading Lab.
 
-## [Unreleased] — promotion freedom with finite-config safety (2026-07-31)
+## [Unreleased] — Stage 1 integrity + promotion freedom (2026-08-01)
+
+### Stage 1 integrity
+
+**Outcome: all eight confirmed MED optimizer rows and the Stage-1 truth/workflow gaps
+are closed without restoring research qualification as a deployment veto.**
+
+- MED #14/#23 were stale rows already subsumed by HIGH #18/#28. The six surviving
+  defects were fixed independently: option re-rank and WFO final analysis honor
+  stop/pause; early-stop evidence separates actual trials from its ceiling; robustness
+  excludes no-op/duplicate perturbations and handles negative objectives symmetrically;
+  drawdown objectives are normalized by total absolute trade P&L in the same unit.
+- Serial, ordinary fork-worker, WFO fork-worker, compact-window and resume metrics now
+  carry the same unitless drawdown basis. The first full-suite run exposed the missing
+  worker denominator; the serial/parallel parity gate now pins it.
+- Dashboard summary uses an inclusion projection that omits root/nested trade/equity and
+  portfolio-curve arrays. Runtime payload fell from 62,924 bytes / 3,087 ms to
+  **1,857 bytes / 348 ms**. Latest Backtest KPIs use the shared dispatch-aware selector,
+  so premium-native results show rupee values and ordinary results remain in points.
+- Stale phase/roadmap/yfinance copy is removed. Execution navigation uses **Deploy
+  Strategies** and **Live Broker**. Startup warns safely for absent/malformed `FERNET_KEY`
+  without logging the secret, and live guidance names both static-IP environment keys.
+- Backtest Lab adds advisory spot-data **Check → Ingest missing → automatic recheck**.
+  Check is read-only; Ingest delegates to the production audit/fill/re-audit helper;
+  deterministic runs remain operator-promotable and are not gated on a preflight click.
+  Async no-candle failures now persist the same audit details as the sync route.
+- **Verification:** pre-fix regressions failed for every surviving MED and the absent spot
+  workflow; host **4,354 passed / 4 xfailed / 0 failed**; selected backend-container
+  behavioral set **142 passed / 9 repository-layout source tests deselected / 0 failed**;
+  compileall, host/Docker frontend builds, rebuilt service health, runtime summary/spot
+  checks and canonical-`localhost` browser interaction pass. A cosmetic favicon 404 remains
+  outside Stage 1. No Flattrade call, order mutation, live-mode change or push occurred.
+
+### Promotion freedom with finite-config safety
 
 **Outcome: the four verified HIGH optimizer defects are closed, and research
 qualification is advisory rather than a deployment veto.**

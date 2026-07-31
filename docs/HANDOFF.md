@@ -14,8 +14,8 @@ Stack: **React** (CRA + craco) frontend, **FastAPI** (Python) backend, **MongoDB
 
 ## 2. Current state
 
-> **As of 2026-07-31 · v0.58.0 + unreleased optimizer/promotion fixes · `main` is two local commits ahead of `origin/main`; not pushed.**
-> Verification baseline: **4,326 passed, 4 xfailed, 0 failed** (4,330 collected).
+> **As of 2026-08-01 · v0.58.0 + unreleased Stage-1 integrity work · `main` is 14 local commits ahead of `origin/main`; not pushed.**
+> Verification baseline: **4,354 passed, 4 xfailed, 0 failed** (4,358 collected).
 
 ### 2.0 The 60-second orientation
 
@@ -26,7 +26,7 @@ Stack: **React** (CRA + craco) frontend, **FastAPI** (Python) backend, **MongoDB
 | Does any strategy have a proven edge? | **No.** Three independent campaigns have failed a holdout. See [`BACKTEST_INTEGRITY_AUDIT.md`](BACKTEST_INTEGRITY_AUDIT.md) §6 and [`PREMIUM_MOMENTUM_EDGE_VERDICT_2026-07.md`](PREMIUM_MOMENTUM_EDGE_VERDICT_2026-07.md). Do not re-litigate without new data. |
 | Can I trust a saved backtest? | **Only if it was run on/after 2026-07-30.** Every paired-option backtest saved before then is wrong — see the ⚠ below. |
 | What is the active work program? | The **capability phase**: make backtest/paper/live fully usable, and make a plain-English strategy deployable. Edge hunting is explicitly parked. [`AGENT_TODO.md`](AGENT_TODO.md) is the live board. |
-| Where do I look first when a number looks wrong? | [`BACKTEST_INTEGRITY_AUDIT.md`](BACKTEST_INTEGRITY_AUDIT.md) — it names the defect class, the reproduction commands, the four closed HIGHs and the 8 MED findings still open. |
+| Where do I look first when a number looks wrong? | [`BACKTEST_INTEGRITY_AUDIT.md`](BACKTEST_INTEGRITY_AUDIT.md) — it names the defect class, reproductions, and the closed HIGH/MED register. Disputed LOW #31 remains separate. |
 
 ### 2.1 ⚠ Two things that will bite you immediately
 
@@ -44,7 +44,7 @@ Stack: **React** (CRA + craco) frontend, **FastAPI** (Python) backend, **MongoDB
    frontend: `isPremiumNative()` / `resultKpis()` in `lib/backtestMetrics.js`). This single mistake
    produced eight separate user-visible defects.
 
-### 2.2 What landed most recently (2026-07-28 → 07-31, v0.57.5 + v0.58.0)
+### 2.2 What landed most recently (2026-07-28 → 08-01, v0.57.5 + v0.58.0 + Stage 1)
 
 A full reporting-integrity audit of the backtest → optimizer → results → journal chain.
 Twenty-plus fixes, ~300 new tests, all merged and pushed. Highlights: the `contract_key`
@@ -67,9 +67,17 @@ non-finite params/metrics/signals, validates optimizer-added indicator keys from
 catalog, repeats deterministic smoke evaluation for AI-authored Python, and revalidates a
 deployment before resume and live enablement. The wizard preserves nullable defaults,
 recovers warning acknowledgment without a dead end, and exact-fetches older deep links.
-**Still open: 8 MED +
-1 disputed LOW**, listed with severity and minimal fix in
-[`BACKTEST_INTEGRITY_AUDIT.md`](BACKTEST_INTEGRITY_AUDIT.md) §5.
+**Stage 1 integrity is complete in the local, unpushed commits.** The six surviving MED
+defects now honor controls during re-rank/WFO analysis, report actual early-stop evidence,
+exclude robustness no-ops, score negative objectives symmetrically, and normalize drawdown
+objectives across points/rupees with serial/parallel parity. MED #14 and #23 were stale
+rows already subsumed by HIGH #18/#28; their existing red regressions remain. Dashboard
+summary payloads are inclusion-projected (runtime: **1,857 bytes / 348 ms**, down from
+62,924 bytes / 3,087 ms), Latest Backtest uses the dispatch-aware KPI selector, operator
+copy/config warnings are actionable, and Backtest Lab has read-only Check → shared Ingest
+→ automatic recheck for spot data. The full verification record is in
+[`BACKTEST_INTEGRITY_AUDIT.md`](BACKTEST_INTEGRITY_AUDIT.md) §5. Only disputed LOW #31
+remains separate; it was not silently promoted into this milestone.
 
 ### 2.3 Release history (newest first — archival, read only what you need)
 

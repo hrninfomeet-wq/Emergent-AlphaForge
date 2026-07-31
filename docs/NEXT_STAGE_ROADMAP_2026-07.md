@@ -67,9 +67,9 @@ reproduction.
 value or reconciliation mismatch stops the session. This gate cannot be completed while the
 market is closed.
 
-### Stage 1 — close truth and optimizer integrity gaps
+### Stage 1 — close truth and optimizer integrity gaps — ✅ COMPLETE 2026-08-01
 
-This is the next implementation milestone.
+This implementation milestone is complete in local, unpushed commits.
 
 1. Close the eight confirmed MED optimizer findings (#14, #17, #20, #23, #25, #26, #29,
    #30) independently, with one pre-fix-red regression per finding and focused/full-suite
@@ -89,7 +89,16 @@ trade/equity payloads, premium and ordinary Latest Backtest cards match their au
 result envelopes, frontend build/browser checks pass, and the full host plus container
 route/Motor suites are green.
 
-### Stage 2 — Dashboard v2, built as a decision surface
+**Completion evidence:** all eight MED rows are closed; #14/#23 were already subsumed by
+the earlier HIGH fixes and the other six have isolated regressions/fixes. Host suite:
+**4,354 passed / 4 xfailed / 0 failed**. In-container selected behavioral set:
+**142 passed / 9 repository-layout source tests deselected / 0 failed**. The rebuilt
+Dashboard summary is **1,857 bytes in 348 ms** and omits the large array fields;
+the prior measurement was 62,924 bytes in 3,087 ms. Dashboard and Backtest Lab browser
+checks pass at the configured `localhost` origin, including a read-only 375/375 spot
+preflight. No deployment mode, broker session or order state changed.
+
+### Stage 2 — Dashboard v2, built as a decision surface — NEXT IMPLEMENTATION MILESTONE
 
 The Dashboard should not duplicate the Live Trading cockpit. Its job is to answer:
 
@@ -248,6 +257,7 @@ weakens live consent and safety gates.
 
 ## Stop point
 
-Do not implement the whole roadmap as one branch. Complete and review Gate A, then Stage 1,
-then the Stage 2a chart slice. Re-evaluate priority after each green milestone. Do not start
-edge research, stock expansion or live activation without a new explicit user decision.
+Do not implement the whole roadmap as one branch. Stage 1 is complete. The next decision is
+between the market-hours Gate A session (when NSE is open) and Stage 2; keep Stage 2a as its
+own chart slice. Re-evaluate priority after each green milestone. Do not start edge research,
+stock expansion or live activation without a new explicit user decision.

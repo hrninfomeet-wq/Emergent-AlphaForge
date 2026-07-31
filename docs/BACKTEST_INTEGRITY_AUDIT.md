@@ -104,19 +104,32 @@ focused promotion/deployment/evaluator set 264/264, full host **4,326 passed / 4
 source-layout tests deselected / 0 failed**; compileall, optimized frontend build and
 hard-refreshed browser smoke pass.
 
-### Still open — 8 MED, 1 disputed LOW
+### Closed 2026-08-01 — all 8 confirmed MED findings
+
+| # | Sev | Resolution |
+|---|---|---|
+| 14 | MED | Already subsumed by HIGH #18 before this Stage-1 pass: the survival summary counts reasons only across `ranked[:evaluated]` and reports evaluated/finalist/not-evaluated separately. The prior red regression remains in `test_optimizer_verified_high_regressions.py`. |
+| 17 | MED | Both ordinary and premium option re-rank loops now read the shared cancel/pause/budget callback and retain the finite partial ranking when stopped (`9865314`). |
+| 20 | MED | WFO rechecks cancel/pause before final analysis, save and option pairing, preserves completed-window evidence, and cannot overwrite the stop state with `done` (`1c3c5b8`). |
+| 23 | MED | Already subsumed by HIGH #28 before this pass: trial promotion carries the exact params+metrics tuple, including pinned dimensions, instead of looking up a partial `study.best_params`. The earlier pinned-dimension regression remains the proof. |
+| 25 | MED | Robustness excludes clamped/rounded no-ops and duplicate perturbations; its denominator is the number of distinct effective trials and skipped cases are disclosed (`f7f0546`). |
+| 26 | MED | The degradation tolerance is symmetric around positive and negative maximizing objectives, so an improvement from a negative baseline no longer fails by construction (`5bf5582`). |
+| 29 | MED | Drawdown objectives use a unitless `abs(max_drawdown) / sum(abs(trade_pnl))` fraction in points for ordinary runs and rupees for premium-native runs. Serial, fork-worker, WFO compact-persistence and resume paths carry the same denominator (`9184a06`, `675d4fd`). |
+| 30 | MED | Saved evidence separates actual completed trials from the requested ceiling and the UI names auto-stop explicitly (`2c31cc9`). |
+
+Regression coverage for the six newly implemented findings lives in
+`tests/test_optimizer_medium_integrity.py`; #14/#23 remain covered by the earlier HIGH
+regressions because their MED descriptions were stale rows, not separate surviving
+defects. Final Stage-1 verification: host **4,354 passed / 4 xfailed / 0 failed**;
+selected in-container route/Motor/optimizer set **142 passed / 9 source-layout tests
+deselected / 0 failed**; compileall, optimized frontend/Docker builds, service health,
+runtime payload/preflight checks and canonical-`localhost` browser smoke pass.
+
+### Still open — 1 disputed LOW
 
 | # | Sev | Finding |
 |---|---|---|
-| 14 | MED | Truncated survival stage counts un-evaluated finalists as non-survivors. |
-| 17 | MED | Option re-rank ignores Stop/Pause — neither of its loops reads the control flags. |
-| 20 | MED | WFO analyze stage reads no control flag at all; job still reports "done". |
-| 23 | MED | A pinned (`fixed`) param override is dropped from `best_params`, so the saved best runs a different value than the trials did. |
-| 25 | MED | `_robustness_score` counts no-op perturbations as passes (int rounding / bound clamping), inflating the ROBUST verdict. |
-| 26 | MED | `_robustness_score`'s pass test inverts on a negative objective — `neg_max_dd` runs are FRAGILE by construction. |
-| 29 | MED | `risk_adjusted` mixes units: `max_dd_pts` is index POINTS (ordinary) vs RUPEES (premium), and `max(1.0, dd/100)` zeroes the drawdown penalty for any ordinary run under 100 points. Intra-job ranking is unaffected; cross-job comparison is meaningless. |
-| 30 | MED | Early stop is invisible — the ceiling `n_trials` is reported as the trial count and stamped into the saved run's overfit evidence. |
-| 31 | LOW | `net_pnl_inr` ignores `option_config.lots` and converts SPOT points at the option lot size. (One verifier refuted this; treat as disputed.) |
+| 31 | LOW | `net_pnl_inr` ignores `option_config.lots` and converts SPOT points at the option lot size. One verifier refuted this; it remains explicitly disputed and was not folded into Stage 1. |
 
 **SUPERSEDED BY OPERATOR POLICY:** #5's former zero-survivor refusal. A finite best
 candidate is now retained and `done_no_survivor` is accepted by apply-as-preset, with
@@ -125,7 +138,9 @@ the failed survival screen carried as an acknowledgment warning.
 **REFUTED — do not re-raise:** #13 (`search_exit_controls` no-op grid) · #21 was
 refuted by me and later **CONFIRMED** and fixed — see §7.
 
-**Never audited:** the deploy → paper → live handoff. See `AGENT_TODO.md`.
+**Code handoff audit complete; broker validation still absent.** Promotion/deployment
+competency and resume/live-enable revalidation were audited with the HIGH closure. No live
+order has ever occurred, so real broker behavior remains unvalidated; see `AGENT_TODO.md`.
 
 ## 6. Strategy verdict (do not re-litigate without new data)
 

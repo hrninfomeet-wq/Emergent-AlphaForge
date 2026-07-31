@@ -10,33 +10,30 @@ Everything cited is file:line-verified.
 
 ---
 
-## ▸ STATUS as of 2026-07-31 (read this before using the plan below)
+## ▸ STATUS as of 2026-08-01 (read this before using the plan below)
 
 | Phase | Status |
 |---|---|
 | **Phase 0** — unlock what is already built | ✅ **COMPLETE** 2026-07-27 (`e1bfd4c`, `6d89370`) — all four capabilities now have UI paths |
 | **Phase 1** — config-block generalization | ✅ **COMPLETE** 2026-07-28/29 (`1abc3a9` + the authoring-loop fixes in v0.57.5) — a plain-words premium-trigger strategy now generates, installs, backtests, optimizes and deploys |
-| **Phase 2** — remove the remaining friction | ➡ **NEXT.** Still open: spot-data preflight · async backtest error parity · **optimizer cancel honesty (now tracked as finding #17 in [`BACKTEST_INTEGRITY_AUDIT.md`](BACKTEST_INTEGRITY_AUDIT.md) §5, with #20 as its WFO twin)** · nav badges still read "P4"/"L0" (`Layout.jsx:36,39`) · `FERNET_KEY` still fails silently (`encryption.py:9-14` carries a comment, not a boot warning) · static-IP guidance. **Resolved since the plan was written:** `PositionMonitor.jsx` is wired (imported by `LiveDataProvider.jsx`) — do not delete it. |
+| **Phase 2** — remove the remaining friction | ✅ **COMPLETE 2026-08-01.** Spot-data Check → shared Ingest → auto-recheck; async error/audit parity; optimizer cancel honesty (#17/#20); operator navigation; no-secret `FERNET_KEY` boot warning; either-IP recognition and exact static-IP guidance. `PositionMonitor.jsx` remains wired via `LiveDataProvider.jsx`. |
 | **Phase 3** — live-readiness | ⛔ still blocked on a Flattrade-registered static IP; `live_trades` is still empty. The scripted-readback prep is NOT blocked and has not been built. |
 
 **One correction to the framing below:** the plan's premise that the backtest/optimizer
 surface was merely *high-friction* was optimistic. The 2026-07-29→31 audit found it was
 also **wrong in places** — see [`BACKTEST_INTEGRITY_AUDIT.md`](BACKTEST_INTEGRITY_AUDIT.md).
-The four confirmed HIGH findings are now closed; Phase 2 proceeds with the eight confirmed
-MED findings and the truth/performance work in
-[`NEXT_STAGE_ROADMAP_2026-07.md`](NEXT_STAGE_ROADMAP_2026-07.md) Stage 1.
+The four confirmed HIGH and all eight confirmed MED findings are now closed. The
+truth/performance work in [`NEXT_STAGE_ROADMAP_2026-07.md`](NEXT_STAGE_ROADMAP_2026-07.md)
+Stage 1 is complete; disputed LOW #31 remains separate.
 
 ---
 
 ## The one-line answer
 
-> **Next step = Phase 0: unlock what is already built.** Four fully-implemented, tested
-> backend capabilities have **zero** UI path — including a safety latch that can lock you
-> out of live trading with no way back in. Days of work, no new design.
->
-> **Then Phase 1: finish the config-block generalization** — the single change that turns
-> the strategy builder from "per-bar indicator rules only" into the plain-words→plugin tool
-> you actually asked for. It is a *completion of existing design*, not new invention.
+> **Phases 0, 1 and 2 are complete.** Next: execute market-hours PAPER/read-only
+> capability validation when NSE is open, or proceed to the separately scoped Stage-2
+> Dashboard decision surface. Phase 3 live validation remains blocked on the registered IP
+> and the user's manual authorization.
 
 ---
 
@@ -188,7 +185,8 @@ command and a checklist, not a day of manual clicking.
 
 ## Recommended order
 
-**Phase 0 → Phase 1 → Phase 2**, with Phase 3 prep slotted whenever the IP is sorted.
+**Phase 0 → Phase 1 → Phase 2 are complete.** Phase 3 prep can proceed, but live execution
+remains blocked until the IP is registered and the user manually authorizes it.
 
 Phase 0 first because it is days, not weeks; it converts already-paid-for work into visible
 capability; and 0.1 closes a lockout that today's own change made reachable. Phase 1 next
