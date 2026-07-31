@@ -54,6 +54,29 @@ def test_clean_source_yields_no_warnings_and_no_ack_required():
     assert res["metrics_snapshot"]["has_walkforward"] is True
 
 
+def test_incomplete_backtest_is_an_acknowledgeable_warning_not_a_hard_block():
+    source = {
+        "status": "failed", "metrics": _good_metrics(),
+        "walkforward": _good_walkforward(),
+    }
+    res = evaluate_source_quality(source)
+    ids = [w["id"] for w in res["warnings"]]
+    assert "incomplete_backtest_run" in ids
+    assert res["acknowledgment_required"] is True
+
+
+def test_optimizer_guardrail_failure_is_an_acknowledgeable_warning():
+    source = {
+        "metrics": _good_metrics(), "walkforward": _good_walkforward(),
+        "config": {"validation": {"guardrail_qualified": False,
+                                   "job_status": "done_no_survivor"}},
+    }
+    res = evaluate_source_quality(source)
+    ids = [w["id"] for w in res["warnings"]]
+    assert "optimizer_guardrail_failed" in ids
+    assert "optimizer_survival_failed" in ids
+
+
 # ---- missing walkforward ---------------------------------------------------
 
 

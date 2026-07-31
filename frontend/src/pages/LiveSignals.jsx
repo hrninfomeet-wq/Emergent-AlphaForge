@@ -411,17 +411,21 @@ function DeployWizard({ presets, strategies, backtestRuns = [], initialPreset, i
   const preset = form.source_type === "preset"
     ? presets.find((p) => p.name === form.source_id)
     : null;
+  const backtestRun = form.source_type === "backtest_run"
+    ? backtestRuns.find((r) => r.id === form.source_id)
+    : null;
+  const selectedSourceConfig = preset?.config || backtestRun?.config;
   const libraryStrategy = form.source_type === "strategy"
     ? strategies.find((s) => s.id === form.source_id)
     : null;
   const instrument = (form.source_type === "strategy"
     ? form.source_instrument
-    : preset?.config?.instrument || "").toUpperCase();
-  const execSizing = preset?.config?.execution?.sizing_config;
+    : selectedSourceConfig?.instrument || backtestRun?.instrument || "").toUpperCase();
+  const execSizing = selectedSourceConfig?.execution?.sizing_config;
   const sizingSummary = execSizing?.enabled
     ? `premium-at-risk · ${execSizing.risk_per_trade_pct ?? 1}% · ₹${fmtNum(execSizing.capital ?? 200000, 0)} · max ${execSizing.max_lots ?? 10}`
     : execSizing
-      ? `fixed ${preset?.config?.execution?.lots || form.default_lots} lot(s)`
+      ? `fixed ${selectedSourceConfig?.execution?.lots || form.default_lots} lot(s)`
       : `fixed ${form.default_lots} lot(s)`;
 
   // Data-realism preflight for the chosen preset's instrument (informational,
@@ -488,12 +492,13 @@ function DeployWizard({ presets, strategies, backtestRuns = [], initialPreset, i
     }));
   }, [form.source_type, libraryStrategy]);
 
-  // Execution policy travels with the preset: prefill once per preset choice.
+  // Execution policy travels with either stored source: prefill once per choice.
   const prefillRef = useRef(null);
   useEffect(() => {
-    if (form.source_type !== "preset" || !form.source_id || prefillRef.current === form.source_id) return;
-    const ex = preset?.config?.execution;
-    prefillRef.current = form.source_id;
+    if (form.source_type === "strategy" || !form.source_id
+        || prefillRef.current === `${form.source_type}:${form.source_id}`) return;
+    const ex = selectedSourceConfig?.execution;
+    prefillRef.current = `${form.source_type}:${form.source_id}`;
     setForm((prev) => ({
       ...prev,
       name: prev.name || `${form.source_id} deployment`,
@@ -529,7 +534,7 @@ function DeployWizard({ presets, strategies, backtestRuns = [], initialPreset, i
       } : {}),
     }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [form.source_id, form.source_type, preset]);
+  }, [form.source_id, form.source_type, preset, backtestRun, selectedSourceConfig]);
 
   const create = async () => {
     setBusy(true);
@@ -800,7 +805,7 @@ function DeployWizard({ presets, strategies, backtestRuns = [], initialPreset, i
               {readiness && <ReadinessSummary readiness={readiness} />}
               {preflightBusy && <div className="text-dimmer text-[11px]">Checking data realism…</div>}
               {preflight && <PreflightSummary preflight={preflight} />}
-              {form.source_type === "preset" && form.source_id && preset?.config?.execution == null && (
+              {form.source_type !== "strategy" && form.source_id && selectedSourceConfig?.execution == null && (
                 <div className="text-[10px] text-dimmer">
                   This preset carries no execution policy (older preset or spot-only run) — review step 2 manually.
                 </div>
@@ -839,7 +844,7 @@ function DeployWizard({ presets, strategies, backtestRuns = [], initialPreset, i
                   </div>
                 </label>
               </div>
-              {form.source_type === "preset" && form.source_id && !execSizing && (
+              {form.source_type !== "strategy" && form.source_id && !execSizing && (
                 <div className="mt-1 text-[10px] leading-snug text-dimmer">
                   Fixed {form.default_lots} lot(s) — this source predates sizing-policy capture; re-save the preset
                   (or deploy from the backtest run) to inherit premium-at-risk sizing.

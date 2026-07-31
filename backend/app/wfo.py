@@ -490,12 +490,13 @@ async def run_wfo(job_id: str, payload: Dict[str, Any], resume: bool = False) ->
         from app.indicator_groups import enrich_with_cache
         from app.optimizer import (
             _DEFAULT_LOT_SIZE,
-            _DISQUALIFY,
             _MAX_ENRICHED_CACHE,
             _build_param_space,
             _indicator_key,
             _make_sampler,
             _objective_value,
+            _finite_trial_score,
+            _promote_best_if_finite,
             _save_best_as_backtest,
             _suggest,
         )
@@ -670,6 +671,7 @@ async def run_wfo(job_id: str, payload: Dict[str, Any], resume: bool = False) ->
                 window_best = {"value": -float("inf"), "params": {}, "metrics": {}}
 
                 def objective_fn(trial: optuna.Trial) -> float:
+                    nonlocal window_best
                     params = _suggest(trial, space)
                     merged = strategy.merged_params(params)
                     enr = get_enriched(merged)
@@ -677,9 +679,13 @@ async def run_wfo(job_id: str, payload: Dict[str, Any], resume: bool = False) ->
                                                  instrument, costs, pretrade,
                                                  trade_window_start, trade_window_end)
                     val = obj(metrics)
-                    if val > window_best["value"]:
-                        window_best.update({"value": val, "params": dict(params), "metrics": metrics})
-                    return val
+                    finite_val = _finite_trial_score(val)
+                    if finite_val is None:
+                        raise ValueError("non_finite_objective")
+                    window_best = _promote_best_if_finite(
+                        window_best, value=finite_val, params=params, metrics=metrics,
+                        trial_num=trial.number)
+                    return finite_val
 
                 paused = False
                 if not use_parallel:
@@ -725,10 +731,14 @@ async def run_wfo(job_id: str, payload: Dict[str, Any], resume: bool = False) ->
                                 study.tell(trial, None, state=optuna.trial.TrialState.FAIL)
                             else:
                                 val = obj(metrics)
-                                study.tell(trial, val)
-                                if val > window_best["value"]:
-                                    window_best.update({"value": val, "params": dict(params),
-                                                        "metrics": metrics})
+                                finite_val = _finite_trial_score(val)
+                                if finite_val is None:
+                                    study.tell(trial, None, state=optuna.trial.TrialState.FAIL)
+                                    continue
+                                study.tell(trial, finite_val)
+                                window_best = _promote_best_if_finite(
+                                    window_best, value=finite_val, params=params,
+                                    metrics=metrics, trial_num=trial.number)
                         prev = done
                         done += B
                         if (done // 5) > (prev // 5) or done >= n_trials_per_window:
@@ -750,13 +760,15 @@ async def run_wfo(job_id: str, payload: Dict[str, Any], resume: bool = False) ->
                     log.info(f"WFO {job_id} cancelled at window {w['index'] + 1}/{len(windows)}")
                     break
 
-                if window_best["value"] <= _DISQUALIFY or not window_best["params"]:
-                    # No qualifying trial in this train window — record it honestly
-                    # as a no-trade window (an OOS gap, not a silent skip).
+                if not window_best["params"]:
+                    # No finite trial in this train window: there is no executable
+                    # candidate to calculate on the unseen slice.
                     completed_windows.append({
                         **{k: w[k] for k in ("index", "train_start", "train_end", "test_start",
                                              "test_end", "train_day_count", "test_day_count")},
                         "no_qualifying_params": True,
+                        "no_finite_params": True,
+                        "guardrail_qualified": False,
                         "best_params": None, "is_objective": None,
                         "is_metrics": {}, "oos_metrics": {}, "oos_trade_count": 0,
                     })
@@ -770,7 +782,9 @@ async def run_wfo(job_id: str, payload: Dict[str, Any], resume: bool = False) ->
                     completed_windows.append({
                         **{k: w[k] for k in ("index", "train_start", "train_end", "test_start",
                                              "test_end", "train_day_count", "test_day_count")},
-                        "no_qualifying_params": False,
+                        "no_qualifying_params": not window_best.get("guardrail_qualified", False),
+                        "no_finite_params": False,
+                        "guardrail_qualified": window_best.get("guardrail_qualified", False),
                         "best_params": window_best["params"],
                         "is_objective": round(float(window_best["value"]), 4),
                         "is_metrics": _compact_metrics(window_best["metrics"]),
@@ -789,7 +803,8 @@ async def run_wfo(job_id: str, payload: Dict[str, Any], resume: bool = False) ->
 
         # ---- Final analysis over completed windows ----
         await _update_job(job_id, {"status": "analyzing"})
-        usable = [w for w in completed_windows if not w.get("no_qualifying_params")]
+        usable = [w for w in completed_windows if w.get("guardrail_qualified")]
+        promotion_windows = [w for w in completed_windows if w.get("best_params")]
         oos_sorted = sorted(oos_trades_all, key=lambda t: (t.get("exit_ts") or 0))
         stitched = stitch_oos_metrics(oos_sorted)
         equity = stitch_equity_curve(oos_sorted)
@@ -797,7 +812,7 @@ async def run_wfo(job_id: str, payload: Dict[str, Any], resume: bool = False) ->
         consistency = oos_consistency(usable)
         stability = param_stability([w["best_params"] for w in usable], space)
 
-        final_params = usable[-1]["best_params"] if usable else None
+        final_params = promotion_windows[-1]["best_params"] if promotion_windows else None
 
         best_backtest_run_id = None
         if final_params and not cancelled:
@@ -821,7 +836,7 @@ async def run_wfo(job_id: str, payload: Dict[str, Any], resume: bool = False) ->
                 from app.db import get_db
                 opt_cfg = payload.get("option_config") or {}
                 sim = await _pair_oos_with_options(get_db(), oos_sorted, instrument, opt_cfg)
-                option_oos = option_oos_summary(sim, usable, opt_cfg)
+                option_oos = option_oos_summary(sim, promotion_windows, opt_cfg)
             except Exception as e:
                 log.exception(f"WFO {job_id}: option-aware OOS pairing failed")
                 option_oos = {"error": str(e)}
@@ -834,6 +849,10 @@ async def run_wfo(job_id: str, payload: Dict[str, Any], resume: bool = False) ->
             "best_params": final_params or {},
             "best_value": stitched.get("total_pnl_pts"),
             "best_metrics": {**stitched, "source": "stitched_oos"},
+            "best_guardrail_qualified": (
+                promotion_windows[-1].get("guardrail_qualified")
+                if promotion_windows else None
+            ),
             "best_backtest_run_id": best_backtest_run_id,
             "wfo": {
                 "windows": completed_windows,
@@ -843,7 +862,7 @@ async def run_wfo(job_id: str, payload: Dict[str, Any], resume: bool = False) ->
                 "consistency": consistency,
                 "param_stability": stability,
                 "final_params": final_params,
-                "final_params_window": usable[-1]["index"] if usable else None,
+                "final_params_window": promotion_windows[-1]["index"] if promotion_windows else None,
                 "option_oos": option_oos,
             },
             # Bulky intermediates are no longer needed once `wfo` is written.

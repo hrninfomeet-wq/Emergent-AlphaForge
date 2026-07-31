@@ -206,9 +206,9 @@ def best_so_far_doc(best_so_far: Dict[str, Any]) -> Dict[str, Any]:
     high-cadence trial-loop updates did not. One helper now, so a sixth writer
     cannot drift out of step.
 
-    Anything non-finite, or at/below the disqualification sentinel, becomes
-    ``None`` — "no usable result yet" — which is exactly what the UI already
-    renders as a dash.
+    Non-finite values become ``None``. The finite disqualification sentinel is
+    also hidden as a score (it is not a real objective value), but its params and
+    metrics remain available for user-directed promotion.
     """
     raw = (best_so_far or {}).get("value")
     try:
@@ -224,6 +224,96 @@ def best_so_far_doc(best_so_far: Dict[str, Any]) -> Dict[str, Any]:
         "params": (best_so_far or {}).get("params"),
         "metrics": (best_so_far or {}).get("metrics"),
         "trial_num": (best_so_far or {}).get("trial_num"),
+        "guardrail_qualified": (best_so_far or {}).get("guardrail_qualified"),
+    }
+
+
+def _finite_trial_score(value: Any) -> Optional[float]:
+    """Return a comparable finite objective, or ``None`` for an invalid trial."""
+    try:
+        candidate = float(value)
+    except (TypeError, ValueError):
+        return None
+    return candidate if math.isfinite(candidate) else None
+
+
+def _promote_best_if_finite(
+    best_so_far: Dict[str, Any],
+    *,
+    value: Any,
+    params: Dict[str, Any],
+    metrics: Dict[str, Any],
+    trial_num: int,
+) -> Dict[str, Any]:
+    """Return a new best for any finite, deterministically evaluated score.
+
+    Guard rails are research-quality advice, not a promotion veto. A trial at the
+    finite ``_DISQUALIFY`` sentinel therefore retains its params/metrics and is
+    explicitly labelled unqualified. NaN and infinities are not completed
+    calculations and remain ineligible.
+
+    The caller supplies the exact params/metrics pair that produced ``value``.
+    That is load-bearing for parallel trials: Optuna's ``study.best_params`` omits
+    dimensions injected by ``_suggest`` as ``fixed``, so reconstructing metrics by
+    comparing that partial dict to full trial-history params returned stale data.
+    """
+    candidate = _finite_trial_score(value)
+    if candidate is None:
+        return best_so_far
+
+    try:
+        current = float((best_so_far or {}).get("value", -float("inf")))
+    except (TypeError, ValueError):
+        current = -float("inf")
+    if not math.isfinite(current):
+        current = -float("inf")
+    if candidate <= current:
+        return best_so_far
+
+    return {
+        "value": candidate,
+        "params": dict(params or {}),
+        "metrics": metrics or {},
+        "trial_num": int(trial_num),
+        "guardrail_qualified": candidate != float(_DISQUALIFY),
+    }
+
+
+def _best_finite_rerank_candidate(ranked: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Return the first option re-rank finalist with finite P&L and params."""
+    for row in ranked or []:
+        if row.get("params") and _finite_trial_score(row.get("option_pnl_value")) is not None:
+            return row
+    return None
+
+
+def _survival_progress_summary(
+    ranked: List[Dict[str, Any]], *, evaluated: int
+) -> Dict[str, Any]:
+    """Describe a possibly truncated survival sweep without judging its tail.
+
+    Finalists after ``evaluated`` have no survival result.  They must not inflate
+    the evaluated count or be assigned the fabricated failure reason ``unknown``.
+    """
+    try:
+        evaluated_n = int(evaluated)
+    except (TypeError, ValueError):
+        evaluated_n = 0
+    evaluated_n = max(0, min(evaluated_n, len(ranked)))
+
+    reasons: Dict[str, int] = {}
+    for row in ranked[:evaluated_n]:
+        verdict = row.get("survival") or {}
+        if verdict.get("survived"):
+            continue
+        reason = str(verdict.get("reason") or "unknown")
+        reasons[reason] = reasons.get(reason, 0) + 1
+
+    return {
+        "evaluated": evaluated_n,
+        "finalists": len(ranked),
+        "not_evaluated": len(ranked) - evaluated_n,
+        "reason_counts": reasons,
     }
 
 
@@ -283,9 +373,8 @@ def scored_trials(trial_history: Optional[List[Dict[str, Any]]]) -> List[Dict[st
     trial has no result, so it must not occupy a Top-N alternatives slot (which
     would render params with no metrics) or skew an importance correlation.
 
-    ``_DISQUALIFY`` is deliberately still included — it is a real, very negative
-    float, and it is how the guard rails express "the run was valid, the result is
-    unusable". Only None/NaN/missing means "never scored".
+    ``_DISQUALIFY`` is deliberately still included: it marks a finite completed
+    run that failed advisory guard rails. None/NaN/infinity means never scored.
     """
     out: List[Dict[str, Any]] = []
     for t in trial_history or []:
@@ -296,7 +385,7 @@ def scored_trials(trial_history: Optional[List[Dict[str, Any]]]) -> List[Dict[st
             fv = float(v)
         except (TypeError, ValueError):
             continue
-        if fv != fv:      # NaN — unorderable, and invalid JSON on the way out
+        if not math.isfinite(fv):
             continue
         out.append(t)
     return out
@@ -1520,13 +1609,22 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
             completed = resolve_resume_completed(
                 n_trials_completed=rdoc.get("n_trials_completed"),
                 trial_log_len=len(trial_history))
-            bsf = rdoc.get("best_so_far") or {}
+            # Rebuild the best from the same logged evidence that controls the
+            # resume offset. Older jobs may contain `value: null` alongside a
+            # disqualified params blob (or stale parallel metrics); trusting that
+            # denormalized snapshot would re-introduce #11/#28 on resume. Trials
+            # missing from the log are deliberately re-run by resolve_resume_completed.
             best_so_far = {
-                "value": bsf.get("value") if bsf.get("value") is not None else -float("inf"),
-                "params": bsf.get("params") or {},
-                "metrics": bsf.get("metrics") or {},
-                "trial_num": bsf.get("trial_num", -1),
+                "value": -float("inf"), "params": {}, "metrics": {},
+                "trial_num": -1,
             }
+            for trial_num, record in enumerate(trial_history):
+                best_so_far = _promote_best_if_finite(
+                    best_so_far,
+                    value=record.get("objective_value"),
+                    params=record.get("params") or {},
+                    metrics=record.get("metrics") or {},
+                    trial_num=trial_num)
             anchor_value = best_so_far["value"]
             last_improve_trial = best_so_far["trial_num"] if best_so_far["trial_num"] >= 0 else 0
             study = _rebuild_study(method, space, trial_history)
@@ -1607,9 +1705,18 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                                           "objective_value": None, "error": str(exc)[:200]})
                     completed += 1
                     continue
-                trial_history.append({"params": params, "metrics": metrics, "objective_value": round(val, 4)})
-                if val > best_so_far["value"]:
-                    best_so_far = {"value": val, "params": dict(params), "metrics": metrics, "trial_num": completed}
+                finite_val = _finite_trial_score(val)
+                if finite_val is None:
+                    trial_history.append({"params": params, "metrics": metrics,
+                                          "objective_value": None,
+                                          "error": "non_finite_objective"})
+                    completed += 1
+                    continue
+                trial_history.append({"params": params, "metrics": metrics,
+                                      "objective_value": round(finite_val, 4)})
+                best_so_far = _promote_best_if_finite(
+                    best_so_far, value=finite_val, params=params, metrics=metrics,
+                    trial_num=completed)
                 completed += 1
                 if early_stop:
                     if is_significant_improvement(best_so_far["value"], anchor_value, es_min_delta):
@@ -1629,11 +1736,22 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
         elif _workers <= 1:
             # SEQUENTIAL (workers==1) — UNCHANGED. Do NOT refactor to ask/tell. (spec §4 byte-identical)
             def objective_fn(trial: optuna.Trial) -> float:
+                nonlocal best_so_far
                 params = _suggest(trial, space)
                 metrics, merged = evaluate(params)
                 val = obj(metrics)
-                trial_history.append({"params": params, "metrics": metrics, "objective_value": round(val, 4)})
-                return val
+                finite_val = _finite_trial_score(val)
+                if finite_val is None:
+                    trial_history.append({"params": params, "metrics": metrics,
+                                          "objective_value": None,
+                                          "error": "non_finite_objective"})
+                    raise ValueError("non_finite_objective")
+                trial_history.append({"params": params, "metrics": metrics,
+                                      "objective_value": round(finite_val, 4)})
+                best_so_far = _promote_best_if_finite(
+                    best_so_far, value=finite_val, params=params, metrics=metrics,
+                    trial_num=len(trial_history) - 1)
+                return finite_val
 
             for i in range(completed, n_trials):
                 cf, pf = await _job_control(job_id)
@@ -1644,20 +1762,6 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                     return
                 await asyncio.to_thread(study.optimize, objective_fn, n_trials=1, catch=(Exception,))
                 completed += 1
-                # study.best_value raises if no trial has completed successfully
-                # (e.g. every trial errored) — guard so the job doesn't crash.
-                try:
-                    study_best_val = study.best_value
-                    study_best_params = dict(study.best_params)
-                except Exception:
-                    study_best_val = None
-                    study_best_params = {}
-                if study_best_val is not None and study_best_val > best_so_far["value"]:
-                    best_so_far = {
-                        "value": study_best_val, "params": study_best_params,
-                        "metrics": trial_history[-1]["metrics"] if trial_history else {},
-                        "trial_num": completed - 1,
-                    }
                 if early_stop:
                     if is_significant_improvement(best_so_far["value"], anchor_value, es_min_delta):
                         anchor_value = best_so_far["value"]
@@ -1676,6 +1780,7 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
         else:
             # PARALLEL (workers>1) — opt-in batched ask/tell; non-deterministic (spec §4/§8).
             pool = start_pool(raw_df, _workers)   # None -> concurrent parallel job active -> sequential in-process
+            use_parallel = pool is not None
             try:
                 prior = completed
                 while completed < n_trials:
@@ -1694,25 +1799,30 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                         raw_df=raw_df, instrument=instrument, costs=costs, pretrade=pretrade,
                         trade_window_start=trade_window_start, trade_window_end=trade_window_end)
                     # Atomic flush: tell+append ALL in ask-order, THEN best, THEN checkpoint.
-                    for trial, params, (metrics, _m) in zip(trials, param_list, results):
+                    for batch_offset, (trial, params, (metrics, _m)) in enumerate(
+                            zip(trials, param_list, results)):
                         if metrics is None:
                             study.tell(trial, None, state=optuna.trial.TrialState.FAIL)
                         else:
                             val = obj(metrics)
-                            study.tell(trial, val)
-                            trial_history.append({"params": params, "metrics": metrics, "objective_value": round(val, 4)})
+                            finite_val = _finite_trial_score(val)
+                            if finite_val is None:
+                                study.tell(trial, None, state=optuna.trial.TrialState.FAIL)
+                                trial_history.append({"params": params, "metrics": metrics,
+                                                      "objective_value": None,
+                                                      "error": "non_finite_objective"})
+                                continue
+                            study.tell(trial, finite_val)
+                            trial_history.append({"params": params, "metrics": metrics,
+                                                  "objective_value": round(finite_val, 4)})
+                            # Bind the winner directly to the exact result tuple that
+                            # produced it. study.best_params omits fixed dimensions,
+                            # so looking it up in full-param trial_history can only
+                            # fall back to the PREVIOUS winner's metrics.
+                            best_so_far = _promote_best_if_finite(
+                                best_so_far, value=finite_val, params=params,
+                                metrics=metrics, trial_num=completed + batch_offset)
                     completed += B
-                    try:
-                        study_best_val = study.best_value
-                        study_best_params = dict(study.best_params)
-                    except Exception:
-                        study_best_val = None
-                        study_best_params = {}
-                    if study_best_val is not None and study_best_val > best_so_far["value"]:
-                        best_metrics = next((t["metrics"] for t in reversed(trial_history)
-                                             if t["params"] == study_best_params), best_so_far["metrics"])
-                        best_so_far = {"value": study_best_val, "params": study_best_params,
-                                       "metrics": best_metrics, "trial_num": completed - 1}
                     if early_stop:
                         if is_significant_improvement(best_so_far["value"], anchor_value, es_min_delta):
                             anchor_value = best_so_far["value"]
@@ -1730,7 +1840,10 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                         await _flush_trial_log(job_id, trial_history, best_so_far, completed)
                     prior = completed
             finally:
-                shutdown_pool()
+                # start_pool returns None when another optimizer owns the
+                # module-global fork pool. Only its owner may tear it down.
+                if use_parallel:
+                    shutdown_pool()
 
         # Final analyses. If the user cancelled, finalize FAST: skip the
         # expensive heatmap + robustness passes (each runs dozens of extra
@@ -1748,6 +1861,7 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
         analyze_budget_sec = int(payload.get("analyze_budget_sec", 1800) or 0)
         _an_t0 = time.monotonic()
         analyze_budget_hit = False
+        analyze_stopped_by = None
         analyzed_candidates = None
         _last_progress = [0.0]
 
@@ -1757,15 +1871,22 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
             the analyze stage misses those). On stop the caller breaks and the job
             finalizes with PARTIAL results (best-so-far + whatever ranked/survived).
             Byte-identical when nobody stops and the budget is 0/unhit."""
-            nonlocal analyze_budget_hit
+            nonlocal analyze_budget_hit, analyze_stopped_by
             if over_budget(elapsed=time.monotonic() - _an_t0, budget_sec=analyze_budget_sec):
                 analyze_budget_hit = True
+                analyze_stopped_by = analyze_stopped_by or "budget"
                 return True
             try:
                 cf, pf = await _job_control(job_id)
             except Exception:
                 return False
-            return bool(cf or pf)
+            if cf:
+                analyze_stopped_by = analyze_stopped_by or "cancelled"
+                return True
+            if pf:
+                analyze_stopped_by = analyze_stopped_by or "paused"
+                return True
+            return False
 
         async def _an_progress(stage, done, total, per_item):
             now = time.monotonic()
@@ -1840,6 +1961,8 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                         trade_window_end=trade_window_end,
                         min_trades=min_trades)
                     analyze_budget_hit = analyze_budget_hit or _rr_hit
+                    if _rr_hit:
+                        analyze_stopped_by = analyze_stopped_by or "budget"
                 except Exception as e:
                     log.warning(f"option re-rank failed: {e}")
                     ranked = []
@@ -1853,6 +1976,7 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                 # the exit-control grid). Byte-identical to each sim rebuilding it.
                 rerank_by_key = build_candles_by_key(rerank_candles)
                 _per_item_surv: Optional[float] = None
+                surv_evaluated = 0
                 for i, r in enumerate(ranked):
                     _s_t = time.monotonic()
                     try:
@@ -1866,6 +1990,7 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                     except Exception as e:
                         log.warning(f"survival eval failed: {e}")
                         r["survival"] = {"survived": False, "reason": "eval_error"}
+                    surv_evaluated = i + 1
                     _per_item_surv = ewma(_per_item_surv, time.monotonic() - _s_t)
                     if (i + 1) % 10 == 0:
                         log.info("rerank %d/%d", i + 1, len(ranked))
@@ -1874,6 +1999,8 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                         break
                 survivors = [r for r in ranked if r.get("survival", {}).get("survived")
                              and (r["survival"].get("total_return_pct") or 0) > 0]
+                survival_progress = _survival_progress_summary(
+                    ranked, evaluated=surv_evaluated)
                 if payload.get("search_exit_controls"):
                     from app.exit_controls import exit_control_grid
                     grid = exit_control_grid(option_cfg.get("exit_control_search"))
@@ -1914,10 +2041,12 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                             "survival": best["survival"],
                         },
                         "trial_num": -1,
+                        "guardrail_qualified": True,
+                        "survival_qualified": True,
                     }
                     best_so_far["exit_controls"] = best.get("chosen_exit_controls") or option_cfg.get("exit_controls")
                     best_so_far["daily_caps"] = option_cfg.get("daily_caps")
-                    survival_summary = {"survivors": len(survivors), "evaluated": len(ranked),
+                    survival_summary = {"survivors": len(survivors), **survival_progress,
                                         "objective": survival.objective,
                                         # O2: record the capital the gate actually
                                         # scaled DD%/RoR against (defaults 200k) so
@@ -1925,18 +2054,57 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                                         # phantom account.
                                         "capital": float((option_cfg.get("sizing_config") or {}).get("capital", 200_000) or 200_000)}
                 else:
-                    # Zero survivors: do NOT promote a disqualified candidate as "best".
-                    reasons: Dict[str, int] = {}
-                    for r in ranked:
-                        rs = r.get("survival", {}).get("reason", "unknown")
-                        reasons[rs] = reasons.get(rs, 0) + 1
-                    best_so_far = {"value": -1e9, "params": {}, "metrics": {}, "trial_num": -1}
+                    # Survival is evidence, not a user-authorization veto. Preserve
+                    # the highest-ranked finite finalist, while labelling the failed
+                    # screen so preset/deployment flows can require acknowledgment.
+                    fallback = _best_finite_rerank_candidate(ranked)
+                    if fallback is not None:
+                        best_so_far = {
+                            "value": fallback["option_pnl_value"],
+                            "params": dict(fallback["params"]),
+                            "metrics": {
+                                **(fallback.get("spot_metrics") or {}),
+                                "option_pnl_value": fallback["option_pnl_value"],
+                                "option_pnl_pts": fallback.get("option_pnl_pts"),
+                                "option_win_rate": fallback.get("option_win_rate"),
+                                "paired_trade_count": fallback.get("paired_trade_count"),
+                                "survival": fallback.get("survival"),
+                            },
+                            "trial_num": -1,
+                            "guardrail_qualified": True,
+                            "survival_qualified": False,
+                        }
+                        best_so_far["exit_controls"] = option_cfg.get("exit_controls")
+                        best_so_far["daily_caps"] = option_cfg.get("daily_caps")
+                    else:
+                        best_so_far = {
+                            "value": -float("inf"), "params": {}, "metrics": {},
+                            "trial_num": -1, "guardrail_qualified": None,
+                            "survival_qualified": False,
+                        }
                     survival_summary = {
-                        "survivors": 0, "evaluated": len(ranked), "reason_counts": reasons,
+                        "survivors": 0, **survival_progress,
                         "capital": float((option_cfg.get("sizing_config") or {}).get("capital", 200_000) or 200_000),
                         "suggestions": ["loosen max_drawdown_pct or max_ror_pct",
                                         "widen parameter bounds / increase rerank_top_k",
                                         "extend the date range for more OOS trades"]}
+            elif survival.enabled:
+                # Every Stage-1 trial may be finite yet guardrail-unqualified, so
+                # Stage 2 has no finalist. Preserve the finite Stage-1 candidate
+                # instead of silently erasing it or pretending survival never ran.
+                if best_so_far.get("params") and _finite_trial_score(best_so_far.get("value")) is not None:
+                    best_so_far = {**best_so_far, "survival_qualified": False}
+                survival_summary = {
+                    "survivors": 0,
+                    "evaluated": 0,
+                    "finalists": 0,
+                    "not_evaluated": 0,
+                    "reason_counts": {},
+                    "capital": float((option_cfg.get("sizing_config") or {}).get("capital", 200_000) or 200_000),
+                    "suggestions": ["review the Stage-1 guardrail warning",
+                                    "loosen guard rails to evaluate option finalists",
+                                    "extend the date range for more trades"],
+                }
             elif ranked and ranked[0]["paired_trade_count"] > 0:
                 best = ranked[0]
                 best_so_far = {
@@ -1950,11 +2118,15 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                         "paired_trade_count": best["paired_trade_count"],
                     },
                     "trial_num": -1,
+                    "guardrail_qualified": True,
+                    "survival_qualified": None,
                 }
                 best_so_far["exit_controls"] = option_cfg.get("exit_controls")
                 best_so_far["daily_caps"] = option_cfg.get("daily_caps")
             spot_option_corr = compute_spot_option_correlation(ranked)
-            analyzed_candidates = f"{len(ranked)}"
+            analyzed_candidates = str(
+                survival_summary["evaluated"] if survival_summary is not None
+                else len(ranked))
             rerank_info = {
                 "top_k": rerank_top_k,
                 "diversity": rerank_diversity,
@@ -1992,6 +2164,7 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                 log.warning(f"robustness failed: {e}")
         elif over_budget(elapsed=time.monotonic() - _an_t0, budget_sec=analyze_budget_sec):
             analyze_budget_hit = True
+            analyze_stopped_by = analyze_stopped_by or "budget"
 
         # Persist final best as a full backtest_run with trades + equity + walkforward.
         # Re-enrich for the BEST indicator periods so the saved run matches what
@@ -2012,7 +2185,7 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
             )
 
         # Determine final status — cancelled if user cancelled before completion;
-        # distinct done_no_survivor when survival mode found nothing deployable.
+        # distinct done_no_survivor when the configured screen passed nobody.
         cancelled_flag = await _is_cancelled(job_id)
         if survival.enabled and survival_summary is not None and survival_summary.get("survivors") == 0:
             final_status = "done_no_survivor"
@@ -2059,7 +2232,10 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
             "survival_summary": survival_summary,
             "best_exit_controls": best_so_far.get("exit_controls"),
             "best_daily_caps": best_so_far.get("daily_caps"),
+            "best_guardrail_qualified": best_so_far.get("guardrail_qualified"),
+            "best_survival_qualified": best_so_far.get("survival_qualified"),
             "analyze_budget_hit": analyze_budget_hit,
+            "analyze_stopped_by": analyze_stopped_by,
             "analyzed_candidates": analyzed_candidates,
             "trial_log": [],
             "timing": ({
@@ -2071,8 +2247,8 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
             } if _OPT_TIMING else None),
         }
         # Fix-A/Fix-C: read the promoted full-window option net (for Fix-D's deploy gate)
-        # and compute the trust verdict, both off the already-saved best run. best_run is
-        # None for done_no_survivor / save-failure -> both keys simply omitted (no crash).
+        # and compute the trust verdict, both off the already-saved best run.
+        # best_run is None only when no finite result exists or saving failed.
         best_run = best_backtest_run_id and await get_db().backtest_runs.find_one({"id": best_backtest_run_id}, {"_id": 0})
         if best_run:
             from app.deployment_quality import evaluate_source_quality
@@ -2087,7 +2263,12 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
             finished["best_quality"] = evaluate_source_quality(
                 best_run,
                 evidence={"oos_return_pct": None, "stress_return_pct": _stress,
-                          "n_trials": n_trials, "spot_option_correlation": spot_option_corr})
+                          "n_trials": n_trials, "spot_option_correlation": spot_option_corr,
+                          "optimizer_validation": {
+                              "job_status": final_status,
+                              "guardrail_qualified": best_so_far.get("guardrail_qualified"),
+                              "survival_qualified": best_so_far.get("survival_qualified"),
+                          }})
         await _update_job(job_id, finished)
         log.info(f"Optimization {job_id} {final_status}: best={best_so_far['value']:.4f} run_id={best_backtest_run_id}")
     except Exception as e:

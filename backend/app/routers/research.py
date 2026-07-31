@@ -725,11 +725,11 @@ async def apply_opt_as_preset(job_id: str, name: str = Query(...)):
     job = await db.optimization_jobs.find_one({"id": job_id}, {"_id": 0})
     if not job:
         raise HTTPException(404, "Job not found")
-    if job.get("status") not in ("done", "cancelled", "paused", "interrupted", "failed"):
+    if job.get("status") not in ("done", "done_no_survivor", "cancelled", "paused", "interrupted", "failed"):
         raise HTTPException(400, "Job has no finished result yet")
     best_params = job.get("best_params") or (job.get("best_so_far") or {}).get("params")
     if not best_params:
-        raise HTTPException(400, "Job has no best parameters to save (no qualifying trial yet)")
+        raise HTTPException(400, "Job has no best parameters to save (no finite completed trial yet)")
     _cfg = job.get("config") or {}
     config = {
         "instrument": job["instrument"],
@@ -768,6 +768,17 @@ async def apply_opt_as_preset(job_id: str, name: str = Query(...)):
         "survival_ran": _survival_on,
         "survivors": _surv.get("survivors"),
         "survival_capital": _surv.get("capital"),
+        "guardrail_qualified": (
+            job.get("best_guardrail_qualified")
+            if job.get("best_guardrail_qualified") is not None
+            else (job.get("best_so_far") or {}).get("guardrail_qualified")
+        ),
+        "survival_qualified": (
+            job.get("best_survival_qualified")
+            if job.get("best_survival_qualified") is not None
+            else (False if _survival_on and (_surv.get("survivors") or 0) == 0
+                  else (True if _survival_on else None))
+        ),
         "trade_window_start": _cfg.get("trade_window_start"),
         "trade_window_end": _cfg.get("trade_window_end"),
     }

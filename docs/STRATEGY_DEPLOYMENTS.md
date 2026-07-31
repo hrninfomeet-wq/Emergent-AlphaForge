@@ -117,13 +117,21 @@ inspects the source plus **out-of-sample evidence** gathered by
 (re-rank job or option backtest run), and the optimizer trial count behind the
 params (the selection-bias signal for a deflated Sharpe). Checks include missing
 walk-forward, walk-forward divergence, low trade count, weak Sharpe, large
-drawdown, selection bias, and option-rupee-OOS.
+drawdown, selection bias, option-rupee-OOS, incomplete/failed source-run status,
+and failed optimizer guardrail/survival screens.
 
 If **any** warning is present, the create call returns
 **`400 acknowledgment_required`** unless the request carries
 `acknowledged_warnings=true`. On success the full `quality` snapshot + the ack
-flag are stored on the deployment. The gate **warns, never silently blocks** —
-the user makes a conscious choice.
+flag are stored on the deployment. The evidence gate **warns, never vetoes a
+technically executable source** — the user makes a conscious choice. Technical
+capability is still enforced centrally: the strategy must be registered, support
+the selected instrument and the live 1-minute evaluator, use only schema-valid,
+range-valid finite params, and not be retired. Non-finite execution values
+(including trailing/breakeven controls, daily caps, friction, capital and
+premium-trigger fields) are rejected rather than stored. Paper creation and live
+enable remain independent decisions; live still requires the separate user act
+and every operational/capital preflight.
 
 Companion informational routes (never block): `GET /deployments/quality`
 (preview at custom thresholds), `GET /deployments/readiness` (was the honest

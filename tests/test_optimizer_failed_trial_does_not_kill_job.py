@@ -89,7 +89,7 @@ def test_nan_is_treated_as_unscored():
 
 def test_disqualified_but_real_scores_are_kept():
     """_DISQUALIFY is a real (very negative) float, not None — it must still rank,
-    because that is how the guard rails express 'valid run, unusable result'."""
+    because that is how guard rails mark a finite run as advisory-unqualified."""
     hist = [{"params": {"a": 1}, "objective_value": -1e9},
             {"params": {"a": 2}, "objective_value": 0.5}]
     assert len(scored_trials(hist)) == 2

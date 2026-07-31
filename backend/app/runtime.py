@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import uuid as _uuid
 from datetime import datetime, time as dtime, timedelta, timezone
 from typing import Any, Dict, List, Optional
@@ -1877,13 +1878,16 @@ def _validate_strategy_deployment_config(
             if not isinstance(value, bool):
                 raise HTTPException(400, f"Strategy parameter {param_name} must be boolean")
         elif value_type == "int":
-            if isinstance(value, bool) or not isinstance(value, (int, float)) or int(value) != value:
+            if (isinstance(value, bool) or not isinstance(value, (int, float))
+                    or not math.isfinite(float(value)) or int(value) != value):
                 raise HTTPException(400, f"Strategy parameter {param_name} must be an integer")
             value = int(value)
         elif value_type == "float":
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 raise HTTPException(400, f"Strategy parameter {param_name} must be numeric")
             value = float(value)
+            if not math.isfinite(value):
+                raise HTTPException(400, f"Strategy parameter {param_name} must be finite")
         elif value_type == "str":
             if not isinstance(value, str) or not value.strip():
                 raise HTTPException(400, f"Strategy parameter {param_name} must be non-empty text")
@@ -1908,20 +1912,9 @@ async def _load_deployment_source(
         doc = await db.presets.find_one({"name": source_id}, {"_id": 0})
     elif source_type == "backtest_run":
         doc = await db.backtest_runs.find_one({"id": source_id}, {"_id": 0, "trades": 0, "equity_curve": 0})
-        # A run that FAILED or is still RUNNING carries a valid config from the
-        # moment /backtest/start inserts it, so every downstream validation passed
-        # and the user could deploy against a backtest that produced no trades, no
-        # walk-forward and no option result. The only warnings shown were the
-        # generic "no walk-forward" / "trade count not available" pair, which read
-        # as advisory noise rather than "this never finished".
-        # Runs written by /backtest/run and by the optimizer carry NO status key at
-        # all, so `None` must stay acceptable or every one of them breaks.
-        _run_status = (doc or {}).get("status")
-        if _run_status is not None and _run_status != "done":
-            raise HTTPException(
-                409,
-                f"Backtest run {source_id} is '{_run_status}' — deploy only from a "
-                f"completed run. Re-run it and deploy from the finished result.")
+        # Result status is evidence, not an authorization gate. The common
+        # strategy/schema validation below still rejects non-executable configs;
+        # deployment_quality surfaces incomplete/failed status for acknowledgment.
     elif source_type == "strategy":
         # A library strategy is converted to the same immutable source shape as
         # a preset.  This is deliberately a snapshot, not a pointer to mutable

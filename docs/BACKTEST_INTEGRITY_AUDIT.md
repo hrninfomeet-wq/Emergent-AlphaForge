@@ -1,6 +1,7 @@
 # Backtest & optimizer integrity audit — permanent register
 
-**Period:** 2026-07-29 → 2026-07-31 · **All work merged and pushed** (`origin/main`).
+**Period:** 2026-07-29 → 2026-07-31 · original audit merged and pushed;
+2026-07-31 HIGH-fix follow-up is committed locally and not pushed.
 Supersedes and replaces four running logs (`BACKTEST_AUDIT_2026-07-30.md`,
 `PREMIUM_NATIVE_REPORTING_AUDIT_2026-07.md`, `ROUND6_OPTIMIZER_AUDIT_RAW.md`,
 `ROUND8_VERIFICATION.md`) — recover any of them with
@@ -77,19 +78,32 @@ self-heals once every row has the field — so it looks intermittent.
 | **Objective / resume / sample** | `profit_factor` zero-loss inversion; `stage2_rank_key` min-sample; `resolve_resume_completed` | `8085ddd` |
 | **JSON safety** | `best_so_far_doc()` — `-Infinity` no longer 500s the job-history endpoint | `405d37c` |
 | **Journal / trust** | Journal + trust scorecard read the option envelope; orphaned runs reconciled as failed | `03f6ae7` |
-| **Persistence** | List projection inverted → **155.3 MB → 3.5 MB (97.8%)**; preset carries window/sizing/spread_min_pts; `candles_capped` measured; failed runs undeployable; Monte Carlo samples randomly + discloses; `data_coverage` on both paths | `23ccfed` |
+| **Persistence** | List projection inverted → **155.3 MB → 3.5 MB (97.8%)**; preset carries window/sizing/spread_min_pts; `candles_capped` measured; incomplete/failed run status explicitly warned and acknowledged (hard veto superseded by operator policy); Monte Carlo samples randomly + discloses; `data_coverage` on both paths | `23ccfed` + current tree |
 
-## 5. STILL OPEN — verified, not yet fixed
+## 5. VERIFIED FINDINGS — current status
 
 All independently verified against source. `minimal_fix` guidance is in the commit
 history of `139a1f2` (or `git show 23ccfed:docs/ROUND8_VERIFICATION.md`).
 
+### Closed 2026-07-31 — local commit not pushed
+
+| # | Sev | Resolution |
+|---|---|---|
+| 11 | **HIGH** | One shared promotion path binds the exact params/metrics tuple across Grid, sequential and parallel trials and rebuilds resume state from logged evidence. Per the operator's 2026-07-31 policy, every finite completed result — including the `_DISQUALIFY` guardrail sentinel — retains params/metrics for optional save/deploy with an explicit qualification warning. Only errored or non-finite trials produce no promotable result. |
+| 18 | **HIGH** | Survival summaries now separate evaluated/finalist/not-evaluated counts, count failure reasons only for evaluated rows, persist budget/cancel/pause stop cause, and disclose incomplete coverage in the UI. |
+| 22 | **HIGH** | The optimizer mirrors WFO's ownership guard: `shutdown_pool()` runs only when `start_pool()` returned a pool to this job. |
+| 28 | **HIGH** | Parallel promotion happens at tell time from the exact `(params, metrics, value)` tuple, retaining pinned dimensions and eliminating the partial-`study.best_params` history lookup. |
+
+Regression proof lives in `tests/test_optimizer_verified_high_regressions.py`; the
+promotion-policy cases were observed failing against the former hard gates and pass
+after the policy implementation. Verification: focused 116/116, interconnected
+504/504, full host **4,293 passed / 4 xfailed / 0 failed**, and selected in-container
+route/Motor regressions 170/170; compileall and the optimized frontend build pass.
+
+### Still open — 8 MED, 1 disputed LOW
+
 | # | Sev | Finding |
 |---|---|---|
-| 11 | **HIGH** | When every trial fails the guard rails, the optimizer still promotes/saves a **disqualified** config and lets the user apply it; the "no usable result" banner never fires. Fix: require `val > _DISQUALIFY` before promoting. |
-| 18 | **HIGH** | A truncated survival sweep reports every finalist as "evaluated" and every unevaluated one as a failure reason. |
-| 22 | **HIGH** | A concurrent optimizer job's fork pool is torn down by an unrelated job's `finally` block, failing the running job. Fix: mirror `wfo.py`'s `use_parallel` guard. |
-| 28 | **HIGH** | Parallel trial path attaches the PREVIOUS best's metrics to the NEW best params whenever the space contains a pinned dimension (`study.best_params` omits fixed params). |
 | 14 | MED | Truncated survival stage counts un-evaluated finalists as non-survivors. |
 | 17 | MED | Option re-rank ignores Stop/Pause — neither of its loops reads the control flags. |
 | 20 | MED | WFO analyze stage reads no control flag at all; job still reports "done". |
@@ -100,9 +114,12 @@ history of `139a1f2` (or `git show 23ccfed:docs/ROUND8_VERIFICATION.md`).
 | 30 | MED | Early stop is invisible — the ceiling `n_trials` is reported as the trial count and stamped into the saved run's overfit evidence. |
 | 31 | LOW | `net_pnl_inr` ignores `option_config.lots` and converts SPOT points at the option lot size. (One verifier refuted this; treat as disputed.) |
 
-**REFUTED — do not re-raise:** #5 (zero-survivor refusal holds — `done_no_survivor`
-is not in apply-as-preset's accepted-status tuple) · #13 (`search_exit_controls`
-no-op grid) · #21 was refuted by me and later **CONFIRMED** and fixed — see §7.
+**SUPERSEDED BY OPERATOR POLICY:** #5's former zero-survivor refusal. A finite best
+candidate is now retained and `done_no_survivor` is accepted by apply-as-preset, with
+the failed survival screen carried as an acknowledgment warning.
+
+**REFUTED — do not re-raise:** #13 (`search_exit_controls` no-op grid) · #21 was
+refuted by me and later **CONFIRMED** and fixed — see §7.
 
 **Never audited:** the deploy → paper → live handoff. See `AGENT_TODO.md`.
 

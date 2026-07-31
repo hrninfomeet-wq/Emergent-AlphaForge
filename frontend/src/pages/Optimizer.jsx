@@ -1440,8 +1440,18 @@ function CurrentJobView({ job, onApply, onStop, onPause, onResume, onOpenBest })
   const dataIntegrity = job.research_eligibility
     || job.rerank?.data_integrity
     || job.wfo?.option_oos?.data_integrity;
-  const researchOnly = dataIntegrity && dataIntegrity.promotion_allowed === false;
+  const integrityWarning = dataIntegrity && dataIntegrity.promotion_allowed === false;
+  const guardrailQualified = job.best_guardrail_qualified
+    ?? bsf.guardrail_qualified
+    ?? null;
   const optionPnl = job.best_option_pnl_value ?? job.best_metrics?.option_pnl_value ?? job.rerank?.ranked?.[0]?.option_pnl_value ?? null;
+  const survivalSummary = job.survival_summary ?? job.rerank?.survival_summary;
+  const analyzeStoppedBy = job.analyze_stopped_by || (job.analyze_budget_hit ? "budget" : null);
+  const analyzeStopLabel = analyzeStoppedBy === "cancelled"
+    ? "a cancellation request"
+    : analyzeStoppedBy === "paused"
+      ? "a pause request"
+      : "the analyzing budget";
   // The SPOT search objective (the live "best so far" value during the trial loop).
   // NOT job.best_value, which for a survivor becomes the survival objective (e.g. calmar).
   const spotObjective = bsf.value;
@@ -1491,8 +1501,8 @@ function CurrentJobView({ job, onApply, onStop, onPause, onResume, onOpenBest })
                 )}
                 {hasBest && (
                   <Button size="sm" onClick={() => onApply(job.id)} className="h-7 text-xs bg-info text-bg-0 hover:bg-info/90" data-testid="opt-apply-preset-button"
-                    title={researchOnly ? "Saves a research preset only; option-data and forward gates still block promotion" : "Save the result as a preset"}>
-                    <Save className="w-3.5 h-3.5 mr-1" /> {researchOnly ? "Save Research Preset" : "Save as Preset"}
+                    title="Save this finite result as a preset; evidence warnings remain visible at deployment">
+                    <Save className="w-3.5 h-3.5 mr-1" /> Save as Preset
                   </Button>
                 )}
               </>
@@ -1534,18 +1544,23 @@ function CurrentJobView({ job, onApply, onStop, onPause, onResume, onOpenBest })
             Analyzing {job.rerank_progress?.stage}: {job.rerank_progress?.done ?? 0}/{job.rerank_progress?.total ?? 0} · ETA {fmtEta(job.rerank_progress?.eta_sec)}
           </div>
         )}
-        {finished && job.analyze_budget_hit && (
-          <div className="text-xs text-warning mt-2 leading-snug" data-testid="opt-analyze-budget-hit">
-            Analyzing budget hit — evaluated {job.analyzed_candidates ?? "?"} candidate(s). Raise the budget or lower Re-rank top-K for full coverage.
+        {showResults && analyzeStoppedBy && (
+          <div className="text-xs text-warning mt-2 leading-snug" data-testid="opt-analyze-stopped">
+            Analysis stopped by {analyzeStopLabel} — evaluated {survivalSummary?.evaluated ?? job.analyzed_candidates ?? "?"}
+            {survivalSummary?.finalists != null ? ` of ${survivalSummary.finalists}` : ""} candidate(s).
+            {Number(survivalSummary?.not_evaluated || 0) > 0 && (
+              <> {survivalSummary.not_evaluated} finalist(s) were not evaluated and are excluded from failure counts.</>
+            )}
+            {analyzeStoppedBy === "budget" && <> Raise the budget or lower Re-rank top-K for full coverage.</>}
           </div>
         )}
       </div>
 
-      {researchOnly && (
+      {integrityWarning && (
         <div className="rounded-lg border border-rose-500/40 bg-rose-500/5 p-3 text-xs text-rose-200 leading-relaxed" data-testid="opt-research-only-gate">
-          <div className="font-semibold uppercase tracking-wider mb-1">Research only — promotion blocked</div>
+          <div className="font-semibold uppercase tracking-wider mb-1">Research evidence warning — promotion remains available</div>
           <div>
-            This result may help rank hypotheses, but it cannot justify paper-to-live promotion. The loaded option history lacks point-in-time certification and executable bid/ask evidence.
+            This result cannot establish an edge because the loaded option history lacks point-in-time certification and executable bid/ask evidence. You may still save it and choose user-authorized paper or live deployment after acknowledging the warnings; live operational preflights remain mandatory.
           </div>
           {(dataIntegrity.blockers || []).length > 0 && (
             <ul className="list-disc pl-4 mt-1 text-[11px] text-rose-200/90">
@@ -1555,12 +1570,16 @@ function CurrentJobView({ job, onApply, onStop, onPause, onResume, onOpenBest })
         </div>
       )}
 
-      {/* No usable result — every trial took no trades or failed the guard rails */}
+      {/* No finite result — errored/non-finite trials have no promotable calculation. */}
       {(finished || cancelled) && !hasBest && (
         <div className="rounded-lg border border-warning/40 bg-warning/10 p-3 text-xs text-warning leading-relaxed" data-testid="opt-no-result">
-          No trial produced a usable result — every candidate either took no trades or was disqualified by the guard rails.
-          Try lowering <b>Min trades</b> / <b>Min CE-PE side %</b> (or turning Guard rails off), widening the date window,
-          or loosening the strategy's parameter bounds, then Auto-Optimize again.
+          No trial produced a finite candidate with a completed deterministic calculation. Every trial errored or returned NaN/infinity. Review the trial errors and numeric inputs, then run again.
+        </div>
+      )}
+
+      {hasBest && guardrailQualified === false && (
+        <div className="rounded-lg border border-warning/40 bg-warning/10 p-3 text-xs text-warning leading-relaxed" data-testid="opt-guardrail-advisory">
+          This finite candidate did not pass the configured optimizer guard rails. It is preserved for saving and optional paper/live deployment, but the failed guard rails remain adverse evidence and require acknowledgment.
         </div>
       )}
 
@@ -1623,7 +1642,7 @@ function CurrentJobView({ job, onApply, onStop, onPause, onResume, onOpenBest })
             {/* Trust verdict (Piece 3) for the promoted best — advisory, never blocks. */}
             {job.best_quality && <TrustScorecard quality={job.best_quality} />}
             {job.rerank ? (
-              <RerankResults rerank={job.rerank} survivalSummary={job.survival_summary ?? job.rerank?.survival_summary} jobStatus={job.status} />
+              <RerankResults rerank={job.rerank} survivalSummary={survivalSummary} jobStatus={job.status} />
             ) : (
               <>
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
@@ -1800,11 +1819,14 @@ function WfoResults({ job }) {
                     <td className="p-2 font-mono text-dim">{w.index + 1}</td>
                     <td className="p-2 font-mono text-dim whitespace-nowrap">{w.train_start} → {w.train_end}</td>
                     <td className="p-2 font-mono whitespace-nowrap">{w.test_start} → {w.test_end}</td>
-                    {w.no_qualifying_params ? (
-                      <td colSpan="6" className="p-2 text-warning">no qualifying params in this train window (guard rails) — no OOS trades taken</td>
+                    {w.no_finite_params ? (
+                      <td colSpan="6" className="p-2 text-warning">no finite completed trial in this train window — no OOS calculation was possible</td>
                     ) : (
                       <>
-                        <td className="p-2 font-mono text-right text-dim">{fmtBest(w.is_objective)}</td>
+                        <td className="p-2 font-mono text-right text-dim">
+                          {fmtBest(w.is_objective)}
+                          {w.guardrail_qualified === false && <div className="text-[9px] text-warning">guard warning</div>}
+                        </td>
                         <td className="p-2 font-mono text-right text-dim">{fmtNum(w.is_metrics?.total_pnl_pts)}</td>
                         <td className={`p-2 font-mono text-right ${oosPts > 0 ? "text-emerald-400" : oosPts < 0 ? "text-rose-400" : ""}`}>{fmtNum(oosPts)}</td>
                         <td className="p-2 font-mono text-right">{fmtInt(w.oos_trade_count)}</td>
@@ -2300,6 +2322,14 @@ function NoSurvivorBanner({ summary }) {
   return (
     <div className="rounded-lg border border-rose-500/40 bg-rose-500/10 p-3 text-xs text-rose-300 space-y-2" data-testid="opt-no-survivor">
       <div className="font-semibold text-rose-200">No strategy survived your constraints.</div>
+      <div className="text-[11px] text-rose-200/90">
+        The best finite candidate is still available to save and deploy by explicit choice; this failed screen remains advisory evidence, not a certification.
+      </div>
+      {Number(summary?.not_evaluated || 0) > 0 && (
+        <div className="text-[11px] text-warning">
+          Incomplete sweep: {summary.not_evaluated} of {summary.finalists} finalist(s) were not evaluated and are not included below.
+        </div>
+      )}
       {summary?.reason_counts && Object.keys(summary.reason_counts).length > 0 && (
         <div className="space-y-0.5 text-[11px] text-rose-300/80">
           {Object.entries(summary.reason_counts).map(([reason, n]) => (

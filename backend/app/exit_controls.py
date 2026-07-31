@@ -8,6 +8,7 @@ bad config (the router validates too); silently ignores out-of-range values.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -154,6 +155,26 @@ def validate_exit_risk_config(exit_controls: Optional[Dict[str, Any]],
     """Pure validation; returns a list of error strings (empty = valid). The
     corpus-visible routers call this and raise 400 on any error."""
     errs: List[str] = []
+    ec_raw = exit_controls or {}
+    dc_raw = daily_caps or {}
+    numeric_inputs = (
+        ("breakeven.trigger", (ec_raw.get("breakeven") or {}).get("trigger")),
+        ("breakeven.lock", (ec_raw.get("breakeven") or {}).get("lock")),
+        ("trailing.activation", (ec_raw.get("trailing") or {}).get("activation")),
+        ("trailing.distance", (ec_raw.get("trailing") or {}).get("distance")),
+        ("daily_caps.loss", dc_raw.get("loss")),
+        ("daily_caps.target", dc_raw.get("target")),
+        ("daily_caps.max_trades", dc_raw.get("max_trades")),
+    )
+    for path, raw in numeric_inputs:
+        if raw in (None, ""):
+            continue
+        try:
+            finite = math.isfinite(float(raw))
+        except (TypeError, ValueError):
+            finite = True  # existing type/range checks retain their own messages
+        if not finite:
+            errs.append(f"{path} must be finite.")
     ec = ExitControlsConfig.from_dict(exit_controls)
     dc = DailyCapsConfig.from_dict(daily_caps)
 

@@ -181,6 +181,25 @@ def test_direct_strategy_loader_rejects_invalid_parameter(monkeypatch):
         assert "period must be <= 50" in str(exc.detail)
 
 
+def test_direct_strategy_loader_rejects_nonfinite_numeric_parameters(monkeypatch):
+    from fastapi import HTTPException
+
+    _direct_registry(monkeypatch)
+    for value in (float("nan"), float("inf"), -float("inf")):
+        try:
+            asyncio.run(_load_deployment_source(
+                object(), "strategy", "direct_deploy_test",
+                strategy_config={
+                    "instrument": "NIFTY", "timeframe": "1m",
+                    "params": {"threshold": value},
+                },
+            ))
+            assert False, f"expected HTTPException for {value}"
+        except HTTPException as exc:
+            assert exc.status_code == 400
+            assert "finite" in str(exc.detail).lower()
+
+
 class _NullableParamStrategy(StrategyBase):
     """Mirrors premium_momentum's nullable params: a float/str whose schema
     default is None legitimately means 'not configured'."""
@@ -368,6 +387,32 @@ def test_backtest_run_source_rejects_nonexistent_strategy(monkeypatch):
         assert False, "expected HTTPException"
     except HTTPException as exc:
         assert exc.status_code == 404
+
+
+def test_incomplete_backtest_source_with_valid_config_is_deployable(monkeypatch):
+    """Run status is evidence, while executable strategy configuration is the gate."""
+    _direct_registry(monkeypatch)
+    run = {
+        "id": "r1", "status": "failed", "strategy_id": "direct_deploy_test",
+        "instrument": "NIFTY",
+        "config": {"timeframe": "1m", "params": {"period": 12, "threshold": 0.5}},
+    }
+    db = _FakeDeployDB(runs={"r1": run})
+    source = asyncio.run(_load_deployment_source(db, "backtest_run", "r1"))
+    assert source["status"] == "failed"
+
+
+def test_deployment_execution_config_rejects_nonfinite_values_recursively():
+    from app.routers.deployments import _nonfinite_numeric_paths
+    paths = _nonfinite_numeric_paths({
+        "risk": {"exit_controls": {"trailing": {"distance": float("nan")}}},
+        "friction": {"costs": {"spread": float("inf")}},
+        "capital_amount": 200000.0,
+    })
+    assert paths == [
+        "risk.exit_controls.trailing.distance",
+        "friction.costs.spread",
+    ]
 
 
 def test_forward_config_hash_covers_execution_policy_but_not_post_promotion_live_caps():

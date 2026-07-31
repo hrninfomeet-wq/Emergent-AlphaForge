@@ -141,6 +141,18 @@ def test_validate_ranges():
     assert len(errs) >= 2
 
 
+def test_validate_rejects_nonfinite_trailing_and_daily_caps():
+    errs = validate_exit_risk_config(
+        {"enabled": True, "unit": "pct",
+         "trailing": {"activation": float("nan"), "distance": float("inf")}},
+        {"loss": float("nan"), "target": float("inf")},
+        costs_on=True, option_exec_on=True)
+    assert any("trailing.activation must be finite" in e for e in errs)
+    assert any("trailing.distance must be finite" in e for e in errs)
+    assert any("daily_caps.loss must be finite" in e for e in errs)
+    assert any("daily_caps.target must be finite" in e for e in errs)
+
+
 from app.exit_controls import exit_control_grid
 
 

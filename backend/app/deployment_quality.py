@@ -211,6 +211,49 @@ def evaluate_source_quality(
     om = source_doc.get("option_backtest")   # self-contained option result (Fix-B); also drives the dedup
     warnings: List[Dict[str, Any]] = []
 
+    # Completion/optimizer gates describe evidence quality, not whether the
+    # strategy configuration can run. Keep them explicit and acknowledgeable.
+    source_status = source_doc.get("status")
+    if source_status is not None and source_status != "done":
+        warnings.append({
+            "id": "incomplete_backtest_run", "severity": SEVERITY_WARNING,
+            "label": "Backtest result is not complete",
+            "detail": (
+                f"This source run is '{source_status}'. Its executable strategy "
+                "configuration may still be promoted, but the result is not valid "
+                "performance evidence. Acknowledge this before deployment."
+            ),
+            "value": {"status": source_status},
+        })
+
+    source_config = source_doc.get("config")
+    validation = ((source_config if isinstance(source_config, dict) else {}).get("validation") or {})
+    evidence_validation = (evidence or {}).get("optimizer_validation") or {}
+    validation = {**evidence_validation, **validation}
+    if validation.get("guardrail_qualified") is False:
+        warnings.append({
+            "id": "optimizer_guardrail_failed", "severity": SEVERITY_WARNING,
+            "label": "Optimizer guard rails not passed",
+            "detail": (
+                "This finite candidate did not pass the configured trade-count or "
+                "direction guard rails. It remains deployable by explicit choice; "
+                "the optimizer result does not validate an edge."
+            ),
+            "value": {"guardrail_qualified": False},
+        })
+    if (validation.get("survival_qualified") is False
+            or validation.get("job_status") == "done_no_survivor"):
+        warnings.append({
+            "id": "optimizer_survival_failed", "severity": SEVERITY_WARNING,
+            "label": "Survival screen not passed",
+            "detail": (
+                "No finalist passed the configured survival constraints. The best "
+                "finite candidate is retained for user-directed promotion, but this "
+                "screen supplies adverse evidence, not certification."
+            ),
+            "value": {"survival_qualified": False},
+        })
+
     # A premium-native run's SPOT metrics are a zero-filled stub by construction
     # (its evaluate() is an inert stub, so compute_metrics([]) yields
     # trade_count 0 / sharpe None / pnl 0). Reading them here fired a factually

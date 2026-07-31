@@ -16,10 +16,9 @@
    and reports this; the UI warning is keyed on the flag, so it can never fire for
    a premium run.
 
-4. **A failed or still-running backtest can be deployed.** `_load_deployment_source`
-   has no `status` predicate, and everything downstream tolerates the empty result
-   silently — the user sees only the generic "no walk-forward" / "trade count not
-   available" pair, which reads as advisory noise rather than "this never finished".
+4. **A failed or still-running backtest needs an explicit warning.** Run status is
+   advisory evidence rather than a promotion veto, but it must be visible and
+   acknowledged before a technically valid config is deployed.
 
 5. **Monte Carlo silently truncates to the first 1000 trades** and reports that as
    the sample size, taking the HEAD rather than a random sample.
@@ -146,25 +145,20 @@ def test_runtime_no_longer_hardcodes_candles_capped_false():
 
 
 # --------------------------------------------------------------------------- #
-# 4. deployment source must be a completed run
+# 4. incomplete deployment source is advisory and explicit
 # --------------------------------------------------------------------------- #
 
-def test_a_backtest_run_status_gate_exists():
+def test_backtest_run_loader_does_not_hard_block_on_result_status():
     from app import runtime
-    src = inspect.getsource(runtime)
-    i = src.index('source_type == "backtest_run"')
-    block = src[i:i + 1200]
-    assert "status" in block, "no status predicate on the deployment source"
+    src = inspect.getsource(runtime._load_deployment_source)
+    assert "deploy only from a completed run" not in src
 
 
-def test_the_gate_is_backward_compatible_with_statusless_runs():
-    """Runs written by /backtest/run and by the optimizer carry no status key at
-    all — gating on truthiness alone would break every one of them."""
-    from app import runtime
-    src = inspect.getsource(runtime)
-    i = src.index('source_type == "backtest_run"')
-    block = src[i:i + 1200]
-    assert "None" in block and "done" in block
+def test_incomplete_run_quality_warning_is_explicit():
+    from app import deployment_quality
+    src = inspect.getsource(deployment_quality.evaluate_source_quality)
+    assert "incomplete_backtest_run" in src
+    assert "acknowledgment" in inspect.getsource(deployment_quality)
 
 
 # --------------------------------------------------------------------------- #

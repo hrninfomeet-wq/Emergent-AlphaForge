@@ -44,6 +44,26 @@ from app.schemas import DeploymentCreateReq
 api = APIRouter()
 
 
+def _nonfinite_numeric_paths(value: Any, path: str = "") -> List[str]:
+    """Find NaN/infinity in execution-bearing request configuration."""
+    if isinstance(value, bool) or value is None:
+        return []
+    if isinstance(value, (int, float)):
+        return [] if math.isfinite(float(value)) else [path or "value"]
+    if isinstance(value, dict):
+        out: List[str] = []
+        for key, item in value.items():
+            child = f"{path}.{key}" if path else str(key)
+            out.extend(_nonfinite_numeric_paths(item, child))
+        return out
+    if isinstance(value, (list, tuple)):
+        out: List[str] = []
+        for idx, item in enumerate(value):
+            out.extend(_nonfinite_numeric_paths(item, f"{path}[{idx}]"))
+        return out
+    return []
+
+
 # ---------------------------------------------------------------------------
 # Live deployment control surface (strategy-deploy-to-live)
 #
@@ -353,13 +373,33 @@ async def _gather_deployment_evidence(
     # Optimizer trial count behind the chosen params (selection-bias signal).
     n_trials = None
     job_id = None
+    optimizer_validation = None
     if source_doc:
         job_id = source_doc.get("optimization_job_id") or (source_doc.get("config") or {}).get("optimization_job_id")
     if job_id:
         job = await db.optimization_jobs.find_one(
-            {"id": job_id}, {"_id": 0, "n_trials_completed": 1, "n_trials_total": 1})
+            {"id": job_id}, {
+                "_id": 0, "status": 1, "n_trials_completed": 1,
+                "n_trials_total": 1, "best_guardrail_qualified": 1,
+                "best_survival_qualified": 1, "best_so_far.guardrail_qualified": 1,
+                "survival_summary.survivors": 1,
+            })
         if job:
             n_trials = job.get("n_trials_completed") or job.get("n_trials_total")
+            _survivors = (job.get("survival_summary") or {}).get("survivors")
+            optimizer_validation = {
+                "job_status": job.get("status"),
+                "guardrail_qualified": (
+                    job.get("best_guardrail_qualified")
+                    if job.get("best_guardrail_qualified") is not None
+                    else (job.get("best_so_far") or {}).get("guardrail_qualified")
+                ),
+                "survival_qualified": (
+                    job.get("best_survival_qualified")
+                    if job.get("best_survival_qualified") is not None
+                    else (False if _survivors == 0 else None)
+                ),
+            }
     if not n_trials:
         cand = await db.optimization_jobs.find(
             {"kind": {"$ne": "wfo"}, "strategy_id": strategy_id, "instrument": instrument, "status": "done"},
@@ -376,6 +416,7 @@ async def _gather_deployment_evidence(
         "params": params,
         "wfo": wfo_evidence,
         "option_evidence": option_evidence,
+        "optimizer_validation": optimizer_validation,
         "n_trials": int(n_trials) if n_trials else None,
     }
 
@@ -392,6 +433,21 @@ async def list_deployments(status: Optional[str] = Query(None), limit: int = Que
 @api.post("/deployments")
 async def create_deployment(req: DeploymentCreateReq):
     db = get_db()
+    nonfinite = _nonfinite_numeric_paths({
+        "source_params": req.source_params,
+        "risk": req.risk,
+        "friction": req.friction,
+        "premium_trigger": req.premium_trigger,
+        "auto_paper_target_pts": req.auto_paper_target_pts,
+        "auto_paper_stop_pts": req.auto_paper_stop_pts,
+        "auto_paper_target_pct": req.auto_paper_target_pct,
+        "auto_paper_stop_pct": req.auto_paper_stop_pct,
+        "daily_loss_cutoff_pct": req.daily_loss_cutoff_pct,
+        "capital_amount": req.capital_amount,
+    })
+    if nonfinite:
+        raise HTTPException(
+            400, f"Deployment numeric values must be finite: {', '.join(nonfinite)}")
     source = await _load_deployment_source(
         db,
         req.source_type,

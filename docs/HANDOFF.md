@@ -14,8 +14,8 @@ Stack: **React** (CRA + craco) frontend, **FastAPI** (Python) backend, **MongoDB
 
 ## 2. Current state
 
-> **As of 2026-07-31 · v0.58.0 · `main` == `origin/main` · one branch, clean tree.**
-> Verification baseline: **4,271 passed, 4 xfailed, 0 failed** (4,275 collected).
+> **As of 2026-07-31 · v0.58.0 + unreleased optimizer/promotion fixes · `main` is one local commit ahead of `origin/main`; not pushed.**
+> Verification baseline: **4,293 passed, 4 xfailed, 0 failed** (4,297 collected).
 
 ### 2.0 The 60-second orientation
 
@@ -26,7 +26,7 @@ Stack: **React** (CRA + craco) frontend, **FastAPI** (Python) backend, **MongoDB
 | Does any strategy have a proven edge? | **No.** Three independent campaigns have failed a holdout. See [`BACKTEST_INTEGRITY_AUDIT.md`](BACKTEST_INTEGRITY_AUDIT.md) §6 and [`PREMIUM_MOMENTUM_EDGE_VERDICT_2026-07.md`](PREMIUM_MOMENTUM_EDGE_VERDICT_2026-07.md). Do not re-litigate without new data. |
 | Can I trust a saved backtest? | **Only if it was run on/after 2026-07-30.** Every paired-option backtest saved before then is wrong — see the ⚠ below. |
 | What is the active work program? | The **capability phase**: make backtest/paper/live fully usable, and make a plain-English strategy deployable. Edge hunting is explicitly parked. [`AGENT_TODO.md`](AGENT_TODO.md) is the live board. |
-| Where do I look first when a number looks wrong? | [`BACKTEST_INTEGRITY_AUDIT.md`](BACKTEST_INTEGRITY_AUDIT.md) — it names the defect class, the reproduction commands, and 13 verified-but-unfixed findings. |
+| Where do I look first when a number looks wrong? | [`BACKTEST_INTEGRITY_AUDIT.md`](BACKTEST_INTEGRITY_AUDIT.md) — it names the defect class, the reproduction commands, the four closed HIGHs and the 8 MED findings still open. |
 
 ### 2.1 ⚠ Two things that will bite you immediately
 
@@ -55,12 +55,15 @@ premium walk-forward with a **signed decay** instead of a boolean that hid 9.4pt
 one entry window across trial/re-rank/saved-run/preset; saved runs **155.3 MB → 3.5 MB**;
 coverage preflight now certifies through the real lookup it had been bypassing.
 
-**Still open and verified — 4 HIGH, 8 MED, 1 disputed**, all in the optimizer, all listed
-with severity and minimal fix in [`BACKTEST_INTEGRITY_AUDIT.md`](BACKTEST_INTEGRITY_AUDIT.md) §5.
-The HIGHs: a disqualified config can still be promoted and applied (#11); a truncated
-survival sweep reports un-evaluated finalists as evaluated (#18); a concurrent job's
-`finally` tears down another job's fork pool (#22); the parallel path can attach the
-PREVIOUS best's metrics to the NEW best params when the space has a pinned dimension (#28).
+**The four verified HIGH optimizer findings are closed in the current working tree**:
+finite candidates retain exact params+metrics and non-finite trials cannot promote
+(#11); truncated survival coverage is reported truthfully (#18); fork-pool teardown is
+owner-only (#22); and parallel winners keep their own params+metrics including pinned
+dimensions (#28). By operator decision, guardrail/survival/backtest-result status is
+advisory: a technically executable config remains available for acknowledged paper and
+separately authorized live deployment. **Still open: 8 MED +
+1 disputed LOW**, listed with severity and minimal fix in
+[`BACKTEST_INTEGRITY_AUDIT.md`](BACKTEST_INTEGRITY_AUDIT.md) §5.
 
 ### 2.3 Release history (newest first — archival, read only what you need)
 

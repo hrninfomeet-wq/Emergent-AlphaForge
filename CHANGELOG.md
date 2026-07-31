@@ -2,6 +2,44 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [Unreleased] — promotion freedom with finite-config safety (2026-07-31)
+
+**Outcome: the four verified HIGH optimizer defects are closed, and research
+qualification is advisory rather than a deployment veto.**
+
+- Grid, sequential Optuna, parallel Optuna and resume share one finite-result
+  promotion path. A completed finite candidate is retained even when trade-count,
+  direction or survival research screens fail; its qualification flags travel to
+  the preset/deployment quality warning and require acknowledgment. NaN/infinity
+  and errored trials remain ineligible and cannot enter rankings or saved results.
+- A zero-survivor option sweep retains the highest-ranked finite finalist and
+  `done_no_survivor` can be saved as a preset. Honest WFO also calculates the unseen
+  window for finite guardrail-failing params and retains them for optional promotion,
+  while keeping qualified-only robustness statistics separate.
+- A technically executable Strategy Library snapshot, preset or backtest config may
+  be promoted to paper, and later to live by the user's separate live-enable act.
+  Failed/running backtest status is now an explicit acknowledgment warning instead
+  of a hard veto. Registered strategy, 1-minute capability, schema/range validation,
+  retirement, source drift, and every live operational/risk preflight remain enforced.
+- Non-finite numeric values are rejected at optimizer, strategy-param and deployment
+  execution boundaries, including trailing/breakeven, daily caps, friction, capital
+  and premium-trigger configuration.
+- A truncated survival sweep now distinguishes `evaluated`, total `finalists`, and
+  `not_evaluated`; failure reasons are counted only for finalists that actually ran.
+  Budget/cancel/pause stop causes reach the UI, which explicitly discloses incomplete
+  coverage rather than labelling the untouched tail as failed.
+- An optimizer that falls back to sequential evaluation because another job owns the
+  fork pool no longer tears down that other job's pool in its `finally` block.
+- Parallel trial promotion now captures the winning params and metrics from the same
+  completed result tuple. This preserves pinned dimensions and prevents the previous
+  winner's metrics from being attached to new best params.
+- **Verification:** policy regressions were observed failing on the former hard
+  gates before the fixes; 116 focused tests and 504 interconnected optimizer /
+  deployment / live-capital tests pass. Backend compileall, the optimized frontend
+  build, and rebuilt Docker services pass; the full host suite is **4,293 passed /
+  4 xfailed / 0 failed**, and the selected in-container route/Motor regression set
+  is **170 passed / 0 failed**. Backend health reports `db: ok`; frontend returns 200.
+
 ## [0.58.0] — the numbers you see are finally the numbers that happened (2026-07-31)
 
 **Outcome: a whole class of reporting defects is closed, and one critical bug means
