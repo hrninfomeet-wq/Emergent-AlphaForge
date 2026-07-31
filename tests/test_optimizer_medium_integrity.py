@@ -82,3 +82,23 @@ def test_17_ordinary_rerank_checks_stop_in_both_long_loops():
     src = inspect.getsource(optimizer._option_rerank)
     assert "should_stop" in src
     assert src.count("await should_stop()") >= 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("control", "expected"),
+    [((False, False), None), ((True, False), "cancelled"), ((False, True), "paused")],
+)
+async def test_20_wfo_analysis_control_reports_pause_and_cancel(monkeypatch, control, expected):
+    async def fake_control(_job_id):
+        return control
+
+    monkeypatch.setattr(wfo, "_job_control", fake_control)
+    assert await wfo._analysis_stop_reason("job-1") == expected
+
+
+def test_20_wfo_final_analysis_rechecks_control_around_expensive_steps():
+    src = inspect.getsource(wfo.run_wfo)
+    assert src.count("_analysis_stop_reason(job_id)") >= 3
+    assert '"analysis_stopped_by": analysis_stopped_by' in src
+    assert 'final_status = analysis_stopped_by or' in src

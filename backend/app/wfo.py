@@ -352,6 +352,23 @@ async def _job_control(job_id: str) -> Tuple[bool, bool]:
     return (bool(doc.get("cancelled")), bool(doc.get("paused")))
 
 
+async def _analysis_stop_reason(job_id: str) -> Optional[str]:
+    """Return the terminal control requested during WFO's analysis tail.
+
+    Window trial loops already poll ``_job_control``.  The former final-analysis
+    tail did not, so Stop/Pause could land after the last window and the runner
+    would still execute a full saved backtest plus option pairing, then overwrite
+    the request with ``done``.  Keep one control interpretation for every
+    expensive boundary; cancellation wins if both flags are ever present.
+    """
+    cancelled, paused = await _job_control(job_id)
+    if cancelled:
+        return "cancelled"
+    if paused:
+        return "paused"
+    return None
+
+
 def _evaluate_slice(
     enr_full: pd.DataFrame, a: int, b: int, strategy, merged: Dict[str, Any],
     instrument: str, costs: bool, pretrade: Dict[str, Any],
@@ -803,7 +820,11 @@ async def run_wfo(job_id: str, payload: Dict[str, Any], resume: bool = False) ->
                 shutdown_pool()
 
         # ---- Final analysis over completed windows ----
-        await _update_job(job_id, {"status": "analyzing"})
+        # A control can land after the last window's final poll. Re-read before
+        # entering the expensive tail and at every subsequent long boundary.
+        analysis_stopped_by = await _analysis_stop_reason(job_id)
+        if analysis_stopped_by is None:
+            await _update_job(job_id, {"status": "analyzing"})
         usable = [w for w in completed_windows if w.get("guardrail_qualified")]
         promotion_windows = [
             w for w in completed_windows
@@ -819,7 +840,8 @@ async def run_wfo(job_id: str, payload: Dict[str, Any], resume: bool = False) ->
         final_params = promotion_windows[-1]["best_params"] if promotion_windows else None
 
         best_backtest_run_id = None
-        if final_params is not None and not cancelled:
+        analysis_stopped_by = analysis_stopped_by or await _analysis_stop_reason(job_id)
+        if final_params is not None and not cancelled and analysis_stopped_by is None:
             merged_final = strategy.merged_params(final_params)
             df_final = get_enriched(merged_final)
             best_backtest_run_id = await _save_best_as_backtest(
@@ -835,7 +857,9 @@ async def run_wfo(job_id: str, payload: Dict[str, Any], resume: bool = False) ->
         # Never fails the job: data gaps degrade to an `error`/low-coverage
         # block the UI can show honestly.
         option_oos = None
-        if payload.get("option_aware") and (payload.get("option_config") or {}) and oos_sorted:
+        analysis_stopped_by = analysis_stopped_by or await _analysis_stop_reason(job_id)
+        if (payload.get("option_aware") and (payload.get("option_config") or {})
+                and oos_sorted and analysis_stopped_by is None):
             try:
                 from app.db import get_db
                 opt_cfg = payload.get("option_config") or {}
@@ -844,8 +868,14 @@ async def run_wfo(job_id: str, payload: Dict[str, Any], resume: bool = False) ->
             except Exception as e:
                 log.exception(f"WFO {job_id}: option-aware OOS pairing failed")
                 option_oos = {"error": str(e)}
+        elif (payload.get("option_aware") and (payload.get("option_config") or {})
+              and oos_sorted and analysis_stopped_by is not None):
+            option_oos = {"stopped": True, "reason": analysis_stopped_by}
 
-        final_status = "cancelled" if (cancelled and len(completed_windows) < len(windows)) else "done"
+        analysis_stopped_by = analysis_stopped_by or await _analysis_stop_reason(job_id)
+        final_status = analysis_stopped_by or (
+            "cancelled" if (cancelled and len(completed_windows) < len(windows)) else "done"
+        )
         await _update_job(job_id, {
             "status": final_status,
             "finished_at": datetime.now(timezone.utc).isoformat(),
@@ -859,6 +889,7 @@ async def run_wfo(job_id: str, payload: Dict[str, Any], resume: bool = False) ->
                 if promotion_windows else None
             ),
             "best_backtest_run_id": best_backtest_run_id,
+            "analysis_stopped_by": analysis_stopped_by,
             "wfo": {
                 "windows": completed_windows,
                 "stitched_oos": stitched,
@@ -870,8 +901,9 @@ async def run_wfo(job_id: str, payload: Dict[str, Any], resume: bool = False) ->
                 "final_params_window": promotion_windows[-1]["index"] if promotion_windows else None,
                 "option_oos": option_oos,
             },
-            # Bulky intermediates are no longer needed once `wfo` is written.
-            "wfo_oos_trades": [],
+            # A paused analysis can resume the expensive tail without replaying
+            # completed windows. Cancelled/done jobs have no resume path.
+            "wfo_oos_trades": oos_trades_all if final_status == "paused" else [],
         })
         log.info(f"WFO {job_id} {final_status}: windows={len(completed_windows)}/{len(windows)} "
                  f"stitched_oos_pnl={stitched.get('total_pnl_pts')} efficiency={efficiency}")
