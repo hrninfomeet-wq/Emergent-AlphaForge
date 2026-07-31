@@ -175,6 +175,8 @@ export const api = {
     apiClient.post("/backtest/start", payload).then((r) => r.data),
   optionPreflight: (payload, ingestMissing = false) =>
     apiClient.post("/backtest/option-preflight", payload, { params: { ingest_missing: ingestMissing }, timeout: LONG_TIMEOUT_MS }).then((r) => r.data),
+  spotPreflight: (payload, ingestMissing = false) =>
+    apiClient.post("/backtest/spot-preflight", payload, { params: { ingest_missing: ingestMissing }, timeout: LONG_TIMEOUT_MS }).then((r) => r.data),
   preflightIngestJob: (runId) =>
     apiClient.get(`/upstox/warehouse/ingest/jobs/${runId}`).then((r) => r.data),
   paperDeploymentStats: (deploymentId) =>

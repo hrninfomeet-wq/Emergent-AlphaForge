@@ -21,7 +21,7 @@ def test_long_timeout_constant_and_short_global():
 
 def test_heavy_endpoints_use_long_timeout():
     for ep in (
-        "/backtest/run", "/backtest/option-preflight",
+        "/backtest/run", "/backtest/option-preflight", "/backtest/spot-preflight",
         "/data-hygiene/plan", "/data-hygiene/execute", "/data-hygiene/catch-up",
         "/warehouse/sync", "/warehouse/audit/", "/volatility/audit",
     ):

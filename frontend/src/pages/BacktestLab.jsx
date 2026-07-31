@@ -629,6 +629,40 @@ export default function BacktestLab() {
 
   const [preflight, setPreflight] = useState(null);
   const [preflighting, setPreflighting] = useState(false);
+  const [spotPreflight, setSpotPreflight] = useState(null);
+  const [spotPreflighting, setSpotPreflighting] = useState(false);
+
+  // A coverage result describes exactly one instrument/window.  Never leave a
+  // prior green result visible after the operator changes those inputs.
+  useEffect(() => {
+    setSpotPreflight(null);
+  }, [config.instrument, config.start_date, config.end_date]);
+
+  const checkSpotData = async (ingest = false) => {
+    if (!config.start_date || !config.end_date) {
+      toast.error("Choose both backtest dates before checking spot data.");
+      return;
+    }
+    setSpotPreflighting(true);
+    try {
+      const res = await api.spotPreflight(buildPayload(), ingest);
+      setSpotPreflight(res);
+      const after = res.after || {};
+      const fill = res.fill || {};
+      if (ingest && fill.attempted) {
+        const verb = after.complete ? "complete" : "still needs review";
+        toast.success(`Spot ingest ${fill.status || "finished"} — auto-recheck ${verb} (${after.complete_days || 0}/${after.expected_days || 0} sessions).`);
+      } else if (ingest && !fill.attempted) {
+        toast.info(`Spot ingest not started: ${fill.reason || "no fill required"}.`);
+      } else {
+        toast.success(`Spot data: ${after.complete_days || 0}/${after.expected_days || 0} complete sessions.`);
+      }
+    } catch (e) {
+      toast.error(`Spot preflight failed: ${e.response?.data?.detail || e.message}`);
+    } finally {
+      setSpotPreflighting(false);
+    }
+  };
 
   const checkOptionData = async (ingest = false) => {
     if (!config.option_backtest_enabled) {
@@ -1523,6 +1557,14 @@ export default function BacktestLab() {
           )}
         </Panel>
 
+        <SpotPreflightPanel
+          report={spotPreflight}
+          checking={spotPreflighting}
+          hasWindow={Boolean(config.start_date && config.end_date)}
+          onCheck={() => checkSpotData(false)}
+          onIngest={() => checkSpotData(true)}
+        />
+
         {config.option_backtest_enabled && (
           <PreflightPanel
             preflight={preflight}
@@ -1667,6 +1709,86 @@ function PreflightPanel({ preflight, preflighting, onCheck, onIngest }) {
         {preflight && preflight.enabled === false && (
           <div className="rounded border border-line bg-bg-0 px-2 py-1.5 text-[11px] text-dimmer">
             Option execution is disabled — nothing to check.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SpotPreflightPanel({ report, checking, hasWindow, onCheck, onIngest }) {
+  const after = report?.after || {};
+  const complete = Boolean(after.complete);
+  const expected = Number(after.expected_days || 0);
+  const fill = report?.fill || {};
+  const problemDays = (report?.days || []).filter((day) => day.status !== "ok");
+  const statusClass = complete ? "text-positive" : report ? "text-warning" : "text-dim";
+
+  return (
+    <div className="rounded-lg border border-line bg-bg-1" data-testid="spot-preflight-panel">
+      <div className="px-3 py-2 border-b border-line flex items-center gap-2">
+        <ShieldCheck className="w-3.5 h-3.5 text-info" />
+        <div className="text-[11px] font-semibold uppercase tracking-wider text-dim">Spot Data Preflight</div>
+      </div>
+      <div className="p-3 space-y-3">
+        <p className="text-[11px] text-dimmer leading-relaxed">
+          Check the selected index and date window. If sessions are missing, ingest them through the same Upstox gap-fill used by the backtest; the result is rechecked automatically. This check is advisory and does not block a deterministic run.
+        </p>
+        {!hasWindow && (
+          <div className="text-[11px] text-warning">Choose both backtest dates to check this window.</div>
+        )}
+        <div className="flex flex-wrap gap-2">
+          <Button
+            onClick={onCheck}
+            disabled={checking || !hasWindow}
+            variant="outline"
+            className="flex-1 min-w-[8.5rem] text-xs h-8"
+            data-testid="spot-preflight-check"
+          >
+            {checking ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : <ShieldCheck className="w-3.5 h-3.5 mr-1.5" />}
+            Check spot data
+          </Button>
+          <Button
+            onClick={onIngest}
+            disabled={checking || !hasWindow || !report || complete || expected === 0}
+            variant="outline"
+            className="flex-1 min-w-[8.5rem] text-xs h-8"
+            data-testid="spot-preflight-ingest"
+          >
+            Ingest missing &amp; recheck
+          </Button>
+        </div>
+
+        {report && (
+          <div className="rounded-md border border-line bg-bg-0 p-3 space-y-2">
+            <div className="flex items-center justify-between text-[11px]">
+              <span className="text-dim">Selected-window status</span>
+              <span className={`font-semibold ${statusClass}`}>{complete ? "complete" : "needs review"}</span>
+            </div>
+            <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-[11px]">
+              <div className="flex justify-between"><span className="text-dimmer">Complete sessions</span><span className="font-mono">{after.complete_days || 0}/{expected}</span></div>
+              <div className="flex justify-between"><span className="text-dimmer">Missing</span><span className="font-mono">{after.missing_days || 0}</span></div>
+              <div className="flex justify-between"><span className="text-dimmer">Incomplete</span><span className="font-mono">{after.incomplete_days || 0}</span></div>
+              <div className="flex justify-between"><span className="text-dimmer">Hash/unverified</span><span className="font-mono">{Number(after.hash_mismatch_days || 0) + Number(after.unverified_days || 0)}</span></div>
+            </div>
+            {fill.attempted && (
+              <div className={`rounded border px-2 py-1.5 text-[11px] ${fill.status === "failed" ? "border-warning/40 bg-warning/10 text-warning" : "border-line text-dim"}`}>
+                Fill {fill.status || "unknown"} · {fmtInt(fill.fetched || 0)} fetched{fill.error ? ` · ${fill.error}` : ""} · automatic recheck shown above
+              </div>
+            )}
+            {!fill.attempted && fill.reason && fill.reason !== "check_only" && fill.reason !== "coverage_complete" && (
+              <div className="rounded border border-warning/40 bg-warning/10 px-2 py-1.5 text-[11px] text-warning">
+                Ingest not started: {fill.reason}{fill.error ? ` · ${fill.error}` : ""}
+              </div>
+            )}
+            {problemDays.length > 0 && (
+              <details className="text-[11px]">
+                <summary className="cursor-pointer text-dimmer hover:text-dim">{problemDays.length} session{problemDays.length > 1 ? "s" : ""} need review</summary>
+                <div className="mt-1.5 max-h-28 overflow-auto font-mono text-dimmer space-y-0.5">
+                  {problemDays.slice(0, 40).map((day) => <div key={day.date}>{day.date} · {day.status} · {day.stored_candles || 0}/{day.expected_candles || 0}</div>)}
+                </div>
+              </details>
+            )}
           </div>
         )}
       </div>

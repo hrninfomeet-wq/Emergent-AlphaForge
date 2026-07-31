@@ -21,7 +21,7 @@ from app.backtest import run_backtest, stat_significance
 from app.option_warehouse_jobs import run_option_warehouse_fetch_job
 from app.preset_execution import execution_from_option_config
 from app.walkforward import premium_walk_forward, walk_forward
-from app.warehouse import attach_required_data, load_candles_df
+from app.warehouse import attach_required_data, audit_integrity, load_candles_df
 from app.optimizer import (
     create_job as optimizer_create_job,
     resume_optimization as optimizer_resume_job,
@@ -183,6 +183,43 @@ async def backtest_option_preflight(req: BacktestReq, ingest_missing: bool = Que
             report["ingest"] = {"status": "started", "run_id": run_id,
                                 "moneyness": band, "contracts_stage": sync_contracts}
     return serialize_doc(report)
+
+
+@api.post("/backtest/spot-preflight")
+async def backtest_spot_preflight(req: BacktestReq, ingest_missing: bool = Query(False)):
+    """Audit the selected spot-data window, optionally filling and rechecking it.
+
+    Check-only calls never contact a broker.  Ingest calls deliberately delegate
+    to the same audit -> Upstox gap-fill -> audit helper used by both backtest
+    entry points, so the preflight cannot drift into a second ingestion path.
+    This remains advisory: running a deterministic backtest is never gated on a
+    prior click, and the run itself still performs the same best-effort fill.
+    """
+    if req.start_ts is None or req.end_ts is None:
+        raise HTTPException(400, "Spot-data preflight requires both start and end dates.")
+    if int(req.start_ts) > int(req.end_ts):
+        raise HTTPException(400, "Spot-data preflight start date must not be after end date.")
+
+    if ingest_missing:
+        report = await _audit_and_fill_backtest_data(req)
+        if report is None:  # Defensive: the validated window makes this unreachable.
+            raise HTTPException(400, "Spot-data preflight could not resolve the selected window.")
+        return serialize_doc(report)
+
+    audit = await audit_integrity(
+        req.instrument.upper(), start_ts=req.start_ts, end_ts=req.end_ts,
+    )
+    summary = audit.get("summary", {})
+    return serialize_doc({
+        "before": summary,
+        "after": summary,
+        "fill": {
+            "attempted": False,
+            "status": "skipped",
+            "reason": "coverage_complete" if summary.get("complete") else "check_only",
+        },
+        "days": audit.get("days", []),
+    })
 
 
 def resolve_wf_and_significance(
