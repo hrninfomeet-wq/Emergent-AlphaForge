@@ -1308,7 +1308,11 @@ async def _run_paired_option_backtest(
                 "expiry_date": config.expiry_date, "expiry_mode": "premium_trigger_config",
                 "resolved_expiries": [], "trades_without_expiry": 0,
                 "contracts_loaded": len(contracts), "instrument_keys_needed": 0,
-                "candles_loaded": int(len(option_candles)), "candles_capped": False,
+                "candles_loaded": int(len(option_candles)),
+                # MEASURED by _load_window, not asserted. It was hardcoded False,
+                # so a truncated premium load looked identical to a complete one.
+                "candles_capped": bool(
+                    getattr(option_candles, "attrs", {}).get("candles_capped", False)),
                 "source": "premium_trigger_dispatch", "auto_fetch": False, "dte_filter": None,
             }
             return pm_result
@@ -1904,6 +1908,20 @@ async def _load_deployment_source(
         doc = await db.presets.find_one({"name": source_id}, {"_id": 0})
     elif source_type == "backtest_run":
         doc = await db.backtest_runs.find_one({"id": source_id}, {"_id": 0, "trades": 0, "equity_curve": 0})
+        # A run that FAILED or is still RUNNING carries a valid config from the
+        # moment /backtest/start inserts it, so every downstream validation passed
+        # and the user could deploy against a backtest that produced no trades, no
+        # walk-forward and no option result. The only warnings shown were the
+        # generic "no walk-forward" / "trade count not available" pair, which read
+        # as advisory noise rather than "this never finished".
+        # Runs written by /backtest/run and by the optimizer carry NO status key at
+        # all, so `None` must stay acceptable or every one of them breaks.
+        _run_status = (doc or {}).get("status")
+        if _run_status is not None and _run_status != "done":
+            raise HTTPException(
+                409,
+                f"Backtest run {source_id} is '{_run_status}' — deploy only from a "
+                f"completed run. Re-run it and deploy from the finished result.")
     elif source_type == "strategy":
         # A library strategy is converted to the same immutable source shape as
         # a preset.  This is deliberately a snapshot, not a pointer to mutable

@@ -848,3 +848,71 @@ state is one the user can act on.
 
 `tests/test_journal_premium_rows.py` (10) + `tests/test_premium_trust_and_stuck_runs.py`
 (11). Suite **4254 passed / 0 failed**. Containers rebuilt and verified live.
+
+## Round 10 — the six remaining result-persistence-display findings, FIXED
+
+### ⚠️ Pre-existing breakage found on resume
+`backend/app/strategies/plugins/premium_momentum.py` was DELETED in the working
+tree (uncommitted). The suite could not even collect, and `premium_momentum` was
+absent from the registry — which also silently degrades
+`compiler._shipped_premium_schema()` (falls back to `{}`, pinning every authored
+param) and `premium_trigger_allowed_keys()`. No `strategy_lifecycle` row exists for
+it, so this was NOT an in-app retire/delete; the file is committed in `b1b6f3c`.
+Restored with `git restore` (recovers the committed version; reversible).
+
+### 1. List projection was inverted — 155.3 MB → 3.5 MB (97.8%)
+`GET /backtest/runs` stripped the SMALL spot `trades` array and kept the far larger
+`option_backtest.trades` (~45 keys/row plus nested charges/context), together with
+`option_backtest.equity_curve` and `portfolio.curve`. The journal requests
+`limit=200`, so it pulled **155.3 MB** to render a table reading four fields.
+Replaced with an INCLUSION projection of exactly what the journal renders,
+including `option_backtest.metrics/.portfolio/.dispatch` (needed by the
+family-aware row KPIs) and `status`/`error`. **Measured live: 155.3 MB → 3.5 MB.**
+`profit_factor` is now persisted into the option metrics (`_profit_factor`, None
+when there are no losses — the same convention the spot side uses), because PF was
+previously derived client-side from the full trade array the list no longer ships.
+NB runs saved BEFORE this change have no persisted PF and will show "–"; new runs
+carry it.
+
+### 2. Preset from a displayed run dropped three fields
+`buildExecutionFromRun` claimed parity with the backend's
+`execution_from_option_config` but omitted `trade_window_start/end`,
+`sizing_config` and `spread_min_pts` — so a preset saved off a result deployed at a
+different size and entry window than the run that justified it. All three now
+carried, omitted when absent so "unset" stays distinguishable.
+
+### 3. `candles_capped` was asserted, not measured
+Premium runs stamped `"candles_capped": False` as a literal while `_load_window`
+truncates oldest-first at `OPTION_CANDLE_LOAD_CAP` — dropping the NEWEST candles,
+so recent sessions lose their premium series. The UI warning is keyed on that flag
+and could never fire. `_load_window` now measures it and logs the same warning the
+ordinary path logs; signalled via `DataFrame.attrs` rather than a wider return
+tuple, because that function has **seven** callers.
+
+### 4. A failed or still-running backtest could be deployed
+`_load_deployment_source` had no `status` predicate, and everything downstream
+tolerated the empty result — the user saw only the generic "no walk-forward" /
+"trade count not available" pair, which reads as advisory noise rather than "this
+never finished". Now 409s with the actual state. Gated on
+`status not in (None, "done")` because runs written by `/backtest/run` and by the
+optimizer carry no `status` key at all.
+
+### 5. Monte Carlo silently resampled the first 1000 trades
+It took the HEAD and reported that count as the sample size, so a 3000-trade run
+was bootstrapped from its first third and presented as covering everything. Now
+samples UNIFORMLY AT RANDOM up to a 2000 bound, discloses "N of M … not the first
+N" when it truncates, and filters to `status === "PAIRED"` explicitly rather than
+relying on `Number.isFinite` to drop the MISSING_* rows by accident.
+
+### 6. `data_coverage` was written only by the sync endpoint
+The async endpoint the UI actually calls discarded it (`df, _ = await ...`), so the
+promise that "a result can never quietly rest on a column that was absent for part
+of the window" held only on the path nobody uses. Now persisted on both.
+
+pyflakes again caught an undefined `log` in `premium_momentum_routes.py` before any
+test ran. Two pre-existing tests pinned the OLD behaviour (`slice(0, 1000)` and the
+`df, _ =` discard shape) and were updated to assert the property instead.
+
+`tests/test_persistence_display_mediums.py` — 17 tests. Suite **4271 passed / 0**.
+
+## The result-persistence-display dimension is now fully closed (3 HIGH + 6).

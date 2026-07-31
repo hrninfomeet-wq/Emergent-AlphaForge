@@ -16,6 +16,8 @@ All entry/exit/strike/tuning semantics live in the pure modules; this file is gl
 """
 from __future__ import annotations
 
+import logging
+
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -37,6 +39,7 @@ from app.vix import VIX_INSTRUMENT, vix_by_session_map
 from app.warehouse import load_candles_df
 
 api = APIRouter()
+log = logging.getLogger(__name__)
 
 # Grid keys the tune endpoint accepts. reference_time/side sweeps are deliberately
 # NOT tunable in v1 (they change which strikes get pre-locked per config; moneyness
@@ -158,7 +161,21 @@ async def _load_window(instrument: str, start_ts: int, end_ts: int, *,
              "ts": {"$gte": int(start_ts), "$lte": int(end_ts)}},
             {"_id": 0},
         ).sort("ts", 1).to_list(length=OPTION_CANDLE_LOAD_CAP)
-    return spot_df, pd.DataFrame(option_rows), contracts
+    # The sort is oldest-first, so a capped load drops the NEWEST candles and the
+    # most recent sessions silently lose their premium series. The ordinary paired
+    # path already detects and reports this; the premium path stamped
+    # `candles_capped: False` as a literal, so the UI's cap warning (keyed on that
+    # flag) could never fire here. Signalled via DataFrame.attrs rather than a
+    # wider return tuple — this function has seven callers.
+    _capped = len(option_rows) >= OPTION_CANDLE_LOAD_CAP
+    if _capped:
+        log.warning(
+            "premium window load hit the %d-row cap (%d strike keys); oldest-first "
+            "sort means the NEWEST candles were dropped and recent sessions will "
+            "not price", OPTION_CANDLE_LOAD_CAP, len(locked_keys))
+    _odf = pd.DataFrame(option_rows)
+    _odf.attrs["candles_capped"] = _capped
+    return spot_df, _odf, contracts
 
 
 async def _build_vix_by_session(spot_df: pd.DataFrame, start_ts: int, end_ts: int, *,

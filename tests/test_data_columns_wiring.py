@@ -67,7 +67,11 @@ def test_research_job_path_attaches_before_the_sync_compute_closure():
     """The job path does its CPU work in a thread via a sync closure; the await
     must therefore happen BEFORE it, or it could not happen at all."""
     src = (BACKEND / "app/routers/research.py").read_text(encoding="utf-8")
-    attach = src.index("df, _ = await attach_required_data")
+    # The job path now KEEPS the coverage report it used to discard
+    # (`df, _ = ...` became `df, data_coverage = ...`), so anchor on the call
+    # rather than on the discarding tuple shape. The ordering property is what
+    # this test is actually about.
+    attach = src.index("await attach_required_data", src.index("async def run_backtest_job"))
     compute = src.index("def _compute():")
     assert attach < compute
 

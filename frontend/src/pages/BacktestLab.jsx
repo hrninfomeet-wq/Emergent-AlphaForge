@@ -428,6 +428,13 @@ export default function BacktestLab() {
       exit_mode: ob.exit_mode || "spot_exit",
       lots: Math.max(1, Number(ob.lots || 1)),
     };
+    // Parity with the backend's execution_from_option_config, which this block
+    // claims to match. These three were silently dropped, so a preset saved from
+    // a displayed run deployed at a DIFFERENT size and entry window than the run
+    // that justified it. Omitted when absent, so "unset" stays distinguishable.
+    if (run?.config?.trade_window_start) ex.trade_window_start = run.config.trade_window_start;
+    if (run?.config?.trade_window_end) ex.trade_window_end = run.config.trade_window_end;
+    if (ob.sizing_config) ex.sizing_config = ob.sizing_config;
     if ((ob.exit_mode || "spot_exit") === "option_levels") {
       if (ob.option_target_pts != null) ex.option_target_pts = Number(ob.option_target_pts);
       if (ob.option_stop_pts != null) ex.option_stop_pts = Number(ob.option_stop_pts);
@@ -439,6 +446,9 @@ export default function BacktestLab() {
         enabled: true,
         brokerage_per_order: Number(ob.cost_config.brokerage_per_order || 0),
         spread_pct_of_premium: Number(ob.cost_config.spread_pct_of_premium || 0),
+        // was dropped, silently losing a configured minimum-spread floor
+        ...(ob.cost_config.spread_min_pts != null
+          ? { spread_min_pts: Number(ob.cost_config.spread_min_pts) } : {}),
       };
     }
     // Exit/risk overlay from the RUN DOC -> execution (same shape the deploy wizard
@@ -2547,9 +2557,29 @@ function MonteCarloCard({ trades, optionBacktest }) {
   const sims = useMemo(() => {
     const source = optionEnabled ? (optionBacktest?.trades || []) : (trades || []);
     const pnlKey = optionEnabled ? "option_pnl_value" : "pnl_pts";
-    const pnl = source.map((t) => Number(t[pnlKey])).filter((v) => Number.isFinite(v)).slice(0, 1000);
+    // Filter to PAIRED explicitly rather than relying on Number.isFinite to drop
+    // the MISSING_* rows — that worked by accident and would silently include any
+    // unpaired row that happened to carry a numeric field.
+    const usable = (optionEnabled ? source.filter((t) => t.status === "PAIRED") : source)
+      .map((t) => Number(t[pnlKey]))
+      .filter((v) => Number.isFinite(v));
+    // The old bound took the FIRST 1000 trades and then reported that count as
+    // the sample size, so a 3000-trade run was resampled from its first third and
+    // presented as if it covered everything. Keep a bound (the inner loop is
+    // RUNS x N) but sample UNIFORMLY AT RANDOM and disclose it.
+    const MC_MAX = 2000;
+    const total = usable.length;
+    let pnl = usable;
+    if (total > MC_MAX) {
+      pnl = usable.slice();
+      for (let i = pnl.length - 1; i > 0; i--) {
+        const j = (Math.random() * (i + 1)) | 0;
+        const t = pnl[i]; pnl[i] = pnl[j]; pnl[j] = t;
+      }
+      pnl = pnl.slice(0, MC_MAX);
+    }
     const N = pnl.length;
-    if (N < 5) return { N };
+    if (N < 5) return { N, total };
     const RUNS = 1000;
     const dd = new Array(RUNS);
     const end = new Array(RUNS);
@@ -2569,7 +2599,7 @@ function MonteCarloCard({ trades, optionBacktest }) {
     dd.sort((a, b) => a - b);
     end.sort((a, b) => a - b);
     return {
-      N, runs: RUNS,
+      N, total, runs: RUNS,
       ddP5: quantileAsc(dd, 0.05), ddP50: quantileAsc(dd, 0.5), ddP95: quantileAsc(dd, 0.95),
       endP5: quantileAsc(end, 0.05), endP50: quantileAsc(end, 0.5), endP95: quantileAsc(end, 0.95),
       pNeg: negCount / RUNS,
@@ -2591,9 +2621,14 @@ function MonteCarloCard({ trades, optionBacktest }) {
   const pNegPct = sims.pNeg * 100;
   return (
     <Panel title="Monte Carlo (trade resampling)" testid="monte-carlo-card">
-      <div className="text-[11px] text-dimmer mb-3">
-        {fmtInt(sims.runs)} bootstrap runs over {fmtInt(sims.N)} trades (drawn with replacement, {unit}). Shows how
+      <div className="text-[11px] text-dimmer mb-3" data-testid="mc-sample-note">
+        {fmtInt(sims.runs)} bootstrap runs over {fmtInt(sims.N)}{sims.total > sims.N ? ` of ${fmtInt(sims.total)}` : ""} trades (drawn with replacement, {unit}). Shows how
         path-luck could reshape drawdown and the final result given this strategy's per-trade P&L.
+        {sims.total > sims.N && (
+          <span className="text-warning">
+            {" "}Sampled uniformly at random from all {fmtInt(sims.total)} trades — not the first {fmtInt(sims.N)}.
+          </span>
+        )}
       </div>
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
         <div className="rounded-md border border-line bg-bg-2 p-2" data-testid="mc-drawdown-block">

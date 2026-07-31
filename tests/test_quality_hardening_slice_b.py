@@ -39,9 +39,18 @@ def test_backtest_lab_exposes_monte_carlo_card():
     for needle in ("monte-carlo-card", "mc-drawdown-block", "mc-ending-block",
                    "mc-pneg-block", "monte-carlo-hint"):
         assert needle in lab, f"missing Monte Carlo surface: {needle}"
-    # Bootstrap with replacement over the per-trade P&L, capped at 1,000 trades,
-    # 1,000 runs — all client-side, no backend field.
-    assert "slice(0, 1000)" in lab
+    # Bootstrap with replacement over the per-trade P&L, 1,000 runs — all
+    # client-side, no backend field.
+    #
+    # The cap USED to be `.slice(0, 1000)`, i.e. the first 1000 trades taken as
+    # the head and then reported as the sample size — so a 3000-trade run was
+    # resampled from its first third and presented as if it covered everything
+    # (audit 2026-07-30). A bound still exists (the inner loop is RUNS x N) but it
+    # now samples uniformly at random and discloses the truncation, so this
+    # asserts the PROPERTY rather than the old literal.
+    assert "MC_MAX" in lab
+    assert "mc-sample-note" in lab
+    assert "slice(0, 1000)" not in lab, "head-truncation reintroduced"
     assert "RUNS = 1000" in lab
     assert "option_pnl_value" in lab and "pnl_pts" in lab
 

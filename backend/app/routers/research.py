@@ -351,7 +351,11 @@ async def run_backtest_job(run_id: str, req: BacktestReq) -> None:
         params = strategy.merged_params(req.params)
         # Warehouse-backed columns join on the RAW frame while we are still on the
         # event loop — the _compute closure below is sync and cannot await.
-        df, _ = await attach_required_data(df, strategy.required_data)
+        # The coverage report is KEPT: the sync endpoint persists it with an
+        # explicit promise that a result can never quietly rest on a column that
+        # was absent for part of the window, and this is the endpoint the UI
+        # actually calls — so discarding it broke that promise where it counts.
+        df, data_coverage = await attach_required_data(df, strategy.required_data)
 
         # All CPU-bound work (indicators + spot backtest + optional walk-forward)
         # runs inside ONE worker thread so the event loop stays responsive.
@@ -403,6 +407,10 @@ async def run_backtest_job(run_id: str, req: BacktestReq) -> None:
             "regime_distribution": regime_dist,
             "signal_funnel": res["signal_funnel"],
             "data_audit": data_audit,
+            # Parity with /backtest/run: per-column coverage over THIS window, so a
+            # result can never quietly rest on a column that was absent for part of
+            # it. This is the endpoint the UI calls, so it is the one that matters.
+            "data_coverage": data_coverage,
             "option_backtest": option_result,
             "status": "done",
             "progress": 100,
@@ -464,7 +472,22 @@ async def backtest_start(req: BacktestReq):
 @api.get("/backtest/runs")
 async def list_backtest_runs(limit: int = Query(50, le=200)):
     db = get_db()
-    cur = db.backtest_runs.find({}, {"_id": 0, "trades": 0, "equity_curve": 0, "walkforward": 0}).sort("created_at", -1).limit(limit)
+    # INCLUSION projection of exactly what the journal renders. The old exclusion
+    # form stripped the SMALL spot `trades` array and kept the much larger
+    # `option_backtest.trades` (~45 keys per row plus nested charges/context),
+    # along with option_backtest.equity_curve and portfolio.curve — so a journal
+    # asking for limit=200 pulled tens of MB to draw a table that reads only
+    # metrics/significance/mode/created_at. The trimming the projection existed
+    # to provide never actually happened.
+    # `option_backtest.metrics/.portfolio/.dispatch` are required by the
+    # family-aware row KPIs (a premium run's spot metrics are a zero stub).
+    cur = db.backtest_runs.find({}, {
+        "_id": 0, "id": 1, "created_at": 1, "name": 1, "instrument": 1,
+        "strategy_id": 1, "status": 1, "error": 1, "config.mode": 1,
+        "metrics": 1, "significance": 1,
+        "option_backtest.metrics": 1, "option_backtest.portfolio": 1,
+        "option_backtest.dispatch": 1, "option_backtest.enabled": 1,
+    }).sort("created_at", -1).limit(limit)
     rows = await cur.to_list(length=limit)
     return {"items": rows}
 

@@ -376,6 +376,11 @@ def _compute_metrics(trades: List[Dict[str, Any]]) -> Dict[str, Any]:
         "total_option_pnl_pts": round(float(pnls_pts.sum()), 3),
         "total_option_pnl_value": round(float(pnls_value.sum()), 2),
         "total_charges": round(float(sum(float(t.get("total_charges") or 0.0) for t in paired)), 2),
+        # Persisted so a TRIMMED list row can still show PF. It used to be derived
+        # client-side from the full option trade array, which the run-list
+        # projection no longer ships. None when there are no losses — the same
+        # convention backtest.compute_metrics uses for the spot side.
+        "profit_factor": _profit_factor(pnls_value),
         # Spread is deducted inside the FILLS, so it is already absorbed by
         # `total_gross_option_pnl_value` and was invisible in the cost summary —
         # a user reading "charges -14,924" was missing a further ~39,694 of
@@ -457,6 +462,17 @@ def build_option_equity_curve(trades: List[Dict[str, Any]]) -> List[Dict[str, An
             "pnl_value": round(float(trade.get("option_pnl_value", 0.0)), 2),
         })
     return curve
+
+
+def _profit_factor(pnls_value) -> Optional[float]:
+    """Gross win / gross loss over per-trade rupee P&L, or None when there were no
+    losing trades — matching `backtest.compute_metrics`'s spot convention so the
+    two families agree on what "no profit factor" means."""
+    wins = float(sum(float(v) for v in pnls_value if float(v) > 0))
+    loss = abs(float(sum(float(v) for v in pnls_value if float(v) < 0)))
+    if loss <= 0:
+        return None
+    return round(wins / loss, 3)
 
 
 def _safe_num(value: Any) -> float:
