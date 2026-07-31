@@ -781,7 +781,24 @@ def _robustness_score(evaluate_fn, obj_fn, best_params: Dict[str, Any], space: D
     (already guard-aware).
     """
     base_metrics, _ = evaluate_fn(best_params)
-    base_val = obj_fn(base_metrics)
+    base_val = float(obj_fn(base_metrics))
+    if not math.isfinite(base_val) or base_val <= float(_DISQUALIFY):
+        return {
+            "score": 0.0,
+            "perturbations": [],
+            "base_objective": None,
+            "tested_count": 0,
+            "skipped_count": 0,
+            "skipped_perturbations": [],
+            "measured": False,
+            "reason": "base_objective_not_finite_or_unqualified",
+        }
+    # The objective is always maximized. A signed ``base * .85`` relaxes a
+    # positive score but tightens a negative one (-100 -> -85), requiring an
+    # improvement rather than tolerating degradation. Subtract 15% of the
+    # magnitude instead: +100 -> +85 and -100 -> -115. A zero best has an
+    # explicit zero threshold.
+    tolerance_floor = base_val - abs(base_val) * 0.15
     n_total = 0
     n_ok = 0
     perturbations = []
@@ -824,14 +841,15 @@ def _robustness_score(evaluate_fn, obj_fn, best_params: Dict[str, Any], space: D
             test_params = dict(best_params)
             test_params[name] = t_v
             metrics, _ = evaluate_fn(test_params)
-            val = obj_fn(metrics)
-            ok = val >= base_val * 0.85 and metrics.get("trade_count", 0) >= 5
+            val = float(obj_fn(metrics))
+            ok = (math.isfinite(val) and val >= tolerance_floor
+                  and metrics.get("trade_count", 0) >= 5)
             n_total += 1
             if ok:
                 n_ok += 1
             perturbations.append({
                 "param": name, "shift_pct": int(pct * 100),
-                "value": t_v, "objective": round(val, 3),
+                "value": t_v, "objective": round(val, 3) if math.isfinite(val) else None,
                 "trades": metrics.get("trade_count", 0), "ok": bool(ok),
             })
     score = round((n_ok / n_total * 100) if n_total > 0 else 0, 1)
@@ -842,6 +860,8 @@ def _robustness_score(evaluate_fn, obj_fn, best_params: Dict[str, Any], space: D
         "tested_count": n_total,
         "skipped_count": len(skipped),
         "skipped_perturbations": skipped,
+        "measured": True,
+        "degradation_tolerance_pct": 15.0,
     }
 
 

@@ -147,3 +147,20 @@ def test_25_noop_or_duplicate_perturbations_do_not_inflate_robustness():
     assert len(out["perturbations"]) == 1
     assert out["perturbations"][0]["value"] == 2
     assert out["score"] == 100.0
+
+
+def test_26_negative_objective_uses_symmetric_degradation_tolerance():
+    def evaluate(params):
+        value = -100.0 if float(params["x"]) == 10.0 else -90.0
+        return {"trade_count": 10, "objective": value}, params
+
+    out = optimizer._robustness_score(
+        evaluate,
+        lambda metrics: metrics["objective"],
+        {"x": 10.0},
+        {"x": {"type": "float", "min": 1.0, "max": 20.0}},
+    )
+
+    assert out["tested_count"] == 4
+    assert all(row["ok"] for row in out["perturbations"])
+    assert out["score"] == 100.0

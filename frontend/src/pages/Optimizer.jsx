@@ -2046,7 +2046,7 @@ function RobustnessCard({ robustness }) {
         <div className={`text-2xl font-mono ${color}`}>{score}</div>
         <div className={`text-xs font-semibold ${color}`}>{label}</div>
       </div>
-      <div className="text-[10px] text-dimmer mb-2">% of ±10/20% param perturbations that stayed within 85% of best objective</div>
+      <div className="text-[10px] text-dimmer mb-2">% of distinct ±10/20% perturbations that stayed within a 15% degradation tolerance of the best objective</div>
       {Number(robustness.skipped_count || 0) > 0 && (
         <div className="text-[10px] text-warning mb-2" data-testid="opt-robustness-skipped">
           {robustness.skipped_count} no-op or duplicate bounded perturbation(s) were excluded; {robustness.tested_count || 0} distinct configuration(s) were tested.
