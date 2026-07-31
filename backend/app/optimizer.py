@@ -1184,8 +1184,8 @@ async def _survival_eval_oos(
 
 async def _option_rerank_premium_trigger(
     candidates: List[Dict[str, Any]], get_enriched, strategy, instrument: str,
-    *, min_trades: int = 0,
-) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Any, bool]:
+    *, min_trades: int = 0, should_stop=None,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Any, bool, bool]:
     """premium_momentum's Stage-2 re-rank. `strategy.evaluate()` is a deliberate
     stub (real logic lives only in deployment_evaluator.py's dedicated branch), so
     there is no spot signal to pair — dispatching each candidate through
@@ -1206,12 +1206,12 @@ async def _option_rerank_premium_trigger(
                 "coverage": {}}
 
     if not candidates:
-        return ([], [], pd.DataFrame(), False)
+        return ([], [], pd.DataFrame(), False, False)
 
     merged_list = [strategy.merged_params(c["params"]) for c in candidates]
     enr0 = get_enriched(merged_list[0])
     if enr0.empty or "ts" not in enr0.columns:
-        return ([_degenerate(c) for c in candidates], [], pd.DataFrame(), False)
+        return ([_degenerate(c) for c in candidates], [], pd.DataFrame(), False, False)
 
     start_ts, end_ts = int(enr0["ts"].min()), int(enr0["ts"].max())
     moneynesses = sorted({str(m.get("moneyness") or "itm1") for m in merged_list})
@@ -1219,11 +1219,15 @@ async def _option_rerank_premium_trigger(
     loaded = await _load_window(instrument, start_ts, end_ts, ref_time=ref_time,
                                 moneynesses=moneynesses, sides=["CE", "PE"])
     if loaded is None:
-        return ([_degenerate(c) for c in candidates], [], pd.DataFrame(), False)
+        return ([_degenerate(c) for c in candidates], [], pd.DataFrame(), False, False)
     spot_df, option_candles, contracts = loaded
 
     ranked: List[Dict[str, Any]] = []
+    stopped = False
     for cand, merged in zip(candidates, merged_list):
+        if should_stop is not None and await should_stop():
+            stopped = True
+            break
         pm_result = await asyncio.to_thread(
             dispatch_full_backtest, strategy_id=strategy.id, merged_params=merged,
             spot_df=spot_df, option_candles=option_candles, contracts=contracts,
@@ -1246,7 +1250,7 @@ async def _option_rerank_premium_trigger(
     # Sample floor now applies here too — one paired trade could otherwise win
     # on its single rupee P&L (min_trades only gates the SPOT count upstream).
     ranked.sort(key=lambda r: stage2_rank_key(r, min_trades=min_trades), reverse=True)
-    return ranked, contracts, option_candles, False
+    return ranked, contracts, option_candles, False, stopped
 
 
 async def _option_rerank(
@@ -1254,15 +1258,17 @@ async def _option_rerank(
     instrument: str, costs: bool, pretrade: Dict[str, Any], option_cfg: Dict[str, Any],
     *, analyze_t0: Optional[float] = None, analyze_budget_sec: int = 0, progress_cb=None,
     trade_window_start: Optional[str] = None, trade_window_end: Optional[str] = None,
-    min_trades: int = 0,
-) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Any, bool]:  # (ranked, contracts, candles_df, budget_hit)
+    min_trades: int = 0, should_stop=None,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Any, bool, bool]:
+    # (ranked, contracts, candles_df, budget_hit, stopped)
     """Stage 2: re-score the top-K spot candidates on REAL paired-option net
     rupee. Option contracts + candles are loaded from the DB ONCE (over the
     union of all candidates' needed strikes), then each candidate is simulated
     in-memory. Returns candidates ranked by option net-rupee P&L."""
     if is_premium_trigger_strategy(strategy):
         return await _option_rerank_premium_trigger(candidates, get_enriched, strategy, instrument,
-                                                   min_trades=min_trades)
+                                                   min_trades=min_trades,
+                                                   should_stop=should_stop)
 
     moneyness = str(option_cfg.get("moneyness") or "atm")
     lots = int(option_cfg.get("lots") or 1)
@@ -1290,7 +1296,11 @@ async def _option_rerank(
     _tw = ({"trade_window_start": trade_window_start, "trade_window_end": trade_window_end}
            if trade_window_start and trade_window_end else {})
     cand_trades: List[List[Dict[str, Any]]] = []
+    stopped = False
     for cand in candidates:
+        if should_stop is not None and await should_stop():
+            stopped = True
+            break
         merged = strategy.merged_params(cand["params"])
         enr = get_enriched(merged)
         res = await asyncio.to_thread(
@@ -1300,13 +1310,15 @@ async def _option_rerank(
         )
         cand_trades.append(res.get("trades", []) or [])
 
+    evaluated_candidates = candidates[:len(cand_trades)]
+
     all_ts = [int(t["entry_ts"]) for tr in cand_trades for t in tr if t.get("entry_ts") is not None]
     all_xt = [int(t["exit_ts"]) for tr in cand_trades for t in tr if t.get("exit_ts") is not None]
     if not all_ts:
         return ([{"params": c["params"], "spot_objective": c["objective_value"],
                   "spot_metrics": c["metrics"], "option_pnl_value": 0.0, "option_pnl_pts": 0.0,
                   "option_win_rate": 0.0, "paired_trade_count": 0, "spot_trade_count": 0,
-                  "coverage": {}} for c in candidates], [], pd.DataFrame(), False)
+                  "coverage": {}} for c in evaluated_candidates], [], pd.DataFrame(), False, stopped)
 
     # 2. Load contracts once (windowed by the candidates' trade span + margin).
     contract_query: Dict[str, Any] = {"underlying": instrument}
@@ -1377,7 +1389,10 @@ async def _option_rerank(
     ranked: List[Dict[str, Any]] = []
     budget_hit = False
     _per_item: Optional[float] = None
-    for cand, pc in zip(candidates, per_cand):
+    for cand, pc in zip(evaluated_candidates, per_cand):
+        if should_stop is not None and await should_stop():
+            stopped = True
+            break
         _c_t = time.monotonic()
         sim = await asyncio.to_thread(
             simulate_paired_option_trades,
@@ -1419,7 +1434,7 @@ async def _option_rerank(
     ranked.sort(key=lambda r: stage2_rank_key(r, min_trades=min_trades), reverse=True)
     # Also return the loaded contracts + candle frame so the survival evaluator can
     # reuse the single (multi-million-row) option-candle load instead of re-querying.
-    return ranked, contracts, candles_df, budget_hit
+    return ranked, contracts, candles_df, budget_hit, stopped
 
 
 async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = False) -> None:
@@ -1975,17 +1990,20 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
             if candidates:
                 await _update_job(job_id, {"rerank_progress": {"stage": "option_rerank", "candidates": len(candidates)}})
                 try:
-                    ranked, rerank_contracts, rerank_candles, _rr_hit = await _option_rerank(
+                    ranked, rerank_contracts, rerank_candles, _rr_hit, _rr_stopped = await _option_rerank(
                         get_db(), strategy, get_enriched, candidates,
                         instrument, costs, pretrade, option_cfg,
                         analyze_t0=_an_t0, analyze_budget_sec=analyze_budget_sec,
                         progress_cb=_an_progress,
                         trade_window_start=trade_window_start,
                         trade_window_end=trade_window_end,
-                        min_trades=min_trades)
+                        min_trades=min_trades,
+                        should_stop=_analyze_should_stop)
                     analyze_budget_hit = analyze_budget_hit or _rr_hit
                     if _rr_hit:
                         analyze_stopped_by = analyze_stopped_by or "budget"
+                    if _rr_stopped and analyze_stopped_by is None:
+                        analyze_stopped_by = "stopped"
                 except Exception as e:
                     log.warning(f"option re-rank failed: {e}")
                     ranked = []
