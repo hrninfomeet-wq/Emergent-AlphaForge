@@ -564,3 +564,40 @@ the exact params+metrics tuple and keep research evidence separate from operator
 - Repository-layout/source-contract tests cannot run inside the stripped backend image;
   run them on the host and deselect only those explicit cases from the in-container Motor
   route pass rather than describing the container subset as the whole suite.
+
+---
+
+## Session 2026-07-31 (cont.) — capability breadth is not the next bottleneck
+
+**Core lesson: AlphaForge already has enough strategy, backtest, optimizer, paper and live
+execution machinery to learn from the market. The next unit of value is a reproducible
+prospective-evidence loop and a truthful decision surface, not another strategy family.**
+
+**Confirmed approaches:**
+- Separate three programs that answer different questions: product capability, edge
+  research and broker/execution validation. A pass in one never substitutes for a pass in
+  another.
+- Freeze hypothesis, source hash, parameters, data manifest, costs, split boundaries,
+  trial budget and kill rules before selection. Treat validation and one-use holdout as
+  named states, not a generic `OOS` label.
+- Make Dashboard a decision and workflow surface. Fix premium-result routing and bound the
+  summary payload before adding new visuals; otherwise a polished page can display the
+  wrong result more quickly.
+- A live index chart does not require persistent candle storage: bootstrap the current day
+  from Upstox intraday candles, aggregate subsequent ticks into a bounded in-memory ring,
+  and stream only the selected instrument. Label the view transient and expose stale/feed
+  state.
+- Use binary gates for every roadmap slice: deterministic replay, immutable evidence hash,
+  one-use holdout audit, fixed-config forward cohort, and broker reconciliation.
+
+**Dead ends / traps:**
+- The Dashboard's static phase/roadmap text is stale and cannot be used as project state.
+- `result.metrics` is not authoritative for premium-native backtests; use the dispatch-aware
+  option result envelope.
+- A latest-tick map is not chart history. Without an intraday bootstrap or an ephemeral bar
+  buffer, a live chart starts empty and cannot recover after reconnect.
+- Adding stocks is not a universe toggle: instrument assumptions cross data, strategy,
+  optimizer, backtest, expiry/strike metadata, live execution and frontend selectors.
+- More optimizer objectives, charts or strategy plugins cannot turn in-sample selection
+  into evidence. Historical option coverage also cannot manufacture point-in-time spread,
+  depth or IV data that was never recorded.

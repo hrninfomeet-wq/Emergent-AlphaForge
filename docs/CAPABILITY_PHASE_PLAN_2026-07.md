@@ -22,7 +22,9 @@ Everything cited is file:line-verified.
 **One correction to the framing below:** the plan's premise that the backtest/optimizer
 surface was merely *high-friction* was optimistic. The 2026-07-29→31 audit found it was
 also **wrong in places** — see [`BACKTEST_INTEGRITY_AUDIT.md`](BACKTEST_INTEGRITY_AUDIT.md).
-Phase 2 should be sequenced after that register's 4 remaining HIGH findings.
+The four confirmed HIGH findings are now closed; Phase 2 proceeds with the eight confirmed
+MED findings and the truth/performance work in
+[`NEXT_STAGE_ROADMAP_2026-07.md`](NEXT_STAGE_ROADMAP_2026-07.md) Stage 1.
 
 ---
 
