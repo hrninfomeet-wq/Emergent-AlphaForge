@@ -67,13 +67,13 @@ const METHODS = [
   { id: "genetic", name: "Genetic (CMA-ES)", desc: "Multi-objective, good for many params.", default_trials: 200 },
 ];
 const OBJECTIVES = [
-  { id: "risk_adjusted", name: "Risk-Adjusted Return (default)", desc: "Sharpe / drawdown — balanced quality" },
+  { id: "risk_adjusted", name: "Risk-Adjusted Return (default)", desc: "Sharpe minus unitless drawdown/activity fraction" },
   { id: "net_pnl_inr", name: "Maximize Net P&L (₹)", desc: "Net rupee P&L = net points × lot size (enable costs)" },
   { id: "sharpe", name: "Maximize Sharpe Ratio", desc: "Risk-adjusted return per std-dev" },
   { id: "profit_factor", name: "Maximize Profit Factor", desc: "Gross profit / |gross loss|" },
   { id: "total_pnl_pts", name: "Maximize Net P&L (pts)", desc: "Raw profit; ignores drawdown" },
   { id: "win_rate", name: "Maximize Win Rate", desc: "% of trades profitable" },
-  { id: "neg_max_dd", name: "Minimize Max Drawdown", desc: "Stable equity curve" },
+  { id: "neg_max_dd", name: "Minimize Normalized Drawdown", desc: "Max drawdown / total absolute trade P&L" },
 ];
 
 // Persist the Optimization Setup panel config across navigation. Only setup

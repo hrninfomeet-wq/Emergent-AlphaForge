@@ -164,3 +164,28 @@ def test_26_negative_objective_uses_symmetric_degradation_tolerance():
     assert out["tested_count"] == 4
     assert all(row["ok"] for row in out["perturbations"])
     assert out["score"] == 100.0
+
+
+def _objective_metrics(*, max_dd: float, pnl_abs_sum: float) -> dict:
+    return {
+        "trade_count": 20,
+        "ce_count": 10,
+        "pe_count": 10,
+        "sharpe": 1.0,
+        "max_dd_pts": max_dd,
+        "pnl_abs_sum": pnl_abs_sum,
+        "total_pnl_pts": 25.0,
+    }
+
+
+def test_29_risk_objectives_are_unitless_across_points_and_rupees():
+    points = _objective_metrics(max_dd=-50.0, pnl_abs_sum=100.0)
+    rupees = _objective_metrics(max_dd=-5_000.0, pnl_abs_sum=10_000.0)
+
+    point_score = optimizer._objective_value(points, "risk_adjusted")
+    rupee_score = optimizer._objective_value(rupees, "risk_adjusted")
+    assert point_score == pytest.approx(rupee_score)
+    assert point_score == pytest.approx(0.5)
+
+    assert optimizer._objective_value(points, "neg_max_dd") == pytest.approx(-0.5)
+    assert optimizer._objective_value(rupees, "neg_max_dd") == pytest.approx(-0.5)

@@ -7,8 +7,8 @@ Objective options:
   - profit_factor (maximize)
   - total_pnl_pts (maximize)
   - win_rate     (maximize)
-  - neg_max_dd   (maximize = minimize abs drawdown)
-  - risk_adjusted (default: sharpe / max(1, abs(maxDD/100)))
+  - neg_max_dd   (maximize = minimize unitless drawdown/activity fraction)
+  - risk_adjusted (default: sharpe - unitless drawdown/activity fraction)
 
 Robustness: for the top trial, perturb each numeric param by ±10% and ±20% and re-evaluate.
 Heatmap: pick top 2 params by importance, build a 2D grid over their bounds.
@@ -172,12 +172,29 @@ def _objective_value(
         return float(metrics.get("total_pnl_pts", 0) or 0) * float(lot_size)
     if objective == "win_rate":
         return float(metrics.get("win_rate", 0) or 0)
+    # Normalize drawdown by the total absolute P&L traversed by the trade path.
+    # Both numerator and denominator are points for ordinary runs and rupees for
+    # premium-native runs, so the fraction is unitless and comparable. Missing
+    # activity on legacy metrics degrades conservatively to 1.0 (any drawdown)
+    # rather than mixing physical units again.
+    dd = abs(float(metrics.get("max_dd_pts", 0) or 0))
+    try:
+        activity = abs(float(metrics.get("pnl_abs_sum", 0) or 0))
+    except (TypeError, ValueError):
+        activity = 0.0
+    if dd <= 0:
+        drawdown_fraction = 0.0
+    elif not math.isfinite(activity) or activity <= 0:
+        drawdown_fraction = 1.0
+    else:
+        drawdown_fraction = min(1.0, dd / activity)
     if objective == "neg_max_dd":
-        return -abs(float(metrics.get("max_dd_pts", 0) or 0))
+        return -drawdown_fraction
     # risk_adjusted (default)
     sharpe = float(metrics.get("sharpe") or 0)
-    dd = abs(float(metrics.get("max_dd_pts") or 1))
-    return sharpe / max(1.0, dd / 100.0)
+    # Subtraction stays monotonic for negative Sharpe too; division would make
+    # a negative score less negative (apparently better) as drawdown increased.
+    return sharpe - drawdown_fraction
 
 
 def optimizer_trial_evidence(
@@ -681,6 +698,9 @@ def _evaluate(get_enriched, strategy, params: Dict[str, Any], instrument: str, c
     res = run_backtest(df_enriched, strategy, merged, instrument=instrument, costs_enabled=costs, pretrade_filters=pretrade, **_tw)
     metrics = dict(res["metrics"])
     trades = res.get("trades", []) or []
+    metrics["pnl_abs_sum"] = float(sum(
+        abs(float(t.get("pnl_pts", 0.0) or 0.0)) for t in trades
+    ))
     ce = sum(1 for t in trades if str(t.get("direction", "")).upper() == "CE")
     metrics["ce_count"] = int(ce)
     metrics["pe_count"] = int(len(trades) - ce)
@@ -693,7 +713,8 @@ def _premium_zero_metrics() -> Dict[str, Any]:
     trade_count==0 guard disqualifies it exactly like a real no-trade result."""
     return {"trade_count": 0, "ce_count": 0, "pe_count": 0, "wins": 0, "losses": 0,
             "win_rate": 0.0, "sharpe": 0.0, "profit_factor": None,
-            "total_pnl_pts": 0.0, "max_dd_pts": 0.0, "total_option_pnl_value": 0.0}
+            "total_pnl_pts": 0.0, "max_dd_pts": 0.0, "pnl_abs_sum": 0.0,
+            "total_option_pnl_value": 0.0}
 
 
 def _evaluate_premium_trigger(
@@ -764,10 +785,10 @@ def _evaluate_premium_trigger(
         "sharpe": float(sharpe) if sharpe is not None else 0.0,
         "profit_factor": profit_factor,
         "total_pnl_pts": float(m.get("total_option_pnl_pts", 0.0) or 0.0),
-        # NOT a true unit match: rupee max-drawdown substituted where the spot
-        # formula expects index points (a rupee-native premium strategy has no
-        # index-points drawdown concept) — an honest, documented proxy.
+        # Rupee drawdown is normalized by rupee activity in _objective_value;
+        # ordinary trials supply the same pair in points.
         "max_dd_pts": abs(float(port.get("max_drawdown_value", 0.0) or 0.0)),
+        "pnl_abs_sum": float(sum(abs(p) for p in pnls)),
         "total_option_pnl_value": float(m.get("total_option_pnl_value", 0.0) or 0.0),
     }
     return metrics, merged_params
@@ -926,7 +947,7 @@ async def _job_control(job_id: str) -> Tuple[bool, bool]:
 # still covering everything the UI's Top-Alternatives table shows).
 _RESUME_METRIC_KEYS = (
     "trade_count", "win_rate", "profit_factor", "total_pnl_pts",
-    "max_dd_pts", "sharpe", "ce_count", "pe_count",
+    "max_dd_pts", "pnl_abs_sum", "sharpe", "ce_count", "pe_count",
 )
 
 

@@ -385,6 +385,9 @@ def _evaluate_slice(
                        costs_enabled=costs, pretrade_filters=pretrade, **_tw)
     metrics = dict(res["metrics"])
     trades = res.get("trades", []) or []
+    metrics["pnl_abs_sum"] = float(sum(
+        abs(float(t.get("pnl_pts", 0.0) or 0.0)) for t in trades
+    ))
     ce = sum(1 for t in trades if str(t.get("direction", "")).upper() == "CE")
     metrics["ce_count"] = int(ce)
     metrics["pe_count"] = int(len(trades) - ce)
