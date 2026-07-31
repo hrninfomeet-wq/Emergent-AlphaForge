@@ -8,10 +8,13 @@ All notable changes to AlphaForge Trading Lab.
 qualification is advisory rather than a deployment veto.**
 
 - Grid, sequential Optuna, parallel Optuna and resume share one finite-result
-  promotion path. A completed finite candidate is retained even when trade-count,
+  promotion path. A finite candidate snapshot can be promoted before the job ends,
+  including a legitimate zero-parameter strategy. A completed finite candidate is
+  retained even when trade-count,
   direction or survival research screens fail; its qualification flags travel to
   the preset/deployment quality warning and require acknowledgment. NaN/infinity
-  and errored trials remain ineligible and cannot enter rankings or saved results.
+  anywhere in its params or metrics, and errored trials, remain ineligible and cannot
+  enter rankings or saved results.
 - A zero-survivor option sweep retains the highest-ranked finite finalist and
   `done_no_survivor` can be saved as a preset. Honest WFO also calculates the unseen
   window for finite guardrail-failing params and retains them for optional promotion,
@@ -20,10 +23,21 @@ qualification is advisory rather than a deployment veto.**
   be promoted to paper, and later to live by the user's separate live-enable act.
   Failed/running backtest status is now an explicit acknowledgment warning instead
   of a hard veto. Registered strategy, 1-minute capability, schema/range validation,
-  retirement, source drift, and every live operational/risk preflight remain enforced.
+  retirement, source drift, deterministic finite signals, and every live
+  operational/risk preflight remain enforced. The same competency check is repeated
+  when a paused deployment resumes and immediately before live enablement.
 - Non-finite numeric values are rejected at optimizer, strategy-param and deployment
   execution boundaries, including trailing/breakeven, daily caps, friction, capital
-  and premium-trigger configuration.
+  and premium-trigger configuration. AI-authored Python strategies additionally reject
+  random/time-dependent APIs and must reproduce the same canonical smoke pass twice.
+- Optimizer-injected indicator parameters now come from one backend catalog shared by
+  optimization and deployment validation, so a valid optimized preset is not vetoed
+  later merely because its indicator keys were absent from the strategy's base schema.
+- The deployment wizard preserves nullable strategy defaults instead of coercing them
+  to zero/empty values, exact-fetches older deep-linked backtests beyond the first list
+  page, and recovers in place when the backend requires warning acknowledgment. Source
+  and mode labels now distinguish Strategy Library, paper, signal-only, and live
+  real-money deployments without implying that research evidence grants authority.
 - A truncated survival sweep now distinguishes `evaluated`, total `finalists`, and
   `not_evaluated`; failure reasons are counted only for finalists that actually ran.
   Budget/cancel/pause stop causes reach the UI, which explicitly discloses incomplete
@@ -33,12 +47,16 @@ qualification is advisory rather than a deployment veto.**
 - Parallel trial promotion now captures the winning params and metrics from the same
   completed result tuple. This preserves pinned dimensions and prevents the previous
   winner's metrics from being attached to new best params.
-- **Verification:** policy regressions were observed failing on the former hard
-  gates before the fixes; 116 focused tests and 504 interconnected optimizer /
-  deployment / live-capital tests pass. Backend compileall, the optimized frontend
-  build, and rebuilt Docker services pass; the full host suite is **4,293 passed /
-  4 xfailed / 0 failed**, and the selected in-container route/Motor regression set
-  is **170 passed / 0 failed**. Backend health reports `db: ok`; frontend returns 200.
+- **Verification:** policy regressions were observed failing on the former hard gates
+  before the fixes; the final focused promotion/deployment/evaluator set is **264
+  passed**. Backend compileall, the optimized frontend build, and rebuilt Docker
+  services pass; the full host suite is **4,326 passed / 4 xfailed / 0 failed**, and
+  the selected in-container route/Motor regression set is **212 passed / 4 deselected
+  / 0 failed** (the deselections are repository-layout source-contract tests already
+  green on the host). Backend health reports `db: ok`; frontend returns 200. A hard-
+  refreshed browser smoke verified all three promotion sources, 10 compatible Strategy
+  Library entries, nullable direct-strategy inputs, an older optimizer snapshot, and
+  zero console errors/warnings.
 
 ## [0.58.0] — the numbers you see are finally the numbers that happened (2026-07-31)
 

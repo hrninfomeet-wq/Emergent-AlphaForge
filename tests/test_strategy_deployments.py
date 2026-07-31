@@ -375,6 +375,17 @@ def test_preset_source_accepts_valid_config(monkeypatch):
     assert doc["instrument"] == "NIFTY"
 
 
+def test_optimizer_indicator_dimension_remains_deployment_compatible(monkeypatch):
+    """Optimizer-injected shared periods are accepted by merged_params and must
+    not become an unknown-param veto when the finite preset is promoted."""
+    _direct_registry(monkeypatch)
+    preset = _preset()
+    preset["config"]["params"]["rsi_length"] = 9
+    db = _FakeDeployDB(presets={"p1": preset})
+    doc = asyncio.run(_load_deployment_source(db, "preset", "p1"))
+    assert doc["config"]["params"]["rsi_length"] == 9
+
+
 def test_backtest_run_source_rejects_nonexistent_strategy(monkeypatch):
     """H5 parity also covers backtest_run sources."""
     from fastapi import HTTPException

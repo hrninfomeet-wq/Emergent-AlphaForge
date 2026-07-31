@@ -12,9 +12,9 @@ import { Input } from "@/components/ui/input";
 
 /**
  * Saved Presets (route /presets) — one place for every preset saved from the
- * Backtest Lab and the Optimizer, grouped by source. Each preset is the full
- * deployable artifact (strategy + params + option-execution policy); this page
- * surfaces what each will deploy, whether it is already live, a validation
+ * Backtest Lab and the Optimizer, grouped by source. Every executable preset is
+ * promotable; some also capture an option-execution policy from their source.
+ * This page surfaces what each will deploy, whether it is already live, a validation
  * badge (honest-WFO + option-rupee OOS), and one-click Deploy / Open-in-Lab /
  * Rename / Duplicate / Delete, plus multi-select Compare and bulk delete.
  */
@@ -104,7 +104,7 @@ export default function SavedPresets() {
   const [search, setSearch] = useState("");
   const [srcFilter, setSrcFilter] = useState("all");
   const [instFilter, setInstFilter] = useState("all");
-  const [deployableOnly, setDeployableOnly] = useState(false);
+  const [executionPolicyOnly, setExecutionPolicyOnly] = useState(false);
   const [deployedOnly, setDeployedOnly] = useState(false);
   const [sortBy, setSortBy] = useState("saved");
   const [collapsed, setCollapsed] = useState({});
@@ -172,7 +172,7 @@ export default function SavedPresets() {
       (p.name || "").toLowerCase().includes(q) || (p.config?.strategy_id || "").toLowerCase().includes(q));
     if (srcFilter !== "all") list = list.filter((p) => p._source === srcFilter);
     if (instFilter !== "all") list = list.filter((p) => (p.config?.instrument || "").toUpperCase() === instFilter);
-    if (deployableOnly) list = list.filter((p) => p._ex);
+    if (executionPolicyOnly) list = list.filter((p) => p._ex);
     if (deployedOnly) list = list.filter((p) => p._dep);
     list.sort((a, b) => {
       if (sortBy === "name") return (a.name || "").localeCompare(b.name || "");
@@ -180,7 +180,7 @@ export default function SavedPresets() {
       return (b.saved_at || "").localeCompare(a.saved_at || "");
     });
     return list;
-  }, [presets, deployed, validation, search, srcFilter, instFilter, deployableOnly, deployedOnly, sortBy]);
+  }, [presets, deployed, validation, search, srcFilter, instFilter, executionPolicyOnly, deployedOnly, sortBy]);
 
   const groups = useMemo(() => ({
     optimizer: filtered.filter((p) => p._source === "optimizer"),
@@ -189,7 +189,7 @@ export default function SavedPresets() {
 
   const stats = useMemo(() => ({
     total: presets.length,
-    deployable: presets.filter((p) => p.config?.execution).length,
+    withExecutionPolicy: presets.filter((p) => p.config?.execution).length,
     deployed: Object.keys(deployed).length,
   }), [presets, deployed]);
 
@@ -292,7 +292,7 @@ export default function SavedPresets() {
           <div className="text-xs font-semibold uppercase tracking-wider text-dim">Saved Presets</div>
         </div>
         <HeaderStat label="Total" value={stats.total} />
-        <HeaderStat label="Deployable" value={stats.deployable} title="Presets that carry an option-execution policy" />
+        <HeaderStat label="Execution policy" value={stats.withExecutionPolicy} title="Presets that captured an option-execution policy; other executable presets remain promotable" />
         <HeaderStat label="Deployed" value={stats.deployed} title="Presets currently backing a live deployment" />
         {validating && (
           <span className="flex items-center gap-1 text-[10px] text-dimmer"><Loader2 className="w-3 h-3 animate-spin" /> validating…</span>
@@ -325,8 +325,8 @@ export default function SavedPresets() {
           ))}
         </div>
         <label className="flex items-center gap-1.5 text-dim cursor-pointer">
-          <input type="checkbox" checked={deployableOnly} onChange={(e) => setDeployableOnly(e.target.checked)} className="h-3.5 w-3.5 rounded border-line" />
-          deployable only
+          <input type="checkbox" checked={executionPolicyOnly} onChange={(e) => setExecutionPolicyOnly(e.target.checked)} className="h-3.5 w-3.5 rounded border-line" />
+          execution policy captured
         </label>
         <label className="flex items-center gap-1.5 text-dim cursor-pointer">
           <input type="checkbox" checked={deployedOnly} onChange={(e) => setDeployedOnly(e.target.checked)} className="h-3.5 w-3.5 rounded border-line" />

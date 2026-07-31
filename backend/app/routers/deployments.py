@@ -18,7 +18,7 @@ from app.db import get_db, serialize_doc
 from app.strategies.base import get_registry
 from app.strategy_deployments import build_deployment_doc, compute_forward_config_hash
 from app.live_friction import FrictionConfig
-from app.strategy_source_hash import hash_strategy_source, build_repin_update
+from app.strategy_source_hash import hash_strategy_source, build_repin_update, detect_drift
 from app.deployment_quality import evaluate_source_quality, QualityThresholds
 from app.forward_metrics import (
     build_arm_advisories,
@@ -30,12 +30,14 @@ from app.deployment_evaluator import evaluate_active_deployments, evaluate_deplo
 from app.deployment_preflight import compute_data_realism
 from app.nse_calendar import market_status
 from app.paper_squareoff import square_off_open_paper_trades
+from app.finite_values import nonfinite_numeric_paths as _nonfinite_numeric_paths
 
 from app.runtime import (
     _auto_follow_option_stream,
     _ist_day_bounds_ms_full,
     _load_deployment_source,
     _set_deployment_status,
+    _validate_strategy_deployment_config,
     upstox_stream_manager,
 )
 
@@ -44,24 +46,48 @@ from app.schemas import DeploymentCreateReq
 api = APIRouter()
 
 
-def _nonfinite_numeric_paths(value: Any, path: str = "") -> List[str]:
-    """Find NaN/infinity in execution-bearing request configuration."""
-    if isinstance(value, bool) or value is None:
-        return []
-    if isinstance(value, (int, float)):
-        return [] if math.isfinite(float(value)) else [path or "value"]
-    if isinstance(value, dict):
-        out: List[str] = []
-        for key, item in value.items():
-            child = f"{path}.{key}" if path else str(key)
-            out.extend(_nonfinite_numeric_paths(item, child))
-        return out
-    if isinstance(value, (list, tuple)):
-        out: List[str] = []
-        for idx, item in enumerate(value):
-            out.extend(_nonfinite_numeric_paths(item, f"{path}[{idx}]"))
-        return out
-    return []
+def _validate_persisted_deployment_competency(deployment: Dict[str, Any]) -> None:
+    """Fail closed when a stored deployment can no longer execute exactly.
+
+    Creation validates the source snapshot, but older documents and later risk
+    edits can predate those guards. Resume and live-enable therefore re-check the
+    final persisted execution state rather than trusting its original route.
+    """
+    nonfinite = _nonfinite_numeric_paths({
+        "params": deployment.get("params") or {},
+        "risk": deployment.get("risk") or {},
+        "option_policy": deployment.get("option_policy") or {},
+        "premium_trigger": deployment.get("premium_trigger"),
+        "pretrade_settings_snapshot": deployment.get("pretrade_settings_snapshot") or {},
+    })
+    if nonfinite:
+        raise HTTPException(
+            400,
+            f"Deployment numeric values must be finite: {', '.join(nonfinite)}",
+        )
+
+    strategy_id = str(deployment.get("strategy_id") or "")
+    strategy = get_registry().get(strategy_id) if strategy_id else None
+    if strategy is None:
+        raise HTTPException(
+            409,
+            f"Strategy {strategy_id or '(missing)'} is not loaded; deployment cannot execute deterministically",
+        )
+    _validate_strategy_deployment_config(
+        strategy,
+        instrument=deployment.get("instrument"),
+        timeframe=deployment.get("timeframe") or "1m",
+        requested_params=deployment.get("params") or {},
+    )
+    current_sha = hash_strategy_source(strategy)
+    if detect_drift(
+        pinned=deployment.get("strategy_source_sha"),
+        current=current_sha,
+    ):
+        raise HTTPException(
+            409,
+            "Deployment strategy source differs from its pinned version; re-pin it before resuming or going live",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -873,6 +899,10 @@ async def set_paper_caps(deployment_id: str, body: _PaperCapsBody):
         raise HTTPException(404, "Deployment not found")
     if str(dep.get("mode") or "").lower() != "paper":
         raise HTTPException(400, "paper-caps apply to paper deployments only")
+    nonfinite = _nonfinite_numeric_paths(body.model_dump())
+    if nonfinite:
+        raise HTTPException(
+            400, f"Paper cap numeric values must be finite: {', '.join(nonfinite)}")
     if body.lots_override is not None and not (1 <= int(body.lots_override) <= 100):
         raise HTTPException(400, "lots_override must be 1..100")
     if body.max_concurrent is not None and not (1 <= int(body.max_concurrent) <= 50):
@@ -916,6 +946,7 @@ async def resume_deployment(deployment_id: str):
     deployment = await db.strategy_deployments.find_one({"id": deployment_id}, {"_id": 0})
     if not deployment:
         raise HTTPException(404, "Deployment not found")
+    _validate_persisted_deployment_competency(deployment)
     sid = str(deployment.get("strategy_id") or "")
     # local import avoids a circular dependency between the two routers
     from app.routers.strategies_admin import is_retired
@@ -1098,6 +1129,7 @@ async def enable_deployment_live(deployment_id: str, body: _LiveEnableBody):
         raise HTTPException(404, "Deployment not found")
     if str(deployment.get("status") or "").upper() != "ACTIVE":
         raise HTTPException(400, "Deployment must be ACTIVE to enable live execution.")
+    _validate_persisted_deployment_competency(deployment)
     sid = str(deployment.get("strategy_id") or "")
     # local import avoids a circular dependency between the two routers
     from app.routers.strategies_admin import is_retired

@@ -49,6 +49,8 @@ from app.dte import compute_dte, normalize_dte_filter
 from app.survival import survival_verdict, SurvivalConfig, oos_fold_index_ranges
 from app.early_stop import is_significant_improvement, should_early_stop, effective_warmup_patience
 from app.analyze_budget import over_budget, ewma, eta_seconds
+from app.finite_values import nonfinite_numeric_paths
+from app.indicator_param_catalog import INDICATOR_PARAM_CATALOG
 
 log = logging.getLogger(__name__)
 optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -105,19 +107,6 @@ if set(INDICATOR_PARAM_KEYS) != set(_SHARED_KEYS):
 # space on request (sensible intraday bounds). Only added when the user enables
 # "optimize indicator periods" AND the param isn't already in the strategy's
 # own schema (the strategy's bounds win).
-INDICATOR_PARAM_CATALOG: Dict[str, Dict[str, Any]] = {
-    "ema_fast": {"type": "int", "min": 3, "max": 20, "default": 9},
-    "ema_slow": {"type": "int", "min": 15, "max": 80, "default": 21},
-    "rsi_length": {"type": "int", "min": 5, "max": 30, "default": 14},
-    "macd_fast": {"type": "int", "min": 5, "max": 20, "default": 12},
-    "macd_slow": {"type": "int", "min": 20, "max": 60, "default": 26},
-    "macd_signal": {"type": "int", "min": 5, "max": 15, "default": 9},
-    "atr_length": {"type": "int", "min": 7, "max": 30, "default": 14},
-    "adx_length": {"type": "int", "min": 7, "max": 30, "default": 14},
-    "chop_length": {"type": "int", "min": 7, "max": 30, "default": 14},
-    "swing_lookback": {"type": "int", "min": 3, "max": 15, "default": 5},
-}
-
 # Fallback lot sizes (used only if no contract metadata is found in the DB).
 _DEFAULT_LOT_SIZE = {"NIFTY": 75, "BANKNIFTY": 35, "SENSEX": 20}
 
@@ -225,6 +214,7 @@ def best_so_far_doc(best_so_far: Dict[str, Any]) -> Dict[str, Any]:
         "metrics": (best_so_far or {}).get("metrics"),
         "trial_num": (best_so_far or {}).get("trial_num"),
         "guardrail_qualified": (best_so_far or {}).get("guardrail_qualified"),
+        "finite_candidate_available": _has_finite_candidate(best_so_far),
     }
 
 
@@ -235,6 +225,31 @@ def _finite_trial_score(value: Any) -> Optional[float]:
     except (TypeError, ValueError):
         return None
     return candidate if math.isfinite(candidate) else None
+
+
+def _has_finite_candidate(candidate: Any) -> bool:
+    """Whether an immutable optimizer snapshot is executable and fully finite.
+
+    The explicit flag preserves a disqualified-but-finite candidate after its
+    sentinel objective is hidden as ``None`` in Mongo. Legacy/in-memory records
+    remain inferable from a finite raw value. Empty parameter dictionaries are
+    valid for strategies with no tunable parameters.
+    """
+    if not isinstance(candidate, dict):
+        return False
+    if "params" not in candidate or not isinstance(candidate.get("params"), dict):
+        return False
+    if "metrics" in candidate and candidate.get("metrics") is not None \
+            and not isinstance(candidate.get("metrics"), dict):
+        return False
+    if nonfinite_numeric_paths({
+        "params": candidate.get("params"),
+        "metrics": candidate.get("metrics") or {},
+    }):
+        return False
+    if candidate.get("finite_candidate_available") is True:
+        return True
+    return _finite_trial_score(candidate.get("value")) is not None
 
 
 def _promote_best_if_finite(
@@ -258,14 +273,14 @@ def _promote_best_if_finite(
     comparing that partial dict to full trial-history params returned stale data.
     """
     candidate = _finite_trial_score(value)
-    if candidate is None:
+    if candidate is None or nonfinite_numeric_paths({"params": params, "metrics": metrics}):
         return best_so_far
 
     try:
         current = float((best_so_far or {}).get("value", -float("inf")))
     except (TypeError, ValueError):
         current = -float("inf")
-    if not math.isfinite(current):
+    if not _has_finite_candidate(best_so_far) or not math.isfinite(current):
         current = -float("inf")
     if candidate <= current:
         return best_so_far
@@ -276,13 +291,21 @@ def _promote_best_if_finite(
         "metrics": metrics or {},
         "trial_num": int(trial_num),
         "guardrail_qualified": candidate != float(_DISQUALIFY),
+        "finite_candidate_available": True,
     }
 
 
 def _best_finite_rerank_candidate(ranked: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """Return the first option re-rank finalist with finite P&L and params."""
     for row in ranked or []:
-        if row.get("params") and _finite_trial_score(row.get("option_pnl_value")) is not None:
+        if (isinstance(row.get("params"), dict)
+                and _finite_trial_score(row.get("option_pnl_value")) is not None
+                and not nonfinite_numeric_paths({
+                    "params": row.get("params"),
+                    "metrics": row.get("spot_metrics") or {},
+                    "option_pnl_pts": row.get("option_pnl_pts"),
+                    "option_win_rate": row.get("option_win_rate"),
+                })):
             return row
     return None
 
@@ -2092,7 +2115,7 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                 # Every Stage-1 trial may be finite yet guardrail-unqualified, so
                 # Stage 2 has no finalist. Preserve the finite Stage-1 candidate
                 # instead of silently erasing it or pretending survival never ran.
-                if best_so_far.get("params") and _finite_trial_score(best_so_far.get("value")) is not None:
+                if _has_finite_candidate(best_so_far):
                     best_so_far = {**best_so_far, "survival_qualified": False}
                 survival_summary = {
                     "survivors": 0,
@@ -2170,7 +2193,7 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
         # Re-enrich for the BEST indicator periods so the saved run matches what
         # was optimized (not the default-period indicators).
         best_backtest_run_id = None
-        if best_so_far["params"]:
+        if _has_finite_candidate(best_so_far):
             best_merged = strategy.merged_params(best_so_far["params"])
             df_best = get_enriched(best_merged)
             best_backtest_run_id = await _save_best_as_backtest(
@@ -2198,6 +2221,7 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
             "n_trials_completed": completed,
             "evaluation_mode": evaluation_mode,
             "best_params": best_so_far["params"],
+            "finite_candidate_available": _has_finite_candidate(best_so_far),
             # Same sanitiser as best_so_far: the old guard let +inf through
             # (inf > -1e8 is True), which would 500 the job-history endpoint.
             "best_value": best_so_far_doc(best_so_far)["value"],

@@ -1860,14 +1860,20 @@ def _validate_strategy_deployment_config(
         raise HTTPException(
             400,
             "Strategy deployments currently require timeframe=1m; 3m/5m live resampling is not implemented")
+    from app.indicator_param_catalog import INDICATOR_PARAM_CATALOG
+
     requested = dict(requested_params or {})
-    unknown_params = sorted(set(requested) - set(strategy.parameter_schema or {}))
+    strategy_schema = dict(strategy.parameter_schema or {})
+    accepted_schema = dict(strategy_schema)
+    for name in set(requested) & set(INDICATOR_PARAM_CATALOG):
+        accepted_schema.setdefault(name, INDICATOR_PARAM_CATALOG[name])
+    unknown_params = sorted(set(requested) - set(accepted_schema))
     if unknown_params:
         raise HTTPException(
             400,
             f"Strategy {strategy.id} received unknown parameter(s): {unknown_params}")
     params = strategy.merged_params(requested)
-    for param_name, spec in (strategy.parameter_schema or {}).items():
+    for param_name, spec in accepted_schema.items():
         value = params.get(param_name)
         value_type = str((spec or {}).get("type") or "")
         # A param whose schema default is None legitimately accepts None (H4).

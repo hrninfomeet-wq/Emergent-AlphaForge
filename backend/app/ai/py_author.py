@@ -35,7 +35,7 @@ NO function calls or comprehensions anywhere a value is assigned at class-defini
 to_csv, to_pickle, ...), no DataFrame.eval/.query, no numpy.load/.save/.fromfile/.tofile/.memmap. A strategy is a \
 PURE in-memory function: index row/prev with row["col"], use arithmetic/comparisons, numpy ufuncs (np.where, np.abs, \
 np.sign, np.maximum, np.minimum), pandas Series math (.mean()/.std()/.shift()/.rolling()/.ewm()/.diff()), and math.
-- evaluate(self, row, prev, params, ctx) must be a PURE function returning a Signal.
+- evaluate(self, row, prev, params, ctx) must be a PURE deterministic function returning a Signal. Do not use random sampling, current time/date, mutable instance state, or data-frame sampling. Every numeric Signal field must be finite (never NaN or infinity).
 
 # Required class attributes
 id (lowercase slug ^[a-z][a-z0-9_]*$, a STRING LITERAL), name, version="1.0.0", description, \

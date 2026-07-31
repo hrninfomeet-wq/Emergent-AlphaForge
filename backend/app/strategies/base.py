@@ -4,7 +4,9 @@ import importlib
 import pkgutil
 import inspect
 import logging
+import math
 from dataclasses import dataclass, field
+from numbers import Real
 from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 
@@ -30,6 +32,39 @@ class Signal:
     scenario: Optional[str] = None
     spot_target_level: Optional[float] = None
     exit_mode: Optional[str] = None
+
+
+_SIGNAL_NUMERIC_FIELDS = (
+    "score", "target_pct", "stop_pct", "time_stop_minutes",
+    "spot_target_pts", "spot_stop_pts", "spot_target_level",
+)
+
+
+def validate_signal(signal: Any) -> Signal:
+    """Validate the runtime output shared by backtest, smoke, paper and live.
+
+    Type annotations do not protect a plugin at runtime. A NaN comparison can
+    silently bypass thresholds while infinity can poison targets, trades, and
+    saved metrics, so these are competency failures rather than research
+    warnings.
+    """
+    if not isinstance(signal, Signal):
+        raise TypeError(f"evaluate returned {type(signal).__name__}, not Signal")
+    if signal.direction not in ("CE", "PE", "NONE"):
+        raise ValueError(f"invalid Signal direction {signal.direction!r}")
+    for field_name in _SIGNAL_NUMERIC_FIELDS:
+        value = getattr(signal, field_name)
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, Real):
+            raise ValueError(f"Signal field {field_name} must be numeric")
+        if not math.isfinite(float(value)):
+            raise ValueError(f"Signal field {field_name} must be finite")
+    for field_name in ("reasons", "blockers"):
+        value = getattr(signal, field_name)
+        if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+            raise ValueError(f"Signal field {field_name} must be a list of strings")
+    return signal
 
 
 EVAL_CTX_KEYS = ("history_df", "i", "instrument", "session_date", "mode")

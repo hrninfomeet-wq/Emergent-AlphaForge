@@ -935,7 +935,7 @@ export default function BacktestLab() {
                 data-testid="backtest-costs-switch"
               />
               <span className="text-xs text-dim">Apply realistic costs (slippage + brokerage)</span>
-              <Hint label="Apply realistic costs">Adds index-side slippage. Keep ON — an edge that only survives with costs OFF isn't deployable. For the option ₹ P&L, also enable 'Apply rupee costs' in Option Execution.</Hint>
+              <Hint label="Apply realistic costs">Adds index-side slippage. Keep ON — an edge that only survives with costs OFF is not credible evidence, though the executable strategy remains promotable with a warning. For the option ₹ P&L, also enable 'Apply rupee costs' in Option Execution.</Hint>
             </div>
             <div className="flex items-center gap-2">
               <Switch
@@ -1007,7 +1007,7 @@ export default function BacktestLab() {
                 data-testid="option-backtest-switch"
               />
               <span className="text-xs text-dim">Pair signals with option candles</span>
-              <Hint label="Pair signals with option candles">Re-prices each spot signal as a REAL ATM-band option trade (actual CE/PE premium candles) instead of index points. Turn ON for a realistic ₹ P&L — this is what makes a result deployable, and it reveals the Exit/risk controls below.</Hint>
+              <Hint label="Pair signals with option candles">Re-prices each spot signal as a REAL ATM-band option trade (actual CE/PE premium candles) instead of index points. Turn ON for more realistic ₹ evidence and to reveal the Exit/risk controls below; it is not a prerequisite for user-authorized promotion.</Hint>
             </div>
             <div className="grid grid-cols-2 gap-2">
               <Row label="Expiry" hint="Which expiry to trade. 'Nearest weekly (auto)' is the realistic default (most liquid, highest theta). 'Fixed' pins one expiry — research only.">

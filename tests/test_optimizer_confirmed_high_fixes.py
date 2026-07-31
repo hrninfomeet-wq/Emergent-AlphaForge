@@ -39,7 +39,11 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 
 from app.optimizer import (  # noqa: E402
+    _best_finite_rerank_candidate,
+    _has_finite_candidate,
     _objective_value,
+    _promote_best_if_finite,
+    best_so_far_doc,
     resolve_resume_completed,
     stage2_rank_key,
 )
@@ -176,3 +180,60 @@ def test_an_empty_log_with_a_counter_starts_over():
 def test_negative_or_garbage_is_clamped():
     assert resolve_resume_completed(n_trials_completed=-5, trial_log_len=0) == 0
     assert resolve_resume_completed(n_trials_completed="x", trial_log_len=3) == 3
+
+
+# --------------------------------------------------------------------------- #
+# Promotion competency — finite means the whole immutable candidate, not only
+# its scalar objective. Empty params are valid for zero-parameter strategies.
+# --------------------------------------------------------------------------- #
+
+def _empty_best():
+    return {"value": -float("inf"), "params": {}, "metrics": {}, "trial_num": -1}
+
+
+def test_nested_nonfinite_params_cannot_be_promoted():
+    best = _promote_best_if_finite(
+        _empty_best(), value=1.0,
+        params={"risk": {"distance": float("inf")}},
+        metrics={"sharpe": 1.0}, trial_num=0,
+    )
+    assert not _has_finite_candidate(best)
+
+
+def test_nested_nonfinite_metrics_cannot_be_promoted():
+    best = _promote_best_if_finite(
+        _empty_best(), value=1.0, params={"period": 10},
+        metrics={"folds": [{"sharpe": float("nan")}]}, trial_num=0,
+    )
+    assert not _has_finite_candidate(best)
+
+
+def test_finite_candidate_replaces_higher_scoring_corrupt_snapshot():
+    corrupt = {
+        "value": 10.0, "params": {"period": 10},
+        "metrics": {"sharpe": float("nan")}, "trial_num": 0,
+    }
+    best = _promote_best_if_finite(
+        corrupt, value=1.0, params={"period": 20},
+        metrics={"sharpe": 1.0}, trial_num=1,
+    )
+    assert best["params"] == {"period": 20}
+    assert _has_finite_candidate(best)
+
+
+def test_zero_parameter_candidate_is_explicitly_available():
+    best = _promote_best_if_finite(
+        _empty_best(), value=1.0, params={}, metrics={"sharpe": 1.0}, trial_num=0,
+    )
+    assert _has_finite_candidate(best)
+    assert best_so_far_doc(best)["finite_candidate_available"] is True
+
+
+def test_rerank_accepts_empty_params_but_rejects_nonfinite_candidate():
+    valid = {"params": {}, "option_pnl_value": 10.0, "spot_metrics": {"sharpe": 1.0}}
+    invalid = {
+        "params": {"period": float("nan")},
+        "option_pnl_value": 20.0,
+        "spot_metrics": {"sharpe": 2.0},
+    }
+    assert _best_finite_rerank_candidate([invalid, valid]) is valid

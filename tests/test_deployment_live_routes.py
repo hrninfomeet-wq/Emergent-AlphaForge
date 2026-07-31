@@ -161,12 +161,28 @@ class _FakeEngine:
         return (self._can, "ok" if self._can else "halted")
 
 
+class _FakeStrategy:
+    id = "confluence_scalper"
+    supported_instruments = ["NIFTY", "BANKNIFTY", "SENSEX"]
+    supported_timeframes = ["1m"]
+    parameter_schema = {}
+
+    def merged_params(self, params):
+        return dict(params or {})
+
+
 def _install(monkeypatch, db, *, connected=True, can_trade=True, registry=None,
              retired=False, autoplace=False, guard_armed=False,
              promotion_allowed=True, account_max_lots=20,
-             account_max_open=5, broker_expired=False, static_ip="1.2.3.4"):
+             account_max_open=5, broker_expired=False, static_ip="1.2.3.4",
+             strategy_loaded=True):
     """Patch all module-level seams the routes touch."""
     monkeypatch.setattr(dep, "get_db", lambda: db)
+    fake_strategy = _FakeStrategy() if strategy_loaded else None
+    monkeypatch.setattr(
+        dep, "get_registry",
+        lambda: type("Registry", (), {"get": lambda self, sid: fake_strategy})(),
+    )
 
     # broker token presence → connected
     async def _token_doc():
@@ -260,6 +276,30 @@ def _enable_body(confirm=True, lots=1, max_lots_per_day=1, max_concurrent=1, dai
 # ===========================================================================
 
 class TestEnable:
+    def test_enable_rejects_persisted_nonfinite_execution_config(self, monkeypatch):
+        from fastapi import HTTPException
+        db = FakeDB()
+        db.strategy_deployments.rows.append(_deployment(risk={
+            "allow_overnight": False,
+            "exit_controls": {"trailing": {"distance": float("nan")}},
+        }))
+        _install(monkeypatch, db)
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(dep.enable_deployment_live("dep-1", _enable_body()))
+        assert exc.value.status_code == 400
+        assert "finite" in str(exc.value.detail).lower()
+        assert db.strategy_deployments.rows[0].get("mode") != "live"
+
+    def test_enable_rejects_strategy_that_is_no_longer_loaded(self, monkeypatch):
+        from fastapi import HTTPException
+        db = FakeDB()
+        db.strategy_deployments.rows.append(_deployment())
+        _install(monkeypatch, db, strategy_loaded=False)
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(dep.enable_deployment_live("dep-1", _enable_body()))
+        assert exc.value.status_code == 409
+        assert "not loaded" in str(exc.value.detail).lower()
+
     def test_enable_success_sets_mode_live_and_writes_caps(self, monkeypatch):
         db = FakeDB()
         db.strategy_deployments.rows.append(_deployment())
@@ -1000,6 +1040,36 @@ class TestPauseDemotesLive:
         asyncio.run(dep.resume_deployment("dep-1"))
         assert db.strategy_deployments.rows[0]["status"] == "ACTIVE"
         assert db.strategy_deployments.rows[0]["mode"] == "paper"   # NOT re-authorized
+
+    def test_resume_rejects_legacy_nonfinite_execution_config(self, monkeypatch):
+        from fastapi import HTTPException
+        db = FakeDB()
+        db.strategy_deployments.rows.append(_deployment(
+            status="PAUSED", mode="paper", params={"threshold": float("inf")},
+        ))
+        _install(monkeypatch, db)
+        import app.runtime as _rt
+        monkeypatch.setattr(_rt, "get_db", lambda: db)
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(dep.resume_deployment("dep-1"))
+        assert exc.value.status_code == 400
+        assert "finite" in str(exc.value.detail).lower()
+        assert db.strategy_deployments.rows[0]["status"] == "PAUSED"
+
+    @pytest.mark.parametrize("field,value", [
+        ("daily_caps", {"loss": float("inf")}),
+        ("capital", {"amount": float("inf"), "basis": "fixed"}),
+    ])
+    def test_paper_caps_reject_nonfinite_values(self, monkeypatch, field, value):
+        from fastapi import HTTPException
+        db = FakeDB()
+        db.strategy_deployments.rows.append(_deployment(mode="paper"))
+        _install(monkeypatch, db)
+        body = dep._PaperCapsBody(**{field: value})
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(dep.set_paper_caps("dep-1", body))
+        assert exc.value.status_code == 400
+        assert "finite" in str(exc.value.detail).lower()
 
     def test_enable_requires_daily_loss_cap(self, monkeypatch):
         """A live deployment's only day-level loss halt is daily_loss_cap (the

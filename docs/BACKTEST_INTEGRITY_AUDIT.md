@@ -89,16 +89,20 @@ history of `139a1f2` (or `git show 23ccfed:docs/ROUND8_VERIFICATION.md`).
 
 | # | Sev | Resolution |
 |---|---|---|
-| 11 | **HIGH** | One shared promotion path binds the exact params/metrics tuple across Grid, sequential and parallel trials and rebuilds resume state from logged evidence. Per the operator's 2026-07-31 policy, every finite completed result — including the `_DISQUALIFY` guardrail sentinel — retains params/metrics for optional save/deploy with an explicit qualification warning. Only errored or non-finite trials produce no promotable result. |
+| 11 | **HIGH** | One shared promotion path binds the exact params/metrics tuple across Grid, sequential and parallel trials and rebuilds resume state from logged evidence. Per the operator's 2026-07-31 policy, every recursively finite candidate — including a running-job snapshot, a zero-parameter strategy, and the `_DISQUALIFY` guardrail sentinel — retains params/metrics for optional save/deploy with an explicit qualification warning. Only errored candidates or candidates with NaN/infinity anywhere in params/metrics produce no promotable result. |
 | 18 | **HIGH** | Survival summaries now separate evaluated/finalist/not-evaluated counts, count failure reasons only for evaluated rows, persist budget/cancel/pause stop cause, and disclose incomplete coverage in the UI. |
 | 22 | **HIGH** | The optimizer mirrors WFO's ownership guard: `shutdown_pool()` runs only when `start_pool()` returned a pool to this job. |
 | 28 | **HIGH** | Parallel promotion happens at tell time from the exact `(params, metrics, value)` tuple, retaining pinned dimensions and eliminating the partial-`study.best_params` history lookup. |
 
 Regression proof lives in `tests/test_optimizer_verified_high_regressions.py`; the
 promotion-policy cases were observed failing against the former hard gates and pass
-after the policy implementation. Verification: focused 116/116, interconnected
-504/504, full host **4,293 passed / 4 xfailed / 0 failed**, and selected in-container
-route/Motor regressions 170/170; compileall and the optimized frontend build pass.
+after the policy implementation. The completion review also regression-pins recursive
+finite values, zero-param/running snapshots, deterministic finite `Signal` output,
+optimizer-param deployment parity, and resume/live-enable revalidation. Verification:
+focused promotion/deployment/evaluator set 264/264, full host **4,326 passed / 4 xfailed /
+0 failed**, and selected in-container route/Motor regressions **212 passed / 4
+source-layout tests deselected / 0 failed**; compileall, optimized frontend build and
+hard-refreshed browser smoke pass.
 
 ### Still open — 8 MED, 1 disputed LOW
 

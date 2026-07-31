@@ -8,7 +8,7 @@ import pandas as pd
 from dataclasses import dataclass, field, asdict
 from typing import Any, Dict, List, Optional, Tuple
 
-from app.strategies.base import StrategyBase, Signal, build_eval_ctx
+from app.strategies.base import StrategyBase, Signal, build_eval_ctx, validate_signal
 from app.costs import apply_round_trip_cost
 from app.exit_engine import intrabar_exit
 from app.features import materialize_features
@@ -189,7 +189,7 @@ def run_backtest(
         # self, or write into it across calls (grep of backend/app/strategies).
         ctx_global["i"] = i
         ctx_global["session_date"] = row.get("session_date")
-        sig: Signal = strategy.evaluate(row, prev, params, ctx_global)
+        sig: Signal = validate_signal(strategy.evaluate(row, prev, params, ctx_global))
         if sig.direction not in ("CE", "PE"):
             continue
         if sig.blockers:

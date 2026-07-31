@@ -8,6 +8,11 @@ import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { fmtNum } from "@/lib/fmt";
 import { getApiErrorMessage } from "@/lib/apiError";
+import {
+  areStrategyParamsValid,
+  isNullableStrategyParam,
+  strategyParamInputValue,
+} from "@/lib/strategyParams";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
@@ -65,7 +70,7 @@ export default function LiveSignals() {
         api.listStrategies().catch(() => ({ items: [] })),
         // Deploying straight from a run is supported server-side; listing the
         // runs is what makes it reachable without a preset detour.
-        api.listBacktestRuns(50).catch(() => ({ items: [] })),
+        api.listBacktestRuns(200).catch(() => ({ items: [] })),
       ]);
       setOverview(ov);
       setPresets(presetList.items || []);
@@ -110,15 +115,29 @@ export default function LiveSignals() {
   }, [searchParams, presets]);
 
   // Deep-link /live?backtest=RUN_ID (Backtest Lab's Deploy button). Same
-  // once-per-load discipline as ?preset=, and it only fires once the run is
-  // actually in the list, so the wizard never opens on a stale id.
+  // once-per-load discipline as ?preset=. Fetch the exact run when it is older
+  // than the bounded picker list so every saved backtest remains promotable.
   useEffect(() => {
     const runId = searchParams.get("backtest");
-    if (!runId || deepLinkRef.current || backtestRuns.length === 0) return;
-    if (!backtestRuns.some((r) => r.id === runId)) return;
+    if (!runId || deepLinkRef.current) return;
+    const listed = backtestRuns.find((r) => r.id === runId);
+    if (listed) {
+      deepLinkRef.current = true;
+      setWizardBacktestRun(runId);
+      setWizardOpen(true);
+      return;
+    }
     deepLinkRef.current = true;
-    setWizardBacktestRun(runId);
-    setWizardOpen(true);
+    let cancelled = false;
+    api.getBacktestRun(runId).then((run) => {
+      if (cancelled) return;
+      setBacktestRuns((prev) => prev.some((r) => r.id === runId) ? prev : [run, ...prev]);
+      setWizardBacktestRun(runId);
+      setWizardOpen(true);
+    }).catch((e) => {
+      if (!cancelled) toast.error(`Backtest run unavailable: ${getApiErrorMessage(e)}`);
+    });
+    return () => { cancelled = true; };
   }, [searchParams, backtestRuns]);
 
   const act = async (fn, okMsg) => {
@@ -252,6 +271,10 @@ function DeploymentCard({ item, busy, onPause, onResume, onRepin, onEvaluate, on
   const lt = item.lifetime;
   const paused = d.status === "PAUSED";
   const isPaper = d.mode === "paper";
+  const isLive = d.mode === "live";
+  const sourceLabel = d.source_type === "preset"
+    ? `from preset "${d.source_id}"`
+    : d.source_type === "strategy" ? "from Strategy Library" : "from backtest run";
   const pausedReason = d.kill_switch_reason || d.drift_reason;
   const isDriftPaused = paused && d.drift_reason === "strategy_source_drift";
   const mtm = Number(t.realized_pnl || 0) + Number(t.open_unrealized || 0);
@@ -263,7 +286,7 @@ function DeploymentCard({ item, busy, onPause, onResume, onRepin, onEvaluate, on
           <div className="text-[11px] font-mono text-dimmer truncate">
             {d.strategy_id} · {d.instrument} · {(d.option_policy?.moneyness || []).join("/").toUpperCase() || "ATM"}
             {" · DTE "}{(d.option_policy?.dte_filter || []).join(",") || "all"}
-            {" · from "}{d.source_type === "preset" ? `preset "${d.source_id}"` : "backtest run"}
+            {" · "}{sourceLabel}
           </div>
           <div className="text-[10px] text-dimmer" data-testid="deployment-last-evaluated">
             {item.last_evaluated_ts
@@ -272,8 +295,8 @@ function DeploymentCard({ item, busy, onPause, onResume, onRepin, onEvaluate, on
           </div>
         </div>
         <div className="ml-auto flex items-center gap-1.5 shrink-0">
-          <span className={`text-[10px] px-1.5 py-0.5 rounded border font-mono ${isPaper ? "border-emerald-500/40 text-emerald-300" : "border-info/40 text-info"}`}>
-            {isPaper ? "PAPER AUTO-TRADE" : "SIGNAL ONLY"}
+          <span className={`text-[10px] px-1.5 py-0.5 rounded border font-mono ${isLive ? "border-rose-500/50 text-rose-300" : isPaper ? "border-emerald-500/40 text-emerald-300" : "border-info/40 text-info"}`}>
+            {isLive ? "LIVE REAL-MONEY" : isPaper ? "PAPER AUTO-TRADE" : "SIGNAL ONLY"}
           </span>
           <span className={`text-[10px] px-1.5 py-0.5 rounded border font-mono ${paused ? "border-amber-500/40 text-warning" : "border-emerald-500/40 text-emerald-300"}`}>
             {d.status}
@@ -613,6 +636,14 @@ function DeployWizard({ presets, strategies, backtestRuns = [], initialPreset, i
         : "Deployed. Signals start with the next market minute.");
       onCreated();
     } catch (e) {
+      const detail = e?.response?.data?.detail;
+      if (detail?.code === "acknowledgment_required") {
+        setQuality(detail.quality || null);
+        setForm((prev) => ({ ...prev, acknowledged_warnings: false }));
+        setStep(3);
+        toast.warning(detail.message || "Review and acknowledge the source warnings to deploy.");
+        return;
+      }
       toast.error(`Deployment failed: ${getApiErrorMessage(e)}`);
     } finally {
       setBusy(false);
@@ -622,17 +653,10 @@ function DeployWizard({ presets, strategies, backtestRuns = [], initialPreset, i
   const needAck = Boolean(quality?.acknowledgment_required);
   const libraryParamsValid = form.source_type !== "strategy" || !libraryStrategy
     ? true
-    : Object.entries(libraryStrategy.parameter_schema || {}).every(([name, spec]) => {
-        const value = form.source_params?.[name];
-        if (spec?.type === "bool") return typeof value === "boolean";
-        if (spec?.type === "str") return typeof value === "string" && value.trim() !== "";
-        const numeric = Number(value);
-        if (!Number.isFinite(numeric)) return false;
-        if (spec?.type === "int" && !Number.isInteger(numeric)) return false;
-        if (spec?.min != null && numeric < Number(spec.min)) return false;
-        if (spec?.max != null && numeric > Number(spec.max)) return false;
-        return true;
-      });
+    : areStrategyParamsValid(
+        libraryStrategy.parameter_schema,
+        form.source_params,
+      );
   const canNext1 = Boolean(form.source_id)
     && (form.source_type !== "strategy" || Boolean(form.source_instrument && form.source_timeframe))
     && libraryParamsValid;
@@ -765,25 +789,24 @@ function DeployWizard({ presets, strategies, backtestRuns = [], initialPreset, i
                             ) : spec?.type === "str" ? (
                               <label key={name} className="text-[10px] text-dim">
                                 <span className="block truncate" title={name}>{name}</span>
-                                <Input type="text" required
+                                <Input type="text" required={!isNullableStrategyParam(spec)}
                                   value={form.source_params?.[name] ?? spec?.default ?? ""}
                                   onChange={(e) => set("source_params", {
                                     ...form.source_params,
-                                    [name]: e.target.value,
+                                    [name]: strategyParamInputValue(e.target.value, spec),
                                   })}
                                   className="mt-1 bg-bg-2 border-line h-8 text-[10px]" />
                               </label>
                             ) : (
                               <label key={name} className="text-[10px] text-dim">
                                 <span className="block truncate" title={name}>{name}</span>
-                                <Input type="number" min={spec?.min} max={spec?.max} required
+                                <Input type="number" min={spec?.min} max={spec?.max}
+                                  required={!isNullableStrategyParam(spec)}
                                   step={spec?.type === "int" ? 1 : "any"}
                                   value={form.source_params?.[name] ?? spec?.default ?? ""}
                                   onChange={(e) => set("source_params", {
                                     ...form.source_params,
-                                    [name]: e.target.value === ""
-                                      ? ""
-                                      : spec?.type === "int" ? parseInt(e.target.value, 10) : Number(e.target.value),
+                                    [name]: strategyParamInputValue(e.target.value, spec),
                                   })}
                                   className="mt-1 bg-bg-2 border-line h-8 text-[10px]" />
                               </label>

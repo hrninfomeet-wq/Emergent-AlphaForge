@@ -42,8 +42,8 @@ def test_optimizer_hint_content_is_present_and_grounded():
         # core selectors
         "Bayesian (TPE) is the default",
         "Risk-Adjusted is the balanced default",
-        "Verify a Single run with walk-forward before trusting it",
-            "forward gates decide promotion",
+            "Verify a Single run with walk-forward before trusting it",
+            "finite candidates remain promotable by explicit user choice",
         # trial controls + guards
         "becomes a ceiling, not a target",       # trial budget / early-stop
         "Keep 1 for a deploy decision",           # parallel workers

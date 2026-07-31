@@ -87,7 +87,8 @@ def test_deploy_deeplink_is_consumed_and_guarded():
     src = _read("pages", "LiveSignals.jsx")
     assert 'searchParams.get("backtest")' in src
     assert "deepLinkRef" in src
-    assert "backtestRuns.some" in src, "must verify the run id is real before opening"
+    assert "backtestRuns.find" in src, "must reuse the run when it is already listed"
+    assert "api.getBacktestRun(runId)" in src, "must verify older/deep-linked run ids before opening"
 
 
 def test_saving_a_preset_is_no_longer_presented_as_the_only_route():

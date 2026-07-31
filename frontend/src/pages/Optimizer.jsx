@@ -5,6 +5,7 @@ import { api } from "@/lib/api";
 import { fmtInt, fmtNum, fmtPct, isoToFull } from "@/lib/fmt";
 import { dateToMs, msToDate } from "@/lib/time";
 import { exportOptConfig, exportOptJob, exportOptAlternatives } from "@/lib/optExports";
+import { hasFiniteOptimizerCandidate } from "@/lib/optimizerCandidate";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
@@ -891,14 +892,14 @@ export default function Optimizer() {
                     data-testid="opt-wfo-option-aware"
                   />
                   <span className="text-[11px] text-dim">
-                    <b>Option-aware OOS (₹)</b><Hint label="Option-aware OOS">After stitching the unseen windows, pairs those trades with <b>historical one-minute option bars</b> and reports modelled net rupee. It can reject a spot edge that fails in option behaviour, but it only reports, never re-ranks, and current history is not point-in-time/execution certified. <b>Suggested: ON for research; forward validation decides promotion.</b></Hint> — model option ₹ on the stitched OOS trades (research screen)
+                    <b>Option-aware OOS (₹)</b><Hint label="Option-aware OOS">After stitching the unseen windows, pairs those trades with <b>historical one-minute option bars</b> and reports modelled net rupee. It can reject a spot-edge hypothesis that fails in option behaviour, but it only reports, never re-ranks, and current history is not point-in-time/execution certified. <b>Suggested: ON for evidence; finite candidates remain promotable by explicit user choice.</b></Hint> — model option ₹ on the stitched OOS trades (research screen)
                   </span>
                 </div>
               </div>
             )}
 
             {config.run_kind !== "walkforward" && (
-            <Row label="Evaluation" hint={<>How candidates are scored. <b>Option re-rank</b> takes the top spot configs and re-scores them on paired historical option bars with modelled costs. It is much more relevant than spot points for option buying, but it is still research-only until data provenance and forward gates pass. <b>Spot points</b> is faster and useful only for early hypothesis search.</>}>
+            <Row label="Evaluation" hint={<>How candidates are scored. <b>Option re-rank</b> takes the top spot configs and re-scores them on paired historical option bars with modelled costs. It is much more relevant than spot points for option buying, but it remains research evidence rather than proof of edge. A finite candidate stays promotable with warnings. <b>Spot points</b> is faster and useful only for early hypothesis search.</>}>
               <Select value={config.evaluation_mode} onValueChange={(v) => setConfig({ ...config, evaluation_mode: v })}>
                 <SelectTrigger className="bg-bg-2 border-line h-8" data-testid="opt-eval-mode-select"><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -941,7 +942,7 @@ export default function Optimizer() {
                   )}
                   {config.run_kind !== "walkforward" && (
                   <div>
-                    <Label className="text-[11px] text-dim">Analyzing budget (min)<Hint label="Analyzing budget">Time cap on option re-rank + stress analysis. <b>0 = complete every finalist</b> and is the evidence-profile default. A capped run can return only the best candidate evaluated before timeout, so it is useful for exploration but cannot support promotion.</Hint></Label>
+                    <Label className="text-[11px] text-dim">Analyzing budget (min)<Hint label="Analyzing budget">Time cap on option re-rank + stress analysis. <b>0 = complete every finalist</b> and is the evidence-profile default. A capped run returns the best candidate evaluated before timeout. It remains promotable, but the incomplete sweep is adverse evidence and is disclosed.</Hint></Label>
                     <Input type="number" min={0} max={240} value={config.analyze_budget_min}
                       onChange={(e) => setConfig({ ...config, analyze_budget_min: e.target.value })}
                       className="bg-bg-2 border-line h-8 text-xs font-mono mt-1" data-testid="opt-analyze-budget" />
@@ -1086,7 +1087,7 @@ export default function Optimizer() {
                   {config.survival_config?.enabled && (
                     <>
                       <div className="text-[10px] text-dimmer leading-snug">
-                        Requires modelled option execution + costs ON. This is an observed-history stress screen; the separate forward policy decides promotion.
+                        Requires modelled option execution + costs ON. This is an observed-history stress screen; it changes the evidence label, not the user&apos;s promotion authority.
                       </div>
                       <div>
                         <Label className="text-[11px] text-dim">Trading capital (₹)<Hint label="Trading capital">The account size the gate scales drawdown % and risk-of-ruin against — DD% is a fraction of THIS, and RoR paths start from it. <b>Default ₹2,00,000.</b> Set it to your real deployable capital: a smaller account makes every % gate stricter (a ₹35k drawdown is 70% of ₹50k but only 17.5% of ₹200k). Equity floor / ruin floor must be below it.</Hint></Label>
@@ -1125,7 +1126,7 @@ export default function Optimizer() {
                           />
                         </div>
                         <div>
-                          <Label className="text-[11px] text-dim">Max stress RoR %<Hint label="Max stress risk-of-ruin %">Current model: an IID bootstrap over the observed daily ₹ series, with an upper confidence bound. The ₹2L profile uses your <b>30%</b> ceiling, but this number is <b>not annualized</b>. Promotion requires the forward policy's 252-session block-bootstrap upper bound to be below 30%. Needs ≥100 paired trades.</Hint></Label>
+                          <Label className="text-[11px] text-dim">Max stress RoR %<Hint label="Max stress risk-of-ruin %">Current model: an IID bootstrap over the observed daily ₹ series, with an upper confidence bound. The ₹2L evidence profile uses your <b>30%</b> ceiling, but this number is <b>not annualized</b>. The forward-validated label separately requires a 252-session block-bootstrap upper bound below 30%; a failed check remains an explicit warning, not a promotion veto. Needs ≥100 paired trades.</Hint></Label>
                           <Input
                             type="number"
                             min={0} max={100} step={1}
@@ -1270,13 +1271,13 @@ export default function Optimizer() {
                   data-testid="opt-guards-switch"
                 />
                 <span className="text-xs text-dim">Guard rails</span>
-                <Hint label="Guard rails">Master switch for the two disqualifiers below (Min trades + Min CE/PE side %). <b>Default ON</b> — keeps the optimizer from "winning" with degenerate few-trade or all-CE/all-PE param sets. Off, only zero-trade sets are still rejected.</Hint>
+                <Hint label="Guard rails">Master switch for the two advisory screens below (Min trades + Min CE/PE side %). <b>Default ON</b> — qualified candidates rank ahead of degenerate few-trade or all-CE/all-PE sets. A finite guardrail-failed candidate is retained for explicit promotion; only errored or non-finite calculations are prohibited.</Hint>
               </div>
               {config.guards_enabled ? (
                 <>
                   <div className="grid grid-cols-2 gap-2">
                     <div>
-                      <Label className="text-[11px] text-dim">Min trades<Hint label="Min trades">Basic few-trade screen: any trial taking fewer trades is disqualified so a lucky handful cannot win. <b>Default 30.</b> This is not statistical significance; the promotion cohort still needs at least 120 closed forward trades. Needs <b>Guard rails ON</b>.</Hint></Label>
+                      <Label className="text-[11px] text-dim">Min trades<Hint label="Min trades">Basic few-trade screen: a trial below this count is marked guardrail-unqualified so a lucky handful cannot be presented as validated. <b>Default 30.</b> The candidate is still retained for explicit promotion; the forward-validated label separately needs at least 120 closed trades. Needs <b>Guard rails ON</b>.</Hint></Label>
                       <Input
                         type="number" min={0}
                         value={config.min_trades}
@@ -1286,7 +1287,7 @@ export default function Optimizer() {
                       />
                     </div>
                     <div>
-                      <Label className="text-[11px] text-dim">Min CE/PE side %<Hint label="Min CE/PE side %">Rejects one-sided winners: the minority side (CE vs PE) must be at least this % of trades, else disqualified. <b>0 = off (default)</b>; capped at <b>50</b> (a 50/50 split). Needs <b>Guard rails ON</b>.</Hint></Label>
+                      <Label className="text-[11px] text-dim">Min CE/PE side %<Hint label="Min CE/PE side %">Flags one-sided winners: the minority side (CE vs PE) must be at least this % of trades, else the result is guardrail-unqualified but still retained for explicit promotion. <b>0 = off (default)</b>; capped at <b>50</b> (a 50/50 split). Needs <b>Guard rails ON</b>.</Hint></Label>
                       <Input
                         type="number" min={0} max={50}
                         value={config.min_direction_pct}
@@ -1297,7 +1298,7 @@ export default function Optimizer() {
                     </div>
                   </div>
                   <div className="text-[10px] text-dimmer mt-1.5 leading-snug">
-                    Disqualifies degenerate solutions: fewer than <b>{config.min_trades || 0}</b> trades (basic screen, not significance), or where the minority side (CE vs PE) is below <b>{config.min_direction_pct || 0}%</b> of trades (0 = off).
+                    Marks degenerate solutions unqualified: fewer than <b>{config.min_trades || 0}</b> trades (basic screen, not significance), or where the minority side (CE vs PE) is below <b>{config.min_direction_pct || 0}%</b> of trades (0 = off). Finite results remain available with the warning.
                   </div>
                 </>
               ) : (
@@ -1433,8 +1434,13 @@ function CurrentJobView({ job, onApply, onStop, onPause, onResume, onOpenBest })
   const interrupted = status === "interrupted";
   const inProgress = status === "running" || status === "queued" || status === "analyzing";
   const resumable = paused || interrupted || failed;
-  const hasBest = (bsf.params && Object.keys(bsf.params).length > 0)
-    || (isWfo && job.best_params && Object.keys(job.best_params).length > 0);
+  const hasBest = hasFiniteOptimizerCandidate(job);
+  const displayParams = (bsf.params && typeof bsf.params === "object")
+    ? bsf.params
+    : (job.best_params || {});
+  const displayMetrics = (bsf.metrics && typeof bsf.metrics === "object")
+    ? bsf.metrics
+    : (job.best_metrics || {});
   const showResults = finished || cancelled || resumable;
   const isOptionRerank = (job.evaluation_mode || job.config?.evaluation_mode) === "option_rerank";
   const dataIntegrity = job.research_eligibility
@@ -1499,13 +1505,15 @@ function CurrentJobView({ job, onApply, onStop, onPause, onResume, onOpenBest })
                     <FileText className="w-3.5 h-3.5 mr-1" /> Alts.csv
                   </Button>
                 )}
-                {hasBest && (
-                  <Button size="sm" onClick={() => onApply(job.id)} className="h-7 text-xs bg-info text-bg-0 hover:bg-info/90" data-testid="opt-apply-preset-button"
-                    title="Save this finite result as a preset; evidence warnings remain visible at deployment">
-                    <Save className="w-3.5 h-3.5 mr-1" /> Save as Preset
-                  </Button>
-                )}
               </>
+            )}
+            {hasBest && (
+              <Button size="sm" onClick={() => onApply(job.id)} className="h-7 text-xs bg-info text-bg-0 hover:bg-info/90" data-testid="opt-apply-preset-button"
+                title={inProgress
+                  ? "Snapshot the current finite completed candidate as a preset; optimization continues"
+                  : "Save this finite result as a preset; evidence warnings remain visible at deployment"}>
+                <Save className="w-3.5 h-3.5 mr-1" /> {inProgress ? "Snapshot Preset" : "Save as Preset"}
+              </Button>
             )}
           </div>
         </div>
@@ -1584,7 +1592,7 @@ function CurrentJobView({ job, onApply, onStop, onPause, onResume, onOpenBest })
       )}
 
       {/* Best-so-far */}
-      {bsf.params && Object.keys(bsf.params).length > 0 && (
+      {hasBest && (
         <div className="rounded-lg border border-line bg-bg-1 p-3" data-testid="opt-best-so-far">
           <div className="flex items-center gap-2 mb-2">
             <Trophy className="w-4 h-4 text-warning" />
@@ -1609,27 +1617,33 @@ function CurrentJobView({ job, onApply, onStop, onPause, onResume, onOpenBest })
               )}
             </div>
           </div>
+          {Object.keys(displayParams).length === 0 ? (
+            <div className="rounded-md bg-bg-2 border border-line p-2 text-xs text-dim mb-3">
+              This strategy has no tunable parameters; its finite default configuration is the candidate.
+            </div>
+          ) : (
           <div className="grid grid-cols-2 lg:grid-cols-3 gap-2 mb-3">
-            {Object.entries(bsf.params).map(([k, v]) => (
+            {Object.entries(displayParams).map(([k, v]) => (
               <div key={k} className="rounded-md bg-bg-2 border border-line p-2 text-xs">
                 <div className="text-[10px] uppercase tracking-wider text-dimmer truncate">{k}</div>
                 <div className="font-mono text-foreground mt-0.5 truncate">{typeof v === "number" ? v.toFixed(2) : String(v)}</div>
               </div>
             ))}
           </div>
+          )}
           {isOptionRerank && <div className="text-[10px] text-dimmer mb-1">spot backtest metrics of the best config (not the option trade)</div>}
-          {bsf.metrics && Object.keys(bsf.metrics).length > 0 && (
+          {Object.keys(displayMetrics).length > 0 && (
             <div className="grid grid-cols-3 lg:grid-cols-6 gap-2 text-xs">
-              <SmallMetric label="Trades" value={fmtInt(bsf.metrics.trade_count)} />
-              <SmallMetric label="WinRate" value={fmtPct(bsf.metrics.win_rate)} />
-              <SmallMetric label="PF" value={fmtNum(bsf.metrics.profit_factor)} />
-              <SmallMetric label="Net Pts" value={fmtNum(bsf.metrics.total_pnl_pts)} />
-              <SmallMetric label="MaxDD" value={fmtNum(bsf.metrics.max_dd_pts)} />
-              <SmallMetric label="Sharpe" value={fmtNum(bsf.metrics.sharpe)} />
+              <SmallMetric label="Trades" value={fmtInt(displayMetrics.trade_count)} />
+              <SmallMetric label="WinRate" value={fmtPct(displayMetrics.win_rate)} />
+              <SmallMetric label="PF" value={fmtNum(displayMetrics.profit_factor)} />
+              <SmallMetric label="Net Pts" value={fmtNum(displayMetrics.total_pnl_pts)} />
+              <SmallMetric label="MaxDD" value={fmtNum(displayMetrics.max_dd_pts)} />
+              <SmallMetric label="Sharpe" value={fmtNum(displayMetrics.sharpe)} />
             </div>
           )}
-          {bsf.metrics && (bsf.metrics.ce_count != null || bsf.metrics.pe_count != null) && (
-            <DirectionSplit ce={bsf.metrics.ce_count} pe={bsf.metrics.pe_count} />
+          {(displayMetrics.ce_count != null || displayMetrics.pe_count != null) && (
+            <DirectionSplit ce={displayMetrics.ce_count} pe={displayMetrics.pe_count} />
           )}
         </div>
       )}
@@ -1768,7 +1782,7 @@ function WfoResults({ job }) {
             )}
             <div className="text-[11px] text-dim">
               Rupee consistency: <b className="text-foreground">{rc.positive_windows ?? 0}/{rc.windows_with_trades ?? 0}</b> windows ₹-positive.
-              <span className="text-dimmer"> A spot-positive stitch with a negative rupee result means option behaviour and modelled friction eat the edge — reject the hypothesis. A positive result is still research-only until the provenance and forward gates pass. Low pairing % means option data is missing.</span>
+              <span className="text-dimmer"> A spot-positive stitch with a negative rupee result means option behaviour and modelled friction eat the edge — reject the edge claim. A positive result is still only research evidence; promotion remains available by explicit choice with warnings. Low pairing % means option data is missing.</span>
             </div>
           </div>
         );
@@ -2236,7 +2250,7 @@ function RerankResults({ rerank, survivalSummary, jobStatus }) {
           <div className="text-xs font-semibold uppercase tracking-wider text-dim">Option Re-rank · top {rerank.evaluated} by net ₹</div>
         </div>
         <div className="px-3 py-2 text-[10px] text-dimmer leading-snug border-b border-line">
-          Each candidate's spot signals were paired with historical {String(rerank.option_config?.moneyness || "ATM").toUpperCase()} option minute bars and scored on modelled net rupee P&L. Ranked best-first for research; the data-integrity and forward gates decide promotion.
+          Each candidate's spot signals were paired with historical {String(rerank.option_config?.moneyness || "ATM").toUpperCase()} option minute bars and scored on modelled net rupee P&L. Ranked best-first for research; data-integrity and forward checks label the evidence, while finite candidates remain promotable by explicit choice.
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-xs">

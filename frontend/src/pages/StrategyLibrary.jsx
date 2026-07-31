@@ -281,9 +281,9 @@ function ForwardMetricsBlock({ metrics }) {
           const lowSample = sessions < minSessions;
           const validation = item.forward_validation || {};
           const policy = validation.policy || {};
-          const promotionReady = Boolean(validation.promotion_allowed);
-          const validationLabel = promotionReady ? "promotion ready"
-            : validation.phase === "plumbing_ready" ? "plumbing ready" : "collecting";
+          const forwardValidated = Boolean(validation.promotion_allowed);
+          const validationLabel = forwardValidated ? "forward validated"
+            : validation.phase === "plumbing_ready" ? "plumbing ready" : "evidence collecting";
           return (
             <div key={item.deployment_id} className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px]">
               <div className="min-w-0">
@@ -298,8 +298,8 @@ function ForwardMetricsBlock({ metrics }) {
                     </span>
                   )}
                   <span
-                    className={`text-[9px] uppercase tracking-wide px-1 py-px rounded border shrink-0 ${promotionReady ? "bg-emerald-950 text-emerald-300 border-emerald-900" : "bg-slate-950 text-dimmer border-line"}`}
-                    title={promotionReady ? "All pre-registered forward gates passed." : `Failed: ${(validation.failed_checks || []).join(", ") || "evidence not available"}`}
+                    className={`text-[9px] uppercase tracking-wide px-1 py-px rounded border shrink-0 ${forwardValidated ? "bg-emerald-950 text-emerald-300 border-emerald-900" : "bg-slate-950 text-dimmer border-line"}`}
+                    title={forwardValidated ? "All pre-registered forward evidence checks passed." : `Evidence failed or incomplete: ${(validation.failed_checks || []).join(", ") || "evidence not available"}. Promotion remains available with explicit warnings.`}
                   >
                     {validationLabel}
                   </span>

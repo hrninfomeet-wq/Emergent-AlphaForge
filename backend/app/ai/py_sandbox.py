@@ -39,6 +39,11 @@ FORBIDDEN_ATTR_NAMES = FORBIDDEN_MODULE_ATTRS | {
     "to_pickle", "to_csv", "to_parquet", "to_json", "to_hdf", "to_feather", "to_sql",
     "to_excel", "to_html", "to_xml", "to_stata", "to_gbq", "to_clipboard", "to_orc",
     "system", "popen", "fork", "spawn", "getoutput", "check_output", "check_call", "run", "Popen",
+    # Reproducibility: authored strategies must return the same Signal for the
+    # same bars/params/context. Random sampling and wall-clock reads violate the
+    # exact promotion artifact even when their outputs happen to be finite.
+    "random", "default_rng", "rand", "randn", "randint", "choice", "shuffle",
+    "permutation", "seed", "sample", "now", "today", "utcnow",
 }
 _DUNDER_RE = re.compile(r"^__.*__$")
 _SLUG_RE = re.compile(r"^[a-z][a-z0-9_]*$")

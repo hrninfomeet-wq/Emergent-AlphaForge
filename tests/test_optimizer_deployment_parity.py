@@ -16,6 +16,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pandas as pd
+import pytest
+from fastapi import HTTPException
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
@@ -114,6 +116,8 @@ def _job(**over):
     j = {
         "id": "J1", "instrument": "NIFTY", "strategy_id": "s", "method": "bayesian",
         "objective": "risk_adjusted", "status": "done", "best_params": {"a": 1},
+        "best_value": 1.0, "best_metrics": {"sharpe": 1.0},
+        "finite_candidate_available": True,
         "config": {"evaluation_mode": "spot"},
     }
     j.update(over)
@@ -153,3 +157,41 @@ def test_preset_option_ranked_when_no_survivors():
         config={"evaluation_mode": "option_rerank", "survival_config": {"enabled": False}}))
     _apply(db)
     assert db.presets.upserts[0]["config"]["validation"]["stage"] == "option_ranked"
+
+
+def test_running_job_with_finite_snapshot_can_be_saved():
+    db = _DB(_job(status="running", best_params=None, best_so_far={
+        "value": 1.2, "params": {"a": 2}, "metrics": {"sharpe": 1.2},
+        "trial_num": 4, "finite_candidate_available": True,
+    }))
+    assert _apply(db)["ok"]
+    cfg = db.presets.upserts[0]["config"]
+    assert cfg["params"] == {"a": 2}
+    assert cfg["validation"]["job_status"] == "running"
+
+
+def test_empty_param_finite_candidate_is_saved():
+    db = _DB(_job(best_params={}, best_metrics={"sharpe": 1.0}))
+    assert _apply(db)["ok"]
+    assert db.presets.upserts[0]["config"]["params"] == {}
+
+
+def test_optimizer_preset_rejects_nonfinite_candidate_params():
+    db = _DB(_job(best_params={"a": float("nan")}))
+    with pytest.raises(HTTPException) as exc:
+        _apply(db)
+    assert exc.value.status_code == 400
+    assert "finite" in str(exc.value.detail).lower()
+    assert db.presets.upserts == []
+
+
+def test_running_job_without_completed_finite_candidate_is_rejected():
+    db = _DB(_job(
+        status="running", best_params=None, best_value=None,
+        best_metrics={}, finite_candidate_available=False,
+        best_so_far={"value": None, "params": {}, "metrics": {}, "trial_num": -1},
+    ))
+    with pytest.raises(HTTPException) as exc:
+        _apply(db)
+    assert exc.value.status_code == 400
+    assert "finite completed trial" in str(exc.value.detail).lower()

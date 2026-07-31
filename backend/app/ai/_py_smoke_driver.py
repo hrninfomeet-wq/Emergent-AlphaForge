@@ -21,7 +21,8 @@ def run_smoke(inst, cols):
     Returns {ok, error?, signal_repr?}. Host-importable (no /app cwd needed)."""
     import pandas as pd
     import numpy as np
-    from app.strategies.base import Signal, build_eval_ctx
+    from dataclasses import asdict
+    from app.strategies.base import build_eval_ctx, validate_signal
 
     n = 120
     frame = {c: np.linspace(100, 110, n) for c in cols}
@@ -36,21 +37,30 @@ def run_smoke(inst, cols):
     df["session_date"] = ["2026-06-01" if i < n // 2 else "2026-06-02" for i in range(n)]
 
     params = inst.merged_params(None)
-    session_extras = inst.session_precompute(df, params)   # may raise -> caught by main()
-    last_repr = None
-    for i in range(2, min(n, 20)):
-        row, prev = df.iloc[i], df.iloc[i - 1]
-        ctx = build_eval_ctx(
-            history_df=df, i=i, instrument="NIFTY",
-            session_date=str(df.iloc[i].get("session_date") or ""),
-            mode="INTRADAY", session_extras=session_extras,
-        )
-        sig = inst.evaluate(row, prev, params, ctx)
-        if not isinstance(sig, Signal):
-            return {"ok": False, "error": f"evaluate returned {type(sig).__name__}, not Signal"}
-        if sig.direction not in ("CE", "PE", "NONE"):
-            return {"ok": False, "error": f"invalid direction {sig.direction!r}"}
-        last_repr = repr(sig)
+
+    def evaluate_pass():
+        session_extras = inst.session_precompute(df, params)  # may raise -> caught by main()
+        signals = []
+        last_repr = None
+        for i in range(2, min(n, 20)):
+            row, prev = df.iloc[i], df.iloc[i - 1]
+            ctx = build_eval_ctx(
+                history_df=df, i=i, instrument="NIFTY",
+                session_date=str(df.iloc[i].get("session_date") or ""),
+                mode="INTRADAY", session_extras=session_extras,
+            )
+            sig = validate_signal(inst.evaluate(row, prev, params, ctx))
+            signals.append(asdict(sig))
+            last_repr = repr(sig)
+        return signals, last_repr
+
+    first, last_repr = evaluate_pass()
+    second, _ = evaluate_pass()
+    if first != second:
+        return {
+            "ok": False,
+            "error": "strategy evaluate/session_precompute is not deterministic for identical inputs",
+        }
     return {"ok": True, "signal_repr": last_repr}
 
 

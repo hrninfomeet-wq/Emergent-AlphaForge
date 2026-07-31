@@ -14,8 +14,8 @@ Stack: **React** (CRA + craco) frontend, **FastAPI** (Python) backend, **MongoDB
 
 ## 2. Current state
 
-> **As of 2026-07-31 · v0.58.0 + unreleased optimizer/promotion fixes · `main` is one local commit ahead of `origin/main`; not pushed.**
-> Verification baseline: **4,293 passed, 4 xfailed, 0 failed** (4,297 collected).
+> **As of 2026-07-31 · v0.58.0 + unreleased optimizer/promotion fixes · `main` is two local commits ahead of `origin/main`; not pushed.**
+> Verification baseline: **4,326 passed, 4 xfailed, 0 failed** (4,330 collected).
 
 ### 2.0 The 60-second orientation
 
@@ -61,7 +61,13 @@ finite candidates retain exact params+metrics and non-finite trials cannot promo
 owner-only (#22); and parallel winners keep their own params+metrics including pinned
 dimensions (#28). By operator decision, guardrail/survival/backtest-result status is
 advisory: a technically executable config remains available for acknowledged paper and
-separately authorized live deployment. **Still open: 8 MED +
+separately authorized live deployment. This now includes finite snapshots from running
+optimizer jobs and zero-parameter strategies. The execution boundary recursively rejects
+non-finite params/metrics/signals, validates optimizer-added indicator keys from a shared
+catalog, repeats deterministic smoke evaluation for AI-authored Python, and revalidates a
+deployment before resume and live enablement. The wizard preserves nullable defaults,
+recovers warning acknowledgment without a dead end, and exact-fetches older deep links.
+**Still open: 8 MED +
 1 disputed LOW**, listed with severity and minimal fix in
 [`BACKTEST_INTEGRITY_AUDIT.md`](BACKTEST_INTEGRITY_AUDIT.md) §5.
 

@@ -9,15 +9,15 @@
 > audit-finding evidence table) · [`docs/HANDOFF.md`](HANDOFF.md) (architecture/state
 > entry point) · `CHANGELOG.md`.
 
-**Last updated:** 2026-07-31 (Codex — four verified HIGH optimizer fixes)
+**Last updated:** 2026-07-31 (Codex — operator-directed promotion competency closure)
 
 ---
 
 ## ★ START HERE — the state of play on 2026-07-31
 
-**Repo:** `main` is one local green-milestone commit ahead of `origin/main`; not pushed, one branch, zero stashes.
-**Suite:** 4,293 passed · 4 xfailed · 0 failed (4,297 collected).
-**Version:** v0.58.0 + unreleased optimizer fixes.
+**Repo:** `main` is two local green-milestone commits ahead of `origin/main`; not pushed, one branch, zero stashes.
+**Suite:** 4,326 passed · 4 xfailed · 0 failed (4,330 collected).
+**Version:** v0.58.0 + unreleased optimizer/promotion fixes.
 
 ### Where the project actually is
 
@@ -36,14 +36,15 @@ because the current IP is not registered with Flattrade, and `live_trades` is em
 The four verified HIGH optimizer defects (#11/#18/#22/#28) are **DONE in the current
 working tree** with pre-fix red regression proof and the full suite green.
 
-1. **Audit the deploy → paper → live handoff.** It is the one dimension of the pipeline
-   this audit cycle never covered, and it is the seam that carries real money.
+1. **Market-hours validation** (board row V) — still pending, still the main event, and
+   the only thing that converts "the code is correct" into evidence. Posture stays
+   **PAPER + READ-ONLY**.
 2. **Close the 8 verified MED optimizer findings** in
    [`BACKTEST_INTEGRITY_AUDIT.md`](BACKTEST_INTEGRITY_AUDIT.md) §5. Keep disputed #31
    separate unless new evidence resolves it.
-3. **Market-hours validation** (board row V) — still pending, still the main event, and
-   the only thing that converts "the code is correct" into evidence. Posture stays
-   **PAPER + READ-ONLY**.
+3. **Run an AI-authored strategy end to end with a real LLM call** after the capability
+   work is accepted: author → install → backtest → optimize → paper. Do not spend an
+   untouched holdout or enable live merely to prove plumbing.
 
 ### Non-negotiables a new agent must not rediscover the hard way
 
@@ -109,7 +110,7 @@ working tree** with pre-fix red regression proof and the full suite green.
 | **9** | **CAPABILITY PHASE (new user priority 2026-07-27)** | ➡ **ACTIVE** | User's stated goal, verbatim intent: (a) make **backtesting, paper trading and live trading fully usable WITHOUT CONSTRAINTS** and fit to hand to a user; (b) build the **strategy builder** so a strategy defined in PLAIN WORDS becomes a plugin that backtests, optimizes, and deploys to paper and/or live. Edge hunting comes AFTER. Focus = high-value additions. Plan being assembled from two audits (authoring pipeline end-to-end; backtest/paper/live friction). |
 | 9.0 | **Phase 0 — unlock built-but-unreachable capability** | ✅ **COMPLETE** 2026-07-27 (`e1bfd4c`, `6d89370`) | Four backend features were fully built + tested with **ZERO frontend callers**. **0.1 safety-latch reset** — `blocked_until_reset` halts ALL live entries and never self-clears; the reset endpoint had no caller, so the only exit was a raw API call. **Newly urgent because C3 gave `guardrail_tick` its FIRST production caller that same day** — the latch became trippable and I opened that reachability. Backend now records `latched_at`+`latched_reason` in the SAME write as the flag (they can never disagree); `reset()` clears provenance so a stale cause can't mislead the next operator; `put_config` still refuses all three keys so a halt can't be relabelled. Banner is two-step (clearing re-authorises real money). **0.2 recovery banner** — `/live-broker/recovery-status` existed to drive a UI strip per its own docstring; severity now follows exposure (unrecovered + open positions = danger). **0.3 deploy from a backtest run** — backend always accepted `source_type="backtest_run"` with full H5 validation parity; the wizard never offered it, forcing a save-a-preset detour on EVERY deploy. Now a third source + Deploy button + guarded `?backtest=` deep link. **0.4 pipeline chips** — `/strategies/{id}/pipeline` was built to power exactly these; distinguishes `live_ever_count` from `live_armed_count`. All contract tests assert components are **MOUNTED, not merely imported** (how `ExecutionStateStrip` was silently dropped). Suite **3682/0**, frontend build clean. |
 | 9.1 | Phase 1 — config-block generalization (strategy builder) | ✅ **COMPLETE** 2026-07-28 (`1abc3a9`) | All 7 steps. `classify_rule` promised BUILDABLE_NOW for premium-trigger concepts and NOTHING could build them; now end-to-end. **1** dispatch routes on CONFIG PRESENCE + fixed a silent 6-field loss (`stop_pts`/`target_pts`/`trail_x`/`trail_y` were dropped by `merged_params`' allow-list while the run reported numbers as if applied) + split absent-vs-invalid. **1b** optimizer ×5 + coverage preflight route on `is_premium_trigger_strategy` (literal count in optimizer 6→0; predicate matches exactly the 1 strategy the string did, measured across all 12). **1c** classifier stopped promising fields that don't exist (`expiry` never existed; `side` had no `BOTH`) — ~51 tests touched `classify_rule` and none pinned message text to the schema it cites. **2** deployment carries a validated `premium_trigger` block, refused at CREATION. **3** Track B routes on capability, configured by the deployment — a block can NEVER flip a strategy's capability, which is what stops it silently bypassing an ordinary `evaluate()`; principle recorded: **entry strict / exit permissive** (a too-strict exit gate STRANDS a position). **4** `StrategySpec` emits a config; end-to-end test proves the generated plugin IS premium-native. **5** both generators taught; field list DERIVED from the model. **6** wizard carries + displays it (fixed silent data-loss: the config was discarded at Install). **7** paper honours `exit_time`; sizing replays the config's lots. **Suite 3902/0; the `premium_momentum` parity test stayed green and untouched throughout (invariant #1).** NOT yet validated against a live broker, and no AI-authored premium strategy generated end-to-end with a real LLM call — both are validation, not implementation. Log deleted after completion; recover with `git show 23ccfed:docs/PHASE1_CONFIG_BLOCK_LOG.md`. |
-| 9.2 | Four verified HIGH optimizer defects + promotion-freedom policy | ✅ **DONE 2026-07-31, local commit not pushed** | #11 one finite-result path across Grid/sequential/parallel/resume; finite guardrail/survival failures remain saveable and deployable with explicit warnings, while NaN/infinity are refused. WFO calculates finite unqualified windows OOS; failed/running backtest status is advisory after executable-config validation. #18 truthful evaluated/finalist/not-evaluated counts; #22 owner-only fork-pool teardown; #28 exact tell-time params+metrics. Focused 116/116; interconnected 504/504; full host **4,293 passed / 4 xfailed / 0 failed**; container route/Motor set 170/170; compileall, frontend build and rebuilt-service health green. |
+| 9.2 | Four verified HIGH optimizer defects + promotion-freedom policy | ✅ **DONE 2026-07-31, local commits not pushed** | #11 one finite-result path across Grid/sequential/parallel/resume, including running snapshots and zero-param strategies; finite guardrail/survival failures remain saveable and deployable with explicit warnings, while recursively non-finite params/metrics/signals are refused. WFO calculates finite unqualified windows OOS; failed/running backtest status is advisory after executable-config validation. Deployment competency is rechecked on resume/live-enable, optimizer indicator params share a runtime catalog, AI-authored Python must reproduce a canonical smoke pass, and nullable/direct/deep-linked wizard sources preserve their configs. #18 truthful evaluated/finalist/not-evaluated counts; #22 owner-only fork-pool teardown; #28 exact tell-time params+metrics. Focused promotion/deployment/evaluator set 264/264; full host **4,326 passed / 4 xfailed / 0 failed**; container route/Motor set **212 passed / 4 source-layout tests deselected / 0 failed**; compileall, frontend build, rebuilt-service health and hard-refreshed browser smoke green. |
 | P1 | Lot-size single source of truth | ✅ DONE 2026-07-27 (`da4e85b`) | **Pre-flight for the pooled campaign.** Two independent lot sources disagreed: `option_backtest.py:750` reads the CONTRACT's lot (correct, data-driven) while `premium_momentum_backtest.py:342` + `premium_trigger_dispatch.py:194` read hardcoded `UNDERLYING_META`. NIFTY(65)/SENSEX(20) agree so it was invisible; **BANKNIFTY contracts say 30, the map said 35 → 16.7% error in every quantity/₹ figure** on those (backtest-only, not live placement). New `instruments.resolve_lot_size()` resolves from contract data + returns warnings; surfaces `lot_size_changed_in_window` (BANKNIFTY really was 35 Jul-Dec-2025, 30 after) instead of silently picking. Did NOT assert a number — broker MCP unauthenticated on this IP and its login must never be called — removed the hardcode so both paths agree by construction. Closes the long-standing BANKNIFTY lot OPEN ITEM. **Context: BANKNIFTY has had 0 backtest runs EVER (NIFTY 225, SENSEX 31)** — the untested path is where the bug lived. |
 | P2 | C2 fence test was wall-clock dependent | ✅ DONE 2026-07-27 (`da4e85b`) | My own C2 test asserted the authorised case while the fence deliberately uses a FRESH clock (re-checking the time IS half the fence's purpose — a deployment can cross the 15:00 IST cutoff during broker round-trips). Passed when written, failed every afternoon; surfaced only because this run was at 15:30 IST. Production behaviour UNCHANGED and correct; clock now injectable, only the test pins it. |
 | P3 | C2 fence: the post-cutoff branch was never tested | ✅ DONE 2026-07-27 | **P2 made the test deterministic but never tested the property the fresh clock exists FOR.** The suite had NO assertion that the fence *refuses* after 15:00 IST — the only `clock_fn` use pinned it PRE-cutoff and asserted the authorised case. Proved by mutation: reverting `auto_live.py:493` to the frozen `now_utc` is caught by exactly ONE test (the new one) while the other 54 in the file stay green — so production could have regressed to the frozen clock, opening a real position minutes before the EOD square, with a green suite. Added `test_transmit_fence_refuses_when_entry_cutoff_passes_mid_flight` (both clocks pinned → deterministic at any hour). **Suite 3,649/0 verified at 15:52 IST**, i.e. after-cutoff AND outside-market-hours branches live; docs' "3,639" baseline is stale (HEAD was 3,648). Swept the rest of the suite for the same class — none found; details + the faked-clock dead end in `learning_log.md`. Residual (not a bomb, but untested): `_in_market_hours` is triplicated across `live_exit_monitor.py:23` / `live/live_position_guard.py:97` / `live/live_sl_monitor.py:55` and is only reachable from `run()` loops NO test drives. |
@@ -337,15 +338,19 @@ Junior-agent prompt:
 ## 4. Session log
 
 - **2026-07-31 (Codex) — four verified HIGH optimizer defects + operator promotion
-  policy closed.** Added pre-fix-red regression coverage for #11/#18/#22/#28 and the
+  competency closed.** Added pre-fix-red regression coverage for #11/#18/#22/#28 and the
   former qualification vetoes. Finite guardrail/survival failures now retain exact
-  params and deterministic metrics for acknowledged paper/live choice; non-finite
-  trials/config values remain refused. WFO still calculates finite unqualified OOS
+  params and deterministic metrics for acknowledged paper/live choice; running snapshots
+  and zero-param strategies are valid, while recursively non-finite params/metrics/signals
+  remain refused. WFO still calculates finite unqualified OOS
   windows, incomplete backtests warn rather than veto, survival truncation is truthful,
   pool teardown is owner-only, and parallel winners bind their own params+metrics.
-  Focused 116/116, interconnected 504/504, full host **4,293 passed / 4 xfailed /
-  0 failed**, container route/Motor set 170/170, compileall, optimized frontend build,
-  rebuilt services and health checks green. Committed locally; not pushed.
+  Deployment competency is rechecked before resume/live-enable; shared indicator metadata,
+  deterministic AI smoke validation, nullable form parity, older-backtest exact fetch, and
+  acknowledgment recovery close the deploy → paper → live handoff. Focused 264/264, full
+  host **4,326 passed / 4 xfailed / 0 failed**, container route/Motor set **212 passed /
+  4 source-layout tests deselected / 0 failed**, compileall, optimized frontend build,
+  rebuilt services, health checks and browser smoke green. Committed locally; not pushed.
 - **2026-07-29 → 07-31 (Claude Opus 5) — backtest & optimizer integrity audit.**
   Triggered by a user report: an optimized premium strategy showed `lots: 100` for a form
   that said 5, blank KPI cards, an empty Trades pane and a +197% headline. Root cause was a

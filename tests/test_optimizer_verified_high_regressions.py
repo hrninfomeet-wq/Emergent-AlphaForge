@@ -204,10 +204,11 @@ def test_wfo_preserves_finite_unqualified_windows_for_oos_and_promotion():
     assert "promotion_windows" in src
 
 
-def test_optimizer_preset_route_accepts_zero_survivor_finite_results():
+def test_optimizer_preset_route_uses_finite_candidate_not_terminal_status_as_gate():
     from app.routers import research
     src = inspect.getsource(research.apply_opt_as_preset)
-    assert '"done_no_survivor"' in src
+    assert "finite_candidate_available" in src
+    assert "Job has no finished result yet" not in src
     assert '"guardrail_qualified"' in src
 
 

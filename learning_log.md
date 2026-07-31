@@ -523,3 +523,44 @@ rebinding only `app.*` module globals — would silently miss the function-level
 false assurance. Abandoned rather than reported as proof. There is **no `freezegun` /
 `time_machine` in the venv**; if an hour-sweep is ever genuinely needed, install one rather
 than hand-rolling it.
+
+---
+
+## Session 2026-07-31 — promotion freedom is a capability boundary, not an evidence gate
+
+**Core lesson: represent candidate availability explicitly. Job status, qualification,
+objective score and parameter-dict truthiness are all lossy proxies for whether a concrete
+configuration can execute.** A legitimate strategy can have zero tunable parameters, a
+finite optimizer candidate can exist while its job is still running, and a disqualified
+research result can still be technically executable. The promotion decision must inspect
+the exact params+metrics tuple and keep research evidence separate from operator authority.
+
+**Confirmed approaches:**
+- One recursive finite-value check now guards optimizer candidates and deployment execution
+  values, while the shared `Strategy.validate_signal` boundary guards every backtest,
+  authoring smoke run and paper/live evaluation. This catches nested NaN/infinity instead
+  of checking only the optimizer objective or a few monetary fields.
+- Runtime competency is re-established at state transitions, not assumed from creation:
+  strategy loaded, source SHA unchanged, instrument/timeframe supported, schema/ranges
+  valid, and signal output finite. Resume and live-enable both repeat this check; live
+  consent, capital, broker, account and transmit gates remain separate and unchanged.
+- AI-authored Python is treated as untrusted executable logic: random/current-time APIs are
+  blocked and the same canonical smoke input must produce the same outputs twice.
+- Backend/frontend schema parity matters at the promotion seam. A shared indicator catalog
+  prevents optimizer-only keys becoming deployment vetoes; nullable UI defaults are kept
+  null instead of silently becoming zero; old deep links use exact fetch; acknowledgment
+  errors return the wizard to the actionable step.
+- For local browser verification, use the configured `localhost` origin. The production
+  bundle bakes that backend origin; opening `127.0.0.1` creates a different browser origin
+  and can mimic empty strategy data without exposing a product defect.
+
+**Dead ends / traps:**
+- `if params` is not a validity check: `{}` is the correct config for a zero-parameter
+  strategy. Likewise, a terminal job status is not proof that no promotable snapshot exists.
+- Objective-only finiteness is insufficient; params, nested metrics and emitted signals can
+  independently contain non-finite values.
+- Frontend default coercion, list-only deep-link resolution and a 400 acknowledgment dead end
+  can nullify a correct backend policy.
+- Repository-layout/source-contract tests cannot run inside the stripped backend image;
+  run them on the host and deselect only those explicit cases from the in-container Motor
+  route pass rather than describing the container subset as the whole suite.

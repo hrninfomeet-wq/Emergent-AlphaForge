@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import uuid
 import uuid as _uuid
 from datetime import datetime, timezone
@@ -37,6 +38,7 @@ from app.runtime import (
 )
 from app.option_contract_store import upsert_option_contracts
 from app.expired_contract_backfill import backfill_expired_option_contracts
+from app.finite_values import nonfinite_numeric_paths
 
 from app.schemas import (
     BacktestReq,
@@ -725,11 +727,33 @@ async def apply_opt_as_preset(job_id: str, name: str = Query(...)):
     job = await db.optimization_jobs.find_one({"id": job_id}, {"_id": 0})
     if not job:
         raise HTTPException(404, "Job not found")
-    if job.get("status") not in ("done", "done_no_survivor", "cancelled", "paused", "interrupted", "failed"):
-        raise HTTPException(400, "Job has no finished result yet")
-    best_params = job.get("best_params") or (job.get("best_so_far") or {}).get("params")
-    if not best_params:
+    best = job.get("best_so_far") or {}
+    if job.get("best_params") is not None:
+        best_params = job.get("best_params")
+        best_metrics = job.get("best_metrics") or {}
+        available = job.get("finite_candidate_available") is True
+        if not available:
+            try:
+                available = job.get("best_value") is not None and math.isfinite(float(job.get("best_value")))
+            except (TypeError, ValueError):
+                available = False
+    else:
+        best_params = best.get("params")
+        best_metrics = best.get("metrics") or {}
+        available = best.get("finite_candidate_available") is True
+        if not available:
+            try:
+                available = best.get("value") is not None and math.isfinite(float(best.get("value")))
+            except (TypeError, ValueError):
+                available = False
+    if not available or not isinstance(best_params, dict):
         raise HTTPException(400, "Job has no best parameters to save (no finite completed trial yet)")
+    nonfinite = nonfinite_numeric_paths({"params": best_params, "metrics": best_metrics})
+    if nonfinite:
+        raise HTTPException(
+            400,
+            f"Optimizer candidate numeric values must be finite: {', '.join(nonfinite)}",
+        )
     _cfg = job.get("config") or {}
     config = {
         "instrument": job["instrument"],

@@ -496,6 +496,7 @@ async def run_wfo(job_id: str, payload: Dict[str, Any], resume: bool = False) ->
             _make_sampler,
             _objective_value,
             _finite_trial_score,
+            _has_finite_candidate,
             _promote_best_if_finite,
             _save_best_as_backtest,
             _suggest,
@@ -760,7 +761,7 @@ async def run_wfo(job_id: str, payload: Dict[str, Any], resume: bool = False) ->
                     log.info(f"WFO {job_id} cancelled at window {w['index'] + 1}/{len(windows)}")
                     break
 
-                if not window_best["params"]:
+                if not _has_finite_candidate(window_best):
                     # No finite trial in this train window: there is no executable
                     # candidate to calculate on the unseen slice.
                     completed_windows.append({
@@ -804,7 +805,10 @@ async def run_wfo(job_id: str, payload: Dict[str, Any], resume: bool = False) ->
         # ---- Final analysis over completed windows ----
         await _update_job(job_id, {"status": "analyzing"})
         usable = [w for w in completed_windows if w.get("guardrail_qualified")]
-        promotion_windows = [w for w in completed_windows if w.get("best_params")]
+        promotion_windows = [
+            w for w in completed_windows
+            if w.get("no_finite_params") is False and isinstance(w.get("best_params"), dict)
+        ]
         oos_sorted = sorted(oos_trades_all, key=lambda t: (t.get("exit_ts") or 0))
         stitched = stitch_oos_metrics(oos_sorted)
         equity = stitch_equity_curve(oos_sorted)
@@ -815,7 +819,7 @@ async def run_wfo(job_id: str, payload: Dict[str, Any], resume: bool = False) ->
         final_params = promotion_windows[-1]["best_params"] if promotion_windows else None
 
         best_backtest_run_id = None
-        if final_params and not cancelled:
+        if final_params is not None and not cancelled:
             merged_final = strategy.merged_params(final_params)
             df_final = get_enriched(merged_final)
             best_backtest_run_id = await _save_best_as_backtest(
@@ -846,9 +850,10 @@ async def run_wfo(job_id: str, payload: Dict[str, Any], resume: bool = False) ->
             "status": final_status,
             "finished_at": datetime.now(timezone.utc).isoformat(),
             "kind": "wfo",
-            "best_params": final_params or {},
+            "best_params": final_params if final_params is not None else {},
             "best_value": stitched.get("total_pnl_pts"),
             "best_metrics": {**stitched, "source": "stitched_oos"},
+            "finite_candidate_available": final_params is not None,
             "best_guardrail_qualified": (
                 promotion_windows[-1].get("guardrail_qualified")
                 if promotion_windows else None

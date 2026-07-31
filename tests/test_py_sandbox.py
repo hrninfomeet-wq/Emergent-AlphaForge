@@ -2,6 +2,8 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 
@@ -103,6 +105,20 @@ def test_forbidden_calls():
         codecall = VALID.replace("return Signal(direction=\"NONE\")",
                                  f"{name}('x'); return Signal(direction=\"NONE\")")
         assert _has(static_check(codecall), name), name
+
+
+@pytest.mark.parametrize("expression", [
+    "np.random.random()",
+    "np.random.default_rng().normal()",
+    "pd.Timestamp.now()",
+    "row.sample()",
+])
+def test_nondeterministic_apis_are_rejected(expression):
+    code = VALID.replace(
+        'return Signal(direction="NONE")',
+        f'x = {expression}; return Signal(direction="NONE")',
+    )
+    assert _has(static_check(code), "deterministic") or _has(static_check(code), "forbidden")
 
 
 def test_method_level_import_rejected():
@@ -243,6 +259,26 @@ def test_smoke_test_missing_result_is_failure(monkeypatch, tmp_path):
     monkeypatch.setattr(py_sandbox.subprocess, "Popen", lambda cmd, **kw: _FakeProc())
     out = py_sandbox.smoke_test("ignored", timeout=5)  # nobody wrote the result file
     assert out["ok"] is False
+
+
+def test_smoke_driver_rejects_stateful_nondeterministic_strategy():
+    from app.ai._py_smoke_driver import run_smoke
+    from app.strategies.base import Signal, StrategyBase
+
+    class Stateful(StrategyBase):
+        id = "stateful"
+        parameter_schema = {}
+
+        def __init__(self):
+            self.counter = 0
+
+        def evaluate(self, row, prev, params, ctx):
+            self.counter += 1
+            return Signal(direction="NONE", score=self.counter)
+
+    out = run_smoke(Stateful(), ["open", "high", "low", "close", "volume"])
+    assert out["ok"] is False
+    assert "deterministic" in out["error"].lower()
 
 
 # --- red-team evasion regression battery (all must be REJECTED) ---
