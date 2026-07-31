@@ -26,6 +26,7 @@ from __future__ import annotations
 import inspect
 import os
 import sys
+import asyncio
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 
@@ -166,3 +167,49 @@ def test_a_spot_run_with_walkforward_off_stays_none():
         option_result=None, spot_wf=None, spot_metrics=SPOT_METRICS,
         n_folds=3, train_pct=0.6)
     assert wf is None
+
+
+def test_async_insufficient_candles_preserves_the_same_audit_detail(monkeypatch):
+    """The UI polls the async job, so its terminal error must be as useful as
+    the synchronous endpoint's 400 rather than discarding the audit it just ran."""
+    import pandas as pd
+    import app.routers.research as research
+
+    class _DB:
+        def __init__(self):
+            self.patch = None
+            self.backtest_runs = self
+
+        async def update_one(self, _query, patch):
+            self.patch = patch
+
+    audit = {
+        "after": {"complete_days": 1, "expected_days": 3},
+        "fill": {"status": "skipped", "reason": "upstox_not_connected"},
+    }
+    db = _DB()
+    req = type("Req", (), {"strategy_id": "known", "instrument": "NIFTY",
+                            "start_ts": 1, "end_ts": 2})()
+    strategy = object()
+
+    monkeypatch.setattr(research, "get_db", lambda: db)
+    monkeypatch.setattr(research, "get_registry", lambda: type("R", (), {
+        "get": staticmethod(lambda _id: strategy),
+    })())
+
+    async def _audit(_req):
+        return audit
+
+    async def _empty(*_args, **_kwargs):
+        return pd.DataFrame()
+
+    monkeypatch.setattr(research, "_audit_and_fill_backtest_data", _audit)
+    monkeypatch.setattr(research, "load_candles_df", _empty)
+
+    asyncio.run(run_backtest_job("run-1", req))
+
+    stored = db.patch["$set"]
+    assert stored["status"] == "failed"
+    assert stored["data_audit"] == audit
+    assert "Audit: 1/3 complete days" in stored["error"]
+    assert "fill skipped (upstox_not_connected)" in stored["error"]

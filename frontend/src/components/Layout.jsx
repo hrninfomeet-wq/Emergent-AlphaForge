@@ -33,10 +33,10 @@ const NAV_GROUPS = [
     label: "Execution",
     items: [
       { to: "/checklist", label: "Pre-Trade Checklist", icon: ListChecks, testid: "nav-checklist" },
-      { to: "/live", label: "Live Signals", icon: Activity, testid: "nav-live", badge: "P4" },
+      { to: "/live", label: "Deploy Strategies", icon: Activity, testid: "nav-live" },
       { to: "/journal", label: "Signal Journal", icon: BookOpen, testid: "nav-journal" },
       { to: "/paper", label: "Paper Trading", icon: Briefcase, testid: "nav-paper" },
-      { to: "/live-trading", label: "Live Trading", icon: Zap, testid: "nav-live-trading", badge: "L0" },
+      { to: "/live-trading", label: "Live Broker", icon: Zap, testid: "nav-live-trading" },
     ],
   },
 ];
@@ -96,7 +96,7 @@ export default function Layout({ children }) {
             <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
             <span>local API live</span>
           </div>
-          <div className="mt-1 font-mono">P4a prep · Docker verified</div>
+          <div className="mt-1 font-mono">local Docker workspace</div>
         </div>
       </aside>
 
@@ -185,8 +185,8 @@ function pageTitle(path) {
     case "/optimizer": return "Auto Optimizer";
     case "/premium-momentum": return "Premium Momentum";
     case "/presets": return "Saved Presets";
-    case "/live": return "Live Signals";
-    case "/live-trading": return "Live Trading";
+    case "/live": return "Deploy Strategies";
+    case "/live-trading": return "Live Broker";
     default: return "AlphaForge";
   }
 }

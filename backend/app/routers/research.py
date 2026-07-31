@@ -231,6 +231,27 @@ def resolve_wf_and_significance(
     return wf, sig
 
 
+def _insufficient_candles_error(req: BacktestReq, data_audit: dict | None) -> str:
+    """One user-facing no-data message for both backtest entry points.
+
+    The UI submits the asynchronous route and only learns its outcome from the
+    persisted job document.  Keep its explanation equal to the synchronous
+    route's HTTP 400 so a failed gap fill is diagnosable without switching APIs.
+    """
+    audit_msg = ""
+    if data_audit:
+        after = data_audit.get("after", {})
+        fill = data_audit.get("fill", {})
+        audit_msg = (
+            f" Audit: {after.get('complete_days', 0)}/{after.get('expected_days', 0)} complete days; "
+            f"fill {fill.get('status')} ({fill.get('reason') or fill.get('source', 'unknown')})."
+        )
+    return (
+        f"Insufficient candles for {req.instrument}. Ingest data first via /api/warehouse/ingest."
+        f"{audit_msg}"
+    )
+
+
 @api.post("/backtest/run")
 async def backtest_run(req: BacktestReq):
     registry = get_registry()
@@ -241,18 +262,7 @@ async def backtest_run(req: BacktestReq):
     data_audit = await _audit_and_fill_backtest_data(req)
     df = await load_candles_df(req.instrument.upper(), req.start_ts, req.end_ts)
     if df.empty or len(df) < 50:
-        audit_msg = ""
-        if data_audit:
-            after = data_audit.get("after", {})
-            fill = data_audit.get("fill", {})
-            audit_msg = (
-                f" Audit: {after.get('complete_days', 0)}/{after.get('expected_days', 0)} complete days; "
-                f"fill {fill.get('status')} ({fill.get('reason') or fill.get('source', 'unknown')})."
-            )
-        raise HTTPException(
-            400,
-            f"Insufficient candles for {req.instrument}. Ingest data first via /api/warehouse/ingest.{audit_msg}"
-        )
+        raise HTTPException(400, _insufficient_candles_error(req, data_audit))
 
     # Merge default + user params (strict allow-list)
     params = strategy.merged_params(req.params)
@@ -348,7 +358,9 @@ async def run_backtest_job(run_id: str, req: BacktestReq) -> None:
         if df.empty or len(df) < 50:
             await db.backtest_runs.update_one({"id": run_id}, {"$set": {
                 "status": "failed",
-                "error": f"Insufficient candles for {req.instrument}. Ingest data first via /api/warehouse/ingest."}})
+                "error": _insufficient_candles_error(req, data_audit),
+                "data_audit": data_audit,
+            }})
             return
         params = strategy.merged_params(req.params)
         # Warehouse-backed columns join on the RAW frame while we are still on the

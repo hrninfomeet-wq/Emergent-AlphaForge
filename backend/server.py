@@ -30,6 +30,7 @@ from app.option_coverage_cache import get_option_coverage_cached
 from app.upstox_stream import DEFAULT_STREAM_MODE
 from app.warehouse_autoupdate import daily_autoupdate_loop
 from app import upstox_client
+from app.encryption import fernet_startup_warning
 
 from app.runtime import (
     DEFAULT_PROFILES,
@@ -60,6 +61,9 @@ api = APIRouter(prefix="/api")
 
 @app.on_event("startup")
 async def startup() -> None:
+    fernet_warning = fernet_startup_warning()
+    if fernet_warning:
+        log.warning(fernet_warning)
     await ensure_indexes()
     registry = get_registry()
     registry.auto_discover()

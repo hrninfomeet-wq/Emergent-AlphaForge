@@ -15,7 +15,7 @@ export default function LiveBanner({ status, onRefresh, armedCount = 0, autoplac
   const connected = status?.connected;
   const expired = status?.expired || status?.regenerate_after_6am;
   const uid = status?.uid;
-  const hasStaticIp = status?.static_ip_primary;
+  const hasStaticIp = Boolean(status?.static_ip_primary || status?.static_ip_secondary);
 
   // Login: full-page (same-tab) OAuth redirect to Flattrade. After login the
   // broker bounces to our /auth/callback which saves the token and redirects
@@ -75,6 +75,19 @@ export default function LiveBanner({ status, onRefresh, armedCount = 0, autoplac
         {/* The real execution-state verdict lives in <ExecutionStateStrip/> below,
             data-bound to /live-broker/arm-state — replacing the old hardcoded chip. */}
       </div>
+
+      {status !== null && !hasStaticIp && (
+        <div
+          className="rounded-md border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-xs text-warning"
+          data-testid="live-static-ip-guidance"
+        >
+          <span className="font-semibold">Static IP required before live enablement.</span>{" "}
+          Set <code>FLATTRADE_PRIMARY_IP</code> or <code>FLATTRADE_SECONDARY_IP</code> in the
+          deployment environment (normally <code>backend/.env</code>) to the reserved public IPv4
+          registered with Flattrade, then restart the backend. Keep <code>LIVE_AUTOPLACE_ARMED=0</code>{" "}
+          until the operational checklist is complete.
+        </div>
+      )}
 
       {/* Connection status row */}
       <div className="flex items-center gap-3 flex-wrap text-sm">
