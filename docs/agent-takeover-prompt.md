@@ -45,9 +45,9 @@ trading, gated live execution with a layered safety stack (confirm-flat guard, k
 switches, per-token recovery), the premium-momentum family including Phase 5B multi-leg
 execution, and Flattrade-MCP session sharing.
 
-- **Git:** `origin/main` remains `aedbf42`; local `main` is 15 green-milestone commits
-  ahead, containing the HIGH fixes, promotion-freedom policy, next-stage roadmap and
-  completed Stage-1 integrity work; not pushed. One branch, zero stashes.
+- **Git:** local `main` and `origin/main` are synchronized at the published Stage-1
+  checkpoint, containing the HIGH fixes, promotion-freedom policy, next-stage roadmap and
+  completed Stage-1 integrity work. One branch, zero stashes.
   Two archive tags preserve retired work (`archive/live-deploy-wip-2026-06-25`,
   `archive/journal-wip-2026-06-21`). Always run `git log origin/main..main --oneline`
   before describing "current state".

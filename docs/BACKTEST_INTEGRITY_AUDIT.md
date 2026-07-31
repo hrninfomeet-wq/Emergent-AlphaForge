@@ -1,7 +1,7 @@
 # Backtest & optimizer integrity audit — permanent register
 
-**Period:** 2026-07-29 → 2026-07-31 · original audit merged and pushed;
-2026-07-31 HIGH-fix follow-up is committed locally and not pushed.
+**Period:** 2026-07-29 → 2026-07-31 · original audit and the 2026-07-31/08-01
+HIGH/MED follow-ups are merged and pushed to `origin/main`.
 Supersedes and replaces four running logs (`BACKTEST_AUDIT_2026-07-30.md`,
 `PREMIUM_NATIVE_REPORTING_AUDIT_2026-07.md`, `ROUND6_OPTIMIZER_AUDIT_RAW.md`,
 `ROUND8_VERIFICATION.md`) — recover any of them with
@@ -85,7 +85,7 @@ self-heals once every row has the field — so it looks intermittent.
 All independently verified against source. `minimal_fix` guidance is in the commit
 history of `139a1f2` (or `git show 23ccfed:docs/ROUND8_VERIFICATION.md`).
 
-### Closed 2026-07-31 — local commit not pushed
+### Closed 2026-07-31 — published to `origin/main` 2026-08-01
 
 | # | Sev | Resolution |
 |---|---|---|

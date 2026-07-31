@@ -668,3 +668,25 @@ milestone needs one session checkpoint plus links from every entry point.
 - Do not record a commit-ahead count without accounting for the documentation checkpoint
   itself. Re-run `git rev-list --count origin/main..main` after committing.
 - Do not describe after-hours healthy containers as market-hours or broker validation.
+
+---
+
+## Session 2026-08-01 (publication) — publishing is a state change that invalidates handoff text
+
+**Core lesson:** a push can make accurate takeover documentation stale even when it changes
+no product code. Synchronize current-state markers after publication and push that small
+status commit under the same explicit authorization.
+
+**Confirmed approaches:**
+- Enumerate local branches, remote heads and merged/unmerged state before pruning. This repo
+  had only `main`; `git fetch --prune` removed no live branch and archive tags were preserved.
+- Use a normal non-force `main:main` push, then compare local `main`, `origin/main` and
+  `git ls-remote` hashes independently.
+- Sweep current-state docs for `ahead`, `not pushed` and `unpushed`; retain those words only
+  where they describe an explicitly historical checkpoint.
+
+**Dead ends / traps:**
+- Do not stop immediately after a successful push when the handoff says the work is still
+  local. The next agent would infer a divergence that no longer exists.
+- Do not interpret archive tags as archaic branches. The user asked to prune branches, not
+  destroy recovery tags.

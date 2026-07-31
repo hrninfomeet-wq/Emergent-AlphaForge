@@ -69,7 +69,7 @@ market is closed.
 
 ### Stage 1 — close truth and optimizer integrity gaps — ✅ COMPLETE 2026-08-01
 
-This implementation milestone is complete in local, unpushed commits.
+This implementation milestone is complete and published to `origin/main`.
 
 1. Close the eight confirmed MED optimizer findings (#14, #17, #20, #23, #25, #26, #29,
    #30) independently, with one pre-fix-red regression per finding and focused/full-suite

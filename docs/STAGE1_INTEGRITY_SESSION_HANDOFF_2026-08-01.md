@@ -7,7 +7,7 @@
 
 ## 1. Decision-ready status
 
-Stage 1 Integrity is **complete in local, unpushed commits**. The work closed every
+Stage 1 Integrity is **complete and published to `origin/main`**. The work closed every
 confirmed MED optimizer finding, corrected Stage 1 Dashboard/workflow truth gaps, added
 an advisory spot-data preflight, and preserved the user's right to promote any technically
 competent finite strategy independently to paper or live. Research qualification remains
@@ -17,7 +17,7 @@ Snapshot verified on 2026-08-01 before this documentation checkpoint:
 
 | Area | Verified state |
 |---|---|
-| Git | `main`; `origin/main` = `aedbf42`; implementation/docs checkpoint = `24adedd`; 14 local commits ahead before this handoff commit; clean tree; zero stashes; not pushed |
+| Git | Historical pre-publish snapshot: `origin/main` = `aedbf42`, with 14 local commits through `24adedd`; takeover package `9fd22c3` and the completed Stage-1 chain were subsequently pushed to `origin/main`. Verify the exact current head with the commands in §8. |
 | Host suite | **4,354 passed, 4 xfailed, 0 failed** (4,358 collected) |
 | Container behavioral set | **142 passed, 9 repository-layout tests deselected, 0 failed** |
 | Build/runtime | Python compileall and host/Docker frontend builds passed; backend and Mongo healthy; frontend up; `/api/health` returned `{"db":"ok"}` |

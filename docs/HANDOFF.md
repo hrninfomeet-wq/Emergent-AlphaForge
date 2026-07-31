@@ -14,7 +14,7 @@ Stack: **React** (CRA + craco) frontend, **FastAPI** (Python) backend, **MongoDB
 
 ## 2. Current state
 
-> **As of 2026-08-01 · v0.58.0 + unreleased Stage-1 integrity work · `main` is 15 local commits ahead of `origin/main` after the documentation checkpoint; not pushed.**
+> **As of 2026-08-01 · v0.58.0 + unreleased Stage-1 integrity work · `main` and `origin/main` are synchronized at the published Stage-1 checkpoint.**
 > Verification baseline: **4,354 passed, 4 xfailed, 0 failed** (4,358 collected).
 
 ### 2.0 The 60-second orientation
@@ -67,7 +67,7 @@ non-finite params/metrics/signals, validates optimizer-added indicator keys from
 catalog, repeats deterministic smoke evaluation for AI-authored Python, and revalidates a
 deployment before resume and live enablement. The wizard preserves nullable defaults,
 recovers warning acknowledgment without a dead end, and exact-fetches older deep links.
-**Stage 1 integrity is complete in the local, unpushed commits.** The six surviving MED
+**Stage 1 integrity is complete and published to `origin/main`.** The six surviving MED
 defects now honor controls during re-rank/WFO analysis, report actual early-stop evidence,
 exclude robustness no-ops, score negative objectives symmetrically, and normalize drawdown
 objectives across points/rupees with serial/parallel parity. MED #14 and #23 were stale
