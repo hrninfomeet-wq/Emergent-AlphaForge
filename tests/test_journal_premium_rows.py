@@ -63,7 +63,7 @@ PREMIUM_ROW = {
     "option_backtest": {
         "enabled": True, "dispatch": "premium_trigger_config",
         "metrics": {"paired_trade_count": 253, "win_rate": 46.2,
-                    "total_option_pnl_value": 120000.0},
+                    "profit_factor": 1.37, "total_option_pnl_value": 120000.0},
         "portfolio": {"starting_capital": 200000.0, "net_pnl_value": 120000.0,
                       "max_drawdown_value": -45000.0, "sharpe_daily": 1.31},
         "trades": [],
@@ -109,6 +109,12 @@ def test_a_premium_row_without_option_trades_still_reports_drawdown_and_sharpe()
     assert k["sharpe"] == 1.31
 
 
+def test_a_trimmed_premium_row_uses_its_persisted_profit_factor():
+    """Dashboard/list responses deliberately omit option trades and still need PF."""
+    k = _run_js(f"return M.resultKpis({_j(PREMIUM_ROW)});")
+    assert k["profitFactor"] == 1.37
+
+
 def test_an_ordinary_journal_row_is_unchanged():
     k = _run_js(f"return M.resultKpis({_j(ORDINARY_ROW)});")
     assert k["tradeCount"] == 253 and k["winRate"] == 45.4
@@ -133,6 +139,15 @@ def _src(path):
 def test_the_journal_uses_the_family_aware_kpis():
     src = _src(_JOURNAL)
     assert "resultKpis" in src, "the journal still reads the spot metrics stub"
+
+
+def test_dashboard_uses_the_same_family_aware_kpis_and_units():
+    dashboard = _src(os.path.join(os.path.dirname(__file__), "..", "frontend", "src",
+                                  "pages", "Dashboard.jsx"))
+    assert "resultKpis" in dashboard
+    assert "latestKpis = resultKpis(latest)" in dashboard
+    assert "Net P&L (${latestKpis.unit})" in dashboard
+    assert "Max DD (${latestKpis.unit})" in dashboard
 
 
 def test_the_journal_no_longer_reads_the_raw_spot_metrics_for_those_columns():

@@ -74,8 +74,9 @@ export function displayTrades(result) {
  * "Net P&L (pts)" heading would be the same units lie this audit found in
  * optimizer.py, where a rupee drawdown is stored as `max_dd_pts`.
  *
- * `profitFactor` is COMPUTED for premium runs: option_backtest.metrics has no
- * profit_factor key at all, so that card could never have shown anything.
+ * Newer option results persist profit_factor in the metrics envelope so trimmed
+ * list/summary responses do not need to carry every trade.  Older full results
+ * can still derive it from their trades as a compatibility fallback.
  */
 export function resultKpis(result) {
   if (!isPremiumNative(result)) {
@@ -103,7 +104,7 @@ export function resultKpis(result) {
     unit: "₹",
     tradeCount: m.paired_trade_count ?? paired.length,
     winRate: m.win_rate ?? null,
-    profitFactor: grossLoss > 0 ? grossWin / grossLoss : (grossWin > 0 ? null : null),
+    profitFactor: m.profit_factor ?? (grossLoss > 0 ? grossWin / grossLoss : null),
     netPnl: port.net_pnl_value ?? m.total_option_pnl_value ?? null,
     maxDd: port.max_drawdown_value ?? null,
     sharpe: port.sharpe_daily ?? null,

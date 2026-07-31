@@ -152,8 +152,9 @@ def test_frontend_status_copy_matches_current_phase():
 
     assert "phase 2 · V1 build" not in layout
     assert 'value="V1"' not in dashboard
-    assert "Phase 3 — Auto-Optimizer" in dashboard
-    assert "status: \"done\"" in dashboard
+    for stale in ("P4a", "Upstox scaffold", "WS/live/options remain",
+                  "yfinance with integrity checks"):
+        assert stale not in dashboard
 
 
 def test_dashboard_warehouse_health_banner_present():

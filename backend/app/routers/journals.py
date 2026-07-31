@@ -204,8 +204,34 @@ async def dashboard_summary():
     candle_total = sum(c["candle_count"] for c in cov.values())
     bt_count = await db.backtest_runs.count_documents({})
     strategies = get_registry().list_all()
-    # Latest backtest summary
-    latest = await db.backtest_runs.find_one({}, {"_id": 0, "trades": 0, "equity_curve": 0, "walkforward": 0}, sort=[("created_at", -1)])
+    # Dashboard must not fetch a full result document.  In particular, premium-native
+    # runs keep their real trade/equity data under ``option_backtest``; an exclusion
+    # projection of only the spot arrays still shipped those large nested arrays.
+    # Keep exactly the scalar fields the dashboard renders, including the premium
+    # envelope used by the shared, dispatch-aware KPI selector.
+    latest = await db.backtest_runs.find_one({}, {
+        "_id": 0,
+        "id": 1,
+        "created_at": 1,
+        "name": 1,
+        "instrument": 1,
+        "strategy_id": 1,
+        "status": 1,
+        "error": 1,
+        "config.mode": 1,
+        "metrics": 1,
+        "significance": 1,
+        "regime_distribution": 1,
+        "option_backtest.enabled": 1,
+        "option_backtest.dispatch": 1,
+        "option_backtest.metrics": 1,
+        "option_backtest.portfolio.starting_capital": 1,
+        "option_backtest.portfolio.ending_equity": 1,
+        "option_backtest.portfolio.net_pnl_value": 1,
+        "option_backtest.portfolio.max_drawdown_value": 1,
+        "option_backtest.portfolio.sharpe_daily": 1,
+        "option_backtest.portfolio.total_return_pct": 1,
+    }, sort=[("created_at", -1)])
     return {
         "warehouse": {
             "instruments_tracked": instrument_count,
