@@ -180,6 +180,23 @@ def _objective_value(
     return sharpe / max(1.0, dd / 100.0)
 
 
+def optimizer_trial_evidence(
+    *, completed: int, ceiling: int, early_stopped: bool
+) -> Dict[str, Any]:
+    """Truthful optimizer-selection evidence for saved runs and trust checks.
+
+    ``ceiling`` is the requested upper bound; only completed objective draws
+    contribute to selection bias.  Conflating the two made an auto-stopped
+    50/150 run claim it was the best of 150 trials in both persistence and the
+    trust scorecard.
+    """
+    return {
+        "n_trials": max(0, int(completed)),
+        "trials_ceiling": max(0, int(ceiling)),
+        "early_stopped": bool(early_stopped),
+    }
+
+
 def best_so_far_doc(best_so_far: Dict[str, Any]) -> Dict[str, Any]:
     """The persisted shape of ``best_so_far`` — the ONLY way it may be written.
 
@@ -915,7 +932,7 @@ def _rebuild_study(method: str, space: Dict[str, Dict[str, Any]], trial_history:
     return study
 
 
-async def _save_best_as_backtest(job_id: str, payload: Dict[str, Any], strategy, df_enriched: pd.DataFrame, best_params: Dict[str, Any], instrument: str, costs_enabled: bool, pretrade: Dict[str, Any], run_walkforward: bool = True, option_config: Optional[Dict[str, Any]] = None, n_trials: Optional[int] = None, trade_window_start: Optional[str] = None, trade_window_end: Optional[str] = None) -> Optional[str]:
+async def _save_best_as_backtest(job_id: str, payload: Dict[str, Any], strategy, df_enriched: pd.DataFrame, best_params: Dict[str, Any], instrument: str, costs_enabled: bool, pretrade: Dict[str, Any], run_walkforward: bool = True, option_config: Optional[Dict[str, Any]] = None, n_trials_completed: Optional[int] = None, trials_ceiling: Optional[int] = None, early_stopped: bool = False, trade_window_start: Optional[str] = None, trade_window_end: Optional[str] = None) -> Optional[str]:
     """Run a final full backtest with best params and persist as a backtest_run.
     Returns the new backtest_run_id (or None on failure). When run_walkforward
     is False (e.g. on cancellation) the slow multi-fold walk-forward is skipped
@@ -996,7 +1013,11 @@ async def _save_best_as_backtest(job_id: str, payload: Dict[str, Any], strategy,
             "signal_funnel": res["signal_funnel"],
             "instrument": instrument,
             "strategy_id": strategy.id,
-            **({"n_trials": int(n_trials)} if n_trials else {}),
+            **(optimizer_trial_evidence(
+                completed=n_trials_completed,
+                ceiling=(trials_ceiling if trials_ceiling is not None else n_trials_completed),
+                early_stopped=early_stopped,
+            ) if n_trials_completed is not None else {}),
             # Fix-A: top-level option result (conditional key -> spot mode byte-identical).
             **({"option_backtest": option_result} if option_config else {}),
         }
@@ -1890,7 +1911,8 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
         cancelled_flag = await _is_cancelled(job_id)
         await _update_job(job_id, {"status": "analyzing", "n_trials_completed": completed,
                                    "early_stopped": early_stopped, "stopped_at_trial": completed,
-                                   "trials_ceiling": n_trials})
+                                   "trials_ceiling": n_trials,
+                                   "early_stop_patience": es_patience})
 
         # Analyzing-stage governance: a wall-clock budget + live per-candidate
         # progress/ETA + graceful partial results. INVARIANT: when the budget is
@@ -2220,7 +2242,9 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                 option_config={**(option_cfg or {}),
                                "exit_controls": best_so_far.get("exit_controls"),
                                "daily_caps": best_so_far.get("daily_caps")} if evaluation_mode == "option_rerank" else None,
-                n_trials=n_trials,
+                n_trials_completed=completed,
+                trials_ceiling=n_trials,
+                early_stopped=early_stopped,
                 trade_window_start=trade_window_start,
                 trade_window_end=trade_window_end,
             )
@@ -2237,6 +2261,10 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
             "status": final_status,
             "finished_at": datetime.now(timezone.utc).isoformat(),
             "n_trials_completed": completed,
+            "n_trials": completed,
+            "trials_ceiling": n_trials,
+            "early_stopped": early_stopped,
+            "stopped_at_trial": completed,
             "evaluation_mode": evaluation_mode,
             "best_params": best_so_far["params"],
             "finite_candidate_available": _has_finite_candidate(best_so_far),
@@ -2305,7 +2333,9 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
             finished["best_quality"] = evaluate_source_quality(
                 best_run,
                 evidence={"oos_return_pct": None, "stress_return_pct": _stress,
-                          "n_trials": n_trials, "spot_option_correlation": spot_option_corr,
+                          "n_trials": completed, "trials_ceiling": n_trials,
+                          "early_stopped": early_stopped,
+                          "spot_option_correlation": spot_option_corr,
                           "optimizer_validation": {
                               "job_status": final_status,
                               "guardrail_qualified": best_so_far.get("guardrail_qualified"),

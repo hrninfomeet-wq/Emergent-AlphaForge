@@ -102,3 +102,30 @@ def test_20_wfo_final_analysis_rechecks_control_around_expensive_steps():
     assert src.count("_analysis_stop_reason(job_id)") >= 3
     assert '"analysis_stopped_by": analysis_stopped_by' in src
     assert 'final_status = analysis_stopped_by or' in src
+
+
+def test_30_trial_evidence_separates_actual_count_from_ceiling():
+    out = optimizer.optimizer_trial_evidence(
+        completed=50, ceiling=150, early_stopped=True
+    )
+    assert out == {
+        "n_trials": 50,
+        "trials_ceiling": 150,
+        "early_stopped": True,
+    }
+
+
+def test_30_runner_saves_and_scores_actual_trials_and_ui_explains_stop():
+    runner = inspect.getsource(optimizer.run_optimization)
+    assert "n_trials_completed=completed" in runner
+    assert "trials_ceiling=n_trials" in runner
+    assert '"n_trials": completed' in runner
+
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    with open(
+        os.path.join(root, "frontend", "src", "pages", "Optimizer.jsx"),
+        encoding="utf-8",
+    ) as handle:
+        ui = handle.read()
+    assert "effectiveTrialTotal" in ui
+    assert "Auto-stopped at" in ui

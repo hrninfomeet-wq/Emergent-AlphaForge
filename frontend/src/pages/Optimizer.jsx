@@ -1423,7 +1423,12 @@ function EmptyOptimizer() {
 }
 
 function CurrentJobView({ job, onApply, onStop, onPause, onResume, onOpenBest }) {
-  const pct = job.n_trials_total ? Math.round((job.n_trials_completed / job.n_trials_total) * 100) : 0;
+  const effectiveTrialTotal = job.early_stopped
+    ? (job.stopped_at_trial ?? job.n_trials_completed ?? 0)
+    : (job.n_trials_total || 0);
+  const pct = effectiveTrialTotal
+    ? Math.min(100, Math.round(((job.n_trials_completed || 0) / effectiveTrialTotal) * 100))
+    : 0;
   const bsf = job.best_so_far || {};
   const isWfo = job.kind === "wfo";
   const status = job.status;
@@ -1519,7 +1524,10 @@ function CurrentJobView({ job, onApply, onStop, onPause, onResume, onOpenBest })
         </div>
         <div className="text-[11px] font-mono text-dim mb-1 flex items-center justify-between">
           <span>
-            {job.n_trials_completed || 0} / {job.n_trials_total || 0} trials
+            {job.n_trials_completed || 0} / {effectiveTrialTotal} trials
+            {job.early_stopped && job.trials_ceiling != null && (
+              <span className="text-dim ml-2">requested ceiling {job.trials_ceiling}</span>
+            )}
             {isWfo && job.wfo_progress && (
               <span className="text-emerald-400 ml-2">
                 window {job.wfo_progress.window}/{job.wfo_progress.window_count}
@@ -1546,6 +1554,15 @@ function CurrentJobView({ job, onApply, onStop, onPause, onResume, onOpenBest })
         )}
         {interrupted && (
           <div className="text-xs text-warning mt-2">Interrupted by a restart at trial {job.n_trials_completed}/{job.n_trials_total}. Click Resume to continue.</div>
+        )}
+        {showResults && job.early_stopped && (
+          <div className="text-xs text-emerald-300 mt-2" data-testid="opt-early-stopped">
+            Auto-stopped at trial {job.stopped_at_trial ?? job.n_trials_completed} of {job.trials_ceiling ?? job.n_trials_total}
+            {job.early_stop_patience != null
+              ? ` after ${job.early_stop_patience} trials without significant improvement.`
+              : " after the configured no-improvement limit."}
+            {" "}Only the completed trial count is used in saved-run selection-bias evidence.
+          </div>
         )}
         {status === "analyzing" && job.rerank_progress && (
           <div className="text-[11px] font-mono text-warning mt-2" data-testid="opt-analyze-eta">
