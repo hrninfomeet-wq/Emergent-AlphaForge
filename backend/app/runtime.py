@@ -649,28 +649,20 @@ async def live_startup_recovery() -> bool:
     #          mark_submitted is still provably ours.
     _owned_tsyms: set = set()
     try:
-        _ours_ordnos: set = set()
-        _ours_cids: set = set()
-        async for _t in get_db().live_trades.find(
-                {"status": {"$ne": "CLOSED"}}, {"norenordno": 1, "cid": 1, "_id": 0}):
-            if _t.get("norenordno"):
-                _ours_ordnos.add(str(_t["norenordno"]))
-            if _t.get("cid"):
-                _ours_cids.add(str(_t["cid"]))
-        async for _o in get_db().live_orders.find(
-                {}, {"norenordno": 1, "client_order_id": 1, "_id": 0}):
-            if _o.get("norenordno"):
-                _ours_ordnos.add(str(_o["norenordno"]))
-            if _o.get("client_order_id"):
-                _ours_cids.add(str(_o["client_order_id"]))
-        _own_rows = await client.order_book()
-        for _row in (_own_rows if isinstance(_own_rows, list) else []):
-            _rt = str(_row.get("tsym") or "")
-            if not _rt:
-                continue
-            if (str(_row.get("norenordno") or "") in _ours_ordnos
-                    or str(_row.get("remarks") or "") in _ours_cids):
-                _owned_tsyms.add(_rt)
+        from app.live.ownership import resolve_owned_tsyms
+        _lt = [d async for d in get_db().live_trades.find(
+            {"status": {"$ne": "CLOSED"}},
+            {"norenordno": 1, "cid": 1, "status": 1, "_id": 0})]
+        _lo = [d async for d in get_db().live_orders.find(
+            {}, {"norenordno": 1, "client_order_id": 1, "state": 1,
+                 "intent": 1, "_id": 0})]
+        try:
+            _ob = await client.order_book()
+        except Exception:
+            _ob = []          # secondary path only — the intent store still owns
+        _owned_tsyms = resolve_owned_tsyms(
+            live_trades=_lt, live_orders=_lo,
+            order_book=_ob if isinstance(_ob, list) else [])
     except Exception as exc:
         # Unresolvable ownership => adopt NOTHING (fail closed) and retry later.
         complete = False
