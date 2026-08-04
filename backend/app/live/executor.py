@@ -166,7 +166,25 @@ async def _transmit_and_arm(
         return _blocked(f"cannot_trade:{why}", verdicts)
     if not await intent_store.claim_for_submit(cid):
         return _blocked("already_claimed", verdicts)
-    result = await client.place_order(intent)            # THE ONLY place_order CALL IN THIS MODULE
+    try:
+        result = await client.place_order(intent)        # THE ONLY place_order CALL IN THIS MODULE
+    except Exception as exc:
+        # The ACK was lost — the ORDER may not have been. `place_order` converts
+        # only a non-200 into RuntimeError, so an httpx.ReadTimeout on the 20s
+        # client (or a JSONDecodeError on a truncated body) lands here with the
+        # broker's true state UNKNOWN. Treat unknown as "I may be long":
+        #   * do NOT release the claim — the intent stays SUBMITTING so
+        #     `resume_pending` can adopt the orphan and reconcile it;
+        #   * HALT the engine, because every cap that would stop a second order
+        #     counts live_trades rows, and no row was written — without the halt
+        #     the next bar is fully authorized to place again;
+        #   * report `indeterminate`, never a clean not-placed.
+        try:
+            await engine.halt(f"place_ack_lost:{cid}")
+        except Exception:                                # halting must never mask the result
+            pass
+        return {"placed": False, "reason": f"ack_lost:{type(exc).__name__}",
+                "indeterminate": True, "verdicts": verdicts}
     if not result.ok:
         return {"placed": False, "reason": f"reject:{result.rejreason}", "verdicts": verdicts}
     try:
