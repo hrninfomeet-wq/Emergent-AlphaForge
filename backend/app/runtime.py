@@ -635,9 +635,50 @@ async def live_startup_recovery() -> bool:
                   "%s (UNKNOWN); no lock closed",
                   "empty" if isinstance(_pm_book, list)
                   else "unreadable (non-list payload)")
-    # 3. guard rehydrate — re-attach to the remaining open positions (default stop).
+    # 3. guard rehydrate — re-attach to the remaining open positions AlphaForge
+    #    can PROVE it opened (default stop). Adoption fails closed: an unresolvable
+    #    ownership set adopts nothing.
+    #
+    #    Ownership is resolved through the broker ORDER book, never by comparing
+    #    live_trades.trading_symbol to the position book — that field is
+    #    UPSTOX-space while the book is NOREN-keyed (the long-standing symbol-space
+    #    invariant). Two independent proofs of ours, either sufficient:
+    #      (a) row.norenordno matches a live_trades / intent-store order number;
+    #      (b) row.remarks matches a client_order_id — `record_intent` writes the
+    #          cid BEFORE the POST, so an order that crashed between the POST and
+    #          mark_submitted is still provably ours.
+    _owned_tsyms: set = set()
     try:
-        n = await live_position_guard.rehydrate_from_broker()
+        _ours_ordnos: set = set()
+        _ours_cids: set = set()
+        async for _t in get_db().live_trades.find(
+                {"status": {"$ne": "CLOSED"}}, {"norenordno": 1, "cid": 1, "_id": 0}):
+            if _t.get("norenordno"):
+                _ours_ordnos.add(str(_t["norenordno"]))
+            if _t.get("cid"):
+                _ours_cids.add(str(_t["cid"]))
+        async for _o in get_db().live_orders.find(
+                {}, {"norenordno": 1, "client_order_id": 1, "_id": 0}):
+            if _o.get("norenordno"):
+                _ours_ordnos.add(str(_o["norenordno"]))
+            if _o.get("client_order_id"):
+                _ours_cids.add(str(_o["client_order_id"]))
+        _own_rows = await client.order_book()
+        for _row in (_own_rows if isinstance(_own_rows, list) else []):
+            _rt = str(_row.get("tsym") or "")
+            if not _rt:
+                continue
+            if (str(_row.get("norenordno") or "") in _ours_ordnos
+                    or str(_row.get("remarks") or "") in _ours_cids):
+                _owned_tsyms.add(_rt)
+    except Exception as exc:
+        # Unresolvable ownership => adopt NOTHING (fail closed) and retry later.
+        complete = False
+        _owned_tsyms = set()
+        _log.warning("live startup recovery: could not resolve guard ownership "
+                     "(%s) — adopting no positions this pass", exc)
+    try:
+        n = await live_position_guard.rehydrate_from_broker(owned_tsyms=_owned_tsyms)
         if n:
             _log.warning("live startup recovery: guard re-attached to %s open position(s) "
                          "at the default catastrophe stop (original levels lost on restart)", n)

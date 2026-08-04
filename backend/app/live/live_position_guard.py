@@ -94,6 +94,23 @@ REPRICE_MAX_PER_CYCLE = 2
 _EPOCH0 = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 
+def _basket_members(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Entries eligible for the AGGREGATE overall-controls basket.
+
+    A ``source == "rehydrated"`` entry's ``entry_price`` is a reconstructed MARK
+    (the live lp at recovery time), not the price AlphaForge actually entered at,
+    so folding it into ``basket_premium`` mis-scales every percentage-mode overall
+    level, and folding its ``urmtom`` into ``basket_mtm`` lets a position the
+    strategy never opened trip the strategy's basket stop/target.
+
+    2026-08-04: a hand-placed 325-qty NIFTY CE was adopted at recovery and became
+    the ENTIRE basket. The ₹180 MTM target — a 1.6% move on its ₹11,099 premium —
+    breached within seconds and the guard squared it for real. Per-position
+    stop/target/EOD protection is unaffected; only the aggregate excludes them.
+    """
+    return [e for e in entries if e.get("source") != "rehydrated"]
+
+
 def _in_market_hours(now_utc: Optional[datetime] = None) -> bool:
     ist = (now_utc or datetime.now(timezone.utc)) + _IST
     if ist.weekday() >= 5:
@@ -1136,7 +1153,7 @@ class LivePositionGuard:
         positions (via the same dry-run-gated margin-safe square_fn). The trailing
         floor (self._overall_state) persists across cycles; it resets when the
         guarded set empties. A config with nothing enabled is a no-op."""
-        remaining = self._registry.snapshot()
+        remaining = _basket_members(self._registry.snapshot())
         if not remaining or self._overall_provider is None:
             self._overall_state = None  # no basket → reset trailing
             return
@@ -1182,7 +1199,7 @@ class LivePositionGuard:
         # single _issue_square choke-point (place-and-mark; the OCO cancel + close-
         # loop happen later on confirmed-flat). An entry already `squaring` is
         # skipped — its exit is already working.
-        for entry in self._registry.snapshot():
+        for entry in _basket_members(self._registry.snapshot()):
             if entry.get("squaring"):
                 continue
             await self._issue_square(
@@ -1203,7 +1220,10 @@ class LivePositionGuard:
         finally:
             self._stats["running"] = False
 
-    async def rehydrate_from_broker(self, *, default_stop_pct: float = 50.0) -> int:
+    async def rehydrate_from_broker(
+        self, *, default_stop_pct: float = 50.0,
+        owned_tsyms: Optional[set] = None,
+    ) -> int:
         """Re-attach the software guard to open broker positions after a restart.
 
         The registry is an in-memory singleton (EMPTY on boot), so any position
@@ -1215,8 +1235,20 @@ class LivePositionGuard:
         ``source="rehydrated"`` so the UI can flag "levels reset to default". A fresh
         arm that already registered a tsym is never clobbered.
 
+        ``owned_tsyms`` is the set of Noren tsyms AlphaForge can PROVE it opened
+        (resolved by the caller from live_trades / the intent store via the broker
+        order book's norenordno + remarks join). Adoption FAILS CLOSED: ``None``
+        or an empty set adopts NOTHING. Guarding a position AlphaForge did not open
+        is not a safe default — on 2026-08-04 this adopted a hand-placed position
+        from the operator's mobile app and squared it for real money.
+
+        SHORT positions are refused outright: ``build_monitor_state`` /
+        ``evaluate_exit`` are LONG-only, so a short's "stop" sits below its entry
+        and would fire on profit while never firing on loss.
+
         Best-effort: returns the count rehydrated; never raises out (a broker/feed
-        error logs and returns 0). Call ONCE at startup, around guard start.
+        error logs and returns 0). Safe to re-run — already-watched tsyms are
+        skipped — which matters because live recovery retries while incomplete.
         """
         try:
             client = await self._client_factory()
@@ -1239,6 +1271,18 @@ class LivePositionGuard:
                 tsym = str(pos.get("tsym", ""))
                 if not tsym or tsym in watched_tsyms:
                     continue  # already watched (e.g. a fresh arm) — don't clobber
+                if not owned_tsyms or tsym not in owned_tsyms:
+                    log.warning(
+                        "guard rehydrate: SKIPPING %s (netqty=%s) — no AlphaForge "
+                        "entry order or live_trades record proves we opened it; "
+                        "NOT adopting an externally-opened position", tsym, netqty)
+                    continue
+                if netqty < 0:
+                    log.error(
+                        "guard rehydrate: %s is SHORT (netqty=%s) — the software "
+                        "guard's stop/target logic is LONG-ONLY; NOT adopting. "
+                        "This position is UNGUARDED by AlphaForge", tsym, netqty)
+                    continue
                 # Entry mark: prefer the live lp, else the net/buy average price.
                 entry = (_finite_pos(pos.get("lp")) or _finite_pos(pos.get("netavgprc"))
                          or _finite_pos(pos.get("daybuyavgprc")))

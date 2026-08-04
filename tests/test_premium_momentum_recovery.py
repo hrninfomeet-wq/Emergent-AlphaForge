@@ -66,11 +66,38 @@ class _Deployments:
         return None
 
 
+class _OwnColl:
+    """Minimal motor-like collection: `find()` returns an async-iterable cursor.
+
+    Live startup recovery reads live_trades + live_orders to resolve which broker
+    positions AlphaForge can PROVE it opened (guard adoption fails closed without
+    that proof, 2026-08-04). These fakes must therefore be queryable, not stubs.
+    """
+
+    def __init__(self, docs=None):
+        self.docs = [dict(d) for d in (docs or [])]
+
+    def find(self, q=None, proj=None):
+        async def _cursor():
+            for d in self.docs:
+                if not q or all(d.get(k) == v for k, v in q.items()
+                                if not isinstance(v, dict)):
+                    yield dict(d)
+        return _cursor()
+
+
 class _DB:
-    def __init__(self, locks, deployments):
+    def __init__(self, locks, deployments, live_trades=None, live_orders=None):
         self.premium_locks = locks
         self.strategy_deployments = _Deployments(deployments)
-        self.live_orders = object()  # LiveEngine wiring only — never queried
+        # N1/N2 are the well-known test order numbers the fake order book maps to
+        # the Noren symbols — so the premium legs resolve as AlphaForge-owned.
+        self.live_trades = _OwnColl(live_trades if live_trades is not None
+                                    else [{"norenordno": "N1", "cid": "cid-N1"},
+                                          {"norenordno": "N2", "cid": "cid-N2"}])
+        self.live_orders = _OwnColl(live_orders if live_orders is not None
+                                    else [{"norenordno": "N1", "client_order_id": "cid-N1"},
+                                          {"norenordno": "N2", "client_order_id": "cid-N2"}])
 
 
 class _Reg:
@@ -264,8 +291,10 @@ def _wire(monkeypatch, *, book, db, reg, events):
         async def resume_pending(self):
             return {"adopted": 0, "needs_submit": 0}
 
-    async def _generic_rehydrate():
-        events.append(("generic_rehydrate",))
+    async def _generic_rehydrate(*, owned_tsyms=None, **_kw):
+        # Recovery now resolves proven ownership and passes it down; record it so
+        # the ordering assertion also proves the set reached the guard.
+        events.append(("generic_rehydrate", tuple(sorted(owned_tsyms or ()))))
         return 0
 
     async def _reconcile(_db, _client):
@@ -293,8 +322,14 @@ def test_startup_recovery_premium_runs_before_generic_with_persisted_state(monke
     book = [{"tsym": CE["trading_symbol"], "netqty": "65.00", "exch": "NFO"}]
     _wire(monkeypatch, book=book, db=db, reg=reg, events=events)
     assert run(live_startup_recovery()) is True
-    assert events == [("premium_register", CE["trading_symbol"]),
-                      ("generic_rehydrate",)]
+    assert [e[0] for e in events] == ["premium_register", "generic_rehydrate"], (
+        "premium rehydrate must run BEFORE the generic one")
+    assert events[0][1] == CE["trading_symbol"]
+    # The generic step must receive a resolved ownership set — adoption fails
+    # closed, so an empty set here would mean AlphaForge's own recovered position
+    # goes unguarded (2026-08-04 ownership boundary).
+    assert events[1][1], "generic rehydrate got no proven-ownership set"
+    assert NOREN_CE in events[1][1]
     assert reg.calls[0]["entry_price"] == 115.0
     assert reg.calls[0]["qty"] == 65  # "65.00" parsed via _parse_netqty
 

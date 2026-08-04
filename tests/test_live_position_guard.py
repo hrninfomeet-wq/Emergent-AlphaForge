@@ -740,12 +740,17 @@ class TestEodSquare:
 
 class TestRehydrateFromBroker:
     """rehydrate_from_broker re-attaches the guard to open broker positions after a
-    restart (the in-memory registry is empty on boot)."""
+    restart (the in-memory registry is empty on boot).
+
+    Since 2026-08-04 adoption requires PROVEN ownership and fails closed — these
+    tests therefore pass `owned_tsyms` explicitly. See
+    `tests/test_guard_ownership_boundary.py` for the boundary itself."""
 
     def test_rehydrates_open_position_with_default_stop_and_source(self):
         reg = LiveMonitorRegistry()
         client = _FakeClient([_pos(netqty=20, lp=250.0, tsym=_TSYM)])
-        n = run(_guard(reg, client, _Recorder()).rehydrate_from_broker())
+        n = run(_guard(reg, client, _Recorder())
+                .rehydrate_from_broker(owned_tsyms={_TSYM}))
         assert n == 1
         item = reg.get(_TSYM)
         assert item is not None
@@ -757,7 +762,8 @@ class TestRehydrateFromBroker:
     def test_skips_flat_positions(self):
         reg = LiveMonitorRegistry()
         client = _FakeClient([_pos(netqty=0, lp=250.0, tsym=_TSYM)])
-        n = run(_guard(reg, client, _Recorder()).rehydrate_from_broker())
+        n = run(_guard(reg, client, _Recorder())
+                .rehydrate_from_broker(owned_tsyms={_TSYM}))
         assert n == 0 and len(reg) == 0
 
     def test_does_not_clobber_an_already_registered_tsym(self):
@@ -765,7 +771,8 @@ class TestRehydrateFromBroker:
         reg.register(key="N1", tsym=_TSYM, exch="BFO", qty=20, prd="I", entry_price=300.0,
                      state=build_monitor_state(300.0, stop_pct=30), source="auto_live")
         client = _FakeClient([_pos(netqty=20, lp=250.0, tsym=_TSYM)])
-        n = run(_guard(reg, client, _Recorder()).rehydrate_from_broker())
+        n = run(_guard(reg, client, _Recorder())
+                .rehydrate_from_broker(owned_tsyms={_TSYM}))
         assert n == 0
         assert len(reg) == 1  # no duplicate entry added for the same tsym
         item = reg.get("N1")  # original arm (keyed by norenordno) survives untouched
@@ -791,7 +798,8 @@ class TestRehydrateFromBroker:
     def test_skips_position_without_a_price(self):
         reg = LiveMonitorRegistry()
         client = _FakeClient([{"tsym": _TSYM, "exch": "BFO", "netqty": "20"}])  # no lp/avg
-        n = run(_guard(reg, client, _Recorder()).rehydrate_from_broker())
+        n = run(_guard(reg, client, _Recorder())
+                .rehydrate_from_broker(owned_tsyms={_TSYM}))
         assert n == 0 and len(reg) == 0
 
 
