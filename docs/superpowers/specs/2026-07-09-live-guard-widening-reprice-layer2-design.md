@@ -5,6 +5,13 @@
 premise ("re‑price = re‑invoke `square_position`, no new over‑sell logic") was **rejected** — it hides
 two confirmed over‑sell races. This is the approved design.
 **Builds on:** Layer 1 confirm‑flat (`2026-07-09-live-guard-confirmed-flat-square-design.md`).
+**Kept deliberately (2026-08-04 docs audit):** this file has ZERO inbound references and its
+rationale IS mirrored in the shipped code (`live_position_guard.py:396-403`, `auto_square.py:872-878`,
+constants at `live_position_guard.py:85-92`) — but it is the only place the four confirmed defects
+and OQ1–OQ6 appear as ONE decision log with red-team provenance (`wf_cd41c541`), for the live guard:
+the most safety-critical subsystem in an app that has never traded real money. Gate A live
+validation is still pending. Retained until that validation passes.
+
 **Area:** `backend/app/live/live_position_guard.py`, `backend/app/live/auto_square.py` (new primitive),
 `backend/app/runtime.py` (wiring).
 
@@ -42,7 +49,11 @@ first square is byte‑identical to Layer 1.
 
 - **A vs B (OQ6):** A for scheduling + B's per‑leg pricing/sizing primitive for the one step.
 - **Failed re‑price (OQ1):** stamp `square_last_ts` on every *attempt* (makes the interval a real rate
-  gate); **never advance the band on failure**. Classify: `unpriced` → held, no stamp (benign);
+  gate); **never advance the band on failure**. Classify: `unpriced` → held (benign);
+  <!-- 2026-08-04: this clause originally read "held, no stamp", contradicting the same
+  bullet's "stamp on every attempt". SHIPPED CODE RESOLVED IT toward stamping always, for a
+  reason this spec never had: a leg whose ts never advances is re-selected every cycle and
+  STARVES priceable legs out of the oldest-first K-budget. See live_position_guard.py:866-875. -->
   `cancel_unconfirmed` → place NOTHING (over‑sell‑safe), same band, retry next interval, set
   `last_error`; hard REJECT (place ok=False twice) → **STOP** re‑pricing that entry + terminal signal +
   page (RMS/margin won't cure); transport error → same band, retry.

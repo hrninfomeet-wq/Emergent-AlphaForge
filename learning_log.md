@@ -5,6 +5,69 @@ so the next session starts smarter. Newest entry first.
 
 ---
 
+## 2026-08-04 — Orchestrated: promotion-warning split + docs cleanup (Claude Opus 5)
+
+**CORE LESSON — verify the delegated claim you were most afraid of, not a random sample.**
+A Sonnet 5 subagent produced an excellent, heavily-cited dossier recommending DELETE on
+three docs. I verified four of its citations. Three were verbatim-accurate. The fourth —
+its *strongest affirmative* argument, that a red-team spec had gone stale and "would
+actively mislead" — was wrong: the spec does not disagree with the code, it **contradicts
+itself inside a single bullet**, and the code resolved that contradiction with reasoning
+the spec never contained. Had I spot-checked the easy claims only, I would have deleted a
+live-guard design record on a false premise. **Pick the verification target by what the
+decision hinges on, not by convenience.**
+
+### Confirmed approaches that worked
+
+- **Split the work by risk, not by size.** The promotion-warning change touches the
+  real-money seam ⇒ done in-house. Reading 100 KB of docs to check whether tasks shipped is
+  mechanical ⇒ delegated. The junior burned 155k tokens on the part where being wrong was
+  cheap and recoverable.
+- **One agent, not seven.** The previous 7-agent fan-out died wholesale on the monthly spend
+  limit and returned literally nothing. A single scoped agent with an exact file list, an
+  exact question and an exact output format finished in 5 minutes.
+- **Deny the junior write access in the prompt.** "You are NOT authorized to delete, move or
+  edit any file. Your output is a dossier a senior reviewer will use." The irreversible act
+  stayed with the reviewer who could weigh it.
+- **Ask the junior to argue against itself.** Requiring a "strongest single argument to KEEP
+  it — state this even when you recommend DELETE" field is what surfaced the red-team
+  provenance point that ultimately overturned one of its verdicts.
+- **Demand measured ratios, not adjectives.** "Sample 5-8 unchecked boxes and grep whether
+  each shipped" produced "7 of 7" and "8 of 8" with file:line proof — checkable in seconds.
+- **Red-then-green on the real-money seam.** 4 of 6 new tests failed before the fix; the 2
+  that passed pinned what must NOT change. That ratio is the evidence the fix is targeted.
+- **Checkpoint to disk before delegating**, not after. `scratchpad/ORCHESTRATION.md` carried
+  the step table and findings, so a limit hit mid-delegation would have cost one agent call.
+
+### Dead ends to avoid
+
+- **Do not fan out 7 agents on this account.** It is a hard wall: 7/7 died, `agents_done: 0`,
+  580k tokens spent for zero output. Sequential or single-agent only.
+- **Do not trust a doc's own status header.** The Layer-2 spec says "FINALIZED after a 4-lens
+  adversarial red-team" and still shipped a self-contradictory clause.
+- **Unchecked `- [ ]` boxes are not open work.** 15 of 15 sampled boxes across two "unfinished"
+  plans had shipped; the trackers were simply never ticked. Counting boxes as a staleness
+  signal would have kept ~97 KB of dead scaffolding.
+- **Do not add a gate at `_score_trial`.** It returns a bare float used across grid /
+  sequential / parallel / resume; the failure *class* was already recoverable from the metrics
+  at the warning site. Changing the scorer's signature would have touched every path for a
+  presentation-layer distinction.
+
+### What landed
+
+- `zero_trade_result` warning split out of `missing_trade_count` — a MEASURED zero
+  ("ran, fired nothing", the `_DISQUALIFY` condition at `optimizer.py:138`) is a definite
+  finding, no longer reported as "does not report a trade count. Cannot assess". Matters
+  because operator-directed promotion (`0fd005b`) made such a candidate promotable to paper
+  and separately live-enableable. `optimizer_guardrail_failed` now carries `trade_count`.
+  Premium routes on `paired_trade_count`, not the spot stub. No frontend change needed —
+  warnings render generically with no switch on id. (`0fbecdb`)
+- Deleted 2 superseded premium-momentum plans (~97 KB, zero inbound refs, 15/15 sampled tasks
+  shipped). **Kept** the live-guard Layer-2 red-team spec against the junior's advice and
+  fixed its self-contradiction in place: it is the only unified decision log (4 defects +
+  OQ1–OQ6, provenance `wf_cd41c541`) for the most safety-critical subsystem in an app that
+  has never traded real money and whose Gate A validation is still pending.
+
 ## 2026-07-21 — Codex release-audit triage (Claude Fable 5 session)
 
 **Task:** Assess the ChatGPT-5.6 Codex session's "release audit failed" verdict (5 critical
