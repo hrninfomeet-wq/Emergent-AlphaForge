@@ -200,6 +200,33 @@ def _live_guard_spot_tick_fn() -> dict:
         return {}
 
 
+async def _live_guard_on_expire(entry, reason) -> None:
+    """Journal an aged-out entry terminal: it never became a position.
+
+    `auto_live` writes live_trades status="OPEN" on broker ACCEPTANCE, but a
+    marketable LMT the market walks away from never fills. The guard ages such an
+    entry out and de-registers it; without this hook the row stayed OPEN forever
+    and `live_deploy_governor` — which counts OPEN rows with NO date filter —
+    permanently consumed a max_concurrent slot, silently ending autonomous
+    trading for that deployment with no operator-visible reason.
+
+    Deliberately NOT routed through `_live_guard_on_close`: nothing was squared,
+    so `should_journal_close` (which requires a real squared result) would have to
+    be bent to accept it. `exit_price=None` leaves realized_pnl untouched rather
+    than fabricating a P&L for a trade that never opened. Never raises — the guard
+    logs and still de-registers.
+    """
+    from app.live.close_loop import close_live_trade
+    if (entry or {}).get("source") == "manual":
+        return                       # no live_trades doc for a manual single-shot
+    await close_live_trade(
+        get_db(),
+        norenordno=(entry or {}).get("id"),
+        exit_price=None,
+        exit_reason=reason or "never_filled",
+    )
+
+
 async def _live_guard_on_close(entry, exit_price, reason, result) -> None:
     """Close-loop: journal realized P&L back to the live_trades doc when the guard's
     square is CONFIRMED FLAT by the broker. Fired from the guard's ``_finalize_flat``
@@ -349,6 +376,7 @@ live_position_guard = LivePositionGuard(
     spot_tick_fn=_live_guard_spot_tick_fn,
     eod_square_ist=dtime(15, 0),
     on_close=_live_guard_on_close,
+    on_expire=_live_guard_on_expire,
 )
 
 

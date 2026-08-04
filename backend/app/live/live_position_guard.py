@@ -402,6 +402,7 @@ class LivePositionGuard:
         eod_square_ist: dtime = dtime(15, 0),
         now_fn: Optional[Callable[[], datetime]] = None,
         on_close: Optional[Callable[..., Awaitable[None]]] = None,
+        on_expire: Optional[Callable[..., Awaitable[None]]] = None,
         reprice_fn: Optional[Callable[..., Awaitable[Dict[str, Any]]]] = None,
         reprice_band_schedule: tuple = REPRICE_BAND_SCHEDULE,
         reprice_interval_seconds: float = REPRICE_INTERVAL_SECONDS,
@@ -419,6 +420,14 @@ class LivePositionGuard:
         # None ⇒ no re-pricing (Layer-1 behavior: the first exit rests until flat —
         # host tests that don't exercise re-price pass None).
         self._reprice_fn = reprice_fn
+        # Fired when a pending entry is AGED OUT because it never appeared in
+        # the position book. Distinct from on_close: nothing was squared and
+        # no position ever existed, so `should_journal_close` (which demands a
+        # real squared result) must not be bent to cover it. Without this the
+        # live_trades row stays OPEN forever and permanently consumes a
+        # max_concurrent slot — the governor counts OPEN rows with no date
+        # filter. Best-effort: a failure here must never strand the entry.
+        self._on_expire = on_expire
         self._reprice_band_schedule = tuple(reprice_band_schedule)
         self._reprice_interval_seconds = float(reprice_interval_seconds)
         self._reprice_max_per_cycle = int(reprice_max_per_cycle)
@@ -600,6 +609,15 @@ class LivePositionGuard:
                                         entry["id"], exc)
                             await self._cancel_oco_best_effort(
                                 client, entry, "age_out")
+                            if self._on_expire is not None:
+                                try:
+                                    await self._on_expire(entry, "never_filled")
+                                except Exception as exc:
+                                    log.warning(
+                                        "guard age-out: journalling %s as never_filled "
+                                        "failed (its live_trades row may still count "
+                                        "against max_concurrent): %s",
+                                        entry.get("id"), exc)
                             self._registry.remove(entry["id"])
                         continue
                     # seen_filled: decide CONFIRMED-FLAT vs UNKNOWN. Finalizing
