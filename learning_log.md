@@ -5,6 +5,55 @@ so the next session starts smarter. Newest entry first.
 
 ---
 
+## 2026-08-04 (cont.) — fixing the blockers, and auditing my own fixes (Claude Opus 5)
+
+**CORE LESSON — when you add a gate, re-read every filter that was written before it.**
+`ce82ba6` added an ownership gate to guard adoption AND a `_basket_members` filter dropping
+`source == "rehydrated"`, in the same commit. The filter's rationale ("a position the strategy
+never opened") was true when written and **made unreachable by the gate beside it**: after the
+gate, "rehydrated" means exactly *AlphaForge's own restart-recovered position*. So the filter
+removed the precise opposite of its intent, and the operator's account-level overall SL silently
+stopped evaluating after any restart. A filter is a claim about a population; changing what can
+enter the population invalidates the claim. **The full suite passed throughout.**
+
+### Confirmed approaches that worked
+
+- **Audit your own commits with the same adversarial machinery you use on others'.** An
+  11-agent blast-radius pass found this; I had reviewed the same code and missed it. The
+  verifier reproduced it with a scratchpad test before I touched anything.
+- **Prove red in BOTH directions on a behavioural fix.** Restoring the old filter made the new
+  end-to-end test produce zero squares; restoring the fix squared the whole basket. Neither
+  direction alone would have been convincing.
+- **Extract the safety predicate into a pure function.** `app/live/ownership.py::resolve_owned_tsyms`
+  is host-testable with plain dicts, so over-claiming and under-claiming are both directly
+  assertable — which is how I caught the carry-forward regression I had introduced.
+- **Ask "what does this field mean AFTER my change?"** `source="rehydrated"` and the
+  `entry_price_is_mark` distinction only became visible by asking what the string denotes now,
+  not what it denoted when it was named.
+
+### Dead ends to avoid
+
+- **A hook is not wired until a test says the PRODUCTION object has it.** `on_expire` shipped
+  defined-but-unwired (4-space vs 8-space indent) and the suite passed 4,388, because every
+  behavioural test constructs its own guard. Same class as the old `ExecutionStateStrip` drop.
+- **Do not model an empty broker position book to test an age-out.** `book_is_known` requires a
+  NON-empty list, deliberately, so an empty book is never read as flat. An empty-book test
+  exercises nothing.
+- **Do not resolve ownership from today's order book alone.** A carry-forward NRML position's
+  entry order is in yesterday's book; the intent store (`intent.tsym`) is the durable source.
+- **The audit's proposed fix can be wrong.** For finding #6 it said "translate exit_controls into
+  the monitor trail contract". Paper COMPOSES breakeven+trailing via `max()` and scales pct off
+  the running peak; the monitor has one exclusive `mode` and a fixed `gap`. Translation is lossy
+  exactly when both legs are on or unit=="pct". Correct approach is parity by SHARED CODE — an
+  `overlay` mode calling `effective_premium_stop` directly. Spec in scratchpad FIXPLAN.md.
+
+### Known trade-off accepted (not a defect)
+
+Refusing to adopt SHORT positions also removes their 15:00 EOD square — previously a short got a
+long-only stop (fires on profit, never on loss) but did get flattened at EOD. With ownership
+enforced an AlphaForge-owned short should not exist (entries are option BUYS only), so this is
+logged at ERROR and left visible rather than papered over.
+
 ## 2026-08-04 (live market) — Gate A attempt + autonomous-live audit (Claude Opus 5)
 
 **CORE LESSON — an always-on automation must define what it OWNS, or it owns everything.**
