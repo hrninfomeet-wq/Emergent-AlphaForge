@@ -137,9 +137,28 @@ def test_low_trade_count_triggers_warning():
     assert "low_trade_count" in ids
 
 
-def test_zero_trade_count_triggers_missing_warning():
+def test_zero_trade_count_triggers_zero_trade_warning():
+    """A MEASURED zero is a definite result, not an absent measurement.
+
+    This asserted `missing_trade_count` until 2026-08-04. Once operator-directed
+    promotion made research qualification advisory, a zero-trade configuration
+    became promotable to paper (and separately live-enableable), so reporting it
+    as "does not report a trade count" understated it. See
+    `tests/test_promotion_warning_classes.py`.
+    """
     metrics = _good_metrics()
     metrics["trade_count"] = 0
+    source = {"metrics": metrics, "walkforward": _good_walkforward()}
+    res = evaluate_source_quality(source)
+    ids = [w["id"] for w in res["warnings"]]
+    assert "zero_trade_result" in ids
+    assert "missing_trade_count" not in ids
+
+
+def test_absent_trade_count_still_triggers_missing_warning():
+    """The unknown case keeps its original warning — the split must not erase it."""
+    metrics = _good_metrics()
+    metrics.pop("trade_count")
     source = {"metrics": metrics, "walkforward": _good_walkforward()}
     res = evaluate_source_quality(source)
     ids = [w["id"] for w in res["warnings"]]

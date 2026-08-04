@@ -211,6 +211,40 @@ def evaluate_source_quality(
     om = source_doc.get("option_backtest")   # self-contained option result (Fix-B); also drives the dedup
     warnings: List[Dict[str, Any]] = []
 
+    # A premium-native run's SPOT metrics are a zero-filled stub by construction
+    # (its evaluate() is an inert stub, so compute_metrics([]) yields
+    # trade_count 0 / sharpe None / pnl 0). Reading them here fired a factually
+    # wrong "Trade count not available" AND silently skipped three real checks:
+    # weak_sharpe (guarded on sharpe_val is not None), large_drawdown (guarded on
+    # total_pnl > 0) and the selection-bias/deflated-Sharpe test (needs
+    # trade_count > 0). The option envelope was already in hand one line above.
+    # Routed on the same `dispatch` predicate research.py uses, so the two cannot
+    # disagree; ordinary runs keep the spot reads and their verdicts are unchanged.
+    if isinstance(om, dict) and om.get("dispatch") == "premium_trigger_config":
+        _om_metrics = om.get("metrics") or {}
+        _port = om.get("portfolio") or {}
+        metrics = dict(metrics)
+        _reported_tc = _om_metrics.get("paired_trade_count")
+        metrics["trade_count"] = _safe_float(_reported_tc)
+        metrics["win_rate"] = _safe_float(_om_metrics.get("win_rate"))
+        if _port.get("sharpe_daily") is not None:
+            metrics["sharpe"] = _port.get("sharpe_daily")
+        # Rupee-native pair, but the ratio the drawdown check computes is
+        # dimensionless so the comparison stays valid.
+        metrics["total_pnl_pts"] = _safe_float(_port.get("net_pnl_value"))
+        metrics["max_dd_pts"] = _safe_float(_port.get("max_drawdown_value"))
+
+    sharpe = metrics.get("sharpe")
+    sharpe_val = _safe_float(sharpe) if sharpe is not None else None
+    # A MEASURED zero ("ran, fired nothing") is a definite result; an ABSENT
+    # field is unknown. Operator-directed promotion lets both reach paper, so
+    # they must not collapse into one warning — see `zero_trade_result` below.
+    if isinstance(om, dict) and om.get("dispatch") == "premium_trigger_config":
+        trade_count_reported = _reported_tc is not None
+    else:
+        trade_count_reported = metrics.get("trade_count") is not None
+    trade_count = int(_safe_float(metrics.get("trade_count")))
+
     # Completion/optimizer gates describe evidence quality, not whether the
     # strategy configuration can run. Keep them explicit and acknowledgeable.
     source_status = source_doc.get("status")
@@ -238,8 +272,11 @@ def evaluate_source_quality(
                 "This finite candidate did not pass the configured trade-count or "
                 "direction guard rails. It remains deployable by explicit choice; "
                 "the optimizer result does not validate an edge."
+                + (" It produced NO trades at all, so there is no executed "
+                   "behaviour behind this configuration."
+                   if trade_count_reported and trade_count == 0 else "")
             ),
-            "value": {"guardrail_qualified": False},
+            "value": {"guardrail_qualified": False, "trade_count": trade_count},
         })
     if (validation.get("survival_qualified") is False
             or validation.get("job_status") == "done_no_survivor"):
@@ -254,31 +291,6 @@ def evaluate_source_quality(
             "value": {"survival_qualified": False},
         })
 
-    # A premium-native run's SPOT metrics are a zero-filled stub by construction
-    # (its evaluate() is an inert stub, so compute_metrics([]) yields
-    # trade_count 0 / sharpe None / pnl 0). Reading them here fired a factually
-    # wrong "Trade count not available" AND silently skipped three real checks:
-    # weak_sharpe (guarded on sharpe_val is not None), large_drawdown (guarded on
-    # total_pnl > 0) and the selection-bias/deflated-Sharpe test (needs
-    # trade_count > 0). The option envelope was already in hand one line above.
-    # Routed on the same `dispatch` predicate research.py uses, so the two cannot
-    # disagree; ordinary runs keep the spot reads and their verdicts are unchanged.
-    if isinstance(om, dict) and om.get("dispatch") == "premium_trigger_config":
-        _om_metrics = om.get("metrics") or {}
-        _port = om.get("portfolio") or {}
-        metrics = dict(metrics)
-        metrics["trade_count"] = _safe_float(_om_metrics.get("paired_trade_count"))
-        metrics["win_rate"] = _safe_float(_om_metrics.get("win_rate"))
-        if _port.get("sharpe_daily") is not None:
-            metrics["sharpe"] = _port.get("sharpe_daily")
-        # Rupee-native pair, but the ratio the drawdown check computes is
-        # dimensionless so the comparison stays valid.
-        metrics["total_pnl_pts"] = _safe_float(_port.get("net_pnl_value"))
-        metrics["max_dd_pts"] = _safe_float(_port.get("max_drawdown_value"))
-
-    sharpe = metrics.get("sharpe")
-    sharpe_val = _safe_float(sharpe) if sharpe is not None else None
-    trade_count = int(_safe_float(metrics.get("trade_count")))
 
     # 1. Walk-forward divergence
     if wf is None:
@@ -324,6 +336,21 @@ def evaluate_source_quality(
             "detail": f"Source backtest has only {trade_count} trades (need >= {th.min_trade_count} for "
                       "statistically meaningful conclusions). Win rate and profit factor are unreliable on this sample.",
             "value": {"trade_count": trade_count, "min_recommended": th.min_trade_count},
+        })
+    elif trade_count == 0 and trade_count_reported:
+        # Measured, not missing. The run completed and fired nothing, which is the
+        # same condition `_score_trial` disqualifies on (`tc == 0`). Promotion is
+        # still the operator's call, but this is a definite finding about the
+        # configuration itself, not an evidence-quality caveat.
+        warnings.append({
+            "id": "zero_trade_result",
+            "severity": SEVERITY_WARNING,
+            "label": "Strategy produced no trades",
+            "detail": "This configuration ran and produced zero trades. There is no executed "
+                      "behaviour to evaluate — no win rate, no drawdown, no edge, for or against. "
+                      "Deploying it risks a strategy that never fires, or one whose only signals "
+                      "fall outside the configured window.",
+            "value": {"trade_count": 0},
         })
     elif trade_count == 0:
         warnings.append({
