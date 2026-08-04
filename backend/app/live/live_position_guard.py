@@ -95,20 +95,30 @@ _EPOCH0 = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 
 def _basket_members(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Entries eligible for the AGGREGATE overall-controls basket.
+    """Entries that belong to the AGGREGATE overall-controls basket.
 
-    A ``source == "rehydrated"`` entry's ``entry_price`` is a reconstructed MARK
-    (the live lp at recovery time), not the price AlphaForge actually entered at,
-    so folding it into ``basket_premium`` mis-scales every percentage-mode overall
-    level, and folding its ``urmtom`` into ``basket_mtm`` lets a position the
-    strategy never opened trip the strategy's basket stop/target.
+    Every registered entry qualifies. Adoption requires PROVEN ownership
+    (``rehydrate_from_broker``), so a registry row is always a position AlphaForge
+    opened — including one re-attached after a restart.
 
-    2026-08-04: a hand-placed 325-qty NIFTY CE was adopted at recovery and became
-    the ENTIRE basket. The ₹180 MTM target — a 1.6% move on its ₹11,099 premium —
-    breached within seconds and the guard squared it for real. Per-position
-    stop/target/EOD protection is unaffected; only the aggregate excludes them.
+    An earlier version of this filter dropped ``source == "rehydrated"`` rows,
+    reasoning that they were "positions the strategy never opened". The ownership
+    gate landing in the same change made that premise unreachable, and the filter
+    then removed EXACTLY the opposite population: AlphaForge's own restart-
+    recovered positions. Because only premium-momentum re-registers as
+    ``auto_live`` on recovery, every other deployment's legs came back
+    ``"rehydrated"`` — so after a restart the basket was empty,
+    ``_evaluate_overall_basket`` returned early, and the operator's account-level
+    overall SL/target silently never evaluated while the UI still showed it armed.
+
+    The genuine half of that concern survives as ``entry_price_is_mark``: a
+    recovered entry price is a recovery-time MARK, so ``basket_premium`` (and only
+    ``basket_premium``, consulted solely for ``premium_pct`` thresholds) is
+    approximate for it. ``basket_mtm`` comes from the broker's own ``urmtom`` and
+    is exact regardless. A rupee-denominated account stop must never be silently
+    disabled because one member's entry price was reconstructed.
     """
-    return [e for e in entries if e.get("source") != "rehydrated"]
+    return list(entries)
 
 
 def _in_market_hours(now_utc: Optional[datetime] = None) -> bool:
@@ -1312,6 +1322,12 @@ class LivePositionGuard:
                     qty=abs(int(netqty)), prd=str(pos.get("prd", "I")),
                     entry_price=float(entry), state=state, source="rehydrated",
                 )
+                # entry_price above is the RECOVERY-TIME MARK, not the true entry.
+                # basket_premium (premium_pct thresholds only) is therefore
+                # approximate for this row; basket_mtm stays exact.
+                _reg_entry = self._registry.get(tsym)
+                if isinstance(_reg_entry, dict):
+                    _reg_entry["entry_price_is_mark"] = True
                 watched_tsyms.add(tsym)  # guard against duplicate tsyms in the book
                 rehydrated += 1
                 log.warning(

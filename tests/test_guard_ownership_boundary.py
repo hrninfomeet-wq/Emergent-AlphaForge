@@ -87,11 +87,25 @@ def test_long_still_adopted_after_the_short_guard():
 
 # --- 3. basket contamination ----------------------------------------------
 
-def test_rehydrated_positions_are_excluded_from_the_overall_basket():
-    """A position whose entry_price is a reconstructed MARK must not move the basket.
+def test_recovered_positions_STAY_in_the_overall_basket():
+    """Regression on my own ce82ba6 fix — it excluded the wrong population.
 
-    This is the exact 2026-08-04 mechanism: an adopted position's own MTM breached a
-    basket target that belonged to the deployed strategy's basket.
+    `_basket_members` dropped every `source == "rehydrated"` entry, justified as
+    excluding "a position the strategy never opened". The ownership gate added in
+    the SAME commit made that premise unreachable: adoption now requires proven
+    ownership, and every adopted row is written `source="rehydrated"`. So the
+    filter removed EXACTLY AlphaForge's own restart-recovered positions.
+
+    Only premium-momentum re-registers as `auto_live` on recovery (runtime.py);
+    every other deployment's legs come back "rehydrated". After a restart the
+    basket was therefore empty, `_evaluate_overall_basket` returned early, and the
+    operator's account-level overall SL/target NEVER evaluated — while the UI
+    still presented it as in force.
+
+    `basket_mtm` is summed from the broker's own `urmtom`, which is correct for a
+    recovered position; only `basket_premium` (built from a reconstructed entry
+    mark) is approximate, and that is consulted ONLY for `premium_pct` thresholds.
+    A ₹-mtm account stop must never be silently disabled.
     """
     from app.live.live_position_guard import _basket_members
     entries = [
@@ -99,6 +113,66 @@ def test_rehydrated_positions_are_excluded_from_the_overall_basket():
         {"tsym": "B", "source": "rehydrated", "entry_price": 200.0, "qty": 50},
     ]
     members = _basket_members(entries)
-    assert [e["tsym"] for e in members] == ["A"], (
-        "a rehydrated position must not contribute to basket MTM/premium, and must "
-        "not be squared by an overall breach")
+    assert {e["tsym"] for e in members} == {"A", "B"}, (
+        "a restart-recovered position AlphaForge owns must still be covered by the "
+        "account-level overall stop")
+
+
+def test_recovered_entry_price_is_flagged_as_a_mark():
+    """The genuine half of the original concern, kept: a recovered entry_price is
+    a recovery-time MARK, so percentage-scaled basket thresholds are approximate.
+    Flag it rather than silently dropping the position's protection."""
+    from app.live.live_position_guard import LiveMonitorRegistry
+    from app.live.live_sl_monitor import build_monitor_state
+    reg = LiveMonitorRegistry()
+    client = _FakeClient([_pos(netqty=20, lp=250.0, tsym=OWNED)])
+    run(_guard(reg, client, _Recorder()).rehydrate_from_broker(owned_tsyms={OWNED}))
+    item = reg.snapshot()[0]
+    assert item.get("entry_price_is_mark") is True, (
+        "a reconstructed entry price must be marked so premium_pct scaling can "
+        "declare itself approximate instead of pretending to be exact")
+
+
+def test_account_stop_fires_for_a_restart_recovered_basket():
+    """End-to-end proof of the regression: the overall SL must actually square.
+
+    Reproduces the verifier's scenario — a restart-recovered basket, an mtm-mode
+    account stop, and broker MTM through it. Before the fix this produced ZERO
+    squares and left `_overall_state` None.
+    """
+    from app.live.live_position_guard import LivePositionGuard, LiveMonitorRegistry
+    from app.live.live_sl_monitor import build_monitor_state
+    from tests.test_live_position_guard import _NOW
+
+    reg = LiveMonitorRegistry()
+    for key, tsym in (("R1", "AAA26JUN100CE"), ("R2", "BBB26JUN100CE")):
+        reg.register(key=key, tsym=tsym, exch="NFO", qty=65, prd="I",
+                     entry_price=100.0,
+                     state=build_monitor_state(100.0, stop_pct=50),
+                     source="rehydrated")
+
+    book = [{"tsym": "AAA26JUN100CE", "exch": "NFO", "netqty": "65",
+             "lp": "60", "urmtom": "-9000"},
+            {"tsym": "BBB26JUN100CE", "exch": "NFO", "netqty": "65",
+             "lp": "60", "urmtom": "-9000"}]
+
+    async def _client():
+        class _C:
+            async def position_book(self):
+                return list(book)
+        return _C()
+
+    rec = _Recorder()
+
+    async def overall_provider():
+        return {"sl": {"enabled": True, "mode": "mtm", "value": 5000}}
+
+    g = LivePositionGuard(registry=reg, client_factory=_client,
+                          square_fn=rec.square_fn,
+                          overall_provider=overall_provider,
+                          now_fn=lambda: _NOW)
+    run(g._cycle())
+    assert rec.squared, (
+        "an account-level overall SL must fire for restart-recovered positions — "
+        "the basket was silently empty before this fix")
+    assert len(rec.squared) == 2, "an overall breach squares the WHOLE basket"
