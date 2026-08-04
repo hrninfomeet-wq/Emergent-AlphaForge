@@ -5,6 +5,63 @@ so the next session starts smarter. Newest entry first.
 
 ---
 
+## 2026-08-04 (live market) — Gate A attempt + autonomous-live audit (Claude Opus 5)
+
+**CORE LESSON — an always-on automation must define what it OWNS, or it owns everything.**
+`rehydrate_from_broker` iterated the broker position book and adopted every non-flat row.
+It was written to recover AlphaForge's own positions after a restart, and for that it was
+correct; nobody asked "what else is in this book?" In a live market it adopted a position
+the operator opened by hand on the Flattrade mobile app, gave it an invented 50% stop, fed
+it into the overall basket, and squared it for real money 24 seconds after the buy. The
+ownership marker already existed — `record_intent` writes `remarks == client_order_id` on
+every order — the adoption path simply never consulted it. **When code acts on shared
+external state, the ownership predicate is part of the feature, not a refinement.**
+
+### Confirmed approaches that worked
+
+- **Read the logs before believing any account of a real-money event.** The operator
+  believed I had squared their order; I believed the guard had not acted (my first grep
+  matched guard-vocabulary, and the placement only appears as an `httpx POST .../PlaceOrder`
+  line). Both wrong. The order book settled it: `src=MOB` for the buy, `src=API2` +
+  AlphaForge's timestamp for the sell.
+- **Reconstruct the mechanism from config, not inference.** `live_overall_settings` held
+  `target: mtm 180`. On the adopted position's ₹11,099 premium that is a 1.6% move — which
+  turned a "+₹180 target" into a **−₹178.75 realised loss** after exit slippage. The number
+  explained the event; the narrative alone would not have.
+- **Adversarial refute pass on every BLOCKER.** 24 agents: 20 findings, **11 overturned**,
+  9 confirmed. Three of the overturned were first-pass BLOCKERs. Shipping those would have
+  burned a day each.
+- **Prove red by reverting, when the fix landed first.** I patched `executor.py` before the
+  test harness was right. `git show HEAD:<file> > <file>` → 5 red → restore. Without that
+  step I would have had six green tests and no evidence they test anything.
+- **Make each test prove it reached the code under test.** `assert client.place_calls == 1`
+  caught that the margin gate was blocking at the default 2 lots — every lost-ACK test was
+  passing for the wrong reason.
+
+### Dead ends to avoid
+
+- **Do not grep for domain vocabulary to prove a subsystem was idle.** "no square/reprice/
+  transmit lines" is not evidence of no order. Grep the HTTP layer.
+- **`get_page_text` on this app returns one ticker `<article>`** — useless for the cockpit.
+  Screenshot or `read_page` instead.
+- **The Live Broker banner "SAFE — NO LIVE ENTRIES ARMED" does not mean the env flag is
+  off.** `LIVE_AUTOPLACE_ARMED=True` all morning; the banner reflects *0 live deployments*.
+- **Executor tests silently dry-run.** Default `capped_lots=2` fails the fixture margin gate
+  (₹27,300 vs ₹16,552), and without `autoplace_armed=True` you get `dry_run` and
+  `place_order` is never called. Both failures look like a passing test.
+- **A test fake that documents a field as "never queried" is a contract that will move.**
+  `_DB.live_orders = object()  # never queried` broke the moment recovery needed ownership.
+
+### What landed (2 commits, unpushed)
+
+- `ce82ba6` — guard adopts only proven-owned tsyms (fails closed), refuses SHORTs outright
+  (the monitor is long-only, so a short's stop fires on profit and never on loss), and
+  `_basket_members()` keeps rehydrated entries out of the aggregate basket.
+- `be04cca` — a lost ACK from `place_order` is INDETERMINATE: claim retained, engine halted,
+  `indeterminate: True`. Previously an `httpx.ReadTimeout` escaped unhandled, leaving a
+  possibly-real position unguarded with no journal row — so caps read zero and **the next
+  bar could place again**.
+
 ## 2026-08-04 — Orchestrated: promotion-warning split + docs cleanup (Claude Opus 5)
 
 **CORE LESSON — verify the delegated claim you were most afraid of, not a random sample.**
