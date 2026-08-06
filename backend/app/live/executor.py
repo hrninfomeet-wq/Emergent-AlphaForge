@@ -196,8 +196,13 @@ async def _transmit_and_arm(
         # can journal whether the PC-down broker backstop exists. The manual path's
         # arm returns None → oco_al_id=None.
         oco_al_id = await arm(intent, result.norenordno)
+        # Surface the BROKER-SPACE symbol and segment. The journal previously
+        # stored only the Upstox trading_symbol, so live_blotter could never match
+        # a Noren-keyed position book, and charges could not pick an exchange rate.
         return {"placed": True, "protected": True, "norenordno": result.norenordno,
-                "cid": cid, "verdicts": verdicts, "oco_al_id": oco_al_id}
+                "cid": cid, "verdicts": verdicts, "oco_al_id": oco_al_id,
+                "tsym": getattr(intent, "tsym", None),
+                "exch": getattr(intent, "exch", None)}
     except Exception as exc:
         return await _abort_protect(client, engine, intent, result.norenordno,
                                     ref_ltp, band_pct, uid, actid, reason=f"post_place_failed:{exc}")

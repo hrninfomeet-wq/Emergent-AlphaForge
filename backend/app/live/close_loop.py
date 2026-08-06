@@ -128,10 +128,12 @@ async def close_live_trade(
             # effect of journalling charges.
             if int(qty) > 0:
                 try:
-                    from app.option_costs import CostConfig, round_trip_charges
+                    from app.option_costs import (cost_config_for_exchange,
+                                                   round_trip_charges)
                     _ch = round_trip_charges(
                         entry_premium=float(entry_px), exit_premium=float(ep),
-                        quantity=int(qty), cfg=CostConfig(enabled=True))
+                        quantity=int(qty),
+                        cfg=cost_config_for_exchange(doc.get("exch")))
                     _total = round(float(_ch["total_charges"]), 2)
                     set_fields["total_charges"] = _total
                     set_fields["charges"] = _ch

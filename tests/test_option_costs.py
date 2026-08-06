@@ -1,4 +1,5 @@
 """Tests for the rupee option cost model + its integration into the backtest."""
+import pytest
 import sys
 from pathlib import Path
 
@@ -95,3 +96,77 @@ def test_cost_model_disabled_matches_gross():
     assert t["option_pnl_value"] == t["gross_option_pnl_value"]
     # 20 pts * 75 = 1500 gross
     assert t["option_pnl_value"] == 1500.0
+
+
+# ---------------------------------------------------------------------------
+# Statutory properties — ported from tests/test_live_friction_profile.py when
+# app/live/live_friction_profile.py was deleted (2026-08-07). That module was a
+# SECOND charge implementation with zero production callers; its only unique
+# value was the segment-aware exchange rate, now carried here. The properties it
+# pinned are statutory facts about Indian index options and belong on whichever
+# model survives, so they are re-asserted against round_trip_charges.
+# ---------------------------------------------------------------------------
+
+from app.option_costs import (  # noqa: E402
+    EXCHANGE_TXN_RATE_BFO, EXCHANGE_TXN_RATE_NFO, cost_config_for_exchange,
+)
+
+_ON = CostConfig(enabled=True)
+
+
+def _charges(entry=100.0, exit_=110.0, qty=50, cfg=None):
+    return round_trip_charges(entry_premium=entry, exit_premium=exit_,
+                              quantity=qty, cfg=cfg or _ON)
+
+
+def test_stt_is_levied_on_the_sell_leg_only():
+    """Finance Act: STT on options is charged on the SELL premium."""
+    assert _charges(exit_=0.0)["stt"] == 0.0
+    assert _charges(entry=0.0)["stt"] > 0.0
+
+
+def test_stamp_duty_is_levied_on_the_buy_leg_only():
+    """Stamp Act 2019: stamp duty is a BUY-side charge."""
+    assert _charges(entry=0.0)["stamp_duty"] == 0.0
+    assert _charges(exit_=0.0)["stamp_duty"] > 0.0
+
+
+def test_exchange_and_sebi_apply_to_both_legs():
+    one_leg = _charges(exit_=0.0)
+    both = _charges()
+    assert both["exchange_txn"] > one_leg["exchange_txn"]
+    assert both["sebi"] > one_leg["sebi"]
+
+
+def test_gst_applies_to_brokerage_exchange_and_sebi_only():
+    """NOT to STT or stamp duty — those are taxes, not chargeable services."""
+    c = _charges()
+    base = c["brokerage"] + c["exchange_txn"] + c["sebi"]
+    assert c["gst"] == pytest.approx(base * 0.18, abs=0.02)
+
+
+def test_total_is_the_sum_of_its_components():
+    c = _charges()
+    parts = (c["brokerage"] + c["stt"] + c["exchange_txn"]
+             + c["sebi"] + c["stamp_duty"] + c["gst"])
+    assert c["total_charges"] == pytest.approx(parts, abs=0.02)
+
+
+def test_segments_differ_only_on_the_exchange_transaction_charge():
+    nfo = _charges(cfg=cost_config_for_exchange("NFO"))
+    bfo = _charges(cfg=cost_config_for_exchange("BFO"))
+    assert nfo["stt"] == bfo["stt"]
+    assert nfo["stamp_duty"] == bfo["stamp_duty"]
+    assert nfo["exchange_txn"] > bfo["exchange_txn"]
+    assert EXCHANGE_TXN_RATE_NFO > EXCHANGE_TXN_RATE_BFO
+
+
+def test_zero_turnover_costs_nothing():
+    c = _charges(entry=0.0, exit_=0.0, qty=0)
+    assert c["total_charges"] == 0.0
+
+
+def test_negative_premiums_are_floored_not_credited():
+    """A negative premium is nonsense input; it must never REFUND charges."""
+    c = _charges(entry=-100.0, exit_=-110.0)
+    assert c["total_charges"] >= 0.0

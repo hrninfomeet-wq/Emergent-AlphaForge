@@ -574,6 +574,11 @@ async def auto_live_trade_for_signal(
         "strategy_id": signal_doc.get("strategy_id"),
         "instrument_key": instrument_key,
         "trading_symbol": contract_doc.get("trading_symbol") or "",
+        # UPSTOX-space above; the broker's own symbol + segment below. Joining the
+        # two spaces is a long-standing source of real bugs here, so both are
+        # stored explicitly rather than inferred at read time.
+        "noren_tsym": result.get("tsym") or "",
+        "exch": result.get("exch") or "",
         "lots": capped,
         "lot_size": lot_size,
         "quantity": capped * lot_size,

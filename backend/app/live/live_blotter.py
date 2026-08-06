@@ -110,7 +110,11 @@ def build_live_blotter(
     claimed_tsyms: set = set()
     rows: List[Dict[str, Any]] = []
     for t in ordered:
-        tsym = str(t.get("trading_symbol") or "")
+        # The position book is NOREN-keyed. `trading_symbol` is UPSTOX-space, so
+        # matching on it never succeeded and every live trade rendered as not-held
+        # with no broker LTP or P&L. Legacy rows predating `noren_tsym` fall back
+        # to the old field and simply do not match — the previous behaviour.
+        tsym = str(t.get("noren_tsym") or t.get("trading_symbol") or "")
         dep_id = str(t.get("deployment_id") or "")
         strategy_id = str(t.get("strategy_id") or "")
         dep = deployments_by_id.get(dep_id) or {}

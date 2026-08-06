@@ -39,10 +39,47 @@ DEFAULT_BROKERAGE_PER_ORDER = 0.0        # Flattrade = 0; set 20 for Zerodha/Ups
 # Saved presets/runs that serialized a full cost_config keep their stored rate
 # (reproducibility); only configs without an explicit stt_sell_rate get this.
 DEFAULT_STT_SELL_RATE = 0.001
-DEFAULT_EXCHANGE_TXN_RATE = 0.00035      # ~0.035% of premium turnover (NSE options)
+DEFAULT_EXCHANGE_TXN_RATE = 0.0003503   # == EXCHANGE_TXN_RATE_NFO below.
+# One NSE rate for paper, backtest AND live: a separate, marginally different
+# default here would silently make live charge differently from the paper run
+# that validated it — the exact divergence this consolidation removes.
 DEFAULT_SEBI_RATE = 0.000001             # ₹10 per crore = 0.0001%
 DEFAULT_GST_RATE = 0.18                  # 18% on (brokerage + exchange txn + SEBI)
 DEFAULT_STAMP_BUY_RATE = 0.00003         # 0.003% on BUY-side premium turnover
+
+# Exchange transaction charges differ by SEGMENT. DEFAULT_EXCHANGE_TXN_RATE above
+# is the NSE (NFO) figure; BSE (BFO — SENSEX) is materially lower, so charging the
+# NSE rate on a SENSEX trade over-states that component by ~7.7%.
+#
+# Ported from the former app/live/live_friction_profile.py, which carried the only
+# segment-aware schedule in the codebase and had ZERO callers. Keeping a second,
+# unwired charge implementation is a trap — a future caller wires the wrong one and
+# live silently diverges from paper — so the knowledge moved here and the duplicate
+# module was deleted.
+#
+# RATES ARE STATUTORY AND CHANGE. Verify against current circulars before relying
+# on these for anything beyond estimation:
+#   NSE circular CML/2024/57 and BSE notice 20240930-1 (exchange txn charges,
+#   effective 2024-10-01); Finance Act 2024 (STT, options sell-side);
+#   SEBI/HO/MRD/MRD-PoD-1/P/CIR/2022/0044 (SEBI fee); Stamp Act 2019 (stamp duty,
+#   buy-side). Flattrade charges ZERO F&O brokerage, hence the 0.0 default above.
+EXCHANGE_TXN_RATE_NFO = DEFAULT_EXCHANGE_TXN_RATE   # NSE F&O (~0.03503%)
+EXCHANGE_TXN_RATE_BFO = 0.000325    # BSE F&O options (~0.0325% of turnover)
+
+
+def cost_config_for_exchange(exch: Optional[str]) -> "CostConfig":
+    """An enabled CostConfig carrying the exchange-transaction rate for *exch*.
+
+    "BFO" (BSE / SENSEX) gets the BSE rate; everything else — including an
+    unknown, empty or missing value — falls back to NSE, which is the busier
+    segment and the safer over-estimate of charges.
+    """
+    cfg = CostConfig(enabled=True)
+    cfg.exchange_txn_rate = (
+        EXCHANGE_TXN_RATE_BFO if str(exch or "").strip().upper() == "BFO"
+        else EXCHANGE_TXN_RATE_NFO
+    )
+    return cfg
 
 
 @dataclass
