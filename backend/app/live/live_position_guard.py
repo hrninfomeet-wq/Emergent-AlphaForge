@@ -613,10 +613,20 @@ class LivePositionGuard:
                     _parts = [x for x in (_u, _r) if x is not None]
                     if not _parts:
                         continue          # neither field parsed — UNKNOWN, not zero
+                    # The broker's TRUE average buy price for this contract today.
+                    # Entries are long-only (the executor refuses sells), so the
+                    # buy average IS the entry. live_trades.entry_price is the
+                    # pre-trade REFERENCE premium used to band the limit — an
+                    # intent, not a fill — so without this every live rupee is
+                    # measured from a price the account never paid. The exact
+                    # per-order `avgprc` lives on live_orders, but its only writer
+                    # (order_sm via engine.on_om) has NO production feed, so the
+                    # position book is the reachable source.
                     marks.append({
                         "norenordno": entry.get("id"),
                         "unrealized_pnl": sum(_parts),
                         "mark_price": _finite_num(pos.get("lp")),
+                        "entry_fill_price": _finite_pos(pos.get("daybuyavgprc")),
                         "marked_at": _marked_at,
                     })
                 if marks:

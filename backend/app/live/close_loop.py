@@ -100,9 +100,19 @@ async def close_live_trade(
     if ep is not None:
         set_fields["exit_price"] = ep
         qty = _finite(doc.get("quantity"))
-        entry_px = _finite(doc.get("entry_price"))
+        # Measure from the price the account ACTUALLY PAID. `entry_price` is the
+        # pre-trade REFERENCE premium used to band the limit order — an intent —
+        # so P&L measured against it silently excluded all entry slippage.
+        # `entry_fill_price` is the broker's own average, captured by the guard's
+        # mark cycle from the position book. Falls back to the reference for any
+        # trade the guard never marked, so no historical row changes meaning.
+        entry_px = _finite(doc.get("entry_fill_price"))
+        if entry_px is None:
+            entry_px = _finite(doc.get("entry_price"))
         if qty is not None and entry_px is not None:
-            set_fields["realized_pnl"] = qty * (ep - entry_px)
+            # Round like every other money field here (close_economics,
+            # option_backtest): an unrounded product yields -227.4999999999986.
+            set_fields["realized_pnl"] = round(qty * (ep - entry_px), 2)
     res = await db.live_trades.update_one(flt, {"$set": set_fields})
     modified = getattr(res, "modified_count", None)
     if modified is None:  # FakeDB / drivers without modified_count

@@ -227,6 +227,28 @@ async def _live_guard_on_mark(marks) -> None:
                 "marked_at": m.get("marked_at"),
             }},
         )
+        # Capture the broker-true entry fill ONCE. `daybuyavgprc` is the day's
+        # average across ALL buys of the contract: with one position per contract
+        # per day (the normal case) it is exact, but a second same-day entry would
+        # blend them — so the FIRST observation wins and is never overwritten.
+        fill = m.get("entry_fill_price")
+        if fill is not None:
+            doc = await db.live_trades.find_one(
+                {"norenordno": ordno, "entry_fill_price": {"$exists": False}},
+                {"entry_price": 1, "_id": 0})
+            if doc is not None:
+                ref = doc.get("entry_price")
+                slip = None
+                try:
+                    slip = round(float(fill) - float(ref), 4)
+                except (TypeError, ValueError):
+                    slip = None
+                await db.live_trades.update_one(
+                    {"norenordno": ordno, "entry_fill_price": {"$exists": False}},
+                    {"$set": {"entry_fill_price": float(fill),
+                              "entry_ref_price": ref,
+                              "entry_slippage": slip}},
+                )
 
 
 async def _live_guard_on_expire(entry, reason) -> None:
