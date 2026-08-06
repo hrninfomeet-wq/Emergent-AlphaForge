@@ -219,6 +219,81 @@ def _open_unrealized_today(rows: List[Dict[str, Any]], today: str,
     return total
 
 
+def evaluate_risk_supervision(
+    *,
+    rows: List[Dict[str, Any]],
+    deployments: List[Dict[str, Any]],
+    account_config: Dict[str, Any],
+    today: str,
+    now_utc: datetime,
+) -> Dict[str, Any]:
+    """Decide what a periodic risk sweep should do. PURE — no DB, no clock, no I/O.
+
+    Exists because ``check_account_caps``/``check_live_caps`` have exactly one
+    caller each: ``auto_live``, the new-entry path. Nothing evaluated them on a
+    timer, so a held position running against the account tripped nothing at all —
+    the stop could only fire when a NEW signal arrived, which is precisely what
+    does not happen while a position is being held. An unattended bot could bleed
+    past its configured limits indefinitely.
+
+    Returns ``halt_account`` (trip the account latch + halt the engine) and
+    ``pause_deployment_ids`` (per-deployment ``daily_loss_cap`` breaches).
+
+    It NEVER squares. Flattening is the guard's job and a separate operator
+    decision; a timer must not acquire the power to place real orders. Supervision
+    blocks new entries — it does not liquidate.
+
+    Unknown exposure (a missing or stale position mark) yields NO action: halting
+    trips a STICKY latch that only a human can clear, and a liveness defect must
+    not be escalated into that.
+    """
+    # Local import mirrors check_account_caps — avoids a module-level cycle.
+    from app.live.kill_switch import evaluate_guardrails
+
+    open_count = sum(1 for r in rows
+                     if str(r.get("status") or "").upper() == "OPEN")
+    realized = daily_realized_summary(rows, today)["net"]
+    open_mtm, unknown = open_unrealized_today(rows, today, now_utc=now_utc)
+    mtm = realized + open_mtm
+
+    out: Dict[str, Any] = {
+        "halt_account": False,
+        "pause_deployment_ids": [],
+        "mtm": mtm,
+        "open_count": open_count,
+        "exposure_unknown": bool(unknown),
+        "reasons": {},
+    }
+    if unknown or not math.isfinite(mtm):
+        return out
+
+    if evaluate_guardrails(mtm, open_count, account_config) == "broker_stop_loss":
+        out["halt_account"] = True
+        out["reasons"]["account"] = "broker_stop_loss"
+
+    for dep in deployments or ():
+        if str(dep.get("status") or "").upper() != "ACTIVE":
+            continue
+        if str(dep.get("mode") or "").lower() != "live":
+            continue
+        cap = _float_or_none(((dep.get("risk") or {}).get("live") or {})
+                             .get("daily_loss_cap"))
+        if cap is None or cap <= 0:
+            continue
+        dep_id = str(dep.get("id") or "")
+        dep_rows = [r for r in rows if str(r.get("deployment_id") or "") == dep_id]
+        if not dep_rows:
+            continue
+        d_real = daily_realized_summary(dep_rows, today)["net"]
+        d_open, d_unknown = open_unrealized_today(dep_rows, today, now_utc=now_utc)
+        if d_unknown:
+            continue
+        if d_real + d_open <= -abs(cap):
+            out["pause_deployment_ids"].append(dep_id)
+            out["reasons"][dep_id] = "daily_loss_cap"
+    return out
+
+
 async def check_live_caps(
     db: Any,
     deployment: Dict[str, Any],

@@ -971,6 +971,102 @@ async def _deployment_evaluator_loop() -> None:
             await asyncio.sleep(15.0)
 
 
+#: How often the risk supervisor re-evaluates account + per-deployment caps.
+_RISK_SUPERVISE_POLL_SEC = 10.0
+
+
+async def _risk_supervisor_loop() -> None:
+    """Re-evaluate live risk caps on a TIMER, not only when a signal arrives.
+
+    ``check_account_caps`` / ``check_live_caps`` are called from exactly one place
+    — ``auto_live``, the new-entry path. Nothing evaluated them periodically, so a
+    held position running against the account tripped nothing at all: the stop
+    could only fire when a NEW signal arrived, which is precisely what does not
+    happen while a position is being held. An unattended bot could bleed past its
+    configured limits indefinitely.
+
+    Blocks new entries only — halts the engine / latches the account and pauses a
+    breached deployment. It NEVER squares: flattening is the guard's job and a
+    separate operator decision, and a timer must not acquire the power to place
+    real orders.
+
+    The decision itself is the pure ``evaluate_risk_supervision``; this loop does
+    only I/O. Never raises out.
+    """
+    from datetime import time as _time
+    from app.nse_calendar import is_trading_day
+    from app.live_deploy_governor import evaluate_risk_supervision
+    log.info("Risk supervisor loop initialized")
+    _last_halt_logged = False
+    while True:
+        try:
+            await asyncio.sleep(_RISK_SUPERVISE_POLL_SEC)
+            now_utc = datetime.now(timezone.utc)
+            ist_now = now_utc + timedelta(hours=5, minutes=30)
+            if not (is_trading_day(ist_now.strftime("%Y-%m-%d"))
+                    and _time(9, 15) <= ist_now.time() < _time(15, 30)):
+                continue
+
+            db = get_db()
+            deployments = await db.strategy_deployments.find(
+                {"status": "ACTIVE", "mode": "live"}, {"_id": 0}).to_list(length=None)
+            if not deployments:
+                continue          # nothing live — nothing to supervise
+            rows = await db.live_trades.find({}).to_list(length=None)
+
+            from app.live.kill_switch import default_store as _safety_store
+            cfg = await _safety_store().get_config()
+            verdict = evaluate_risk_supervision(
+                rows=rows, deployments=deployments, account_config=cfg,
+                today=ist_now.date().isoformat(), now_utc=now_utc)
+
+            if verdict["halt_account"]:
+                if not _last_halt_logged:
+                    log.warning("risk supervisor: account guardrail breached "
+                                "(mtm=%.2f, open=%s) — halting entries",
+                                verdict["mtm"], verdict["open_count"])
+                    _last_halt_logged = True
+                eng = _live_engine_for_supervision()
+                if eng is not None:
+                    # Trips the sticky latch + halts. Idempotent by design.
+                    await eng.guardrail_tick(verdict["mtm"], verdict["open_count"])
+            else:
+                _last_halt_logged = False
+
+            for dep_id in verdict["pause_deployment_ids"]:
+                await _set_deployment_status(db, dep_id, "PAUSED")
+                await db.strategy_deployments.update_one(
+                    {"id": dep_id},
+                    {"$set": {"risk.live.last_block_reason": "daily_loss_cap"}})
+                log.warning("risk supervisor: deployment %s breached its daily "
+                            "loss cap — PAUSED (entries only; nothing squared)",
+                            dep_id)
+        except asyncio.CancelledError:
+            log.info("Risk supervisor loop cancelled")
+            return
+        except Exception as exc:
+            log.exception("Risk supervisor loop error: %s", exc)
+            await asyncio.sleep(15.0)
+
+
+def _live_engine_for_supervision():
+    """Build a LiveEngine for the supervisor, or None when the broker is absent."""
+    try:
+        from app.live.engine import LiveEngine
+        from app.live.idempotency import default_store as _intent_store
+        from app.live.kill_switch import default_store as _safety_store
+        return LiveEngine(
+            client=None,
+            orders_collection=get_db().live_orders,
+            intent_store=_intent_store(),
+            config_store=_safety_store(),
+        )
+    except Exception as exc:
+        log.warning("risk supervisor: could not build engine (%s) — "
+                    "latch not tripped this pass", exc)
+        return None
+
+
 async def _live_feed_supervisor_loop() -> None:
     """Keep the Upstox stream + candle roller running during market hours whenever
     the token is valid. Fixes the 'app started before the daily OAuth' gap and
