@@ -112,7 +112,33 @@ async def close_live_trade(
         if qty is not None and entry_px is not None:
             # Round like every other money field here (close_economics,
             # option_backtest): an unrounded product yields -227.4999999999986.
-            set_fields["realized_pnl"] = round(qty * (ep - entry_px), 2)
+            gross = round(qty * (ep - entry_px), 2)
+            set_fields["realized_pnl"] = gross
+            # What the exchange actually took. Paper and backtest both apply this
+            # model; live did not, so the three were never measuring the same
+            # quantity — and `routers/live_broker` already PROJECTS total_charges,
+            # reading a field nothing wrote. Parity is by SHARED CODE: the same
+            # `round_trip_charges` paper's close path uses, levied on the prices
+            # actually transacted (STT is a turnover tax).
+            #
+            # `realized_pnl` deliberately stays GROSS — `close_economics` records
+            # the project's decision that kill-switch / caps / analytics semantics
+            # are unchanged. The day-stop sums it; making the loss cap
+            # net-of-charges is an explicit operator policy call, not a side
+            # effect of journalling charges.
+            if int(qty) > 0:
+                try:
+                    from app.option_costs import CostConfig, round_trip_charges
+                    _ch = round_trip_charges(
+                        entry_premium=float(entry_px), exit_premium=float(ep),
+                        quantity=int(qty), cfg=CostConfig(enabled=True))
+                    _total = round(float(_ch["total_charges"]), 2)
+                    set_fields["total_charges"] = _total
+                    set_fields["charges"] = _ch
+                    set_fields["net_realized_pnl"] = round(gross - _total, 2)
+                except Exception as exc:      # never block the close on costing
+                    log.warning("close_live_trade: charge computation failed for "
+                                "%s (%s) — realized_pnl still journalled", norenordno, exc)
     res = await db.live_trades.update_one(flt, {"$set": set_fields})
     modified = getattr(res, "modified_count", None)
     if modified is None:  # FakeDB / drivers without modified_count
