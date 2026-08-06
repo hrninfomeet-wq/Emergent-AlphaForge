@@ -4,7 +4,43 @@ import numpy as np
 import pandas as pd
 from typing import Dict, Tuple
 from app.cpr import cpr_levels
+from app.session_spec import CAS_EFFECTIVE_ISO, CAS_END_MIN, CAS_START_MIN
 from app.vol_seasonality import attach_tod_tradeable
+
+
+# --- Closing-auction handling ---------------------------------------------
+# From 2026-08-03 the cash/index segment stops trading continuously at 15:15 and
+# settles via a closing auction. No constituent trades during it, so the index
+# freezes: identical zero-range bars from 15:15, then the auction close lands as
+# one large jump bar (observed +200.95 points on NIFTY, 2026-08-03).
+#
+# Feeding that to a stateful indicator is actively harmful — ATR and Bollinger
+# width decay toward zero across the flat bars, then every breakout / momentum
+# gate fires on a synthetic gap. So auction bars are EXCLUDED from indicator
+# input and the indicator holds its last real value across the window.
+#
+# Note the deliberate asymmetry with OHLC: `warehouse_ohlc` keeps these bars,
+# because the 15:29 bar carries the official closing price and dropping it would
+# make every daily close in the warehouse wrong. Indicators want them gone; the
+# candle series needs them.
+
+
+def cas_window_mask(df: pd.DataFrame) -> pd.Series:
+    """Per-bar bool: True where the bar falls inside the closing auction.
+
+    Date-aware by design — bars before `CAS_EFFECTIVE_ISO` are never flagged, so
+    stored history and the backtests built on it are untouched. Derived from `ts`
+    only. NaT timestamps compare False and read as pre-CAS, which is the safe
+    default.
+    """
+    if "ts" not in df.columns or len(df) == 0:
+        return pd.Series(False, index=df.index, dtype=bool)
+    ist = pd.to_datetime(df["ts"], unit="ms", utc=True).dt.tz_convert("Asia/Kolkata")
+    minute = ist.dt.hour * 60 + ist.dt.minute
+    effective = pd.Timestamp(CAS_EFFECTIVE_ISO, tz="Asia/Kolkata")
+    on_or_after = ist.dt.normalize() >= effective
+    in_window = (minute >= CAS_START_MIN) & (minute < CAS_END_MIN)
+    return (on_or_after & in_window).fillna(False).astype(bool)
 
 
 # --- Intra-session gap handling -------------------------------------------
@@ -32,7 +68,41 @@ def gap_before_mask(df: pd.DataFrame) -> pd.Series:
     return pd.Series(out, index=df.index)
 
 
-def _reset_on_gap(df: pd.DataFrame, fn, *, mask_col: str = "gap_before"):
+CAS_MASK_COL = "in_cas_window"
+
+
+def _hold_across(series: pd.Series, index) -> pd.Series:
+    """Realign onto the full frame, giving auction bars a no-signal value.
+
+    The right filler depends on what the column means:
+
+      * **numeric** indicators are *state* (ema, rsi, atr, macd, supertrend) —
+        holding the last real value is precisely "nothing happened".
+      * **bool / object** columns here are per-bar *event* markers (`fvg`,
+        `is_swing_high`, `nr7`, `inside_bar`). Forward-filling those would
+        manufacture a fresh signal on every one of the ~15 suppressed bars, so
+        they get their empty value (False / None) instead.
+
+    Bool columns are cast back to bool as well — `reindex` introduces NaN, which
+    would otherwise promote them to object and break downstream `&`/`|` masks.
+    """
+    out = series.reindex(index)
+    if series.dtype == bool:
+        return out.fillna(False).astype(bool)
+    if series.dtype == object:
+        return out.astype(object).where(out.notna(), None)
+    return out.ffill()
+
+
+def _realign_across_cas(out, index):
+    if isinstance(out, tuple):
+        return tuple(_hold_across(s, index) for s in out)
+    if isinstance(out, dict):
+        return {key: _hold_across(value, index) for key, value in out.items()}
+    return _hold_across(out, index)
+
+
+def _split_on_gap(df: pd.DataFrame, fn, *, mask_col: str = "gap_before"):
     """Apply `fn` to each gap-bounded contiguous slice of `df` and reassemble.
 
     `fn(sub_df)` returns a Series, a tuple[Series, ...], or a dict[str, Series].
@@ -55,6 +125,32 @@ def _reset_on_gap(df: pd.DataFrame, fn, *, mask_col: str = "gap_before"):
     if isinstance(first, dict):
         return {key: pd.concat([p[key] for p in parts]) for key in first}
     return pd.concat(parts)
+
+
+def _reset_on_gap(df: pd.DataFrame, fn, *, mask_col: str = "gap_before",
+                  cas_col: str = CAS_MASK_COL):
+    """Apply `fn` gap-safely, with closing-auction bars excluded from the input.
+
+    Two independent corrections compose here:
+      * intra-session gaps split the frame so each contiguous slice re-warms
+      * auction bars are dropped before computing, then the result is realigned
+        with the last real value held across the window
+
+    Fast-path: a frame with no auction bars takes the original code path
+    untouched, so every pre-2026-08-03 window stays byte-identical to the
+    pre-change computation. Dropping the auction bars cannot manufacture a false
+    gap either — they sit at the very end of the session, so the bar that follows
+    is next-day 09:15, and `gap_before_mask` never flags a cross-date boundary.
+    """
+    if cas_col not in df.columns:
+        return _split_on_gap(df, fn, mask_col=mask_col)
+    cas = df[cas_col].to_numpy(dtype=bool)
+    if not cas.any():
+        return _split_on_gap(df, fn, mask_col=mask_col)
+    live = df.loc[~cas]
+    if live.empty:
+        return _split_on_gap(df, fn, mask_col=mask_col)
+    return _realign_across_cas(_split_on_gap(live, fn, mask_col=mask_col), df.index)
 
 
 def ema(series: pd.Series, length: int) -> pd.Series:
@@ -322,10 +418,23 @@ def candle_geometry(df: pd.DataFrame, *, z_window: int = 60) -> Dict[str, pd.Ser
     }
 
 
-def precompute_all_indicators(df: pd.DataFrame, params: dict | None = None) -> pd.DataFrame:
-    """Compute all indicators needed by built-in strategies. Returns enriched df."""
+def precompute_all_indicators(df: pd.DataFrame, params: dict | None = None,
+                              segment: str = "spot") -> pd.DataFrame:
+    """Compute all indicators needed by built-in strategies. Returns enriched df.
+
+    `segment` describes what `df` holds. The default "spot" is correct for every
+    current caller — this is the cash/index signal series. Pass "options" for an
+    F&O premium series: derivatives trade continuously through the cash closing
+    auction, so their bars are real and must NOT be suppressed.
+    """
     p = params or {}
     df = df.copy()
+    # Written before `gap_before` to match the `indicator_groups.GROUPS` order —
+    # `test_indicator_equivalence` holds the two paths to identical column order.
+    df[CAS_MASK_COL] = (
+        pd.Series(False, index=df.index, dtype=bool) if segment == "options"
+        else cas_window_mask(df)
+    )
     df["gap_before"] = gap_before_mask(df)
     df["ema9"] = _reset_on_gap(df, lambda d: ema(d["close"], int(p.get("ema_fast", 9))))
     df["ema21"] = _reset_on_gap(df, lambda d: ema(d["close"], int(p.get("ema_slow", 21))))

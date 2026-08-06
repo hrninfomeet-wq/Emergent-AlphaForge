@@ -183,8 +183,83 @@ family — see `PREMIUM_MOMENTUM_EDGE_VERDICT_2026-07.md`.
 10. **Workflow verifier agents die on spend limits.** Findings without a verifier are
     UNVERIFIED claims. Recover partial work from
     `.../subagents/workflows/<run>/journal.jsonl` — the result key is `result`, not `value`.
+11. **The market itself can invalidate a backtest.** History is not a stationary
+    substrate. See §8 — on 2026-08-03 the exchange changed the session shape, so
+    every strategy validated on earlier data was validated on a microstructure that
+    no longer exists. Nothing in the code was wrong; the world moved.
 
-## 8. Reproducing the evidence
+## 8. Market-structure break — 2026-08-03 session split
+
+**This is not a code defect. It is a regime boundary in the data**, and it is the
+one entry in this register that no amount of code review would have surfaced.
+
+SEBI's Closing Auction Session framework took effect across NSE/BSE/MSEI on
+**2026-08-03**, splitting a session shape that had been uniform for the app's whole
+history:
+
+* **Cash / index** — continuous trading now ends **15:15**, with an auction to
+  15:35 printing the official close. Every NIFTY 50 / SENSEX constituent is
+  F&O-eligible, so *nothing trades* during the auction and the published index
+  simply stops. Measured on NIFTY, 2026-08-03: **14 consecutive zero-range bars**
+  at 24573.35, then **24774.30 — a +200.95 point (+0.82%) one-bar gap.**
+* **Equity derivatives** — trade on to **15:40**. Spot and options no longer share
+  a day length: 375 bars vs 385.
+
+### Why it matters for backtests
+
+Any run spanning 2026-08-03 mixes two microstructures. Feeding the frozen tail to a
+stateful indicator is actively harmful — ATR and Bollinger width decay toward zero
+across the flat bars and then every breakout gate fires on a synthetic gap. **A
+strategy tuned across this boundary is fitting an artifact.**
+
+### What was done
+
+`backend/app/session_spec.py` is the single date- and segment-aware source of
+session bounds, keyed on `CAS_EFFECTIVE_DATE`. Auction bars are flagged
+`in_cas_window` and **excluded from every indicator's input** (state indicators
+hold their last real value; event markers read empty), while remaining in the
+candle series because the 15:29 bar carries the official close. Live guards now
+watch to 15:40. Pre-2026-08-03 output is unchanged, enforced by
+`tests/test_cas_indicator_suppression.py::test_pre_cas_day_is_untouched`.
+
+### Measured 2026-08-05 — the warehouse is complete
+
+`backend/scripts/audit_cas_session_coverage.py` was run against the live warehouse.
+**Upstox serves the full extended session: 385 bars/contract, last bar 15:39, on
+every post-CAS day for NIFTY, BANKNIFTY and SENSEX — every contract complete.** No
+vendor escalation is needed. (Flattrade's *historical* API does compress the window
+into its 15:29 bar; that is a Flattrade-only artifact and does not affect our data.)
+
+Spot behaves exactly as described: 375 bars, last 15:29, with 14 frozen tail bars on
+every post-CAS index day. **INDIA VIX does not freeze** (0–1 flat bars) because it is
+derived from the option order book, which keeps trading — and it is correctly never
+CAS-masked, being an `AUX_INSTRUMENT_KEYS` series that no indicator path enriches.
+
+### The damage, quantified on real data
+
+Running `precompute_all_indicators` over the stored NIFTY frame for 2026-08-03, with
+and without suppression:
+
+| IST | ATR suppressed | ATR unsuppressed | |
+|---|---|---|---|
+| 15:14 | 9.689 | 9.689 | last real bar |
+| 15:20 | 9.689 | 6.221 | decayed to 64% |
+| 15:28 | 9.689 | 3.439 | **decayed to 35%** |
+| 15:29 | 9.689 | 17.547 | **spiked to 181%** |
+
+Unsuppressed ATR swings **3.44 → 17.55, a 5.1× jump in one minute**, entirely on
+artifact. Note our stored 15:29 bar has a true range of **200.95** (Upstox captures
+the transition within the bar; Flattrade only prints the final value), so anything
+ATR-scaled — stop sizing, volatility gates, breakout thresholds — would have been
+badly wrong in that window.
+
+### Open — unrelated data gap found while measuring
+
+**BANKNIFTY has no data at all for 2026-08-03** (0 spot bars, 0 option contracts),
+while NIFTY/SENSEX/INDIAVIX all have a full 375. A failed ingest that day, not a CAS
+effect. Run the data-hygiene catch-up for it.
+
+## 9. Reproducing the evidence
 
 ```bash
 # a run's real numbers (premium runs: read option_backtest, NOT metrics)

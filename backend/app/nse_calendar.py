@@ -96,7 +96,9 @@ SPECIAL_SATURDAY_SESSIONS: Set[str] = {
     "2026-02-01",  # Union Budget 2026-27 (declared Saturday session)
 }
 
-# Standard NSE/BSE regular session is 09:15-15:30 IST = 375 one-minute candles.
+# Standard NSE/BSE cash session is 09:15-15:30 IST = 375 one-minute candles.
+# Still 375 after the 2026-08-03 closing-auction change — the index publishes to
+# 15:30 either way. The OPTIONS day grew to 385; see `app.session_spec`.
 REGULAR_SESSION_CANDLES = 375
 
 # Muhurat (Diwali) trading is a special ~1-hour evening session. These dates ARE
@@ -228,37 +230,67 @@ def is_trading_day(iso_date: str) -> bool:
     return iso_date not in ALL_HOLIDAYS
 
 
-# Regular session bounds in IST minutes-of-day (09:15 .. 15:30).
+# Regular CASH-segment session bounds in IST minutes-of-day (09:15 .. 15:30).
+# These stay correct for spot: the index feed still publishes through 15:30, it
+# just stops moving once the closing auction starts at 15:15. Anything that needs
+# the OPTIONS session (which runs to 15:40 from 2026-08-03) must go through
+# `app.session_spec.session_spec(date, OPTIONS)` instead of these constants.
 SESSION_OPEN_MIN = 9 * 60 + 15
 SESSION_CLOSE_MIN = 15 * 60 + 30
 
 
-def market_status(now_ist) -> dict:
-    """Regular-session market status for a given IST datetime — the single,
-    holiday-aware source of "is the market open right now?" so the UI never has
-    to guess. `now_ist` is a naive/aware datetime already shifted to IST.
+def _hhmm(minute_of_day: int) -> str:
+    return f"{minute_of_day // 60:02d}:{minute_of_day % 60:02d}"
 
-    Phases: weekend | holiday | pre_open | open | closed. Muhurat evening
-    sessions are intentionally not modeled (rare; is_trading_day still True, so
-    a Muhurat-only day reads as 'closed' during regular hours — acceptable).
+
+def market_status(now_ist) -> dict:
+    """Market status for a given IST datetime — the single, holiday-aware source
+    of "is the market open right now?" so the UI never has to guess. `now_ist` is
+    a naive/aware datetime already shifted to IST.
+
+    Phases: weekend | holiday | pre_open | open | cas | derivatives_only | closed.
+
+    The last two exist because 2026-08-03 split the day in two. `cas` is the cash
+    closing auction (15:15-15:30) — the index is frozen and prints no new trades,
+    so a spot-derived signal is stale by construction. `derivatives_only`
+    (15:30-15:40) is the window where F&O still trades after cash has settled.
+    `is_open` stays true across both: the app trades options, and they remain
+    tradeable. Before 2026-08-03 neither phase can occur and the output is
+    unchanged.
+
+    Muhurat evening sessions are intentionally not modeled (rare; is_trading_day
+    still True, so a Muhurat-only day reads as 'closed' during regular hours —
+    acceptable).
     """
+    from app.session_spec import OPTIONS, SPOT, session_spec  # deferred: session_spec imports this module
+
     iso = now_ist.strftime("%Y-%m-%d")
     minutes = now_ist.hour * 60 + now_ist.minute
     trading = is_trading_day(iso)
+    cash = session_spec(iso, SPOT)
+    derivatives = session_spec(iso, OPTIONS)
+
     if not trading:
         phase = "weekend" if now_ist.weekday() >= 5 else "holiday"
-    elif minutes < SESSION_OPEN_MIN:
+    elif minutes < cash.open_min:
         phase = "pre_open"
-    elif minutes < SESSION_CLOSE_MIN:
+    elif cash.in_cas(minutes):
+        phase = "cas"
+    elif minutes < cash.close_min:
         phase = "open"
+    elif minutes < derivatives.close_min:
+        phase = "derivatives_only"
     else:
         phase = "closed"
+
     return {
-        "is_open": phase == "open",
+        "is_open": phase in ("open", "cas", "derivatives_only"),
         "phase": phase,
         "is_trading_day": trading,
-        "session_open_ist": "09:15",
-        "session_close_ist": "15:30",
+        "session_open_ist": _hhmm(cash.open_min),
+        "session_close_ist": _hhmm(cash.close_min),
+        "derivatives_close_ist": _hhmm(derivatives.close_min),
+        "cas_start_ist": _hhmm(cash.cas_start_min) if cash.has_cas else None,
         "now_ist": now_ist.strftime("%Y-%m-%dT%H:%M:%S+05:30"),
     }
 

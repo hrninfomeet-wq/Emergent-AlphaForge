@@ -455,7 +455,7 @@ export default function WarehouseChart() {
         <div className="mt-2 text-[10px] text-dimmer font-mono">
           {instrument} · {timeframe} · {fmtInt(meta.bar_count)} bars · stored warehouse data
           {" · full stored range"}
-          <span data-testid="chart-session-note"> · Axis: IST · regular session 09:15-15:30 · blue dots mark session opens</span>
+          <span data-testid="chart-session-note"> · Axis: IST · regular session 09:15-15:30 (index frozen 15:15-15:30 from 2026-08-03; F&O to 15:40) · blue dots mark session opens</span>
         </div>
       </div>
     </div>

@@ -2,6 +2,63 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [Unreleased] — NSE/BSE closing-auction session split (2026-08-05)
+
+**SEBI's Closing Auction Session took effect 2026-08-03 across NSE, BSE and MSEI,
+and it changed the shape of the trading day for the first time in the app's history.**
+Cash/index continuous trading now ends **15:15** with an auction to 15:35; equity
+derivatives trade on to **15:40**. Spot and options no longer share a day length
+(375 vs 385 one-minute bars).
+
+The consequential part is not the extra ten minutes — it is that **the index freezes
+during the auction**. Every NIFTY 50 / SENSEX constituent is F&O-eligible, so nothing
+trades and the published index stops moving. Measured on NIFTY 2026-08-03: 14
+consecutive zero-range bars at 24573.35, then 24774.30 — a **+200.95 point (+0.82%)
+one-bar gap**. Fed to a stateful indicator that is actively harmful: ATR and Bollinger
+width decay toward zero across the flat bars, then every breakout gate fires on a
+synthetic gap.
+
+- **New `backend/app/session_spec.py`** — the single date- and segment-aware source of
+  session bounds, keyed on `CAS_EFFECTIVE_DATE = 2026-08-03`. Everything before that
+  date resolves to the legacy shape, so ~2 years of stored history and every backtest
+  built on it are untouched (pinned by `test_pre_cas_day_is_untouched`).
+- **Auction bars are excluded from indicator input** via a new `in_cas_window` column,
+  applied at the single `_reset_on_gap` choke point so all ~25 indicators inherit it.
+  State indicators (ema/rsi/atr/macd) hold their last real value across the window;
+  event markers (`fvg`, swing points, `nr7`) read empty rather than being forward-filled,
+  which would otherwise have manufactured ~15 fresh signals per day. The bars stay in
+  the candle series — the 15:29 bar carries the official close, so dropping it would
+  make every daily close in the warehouse wrong.
+- **Live guards watch to 15:40.** `live_position_guard`, `live_sl_monitor` and
+  `live_exit_monitor` bounded market hours at 15:30, which would have left an open
+  option position unguarded for the last ten minutes of its own tradeable session.
+  Entry gating is unchanged — entries were already blocked from 14:50, before the
+  auction starts, so no new entry gate was needed.
+- **Option coverage is date-aware.** A complete post-CAS contract-day is 385 bars; the
+  audit compared against a flat 375, so a day missing the entire 15:30–15:40 tape would
+  have reported 100% coverage. `_weekday_counts` also stops expecting 375 bars on
+  market holidays, which it previously did.
+- **UI**: `market_status` gains `cas` and `derivatives_only` phases plus
+  `derivatives_close_ist`/`cas_start_ist`; the cockpit pill and Live Signals chip render
+  them. `lib/time.js` end-of-day bound moves 15:30 → 15:40 so range queries stop
+  truncating the last ten minutes of every option series.
+- **Measured against the live warehouse (2026-08-05)**: Upstox serves the full extended
+  session — **385 bars/contract, last bar 15:39, every contract complete** on every
+  post-CAS day for NIFTY, BANKNIFTY and SENSEX. No vendor escalation needed. (Flattrade's
+  *historical* API does compress the window into its 15:29 bar; that artifact is
+  Flattrade-only and does not affect our data.) New
+  `backend/scripts/audit_cas_session_coverage.py` reports this on demand.
+- **The damage, quantified on the real 2026-08-03 NIFTY frame**: unsuppressed ATR decays
+  to **35%** of its true value across the flat bars (9.689 → 3.439), then spikes to
+  **181%** on the auction-close bar (17.547) — a **5.1× swing in one minute**, entirely
+  artifact. Our stored 15:29 bar carries a true range of 200.95. With suppression ATR
+  correctly holds at 9.689 throughout.
+- **Unrelated gap found while measuring**: **BANKNIFTY has no data for 2026-08-03** (0
+  spot bars, 0 option contracts) while the other instruments have a full session. A
+  failed ingest that day, not a CAS effect — needs a data-hygiene catch-up.
+
+Suite: **4445 passed, 4 xfailed**.
+
 ## [Unreleased] — Stage 1 integrity + promotion freedom (2026-08-01)
 
 ### Stage 1 integrity

@@ -155,6 +155,7 @@ Every `row` provided to `evaluate()` already has these columns computed by `prec
 | `is_swing_high`, `is_swing_low` | Boolean swing detection (5-bar default) |
 | `session_date`, `ist_time` | For session-anchored logic |
 | `gap_before` | Boolean: this bar is >1 min after the previous bar within the same IST session (a warehouse data gap). Rolling indicators reset their warm-up across it so they never compute over a time discontinuity |
+| `in_cas_window` | Boolean: this bar falls inside the cash-segment Closing Auction Session (15:15–15:30 IST, from 2026-08-03). The index has no trades during the auction, so these bars are frozen (zero range) and the auction close arrives as one large jump bar. They are **excluded** from every indicator's input — state indicators hold their last real value across the window and event markers (`fvg`, swing points, `nr7`) read empty — so ATR/Bollinger width never collapse on the flat bars and no breakout fires on the synthetic gap. Always `False` before 2026-08-03 and for option (F&O) series, which trade continuously through the auction |
 
 ### Regime
 

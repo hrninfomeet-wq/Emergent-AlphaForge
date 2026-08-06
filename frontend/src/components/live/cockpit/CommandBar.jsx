@@ -9,21 +9,60 @@ import BrokerConnect from "@/components/live/cockpit/BrokerConnect";
  * The full market ticker is the existing <MarketHeader/>, mounted just below.
  */
 
+// SEBI's Closing Auction Session split the trading day on 2026-08-03: the cash
+// segment trades continuously only to 15:15 and then settles by auction, while
+// equity derivatives run on to 15:40. Mirrors backend/app/session_spec.py — keep
+// the two in step. Date-aware so the label stays right for pre-CAS timestamps.
+export const CAS_EFFECTIVE_ISO = "2026-08-03";
+const OPEN_MIN = 9 * 60 + 15;        // 09:15
+const CAS_START_MIN = 15 * 60 + 15;  // 15:15
+const CASH_CLOSE_MIN = 15 * 60 + 30; // 15:30
+const FNO_CLOSE_MIN = 15 * 60 + 40;  // 15:40, from 2026-08-03
+
 function istNow() {
-  // IST = UTC + 5:30. Returns {weekday(0-6, 0=Sun), minutes-since-midnight}.
+  // IST = UTC + 5:30. Returns {weekday(0-6, 0=Sun), minutes-since-midnight, iso date}.
   const now = new Date();
   const ist = new Date(now.getTime() + (now.getTimezoneOffset() + 330) * 60000);
-  return { day: ist.getDay(), mins: ist.getHours() * 60 + ist.getMinutes() };
+  const iso = `${ist.getFullYear()}-${String(ist.getMonth() + 1).padStart(2, "0")}-${String(ist.getDate()).padStart(2, "0")}`;
+  return { day: ist.getDay(), mins: ist.getHours() * 60 + ist.getMinutes(), iso };
 }
 
-function marketOpen() {
-  const { day, mins } = istNow();
+// Exported for unit testing — takes the clock reading so it stays pure.
+export function marketPhase({ day, mins, iso }) {
   const weekday = day >= 1 && day <= 5;              // Mon–Fri (holidays not modelled client-side)
-  return weekday && mins >= 555 && mins <= 930;      // 09:15–15:30 IST
+  const closed = { open: false, label: "MARKET CLOSED", title: "Market closed" };
+  if (!weekday) return closed;
+
+  const cas = iso >= CAS_EFFECTIVE_ISO;
+  const close = cas ? FNO_CLOSE_MIN : CASH_CLOSE_MIN;
+  if (mins < OPEN_MIN || mins >= close) return closed;
+
+  if (cas && mins >= CASH_CLOSE_MIN) {
+    return {
+      open: true,
+      label: "F&O ONLY · 15:40 close",
+      title: "Cash has settled; equity derivatives trade until 15:40 IST",
+    };
+  }
+  if (cas && mins >= CAS_START_MIN) {
+    return {
+      open: true,
+      label: "CLOSING AUCTION · F&O to 15:40",
+      title: "Cash in closing auction 15:15–15:35 — the index is frozen. F&O trades until 15:40 IST",
+    };
+  }
+  return {
+    open: true,
+    label: cas ? "MARKET OPEN · 15:40 F&O close" : "MARKET OPEN · 15:30 close",
+    title: cas
+      ? "NSE cash open 09:15–15:15 (auction to 15:35); F&O to 15:40 IST"
+      : "NSE cash/F&O open 09:15–15:30 IST",
+  };
 }
 
 export default function CommandBar({ flattradeStatus, onConfigure, onChanged, openPositions = 0 }) {
-  const open = marketOpen();
+  const phase = marketPhase(istNow());
+  const open = phase.open;
   return (
     <div className="sticky top-0 z-20 flex items-center gap-3 flex-wrap rounded-lg border border-line bg-bg-1/90 backdrop-blur px-3 py-2">
       <span className="font-semibold tracking-wide text-foreground whitespace-nowrap">LIVE COCKPIT</span>
@@ -34,10 +73,10 @@ export default function CommandBar({ flattradeStatus, onConfigure, onChanged, op
           open ? "border-success/40 bg-success/10 text-success"
                : "border-line bg-bg-2 text-dimmer"
         }`}
-        title={open ? "NSE cash/F&O open 09:15–15:30 IST" : "Market closed"}
+        title={phase.title}
       >
         <span className={`w-1.5 h-1.5 rounded-full ${open ? "bg-success animate-pulse" : "bg-dimmer"}`} />
-        {open ? "MARKET OPEN · 15:30 close" : "MARKET CLOSED"}
+        {phase.label}
       </span>
 
       <div className="flex-1" />

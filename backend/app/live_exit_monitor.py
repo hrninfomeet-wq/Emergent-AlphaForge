@@ -14,6 +14,8 @@ import logging
 from datetime import datetime, time as dtime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
+from app.session_spec import OPTIONS, segment_close_time
+
 log = logging.getLogger(__name__)
 
 POLL_SECONDS = 1.5
@@ -21,10 +23,16 @@ _IST = timedelta(hours=5, minutes=30)
 
 
 def _in_market_hours(now_utc: Optional[datetime] = None) -> bool:
+    """True while the positions this monitor protects are still tradeable.
+
+    Bounded by the OPTIONS close: from 2026-08-03 the derivatives segment trades
+    until 15:40, so a 15:30 bound would stand the monitor down while an open
+    position could still move for another ten minutes.
+    """
     ist = (now_utc or datetime.now(timezone.utc)) + _IST
     if ist.weekday() >= 5:
         return False
-    return dtime(9, 15) <= ist.time() < dtime(15, 30)
+    return dtime(9, 15) <= ist.time() < segment_close_time(ist.strftime("%Y-%m-%d"), OPTIONS)
 
 
 class LiveExitMonitor:

@@ -49,6 +49,8 @@ from app.indicators import (
     attach_tod_tradeable,
     candle_geometry,
     gap_before_mask,
+    cas_window_mask,
+    CAS_MASK_COL,
     _reset_on_gap,
 )
 from app.regime import classify_regime_series
@@ -77,8 +79,14 @@ class IndicatorGroup:
 # helpers with identical args so output is byte-identical by construction.
 # ---------------------------------------------------------------------------
 
-def _compute_gap_before(df: pd.DataFrame, p: dict) -> Dict[str, pd.Series]:
+def _compute_cas_window(df: pd.DataFrame, p: dict) -> Dict[str, pd.Series]:
     # Param-independent; must run FIRST so the wrapped groups can read the mask.
+    # Spot semantics — this cache path enriches the index signal series only.
+    return {CAS_MASK_COL: cas_window_mask(df)}
+
+
+def _compute_gap_before(df: pd.DataFrame, p: dict) -> Dict[str, pd.Series]:
+    # Param-independent; must run before the wrapped groups read the mask.
     return {"gap_before": gap_before_mask(df)}
 
 
@@ -259,6 +267,7 @@ def _compute_regime(df: pd.DataFrame, p: dict) -> Dict[str, pd.Series]:
 # Param-independent groups have param_keys = ().
 # ---------------------------------------------------------------------------
 GROUPS = [
+    IndicatorGroup("in_cas_window", (), _compute_cas_window),
     IndicatorGroup("gap_before", (), _compute_gap_before),
     IndicatorGroup("ema", ("ema_fast", "ema_slow"), _compute_ema),
     IndicatorGroup("ema50", (), _compute_ema50),

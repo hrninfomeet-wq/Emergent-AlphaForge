@@ -47,6 +47,11 @@ const fmtIstHm = (ms) =>
 const MARKET_PHASE = {
   open: { label: "Market open", cls: "border-emerald-500/40 text-emerald-300" },
   pre_open: { label: "Pre-open", cls: "border-amber-500/40 text-warning" },
+  // From 2026-08-03: cash settles by auction 15:15–15:35 while F&O runs to 15:40.
+  // Amber, not green — during the auction the index is frozen, so any spot-derived
+  // reading on this page is stale until the close prints.
+  cas: { label: "Closing auction — index frozen", cls: "border-amber-500/40 text-warning" },
+  derivatives_only: { label: "F&O only — cash settled", cls: "border-amber-500/40 text-warning" },
   closed: { label: "Market closed", cls: "border-line text-dimmer" },
   weekend: { label: "Weekend — closed", cls: "border-line text-dimmer" },
   holiday: { label: "Holiday — closed", cls: "border-line text-dimmer" },
@@ -185,7 +190,13 @@ export default function LiveSignals() {
           const m = MARKET_PHASE[phase] || { label: "—", cls: "border-line text-dimmer" };
           return (
             <div className="flex items-center gap-2" data-testid="market-status">
-              <span className={`text-[10px] px-1.5 py-0.5 rounded border font-mono ${m.cls}`} title="Holiday-aware NSE regular-session status (09:15–15:30 IST)">
+              <span
+                className={`text-[10px] px-1.5 py-0.5 rounded border font-mono ${m.cls}`}
+                title={
+                  "Holiday-aware NSE session status. Cash 09:15–15:15 then closing auction to 15:35; "
+                  + `equity derivatives to ${overview?.market_status?.derivatives_close_ist || "15:40"} IST`
+                }
+              >
                 {m.label}
               </span>
               <span className="text-[11px] font-mono text-dim tabular-nums" title="Current IST time">{nowIst} IST</span>
@@ -1227,6 +1238,7 @@ function DeployWizard({ presets, strategies, backtestRuns = [], initialPreset, i
                 DTE {form.dte_filter.length ? form.dte_filter.join(",") : "all"} · {form.mode === "paper" && form.lots_override !== "" ? `${form.lots_override} lot(s) override` : sizingSummary}
                 {form.mode === "paper" && form.capital_amount !== "" ? ` · capital ₹${fmtNum(Number(form.capital_amount), 0)} (${form.capital_basis})` : ""}.
                 Evaluation runs every market minute (09:15–15:30 IST, signal window 09:25–14:50); square-off 15:00 IST.
+                The signal window closes well before the 15:15 closing auction, so a frozen index never produces an entry.
               </div>
             </>
           )}

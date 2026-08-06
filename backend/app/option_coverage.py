@@ -3,8 +3,20 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List
 
+from app.session_spec import (
+    CAS_EFFECTIVE_ISO,
+    LEGACY_SESSION_CANDLES,
+    OPTIONS,
+    OPTIONS_SESSION_CANDLES_CAS,
+    expected_candle_count,
+)
 
-EXPECTED_1M_CANDLES_PER_CONTRACT_DAY = 375
+# Pre-2026-08-03 value, kept for callers that predate the CAS split. Prefer
+# `expected_candle_count(date, OPTIONS)`: from 2026-08-03 the derivatives session
+# runs to 15:40, so a complete contract-day is 385 bars, not 375. Comparing a
+# post-CAS day against a flat 375 would let a day that is missing the entire
+# 15:30-15:40 tape still report 100% coverage.
+EXPECTED_1M_CANDLES_PER_CONTRACT_DAY = LEGACY_SESSION_CANDLES
 
 
 def summarize_option_coverage(rows: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
@@ -19,7 +31,8 @@ def summarize_option_coverage(rows: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
         contracts = int(row.get("contracts", 0) or 0)
         complete_contracts = int(row.get("complete_contracts", 0) or 0)
         incomplete_contracts = max(0, contracts - complete_contracts)
-        expected = contracts * EXPECTED_1M_CANDLES_PER_CONTRACT_DAY
+        per_contract = expected_candle_count(date, OPTIONS) or LEGACY_SESSION_CANDLES
+        expected = contracts * per_contract
         coverage_pct = round(min(100.0, (candles / expected) * 100), 2) if expected else 0.0
         bucket = by_underlying.setdefault(underlying, {
             "underlying": underlying,
@@ -87,8 +100,18 @@ async def get_option_coverage(db: Any, underlying: str | None = None) -> Dict[st
             },
             "candles": {"$sum": "$candles"},
             "contracts": {"$sum": 1},
+            # Threshold is per-day: the derivatives session gained ten minutes on
+            # 2026-08-03, so a complete contract-day is 385 bars from then on.
+            # ISO date strings compare correctly, so this stays a pure $expr.
             "complete_contracts": {
-                "$sum": {"$cond": [{"$gte": ["$candles", EXPECTED_1M_CANDLES_PER_CONTRACT_DAY]}, 1, 0]}
+                "$sum": {"$cond": [
+                    {"$gte": ["$candles", {"$cond": [
+                        {"$gte": ["$_id.date", CAS_EFFECTIVE_ISO]},
+                        OPTIONS_SESSION_CANDLES_CAS,
+                        LEGACY_SESSION_CANDLES,
+                    ]}]},
+                    1, 0,
+                ]}
             },
             "instrument_keys": {"$addToSet": "$_id.instrument_key"},
         }},

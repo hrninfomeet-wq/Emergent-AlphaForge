@@ -6,14 +6,26 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import pandas as pd
 
-EXPECTED_1M_CANDLES_PER_DAY = 375
+from app.session_spec import LEGACY_SESSION_CANDLES, OPTIONS, expected_candle_count
+
+# Pre-2026-08-03 value. Prefer `expected_candle_count(date, OPTIONS)` — the
+# derivatives session runs to 15:40 from that date, so a complete contract-day is
+# 385 bars and auditing a post-CAS day against 375 would pass a day that is
+# missing the whole 15:30-15:40 tape.
+EXPECTED_1M_CANDLES_PER_DAY = LEGACY_SESSION_CANDLES
 
 
 def _ts_to_ist_date(ts_ms: int) -> str:
     return pd.Timestamp(int(ts_ms), unit="ms", tz="UTC").tz_convert("Asia/Kolkata").date().isoformat()
 
 
-def _weekday_counts(start_date: str, end_date: str, expected_per_day: int = EXPECTED_1M_CANDLES_PER_DAY) -> Dict[str, int]:
+def _weekday_counts(start_date: str, end_date: str, expected_per_day: Optional[int] = None) -> Dict[str, int]:
+    """Expected option candles per weekday date in the range.
+
+    `expected_per_day` pins every day to one count; leaving it None resolves each
+    date through `session_spec`, which is what makes the 2026-08-03 step from 375
+    to 385 bars visible to the audit.
+    """
     start = date.fromisoformat(start_date)
     end = date.fromisoformat(end_date)
     if start > end:
@@ -22,7 +34,11 @@ def _weekday_counts(start_date: str, end_date: str, expected_per_day: int = EXPE
     cur = start
     while cur <= end:
         if cur.weekday() < 5:
-            counts[cur.isoformat()] = expected_per_day
+            iso = cur.isoformat()
+            counts[iso] = (
+                expected_per_day if expected_per_day is not None
+                else expected_candle_count(iso, OPTIONS)
+            )
         cur += timedelta(days=1)
     return counts
 
