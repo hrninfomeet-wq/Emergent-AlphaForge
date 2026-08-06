@@ -51,6 +51,7 @@ from datetime import datetime, time as dtime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from app.execution_policy import spot_mirror_exit_reason
+from app.session_spec import OPTIONS, segment_close_time
 from app.live.broker_protocol import BrokerReadError, TOKEN_EXPIRED_HINT
 from app.live.kill_switch import _parse_netqty
 from app.live.live_sl_monitor import build_monitor_state, evaluate_exit
@@ -122,10 +123,16 @@ def _basket_members(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def _in_market_hours(now_utc: Optional[datetime] = None) -> bool:
+    """True while the positions this guard protects are still tradeable.
+
+    Bounded by the OPTIONS close: from 2026-08-03 the derivatives segment trades
+    until 15:40, so a 15:30 bound would leave an open position unguarded for the
+    last ten minutes of its own tradeable session.
+    """
     ist = (now_utc or datetime.now(timezone.utc)) + _IST
     if ist.weekday() >= 5:
         return False
-    return dtime(9, 15) <= ist.time() < dtime(15, 30)
+    return dtime(9, 15) <= ist.time() < segment_close_time(ist.strftime("%Y-%m-%d"), OPTIONS)
 
 
 def _finite_pos(x: Any) -> Optional[float]:
@@ -413,6 +420,7 @@ class LivePositionGuard:
         now_fn: Optional[Callable[[], datetime]] = None,
         on_close: Optional[Callable[..., Awaitable[None]]] = None,
         on_expire: Optional[Callable[..., Awaitable[None]]] = None,
+        on_mark: Optional[Callable[..., Awaitable[None]]] = None,
         reprice_fn: Optional[Callable[..., Awaitable[Dict[str, Any]]]] = None,
         reprice_band_schedule: tuple = REPRICE_BAND_SCHEDULE,
         reprice_interval_seconds: float = REPRICE_INTERVAL_SECONDS,
@@ -438,6 +446,13 @@ class LivePositionGuard:
         # max_concurrent slot — the governor counts OPEN rows with no date
         # filter. Best-effort: a failure here must never strand the entry.
         self._on_expire = on_expire
+        # Fired once per cycle with the broker's CURRENT P&L for every guarded
+        # position, so the live day-stop can see OPEN risk. `live_trades`
+        # .unrealized_pnl is written 0.0 at insert and had no other live writer,
+        # so `live_deploy_governor._open_unrealized_today` summed zeros forever
+        # and the mandatory daily_loss_cap could only ever see CLOSED trades.
+        # Best-effort: a failure must never break the guard cycle.
+        self._on_mark = on_mark
         self._reprice_band_schedule = tuple(reprice_band_schedule)
         self._reprice_interval_seconds = float(reprice_interval_seconds)
         self._reprice_max_per_cycle = int(reprice_max_per_cycle)
@@ -579,6 +594,39 @@ class LivePositionGuard:
             # Layer 2: pick the ≤ K squaring entries to ESCALATE (widen the band) this
             # cycle — global per-cycle budget so a synchronized basket can't burst past
             # the order rate limit. Empty on an UNKNOWN book (never re-price on a bad read).
+            # Persist the broker's own P&L for every guarded position. ONLY on a
+            # KNOWN book: an empty/unreadable book is UNKNOWN, and stamping 0.0
+            # from it would silently recreate the blindness this exists to fix.
+            # Keyed on norenordno (== the registry key for an auto_live entry),
+            # NEVER on trading_symbol — live_trades stores the UPSTOX symbol while
+            # the position book is NOREN-keyed, and joining those two spaces is a
+            # long-standing source of real bugs here.
+            if self._on_mark is not None and book_is_known:
+                marks: List[Dict[str, Any]] = []
+                _marked_at = now.isoformat()
+                for entry in self._registry.snapshot():
+                    pos = by_tsym.get(entry.get("tsym"))
+                    if pos is None:
+                        continue
+                    _u = _finite_num(pos.get("urmtom"))
+                    _r = _finite_num(pos.get("rpnl"))
+                    _parts = [x for x in (_u, _r) if x is not None]
+                    if not _parts:
+                        continue          # neither field parsed — UNKNOWN, not zero
+                    marks.append({
+                        "norenordno": entry.get("id"),
+                        "unrealized_pnl": sum(_parts),
+                        "mark_price": _finite_num(pos.get("lp")),
+                        "marked_at": _marked_at,
+                    })
+                if marks:
+                    try:
+                        await self._on_mark(marks)
+                    except Exception as exc:
+                        log.warning("guard mark: persisting position P&L failed "
+                                    "(the day-stop may be running on a stale "
+                                    "mark): %s", exc)
+
             reprice_ids = self._select_reprice_ids(now, by_tsym, book_is_known)
             # Snapshot last_error so the end-of-cycle "clean cycle → clear stale error"
             # reset does NOT clobber a signal a re-price / finalize sets THIS cycle

@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import math
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.deployment_kill_switch import (
     IST,
@@ -93,7 +93,9 @@ async def check_account_caps(
 
     open_count = sum(1 for r in rows if str(r.get("status") or "").upper() == "OPEN")
     realized_today = daily_realized_summary(rows, today)["net"]
-    mtm = realized_today + _open_unrealized_today(rows, today)
+    _open_mtm, _exposure_unknown = open_unrealized_today(
+        rows, today, now_utc=now_utc)
+    mtm = realized_today + _open_mtm
 
     # Separate "the numbers are UNKNOWN" from "the numbers say STOP" before
     # delegating. json.loads accepts NaN, so one malformed live_trades row makes
@@ -102,7 +104,19 @@ async def check_account_caps(
     # sticky latch and halting the engine until a human reset it. Refusing the
     # entry is right (never trade on an unknown P&L); escalating a DATA DEFECT
     # into an account-wide halt is not.
-    if not math.isfinite(mtm):
+    # An open-position COUNT is always knowable — it needs no P&L at all. Decide
+    # the count-based ceiling BEFORE the exposure gate below, so a genuine
+    # "too many positions" refusal is never mislabelled as "I can't read the P&L".
+    _max_open = _int_or_none(cfg.get("max_open_positions"))
+    if _max_open is not None and _max_open > 0 and open_count >= _max_open:
+        return {"allow": False, "reason": "account_max_open_block", "pause": False}
+
+    if not math.isfinite(mtm) or _exposure_unknown:
+        # Either a malformed row (json.loads accepts NaN) or an OPEN position whose
+        # mark is missing/stale — the guard stopped watching it. Both mean the same
+        # thing: we do not know the account's MTM. Refuse the entry (never trade on
+        # an unknown P&L) but do NOT pause: escalating a data/liveness defect into
+        # an account-wide halt is not the same as a measured breach.
         return {"allow": False, "reason": "account_exposure_invalid", "pause": False}
 
     action = evaluate_guardrails(mtm, open_count, cfg)
@@ -140,12 +154,68 @@ def _entered_today(row: Dict[str, Any], today: str) -> bool:
     return _ist_date(row.get("created_at")) == today
 
 
-def _open_unrealized_today(rows: List[Dict[str, Any]], today: str) -> float:
-    """Sum of unrealized_pnl for OPEN trades entered today (IST)."""
+#: How old a position mark may be before the account exposure is UNKNOWN.
+#: The guard marks every cycle (~1.5s), so anything beyond this means it stopped
+#: watching — a crashed task, an expired token, an unreadable book.
+MARK_STALE_AFTER_SECONDS = 120.0
+
+
+def open_unrealized_today(
+    rows: List[Dict[str, Any]], today: str,
+    *, now_utc: Optional[datetime] = None,
+) -> Tuple[float, bool]:
+    """Return ``(total_unrealized, unknown)`` for OPEN trades entered today (IST).
+
+    ``unknown`` is True when ANY open trade's mark is missing or stale, and the
+    caller must treat the whole account exposure as unknown rather than trade on a
+    partial picture.
+
+    Before 2026-08-04 this summed ``unrealized_pnl`` unconditionally. Nothing in
+    the live path ever wrote that field — ``auto_live`` inserts it as 0.0 and only
+    paper analytics updated it — so the sum was always exactly zero and the
+    mandatory ``daily_loss_cap`` could see CLOSED trades only. The guard now marks
+    every cycle; a mark that STOPS updating must read as UNKNOWN rather than
+    silently reverting to that blindness at the moment risk is least observable.
+    """
+    now = now_utc or datetime.now(timezone.utc)
     total = 0.0
+    unknown = False
     for row in rows:
-        if str(row.get("status") or "").upper() == "OPEN" and _entered_today(row, today):
-            total += _float(row.get("unrealized_pnl"))
+        if str(row.get("status") or "").upper() != "OPEN":
+            continue          # settled — carries no unrealized risk
+        if not _entered_today(row, today):
+            continue
+        marked_at = _parse_iso(row.get("marked_at"))
+        if marked_at is None:
+            unknown = True    # never marked: not the same as a 0.0 loss
+            continue
+        if (now - marked_at).total_seconds() > MARK_STALE_AFTER_SECONDS:
+            unknown = True    # the guard stopped watching this position
+            continue
+        total += _float(row.get("unrealized_pnl"))
+    return total, unknown
+
+
+def _parse_iso(value: Any) -> Optional[datetime]:
+    """Parse an ISO timestamp to an aware UTC datetime; None when unusable."""
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _open_unrealized_today(rows: List[Dict[str, Any]], today: str,
+                           *, now_utc: Optional[datetime] = None) -> float:
+    """Back-compat shim — prefer ``open_unrealized_today`` (returns unknown too).
+
+    ``now_utc`` MUST be threaded from the caller's injected clock: staleness
+    compared against the wall clock makes every decision path time-dependent and
+    unpinnable in tests (the same trap the C2 transmit fence hit).
+    """
+    total, _unknown = open_unrealized_today(rows, today, now_utc=now_utc)
     return total
 
 
@@ -212,8 +282,15 @@ async def check_live_caps(
         # daily_realized_summary filters rows by closed_at date; it treats all
         # rows as "closed trades" — rows without a closed_at are simply skipped.
         realized_today = daily_realized_summary(rows, today)["net"]
-        open_unrealized_today = _open_unrealized_today(rows, today)
-        if realized_today + open_unrealized_today <= -abs(loss_cap):
+        _open_mtm, _exposure_unknown = open_unrealized_today(
+            rows, today, now_utc=now_utc)
+        if _exposure_unknown:
+            # An OPEN position whose mark is missing or stale: the guard has
+            # stopped watching it, so this deployment's exposure is unknown.
+            # Refuse the entry without pausing — a liveness defect is not a
+            # measured breach of the cap.
+            return {"allow": False, "reason": "exposure_unknown", "pause": False}
+        if realized_today + _open_mtm <= -abs(loss_cap):
             return {"allow": False, "reason": "daily_loss_cap", "pause": True}
 
     # ------------------------------------------------------------------

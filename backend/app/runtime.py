@@ -200,6 +200,35 @@ def _live_guard_spot_tick_fn() -> dict:
         return {}
 
 
+async def _live_guard_on_mark(marks) -> None:
+    """Persist the broker's current P&L for every guarded position.
+
+    This is what lets the live day-stop see OPEN risk. `auto_live` inserts
+    `live_trades.unrealized_pnl = 0.0` and nothing in the live path ever updated
+    it, so `live_deploy_governor` summed zeros forever and the mandatory
+    `daily_loss_cap` could only ever see CLOSED trades — a held position running
+    against the account tripped nothing.
+
+    Keyed on `norenordno`, matching `close_live_trade`. NEVER on trading_symbol:
+    live_trades stores the UPSTOX symbol while the guard's book is NOREN-keyed.
+    Only fresh marks count downstream — `open_unrealized_today` treats a missing
+    or stale `marked_at` as UNKNOWN rather than as a zero loss.
+    """
+    db = get_db()
+    for m in marks or ():
+        ordno = (m or {}).get("norenordno")
+        if not ordno:
+            continue
+        await db.live_trades.update_one(
+            {"norenordno": ordno, "status": {"$ne": "CLOSED"}},
+            {"$set": {
+                "unrealized_pnl": m.get("unrealized_pnl"),
+                "last_mark_price": m.get("mark_price"),
+                "marked_at": m.get("marked_at"),
+            }},
+        )
+
+
 async def _live_guard_on_expire(entry, reason) -> None:
     """Journal an aged-out entry terminal: it never became a position.
 
@@ -377,6 +406,7 @@ live_position_guard = LivePositionGuard(
     eod_square_ist=dtime(15, 0),
     on_close=_live_guard_on_close,
     on_expire=_live_guard_on_expire,
+    on_mark=_live_guard_on_mark,
 )
 
 

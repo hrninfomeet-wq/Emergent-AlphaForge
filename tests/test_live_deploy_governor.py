@@ -64,11 +64,19 @@ def _trade(
     unrealized_pnl: float = 0.0,
     created_at: str = "2026-06-25T04:00:00+00:00",  # IST 2026-06-25 09:30
     closed_at: Optional[str] = None,
+    marked_at: Optional[str] = "__fresh__",
 ) -> Dict[str, Any]:
+    # The live guard marks every guarded position each ~1.5s cycle, so a FRESH
+    # mark is the production norm; `open_unrealized_today` treats a missing or
+    # stale one as UNKNOWN exposure. Pass marked_at=None to model a guard that
+    # stopped watching.
+    if marked_at == "__fresh__":
+        marked_at = NOW_UTC.isoformat()
     row: Dict[str, Any] = {
         "deployment_id": deployment_id,
         "status": status,
         "lots": lots,
+        "marked_at": marked_at,
         "realized_pnl": realized_pnl,
         "unrealized_pnl": unrealized_pnl,
         "created_at": created_at,
