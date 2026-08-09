@@ -228,22 +228,51 @@ for correctness on an arbitrary user-chosen window:
 Measured against the live warehouse: NIFTY incomplete days **5 → 4** (2025-10-21 now
 reads 60/60 `ok`); the four genuine 374/375 days remain.
 
-## 5c. Open finding — off-session rows reach the backtest, NOT fixed
+## 5c. Off-session rows — filtered at read, and purged from storage
 
-`warehouse.load_candles_df` applies no session filter, while the chart's
-`warehouse_ohlc._regular_session_rows` does. So stale-feed artifacts are hidden on the
-chart but **fed to `precompute_all_indicators` as if they were market minutes**.
+`warehouse.load_candles_df` applied no session filter while the chart's
+`warehouse_ohlc._regular_session_rows` did, so stale-feed artifacts were hidden on the
+chart but **fed to `precompute_all_indicators` as market minutes**. Found: **143 spot
+rows out of ~632,000** plus **16 option rows**, none on non-trading days.
 
-Measured across the whole spot warehouse: **143 rows out of ~632,000 (0.023%)**, none
-on non-trading days. Concentrated on 2026-05-29, which carries bars out to **23:47**
-(110 of the 143 across the three indices); 2026-06-01 has one at **00:09**.
+Both halves are now done.
 
-Entries are safe — the 09:25–14:50 trade window blocks them — but session VWAP, daily
-resampled OHLC and indicator state for those days are contaminated, and the chart and
-the backtest disagree about what data exists. The fix is a session filter at
-`load_candles_df` (segment-aware, so options keep their legitimate 15:30–15:40 bars),
-with an explicit opt-out for repair tooling. **Left for the operator to call because it
-changes historical backtest results for the affected days.**
+**Read filter.** `session_rows_mask(df, segment)` in `session_spec` is the one owner of
+"does this bar belong to a session", and `load_candles_df` applies it.
+`include_off_session=True` opts out for repair tooling. Filtering at read rather than at
+ingest is deliberate: it keeps the raw vendor record intact, so a wrong session rule is a
+re-read away from fixed rather than an irreversible delete.
+
+Two rules that had to be date- and segment-aware, not flat:
+
+* **15:30 flips meaning.** It is an artifact on 2025-11-03 and a legitimate option bar
+  from 2026-08-03. A flat "drop after 15:29" would have deleted real post-CAS data.
+* **Short sessions are exempt from the time-bounds rule.** Muhurat bounds are not
+  modeled, and the exchange has scheduled it in the afternoon *and* the evening in
+  different years. 2025-10-21 happens to run 13:45–14:44 — inside regular hours — but
+  assuming that would have silently destroyed a whole session in a year it did not.
+  Only the day-level expected count applies there.
+
+**Purge.** `backend/scripts/purge_off_session_candles.py` — dry-run by default, JSON
+backup before any delete, `--restore` to undo. Applied 2026-08-10: 143 + 16 rows
+removed across 28 instrument-days, and **integrity hashes recomputed for all 28**.
+Skipping the rehash would have left `integrity_hashes.hash` covering rows that no longer
+exist, so the audit would have reported `hash_mismatch` on exactly the days it cleaned.
+
+Verified after: every affected day reads 375 bars ending 15:29; post-CAS option days
+still hold 385 ending 15:39; and across all four instruments **surplus = 0,
+hash_mismatch = 0, unexpected_session = 0**.
+
+**Audit closes the loop.** A day storing more bars than the session can hold now reports
+`surplus` instead of `ok` — flat-375 arithmetic passed those because the count merely
+cleared the bar. Without it the purge would be a one-time fix that silently rots as the
+vendor sends new artifacts.
+
+### Impact on results
+
+None for the premium-native strategy: `session_end_ts = sdf["ts"].max()` bounds exits by
+the last spot bar, but `exit_time` (15:13) resolves first via `min(...)`. Presets that
+leave `exit_time` unset were bounded at 23:47 on 2026-05-29 and are now bounded at 15:29.
 
 ## 6. Files
 

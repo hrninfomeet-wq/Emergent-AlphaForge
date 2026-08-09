@@ -66,6 +66,26 @@ synthetic gap.
   for 2026-08-03 (0 spot bars, 0 option contracts) while the other instruments had a full
   session — a failed ingest, not a CAS effect. Operator re-synced 2026-08-10; it now
   reads 375 spot bars / 14 frozen and 20 option contracts at 385.
+- **Off-session rows no longer reach analysis, and are gone from storage.**
+  `load_candles_df` applied no session filter while the chart's `_regular_session_rows`
+  did, so stale-feed artifacts were invisible on the chart but fed to
+  `precompute_all_indicators` as market minutes — **143 spot rows and 16 option rows**,
+  including bars stamped 23:47 (2026-05-29) and 00:09 (2026-06-01). New
+  `session_spec.session_rows_mask` is the single owner of "is this bar in a session";
+  `load_candles_df` applies it, with `include_off_session=True` for repair tooling.
+  Filtering at read rather than ingest keeps the raw vendor record intact.
+  Two rules had to stay date/segment-aware rather than flat: **15:30 is an artifact on
+  2025-11-03 but a legitimate option bar from 2026-08-03**, and **short sessions are
+  exempt from the time-bounds rule** because Muhurat bounds are unmodeled and the
+  exchange has scheduled it both in the afternoon and in the evening.
+  `backend/scripts/purge_off_session_candles.py` (dry-run default, JSON backup,
+  `--restore`) removed all 159 rows across 28 instrument-days and **recomputed the
+  integrity hash for each** — without that the audit would have reported `hash_mismatch`
+  on exactly the days it cleaned. After: every affected day reads 375 bars ending 15:29,
+  post-CAS option days still hold 385 ending 15:39, and surplus / hash_mismatch /
+  unexpected_session are all **0** across NIFTY, BANKNIFTY, SENSEX and INDIAVIX.
+  A day storing more bars than the session can hold now reports **`surplus`** rather than
+  `ok`, so new artifacts cannot rot silently.
 - **Spot audit is calendar-aware too.** `warehouse.summarize_audit_days` used a flat
   `expected_per_day=375` while `get_coverage` already resolved per-day counts, so the
   2025-10-21 Muhurat session reported **incomplete at 60/375** when 60 is correct. It now

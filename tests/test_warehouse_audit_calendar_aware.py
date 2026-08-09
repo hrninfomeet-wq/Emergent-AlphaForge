@@ -74,6 +74,20 @@ def test_holiday_in_the_window_is_not_a_shortfall():
     assert res["summary"]["session_days"] == 1
 
 
+def test_more_bars_than_the_session_can_hold_is_flagged_not_ok():
+    """Storage held 412 bars on 2026-05-29 (artifacts out to 23:47). A count
+    that merely clears the bar is not evidence of a good day."""
+    res = _audit([REGULAR], {REGULAR: 412})
+    day = _by_date(res)[REGULAR]
+    assert day["status"] == "surplus"
+    assert res["summary"]["surplus_days"] == 1
+    assert res["summary"]["complete"] is False
+
+
+def test_exact_count_is_still_ok():
+    assert _by_date(_audit([REGULAR], {REGULAR: 375}))[REGULAR]["status"] == "ok"
+
+
 def test_data_stored_on_a_closed_day_is_surfaced_as_an_anomaly():
     """Stray weekend rows reach storage from live/retry paths. Nothing was due,
     so this is not 'incomplete' — it is data that should not exist."""

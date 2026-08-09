@@ -10,7 +10,7 @@ import pandas as pd
 from app.db import get_db
 from app.yfinance_source import fetch_1m
 from app.nse_calendar import trading_days_in_range, expected_candle_count, is_trading_day
-from app.session_spec import SPOT, expected_candle_count as expected_candles_for
+from app.session_spec import SPOT, expected_candle_count as expected_candles_for, session_rows_mask
 
 log = logging.getLogger(__name__)
 
@@ -86,6 +86,11 @@ def summarize_audit_days(
             status = "missing"
         elif stored_count < expected:
             status = "incomplete"
+        elif stored_count > expected:
+            # More bars than the session can hold — stale-feed artifacts stamped
+            # outside market hours. Flat-375 arithmetic filed these as "ok"
+            # because the count merely cleared the bar; they are not ok.
+            status = "surplus"
         elif stored_hash and computed_hash and stored_hash != computed_hash:
             status = "hash_mismatch"
         elif not stored_hash or not computed_hash:
@@ -116,6 +121,7 @@ def summarize_audit_days(
         "complete_days": sum(1 for d in days if d["status"] == "ok"),
         "missing_days": sum(1 for d in days if d["status"] == "missing"),
         "incomplete_days": sum(1 for d in days if d["status"] == "incomplete"),
+        "surplus_days": sum(1 for d in days if d["status"] == "surplus"),
         "hash_mismatch_days": sum(1 for d in days if d["status"] == "hash_mismatch"),
         "unverified_days": sum(1 for d in days if d["status"] == "unverified"),
         "unexpected_session_days": sum(1 for d in days if d["status"] == "unexpected_session"),
@@ -133,6 +139,7 @@ def summarize_audit_days(
         and summary["complete_days"] == session_days
         and summary["missing_days"] == 0
         and summary["incomplete_days"] == 0
+        and summary["surplus_days"] == 0
         and summary["hash_mismatch_days"] == 0
         and summary["unverified_days"] == 0
         and summary["unexpected_session_days"] == 0
@@ -369,7 +376,21 @@ def _ms_to_ist(ms: int) -> str:
     return pd.Timestamp(ms, unit="ms", tz="UTC").tz_convert("Asia/Kolkata").strftime("%Y-%m-%d %H:%M")
 
 
-async def load_candles_df(instrument: str, start_ts: Optional[int] = None, end_ts: Optional[int] = None) -> pd.DataFrame:
+async def load_candles_df(instrument: str, start_ts: Optional[int] = None, end_ts: Optional[int] = None,
+                          *, segment: str = SPOT, include_off_session: bool = False) -> pd.DataFrame:
+    """Load stored 1-minute candles for an instrument, session-filtered.
+
+    Storage is written straight from the vendor with no session filter, so
+    stale-feed artifacts sit in it — bars stamped 23:47 or 00:09. The chart has
+    always dropped those (`warehouse_ohlc._regular_session_rows`); this seam did
+    not, so the chart and every backtest disagreed about what data exists and
+    `precompute_all_indicators` treated 23:47 as a market minute.
+
+    Filtering here rather than at ingest keeps the raw vendor record intact: a
+    wrong session rule is then a re-read away from fixed, not an irreversible
+    delete. Pass `include_off_session=True` for repair/audit tooling that needs
+    to *see* the artifacts.
+    """
     db = get_db()
     q: Dict[str, Any] = {"instrument": instrument.upper()}
     if start_ts is not None or end_ts is not None:
@@ -384,6 +405,8 @@ async def load_candles_df(instrument: str, start_ts: Optional[int] = None, end_t
     if not rows:
         return pd.DataFrame()
     df = pd.DataFrame(rows)
+    if not include_off_session:
+        df = df.loc[session_rows_mask(df, segment)]
     return df.sort_values("ts").reset_index(drop=True)
 
 

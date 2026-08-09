@@ -35,7 +35,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import time as dtime
-from typing import Optional
+from typing import Any, Optional
+
+import pandas as pd
 
 from app.nse_calendar import MUHURAT_SESSIONS, is_trading_day
 
@@ -172,6 +174,50 @@ def cas_start_time(iso_date: str) -> Optional[dtime]:
     """
     spec = session_spec(iso_date, SPOT)
     return _to_time(spec.cas_start_min) if spec.cas_start_min is not None else None
+
+
+def session_rows_mask(df: Any, segment: str = SPOT, *, ts_col: str = "ts") -> pd.Series:
+    """Per-row bool: True where a bar belongs to a real trading session.
+
+    Storage is written straight from the vendor feed with no session filter, so
+    stale-feed artifacts land in it — bars stamped 23:47, or 00:09, or 15:30 on a
+    pre-CAS day. They are invisible on the chart (`warehouse_ohlc` filters) but
+    reach anything reading raw rows, which is how a backtest ends up treating
+    23:47 as a market minute.
+
+    Two rules, both date-aware:
+
+      * the date must be a trading day, and
+      * the minute must fall inside that (date, segment)'s session.
+
+    **Short sessions are exempt from the second rule.** Muhurat bounds are not
+    modeled (`nse_calendar.market_status` makes the same simplification) — the
+    exchange has scheduled it in the afternoon and in the evening in different
+    years — so every bar on such a day is kept and the day-level expected count
+    remains the only check. Dropping them on an assumed window would silently
+    destroy a whole session.
+    """
+    if df is None or len(df) == 0 or ts_col not in getattr(df, "columns", []):
+        return pd.Series([], dtype=bool)
+
+    ist = pd.to_datetime(df[ts_col], unit="ms", utc=True).dt.tz_convert("Asia/Kolkata")
+    minute = ist.dt.hour * 60 + ist.dt.minute
+    iso = ist.dt.strftime("%Y-%m-%d")
+
+    # A handful of distinct dates even for a multi-year frame — resolve once each.
+    # A non-trading day gets an empty window (open > close), so nothing matches.
+    open_min: dict = {}
+    close_min: dict = {}
+    short_session: dict = {}
+    for day in iso.unique():
+        trading = is_trading_day(day)
+        spec = session_spec(day, segment)
+        open_min[day] = spec.open_min if trading else 1
+        close_min[day] = spec.close_min if trading else 0
+        short_session[day] = trading and day in MUHURAT_SESSIONS
+
+    within = (minute >= iso.map(open_min)) & (minute < iso.map(close_min))
+    return (within | iso.map(short_session)).fillna(False).astype(bool)
 
 
 def expected_candle_count(iso_date: str, segment: str = SPOT) -> int:
