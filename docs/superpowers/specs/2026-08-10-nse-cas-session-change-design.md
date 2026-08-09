@@ -1,6 +1,6 @@
 # NSE/BSE closing-auction session split — design
 
-**Date:** 2026-08-05 · **Status:** implemented · **Suite:** 4445 passed, 4 xfailed
+**Date:** 2026-08-10 · **Status:** implemented · **Suite:** 4445 passed, 4 xfailed
 
 ## 1. What changed in the market
 
@@ -133,7 +133,7 @@ to expect 375 bars on market holidays. It now returns 0 for them.
 * **`warehouse_ohlc` / `live_candle_roller` 15:30 bounds** — both are index-only paths;
   15:30 is right for spot.
 
-## 5. Measured 2026-08-05 — verified against the live warehouse
+## 5. Measured 2026-08-10 — verified against the live warehouse
 
 **Upstox serves the full extended session.** 385 bars/contract, last bar 15:39, every
 contract complete, on every post-CAS day for NIFTY, BANKNIFTY and SENSEX. The
@@ -166,14 +166,84 @@ VIX references, so no VIX-derived value passes through `_reset_on_gap`.
 | 15:28 | 9.689 | 3.439 | **decayed to 35%** |
 | 15:29 | 9.689 | 17.547 | **spiked to 181%** |
 
-A **5.1× ATR swing in one minute**, all artifact. Anything ATR-scaled — stop sizing,
-volatility gates, breakout thresholds — would have been badly wrong in that window.
+A **5.1× ATR swing in one minute**, all artifact.
 
-## 5a. Unrelated gap found while measuring
+### ★ It bleeds into the next morning
 
-**BANKNIFTY has no data for 2026-08-03** — 0 spot bars and 0 option contracts, while
-NIFTY/SENSEX/INDIAVIX each have a full 375. A failed ingest that day, not a CAS effect.
-Needs a data-hygiene catch-up.
+The auction window is untradeable, so distortion confined to it would be harmless.
+It is not confined to it. `gap_before_mask` deliberately does not flag cross-date
+boundaries — whole-frame EWM indicators are designed to carry across them — so the
+poisoned state propagates into the next session's open.
+
+Four consecutive post-CAS days (NIFTY, error = unsuppressed vs fixed):
+
+| IST | 04-Aug | 05-Aug | 06-Aug | 07-Aug |
+|---|---|---|---|---|
+| 09:15 | **+57.2%** | −29.4% | **−38.7%** | −29.5% |
+| 09:25 *(signal window opens)* | **+34.4%** | −19.8% | −20.0% | −15.2% |
+| 09:40 | +17.5% | −9.5% | −8.6% | −7.1% |
+| 10:30 | +0.6% | −0.3% | −0.4% | −0.3% |
+
+**The real exposure was the first ~75 minutes of every trading day**, not the dead
+auction window — the whole morning trend-development window the strategies trade.
+Pinned by `test_artifact_does_not_bleed_into_the_next_session`, which asserts that
+excluding the auction bars is exactly equivalent to their never having existed, plus
+a vacuity guard proving the difference is real when the mask is off.
+
+## 5a. End-to-end verification against the live warehouse (2026-08-10)
+
+- `/api/options/coverage` — 375/contract on 2026-07-30..31, **385/contract from
+  2026-08-03**, 100% and all-contracts-complete across NIFTY/BANKNIFTY/SENSEX.
+- `/api/warehouse/audit/NIFTY` — 423 days, **0 missing, 0 hash mismatches**; every
+  post-CAS day 375/375 with `hash_ok=True`.
+- `market_status` serves `cas_start_ist: "15:15"` and `derivatives_close_ist: "15:40"`.
+- All 5 post-CAS trading days (Aug 3–7) uniform: spot 375 with 14 frozen tail bars,
+  options 385 ending 15:39. INDIA VIX 0–1 frozen bars, as expected.
+
+**Resolved:** BANKNIFTY had no data at all for 2026-08-03 (failed ingest, not a CAS
+effect). Operator re-synced 2026-08-10; now 375 spot bars / 14 frozen, 20 option
+contracts at 385.
+
+## 5b. Audit made calendar-aware (fixed on operator instruction)
+
+`warehouse.summarize_audit_days` took a flat `expected_per_day=375` while
+`warehouse.get_coverage` already resolved per-day counts, so
+`/api/warehouse/audit/{instrument}` reported the 2025-10-21 Muhurat session as
+**incomplete at 60/375** when 60 is exactly right.
+
+It now resolves each date through `session_spec` (`expected_per_day=None` default;
+pass an int to pin, pass `segment=OPTIONS` to audit option days at 385). Consequences
+for correctness on an arbitrary user-chosen window:
+
+* `expected_candles` is the **true sum** of per-day expectations, not
+  `len(dates) × 375`. On the full NIFTY history that corrects 158,625 → **158,310**.
+* `expected_per_day` is now `None` whenever a window mixes session lengths — a single
+  number would be a lie there. Per-day values live in `days[].expected_candles`.
+* Non-trading days inside a window report `not_a_session` and no longer count as a
+  shortfall; `session_days` counts only days that expected candles, and `complete` is
+  measured against that.
+* Data stored on a day the exchange was closed reports `unexpected_session` — a real
+  anomaly that flat-375 arithmetic silently classified as merely "incomplete".
+
+Measured against the live warehouse: NIFTY incomplete days **5 → 4** (2025-10-21 now
+reads 60/60 `ok`); the four genuine 374/375 days remain.
+
+## 5c. Open finding — off-session rows reach the backtest, NOT fixed
+
+`warehouse.load_candles_df` applies no session filter, while the chart's
+`warehouse_ohlc._regular_session_rows` does. So stale-feed artifacts are hidden on the
+chart but **fed to `precompute_all_indicators` as if they were market minutes**.
+
+Measured across the whole spot warehouse: **143 rows out of ~632,000 (0.023%)**, none
+on non-trading days. Concentrated on 2026-05-29, which carries bars out to **23:47**
+(110 of the 143 across the three indices); 2026-06-01 has one at **00:09**.
+
+Entries are safe — the 09:25–14:50 trade window blocks them — but session VWAP, daily
+resampled OHLC and indicator state for those days are contaminated, and the chart and
+the backtest disagree about what data exists. The fix is a session filter at
+`load_candles_df` (segment-aware, so options keep their legitimate 15:30–15:40 bars),
+with an explicit opt-out for repair tooling. **Left for the operator to call because it
+changes historical backtest results for the affected days.**
 
 ## 6. Files
 

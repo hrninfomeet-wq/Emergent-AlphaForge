@@ -164,3 +164,55 @@ def test_enriched_frame_keeps_every_bar():
     """Suppression must not drop rows — the auction bars still belong to the
     candle series (the 15:29 bar carries the official close)."""
     assert len(precompute_all_indicators(_session_frame("2026-08-03"))) == 375
+
+
+# --- the property that actually matters -------------------------------------
+
+def test_artifact_does_not_bleed_into_the_next_session():
+    """The auction window is untradeable, so distortion inside it would be
+    harmless on its own. It is not confined there: `gap_before_mask` deliberately
+    does not flag cross-date boundaries, so whole-frame EWM indicators carry the
+    poisoned state straight into the next morning's tradeable hours.
+
+    Measured on real 2026-08 data, unsuppressed ATR was off by +57%/-39% at 09:15
+    and +34%/-15% at 09:25 — the minute the signal window opens.
+
+    Excluding the auction bars must be exactly equivalent to their never having
+    existed, so the next session computes identically either way.
+    """
+    day2 = _session_frame("2026-08-04", frozen=False)
+
+    with_auction = pd.concat([_session_frame("2026-08-03"), day2], ignore_index=True)
+
+    # Control: day one physically ends at 15:14, no auction bars at all.
+    d1 = _session_frame("2026-08-03")
+    ist = pd.to_datetime(d1["ts"], unit="ms", utc=True).dt.tz_convert("Asia/Kolkata")
+    truncated = d1[(ist.dt.hour * 60 + ist.dt.minute) < FREEZE_MIN]
+    without_auction = pd.concat([truncated, day2], ignore_index=True)
+
+    a = precompute_all_indicators(with_auction).set_index("ts")
+    b = precompute_all_indicators(without_auction).set_index("ts")
+
+    next_day = day2["ts"].tolist()
+    for col in ("atr", "ema9", "ema21", "rsi", "adx"):
+        pd.testing.assert_series_equal(
+            a.loc[next_day, col], b.loc[next_day, col], check_names=False,
+        )
+
+
+def test_without_suppression_the_next_session_would_differ():
+    """Guards the test above from passing vacuously — the artifact really does
+    propagate when the mask is off."""
+    day2 = _session_frame("2026-08-04", frozen=False)
+    d1 = _session_frame("2026-08-03")
+    ist = pd.to_datetime(d1["ts"], unit="ms", utc=True).dt.tz_convert("Asia/Kolkata")
+    truncated = d1[(ist.dt.hour * 60 + ist.dt.minute) < FREEZE_MIN]
+
+    # segment="options" disables the mask == pre-change behaviour.
+    a = precompute_all_indicators(pd.concat([d1, day2], ignore_index=True),
+                                  segment="options").set_index("ts")
+    b = precompute_all_indicators(pd.concat([truncated, day2], ignore_index=True),
+                                  segment="options").set_index("ts")
+
+    open_ts = day2["ts"].iloc[0]
+    assert a.at[open_ts, "atr"] != pytest.approx(b.at[open_ts, "atr"])

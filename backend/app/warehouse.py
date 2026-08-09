@@ -10,9 +10,13 @@ import pandas as pd
 from app.db import get_db
 from app.yfinance_source import fetch_1m
 from app.nse_calendar import trading_days_in_range, expected_candle_count, is_trading_day
+from app.session_spec import SPOT, expected_candle_count as expected_candles_for
 
 log = logging.getLogger(__name__)
 
+# Pre-2026-08-03 full cash session. Kept as a fallback only — the audit resolves
+# each date through the calendar instead, so a Muhurat evening session expects its
+# real 60 bars and a non-trading day expects none.
 EXPECTED_1M_CANDLES_PER_DAY = 375
 
 
@@ -40,19 +44,47 @@ def summarize_audit_days(
     stored_counts: Dict[str, int],
     stored_hashes: Dict[str, str],
     computed_hashes: Dict[str, str],
-    expected_per_day: int = EXPECTED_1M_CANDLES_PER_DAY,
+    expected_per_day: Optional[int] = None,
+    segment: str = SPOT,
 ) -> Dict[str, Any]:
+    """Classify each date's stored candles against what that date should hold.
+
+    `expected_per_day` pins every date to one count. Leaving it None — the default —
+    resolves each date through the calendar, the same way `get_coverage` already
+    does. That is what makes the audit correct for *any* window the caller asks
+    for: a Muhurat evening session expects its real 60 bars rather than reading
+    "incomplete" at 60/375, a market holiday expects none, and (with `segment`)
+    a post-2026-08-03 option day expects 385.
+
+    A date can legitimately expect zero — a holiday, or a stray weekend row that
+    reached storage from a live/retry path. Those are reported honestly rather
+    than folded into "missing": `not_a_session` when nothing is stored (correct,
+    not a defect) and `unexpected_session` when data exists on a day the exchange
+    was closed (a real anomaly worth surfacing).
+    """
     days: List[Dict[str, Any]] = []
     for date_str in expected_dates:
+        expected = (
+            expected_per_day if expected_per_day is not None
+            else expected_candles_for(date_str, segment)
+        )
         stored_count = int(stored_counts.get(date_str, 0) or 0)
         stored_hash = stored_hashes.get(date_str)
         computed_hash = computed_hashes.get(date_str)
         hash_ok = bool(stored_hash and computed_hash and stored_hash == computed_hash)
-        coverage_pct = round((stored_count / expected_per_day) * 100, 2) if expected_per_day else 0
 
-        if stored_count <= 0:
+        if expected > 0:
+            coverage_pct = min(100.0, round((stored_count / expected) * 100, 2))
+        else:
+            # Nothing was due. Full coverage if nothing is stored; 0 if data
+            # exists that should not, so it cannot inflate an average.
+            coverage_pct = 100.0 if stored_count <= 0 else 0.0
+
+        if expected <= 0:
+            status = "unexpected_session" if stored_count > 0 else "not_a_session"
+        elif stored_count <= 0:
             status = "missing"
-        elif stored_count < expected_per_day:
+        elif stored_count < expected:
             status = "incomplete"
         elif stored_hash and computed_hash and stored_hash != computed_hash:
             status = "hash_mismatch"
@@ -63,35 +95,47 @@ def summarize_audit_days(
 
         days.append({
             "date": date_str,
-            "expected_candles": expected_per_day,
+            "expected_candles": expected,
             "stored_candles": stored_count,
-            "coverage_pct": min(100, coverage_pct),
+            "coverage_pct": coverage_pct,
             "stored_hash": stored_hash,
             "computed_hash": computed_hash,
             "hash_ok": hash_ok,
             "status": status,
         })
 
+    # Only days that expected candles are sessions; a holiday in the window is not
+    # a shortfall, so it must not count against completeness either way.
+    session_days = sum(1 for d in days if d["expected_candles"] > 0)
+    distinct_expected = {d["expected_candles"] for d in days if d["expected_candles"] > 0}
+
     summary = {
         "instrument": instrument.upper(),
         "expected_days": len(expected_dates),
+        "session_days": session_days,
         "complete_days": sum(1 for d in days if d["status"] == "ok"),
         "missing_days": sum(1 for d in days if d["status"] == "missing"),
         "incomplete_days": sum(1 for d in days if d["status"] == "incomplete"),
         "hash_mismatch_days": sum(1 for d in days if d["status"] == "hash_mismatch"),
         "unverified_days": sum(1 for d in days if d["status"] == "unverified"),
+        "unexpected_session_days": sum(1 for d in days if d["status"] == "unexpected_session"),
+        "not_a_session_days": sum(1 for d in days if d["status"] == "not_a_session"),
         "stored_candles": sum(int(d["stored_candles"]) for d in days),
-        "expected_candles": len(expected_dates) * expected_per_day,
-        "expected_per_day": expected_per_day,
+        # True sum of per-day expectations, not len(dates) x a flat number.
+        "expected_candles": sum(int(d["expected_candles"]) for d in days),
+        # Only meaningful when every session in the window expects the same count;
+        # None means the window mixes session lengths — read days[].expected_candles.
+        "expected_per_day": next(iter(distinct_expected)) if len(distinct_expected) == 1 else None,
         "calendar_assumption": "nse_trading_calendar",
     }
     summary["complete"] = (
-        summary["expected_days"] > 0
-        and summary["complete_days"] == summary["expected_days"]
+        session_days > 0
+        and summary["complete_days"] == session_days
         and summary["missing_days"] == 0
         and summary["incomplete_days"] == 0
         and summary["hash_mismatch_days"] == 0
         and summary["unverified_days"] == 0
+        and summary["unexpected_session_days"] == 0
     )
     if expected_dates:
         summary["start_date"] = expected_dates[0]

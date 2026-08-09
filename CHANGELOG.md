@@ -2,7 +2,7 @@
 
 All notable changes to AlphaForge Trading Lab.
 
-## [Unreleased] — NSE/BSE closing-auction session split (2026-08-05)
+## [Unreleased] — NSE/BSE closing-auction session split (2026-08-10)
 
 **SEBI's Closing Auction Session took effect 2026-08-03 across NSE, BSE and MSEI,
 and it changed the shape of the trading day for the first time in the app's history.**
@@ -42,7 +42,7 @@ synthetic gap.
   `derivatives_close_ist`/`cas_start_ist`; the cockpit pill and Live Signals chip render
   them. `lib/time.js` end-of-day bound moves 15:30 → 15:40 so range queries stop
   truncating the last ten minutes of every option series.
-- **Measured against the live warehouse (2026-08-05)**: Upstox serves the full extended
+- **Measured against the live warehouse (2026-08-10)**: Upstox serves the full extended
   session — **385 bars/contract, last bar 15:39, every contract complete** on every
   post-CAS day for NIFTY, BANKNIFTY and SENSEX. No vendor escalation needed. (Flattrade's
   *historical* API does compress the window into its 15:29 bar; that artifact is
@@ -53,9 +53,33 @@ synthetic gap.
   **181%** on the auction-close bar (17.547) — a **5.1× swing in one minute**, entirely
   artifact. Our stored 15:29 bar carries a true range of 200.95. With suppression ATR
   correctly holds at 9.689 throughout.
-- **Unrelated gap found while measuring**: **BANKNIFTY has no data for 2026-08-03** (0
-  spot bars, 0 option contracts) while the other instruments have a full session. A
-  failed ingest that day, not a CAS effect — needs a data-hygiene catch-up.
+- **★ The artifact bleeds into the next morning, which is the real reason this matters.**
+  `gap_before_mask` deliberately does not flag cross-date boundaries (whole-frame EWM is
+  designed to carry across them), so the poisoned state propagates into the next session.
+  Measured over four consecutive post-CAS days, unsuppressed ATR is off by **+57% to
+  −39% at 09:15** and **+34% to −15% at 09:25 — the exact minute the signal window
+  opens** — converging only around 10:30. The sign flips day to day depending on whether
+  the decayed flat-bar state or the jump-bar spike dominates. The exposure was never the
+  untradeable auction window; it was **the first ~75 minutes of every trading day from
+  2026-08-03 onward**. Pinned by `test_artifact_does_not_bleed_into_the_next_session`.
+- **Unrelated gap found while measuring, since resolved**: BANKNIFTY had no data at all
+  for 2026-08-03 (0 spot bars, 0 option contracts) while the other instruments had a full
+  session — a failed ingest, not a CAS effect. Operator re-synced 2026-08-10; it now
+  reads 375 spot bars / 14 frozen and 20 option contracts at 385.
+- **Spot audit is calendar-aware too.** `warehouse.summarize_audit_days` used a flat
+  `expected_per_day=375` while `get_coverage` already resolved per-day counts, so the
+  2025-10-21 Muhurat session reported **incomplete at 60/375** when 60 is correct. It now
+  resolves each date through `session_spec` (pass an int to pin; `segment=OPTIONS` audits
+  option days at 385). `expected_candles` becomes the true sum rather than
+  `len(dates) × 375` — 158,625 → **158,310** on the full NIFTY history; `expected_per_day`
+  reports `None` when a window mixes session lengths instead of asserting one; holidays
+  inside a window report `not_a_session` rather than counting as a shortfall; and data
+  stored on a closed day reports `unexpected_session`. NIFTY incomplete days **5 → 4**.
+- **Verified end-to-end against the live warehouse**: `/api/options/coverage` reports
+  375/contract for 2026-07-30..31 and **385/contract from 2026-08-03**, 100% complete
+  across NIFTY/BANKNIFTY/SENSEX; `/api/warehouse/audit/NIFTY` reports 423 days,
+  **0 missing, 0 hash mismatches**; `market_status` serves the new `cas_start_ist` /
+  `derivatives_close_ist` fields.
 
 Suite: **4445 passed, 4 xfailed**.
 

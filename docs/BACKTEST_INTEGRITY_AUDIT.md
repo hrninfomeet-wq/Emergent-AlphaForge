@@ -222,7 +222,7 @@ candle series because the 15:29 bar carries the official close. Live guards now
 watch to 15:40. Pre-2026-08-03 output is unchanged, enforced by
 `tests/test_cas_indicator_suppression.py::test_pre_cas_day_is_untouched`.
 
-### Measured 2026-08-05 — the warehouse is complete
+### Measured 2026-08-10 — the warehouse is complete
 
 `backend/scripts/audit_cas_session_coverage.py` was run against the live warehouse.
 **Upstox serves the full extended session: 385 bars/contract, last bar 15:39, on
@@ -249,15 +249,40 @@ and without suppression:
 
 Unsuppressed ATR swings **3.44 → 17.55, a 5.1× jump in one minute**, entirely on
 artifact. Note our stored 15:29 bar has a true range of **200.95** (Upstox captures
-the transition within the bar; Flattrade only prints the final value), so anything
-ATR-scaled — stop sizing, volatility gates, breakout thresholds — would have been
-badly wrong in that window.
+the transition within the bar; Flattrade only prints the final value).
 
-### Open — unrelated data gap found while measuring
+### ★ It bleeds into the NEXT MORNING — this is why it matters
 
-**BANKNIFTY has no data at all for 2026-08-03** (0 spot bars, 0 option contracts),
-while NIFTY/SENSEX/INDIAVIX all have a full 375. A failed ingest that day, not a CAS
-effect. Run the data-hygiene catch-up for it.
+The auction window itself is untradeable, so the distortion above would be harmless
+on its own. **It is not confined to that window.** `gap_before_mask` deliberately does
+not flag cross-date boundaries — whole-frame EWM/rolling indicators are designed to
+carry across them — so the poisoned ATR state propagates straight into the next
+session's open.
+
+Measured across four consecutive post-CAS days (NIFTY, error = unsuppressed vs fixed):
+
+| IST | 04-Aug | 05-Aug | 06-Aug | 07-Aug |
+|---|---|---|---|---|
+| 09:15 | **+57.2%** | −29.4% | **−38.7%** | −29.5% |
+| 09:25 *(signal window opens)* | **+34.4%** | −19.8% | −20.0% | −15.2% |
+| 09:40 | +17.5% | −9.5% | −8.6% | −7.1% |
+| 10:30 | +0.6% | −0.3% | −0.4% | −0.3% |
+
+**ATR is wrong by 15–34% at the exact minute the signal window opens**, and does not
+converge until roughly 10:30. The sign flips day to day, because the EWM carries both
+the decayed flat-bar state and the jump-bar spike and either can dominate.
+
+So the real exposure was never the dead auction window — it was **the first ~75
+minutes of every trading day from 2026-08-03 onward**, covering the whole morning
+trend-development window the strategies actually trade. Anything ATR-scaled — stop
+sizing, volatility gates, regime classification, breakout thresholds — was affected.
+
+### Resolved — the BANKNIFTY gap
+
+**BANKNIFTY had no data at all for 2026-08-03** (0 spot bars, 0 option contracts)
+while the other instruments had a full session. Operator re-synced on 2026-08-10; it
+now reads 375 spot bars with 14 frozen tail bars and 20 option contracts at 385 bars.
+A failed ingest that day, not a CAS effect.
 
 ## 9. Reproducing the evidence
 
