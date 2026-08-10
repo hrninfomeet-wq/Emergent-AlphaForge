@@ -20,7 +20,7 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException
 
@@ -119,6 +119,54 @@ async def startup() -> None:
             log.info("Reconciled %d orphaned backtest run(s) as failed", stale_runs.modified_count)
     except Exception as exc:
         log.warning("Backtest run reconciliation failed: %s", exc)
+
+    # Reconcile stuck WAREHOUSE runs. Same fire-and-forget task shape, but the
+    # consequence is worse than a stale row: the frontend's hygiene batch is
+    # persisted to localStorage and polls until every tracked run leaves
+    # TERMINAL_EXCLUDED = ["queued","running"]. A run orphaned by a restart never
+    # does, so `isHygieneActive()` stays true and disables BOTH "Fill gaps" and
+    # "Sync now" PERMANENTLY — the only escape being to clear browser storage.
+    # "failed" is terminal, so marking these lets the batch finish and clear.
+    try:
+        stale_wh = await db.warehouse_runs.update_many(
+            {"status": {"$in": ["queued", "running"]}},
+            {"$set": {
+                "status": "failed",
+                "error": "Interrupted by a server restart — re-run this sync.",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }},
+        )
+        if stale_wh.modified_count:
+            log.info("Reconciled %d orphaned warehouse run(s) as failed", stale_wh.modified_count)
+    except Exception as exc:
+        log.warning("Warehouse run reconciliation failed: %s", exc)
+
+    # Square off paper trades stranded by a MISSED 15:00 square-off. That sweep
+    # lives in the deployment-evaluator loop, which skips outside 09:15-15:30 IST
+    # and latches on a per-PROCESS date — so on a machine that is rarely up during
+    # market hours, missing it is the normal case. A stranded OPEN trade holds a
+    # max_concurrent slot and committed capital forever, is marked against a later
+    # session's ticks for a possibly-expired contract, and counts as an EOD
+    # violation that fails the promotion policy.
+    #
+    # STALE-ONLY, deliberately: a restart at 11:00 must not flatten a position the
+    # strategy legitimately opened at 09:30, which would turn a restart into an
+    # unintended exit. `allow_overnight` deployments are skipped by the function
+    # itself, and it is idempotent.
+    try:
+        _today_ist = (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).date().isoformat()
+        from app.paper_squareoff import square_off_open_paper_trades
+        _swept = await square_off_open_paper_trades(
+            db,
+            reason="boot_reconcile_missed_squareoff",
+            entered_before_ist_date=_today_ist,
+        )
+        _closed = [s for s in _swept if not s.get("skipped")]
+        if _closed:
+            log.info("Boot reconcile: squared %d paper trade(s) stranded by a "
+                     "missed square-off", len(_closed))
+    except Exception as exc:
+        log.warning("Stranded paper-trade reconciliation failed: %s", exc)
 
     # Warm the option-coverage cache in the background so the first Data Warehouse
     # page load is fast. The persisted cache from the previous run is still valid

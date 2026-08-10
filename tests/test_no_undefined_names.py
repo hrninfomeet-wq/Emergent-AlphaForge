@@ -30,37 +30,45 @@ import sys
 
 import pytest
 
-_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "backend", "app"))
+_BACKEND = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "backend"))
+_ROOT = os.path.join(_BACKEND, "app")
+#: server.py is the BOOT ENTRYPOINT and lives outside backend/app, so the original
+#: scan missed it entirely — an undefined name there means the app does not start
+#: at all, which is strictly worse than the in-app NameErrors this guard was built
+#: for. Found the hard way on 2026-08-10: a boot reconciler used `timedelta`
+#: without importing it and every source-string test still passed.
+_SCAN_PATHS = [_ROOT, os.path.join(_BACKEND, "server.py")]
 
 #: (relative posix path, undefined name) pairs pyflakes reports that are NOT bugs.
-#: Each verified 2026-07-30 by reading the site.
+#: Each verified 2026-07-30 by reading the site. Paths are relative to
+#: `backend/` (not `backend/app/`) since the scan widened to include server.py.
 _BASELINE = {
     # `-> "OrderResult"` string annotations; the file even carries `# noqa: F821`.
-    ("live/auto_square.py", "OrderResult"),
+    ("app/live/auto_square.py", "OrderResult"),
     # `now_utc: "datetime"` string annotation; the bodies import datetime locally.
-    ("live/mode.py", "datetime"),
+    ("app/live/mode.py", "datetime"),
     # `Optional["ApprovalStore"]` / `-> "ApprovalStore"` string annotations.
-    ("routers/live_broker.py", "ApprovalStore"),
+    ("app/routers/live_broker.py", "ApprovalStore"),
     # pyflakes reads `_Literal["PAPER", "LIVE_OFFLINE", "LIVE_TEST"]` and
     # `_Literal["B"]` members as forward references. They are string VALUES.
-    ("routers/live_broker.py", "PAPER"),
-    ("routers/live_broker.py", "LIVE_OFFLINE"),
-    ("routers/live_broker.py", "LIVE_TEST"),
-    ("routers/live_broker.py", "B"),
+    ("app/routers/live_broker.py", "PAPER"),
+    ("app/routers/live_broker.py", "LIVE_OFFLINE"),
+    ("app/routers/live_broker.py", "LIVE_TEST"),
+    ("app/routers/live_broker.py", "B"),
 }
 
 _LINE = re.compile(r"^(?P<path>.+?):(?P<line>\d+):\d+: undefined name '(?P<name>[^']+)'$")
 
 
 def _findings():
-    out = subprocess.run([sys.executable, "-m", "pyflakes", _ROOT],
+    out = subprocess.run([sys.executable, "-m", "pyflakes", *_SCAN_PATHS],
                          capture_output=True, text=True, timeout=600)
     hits = []
     for raw in (out.stdout or "").splitlines():
         m = _LINE.match(raw.strip())
         if not m:
             continue
-        rel = os.path.relpath(m.group("path"), _ROOT).replace("\\", "/")
+        rel = os.path.relpath(m.group("path"), _BACKEND).replace("\\", "/")
         hits.append((rel, m.group("name"), int(m.group("line")), raw.strip()))
     return hits
 

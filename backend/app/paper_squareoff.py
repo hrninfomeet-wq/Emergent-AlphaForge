@@ -99,6 +99,25 @@ async def _resolve_exit_price(
         return 0.0, "entry_fallback", True
 
 
+def _entry_ist_date(trade: Dict[str, Any]) -> Optional[str]:
+    """The trade's entry date in IST ("YYYY-MM-DD"), or None when unparseable.
+
+    `created_at` is stored as a UTC ISO string, so the date must be converted
+    before comparing: 20:00 UTC on the 6th is 01:30 IST on the 7th, and a naive
+    string slice would mis-classify it as the previous day.
+    """
+    raw = trade.get("created_at") or trade.get("entry_time")
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return (dt.astimezone(timezone.utc) + IST_OFFSET).date().isoformat()
+
+
 async def square_off_open_paper_trades(
     db: Any,
     *,
@@ -106,6 +125,7 @@ async def square_off_open_paper_trades(
     reason: str = "auto_square_off_15_00_IST",
     now_ist: Optional[datetime] = None,
     deployment_id: Optional[str] = None,
+    entered_before_ist_date: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Force-close all OPEN paper trades. Idempotent: closed trades are skipped.
 
@@ -116,6 +136,15 @@ async def square_off_open_paper_trades(
     off (used by the per-deployment "Stop" button); when None (the default), the
     scope is global — byte-identical to the original behaviour.
 
+    `entered_before_ist_date` ("YYYY-MM-DD") restricts the sweep to trades entered
+    on an EARLIER IST day, which is what the boot reconciler needs: this machine is
+    rarely on during market hours, so a missed 15:00 square-off strands an OPEN
+    trade that then consumes a max_concurrent slot and committed capital forever.
+    It MUST be stale-only — a mid-session restart at 11:00 must not flatten a
+    position the strategy legitimately opened at 09:30, which would turn a restart
+    into an unintended exit. A trade with no parseable entry timestamp is NOT
+    treated as stale: absent is not old, and we never square on an unknown date.
+
     Returns a list of summaries with id, exit_price, realized_pnl per closed trade.
     Safe to call multiple times - only OPEN trades are touched.
     """
@@ -124,6 +153,10 @@ async def square_off_open_paper_trades(
         query["deployment_id"] = deployment_id
     cursor = db.paper_trades.find(query, {"_id": 0})
     open_trades = await cursor.to_list(length=None)
+    if entered_before_ist_date:
+        open_trades = [t for t in open_trades
+                       if _entry_ist_date(t) is not None
+                       and _entry_ist_date(t) < str(entered_before_ist_date)]
     if not open_trades:
         return []
 
