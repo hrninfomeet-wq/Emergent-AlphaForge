@@ -109,7 +109,7 @@ def _float_or_none(value: Any) -> Optional[float]:
         return None
 
 
-def _promotion_trade_pnl(trade: Dict[str, Any]) -> float:
+def _promotion_trade_pnl(trade: Dict[str, Any], *, is_live: bool = False) -> float:
     """Use executable-surface P&L; haircut uncovered winners to zero.
 
     The policy permits up to 5% missing surfaces for operational tolerance. It
@@ -120,6 +120,13 @@ def _promotion_trade_pnl(trade: Dict[str, Any]) -> float:
     if execution is not None:
         return execution
     realized = float(_float_or_none(trade.get("realized_pnl")) or 0.0)
+    if is_live:
+        # A LIVE trade's realized_pnl is already broker-measured — entry from the
+        # captured fill, exit from the fill — so it IS the executable surface.
+        # `execution_realized_pnl` is written only by the paper path, so haircutting
+        # on its absence would zero every live WINNER while counting every loser in
+        # full, making a real cohort look catastrophic.
+        return realized
     return min(realized, 0.0)
 
 
@@ -209,16 +216,30 @@ def _summarize_sessions(
     }
 
 
-async def _closed_trades(db: Any, deployment_id: str) -> List[Dict[str, Any]]:
-    cursor = db.paper_trades.find(
+def trades_collection_for_mode(db: Any, mode: Any):
+    """The trade collection a deployment in *mode* actually writes to.
+
+    Mirrors `deployment_evaluator`'s existing
+    `col = db.live_trades if mode == "live" else db.paper_trades`. That branch
+    existed for the daily-realized read but was never applied to the metrics
+    aggregations, so a promoted deployment read as dead on every performance
+    surface the moment it started mattering.
+    """
+    return db.live_trades if str(mode or "").lower() == "live" else db.paper_trades
+
+
+async def _closed_trades(db: Any, deployment_id: str, *,
+                         mode: Any = "paper") -> List[Dict[str, Any]]:
+    cursor = trades_collection_for_mode(db, mode).find(
         {"deployment_id": deployment_id, "status": "CLOSED"},
         {"_id": 0},
     ).sort("closed_at", 1)
     return await cursor.to_list(length=None)
 
 
-async def _open_trades(db: Any, deployment_id: str) -> List[Dict[str, Any]]:
-    cursor = db.paper_trades.find(
+async def _open_trades(db: Any, deployment_id: str, *,
+                       mode: Any = "paper") -> List[Dict[str, Any]]:
+    cursor = trades_collection_for_mode(db, mode).find(
         {"deployment_id": deployment_id, "status": "OPEN"}, {"_id": 0},
     ).sort("created_at", 1)
     return await cursor.to_list(length=None)
@@ -341,8 +362,9 @@ async def compute_forward_metrics_for_deployment(
         if int(promotion_counts.get(day) or 0) >= PROMOTION_THRESHOLD_MINUTES
     }
 
-    all_closed = await _closed_trades(db, deployment_id)
-    open_trades = await _open_trades(db, deployment_id)
+    _dep_mode = str(deployment.get("mode") or "").lower()
+    all_closed = await _closed_trades(db, deployment_id, mode=_dep_mode)
+    open_trades = await _open_trades(db, deployment_id, mode=_dep_mode)
     eligible: List[Dict[str, Any]] = []
     excluded_incomplete = 0
     excluded_without_pnl = 0
@@ -373,7 +395,7 @@ async def compute_forward_metrics_for_deployment(
     for trade in promotion_eligible:
         day = _trade_session_date(trade)
         execution_pnl = _float_or_none(trade.get("execution_realized_pnl"))
-        policy_pnl = _promotion_trade_pnl(trade)
+        policy_pnl = _promotion_trade_pnl(trade, is_live=(_dep_mode == "live"))
         if day in daily_pnl:
             daily_pnl[day] += policy_pnl
         if bool((trade.get("execution_evidence") or {}).get(

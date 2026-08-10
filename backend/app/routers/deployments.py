@@ -808,9 +808,20 @@ async def deployments_overview():
             entry["blocked" if (r.get("_id") or {}).get("blocked") else "clean"] += int(r.get("n") or 0)
 
     trade_stats: Dict[str, Dict[str, Any]] = {}
-    if dep_ids:
-        rows = await db.paper_trades.aggregate([
-            {"$match": {"deployment_id": {"$in": dep_ids}}},
+    # A promoted deployment writes to live_trades, so aggregating paper_trades
+    # alone rendered it as 0 trades / Rs 0 underneath the red "LIVE REAL-MONEY"
+    # badge this same feed computes — the screen said nothing was happening while
+    # real money was at risk. Partition by mode and run the IDENTICAL pipeline
+    # over each collection: status / unrealized_pnl / realized_pnl / closed_at all
+    # exist on live_trades docs, and became truthful once the guard began marking
+    # open positions and the close began measuring from broker fills.
+    _live_ids = [str(d.get("id")) for d in deployments
+                 if str(d.get("mode") or "").lower() == "live"]
+    _paper_ids = [i for i in dep_ids if i not in set(_live_ids)]
+
+    def _trade_pipeline(ids):
+        return [
+            {"$match": {"deployment_id": {"$in": ids}}},
             {"$group": {
                 "_id": "$deployment_id",
                 "open_count": {"$sum": {"$cond": [{"$eq": ["$status", "OPEN"]}, 1, 0]}},
@@ -820,7 +831,12 @@ async def deployments_overview():
                 "wins": {"$sum": {"$cond": [{"$and": [{"$eq": ["$status", "CLOSED"]}, {"$gt": [{"$ifNull": ["$realized_pnl", 0]}, 0]}]}, 1, 0]}},
                 "realized_today": {"$sum": {"$cond": [{"$and": [{"$eq": ["$status", "CLOSED"]}, {"$gte": [{"$ifNull": ["$closed_at", ""]}, utc_day_start_iso]}]}, {"$ifNull": ["$realized_pnl", 0]}, 0]}},
             }},
-        ]).to_list(length=None)
+        ]
+
+    for _ids, _col in ((_paper_ids, db.paper_trades), (_live_ids, db.live_trades)):
+        if not _ids:
+            continue
+        rows = await _col.aggregate(_trade_pipeline(_ids)).to_list(length=None)
         for r in rows:
             trade_stats[str(r.get("_id") or "")] = r
 
