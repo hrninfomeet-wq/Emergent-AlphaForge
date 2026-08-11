@@ -196,14 +196,26 @@ def close_economics(
         slippage_cfg=friction.slippage, cost_cfg=friction.costs,
     )
     exit_fill = sell["price"]
+    # ALWAYS compute the statutory schedule, exactly as the friction-OFF branch
+    # above does — "so the operator sees what the exchange would have taken".
+    # Previously this returned total_charges = 0.0 whenever the cost toggle was
+    # off, which is not "costs disabled" but a FALSE claim about what the exchange
+    # takes. The deploy wizard's default is precisely this branch
+    # (friction_enabled: true, friction_costs_enabled: false), so the default
+    # paper deployment reported zero STT/GST/stamp while a friction-OFF deployment
+    # beside it reported the truth — and both were summed into one equity curve.
     charges = round_trip_charges(
         entry_premium=float(entry_price),
         exit_premium=exit_fill,
         quantity=qty,
-        cfg=friction.costs,
-    ) if friction.costs.enabled else None
+        cfg=CostConfig(enabled=True),
+    ) if qty > 0 else None
     total_charges = float(charges["total_charges"]) if charges else 0.0
-    net = round((exit_fill - float(entry_price)) * qty - total_charges, 2)
+    # DEDUCTION still follows the operator's toggle: reporting a charge is not the
+    # same as modelling it in P&L, and `realized_pnl` is what the caps and
+    # kill-switch read. Its meaning must not shift as a side effect of reporting.
+    deducted = total_charges if friction.costs.enabled else 0.0
+    net = round((exit_fill - float(entry_price)) * qty - deducted, 2)
     # Gross is the pure premium move with NO friction on either leg, so the
     # operator can see exactly what slippage + spread + charges cost them.
     gross = round((float(raw_exit_premium) - float(raw_entry_price)) * qty, 2)
@@ -211,7 +223,12 @@ def close_economics(
         "exit_fill_price": round(exit_fill, 3),
         "realized_pnl": net,
         "gross_realized_pnl": gross,
-        "net_realized_pnl": net,
+        # ALWAYS fully net of the statutory schedule, whatever the cost toggle
+        # says. This is the one field comparable across deployments configured
+        # differently — `realized_pnl` follows the operator's modelling choice,
+        # so summing it over a mixed set of deployments compares two definitions.
+        "net_realized_pnl": round(
+            (exit_fill - float(entry_price)) * qty - total_charges, 2),
         "friction_cost": round(gross - net, 2),
         "total_charges": round(total_charges, 2),
         "charges": charges,
