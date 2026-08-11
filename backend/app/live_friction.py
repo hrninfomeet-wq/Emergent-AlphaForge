@@ -204,11 +204,18 @@ def close_economics(
     # (friction_enabled: true, friction_costs_enabled: false), so the default
     # paper deployment reported zero STT/GST/stamp while a friction-OFF deployment
     # beside it reported the truth — and both were summed into one equity curve.
+    # `cfg=friction.costs` — the DEPLOYMENT'S OWN persisted schedule, not the
+    # module defaults. `round_trip_charges` never reads `cfg.enabled` (it uses
+    # only the six rates), so the "always report" intent needs ONLY the guard
+    # below to change from `friction.costs.enabled` to `qty > 0`. Substituting
+    # CostConfig(enabled=True) here silently discarded operator-set brokerage and
+    # any pinned rate, moving `realized_pnl` — the field the kill switch and daily
+    # governor read — by Rs 47.20 per round trip on a Rs 20/order schedule.
     charges = round_trip_charges(
         entry_premium=float(entry_price),
         exit_premium=exit_fill,
         quantity=qty,
-        cfg=CostConfig(enabled=True),
+        cfg=friction.costs,
     ) if qty > 0 else None
     total_charges = float(charges["total_charges"]) if charges else 0.0
     # DEDUCTION still follows the operator's toggle: reporting a charge is not the

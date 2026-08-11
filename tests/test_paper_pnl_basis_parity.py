@@ -127,3 +127,50 @@ def test_a_zero_quantity_close_claims_no_charges():
                           raw_entry_price=_ENTRY, quantity=0, ts_ms=0,
                           friction=_friction(enabled=True, costs_enabled=False))
     assert out["total_charges"] == 0.0
+
+
+# --- the deployment's OWN schedule must be honoured -------------------------
+#
+# Found by an adversarial audit of this very file's first version, which passed
+# the whole suite. The bug: `cfg=CostConfig(enabled=True)` was substituted for
+# `cfg=friction.costs`, silently discarding operator-set brokerage and any pinned
+# rate. `round_trip_charges` never reads `cfg.enabled` — only the guard needed to
+# change — so the swap was unnecessary AND it moved `realized_pnl`, the field the
+# kill switch and daily governor read.
+#
+# The suite stayed green because every existing fixture leaves all six rates at
+# their defaults, so a defaults-substitution bug is invisible to it. These tests
+# use a NON-default schedule for exactly that reason.
+
+def _custom_friction(*, costs_enabled: bool) -> FrictionConfig:
+    f = FrictionConfig()
+    f.enabled = True
+    f.costs = CostConfig(enabled=costs_enabled)
+    f.costs.brokerage_per_order = 20.0        # e.g. a Zerodha-style preset
+    return f
+
+
+def test_operator_set_brokerage_is_actually_charged():
+    out = _close(friction=_custom_friction(costs_enabled=True))
+    expected = round_trip_charges(entry_premium=_ENTRY, exit_premium=out["exit_fill_price"],
+                                  quantity=_QTY, cfg=_custom_friction(costs_enabled=True).costs)
+    assert out["total_charges"] == round(float(expected["total_charges"]), 2), (
+        "the deployment's own cost schedule was discarded for module defaults")
+
+
+def test_a_custom_schedule_is_reported_even_when_costs_are_off():
+    """The whole point of the change — report the truth — must use the RIGHT rates."""
+    off = _close(friction=_custom_friction(costs_enabled=False))
+    on = _close(friction=_custom_friction(costs_enabled=True))
+    assert off["total_charges"] == on["total_charges"] > 0.0
+
+
+def test_realized_pnl_matches_the_deployments_own_schedule():
+    """`realized_pnl` is the caps / kill-switch basis: it must reflect what the
+    operator configured, not what the module defaults to."""
+    out = _close(friction=_custom_friction(costs_enabled=True))
+    default_only = _close(friction=_friction(enabled=True, costs_enabled=True))
+    assert out["realized_pnl"] != default_only["realized_pnl"], (
+        "a Rs 20/order schedule produced the same P&L as a zero-brokerage one — "
+        "the configured rates are being ignored")
+    assert out["realized_pnl"] < default_only["realized_pnl"]
