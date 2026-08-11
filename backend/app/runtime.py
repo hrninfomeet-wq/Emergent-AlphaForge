@@ -993,6 +993,101 @@ async def _deployment_evaluator_loop() -> None:
             await asyncio.sleep(15.0)
 
 
+#: When the pre-open readiness check runs. 08:45 IST is ~30 minutes before the
+#: 09:15 open: late enough that an overnight token refresh has settled, early
+#: enough that a human can still act on a blocker before the bell.
+_PREOPEN_HOUR_IST = 8
+_PREOPEN_MINUTE_IST = 45
+
+
+async def _run_preopen_readiness(*, reason: str = "preopen_timer") -> Dict[str, Any]:
+    """Evaluate whether the coming session can trade, and persist the verdict.
+
+    Nothing ran before the market opened — the only warehouse job is the 18:00
+    auto-update, i.e. after the close — so an unattended day began with zero
+    verification. On 2026-08-04 the roller started 71 minutes late because the
+    daily Upstox OAuth had not been done, and no surface said so: a dead feed and
+    a quiet market look identical on the Live page.
+
+    REPORTS ONLY. It never fetches, trades or blocks; the decision stays the
+    operator's. Never raises.
+    """
+    from app.nse_calendar import is_trading_day
+    from app.preopen_readiness import evaluate_preopen_readiness
+    from app.live.flattrade_token import get_status as _flattrade_status
+
+    ist_now = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+    session_date = ist_now.date().isoformat()
+
+    try:
+        upstox = await upstox_client.get_connection_status()
+    except Exception as exc:
+        upstox = {"connected": False, "error": str(exc)[:120]}
+    try:
+        flattrade = await _flattrade_status()
+    except Exception as exc:
+        flattrade = {"connected": False, "error": str(exc)[:120]}
+
+    db = get_db()
+    try:
+        live_count = await db.strategy_deployments.count_documents(
+            {"status": "ACTIVE", "mode": "live"})
+    except Exception:
+        live_count = 0
+    try:
+        plan = await _autoupdate_compute_plan()
+    except Exception as exc:
+        log.warning("preopen readiness: hygiene plan unavailable (%s)", exc)
+        plan = None
+
+    verdict = evaluate_preopen_readiness(
+        is_trading_day=is_trading_day(session_date),
+        upstox_status=upstox,
+        flattrade_status=flattrade,
+        live_deployment_count=live_count,
+        warehouse_plan=plan,
+    )
+    doc = {
+        **verdict,
+        "session_date": session_date,
+        "trigger": reason,
+        "evaluated_at": datetime.now(timezone.utc).isoformat(),
+        "live_deployment_count": live_count,
+    }
+    try:
+        await db.preopen_readiness.replace_one(
+            {"session_date": session_date}, doc, upsert=True)
+    except Exception as exc:
+        log.warning("preopen readiness: could not persist verdict: %s", exc)
+
+    if verdict["ready"]:
+        log.info("preopen readiness (%s): READY — %d warning(s)",
+                  session_date, len(verdict["warnings"]))
+    else:
+        log.warning("preopen readiness (%s): NOT READY — %s",
+                     session_date,
+                     "; ".join(b["id"] for b in verdict["blockers"]))
+    return doc
+
+
+async def _preopen_readiness_loop() -> None:
+    """Run the readiness check at 08:45 IST every day. Cancellation-safe."""
+    from app.warehouse_autoupdate import seconds_until_next_daily_run
+    log.info("Pre-open readiness loop initialized (%02d:%02d IST)",
+              _PREOPEN_HOUR_IST, _PREOPEN_MINUTE_IST)
+    while True:
+        try:
+            await asyncio.sleep(seconds_until_next_daily_run(
+                hour_ist=_PREOPEN_HOUR_IST, minute_ist=_PREOPEN_MINUTE_IST))
+            await _run_preopen_readiness()
+        except asyncio.CancelledError:
+            log.info("Pre-open readiness loop cancelled")
+            return
+        except Exception as exc:
+            log.exception("Pre-open readiness loop error: %s", exc)
+            await asyncio.sleep(60.0)
+
+
 #: How often the risk supervisor re-evaluates account + per-deployment caps.
 _RISK_SUPERVISE_POLL_SEC = 10.0
 

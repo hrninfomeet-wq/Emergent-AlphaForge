@@ -40,6 +40,7 @@ from app.runtime import (
     _default_stream_instrument_keys,
     _deployment_evaluator_loop,
     _live_feed_supervisor_loop,
+    _preopen_readiness_loop,
     _risk_supervisor_loop,
     _topup_vix,
     _trigger_autoupdate,
@@ -227,6 +228,7 @@ async def startup() -> None:
 
     asyncio.create_task(_live_feed_supervisor_loop(), name="live-feed-supervisor")
     asyncio.create_task(_risk_supervisor_loop(), name="risk-supervisor")
+    asyncio.create_task(_preopen_readiness_loop(), name="preopen-readiness")
     log.info("Live-feed supervisor started")
 
     # Warehouse auto-update: catch up missing data to yesterday's close.
