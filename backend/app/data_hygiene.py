@@ -643,18 +643,33 @@ async def compute_hygiene_plan(
             ).isoformat()
             repair_rows = [r for r in window_rows if repair_floor <= r["date"] <= judge_until]
             incomplete = incomplete_spot_days(repair_rows, judge_until=judge_until)
-            if incomplete:
-                eg = incomplete[0]
+            # ...and WHOLLY-MISSING ones. `spot_status` is a PERCENTAGE over a
+            # rolling ~9-month window with a 95% "verified" threshold, so one to
+            # eight fully-missed sessions out of ~185 still scores 96-99.5% and the
+            # planner emits nothing. Those days also store no candles, so they
+            # produce no aggregation row and the under-captured check above cannot
+            # see them either. Without this the operator's exact pattern — PC off
+            # for a session — is never repaired by ANY automatic trigger.
+            missing = missing_spot_days(
+                repair_rows, floor=repair_floor, judge_until=judge_until)
+            if incomplete or missing:
+                candidates = [d["date"] for d in incomplete] + list(missing)
+                earliest = min(candidates)
+                bits = []
+                if incomplete:
+                    eg = incomplete[0]
+                    bits.append(f"{len(incomplete)} under-captured day(s) to repair "
+                                f"(e.g. {eg['date']} {eg['count']}/{eg['expected']})")
+                if missing:
+                    bits.append(f"{len(missing)} wholly-missing session(s) to backfill "
+                                f"(e.g. {missing[0]})")
                 actions.append({
                     "id": f"spot_{inst}",
                     "kind": "spot",
                     "instrument": inst,
-                    "from_date": eg["date"],
+                    "from_date": earliest,
                     "to_date": end_date,
-                    "reason": (
-                        f"{len(incomplete)} under-captured day(s) to repair "
-                        f"(e.g. {eg['date']} {eg['count']}/{eg['expected']})"
-                    ),
+                    "reason": "; ".join(bits),
                     "eta_minutes": 2,
                 })
                 # surface the pending repair in the per-instrument + rolled-up status
@@ -726,6 +741,49 @@ def incomplete_spot_days(
         if expected > 0 and count < expected - int(tolerance):
             out.append({"date": day, "count": count, "expected": expected})
     return sorted(out, key=lambda d: d["date"])
+
+
+def missing_spot_days(
+    day_rows: Sequence[Dict[str, Any]],
+    *,
+    floor: str,
+    judge_until: Optional[str],
+) -> List[str]:
+    """Trading days in ``[floor, judge_until]`` that stored NOTHING at all.
+
+    Derived from the trading CALENDAR minus the days present, because a session
+    with zero stored candles produces no aggregation row — so ``incomplete_spot_days``,
+    which iterates those rows, structurally cannot see it. Those two checks are
+    complementary and must both run: this finds days that are absent, that one
+    finds days that are short.
+
+    Without this a wholly-missed interior session is invisible forever. The
+    operator's PC is rarely up during market hours: miss Tuesday, let the roller
+    store Wednesday's live bars, and ``last_spot_date`` jumps past Tuesday — which
+    then sits below the forward-append high-water mark AND has no row to be judged
+    short. This is the same hole ``vix_topup_from_date`` already closes for India
+    VIX ("Plain forward-append can never fill a MID-window HOLE"); spot only ever
+    received the short-day half of that repair.
+
+    Pure / unit-testable.
+    """
+    if not judge_until or not floor:
+        return []
+    have = {str(r.get("date") or "") for r in (day_rows or ()) if r.get("date")}
+    if not have:
+        # Nothing stored in the window at all: there is no INTERIOR to have a hole
+        # in. That is forward-append / fallback-start territory, and claiming every
+        # day is missing here would make an empty or newly-seeded warehouse demand
+        # a full re-fetch on every sync.
+        return []
+    # Strictly BETWEEN the first and last stored day. Days after the last stored
+    # one are the forward-append gap and are already handled; days before the
+    # first are pre-history, not holes.
+    lo = max(str(floor), min(have))
+    hi = min(str(judge_until), max(have))
+    if lo > hi:
+        return []
+    return sorted(d for d in trading_days_in_range(lo, hi) if d not in have)
 
 
 def vix_topup_from_date(
@@ -834,11 +892,20 @@ async def compute_catch_up_plan(
         scope_lo = max(fallback_start_date, repair_floor)
         scope_rows = [r for r in day_rows if scope_lo <= r["date"] <= (target_end or "")]
         incomplete = incomplete_spot_days(scope_rows, judge_until=target_end)
+        # Wholly-MISSING sessions are a separate class from SHORT ones: they store
+        # no candles, so they produce no aggregation row and `incomplete_spot_days`
+        # can never report them. Derive them from the trading calendar instead.
+        missing_interior = missing_spot_days(
+            scope_rows, floor=scope_lo, judge_until=target_end)
 
         candidate_from: Optional[str] = forward_from if has_forward_gap else None
         if incomplete:
             earliest = incomplete[0]["date"]
             candidate_from = earliest if candidate_from is None else min(candidate_from, earliest)
+        if missing_interior:
+            earliest_missing = missing_interior[0]
+            candidate_from = (earliest_missing if candidate_from is None
+                              else min(candidate_from, earliest_missing))
 
         if not target_end or candidate_from is None:
             inst_reports.append({
@@ -849,6 +916,7 @@ async def compute_catch_up_plan(
                 "up_to_date": True,
                 "missing_trading_days": 0,
                 "incomplete_days": incomplete,
+                "missing_days": missing_interior,
                 "actions": [],
             })
             continue
@@ -863,6 +931,11 @@ async def compute_catch_up_plan(
             reason_bits.append(
                 f"{len(incomplete)} under-captured day(s) to repair "
                 f"(e.g. {incomplete[0]['date']} {incomplete[0]['count']}/{incomplete[0]['expected']})"
+            )
+        if missing_interior:
+            reason_bits.append(
+                f"{len(missing_interior)} wholly-missing session(s) to backfill "
+                f"(e.g. {missing_interior[0]})"
             )
         reason = "; ".join(reason_bits) or "catch-up"
 
