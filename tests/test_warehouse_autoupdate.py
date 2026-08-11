@@ -168,10 +168,15 @@ async def test_run_executes_when_actions_present():
         execute_plan_fn=execute,
         state=state,
     )
-    assert summary["status"] == "ok"
+    # "submitted", not "ok": execute_plan_fn hands work to ASYNC jobs that can all
+    # fail afterwards, so reporting success here asserted an outcome nobody had
+    # observed. Changed 2026-08-10 — a run with zero actions is still "ok",
+    # because nothing-to-do IS a completed outcome. See
+    # tests/test_autoupdate_log_honesty.py.
+    assert summary["status"] == "submitted"
     assert summary["actions_planned"] == 3
     assert summary["submitted_count"] == 3
-    assert state.last_status == "ok"
+    assert state.last_status == "submitted"
     assert state.last_submitted_count == 3
     assert len(state.history) == 1
 

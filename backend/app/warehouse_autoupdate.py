@@ -142,9 +142,26 @@ async def run_autoupdate_once(
         in_progress=state.in_progress,
     )
     if not run:
+        # A skip returned here BEFORE the try/finally that appends history, so it
+        # left no trace at all: a week of `upstox_not_connected` skips produced an
+        # EMPTY history, indistinguishable from a week of healthy silence. For an
+        # unattended operator that is the single most important thing to see —
+        # "skipped because Upstox was never connected" IS the not-ready state.
         summary = {"status": "skipped", "reason": guard_reason, "trigger": reason}
         state.last_status = "skipped"
         state.last_reason = f"{reason}:{guard_reason}"
+        state.last_finished_at = datetime.now(timezone.utc).isoformat()
+        state.runs_count += 1
+        state.history.append({
+            "trigger": reason,
+            "status": "skipped",
+            "reason": guard_reason,
+            "actions_planned": 0,
+            "submitted_count": 0,
+            "finished_at": state.last_finished_at,
+            "error": None,
+        })
+        state.history = state.history[-10:]
         return summary
 
     state.in_progress = True
@@ -168,17 +185,20 @@ async def run_autoupdate_once(
             submitted_count = int(result.get("submitted_count") or 0)
         state.last_submitted_count = submitted_count
 
-        state.last_status = "ok"
+        # Submission is NOT success: execute_plan_fn hands work to async jobs that
+        # can all fail afterwards, so "ok (N jobs)" asserted an outcome nobody had
+        # observed. Zero actions IS a completed outcome and stays "ok".
+        state.last_status = "ok" if submitted_count == 0 and actions_planned == 0 else "submitted"
         summary = {
-            "status": "ok",
+            "status": state.last_status,
             "trigger": reason,
             "actions_planned": actions_planned,
             "submitted_count": submitted_count,
             "overall_status": (plan.get("summary") or {}).get("overall_status"),
         }
         log.info(
-            "autoupdate(%s): %d actions planned, %d jobs submitted",
-            reason, actions_planned, submitted_count,
+            "autoupdate(%s): %s — %d actions planned, %d jobs submitted",
+            reason, state.last_status, actions_planned, submitted_count,
         )
         return summary
     except Exception as exc:

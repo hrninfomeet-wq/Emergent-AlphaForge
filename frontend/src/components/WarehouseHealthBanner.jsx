@@ -76,7 +76,11 @@ export default function WarehouseHealthBanner() {
   };
 
   // --- Derived health signals -------------------------------------------------
-  const autoOk = auto?.last_status === "ok" || auto?.last_status === "skipped";
+  // A SKIP is the one status that means nothing happened — most often
+// "upstox_not_connected", i.e. exactly the not-ready state. Painting it
+// green hid the unattended failure it exists to report. "submitted" means
+// jobs were handed off and are still running: healthy, but not yet done.
+  const autoOk = auto?.last_status === "ok" || auto?.last_status === "submitted";
 
   const lastTickMs = stream?.last_tick_at ? Date.parse(stream.last_tick_at) : NaN;
   const streamRunning = !!stream?.running;
