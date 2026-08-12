@@ -53,6 +53,38 @@ A clean process forks fine; a process that imports the whole app forks fine;
 only the *running server* fails. The fork was always unsafe — it was winning a
 race it was eventually going to lose.
 
+### 2.1 What is NOT the cause (tested, not assumed)
+
+The long-running server fails 100% of the time. A **freshly started container**
+running the **exact same code** completes 6-worker jobs (10/10 trials, reached
+the analyzing stage). Two further candidates were tested and eliminated:
+
+- **Recent commits.** `parallel_eval.py` last changed 2026-08-01 00:48 IST and
+  `optimizer.py` 2026-08-01 00:38 IST — both *before* the last successful
+  6-worker run (2026-07-31 19:51 UTC). Everything committed since is paper
+  trading, warehouse, live-risk, readiness and docs. Today's exact working tree
+  runs the pool successfully on a fresh process.
+- **The rebuilt base image.** `backend/Dockerfile` pins the floating tag
+  `FROM python:3.11-slim`. The image was rebuilt 2026-08-12T17:47:33Z — minutes
+  before the first failure — pulling a CPython built Aug 5 2026 in place of the
+  Jun 24 2026 build the successful runs used (glibc identical at 2.41). This
+  looked decisive, so it was A/B tested: fresh containers on **both** builds run
+  6-worker jobs successfully. The interpreter build is not the cause.
+
+Also eliminated: thread count (27 idle threads fork fine), rapid thread
+create/destroy churn, `uvloop` (not installed), and loading the real
+55,875-row frame.
+
+What remains unidentified is the specific runtime activity that poisons the
+server process. That gap does not block this design — the fix removes the
+hazard class rather than the trigger — but it means **restarting the backend is
+a workaround, not a cure**, and the first failure came only ~9 minutes after a
+fresh boot.
+
+Separately worth fixing: the unpinned `python:3.11-slim` base silently changed
+the interpreter build under a routine rebuild. It did not cause this, but it
+makes future incidents harder to reason about.
+
 ## 3. Scope
 
 **In scope:** make a broken pool non-fatal, and make parallel evaluation work
@@ -161,10 +193,10 @@ New coverage:
   measured during implementation, and logged, not assumed.
 - **`raw_df` pickle size is unmeasured.** ~55k rows; expected single-digit MB
   per worker. Measure and log.
-- **The precise commit that tipped fork over is unidentified.** The mechanism is
-  confirmed; the trigger is not. This is acceptable because the fix removes the
-  hazard class rather than the trigger, but it means we cannot claim "regression
-  introduced in X".
+- **The runtime activity that poisons the server process is unidentified.** The
+  mechanism is confirmed and code / image / thread-count / churn have all been
+  eliminated by test (§2.1). We cannot claim "regression introduced in X" —
+  because, as far as the evidence goes, no change introduced it.
 - Verification must include a real end-to-end run from the UI at
   `opt_workers = 6`, not just tests — the failure only reproduces from the live
   threaded server.
