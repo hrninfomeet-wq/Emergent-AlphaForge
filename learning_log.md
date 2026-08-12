@@ -5,6 +5,60 @@ so the next session starts smarter. Newest entry first.
 
 ---
 
+## 2026-08-07 → 08-11 — the live path learns what it holds (Claude Opus 5)
+
+**CORE LESSON — audit your own commits with the machinery you use on other people's.**
+Two adversarial passes each found a real bug in code I had written, reviewed, and shipped
+green against 4,500+ tests. `358fcc3`: an ownership gate and a `source`-based filter landed
+in the SAME commit, and the gate made the filter's premise unreachable, so it excluded the
+exact opposite population — restart-recovered positions silently left the account basket
+stop. `58ef491`: making charges "always reported" I changed the config as well as the
+guard, discarding the deployment's own cost schedule and moving `realized_pnl` — the caps
+basis — by Rs 47.20 per round trip. **Both times my commit message asserted the change was
+safe.** The claim is what made it look safe.
+
+### Confirmed approaches that worked
+
+- **A fixture that only exercises DEFAULTS cannot see code that ignores non-defaults.**
+  Every friction fixture left all six rates at defaults, so a defaults-substitution bug was
+  structurally invisible. New tests use a non-default schedule for exactly that reason.
+- **Prove red by reverting**, especially when the fix landed before the test harness was
+  right. Did this four times this stretch; twice it exposed a test that passed for the
+  wrong reason.
+- **Make each test prove it REACHED the code under test.** `assert client.place_calls == 1`
+  caught that the margin gate was silently blocking at the fixture's default lot size.
+- **AST over grep for behavioural claims.** A "never squares" test failed on the word
+  *flatten* inside its own docstring; an overview test failed against a CORRECT
+  implementation that bound the collection to a variable. Both rewritten to walk the AST.
+- **Runtime-verify when the chance appears.** Rebuilding with brokers connected proved the
+  boot reconcilers on real data (9 stuck runs, 19 stranded trades) and the readiness check
+  end-to-end. Everything else remains honestly labelled unverified.
+
+### Dead ends to avoid
+
+- **Do not follow a plan step without checking it.** Three of them were wrong: the audit
+  said to copy `avgprc` from `order_sm` (that path has NO production feed), to translate
+  `exit_controls` into the monitor's trail contract (lossy — paper COMPOSES via `max()`,
+  the monitor has one exclusive mode), and to switch the headline readers to net (would
+  have silently changed the caps basis).
+- **Do not grep domain vocabulary to prove a subsystem was idle.** "No square/transmit
+  lines" is not evidence of no order — the placement appears only as an `httpx POST`.
+- **Do not edit test files with a regex.** Produced a `SyntaxError`; restored from git and
+  edited precisely. Same "verify each call site" discipline as source edits.
+- **Do not model an empty broker book to test an age-out.** `book_is_known` requires a
+  NON-empty list, deliberately, so an empty book exercises nothing.
+- **A skip buried in a shared function is invisible to tests of any single caller.**
+  `allow_overnight` exempted positions from the basket STOP because the skip lived inside
+  `square_off_open_paper_trades`, which has six callers.
+
+### The through-line
+
+The 2026-07 audits found the app **strong at deciding to enter, weak at knowing what it
+holds**. Nearly every fix this stretch was an instance: unrealized P&L never marked, entry
+price an intent not a fill, charges never applied, the guard adopting positions it did not
+own, orphans never reconciled. A trading bot is not primarily an entry engine — it is a
+position-state machine.
+
 ## 2026-08-04 (cont.) — fixing the blockers, and auditing my own fixes (Claude Opus 5)
 
 **CORE LESSON — when you add a gate, re-read every filter that was written before it.**

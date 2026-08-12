@@ -23,7 +23,10 @@ safety-critical.
    `premium_trigger_dispatch.py`.** Its four verified HIGH findings are fixed in the
    current working tree; all 8 confirmed MED findings are also closed locally. One
    disputed LOW remains separate.
-3. `docs/STAGE1_INTEGRITY_SESSION_HANDOFF_2026-08-01.md` — the latest session's commit
+3. `docs/LIVE_VALIDATION_PLAN_2026-08.md` — **read before ANY market session.**
+   Twelve changes landed on the real-money path 2026-07-29 → 08-11 and EIGHT have
+   never run in a market session; that plan exercises exactly those.
+4. `docs/STAGE1_INTEGRITY_SESSION_HANDOFF_2026-08-01.md` — the latest session's commit
    map, verification ledger, runtime snapshot, file routing and exact resume sequence.
 4. `docs/AGENT_TODO.md` — the live board. Its ★ START HERE block names the three
    highest-value next actions.

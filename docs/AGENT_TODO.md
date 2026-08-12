@@ -14,6 +14,36 @@
 
 ---
 
+## ★★ NEXT SESSION IS A MARKET SESSION (2026-08-12)
+
+**Plan: [`LIVE_VALIDATION_PLAN_2026-08.md`](LIVE_VALIDATION_PLAN_2026-08.md). Read it first.**
+
+The build phase is done for now. Twelve changes landed on the real-money path
+2026-07-29 → 08-11 and **eight have never run in a market session**. Continuing to build
+stacks unvalidated work on unvalidated work — and two adversarial audits each found a real
+bug in code that had already been reviewed and was passing 4,500+ tests.
+
+Order of the day: pre-open readiness → paper observation (proves position MARKING, the
+field every other risk control rests on) → restart test → **one lot, operator-armed**
+(the only way to prove the fill/charges chain) → failure drills.
+
+**Open policy decision for the operator, blocking a rupee-accurate rehearsal:** paper
+replays the pinned sizing policy, live uses a flat `risk.live.lots` **by design**. So every
+rupee figure a paper cohort certifies — drawdown, ruin, the promotion checks — is produced
+at a lot count live will not use. Not a bug; a decision. See item 7(b).
+
+**Remaining dev work, all deliberately deferred until after validation:**
+
+| # | Item | Why deferred |
+|---|---|---|
+| 7(c) | Paper's clock-driven exits are price-gated; live's are not | Worth doing BEFORE the session — otherwise paper does not faithfully rehearse live |
+| 7(b) | Paper/live sizing divergence | Operator policy decision, not a bug |
+| — | `AutoUpdateState` is an in-memory global; a restart erases the run history | Needs a db handle threaded into a pure module |
+| — | Stage 2 Dashboard v2, Stage 3 experiment ledger | A dashboard over unvalidated numbers just displays them more attractively |
+| — | 13 verified-but-unfixed optimizer findings | `BACKTEST_INTEGRITY_AUDIT.md` §5 — research path, not the live path |
+
+---
+
 ## ★ START HERE — the state of play on 2026-08-01
 
 **Repo:** `main` and `origin/main` are synchronized at the published Stage-1 checkpoint; one branch, zero stashes.

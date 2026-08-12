@@ -198,6 +198,43 @@ qualification is advisory rather than a deployment veto.**
   Library entries, nullable direct-strategy inputs, an older optimizer snapshot, and
   zero console errors/warnings.
 
+## [Unreleased] — the live path learns what it holds (2026-07-29 → 2026-08-11)
+
+**Outcome: the app can now see what it is holding. Twelve changes to the real-money path;
+EIGHT have never run in a market session — see `docs/LIVE_VALIDATION_PLAN_2026-08.md`.**
+
+- **Your daily loss limit can finally see an open position.** It was evaluated only when a
+  new signal arrived, and could only ever see CLOSED trades — so a position running against
+  you all afternoon tripped nothing at all. The guard now records the broker's own P&L
+  every cycle, and a background check re-evaluates the limits every 10 seconds. A mark that
+  stops updating reads as UNKNOWN rather than as zero.
+- **P&L is measured from the price you actually paid.** The app stored the pre-trade
+  reference premium, not the fill. On the one real trade taken so far that was 33.35 versus
+  a 33.20 fill — and no P&L was ever computed for it at all. Statutory charges (STT, GST,
+  stamp, exchange) are now recorded on every close.
+- **The software guard only touches positions AlphaForge opened.** It previously adopted
+  every position in your broker account — including ones you placed by hand on the mobile
+  app — gave them an invented 50% stop, and folded them into the basket controls.
+- **Orphans clean themselves up at boot.** A missed 15:00 square-off left paper trades open
+  forever, consuming position slots and capital; an interrupted sync left the warehouse
+  buttons permanently disabled. Both now self-heal. Measured on the real database: 9 stuck
+  runs and 19 stranded trades cleared.
+- **A session missed while the PC was off is no longer invisible.** The planners appended
+  forward from the last stored day and repaired only SHORT days, so a wholly-missed session
+  fell into a blind spot between the two.
+- **The app tells you before the bell whether the day can trade.** A new 08:45 check reports
+  a blocked feed, an expired token, or a broker that is down while a strategy is live. On
+  2026-08-04 the candle roller started 71 minutes after the open and nothing said so.
+- **Paper stops rehearsing a different accounting basis.** The cost toggle changed what the
+  exchange was reported to take; the deployment's own cost schedule was being discarded for
+  module defaults; and `allow_overnight` — a preference about end-of-day — was exempting
+  positions from the basket **stop-loss**, Stop-ALL, and strategy deletion.
+- **A promoted deployment stops reading as dead.** Going live made it vanish from every
+  screen that reports performance, showing 0 trades under its own LIVE badge.
+- **Verification:** 4,573 passed, 4 xfailed, 0 failed. Two of the fixes above were bugs
+  introduced during this work and caught by adversarial audit — both had passed the full
+  suite. Nothing here has been validated against a real fill.
+
 ## [0.58.0] — the numbers you see are finally the numbers that happened (2026-07-31)
 
 **Outcome: a whole class of reporting defects is closed, and one critical bug means

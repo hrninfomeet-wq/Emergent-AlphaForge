@@ -14,19 +14,50 @@ Stack: **React** (CRA + craco) frontend, **FastAPI** (Python) backend, **MongoDB
 
 ## 2. Current state
 
-> **As of 2026-08-01 · v0.58.0 + unreleased Stage-1 integrity work · `main` and `origin/main` are synchronized at the published Stage-1 checkpoint.**
-> Verification baseline: **4,354 passed, 4 xfailed, 0 failed** (4,358 collected).
+> **As of 2026-08-11 · v0.58.0 + unreleased live-integrity work · one branch, clean tree.**
+> Verification baseline: **4,573 passed, 4 xfailed, 0 failed**.
+>
+> ⚠ **Before the next market session read
+> [`LIVE_VALIDATION_PLAN_2026-08.md`](LIVE_VALIDATION_PLAN_2026-08.md).** Twelve changes
+> landed on the real-money path between 2026-07-29 and 2026-08-11 and **eight have never
+> run in a market session.** That plan exercises exactly those, in an order where each
+> step's failure is cheap.
 
 ### 2.0 The 60-second orientation
 
 | Question | Answer |
 |---|---|
-| Is it running real money? | **No.** Zero real fills have ever happened — `live_trades` is empty. |
+| Is it running real money? | **Once.** ONE real trade exists (2026-08-04, NIFTY 24550 PE, 1 lot) and the app recorded it WRONG — `entry_price` was the pre-trade reference (33.35) not the fill (33.20), `realized_pnl` was **null**, and it closed via `reconciled_closed`. All three defects are now fixed and **none of the fixes has seen a real fill.** |
 | What stops it? | Not code. All four pre-real-money blockers (C2/C4/H1/C3) are **fixed**; what's missing is a **Flattrade-registered static IP** and a market-hours validation session. |
 | Does any strategy have a proven edge? | **No.** Three independent campaigns have failed a holdout. See [`BACKTEST_INTEGRITY_AUDIT.md`](BACKTEST_INTEGRITY_AUDIT.md) §6 and [`PREMIUM_MOMENTUM_EDGE_VERDICT_2026-07.md`](PREMIUM_MOMENTUM_EDGE_VERDICT_2026-07.md). Do not re-litigate without new data. |
 | Can I trust a saved backtest? | **Only if it was run on/after 2026-07-30.** Every paired-option backtest saved before then is wrong — see the ⚠ below. |
 | What is the active work program? | The **capability phase**: make backtest/paper/live fully usable, and make a plain-English strategy deployable. Edge hunting is explicitly parked. [`AGENT_TODO.md`](AGENT_TODO.md) is the live board. |
 | Where do I look first when a number looks wrong? | [`BACKTEST_INTEGRITY_AUDIT.md`](BACKTEST_INTEGRITY_AUDIT.md) — it names the defect class, reproductions, and the closed HIGH/MED register. Disputed LOW #31 remains separate. |
+
+### 2.0b What changed on the live path (2026-07-29 → 2026-08-11)
+
+The 2026-07 audits found the app was **strong at deciding to enter and weak at knowing
+what it holds**. That layer is now largely closed. The "verified" column is the honest
+state, not the intent — most of this has only ever run in tests.
+
+| Change | What it fixes | Runtime-verified? |
+|---|---|---|
+| `ce82ba6` `7d85ff8` | Guard adopts ONLY positions AlphaForge can prove it opened (was: every row in the book). Refuses shorts. Ownership from the intent store's `intent.tsym`, not today's order book | ❌ needs an open unowned position |
+| `358fcc3` | Restart-recovered positions stay inside the account basket stop (a regression introduced by `ce82ba6` itself) | ❌ |
+| `be04cca` | A lost ACK from `place_order` is INDETERMINATE — claim retained, engine halted — not a clean not-placed | ❌ needs a network failure |
+| `05b6822` | A never-filled entry stops consuming a `max_concurrent` slot forever | ❌ |
+| `1a9a8ed` `6718aba` | **The day-stop can see open risk** (guard marks every cycle) and evaluates on a TIMER, not only when a signal arrives | ❌ needs an open position |
+| `0330156` `f19bb75` `6c78198` | P&L measured from the true fill; statutory charges journalled; broker-space `noren_tsym`/`exch` reach the journal | ❌ needs a real fill |
+| `339500b` | Boot reconciles orphaned warehouse runs + stranded paper trades | ✅ **cleaned 9 runs + 19 trades** |
+| `0a9db7d` | A promoted deployment stops reading as dead on every performance surface | ❌ |
+| `e8dfba3` | A session missed while the PC was off is no longer invisible to the planners | ◐ found 0 gaps (consistent) |
+| `f6181a5` | The auto-update log cannot report green for a day it skipped | ❌ |
+| `d1ce64d` | **Pre-open readiness at 08:45** — says whether the day can trade before the bell | ✅ real brokers, `ready:true` |
+| `97ac3c7` `58ef491` `4a8c96b` | Paper: the cost toggle no longer alters a statutory fact; the deployment's own cost schedule is honoured; `allow_overnight` stops exempting positions from **stop-losses** | ❌ |
+
+**Two of these were bugs I introduced and an adversarial audit caught** — `358fcc3`
+(basket exclusion) and `58ef491` (cost-schedule substitution). Both passed the full suite.
+Audit your own commits with the same machinery you use on others'.
 
 ### 2.1 ⚠ Two things that will bite you immediately
 
