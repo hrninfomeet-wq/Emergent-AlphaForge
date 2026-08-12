@@ -766,6 +766,33 @@ async def _maybe_arm_paper_lazy_leg(db: Any, trade: Dict[str, Any]) -> None:
                     trade.get("id"), exc)
 
 
+def _clock_exit_fill(trade: Dict[str, Any], option_price: Optional[float]):
+    """Price a CLOCK-driven exit: ``(price, source, stale)`` or ``None``.
+
+    A time condition being MET is exactly as definite as a spot level being HIT —
+    the price is only how the exit is BOOKED, never whether it fired. The
+    spot-mirror branch already encodes this ("booked ... but flagged stale so the
+    journal shows it is an estimate, not a fill"); the clock branches were gated on
+    a fresh tick instead, so a feed hiccup at 14:30 made paper ride to the 15:00
+    EOD sweep on a strategy live squares at 14:30. Paper then measured a different
+    strategy from the one being deployed, which defeats the whole point of paper.
+
+    Returns None when NO usable premium exists, so the caller leaves the trade open
+    for the EOD sweep rather than booking a fabricated zero — recording a total
+    loss that never happened would be worse than exiting a minute late.
+    """
+    if option_price is not None:
+        return float(option_price), "live_tick", False
+    for key in ("last_price", "entry_price"):
+        try:
+            candidate = float(trade.get(key) or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if candidate > 0.0:
+            return candidate, "last_mark", True
+    return None
+
+
 async def mark_open_deployment_trades(
     db: Any,
     *,
@@ -877,16 +904,19 @@ async def mark_open_deployment_trades(
             #     ignoring it, and the EOD sweep still backstops it.
             if str(updated.get("status") or "").upper() == "OPEN":
                 _sq = (updated.get("risk_hints") or {}).get("square_at_ist")
-                if _sq and option_price is not None:
+                if _sq:
                     try:
                         _sq_h, _sq_m = (int(x) for x in str(_sq).split(":", 1))
                         _now_ist = _now_utc() + timedelta(hours=5, minutes=30)
                         if (_now_ist.hour, _now_ist.minute) >= (_sq_h, _sq_m):
-                            updated = close_trade(updated, exit_price=option_price,
-                                                  reason="exit_time", at=at)
-                            updated["exit_price_source"] = "live_tick"
-                            updated["exit_price_stale"] = False
-                            wrote = True
+                            _fill = _clock_exit_fill(updated, option_price)
+                            if _fill is not None:
+                                _px, _src, _stale = _fill
+                                updated = close_trade(updated, exit_price=_px,
+                                                      reason="exit_time", at=at)
+                                updated["exit_price_source"] = _src
+                                updated["exit_price_stale"] = _stale
+                                wrote = True
                     except (TypeError, ValueError):
                         pass
 
@@ -897,15 +927,18 @@ async def mark_open_deployment_trades(
             if str(updated.get("status") or "").upper() == "OPEN":
                 tsm = (updated.get("risk_hints") or {}).get("time_stop_minutes")
                 created_at = updated.get("created_at")
-                if tsm and created_at and option_price is not None:
+                if tsm and created_at:
                     entry_ts_ms = _iso_to_ms(created_at)
                     elapsed_min = (now_ms - entry_ts_ms) / 60000.0
                     if elapsed_min >= float(tsm):
-                        updated = close_trade(updated, exit_price=option_price,
-                                              reason="time_stop", at=at)
-                        updated["exit_price_source"] = "live_tick"
-                        updated["exit_price_stale"] = False
-                        wrote = True
+                        _fill = _clock_exit_fill(updated, option_price)
+                        if _fill is not None:
+                            _px, _src, _stale = _fill
+                            updated = close_trade(updated, exit_price=_px,
+                                                  reason="time_stop", at=at)
+                            updated["exit_price_source"] = _src
+                            updated["exit_price_stale"] = _stale
+                            wrote = True
 
             # 3. Spot-mirror exits (the backtest's spot_exit mode, live): close
             #    the option at its current premium when the UNDERLYING hits the
