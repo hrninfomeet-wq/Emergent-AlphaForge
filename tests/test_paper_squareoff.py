@@ -222,7 +222,15 @@ async def test_square_off_is_idempotent_for_already_closed_trades():
 
 @pytest.mark.asyncio
 async def test_square_off_skips_trades_from_allow_overnight_deployments():
-    """User opted into overnight on a deployment -> its open trades survive square-off."""
+    """User opted into overnight on a deployment -> its open trades survive square-off.
+
+    The exemption became OPT-IN on 2026-08-11. It is an END-OF-DAY preference, but
+    the skip lived unconditionally inside this function, whose six callers include
+    the paper overall-basket STOP, Stop-ALL, manual Stop and retire cleanup — so it
+    was silently exempting positions from risk controls. Only the two genuinely
+    scheduled sweeps pass `honour_allow_overnight=True`, as this test now does.
+    See tests/test_overnight_scope.py.
+    """
     db = FakeDB()
     intraday = make_open_trade(instrument_key="NSE_FO|A|CE", entry=100.0, last=120.0)
     intraday["deployment_id"] = "intraday-dep"
@@ -234,7 +242,7 @@ async def test_square_off_skips_trades_from_allow_overnight_deployments():
         {"id": "overnight-dep", "risk": {"allow_overnight": True}},
     ])
 
-    summaries = await square_off_open_paper_trades(db)
+    summaries = await square_off_open_paper_trades(db, honour_allow_overnight=True)
 
     # Both trades should appear in summaries: one closed, one skipped
     closed = [s for s in summaries if "exit_price" in s]

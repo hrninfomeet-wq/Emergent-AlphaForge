@@ -104,10 +104,16 @@ def test_without_the_filter_behaviour_is_unchanged():
 
 
 def test_allow_overnight_still_wins_over_the_boot_sweep():
-    """An operator who opted into overnight positions keeps them."""
+    """An operator who opted into overnight positions keeps them.
+
+    `honour_allow_overnight=True` mirrors the production call: the boot sweep IS
+    the missed 15:00 EOD sweep, so it is one of only two callers that may carry the
+    exemption. Every other caller — the basket stop, Stop-ALL, manual Stop, retire
+    — squares regardless. See tests/test_overnight_scope.py.
+    """
     db = _DB([_trade("t1", "2026-08-04T07:04:02+00:00", dep="depN")],
              deps=[{"id": "depN", "risk": {"allow_overnight": True}}])
-    out = _run(db, entered_before_ist_date="2026-08-07")
+    out = _run(db, entered_before_ist_date="2026-08-07", honour_allow_overnight=True)
     assert db.paper_trades.replaced == []
     assert out and out[0].get("skipped") == "allow_overnight"
 

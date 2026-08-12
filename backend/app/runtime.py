@@ -948,7 +948,8 @@ async def _deployment_evaluator_loop() -> None:
             if last_squareoff_ist_date != today_ist and is_square_off_due(ist_now):
                 summaries = await square_off_open_paper_trades(
                     db,
-                    latest_tick_lookup=upstox_stream_manager.latest_tick_map().get,
+                    latest_tick_lookup=upstox_stream_manager.latest_tick_map(                    honour_allow_overnight=True,  # scheduled 15:00 EOD sweep
+                ).get,
                     reason="auto_square_off_15_00_IST",
                     now_ist=ist_now,
                 )

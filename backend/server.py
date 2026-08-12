@@ -161,6 +161,7 @@ async def startup() -> None:
             db,
             reason="boot_reconcile_missed_squareoff",
             entered_before_ist_date=_today_ist,
+            honour_allow_overnight=True,  # this IS the missed EOD sweep
         )
         _closed = [s for s in _swept if not s.get("skipped")]
         if _closed:

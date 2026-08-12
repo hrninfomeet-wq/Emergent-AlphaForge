@@ -126,11 +126,23 @@ async def square_off_open_paper_trades(
     now_ist: Optional[datetime] = None,
     deployment_id: Optional[str] = None,
     entered_before_ist_date: Optional[str] = None,
+    honour_allow_overnight: bool = False,
 ) -> List[Dict[str, Any]]:
     """Force-close all OPEN paper trades. Idempotent: closed trades are skipped.
 
-    Trades belonging to deployments where `risk.allow_overnight` is True are skipped,
-    so users who explicitly opted into overnight positions keep them open.
+    `honour_allow_overnight` (default **False**) controls whether
+    `risk.allow_overnight` exempts a deployment's trades.
+
+    That flag is a preference about END-OF-DAY behaviour, but the skip used to live
+    unconditionally inside this function — which has six callers — so it also
+    exempted positions from the paper OVERALL BASKET stop-loss, from Stop-ALL and
+    per-deployment manual Stop, from the manual square-off endpoint, and from
+    strategy retire/delete cleanup (leaving orphan OPEN trades behind a deleted
+    strategy). "Keep my position overnight" is not "ignore my stop loss".
+
+    The default therefore IGNORES the flag and squares anyway; only the genuinely
+    time-SCHEDULED sweeps opt in. A caller added later without thought gets the
+    safe behaviour rather than a silent exemption from a risk control.
 
     When `deployment_id` is given, only that deployment's OPEN trades are squared
     off (used by the per-deployment "Stop" button); when None (the default), the
@@ -174,7 +186,7 @@ async def square_off_open_paper_trades(
     closed_at = (now_ist or _ist_now()).strftime("%Y-%m-%dT%H:%M:%S+05:30")
     summaries: List[Dict[str, Any]] = []
     for trade in open_trades:
-        if overnight_allowed.get(trade.get("deployment_id"), False):
+        if honour_allow_overnight and overnight_allowed.get(trade.get("deployment_id"), False):
             summaries.append({"id": trade.get("id"), "skipped": "allow_overnight"})
             continue
         try:
