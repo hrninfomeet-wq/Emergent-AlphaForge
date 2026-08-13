@@ -675,9 +675,16 @@ async def run_wfo(job_id: str, payload: Dict[str, Any], resume: bool = False) ->
                        "optimize_indicator_periods": optimize_indicator_periods},
         })
 
-        pool = start_pool(df, _workers) if _workers > 1 else None
+        pool = start_pool(df, _workers, strategy_id) if _workers > 1 else None
         use_parallel = pool is not None
         await _update_job(job_id, {"opt_workers_effective": _workers if use_parallel else 1})
+        if _workers > 1 and not use_parallel:
+            # start_pool never raises; None here means another parallel job owns the
+            # pool or it could not start. Windows still run — sequentially, correctly,
+            # and slower. opt_workers_effective already reads 1; say why.
+            await _update_job(job_id, {"warning": (
+                f"parallel workers unavailable — ran sequentially instead of {_workers} "
+                f"workers. Results are correct; the run is slower.")})
 
         cancelled = False
         try:

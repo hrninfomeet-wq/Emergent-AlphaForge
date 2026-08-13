@@ -1,6 +1,9 @@
 import sys
 import pickle
 from pathlib import Path
+from concurrent.futures.process import BrokenProcessPool
+
+import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 
@@ -20,13 +23,19 @@ def test_effective_workers_clamps_and_falls_back(monkeypatch):
     assert pe.effective_workers(1) == 1
     assert pe.effective_workers(0) == 1
     assert pe.effective_workers("x") == 1
-    monkeypatch.setattr(pe, "fork_available", lambda: False)
-    assert pe.effective_workers(8) == 1  # no fork -> sequential
-    monkeypatch.setattr(pe, "fork_available", lambda: True)
     monkeypatch.setattr(pe.os, "cpu_count", lambda: 4)
     assert pe.effective_workers(8) == 3  # cpu-1
     monkeypatch.setenv("AF_OPT_WORKERS", "2")
     assert pe.effective_workers(8) == 2  # env cap
+
+
+def test_pool_uses_spawn_not_fork():
+    """The parent is a ~30-thread uvicorn server; forking it segfaults every child
+    in glibc before a single trial runs. Spawn is the whole point of this module —
+    guard it so nobody 'optimises' it back to fork for the cheaper startup."""
+    src = (ROOT / "backend" / "app" / "parallel_eval.py").read_text(encoding="utf-8")
+    assert 'get_context("spawn")' in src
+    assert 'get_context("fork")' not in src
 
 
 def test_worker_function_is_top_level_picklable():
@@ -84,7 +93,61 @@ def test_parallel_backtest_sequential_fallback_in_order():
     assert out[0][0] is not None and "trade_count" in out[0][0]  # REAL backtest, not a sentinel
 
 
-def test_start_pool_returns_none_without_fork(monkeypatch):
-    monkeypatch.setattr(pe, "fork_available", lambda: False)
-    assert pe.start_pool(_fixture_df(), 4) is None  # no fork -> sequential fallback
+def test_start_pool_sequential_when_not_parallel():
     assert pe.start_pool(_fixture_df(), 1) is None  # workers<=1 -> sequential
+    assert pe.start_pool(_fixture_df(), 0) is None
+
+
+def test_start_pool_degrades_instead_of_raising(monkeypatch):
+    """A pool that cannot start must NOT kill the job. This is the regression that
+    burned 800-trial runs: BrokenProcessPool propagated out of run_optimization and
+    failed the whole optimization instead of falling back to the sequential path."""
+    class _Exploding:
+        def __init__(self, *a, **k):
+            pass
+        def map(self, *a, **k):
+            raise BrokenProcessPool("worker died on warmup")
+        def shutdown(self, *a, **k):
+            pass
+
+    monkeypatch.setattr(pe, "ProcessPoolExecutor", _Exploding)
+    try:
+        assert pe.start_pool(_fixture_df(), 4, "confluence_scalper") is None
+        assert pe._POOL is None  # no half-built pool left to poison the next job
+    finally:
+        pe._POOL = None
+
+
+def test_worker_selfcheck_rejects_a_worker_that_cannot_resolve_the_strategy():
+    """_worker_evaluate swallows every exception and returns (None, merged). Without
+    this warmup check, a spawn worker with an empty registry would score EVERY trial
+    as a failed measurement and the job would 'succeed' with garbage."""
+    prev_df = pe._RAW_DF
+    try:
+        pe._RAW_DF = None
+        with pytest.raises(RuntimeError, match="never received raw_df"):
+            pe._worker_selfcheck("confluence_scalper")
+
+        pe._RAW_DF = _fixture_df()
+        get_registry().auto_discover()
+        assert pe._worker_selfcheck("confluence_scalper") == "ok"
+        with pytest.raises(RuntimeError, match="cannot resolve strategy"):
+            pe._worker_selfcheck("no_such_strategy_id")
+    finally:
+        pe._RAW_DF = prev_df
+
+
+def test_init_worker_rebuilds_frame_and_registry():
+    """A spawn worker inherits NOTHING — the initializer is the only thing that puts
+    raw_df and the strategy registry into it."""
+    prev_df = pe._RAW_DF
+    try:
+        pe._RAW_DF = None
+        pe._WORKER_CACHES = {"stale": {}}
+        df = _fixture_df()
+        pe._init_worker(df)
+        assert pe._RAW_DF is df
+        assert pe._WORKER_CACHES == {}
+        assert get_registry().get("confluence_scalper") is not None
+    finally:
+        pe._RAW_DF = prev_df

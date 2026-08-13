@@ -1911,8 +1911,17 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                     await _flush_trial_log(job_id, trial_history, best_so_far, completed)
         else:
             # PARALLEL (workers>1) — opt-in batched ask/tell; non-deterministic (spec §4/§8).
-            pool = start_pool(raw_df, _workers)   # None -> concurrent parallel job active -> sequential in-process
+            pool = start_pool(raw_df, _workers, strategy.id)   # never raises; None -> sequential
             use_parallel = pool is not None
+            if not use_parallel:
+                # None means a concurrent parallel job owns the pool, or the pool
+                # could not start. Either way the trial loop runs sequentially and
+                # the results are correct — but the run is ~_workers times slower,
+                # so say so instead of leaving the user to wonder.
+                log.warning("optimization %s: parallel pool unavailable, running sequentially", job_id)
+                await _update_job(job_id, {"warning": (
+                    f"parallel workers unavailable — ran sequentially instead of {_workers} "
+                    f"workers. Results are correct; the run is slower.")})
             try:
                 prior = completed
                 while completed < n_trials:

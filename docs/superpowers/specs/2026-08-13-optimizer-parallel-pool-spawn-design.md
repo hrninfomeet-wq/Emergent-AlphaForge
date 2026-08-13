@@ -1,7 +1,10 @@
 # Optimizer parallel pool: survive a broken pool, and stop forking a threaded server
 
 **Date:** 2026-08-13
-**Status:** design approved, not yet implemented
+**Status:** IMPLEMENTED 2026-08-13. Verified on the live server with the exact
+failing config (`confluence_scalper` / NIFTY / `option_rerank` / 6 workers):
+`parallel pool: 6 spawn workers ready in 1.4s (rows=55875)`. Spawn startup cost
+is 1.4s once per job — the risk flagged in §7 measured and closed.
 **Area:** `backend/app/parallel_eval.py`, `backend/app/optimizer.py`
 
 ## 1. The failure
@@ -71,9 +74,29 @@ the analyzing stage). Two further candidates were tested and eliminated:
   looked decisive, so it was A/B tested: fresh containers on **both** builds run
   6-worker jobs successfully. The interpreter build is not the cause.
 
-Also eliminated: thread count (27 idle threads fork fine), rapid thread
-create/destroy churn, `uvloop` (not installed), and loading the real
-55,875-row frame.
+Also eliminated: thread count (40 idle threads fork fine), rapid thread
+create/destroy churn, `uvloop` (not installed), loading the real 55,875-row
+frame, and `evaluation_mode` (a `spot` job fails on the poisoned process too).
+
+A second round of elimination compared the poisoned server against healthy
+fresh containers directly:
+
+- **Identical native code.** `/proc/1/maps` lists exactly the same `.so` files
+  in both — zero extra libraries in the poisoned process. No BLAS/OpenMP/libcurl
+  difference.
+- **Identical thread composition.** py-spy shows only the same *kinds* of
+  threads, in different counts (poisoned: 1 main + 15 `asyncio_N` + 10
+  `ThreadPoolExecutor-0_N` + 3 pymongo = 29; healthy: 12). No broker/feed thread,
+  and **no leaked pool threads** — so failed attempts do not self-poison.
+- **Not container config.** A probe with the same v9fs plugins bind mount runs
+  6-worker jobs fine; a fresh probe runs the same job three times in a row with
+  no thread growth.
+
+The one difference not testable in isolation is that the live container is the
+only one with `LIVE_AUTOPLACE_ARMED` / `LIVE_GUARD_ARMED` and Flattrade
+credentials. Replicating that would mean running a second armed backend against
+the real account, which is not an acceptable experiment. It stays unresolved by
+choice, and the fix does not depend on it.
 
 What remains unidentified is the specific runtime activity that poisons the
 server process. That gap does not block this design — the fix removes the
