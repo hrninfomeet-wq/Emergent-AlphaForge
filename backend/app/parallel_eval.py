@@ -241,14 +241,21 @@ _SIM_LOCK = threading.Lock()
 _SIM_CONTRACTS: Optional[List[Dict[str, Any]]] = None
 _SIM_CANDLES_BY_KEY: Optional[Dict[str, Any]] = None
 _SIM_CONTRACTS_BY_EXPIRY: Optional[Dict[str, List[Dict[str, Any]]]] = None
+# The RAW spot frame, for the survival gate: its folds are params-dependent, so a
+# worker re-enriches from raw rather than having a ~57k-row enriched frame shipped
+# per finalist. Worker-side enrichment is already proven equal to the serial path
+# by the trial-worker equivalence tests.
+_SIM_RAW_DF: Optional[pd.DataFrame] = None
 
 
-def _init_sim_worker(contracts: List[Dict[str, Any]], candles_by_key: Dict[str, Any]) -> None:
+def _init_sim_worker(contracts: List[Dict[str, Any]], candles_by_key: Dict[str, Any],
+                     raw_df: Optional[pd.DataFrame] = None) -> None:
     """Install the shared option universe in a spawned sim worker (see _init_worker
     for why spawn workers must rebuild everything, including the registry)."""
-    global _SIM_CONTRACTS, _SIM_CANDLES_BY_KEY, _SIM_CONTRACTS_BY_EXPIRY, _WORKER_CACHES
+    global _SIM_CONTRACTS, _SIM_CANDLES_BY_KEY, _SIM_CONTRACTS_BY_EXPIRY, _SIM_RAW_DF, _WORKER_CACHES
     _SIM_CONTRACTS = contracts
     _SIM_CANDLES_BY_KEY = candles_by_key
+    _SIM_RAW_DF = raw_df
     _SIM_CONTRACTS_BY_EXPIRY = {}
     for c in contracts:
         _SIM_CONTRACTS_BY_EXPIRY.setdefault(str(c.get("expiry_date", "")), []).append(c)
@@ -294,7 +301,8 @@ def sim_worker(spot_trades: List[Dict[str, Any]], expiry_by_trade: Optional[Dict
 
 
 def start_sim_pool(contracts: List[Dict[str, Any]], candles_by_key: Dict[str, Any],
-                   workers: int) -> Optional[ProcessPoolExecutor]:
+                   workers: int,
+                   raw_df: Optional[pd.DataFrame] = None) -> Optional[ProcessPoolExecutor]:
     """Create the analyzing-stage pool. Returns None — meaning "run sequentially,
     exactly as before" — when workers<=1, there is nothing to pair, another
     analyzing job owns the pool, or the pool cannot be started and verified.
@@ -310,7 +318,7 @@ def start_sim_pool(contracts: List[Dict[str, Any]], candles_by_key: Dict[str, An
             ctx = multiprocessing.get_context("spawn")
             pool = ProcessPoolExecutor(max_workers=workers, mp_context=ctx,
                                        initializer=_init_sim_worker,
-                                       initargs=(contracts, candles_by_key))
+                                       initargs=(contracts, candles_by_key, raw_df))
             t0 = time.perf_counter()
             list(pool.map(_sim_selfcheck, range(workers)))
             log.info("sim pool: %d spawn workers ready in %.1fs (%d contracts, %d candle keys)",

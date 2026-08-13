@@ -89,6 +89,52 @@ def test_sim_accepts_a_shared_index_and_matches_building_its_own():
     assert built["coverage"] == shared["coverage"]
 
 
+def test_survival_gate_has_exactly_one_definition():
+    """The survival gate runs in three places — the event loop's thread, and a
+    worker process (per finalist and per exit-control grid point). They must all
+    call the SAME `_survival_eval_oos_sync`; a second copy of floor/DD/RoR logic
+    would be free to drift and silently change who is deployable."""
+    src = (ROOT / "backend" / "app" / "optimizer.py").read_text(encoding="utf-8")
+    assert "def _survival_eval_oos_sync(" in src
+    # the async wrapper must DELEGATE, not re-implement
+    assert "_survival_eval_oos_sync, strategy, df_enriched" in src
+    assert "return _survival_eval_oos_sync(" in src        # the worker delegates too
+    # The gate's arithmetic must exist in exactly TWO places, and they are the two
+    # genuinely different strategy families — `_survival_eval_oos_premium_trigger`
+    # (option-native, no spot signal to pair) and `_survival_eval_oos_sync`. If this
+    # count ever rises, someone has copied the gate rather than called it.
+    import re
+    owners = []
+    fn = None
+    for line in src.splitlines():
+        m = re.match(r"(?:async )?def (\w+)\(", line)
+        if m:
+            fn = m.group(1)
+        if 'verdict["folds_ok"] = folds_ok' in line:
+            owners.append(fn)
+    assert owners == ["_survival_eval_oos_premium_trigger", "_survival_eval_oos_sync"], owners
+
+
+def test_survival_worker_never_raises_so_the_caller_can_recompute():
+    """A worker with no option universe must return None — the caller then
+    recomputes that finalist in-process. Raising, or returning a not-survived
+    verdict, would silently disqualify a finalist that actually survives."""
+    import app.parallel_eval as pe
+    from app.optimizer import survival_worker
+
+    prev = (pe._SIM_RAW_DF, pe._SIM_CONTRACTS, pe._SIM_CANDLES_BY_KEY)
+    try:
+        pe._SIM_RAW_DF, pe._SIM_CONTRACTS, pe._SIM_CANDLES_BY_KEY = None, None, None
+        assert survival_worker("confluence_scalper", {}, "NIFTY", True, {}, {},
+                               None, 3, 0.6, "09:25", "14:50") is None
+        # universe present but empty is equally unusable
+        pe._SIM_CONTRACTS, pe._SIM_CANDLES_BY_KEY = [], {}
+        assert survival_worker("confluence_scalper", {}, "NIFTY", True, {}, {},
+                               None, 3, 0.6, "09:25", "14:50") is None
+    finally:
+        pe._SIM_RAW_DF, pe._SIM_CONTRACTS, pe._SIM_CANDLES_BY_KEY = prev
+
+
 def test_contract_identity_key_memoization_is_transparent():
     """String inputs are memoized; datetime/date/NaN fall through uncached. All
     paths must agree with the uncached implementation."""

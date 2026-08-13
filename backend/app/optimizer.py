@@ -1193,13 +1193,31 @@ async def _survival_eval_oos(
 ):
     """Evaluate one finalist's survival on each walk-forward OOS slice. Floor + DD%
     must hold per fold (per sc.min_oos_folds); RoR runs on the stitched OOS rupee
-    series. Returns the survival_verdict dict augmented with folds_ok/fold_pass."""
+    series. Returns the survival_verdict dict augmented with folds_ok/fold_pass.
+
+    Thin async wrapper. The gate itself lives in `_survival_eval_oos_sync` so that
+    the SAME code can run either here (off-loop in one worker thread) or inside a
+    survival worker process — one definition, no parallel copy to drift."""
     if is_premium_trigger_strategy(strategy):
         return await _survival_eval_oos_premium_trigger(
             strategy, df_enriched, merged_params, contracts, candles_df,
             instrument, option_cfg, sc, n_folds=n_folds, train_pct=train_pct,
         )
+    return await asyncio.to_thread(
+        _survival_eval_oos_sync, strategy, df_enriched, merged_params, contracts,
+        candles_df, instrument, costs, pretrade, option_cfg, sc, n_folds, train_pct,
+        candles_by_key, trade_window_start, trade_window_end)
 
+
+def _survival_eval_oos_sync(
+    strategy, df_enriched, merged_params, contracts, candles_df,
+    instrument, costs, pretrade, option_cfg, sc, n_folds=3, train_pct=0.6,
+    candles_by_key=None, trade_window_start=None, trade_window_end=None,
+    contracts_by_expiry=None,
+):
+    """The survival gate, synchronous. Identical logic to what ran before — the
+    two `await asyncio.to_thread(...)` calls simply became direct calls, because
+    this whole function is now what gets handed to a thread or a process."""
     from app.portfolio import build_rupee_equity_curve
     moneyness = str(option_cfg.get("moneyness") or "atm")
     lots = int(option_cfg.get("lots") or 1)
@@ -1217,9 +1235,9 @@ async def _survival_eval_oos(
         test_df = df_enriched.iloc[a:b].reset_index(drop=True)
         _tw = ({"trade_window_start": trade_window_start, "trade_window_end": trade_window_end}
                if trade_window_start and trade_window_end else {})
-        res = await asyncio.to_thread(
-            run_backtest, test_df, strategy, merged_params,
-            instrument=instrument, costs_enabled=costs, pretrade_filters=pretrade, **_tw)
+        res = run_backtest(test_df, strategy, merged_params,
+                           instrument=instrument, costs_enabled=costs,
+                           pretrade_filters=pretrade, **_tw)
         spot_trades = res.get("trades", []) or []
         if dte_target is not None:
             spot_trades = [t for t in spot_trades if t.get("entry_ts") is not None
@@ -1231,10 +1249,9 @@ async def _survival_eval_oos(
             fold_pass.append(False)
             continue
         ebt = _resolve_expiry_by_trade(spot_trades, contracts, fixed_expiry)
-        sim = await asyncio.to_thread(
-            simulate_paired_option_trades,
+        sim = simulate_paired_option_trades(
             spot_trades=spot_trades, contracts=contracts, option_candles=candles_df,
-            candles_by_key=candles_by_key,
+            candles_by_key=candles_by_key, contracts_by_expiry=contracts_by_expiry,
             underlying=instrument, moneyness=moneyness, lots=lots,
             entry_max_age_sec=int(option_cfg.get("entry_max_age_sec") or 120),
             exit_max_age_sec=int(option_cfg.get("exit_max_age_sec") or 180),
@@ -1275,6 +1292,42 @@ async def _survival_eval_oos(
     verdict["fold_pass"] = fold_pass
     verdict["survived"] = bool(verdict["survived"] and folds_ok)
     return verdict
+
+
+def survival_worker(strategy_id: str, params: Dict[str, Any], instrument: str, costs: bool,
+                    pretrade: Dict[str, Any], option_cfg: Dict[str, Any], sc,
+                    n_folds: int, train_pct: float,
+                    trade_window_start, trade_window_end) -> Optional[Dict[str, Any]]:
+    """Run ONE finalist's survival gate in a sim-pool worker.
+
+    Lives here rather than in parallel_eval because it calls
+    `_survival_eval_oos_sync`, and parallel_eval importing optimizer would be an
+    import cycle. Reads the universe the sim-pool initializer installed.
+
+    The finalist's enriched frame is REBUILT here instead of being shipped: it is
+    params-dependent and ~57k rows, and worker-side enrichment is already proven
+    byte-equal to the serial path. Reusing `_WORKER_CACHES` across finalists is
+    safe here specifically because the frame is always the one constant
+    `_SIM_RAW_DF` — the O12 cache-poisoning hazard needs a CHANGING frame.
+
+    Never raises -> None, and the caller recomputes that finalist in-process, so a
+    worker problem can never turn a surviving finalist into a failed one."""
+    try:
+        import app.parallel_eval as _pe
+        if _pe._SIM_RAW_DF is None or not _pe._SIM_CONTRACTS or not _pe._SIM_CANDLES_BY_KEY:
+            return None
+        strategy = get_registry().get(strategy_id)
+        if strategy is None:
+            return None
+        merged = strategy.merged_params(params)
+        df_enr = enrich_with_cache(_pe._SIM_RAW_DF, merged, _pe._WORKER_CACHES)
+        return _survival_eval_oos_sync(
+            strategy, df_enr, merged, _pe._SIM_CONTRACTS, pd.DataFrame(),
+            instrument, costs, pretrade, option_cfg, sc, n_folds, train_pct,
+            _pe._SIM_CANDLES_BY_KEY, trade_window_start, trade_window_end,
+            _pe._SIM_CONTRACTS_BY_EXPIRY)
+    except Exception:
+        return None
 
 
 async def _option_rerank_premium_trigger(
@@ -2183,26 +2236,65 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                 rerank_by_key = build_candles_by_key(rerank_candles)
                 _per_item_surv: Optional[float] = None
                 surv_evaluated = 0
-                for i, r in enumerate(ranked):
-                    _s_t = time.monotonic()
-                    try:
-                        merged = strategy.merged_params(r["params"])
-                        df_enr = get_enriched(merged)
-                        r["survival"] = await _survival_eval_oos(
-                            strategy, df_enr, merged, rerank_contracts, rerank_candles,
-                            instrument, costs, pretrade, option_cfg, survival,
-                            candles_by_key=rerank_by_key,
-                            trade_window_start=trade_window_start, trade_window_end=trade_window_end)
-                    except Exception as e:
-                        log.warning(f"survival eval failed: {e}")
-                        r["survival"] = {"survived": False, "reason": "eval_error"}
-                    surv_evaluated = i + 1
-                    _per_item_surv = ewma(_per_item_surv, time.monotonic() - _s_t)
-                    if (i + 1) % 10 == 0:
-                        log.info("rerank %d/%d", i + 1, len(ranked))
-                    await _an_progress("survival", i + 1, len(ranked), _per_item_surv)
-                    if await _analyze_should_stop():  # O13: budget OR cancel/pause
-                        break
+                # Fold geometry is pinned HERE and passed to BOTH paths, so the
+                # worker and the in-process fallback can never disagree about which
+                # OOS slices a finalist was judged on.
+                _sf, _st = 3, 0.6
+                # Same fan-out discipline as the re-rank sims: each finalist's gate
+                # is independent of the others, results are consumed in ORDER, and a
+                # worker failure falls back to computing that finalist here. This
+                # pool is separate from (and later than) the re-rank pool, and it
+                # additionally carries raw_df so a worker can rebuild the finalist's
+                # enriched frame instead of having one shipped per task.
+                surv_pool = start_sim_pool(rerank_contracts, rerank_by_key,
+                                           effective_workers(opt_workers), raw_df)
+                surv_futs = ([surv_pool.submit(survival_worker, strategy.id, r["params"],
+                                               instrument, costs, pretrade, option_cfg,
+                                               survival, _sf, _st,
+                                               trade_window_start, trade_window_end)
+                              for r in ranked] if surv_pool is not None else None)
+                _surv_t0 = time.monotonic()
+                try:
+                    for i, r in enumerate(ranked):
+                        _s_t = time.monotonic()
+                        try:
+                            v = None
+                            if surv_futs is not None:
+                                v = await asyncio.wrap_future(surv_futs[i])
+                                if v is None:
+                                    log.warning("survival worker failed for finalist %d "
+                                                "— recomputing in-process", i)
+                            if v is None:
+                                merged = strategy.merged_params(r["params"])
+                                df_enr = get_enriched(merged)
+                                v = await _survival_eval_oos(
+                                    strategy, df_enr, merged, rerank_contracts, rerank_candles,
+                                    instrument, costs, pretrade, option_cfg, survival,
+                                    n_folds=_sf, train_pct=_st,
+                                    candles_by_key=rerank_by_key,
+                                    trade_window_start=trade_window_start,
+                                    trade_window_end=trade_window_end)
+                            r["survival"] = v
+                        except Exception as e:
+                            log.warning(f"survival eval failed: {e}")
+                            r["survival"] = {"survived": False, "reason": "eval_error"}
+                        surv_evaluated = i + 1
+                        # Parallel: finalists are already in flight, so per-item wall
+                        # time measures the WAIT. Report the achieved average instead
+                        # so the ETA stays honest.
+                        _per_item_surv = ((time.monotonic() - _surv_t0) / (i + 1)
+                                          if surv_futs is not None
+                                          else ewma(_per_item_surv, time.monotonic() - _s_t))
+                        if (i + 1) % 10 == 0:
+                            log.info("rerank %d/%d", i + 1, len(ranked))
+                        await _an_progress("survival", i + 1, len(ranked), _per_item_surv)
+                        if await _analyze_should_stop():  # O13: budget OR cancel/pause
+                            break
+                finally:
+                    if surv_pool is not None:
+                        for _f in (surv_futs or [])[surv_evaluated:]:
+                            _f.cancel()
+                        shutdown_sim_pool()
                 survivors = [r for r in ranked if r.get("survival", {}).get("survived")
                              and (r["survival"].get("total_return_pct") or 0) > 0]
                 survival_progress = _survival_progress_summary(
