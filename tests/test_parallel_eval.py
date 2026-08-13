@@ -137,6 +137,63 @@ def test_worker_selfcheck_rejects_a_worker_that_cannot_resolve_the_strategy():
         pe._RAW_DF = prev_df
 
 
+def test_sim_pool_is_sequential_when_it_cannot_help():
+    """No workers, no contracts, or no candles => None => the caller runs the
+    unchanged sequential path."""
+    contracts = [{"expiry_date": "2026-01-08", "strike": 24000, "side": "CE",
+                  "instrument_key": "NFO|1"}]
+    assert pe.start_sim_pool(contracts, {"k": object()}, 1) is None   # workers<=1
+    assert pe.start_sim_pool([], {"k": object()}, 4) is None          # nothing to pair
+    assert pe.start_sim_pool(contracts, {}, 4) is None                # no candles
+
+
+def test_sim_pool_degrades_instead_of_raising(monkeypatch):
+    """The analyzing stage must never die because a pool failed — it falls back to
+    sequential, which produces the SAME ranking, just slower."""
+    class _Exploding:
+        def __init__(self, *a, **k):
+            pass
+        def map(self, *a, **k):
+            raise BrokenProcessPool("sim worker died on warmup")
+        def shutdown(self, *a, **k):
+            pass
+
+    monkeypatch.setattr(pe, "ProcessPoolExecutor", _Exploding)
+    contracts = [{"expiry_date": "2026-01-08", "strike": 24000, "side": "CE",
+                  "instrument_key": "NFO|1"}]
+    try:
+        assert pe.start_sim_pool(contracts, {"k": object()}, 4) is None
+        assert pe._SIM_POOL is None   # no half-built pool left holding ~165MB/worker
+    finally:
+        pe._SIM_POOL = None
+
+
+def test_sim_selfcheck_rejects_a_worker_without_the_option_universe():
+    """An empty universe pairs nothing, which would score every finalist as
+    worthless while the job reported success. Fail the pool loudly instead."""
+    prev_c, prev_k = pe._SIM_CONTRACTS, pe._SIM_CANDLES_BY_KEY
+    try:
+        pe._SIM_CONTRACTS, pe._SIM_CANDLES_BY_KEY = None, None
+        with pytest.raises(RuntimeError, match="never received the option universe"):
+            pe._sim_selfcheck(0)
+        pe._SIM_CONTRACTS, pe._SIM_CANDLES_BY_KEY = [{"a": 1}], {}
+        with pytest.raises(RuntimeError, match="never received the option universe"):
+            pe._sim_selfcheck(0)   # contracts but no candle index is still unusable
+    finally:
+        pe._SIM_CONTRACTS, pe._SIM_CANDLES_BY_KEY = prev_c, prev_k
+
+
+def test_sim_worker_never_raises_so_the_caller_can_recompute():
+    """sim_worker returns None on ANY failure; _option_rerank then recomputes that
+    candidate in-process. Raising would abort the whole re-rank instead."""
+    prev_c = pe._SIM_CONTRACTS
+    try:
+        pe._SIM_CONTRACTS = None   # force an internal failure
+        assert pe.sim_worker([{"direction": "CE"}], {0: "2026-01-08"}, {}) is None
+    finally:
+        pe._SIM_CONTRACTS = prev_c
+
+
 def test_init_worker_rebuilds_frame_and_registry():
     """A spawn worker inherits NOTHING — the initializer is the only thing that puts
     raw_df and the strategy registry into it."""

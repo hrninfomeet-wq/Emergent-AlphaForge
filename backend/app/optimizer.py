@@ -33,7 +33,8 @@ import pandas as pd
 from app.backtest import run_backtest
 from app.db import get_db
 from app.indicator_groups import enrich_with_cache
-from app.parallel_eval import effective_workers, start_pool, shutdown_pool, parallel_backtest
+from app.parallel_eval import (effective_workers, start_pool, shutdown_pool, parallel_backtest,
+                               start_sim_pool, shutdown_sim_pool, sim_worker)
 # Module level, NOT inside a function: six call sites below use this at module
 # scope (the survival gate, the Stage-2 re-rank, the Stage-1 preload + evaluate
 # closure, and both worker-pinning decisions). It was previously only imported
@@ -1352,7 +1353,7 @@ async def _option_rerank(
     instrument: str, costs: bool, pretrade: Dict[str, Any], option_cfg: Dict[str, Any],
     *, analyze_t0: Optional[float] = None, analyze_budget_sec: int = 0, progress_cb=None,
     trade_window_start: Optional[str] = None, trade_window_end: Optional[str] = None,
-    min_trades: int = 0, should_stop=None,
+    min_trades: int = 0, should_stop=None, opt_workers: int = 1,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Any, bool, bool]:
     # (ranked, contracts, candles_df, budget_hit, stopped)
     """Stage 2: re-score the top-K spot candidates on REAL paired-option net
@@ -1494,49 +1495,93 @@ async def _option_rerank(
     # consumes candles_by_key verbatim; build_candles_by_key IS its internal
     # grouping, so behaviour is byte-identical.
     candles_by_key = build_candles_by_key(candles_df)
+    # ONE definition of the per-candidate sim arguments, shared verbatim by the
+    # sequential and worker paths so the two can never drift apart.
+    _sim_kwargs: Dict[str, Any] = dict(
+        underlying=instrument, moneyness=moneyness, lots=lots,
+        entry_max_age_sec=entry_max_age, exit_max_age_sec=exit_max_age,
+        fixed_expiry_date=fixed_expiry,
+        exit_mode=exit_mode, option_target_pts=opt_tp, option_stop_pts=opt_sp,
+        option_target_pct=opt_tpct, option_stop_pct=opt_spct,
+        cost_config=cost_config, sizing_config=sizing_config,
+        exit_controls=exit_controls, daily_caps=daily_caps,
+    )
+
+    async def _sim_in_process(pc: Dict[str, Any]) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            simulate_paired_option_trades,
+            spot_trades=pc["trades"], contracts=contracts, option_candles=candles_df,
+            expiry_by_trade=pc["expiry_by_trade"],
+            candles_by_key=candles_by_key, contracts_by_expiry=contracts_by_expiry,
+            **_sim_kwargs)
+
+    # Opt-in fan-out. The sims are ~65% of the analyzing stage and are pure
+    # functions of (trades, universe, config), so running them in workers changes
+    # only WHERE they run. Results are consumed in SUBMISSION order below, which
+    # keeps `ranked` — and therefore the stable sort that follows — identical to
+    # the sequential path. start_sim_pool returns None (=> sequential) whenever it
+    # cannot guarantee that.
+    sim_pool = start_sim_pool(contracts, candles_by_key, effective_workers(opt_workers))
+    futs = ([sim_pool.submit(sim_worker, pc["trades"], pc["expiry_by_trade"], _sim_kwargs)
+             for pc in per_cand] if sim_pool is not None else None)
+
     ranked: List[Dict[str, Any]] = []
     budget_hit = False
     _per_item: Optional[float] = None
-    for cand, pc in zip(evaluated_candidates, per_cand):
-        if should_stop is not None and await should_stop():
-            stopped = True
-            break
-        _c_t = time.monotonic()
-        sim = await asyncio.to_thread(
-            simulate_paired_option_trades,
-            spot_trades=pc["trades"], contracts=contracts, option_candles=candles_df,
-            underlying=instrument, moneyness=moneyness, lots=lots,
-            entry_max_age_sec=entry_max_age, exit_max_age_sec=exit_max_age,
-            expiry_by_trade=pc["expiry_by_trade"], fixed_expiry_date=fixed_expiry,
-            exit_mode=exit_mode, option_target_pts=opt_tp, option_stop_pts=opt_sp,
-            option_target_pct=opt_tpct, option_stop_pct=opt_spct,
-            cost_config=cost_config, sizing_config=sizing_config,
-            exit_controls=exit_controls, daily_caps=daily_caps,
-            candles_by_key=candles_by_key,
-            contracts_by_expiry=contracts_by_expiry,
-        )
-        m = sim.get("metrics", {})
-        cov = sim.get("coverage", {})
-        ranked.append({
-            "params": cand["params"],
-            "spot_objective": cand["objective_value"],
-            "spot_metrics": cand["metrics"],
-            "option_pnl_value": float(m.get("total_option_pnl_value", 0.0) or 0.0),
-            "option_pnl_pts": float(m.get("total_option_pnl_pts", 0.0) or 0.0),
-            "option_win_rate": float(m.get("win_rate", 0.0) or 0.0),
-            "paired_trade_count": int(m.get("paired_trade_count", 0) or 0),
-            "spot_trade_count": len(pc["trades"]),
-            "coverage": cov,
-        })
-        _per_item = ewma(_per_item, time.monotonic() - _c_t)
-        if len(ranked) % 10 == 0:
-            log.info("rerank %d/%d", len(ranked), len(candidates))
-        if progress_cb is not None:
-            await progress_cb("option_rerank", len(ranked), len(candidates), _per_item)
-        if analyze_t0 is not None and over_budget(
-                elapsed=time.monotonic() - analyze_t0, budget_sec=analyze_budget_sec):
-            budget_hit = True
-            break
+    _loop_t0 = time.monotonic()
+    try:
+        for _i, (cand, pc) in enumerate(zip(evaluated_candidates, per_cand)):
+            # Stop/budget are checked in candidate ORDER and break, so a truncated
+            # run is a strict PREFIX of the ranked candidate list — the same
+            # semantics the sequential loop had, which _survival_progress_summary
+            # and the "evaluated" count downstream both rely on.
+            if should_stop is not None and await should_stop():
+                stopped = True
+                break
+            _c_t = time.monotonic()
+            if futs is not None:
+                sim = await asyncio.wrap_future(futs[_i])
+                if sim is None:
+                    # A worker failed on this one candidate. Recompute it here
+                    # rather than record a zero — a pool problem must never be
+                    # able to downgrade a real result into a disqualifying one.
+                    log.warning("sim worker failed for candidate %d — recomputing in-process", _i)
+                    sim = await _sim_in_process(pc)
+            else:
+                sim = await _sim_in_process(pc)
+            m = sim.get("metrics", {})
+            cov = sim.get("coverage", {})
+            ranked.append({
+                "params": cand["params"],
+                "spot_objective": cand["objective_value"],
+                "spot_metrics": cand["metrics"],
+                "option_pnl_value": float(m.get("total_option_pnl_value", 0.0) or 0.0),
+                "option_pnl_pts": float(m.get("total_option_pnl_pts", 0.0) or 0.0),
+                "option_win_rate": float(m.get("win_rate", 0.0) or 0.0),
+                "paired_trade_count": int(m.get("paired_trade_count", 0) or 0),
+                "spot_trade_count": len(pc["trades"]),
+                "coverage": cov,
+            })
+            # Sequential: EWMA of the per-candidate cost. Parallel: candidates are
+            # already in flight, so that measures the WAIT (≈0 after the first) and
+            # would report a wildly optimistic ETA — use the achieved average.
+            _per_item = ((time.monotonic() - _loop_t0) / len(ranked) if futs is not None
+                         else ewma(_per_item, time.monotonic() - _c_t))
+            if len(ranked) % 10 == 0:
+                log.info("rerank %d/%d", len(ranked), len(candidates))
+            if progress_cb is not None:
+                await progress_cb("option_rerank", len(ranked), len(candidates), _per_item)
+            if analyze_t0 is not None and over_budget(
+                    elapsed=time.monotonic() - analyze_t0, budget_sec=analyze_budget_sec):
+                budget_hit = True
+                break
+    finally:
+        if sim_pool is not None:
+            # Only the job that started the pool may tear it down (mirrors
+            # shutdown_pool's owner discipline). Frees ~165 MB per worker.
+            for _f in (futs or [])[len(ranked):]:
+                _f.cancel()
+            shutdown_sim_pool()
     # Rank by option net rupee; candidates with no paired trades sink to the bottom.
     # Sample floor now applies here too — one paired trade could otherwise win
     # on its single rupee P&L (min_trades only gates the SPOT count upstream).
@@ -2117,7 +2162,8 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                         trade_window_start=trade_window_start,
                         trade_window_end=trade_window_end,
                         min_trades=min_trades,
-                        should_stop=_analyze_should_stop)
+                        should_stop=_analyze_should_stop,
+                        opt_workers=opt_workers)
                     analyze_budget_hit = analyze_budget_hit or _rr_hit
                     if _rr_hit:
                         analyze_stopped_by = analyze_stopped_by or "budget"

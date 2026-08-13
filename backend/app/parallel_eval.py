@@ -226,6 +226,117 @@ def shutdown_pool() -> None:
             _POOL = None
 
 
+# ─── Analyzing-stage pool: option re-rank sims + the survival gate ────────────
+# A SEPARATE pool from the trial pool above, because its workers carry the OPTION
+# universe (contracts + the pre-grouped candle index) which the trial pool has no
+# use for and which is far too big to ship per task — measured on a real SENSEX
+# job: candles 164.5 MB, contracts 5.6 MB. Shipped ONCE per worker via the
+# initializer; per-task payloads are just one candidate's spot trades (~5 MB).
+#
+# Why processes and not threads: the sim's cost is flat pandas overhead (~36k
+# Series constructions and ~99k take_nd per 2,112-trade candidate), all of which
+# holds the GIL. Threads would not parallelize it.
+_SIM_POOL: Optional[ProcessPoolExecutor] = None
+_SIM_LOCK = threading.Lock()
+_SIM_CONTRACTS: Optional[List[Dict[str, Any]]] = None
+_SIM_CANDLES_BY_KEY: Optional[Dict[str, Any]] = None
+_SIM_CONTRACTS_BY_EXPIRY: Optional[Dict[str, List[Dict[str, Any]]]] = None
+
+
+def _init_sim_worker(contracts: List[Dict[str, Any]], candles_by_key: Dict[str, Any]) -> None:
+    """Install the shared option universe in a spawned sim worker (see _init_worker
+    for why spawn workers must rebuild everything, including the registry)."""
+    global _SIM_CONTRACTS, _SIM_CANDLES_BY_KEY, _SIM_CONTRACTS_BY_EXPIRY, _WORKER_CACHES
+    _SIM_CONTRACTS = contracts
+    _SIM_CANDLES_BY_KEY = candles_by_key
+    _SIM_CONTRACTS_BY_EXPIRY = {}
+    for c in contracts:
+        _SIM_CONTRACTS_BY_EXPIRY.setdefault(str(c.get("expiry_date", "")), []).append(c)
+    _WORKER_CACHES = {}
+    get_registry().auto_discover()
+
+
+def _sim_selfcheck(_x: int) -> str:
+    """Warmup: prove the worker actually received the universe before any
+    candidate is handed to it (an empty universe would pair nothing and quietly
+    score every finalist as worthless)."""
+    # `not` rather than `is None` on BOTH: an empty universe is as unusable as a
+    # missing one — it pairs nothing, which would score every finalist as
+    # worthless while the job reported success. start_sim_pool already refuses to
+    # build a pool in that state; this is the last line of defence inside the
+    # worker, so it must not be weaker than the gate in front of it.
+    if not _SIM_CONTRACTS or not _SIM_CANDLES_BY_KEY:
+        raise RuntimeError("sim worker never received the option universe")
+    return "ok"
+
+
+def sim_worker(spot_trades: List[Dict[str, Any]], expiry_by_trade: Optional[Dict[int, str]],
+               kwargs: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Run ONE candidate's paired-option simulation in a worker.
+
+    Returns the metrics/coverage pair, or None on ANY failure — the caller then
+    recomputes that single candidate in-process, so a worker problem can never
+    silently turn a real result into a zero. Only the executor changes here; the
+    pairing logic is the same `simulate_paired_option_trades` the sequential path
+    calls, with the same arguments."""
+    try:
+        import pandas as _pd
+        from app.option_backtest import simulate_paired_option_trades
+        sim = simulate_paired_option_trades(
+            spot_trades=spot_trades, contracts=_SIM_CONTRACTS,
+            option_candles=_pd.DataFrame(),      # unused: candles_by_key is supplied
+            candles_by_key=_SIM_CANDLES_BY_KEY,
+            contracts_by_expiry=_SIM_CONTRACTS_BY_EXPIRY,
+            expiry_by_trade=expiry_by_trade, **kwargs)
+        return {"metrics": sim.get("metrics", {}), "coverage": sim.get("coverage", {})}
+    except Exception:
+        return None
+
+
+def start_sim_pool(contracts: List[Dict[str, Any]], candles_by_key: Dict[str, Any],
+                   workers: int) -> Optional[ProcessPoolExecutor]:
+    """Create the analyzing-stage pool. Returns None — meaning "run sequentially,
+    exactly as before" — when workers<=1, there is nothing to pair, another
+    analyzing job owns the pool, or the pool cannot be started and verified.
+    NEVER raises."""
+    global _SIM_POOL
+    if workers <= 1 or not contracts or not candles_by_key:
+        return None
+    with _SIM_LOCK:
+        if _SIM_POOL is not None:
+            return None
+        pool = None
+        try:
+            ctx = multiprocessing.get_context("spawn")
+            pool = ProcessPoolExecutor(max_workers=workers, mp_context=ctx,
+                                       initializer=_init_sim_worker,
+                                       initargs=(contracts, candles_by_key))
+            t0 = time.perf_counter()
+            list(pool.map(_sim_selfcheck, range(workers)))
+            log.info("sim pool: %d spawn workers ready in %.1fs (%d contracts, %d candle keys)",
+                     workers, time.perf_counter() - t0, len(contracts), len(candles_by_key))
+        except Exception as e:
+            log.warning("sim pool unavailable (%s: %s) — re-rank runs sequentially; "
+                        "results are unaffected", type(e).__name__, e)
+            if pool is not None:
+                try:
+                    pool.shutdown(wait=False, cancel_futures=True)
+                except Exception:
+                    pass
+            return None
+        _SIM_POOL = pool
+    return pool
+
+
+def shutdown_sim_pool() -> None:
+    """Tear down the analyzing pool (no-op if none). Frees the ~165 MB per worker."""
+    global _SIM_POOL
+    with _SIM_LOCK:
+        if _SIM_POOL is not None:
+            _SIM_POOL.shutdown(cancel_futures=True)
+            _SIM_POOL = None
+
+
 def parallel_backtest(pool: Optional[ProcessPoolExecutor],
                       param_sets: List[Tuple[str, Dict[str, Any], Optional[Tuple[int, int]]]],
                       *, raw_df: pd.DataFrame, instrument: str, costs: bool, pretrade: Dict[str, Any],
