@@ -51,7 +51,14 @@ from app.context_signals import (
     rsi_divergence,
     macd_divergence,
     reversal_candle,
+    build_pivot_index,
+    recent_sr_levels_indexed,
+    rsi_divergence_indexed,
+    macd_divergence_indexed,
 )
+
+#: ctx key holding the prebuilt swing-pivot index (see session_precompute).
+_PIVOT_CTX_KEY = "_explosive_reversal_pivots"
 
 
 class ExplosiveReversal(StrategyBase):
@@ -77,9 +84,27 @@ class ExplosiveReversal(StrategyBase):
         "spot_stop_pts": {"type": "float", "min": 3, "max": 100, "default": 18},
     }
 
+    def session_precompute(self, df, params):
+        """Build the swing-pivot index ONCE per frame.
+
+        The three confluence lookups below (S/R levels, RSI and MACD divergence)
+        only ever consult swing pivots, but their DataFrame form re-slices a
+        trailing window on every bar. That was ~28s of a single SENSEX backtest —
+        833,700 DataFrame.__getitem__ calls — and it multiplied across every trial,
+        every re-rank candidate and every survival fold. Precomputing the pivot
+        positions turns each per-bar lookup into two binary searches.
+
+        Returns {} when the frame cannot support it, in which case evaluate()
+        falls back to the DataFrame helpers and behaviour is exactly as before."""
+        px = build_pivot_index(df)
+        return {_PIVOT_CTX_KEY: px} if px is not None else {}
+
     def evaluate(self, row, prev, params, ctx) -> Signal:
         history = ctx.get("history_df")
         i = ctx.get("i", -1)
+        # Present when session_precompute ran (backtest + paper/live both call it).
+        # Absent -> the DataFrame helpers below, i.e. the original path.
+        px = ctx.get(_PIVOT_CTX_KEY)
         sr_lookback = int(params["sr_lookback"])
         if history is None or i < sr_lookback + 3:
             return Signal(direction="NONE")
@@ -94,11 +119,17 @@ class ExplosiveReversal(StrategyBase):
 
         # --- gather confluence factors ---
         candle = reversal_candle(row)                       # BULLISH | BEARISH | None
-        sr_levels = recent_sr_levels(history, i, lookback=sr_lookback)
+        _dl = int(params["divergence_lookback"])
+        if px is not None:
+            sr_levels = recent_sr_levels_indexed(px, i, lookback=sr_lookback)
+            rsi_div = rsi_divergence_indexed(px, i, lookback=_dl)
+            macd_div = macd_divergence_indexed(px, i, lookback=_dl)
+        else:
+            sr_levels = recent_sr_levels(history, i, lookback=sr_lookback)
+            rsi_div = rsi_divergence(history, i, lookback=_dl)
+            macd_div = macd_divergence(history, i, lookback=_dl)
         sr = nearest_sr_proximity(close, sr_levels, atr_val)
         rnd = round_level_proximity(close, instrument, atr_val)
-        rsi_div = rsi_divergence(history, i, lookback=int(params["divergence_lookback"]))
-        macd_div = macd_divergence(history, i, lookback=int(params["divergence_lookback"]))
 
         # Displacement: how far this candle travelled vs ATR.
         candle_range = float(row["high"]) - float(row["low"])
