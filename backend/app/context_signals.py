@@ -68,6 +68,64 @@ def round_level_proximity(price: float, instrument: str, atr: Optional[float] = 
     }
 
 
+#: Human-meaningful round-number ladder. Traders watch 100s and 500s, never 314s,
+#: so a derived step is snapped onto this rather than used raw.
+_NICE_STEPS = (1, 2, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000, 2500, 5000, 10000)
+
+
+def nice_round_step(target: float) -> int:
+    """Largest ladder value <= `target` (never 0)."""
+    usable = [s for s in _NICE_STEPS if s <= max(1.0, float(target))]
+    return int(usable[-1]) if usable else 1
+
+
+def derive_round_grid(price_ref: float, step_pct: float) -> tuple:
+    """Derive a (major, minor) round-number grid as a PERCENT of a reference price.
+
+    Takes a REFERENCE price for the whole run — not the current bar. Deriving per
+    bar looks equivalent and is not: 0.41% of prices either side of 24,400
+    straddles 100, so the grid would flip between 100 and 50 as price drifts and
+    the same level would score differently on different days. Traders watch a
+    fixed ladder; so does this.
+
+    At step_pct=0.41 on NIFTY this yields exactly the hardcoded 100/50, which is
+    what makes it a generalization of the table rather than a different signal.
+    """
+    major = nice_round_step(float(price_ref) * float(step_pct) / 100.0)
+    minor = nice_round_step(major / 2.0)
+    return int(major), int(minor)
+
+
+def round_level_proximity_grid(price: float, major: int, minor: int,
+                               atr: Optional[float] = None) -> Dict[str, Any]:
+    """Scale-free twin of :func:`round_level_proximity`, on an explicit grid.
+
+    The original reads its step from a hardcoded per-instrument table, and that
+    table does not scale: NIFTY gets 100/50 (0.41% / 0.20% of a ~24,400 index)
+    while SENSEX gets 500/500 — coarser in percentage terms AND with both tiers
+    identical, so SENSEX silently loses the two-grid comparison NIFTY enjoys.
+    Everything downstream (ATR-normalized distance, the 0.5-ATR `is_near` rule)
+    is unchanged.
+    """
+    candidates = [round(price / s) * s for s in {int(major), int(minor)}]
+    nearest = min(candidates, key=lambda lv: abs(price - lv))
+    dist = abs(price - nearest)
+    if atr and atr > 0:
+        dist_atr = dist / atr
+        is_near = dist_atr <= 0.5
+    else:
+        dist_atr = None
+        is_near = dist <= price * 0.001
+    return {
+        "nearest_level": float(nearest),
+        "distance_pts": round(float(dist), 2),
+        "distance_atr": round(float(dist_atr), 3) if dist_atr is not None else None,
+        "is_near": bool(is_near),
+        "major_step": int(major),
+        "minor_step": int(minor),
+    }
+
+
 def recent_sr_levels(
     df: pd.DataFrame,
     i: int,
