@@ -608,6 +608,7 @@ def simulate_paired_option_trades(
     exit_controls: Optional[Dict[str, Any]] = None,
     daily_caps: Optional[Dict[str, Any]] = None,  # wired in the next task (daily governor)
     candles_by_key: Optional[Dict[str, pd.DataFrame]] = None,
+    contracts_by_expiry: Optional[Dict[str, List[Dict[str, Any]]]] = None,
 ) -> Dict[str, Any]:
     """Map each spot signal trade to a long CE/PE option premium trade.
 
@@ -655,6 +656,18 @@ def simulate_paired_option_trades(
     # behaviour, byte-identical). The two paths share build_candles_by_key.
     if candles_by_key is None:
         candles_by_key = build_candles_by_key(option_candles)
+    # Same treatment for the CONTRACT side. The per-trade eligible-contract filter
+    # below rebuilt `[c for c in contract_list if ...]` for every trade, which is
+    # O(trades x contracts) — the single largest cost in the optimizer's option
+    # re-rank (measured: 3.03s per candidate at 15,208 contracts x 2,112 trades,
+    # vs ~0.00s indexed). Buckets are built by append over the caller's order, so
+    # each one is byte-identical to the list the comprehension produced. The
+    # optimizer passes a shared index so ~75 per-candidate sims don't each rebuild
+    # the identical mapping; None => build it here (unchanged behaviour).
+    if contracts_by_expiry is None:
+        contracts_by_expiry = {}
+        for _c in contract_list:
+            contracts_by_expiry.setdefault(str(_c.get("expiry_date", "")), []).append(_c)
 
     coverage = _coverage()
     coverage["spot_trade_count"] = len(spot_trade_list)
@@ -680,9 +693,7 @@ def simulate_paired_option_trades(
         # pairs to long-dead contracts (the bug behind near-zero pairing). Only
         # when contracts carry no expiry metadata do we allow the full set.
         if resolved_expiry:
-            eligible_contracts = [
-                c for c in contract_list if str(c.get("expiry_date", "")) == str(resolved_expiry)
-            ]
+            eligible_contracts = contracts_by_expiry.get(str(resolved_expiry), [])
         elif _contracts_have_expiry:
             eligible_contracts = []
         else:

@@ -1429,6 +1429,20 @@ async def _option_rerank(
     expiry_dates_sorted = sorted({str(c.get("expiry_date")) for c in contracts if c.get("expiry_date")})
 
     # 3. Per candidate: DTE filter + expiry resolution + needed contract keys.
+    # Index the contract universe by expiry ONCE. The per-trade lookup below used
+    # to rebuild `[c for c in contracts if ...]` from scratch for every trade of
+    # every candidate — O(trades x contracts), and it runs on the EVENT LOOP
+    # thread, so it also stalled the API while a job was "Analyzing". Measured on
+    # a real SENSEX job (15,208 contracts, 2,112 trades/candidate): 3.03s per
+    # candidate -> ~0.00s, with byte-identical output (918,470 eligible rows
+    # either way). `contracts` is already sorted by (expiry_date, strike, side)
+    # and grouping by append preserves that order, so each bucket is the exact
+    # list the comprehension produced. Same fix build_candles_by_key applied to
+    # the candle side; the contract side never got it.
+    contracts_by_expiry: Dict[str, List[Dict[str, Any]]] = {}
+    for _c in contracts:
+        contracts_by_expiry.setdefault(str(_c.get("expiry_date", "")), []).append(_c)
+
     per_cand: List[Dict[str, Any]] = []
     union_keys: set = set()
     for trades in cand_trades:
@@ -1441,7 +1455,7 @@ async def _option_rerank(
             rexp = fixed_expiry or ebt.get(idx)
             if not rexp:
                 continue
-            elig = [c for c in contracts if str(c.get("expiry_date", "")) == str(rexp)]
+            elig = contracts_by_expiry.get(str(rexp), [])
             try:
                 sel = select_contract_for_signal(
                     contracts=elig, underlying=instrument,
@@ -1499,6 +1513,7 @@ async def _option_rerank(
             cost_config=cost_config, sizing_config=sizing_config,
             exit_controls=exit_controls, daily_caps=daily_caps,
             candles_by_key=candles_by_key,
+            contracts_by_expiry=contracts_by_expiry,
         )
         m = sim.get("metrics", {})
         cov = sim.get("coverage", {})

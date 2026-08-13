@@ -1,6 +1,8 @@
 """Shared instrument metadata for supported index underlyings."""
 
 from datetime import date, datetime
+from functools import lru_cache
+from typing import Optional
 
 INSTRUMENT_KEYS = {
     "NIFTY": "NSE_INDEX|Nifty 50",
@@ -122,7 +124,24 @@ def contract_identity_key(instrument_key, expiry_date=None) -> str:
     If no expiry is available we deliberately fall back to the canonical token
     for backward-compatible non-option fixtures.  Such rows remain ineligible
     for promotion under the option-data integrity gate.
+
+    Hot path: the optimizer's option re-rank calls this once per option-candle
+    row (~690k times per job, measured) while re-parsing the same ~35 expiry
+    dates through ``strptime`` — about 8s of pure date parsing. String inputs are
+    memoized below; anything else (datetime/date, or the NaN pandas puts in a
+    mixed frame) falls through uncached, so behaviour is unchanged.
     """
+    if isinstance(instrument_key, str) and (expiry_date is None or isinstance(expiry_date, str)):
+        return _contract_identity_key_cached(instrument_key, expiry_date)
+    return _contract_identity_key_impl(instrument_key, expiry_date)
+
+
+@lru_cache(maxsize=65536)
+def _contract_identity_key_cached(instrument_key: str, expiry_date: Optional[str]) -> str:
+    return _contract_identity_key_impl(instrument_key, expiry_date)
+
+
+def _contract_identity_key_impl(instrument_key, expiry_date=None) -> str:
     raw = str(instrument_key or "")
     parts = raw.split("|")
     expiry = expiry_date
