@@ -34,7 +34,7 @@ from app.backtest import run_backtest
 from app.db import get_db
 from app.indicator_groups import enrich_with_cache
 from app.parallel_eval import (effective_workers, start_pool, shutdown_pool, parallel_backtest,
-                               start_sim_pool, shutdown_sim_pool, sim_worker)
+                               start_sim_pool, shutdown_sim_pool, sim_worker, trades_worker)
 # Module level, NOT inside a function: six call sites below use this at module
 # scope (the survival gate, the Stage-2 re-rank, the Stage-1 preload + evaluate
 # closure, and both worker-pinning decisions). It was previously only imported
@@ -1406,7 +1406,7 @@ async def _option_rerank(
     instrument: str, costs: bool, pretrade: Dict[str, Any], option_cfg: Dict[str, Any],
     *, analyze_t0: Optional[float] = None, analyze_budget_sec: int = 0, progress_cb=None,
     trade_window_start: Optional[str] = None, trade_window_end: Optional[str] = None,
-    min_trades: int = 0, should_stop=None, opt_workers: int = 1,
+    min_trades: int = 0, should_stop=None, opt_workers: int = 1, raw_df=None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Any, bool, bool]:
     # (ranked, contracts, candles_df, budget_hit, stopped)
     """Stage 2: re-score the top-K spot candidates on REAL paired-option net
@@ -1445,18 +1445,44 @@ async def _option_rerank(
            if trade_window_start and trade_window_end else {})
     cand_trades: List[List[Dict[str, Any]]] = []
     stopped = False
-    for cand in candidates:
-        if should_stop is not None and await should_stop():
-            stopped = True
-            break
-        merged = strategy.merged_params(cand["params"])
-        enr = get_enriched(merged)
-        res = await asyncio.to_thread(
-            run_backtest, enr, strategy, merged,
-            instrument=instrument, costs_enabled=costs, pretrade_filters=pretrade,
-            **_tw,
-        )
-        cand_trades.append(res.get("trades", []) or [])
+    _merged = [strategy.merged_params(c["params"]) for c in candidates]
+    # This loop dominates the analyzing stage on a heavy strategy — measured on a
+    # real explosive_reversal/SENSEX job: 60 candidates x 37.63s = ~38 min, which
+    # was 93% of the whole stage while the sims (already fanned out) took ~2 min.
+    # Same discipline as the sim/survival fan-outs: submitted in candidate order,
+    # consumed in candidate order, so cand_trades — and everything downstream that
+    # zips against it — is identical to the sequential path. Workers re-enrich from
+    # the raw frame rather than having ~57k-row enriched frames shipped.
+    bt_pool = (start_pool(raw_df, effective_workers(opt_workers), strategy.id)
+               if raw_df is not None else None)
+    bt_futs = ([bt_pool.submit(trades_worker, strategy.id, m, instrument, costs, pretrade,
+                               trade_window_start, trade_window_end)
+                for m in _merged] if bt_pool is not None else None)
+    try:
+        for _i, cand in enumerate(candidates):
+            if should_stop is not None and await should_stop():
+                stopped = True
+                break
+            trades = None
+            if bt_futs is not None:
+                trades = await asyncio.wrap_future(bt_futs[_i])
+                if trades is None:   # None = worker FAILED; [] = genuinely no trades
+                    log.warning("trades worker failed for candidate %d — recomputing in-process", _i)
+            if trades is None:
+                enr = get_enriched(_merged[_i])
+                res = await asyncio.to_thread(
+                    run_backtest, enr, strategy, _merged[_i],
+                    instrument=instrument, costs_enabled=costs, pretrade_filters=pretrade,
+                    **_tw,
+                )
+                trades = res.get("trades", []) or []
+            cand_trades.append(trades)
+    finally:
+        if bt_pool is not None:
+            for _f in (bt_futs or [])[len(cand_trades):]:
+                _f.cancel()
+            # Free these workers before the sim pool builds its own (~165 MB each).
+            shutdown_pool()
 
     evaluated_candidates = candidates[:len(cand_trades)]
 
@@ -2216,7 +2242,7 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                         trade_window_end=trade_window_end,
                         min_trades=min_trades,
                         should_stop=_analyze_should_stop,
-                        opt_workers=opt_workers)
+                        opt_workers=opt_workers, raw_df=raw_df)
                     analyze_budget_hit = analyze_budget_hit or _rr_hit
                     if _rr_hit:
                         analyze_stopped_by = analyze_stopped_by or "budget"

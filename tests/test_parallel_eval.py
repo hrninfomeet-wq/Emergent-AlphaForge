@@ -137,6 +137,48 @@ def test_worker_selfcheck_rejects_a_worker_that_cannot_resolve_the_strategy():
         pe._RAW_DF = prev_df
 
 
+def test_trades_worker_distinguishes_failure_from_no_trades():
+    """None means the WORKER failed (caller recomputes in-process); [] means the
+    candidate genuinely takes no trades. Collapsing the two would silently rank a
+    real candidate as unpairable — the exact class of bug that makes an
+    optimization result wrong while still looking plausible."""
+    prev = pe._RAW_DF
+    try:
+        pe._RAW_DF = None                      # force the failure path
+        assert pe.trades_worker("confluence_scalper", {}, "NIFTY", True, {}) is None
+        pe._RAW_DF = _fixture_df()
+        get_registry().auto_discover()
+        assert pe.trades_worker("no_such_strategy", {}, "NIFTY", True, {}) is None
+        # a real strategy on a real frame returns a LIST (possibly empty), never None
+        out = pe.trades_worker("confluence_scalper",
+                               get_registry().get("confluence_scalper").merged_params({}),
+                               "NIFTY", True, {})
+        assert isinstance(out, list)
+    finally:
+        pe._RAW_DF = prev
+
+
+def test_trades_worker_matches_the_in_process_backtest():
+    """Step 1 in a worker must produce the SAME trades as the sequential path —
+    it is what every downstream expiry resolution and premium pairing is built on."""
+    from app.backtest import run_backtest
+    from app.indicator_groups import enrich_with_cache
+
+    get_registry().auto_discover()
+    df = _fixture_df()
+    strat = get_registry().get("confluence_scalper")
+    merged = strat.merged_params({})
+    serial = run_backtest(enrich_with_cache(df, merged, {}), strat, merged,
+                          instrument="NIFTY", costs_enabled=True, pretrade_filters={})
+    prev = pe._RAW_DF
+    try:
+        pe._RAW_DF, pe._WORKER_CACHES = df, {}
+        worker = pe.trades_worker("confluence_scalper", merged, "NIFTY", True, {})
+    finally:
+        pe._RAW_DF = prev
+    assert worker == (serial.get("trades") or [])
+
+
 def test_sim_pool_is_sequential_when_it_cannot_help():
     """No workers, no contracts, or no candles => None => the caller runs the
     unchanged sequential path."""

@@ -19,6 +19,7 @@ Three layers here:
   `run_backtest`, and a non-declaring one gets an untouched frame.
 """
 import asyncio
+import re
 import sys
 from pathlib import Path
 
@@ -91,21 +92,41 @@ def test_attach_is_called_on_the_raw_frame_before_enrichment():
             assert attach < enrich, f"{rel} joins data columns after enrichment"
 
 
-@pytest.mark.parametrize("rel,pool_call", [
-    ("app/optimizer.py", "start_pool(raw_df"),
+@pytest.mark.parametrize("rel,frame_binding", [
+    # optimizer.py seeds pools from `raw_df`. It now calls start_pool from TWO
+    # places — the trial loop, and the re-rank's step-1 fan-out — and the re-rank
+    # is DEFINED EARLIER in the file while receiving the frame as a parameter, so
+    # the position of a call site proves nothing either way. Pin the binding that
+    # every call site ultimately depends on instead (checked exhaustively below).
+    ("app/optimizer.py", "raw_df = df"),
+    # wfo.py passes the joined frame directly, so its call site is the binding.
     ("app/wfo.py", "start_pool(df"),
 ])
-def test_worker_pool_is_seeded_after_the_join_not_before(rel, pool_call):
+def test_worker_pool_is_seeded_after_the_join_not_before(rel, frame_binding):
     """`parallel_eval.start_pool` ships the frame to worker PROCESSES, which then
-    evaluate trials against that copy. Seed it before the join and parallel trials
-    would see an all-NaN column while sequential trials saw real values — an
-    optimization result silently corrupted on only some paths, and invisible
-    because both produce plausible numbers. The ordering is correct today; this
-    pins it, because nothing else would catch the call being moved."""
+    evaluate against that copy. Seed it before the join and parallel trials would
+    see an all-NaN column while sequential trials saw real values — an optimization
+    result silently corrupted on only some paths, and invisible because both
+    produce plausible numbers. The ordering is correct today; this pins it,
+    because nothing else would catch the frame being captured earlier."""
     src = (BACKEND / rel).read_text(encoding="utf-8")
-    assert src.index("attach_required_data(df") < src.index(pool_call), (
-        f"{rel} seeds the worker pool from a frame captured before "
-        "attach_required_data — declared data columns would be missing in workers"
+    assert src.index("attach_required_data(df") < src.index(frame_binding), (
+        f"{rel} binds the worker-pool frame before attach_required_data — "
+        "declared data columns would be missing in workers"
+    )
+
+
+def test_every_optimizer_pool_is_seeded_from_the_joined_frame():
+    """Companion to the ordering check above: since call-site POSITION no longer
+    proves anything in optimizer.py, prove instead that no call site can pass a
+    different frame. Every start_pool must be seeded from `raw_df` — the one name
+    bound after attach_required_data."""
+    src = (BACKEND / "app/optimizer.py").read_text(encoding="utf-8")
+    seeds = re.findall(r"start_pool\(\s*([A-Za-z_][A-Za-z0-9_]*)", src)
+    assert seeds, "no start_pool call found in optimizer.py"
+    assert set(seeds) == {"raw_df"}, (
+        f"optimizer.py seeds a worker pool from {sorted(set(seeds) - {'raw_df'})} "
+        "instead of the post-join `raw_df` — workers would miss declared data columns"
     )
 
 

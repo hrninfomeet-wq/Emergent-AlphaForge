@@ -172,6 +172,34 @@ def _worker_evaluate_wfo(strategy_id: str, merged: Dict[str, Any], slice_bounds:
         return (None, merged)
 
 
+def trades_worker(strategy_id: str, merged: Dict[str, Any], instrument: str, costs: bool,
+                  pretrade: Dict[str, Any], trade_window_start: Optional[str] = None,
+                  trade_window_end: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
+    """Return ONE candidate's spot TRADES — step 1 of the option re-rank.
+
+    Separate from `_worker_evaluate`, which returns metrics and throws the trades
+    away; the re-rank needs the trades themselves to resolve expiries and pair
+    premiums. Measured motivation: on a heavy strategy this loop was ~93% of the
+    analyzing stage (60 candidates x 37.63s = ~38 min, single-threaded).
+
+    Never raises -> None, and the caller recomputes that candidate in-process. An
+    empty list is a LEGITIMATE result (a candidate that takes no trades); None
+    means "worker failed", and the two must not be confused — silently returning
+    [] would rank a real candidate as unpairable."""
+    try:
+        strategy = get_registry().get(strategy_id)
+        if strategy is None or _RAW_DF is None:
+            return None
+        enr = enrich_with_cache(_RAW_DF, merged, _WORKER_CACHES)
+        _tw = ({"trade_window_start": trade_window_start, "trade_window_end": trade_window_end}
+               if trade_window_start and trade_window_end else {})
+        res = run_backtest(enr, strategy, merged, instrument=instrument,
+                           costs_enabled=costs, pretrade_filters=pretrade, **_tw)
+        return res.get("trades", []) or []
+    except Exception:
+        return None
+
+
 def start_pool(raw_df: pd.DataFrame, workers: int,
                strategy_id: Optional[str] = None) -> Optional[ProcessPoolExecutor]:
     """Create the spawn pool, shipping raw_df to each worker once via the
