@@ -1151,6 +1151,38 @@ async def _risk_supervisor_loop() -> None:
             else:
                 _last_halt_logged = False
 
+            # An ACCEPTED OCO is not a RESTING OCO. PlaceOCOOrder returning ok with
+            # an al_id means the alert was accepted; the leg can still be rejected
+            # asynchronously (2026-08-14: margin shortfall, Rs 1,01,830 required
+            # against Rs 86,932 available, because a resting NRML sell is margined
+            # as a potential naked short). Nothing checked survival, so the journal
+            # claimed a backstop that did not exist. One GTT-book read per 10s tick
+            # — not per 1.5s guard cycle — keeps the broker rate budget intact.
+            try:
+                from app.live.oco_verify import unbacked_norenordnos
+                _client = await _live_guard_client_factory()
+                _book = None
+                if _client is not None:
+                    try:
+                        _book = await _client.gtt_book()
+                    except Exception:
+                        _book = None      # unreadable == UNKNOWN, never "no backstop"
+                if _book is not None:
+                    _open = await db.live_trades.find(
+                        {"status": {"$ne": "CLOSED"}},
+                        {"norenordno": 1, "status": 1, "oco_al_id": 1, "_id": 0},
+                    ).to_list(length=None)
+                    for _ordno in unbacked_norenordnos(_open, _book):
+                        await db.live_trades.update_one(
+                            {"norenordno": _ordno},
+                            {"$set": {"oco_al_id": None,
+                                      "oco_error": "no_broker_backstop"}},
+                        )
+                        log.warning("risk supervisor: OCO for %s is NOT resting at the "
+                                    "broker — position is SOFTWARE-GUARD-ONLY", _ordno)
+            except Exception as exc:
+                log.warning("risk supervisor: OCO backstop check failed: %s", exc)
+
             for dep_id in verdict["pause_deployment_ids"]:
                 await _set_deployment_status(db, dep_id, "PAUSED")
                 await db.strategy_deployments.update_one(
