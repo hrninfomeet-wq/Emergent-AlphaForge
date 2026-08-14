@@ -479,6 +479,11 @@ class FlattradeClient:
 # Pure GTT/OCO response parser — host-testable, no network
 # ---------------------------------------------------------------------------
 
+#: Documented success values for a GTT/OCO place or cancel, lower-cased.
+#: Anything else — including an unknown future stat — is NOT a placed backstop.
+_ALERT_OK_STATS = frozenset({"oi created", "oi delete success"})
+
+
 def _parse_alert_response(data: Any) -> Dict[str, Any]:
     """Normalize a Noren GTT/OCO place/cancel response to a flat result dict.
 
@@ -498,7 +503,15 @@ def _parse_alert_response(data: Any) -> Dict[str, Any]:
     raw_alid = rec.get("al_id") or rec.get("Al_id") or rec.get("AL_id")
     al_id = str(raw_alid).strip() if raw_alid not in (None, "") else None
     emsg = rec.get("emsg")
-    ok = al_id is not None and str(stat).strip().lower() != "not_ok"
+    # POSITIVE allowlist. This was a NEGATIVE one (`stat != "not_ok"`), which
+    # failed OPEN on everything unanticipated: `stat="Rejected"`, an absent stat,
+    # and `stat=None` (note `str(None).lower()` is "none") all counted as a placed
+    # GTT/OCO whenever an id was present. For a PROTECTIVE order the unknown must
+    # fail CLOSED — reporting a backstop that does not exist is exactly how the
+    # operator ends up believing a naked position is covered. The success values
+    # are documented (endpoints/21-place-oco-order.md: "OI created / Not_Ok") and
+    # this function's own docstring already named them.
+    ok = al_id is not None and str(stat).strip().lower() in _ALERT_OK_STATS
     return {"ok": ok, "al_id": al_id, "stat": stat, "emsg": emsg, "raw": data}
 
 
