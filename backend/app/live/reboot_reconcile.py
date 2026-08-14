@@ -80,10 +80,23 @@ def _parse_oco_norenordno(remarks: Any) -> Optional[str]:
     if not isinstance(remarks, str):
         return None
     s = remarks.strip()
-    if not s.startswith(_OCO_REMARKS_PREFIX):
+    # The broker DECORATES our tag rather than echoing it. A real fired leg reads
+    #   "LMT_BOS_O: oco:26081400076294: Ltp 61.95 is above 21.45: oco:26081400076294"
+    # i.e. "<ai_t>: <our remarks>: <trigger desc>" (2026-08-14 order book; the June
+    # readback in gtt.py shows the same shape). Requiring startswith() meant NO real
+    # fired leg ever parsed, so an OCO exit was never attributed to its entry and
+    # realized_pnl stayed null. Search anywhere, and take the FIRST occurrence so a
+    # trailing repeat cannot change the answer.
+    idx = s.find(_OCO_REMARKS_PREFIX)
+    if idx < 0:
         return None
-    tail = s[len(_OCO_REMARKS_PREFIX):].strip()
-    return tail or None
+    tail = s[idx + len(_OCO_REMARKS_PREFIX):].strip()
+    # The id ends at the broker's next delimiter — it is not the rest of the string.
+    for sep in (":", " ", ","):
+        cut = tail.find(sep)
+        if cut > 0:
+            tail = tail[:cut]
+    return tail.strip() or None
 
 
 def _match_exit_fill_price(
@@ -97,18 +110,25 @@ def _match_exit_fill_price(
     2. FALLBACK — exactly ONE same-tsym SELL fill (no remarks link survived). More than
        one (or zero) → ambiguous → return None (caller closes without a price).
     """
-    tag = f"{_OCO_REMARKS_PREFIX}{norenordno}"
     for row in trade_book:
         if not isinstance(row, dict):
             continue
-        if row.get("trantype") == "S" and row.get("remarks") == tag:
+        # Compare the PARSED id, not the raw string: the broker's decoration means
+        # `remarks == "oco:<no>"` is never true for a real fired leg.
+        if (row.get("trantype") == "S"
+                and _parse_oco_norenordno(row.get("remarks")) == str(norenordno)):
             return _finite(row.get("flprc"))
-    # Fallback: exactly one same-tsym SELL fill.
+    # Fallback: exactly one same-tsym SELL fill. A row carrying an oco tag for a
+    # DIFFERENT entry is EXCLUDED — the tag is positive proof it belongs to another
+    # trade, so letting it into the pool would attribute someone else's exit price
+    # to this one. Rows with no parseable tag stay eligible: that is the case the
+    # fallback exists for.
     sells = [
         row for row in trade_book
         if isinstance(row, dict)
         and row.get("trantype") == "S"
         and row.get("tsym") == tsym
+        and _parse_oco_norenordno(row.get("remarks")) in (None, str(norenordno))
     ]
     if len(sells) == 1:
         return _finite(sells[0].get("flprc"))
