@@ -155,6 +155,38 @@ def _finite_num(x: Any) -> Optional[float]:
     return v if math.isfinite(v) else None
 
 
+def _entry_basket_premium(entry: Dict[str, Any]) -> float:
+    """One entry's contribution to the basket notional, in rupees.
+
+    Prefers the OBSERVED fill over the seeded reference. ``entry_price`` comes
+    from ``ref_ltp`` because Noren's PlaceOrder response carries no ``avgprc``,
+    so the fill is unknowable at registration; the guard learns it from
+    ``daybuyavgprc`` at the first mark and stamps ``entry_fill_price`` on this
+    same entry. Every ``premium_pct`` threshold on the Overall controls resolves
+    to rupees through this number, and "a percentage of premium" has to mean the
+    premium actually PAID (2026-08-14: ref 61.35 vs fill 61.70).
+
+    Unlike the trailing anchor this is NOT ratcheted, and does not need to be: a
+    notional is not a live stop level. A dearer fill yields a larger basket and
+    therefore more rupees of risk budget, which is the honest reading of "20% of
+    premium", not a loosened stop.
+
+    Falls back to the reference while no fill is known — contributing 0.0 there
+    would silently shrink the basket and TIGHTEN every threshold on a position
+    that is genuinely open. A whole entry that cannot be priced at all
+    contributes 0.0 rather than raising, so one bad row cannot blind the basket.
+    """
+    px = _finite_pos(entry.get("entry_fill_price"))
+    if px is None:
+        px = _finite_pos(entry.get("entry_price"))
+    if px is None:
+        return 0.0
+    try:
+        return px * int(entry["qty"])
+    except (TypeError, ValueError, KeyError):
+        return 0.0
+
+
 def _to_utc_dt(x: Any) -> Optional[datetime]:
     """Coerce an entry timestamp to a tz-aware UTC datetime, else None.
 
@@ -1290,10 +1322,7 @@ class LivePositionGuard:
             if u is not None:
                 basket_mtm += u
                 have_mtm = True
-            try:
-                basket_premium += float(entry["entry_price"]) * int(entry["qty"])
-            except (TypeError, ValueError):
-                pass
+            basket_premium += _entry_basket_premium(entry)
         if not have_mtm:
             return
 
