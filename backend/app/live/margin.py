@@ -263,3 +263,49 @@ def broker_margin_verdict(resp: Any) -> Dict[str, Any]:
             f"broker insufficient margin: cash ₹{cash:.2f} < marginused ₹{margin_used:.2f}"
         )
     return {"check": "broker_margin", "ok": ok, "detail": detail}
+
+
+# ---------------------------------------------------------------------------
+# 6. Resting-OCO margin pre-check
+# ---------------------------------------------------------------------------
+
+def oco_margin_skip_reason(resp: Any) -> Optional[str]:
+    """Reason to SKIP the resting OCO, or ``None`` to attempt it.
+
+    Same GetOrderMargin response as :func:`broker_margin_verdict`, opposite
+    fallback direction — and the direction is the whole design.
+
+    :func:`broker_margin_verdict` gates an ENTRY, so an unreadable probe fails
+    CLOSED: refuse to trade. By the time this runs the entry is already FILLED
+    and registered with the software guard, and the OCO is a best-effort
+    PC-down catastrophe net. Failing closed here would mean discarding a
+    backstop because a probe was unreadable — removing protection to punish a
+    transport error. So this returns a reason ONLY on an affirmative, readable
+    shortfall; every other case attempts the OCO exactly as before.
+
+    Why it is worth a call at all: a **resting** NRML sell is margined as a
+    potential naked short — the broker cannot know the long will still exist
+    when the trigger fires. On 2026-08-14 protecting a Rs 4,010 position
+    demanded Rs 1,01,830 against Rs 86,932 available, and the reject arrived
+    ASYNCHRONOUSLY, after ``PlaceOCOOrder`` had already answered ok with an
+    al_id. Where that shortfall is structural, every live entry otherwise
+    places an order that is accepted, rejected seconds later, and swept by the
+    supervisor tick. This turns that into an explained skip.
+
+    It does NOT replace the supervisor's GTT re-verification (``oco_verify``):
+    a probe that passes still proves nothing about survival.
+    """
+    if not isinstance(resp, dict) or not resp:
+        return None                      # probe unavailable → try anyway
+    if resp.get("stat") != "Ok":
+        return None                      # not evidence of a shortfall
+    cash = _parse_finite_nonneg(resp.get("cash"))
+    margin_used = _parse_finite_nonneg(resp.get("marginused"))
+    if cash is None or margin_used is None:
+        return None                      # unreadable → let the real call rule
+    if cash >= margin_used:
+        return None
+    return (
+        f"insufficient margin for a resting OCO: needs ₹{margin_used:.2f}, "
+        f"cash ₹{cash:.2f}"
+    )

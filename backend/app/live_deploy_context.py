@@ -35,6 +35,7 @@ from app.live.flattrade_token import DEFAULT_USER_ID, get_status
 from app.live.gtt import build_oco_intent
 from app.live.live_position_guard import get_registry
 from app.live.live_sl_monitor import build_monitor_state
+from app.live.margin import oco_margin_skip_reason
 from app.live.oco_levels import compute_catastrophe_band
 
 log = logging.getLogger(__name__)
@@ -191,17 +192,48 @@ def arm_for(
                         remarks=f"oco:{norenordno}",
                     )
                     if oco:
-                        res = await client.place_oco(oco)
-                        if res.get("ok"):
-                            oco_al_id = res.get("al_id")
-                            ent = get_registry().get(norenordno)
-                            if ent is not None:
-                                ent["oco_al_id"] = oco_al_id
-                            log.info("auto_live arm: resting OCO placed for %s (al_id=%s)",
-                                     getattr(intent, "tsym", "?"), oco_al_id)
+                        # Ask the broker whether a RESTING sell can even be
+                        # margined before spending the order. It is priced as a
+                        # potential naked short (the broker cannot know the long
+                        # will still exist at trigger), so on 2026-08-14
+                        # protecting a ₹4,010 position needed ₹1,01,830 against
+                        # ₹86,932 — and the reject came back ASYNCHRONOUSLY,
+                        # after PlaceOCOOrder had already answered ok with an
+                        # al_id. Where that is structural for an account, every
+                        # entry otherwise fires an order that is accepted,
+                        # rejected, then swept by the supervisor tick.
+                        #
+                        # Skips only on a readable shortfall (see
+                        # oco_margin_skip_reason): the entry is already filled
+                        # and software-guarded, so an unreadable probe must not
+                        # cost it a catastrophe net. Best-effort throughout —
+                        # a probe failure is not allowed to skip the attempt.
+                        _skip: Optional[str] = None
+                        try:
+                            _skip = oco_margin_skip_reason(await client.order_margin(
+                                exch=intent.exch, tsym=intent.tsym, qty=intent.qty,
+                                prc=sl_l, prd="M", trantype="S", prctyp="LMT",
+                            ))
+                        except Exception as exc:      # noqa: BLE001 - never block the net
+                            log.debug("auto_live arm: OCO margin probe failed (%s); "
+                                      "attempting the OCO anyway", exc)
+                        if _skip:
+                            log.warning(
+                                "auto_live arm: skipping resting OCO for %s — %s. "
+                                "The software guard remains the live protection.",
+                                getattr(intent, "tsym", "?"), _skip)
                         else:
-                            log.warning("auto_live arm: OCO rejected for %s: %s",
-                                        getattr(intent, "tsym", "?"), res)
+                            res = await client.place_oco(oco)
+                            if res.get("ok"):
+                                oco_al_id = res.get("al_id")
+                                ent = get_registry().get(norenordno)
+                                if ent is not None:
+                                    ent["oco_al_id"] = oco_al_id
+                                log.info("auto_live arm: resting OCO placed for %s (al_id=%s)",
+                                         getattr(intent, "tsym", "?"), oco_al_id)
+                            else:
+                                log.warning("auto_live arm: OCO rejected for %s: %s",
+                                            getattr(intent, "tsym", "?"), res)
                     else:
                         log.warning("auto_live arm: build_oco_intent returned None for %s "
                                     "(NRML-only / bad levels) — no broker backstop",
