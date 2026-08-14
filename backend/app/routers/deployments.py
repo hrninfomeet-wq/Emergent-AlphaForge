@@ -28,6 +28,7 @@ from app.forward_metrics import (
 )
 from app.deployment_evaluator import evaluate_active_deployments, evaluate_deployment_on_close
 from app.deployment_preflight import compute_data_realism
+from app.live_exit_preview import describe_live_exits
 from app.nse_calendar import market_status
 from app.paper_squareoff import square_off_open_paper_trades
 from app.finite_values import nonfinite_numeric_paths as _nonfinite_numeric_paths
@@ -778,7 +779,36 @@ async def get_deployment_metrics(deployment_id: str):
     _pm_advisory = _premium_edge_verdict_advisory_for(deployment)
     if _pm_advisory:
         out["arm_advisories"].append(_pm_advisory)
+    out["exit_preview"] = await _exit_preview_for(db, deployment)
     return out
+
+
+async def _exit_preview_for(db: Any, deployment: Dict[str, Any]) -> Dict[str, Any]:
+    """The exits a live entry would carry, for the enable dialog to render (S[17]).
+
+    Uses the risk_hints of the deployment's MOST RECENT signal, because hints
+    outrank every deployment fallback (auto_live.py:198-213) — previewing the
+    deployment doc alone would have predicted the wrong stop on any strategy that
+    emits its own. ``None`` when no signal exists yet, which the preview reports as
+    ``hints_unobserved`` rather than silently presenting a provisional answer as
+    settled.
+
+    ADVISORY ONLY. Nothing in the enable path may consult this; the standing rule is
+    that live-arming gates are removed, not added. Any failure degrades to a preview
+    without hints rather than failing the metrics call the dialog depends on.
+    """
+    hints = None
+    try:
+        sig = await db.signals.find_one(
+            {"deployment_id": deployment.get("id"), "risk_hints": {"$type": "object"}},
+            {"_id": 0, "risk_hints": 1}, sort=[("created_at", -1)])
+        if sig and isinstance(sig.get("risk_hints"), dict):
+            hints = sig["risk_hints"]
+    except Exception:                                    # noqa: BLE001
+        logging.getLogger(__name__).warning(
+            "exit preview: signal lookup failed for %s; previewing deployment "
+            "config only", deployment.get("id"), exc_info=True)
+    return describe_live_exits(deployment, hints)
 
 
 @api.get("/deployments/overview")

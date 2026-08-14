@@ -3,6 +3,7 @@ import { AlertTriangle, Loader2, Zap } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { getApiErrorMessage } from "@/lib/apiError";
+import { exitRows, exitNotices, hasExitPreview } from "@/lib/exitPreview";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -45,6 +46,10 @@ export default function DeployToLivePanel({ dep, onArmed }) {
   // Evidence is advisory after explicit user consent.  We still load the exact
   // failed checks so the irreversible decision is informed and auditable.
   const [armAdvisories, setArmAdvisories] = useState([]);
+  // The exits a live entry would actually carry (finding [17]). Advisory only —
+  // it never gates ENABLE; it exists so "50% deep-default stop, no target" is
+  // visible at the confirm step instead of discoverable in the blotter.
+  const [exitPreview, setExitPreview] = useState(null);
   const [forwardValidation, setForwardValidation] = useState(null);
   const [validationLoaded, setValidationLoaded] = useState(false);
   const [acceptUnvalidated, setAcceptUnvalidated] = useState(false);
@@ -92,18 +97,21 @@ export default function DeployToLivePanel({ dep, onArmed }) {
     if (!formOpen || !dep?.id) return;
     let cancelled = false;
     setArmAdvisories([]);
+    setExitPreview(null);
     setForwardValidation(null);
     setValidationLoaded(false);
     api.deploymentMetrics(dep.id)
       .then((d) => {
         if (cancelled) return;
         setArmAdvisories(d?.arm_advisories || []);
+        setExitPreview(d?.exit_preview || null);
         setForwardValidation(d?.forward_validation || null);
         setValidationLoaded(true);
       })
       .catch(() => {
         if (cancelled) return;
         setArmAdvisories([]);
+        setExitPreview(null);
         setForwardValidation({
           promotion_allowed: false,
           phase: "unavailable",
@@ -482,6 +490,29 @@ export default function DeployToLivePanel({ dep, onArmed }) {
               <div>Instrument: <span className="text-foreground">{dep.instrument || "—"}</span></div>
               <div>Option selection: <span className="text-foreground">{(dep.option_policy?.moneyness || []).join("/").toUpperCase() || "ATM"} · DTE {(dep.option_policy?.dte_filter || []).join(",") || "all"}</span></div>
             </div>
+            {/* Exits in force (finding [17]). ADVISORY ONLY — nothing here gates
+                ENABLE. It exists so an operator can see that they are arming a
+                deep-default stop with no target BEFORE committing real money,
+                instead of discovering it in the blotter afterwards. */}
+            {hasExitPreview(exitPreview) && (
+              <div className="rounded-md border border-line bg-bg-2 px-3 py-2 text-[11px] space-y-1" data-testid="live-exit-preview">
+                <div className="font-medium text-foreground">Exits in force</div>
+                {exitRows(exitPreview).map((row) => (
+                  <div key={row.key} className="flex items-baseline justify-between gap-3">
+                    <span className="text-dim">{row.label}</span>
+                    <span className={`text-right font-mono ${row.danger ? "text-warning" : "text-foreground"}`}>
+                      {row.value}
+                      {row.note ? <span className="ml-1 font-sans text-dimmer">({row.note})</span> : null}
+                    </span>
+                  </div>
+                ))}
+                {exitNotices(exitPreview).map((n) => (
+                  <p key={n.id} className={n.severity === "warn" ? "text-warning" : "text-dimmer"} data-testid={`exit-notice-${n.id}`}>
+                    {n.message}
+                  </p>
+                ))}
+              </div>
+            )}
             {unvalidated && (
               <label className="flex items-start gap-2 rounded-md border border-danger/60 bg-danger/10 px-3 py-2 text-[11px] text-danger" data-testid="accept-unvalidated-live">
                 <input
