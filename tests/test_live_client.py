@@ -18,6 +18,19 @@ Covers:
 """
 import asyncio
 import json
+from urllib.parse import parse_qs
+
+
+def _form(body: str) -> dict:
+    """Decode the request body the way a form parser does.
+
+    `_make_body` percent-encodes both values (the decoded spec requires it, so a
+    literal '&' in a symbol like M&M cannot truncate the body). Splitting on a raw
+    "&jKey=" therefore no longer finds the separator -- these tests must decode
+    rather than slice.
+    """
+    parsed = parse_qs(body, keep_blank_values=True)
+    return {"jData": json.loads(parsed["jData"][0]), "jKey": parsed["jKey"][0]}
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -102,10 +115,10 @@ def test_make_body_format():
     client = _client(jKey="MYKEY")
     jdata = {"uid": "U1", "actid": "A1"}
     body = client._make_body(jdata)
-    assert body.startswith("jData=")
+    assert body.startswith("jData=")   # still the first field
     assert "&jKey=MYKEY" in body
     # The jData portion must be valid JSON
-    jdata_part = body.split("&jKey=")[0].removeprefix("jData=")
+    jdata_part = json.dumps(_form(body)["jData"])
     parsed = json.loads(jdata_part)
     assert parsed["uid"] == "U1"
     assert parsed["actid"] == "A1"
@@ -447,7 +460,7 @@ def test_search_scrip_request_has_stext_and_exch():
         run(client.search_scrip("BFO", "SENSEX 72000"))
 
     body = captured_body[0]
-    jdata_str = body.split("&jKey=")[0].removeprefix("jData=")
+    jdata_str = json.dumps(_form(body)["jData"])
     jdata = json.loads(jdata_str)
     assert jdata["uid"] == "USER1"
     assert jdata["stext"] == "SENSEX 72000"
@@ -497,7 +510,7 @@ def test_place_order_builds_jdata_from_intent():
 
     # Verify jData fields
     body = captured_body[0]
-    jdata_str = body.split("&jKey=")[0].removeprefix("jData=")
+    jdata_str = json.dumps(_form(body)["jData"])
     jdata = json.loads(jdata_str)
 
     assert jdata["uid"] == "U1"
@@ -536,7 +549,7 @@ def test_place_order_sl_lmt_includes_trgprc():
 
     assert result.ok is True
     body = captured_body[0]
-    jdata = json.loads(body.split("&jKey=")[0].removeprefix("jData="))
+    jdata = _form(body)["jData"]
     assert jdata["prctyp"] == "SL-LMT"
     assert jdata["trgprc"] == "120"
     assert jdata["prc"] == "119"
@@ -617,7 +630,7 @@ def test_cancel_order_includes_norenordno_in_jdata():
         run(client.cancel_order("MY_ORD_123"))
 
     body = captured_body[0]
-    jdata = json.loads(body.split("&jKey=")[0].removeprefix("jData="))
+    jdata = _form(body)["jData"]
     assert jdata["uid"] == "U1"
     assert jdata["norenordno"] == "MY_ORD_123"
 
@@ -655,7 +668,7 @@ def test_modify_order_includes_prc_string():
         run(client.modify_order("ORD1", prc=110.0, trgprc=111.0))
 
     body = captured_body[0]
-    jdata = json.loads(body.split("&jKey=")[0].removeprefix("jData="))
+    jdata = _form(body)["jData"]
     assert jdata["prc"] == "110"
     assert jdata["trgprc"] == "111"
     assert jdata["norenordno"] == "ORD1"
@@ -836,6 +849,6 @@ def test_holdings_sends_product_in_jdata():
         run(client.holdings())
 
     assert "Holdings" in captured_url[0]
-    body = captured_body[0]
-    assert '"prd"' in body and '"C"' in body
-    assert '"uid"' in body and '"actid"' in body
+    jdata = _form(captured_body[0])["jData"]
+    assert jdata["prd"] == "C"
+    assert "uid" in jdata and "actid" in jdata

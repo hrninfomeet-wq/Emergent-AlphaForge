@@ -22,6 +22,7 @@ import json
 import logging
 import socket
 from typing import Any, Callable, Dict, List, Optional
+from urllib.parse import urlencode
 
 import httpx
 
@@ -96,8 +97,20 @@ class FlattradeClient:
     # ------------------------------------------------------------------
 
     def _make_body(self, jdata: Dict[str, Any]) -> str:
-        """Build form-encoded body: jData=<json>&jKey=<token>."""
-        return f"jData={json.dumps(jdata)}&jKey={self._jKey}"
+        """Build form-encoded body: jData=<json>&jKey=<token>.
+
+        Both values are percent-encoded. The decoded spec says so twice — see
+        ``endpoints/04-place-order.md`` and ``endpoints/21-place-oco-order.md``:
+        url-encode "to avoid special char error" for symbols like ``M&M``.
+
+        String interpolation transmitted the raw JSON, so a literal ``&`` in ANY
+        field (a symbol, an operator remark, a strategy name) silently TRUNCATED
+        the body at that byte — the broker then parses a half-object and answers
+        with a generic error that names nothing. A ``+`` is quieter still: it
+        decodes to a space rather than failing. Neither has bitten yet because
+        index-option tsyms and ``oco:<no>`` remarks contain neither character.
+        """
+        return urlencode({"jData": json.dumps(jdata), "jKey": self._jKey})
 
     async def _post(self, route: str, jdata: Dict[str, Any]) -> Dict[str, Any]:
         """POST to PiConnectAPI/<route>, parse JSON response.
