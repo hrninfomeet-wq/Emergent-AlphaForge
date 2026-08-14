@@ -913,3 +913,225 @@ status commit under the same explicit authorization.
   local. The next agent would infer a divergence that no longer exists.
 - Do not interpret archive tags as archaic branches. The user asked to prune branches, not
   destroy recovery tags.
+
+---
+
+## Session 2026-08-13 (web research) — test the premise before optimizing for a provocative angle
+
+**Core lesson:** a provocative article is useful only after its premise survives a primary-source
+check. Here, current college data did not support growing promiscuity; the defensible, sharper
+story was rougher sexual practices occurring alongside flat or declining hookup activity.
+
+**Confirmed approaches:**
+- Use Agent Reach's Exa route to discover current features, then verify the chosen article
+  against the underlying campus surveys and a separate multi-college trend study.
+- Split discovery into a feature search and an independent counter-angle search. Both searches
+  converged on the same correction, which prevented a sensational but false recommendation.
+- Prefer a readable reported feature for the user and attach the primary research as the evidence
+  check, with explicit limits on generalizing one-campus probability samples to all students.
+
+**Dead ends / traps:**
+- The `agent-reach` launcher was not on the task command path. Its isolated Windows executable at
+  `C:\Users\haroo\.agent-reach-venv\Scripts\agent-reach.exe` worked for health and update checks.
+- Do not equate more visible or rougher sexual practices with more partners or more frequent sex;
+  those are different claims and the best current evidence points in different directions.
+- Exa occasionally returned HTTP 503 overflow errors on batched fetches. Smaller calls and an
+  independent web-source check completed verification without repeated blind retries.
+
+---
+
+## Session 2026-08-13 (article PDF) — wait for delayed access controls before exporting
+
+**Core lesson:** a page that briefly exposes full text during initial rendering is not evidence
+that the complete article is available for export. Re-check the settled DOM after membership and
+paywall scripts finish before claiming that a PDF is complete.
+
+**Confirmed approaches:**
+- Compare the article endpoint and paywall marker after the page settles. The Vox page retained
+  its heading and introduction but replaced the remaining article with a membership prompt.
+- Check one other available signed-in browser before requesting user action, then stop when the
+  same access restriction appears instead of reconstructing the article from cached text.
+- Leave the authenticated browser page as a handoff so the user can sign in and resume the exact
+  PDF workflow without repeating discovery.
+
+**Dead ends / traps:**
+- The direct HTML-to-PDF service rejected initialization with HTTP 403, so it could not provide a
+  verified converter path in this session.
+- Chrome print preview blocks page control and is not exposed as a normal controllable tab. Do not
+  press Enter blindly because the selected destination might be a physical printer.
+- A full article snapshot appeared during early load, then disappeared after the paywall check.
+  Capturing that transient state would bypass publisher access controls and is not an acceptable
+  fallback.
+
+---
+
+## Session 2026-08-13 (Sensex close forecast) — model CAS from the local index, not a generic band
+
+**Core lesson:** a post-CAS closing forecast should separate the continuous-session move from the
+auction jump. On the six stored SENSEX sessions from 2026-08-03 through 2026-08-10, the median
+13:42-to-15:14 move was -3.15 points while the median 15:14-to-official-close jump was +67.75
+points; treating both as one ordinary late-day trend would miss the market-structure break.
+
+**Confirmed approaches:**
+- Reconcile the delayed public quote against a second feed, then use the live local warehouse only
+  for timestamps it actually contains. Today's local series began at 09:19, so public data remained
+  the source for the official open, high, and low while the warehouse supplied the fresher level.
+- Compute SENSEX-specific CAS gaps from the stored 15:14 and 15:29 bars. The six auction gaps were
+  -37.07, +104.39, +71.71, +171.71, +7.26, and +63.78 points.
+- Keep news direction and auction uncertainty separate: current risk-off news supplied a mild
+  directional lean, while CAS widened the closing-print error without supplying a direction.
+
+**Dead ends / traps:**
+- Do not apply the regulatory +/-3% security band to an index forecast; it is an order-price limit,
+  not a likely index-closing interval.
+- Do not infer a persistent CAS bias from six sessions. Five positive auction gaps are useful for a
+  direct point instinct, but the sample is too short to establish a durable effect.
+- Do not call a partially captured intraday warehouse series a complete daily OHLC record. The
+  missing 09:15-09:18 bars excluded today's true opening high.
+
+### Closing validation
+
+**Confirmed result:** SENSEX officially closed at 78,079.96 on 2026-08-13. The 78,000 point
+forecast missed by 79.96 points (0.10% of the close); the 77,940-78,060 interval missed by 19.96
+points above its upper bound. The 15:14-to-official-close CAS jump was +225.12 points, larger than
+all six earlier SENSEX auction jumps in the stored post-CAS sample.
+
+**Lesson update:** preserve separate scoring for the point estimate and the interval. A close can
+validate the directional/central call while still falsifying an intentionally narrow range. CAS
+tail risk needs an explicit quantile or maximum-gap check once more post-CAS sessions accumulate.
+
+---
+
+## Session 2026-08-13 (Indian market analysis skill) — dated baselines are part of the forecast
+
+**Core lesson:** cross-index judgment is only valid when each instrument uses its own immediately
+preceding official close and a synchronized observation time. A forward test initially used the
+nearest locally stored SENSEX close after missing sessions and falsely attributed relative
+performance to CAS; dated NSE/BSE series reversed that conclusion.
+
+**Confirmed approaches:**
+- Created the user-level `analyze-indian-market-session` skill with a read-only research workflow,
+  a source hierarchy, CAS separation, portfolio and cash-stock lenses, post-close scoring, and an
+  append-only learning protocol.
+- Added and tested `market_session_math.py`. It reproduced the 78,001.085 SENSEX projection and
+  scored the 78,079.96 close as a 79.96-point midpoint error, 19.96-point range miss, and
+  +225.12-point CAS jump. It rejects BOM-prefixed invalid JSON, non-finite/zero price inputs,
+  inverted ranges, and non-positive historical ranges.
+- Forward-tested three distinct requests. SENSEX verification and Reliance portfolio analysis
+  passed; NIFTY required one revision, then reconciled the 2026-08-12 official closes and passed.
+- Preserve learning without overfitting: record every locked forecast and outcome, but revise the
+  reusable skill only when a lesson exposes a structural defect or survives repeated sessions.
+
+**Dead ends / traps:**
+- PowerShell JSON pipes can prepend a UTF-8 BOM. Decode with `utf-8-sig` in reusable Windows tools.
+- `Last stored close` is not `previous close` when the warehouse skips a trading session. Prove
+  the date from an official daily series before calculating performance or divergence.
+- Do not silently turn a lone current quote into a projection when no historical late-move or CAS
+  inputs exist; absence of an adjustment is absence of evidence, not a zero forecast adjustment.
+
+---
+
+## Session 2026-08-14 (NIFTY 50 close forecast) — lock the dated baseline before CAS modelling
+
+**Locked forecast at 12:40:56 IST:** official close **24,350-24,400**; point call **24,375**.
+The forecast is invalid if NIFTY breaks **24,296.80** late in continuous trading and does not
+recover that level before CAS. Do not revise this entry after the close; score it separately for
+point error, interval hit/miss, and the 15:14-to-official-close CAS gap.
+
+**Core lesson:** vendor metadata can regress to a two-session-old `previousClose` even while the
+live price is current. Yahoo's intraday metadata exposed 24,435.90, but its dated 13 August daily
+row and Google's displayed arithmetic both proved the immediately preceding official close was
+24,395.85. Dated rows and an independent reconciliation remain mandatory.
+
+**Locked evidence and arithmetic:**
+- Yahoo showed NIFTY at 24,342.95 at 12:40:56 IST. Google independently showed 24,346.45 at
+  12:20:06 IST. The dated previous close was 24,395.85, so the synchronized loss was
+  `24,342.95 - 24,395.85 = -52.90` points (-0.217%).
+- Official open/high/low were 24,361.90 / 24,365.00 / 24,296.80. The opening gap was
+  `24,361.90 - 24,395.85 = -33.95` points. The 68.20-point range placed the locked quote
+  `(24,342.95 - 24,296.80) / 68.20 = 67.7%` above the day low.
+- The latest ten completed daily ranges averaged 161.00 points and had a 138.65-point median;
+  today's 68.20 points used 49.2% of that median, leaving meaningful expansion risk.
+- The nine stored post-CAS 12:39-to-15:14 moves had a -13.55-point median. The nine
+  15:14-to-15:29 auction gaps had a +43.30-point median, giving
+  `24,342.95 - 13.55 + 43.30 = 24,372.70`, rounded to the 24,375 point call.
+- A separate central-CAS-quartile calculation produced 24,351.10 to 24,396.05, rounded outward
+  to the locked 24,350-24,400 interval. Weak 15-advance/35-decline breadth and losses in Bank
+  Nifty, Nifty IT, and Nifty Pharma supported a bearish continuous-session lean; recovery from
+  24,296.80 and the recent positive CAS median prevented a lower official-close call.
+
+**Confirmed approaches:**
+- Run chart structure and NIFTY-specific late-session/CAS history independently. Their point
+  candidates were approximately 24,373 and 24,371 before rounding, materially strengthening the
+  24,375 call without pretending the interval is a high-confidence probability band.
+- Separate the bearish cash-session evidence from the auction estimate. CAS changed the expected
+  official print, but it did not erase the lower-high sequence or weak breadth.
+- Use the current warehouse only for the timestamped anchor when its opening bars are missing;
+  retain public dated series for official open, high, low, and prior close.
+
+**Dead ends / traps:**
+- Do not use Yahoo's undated `meta.previousClose` without matching it to the immediately preceding
+  trading date. It was stale by one session in this run.
+- Do not interpret nine positive NIFTY auction gaps as a permanent upward law. The sample is short,
+  and its +7.50 to +200.75-point range can break a deliberately narrow forecast.
+- One accurate SENSEX call and one pre-close NIFTY estimate are not evidence of a tradeable edge.
+  Keep broker interaction read-only and do not size leveraged positions from this forecast alone.
+
+---
+
+## 2026-08-14 — Completing the audit verification after the agents died
+
+**Core lesson: an audit finding is a hypothesis, and roughly a third of them do not
+survive contact with the code.** 31 findings were recovered from a dead workflow's
+journal and verified one at a time. The distribution is the lesson: 13 were already
+SUPERSEDED by fixes made while the audit was still running, 6 were CONFIRMED and
+fixed here, 2 confirmed and deferred, 1 was **not a defect at all**, 1 was confirmed
+but **by design**, and 1 was a determination rather than a finding. Acting on the raw
+list would have meant "fixing" correct code — the two-SELL-leg OCO — and re-fixing
+five things already fixed. Verification is not a formality before the fix; it is the
+majority of the work.
+
+**Confirmed approaches:**
+- **A ledger file checkpointed after every single verdict.** Two agent fleets had
+  already died mid-audit on the spend limit. Writing `VERIFY_LEDGER.json` after each
+  item — never batching — meant no verdict was ever re-derived. Recovering the
+  original 31 findings from `wf_*/journal.jsonl` also proved that a dead workflow's
+  output is not lost, only unread.
+- **Drive the code; never grep the source for behaviour.** Source-text assertions
+  misfired *four* times in this audit, every time against a *correct* implementation
+  (a match in a docstring; a variable-bound `live_trades.aggregate`; a locally-bound
+  `["state"]["entry"]`). Each was rewritten to run the real cycle and assert on the
+  observed value.
+- **When one policy needs two opposite fallback directions, write two functions.**
+  The entry margin gate fails CLOSED (refuse to trade on an unreadable probe); the
+  OCO pre-check fails OPEN (attempt the backstop anyway, because the position is
+  already filled and guarded). Sharing one function with a flag is how a fail-open
+  gets copied into an entry gate a year later.
+- **Distinguish a notional from a level.** The trailing anchor is re-based through a
+  monotonic ratchet because it *is* a live stop. The basket notional is re-based
+  directly because it is *not* — a dearer fill honestly means more rupees of risk
+  budget under "20% of premium".
+
+**Dead ends / traps:**
+- **Two same-direction legs is the correct OCO bracket for a long option.** Both
+  exits are sells; one triggers below, one above. Reported as an "undocumented
+  configuration"; it is simply the shape. The 2026-08-14 rejection was margin.
+- **`catastrophe_stop_pct` is widen-only and never touches the software guard.**
+  Reported as a no-op bug. It is the design — the band is a PC-down last resort that
+  must sit *outside* the software stop. The real problem is that the UI does not say
+  so, and on this account the control is fully inert because a resting NRML sell
+  cannot be margined at all.
+- **A latent bug still deserves the fix but not the alarm.** `jData` was never
+  URL-encoded, but no index-option symbol or `oco:<no>` remark contains an `&`, so
+  nothing has ever been truncated. Fixed, and labelled as latent rather than as a
+  near-miss.
+- **Fixture drift produced two false failures** — an `_Intent` stub missing `prd`,
+  and a `created_at` built from the real clock under a patched one. When a brand-new
+  test fails, suspect the fixture before the code.
+
+**Still open (not fixed here, and the highest-value remaining work):** findings [17]
+and [28] are two halves of one story — an unconfigured deployment silently goes live
+on `stop=50% / target=None / trail=None`, the plan is fully computable from the
+deployment doc *before* arming, and nothing computes or displays it. The exit fields
+that would prevent it are gated to paper mode and only prefill from one preset type.
+That is the gap between what the operator authorises and what actually executes.
