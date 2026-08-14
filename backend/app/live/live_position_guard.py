@@ -622,6 +622,24 @@ class LivePositionGuard:
                     # per-order `avgprc` lives on live_orders, but its only writer
                     # (order_sm via engine.on_om) has NO production feed, so the
                     # position book is the reachable source.
+                    # Stamp the observed fill on the REGISTRY entry so guard-status
+                    # shows the basis honestly. The guard seeds entry_price from
+                    # ref_ltp because OrderResult carries no avgprc — the fill is
+                    # simply not knowable when the position is registered. The
+                    # monitor's LEVELS are deliberately NOT re-based here: _raise_stop
+                    # enforces a monotonic ratchet, and re-pricing a live stop off a
+                    # slightly different entry could LOWER it under an open position,
+                    # which is a worse failure than a level that is 0.57% off (the
+                    # 2026-08-14 gap: ref 61.35 vs fill 61.70, a Rs 11 stop
+                    # difference on 65 qty). Visible beats silently adjusted.
+                    _fill_obs = _finite_pos(pos.get("daybuyavgprc"))
+                    if _fill_obs is not None and entry.get("entry_fill_price") is None:
+                        entry["entry_fill_price"] = _fill_obs
+                        try:
+                            entry["entry_basis_error"] = round(
+                                _fill_obs - float(entry.get("entry_price") or 0.0), 4)
+                        except (TypeError, ValueError):
+                            pass
                     marks.append({
                         "norenordno": entry.get("id"),
                         "unrealized_pnl": sum(_parts),

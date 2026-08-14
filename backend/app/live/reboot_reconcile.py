@@ -140,7 +140,25 @@ async def _reconcile_open_flat(
                 # rehydrated / manual doc with no broker order id → cannot match.
                 summary["skipped_no_norenordno"] += 1
                 continue
-            tsym = str(doc.get("trading_symbol") or "")
+            # The position book is NOREN-keyed. `trading_symbol` is the UPSTOX
+            # symbol ("NIFTY 24300 PE 18 AUG 26" vs "NIFTY18AUG26P24300"), so
+            # comparing it here could NEVER match: every open live trade looked
+            # flat and was closed the instant the book was non-empty. On
+            # 2026-08-14 that journalled a REAL open position as closed with a
+            # null P&L, blinding the caps and the day-stop to it for ~30 minutes.
+            # The documented empty-book guard was working perfectly and masking
+            # this the entire time.
+            tsym = str(doc.get("noren_tsym") or "").strip()
+            if not tsym:
+                # Identity unresolvable in the broker's own symbol space. That is
+                # UNKNOWN, and unknown must NEVER close — the same rule the empty
+                # book already follows. Falling back to `trading_symbol` here
+                # would reproduce the original defect exactly.
+                log.warning("reboot reconcile: %s has no noren_tsym — cannot prove "
+                            "flatness in the broker's symbol space; leaving OPEN",
+                            norenordno)
+                summary["skipped_no_norenordno"] += 1
+                continue
             if tsym in open_tsyms:
                 # still held at the broker → leave OPEN.
                 summary["skipped_held"] += 1

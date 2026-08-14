@@ -159,10 +159,19 @@ class FakeClient:
 
 
 def _open_doc(**overrides: Any) -> Dict[str, Any]:
+    # `trading_symbol` is the UPSTOX symbol; `noren_tsym` is the broker's own and is
+    # what the position book is keyed by. These fixtures used to set only the former,
+    # with a NOREN-SHAPED value — modelling a world where the two symbol spaces are
+    # identical. That is why the suite could not see the 2026-08-14 defect, where
+    # reconcile compared an Upstox string against a Noren-keyed book, never matched,
+    # and closed a REAL open position. A test that collapses the two spaces cannot
+    # detect code that confuses them. `_open_doc(noren_tsym=None)` models a legacy
+    # doc, which must never be closed. See tests/test_reconcile_symbol_space.py.
     d = {
         "id": "T1",
         "norenordno": "N1",
-        "trading_symbol": "NIFTY24X25000CE",
+        "trading_symbol": "NIFTY 25000 CE 24 X",
+        "noren_tsym": "NIFTY24X25000CE",
         "quantity": 65,
         "entry_price": 100.0,
         "status": "OPEN",
@@ -314,9 +323,9 @@ def test_orphan_oco_sweep_cancels_when_entry_closed_not_when_open():
     an OCO remarks=oco:N2 whose N2 doc is still OPEN → NOT cancelled."""
     db = FakeDB()
     db.live_trades.rows.append(_open_doc(id="T1", norenordno="N1", status="CLOSED",
-                                         trading_symbol="X1"))
+                                         noren_tsym="X1"))
     db.live_trades.rows.append(_open_doc(id="T2", norenordno="N2", status="OPEN",
-                                         trading_symbol="X2"))
+                                         noren_tsym="X2"))
     client = FakeClient(
         # non-empty book; X2 still held so the OPEN doc is correctly left open
         position_book=[{"tsym": "X2", "netqty": "65"}],
@@ -336,7 +345,7 @@ def test_orphan_oco_no_remarks_cancelled_only_when_flat_and_no_open_trade():
     db = FakeDB()
     # OPEN doc for tsym HELD — its OCO (no remarks) must be kept.
     db.live_trades.rows.append(_open_doc(id="T1", norenordno="N1",
-                                         trading_symbol="HELD"))
+                                         noren_tsym="HELD"))
     client = FakeClient(
         position_book=[{"tsym": "HELD", "netqty": "65"}],  # FLATSY absent → flat
         gtt_book=[
@@ -372,7 +381,7 @@ def test_closed_doc_is_never_retouched():
     """An already-CLOSED doc (status != OPEN) is excluded by the $ne query → not reclosed."""
     db = FakeDB()
     db.live_trades.rows.append(_open_doc(status="CLOSED", realized_pnl=42.0,
-                                         trading_symbol="OTHER"))
+                                         noren_tsym="OTHER"))
     client = FakeClient(position_book=[{"tsym": "STILLHERE", "netqty": "30"}])
     summary = _run(reconcile_on_startup(db, client))
     assert db.live_trades.rows[0]["realized_pnl"] == 42.0  # untouched

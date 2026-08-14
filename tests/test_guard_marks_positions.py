@@ -169,3 +169,44 @@ def test_marks_are_written_keyed_on_norenordno():
     assert '"norenordno": ordno' in hook
     assert "trading_symbol" not in hook.split('"""')[2], (
         "the mark writer must join on norenordno, never on trading_symbol")
+
+
+# --- the entry BASIS must be visible, not silently adjusted -----------------
+
+def test_the_observed_fill_is_stamped_on_the_registry_entry():
+    """The guard seeds entry_price from ref_ltp because OrderResult carries no
+    avgprc — the fill is not knowable at registration (2026-08-14: ref 61.35 vs
+    fill 61.70). Once the book shows the true buy average, record it so
+    guard-status tells the truth about the basis."""
+    reg = LiveMonitorRegistry()
+    _registered(reg)
+    marks = []
+    p = _pos(); p["daybuyavgprc"] = "251.5"      # the broker's true buy average
+    run(_guard(reg, _FakeClient([p]), marks)._cycle())
+    item = reg.snapshot()[0]
+    assert item.get("entry_fill_price") == 251.5
+    # registered entry_price is 250.0 (the ref) -> a +1.5 basis error, made visible
+    assert item.get("entry_basis_error") == 1.5
+
+
+def test_the_monitor_levels_are_NOT_rebased_under_a_live_position():
+    """_raise_stop is a monotonic ratchet; re-pricing off a different entry could
+    LOWER a stop under an open position — worse than a level 0.57% off."""
+    reg = LiveMonitorRegistry()
+    _registered(reg)
+    before = dict(reg.snapshot()[0]["state"])
+    run(_guard(reg, _FakeClient([_pos()]), [])._cycle())
+    after = reg.snapshot()[0]["state"]
+    assert after["stop_level"] == before["stop_level"]
+    assert after["entry"] == before["entry"]
+
+
+def test_the_fill_is_stamped_once_and_not_overwritten():
+    """daybuyavgprc blends a same-day second buy; the first observation wins."""
+    reg = LiveMonitorRegistry()
+    _registered(reg)
+    p1 = _pos(); p1["daybuyavgprc"] = "251.5"
+    run(_guard(reg, _FakeClient([p1]), [])._cycle())
+    p2 = _pos(); p2["daybuyavgprc"] = "999.0"    # a blended second buy
+    run(_guard(reg, _FakeClient([p2]), [])._cycle())
+    assert reg.snapshot()[0]["entry_fill_price"] == 251.5
