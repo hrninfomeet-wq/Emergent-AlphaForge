@@ -43,6 +43,7 @@ from datetime import datetime, time as dtime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from app.execution_policy import resolve_premium_levels
+from app.exit_controls import ExitControlsConfig, effective_premium_stop
 from app.session_spec import OPTIONS, segment_close_time
 
 log = logging.getLogger(__name__)
@@ -118,6 +119,10 @@ def build_monitor_state(
         ndigits=2,
     )
 
+    # Read the NESTED exit_controls overlay before `trail` is narrowed to the flat
+    # schema below. Both shapes arrive through this one parameter and compose.
+    ec = _parse_exit_controls(trail)
+
     trail = dict(trail or {})
     mode = str(trail.get("mode") or "none").strip().lower()
     if mode not in _VALID_MODES:
@@ -146,7 +151,40 @@ def build_monitor_state(
             "y": trail.get("y"),
         },
     }
+    # ABSENT, not None, when there is no overlay — so a state dict built by any
+    # existing caller stays byte-identical rather than merely equivalent.
+    if ec is not None:
+        state["exit_controls"] = ec
     return state
+
+
+def _parse_exit_controls(trail: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """A nested deployment ``risk.exit_controls`` block -> the flat, JSON-serializable
+    overlay carried on the monitor state, or ``None`` when there is no live overlay.
+
+    Returns None for: a non-dict; a FLAT trail dict (``{"mode": ...}`` has no
+    ``enabled`` key, so ``from_dict`` yields ``enabled=False``); ``enabled: false``;
+    and an enabled block whose every overlay is inert — exactly the arming
+    predicates ``effective_premium_stop`` itself applies. A None return leaves the
+    state dict identical to what this module produced before the overlay existed.
+
+    Coercion is deliberately NOT re-implemented: ``ExitControlsConfig.from_dict`` is
+    the single parser, shared with the sim and paper, and it never raises.
+
+    There is no explicit shape discriminator, on purpose. A ``if trail.get("mode")``
+    guard would silently drop the overlay from a dict carrying BOTH keys — the exact
+    class of bug this fixes, since ``"none"`` is a truthy string.
+    """
+    cfg = ExitControlsConfig.from_dict(trail if isinstance(trail, dict) else None)
+    if not cfg.enabled:
+        return None
+    if not ((cfg.be_trigger and cfg.be_trigger > 0)
+            or (cfg.trail_distance and cfg.trail_distance > 0)):
+        return None
+    return {"enabled": True, "unit": cfg.unit,
+            "be_trigger": float(cfg.be_trigger), "be_lock": float(cfg.be_lock),
+            "trail_activation": float(cfg.trail_activation),
+            "trail_distance": float(cfg.trail_distance)}
 
 
 # ---------------------------------------------------------------------------
@@ -161,6 +199,60 @@ def _raise_stop(state: Dict[str, Any], candidate: Optional[float]) -> None:
     new = round(float(candidate), 2)
     if cur is None or new > cur:
         state["stop_level"] = new
+
+
+def _apply_exit_controls(state: Dict[str, Any], running_max: float) -> None:
+    """Raise ``state["stop_level"]`` by the CANONICAL premium-stop overlay.
+
+    Delegates to ``exit_controls.effective_premium_stop`` — the same decider the sim
+    (``option_backtest``) and paper (``paper_auto``) call — so the three can never
+    drift. That module's docstring already claims to be the single source; live was
+    the one caller that never called it, and silently discarded every overlay
+    because it spoke the flat-trail dialect instead.
+
+    No-op when the state carries no overlay. Writes ONLY through ``_raise_stop``, so
+    it can never lower a live stop. This mirrors the ``stepped_xy`` branch, which
+    already delegates to the backtest's own ``stepped_trail_stop`` helper and feeds
+    the result through the same ratchet — the pattern this module already endorses.
+
+    ``running_max`` must be the peak through the PREVIOUS observation, for
+    look-ahead parity with the sim and paper; it is floored at ``entry`` to mirror
+    their seeds (``running_max_prev[0] = entry_price`` / ``running_max_premium =
+    fill_entry``). ``state["exit_controls"]`` is read-only — it is shallow-aliased
+    across ``evaluate_exit``'s state copy, so mutating it would leak backwards.
+    """
+    ec = state.get("exit_controls")
+    if not ec:
+        return
+    cfg = ExitControlsConfig(
+        enabled=True, unit=ec["unit"], be_trigger=ec["be_trigger"],
+        be_lock=ec["be_lock"], trail_activation=ec["trail_activation"],
+        trail_distance=ec["trail_distance"])
+    entry = float(state["entry"])
+    rm = max(float(running_max), entry)
+    # base_stop is the STATIC initial_stop, not the already-ratcheted stop_level:
+    # it matches the sim's base and keeps the returned level interpretable on its
+    # own rather than coupled to whatever another mode has ratcheted to.
+    level = effective_premium_stop(entry=entry, running_max=rm,
+                                   base_stop=state.get("initial_stop"), cfg=cfg)
+    if level is None:
+        return
+    # Record WHICH candidate binds, so the exit reason can name it honestly
+    # (the sim distinguishes OPTION_BREAKEVEN_STOP from OPTION_TRAIL_STOP).
+    be_level = None
+    if cfg.be_trigger > 0:
+        if cfg.unit == "pts":
+            trigger_level, lock_level = entry + cfg.be_trigger, entry + cfg.be_lock
+        else:
+            trigger_level = entry * (1.0 + cfg.be_trigger)
+            lock_level = entry * (1.0 + cfg.be_lock)
+        if rm >= trigger_level:
+            be_level = lock_level
+    state["ec_stop"] = round(float(level), 2)
+    state["ec_bind"] = ("breakeven"
+                        if be_level is not None and abs(be_level - level) <= 1e-9
+                        else "trailing")
+    _raise_stop(state, level)
 
 
 def evaluate_exit(state: Dict[str, Any], ltp: Any) -> Dict[str, Any]:
@@ -241,6 +333,11 @@ def evaluate_exit(state: Dict[str, Any], ltp: Any) -> Dict[str, Any]:
                 entry_premium=entry, running_high=prev_peak,
                 base_stop=float(initial), x=float(x), y=float(y)))
 
+    # 3b. Canonical exit_controls overlay — the SAME decider the sim and paper use,
+    #     on the prev-peak basis for look-ahead parity. Composes with whichever flat
+    #     mode ran above, through the single monotonic ratchet.
+    _apply_exit_controls(new_state, prev_peak)
+
     # 4. Exit decision.
     stop_level = new_state["stop_level"]
     target_level = new_state["target_level"]
@@ -248,6 +345,10 @@ def evaluate_exit(state: Dict[str, Any], ltp: Any) -> Dict[str, Any]:
     if stop_level is not None and ltp <= stop_level:
         initial = new_state.get("initial_stop")
         if new_state["activated"] and stop_level <= entry + 1e-9 and stop_level >= entry - 1e-9:
+            reason = "breakeven_stop"
+        elif (new_state.get("ec_bind") == "breakeven"
+              and new_state.get("ec_stop") is not None
+              and abs(stop_level - new_state["ec_stop"]) <= 1e-9):
             reason = "breakeven_stop"
         elif initial is None or stop_level > (initial + 1e-9):
             reason = "trailing_stop"
