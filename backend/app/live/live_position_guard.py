@@ -640,6 +640,23 @@ class LivePositionGuard:
                                 _fill_obs - float(entry.get("entry_price") or 0.0), 4)
                         except (TypeError, ValueError):
                             pass
+                        # Re-anchor the TRAILING basis to the true fill. Every mode
+                        # in live_sl_monitor derives its level from state["entry"],
+                        # so a "breakeven" exit anchored to the reference books a
+                        # GUARANTEED loss (2026-08-14: ref 61.35 vs fill 61.70 =
+                        # -Rs 22.75 on 65 qty). A bounded sizing error on a
+                        # catastrophe stop is a rounding issue; an exit that cannot
+                        # keep the promise in its own name is not.
+                        #
+                        # Safe BECAUSE _raise_stop is a monotonic ratchet: a fill
+                        # above the reference raises the levels (accepted, more
+                        # protective), a fill below is REJECTED and the live stop
+                        # stays put. The already-resolved stop_level/initial_stop
+                        # are deliberately untouched — writing those directly
+                        # bypasses the ratchet and could loosen protection.
+                        _st = entry.get("state")
+                        if isinstance(_st, dict) and _st.get("entry") is not None:
+                            _st["entry"] = _fill_obs
                     marks.append({
                         "norenordno": entry.get("id"),
                         "unrealized_pnl": sum(_parts),
