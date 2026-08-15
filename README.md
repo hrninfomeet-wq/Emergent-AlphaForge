@@ -11,7 +11,7 @@ A **local-first research and forward-testing terminal for Indian index options**
 - **Optimizer** — Bayesian (Optuna TPE) / Grid / Genetic search; single-shot **or** walk-forward (honest OOS); spot vs option re-rank evaluation; survival gate; exit-control search. (`app/optimizer.py`, `app/wfo.py`, `app/walkforward.py`, `app/survival.py`, `app/rerank_select.py`)
 - **Strategy Library** — built-in strategies plus drop-in `.py` plugins, a retire/delete lifecycle, and a multi-provider AI authoring wizard (Anthropic + Gemini). (`app/strategies/*`, `app/routers/strategies_admin.py`, `app/ai/*`)
 - **Paper Trading** — live-tick-driven paper realism: tick-based exits and poll-for-new-bar entries at real option premiums. (`app/paper_*.py`, `app/live_exit_monitor.py`)
-- **Live Trading (Flattrade)** — offline-first; an L0–L3 gate chain with a single real-order chokepoint (the executor); margin pre-check; OCO/GTT catastrophe backstop; kill switches; Greeks. ARMED auto-place only under an env gate **and** per-deployment ARM **and** account caps, with EOD auto-disarm. (`app/live/*` — `executor.py`, `safety.py`, `margin.py`, `arm_state.py`, `gtt.py`, `kill_switch.py`; `app/routers/live_broker.py`)
+- **Live Trading (Flattrade)** — offline-first; an L0–L3 gate chain with a single real-order chokepoint (the executor); margin pre-check; OCO/GTT catastrophe backstop; kill switches; Greeks. Auto-place only under the `LIVE_AUTOPLACE_ARMED` env gate **and** `mode=="live"` **and** account caps, with a 15:00 IST entry cutoff. (`app/live/*` — `executor.py`, `safety.py`, `margin.py`, `arm_state.py`, `gtt.py`, `kill_switch.py`; `app/routers/live_broker.py`)
 
 ## Quick Start
 
@@ -47,6 +47,7 @@ MongoDB runs on `:27017`. First-time setup (copy `backend/.env.example` → `bac
 | Doc | Purpose |
 |---|---|
 | [docs/HANDOFF.md](docs/HANDOFF.md) | **START HERE** — current state, how to run/test, table of contents into the deeper docs |
+| [docs/TAKEOVER_CHECKLIST.md](docs/TAKEOVER_CHECKLIST.md) | **Do this first** — safety rules, setup, verified status, lessons, known limitations, one-source-of-truth map |
 | [docs/DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md) | **Deep onboarding** — run/build/test workflow, live-trading safety model, data-warehouse model, India trading rules, research→deploy flow, gotchas |
 | [docs/PROJECT_OVERVIEW.md](docs/PROJECT_OVERVIEW.md) | What AlphaForge is and the end-to-end research→deploy workflow, at a glance |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Technical reference: stack, module map, data flow, MongoDB collections, the live-execution gate chain |
@@ -72,4 +73,6 @@ Pure/contract tests run on the host Python; motor/route tests run **inside the b
 
 ## Safety Note
 
-**No real broker order is ever placed unless the operator has explicitly armed live execution** — an environment gate (`LIVE_AUTOPLACE_ARMED=1`), a per-deployment ARM with account caps, and EOD auto-disarm all have to line up, and every real order passes through a single executor chokepoint behind an L0–L3 gate chain. Paper and signal-only deployments never touch a broker. The offline-first, no-broker-orders-by-default posture is intentional and must remain.
+**No real broker order is ever placed unless the operator has explicitly enabled live execution on a deployment.** Authorization is `deployment.mode == "live"` **and** a connected broker **and** before the 15:00 IST entry cutoff, under account caps, with the `LIVE_AUTOPLACE_ARMED=1` environment gate as the master switch. Every real order passes through a single executor chokepoint behind an L0–L3 gate chain. Paper and signal-only deployments never touch a broker. The offline-first, no-broker-orders-by-default posture is intentional and must remain.
+
+> The old **per-deployment ARM ceremony** and the **research-qualification gate** were both removed on explicit operator instruction (v0.56.0). Do not reintroduce either. A **data-integrity** gate that blocks a NEW live activation when today's candles cannot be verified is a different thing and is intentional — see [`docs/HANDOFF.md`](docs/HANDOFF.md) §2.0c.

@@ -2,7 +2,7 @@
 
 _Entry point for the next engineer or AI agent. This is the shortest useful orientation; the repository and `tests/` are the source of truth, not any prior chat._
 
-**Read order:** this file → [`BACKTEST_INTEGRITY_AUDIT.md`](BACKTEST_INTEGRITY_AUDIT.md) (before trusting any result) → [`STAGE1_INTEGRITY_SESSION_HANDOFF_2026-08-01.md`](STAGE1_INTEGRITY_SESSION_HANDOFF_2026-08-01.md) (latest completed-session checkpoint) → [`DEVELOPER_GUIDE.md`](DEVELOPER_GUIDE.md) (the consolidated deep onboarding — run/build/test, live-trading safety model, warehouse model, India rules, research→deploy, gotchas) → [`ARCHITECTURE.md`](ARCHITECTURE.md) (technical reference). Use the ["Where to go deep"](#5-where-to-go-deep) table below to jump straight to a topic.
+**Read order:** this file → [`TAKEOVER_CHECKLIST.md`](TAKEOVER_CHECKLIST.md) (what to DO, in order — safety rules, setup, lessons) → [`BACKTEST_INTEGRITY_AUDIT.md`](BACKTEST_INTEGRITY_AUDIT.md) (before trusting any result) → [`STAGE1_INTEGRITY_SESSION_HANDOFF_2026-08-01.md`](STAGE1_INTEGRITY_SESSION_HANDOFF_2026-08-01.md) (a dated session record — historical, not current) → [`DEVELOPER_GUIDE.md`](DEVELOPER_GUIDE.md) (the consolidated deep onboarding — run/build/test, live-trading safety model, warehouse model, India rules, research→deploy, gotchas) → [`ARCHITECTURE.md`](ARCHITECTURE.md) (technical reference). Use the ["Where to go deep"](#5-where-to-go-deep) table below to jump straight to a topic.
 
 ---
 
@@ -14,14 +14,18 @@ Stack: **React** (CRA + craco) frontend, **FastAPI** (Python) backend, **MongoDB
 
 ## 2. Current state
 
-> **As of 2026-08-11 · v0.58.0 + unreleased live-integrity work · one branch, clean tree.**
-> Verification baseline: **4,573 passed, 4 xfailed, 0 failed**.
+> **As of 2026-08-15 · v0.58.0 + unreleased live-integrity work · `main` clean, level with
+> `origin/main` at `c5d380b`.** Verification baseline: **4,887 passed, 4 xfailed, 0 failed**.
 >
 > ⚠ **Before the next market session read
-> [`LIVE_VALIDATION_PLAN_2026-08.md`](LIVE_VALIDATION_PLAN_2026-08.md).** Twelve changes
-> landed on the real-money path between 2026-07-29 and 2026-08-11 and **eight have never
-> run in a market session.** That plan exercises exactly those, in an order where each
-> step's failure is cheap.
+> [`LIVE_VALIDATION_PLAN_2026-08.md`](LIVE_VALIDATION_PLAN_2026-08.md).** Changes have landed
+> on the real-money path continuously since 2026-07-29 and **most have never run in a market
+> session.** That plan exercises them in an order where each step's failure is cheap.
+>
+> ⚠ **The 2026-08-14 live session found two defects that a green suite did not.** Read
+> [§2.0c](#20c-what-changed-2026-08-12--08-15-the-live-session-and-what-it-exposed) before
+> touching the live path — one of them cost a real trade, and one of them was a regression
+> introduced two commits earlier by a change whose own tests passed.
 
 ### 2.0 The 60-second orientation
 
@@ -58,6 +62,32 @@ state, not the intent — most of this has only ever run in tests.
 **Two of these were bugs I introduced and an adversarial audit caught** — `358fcc3`
 (basket exclusion) and `58ef491` (cost-schedule substitution). Both passed the full suite.
 Audit your own commits with the same machinery you use on others'.
+
+### 2.0c What changed 2026-08-12 → 08-15 (the live session, and what it exposed)
+
+The app traded live on **2026-08-14** (NIFTY 24300 PE, 1 lot). It was the second real trade
+ever. Correlating it against the SAME deployment's paper trade exposed a class of defect the
+test suite could not see, because both sides of each test shared the implementation's
+assumption.
+
+| Commit | What it fixes | How it was found |
+|---|---|---|
+| `20c9750` | **Live silently DISCARDED `risk.exit_controls`.** `resolve_live_exit_plan` passed the NESTED config verbatim to `build_monitor_state`, which expects a FLAT trail schema; no `mode` key meant `mode="none"` and every trail field null — **with no error**, because "none" is a legal mode. Paper and the sim called `exit_controls.effective_premium_stop` correctly; live was the one caller that never did. Fixed by DELEGATING to that same canonical decider. | Same deployment, same day: PAPER ratcheted its stop to entry+8 and booked **+₹4,882.69**; LIVE dropped the trail and ran from +₹520-worth to −₹1,651-worth. |
+| `23d422b` | **A regression I introduced in `3222640` broke EVERY Flattrade call.** Percent-encoding the whole `jData` JSON made the server answer `HTTP 400 "jData is not valid json object"`. Reverted; `&` is now escaped as `&` instead. | One real API call. The suite was green because the implementation encoded with `urlencode()` and its test decoded with `parse_qs()` — **both sides shared the same wrong assumption about the server.** |
+| `46e934e` `8d61019` | Candle-gap detection, any-day recovery, a real Flattrade TPSeries fallback, and a fail-closed data-integrity gate. | The backend booted 09:49 on 08-14 and NIFTY lost 09:15–09:49 as a clean leading hole. At the first live bar the evaluator's 200-bar window held **199 previous-session bars and one of today's** — the strategy traded a session whose open it had never seen. |
+| `846da50` | The enable dialog now shows the exits that will actually be in force, before arming. | That deployment went live on `stop = 50% deep default, target = None, trail = discarded` — three facts, none displayed anywhere. |
+| `c5d380b` | The deploy wizard sent `risk: null` where the schema wants a dict, so the OPTIONAL Exit/Risk panel was effectively mandatory. | Operator hit `risk: Input should be a valid dictionary`. |
+| `b3f7df3` `cfe1c25` `b6ceb76` `152f52e` | Trailing anchors to the real fill, not the reference; "% of premium" means premium PAID; no OCO order spent when the account provably cannot margin it; the broker's decorated OCO tag is parsed, not demanded verbatim. | Verification of a 31-finding audit ledger (`audit-verification-2026-08-14.json`). |
+
+**The lesson that generalises — and it has now bitten twice:**
+> A contract cannot be validated against a mock that shares the implementation's assumption.
+> The `jData` encoding and the `exit_controls` schema were both green in CI and both wrong in
+> production. When the thing under test is an INTERFACE (a wire format, a schema another module
+> consumes), test it against the real other side at least once.
+
+**Also verified this session:** 2026-08-13 had been sitting at 368/375 bars on all three
+instruments and nothing would ever have repaired it. Recovery now closes prior-day gaps too;
+all six instrument-days are 375/375.
 
 ### 2.1 ⚠ Two things that will bite you immediately
 

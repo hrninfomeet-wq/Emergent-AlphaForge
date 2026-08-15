@@ -1,5 +1,9 @@
 # Stage 1 Integrity — session handoff (2026-08-01)
 
+> ⚠ **HISTORICAL — a dated session record, correct as of 2026-08-01 and not maintained.**
+> For current state see [`HANDOFF.md`](HANDOFF.md); for what to do first see
+> [`TAKEOVER_CHECKLIST.md`](TAKEOVER_CHECKLIST.md).
+
 > **Purpose:** the authoritative checkpoint for the Stage 1 Integrity session. Read this
 > after [`HANDOFF.md`](HANDOFF.md) and before continuing the roadmap. The permanent defect
 > register remains [`BACKTEST_INTEGRITY_AUDIT.md`](BACKTEST_INTEGRITY_AUDIT.md); the live
