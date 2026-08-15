@@ -1,26 +1,34 @@
-"""A literal '&' in jData truncates the request body.
+"""Flattrade reads `jData` LITERALLY — it does not url-decode the body.
 
-`_make_body` built a form-urlencoded body by string interpolation:
+Verified against the live API on 2026-08-15 with one SearchScrip call::
 
-    f"jData={json.dumps(jdata)}&jKey={self._jKey}"
+    percent-encoded jData -> HTTP 400 {"emsg":"jData is not valid json object"}
+    raw JSON jData        -> HTTP 401 {"emsg":"Session Expired : Invalid User Id"}
 
-posted as application/x-www-form-urlencoded. The decoded spec warns twice to
-url-encode — endpoints/04-place-order.md and endpoints/21-place-oco-order.md both
-say "use url encoding to avoid special char error for symbols like M&M".
+The 401 is the informative one: the raw form got PAST JSON parsing and was
+rejected only on a deliberately bogus uid, while the encoded form could not be
+parsed at all.
 
-Latent rather than today's bug: NIFTY/SENSEX option tsyms and an `oco:<no>` remark
-contain no '&' or '+', so the 2026-08-14 payload transmitted intact. It bites the
-first time an '&'-bearing symbol, an operator-supplied remark or a strategy name
-reaches any jData field — the broker then receives a silently TRUNCATED JSON
-object, and the likeliest response is a generic "Invalid Input" that names nothing.
-A '+' is worse: it decodes to a space and corrupts silently rather than failing.
+This file previously encoded the whole document with `urlencode()` and asserted
+the round trip with `parse_qs`. Both sides of that were self-consistent and both
+were wrong about the server, so a green suite shipped a transport that broke
+EVERY Flattrade call — orders, positions, the lot. The decoded spec's advice to
+url-encode "to avoid special char error for symbols like M&M" means escaping a
+special character WITHIN a value, not percent-encoding the JSON document.
+
+The truncation hazard that motivated the encoding is real and still handled: a
+literal `&` anywhere in the payload would end the body at that byte, so `&` is
+emitted as the JSON escape `\\u0026` — valid JSON denoting the same string, with
+no `&` left to split on.
+
+The lesson worth keeping: a transport contract cannot be validated against a
+mock that shares the implementation's assumption. This needed one real call.
 """
 from __future__ import annotations
 
 import json
 import os
 import sys
-from urllib.parse import parse_qs
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 
@@ -33,39 +41,63 @@ class _C(FlattradeClient):
         self._uid = "FZ00000"
 
 
-def _roundtrip(jdata):
-    body = _C()._make_body(jdata)
-    parsed = parse_qs(body, keep_blank_values=True)
-    return json.loads(parsed["jData"][0]), parsed["jKey"][0]
+def _server_parse(body: str):
+    """Read the body the way Flattrade demonstrably does: split on the LAST
+    `&jKey=` and treat what precedes it as literal JSON."""
+    head, _, key = body.rpartition("&jKey=")
+    assert head.startswith("jData="), body
+    return json.loads(head[len("jData="):]), key
 
 
-def test_an_ampersand_symbol_survives():
-    got, key = _roundtrip({"tsym": "M&M-EQ", "qty": 1})
-    assert got["tsym"] == "M&M-EQ", "the body was truncated at the literal '&'"
+def test_jdata_is_sent_as_raw_json():
+    body = _C()._make_body({"uid": "FZ00000", "qty": 1})
+    assert body.startswith('jData={"'), body
+    assert "%7B" not in body and "%22" not in body, "the document was percent-encoded"
+
+
+def test_an_ordinary_option_payload_round_trips():
+    j = {"tsym": "NIFTY18AUG26P24300", "exch": "NFO", "qty": 65,
+         "remarks": "oco:26081400076294"}
+    got, key = _server_parse(_C()._make_body(j))
+    assert got == j
     assert key == "TOKEN123"
 
 
-def test_a_plus_in_a_remark_is_not_decoded_as_a_space():
-    got, _ = _roundtrip({"remarks": "a+b"})
+def test_an_ampersand_in_a_value_cannot_truncate_the_body():
+    """`M&M-EQ` must survive: the `&` is escaped to \\u0026 so the body has exactly
+    one `&`, the one separating jKey."""
+    body = _C()._make_body({"tsym": "M&M-EQ", "qty": 1})
+    assert body.count("&") == 1, body
+    got, _ = _server_parse(body)
+    assert got["tsym"] == "M&M-EQ"
+
+
+def test_multiple_ampersands_are_all_escaped():
+    body = _C()._make_body({"a": "x&y", "b": "p&q&r"})
+    assert body.count("&") == 1
+    got, _ = _server_parse(body)
+    assert got == {"a": "x&y", "b": "p&q&r"}
+
+
+def test_a_plus_is_transmitted_literally():
+    """The server does not form-decode, so `+` is NOT read as a space. Encoding it
+    would corrupt it; leaving it raw is correct."""
+    got, _ = _server_parse(_C()._make_body({"remarks": "a+b"}))
     assert got["remarks"] == "a+b"
 
 
-def test_an_ordinary_option_payload_is_unchanged():
-    """No regression for every payload sent to date."""
-    j = {"tsym": "NIFTY18AUG26P24300", "exch": "NFO", "qty": 65,
-         "remarks": "oco:26081400076294"}
-    got, _ = _roundtrip(j)
+def test_nested_oco_structures_survive():
+    j = {"oivariable": [{"d": "21.45", "var_name": "x"}],
+         "place_order_params": {"tsym": "NIFTY18AUG26P24300", "prc": "21.00"}}
+    got, _ = _server_parse(_C()._make_body(j))
     assert got == j
 
 
-def test_the_token_is_still_delivered_verbatim():
-    _, key = _roundtrip({"a": 1})
+def test_the_token_is_delivered_verbatim():
+    _, key = _server_parse(_C()._make_body({"a": 1}))
     assert key == "TOKEN123"
 
 
-def test_nested_structures_survive():
-    """OCO jdata is nested (oivariable + two leg dicts)."""
-    j = {"oivariable": [{"d": "21.45", "var_name": "x"}],
-         "place_order_params": {"tsym": "M&M", "prc": "21.00"}}
-    got, _ = _roundtrip(j)
-    assert got["place_order_params"]["tsym"] == "M&M"
+def test_unicode_values_survive():
+    got, _ = _server_parse(_C()._make_body({"name": "Nifty 50"}))
+    assert got["name"] == "Nifty 50"

@@ -22,7 +22,6 @@ import json
 import logging
 import socket
 from typing import Any, Callable, Dict, List, Optional
-from urllib.parse import urlencode
 
 import httpx
 
@@ -97,20 +96,33 @@ class FlattradeClient:
     # ------------------------------------------------------------------
 
     def _make_body(self, jdata: Dict[str, Any]) -> str:
-        """Build form-encoded body: jData=<json>&jKey=<token>.
+        """Build the body: ``jData=<json>&jKey=<token>``, with jData sent RAW.
 
-        Both values are percent-encoded. The decoded spec says so twice — see
-        ``endpoints/04-place-order.md`` and ``endpoints/21-place-oco-order.md``:
-        url-encode "to avoid special char error" for symbols like ``M&M``.
+        The server reads ``jData`` LITERALLY — it does not url-decode it. Verified
+        against the live API on 2026-08-15 with a single SearchScrip call::
 
-        String interpolation transmitted the raw JSON, so a literal ``&`` in ANY
-        field (a symbol, an operator remark, a strategy name) silently TRUNCATED
-        the body at that byte — the broker then parses a half-object and answers
-        with a generic error that names nothing. A ``+`` is quieter still: it
-        decodes to a space rather than failing. Neither has bitten yet because
-        index-option tsyms and ``oco:<no>`` remarks contain neither character.
+            percent-encoded jData -> HTTP 400 {"emsg":"jData is not valid json object"}
+            raw JSON jData        -> HTTP 401 {"emsg":"Session Expired : Invalid User Id"}
+
+        The 401 is the point: the raw form got PAST JSON parsing and was rejected
+        only on the (deliberately bogus) uid, while the encoded form could not be
+        parsed at all. Percent-encoding the document therefore breaks every call.
+
+        This corrects my own regression. The decoded spec does say to url-encode
+        "to avoid special char error for symbols like M&M" — but that means
+        escaping special characters WITHIN a value, not percent-encoding the whole
+        JSON document, and taking it literally broke the transport.
+
+        The truncation hazard the encoding was meant to fix is real and is still
+        handled: a literal ``&`` anywhere in the payload would end the body at that
+        byte, so ``&`` is emitted as the JSON escape ``\\u0026``. That is valid JSON
+        denoting the same string, it survives a literal read, and it contains no
+        ``&`` to split on. Ordinary payloads are byte-identical to what shipped
+        before the regression, because index tsyms and ``oco:<no>`` remarks contain
+        no ``&`` at all.
         """
-        return urlencode({"jData": json.dumps(jdata), "jKey": self._jKey})
+        payload = json.dumps(jdata).replace("&", "\\u0026")
+        return f"jData={payload}&jKey={self._jKey}"
 
     async def _post(self, route: str, jdata: Dict[str, Any]) -> Dict[str, Any]:
         """POST to PiConnectAPI/<route>, parse JSON response.
