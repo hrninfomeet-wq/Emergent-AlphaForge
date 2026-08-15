@@ -1,6 +1,6 @@
 # AlphaForge Startup Manual
 
-Updated: 2026-05-31
+Updated: 2026-08-16
 
 This manual explains how to start AlphaForge on a local PC, either with the one-click Windows launcher or with manual Docker commands. It is written for day-to-day use and for future AI/developer handoff.
 
@@ -30,13 +30,17 @@ You can double-click it from File Explorer or run it from Command Prompt/PowerSh
 
 1. Confirms it is running from the project root.
 2. Confirms Docker and Docker Compose are installed.
-3. Confirms Docker Desktop engine is running. If Docker Desktop is not running, it asks you to start it and retry.
+3. Confirms the Docker Desktop engine is running. If needed, it starts Docker Desktop automatically and waits up to 180 seconds for the engine.
 4. Creates `backend\.env` and `frontend\.env` from examples if missing.
-5. Warns if `FERNET_KEY`, `UPSTOX_CLIENT_ID`, or `UPSTOX_CLIENT_SECRET` are blank. It never prints secret values.
+5. Warns if `FERNET_KEY`, `UPSTOX_CLIENT_ID`, or `UPSTOX_CLIENT_SECRET` are blank. It never prints secret values. It also warns when `LIVE_AUTOPLACE_ARMED` is already enabled but never changes that setting.
 6. Validates `docker-compose.yml`.
-7. Runs `docker compose up -d --build` after confirmation.
-8. Waits for backend health and frontend response.
-9. Prints useful URLs and log commands.
+7. Reuses an already-healthy backend and frontend without rebuilding them. If the backend is healthy but the frontend is not, it rebuilds only the frontend. When the backend is not running, it runs `docker compose up -d --build` automatically. The default success path requires no confirmation on the success path.
+8. Waits for the backend health response and a successful frontend HTTP response.
+9. Prints useful URLs and log commands, then opens the browser only after both services are ready.
+
+If Docker cannot start, Compose fails, or either service misses the readiness deadline, the launcher prints targeted recovery commands, does not open the browser, and exits with a non-zero status. On a double-clicked error path, it pauses so the warning remains visible. Containers that did start are left running for inspection; the launcher never deletes the `mongo_data` volume.
+
+Starting the backend activates AlphaForge's existing recovery and position-guard behavior. Existing guarded live positions can still transmit safety exits. The launcher does not log in to a broker, change broker sessions, arm or disarm `LIVE_AUTOPLACE_ARMED`, or bypass any live-readiness gate.
 
 ### Launcher Options
 
@@ -44,13 +48,19 @@ You can double-click it from File Explorer or run it from Command Prompt/PowerSh
 start-app.bat --check-only
 ```
 
-Runs prerequisite checks and exits before starting or rebuilding containers.
+Runs prerequisite and environment checks without starting Docker Desktop and without starting or rebuilding containers. If the Docker engine is already running, it also prints current container status.
 
 ```bat
 start-app.bat --no-browser
 ```
 
 Starts the stack but does not open the frontend URL.
+
+```bat
+start-app.bat --rebuild
+```
+
+Forces a full rebuild even when the backend is already running. This can briefly interrupt AlphaForge's software position guard. Use it only after confirming there is no live broker exposure. Ordinary double-click startup waits for a running backend to become healthy without recreating it; if the deadline expires, it prints diagnostics and exits.
 
 ```bat
 start-app.bat --help
@@ -207,11 +217,11 @@ Symptom:
 Cannot connect to the Docker daemon
 ```
 
-Fix:
+The launcher normally starts Docker Desktop automatically and waits up to 180 seconds. If that wait fails:
 
-1. Start Docker Desktop.
-2. Wait until the engine is running.
-3. Run `start-app.bat` again.
+1. Open Docker Desktop and review its status or Troubleshoot panel.
+2. If Docker reports a WSL problem, run `wsl --status` in PowerShell.
+3. Wait until Docker reports that the engine is running, then run `start-app.bat` again.
 
 ### Backend Health Is Not OK
 

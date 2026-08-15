@@ -1,6 +1,6 @@
 # User Manual
 
-Updated: 2026-06-12
+Updated: 2026-08-16
 
 This guide explains how to use AlphaForge as a local research and forward-testing app.
 
@@ -14,7 +14,7 @@ Open `http://localhost:3000`.
 
 One-click launchers:
 
-- Windows: double-click `start-app.bat` (recommended) or `start.bat`.
+- Windows: double-click `start-app.bat` (recommended). It starts Docker Desktop when needed, safely reuses an already-healthy stack or builds a stopped stack, waits for readiness, and opens the browser automatically. Use `start-app.bat --rebuild` only when there is no live broker exposure.
 - Mac/Linux: `./start.sh`.
 
 For detailed startup, troubleshooting, and manual Docker steps, see `docs/STARTUP_MANUAL.md`.

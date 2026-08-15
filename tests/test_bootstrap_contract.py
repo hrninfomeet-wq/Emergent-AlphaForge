@@ -1,6 +1,8 @@
+import os
 from pathlib import Path
 import py_compile
 import subprocess
+import pytest
 from tests.contract_corpus import backend_api_text
 from tests.contract_corpus import warehouse_page_text
 
@@ -81,6 +83,315 @@ def test_startup_readiness_probe_uses_ipv4_loopback_not_localhost():
         "Invoke-WebRequest -Uri 'http://localhost:",
     ):
         assert banned not in launcher, f"readiness probe regressed to localhost: {banned}"
+
+
+def test_windows_launcher_default_success_path_is_non_interactive():
+    """A double-click must need no keyboard input on the successful path."""
+    launcher = (ROOT / "start-app.bat").read_text(encoding="utf-8")
+    low = launcher.lower()
+
+    assert "set /p" not in low
+    assert "\ndocker compose up -d --build\n" in launcher
+    assert 'start "" "http://localhost:3000"' in launcher
+
+    success_tail = launcher[
+        launcher.index('if "%NO_BROWSER%"'):
+        launcher.rindex("\n:EnsureDockerEngine")
+    ]
+    assert "pause" not in success_tail.lower()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="executes the Windows batch launcher")
+def test_windows_launcher_rejects_metacharacter_arguments_without_execution():
+    result = subprocess.run(
+        [
+            "cmd.exe",
+            "/d",
+            "/c",
+            "call",
+            "start-app.bat",
+            "probe&echo INJECTION_MARKER",
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        timeout=15,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "INJECTION_MARKER" not in result.stdout
+    assert "INJECTION_MARKER" not in result.stderr
+
+
+def test_windows_launcher_autostarts_docker_with_bounded_wait():
+    launcher = (ROOT / "start-app.bat").read_text(encoding="utf-8")
+    engine = launcher[
+        launcher.rindex("\n:EnsureDockerEngine"):
+        launcher.rindex("\n:CheckEnvHints")
+    ]
+
+    assert "%ProgramFiles%\\Docker\\Docker\\Docker Desktop.exe" in engine
+    assert 'start "" "%DOCKER_DESKTOP_EXE%"' in engine
+    assert engine.count("docker info") >= 2
+    assert "AddSeconds(180)" in engine
+    assert "timed out" in engine.lower()
+    assert "exit /b 1" in engine
+    assert "set /p" not in engine.lower()
+    assert "goto docker_wait" not in engine.lower()
+
+
+def test_windows_launcher_opens_browser_only_after_full_readiness():
+    launcher = (ROOT / "start-app.bat").read_text(encoding="utf-8")
+    up = launcher.index("\ndocker compose up -d --build\n")
+    wait = launcher.index("call :WaitForServices", up)
+    ready_gate = launcher.index('if not "%READY_CODE%"=="0"', wait)
+    browser = launcher.index('start "" "http://localhost:3000"', ready_gate)
+
+    assert up < wait < ready_gate < browser
+    assert "exit /b 1" in launcher[ready_gate:browser]
+    assert "$f=$true" in launcher
+    assert ".StatusCode -ge 200" in launcher
+    assert ".StatusCode -lt 400" in launcher
+    assert ".StatusCode -lt 500" not in launcher
+
+
+def test_windows_launcher_preserves_check_only_and_no_browser():
+    launcher = (ROOT / "start-app.bat").read_text(encoding="utf-8")
+    up = launcher.index("\ndocker compose up -d --build\n")
+    check_only = launcher.index('if "%CHECK_ONLY%"=="1"')
+    no_browser = launcher.index('if "%NO_BROWSER%"=="1"')
+    browser = launcher.index('start "" "http://localhost:3000"')
+
+    assert check_only < up
+    assert 'exit /b 0' in launcher[check_only:up]
+    assert up < no_browser < browser
+    assert 'goto done' in launcher[no_browser:browser].lower()
+    assert "exit before starting Docker." not in launcher
+    assert "without starting Docker Desktop or containers." in launcher
+    assert "--rebuild" in launcher
+
+
+def test_windows_launcher_does_not_read_or_mutate_sensitive_state():
+    launcher = (ROOT / "start-app.bat").read_text(encoding="utf-8")
+    low = launcher.lower()
+
+    for transient_secret_var in (
+        "FERNET_KEY_VALUE",
+        "UPSTOX_CLIENT_ID_VALUE",
+        "UPSTOX_CLIENT_SECRET_VALUE",
+    ):
+        assert transient_secret_var not in launcher
+
+    for required_safe_fragment in (
+        'findstr /R /C:"^FERNET_KEY=..*" "backend\\.env" >nul 2>nul',
+        'findstr /R /C:"^UPSTOX_CLIENT_ID=..*" "backend\\.env" >nul 2>nul',
+        'findstr /R /C:"^UPSTOX_CLIENT_SECRET=..*" "backend\\.env" >nul 2>nul',
+        "WARNING: LIVE_AUTOPLACE_ARMED is enabled in backend\\.env.",
+    ):
+        assert required_safe_fragment in launcher
+
+    for banned in (
+        "type backend\\.env",
+        "docker compose down -v",
+        "docker volume rm",
+        "docker system prune",
+        "mcp__flattrade",
+        'set "live_autoplace_armed=',
+        "echo live_autoplace_armed=0",
+        "echo live_autoplace_armed=1",
+    ):
+        assert banned not in low
+
+
+def _prepare_windows_launcher_sandbox(tmp_path):
+    (tmp_path / "start-app.bat").write_text(
+        (ROOT / "start-app.bat").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    (tmp_path / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+
+    backend = tmp_path / "backend"
+    frontend = tmp_path / "frontend"
+    fake_bin = tmp_path / "fake-bin"
+    backend.mkdir()
+    frontend.mkdir()
+    fake_bin.mkdir()
+    (backend / ".env.example").write_text(
+        "FERNET_KEY=test-only\n"
+        "UPSTOX_CLIENT_ID=test-only\n"
+        "UPSTOX_CLIENT_SECRET=test-only\n"
+        "LIVE_AUTOPLACE_ARMED=0\n",
+        encoding="utf-8",
+    )
+    (frontend / ".env.example").write_text("REACT_APP_BACKEND_URL=\n", encoding="utf-8")
+    stub_source = fake_bin / "Stub.cs"
+    stub_exe = fake_bin / "stub.exe"
+    stub_source.write_text(
+        "using System;\n"
+        "using System.IO;\n"
+        "public static class Stub {\n"
+        "  public static int Main(string[] args) {\n"
+        "    var log = Environment.GetEnvironmentVariable(\"ALPHAFORGE_LAUNCHER_STUB_LOG\");\n"
+        "    var exe = Path.GetFileNameWithoutExtension(Environment.GetCommandLineArgs()[0]);\n"
+        "    var command = String.Join(\" \", args);\n"
+        "    if (!String.IsNullOrEmpty(log)) {\n"
+        "      File.AppendAllText(log, exe + \" \" + command + Environment.NewLine);\n"
+        "    }\n"
+        "    if (exe.Equals(\"powershell\", StringComparison.OrdinalIgnoreCase)) {\n"
+        "      if (command.Contains(\"Get-Content\")) return 1;\n"
+        "      if (Environment.GetEnvironmentVariable(\"ALPHAFORGE_STUB_BACKEND_RESTORING\") == \"1\""
+        " && command.Contains(\"Invoke-RestMethod\") && !command.Contains(\"AddSeconds(180)\")) {\n"
+        "        var state = Environment.GetEnvironmentVariable(\"ALPHAFORGE_STUB_PROBE_STATE\");\n"
+        "        var count = File.Exists(state) ? Int32.Parse(File.ReadAllText(state)) : 0;\n"
+        "        count += 1; File.WriteAllText(state, count.ToString());\n"
+        "        if (count == 1) return 1;\n"
+        "      }\n"
+        "      if (Environment.GetEnvironmentVariable(\"ALPHAFORGE_STUB_SERVICES_COLD\") == \"1\""
+        " && command.Contains(\"Invoke-RestMethod\") && !command.Contains(\"AddSeconds(180)\")) return 1;\n"
+        "    }\n"
+        "    if (exe.Equals(\"docker\", StringComparison.OrdinalIgnoreCase)"
+        " && Environment.GetEnvironmentVariable(\"ALPHAFORGE_STUB_BACKEND_RESTORING\") == \"1\""
+        " && command.Contains(\"compose ps --status running -q backend\")) Console.WriteLine(\"stub-backend\");\n"
+        "    if (exe.Equals(\"docker\", StringComparison.OrdinalIgnoreCase) && args.Length > 0"
+        " && args[0].Equals(\"info\", StringComparison.OrdinalIgnoreCase)"
+        " && Environment.GetEnvironmentVariable(\"ALPHAFORGE_STUB_DOCKER_INFO_FAIL\") == \"1\") return 1;\n"
+        "    return 0;\n"
+        "  }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    compile_env = os.environ.copy()
+    compile_env["ALPHAFORGE_STUB_SOURCE"] = str(stub_source)
+    compile_env["ALPHAFORGE_STUB_EXE"] = str(stub_exe)
+    compiled = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            "Add-Type -Path $env:ALPHAFORGE_STUB_SOURCE "
+            "-OutputAssembly $env:ALPHAFORGE_STUB_EXE -OutputType ConsoleApplication",
+        ],
+        env=compile_env,
+        text=True,
+        capture_output=True,
+        timeout=15,
+        check=False,
+    )
+    assert compiled.returncode == 0, compiled.stdout + compiled.stderr
+    stub_bytes = stub_exe.read_bytes()
+    (fake_bin / "docker.exe").write_bytes(stub_bytes)
+    (fake_bin / "powershell.exe").write_bytes(stub_bytes)
+
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+    stub_log = tmp_path / "stub-calls.log"
+    env["ALPHAFORGE_LAUNCHER_STUB_LOG"] = str(stub_log)
+    return fake_bin, env, stub_log
+
+
+def _run_sandboxed_launcher(tmp_path, env, *args):
+    return subprocess.run(
+        ["cmd.exe", "/d", "/c", "call", "start-app.bat", *args],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=15,
+        check=False,
+    )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="executes the Windows batch launcher")
+def test_windows_launcher_warm_and_cold_success_flows_use_safe_actions(tmp_path):
+    """Exercise cmd.exe control flow without starting Docker, brokers, or a browser."""
+    _fake_bin, env, stub_log = _prepare_windows_launcher_sandbox(tmp_path)
+    result = _run_sandboxed_launcher(tmp_path, env, "--no-browser")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "AlphaForge startup complete." in result.stdout
+    assert "Skipping rebuild to preserve the running guard." in result.stdout
+    calls = stub_log.read_text(encoding="utf-8")
+    assert "docker compose up -d --build" not in calls
+
+    stub_log.unlink()
+    env["ALPHAFORGE_STUB_SERVICES_COLD"] = "1"
+    result = _run_sandboxed_launcher(tmp_path, env, "--no-browser")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "AlphaForge startup complete." in result.stdout
+    calls = stub_log.read_text(encoding="utf-8")
+    assert "docker compose up -d --build" in calls
+    assert "powershell -NoProfile" in calls
+
+    stub_log.unlink()
+    env.pop("ALPHAFORGE_STUB_SERVICES_COLD")
+    result = _run_sandboxed_launcher(tmp_path, env, "--rebuild", "--no-browser")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "--rebuild can recreate the backend" in result.stdout
+    assert "docker compose up -d --build" in stub_log.read_text(encoding="utf-8")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="executes the Windows batch launcher")
+def test_windows_launcher_waits_for_a_restoring_backend_without_rebuilding_it(tmp_path):
+    _fake_bin, env, stub_log = _prepare_windows_launcher_sandbox(tmp_path)
+    env["ALPHAFORGE_STUB_BACKEND_RESTORING"] = "1"
+    env["ALPHAFORGE_STUB_PROBE_STATE"] = str(tmp_path / "probe-state.txt")
+    result = _run_sandboxed_launcher(tmp_path, env, "--no-browser")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Waiting without recreating it" in result.stdout
+    assert "The running backend was not rebuilt." in result.stdout
+    calls = stub_log.read_text(encoding="utf-8")
+    assert "docker compose up" not in calls
+    assert "AddSeconds(180)" in calls
+
+
+@pytest.mark.skipif(os.name != "nt", reason="executes the Windows batch launcher")
+def test_windows_check_only_does_not_start_docker_and_parses_quoted_arm_value(tmp_path):
+    fake_bin, env, stub_log = _prepare_windows_launcher_sandbox(tmp_path)
+    (fake_bin / "powershell.exe").unlink()
+    (tmp_path / "backend" / ".env").write_text(
+        "FERNET_KEY=test-only\n"
+        "UPSTOX_CLIENT_ID=test-only\n"
+        "UPSTOX_CLIENT_SECRET=test-only\n"
+        "LIVE_AUTOPLACE_ARMED = \"1\"\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "frontend" / ".env").write_text("REACT_APP_BACKEND_URL=\n", encoding="utf-8")
+    env["ALPHAFORGE_STUB_DOCKER_INFO_FAIL"] = "1"
+    env["ProgramFiles"] = str(tmp_path / "missing-program-files")
+    result = _run_sandboxed_launcher(tmp_path, env, "--check-only")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "LIVE_AUTOPLACE_ARMED is enabled" in result.stdout
+    assert "Check-only mode will not start Docker Desktop." in result.stdout
+    calls = stub_log.read_text(encoding="utf-8")
+    assert "docker compose up" not in calls
+
+
+def test_startup_manual_describes_one_click_and_failure_behavior():
+    manual = (ROOT / "docs" / "STARTUP_MANUAL.md").read_text(encoding="utf-8")
+    user_manual = (ROOT / "docs" / "USER_MANUAL.md").read_text(encoding="utf-8")
+    low = manual.lower()
+
+    for phrase in (
+        "starts Docker Desktop automatically",
+        "requires no confirmation on the success path",
+        "opens the browser only after both services are ready",
+        "exits with a non-zero status",
+        "--check-only",
+        "--no-browser",
+        "--rebuild",
+    ):
+        assert phrase.lower() in low
+
+    assert "start.bat" not in user_manual
 
 
 def test_mongo_healthcheck_declares_start_period():

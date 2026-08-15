@@ -1135,3 +1135,34 @@ on `stop=50% / target=None / trail=None`, the plan is fully computable from the
 deployment doc *before* arming, and nothing computes or displays it. The exit fields
 that would prevent it are gated to paper mode and only prefill from one preset type.
 That is the gap between what the operator authorises and what actually executes.
+
+---
+
+## 2026-08-16 — One-click startup without weakening live boundaries
+
+**Core lesson: removing operator prompts from startup makes the readiness gate and existing
+live-state warning more important, not less.** The browser belongs after both backend database
+health and a successful frontend HTTP response; a timeout must exit non-zero and leave containers
+available for diagnosis. A routine launcher click must also reuse a healthy backend instead of
+recreating it and briefly removing its software guard. Startup automation must not silently arm,
+disarm or rewrite live state.
+
+**Confirmed approaches:**
+- Encode the launcher contract in source-level regression tests: no `set /p`, bounded Docker wait,
+  exact readiness ordering, 2xx/3xx frontend acceptance, and browser launch only after full readiness.
+- Check whether required environment values are present without copying their values into batch
+  variables or output, and warn when `LIVE_AUTOPLACE_ARMED` is already enabled without changing it.
+- Keep `--check-only` and `--no-browser` as explicit automation seams, and exercise the real
+  `cmd.exe` control flow with stub executables, without starting Docker or broker-capable services.
+- Keep `--check-only` from starting Docker Desktop because restart policies can restore containers
+  with the daemon. Put intentional backend recreation behind `--rebuild` and warn about live exposure.
+- Capture command-line arguments with delayed expansion disabled, then compare them through delayed
+  expansion so an option containing CMD metacharacters remains data rather than executable syntax.
+
+**Dead ends / traps:**
+- Reusing old help text after changing behavior is misleading: `--check-only` can initialize Docker
+  prerequisites even though it never starts or rebuilds containers.
+- Treating any frontend response below HTTP 500 as ready can open a broken app. Readiness requires
+  an HTTP 2xx or 3xx response plus backend health with database status `ok`.
+- Unconditionally running `docker compose up -d --build` is unsafe during live exposure because
+  Compose can recreate a healthy backend and interrupt its in-process guard before recovery reattaches.
