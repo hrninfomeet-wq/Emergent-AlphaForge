@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.option_data_planner import DEFAULT_LEGS
 from app.upstox_stream import DEFAULT_STREAM_MODE
@@ -352,6 +352,16 @@ class DeploymentCreateReq(BaseModel):
     confirmation_mode: str = "1m_close"
     option_moneyness: List[str] = Field(default_factory=lambda: ["atm"])
     pretrade_profile: str = "Balanced"
+    # `{}` is the valid, explicit representation of "no optional exit or risk
+    # controls". A client that sends `null` for the same idea used to get
+    # `risk: Input should be a valid dictionary` — a raw Pydantic error that told
+    # the operator nothing and made the OPTIONAL Exit/Risk panel look mandatory,
+    # because ticking it was the only way to produce a payload the schema
+    # accepted. `null` now normalises to the field's own default.
+    #
+    # This weakens nothing: the default has always been `{}`, and every downstream
+    # consumer already reads `req.risk or {}`. It only stops a client's "nothing
+    # configured" from being a 422.
     risk: Dict[str, Any] = Field(default_factory=dict)
     dte_filter: List[int] = Field(default_factory=lambda: [0, 1, 2, 3, 4, 5, 6])
     allow_overnight: bool = False
@@ -389,6 +399,16 @@ class DeploymentCreateReq(BaseModel):
     # editor's post-deploy lots_override): overrides the pinned sizing replay.
     lots_override: Optional[int] = None
     acknowledged_warnings: bool = False
+
+    @field_validator("risk", mode="before")
+    @classmethod
+    def _risk_none_means_empty(cls, v: Any) -> Any:
+        """Treat an explicit ``null`` as "no risk config" rather than a type error.
+
+        See the field comment: this is the exact 422 that made the optional
+        Exit/Risk panel appear mandatory in the deploy wizard.
+        """
+        return {} if v is None else v
     # Declarative premium-trigger config for this deployment (locked strike +
     # premium momentum + stepped trail). ai/capability.py has always told users
     # AND the authoring LLM to "configure on the deployment's premium_trigger

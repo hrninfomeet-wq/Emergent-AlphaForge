@@ -7,7 +7,13 @@ import {
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { fmtNum } from "@/lib/fmt";
-import { getApiErrorMessage } from "@/lib/apiError";
+import { getApiErrorMessage, getDeploymentErrorMessage } from "@/lib/apiError";
+import {
+  buildRiskPayload,
+  deployAcknowledgements,
+  deployBlockers,
+  validateRiskFields,
+} from "@/lib/deployPayload";
 import {
   areStrategyParamsValid,
   isNullableStrategyParam,
@@ -417,6 +423,11 @@ const WIZARD_DEFAULTS = {
   // Exit / risk controls (Piece 2). Off by default so existing deployments
   // are byte-identical — nothing is posted unless the user enables the panel.
   exit_controls_enabled: false,
+  // Sub-selection: enabling the panel no longer dumps every field on screen.
+  // Each control reveals only its own inputs.
+  risk_use_breakeven: false,
+  risk_use_trailing: false,
+  risk_use_daily_caps: false,
   exit_controls_unit: "pct",
   breakeven_trigger: "",
   breakeven_lock: "",
@@ -617,27 +628,11 @@ function DeployWizard({ presets, strategies, backtestRuns = [], initialPreset, i
             spread_pct_of_premium: Number(form.friction_spread_pct) || 0,
           },
         } : null,
-        // Exit / risk controls (Piece 2). Only posted when the user enables the
-        // panel; otherwise omitted so older deployments are byte-identical.
-        risk: form.exit_controls_enabled ? {
-          exit_controls: {
-            enabled: true,
-            unit: form.exit_controls_unit,
-            breakeven: (form.breakeven_trigger !== "" || form.breakeven_lock !== "") ? {
-              trigger: form.breakeven_trigger !== "" ? Number(form.breakeven_trigger) : null,
-              lock: form.breakeven_lock !== "" ? Number(form.breakeven_lock) : null,
-            } : null,
-            trailing: (form.trailing_activation !== "" || form.trailing_distance !== "") ? {
-              activation: form.trailing_activation !== "" ? Number(form.trailing_activation) : null,
-              distance: form.trailing_distance !== "" ? Number(form.trailing_distance) : null,
-            } : null,
-          },
-          daily_caps: (form.daily_cap_loss !== "" || form.daily_cap_target !== "" || form.daily_cap_max_trades !== "") ? {
-            loss: form.daily_cap_loss !== "" ? Number(form.daily_cap_loss) : null,
-            target: form.daily_cap_target !== "" ? Number(form.daily_cap_target) : null,
-            max_trades: form.daily_cap_max_trades !== "" ? Math.max(0, parseInt(form.daily_cap_max_trades, 10) || 0) : null,
-          } : null,
-        } : null,
+        // Exit / risk controls. ALWAYS an object: `{}` is the explicit
+        // "nothing configured" the schema expects. This previously sent `null`,
+        // which Pydantic rejected with "risk: Input should be a valid
+        // dictionary" — making the OPTIONAL panel effectively mandatory.
+        risk: buildRiskPayload(form),
         acknowledged_warnings: Boolean(form.acknowledged_warnings),
       };
       const res = await api.createDeployment(payload);
@@ -655,13 +650,14 @@ function DeployWizard({ presets, strategies, backtestRuns = [], initialPreset, i
         toast.warning(detail.message || "Review and acknowledge the source warnings to deploy.");
         return;
       }
-      toast.error(`Deployment failed: ${getApiErrorMessage(e)}`);
+      toast.error(getDeploymentErrorMessage(e, "Deployment failed"));
     } finally {
       setBusy(false);
     }
   };
 
-  const needAck = Boolean(quality?.acknowledgment_required);
+  const acknowledgements = deployAcknowledgements(form, quality);
+  const riskFieldErrors = validateRiskFields(form);
   const libraryParamsValid = form.source_type !== "strategy" || !libraryStrategy
     ? true
     : areStrategyParamsValid(
@@ -671,7 +667,8 @@ function DeployWizard({ presets, strategies, backtestRuns = [], initialPreset, i
   const canNext1 = Boolean(form.source_id)
     && (form.source_type !== "strategy" || Boolean(form.source_instrument && form.source_timeframe))
     && libraryParamsValid;
-  const canCreate = canNext1 && (!needAck || form.acknowledged_warnings);
+  const deployBlocked = deployBlockers(form, quality, { sourceReady: canNext1 });
+  const canCreate = deployBlocked.length === 0;
 
   return (
     <div className="fixed inset-0 z-50 bg-black/60 flex items-start justify-center p-4 overflow-y-auto" data-testid="deploy-wizard">
@@ -1092,6 +1089,7 @@ function DeployWizard({ presets, strategies, backtestRuns = [], initialPreset, i
                 </label>
                 {form.exit_controls_enabled && (
                   <>
+                    {(form.risk_use_breakeven || form.risk_use_trailing) && (
                     <div className="flex items-center gap-2">
                       <span className="text-[11px] text-dim">Exit unit</span>
                       <div className="flex rounded-md border border-line overflow-hidden">
@@ -1109,9 +1107,16 @@ function DeployWizard({ presets, strategies, backtestRuns = [], initialPreset, i
                           : "pts = absolute premium points (e.g. 10 pts); enter whole or half points"}
                       </span>
                     </div>
+                    )}
 
                     <div className="space-y-1">
-                      <div className="text-[10px] uppercase tracking-wider text-dimmer">Breakeven lock</div>
+                      <label className="text-[10px] uppercase tracking-wider text-dimmer flex items-center gap-2">
+                        <input type="checkbox" checked={Boolean(form.risk_use_breakeven)}
+                          onChange={(e) => set("risk_use_breakeven", e.target.checked)}
+                          className="h-3 w-3 rounded border-line" data-testid="risk-use-breakeven" />
+                        Breakeven lock
+                      </label>
+                      {form.risk_use_breakeven && (
                       <div className="grid grid-cols-2 gap-2">
                         <label className="text-[11px] text-dim">
                           Breakeven trigger {form.exit_controls_unit === "pts" ? "(pts profit)" : "(fraction)"}
@@ -1122,6 +1127,9 @@ function DeployWizard({ presets, strategies, backtestRuns = [], initialPreset, i
                             placeholder={form.exit_controls_unit === "pts" ? "off" : "0.30 = +30% arms breakeven"}
                             data-testid="breakeven-trigger"
                             title={form.exit_controls_unit === "pts" ? "Move stop to breakeven once trade profits by this many premium points" : "Move stop to breakeven once trade profits by this fraction (0.30 = +30%)"} />
+                          {riskFieldErrors.breakeven_trigger && (
+                            <div className="text-[10px] text-danger mt-0.5">{riskFieldErrors.breakeven_trigger}</div>
+                          )}
                         </label>
                         <label className="text-[11px] text-dim">
                           Breakeven lock {form.exit_controls_unit === "pts" ? "(pts above entry)" : "(fraction)"}
@@ -1132,12 +1140,22 @@ function DeployWizard({ presets, strategies, backtestRuns = [], initialPreset, i
                             placeholder={form.exit_controls_unit === "pts" ? "0 = exact entry" : "0.0 = lock at entry"}
                             data-testid="breakeven-lock"
                             title={form.exit_controls_unit === "pts" ? "Lock stop this many pts above entry (0 = exact breakeven)" : "Lock stop at this fraction above entry (0.0 = exact breakeven)"} />
+                          {riskFieldErrors.breakeven_lock && (
+                            <div className="text-[10px] text-danger mt-0.5">{riskFieldErrors.breakeven_lock}</div>
+                          )}
                         </label>
                       </div>
+                      )}
                     </div>
 
                     <div className="space-y-1">
-                      <div className="text-[10px] uppercase tracking-wider text-dimmer">Trailing stop</div>
+                      <label className="text-[10px] uppercase tracking-wider text-dimmer flex items-center gap-2">
+                        <input type="checkbox" checked={Boolean(form.risk_use_trailing)}
+                          onChange={(e) => set("risk_use_trailing", e.target.checked)}
+                          className="h-3 w-3 rounded border-line" data-testid="risk-use-trailing" />
+                        Trailing stop
+                      </label>
+                      {form.risk_use_trailing && (
                       <div className="grid grid-cols-2 gap-2">
                         <label className="text-[11px] text-dim">
                           Activate at {form.exit_controls_unit === "pts" ? "(pts profit)" : "(fraction)"}
@@ -1148,6 +1166,9 @@ function DeployWizard({ presets, strategies, backtestRuns = [], initialPreset, i
                             placeholder={form.exit_controls_unit === "pts" ? "off" : "0.40 = +40%"}
                             data-testid="trailing-activation"
                             title={form.exit_controls_unit === "pts" ? "Trailing stop kicks in once trade profits by this many premium points" : "Trailing stop kicks in once trade profits by this fraction (0.40 = +40%)"} />
+                          {riskFieldErrors.trailing_activation && (
+                            <div className="text-[10px] text-danger mt-0.5">{riskFieldErrors.trailing_activation}</div>
+                          )}
                         </label>
                         <label className="text-[11px] text-dim">
                           Trail distance {form.exit_controls_unit === "pts" ? "(pts from peak)" : "(fraction)"}
@@ -1158,25 +1179,34 @@ function DeployWizard({ presets, strategies, backtestRuns = [], initialPreset, i
                             placeholder={form.exit_controls_unit === "pts" ? "—" : "0.25 = give back 25% of peak"}
                             data-testid="trailing-distance"
                             title={form.exit_controls_unit === "pts" ? "Trail the peak profit by this many pts; exit when it retraces this far" : "Give back at most this fraction of peak profit before exiting (0.25 = 25%)"} />
+                          {riskFieldErrors.trailing_distance && (
+                            <div className="text-[10px] text-danger mt-0.5">{riskFieldErrors.trailing_distance}</div>
+                          )}
                         </label>
                       </div>
+                      )}
                     </div>
 
                     <div className="space-y-1">
-                      <div className="text-[10px] uppercase tracking-wider text-dimmer">Daily caps</div>
+                      <label className="text-[10px] uppercase tracking-wider text-dimmer flex items-center gap-2">
+                        <input type="checkbox" checked={Boolean(form.risk_use_daily_caps)}
+                          onChange={(e) => set("risk_use_daily_caps", e.target.checked)}
+                          className="h-3 w-3 rounded border-line" data-testid="risk-use-daily-caps" />
+                        Daily caps
+                      </label>
+                      {form.risk_use_daily_caps && (
                       <div className="grid grid-cols-3 gap-2">
                         <label className="text-[11px] text-dim">
                           Daily loss cap (₹)
                           <Input type="number" min="0" step="100"
                             value={form.daily_cap_loss}
                             onChange={(e) => set("daily_cap_loss", e.target.value)}
-                            disabled={!form.friction_costs_enabled}
-                            className={`mt-1 bg-bg-2 border-line h-8 ${!form.friction_costs_enabled ? "opacity-40 cursor-not-allowed" : ""}`}
+                            className="mt-1 bg-bg-2 border-line h-8"
                             placeholder="off"
                             data-testid="daily-cap-loss"
-                            title={!form.friction_costs_enabled ? "Requires costs enabled (friction panel in step 2)" : "Block new signals once today's realized loss exceeds this ₹ amount"} />
-                          {!form.friction_costs_enabled && (
-                            <div className="text-[10px] text-warning mt-0.5">requires costs ON</div>
+                            title={!form.friction_costs_enabled ? "Requires costs enabled (step 2)" : "Block new signals once today's realized loss exceeds this ₹ amount"} />
+                          {riskFieldErrors.daily_cap_loss && (
+                            <div className="text-[10px] text-danger mt-0.5">{riskFieldErrors.daily_cap_loss}</div>
                           )}
                         </label>
                         <label className="text-[11px] text-dim">
@@ -1184,13 +1214,12 @@ function DeployWizard({ presets, strategies, backtestRuns = [], initialPreset, i
                           <Input type="number" min="0" step="100"
                             value={form.daily_cap_target}
                             onChange={(e) => set("daily_cap_target", e.target.value)}
-                            disabled={!form.friction_costs_enabled}
-                            className={`mt-1 bg-bg-2 border-line h-8 ${!form.friction_costs_enabled ? "opacity-40 cursor-not-allowed" : ""}`}
+                            className="mt-1 bg-bg-2 border-line h-8"
                             placeholder="off"
                             data-testid="daily-cap-target"
-                            title={!form.friction_costs_enabled ? "Requires costs enabled (friction panel in step 2)" : "Block new signals once today's realized profit exceeds this ₹ amount"} />
-                          {!form.friction_costs_enabled && (
-                            <div className="text-[10px] text-warning mt-0.5">requires costs ON</div>
+                            title={!form.friction_costs_enabled ? "Requires costs enabled (step 2)" : "Block new signals once today's realized profit exceeds this ₹ amount"} />
+                          {riskFieldErrors.daily_cap_target && (
+                            <div className="text-[10px] text-danger mt-0.5">{riskFieldErrors.daily_cap_target}</div>
                           )}
                         </label>
                         <label className="text-[11px] text-dim">
@@ -1201,8 +1230,12 @@ function DeployWizard({ presets, strategies, backtestRuns = [], initialPreset, i
                             className="mt-1 bg-bg-2 border-line h-8" placeholder="off"
                             data-testid="daily-cap-max-trades"
                             title="Block new signals once this many trades are taken today" />
+                          {riskFieldErrors.daily_cap_max_trades && (
+                            <div className="text-[10px] text-danger mt-0.5">{riskFieldErrors.daily_cap_max_trades}</div>
+                          )}
                         </label>
                       </div>
+                      )}
                     </div>
 
                     <div className="text-[10px] text-dimmer leading-snug">
@@ -1215,20 +1248,36 @@ function DeployWizard({ presets, strategies, backtestRuns = [], initialPreset, i
                 )}
               </div>
 
-              {needAck && (
-                <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-2 space-y-1">
+              {/* ONE consolidated acknowledgement. The wizard previously showed a
+                  quality-warning tick, and "no exit controls configured" is a
+                  second thing worth an explicit nod — but two checkboxes for one
+                  decision trains people to click both without reading. A single
+                  list that CHANGES with the situation is harder to skim past. */}
+              {acknowledgements.length > 0 && (
+                <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-2 space-y-1"
+                     data-testid="wizard-acknowledgements">
                   <div className="text-[11px] text-warning font-semibold">
-                    Quality warnings on this source — acknowledge to deploy:
+                    Before you deploy — acknowledge {acknowledgements.length === 1 ? "this" : "these"}:
                   </div>
                   <ul className="text-[11px] text-warning list-disc pl-4">
-                    {(quality?.warnings || []).map((w) => <li key={w.id}>{w.label}{w.detail ? ` — ${w.detail}` : ""}</li>)}
+                    {acknowledgements.map((a) => (
+                      <li key={a.id} data-testid={`ack-item-${a.kind}`}>
+                        <b>{a.title}</b>{a.detail ? ` — ${a.detail}` : ""}
+                      </li>
+                    ))}
                   </ul>
                   <label className="text-[11px] text-dim flex items-center gap-2 pt-1">
                     <input type="checkbox" checked={Boolean(form.acknowledged_warnings)}
                       onChange={(e) => set("acknowledged_warnings", e.target.checked)}
                       className="h-4 w-4 rounded border-line" data-testid="wizard-ack-checkbox" />
-                    <span>I understand these warnings and want to deploy anyway</span>
+                    <span>I understand and want to deploy anyway</span>
                   </label>
+                </div>
+              )}
+
+              {deployBlocked.length > 0 && (
+                <div className="text-[11px] text-danger" data-testid="wizard-deploy-blockers">
+                  {deployBlocked.join(" ")}
                 </div>
               )}
 
