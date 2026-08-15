@@ -182,6 +182,33 @@ async def live_feed_health_endpoint():
         supervisor_backoff_active=bool(sup.get("backoff_active")),
         supervisor_last_error=sup.get("last_error"),
     )
+    # COMPLETENESS, alongside freshness. `compute_feed_health` answers "is the
+    # newest bar recent?" — which reports LIVE within two minutes of a mid-session
+    # boot while the whole morning is absent. This adds "do we actually have every
+    # closed minute of today", per instrument, plus the recovery outcome.
+    try:
+        from app.candle_gap import assess_completeness, format_ranges_ist
+        from app.instruments import INSTRUMENT_KEYS
+        from app.runtime import candle_recovery_state
+        day = ist_now.strftime("%Y-%m-%d")
+        day_start = int(datetime.fromisoformat(
+            f"{day}T00:00:00+05:30").timestamp() * 1000)
+        completeness = {}
+        for inst in INSTRUMENT_KEYS:
+            rows = await db.candles_1m.find(
+                {"instrument": inst,
+                 "ts": {"$gte": day_start, "$lt": day_start + 86_400_000}},
+                {"_id": 0, "ts": 1}).to_list(length=3000)
+            c = assess_completeness(day, [r.get("ts") for r in rows], now_ms=now_ms)
+            c["missing_spans"] = format_ranges_ist(c.get("ranges") or [])
+            completeness[inst] = c
+        health["completeness"] = completeness
+        health["all_complete"] = all(c.get("complete") for c in completeness.values())
+        health["candle_recovery"] = candle_recovery_state()
+    except Exception as exc:                            # noqa: BLE001
+        # Never let the completeness add-on break the liveness endpoint the Live
+        # page depends on.
+        health["completeness_error"] = str(exc)[:200]
     return serialize_doc(health)
 
 

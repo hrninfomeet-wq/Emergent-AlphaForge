@@ -28,6 +28,7 @@ from app.forward_metrics import (
 )
 from app.deployment_evaluator import evaluate_active_deployments, evaluate_deployment_on_close
 from app.deployment_preflight import compute_data_realism
+from app.live_data_gate import check_live_data_gate
 from app.live_exit_preview import describe_live_exits
 from app.nse_calendar import market_status
 from app.paper_squareoff import square_off_open_paper_trades
@@ -1192,6 +1193,38 @@ async def enable_deployment_live(deployment_id: str, body: _LiveEnableBody):
         ok, reason = False, "engine_unavailable"
     if ok is not True:
         raise HTTPException(400, f"Live engine cannot trade ({reason}) — clear the halt/latch before going live.")
+
+    # DATA-INTEGRITY GATE (fail closed). A strategy evaluated over a hole is not
+    # accepting known risk, it is computing on fiction: on 2026-08-14 NIFTY was
+    # missing 09:15-09:49 and the evaluator's 200-bar lookback silently held 199
+    # PREVIOUS-session bars and one of today's.
+    #
+    # This judges the DATA, not the strategy — it is deliberately not the
+    # research-qualification gate that was removed, and it is scoped to this ONE
+    # transition. It is never consulted by an exit, the guard, the kill switch or
+    # the EOD square: an open position must always remain closeable.
+    #
+    # A holiday, a pre-open moment and a market that has not opened all expect
+    # zero candles and therefore PASS.
+    try:
+        gate = await check_live_data_gate(
+            db, [str(deployment.get("instrument") or "").upper()])
+    except Exception:                                   # noqa: BLE001
+        logging.getLogger(__name__).exception(
+            "live data gate raised for %s; treating as unverifiable", deployment_id)
+        gate = {"ok": False, "reason": "gate_unavailable", "blocked_instruments": [],
+                "detail": "Market-data completeness could not be verified.",
+                "report": {}}
+    if not gate.get("ok"):
+        raise HTTPException(409, detail={
+            "code": "incomplete_market_data",
+            "message": gate.get("detail") or "Today's market data is incomplete.",
+            "blocked_instruments": gate.get("blocked_instruments") or [],
+            "report": gate.get("report") or {},
+            "recovery_hint": ("Recovery runs automatically at startup and on the "
+                              "feed supervisor tick; POST /api/warehouse/"
+                              "intraday-backfill/ALL forces an immediate attempt."),
+        })
 
     # Capital freedom is intentionally bounded by the account-level guardrails.
     # This is independent of research evidence: the operator may change these

@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import time
 import uuid as _uuid
 from datetime import datetime, time as dtime, timedelta, timezone
 from typing import Any, Dict, List, Optional
@@ -110,6 +111,82 @@ _feed_supervisor: Dict[str, Any] = {
 
 def feed_supervisor_state() -> Dict[str, Any]:
     return dict(_feed_supervisor)
+
+
+# ---------------------------------------------------------------------------
+# Intraday candle recovery — close today's gaps from the historical API.
+#
+# The tick roller only aggregates ticks it personally witnesses, so a backend that
+# boots mid-session is permanently missing the morning. On 2026-08-14 that left
+# NIFTY with 340/375 bars and the warehouse was not repaired until 09:13 IST the
+# NEXT DAY — after every trading decision had been made. The repair capability
+# already existed (POST /warehouse/intraday-backfill) and had zero callers.
+# ---------------------------------------------------------------------------
+
+#: Minimum spacing between recovery attempts. Recovery is cheap (one Upstox call
+#: per instrument, and none at all when the day is already complete), but the rate
+#: budget is shared with the operator's live account, so a supervisor ticking every
+#: 20s must not turn an unrecoverable gap into a request storm.
+_CANDLE_RECOVERY_MIN_INTERVAL_SEC = 120.0
+
+_candle_recovery: Dict[str, Any] = {
+    "last_run_at": None, "last_result": None, "runs": 0, "last_error": None,
+}
+
+
+def candle_recovery_state() -> Dict[str, Any]:
+    """Latest recovery outcome, for the readiness surface and the operator."""
+    return dict(_candle_recovery)
+
+
+async def maybe_recover_candles(*, force: bool = False,
+                                reason: str = "supervisor") -> Optional[Dict[str, Any]]:
+    """Assess and close today's candle gaps. Safe to call on every supervisor tick.
+
+    Returns None when skipped (rate-limited, no token, nothing expected today).
+    Never raises: it runs on the startup path and inside the supervisor loop, and a
+    recovery failure must degrade to "reported unresolved", never take either down.
+    """
+    from app.candle_recovery import recover_today
+    from app.instruments import INSTRUMENT_KEYS
+
+    now = time.time()
+    last = _candle_recovery.get("last_run_at_monotonic")
+    if not force and last is not None and (now - last) < _CANDLE_RECOVERY_MIN_INTERVAL_SEC:
+        return None
+    try:
+        token = await upstox_client.get_connection_status()
+        if not (token.get("connected") and not token.get("expired")):
+            _candle_recovery["last_error"] = "upstox_not_connected"
+            return None
+    except Exception as exc:                            # noqa: BLE001
+        _candle_recovery["last_error"] = f"token probe failed: {str(exc)[:120]}"
+        return None
+
+    _candle_recovery["last_run_at_monotonic"] = now
+    try:
+        result = await recover_today(
+            get_db(), list(INSTRUMENT_KEYS.keys()),
+            primary_fetch=upstox_client.fetch_intraday_1m,
+            persist=persist_candles_df,
+        )
+    except Exception as exc:                            # noqa: BLE001
+        log.exception("candle recovery failed (%s)", reason)
+        _candle_recovery["last_error"] = str(exc)[:200]
+        return None
+
+    _candle_recovery.update({
+        "last_run_at": datetime.now(timezone.utc).isoformat(),
+        "last_result": result,
+        "runs": int(_candle_recovery.get("runs") or 0) + 1,
+        "last_error": None,
+        "reason": reason,
+    })
+    if not result.get("complete"):
+        log.warning("candle recovery (%s): UNRESOLVED for %s — live activation is "
+                    "blocked for those instruments until the gap closes",
+                    reason, result.get("unresolved"))
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -1272,6 +1349,17 @@ async def _live_feed_supervisor_loop() -> None:
                 await maybe_run_live_recovery()
             except Exception as exc:   # noqa: BLE001 - never kill the supervisor
                 log.warning("live recovery (supervisor) failed: %s", exc)
+            # Close today's candle gaps from the historical API. Covers BOTH the
+            # mid-session boot (the roller starts empty) and any mid-session WS
+            # dropout (2026-08-13 lost 09:54 and 10:01-10:02 on all three
+            # instruments simultaneously — a feed-level outage the roller cannot
+            # backfill by itself). Rate-limited internally; a no-op once the day
+            # is complete, because a complete day spends no broker call at all.
+            if market_open and token_ok:
+                try:
+                    await maybe_recover_candles(reason="supervisor")
+                except Exception as exc:   # noqa: BLE001 - never kill the supervisor
+                    log.warning("candle recovery (supervisor) failed: %s", exc)
         except Exception as exc:   # noqa: BLE001 - never kill the loop
             log.exception("live-feed supervisor tick failed: %s", exc)
 

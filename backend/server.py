@@ -47,6 +47,7 @@ from app.runtime import (
     live_candle_roller,
     live_exit_monitor,
     live_position_guard,
+    maybe_recover_candles,
     maybe_run_live_recovery,
     upstox_stream_manager,
 )
@@ -200,6 +201,15 @@ async def startup() -> None:
                 # This is what makes the deployment evaluator able to fire on intraday data.
                 await live_candle_roller.start()
                 await live_exit_monitor.start()
+                # The roller only aggregates ticks it personally witnesses, so a
+                # boot after 09:15 is permanently missing the morning unless the
+                # gap is fetched from the historical API. WebSockets cannot supply
+                # history. Backgrounded so a slow broker cannot stall startup; the
+                # live-data gate blocks new live activations until it succeeds, and
+                # the feed supervisor retries.
+                asyncio.create_task(
+                    maybe_recover_candles(force=True, reason="startup"),
+                    name="candle-recovery-startup")
         else:
             log.info("Upstox not connected at startup; skipping WS auto-start")
     except Exception as exc:
