@@ -239,3 +239,194 @@ async def recover_today(
         "complete": not unresolved,
         "unresolved": [r["instrument"] for r in unresolved],
     }
+
+
+# ---------------------------------------------------------------------------
+# Any-day recovery. The two Upstox endpoints are NOT interchangeable, and picking
+# the wrong one silently returns nothing:
+#
+#   today      -> /v3/historical-candle/intraday/{key}/minutes/1   (no date args)
+#   prior day  -> /v3/historical-candle/{key}/minutes/1/{to}/{from}
+#
+# Verified live on 2026-08-15: the historical endpoint returned status=success
+# with 375 candles for 2026-08-14 (09:15..15:29), while the intraday endpoint
+# returned status=success with 0 candles because that day was a holiday. The
+# historical endpoint is EMPTY for the in-progress day — the documented limitation
+# that made the tick roller necessary in the first place.
+#
+# Without this, a gap on a prior day could never be closed: 2026-08-13 still shows
+# 368/375 on all three instruments (a feed-level dropout at 09:15-09:18, 09:54 and
+# 10:01-10:02), and today-only recovery would never have touched it.
+# ---------------------------------------------------------------------------
+
+async def recover_day(
+    db: Any,
+    instrument: str,
+    *,
+    iso_date: str,
+    now_ms: int,
+    persist: Callable[[str, Any], Awaitable[Dict[str, int]]],
+    today_iso: str,
+    intraday_fetch: Optional[Callable[[str], Awaitable[Any]]] = None,
+    historical_fetch: Optional[Callable[[str, str], Awaitable[Any]]] = None,
+    fallback_fetch: Optional[Callable[[str, int, int], Awaitable[Any]]] = None,
+    segment: str = SPOT,
+) -> Dict[str, Any]:
+    """Recover one instrument-day, choosing the source by WHICH day it is.
+
+    A COMPLETED day is assessed against the whole session: ``now_ms`` must not
+    truncate it, or a gap at 15:20 yesterday would be invisible this morning.
+    Only today is bounded by the clock, and only to exclude the minute still
+    forming.
+    """
+    is_today = str(iso_date) == str(today_iso)
+    assess_now = now_ms if is_today else None
+
+    before = assess_completeness(
+        iso_date, await _present_ts(db, instrument, iso_date),
+        segment=segment, now_ms=assess_now)
+
+    out: Dict[str, Any] = {
+        "instrument": instrument, "date": iso_date, "segment": segment,
+        "is_today": is_today, "before": before, "source": None, "attempts": 0,
+        "fetched": 0, "written": 0, "errors": [],
+    }
+    if before["complete"]:
+        out["after"] = before
+        out["status"] = "already_complete"
+        return out
+
+    # Only today's in-progress minute needs excluding; a completed day has none.
+    cutoff = _last_closed_minute_ms(now_ms) if is_today else None
+
+    sources: List[tuple] = []
+    if is_today and intraday_fetch is not None:
+        sources.append(("upstox_intraday", lambda: intraday_fetch(instrument)))
+    if (not is_today) and historical_fetch is not None:
+        sources.append(("upstox_historical",
+                        lambda: historical_fetch(instrument, iso_date)))
+    if fallback_fetch is not None:
+        lo = before["first_missing"]
+        hi = before["last_missing"]
+        if lo is not None and hi is not None:
+            if cutoff is not None:
+                hi = min(hi, cutoff)
+            sources.append(("flattrade_tpseries",
+                            lambda: fallback_fetch(instrument, lo, hi)))
+
+    for name, call in sources:
+        if out["attempts"] >= MAX_ATTEMPTS_PER_INSTRUMENT:
+            break
+        out["attempts"] += 1
+        try:
+            df = await call()
+        except Exception as exc:                       # noqa: BLE001
+            out["errors"].append(f"{name}: {str(exc)[:200]}")
+            log.warning("candle recovery: %s failed for %s %s: %s",
+                        name, instrument, iso_date, exc)
+            continue
+        if df is None or getattr(df, "empty", True):
+            out["errors"].append(f"{name}: empty")
+            continue
+        usable = df
+        if cutoff is not None:
+            try:
+                usable = df[df["ts"] <= cutoff]
+            except Exception:                          # noqa: BLE001
+                usable = df
+        if getattr(usable, "empty", True):
+            out["errors"].append(f"{name}: nothing closed yet")
+            continue
+        out["fetched"] = int(len(usable))
+        try:
+            saved = await persist(instrument, usable)
+        except Exception as exc:                       # noqa: BLE001
+            out["errors"].append(f"{name}: persist failed: {str(exc)[:200]}")
+            log.exception("candle recovery: persist failed for %s %s",
+                          instrument, iso_date)
+            continue
+        out["written"] = int((saved or {}).get("candles_added") or 0) + \
+            int((saved or {}).get("candles_updated") or 0)
+        out["source"] = name
+        break
+
+    after = assess_completeness(
+        iso_date, await _present_ts(db, instrument, iso_date),
+        segment=segment, now_ms=assess_now)
+    out["after"] = after
+    out["status"] = ("recovered" if after["complete"]
+                     else ("improved" if after["missing"] < before["missing"]
+                           else "unresolved"))
+    log.info("candle recovery %s %s: %s  %d/%d -> %d/%d  source=%s  gaps=%s",
+             instrument, iso_date, out["status"],
+             before["present"], before["expected"],
+             after["present"], after["expected"], out["source"],
+             format_ranges_ist(after["ranges"]))
+    return out
+
+
+async def recover_recent_days(
+    db: Any,
+    instruments: Sequence[str],
+    *,
+    days: int = 3,
+    persist: Callable[[str, Any], Awaitable[Dict[str, int]]],
+    intraday_fetch: Optional[Callable[[str], Awaitable[Any]]] = None,
+    historical_fetch: Optional[Callable[[str, str], Awaitable[Any]]] = None,
+    fallback_fetch: Optional[Callable[[str, int, int], Awaitable[Any]]] = None,
+    now_ms: Optional[int] = None,
+    segment: str = SPOT,
+) -> Dict[str, Any]:
+    """Sweep the last ``days`` TRADING days, newest first, for every instrument.
+
+    Today is repaired first because it is the one the live path is reading. Only
+    trading days are visited: requesting a holiday would spend a call to be told
+    the market was shut, and the completeness model already expects zero candles
+    there.
+
+    Never raises. A sweep that took the supervisor down would be a worse failure
+    than the gaps it repairs.
+    """
+    from app.nse_calendar import is_trading_day
+
+    now = now_ms if now_ms is not None else int(datetime.now(timezone.utc).timestamp() * 1000)
+    today_iso = _today_ist(now)
+
+    wanted: List[str] = []
+    probe = datetime.fromtimestamp(now / 1000, IST).date()
+    while len(wanted) < max(1, int(days)):
+        iso = probe.isoformat()
+        if is_trading_day(iso):
+            wanted.append(iso)
+        probe -= timedelta(days=1)
+
+    day_results: List[Dict[str, Any]] = []
+    unresolved: List[str] = []
+    first = True
+    for iso in wanted:
+        for inst in instruments or ():
+            if not first:
+                await asyncio.sleep(FETCH_SPACING_SEC)
+            first = False
+            try:
+                r = await recover_day(
+                    db, str(inst).upper(), iso_date=iso, now_ms=now, persist=persist,
+                    today_iso=today_iso, intraday_fetch=intraday_fetch,
+                    historical_fetch=historical_fetch, fallback_fetch=fallback_fetch,
+                    segment=segment)
+            except Exception as exc:                   # noqa: BLE001
+                log.exception("candle recovery: unhandled failure for %s %s", inst, iso)
+                r = {"instrument": str(inst).upper(), "date": iso, "status": "error",
+                     "errors": [str(exc)[:200]], "before": None, "after": None}
+            day_results.append(r)
+            if r.get("status") in ("unresolved", "improved", "error"):
+                unresolved.append(f"{r['instrument']}@{iso}")
+
+    return {
+        "today": today_iso,
+        "days": wanted,
+        "ran_at": datetime.fromtimestamp(now / 1000, timezone.utc).isoformat(),
+        "results": day_results,
+        "complete": not unresolved,
+        "unresolved": unresolved,
+    }

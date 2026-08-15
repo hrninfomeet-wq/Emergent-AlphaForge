@@ -129,6 +129,11 @@ def feed_supervisor_state() -> Dict[str, Any]:
 #: 20s must not turn an unrecoverable gap into a request storm.
 _CANDLE_RECOVERY_MIN_INTERVAL_SEC = 120.0
 
+#: Trading days swept per pass. Today plus two: enough to catch a dropout the
+#: previous session left behind (2026-08-13 was still 368/375 a day later), while
+#: keeping a complete-day pass free — an already-complete day spends no call.
+_CANDLE_RECOVERY_DAYS = 3
+
 _candle_recovery: Dict[str, Any] = {
     "last_run_at": None, "last_result": None, "runs": 0, "last_error": None,
 }
@@ -147,7 +152,8 @@ async def maybe_recover_candles(*, force: bool = False,
     Never raises: it runs on the startup path and inside the supervisor loop, and a
     recovery failure must degrade to "reported unresolved", never take either down.
     """
-    from app.candle_recovery import recover_today
+    from app.candle_recovery import recover_recent_days
+    from app.flattrade_candles import make_tpseries_fetcher
     from app.instruments import INSTRUMENT_KEYS
 
     now = time.time()
@@ -165,9 +171,19 @@ async def maybe_recover_candles(*, force: bool = False,
 
     _candle_recovery["last_run_at_monotonic"] = now
     try:
-        result = await recover_today(
+        # Upstox primary, Flattrade TPSeries fallback. The two endpoints are NOT
+        # interchangeable — today needs the intraday route (no date args), any
+        # prior day needs the historical one (empty for the in-progress day) —
+        # so recover_day picks by date. The sweep covers prior days too because a
+        # feed dropout leaves a hole that today-only recovery would never touch
+        # (2026-08-13 lost 09:15-09:18, 09:54 and 10:01-10:02 on all three).
+        result = await recover_recent_days(
             get_db(), list(INSTRUMENT_KEYS.keys()),
-            primary_fetch=upstox_client.fetch_intraday_1m,
+            days=_CANDLE_RECOVERY_DAYS,
+            intraday_fetch=upstox_client.fetch_intraday_1m,
+            historical_fetch=lambda inst, day: upstox_client.fetch_historical_1m(
+                inst, day, day),
+            fallback_fetch=make_tpseries_fetcher(_live_guard_client_factory),
             persist=persist_candles_df,
         )
     except Exception as exc:                            # noqa: BLE001

@@ -20,7 +20,9 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import socket
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional
 
 import httpx
@@ -49,6 +51,30 @@ def _is_no_data(emsg: Any) -> bool:
     """True when a Noren ``stat != "Ok"`` response denotes a genuinely EMPTY book
     rather than a read error (see ``_NO_DATA_MARKERS``)."""
     return isinstance(emsg, str) and any(m in emsg.lower() for m in _NO_DATA_MARKERS)
+
+
+_IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def _parse_noren_time_ms(value: Any) -> Optional[int]:
+    """Noren ``time`` -> epoch ms, FLOORED to the minute.
+
+    The field table documents ``DD/MM/CCYY hh:mm:ss`` while the vendor sample
+    shows ``02-06-2020 15:46:23`` — dashes, and seconds that are not on a minute
+    boundary. Both separators are accepted and the value is floored, because an
+    unaligned timestamp would write rows that never match the ``candles_1m``
+    minute grid: the gap would stay open while appearing to have been filled.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip().replace("/", "-")
+    for fmt in ("%d-%m-%Y %H:%M:%S", "%d-%m-%Y %H:%M"):
+        try:
+            dt = datetime.strptime(text, fmt).replace(tzinfo=_IST)
+        except ValueError:
+            continue
+        return (int(dt.timestamp()) // 60) * 60_000
+    return None
 
 
 def _parse_book(route: str, data: Any) -> List[Dict[str, Any]]:
@@ -218,6 +244,87 @@ class FlattradeClient:
         if _is_no_data(emsg):
             return {}
         raise BrokerReadError(str(emsg), route="Limits")
+
+    async def time_price_series(
+        self,
+        *,
+        exch: str,
+        token: str,
+        start_ms: int,
+        end_ms: int,
+        interval: str = "1",
+    ) -> List[Dict[str, Any]]:
+        """TPSeries (#29) — 1-minute chart candles for a Noren token over a window.
+
+        The FALLBACK historical source when Upstox is unavailable. Unlike Upstox's
+        intraday endpoint, which takes no date arguments and returns today
+        wholesale, TPSeries accepts explicit ``st``/``et`` epoch-SECOND bounds, so a
+        gap can be requested precisely.
+
+        Returns rows normalised to ``{ts, open, high, low, close, volume}`` with
+        ``ts`` as epoch MILLISECONDS, ascending — the shape the warehouse expects.
+        Returns ``[]`` for a genuinely empty window; raises ``BrokerReadError`` on a
+        real read failure, so an unreadable window is never mistaken for "no data".
+
+        Two response details bite if ignored:
+
+        * The vendor sample returns ``"time":"02-06-2020 15:46:23"`` — **not**
+          minute-aligned, and using dashes where the field table says slashes. The
+          timestamp is floored to the minute and both separators are accepted;
+          storing an unaligned ts would write rows that never match the
+          ``candles_1m`` minute grid, so the gap would stay open forever while
+          appearing to have been filled.
+        * Rows arrive NEWEST FIRST. They are sorted ascending here.
+        """
+        jdata: Dict[str, Any] = {
+            "uid": self._uid,
+            "exch": str(exch),
+            "token": str(token),
+            "st": str(int(start_ms) // 1000),
+            "et": str(int(end_ms) // 1000),
+            "intrv": str(interval),
+        }
+        data = await self._post("TPSeries", jdata)
+
+        if isinstance(data, dict):
+            emsg = data.get("emsg", "unknown error")
+            if data.get("stat") == "Ok":
+                data = [data]
+            elif _is_no_data(emsg):
+                return []
+            else:
+                raise BrokerReadError(str(emsg), route="TPSeries")
+        if not isinstance(data, list):
+            raise BrokerReadError(
+                f"unexpected TPSeries response shape: {type(data).__name__}",
+                route="TPSeries")
+
+        rows: List[Dict[str, Any]] = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            if item.get("stat") not in (None, "Ok"):
+                continue
+            ts_ms = _parse_noren_time_ms(item.get("time"))
+            if ts_ms is None:
+                continue
+            try:
+                row = {
+                    "ts": ts_ms,
+                    "open": float(item["into"]),
+                    "high": float(item["inth"]),
+                    "low": float(item["intl"]),
+                    "close": float(item["intc"]),
+                    "volume": float(item.get("intv") or 0),
+                }
+            except (KeyError, TypeError, ValueError):
+                continue
+            if not all(math.isfinite(row[k]) for k in ("open", "high", "low", "close")):
+                continue
+            rows.append(row)
+
+        rows.sort(key=lambda r: r["ts"])
+        return rows
 
     async def search_scrip(self, exch: str, text: str) -> List[Dict[str, Any]]:
         """Search for scrips matching text on an exchange.
