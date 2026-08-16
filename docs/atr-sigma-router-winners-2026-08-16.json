@@ -1,0 +1,301 @@
+[
+  {
+    "job_id": "72c2b408-d84b-4c53-9cb9-e46c9d38630c",
+    "instrument": "SENSEX",
+    "trials": "800/800",
+    "search_window": [
+      1761968700000,
+      1786702200000
+    ],
+    "option_config": {
+      "moneyness": "atm",
+      "dte_filter": null,
+      "lots": 5,
+      "entry_max_age_sec": 120,
+      "exit_max_age_sec": 180,
+      "exit_mode": "spot_exit",
+      "option_target_pts": null,
+      "option_stop_pts": null,
+      "option_target_pct": null,
+      "option_stop_pct": null,
+      "cost_config": {
+        "enabled": true,
+        "brokerage_per_order": 0,
+        "spread_pct_of_premium": 1
+      },
+      "sizing_config": {
+        "capital": 200000
+      }
+    },
+    "params": {
+      "entry_family": 2,
+      "band_atr_mult": 1.5163541870007946,
+      "expansion_ratio": 1.4540106277285818,
+      "stop_atr_mult": 3.9038713041898334,
+      "target_atr_mult": 4.227408501771571,
+      "min_stop_bps": 21.30835557438061,
+      "time_stop_minutes": 13,
+      "weekday_mask": 21,
+      "trend_filter": false,
+      "signal_threshold": 50,
+      "cooldown_bars": 25,
+      "ema_fast": 15,
+      "ema_slow": 28,
+      "rsi_length": 16,
+      "macd_fast": 5,
+      "macd_slow": 54,
+      "macd_signal": 13,
+      "atr_length": 7,
+      "adx_length": 16,
+      "chop_length": 25,
+      "swing_lookback": 14
+    },
+    "in_sample_metrics": {
+      "trade_count": 151,
+      "wins": 96,
+      "losses": 55,
+      "win_rate": 63.58,
+      "profit_factor": 2.27,
+      "avg_pnl_pts": 79.513,
+      "expectancy_pts": 79.513,
+      "max_dd_pts": -996.25,
+      "sharpe": 5.557,
+      "best_pts": 733.52,
+      "worst_pts": -475.71,
+      "target_exits": 62,
+      "stop_exits": 35,
+      "time_exits": 54,
+      "total_pnl_pts": 12006.43,
+      "avg_bars_held": 108.1,
+      "pnl_abs_sum": 30920.625999999993,
+      "ce_count": 77,
+      "pe_count": 74,
+      "option_pnl_value": 529655.99,
+      "option_pnl_pts": 5436.01,
+      "option_win_rate": 58.94,
+      "paired_trade_count": 151
+    },
+    "in_sample_net_inr": 529655.99
+  },
+  {
+    "job_id": "7124d77b-e397-41f5-8a09-bde6fd5d78d3",
+    "instrument": "NIFTY",
+    "trials": "800/800",
+    "search_window": [
+      1761968700000,
+      1786702200000
+    ],
+    "option_config": {
+      "moneyness": "atm",
+      "dte_filter": null,
+      "lots": 5,
+      "entry_max_age_sec": 120,
+      "exit_max_age_sec": 180,
+      "exit_mode": "spot_exit",
+      "option_target_pts": null,
+      "option_stop_pts": null,
+      "option_target_pct": null,
+      "option_stop_pct": null,
+      "cost_config": {
+        "enabled": true,
+        "brokerage_per_order": 0,
+        "spread_pct_of_premium": 1
+      },
+      "sizing_config": {
+        "capital": 200000
+      }
+    },
+    "params": {
+      "entry_family": 2,
+      "band_atr_mult": 0.6740196747895448,
+      "expansion_ratio": 0.9521659621345919,
+      "stop_atr_mult": 4.971864874417024,
+      "target_atr_mult": 5.158422996920802,
+      "min_stop_bps": 23.760212324694656,
+      "time_stop_minutes": 83,
+      "weekday_mask": 13,
+      "trend_filter": false,
+      "signal_threshold": 54,
+      "cooldown_bars": 33,
+      "ema_fast": 20,
+      "ema_slow": 45,
+      "rsi_length": 23,
+      "macd_fast": 13,
+      "macd_slow": 45,
+      "macd_signal": 6,
+      "atr_length": 28,
+      "adx_length": 18,
+      "chop_length": 25,
+      "swing_lookback": 10
+    },
+    "in_sample_metrics": {
+      "trade_count": 338,
+      "wins": 188,
+      "losses": 150,
+      "win_rate": 55.62,
+      "profit_factor": 1.613,
+      "avg_pnl_pts": 14.673,
+      "expectancy_pts": 14.673,
+      "max_dd_pts": -611.05,
+      "sharpe": 3.311,
+      "best_pts": 210.94,
+      "worst_pts": -152.8,
+      "target_exits": 134,
+      "stop_exits": 93,
+      "time_exits": 111,
+      "total_pnl_pts": 4959.6,
+      "avg_bars_held": 97.2,
+      "pnl_abs_sum": 21133.286,
+      "ce_count": 168,
+      "pe_count": 170,
+      "option_pnl_value": 655931.35,
+      "option_pnl_pts": 2065.055,
+      "option_win_rate": 49.41,
+      "paired_trade_count": 338
+    },
+    "in_sample_net_inr": 655931.35
+  },
+  {
+    "job_id": "6f9c1698-4b9f-4c2c-b373-b1b3422e9e86",
+    "instrument": "NIFTY",
+    "trials": "396/800",
+    "search_window": [
+      1767239100000,
+      1786702200000
+    ],
+    "option_config": {
+      "moneyness": "atm",
+      "dte_filter": null,
+      "lots": 5,
+      "entry_max_age_sec": 120,
+      "exit_max_age_sec": 180,
+      "exit_mode": "spot_exit",
+      "option_target_pts": null,
+      "option_stop_pts": null,
+      "option_target_pct": null,
+      "option_stop_pct": null,
+      "cost_config": {
+        "enabled": true,
+        "brokerage_per_order": 0,
+        "spread_pct_of_premium": 1
+      },
+      "sizing_config": {
+        "capital": 200000
+      }
+    },
+    "params": {
+      "entry_family": 2,
+      "band_atr_mult": 0.67999994001179,
+      "expansion_ratio": 1.621439405743362,
+      "stop_atr_mult": 3.4082246362524042,
+      "target_atr_mult": 9.773830479408044,
+      "min_stop_bps": 7.891833499991492,
+      "time_stop_minutes": 165,
+      "weekday_mask": 31,
+      "trend_filter": false,
+      "signal_threshold": 60,
+      "cooldown_bars": 24,
+      "ema_fast": 8,
+      "ema_slow": 72,
+      "rsi_length": 17,
+      "macd_fast": 9,
+      "macd_slow": 57,
+      "macd_signal": 7,
+      "atr_length": 8,
+      "adx_length": 12,
+      "chop_length": 20,
+      "swing_lookback": 14
+    },
+    "in_sample_metrics": {
+      "trade_count": 128,
+      "wins": 65,
+      "losses": 63,
+      "win_rate": 50.78,
+      "profit_factor": 1.678,
+      "avg_pnl_pts": 21.18,
+      "expectancy_pts": 21.18,
+      "max_dd_pts": -525.18,
+      "sharpe": 3.33,
+      "best_pts": 338.06,
+      "worst_pts": -160.58,
+      "target_exits": 16,
+      "stop_exits": 54,
+      "time_exits": 58,
+      "total_pnl_pts": 2711.1,
+      "avg_bars_held": 168.9,
+      "pnl_abs_sum": 10706.274,
+      "ce_count": 60,
+      "pe_count": 68,
+      "option_pnl_value": 384965.72,
+      "option_pnl_pts": 1218.798,
+      "option_win_rate": 41.41,
+      "paired_trade_count": 128
+    },
+    "in_sample_net_inr": 384965.72
+  },
+  {
+    "job_id": "19489eba-6500-4bff-9552-a48f88dedf8a",
+    "instrument": "NIFTY",
+    "trials": "77/120",
+    "search_window": [
+      1732473000000,
+      1767119400000
+    ],
+    "option_config": {
+      "enabled": true,
+      "moneyness": "atm",
+      "lots": 1,
+      "exit_mode": "spot_exit",
+      "dte_filter": [
+        1,
+        2
+      ],
+      "auto_fetch": false,
+      "cost_config": {
+        "enabled": true,
+        "brokerage_per_order": 0.0,
+        "spread_pct_of_premium": 0.4,
+        "spread_min_pts": 0.05
+      }
+    },
+    "params": {
+      "entry_family": 2,
+      "band_atr_mult": 2.88762240480079,
+      "expansion_ratio": 1.3933769736151573,
+      "stop_atr_mult": 4.457815613662548,
+      "target_atr_mult": 5.576361054361951,
+      "min_stop_bps": 17.577137369729876,
+      "time_stop_minutes": 130,
+      "weekday_mask": 27,
+      "trend_filter": true,
+      "signal_threshold": 75,
+      "cooldown_bars": 24
+    },
+    "in_sample_metrics": {
+      "trade_count": 168,
+      "wins": 87,
+      "losses": 81,
+      "win_rate": 51.79,
+      "profit_factor": 1.381,
+      "avg_pnl_pts": 9.861,
+      "expectancy_pts": 9.861,
+      "max_dd_pts": -564.2,
+      "sharpe": 2.124,
+      "best_pts": 330.25,
+      "worst_pts": -126.73,
+      "target_exits": 61,
+      "stop_exits": 55,
+      "time_exits": 52,
+      "total_pnl_pts": 1656.64,
+      "avg_bars_held": 83.7,
+      "pnl_abs_sum": 10361.249999999998,
+      "ce_count": 66,
+      "pe_count": 102,
+      "option_pnl_value": 17934.54,
+      "option_pnl_pts": 324.984,
+      "option_win_rate": 41.67,
+      "paired_trade_count": 48
+    },
+    "in_sample_net_inr": 17934.54
+  }
+]
