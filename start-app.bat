@@ -360,11 +360,6 @@ if not exist "%DOCKER_DESKTOP_EXE%" (
 
 echo Starting Docker Desktop automatically...
 start "" "%DOCKER_DESKTOP_EXE%"
-if errorlevel 1 (
-  echo ERROR: Windows could not launch Docker Desktop.
-  echo Start Docker Desktop manually, wait for the engine, then run start-app.bat again.
-  exit /b 1
-)
 
 echo Waiting up to 180 seconds for the Docker engine...
 powershell -NoProfile -ExecutionPolicy Bypass -Command "$d=(Get-Date).AddSeconds(180); while((Get-Date) -lt $d){ docker info *> $null; if($LASTEXITCODE -eq 0){ exit 0 }; Start-Sleep -Seconds 2 }; exit 1"

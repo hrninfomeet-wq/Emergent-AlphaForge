@@ -140,6 +140,12 @@ def test_windows_launcher_autostarts_docker_with_bounded_wait():
     assert "set /p" not in engine.lower()
     assert "goto docker_wait" not in engine.lower()
 
+    launch_to_poll = engine[
+        engine.index('start "" "%DOCKER_DESKTOP_EXE%"'):
+        engine.index("echo Waiting up to 180 seconds for the Docker engine...")
+    ]
+    assert "if errorlevel 1" not in launch_to_poll.lower()
+
 
 def test_windows_launcher_opens_browser_only_after_full_readiness():
     launcher = (ROOT / "start-app.bat").read_text(encoding="utf-8")
@@ -256,6 +262,14 @@ def _prepare_windows_launcher_sandbox(tmp_path):
         "    if (exe.Equals(\"docker\", StringComparison.OrdinalIgnoreCase) && args.Length > 0"
         " && args[0].Equals(\"info\", StringComparison.OrdinalIgnoreCase)"
         " && Environment.GetEnvironmentVariable(\"ALPHAFORGE_STUB_DOCKER_INFO_FAIL\") == \"1\") return 1;\n"
+        "    if (exe.Equals(\"docker\", StringComparison.OrdinalIgnoreCase) && args.Length > 0"
+        " && args[0].Equals(\"info\", StringComparison.OrdinalIgnoreCase)"
+        " && Environment.GetEnvironmentVariable(\"ALPHAFORGE_STUB_DOCKER_INFO_FAIL_ONCE\") == \"1\") {\n"
+        "      var state = Environment.GetEnvironmentVariable(\"ALPHAFORGE_STUB_DOCKER_INFO_STATE\");\n"
+        "      var count = File.Exists(state) ? Int32.Parse(File.ReadAllText(state)) : 0;\n"
+        "      count += 1; File.WriteAllText(state, count.ToString());\n"
+        "      if (count == 1) return 1;\n"
+        "    }\n"
         "    return 0;\n"
         "  }\n"
         "}\n",
@@ -301,6 +315,7 @@ def _run_sandboxed_launcher(tmp_path, env, *args):
         env=env,
         text=True,
         capture_output=True,
+        input="",
         timeout=15,
         check=False,
     )
@@ -350,6 +365,25 @@ def test_windows_launcher_waits_for_a_restoring_backend_without_rebuilding_it(tm
     calls = stub_log.read_text(encoding="utf-8")
     assert "docker compose up" not in calls
     assert "AddSeconds(180)" in calls
+
+
+@pytest.mark.skipif(os.name != "nt", reason="executes the Windows batch launcher")
+def test_windows_launcher_continues_after_docker_desktop_launch_until_engine_is_ready(tmp_path):
+    fake_bin, env, _stub_log = _prepare_windows_launcher_sandbox(tmp_path)
+    desktop = tmp_path / "program-files" / "Docker" / "Docker" / "Docker Desktop.exe"
+    desktop.parent.mkdir(parents=True)
+    desktop.write_bytes((fake_bin / "stub.exe").read_bytes())
+    env["ProgramFiles"] = str(tmp_path / "program-files")
+    env["ALPHAFORGE_STUB_DOCKER_INFO_FAIL_ONCE"] = "1"
+    env["ALPHAFORGE_STUB_DOCKER_INFO_STATE"] = str(tmp_path / "docker-info-state.txt")
+
+    result = _run_sandboxed_launcher(tmp_path, env, "--no-browser")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Starting Docker Desktop automatically..." in result.stdout
+    assert "Waiting up to 180 seconds for the Docker engine..." in result.stdout
+    assert "Windows could not launch Docker Desktop" not in result.stdout
+    assert "AlphaForge startup complete." in result.stdout
 
 
 @pytest.mark.skipif(os.name != "nt", reason="executes the Windows batch launcher")

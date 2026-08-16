@@ -1166,3 +1166,21 @@ disarm or rewrite live state.
   an HTTP 2xx or 3xx response plus backend health with database status `ok`.
 - Unconditionally running `docker compose up -d --build` is unsafe during live exposure because
   Compose can recreate a healthy backend and interrupt its in-process guard before recovery reattaches.
+
+---
+
+## 2026-08-16 — Docker launch status must come from engine health
+
+**Core lesson: a GUI process-launch return code is not the Docker engine's readiness state.**
+`start` can open Docker Desktop while leaving a prior non-zero `ERRORLEVEL` visible to the batch
+file. Treating that inherited value as launch failure stopped startup before the bounded engine poll.
+
+**Confirmed approaches:**
+- After verifying the executable exists, launch it and let repeated `docker info` checks decide
+  success or timeout; retain the final `docker info` fence before Compose work.
+- Reproduce Windows launcher defects with temporary stub executables and empty stdin, never with
+  ad-hoc OS launch commands or the real broker-capable Docker stack.
+
+**Dead end:**
+- An immediate `if errorlevel 1` after `start` produced a false failure and duplicated the stronger
+  180-second engine-health check.
