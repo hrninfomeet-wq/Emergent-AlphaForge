@@ -16,6 +16,14 @@ class OpeningRangeRegimeRouter(ScenarioRoutedStrategyBase):
     version = "1.0.0"
     description = ("Routes on opening-range width: narrow open -> trend-follow the "
                    "opening drive; wide open -> fade back toward the session open.")
+    # Live window must cover the session. Session-anchored values are computed
+    # over ONLY the rows in the evaluator's rolling window, so at the old default
+    # of 200 the window stopped reaching 09:15 after 12:34 and this strategy's
+    # the opening range silently diverged from its backtest for the rest of
+    # the day (measured: VWAP off by 2.12 ATR at 14:49). 335 bars are needed to
+    # reach 09:15 from the 14:50 cutoff; 400 also retains the prior session.
+    live_lookback_bars = 400
+
     scenarios_traded = ("TREND_CONTINUATION", "VOLATILE_FADE")
     extra_params = {
         "trend_target_atr": {"type": "float", "min": 2.0, "max": 8.0, "default": 4.0},

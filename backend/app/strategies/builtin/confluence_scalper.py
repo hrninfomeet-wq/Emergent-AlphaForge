@@ -12,6 +12,14 @@ class ConfluenceScalper(StrategyBase):
     version = "1.0.0"
     description = "Multi-factor confluence: EMA stack + VWAP + RSI + MACD + ADX + pullback. Best in trending+expanding regimes."
     supported_modes = ["SCALP", "INTRADAY"]
+    # Live window must cover the session. Session-anchored values are computed
+    # over ONLY the rows in the evaluator's rolling window, so at the old default
+    # of 200 the window stopped reaching 09:15 after 12:34 and this strategy's
+    # session VWAP silently diverged from its backtest for the rest of
+    # the day (measured: VWAP off by 2.12 ATR at 14:49). 335 bars are needed to
+    # reach 09:15 from the 14:50 cutoff; 400 also retains the prior session.
+    live_lookback_bars = 400
+
     parameter_schema = {
         "ema_fast": {"type": "int", "min": 5, "max": 30, "default": 9},
         "ema_slow": {"type": "int", "min": 10, "max": 60, "default": 21},

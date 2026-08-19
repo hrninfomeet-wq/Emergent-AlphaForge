@@ -91,23 +91,45 @@ def test_the_error_is_large_enough_to_invert_a_signal(frame):
         "anchor error no longer exceeds one ATR — the severity claim is stale")
 
 
-def test_shipped_strategies_that_read_vwap_declare_an_adequate_window():
-    """Any strategy reading `vwap` needs a window covering the session, or its
-    live signals silently diverge from its backtest. 335 bars are needed to reach
-    09:15 from the 14:49 cutoff."""
+SESSION_ANCHORED_TOKENS = ('"vwap"', "'vwap'", "orb_", "gap_by_session",
+                           "cpr_", "day_type", "orb_range_by_session",
+                           "opening_range_by_session")
+
+#: Bars needed to reach 09:15 from the 14:50 entry cutoff (09:15 -> 14:49 inclusive).
+MIN_SESSION_ANCHORED_LOOKBACK = 335
+
+
+def _session_anchored_strategies():
     from app.strategies.base import get_registry
     registry = get_registry()
     registry.auto_discover()
-    offenders = []
+    out = []
     for meta in registry.list_all():
         strategy = registry.get(meta["id"])
         if strategy is None:
             continue
         source = Path(sys.modules[type(strategy).__module__].__file__).read_text(
             encoding="utf-8", errors="replace")
-        if '"vwap"' not in source and "'vwap'" not in source:
+        if not any(tok in source for tok in SESSION_ANCHORED_TOKENS):
             continue
-        if int(getattr(strategy, "live_lookback_bars", 200) or 200) < 335:
-            offenders.append(meta["id"])
-    assert "atr_sigma_router" not in offenders, (
-        "atr_sigma_router reads vwap but declares too small a live window")
+        out.append((meta["id"], int(getattr(strategy, "live_lookback_bars", 200) or 200)))
+    return out
+
+
+def test_no_registered_strategy_reads_a_session_anchor_through_too_small_a_window():
+    """Project-wide guard. ANY strategy reading a session-anchored value (VWAP,
+    opening range, prior-session gap, pivot levels) needs a live window that
+    reaches 09:15, or its live signals silently diverge from its backtest after
+    ~12:34 — invisible to every backtest, because the backtest sees the whole
+    frame. Nine shipped strategies were affected before 2026-08-20."""
+    offenders = [(sid, lb) for sid, lb in _session_anchored_strategies()
+                 if lb < MIN_SESSION_ANCHORED_LOOKBACK]
+    assert not offenders, (
+        "session-anchored strategies with too small a live window "
+        f"(need >= {MIN_SESSION_ANCHORED_LOOKBACK}): {offenders}")
+
+
+def test_the_guard_above_actually_inspects_something():
+    """A tokens list that matched nothing would make the guard vacuously pass."""
+    found = _session_anchored_strategies()
+    assert len(found) >= 8, f"guard inspected only {len(found)} strategies"

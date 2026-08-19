@@ -19,6 +19,14 @@ class GapFade(AdaptiveStrategyBase):
     description = ("Fade large opening gaps back toward prior close/VWAP after a "
                    "confirmation window; skip breakaway gaps (gap with strong accel). "
                    "Mean-reversion direction edge.")
+    # Live window must cover the session. Session-anchored values are computed
+    # over ONLY the rows in the evaluator's rolling window, so at the old default
+    # of 200 the window stopped reaching 09:15 after 12:34 and this strategy's
+    # the PRIOR session's close silently diverged from its backtest for the rest of
+    # the day (measured: VWAP off by 2.12 ATR at 14:49). 335 bars are needed to
+    # reach 09:15 from the 14:50 cutoff; 400 also retains the prior session.
+    live_lookback_bars = 400
+
     extra_params = {
         "g_min_atr": {"type": "float", "min": 0.5, "max": 3.0, "default": 1.0},
         "rsi_ob": {"type": "float", "min": 60, "max": 85, "default": 70},

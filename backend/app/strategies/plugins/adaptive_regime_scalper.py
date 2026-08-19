@@ -17,6 +17,14 @@ class AdaptiveRegimeScalper(AdaptiveStrategyBase):
     description = ("Variance-Ratio soft-blend regime switch: trend-ride (Supertrend + "
                    "VWAP/CPR reclaim) when VR>1, fade VWAP-2sigma/CPR edges when VR<1, "
                    "biased by CPR day-type. Direction-timing edge.")
+    # Live window must cover the session. Session-anchored values are computed
+    # over ONLY the rows in the evaluator's rolling window, so at the old default
+    # of 200 the window stopped reaching 09:15 after 12:34 and this strategy's
+    # session VWAP + pivot levels silently diverged from its backtest for the rest of
+    # the day (measured: VWAP off by 2.12 ATR at 14:49). 335 bars are needed to
+    # reach 09:15 from the 14:50 cutoff; 400 also retains the prior session.
+    live_lookback_bars = 400
+
     extra_params = {
         "dead_band": {"type": "float", "min": 0.05, "max": 0.4, "default": 0.15},
         # vr_*/st_* tune the precomputed regime_score/supertrend columns via the optimizer's

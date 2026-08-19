@@ -13,6 +13,14 @@ class OpeningRangeBreakout(StrategyBase):
     version = "1.0.0"
     description = "Marks first 15-min H/L, enters on breakout with VWAP+momentum confirm. Works mornings (09:30–11:30)."
     supported_modes = ["SCALP", "INTRADAY"]
+    # Live window must cover the session. Session-anchored values are computed
+    # over ONLY the rows in the evaluator's rolling window, so at the old default
+    # of 200 the window stopped reaching 09:15 after 12:34 and this strategy's
+    # session VWAP + the opening range silently diverged from its backtest for the rest of
+    # the day (measured: VWAP off by 2.12 ATR at 14:49). 335 bars are needed to
+    # reach 09:15 from the 14:50 cutoff; 400 also retains the prior session.
+    live_lookback_bars = 400
+
     parameter_schema = {
         "range_minutes": {"type": "int", "min": 5, "max": 60, "default": 15},
         "buffer_pts": {"type": "float", "min": 0, "max": 20, "default": 2},

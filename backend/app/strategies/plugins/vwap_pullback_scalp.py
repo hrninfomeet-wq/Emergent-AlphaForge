@@ -12,6 +12,14 @@ class VWAPPullbackScalp(StrategyBase):
     version = "1.0.0"
     description = "Trend = side of VWAP. Entry = pullback to EMA9 with confirming candle. Default for scalping."
     supported_modes = ["SCALP"]
+    # Live window must cover the session. Session-anchored values are computed
+    # over ONLY the rows in the evaluator's rolling window, so at the old default
+    # of 200 the window stopped reaching 09:15 after 12:34 and this strategy's
+    # session VWAP silently diverged from its backtest for the rest of
+    # the day (measured: VWAP off by 2.12 ATR at 14:49). 335 bars are needed to
+    # reach 09:15 from the 14:50 cutoff; 400 also retains the prior session.
+    live_lookback_bars = 400
+
     parameter_schema = {
         "ema_fast": {"type": "int", "min": 5, "max": 21, "default": 9},
         "ema_slow": {"type": "int", "min": 13, "max": 50, "default": 21},
