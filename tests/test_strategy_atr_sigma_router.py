@@ -43,6 +43,20 @@ def _row(*, close, vwap, atr, atr_avg=None, ema9=None, ema21=None,
     })
 
 
+def _flat(row):
+    """A previous bar that qualifies for NOTHING: sitting exactly on VWAP (inside
+    any band) with ATR at its average (no expansion). The strategy is
+    EDGE-triggered — it fires on the bar a setup first appears — so a `prev` that
+    already qualifies correctly suppresses the signal. Passing `row` as its own
+    `prev` therefore tests nothing.
+    """
+    vwap = float(row["vwap"])
+    atr = float(row["atr"])
+    return _row(close=vwap, vwap=vwap, atr=atr, atr_avg=atr,
+                open_=vwap, high=vwap + atr * 0.1, low=vwap - atr * 0.1,
+                session_date=str(row["session_date"]), ist_time=str(row["ist_time"]))
+
+
 def _params(strategy, **over):
     p = strategy.default_params()
     p.update(over)
@@ -84,13 +98,13 @@ def test_entry_family_bounds_cover_exactly_the_three_families(strat):
 
 def test_warmup_returns_none_with_blocker(strat):
     row = _row(close=24500, vwap=24500, atr=float("nan"))
-    sig = validate_signal(strat.evaluate(row, row, _params(strat), {}))
+    sig = validate_signal(strat.evaluate(row, _flat(row), _params(strat), {}))
     assert sig.direction == "NONE" and sig.blockers
 
 
 def test_zero_atr_is_treated_as_warmup_not_a_divide_by_zero(strat):
     row = _row(close=24500, vwap=24400, atr=0.0)
-    sig = validate_signal(strat.evaluate(row, row, _params(strat), {}))
+    sig = validate_signal(strat.evaluate(row, _flat(row), _params(strat), {}))
     assert sig.direction == "NONE" and sig.blockers
 
 
@@ -100,21 +114,21 @@ def test_momentum_family_buys_the_breakout_side(strat):
     p = _params(strat, entry_family=MOMENTUM, band_atr_mult=1.0)
     up = _row(close=24530, vwap=24500, atr=20.0)     # +1.5 ATR above VWAP
     dn = _row(close=24470, vwap=24500, atr=20.0)
-    assert validate_signal(strat.evaluate(up, up, p, {})).direction == "CE"
-    assert validate_signal(strat.evaluate(dn, dn, p, {})).direction == "PE"
+    assert validate_signal(strat.evaluate(up, _flat(up), p, {})).direction == "CE"
+    assert validate_signal(strat.evaluate(dn, _flat(dn), p, {})).direction == "PE"
 
 
 def test_fade_family_is_the_exact_inverse_of_momentum(strat):
     up = _row(close=24530, vwap=24500, atr=20.0)
-    mom = strat.evaluate(up, up, _params(strat, entry_family=MOMENTUM), {})
-    fade = strat.evaluate(up, up, _params(strat, entry_family=FADE), {})
+    mom = strat.evaluate(up, _flat(up), _params(strat, entry_family=MOMENTUM), {})
+    fade = strat.evaluate(up, _flat(up), _params(strat, entry_family=FADE), {})
     assert mom.direction == "CE" and fade.direction == "PE"
 
 
 def test_inside_the_band_nothing_fires(strat):
     p = _params(strat, entry_family=MOMENTUM, band_atr_mult=1.0)
     flat = _row(close=24505, vwap=24500, atr=20.0)   # +0.25 ATR, inside band
-    assert validate_signal(strat.evaluate(flat, flat, p, {})).direction == "NONE"
+    assert validate_signal(strat.evaluate(flat, _flat(flat), p, {})).direction == "NONE"
 
 
 def test_expansion_family_requires_volatility_expansion(strat):
@@ -123,18 +137,18 @@ def test_expansion_family_requires_volatility_expansion(strat):
     # decisive bullish bar, but ATR is NOT expanded -> no trade
     quiet = _row(close=24540, vwap=24500, atr=20.0, atr_avg=20.0,
                  open_=24521, high=24540, low=24520)
-    assert validate_signal(strat.evaluate(quiet, quiet, p, {})).direction == "NONE"
+    assert validate_signal(strat.evaluate(quiet, _flat(quiet), p, {})).direction == "NONE"
     # same bar with ATR 2x its average -> fires
     loud = _row(close=24540, vwap=24500, atr=40.0, atr_avg=20.0,
                 open_=24521, high=24540, low=24520)
-    assert validate_signal(strat.evaluate(loud, loud, p, {})).direction == "CE"
+    assert validate_signal(strat.evaluate(loud, _flat(loud), p, {})).direction == "CE"
 
 
 def test_weekday_mask_blocks_excluded_days(strat):
     # 2026-08-10 is a Monday (bit 0). Mask 0b11110 excludes Monday.
     row = _row(close=24530, vwap=24500, atr=20.0, session_date="2026-08-10")
-    blocked = validate_signal(strat.evaluate(row, row, _params(strat, weekday_mask=0b11110), {}))
-    allowed = validate_signal(strat.evaluate(row, row, _params(strat, weekday_mask=0b11111), {}))
+    blocked = validate_signal(strat.evaluate(row, _flat(row), _params(strat, weekday_mask=0b11110), {}))
+    allowed = validate_signal(strat.evaluate(row, _flat(row), _params(strat, weekday_mask=0b11111), {}))
     assert blocked.direction == "NONE" and blocked.blockers
     assert allowed.direction == "CE"
 
@@ -147,7 +161,7 @@ def test_stop_respects_the_basis_point_floor_when_atr_is_tiny(strat):
     p = _params(strat, entry_family=MOMENTUM, stop_atr_mult=0.5,
                 min_stop_bps=4.0, band_atr_mult=1.0)
     row = _row(close=24000, vwap=23990, atr=2.0)     # 0.5*ATR = 1pt, floor = 9.6pt
-    sig = validate_signal(strat.evaluate(row, row, p, {}))
+    sig = validate_signal(strat.evaluate(row, _flat(row), p, {}))
     assert sig.direction == "CE"
     assert sig.spot_stop_pts == pytest.approx(24000 * 4.0 / 10_000)
 
@@ -156,7 +170,7 @@ def test_target_always_exceeds_stop(strat):
     p = _params(strat, entry_family=MOMENTUM, stop_atr_mult=6.0,
                 target_atr_mult=1.0, band_atr_mult=1.0)
     row = _row(close=24500, vwap=24400, atr=20.0)
-    sig = validate_signal(strat.evaluate(row, row, p, {}))
+    sig = validate_signal(strat.evaluate(row, _flat(row), p, {}))
     assert sig.direction == "CE"
     assert sig.spot_target_pts > sig.spot_stop_pts
 
@@ -167,7 +181,7 @@ def test_signal_numerics_are_always_finite(strat):
     for family in (MOMENTUM, FADE, EXPANSION):
         row = _row(close=24540, vwap=24500, atr=40.0, atr_avg=20.0,
                    open_=24521, high=24540, low=24520)
-        sig = validate_signal(strat.evaluate(row, row, _params(strat, entry_family=family), {}))
+        sig = validate_signal(strat.evaluate(row, _flat(row), _params(strat, entry_family=family), {}))
         for f in ("spot_target_pts", "spot_stop_pts", "time_stop_minutes"):
             v = getattr(sig, f)
             assert v is None or math.isfinite(float(v))
@@ -192,11 +206,54 @@ def test_identical_params_transfer_across_index_scales(strat, family):
                   open_=24_000 * 1.0012 * scale, high=24_000 * 1.002 * scale,
                   low=24_000 * 1.0011 * scale)
 
-    sn = validate_signal(strat.evaluate(nifty, nifty, p, {}))
-    ss = validate_signal(strat.evaluate(sensex, sensex, p, {}))
+    sn = validate_signal(strat.evaluate(nifty, _flat(nifty), p, {}))
+    ss = validate_signal(strat.evaluate(sensex, _flat(sensex), p, {}))
 
     assert sn.direction == ss.direction != "NONE"
     assert sn.score == ss.score
     # exits must scale linearly with the index level
     assert ss.spot_stop_pts == pytest.approx(sn.spot_stop_pts * scale, rel=1e-6)
     assert ss.spot_target_pts == pytest.approx(sn.spot_target_pts * scale, rel=1e-6)
+
+
+# ------------------------------------------- regressions from the 2026-08-19 audit --
+
+def test_live_lookback_covers_the_whole_session(strat):
+    """session_vwap is grouped over ONLY the rows in the live window, so the VWAP
+    anchor is the window start. At 200 bars the window stops reaching 09:15 after
+    12:34 and the anchor error reached 2.12 ATR by 14:49 — larger than the default
+    entry band, which silently flips momentum/fade signals."""
+    assert strat.live_lookback_bars >= 400
+    assert strat.meta()["live_lookback_bars"] == strat.live_lookback_bars
+
+
+def test_edge_triggered_not_level_triggered(strat):
+    """Backtest takes one trade then blocks on position-open + cooldown, but the
+    live evaluator applies NEITHER. Level-triggering would emit on every bar the
+    close sits outside the band — unbounded live exposure."""
+    p = _params(strat, entry_family=MOMENTUM, band_atr_mult=1.0)
+    bar = _row(close=24530, vwap=24500, atr=20.0)
+    assert validate_signal(strat.evaluate(bar, _flat(bar), p, {})).direction == "CE"
+    # same setup still active on the prior bar -> suppressed
+    again = validate_signal(strat.evaluate(bar, bar, p, {}))
+    assert again.direction == "NONE" and again.blockers == ["setup already active"]
+
+
+def test_signal_threshold_is_enforced_by_the_strategy(strat):
+    """The backtest engine gates on signal_threshold generically; the live
+    evaluator does not. A tuned threshold must mean the same thing on both."""
+    bar = _row(close=24530, vwap=24500, atr=20.0)
+    assert validate_signal(strat.evaluate(bar, _flat(bar), _params(strat, signal_threshold=40), {})).direction == "CE"
+    blocked = validate_signal(strat.evaluate(bar, _flat(bar), _params(strat, signal_threshold=90), {}))
+    assert blocked.direction == "NONE" and blocked.blockers
+
+
+def test_nan_atr_avg_falls_back_rather_than_poisoning_the_score(strat):
+    """`atr_avg and atr/atr_avg or 1.0` looked like a guard but bool(nan) is True,
+    so NaN propagated instead of falling back to 1.0."""
+    p = _params(strat, entry_family=MOMENTUM, band_atr_mult=1.0)
+    bar = _row(close=24530, vwap=24500, atr=20.0, atr_avg=float("nan"))
+    sig = validate_signal(strat.evaluate(bar, _flat(bar), p, {}))
+    assert sig.direction == "CE"
+    assert math.isfinite(sig.score) and sig.score >= 60
+    assert not any("nan" in r.lower() for r in sig.reasons)

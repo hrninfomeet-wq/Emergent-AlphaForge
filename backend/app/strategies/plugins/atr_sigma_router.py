@@ -28,6 +28,14 @@ would not — run 2.51% at +/-5 NIFTY points but only 0.16% at +/-10 and 0.02% a
 +/-20. `min_stop_bps` keeps the stop above that ambiguity floor in scale-free
 units (4 bps ~ 9.8 NIFTY pts ~ 32 SENSEX pts).
 
+DEPLOYMENT NOTE — SET A PREMIUM STOP
+-----------------------------------
+This strategy emits SPOT exits only (spot_target_pts / spot_stop_pts /
+time_stop_minutes). It sets no `stop_pct` / `target_pct`, so a paper or live
+deployment with no `risk.auto_paper_stop_pct` falls back to the deep 50%-of-
+premium catastrophe default and gets NO premium target at all. Set
+`auto_paper_stop_pct` / `auto_paper_target_pct` on the deployment.
+
 WHAT THIS DELIBERATELY DOES NOT DO
 ----------------------------------
 No DTE gating. The expiry weekday ROTATED TWICE inside the warehouse window
@@ -82,6 +90,14 @@ class ATRSigmaRouter(StrategyBase):
     supported_instruments = ["NIFTY", "BANKNIFTY", "SENSEX"]
     supported_modes = ["SCALP", "INTRADAY"]
     supported_timeframes = ["1m"]
+    # MUST cover the whole session. `session_vwap` is grouped by session_date over
+    # ONLY the rows present in the evaluator's rolling window, so the VWAP anchor
+    # is the WINDOW start, not 09:15. At the default 200 the window stops reaching
+    # 09:15 after 12:34, and by 14:49 the anchor error measured +17.02 pts = 2.12
+    # ATR — larger than the entire default entry band (band_atr_mult=1.0), which
+    # silently FLIPS momentum/fade signals for ~40% of the session. 400 keeps the
+    # full current session (335 bars at 14:49) plus warm-up from the prior one.
+    live_lookback_bars = 400
 
     parameter_schema = {
         # Entry family. INT, not a string: optimizer.py only searches
@@ -144,7 +160,12 @@ class ATRSigmaRouter(StrategyBase):
         # than arithmetic truncation, so two identically-shaped bars at
         # different index levels cannot round to different ints.
         stretch = abs(dev) / atr
-        expansion = float(row["atr_avg"]) and atr / float(row["atr_avg"]) or 1.0
+        # NOT `atr_avg and atr/atr_avg or 1.0`: bool(nan) is True, so a NaN
+        # atr_avg fell through to nan rather than the 1.0 fallback, and every
+        # downstream `expansion >= threshold` then silently read False.
+        atr_avg = row.get("atr_avg")
+        expansion = (atr / float(atr_avg)
+                     if _finite(atr_avg) and float(atr_avg) > 0 else 1.0)
         score = _BASE_SCORE
         for threshold in (1.5, 2.5, 4.0):
             if stretch >= threshold:
@@ -155,16 +176,42 @@ class ATRSigmaRouter(StrategyBase):
                 score += 5
                 reasons.append(f"ATR {expansion:.1f}x its average")
 
+        # The BACKTEST engine applies signal_threshold and cooldown_bars
+        # generically (backtest.py:181-200); the LIVE evaluator applies NEITHER
+        # (deployment_evaluator.py checks only direction). Enforcing the
+        # threshold here is what makes a tuned value mean the same thing in both.
+        score = min(100, score)
+        if score < int(params.get("signal_threshold", 55)):
+            return Signal(direction="NONE",
+                          blockers=[f"score {score} below threshold"])
+
+        # Edge-trigger. Backtest takes ONE trade then blocks on position-open +
+        # cooldown, but `close` typically sits outside the band for many
+        # consecutive bars, so a level-triggered rule emits on EVERY bar live —
+        # unbounded paper exposure. Fire only on the bar the setup first appears.
+        if self._route(family, prev, params,
+                       self._dev(prev, params), band, atr)[0] == direction:
+            return Signal(direction="NONE", blockers=["setup already active"])
+
         stop_pts, target_pts = self._exits(close, atr, params)
         return Signal(
             direction=direction,
-            score=min(100, score),
+            score=score,
             reasons=reasons,
             scenario=_FAMILY_NAMES.get(family, "unknown"),
             spot_stop_pts=stop_pts,
             spot_target_pts=target_pts,
             time_stop_minutes=int(params["time_stop_minutes"]),
         )
+
+    @staticmethod
+    def _dev(row, params):
+        """close - vwap for a bar, or an out-of-band NaN-safe 0.0 when the bar
+        cannot be read (an unreadable previous bar must not suppress a signal)."""
+        close, vwap = row.get("close"), row.get("vwap")
+        if not (_finite(close) and _finite(vwap)):
+            return 0.0
+        return float(close) - float(vwap)
 
     # ------------------------------------------------------------- families --
 
