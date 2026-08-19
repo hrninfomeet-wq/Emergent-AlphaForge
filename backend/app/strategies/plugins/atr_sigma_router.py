@@ -26,7 +26,8 @@ range in intrabar oscillation (p90 7.6x). Bars where a stop AND a target would
 both sit inside the range — where the backtest must guess the order and live
 would not — run 2.51% at +/-5 NIFTY points but only 0.16% at +/-10 and 0.02% at
 +/-20. `min_stop_bps` keeps the stop above that ambiguity floor in scale-free
-units (4 bps ~ 9.8 NIFTY pts ~ 32 SENSEX pts).
+units (4.5 bps ~ 11 NIFTY pts ~ 36 SENSEX pts). 4.0 bps was NOT
+enough: on NIFTY 24,500 it yields 9.8 pts, under the >=10 the study requires.
 
 DEPLOYMENT NOTE — SET A PREMIUM STOP
 -----------------------------------
@@ -105,13 +106,21 @@ class ATRSigmaRouter(StrategyBase):
         # search space and every trial would evaluate the same default.
         "entry_family":      {"type": "int",   "min": 0,    "max": 2,    "default": 0},
         # Distance from session VWAP that counts as "outside the noise", in ATR.
+        # NOTE: read by MOMENTUM and FADE only — the EXPANSION branch never
+        # consults it, so PIN this when searching entry_family=2 or a third of
+        # the trials burn a continuous dimension on a no-op.
         "band_atr_mult":     {"type": "float", "min": 0.25, "max": 4.0,  "default": 1.0},
         # EXPANSION family only: atr / atr_avg required to call it an ignition.
         "expansion_ratio":   {"type": "float", "min": 0.8,  "max": 3.0,  "default": 1.3},
         "stop_atr_mult":     {"type": "float", "min": 0.5,  "max": 6.0,  "default": 2.0},
         "target_atr_mult":   {"type": "float", "min": 1.0,  "max": 12.0, "default": 4.0},
         # Scale-free stop floor; see the tick-fidelity note in the module docstring.
-        "min_stop_bps":      {"type": "float", "min": 1.0,  "max": 25.0, "default": 4.0},
+        # Lower bound is the MEASURED safety floor, not 0: below ~4 bps the stop
+        # re-enters the 2.51%-ambiguity zone where backtest and live disagree.
+        # A searchable range that reaches below it lets the optimizer switch the
+        # safety off — the same failure class as it tuning `lots` to an invented
+        # ceiling.
+        "min_stop_bps":      {"type": "float", "min": 4.5,  "max": 25.0, "default": 4.5},
         "time_stop_minutes": {"type": "int",   "min": 5,    "max": 180,  "default": 45},
         # Calendar research knob. bit0=Mon .. bit4=Fri; 31 = every weekday.
         # NOT a DTE proxy — see the module docstring.
@@ -119,7 +128,10 @@ class ATRSigmaRouter(StrategyBase):
         # Require the EMA stack to agree. Applied to the trend-following
         # families only; demanding it of FADE would be self-contradictory.
         "trend_filter":      {"type": "bool",  "default": True},
-        "signal_threshold":  {"type": "int",   "min": 40,   "max": 90,   "default": 55},
+        # Reachable scores are {60,65,70,75,80,85} (_BASE_SCORE 60 + 3x5 stretch
+        # + 2x5 expansion), so the old [40,90] range was a no-op below 60 and
+        # blocked every trade above 85 — 51 values mapping to 6 behaviours.
+        "signal_threshold":  {"type": "int",   "min": 60,   "max": 85,   "default": 60},
         "cooldown_bars":     {"type": "int",   "min": 1,    "max": 60,   "default": 10},
     }
 
@@ -171,10 +183,10 @@ class ATRSigmaRouter(StrategyBase):
             if stretch >= threshold:
                 score += 5
                 reasons.append(f"stretch >= {threshold} ATR")
-        for threshold in (1.5, 2.0):
-            if expansion >= threshold:
-                score += 5
-                reasons.append(f"ATR {expansion:.1f}x its average")
+        expansion_steps = sum(1 for threshold in (1.5, 2.0) if expansion >= threshold)
+        if expansion_steps:
+            score += 5 * expansion_steps
+            reasons.append(f"ATR {expansion:.1f}x its average")
 
         # The BACKTEST engine applies signal_threshold and cooldown_bars
         # generically (backtest.py:181-200); the LIVE evaluator applies NEITHER
@@ -189,8 +201,10 @@ class ATRSigmaRouter(StrategyBase):
         # cooldown, but `close` typically sits outside the band for many
         # consecutive bars, so a level-triggered rule emits on EVERY bar live —
         # unbounded paper exposure. Fire only on the bar the setup first appears.
-        if self._route(family, prev, params,
-                       self._dev(prev, params), band, atr)[0] == direction:
+        # prev is judged on ITS OWN atr/band: reusing the CURRENT bar's would ask
+        # "was this active?" against today's volatility, which both re-opens the
+        # re-fire hole on a rising ATR and back-dates an expansion onto prev.
+        if self._setup_of(family, prev, params) == direction:
             return Signal(direction="NONE", blockers=["setup already active"])
 
         stop_pts, target_pts = self._exits(close, atr, params)
@@ -204,14 +218,22 @@ class ATRSigmaRouter(StrategyBase):
             time_stop_minutes=int(params["time_stop_minutes"]),
         )
 
-    @staticmethod
-    def _dev(row, params):
-        """close - vwap for a bar, or an out-of-band NaN-safe 0.0 when the bar
-        cannot be read (an unreadable previous bar must not suppress a signal)."""
-        close, vwap = row.get("close"), row.get("vwap")
-        if not (_finite(close) and _finite(vwap)):
-            return 0.0
-        return float(close) - float(vwap)
+    def _setup_of(self, family, row, params):
+        """Which direction (if any) THIS bar independently qualifies for.
+
+        Everything is derived from `row` alone — its own close/vwap/atr — so the
+        edge-trigger compares like with like. Returns "NONE" for any bar that
+        cannot be read: an unreadable previous bar must never suppress a signal.
+        """
+        close, vwap, atr = row.get("close"), row.get("vwap"), row.get("atr")
+        if not (_finite(close) and _finite(vwap) and _finite(atr)):
+            return "NONE"
+        atr = float(atr)
+        if atr <= 0:
+            return "NONE"
+        band = float(params["band_atr_mult"]) * atr
+        dev = float(close) - float(vwap)
+        return self._route(family, row, params, dev, band, atr)[0]
 
     # ------------------------------------------------------------- families --
 
@@ -242,14 +264,22 @@ class ATRSigmaRouter(StrategyBase):
                 return "NONE", []
             # Direction from where the bar CLOSED in its own range — an
             # ignition bar closes on its extreme.
-            high, low = float(row["high"]), float(row["low"])
-            span = high - low
-            if span <= 0:
+            high, low = row.get("high"), row.get("low")
+            if not (_finite(high) and _finite(low)):
                 return "NONE", []
+            span = float(high) - float(low)
+            # `span <= 0` alone lets an infinite high through: position then
+            # underflows to 0.0 and emits a confident PE.
+            if not (math.isfinite(span) and span > 0):
+                return "NONE", []
+            high, low = float(high), float(low)
             position = (float(row["close"]) - low) / span
-            if position >= 2.0 / 3.0:
+            # Also require displacement from VWAP. Without this, band_atr_mult
+            # was a DEAD search dimension for this family — its whole [0.25, 4.0]
+            # range produced one identical output.
+            if position >= 2.0 / 3.0 and dev > band:
                 return "CE", [f"expansion {ratio:.1f}x, close in top third"]
-            if position <= 1.0 / 3.0:
+            if position <= 1.0 / 3.0 and dev < -band:
                 return "PE", [f"expansion {ratio:.1f}x, close in bottom third"]
             return "NONE", []
 
@@ -283,4 +313,8 @@ class ATRSigmaRouter(StrategyBase):
         # A target inside the stop would make every trade a guaranteed loser
         # under the engine's stop-first intrabar rule.
         target_pts = max(target_pts, stop_pts * 1.2)
-        return round(stop_pts, 4), round(target_pts, 4)
+        # round() here is an ABSOLUTE grid in index points — the one non-ratio
+        # quantity left in the exit path. At 4dp it broke scale linearity at
+        # ~5e-6 relative (5x the transfer test's own tolerance); 6dp puts the
+        # artifact ~2.5e-8 relative, far below anything economically meaningful.
+        return round(stop_pts, 6), round(target_pts, 6)
