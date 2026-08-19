@@ -129,9 +129,14 @@ class ATRSigmaRouter(StrategyBase):
         # families only; demanding it of FADE would be self-contradictory.
         "trend_filter":      {"type": "bool",  "default": True},
         # Reachable scores are {60,65,70,75,80,85} (_BASE_SCORE 60 + 3x5 stretch
-        # + 2x5 expansion), so the old [40,90] range was a no-op below 60 and
-        # blocked every trade above 85 — 51 values mapping to 6 behaviours.
-        "signal_threshold":  {"type": "int",   "min": 60,   "max": 85,   "default": 60},
+        # + 2x5 expansion). The old [40,90] range therefore mapped 51 values onto
+        # 6 behaviours. Only the TOP was harmful — 86-90 blocks every trade — so
+        # only the top is trimmed. The 40-59 band is a pure no-op ("no threshold
+        # filtering") and is RETAINED deliberately: raising the minimum to 60
+        # made previously-saved presets undeployable
+        # (HTTP 400 "must be >= 60" from _validate_strategy_deployment_config),
+        # and breaking saved artifacts is not worth a search-efficiency gain.
+        "signal_threshold":  {"type": "int",   "min": 40,   "max": 85,   "default": 60},
         "cooldown_bars":     {"type": "int",   "min": 1,    "max": 60,   "default": 10},
     }
 

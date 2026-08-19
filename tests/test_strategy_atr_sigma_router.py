@@ -376,7 +376,11 @@ def test_searchable_ranges_cannot_disable_the_safety_floor_or_no_op(strat):
     signal_threshold must not span values that are all no-op or all-blocking."""
     assert strat.parameter_schema["min_stop_bps"]["min"] >= 4.0
     thr = strat.parameter_schema["signal_threshold"]
-    assert thr["min"] >= 60 and thr["max"] <= 85
+    # Only the harmful end is trimmed: >85 blocks every trade. The 40-59 no-op
+    # band stays so saved presets remain deployable — two real ones carried 54
+    # and 50 and were rejected outright when the minimum was raised to 60.
+    assert thr["max"] <= 85
+    assert thr["min"] <= 50, "raising this minimum breaks previously-saved presets"
 
 
 def test_expansion_reason_is_not_duplicated(strat):
