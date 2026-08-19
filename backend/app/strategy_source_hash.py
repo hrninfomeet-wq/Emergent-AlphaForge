@@ -71,15 +71,37 @@ def hash_strategy_source(strategy_obj: Any) -> Optional[str]:
 
 
 def detect_drift(*, pinned: Optional[str], current: Optional[str]) -> bool:
-    """Return True iff a pinned hash exists, a current hash exists, and they differ.
+    """Return False ONLY when the source is positively verified; True otherwise.
 
-    Conservative defaults:
-      - If either side is missing/None we report no drift (we can't be sure).
-      - If both are present and equal, no drift.
-      - Only when both are present and unequal do we flag drift.
+    "Drift" here means "this deployment's code is not provably the code it was
+    pinned to". That includes *not being able to check at all*, which is why a
+    missing hash on either side reports True:
+
+      - both present and EQUAL  -> False. The only verified state.
+      - both present, different -> True.  Classic drift; the file changed.
+      - `pinned` missing        -> True.  Never pinned, so never verified. The
+                                          remedy is cheap and already exists:
+                                          POST /deployments/{id}/repin-source.
+      - `current` missing       -> True.  Source unreadable/unresolvable, so it
+                                          cannot be verified right now.
+
+    This FAILS CLOSED, and that is a deliberate reversal of the original
+    behaviour, which returned False whenever either side was missing and
+    described that as "conservative". It was the opposite: absence of evidence
+    was treated as evidence of safety, so a deployment carrying no pin had
+    source-drift protection silently disabled forever while still reading as
+    protected. Six real deployments in the production database were in exactly
+    that state (one of them pinned to the literal string
+    "FAKE_PINNED_FROM_TEST"), and any of them could have been resumed against
+    completely unverified strategy code.
+
+    Both callers already do the right thing with a True: the resume/live gate
+    (`routers/deployments.py`) refuses with 409 and tells the operator to
+    re-pin, and the evaluator auto-pauses and journals the event. Pausing is
+    recoverable; trading unverified code is not.
     """
     if not pinned or not current:
-        return False
+        return True
     return str(pinned) != str(current)
 
 

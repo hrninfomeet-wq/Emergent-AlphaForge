@@ -25,22 +25,63 @@ from app.strategies.base import StrategyBase  # noqa: E402
 # ---- detect_drift pure logic ------------------------------------------------
 
 
-def test_detect_drift_returns_false_when_pinned_missing():
-    assert detect_drift(pinned=None, current="abc123") is False
-    assert detect_drift(pinned="", current="abc123") is False
+def test_detect_drift_FAILS_CLOSED_when_pinned_missing():
+    """A deployment with no pinned SHA has never had its source verified, so it
+    must NOT be treated as verified.
+
+    This used to return False ("we can't be sure, so report no drift"), which
+    inverted the gate: absence of evidence was treated as evidence of safety.
+    Six real deployments in the production database carried no pin (and one
+    carried the literal string FAKE_PINNED_FROM_TEST), and drift protection was
+    silently inert for every one of them. The remedy is cheap and already
+    exists: POST /deployments/{id}/repin-source."""
+    assert detect_drift(pinned=None, current="abc123") is True
+    assert detect_drift(pinned="", current="abc123") is True
 
 
-def test_detect_drift_returns_false_when_current_missing():
-    assert detect_drift(pinned="abc123", current=None) is False
-    assert detect_drift(pinned="abc123", current="") is False
+def test_detect_drift_FAILS_CLOSED_when_current_missing():
+    """The source cannot be read right now, so it cannot be verified either.
+    Pausing is recoverable (re-pin, or fix the file); running unverified code
+    against real money is not."""
+    assert detect_drift(pinned="abc123", current=None) is True
+    assert detect_drift(pinned="abc123", current="") is True
+
+
+def test_detect_drift_fails_closed_when_both_sides_missing():
+    assert detect_drift(pinned=None, current=None) is True
 
 
 def test_detect_drift_returns_false_when_hashes_match():
+    """The ONLY input that may report 'no drift': both present and equal."""
     assert detect_drift(pinned="abc123", current="abc123") is False
 
 
-def test_detect_drift_returns_true_only_when_both_present_and_differ():
+def test_detect_drift_returns_true_when_both_present_and_differ():
     assert detect_drift(pinned="abc123", current="def456") is True
+
+
+def test_only_a_verified_match_is_ever_reported_as_no_drift():
+    """Exhaustive over the shape of the inputs, so no future 'conservative
+    default' can reopen the hole: a False result must imply both sides present
+    and equal."""
+    values = (None, "", "abc123", "def456")
+    for pinned in values:
+        for current in values:
+            drifted = detect_drift(pinned=pinned, current=current)
+            if drifted is False:
+                assert pinned and current and pinned == current, (
+                    f"no-drift reported for pinned={pinned!r} current={current!r}")
+
+
+def test_an_unpinned_deployment_cannot_pass_the_resume_gate():
+    """End-to-end meaning of the fix: routers/deployments.py raises 409 on any
+    truthy detect_drift, so an unpinned deployment can no longer be resumed or
+    promoted to live. Pinned here as behaviour, not just as a unit result."""
+    legacy_deployment = {"strategy_source_sha": None}          # pre-pinning row
+    fake_pinned = {"strategy_source_sha": "FAKE_PINNED_FROM_TEST"}
+    for deployment in (legacy_deployment, fake_pinned):
+        assert detect_drift(pinned=deployment.get("strategy_source_sha"),
+                            current="06474910c1153462") is True
 
 
 # ---- hash_strategy_source against a real plugin file -----------------------

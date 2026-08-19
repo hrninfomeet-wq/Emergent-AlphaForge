@@ -33,6 +33,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 
 import app.routers.deployments as dep  # noqa: E402
+from app.strategy_source_hash import hash_strategy_source  # noqa: E402
 from app.live.live_position_guard import LiveMonitorRegistry  # noqa: E402
 from app.live.live_sl_monitor import build_monitor_state  # noqa: E402
 
@@ -148,6 +149,12 @@ def _deployment(dep_id="dep-1", status="ACTIVE", **extra) -> Dict[str, Any]:
         "status": status,
         "risk": {"allow_overnight": False, "sizing": {"lots": 2}},
         "updated_at": "2026-06-25T00:00:00+00:00",
+        # Real creation ALWAYS pins this (routers/deployments.py:530), and since
+        # detect_drift fails closed an unpinned deployment can no longer be
+        # resumed or promoted — so a fixture without it is not a realistic
+        # deployment, it is an unverifiable one. Computed rather than hardcoded
+        # because _FakeStrategy's source file is this test file.
+        "strategy_source_sha": hash_strategy_source(_FakeStrategy()),
     }
     d.update(extra)
     return d
@@ -1210,3 +1217,35 @@ class TestSafetyTransitionsDoNotClobber:
         assert row["status"] == "PAUSED"
         assert row["mode"] == "paper"
         assert row["risk"]["live"]["last_block_reason"] == "status_paused"
+
+
+class TestUnpinnedDeploymentCannotResume:
+    """The source-drift gate must fail CLOSED on a deployment that was never
+    pinned. Six such rows existed in the production database (one pinned to the
+    literal string "FAKE_PINNED_FROM_TEST") and every one of them read as
+    protected while having no protection at all."""
+
+    def test_missing_pin_is_refused(self, monkeypatch):
+        from fastapi import HTTPException
+        db = FakeDB()
+        db.strategy_deployments.rows.append(
+            _deployment(status="PAUSED", strategy_source_sha=None))
+        _install(monkeypatch, db)
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(dep.resume_deployment("dep-1"))
+        assert exc.value.status_code == 409
+        assert "re-pin" in str(exc.value.detail).lower()
+
+    def test_fake_pin_is_refused(self, monkeypatch):
+        from fastapi import HTTPException
+        db = FakeDB()
+        db.strategy_deployments.rows.append(
+            _deployment(status="PAUSED", strategy_source_sha="FAKE_PINNED_FROM_TEST"))
+        _install(monkeypatch, db)
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(dep.resume_deployment("dep-1"))
+        assert exc.value.status_code == 409
+
+    # The positive path — a correctly pinned deployment still resuming — is
+    # already covered by TestPauseDemotesLive, which drives the same route
+    # through the now-pinned fixture. Not duplicated here.
