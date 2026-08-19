@@ -25,6 +25,31 @@ for why that was the expected outcome.
 Holdout for the first three = 2024-11-25 → 2025-10-31 (before their search window).
 Holdout for `19489eba` = 2026-01-01 → 2026-08-14 (after its search window).
 
+
+## Post-fix re-test (2026-08-19, `34d5b69` + `4d95135`)
+
+After the eight defect fixes, all three families were re-run at DEFAULT parameters on
+NIFTY, `dte_filter [1,2]`, ATM, costs on. The fixes cut trade counts sharply (the plugin is
+now edge-triggered and enforces its own threshold): momentum 5,287 → 1,715, fade 6,110 →
+1,859, vol_expansion 1,120 → 835.
+
+`fade` flipped from −₹126,928 to **+₹1,267** on the full window — which is **₹1.6 per trade
+over 784 trades**, i.e. noise. Split train/holdout and tested properly:
+
+| Family | Train (2024-11→2025-12) | Holdout (2026) |
+|---|---|---|
+| fade | −₹752 · t = **−0.02** | +₹657 · t = **+0.03** |
+| vol_expansion | −₹29,884 · t = −1.17 | −₹30,760 · t = **−1.80** |
+
+Nothing clears \|t\| > 2. (Those are TRADE-level t-stats — the grouping key was not a date,
+so each trade counted as its own session. Trade-level is the *more permissive* test, with
+more observations and a tighter standard error, so the conclusion holds a fortiori.)
+
+**Verdict unchanged: no edge at default parameters.** The plugin is now correct and
+well-tested; it is a search space, not a strategy with a demonstrated edge. This is what
+[`OPTION_BUYING_MICROSTRUCTURE_2026-08.md`](OPTION_BUYING_MICROSTRUCTURE_2026-08.md)
+predicted — the ATM buyer's MFE/MAE is 0.90–0.95 before costs.
+
 ## What went wrong, precisely
 
 **1. No holdout in the search protocol.** The three large runs optimized over the whole
