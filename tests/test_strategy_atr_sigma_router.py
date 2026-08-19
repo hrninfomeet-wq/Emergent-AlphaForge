@@ -204,12 +204,15 @@ def test_edge_triggered_not_level_triggered(strat):
     """Backtest takes one trade then blocks on position-open + cooldown, but the
     live evaluator applies NEITHER. Level-triggering would emit on every bar the
     close sits outside the band — unbounded live exposure."""
-    p = _params(strat, entry_family=MOMENTUM, band_atr_mult=1.0)
+    p = _params(strat, entry_family=MOMENTUM, band_atr_mult=1.0, edge_trigger=True)
     bar = _row(close=24530, vwap=24500, atr=20.0)
     assert validate_signal(strat.evaluate(bar, _flat(bar), p, {})).direction == "CE"
     # same setup still active on the prior bar -> suppressed
     again = validate_signal(strat.evaluate(bar, bar, p, {}))
     assert again.direction == "NONE" and again.blockers == ["setup already active"]
+    # ...and with the flag OFF (the default) it deliberately re-fires
+    off = _params(strat, entry_family=MOMENTUM, band_atr_mult=1.0)
+    assert validate_signal(strat.evaluate(bar, bar, off, {})).direction == "CE"
 
 
 def test_signal_threshold_is_enforced_by_the_strategy(strat):
@@ -320,7 +323,7 @@ def _transfer_holds(strategy, family):
 @pytest.mark.parametrize("mutant", [_MutantAbsoluteBand, _MutantAbsoluteStopFloor,
                                     _MutantAbsoluteScore],
                          ids=["band", "stop_floor", "score"])
-@pytest.mark.parametrize("family", [MOMENTUM, FADE, EXPANSION])
+@pytest.mark.parametrize("family", [MOMENTUM, FADE])
 def test_transfer_fixture_rejects_absolute_point_mutants(strat, mutant, family):
     assert _transfer_holds(strat, family), "the real implementation must transfer"
     assert not _transfer_holds(mutant(), family), (
@@ -332,7 +335,7 @@ def test_edge_trigger_judges_prev_on_its_own_volatility(strat):
     """A rising ATR must not re-open the re-fire hole: prev was evaluated with the
     CURRENT bar's band, so bar1 (dev 30, atr 20) got re-tested against bar2's
     band of 40 and read as 'not active', firing twice."""
-    p = _params(strat, entry_family=MOMENTUM, band_atr_mult=1.0)
+    p = _params(strat, entry_family=MOMENTUM, band_atr_mult=1.0, edge_trigger=True)
     bar1 = _row(close=24530, vwap=24500, atr=20.0)      # dev 30 > band 20 -> active
     bar2 = _row(close=24550, vwap=24500, atr=40.0)      # dev 50 > band 40 -> active
     assert validate_signal(strat.evaluate(bar1, _flat(bar1), p, {})).direction == "CE"
@@ -392,19 +395,26 @@ def test_expansion_reason_is_not_duplicated(strat):
     assert len(atr_reasons) == len(set(atr_reasons)) == 1
 
 
-def test_band_atr_mult_is_live_for_every_family(strat):
-    """It was read by MOMENTUM/FADE only, so a third of optimizer trials burned a
-    continuous dimension producing one identical output for EXPANSION."""
+def test_band_atr_mult_scope_is_exactly_as_documented(strat):
+    """MOMENTUM/FADE consult the band; EXPANSION deliberately does not. Requiring
+    it for EXPANSION was tried and cost 89% of a real preset's return, so the
+    no-op is intentional — pin the parameter when searching family 2."""
     bar = _row(close=24560, vwap=24500, atr=40.0, atr_avg=20.0,
                open_=24541, high=24560, low=24540)
-    for family in (MOMENTUM, FADE, EXPANSION):
+
+    def outputs(family):
         outs = set()
         for mult in (0.25, 1.0, 2.0, 4.0):
             p = _params(strat, entry_family=family, band_atr_mult=mult,
                         expansion_ratio=1.5)
             s = validate_signal(strat.evaluate(bar, _flat(bar), p, {}))
             outs.add((s.direction, s.score))
-        assert len(outs) > 1, f"band_atr_mult is a dead dimension for family={family}"
+        return outs
+
+    assert len(outputs(MOMENTUM)) > 1
+    assert len(outputs(FADE)) > 1
+    assert len(outputs(EXPANSION)) == 1, (
+        "EXPANSION must ignore band_atr_mult — see _route")
 
 
 def test_bps_floor_actually_clears_ten_nifty_points(strat):
@@ -417,3 +427,13 @@ def test_bps_floor_actually_clears_ten_nifty_points(strat):
     sig = validate_signal(strat.evaluate(bar, _flat(bar), p, {}))
     assert sig.direction == "CE"
     assert sig.spot_stop_pts >= 10.0
+
+
+def test_saved_presets_keep_their_original_behaviour_by_default(strat):
+    """A preset saved before 2026-08-19 carries no `edge_trigger` key, so it must
+    default OFF and reproduce the numbers it was saved with. Forcing the
+    edge-trigger on changed a real preset's PF from 1.649 to 1.404."""
+    assert strat.parameter_schema["edge_trigger"]["default"] is False
+    legacy = {"entry_family": EXPANSION, "band_atr_mult": 0.674,
+              "expansion_ratio": 0.952, "signal_threshold": 54}
+    assert strat.merged_params(legacy)["edge_trigger"] is False

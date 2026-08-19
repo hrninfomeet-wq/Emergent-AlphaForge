@@ -106,9 +106,9 @@ class ATRSigmaRouter(StrategyBase):
         # search space and every trial would evaluate the same default.
         "entry_family":      {"type": "int",   "min": 0,    "max": 2,    "default": 0},
         # Distance from session VWAP that counts as "outside the noise", in ATR.
-        # NOTE: read by MOMENTUM and FADE only — the EXPANSION branch never
-        # consults it, so PIN this when searching entry_family=2 or a third of
-        # the trials burn a continuous dimension on a no-op.
+        # NOTE: read by MOMENTUM and FADE only — the EXPANSION branch does not
+        # consult it (deliberately; see _route). PIN this when searching
+        # entry_family=2, or a third of the trials vary a no-op.
         "band_atr_mult":     {"type": "float", "min": 0.25, "max": 4.0,  "default": 1.0},
         # EXPANSION family only: atr / atr_avg required to call it an ignition.
         "expansion_ratio":   {"type": "float", "min": 0.8,  "max": 3.0,  "default": 1.3},
@@ -128,6 +128,11 @@ class ATRSigmaRouter(StrategyBase):
         # Require the EMA stack to agree. Applied to the trend-following
         # families only; demanding it of FADE would be self-contradictory.
         "trend_filter":      {"type": "bool",  "default": True},
+        # Fire only on the bar a setup first appears, instead of every bar it
+        # stays true. OFF preserves pre-2026-08-19 behaviour and every saved
+        # preset's numbers. Turn ON for a paper/live deployment that is not
+        # otherwise capped, or to search a more selective variant.
+        "edge_trigger":      {"type": "bool",  "default": False},
         # Reachable scores are {60,65,70,75,80,85} (_BASE_SCORE 60 + 3x5 stretch
         # + 2x5 expansion). The old [40,90] range therefore mapped 51 values onto
         # 6 behaviours. Only the TOP was harmful — 86-90 blocks every trade — so
@@ -202,14 +207,20 @@ class ATRSigmaRouter(StrategyBase):
             return Signal(direction="NONE",
                           blockers=[f"score {score} below threshold"])
 
-        # Edge-trigger. Backtest takes ONE trade then blocks on position-open +
-        # cooldown, but `close` typically sits outside the band for many
-        # consecutive bars, so a level-triggered rule emits on EVERY bar live —
-        # unbounded paper exposure. Fire only on the bar the setup first appears.
-        # prev is judged on ITS OWN atr/band: reusing the CURRENT bar's would ask
-        # "was this active?" against today's volatility, which both re-opens the
-        # re-fire hole on a rising ATR and back-dates an expansion onto prev.
-        if self._setup_of(family, prev, params) == direction:
+        # Edge-trigger — OPT-IN, default OFF.
+        # Rationale for having it: `close` typically sits outside the band for
+        # many consecutive bars. The BACKTEST engine bounds that itself (one open
+        # position at a time + cooldown_bars), but the live evaluator does not, so
+        # a level-triggered rule emits on every qualifying bar live.
+        # Rationale for it being OFF by default: the backtest was never wrong, and
+        # forcing it on changed saved presets' results by ~34% (PF 1.649 -> 1.404
+        # on a real preset). Live exposure is properly bounded by the deployment's
+        # max_concurrent / max_lots_per_day caps, which live already requires.
+        # prev is judged on ITS OWN atr/band — reusing the CURRENT bar's asks "was
+        # this active?" against today's volatility, which re-opens the re-fire hole
+        # on a rising ATR and back-dates an expansion onto prev.
+        if params.get("edge_trigger", False) and (
+                self._setup_of(family, prev, params) == direction):
             return Signal(direction="NONE", blockers=["setup already active"])
 
         stop_pts, target_pts = self._exits(close, atr, params)
@@ -279,12 +290,16 @@ class ATRSigmaRouter(StrategyBase):
                 return "NONE", []
             high, low = float(high), float(low)
             position = (float(row["close"]) - low) / span
-            # Also require displacement from VWAP. Without this, band_atr_mult
-            # was a DEAD search dimension for this family — its whole [0.25, 4.0]
-            # range produced one identical output.
-            if position >= 2.0 / 3.0 and dev > band:
+            # NOTE: deliberately does NOT consult `band`. Requiring displacement
+            # from VWAP here was tried (2026-08-19) to stop band_atr_mult being a
+            # dead search dimension for this family, and it cost 89% of a real
+            # saved preset's return on the 2026 holdout (PF 1.649 -> 1.056) while
+            # barely changing the trade count — it selected DIFFERENT, worse bars.
+            # Search efficiency is not worth altering what the family means. Pin
+            # band_atr_mult when searching entry_family=2 instead.
+            if position >= 2.0 / 3.0:
                 return "CE", [f"expansion {ratio:.1f}x, close in top third"]
-            if position <= 1.0 / 3.0 and dev < -band:
+            if position <= 1.0 / 3.0:
                 return "PE", [f"expansion {ratio:.1f}x, close in bottom third"]
             return "NONE", []
 
