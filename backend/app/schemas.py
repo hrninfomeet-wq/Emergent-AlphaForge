@@ -192,7 +192,7 @@ class OptimizerStartReq(BaseModel):
     optimize_indicator_periods: bool = False
     # Evaluation mode: "spot" (default, original — score the index backtest) or
     # "option_rerank" (two-stage: spot search, then re-rank the top-K candidates
-    # by REAL paired-option net rupee P&L). option_config mirrors OptionBacktestReq.
+    # by REAL paired-option net rupee P&L).
     evaluation_mode: str = "spot"
     rerank_top_k: int = 50
     # Broaden the re-rank shortlist with a diversity sample so an option-profitable
@@ -200,6 +200,17 @@ class OptimizerStartReq(BaseModel):
     rerank_diversity: bool = False
     # Commit 2: search a bounded grid of exit/cap configs per surviving finalist.
     search_exit_controls: bool = False
+    # Mirrors OptionBacktestReq's fields EXCEPT `enabled`: option evaluation here
+    # is gated by `evaluation_mode == "option_rerank"`, and every reader
+    # (optimizer re-rank, survival folds, WFO) pulls keys individually. So a
+    # stored option_config has NO `enabled` key — and OptionBacktestReq.enabled
+    # defaults to False. Feeding a stored option_config straight back into
+    # /backtest/run as `option_backtest` therefore runs with the overlay OFF and
+    # returns paired:0, which reads as missing option data rather than a
+    # misconfiguration. Replaying one? Set `enabled: True` explicitly.
+    # (Do NOT "fix" this by flipping OptionBacktestReq.enabled to True: that field
+    # also defaults for requests that omit the block entirely, so it would switch
+    # on option pairing for every spot-only backtest.)
     option_config: Optional[Dict[str, Any]] = None
     survival_config: Optional[SurvivalConfigReq] = None
     # Opt-in multi-core: parallel TPE trial workers. 1 = sequential (default, byte-identical).
