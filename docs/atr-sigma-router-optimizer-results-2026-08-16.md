@@ -6,6 +6,15 @@ for why that was the expected outcome.
 
 ## Results
 
+> ⚠ **These metrics are STALE as of `fc424a1` (2026-08-19).** A deployment audit found the
+> plugin was level-triggered, so it re-fired while a setup stayed active, and it did not
+> enforce its own `signal_threshold`. Both are now handled inside `evaluate()`, which changes
+> trade counts. The recorded PARAMETERS remain valid for reproduction; the metrics beside them
+> no longer correspond to the current code. **The failed-holdout verdict is unaffected** — it
+> was reproduced across four independent runs, and the separate live-VWAP defect fixed in the
+> same commit is live-only (the backtest engine anchors VWAP over the full frame).
+
+
 | Job | Index | Trials | Search window | In-sample | True holdout | Verdict |
 |---|---|---|---|---|---|---|
 | `72c2b408` | SENSEX | 800/800 | 2025-11-01 → 2026-08-14 | **+₹529,656** · PF 2.27 · Sharpe 5.56 · win 63.6% | **−₹305,326** · win 40.8% · 233 paired | ❌ |
