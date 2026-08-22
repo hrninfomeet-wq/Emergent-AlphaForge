@@ -110,12 +110,74 @@ def validate_spot(db, instrument: str) -> Dict[str, Any]:
     }
 
 
+#: Rows drawn for the open-interest estimate. A random sample this size pins the
+#: population share to well under a percentage point, which is far more precision
+#: than the go/no-go decision it feeds needs.
+OI_SAMPLE_SIZE = 20_000
+
+
+def _oi_population(db, instrument: str) -> Dict[str, Any]:
+    """Estimate what share of this instrument's option bars carry a non-zero `oi`.
+
+    This is the single number that decides whether candidate A is worth building,
+    so it has to be honest rather than convenient.
+
+    The obvious implementation is wrong in a way that always looks good:
+    ``count_documents({"oi": {"$gt": 0}}, limit=N)`` saturates at N, and dividing
+    it by ``min(total, N)`` reports ~100% for any warehouse holding at least N
+    populated rows — including one where only 3% are populated. It answers "are
+    there at least N?", not "what share?".
+
+    So: draw a genuine random sample scoped to THIS instrument (``options_1m``
+    carries `underlying`) and report the share with its sample size, so a reader
+    can see what the estimate rests on. Falls back to an unscoped sample if the
+    instrument-scoped draw comes back empty, which would itself mean the
+    `underlying` field is absent from these rows — worth knowing and reported.
+    """
+    total = db.options_1m.estimated_document_count()
+    if not total:
+        return {"sampled": 0, "with_oi": 0, "pct": None, "scope": "none",
+                "note": "options_1m is empty"}
+
+    def _draw(match: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        pipeline: List[Dict[str, Any]] = []
+        if match:
+            pipeline.append({"$match": match})
+        pipeline += [
+            {"$sample": {"size": min(int(total), OI_SAMPLE_SIZE)}},
+            {"$group": {
+                "_id": None,
+                "n": {"$sum": 1},
+                "with_oi": {"$sum": {"$cond": [{"$gt": ["$oi", 0]}, 1, 0]}},
+            }},
+        ]
+        rows = list(db.options_1m.aggregate(pipeline))
+        return rows[0] if rows else None
+
+    scope = "instrument"
+    row = _draw({"underlying": instrument.upper()})
+    if not row or not row.get("n"):
+        scope = "all-instruments"
+        row = _draw(None)
+    if not row or not row.get("n"):
+        return {"sampled": 0, "with_oi": 0, "pct": None, "scope": "none",
+                "note": "sample returned no rows"}
+
+    n = int(row["n"])
+    with_oi = int(row.get("with_oi") or 0)
+    note = ("" if scope == "instrument" else
+            f"no options_1m rows carry underlying={instrument.upper()!r}; "
+            "sampled across all instruments instead")
+    return {"sampled": n, "with_oi": with_oi,
+            "pct": round(100.0 * with_oi / n, 2), "scope": scope, "note": note}
+
+
 def validate_options(db, instrument: str) -> Dict[str, Any]:
     """Option-side coverage: contracts, expiries, contract_key hygiene, OI presence."""
     contracts = list(db.option_contracts.find(
         {"underlying": instrument.upper()},
         {"_id": 0, "instrument_key": 1, "expiry_date": 1, "strike": 1,
-         "option_type": 1, "lot_size": 1, "contract_key": 1},
+         "side": 1, "lot_size": 1, "contract_key": 1},
     ))
     if not contracts:
         # Older rows may key the underlying differently; report rather than guess.
@@ -129,8 +191,7 @@ def validate_options(db, instrument: str) -> Dict[str, Any]:
     keyed = sum(1 for c in contracts if c.get("contract_key"))
 
     total_candles = db.options_1m.estimated_document_count()
-    with_oi = db.options_1m.count_documents({"oi": {"$gt": 0}}, limit=200_000)
-    sampled = min(total_candles, 200_000)
+    oi = _oi_population(db, instrument)
 
     return {
         "instrument": instrument,
@@ -142,9 +203,7 @@ def validate_options(db, instrument: str) -> Dict[str, Any]:
         "lot_size_static_fallback": UNDERLYING_META.get(instrument.upper(), {}).get("lot_size"),
         "contract_key_coverage_pct": round(100.0 * keyed / len(contracts), 2),
         "option_candles_total": total_candles,
-        "oi_populated_pct_of_sample": (
-            round(100.0 * with_oi / sampled, 2) if sampled else None
-        ),
+        "oi_population": oi,
         "chain_snapshots": db.chain_snapshots.estimated_document_count(),
         "ticks_retained": db.ticks.estimated_document_count(),
     }
@@ -201,9 +260,14 @@ def build_atm_series(
             continue
 
         for side in ("CE", "PE"):
+            # The field is `side`, NOT `option_type`. Getting this wrong returns
+            # zero contracts and the run reports "no ATM option series could be
+            # built ... this is a DATA finding" — i.e. it would blame the
+            # warehouse for a typo in this query. Authority: options_universe.py
+            # normalises to `side`, and option_candles.py stores `side`.
             contract = db.option_contracts.find_one({
                 "underlying": instrument.upper(), "strike": strike,
-                "option_type": side, "expiry_date": target_expiry,
+                "side": side, "expiry_date": target_expiry,
             }, {"_id": 0, "instrument_key": 1, "contract_key": 1})
             if not contract:
                 continue
@@ -292,7 +356,13 @@ def main() -> int:
               f"(static fallback {opts['lot_size_static_fallback']})")
         print(f"  contract_key coverage: {opts['contract_key_coverage_pct']}%")
         print(f"  option candles       : {opts['option_candles_total']:,}")
-        print(f"  OI populated (sample): {opts['oi_populated_pct_of_sample']}%")
+        _oi = opts["oi_population"]
+        _pct = "n/a" if _oi["pct"] is None else f"{_oi['pct']}%"
+        print(f"  OI populated         : {_pct}  "
+              f"({_oi['with_oi']:,}/{_oi['sampled']:,} sampled, scope={_oi['scope']})")
+        if _oi.get("note"):
+            print(f"      ! {_oi['note']}")
+        print(f"      <- if this is near 0%, candidate A is dead before it starts")
         print(f"  chain snapshots      : {opts['chain_snapshots']}   "
               f"<- 0 means no option-chain history exists to test")
         print(f"  ticks retained       : {opts['ticks_retained']:,}   "
@@ -331,9 +401,14 @@ def main() -> int:
     print(f"  bars {len(frame):,} | median ATM premium {median_premium:.2f} | "
           f"lot {lot} | statutory {charges_pct:.3f}% RT | spread {args.spread_pct}%/side")
 
+    # One block per (session, leg): the frame stacks a CE and a PE series for every
+    # session, and a forward window must never measure one contract's excursion
+    # against another's prices.
+    blocks = (frame["session_date"].astype(str) + "|" + frame["side"].astype(str))
     cells = screen_condition(frame, label="unconditioned_atm", horizons=args.horizons,
                              spread_pct_per_side=args.spread_pct,
-                             charges_pct_round_trip=charges_pct)
+                             charges_pct_round_trip=charges_pct,
+                             group_by=blocks)
     report["baseline"] = summarize_screen(cells)
 
     print(f"\n  {'condition':<24} {'H':>4} {'bars':>8} {'MFE/MAE':>9} "

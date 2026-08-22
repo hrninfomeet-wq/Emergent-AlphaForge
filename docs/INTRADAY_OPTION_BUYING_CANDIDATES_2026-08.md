@@ -847,15 +847,35 @@ from source; this one was not, and it was the only one that was wrong.
 | `backend/app/option_screen.py` | New. The shipped pre-plugin screen (pure, no DB). |
 | `backend/scripts/screen_option_buying.py` | New. Read-only CLI: validate → split → baseline → conditions. |
 | `tests/test_option_screen.py` | New. 29 tests. |
-| `tests/test_screen_option_buying_script.py` | New. 16 tests. |
+| `tests/test_screen_option_buying_script.py` | New. 16 tests (pure helpers). |
+| `tests/test_screen_option_buying_db_paths.py` | New. 16 tests driving the DB-touching functions against a strict fake Mongo. |
 | `backend/app/strategies/plugins/expiry_regime_trend_continuation.py` | New. Candidate B as a registered research-only plugin. |
 | `tests/test_strategy_expiry_regime_trend_continuation.py` | New. 34 tests, including look-ahead safety and fail-closed paths. |
 | `docs/INTRADAY_OPTION_BUYING_CANDIDATES_2026-08.md` | This document. |
 
-Every change is **additive** — seven new files, zero modifications to existing source.
+Every change is **additive** — eight new files, zero modifications to existing source.
 
-**Verification baseline (host, 2026-08-22):** `5,047 passed, 2 failed, 10 skipped,
-4 xfailed` in 169s. The two failures are `test_premium_momentum_route.py`, which needs a
+### 9.1 Three defects the CLI's database path was hiding
+
+The screen's pure helpers were tested from the start; its three DB-touching
+functions — `validate_spot`, `validate_options`, `build_atm_series` — were not, because
+this environment has no MongoDB. Driving them against a strict fake found three defects,
+all of which would have surfaced on the operator's first real run:
+
+| Defect | Why it mattered |
+|---|---|
+| `option_contracts` was queried on **`option_type`**; the field is **`side`** (`options_universe.py` normalises to it, `option_candles.py` stores it). | The query matched nothing, so the run printed *"no ATM option series could be built … this is a DATA finding, not a strategy one."* It would have **blamed the warehouse for a typo in the query** — the most expensive possible failure mode for a validation tool. A second instance survived in a projection and was caught only by a test asserting the string is absent repo-wide. |
+| The OI estimate used `count_documents({"oi": {"$gt": 0}}, limit=200_000)` over a denominator of `min(total, 200_000)`. | It saturates: any warehouse holding 200k populated rows reads **~100%**, whether the true share is 3% or 100%. This is *the* number the whole candidate-A decision turns on. Replaced with a per-instrument `$sample` estimate that reports the share, the sample size and its scope. |
+| The CLI handed `screen_condition` one frame stacking every session **and both option legs**, while that function's docstring said forward windows must not straddle sessions. | Every block boundary produced `horizon` bars whose "forward" excursion was measured against a different contract, silently corrupting every cell. Fixed by making `screen_condition` compute excursions **within contiguous blocks** (`group_by`, defaulting to `session_date`) — the contract is now enforced by the code instead of asserted in prose. |
+
+**The generalisable point, and it is the same one as §7.8:** the third defect existed
+because a contract was *documented* rather than *checked*, and the only caller broke it
+immediately. This repository's own record already says it twice — the `jData` encoding and
+the `exit_controls` schema were both green in CI and both wrong in production, because the
+test shared the implementation's assumption. A docstring is not a test.
+
+**Verification baseline (host, 2026-08-22):** `5,063 passed, 2 failed, 10 skipped,
+4 xfailed` in 164s. The two failures are `test_premium_momentum_route.py`, which needs a
 live MongoDB on `localhost:27017` and fails with `ServerSelectionTimeoutError` in any
 environment without one; they are unrelated to this change. The host also needed
 `pytest-asyncio`, `pydantic`, `fastapi`, `httpx`, `optuna`, `motor` and `yfinance`

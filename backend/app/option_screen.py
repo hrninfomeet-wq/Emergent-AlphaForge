@@ -389,6 +389,24 @@ def classify_cell(
     return "WEAK"
 
 
+def _contiguous_blocks(keys: np.ndarray) -> List[Tuple[int, int]]:
+    """Half-open ``[start, stop)`` spans over runs of an identical key.
+
+    Runs, not groups: two separated stretches of the same key are two blocks.
+    That is deliberate — a forward window may only look inside the stretch of
+    bars it is actually contiguous with.
+    """
+    n = len(keys)
+    if n == 0:
+        return []
+    cuts = [0]
+    for i in range(1, n):
+        if keys[i] != keys[i - 1]:
+            cuts.append(i)
+    cuts.append(n)
+    return [(cuts[i], cuts[i + 1]) for i in range(len(cuts) - 1)]
+
+
 def screen_condition(
     frame: pd.DataFrame,
     *,
@@ -398,17 +416,25 @@ def screen_condition(
     spread_pct_per_side: float = 1.0,
     charges_pct_round_trip: float = 0.0,
     min_sessions: int = MIN_SESSIONS_FOR_STAT,
+    group_by: Optional[Sequence] = None,
 ) -> List[ScreenCell]:
     """Measure one entry condition across horizons on an option premium series.
 
     ``frame`` must carry columns ``session_date``, ``high``, ``low``, ``close``
-    and be sorted ascending in time within each session. ``condition`` is an
-    optional boolean mask selecting eligible ENTRY bars; None screens every bar
-    (the unconditioned base rate).
+    and be sorted ascending in time within each contiguous block. ``condition``
+    is an optional boolean mask selecting eligible ENTRY bars; None screens every
+    bar (the unconditioned base rate).
 
-    Excursions are measured within the frame as given, so the caller is
-    responsible for not letting a window straddle two sessions — pass one
-    session's bars at a time, or a frame the caller has already made contiguous.
+    **A forward window never crosses a block boundary.** ``group_by`` labels the
+    blocks — pass one entry per row, e.g. ``session_date + "|" + side`` when a
+    frame stacks a CE leg and a PE leg. It defaults to ``session_date``, so the
+    safe behaviour is the default rather than something the caller must remember.
+
+    This used to be the caller's problem, documented and not enforced. The one
+    caller then concatenated every session and both option legs into a single
+    frame, so each block boundary produced ``horizon`` bars whose "forward"
+    excursion was measured against a different contract. A contract a docstring
+    states and nothing checks is a contract that gets broken.
     """
     required = {"session_date", "high", "low", "close"}
     missing = required - set(frame.columns)
@@ -421,6 +447,14 @@ def screen_condition(
     close = frame["close"].to_numpy(dtype=float)
     sessions = frame["session_date"].astype(str).to_numpy()
 
+    if group_by is None:
+        block_keys = sessions
+    else:
+        block_keys = np.asarray([str(k) for k in group_by], dtype=object)
+        if block_keys.size != len(frame):
+            raise ValueError("group_by length does not match frame length")
+    blocks = _contiguous_blocks(block_keys)
+
     mask = (
         np.ones(len(frame), dtype=bool) if condition is None
         else np.asarray(condition, dtype=bool)
@@ -429,7 +463,16 @@ def screen_condition(
         raise ValueError("condition mask length does not match frame length")
 
     for h in horizons:
-        mfe, mae, _net = forward_excursions(high, low, close, int(h))
+        # Excursions are computed INSIDE each block and stitched back, so the
+        # last `h` bars of every block are correctly ineligible rather than
+        # borrowing the next block's prices.
+        mfe = np.full(len(frame), np.nan, dtype=float)
+        mae = np.full(len(frame), np.nan, dtype=float)
+        for start, stop in blocks:
+            b_mfe, b_mae, _ = forward_excursions(
+                high[start:stop], low[start:stop], close[start:stop], int(h))
+            mfe[start:stop] = b_mfe
+            mae[start:stop] = b_mae
         # A bar is eligible if the condition fires AND the full horizon fits.
         eligible = mask & np.isfinite(mfe) & np.isfinite(mae)
         if not eligible.any():
