@@ -17,7 +17,10 @@ define the 1-minute-versus-live gap, and design two intraday **option-buying** c
 one short-horizon scalp, one same-day intraday including 0DTE/1DTE variants.
 
 The audit is complete and verified against source. The constraints are verified against
-source plus current external sources. The two specifications are complete and frozen.
+source plus current external sources. The two specifications are complete and frozen, and
+candidate B ships as a registered research-only plugin
+(`expiry_regime_trend_continuation`) so that its spec is actually falsifiable inside
+Backtest Lab and the Optimizer. Registered is not validated: it has never been run.
 
 **The results section is empty on purpose, and you should read §6 before §4.** This
 repository has already measured the thing these strategies would try to exploit, and the
@@ -454,7 +457,11 @@ not move the objective.
 
 ### 4.2 Candidate B — Expiry-Regime Trend Continuation (same-day intraday)
 
-**Status: SPECIFIED, IMPLEMENTABLE TODAY** on the existing spot-led contract.
+**Status: SPECIFIED AND IMPLEMENTED** as
+`backend/app/strategies/plugins/expiry_regime_trend_continuation.py` (34 tests). It
+registers, loads, and is selectable in Backtest Lab and the Optimizer. Implemented ≠
+validated: it has no screen result, no backtest and no paper cohort, and the verdict in
+§6.2 is unchanged.
 
 #### Hypothesis B
 
@@ -496,7 +503,7 @@ of the friction. That is the only structural advantage available.
 | Lots | 1 | 1 |
 | Entry window | 09:45–13:30 IST | 09:45–13:30 IST |
 | Max trades/session | **1** | 1 |
-| Hold | 30 min minimum, 60 min time stop | same |
+| Hold | 60 min time stop (`hold_max_minutes`) | same |
 | Stop | max(5 bps of spot, 0.8 × ATR14) | same formula |
 | Target | 2.5 × stop | 2.5 × stop |
 | Trailing | Breakeven at +1.2 × stop, then trail 1.2 × stop | same |
@@ -524,10 +531,28 @@ already taken; time outside 09:45–13:30; data gate failed; ATM contract stale 
 slippage multiplier (2× from 15:00) never applies because the position is closed by 14:55,
 and if the 0DTE arm ever needs to hold past 15:00 the trade is rejected rather than modelled.
 
-**Parameter budget — frozen, 5 dimensions.** `or_minutes` {30}, `stop_bps` {5, 7, 10},
-`target_mult` {2.0, 2.5, 3.0}, `range_mult` {1.0, 1.2, 1.5}, `entry_cutoff` {12:30, 13:30},
-`hold_max_minutes` {45, 60}. **108 combinations, per index, per DTE arm.** Indicator periods
-pinned.
+**Parameter budget — frozen, 5 dimensions**, as implemented in the plugin's
+`parameter_schema`:
+
+| Dimension | Grid | Schema name |
+|---|---|---|
+| Stop floor (bps of spot) | {5, 7, 10} | `stop_bps` (min pinned at **4.0**, the ambiguity floor) |
+| Target multiple | {2.0, 2.5, 3.0} | `target_mult` |
+| Range expansion | {1.0, 1.2, 1.5} | `range_mult` |
+| Entry cutoff | {12:30, 13:30} → {195, 255} | `entry_cutoff_minutes_after_open` |
+| Max hold | {45, 60} | `hold_max_minutes` |
+
+**108 combinations, per index, per DTE arm.** Opening range is pinned at 30 bars; indicator
+periods are pinned at defaults; `signal_threshold` is pinned (the score is fixed at 65, so
+any value ≤ 65 is behaviourally identical). `stop_atr_mult` is exposed at its 0.8 default
+for sensitivity probing but is **not** part of the search budget.
+
+**One honest deviation from the spec above.** The "30-minute minimum hold" is *not*
+implemented. The `Signal` contract has no minimum-hold field, and adding one would mean
+suppressing the stop-loss for the first 30 minutes — strictly worse risk for a
+long-premium position. Early exit is therefore governed by the stop and target alone, and
+`hold_max_minutes` caps the upper end. If a minimum hold turns out to matter, it is a
+change to the exit engine, not to this plugin.
 
 ---
 
@@ -538,8 +563,9 @@ pinned.
 ```
 1. Validate data      backend/scripts/screen_option_buying.py --validate-only
 2. Screen             backend/scripts/screen_option_buying.py --instrument {NIFTY,SENSEX}
-   └─ REJECT here kills the candidate. No plugin. No optimizer trial.
-3. Write the plugin   only for a surviving candidate
+   └─ REJECT here kills the candidate. No optimizer trial. No backtest.
+3. Plugin             candidate B: ALREADY WRITTEN (expiry_regime_trend_continuation)
+                      candidate A: blocked on §7.1 and must not be written before it
 4. Backtest, train    Backtest Lab, costs on
 5. Optimize, train    Optimizer, frozen budget from §4, train slice only
 6. Rank, validation   validation slice; finalists RECORDED before step 7
@@ -551,6 +577,13 @@ Step 2 is not optional and not a formality. `OPTION_BUYING_MICROSTRUCTURE_2026-0
 by saying the screen "kills candidates before a plugin is written", and the five scripts
 behind it were thrown away. They are now shipped as `app/option_screen.py` (§7.3) so this
 campaign and the next one measure the same thing the same way.
+
+Candidate B's plugin exists ahead of its screen result, which is a deliberate departure
+from that ordering and worth naming. The screen measures raw ATM premium excursions under a
+mask; it does **not** execute a strategy. Without a registered plugin the candidate could
+not reach Backtest Lab or the Optimizer *even after passing*, so the spec would not have
+been falsifiable inside this application. Writing it costs one file and consumes no
+holdout. The gate is unchanged: **a REJECT at step 2 retires the plugin unrun.**
 
 ### 5.2 What the screen must reproduce before its verdicts mean anything
 
@@ -626,7 +659,7 @@ Pinned in `tests/test_screen_option_buying_script.py`.
 | Candidate | Verdict | Basis |
 |---|---|---|
 | **A — ATM Premium-Flow Scalp** | **RESEARCH-ONLY — blocked on a product change** | Not implementable: option-side volume/OI cannot reach `evaluate()` (§1.4, §7.1). Cannot be screened until built. |
-| **B — Expiry-Regime Trend Continuation, 1DTE arm** | **RESEARCH-ONLY — cleared to screen** | Implementable today. No evidence yet. Screen first (§5.1 step 2). |
+| **B — Expiry-Regime Trend Continuation, 1DTE arm** | **RESEARCH-ONLY — implemented, cleared to screen** | Plugin registers and loads (34 tests). No screen, backtest or paper evidence exists. Screen first (§5.1 step 2); a REJECT retires it unrun. |
 | **B — 0DTE arm** | **RESEARCH-ONLY, pre-registered as expected to FAIL** | Measured net −4.43% NIFTY / −2.01% SENSEX per 5-min ATM hold, ~3× the 1DTE bleed. Run it as the control arm, not as a hope. |
 
 **Neither candidate is paper-ready, and neither is eligible for a live-readiness review.**
@@ -792,19 +825,22 @@ call site that skips the check entirely is the one remaining place it does not.
 | `backend/scripts/screen_option_buying.py` | New. Read-only CLI: validate → split → baseline → conditions. |
 | `tests/test_option_screen.py` | New. 29 tests. |
 | `tests/test_screen_option_buying_script.py` | New. 16 tests. |
+| `backend/app/strategies/plugins/expiry_regime_trend_continuation.py` | New. Candidate B as a registered research-only plugin. |
+| `tests/test_strategy_expiry_regime_trend_continuation.py` | New. 34 tests, including look-ahead safety and fail-closed paths. |
 | `docs/INTRADAY_OPTION_BUYING_CANDIDATES_2026-08.md` | This document. |
 
-Every change is **additive** — five new files, zero modifications to existing source.
+Every change is **additive** — seven new files, zero modifications to existing source.
 
-**Verification baseline (host, 2026-08-22):** `5,013 passed, 2 failed, 10 skipped,
-4 xfailed` in 164s. The two failures are `test_premium_momentum_route.py`, which needs a
+**Verification baseline (host, 2026-08-22):** `5,047 passed, 2 failed, 10 skipped,
+4 xfailed` in 169s. The two failures are `test_premium_momentum_route.py`, which needs a
 live MongoDB on `localhost:27017` and fails with `ServerSelectionTimeoutError` in any
 environment without one; they are unrelated to this change. The host also needed
 `pytest-asyncio`, `pydantic`, `fastapi`, `httpx`, `optuna`, `motor` and `yfinance`
 installed before the suite would collect — all are already in
 `backend/requirements.txt`.
 
-No strategy plugin was written — by design (§5.1). No deployment, preset, broker session or
+Candidate B's plugin is registered but **unrun and undeployed**; candidate A's was
+deliberately not written (§5.1, §7.1). No deployment, preset, broker session or
 live setting was created or altered. No order was placed, modified or cancelled. No live mode
 was enabled, and no Flattrade MCP login/logout was called. The screen CLI opens one read-only
 Mongo connection and writes nothing.
