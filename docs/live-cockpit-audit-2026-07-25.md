@@ -7,6 +7,10 @@
 
 Legend — **STATUS**: FIXED (landed + verified) · OPEN (verified real, not yet fixed) · UNVERIFIED (auditor claim, not yet checked) · N/A (refuted).
 
+**2026-08-15 follow-up:** three consequential claims below were behaviorally reproduced and
+closed (manual stand-down failure, unknown placement outcome, stale Flattrade token state).
+The remaining **38** `UNVERIFIED` rows are still hypotheses, not confirmed defects.
+
 
 ## CRITICAL
 
@@ -235,7 +239,7 @@ Legend — **STATUS**: FIXED (landed + verified) · OPEN (verified real, not yet
 
 ### frontend/src/components/live/LiveCockpit.jsx:53
 
-- **STATUS:** UNVERIFIED
+- **STATUS:** FIXED 2026-08-15 — `standDownManualExecution` reports the rejected mode write, always refreshes state, and both cockpit/manual-ticket callers surface failure. Node-driven behavior tests cover success and rejection.
 - **Defect:** `handleStandDown` swallows the `setLiveMode("LIVE_OFFLINE")` failure in an empty catch with no toast or error state, so a failed stand-down is indistinguishable from a slow one.
 - **Failure:** The manual ticket is in LIVE_TEST (armed single-shot). The trader clicks "Stand down" in the ExecutionStateStrip. The call 400s (session expired, backend restart, network). The spinner stops, no toast appears, and because arm-state is on the 15s poll the strip continues to read LIVE_TEST (armed). The trader reads that as poll lag, walks away, and the manual path stays armed. The comment claims the failure is "surfaced by the unchanged strip state on the next poll" — but an unchanged strip is exactly what a *pending* refresh looks like, so nothing distinguishes failure from success.
 - **Fix:** `catch (e) { toast.error(getApiErrorMessage(e, "Stand down failed")); }` — the page already imports sonner elsewhere and the strip is the one control whose failure must be loud.
@@ -249,7 +253,7 @@ Legend — **STATUS**: FIXED (landed + verified) · OPEN (verified real, not yet
 
 ### frontend/src/components/live/LiveOrderTicket.jsx:352
 
-- **STATUS:** UNVERIFIED
+- **STATUS:** FIXED 2026-08-15 — transport/5xx failures and resolved HTTP-200 `{indeterminate:true}` outcomes now enter the same blocking UNKNOWN state. The backend makes the approval terminal/non-retryable and the ticket deliberately does not stand down. Route, approval-store and Node behavior regressions cover replay prevention.
 - **Defect:** A transport-level failure of the approve/place call is reported as a flat "Place failed", collapsing the genuinely-unknown "may already be working at the broker" state into a definitive not-placed verdict.
 - **Failure:** Trader confirms a real-money order. `api.approveOrder` (line 348) reaches the backend, the executor transmits to Flattrade, and the HTTP response is lost to a timeout. The catch at 352-354 sets `queueError = "Place failed"`, the finally block closes the confirm dialog and stands the mode down, and the only thing on screen is a small red "Place failed" line. The trader believes nothing was transmitted and re-runs Preview → Place, doubling the position. The codebase already models this state correctly elsewhere — KillSwitchPanel.jsx:44/54 renders `PLACED_UNCONFIRMED` as "UNFILLED · WORKING" — but the ticket does not.
 - **Fix:** On a transport/timeout error (as opposed to a server verdict), render an amber UNKNOWN state that says the order may be live, and prompt the trader to check the Order book / positions before retrying; keep the Place button disabled until a fresh read confirms.
@@ -284,7 +288,7 @@ Legend — **STATUS**: FIXED (landed + verified) · OPEN (verified real, not yet
 
 ### frontend/src/components/live/cockpit/BrokerConnect.jsx:34
 
-- **STATUS:** UNVERIFIED
+- **STATUS:** FIXED 2026-08-15 — shared `brokerConnectionState` treats `expired || regenerate_after_6am` as expired and is used by BrokerConnect, the cockpit OAuth-banner cleanup, and RecoveryStatusBanner. Node behavior regression and the optimized frontend build pass.
 - **Defect:** `connected` ignores `status.regenerate_after_6am`, so the Flattrade chip can show a green "connected" dot for a token the backend already treats as unusable — a regression against LiveBanner.jsx:16, the component BrokerConnect replaced.
 - **Failure:** `expired` (from `expires_at`) and `regenerate_after_6am` (from `issued_at` vs today's 06:00 IST cutoff) are computed independently in backend/app/live/flattrade_token.py:252-278, and `regenerate_after_6am` fails CLOSED to true on an unparseable `issued_at` while `expired` stays false when `expires_at` is absent or parses fine (line 256, `if expires_at_str:`). backend/app/routers/deployments.py:117 blocks live execution on either flag. So a token doc written without `expires_at`, or with a malformed `issued_at`, renders as a green "Flattrade · exec · connected" chip while every broker call 400s. The trader concludes execution is healthy and that the guard can transmit exits; it cannot.
 - **Fix:** Mirror LiveBanner: `const expired = !!(status?.expired || status?.regenerate_after_6am)` and show "token expired — login needed" for either.

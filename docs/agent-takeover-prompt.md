@@ -1,10 +1,4 @@
-# AI-agent takeover prompt (as of 2026-08-15, `main` @ `ffdd4f1`)
-
-_Copy-paste the block below as the first message to a new AI agent taking over this repo.
-It is self-contained. Keep it in sync when the app state changes materially — and update the
-date and commit in the heading when you do._
-
----
+# AI-agent takeover prompt (as of 2026-08-15, `main` @ `c2b3d7a` + verified working tree)
 
 You are taking over active development of **AlphaForge Trading Lab** — a local-first
 research + forward-test + live-execution app for Indian index options (NIFTY / BANKNIFTY /
@@ -24,14 +18,14 @@ OMS) = live broker execution. It trades **real money** when the operator enables
 5. `docs/DEVELOPER_GUIDE.md` (deep onboarding) and `docs/ARCHITECTURE.md` (module map) as needed.
 
 Then run the suite and confirm the baseline before changing anything:
-`.venv/Scripts/python.exe -m pytest tests -q` → **4,887 passed, 4 xfailed, 0 failed**.
+`.venv/Scripts/python.exe -m pytest tests -q` → **4,896 passed, 4 xfailed, 0 failed**.
 
 ## Where the app stands
 
 | | |
 |---|---|
-| Branch | `main`, clean, level with `origin/main` |
-| Suite | 4,887 passed / 4 xfailed / 0 failed |
+| Branch | `main` at `c2b3d7a`, **2 commits ahead of `origin/main` (`c5d380b`)**, plus the verified 2026-08-15 working tree; do not discard the existing prompt edit |
+| Suite | 4,896 passed / 4 xfailed / 0 failed |
 | Real money traded | **Twice** — 2026-08-04 (journalled wrong; fixed) and 2026-08-14 (exposed a live/paper parity break) |
 | Proven edge? | **No.** Three independent campaigns failed a holdout. Do not re-litigate without new data. |
 | What blocks live | Not code — a **Flattrade-registered static IP** and a market-hours validation session |
@@ -112,11 +106,13 @@ same wrong assumption about the server. Both are documented in `HANDOFF.md` §2.
 
 1. **Market-session validation** of the live path — `docs/LIVE_VALIDATION_PLAN_2026-08.md`.
    Most live-path changes have never run in a real session.
-2. **13 verified-but-unfixed findings**, 4 HIGH, all optimizer — `BACKTEST_INTEGRITY_AUDIT.md`.
-3. **41 UNVERIFIED findings** in `docs/live-cockpit-audit-2026-07-25.md` — that file is a live
+2. The optimizer HIGH/MED register is **closed**; disputed LOW #31 remains separate —
+   `BACKTEST_INTEGRITY_AUDIT.md`.
+3. **38 UNVERIFIED findings** in `docs/live-cockpit-audit-2026-07-25.md` — that file is a live
    backlog, not history.
-4. The evaluator's new-bar trigger is **hardcoded to NIFTY** (`runtime.py:962-967`) — if NIFTY
-   stalls, no SENSEX deployment is evaluated either.
+4. The evaluator's NIFTY-only wakeup was fixed in the 2026-08-15 working tree: NIFTY,
+   BANKNIFTY and SENSEX now wake evaluation independently. It is regression-tested but still
+   needs market-session validation.
 5. No same-day candle source for **option** contracts (Upstox intraday serves only the 3 index
    keys). Live exits are unaffected — the guard marks from the broker position book.
 6. `frontend/src/components/live/PositionMonitor.jsx` is unmounted — an L2-era manual test-order panel. Wire it or delete it;

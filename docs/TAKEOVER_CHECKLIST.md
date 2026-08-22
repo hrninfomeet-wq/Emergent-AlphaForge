@@ -13,9 +13,9 @@ _Written 2026-08-15. For a new engineer or AI agent inheriting AlphaForge._
 | # | Do this | Why |
 |---|---|---|
 | 1 | Read [`HANDOFF.md`](HANDOFF.md) §2 — especially **§2.0c** | The last live session found two defects a green suite did not. One cost a real trade. |
-| 2 | Read [`BACKTEST_INTEGRITY_AUDIT.md`](BACKTEST_INTEGRITY_AUDIT.md) before trusting ANY number | Every paired-option backtest saved before 2026-07-30 is wrong. 13 verified-but-unfixed findings remain, 4 of them HIGH, all in the optimizer. |
+| 2 | Read [`BACKTEST_INTEGRITY_AUDIT.md`](BACKTEST_INTEGRITY_AUDIT.md) before trusting ANY number | Every paired-option backtest saved before 2026-07-30 is wrong. The verified HIGH/MED optimizer register is closed; disputed LOW #31 remains separate. |
 | 3 | Read the **safety rules** in §3 below, in full | These are not style preferences. Two of them can silently kill the operator's live broker session. |
-| 4 | Run the suite: `.venv/Scripts/python.exe -m pytest tests -q` | Baseline **4,887 passed / 4 xfailed / 0 failed**. If it differs, find out why before writing code. |
+| 4 | Run the suite: `.venv/Scripts/python.exe -m pytest tests -q` | Baseline **4,896 passed / 4 xfailed / 0 failed**. If it differs, find out why before writing code. |
 | 5 | Skim [`AGENT_TODO.md`](AGENT_TODO.md) | The live work board. Do not invent priorities. |
 
 ---
@@ -34,8 +34,8 @@ execution.
 | Real money traded? | **Twice.** 2026-08-04 (recorded wrong, since fixed) and 2026-08-14 (exposed the `exit_controls` parity break). |
 | Does any strategy have a proven edge? | **No.** Three independent campaigns failed a holdout. Do not re-litigate without new data — the verdicts are in `*VERDICT*.md` and their kill criteria were pre-registered. |
 | What blocks live? | Not code. A **Flattrade-registered static IP** and market-hours validation. |
-| Suite | 4,887 passed / 4 xfailed / 0 failed |
-| Branch | `main`, clean, level with `origin/main` |
+| Suite | 4,896 passed / 4 xfailed / 0 failed |
+| Branch | `main` at `c2b3d7a`, 2 commits ahead of `origin/main` (`c5d380b`), plus a verified 2026-08-15 working tree |
 
 ---
 
@@ -94,7 +94,7 @@ Full detail: [`LOCAL_SETUP.md`](LOCAL_SETUP.md) · [`STARTUP_MANUAL.md`](STARTUP
 
 ```bash
 docker compose up -d --build backend        # backend edits need a rebuild — the image bakes code in
-.venv/Scripts/python.exe -m pytest tests -q # host suite; baseline 4,887
+.venv/Scripts/python.exe -m pytest tests -q # host suite; baseline 4,896
 cd frontend && CI=true npx --no-install craco build
 ```
 
@@ -127,17 +127,18 @@ These are earned, each from a defect that shipped green. Full narrative in
 Prioritised. The board is [`AGENT_TODO.md`](AGENT_TODO.md).
 
 1. **No strategy has a proven edge.** Everything else is capability work.
-2. **13 verified-but-unfixed findings**, 4 HIGH, all optimizer —
+2. The optimizer HIGH/MED register is **closed**; disputed LOW #31 remains separate —
    [`BACKTEST_INTEGRITY_AUDIT.md`](BACKTEST_INTEGRITY_AUDIT.md).
-3. **41 UNVERIFIED findings** in [`live-cockpit-audit-2026-07-25.md`](live-cockpit-audit-2026-07-25.md)
+3. **38 UNVERIFIED findings** in [`live-cockpit-audit-2026-07-25.md`](live-cockpit-audit-2026-07-25.md)
    — that file is a **live backlog**, not history.
 4. **Flattrade TPSeries fallback is implemented and live-verified, but Upstox stays primary** —
    the two vendors disagree on the `open` of ~2 bars in 60 (max 1.85 pts). Mixing sources within
    one day mixes conventions.
 5. **No same-day candle source for OPTION contracts.** Upstox intraday serves only the 3 index
    keys. Live exits are unaffected (the guard marks from the broker position book).
-6. **The evaluator's new-bar trigger is hardcoded to NIFTY** (`runtime.py:962-967`) — if NIFTY
-   stalls, no SENSEX deployment is evaluated either.
+6. **The NIFTY-only evaluator wakeup is fixed in the 2026-08-15 working tree.** NIFTY,
+   BANKNIFTY and SENSEX timestamps are checked independently; behavior is regression-tested,
+   but the path remains market-session unverified.
 7. **112 source-text test files** to convert to behavioural tests, over time.
 8. **`PositionMonitor.jsx` is unmounted** — an L2-era manual test-order panel. Wire it or delete
    it; deployed-position exits do not depend on it.

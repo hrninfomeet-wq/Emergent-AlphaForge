@@ -2,6 +2,117 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [Unreleased] — live-window integrity, fail-closed drift gate, ATR Sigma Router (2026-08-20)
+
+**A live-only defect class that no backtest could ever see.** Session-anchored values
+(`vwap`, the opening range, the prior-session gap, pivot levels) are computed over ONLY the
+rows handed to `precompute_all_indicators`. The backtest hands it the whole frame, so they
+anchor at 09:15; the live evaluator hands it the last N bars, so they anchor at the WINDOW
+start. An NSE session is 375 one-minute bars, so at the 200-bar default the window stopped
+reaching 09:15 after 12:34. Measured at the 14:49 entry cutoff: VWAP off by +17.02 pts =
+**2.12 ATR** on real NIFTY data — larger than a default 1-ATR entry band, which silently
+FLIPS a momentum/fade signal. **Nine shipped strategies were affected**, including the
+permanent built-in `confluence_scalper`. All now declare `live_lookback_bars = 400` (335 are
+needed to reach 09:15 from the 14:50 cutoff; 400 also retains the prior session).
+Pinned project-wide by `tests/test_live_window_vwap_anchor.py`, which fails if ANY registered
+strategy reads a session anchor through a window under 335 bars, plus a meta-test so the
+guard cannot pass vacuously.
+
+**`detect_drift` failed OPEN.** It returned `False` — the ALLOW answer — whenever either hash
+was missing, and called that "conservative". A deployment carrying no `strategy_source_sha`
+therefore read as verified forever while having no source-drift protection at all. Six such
+rows existed in the production database, one pinned to the literal string
+`FAKE_PINNED_FROM_TEST`; any of them could have passed the resume/live gate against entirely
+unverified strategy code. `detect_drift` now returns `False` ONLY when both hashes are present
+and equal. Guarded by an EXHAUSTIVE property test (any `False` must imply both sides present
+and equal) so no future "conservative default" can reopen it, plus two end-to-end regressions
+driving the real resume route. The dev-era residue rows were removed after confirming zero
+dependent signals/trades.
+
+**New research plugin `atr_sigma_router`** — a deliberately small SEARCH SPACE, not an edge
+claim: momentum / fade / volatility-expansion behind one INT parameter so the Optimizer
+explores all three. Every threshold is a ratio (ATR, or bps of spot) so one parameter set
+means the same thing on NIFTY (~24,500) and SENSEX (~80,000). **It has no demonstrated edge**
+— four optimizer runs all failed their holdout (best in-sample +Rs 655,931 -> -Rs 518,145
+out-of-sample), and at defaults nothing clears |t| > 2. Full record in
+`docs/atr-sigma-router-optimizer-results-2026-08-16.md`.
+
+**`docs/OPTION_BUYING_MICROSTRUCTURE_2026-08.md`** — a measured register answering "is there
+anything to find?" before the next option-buying campaign. Headline: the ATM buyer's MFE/MAE
+is **0.90-0.95 — a negative payoff BEFORE costs**. Five hypotheses tested and killed; 0DTE is
+the WORST day to buy (net -4.43%/5min vs -1.48% at 1DTE), not the best; `candles_1m.volume` is
+identically 0 for all four instruments so no relative-volume filter is possible; and the
+expiry weekday ROTATED TWICE inside the warehouse, so a weekday-derived DTE rule reproduces
+the real expiry on only 233/424 NIFTY sessions.
+
+**Also:** corrected the `OptimizerStartReq.option_config` contract comment, which claimed to
+mirror `OptionBacktestReq` while omitting `enabled` — the one field that gates the whole
+overlay, and which defaults to `False`, so replaying a stored optimizer config verbatim runs
+with option pairing silently OFF and reports `paired: 0`.
+
+Verification: **4,973 passed, 4 xfailed**; the 5 `test_bootstrap_contract.py` failures are a
+pre-existing launcher working-directory issue. Both images rebuilt; `/api/health` returned
+`{"db":"ok"}`, frontend HTTP 200, 17 strategies registered with zero load failures.
+
+## [Unreleased] — DTE opening-shock research plugin (2026-08-16)
+
+- Added `dte_opening_shock_breakout`, an explicitly unvalidated NIFTY/SENSEX
+  one-minute research plugin. It freezes the 09:15–09:44 range, derives direction
+  from the 09:44 close versus the prior-session close, emits only the first
+  same-direction break, and anchors its spot stop at the broken range boundary.
+- The final signal bar is 14:48: a 14:49-labelled bar is known only at the hard
+  14:50 entry cutoff. Research runs use a 15:00 forced exit; the plugin owns the
+  earlier entry gate. Its live history requirement is 400 bars so the prior close
+  and opening range remain available through the entry window.
+- Closed a backtest-to-deployment defect: paper/live ordinary deployments now
+  enforce `option_policy.dte_filter`, restrict selection to the nearest metadata
+  expiry, and never fall through to a farther expiry for a convenient strike.
+  Premium-native evaluation applies the same filter before it can create or mutate
+  a session lock. DTE is computed from the signal candle's IST session date and the
+  trading calendar, not process time or weekday assumptions.
+- Added the frozen strategy contract, required Backtest/Optimizer settings,
+  one-minute-versus-live-quote boundary and promotion gates in
+  `docs/DTE_OPENING_SHOCK_STRATEGY.md`.
+
+Development evidence only: the protected 2026 holdout was not queried. On the
+2025-01-06..2025-01-31 training slice, both indices had 20/20 complete sessions
+(7,500/7,500 spot candles). ITM1 DTE1/2 pairing was 6/6 for each index with costs
+and a 1% premium-spread sensitivity: NIFTY net -Rs 1,788.21; SENSEX net
+Rs 1,943.14. The read-only in-memory Optimizer rerank reproduced NIFTY exactly.
+This proves plumbing, not profitability; live promotion remains blocked.
+
+Verification: plugin/strategy contract set **25 passed**; deployment/DTE/premium
+container set **68 passed** in a disposable network-disabled container; adjacent
+deployment/optimizer/option-cost set **84 passed**. Python compileall passed. No
+broker action, holdout query, live-setting change, running-backend rebuild, commit
+or push occurred.
+
+## [Unreleased] — takeover integrity regressions (2026-08-15)
+
+- **Scheduled paper EOD square-off executes again.** `honour_allow_overnight=True` was
+  accidentally parenthesized into `latest_tick_map()` instead of
+  `square_off_open_paper_trades()`, raising `TypeError` inside the scheduler and skipping the
+  15:00 paper exit. A one-cycle behavioral scheduler regression failed before the call-site fix;
+  the old source-string assertion had proved only that the text existed, not which call owned it.
+- **Evaluator wakeups are instrument-aware.** The runtime now watches the latest closed bar for
+  NIFTY, BANKNIFTY and SENSEX independently. A fresh SENSEX/BANKNIFTY bar can wake deployment
+  evaluation even when NIFTY stalls; per-deployment timestamps continue to suppress duplicates.
+- **Unknown broker outcomes cannot be retried as clean failures.** A lost ACK may be returned as
+  a resolved HTTP-200 `{placed:false, indeterminate:true}` response. The approval store now makes
+  that token terminal `indeterminate`, clears it and returns `retryable:false`; the order ticket
+  renders a blocking UNKNOWN state and deliberately leaves execution mode unchanged until the
+  operator reconciles the broker book. This closes a duplicate-order path.
+- **Manual stand-down and token state are honest.** Failed `LIVE_OFFLINE` writes surface loudly
+  and refresh status. A shared broker-state helper treats either `expired` or
+  `regenerate_after_6am` as expired across the command chip, OAuth banner and recovery banner.
+
+Verification: focused safety set **121 passed**; full host suite **4,896 passed / 4 xfailed /
+0 failed** in 41.89 seconds; Python compileall and optimized frontend build passed; scoped
+adversarial re-review approved the lost-ACK and token-state closures. Backend/frontend Docker
+images rebuilt; `/api/health` returned `{"db":"ok"}` and the frontend returned HTTP 200. No
+broker order, broker login/logout, deployment-live mutation or push occurred. Market-session
+validation remains open.
+
 ## [Unreleased] — NSE/BSE closing-auction session split (2026-08-10)
 
 **SEBI's Closing Auction Session took effect 2026-08-03 across NSE, BSE and MSEI,

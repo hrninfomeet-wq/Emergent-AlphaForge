@@ -14,8 +14,18 @@ Stack: **React** (CRA + craco) frontend, **FastAPI** (Python) backend, **MongoDB
 
 ## 2. Current state
 
-> **As of 2026-08-15 · v0.58.0 + unreleased live-integrity work · `main` clean, level with
-> `origin/main` at `c5d380b`.** Verification baseline: **4,887 passed, 4 xfailed, 0 failed**.
+> **As of 2026-08-20 · v0.58.0 + unreleased live-integrity work.** Verification baseline:
+> **4,973 passed, 4 xfailed, 5 failed** — the five are `test_bootstrap_contract.py` and are a
+> pre-existing Windows-launcher working-directory issue (`'start-app.bat' is not recognized`),
+> unrelated to any strategy or live-path code. Both images rebuilt; `/api/health` returned
+> `{"db":"ok"}`, the frontend returned HTTP 200, and 17 strategies registered with zero load
+> failures.
+>
+> ⚠ **A live-only defect class was closed on 2026-08-20 — read
+> [§2.0e](#20e-what-changed-2026-08-19--08-20-live-window-integrity-and-a-fail-open-safety-gate)
+> before deploying ANY strategy.** Nine shipped strategies, including the permanent built-in
+> `confluence_scalper`, were reading a session anchor through too small a live window and so
+> diverged from their own backtests after ~12:34 every day. No backtest could show it.
 >
 > ⚠ **Before the next market session read
 > [`LIVE_VALIDATION_PLAN_2026-08.md`](LIVE_VALIDATION_PLAN_2026-08.md).** Changes have landed
@@ -31,7 +41,7 @@ Stack: **React** (CRA + craco) frontend, **FastAPI** (Python) backend, **MongoDB
 
 | Question | Answer |
 |---|---|
-| Is it running real money? | **Once.** ONE real trade exists (2026-08-04, NIFTY 24550 PE, 1 lot) and the app recorded it WRONG — `entry_price` was the pre-trade reference (33.35) not the fill (33.20), `realized_pnl` was **null**, and it closed via `reconciled_closed`. All three defects are now fixed and **none of the fixes has seen a real fill.** |
+| Is it running real money? | **Twice.** The 2026-08-04 NIFTY 24550 PE trade exposed fill/journal defects; the 2026-08-14 NIFTY 24300 PE trade exposed live/paper `exit_controls` divergence. Those defects are fixed, but most live-integrity work remains market-session unverified. |
 | What stops it? | Not code. All four pre-real-money blockers (C2/C4/H1/C3) are **fixed**; what's missing is a **Flattrade-registered static IP** and a market-hours validation session. |
 | Does any strategy have a proven edge? | **No.** Three independent campaigns have failed a holdout. See [`BACKTEST_INTEGRITY_AUDIT.md`](BACKTEST_INTEGRITY_AUDIT.md) §6 and [`PREMIUM_MOMENTUM_EDGE_VERDICT_2026-07.md`](PREMIUM_MOMENTUM_EDGE_VERDICT_2026-07.md). Do not re-litigate without new data. |
 | Can I trust a saved backtest? | **Only if it was run on/after 2026-07-30.** Every paired-option backtest saved before then is wrong — see the ⚠ below. |
@@ -88,6 +98,52 @@ assumption.
 **Also verified this session:** 2026-08-13 had been sitting at 368/375 bars on all three
 instruments and nothing would ever have repaired it. Recovery now closes prior-day gaps too;
 all six instrument-days are 375/375.
+
+### 2.0d What changed in the 2026-08-15 takeover pass
+
+The takeover did not assume that the green baseline proved runtime behavior. It drove the
+scheduler, browser-facing action helpers and approval state machine, then rebuilt both images.
+
+| Change | Why it matters | Verification |
+|---|---|---|
+| Scheduled 15:00 paper square-off now passes `honour_allow_overnight` to `square_off_open_paper_trades`, not to `latest_tick_map`. | The old parenthesis error raised `TypeError` inside the scheduler and silently skipped the EOD paper exit. A source-text assertion had seen the argument name but could not prove which function received it. | A one-cycle scheduler regression failed on the old call and passes now; overnight and paper square-off suites pass. |
+| Deployment evaluation wakes from the latest bar of **NIFTY, BANKNIFTY or SENSEX**, not NIFTY alone. | A stalled NIFTY feed could previously prevent a fresh SENSEX/BANKNIFTY bar from waking the evaluator. Per-deployment `last_evaluated` still deduplicates work. | Behavioral regression advances only SENSEX while NIFTY is unchanged and observes a second evaluation. |
+| Manual stand-down failures are loud, and a resolved `{indeterminate:true}` placement response is treated as UNKNOWN rather than rejected. | A lost broker ACK can arrive as HTTP 200. Re-queueing its one-shot token and showing “failed” could let the operator duplicate an order that is already live. | Backend marks the approval terminal `indeterminate`, clears its token and returns `retryable:false`; Node-driven frontend tests keep Place blocked and suppress stand-down. An adversarial re-review approved both closures. |
+| Flattrade connection state has one shared decider for `expired` and `regenerate_after_6am`. | The chip, OAuth banner and recovery banner could otherwise contradict the backend and each other about a stale token. | Node behavior test plus optimized frontend build; all three cockpit consumers use the shared result. |
+
+**Verification boundary:** full host suite **4,896 passed / 4 xfailed / 0 failed** in
+41.89 seconds; focused safety set 121 passed; Python compileall, host frontend build, Docker
+backend/frontend builds and service health passed. No broker order, login/logout, deployment-live
+change or push occurred. This was a holiday/weekend pass, so none of the changes above is a
+substitute for the next market-session validation plan.
+
+### 2.0e What changed 2026-08-19 → 08-20 (live-window integrity and a fail-open safety gate)
+
+Two defect classes, both invisible to the test suite that was green over them.
+
+| Commit | What it fixes | How it was found |
+|---|---|---|
+| `fc424a1` `1cc6ce2` | **Session anchors were computed over the live WINDOW, not the session.** `precompute_all_indicators` groups `vwap` by `session_date` over only the rows it is handed (`indicators.py:470-473`). The backtest hands it the whole frame; the evaluator hands it the last N bars. At the 200-bar default the window stops reaching 09:15 after **12:34**, and by 14:49 the VWAP anchor error measured **+17.02 pts = 2.12 ATR** — larger than a default 1-ATR entry band, so momentum/fade signals silently INVERT for ~40% of the session. Nine strategies affected (`confluence_scalper`, both `vwap_*`, `squeeze_expansion_breakout`, `adaptive_regime_scalper`, both opening-range routers, `gap_fade`, `atr_sigma_router`); all now declare `live_lookback_bars = 400`. | An adversarial deployment audit of a newly added plugin. The bug was never specific to that plugin. |
+| `fa2b65d` | **`detect_drift` failed OPEN.** It returned `False` (the ALLOW answer) whenever either hash was missing. A deployment with no `strategy_source_sha` read as verified forever with no protection. Six such rows existed in the database, one pinned to `FAKE_PINNED_FROM_TEST`. Now `False` only when both hashes are present and equal. | Auditing dev-era residue found while answering "do I need fresh deployments?" |
+
+**The lesson that generalises, and it is the same shape both times:**
+> Ask which answer is the ALLOW answer, then check that every "cannot verify" path returns the
+> DENY one. Both defects were *documented as conservative* and were the opposite. And both were
+> invisible to the suite because the fixtures omitted a field production always sets — the
+> live-route fixtures built deployments with no pin, which real creation never does. Fixing the
+> fixture to match reality repaired 14 unrelated pre-existing failures.
+
+**Also landed:** `atr_sigma_router`, a scale-free entry-family SEARCH SPACE with **no
+demonstrated edge** (four optimizer runs, all failed their holdout — best in-sample
++₹655,931 → **−₹518,145** out-of-sample); and
+[`OPTION_BUYING_MICROSTRUCTURE_2026-08.md`](OPTION_BUYING_MICROSTRUCTURE_2026-08.md), a
+measured register showing the ATM option buyer's MFE/MAE is **0.90–0.95, i.e. a negative
+payoff before costs**. Read it before proposing another option-buying campaign.
+
+**Known open (deliberate):** `deployment_evaluator.py` guards its own drift call site with
+`if pinned_sha:`, so it still skips the check for an unpinned deployment. Defense-in-depth
+only — creation always pins and the resume gate is the sole path to ACTIVE — left untouched
+because a concurrent session held uncommitted work in that file.
 
 ### 2.1 ⚠ Two things that will bite you immediately
 

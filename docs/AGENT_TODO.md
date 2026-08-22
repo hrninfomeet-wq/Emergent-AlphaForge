@@ -10,18 +10,37 @@
 > entry point) · [`STAGE1_INTEGRITY_SESSION_HANDOFF_2026-08-01.md`](STAGE1_INTEGRITY_SESSION_HANDOFF_2026-08-01.md)
 > (latest completed-session checkpoint) · `CHANGELOG.md`.
 
-**Last updated:** 2026-08-01 (Codex — Stage 1 integrity complete; takeover package refreshed)
+**Last updated:** 2026-08-20 (Claude Opus 5 — live-window integrity + fail-closed drift gate)
+
+### ★ Open follow-ups from the 2026-08-20 session
+
+- [ ] **`deployment_evaluator.py` still bypasses the drift gate at its call site.**
+  `if pinned_sha:` skips the check entirely for an unpinned deployment, so `fa2b65d`'s
+  fail-closed `detect_drift` never runs there. Defense-in-depth only (creation always pins;
+  the resume gate is the sole path to ACTIVE), and it was left alone because a concurrent
+  session held ~100 uncommitted lines in that file. Close it now that the file is committed.
+- [ ] **5 pre-existing `test_bootstrap_contract.py` failures** — `'start-app.bat' is not
+  recognized`, a working-directory assumption in the test rather than a broken launcher. They
+  are the only red in an otherwise 4,973-passing suite, which makes a real regression easy to
+  miss.
+- [ ] **Re-pin 3 drifted deployments** (1 `atr_sigma_router`, 2 `confluence_scalper`) via
+  `POST /deployments/{id}/repin-source`. The other two PAUSED deployments are unaffected.
+- [ ] **`atr_sigma_router` has no edge** and should not be deployed to real money on current
+  evidence — four optimizer runs failed their holdout. See
+  `docs/atr-sigma-router-optimizer-results-2026-08-16.md` before spending time on it.
 
 ---
 
-## ★★ NEXT SESSION IS A MARKET SESSION (2026-08-12)
+## ★★ NEXT OPEN GATE: A CONTROLLED MARKET SESSION
 
 **Plan: [`LIVE_VALIDATION_PLAN_2026-08.md`](LIVE_VALIDATION_PLAN_2026-08.md). Read it first.**
 
-The build phase is done for now. Twelve changes landed on the real-money path
-2026-07-29 → 08-11 and **eight have never run in a market session**. Continuing to build
-stacks unvalidated work on unvalidated work — and two adversarial audits each found a real
-bug in code that had already been reviewed and was passing 4,500+ tests.
+The planned 2026-08-12 session did not close the gate. A real trade on 2026-08-14 exposed
+the live/paper `exit_controls` split and the mid-session candle-recovery gap; read
+[`HANDOFF.md`](HANDOFF.md) §2.0c. The 2026-08-15 takeover pass then found a scheduled paper
+square-off call-site error, NIFTY-only evaluator wakeup, swallowed stand-down errors and a
+duplicate-order risk in resolved lost-ACK responses. Those are regression-tested and rebuilt,
+but were found on a holiday/weekend and therefore are not market-session proof.
 
 Order of the day: pre-open readiness → paper observation (proves position MARKING, the
 field every other risk control rests on) → restart test → **one lot, operator-armed**
@@ -32,23 +51,29 @@ replays the pinned sizing policy, live uses a flat `risk.live.lots` **by design*
 rupee figure a paper cohort certifies — drawdown, ruin, the promotion checks — is produced
 at a lot count live will not use. Not a bug; a decision. See item 7(b).
 
-**Remaining dev work, all deliberately deferred until after validation:**
+**Offline work selected while the market is closed:**
 
-| # | Item | Why deferred |
+| # | Item | Decision |
 |---|---|---|
-| 7(c) | Paper's clock-driven exits are price-gated; live's are not | Worth doing BEFORE the session — otherwise paper does not faithfully rehearse live |
+| P0 | Split the supervisor's 15:30 spot clock from the 15:40 option exit-monitor clock; add risk-supervisor read-only telemetry | Small pre-Monday hardening only if red regressions, full suite, rebuild and review all finish; otherwise preserve the frozen baseline |
+| E1 | **Durable live execution episode ledger + fail-closed admission reservation** | **NEXT substantial development.** The broker can accept before `live_trades` exists; caps currently count that projection, not the unresolved accepted intent |
+| 7(c) | ~~Paper clock exits are price-gated~~ | ✅ STALE/DONE: `_clock_exit_fill` handles stale ticks and nine behavioral regressions cover both clock exits (`df423b1`) |
 | 7(b) | Paper/live sizing divergence | Operator policy decision, not a bug |
 | — | `AutoUpdateState` is an in-memory global; a restart erases the run history | Needs a db handle threaded into a pure module |
-| — | Stage 2 Dashboard v2, Stage 3 experiment ledger | A dashboard over unvalidated numbers just displays them more attractively |
-| — | 13 verified-but-unfixed optimizer findings | `BACKTEST_INTEGRITY_AUDIT.md` §5 — research path, not the live path |
+| E2 | Append-only Experiment/Cohort Ledger + deterministic next-action controller | After execution truth; this is the evidence/autonomy prerequisite before adding more strategy plugins |
+| — | Stage 2 Dashboard v2 | Build from the durable episode/cohort status so the decision surface cannot report a false green |
+| — | 38 still-UNVERIFIED cockpit-audit claims | Verify each against current behavior before fixing; the raw audit is a hypothesis register |
+
+Detailed design and binary checks:
+[`AUTONOMY_DEVELOPMENT_PLAN_2026-08.md`](AUTONOMY_DEVELOPMENT_PLAN_2026-08.md).
 
 ---
 
-## ★ START HERE — the state of play on 2026-08-01
+## ★ START HERE — the state of play on 2026-08-15
 
-**Repo:** `main` and `origin/main` are synchronized at the published Stage-1 checkpoint; one branch, zero stashes.
-**Suite:** 4,354 passed · 4 xfailed · 0 failed (4,358 collected).
-**Version:** v0.58.0 + unreleased Stage-1 integrity work.
+**Repo:** `main` at `c2b3d7a`, 2 commits ahead of `origin/main` (`c5d380b`), plus the verified 2026-08-15 working tree.
+**Suite:** 4,896 passed · 4 xfailed · 0 failed.
+**Version:** v0.58.0 + unreleased live-integrity work.
 
 ### Where the project actually is
 
@@ -58,9 +83,10 @@ and live fully usable, and make a plain-English strategy deployable end to end. 
 COMPLETE. **Edge hunting is parked by explicit user decision** — do not start a new
 strategy search.
 
-Real money is blocked on **operations, not code**: all four pre-real-money blockers
-(C2/C4/H1/C3) are fixed, but nothing has ever been validated against a live broker
-because the current IP is not registered with Flattrade, and `live_trades` is empty.
+Real money has traded **twice**. That does not clear the release gate: both sessions exposed
+defects, and most of the current live-integrity changes have no market-session runtime evidence.
+The remaining broad gate is still operational: registered static IP plus the controlled
+market-hours plan, with live activation exclusively under operator control.
 
 ### The three highest-value things to do next
 
@@ -71,13 +97,14 @@ stale audit rows already subsumed by HIGH #18/#28; disputed LOW #31 remains sepa
 1. **Market-hours validation** (board row V) — still pending, still the main event, and
    the only thing that converts "the code is correct" into evidence. Posture stays
    **PAPER + READ-ONLY**.
-2. **Stage 2 Dashboard decision surface** in
-   [`NEXT_STAGE_ROADMAP_2026-07.md`](NEXT_STAGE_ROADMAP_2026-07.md): runtime data trust,
-   experiment/deployment attention and continuation actions. Keep the Live Broker cockpit
-   as the only order-control surface.
-3. **Run an AI-authored strategy end to end with a real LLM call** after the capability
-   work is accepted: author → install → backtest → optimize → paper. Do not spend an
-   untouched holdout or enable live merely to prove plumbing.
+2. **Durable execution episode ledger** in
+   [`AUTONOMY_DEVELOPMENT_PLAN_2026-08.md`](AUTONOMY_DEVELOPMENT_PLAN_2026-08.md):
+   make broker-accepted exposure counted, restart-recoverable and linked to its exact
+   exit plan before adding strategy surface area.
+3. **Experiment/Cohort Ledger, then real-LLM acceptance:** freeze evidence identities
+   and holdout consumption, then drive one ordinary and one premium-trigger strategy
+   through author → install → backtest → optimize → paper on synthetic/selection data.
+   Do not spend an untouched holdout or enable live merely to prove plumbing.
 
 ### Non-negotiables a new agent must not rediscover the hard way
 
@@ -106,9 +133,10 @@ stale audit rows already subsumed by HIGH #18/#28; disputed LOW #31 remains sepa
    do not treat green code as broker validation. The remaining prerequisite is operational:
    registered static IP, market-hours PAPER/read-only Gate A, then a user-authorized live
    readback if the user decides — see §2 and the Stage 1 session handoff.
-4. **Current priorities:** market-hours PAPER/read-only Gate A → Stage 2 Dashboard decision
-   surface when Gate A cannot run → real-LLM author/install/backtest/optimize/paper acceptance.
-   Edge research and live activation remain explicitly decision-gated.
+4. **Current priorities:** dated market-hours PAPER/read-only Gate A → durable execution
+   episode ledger → Experiment/Cohort Ledger → real-LLM
+   author/install/backtest/optimize/paper acceptance. Edge research and live activation
+   remain explicitly decision-gated.
 5. **Checkpoint work into small green commits.** Use scoped parallel review only when the
    user requests orchestration and the work units are independent; review every delegated
    result against source and isolated tests before accepting it.
@@ -136,10 +164,13 @@ stale audit rows already subsumed by HIGH #18/#28; disputed LOW #31 remains sepa
 | C | (was: deferred pre-real-money fixes — C2/H1/C3 ALL DONE) | ✅ COMPLETE | MUST land before first real-money session — §2 |
 | 2 | Lazy-leg contingency (Phase 5 design → ship) | ✅ DONE | Was already shipped in backtest+live; built the only gap = **paper-mode lazy arming** (`ab453fa`) + H4 nullable-param deploy fix (`3639009`). Suite 3,549/0. See §3 item 2 |
 | 3 | Strategy builder + AI authoring audit/completion | ✅ DONE | H5 preset/backtest validation parity (`10f8ce7`) + AI-install file rollback (`6e8861d`); wizard audited = already robust. Suite 3,557/0. See §3 item 3 |
-| 4b | ↳ Page audit + fixes (2026-07-25) | ✅ AUDIT COMPLETE | All 5 dimensions done (4 by agents, data-null-safety inline after both workflow runs died on the usage limit). Register: `docs/live-cockpit-audit-2026-07-25.md` (66 findings, 23 fixed). Landed `3007f7d`,`58c158d`,`91fa367`,`bbafd54`: drawer clipping (the reported bug), ExecutionStateStrip regression, duplicate ticker, clipped dialogs app-wide, drawer a11y/inert, honest unavailable states, Day-Stop wiring, guard fail-safe, 2 money-figure semantic inversions. **4 deferred safety items planned**: `docs/superpowers/plans/2026-07-25-live-safety-four-fixes.md` |
+| 4b | ↳ Page audit + fixes (2026-07-25) | ⚠️ LIVE REGISTER | The original five audit dimensions were completed, but raw findings were not all verified. On 2026-08-15 three consequential claims were behaviorally reproduced and closed: manual stand-down failure, unknown placement outcome, and stale Flattrade token state. **38 rows remain `UNVERIFIED` hypotheses**; verify each against current code before fixing. Register: `docs/live-cockpit-audit-2026-07-25.md`. |
 | 4 | Live-trading page redesign | ✅ DONE (both phases) | **Phase 2 landed 2026-07-22**: read-only `GET /market/analysis` engine (`market_analysis.py` pure primitives + `market_analysis_build.py` assembly, ~8s single-flight cache) + `GET /live-broker/holdings`; MarketPulse (structure/regime meter/confidence/multi-TF trend/S-R range bar), MarketAnalysis (PCR·max-pain·IV-rank·straddle·net Δ,Θ + chain) and the Holdings tab all wired. Honest degradation everywhere (PCR suppressed without OI; IV rank declares `vix_proxy`). Commits `e0fb250`,`df6ebe3`,`afbd24b`. Suite 3,610/0; verified against live data. Phase-1 detail below |
 | 4a | ↳ Phase 1 (shell) | ✅ DONE | Design+plan approved+committed (`c524ddf`,`e94d9cc`). **Phase 1 SHELL BUILT + Chrome-verified** on branch `feat/live-cockpit` (`3511874`): always-on cockpit (command bar + market-status pill + Upstox/Flattrade connection module + MarketHeader ticker), always-on core (risk KPIs, positions, kill, guard, quick-trade, deployment summary), config drawer (deployments/backstop/overall), tabbed account panel (Funds/Holdings/Orders/Trades). LiveDashboard retired→liveHelpers.js; 3 tests repointed; 7 new contract tests; suite 3,564/0. Historical note: the original row ended with **Phase 2 PENDING**; Phase 2 was later completed and is recorded in row 4 above. |
-| V | **Market-hours validation** | ⏳ NEXT MARKET SESSION | Plan (deleted after the session; recover with `git show 23ccfed:docs/market-session-plan-2026-07-27.md`). Phase-5B paper validation is STILL PENDING and remains the main event. Posture: **PAPER + READ-ONLY, do NOT enable any live deployment**. Historical note: this row previously said C3 was open; C3 is now closed (row C3) and the remaining gate is runtime validation. Tier A = cockpit/analysis panels on live data (PCR + max-pain should stop being suppressed once the stream runs in FULL mode). Tier D remains deferred to the 1-lot live day: Item 1 + the C2 fence both need a real transmit. |
+| V | **Market-hours validation** | ⏳ NEXT MARKET SESSION | Current plan: [`LIVE_VALIDATION_PLAN_2026-08.md`](LIVE_VALIDATION_PLAN_2026-08.md). The 2026-08-14 real session found defects rather than closing the gate; see HANDOFF §2.0c. Posture remains **PAPER + READ-ONLY unless the operator explicitly performs a live action**. Validate the 2026-08-15 scheduler/evaluator/cockpit changes before stacking further live-path capability. |
+| E1 | **Durable live execution episode ledger** | ⏳ NEXT OFFLINE DEVELOPMENT | Persist signal/deployment/intent/exact exit plan and reserve worst-case exposure before broker POST; make `live_trades` an idempotent projection; reconcile every nonterminal episode before admitting another entry. Plan and fault matrix: [`AUTONOMY_DEVELOPMENT_PLAN_2026-08.md`](AUTONOMY_DEVELOPMENT_PLAN_2026-08.md). |
+| E0 | **Pre-Monday supervisor hardening** | ⏳ BOUNDED | Split 15:30 spot-feed and 15:40 option-monitor clocks; add risk-supervisor heartbeat/status. Do not rush onto the frozen Monday build without red regressions, full suite, rebuild and adversarial review. |
+| T | **2026-08-15 takeover integrity pass** | ✅ VERIFIED WORKING TREE | Fixed scheduled paper EOD square-off argument ownership, per-instrument evaluator wakeups, loud manual stand-down failure, terminal/non-retryable lost-ACK approvals, and one shared Flattrade token-state decider. Host **4,896 passed / 4 xfailed / 0 failed**; focused 121 passed; compileall, optimized frontend build, adversarial re-review, rebuilt backend/frontend, `/api/health` db=ok and frontend HTTP 200 passed. No broker write/login/live-mode change or push. Market-session verification remains open. |
 | 5 | New strategy plugins / edge hunting | ⏸ **PARKED BY USER 2026-07-27** | Direction B ran and was **KILLED AT VALIDATION** (`docs/POOLED_REGIME_VERDICT_2026-07.md`, `d6ef472`): 0/36 NIFTY configs had positive GROSS on train; every survivor was SENSEX-only; holdout NEVER touched and stays clean. **User decision: stop going deeper on edge findings.** Strategy hunting (incl. internet research for an index-option-BUYING edge) is deferred to a LATER phase, explicitly after the capability work below. The one open research question — whether to spend the clean holdout on a SENSEX-only retest — stays OPEN and my recommendation stands: DON'T (a survivor is ~₹380/month on 1 lot; friction is a % of premium so lots scale reward and cost together). |
 | **9** | **CAPABILITY PHASE (new user priority 2026-07-27)** | ➡ **ACTIVE** | User's stated goal, verbatim intent: (a) make **backtesting, paper trading and live trading fully usable WITHOUT CONSTRAINTS** and fit to hand to a user; (b) build the **strategy builder** so a strategy defined in PLAIN WORDS becomes a plugin that backtests, optimizes, and deploys to paper and/or live. Edge hunting comes AFTER. Focus = high-value additions. Plan being assembled from two audits (authoring pipeline end-to-end; backtest/paper/live friction). |
 | 9.0 | **Phase 0 — unlock built-but-unreachable capability** | ✅ **COMPLETE** 2026-07-27 (`e1bfd4c`, `6d89370`) | Four backend features were fully built + tested with **ZERO frontend callers**. **0.1 safety-latch reset** — `blocked_until_reset` halts ALL live entries and never self-clears; the reset endpoint had no caller, so the only exit was a raw API call. **Newly urgent because C3 gave `guardrail_tick` its FIRST production caller that same day** — the latch became trippable and I opened that reachability. Backend now records `latched_at`+`latched_reason` in the SAME write as the flag (they can never disagree); `reset()` clears provenance so a stale cause can't mislead the next operator; `put_config` still refuses all three keys so a halt can't be relabelled. Banner is two-step (clearing re-authorises real money). **0.2 recovery banner** — `/live-broker/recovery-status` existed to drive a UI strip per its own docstring; severity now follows exposure (unrecovered + open positions = danger). **0.3 deploy from a backtest run** — backend always accepted `source_type="backtest_run"` with full H5 validation parity; the wizard never offered it, forcing a save-a-preset detour on EVERY deploy. Now a third source + Deploy button + guarded `?backtest=` deep link. **0.4 pipeline chips** — `/strategies/{id}/pipeline` was built to power exactly these; distinguishes `live_ever_count` from `live_armed_count`. All contract tests assert components are **MOUNTED, not merely imported** (how `ExecutionStateStrip` was silently dropped). Suite **3682/0**, frontend build clean. |
@@ -153,7 +184,7 @@ stale audit rows already subsumed by HIGH #18/#28; disputed LOW #31 remains sepa
 | C-blocked | Friction measurement (analysis direction C) | ⛔ NOT MEASURABLE | `live_trades` is EMPTY — zero real fills ever. Paper trades carry `entry_slippage_pts`/`entry_spread_pts` which ARE the friction model's own outputs, so measuring them against the model is circular. Blocked behind a real-money session → blocked on a registered IP. Do not fake it. |
 | 6 | Profit-leverage ideas write-up | ✅ DONE 2026-07-27 (`bb06e9f`) | Deliverable **`docs/PROFIT_LEVERAGE_ANALYSIS_2026-07.md`**. Structural finding: the app is LONG-PREMIUM ONLY by construction (`base.py:21` no side; `option_backtest.py:749` long P&L; `auto_live.py:483` `side="B"` always), so all three failed campaigns searched ONE family — the one that PAYS the variance premium. **Decisive measurement (Mongo, not the manifest): every day for every index stores exactly ONE expiry (100% of 408/392/410 days); median strikes/day 6/8/9 spanning ~±1-1.5% of spot.** → calendars untestable, verticals barely; the only DEFENSIBLE short experiment (defined-risk spreads) is the one the data can't support, and the one it can (naked) the executor blocks by design. Direction A = ~20 files + novel offline margin model (`GetOrderMargin` is live-only, unreplayable) + multi-leg (doesn't exist — premium_momentum's "both" is two independent trades) + a data campaign. **Reduced to a scoped procurement question; no experiment authorised.** **RANKING: F (wire existing signal) → B (pool 3 indices: 1,210 option index-days vs 408 = 2.97×, ZERO engine changes, the one signal already judged +EV-but-sample-starved), C (realized-fill vs model) in parallel.** D reframed — front-expiry-only storage is fatal for calendars but is exactly what 0DTE trades. Kill criteria pre-registered for all. Side findings: VIX exists for 280 sessions (67.6% of history) so `capability.py:27 has_vix_history: False` is PROVABLY WRONG (AI wizard refusing rules against real data); BANKNIFTY option gap 2024-11-28→19 must be excluded from any pooled study; long P&L convention reimplemented in FOUR places with no chokepoint; OI written per candle and read by NOTHING; six ICT/SMC structural features have ZERO consumers; `explosive_reversal`'s `vix_boost_threshold` is a DEAD optimizer knob → chip `task_ff707a16`. |
 | 7 | End-to-end deep audit | ⏸ BLOCKED | Needs multi-agent budget (spend-limit reset) or several lean sessions |
-| 8 | Handover documentation refresh | ✅ CURRENT 2026-08-01 | Consolidated Stage 1 checkpoint added at `docs/STAGE1_INTEGRITY_SESSION_HANDOFF_2026-08-01.md`; HANDOFF, takeover prompt, live board, changelog and learning log agree. Continue updating after each future work unit. |
+| 8 | Handover documentation refresh | ✅ CURRENT 2026-08-15 | HANDOFF, takeover checklist/prompt, live board, cockpit register, changelog and learning log agree on the 4,896-test working-tree baseline and residual market-session gate. The Stage 1 checkpoint remains dated historical evidence. |
 
 Legend: ⬜ not started · 🔄 in progress · ⏸ deferred/blocked · ✅ done
 
@@ -373,6 +404,17 @@ Junior-agent prompt:
 
 ## 4. Session log
 
+- **2026-08-15 (Codex + scoped adversarial reviewers) — takeover integrity pass.** Verified
+  the 4,887-test inherited baseline, then found that the scheduled 15:00 paper square-off
+  passed `honour_allow_overnight` to `latest_tick_map` and raised `TypeError`; a source-text
+  test had missed argument ownership. Added a driven scheduler regression and fixed it.
+  Replaced the NIFTY-only evaluator wakeup with independent NIFTY/BANKNIFTY/SENSEX bar
+  timestamps. Closed three behaviorally reproduced cockpit claims: rejected stand-down writes
+  are loud, lost broker acknowledgements remain UNKNOWN even when returned in HTTP 200, and
+  all cockpit consumers agree on the post-06:00 token cutoff. The lost-ACK approval is terminal,
+  non-retryable and cannot replay its token. Full host **4,896/4 xfailed/0**; focused 121;
+  compileall, two optimized frontend builds, adversarial re-review, rebuilt services and health
+  checks green. No broker operation, login/logout, deployment-live mutation, commit or push.
 - **2026-08-01 (Codex) — Stage 1 published.** User explicitly authorized the push.
   Pruned stale remote-tracking refs, confirmed the only local/remote branch is `main`,
   preserved archive tags, and pushed the complete HIGH/MED/Stage-1/takeover chain with a
@@ -422,8 +464,9 @@ Junior-agent prompt:
   +60.83% / Sharpe 4.49 in train → **−1.65% / Sharpe −0.27** out of sample. A full
   claim-verification pass (23 claims, 0 disputed) plus the never-audited
   `result-persistence-display` dimension (9 findings, all fixed) closed the cycle.
-  Register: [`BACKTEST_INTEGRITY_AUDIT.md`](BACKTEST_INTEGRITY_AUDIT.md) — including
-  **13 verified-but-unfixed findings** and 10 generalisable lessons. Documentation audited
+  Register: [`BACKTEST_INTEGRITY_AUDIT.md`](BACKTEST_INTEGRITY_AUDIT.md) — at that date it
+  contained **13 verified-but-unfixed findings** plus 10 generalisable lessons; the HIGH/MED
+  rows were closed later. Documentation audited
   and consolidated the same session (40 → 29 doc files; four running logs replaced by the
   one register). All work merged and **pushed** to `origin/main`.
 

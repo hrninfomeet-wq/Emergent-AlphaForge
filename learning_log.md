@@ -5,6 +5,62 @@ so the next session starts smarter. Newest entry first.
 
 ---
 
+## 2026-08-19 → 08-20 — the gates that were documented as conservative (Claude Opus 5)
+
+**CORE LESSON — in any gate, find the ALLOW answer first, then check that every
+"cannot verify" path returns the DENY one.** Two independent defects this session had the
+identical shape, and both carried a docstring calling the behaviour "conservative".
+`detect_drift` returned `False` — *no drift*, the allow answer — whenever either hash was
+missing, so a deployment with no `strategy_source_sha` read as verified forever with zero
+protection; six such rows existed in the production database, one pinned to the literal
+string `FAKE_PINNED_FROM_TEST`. And nine strategies read `vwap` through a 200-bar live window
+that stops reaching 09:15 after 12:34, so "the session anchor" silently became "the window
+anchor" and momentum/fade signals INVERTED for ~40% of every live session. Absence of
+evidence was being treated as evidence of safety in both.
+
+**Why a green suite could not see either.** The fixtures omitted a field production always
+sets. The live-route tests built deployments with **no pin**, which real creation
+(`routers/deployments.py:530`) never does — so they exercised only the fail-open path.
+Fixing the fixture to match reality repaired **14 unrelated pre-existing failures** in that
+file. And the VWAP defect is structurally invisible to backtesting: `run_backtest` passes the
+whole frame, so the anchor is always correct there. **A defect that only exists in the live
+window cannot be found by any backtest, however thorough.**
+
+**Confirmed approaches.**
+- **Property tests beat case tests for gates.** Per-case assertions let the next
+  "conservative default" reopen the hole. The replacement is exhaustive over the input shape:
+  *any* `False` from `detect_drift` must imply both sides present and equal.
+- **Mutation-test the claim, not the code.** The scale-freeness test that justified this
+  session's new plugin was a tautology — it scaled ONE bar shape by a constant, so three
+  mutants reintroducing hardcoded index points passed it on all three families. A fixture only
+  proves transfer if the two legs straddle an absolute threshold.
+- **Measure before building.** Five option-buying hypotheses were killed against the warehouse
+  in an afternoon, before any plugin existed. The ATM buyer's MFE/MAE is 0.90–0.95 — negative
+  before costs — which is why three prior campaigns failed. Register:
+  `docs/OPTION_BUYING_MICROSTRUCTURE_2026-08.md`.
+
+**Dead ends — do not repeat.**
+- **0DTE is the WORST day to buy, not the best.** Gross-move-vs-friction favours it (premium
+  ~4× cheaper, same absolute point-move, 8.4× volume) and that metric ignores theta. Net cost
+  of a 5-minute ATM hold: −4.43% at 0DTE vs −1.48% at 1DTE. I recommended 0DTE on the wrong
+  metric and the user's own 1–2 DTE preference was right.
+- **Never change a strategy's meaning to tidy a parameter.** An adversarial review flagged
+  `band_atr_mult` as a dead search dimension for one family; "fixing" it by adding a
+  displacement requirement cost **89%** of a real saved preset's return (PF 1.649 → 1.056)
+  while barely changing the trade count — it selected different, worse bars. Reverted. A dead
+  dimension is a docs-and-pinning matter.
+- **Do not narrow a searchable range that saved presets already occupy.**
+  `_validate_strategy_deployment_config` REJECTS out-of-range params rather than clamping, so
+  raising `signal_threshold`'s minimum made two saved presets undeployable with HTTP 400.
+  Only the harmful end of a range should ever be trimmed.
+
+**Operational.** `builtin/` is NOT volume-mounted — only `plugins/` is — so editing
+`confluence_scalper` needs a full image rebuild; a restart silently keeps the old code and the
+API still reports the old value. And never `Start-Process` Docker Desktop directly: it died on
+a stale `dockerInference` socket. Use `start-app.bat`.
+
+---
+
 ## 2026-08-07 → 08-11 — the live path learns what it holds (Claude Opus 5)
 
 **CORE LESSON — audit your own commits with the machinery you use on other people's.**
@@ -1138,6 +1194,80 @@ That is the gap between what the operator authorises and what actually executes.
 
 ---
 
+## 2026-08-15 — Takeover integrity: drive ownership and model unknown outcomes
+
+**Core lesson: a test must prove who owns an argument and what an outcome means, not merely
+that the right-looking text or HTTP status exists.** The scheduled paper square-off contained
+`honour_allow_overnight=True`, so its source-string regression stayed green, but the argument was
+inside `latest_tick_map()` and the scheduler raised `TypeError`. Separately, the browser treated
+only thrown timeout/5xx errors as transmission-unknown; the executor can resolve HTTP 200 with
+`indeterminate:true` after a lost broker ACK. Both defects survived fluent, locally consistent
+code because the tests asserted the shape rather than driving the boundary.
+
+**Confirmed approaches:**
+- Drive one real scheduler loop cycle with controlled time and collaborators. That failed on the
+  exact old `TypeError` and proves the square-off callee receives the flag.
+- Represent a multi-instrument wakeup as a timestamp vector. Advancing SENSEX alone while NIFTY
+  stays fixed proves the evaluator no longer has an accidental global NIFTY clock.
+- Put consequential frontend branching in a plain JavaScript helper and execute it with Node.
+  Stand-down rejection, the post-06:00 token cutoff and resolved indeterminate placement now have
+  behavior tests without pretending that grepping JSX is a browser test.
+- Run an adversarial review after the first green pass. The quick pass approved, but the deeper
+  pass found the HTTP-200 lost-ACK gap; a focused re-review approved the terminal-token and shared
+  token-state closures only after their regressions passed.
+
+**Dead ends / traps:**
+- A stale takeover document is not a work queue. The prompt repeated 13 open optimizer findings,
+  but the permanent audit already closed every HIGH/MED row; only disputed LOW #31 remains.
+- `disabled={false}` on QuickTrade looked critical in isolation, but the backend refuses placement
+  unless the token is connected and the single-shot mode is armed, and the Place control requires
+  a successful preview. Severity comes from the whole path, not the nearest JSX prop.
+- `PositionMonitor.jsx` being unmounted is an L2 manual-test-panel issue, not proof that deployed
+  positions lack exit protection. The live guard and auto-square paths are separate.
+- A subagent report is a lead, not verification. One fast APPROVE missed the resolved-response
+  duplicate-order path; source review plus red regressions overruled it.
+
+---
+
+## 2026-08-15 — Offline autonomy priority and Monday validation design
+
+**Core lesson: autonomy begins with durable exposure truth, not with more strategy
+choices.** The executor durably records a minimal intent before the broker call, but the
+cap-counted `live_trades` row is inserted only after broker acceptance and guard setup. A
+process or Mongo failure in that interval can leave real exposure recoverable by broker
+identity yet absent from the journal used by admission caps. The next substantial slice is
+therefore an execution-episode ledger whose nonterminal states reserve exposure and restore
+the exact exit plan.
+
+**Confirmed approaches:**
+- Trace every money-moving workflow across the external side effect, durable records,
+  restart path and downstream cap readers. Reviewing the executor alone would have missed
+  that recovery adopts an order but does not materialize its missing exposure projection.
+- Separate scheduled observation from operator authority. Monday's Codex jobs only read and
+  classify evidence; OAuth, restart, live enablement, arming, Stop/Disable/kill and every
+  order action remain operator-owned.
+- Give every market target `PASS`, `FAIL`, `NOT_EXERCISED`, `BLOCKED` or `NO_SESSION`.
+  A quiet risk supervisor with zero live deployments and a day with no signal are not green
+  evidence.
+- Build evidence autonomy after execution truth: an append-only Experiment/Cohort Ledger
+  with named stages and holdout-consumption tracking, then real-LLM plumbing acceptance,
+  then a unified strategy adapter, then one pre-registered strategy hypothesis at a time.
+
+**Dead ends / traps:**
+- TODO 7(c) was stale. Paper clock exits already survive stale option ticks through
+  `_clock_exit_fill`, with dedicated behavioral regressions; repeating it as open work would
+  waste the offline window.
+- The old live plan overclaimed exit-fill truth. Normal guard close journals the last broker
+  mark unless a confirmed fill is supplied, so realized P&L and charges must remain labelled
+  estimated until reconciled to broker `avgprc`.
+- One `market_open` boolean cannot govern both the 15:30 spot feed and the 15:40 option exit
+  monitor. The current supervisor stops paper monitoring ten minutes early for overnight
+  option positions; split the session clocks before calling that boundary autonomous.
+- Adding another strategy plugin before the experiment identity/holdout ledger increases
+  multiple-testing risk without closing the app's capital or evidence-control gaps.
+
+---
+
 ## 2026-08-16 — One-click startup without weakening live boundaries
 
 **Core lesson: removing operator prompts from startup makes the readiness gate and existing
@@ -1184,3 +1314,46 @@ file. Treating that inherited value as launch failure stopped startup before the
 **Dead end:**
 - An immediate `if errorlevel 1` after `start` produced a false failure and duplicated the stronger
   180-second engine-health check.
+
+---
+
+## 2026-08-16 — Efficiency lesson from the Docker launcher fix
+
+**Core lesson: once the observed symptom maps directly to a five-line control-flow defect, stop
+exploring and run the shortest proof loop.** This fix needed one source inspection, one sandboxed
+behavior regression, deletion of the stale `ERRORLEVEL` branch, the focused launcher suite, and one
+concise review.
+
+**Use next time:**
+- Treat the user's exact reproduction as evidence, then confirm it against the adjacent source lines.
+- Prefer one behavioral regression that proves red → green; add a source assertion only if it guards
+  a batch-language semantic that the behavioral fixture cannot isolate reliably.
+- Run the two affected tests first, then the single relevant test file once. Avoid repeated identical
+  full runs, repeated status narration, and multiple review rounds for a minimal deletion.
+- Never improvise an OS process-launch probe when temporary stub executables already provide a safe
+  test seam; the malformed probe added noise and caused an unrelated Windows Network Error dialog.
+
+**Efficient target workflow:** inspect → red regression → minimal patch → focused tests → one review →
+commit only if authorized.
+
+---
+
+## 2026-08-16 — Short-DTE option-strategy research checkpoint
+
+**Core lesson:** expiry-derived DTE is the invariant; hard-coded weekdays are not. Under the current
+Tuesday NIFTY and Thursday SENSEX expiries, the proposed Monday/Tuesday and Wednesday/Thursday
+windows normally mix 1DTE with 0DTE rather than 1DTE with 2DTE.
+
+**Confirmed approaches:**
+- Repair and regress live/paper `dte_filter` contract-selection parity before strategy evaluation.
+- Keep entries on completed one-minute underlying bars and use quote/tick data for executable-fill
+  calibration and protective exits until deterministic sub-minute replay exists.
+- Compare one frozen opening-shock hypothesis against existing opening-range and squeeze strategies,
+  with costs on, chronological OOS, untouched holdout, and paper-forward evidence.
+
+**Dead ends to avoid:** retail API trading described as HFT; weakening the 14:50/15:00 safety cutoffs
+for close-momentum research; reviving rejected premium momentum; or treating LTP candles as
+executable bid/ask fills.
+
+**Checkpoint:** Gate 1 research is complete. No strategy implementation, warehouse query,
+Optimizer/Backtest run, broker action, or live-setting change has been made for this work.
