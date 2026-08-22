@@ -372,6 +372,36 @@ class TestApproveGate:
         finally:
             _stop(tc)
 
+    def test_indeterminate_placement_is_terminal_not_retryable(self):
+        """A lost broker ACK may be a live order; never re-queue its token."""
+        place = AsyncMock(return_value={
+            "placed": False,
+            "indeterminate": True,
+            "reason": "ack_lost:ReadTimeout",
+            "verdicts": [],
+        })
+        store = ApprovalStore()
+        tc = _make_app(approval_store=store, place_mock=place)
+        try:
+            created = tc.post("/live-broker/order/approvals", json=_TICKET).json()
+            aid, tok = created["approval_id"], created["token"]
+
+            result = tc.post(
+                f"/live-broker/order/approvals/{aid}/approve", json={"token": tok}
+            ).json()
+
+            assert result["indeterminate"] is True
+            assert result["retryable"] is False
+            assert tc.get("/live-broker/order/approvals").json()["pending"] == []
+            assert store.get(aid)["status"] == "indeterminate"
+            replay = tc.post(
+                f"/live-broker/order/approvals/{aid}/approve", json={"token": tok}
+            ).json()
+            assert replay["placed"] is False
+            assert "not pending (indeterminate)" in replay["reason"]
+        finally:
+            _stop(tc)
+
 
 # ---------------------------------------------------------------------------
 # Overall-controls settings (Phase 2)

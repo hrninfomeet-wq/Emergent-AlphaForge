@@ -1213,10 +1213,10 @@ async def live_order_approve(approval_id: str, body: _ApproveBody):
     The token gate sits in FRONT of the existing single executor chokepoint
     (live_order_place → executor.place_live_test_order): a bad/expired/replayed
     token NEVER reaches the executor. On a successful place the approval is marked
-    CONSUMED (terminal — it can never be re-placed). On ANY non-placement after the
-    token is redeemed (BUY-only, mode not armed, broker reject), the approval is
-    REVERTED to pending so it stays in the queue and the operator can fix the cause
-    and retry (or reject) with the same token — never a stranded, vanished order."""
+    CONSUMED (terminal — it can never be re-placed). A confirmed non-placement
+    (BUY-only, mode not armed, broker reject) is REVERTED to pending so it can be
+    retried. A lost broker acknowledgement is terminal INDETERMINATE because the
+    order may already be live; re-queueing that token risks a duplicate order."""
     store = _approval_store()
     now = _utcnow_iso()
     res = store.approve(approval_id, body.token, now)
@@ -1226,8 +1226,8 @@ async def live_order_approve(approval_id: str, body: _ApproveBody):
         # The executor is NOT called and nothing is stranded.
         return {"placed": False, "approval_id": approval_id, "reason": res["reason"]}
 
-    # Token is now redeemed (status=approved). EVERY path below that does not end in
-    # a confirmed placement MUST revert to pending so the approval is never stranded.
+    # Token is now redeemed (status=approved). Confirmed non-placement paths revert
+    # to pending; an unknown broker outcome is terminal and must never be retried.
     def _not_placed(reason: str, extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         store.revert_to_pending(approval_id, now)
         out = {"placed": False, "approval_id": approval_id, "reason": reason, "retryable": True}
@@ -1265,6 +1265,10 @@ async def live_order_approve(approval_id: str, body: _ApproveBody):
     if isinstance(result, dict) and result.get("placed"):
         store.mark_consumed(approval_id, now)
         return {"approval_id": approval_id, **result}
+    if isinstance(result, dict) and result.get("indeterminate"):
+        reason = str(result.get("reason") or "placement_indeterminate")
+        store.mark_indeterminate(approval_id, now, reason=reason)
+        return {"approval_id": approval_id, **result, "retryable": False}
     # Executor returned without placing (halt / margin / broker reject) → revert so
     # the operator can retry; preserve the executor's reason/verdicts for the UI.
     extra = result if isinstance(result, dict) else {"result": result}

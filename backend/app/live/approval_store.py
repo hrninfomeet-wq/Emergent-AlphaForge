@@ -15,8 +15,11 @@ test, mirroring auto_square / kill_switch.
 Autonomy later: making the system autonomous = the route auto-approving on create
 instead of waiting for the operator — the one-shot/TTL guarantees still hold.
 
-State machine (a record only ever moves forward):
+State machine (a record only ever moves forward, except an explicitly safe retry):
     pending ──approve(token)──► approved ──mark_consumed──► consumed
+                                  │
+                                  ├──mark_indeterminate──► indeterminate
+                                  └──revert_to_pending──► pending
        │
        ├──reject──► rejected
        └──(age ≥ ttl)──► expired   (lazily, on any read/decision)
@@ -38,6 +41,7 @@ STATUS_APPROVED = "approved"
 STATUS_REJECTED = "rejected"
 STATUS_EXPIRED = "expired"
 STATUS_CONSUMED = "consumed"
+STATUS_INDETERMINATE = "indeterminate"
 
 # Fields exposed to the UI (NEVER the token, except in the create() response).
 _PUBLIC_FIELDS = (
@@ -174,6 +178,30 @@ class ApprovalStore:
             return {"ok": False, "reason": f"not approved ({rec['status']})"}
         rec["status"] = STATUS_CONSUMED
         rec["decided_at"] = now_iso
+        return {"ok": True, "approval_id": approval_id}
+
+    def mark_indeterminate(
+        self,
+        approval_id: str,
+        now_iso: str,
+        *,
+        reason: str = "placement_indeterminate",
+    ) -> Dict[str, Any]:
+        """Make an APPROVED approval terminal when broker acknowledgement is lost.
+
+        The order may already exist at the broker, so returning the approval to
+        ``pending`` would let the same token create a duplicate position.  The
+        terminal state forces operator reconciliation before any new order.
+        """
+        rec = self._q.get(approval_id)
+        if rec is None:
+            return {"ok": False, "reason": "not_found"}
+        if rec["status"] != STATUS_APPROVED:
+            return {"ok": False, "reason": f"not approved ({rec['status']})"}
+        rec["status"] = STATUS_INDETERMINATE
+        rec["decided_at"] = now_iso
+        rec["reason"] = str(reason or "placement_indeterminate")
+        rec["token"] = None
         return {"ok": True, "approval_id": approval_id}
 
     def reject(self, approval_id: str, now_iso: str, *, reason: str = "operator_rejected") -> Dict[str, Any]:

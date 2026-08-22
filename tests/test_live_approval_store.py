@@ -17,6 +17,7 @@ from app.live.approval_store import (  # noqa: E402
     STATUS_APPROVED,
     STATUS_CONSUMED,
     STATUS_EXPIRED,
+    STATUS_INDETERMINATE,
     STATUS_PENDING,
     STATUS_REJECTED,
     ApprovalStore,
@@ -168,6 +169,29 @@ class TestConsume:
         s = _store()
         rec = s.create(payload=_PAYLOAD, summary=_SUMMARY, now_iso=_T0)
         assert s.mark_consumed(rec["approval_id"], _T0)["ok"] is False
+
+
+class TestIndeterminate:
+    def test_lost_ack_is_terminal_and_token_cannot_be_replayed(self):
+        s = _store()
+        rec = s.create(payload=_PAYLOAD, summary=_SUMMARY, now_iso=_T0)
+        aid, token = rec["approval_id"], rec["token"]
+        s.approve(aid, token, _T0)
+
+        result = s.mark_indeterminate(aid, _T0, reason="ack_lost:ReadTimeout")
+
+        assert result["ok"] is True
+        assert s.get(aid)["status"] == STATUS_INDETERMINATE
+        assert s.get(aid)["reason"] == "ack_lost:ReadTimeout"
+        assert s.approve(aid, token, _T0)["ok"] is False
+        assert s.revert_to_pending(aid, _T0)["ok"] is False
+        assert s.mark_consumed(aid, _T0)["ok"] is False
+
+    def test_only_approved_can_be_marked_indeterminate(self):
+        s = _store()
+        rec = s.create(payload=_PAYLOAD, summary=_SUMMARY, now_iso=_T0)
+        assert s.mark_indeterminate(rec["approval_id"], _T0)["ok"] is False
+        assert s.mark_indeterminate("missing", _T0)["ok"] is False
 
     def test_cannot_consume_twice(self):
         s = _store()

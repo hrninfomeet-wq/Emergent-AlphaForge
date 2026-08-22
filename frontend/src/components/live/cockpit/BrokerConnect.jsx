@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
+import { brokerConnectionState } from "@/lib/liveCockpitActions";
 import { toast } from "sonner";
 
 /**
@@ -37,10 +38,8 @@ function BrokerChip({ name, purpose, status, onReconnect, onDisconnect, openPosi
   // Reset the disconnect confirmation whenever the popover closes.
   useEffect(() => { if (!open) setConfirmDisconnect(false); }, [open]);
 
-  const connected = !!status?.connected && !status?.expired;
-  const expired = !!status?.expired;
+  const { connected, expired, stateLabel } = brokerConnectionState(status);
   const dot = connected ? "bg-success" : expired ? "bg-warning" : "bg-danger";
-  const stateLabel = connected ? "connected" : expired ? "token expired" : "disconnected";
   // Colour alone must not carry the state (colour-blind users, and the dot is 6px).
   const stateGlyph = connected ? "✓" : expired ? "!" : "×";
   const hint = tokenHint(status);

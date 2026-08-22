@@ -26,6 +26,7 @@ import pandas as pd
 
 from app.indicators import precompute_all_indicators
 from app.instruments import UNDERLYING_META
+from app.dte import compute_dte, normalize_dte_filter
 from app.options_universe import select_contract_for_signal
 from app.regime import classify_regime_series
 from app.features import materialize_features
@@ -134,6 +135,8 @@ async def _resolve_option_contract(
     spot_price: float,
     direction: str,
     moneyness: str,
+    trade_date_iso: Optional[str] = None,
+    dte_filter: Any = None,
 ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     """Pick an option contract per moneyness using stored metadata.
 
@@ -141,12 +144,13 @@ async def _resolve_option_contract(
     Blockers:
       - "option_contract_metadata_missing": no contracts in option_contracts for instrument
       - "option_contract_no_active_expiry": all stored contracts are past their expiry
+      - "option_contract_dte_not_allowed": nearest expiry is outside the deployment's DTE filter
       - "option_contract_not_found":        no exact strike/side match for the requested moneyness
     """
     if instrument.upper() not in UNDERLYING_META:
         return None, f"option_unsupported_underlying ({instrument})"
 
-    today_iso = (datetime.now(timezone.utc) + IST_OFFSET).strftime("%Y-%m-%d")
+    today_iso = trade_date_iso or (datetime.now(timezone.utc) + IST_OFFSET).strftime("%Y-%m-%d")
 
     # Query for ACTIVE contracts only (expiry_date >= today). This prevents the bug we
     # observed on 2026-05-28 where the picker resolved a live signal to a Nov-2024
@@ -166,8 +170,16 @@ async def _resolve_option_contract(
             return None, "option_contract_no_active_expiry (all stored contracts are past expiry; sync current contracts)"
         return None, "option_contract_metadata_missing"
 
+    eligible_contracts, expiry_blocker = _contracts_for_nearest_eligible_expiry(
+        contracts,
+        trade_date_iso=today_iso,
+        dte_filter=dte_filter,
+    )
+    if expiry_blocker:
+        return None, expiry_blocker
+
     contract = select_contract_for_signal(
-        contracts=contracts,
+        contracts=eligible_contracts,
         underlying=instrument,
         spot_price=float(spot_price),
         direction=direction,
@@ -176,6 +188,68 @@ async def _resolve_option_contract(
     if not contract:
         return None, f"option_contract_not_found (moneyness={moneyness}, spot={spot_price}, side={direction})"
     return contract, None
+
+
+def _contracts_for_nearest_eligible_expiry(
+    contracts: List[Dict[str, Any]],
+    *,
+    trade_date_iso: str,
+    dte_filter: Any = None,
+) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    """Restrict contracts to the signal session's nearest eligible expiry.
+
+    The stored contract expiry is the source of truth. DTE is trading-session
+    distance, not weekday arithmetic. If a deployment pins a DTE filter and the
+    nearest expiry does not match it, fail closed instead of falling through to
+    a later expiry whose strike happens to be present.
+    """
+    valid_expiries = set()
+    malformed_expiry_seen = False
+    for contract in contracts:
+        raw_expiry = contract.get("expiry_date")
+        if not raw_expiry:
+            malformed_expiry_seen = True
+            continue
+        expiry = str(raw_expiry)
+        try:
+            # Require the canonical metadata format; datetime.fromisoformat would
+            # also accept timestamp strings that break lexical date comparisons.
+            datetime.strptime(expiry, "%Y-%m-%d")
+        except (TypeError, ValueError):
+            malformed_expiry_seen = True
+            continue
+        if expiry >= trade_date_iso:
+            valid_expiries.add(expiry)
+    expiries = sorted(valid_expiries)
+    if not expiries:
+        if malformed_expiry_seen:
+            return [], "option_contract_expiry_metadata_invalid"
+        return [], "option_contract_no_active_expiry (no valid expiry on or after signal session)"
+
+    nearest_expiry = expiries[0]
+    dte = compute_dte(trade_date_iso, expiries)
+    allowed = normalize_dte_filter(dte_filter)
+    explicitly_unrestricted = (
+        dte_filter is None
+        or (isinstance(dte_filter, str) and dte_filter.strip().lower() in ("", "all"))
+        or (
+            isinstance(dte_filter, (list, tuple, set, frozenset))
+            and len(dte_filter) == 0
+        )
+    )
+    if allowed is None and not explicitly_unrestricted:
+        return [], f"option_contract_dte_filter_invalid (value={dte_filter!r})"
+    if allowed is not None and (dte is None or dte not in allowed):
+        rendered_dte = "unknown" if dte is None else str(dte)
+        return [], (
+            "option_contract_dte_not_allowed "
+            f"(dte={rendered_dte}, allowed={sorted(allowed)}, expiry={nearest_expiry})"
+        )
+
+    return [
+        contract for contract in contracts
+        if str(contract.get("expiry_date") or "") == nearest_expiry
+    ], None
 
 
 async def next_expiry_for(db: Any, instrument: str, *, today_iso: Optional[str] = None) -> Optional[str]:
@@ -441,7 +515,12 @@ async def evaluate_deployment_on_close(
         }
     kill_block_reason = kill.get("block_reason")
 
-    df = await _load_recent_candles(db, instrument, lookback=200)
+    try:
+        requested_lookback = int(getattr(strategy, "live_lookback_bars", 200) or 200)
+    except (TypeError, ValueError):
+        requested_lookback = 200
+    live_lookback = max(200, min(requested_lookback, 1_000))
+    df = await _load_recent_candles(db, instrument, lookback=live_lookback)
     if df.empty or len(df) < MIN_BARS_FOR_EVALUATION:
         return {
             "deployment_id": deployment_id,
@@ -483,6 +562,9 @@ async def evaluate_deployment_on_close(
     next_expiry_iso = await next_expiry_for(db, instrument)
     bar_ist_dt = datetime.fromtimestamp(candle_ts / 1000, tz=timezone.utc) + IST_OFFSET
     expiry_blocker = _is_blocked_by_expiry_day_cutoff(bar_ist_dt, next_expiry_iso)
+    option_policy = dict(deployment.get("option_policy") or {})
+    dte_filter = option_policy.get("dte_filter")
+    signal_session_date = _ist_session_date_of_ts(candle_ts)
 
     # ---- Track B: premium-momentum deployments use the premium session engine
     # instead of the generic spot evaluate + per-bar contract re-resolution. The
@@ -543,14 +625,23 @@ async def evaluate_deployment_on_close(
 
         pm_contracts = await db.option_contracts.find(
             {"underlying": instrument,
-             "expiry_date": {"$gte": _ist_session_date_of_ts(candle_ts)}},
+             "expiry_date": {"$gte": signal_session_date}},
             {"_id": 0},
         ).sort([("expiry_date", 1), ("strike", 1), ("side", 1)]).to_list(length=None)
-        # per-session weekly: keep only the nearest expiry >= session (blueprint
-        # "current weekly"); mirrors the backtest's expiry_for_session.
-        _expiries = sorted({str(c.get("expiry_date")) for c in pm_contracts if c.get("expiry_date")})
-        if _expiries:
-            pm_contracts = [c for c in pm_contracts if str(c.get("expiry_date")) == _expiries[0]]
+        pm_contracts, pm_expiry_blocker = _contracts_for_nearest_eligible_expiry(
+            pm_contracts,
+            trade_date_iso=signal_session_date,
+            dte_filter=dte_filter,
+        )
+        if pm_expiry_blocker:
+            await _mark_deployment_evaluated(db, deployment_id, candle_ts)
+            return {
+                "deployment_id": deployment_id,
+                "outcome": "blocked",
+                "reason": pm_expiry_blocker,
+                "blockers": [pm_expiry_blocker],
+                "candle_ts": candle_ts,
+            }
         pm_result = await evaluate_premium_momentum_bar(
             locks_col=db.premium_locks, deployment=_pm_deployment, instrument=instrument,
             candle_ts=candle_ts, spot_close=float(last_bar["close"]),
@@ -616,7 +707,6 @@ async def evaluate_deployment_on_close(
     strategy_blockers: List[str] = list(getattr(sig, "blockers", []) or [])
 
     # Option contract resolution (use first moneyness from policy; ATM by default)
-    option_policy = dict(deployment.get("option_policy") or {})
     moneyness_list = option_policy.get("moneyness") or ["atm"]
     moneyness = str(moneyness_list[0] if isinstance(moneyness_list, list) and moneyness_list else "atm").lower()
     spot_price = float(last_bar["close"])
@@ -632,6 +722,8 @@ async def evaluate_deployment_on_close(
             spot_price=spot_price,
             direction=direction,
             moneyness=moneyness,
+            trade_date_iso=signal_session_date,
+            dte_filter=dte_filter,
         )
 
     # No-data flag: contract exists but has no recent option candle

@@ -35,6 +35,7 @@ from app.deployment_evaluator import (  # noqa: E402
     compute_strategy_hash,
     evaluate_deployment_on_close,
     _is_blocked_by_window,
+    _resolve_option_contract,
 )
 from app.signal_lifecycle import create_signal_doc  # noqa: E402
 from app.strategies.base import StrategyBase, Signal, get_registry  # noqa: E402
@@ -49,14 +50,22 @@ def ist_to_epoch_ms(year: int, month: int, day: int, hh: int, mm: int) -> int:
     return int(ist_dt.astimezone(timezone.utc).timestamp() * 1000)
 
 
-def make_candles(n: int = 80, *, base_ist_hh: int = 11, base_ist_mm: int = 30) -> pd.DataFrame:
+def make_candles(
+    n: int = 80,
+    *,
+    year: int = 2026,
+    month: int = 5,
+    day: int = 27,
+    base_ist_hh: int = 11,
+    base_ist_mm: int = 30,
+) -> pd.DataFrame:
     """Build a synthetic NIFTY 1m candle frame with mild trend so indicators populate.
 
     Anchored at fixed IST time (default 11:30 -> last bar around 12:49) so window-block
     tests are deterministic. Tests that need 'recent option data' should insert the option
     candle with `ts = now_ms()` since `_has_recent_option_data` uses wall-clock time.
     """
-    base_ts = ist_to_epoch_ms(2026, 5, 27, base_ist_hh, base_ist_mm)
+    base_ts = ist_to_epoch_ms(year, month, day, base_ist_hh, base_ist_mm)
     rows: List[Dict[str, Any]] = []
     price = 23900.0
     for i in range(n):
@@ -248,9 +257,13 @@ def register_stub_strategy():
 def make_deployment(
     *,
     moneyness: List[str] = None,
+    dte_filter: Any = None,
     pretrade_profile: str = "Balanced",
     last_evaluated_ts: int = 0,
 ) -> Dict[str, Any]:
+    option_policy = {"moneyness": moneyness or ["atm"], "expiry_policy": "next_available"}
+    if dte_filter is not None:
+        option_policy["dte_filter"] = dte_filter
     return {
         "id": "test-deploy-1",
         "name": "Test deployment",
@@ -261,7 +274,7 @@ def make_deployment(
         "instrument": "NIFTY",
         "timeframe": "1m",
         "confirmation_mode": "1m_close",
-        "option_policy": {"moneyness": moneyness or ["atm"], "expiry_policy": "next_available"},
+        "option_policy": option_policy,
         "pretrade_profile": pretrade_profile,
         "mode": "shadow",
         "manual_approval_required": True,
@@ -334,6 +347,239 @@ def test_window_blocker_last_30_minutes():
 def test_window_clear_midday():
     ts = ist_to_epoch_ms(2026, 5, 27, 11, 30)
     assert _is_blocked_by_window(ts) is None
+
+
+# ---------- option expiry / DTE parity ----------------------------------------
+
+@pytest.mark.asyncio
+async def test_contract_resolution_restricts_selection_to_nearest_allowed_expiry():
+    """A DTE1 deployment must not select the same strike from a later expiry."""
+    db = FakeDB()
+    near = make_contracts(expiry_date="2026-08-18")
+    far = make_contracts(expiry_date="2026-08-25")
+    for contract in near:
+        contract["instrument_key"] = f"NEAR|{contract['instrument_key']}"
+    for contract in far:
+        contract["instrument_key"] = f"FAR|{contract['instrument_key']}"
+    # Put the far contracts first to prove DB/list order cannot choose expiry.
+    db.option_contracts.rows = far + near
+
+    contract, blocker = await _resolve_option_contract(
+        db,
+        instrument="NIFTY",
+        spot_price=23950.0,
+        direction="CE",
+        moneyness="atm",
+        trade_date_iso="2026-08-17",
+        dte_filter=[1, 2],
+    )
+
+    assert blocker is None
+    assert contract is not None
+    assert contract["expiry_date"] == "2026-08-18"
+    assert contract["instrument_key"].startswith("NEAR|")
+
+
+@pytest.mark.asyncio
+async def test_contract_resolution_blocks_dte0_when_only_dte1_and_dte2_allowed():
+    db = FakeDB()
+    db.option_contracts.rows = make_contracts(expiry_date="2026-08-18")
+
+    contract, blocker = await _resolve_option_contract(
+        db,
+        instrument="NIFTY",
+        spot_price=23950.0,
+        direction="CE",
+        moneyness="atm",
+        trade_date_iso="2026-08-18",
+        dte_filter=[1, 2],
+    )
+
+    assert contract is None
+    assert blocker == "option_contract_dte_not_allowed (dte=0, allowed=[1, 2], expiry=2026-08-18)"
+
+
+@pytest.mark.asyncio
+async def test_contract_resolution_honors_holiday_shifted_expiry_metadata():
+    """The calendar marks 2026-01-15 closed; stored 2026-01-14 expiry is DTE1 on Jan 13."""
+    db = FakeDB()
+    db.option_contracts.rows = [{
+        "underlying": "SENSEX",
+        "strike": 82000.0,
+        "side": "PE",
+        "expiry": "2026-01-14",
+        "expiry_date": "2026-01-14",
+        "instrument_key": "BSE_FO|SHIFTED|82000PE",
+        "trading_symbol": "SENSEX14JAN2682000PE",
+    }]
+
+    contract, blocker = await _resolve_option_contract(
+        db,
+        instrument="SENSEX",
+        spot_price=82000.0,
+        direction="PE",
+        moneyness="atm",
+        trade_date_iso="2026-01-13",
+        dte_filter=[1],
+    )
+
+    assert blocker is None
+    assert contract is not None
+    assert contract["expiry_date"] == "2026-01-14"
+
+
+@pytest.mark.asyncio
+async def test_contract_resolution_empty_dte_filter_keeps_all_but_still_uses_nearest_expiry():
+    db = FakeDB()
+    db.option_contracts.rows = (
+        make_contracts(expiry_date="2026-08-25")
+        + make_contracts(expiry_date="2026-08-18")
+    )
+
+    contract, blocker = await _resolve_option_contract(
+        db,
+        instrument="NIFTY",
+        spot_price=23950.0,
+        direction="CE",
+        moneyness="atm",
+        trade_date_iso="2026-08-18",
+        dte_filter=[],
+    )
+
+    assert blocker is None
+    assert contract is not None
+    assert contract["expiry_date"] == "2026-08-18"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_filter", [["garbage"], [-1], True, "dte-x"])
+async def test_contract_resolution_fails_closed_for_malformed_explicit_dte_filter(invalid_filter):
+    db = FakeDB()
+    db.option_contracts.rows = make_contracts(expiry_date="2026-08-18")
+
+    contract, blocker = await _resolve_option_contract(
+        db,
+        instrument="NIFTY",
+        spot_price=23950.0,
+        direction="CE",
+        moneyness="atm",
+        trade_date_iso="2026-08-18",
+        dte_filter=invalid_filter,
+    )
+
+    assert contract is None
+    assert blocker == f"option_contract_dte_filter_invalid (value={invalid_filter!r})"
+
+
+@pytest.mark.asyncio
+async def test_contract_resolution_fails_closed_without_crashing_on_malformed_expiry_metadata():
+    db = FakeDB()
+    db.option_contracts.rows = [{
+        **make_contracts(expiry_date="2026-08-18")[0],
+        "expiry": "garbage",
+        "expiry_date": "garbage",
+    }]
+
+    contract, blocker = await _resolve_option_contract(
+        db,
+        instrument="NIFTY",
+        spot_price=23950.0,
+        direction="CE",
+        moneyness="atm",
+        trade_date_iso="2026-08-18",
+        dte_filter=[1, 2],
+    )
+
+    assert contract is None
+    assert blocker == "option_contract_expiry_metadata_invalid"
+
+
+@pytest.mark.asyncio
+async def test_contract_resolution_fails_closed_when_no_expiry_is_active_for_signal_date():
+    db = FakeDB()
+    db.option_contracts.rows = make_contracts(expiry_date="2026-08-18")
+
+    contract, blocker = await _resolve_option_contract(
+        db,
+        instrument="NIFTY",
+        spot_price=23950.0,
+        direction="CE",
+        moneyness="atm",
+        trade_date_iso="2026-08-19",
+        dte_filter=[1, 2],
+    )
+
+    assert contract is None
+    assert blocker and blocker.startswith("option_contract_no_active_expiry")
+
+
+@pytest.mark.asyncio
+async def test_contract_resolution_counts_friday_to_tuesday_as_dte2():
+    db = FakeDB()
+    db.option_contracts.rows = make_contracts(expiry_date="2026-08-18")
+
+    contract, blocker = await _resolve_option_contract(
+        db,
+        instrument="NIFTY",
+        spot_price=23950.0,
+        direction="CE",
+        moneyness="atm",
+        trade_date_iso="2026-08-14",
+        dte_filter=[2],
+    )
+
+    assert blocker is None
+    assert contract is not None
+    assert contract["expiry_date"] == "2026-08-18"
+
+
+@pytest.mark.asyncio
+async def test_contract_resolution_never_falls_to_far_expiry_for_missing_near_strike():
+    db = FakeDB()
+    near_without_atm = [
+        contract for contract in make_contracts(expiry_date="2026-08-18")
+        if int(contract["strike"]) != 23950
+    ]
+    far_with_atm = make_contracts(expiry_date="2026-08-25")
+    db.option_contracts.rows = near_without_atm + far_with_atm
+
+    contract, blocker = await _resolve_option_contract(
+        db,
+        instrument="NIFTY",
+        spot_price=23950.0,
+        direction="CE",
+        moneyness="atm",
+        trade_date_iso="2026-08-17",
+        dte_filter=[1, 2],
+    )
+
+    assert contract is None
+    assert blocker and blocker.startswith("option_contract_not_found")
+
+
+@pytest.mark.asyncio
+@requires_motor
+async def test_ordinary_evaluator_applies_dte_filter_from_option_policy():
+    db = FakeDB()
+    candles = make_candles(n=80, year=2026, month=8, day=17)
+    deployment = make_deployment(dte_filter=[0])
+    seed_db(
+        db,
+        candles=candles,
+        deployment=deployment,
+        contracts=make_contracts(expiry_date="2026-08-18"),
+        profiles=[make_profile()],
+    )
+    StubStrategy.set_next(Signal(direction="CE", score=75, reasons=["test setup"]))
+
+    result = await evaluate_deployment_on_close(db, db.strategy_deployments.rows[0])
+
+    assert result["outcome"] == "blocked"
+    assert any("option_contract_dte_not_allowed" in blocker for blocker in result["blockers"])
+    assert len(db.signals.rows) == 1
+    # Blocked signals finish the lifecycle as AUDITED after the SKIPPED transition.
+    assert db.signals.rows[0]["state"] == "AUDITED"
+    assert db.signals.rows[0]["option_contract"] == {}
 
 
 # ---------- evaluator end-to-end ----------------------------------------------

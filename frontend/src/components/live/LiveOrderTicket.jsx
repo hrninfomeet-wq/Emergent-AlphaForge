@@ -3,6 +3,7 @@ import { CheckCircle, XCircle, Loader2, AlertTriangle, Send } from "lucide-react
 import { api } from "@/lib/api";
 import { fmtINR } from "@/lib/fmt";
 import { getApiErrorMessage } from "@/lib/apiError";
+import { placementOutcome, standDownManualExecution } from "@/lib/liveCockpitActions";
 import PayoffChart from "./PayoffChart";
 
 /**
@@ -361,8 +362,16 @@ export default function LiveOrderTicket({ mode, disabled, onQueued, onPlaced }) 
       // From here on a failure CANNOT prove the order never reached the broker.
       redeemAttempted = true;
       const placed = await api.approveOrder(created.approval_id, created.token);
+      const outcome = placementOutcome(placed);
+      if (outcome.unconfirmed) {
+        unconfirmed = true;
+        setPlaceUnconfirmed({ detail: outcome.detail });
+        setPreviewResult(null);
+        onPlaced?.();
+        return;
+      }
       setPlaceResult(placed);
-      placedOk = !!placed?.placed;
+      placedOk = outcome.placed;
       if (placedOk) {
         setPreviewResult(null); // clear so it can't double-fire
         // Pull the shared broker slices immediately: without this a real fill
@@ -395,11 +404,16 @@ export default function LiveOrderTicket({ mode, disabled, onQueued, onPlaced }) 
       // order may be working at the broker reads as "nothing happened", which is
       // the very impression that causes a duplicate re-place.
       if (armed && !placedOk && !unconfirmed) {
-        try {
-          await api.setLiveMode("LIVE_OFFLINE");
-        } catch {
-          /* best-effort stand-down; the hero Mode tile will still reflect reality on the next poll */
-        }
+        await standDownManualExecution({
+          setMode: (mode) => api.setLiveMode(mode),
+          onFailure: (error) => setQueueError((current) => {
+            const detail = getApiErrorMessage(
+              error,
+              "Stand down failed — LIVE_TEST may still be armed",
+            );
+            return current ? `${current} · ${detail}` : detail;
+          }),
+        });
       }
       setQueueBusy(false);
     }

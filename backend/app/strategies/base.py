@@ -119,6 +119,10 @@ class StrategyBase:
     parameter_schema: Dict[str, Any] = {}
     is_builtin: bool = True
     required_features: List[str] = []
+    # Paper/live evaluator history requirement. Most strategies need only the
+    # latest 200 bars; session-anchored strategies may raise this (bounded by
+    # the evaluator) so their live context matches the backtest context.
+    live_lookback_bars: int = 200
     # Warehouse-backed columns joined AS-OF the bar ts at LOAD time, before
     # indicator enrichment (see app.data_columns). Separate from
     # `required_features` because these need I/O the pure feature registry is
@@ -169,6 +173,7 @@ class StrategyBase:
             "is_builtin": self.is_builtin,
             "required_features": self.required_features,
             "required_data": self.required_data,
+            "live_lookback_bars": self.live_lookback_bars,
             "origin": _origin_from_module(type(self).__module__),
         }
 

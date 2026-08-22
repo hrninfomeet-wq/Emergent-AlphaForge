@@ -1020,7 +1020,13 @@ async def _deployment_evaluator_loop() -> None:
     # New-bar gate state: only (re)evaluate strategies when the live-candle roller
     # has flushed a NEW closed 1-min spot bar — entries then fire ~2-3s after close
     # (vs the old fixed minute+10s), and never on the still-forming bucket.
-    last_bar_ts = 0
+    # Each supported underlying owns its own feed cadence. A single NIFTY scalar
+    # used to freeze BANKNIFTY/SENSEX deployments whenever NIFTY stalled, and a
+    # global max timestamp would still miss an instrument that caught up to a
+    # minute another instrument had already reached. Track the full vector.
+    last_bar_ts_by_instrument: Dict[str, int] = {
+        instrument: 0 for instrument in HYGIENE_DEFAULT_INSTRUMENTS
+    }
     EVAL_POLL_SECONDS = 2.0
     while True:
         try:
@@ -1041,10 +1047,10 @@ async def _deployment_evaluator_loop() -> None:
             if last_squareoff_ist_date != today_ist and is_square_off_due(ist_now):
                 summaries = await square_off_open_paper_trades(
                     db,
-                    latest_tick_lookup=upstox_stream_manager.latest_tick_map(                    honour_allow_overnight=True,  # scheduled 15:00 EOD sweep
-                ).get,
+                    latest_tick_lookup=upstox_stream_manager.latest_tick_map().get,
                     reason="auto_square_off_15_00_IST",
                     now_ist=ist_now,
+                    honour_allow_overnight=True,  # scheduled 15:00 EOD sweep
                 )
                 if summaries:
                     log.info("paper square-off at 15:00 IST closed %d open trades", len(summaries))
@@ -1052,12 +1058,22 @@ async def _deployment_evaluator_loop() -> None:
 
             # New-bar gate. Exits are owned by LiveExitMonitor (~1.5s) — this loop
             # only journals signals + auto-opens entries, once per fresh bar.
-            latest = await db.candles_1m.find_one(
-                {"instrument": "NIFTY"}, {"_id": 0, "ts": 1}, sort=[("ts", -1)])
-            latest_ts = int((latest or {}).get("ts") or 0)
-            if latest_ts <= last_bar_ts:
+            latest_rows = await asyncio.gather(*(
+                db.candles_1m.find_one(
+                    {"instrument": instrument},
+                    {"_id": 0, "ts": 1},
+                    sort=[("ts", -1)],
+                )
+                for instrument in HYGIENE_DEFAULT_INSTRUMENTS
+            ))
+            advanced_instruments = []
+            for instrument, latest in zip(HYGIENE_DEFAULT_INSTRUMENTS, latest_rows):
+                latest_ts = int((latest or {}).get("ts") or 0)
+                if latest_ts > last_bar_ts_by_instrument[instrument]:
+                    last_bar_ts_by_instrument[instrument] = latest_ts
+                    advanced_instruments.append(instrument)
+            if not advanced_instruments:
                 continue
-            last_bar_ts = latest_ts
 
             tick_lookup = upstox_stream_manager.latest_tick_map().get
             results = await evaluate_active_deployments(db, latest_tick_lookup=tick_lookup)

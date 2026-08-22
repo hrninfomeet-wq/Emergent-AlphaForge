@@ -267,6 +267,23 @@ def test_ref_bar_creates_lock_and_returns_premium_monitoring():
     assert db.strategy_deployments.rows[0]["last_evaluated_ts"] == TS_0931
 
 
+def test_dte_filter_blocks_expiry_day_before_premium_lock_mutation():
+    """Track B must enforce the same DTE policy before capturing reference state."""
+    db = _FakeDB()
+    dep = seed_db(db, end_ts=TS_0931)
+    dep["option_policy"]["dte_filter"] = [1, 2]
+    db.strategy_deployments.rows = [dict(dep)]
+    db.option_contracts.rows = make_contracts("2026-07-10")  # signal session == DTE0
+
+    result = _eval_with_ticks(db, dep, _fresh_ticks(100.0, 110.0))
+
+    assert result["outcome"] == "blocked"
+    assert "option_contract_dte_not_allowed" in result["reason"]
+    assert db.premium_locks.docs == []
+    assert db.signals.rows == []
+    assert db.strategy_deployments.rows[0]["last_evaluated_ts"] == TS_0931
+
+
 # --- (b) trigger bar: CONFIRMED signal from the LOCKED contract + latch -------
 
 def test_trigger_bar_journals_confirmed_signal_from_lock_and_latches():

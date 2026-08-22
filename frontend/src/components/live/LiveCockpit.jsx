@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { toast } from "sonner";
 import { api } from "@/lib/api";
+import { getApiErrorMessage } from "@/lib/apiError";
+import { brokerConnectionState, standDownManualExecution } from "@/lib/liveCockpitActions";
 import { useLiveData } from "@/components/live/LiveDataProvider";
 import {
   SectionCard, ReconcileChip, PositionsBlotter, fmtAsOf,
@@ -40,6 +43,7 @@ export default function LiveCockpit() {
     marketAnalysis, holdings, greeks, errors, deployLive,
   } = useLiveData();
   const fetchAll = refetch.all;
+  const brokerConnection = useMemo(() => brokerConnectionState(status), [status]);
 
   const [authMsg, setAuthMsg] = useState(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -50,14 +54,17 @@ export default function LiveCockpit() {
   // only one-click way to neutralise an armed manual ticket.
   const handleStandDown = useCallback(async () => {
     setStandDownBusy(true);
-    try {
-      await api.setLiveMode("LIVE_OFFLINE");
-    } catch {
-      /* surfaced by the unchanged strip state on the next poll */
-    } finally {
-      setStandDownBusy(false);
-      fetchAll();
-    }
+    await standDownManualExecution({
+      setMode: (mode) => api.setLiveMode(mode),
+      onFailure: (error) => toast.error(getApiErrorMessage(
+        error,
+        "Stand down failed — LIVE_TEST may still be armed",
+      )),
+      onSettled: () => {
+        setStandDownBusy(false);
+        fetchAll();
+      },
+    });
   }, [fetchAll]);
 
   // OAuth post-redirect (Flattrade bounces to /live-trading?flattrade_connected=1).
@@ -86,8 +93,8 @@ export default function LiveCockpit() {
 
   // ...and drop it immediately if the session actually goes away.
   useEffect(() => {
-    if (authMsg?.ok && status && !(status.connected && !status.expired)) setAuthMsg(null);
-  }, [authMsg, status]);
+    if (authMsg?.ok && status && !brokerConnection.connected) setAuthMsg(null);
+  }, [authMsg, status, brokerConnection.connected]);
 
   const mode = armState?.mode ?? null;
   const activeCount = (deployments || []).filter((d) => String(d?.status || "").toUpperCase() === "ACTIVE").length;
@@ -157,7 +164,7 @@ export default function LiveCockpit() {
           position may have no guard and no resting OCO backstop. Boot-before-OAuth is
           the usual cause. Severity follows exposure. */}
       <RecoveryStatusBanner
-        connected={!!(status?.connected && !status?.expired)}
+        connected={brokerConnection.connected}
         openPositions={openPositionCount}
       />
 
