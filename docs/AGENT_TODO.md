@@ -14,11 +14,14 @@
 
 ### ★ Open follow-ups from the 2026-08-20 session
 
-- [ ] **`deployment_evaluator.py` still bypasses the drift gate at its call site.**
-  `if pinned_sha:` skips the check entirely for an unpinned deployment, so `fa2b65d`'s
-  fail-closed `detect_drift` never runs there. Defense-in-depth only (creation always pins;
-  the resume gate is the sole path to ACTIVE), and it was left alone because a concurrent
-  session held ~100 uncommitted lines in that file. Close it now that the file is committed.
+- [x] ~~**`deployment_evaluator.py` still bypasses the drift gate at its call site.**~~
+  **DONE 2026-08-20.** The `if pinned_sha:` pre-filter is gone; `detect_drift` now runs on
+  every evaluation. The three failing states are journalled under DISTINCT reasons —
+  `strategy_source_never_pinned`, `strategy_source_unreadable`, `strategy_source_drift` — so
+  an operator can tell "never verified" from "the file changed under a running deployment".
+  Two test fixtures (`test_deployment_evaluator.make_deployment`,
+  `test_premium_momentum_evaluator.make_deployment`) were omitting the pin that real creation
+  always sets and so had encoded the bypass; both now pin like reality.
 - [ ] **5 pre-existing `test_bootstrap_contract.py` failures** — `'start-app.bat' is not
   recognized`, a working-directory assumption in the test rather than a broken launcher. They
   are the only red in an otherwise 4,973-passing suite, which makes a real regression easy to

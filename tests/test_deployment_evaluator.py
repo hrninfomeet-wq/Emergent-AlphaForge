@@ -254,6 +254,13 @@ def register_stub_strategy():
     registry._strategies.pop(stub.id, None)
 
 
+def _stub_source_sha() -> str:
+    """The SHA the evaluator will compute for StubStrategy, so fixtures pin the
+    same value real deployment creation would."""
+    from app.strategy_source_hash import hash_strategy_source
+    return hash_strategy_source(StubStrategy()) or "STUB_SOURCE_SHA"
+
+
 def make_deployment(
     *,
     moneyness: List[str] = None,
@@ -274,6 +281,12 @@ def make_deployment(
         "instrument": "NIFTY",
         "timeframe": "1m",
         "confirmation_mode": "1m_close",
+        # Real creation ALWAYS pins this (routers/deployments.py:530). The
+        # evaluator now FAILS CLOSED on an unpinned deployment, so a fixture
+        # without it is not a realistic deployment — it is an unverifiable one.
+        # Computed, not hardcoded, because StubStrategy's source file is this
+        # test file and its hash changes whenever this file is edited.
+        "strategy_source_sha": _stub_source_sha(),
         "option_policy": option_policy,
         "pretrade_profile": pretrade_profile,
         "mode": "shadow",
@@ -1001,14 +1014,73 @@ async def test_evaluator_does_not_pause_when_source_sha_matches(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_evaluator_no_pinned_sha_means_no_drift_check(monkeypatch):
-    """Deployments created before slice 8 have no pinned SHA. They keep working."""
+async def test_evaluator_pauses_a_deployment_that_was_never_pinned(monkeypatch):
+    """An unpinned deployment must be PAUSED, not waved through.
+
+    This test previously asserted the opposite — that a missing pin meant "never
+    compare and never pause" — and so encoded the hole it was meant to guard. A
+    deployment with no `strategy_source_sha` has never had its source verified,
+    which is exactly the state that must NOT trade. Six such rows existed in the
+    production database, one pinned to the literal string FAKE_PINNED_FROM_TEST.
+    The remedy is cheap and already exists: POST /deployments/{id}/repin-source.
+    """
     from app import strategy_source_hash as ssh
 
     db = FakeDB()
     candles = make_candles(n=80)
     deployment = make_deployment()
-    # NOT setting strategy_source_sha - simulates a pre-slice-8 deployment
+    deployment.pop("strategy_source_sha", None)   # a pre-pinning / hand-edited row
+    seed_db(db, candles=candles, deployment=deployment,
+            contracts=make_contracts(), profiles=[make_profile(min_score=50)])
+    monkeypatch.setattr(ssh, "hash_strategy_source", lambda obj: "A_REAL_SHA")
+
+    StubStrategy.set_next(Signal(direction="CE", score=80, reasons=["must NOT fire"]))
+
+    res = await evaluate_deployment_on_close(db, db.strategy_deployments.rows[0])
+
+    assert res["outcome"] == "skipped"
+    assert "never_pinned" in res["reason"], res["reason"]
+    updated = db.strategy_deployments.rows[0]
+    assert updated["status"] == "PAUSED"
+    # the journal must say WHY, so an operator can tell "never verified" apart
+    # from "the file actually changed"
+    assert updated["drift_reason"] == "strategy_source_never_pinned"
+
+
+@pytest.mark.asyncio
+async def test_evaluator_pauses_when_the_source_cannot_be_read(monkeypatch):
+    """Pinned, but the current source is unresolvable — also unverifiable, also
+    must not trade. Journalled under its own reason so it is diagnosable."""
+    from app import strategy_source_hash as ssh
+
+    db = FakeDB()
+    candles = make_candles(n=80)
+    deployment = make_deployment()
+    deployment["strategy_source_sha"] = "PINNED_SHA"
+    seed_db(db, candles=candles, deployment=deployment,
+            contracts=make_contracts(), profiles=[make_profile(min_score=50)])
+    monkeypatch.setattr(ssh, "hash_strategy_source", lambda obj: None)
+
+    StubStrategy.set_next(Signal(direction="CE", score=80, reasons=["must NOT fire"]))
+
+    res = await evaluate_deployment_on_close(db, db.strategy_deployments.rows[0])
+
+    assert res["outcome"] == "skipped"
+    assert "unreadable" in res["reason"], res["reason"]
+    updated = db.strategy_deployments.rows[0]
+    assert updated["status"] == "PAUSED"
+    assert updated["drift_reason"] == "strategy_source_unreadable"
+
+
+@pytest.mark.asyncio
+async def test_evaluator_runs_normally_when_the_pin_verifies(monkeypatch):
+    """The gate must not become a brick: a matching pin still evaluates."""
+    from app import strategy_source_hash as ssh
+
+    db = FakeDB()
+    candles = make_candles(n=80)
+    deployment = make_deployment()
+    deployment["strategy_source_sha"] = "MATCHING_SHA"
     seed_db(db, candles=candles, deployment=deployment,
             contracts=make_contracts(), profiles=[make_profile(min_score=50)])
     last_close = float(candles["close"].iloc[-1])
@@ -1017,9 +1089,7 @@ async def test_evaluator_no_pinned_sha_means_no_drift_check(monkeypatch):
         "instrument_key": f"NSE_FO|TEST|{atm_strike}CE",
         "ts": now_ms(),
     })
-    # Even if hash_strategy_source would return something different, the absence
-    # of a pinned SHA on the deployment means we never compare and never pause.
-    monkeypatch.setattr(ssh, "hash_strategy_source", lambda obj: "DOESNT_MATTER")
+    monkeypatch.setattr(ssh, "hash_strategy_source", lambda obj: "MATCHING_SHA")
 
     StubStrategy.set_next(Signal(direction="CE", score=80, reasons=["should fire"]))
 

@@ -439,45 +439,64 @@ async def evaluate_deployment_on_close(
     if strategy is None:
         return {"deployment_id": deployment_id, "outcome": "error", "reason": f"strategy_not_loaded: {strategy_id}"}
 
-    # Drift check: if a strategy_source_sha was pinned at deployment creation time
-    # and the current file no longer matches, auto-pause this deployment and journal
-    # the drift event. Conservative: missing/None on either side = no drift.
-    # Drift check: if a strategy_source_sha was pinned at deployment creation time
-    # and the current file no longer matches, auto-pause this deployment and journal
-    # the drift event. Conservative: missing/None on either side = no drift.
+    # Source verification — FAILS CLOSED. A deployment may evaluate only when its
+    # pinned SHA is present AND equals the strategy file's hash right now.
+    #
+    # This used to be guarded by `if pinned_sha:`, which skipped the check
+    # entirely for a deployment that had never been pinned — i.e. the one state
+    # that is definitionally unverified was the one state that was waved through.
+    # `detect_drift` itself had the mirror-image bug (it returned "no drift"
+    # whenever either side was missing); both are now closed, and the call site
+    # no longer pre-filters. Six unpinned rows existed in the production
+    # database, one carrying the literal string FAKE_PINNED_FROM_TEST.
+    #
+    # The three failing states are journalled under DISTINCT reasons, because
+    # "this was never verified" and "the file changed under a running
+    # deployment" need very different responses from an operator.
+    from app.strategy_source_hash import detect_drift, hash_strategy_source
     pinned_sha = str(deployment.get("strategy_source_sha") or "")
-    if pinned_sha:
-        from app.strategy_source_hash import detect_drift, hash_strategy_source
-        current_sha = hash_strategy_source(strategy)
-        if detect_drift(pinned=pinned_sha, current=current_sha):
-            await db.strategy_deployments.update_one(
-                {"id": deployment_id},
-                {"$set": {
-                    "status": "PAUSED",
-                    # Demote a live deployment to paper on drift (v0.56.0 invariant:
-                    # only /live/enable may authorize real money). Otherwise re-pin —
-                    # which sets status back to ACTIVE and inspects nothing else —
-                    # would resume real trading against the CHANGED, never-live-
-                    # validated strategy code that triggered the drift.
-                    "mode": "paper" if str(deployment.get("mode") or "").lower() == "live" else deployment.get("mode"),
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
-                    "drift_detected_at": datetime.now(timezone.utc).isoformat(),
-                    "drift_pinned_sha": pinned_sha,
-                    "drift_current_sha": current_sha,
-                    "drift_reason": "strategy_source_drift",
-                }},
-            )
-            log.warning(
-                "strategy_source_drift on deployment %s: pinned=%s current=%s -> auto-paused",
-                deployment_id, pinned_sha, current_sha,
-            )
-            return {
-                "deployment_id": deployment_id,
-                "outcome": "skipped",
-                "reason": f"strategy_source_drift (pinned={pinned_sha}, current={current_sha}); deployment auto-paused",
+    current_sha = hash_strategy_source(strategy)
+    if detect_drift(pinned=pinned_sha or None, current=current_sha):
+        if not pinned_sha:
+            drift_reason = "strategy_source_never_pinned"
+            summary = ("strategy_source_never_pinned: this deployment has no pinned "
+                       "source SHA, so its code has never been verified")
+        elif not current_sha:
+            drift_reason = "strategy_source_unreadable"
+            summary = (f"strategy_source_unreadable: cannot hash {strategy_id}'s source "
+                       f"file, so the pin ({pinned_sha}) cannot be checked")
+        else:
+            drift_reason = "strategy_source_drift"
+            summary = f"strategy_source_drift (pinned={pinned_sha}, current={current_sha})"
+        await db.strategy_deployments.update_one(
+            {"id": deployment_id},
+            {"$set": {
+                "status": "PAUSED",
+                # Demote a live deployment to paper on drift (v0.56.0 invariant:
+                # only /live/enable may authorize real money). Otherwise re-pin —
+                # which sets status back to ACTIVE and inspects nothing else —
+                # would resume real trading against the CHANGED, never-live-
+                # validated strategy code that triggered the drift.
+                "mode": "paper" if str(deployment.get("mode") or "").lower() == "live" else deployment.get("mode"),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "drift_detected_at": datetime.now(timezone.utc).isoformat(),
                 "drift_pinned_sha": pinned_sha,
                 "drift_current_sha": current_sha,
-            }
+                "drift_reason": drift_reason,
+            }},
+        )
+        log.warning(
+            "%s on deployment %s: pinned=%s current=%s -> auto-paused",
+            drift_reason, deployment_id, pinned_sha or "<none>", current_sha or "<unreadable>",
+        )
+        return {
+            "deployment_id": deployment_id,
+            "outcome": "skipped",
+            "reason": f"{summary}; deployment auto-paused — re-pin it "
+                      f"(POST /deployments/{{id}}/repin-source) to resume",
+            "drift_pinned_sha": pinned_sha,
+            "drift_current_sha": current_sha,
+        }
 
     # Kill switches (Slice 12): paper deployments only. A pause switch
     # (max_consecutive_losses / daily_loss_cutoff_pct) is a hard circuit-breaker

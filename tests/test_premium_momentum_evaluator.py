@@ -202,6 +202,22 @@ def make_candles(end_ts: int, n: int = 60) -> List[Dict[str, Any]]:
     return rows
 
 
+def _premium_momentum_source_sha() -> str:
+    """The SHA the evaluator will compute for the premium_momentum plugin.
+
+    Real deployment creation always pins this (routers/deployments.py:530) and
+    the evaluator now FAILS CLOSED without it, so a fixture that omits it is not
+    a realistic deployment — it is an unverifiable one. Computed rather than
+    hardcoded so an edit to the plugin does not silently red every test here.
+    """
+    from app.strategies.base import get_registry
+    from app.strategy_source_hash import hash_strategy_source
+    registry = get_registry()
+    if registry.get("premium_momentum") is None:
+        registry.auto_discover()
+    return hash_strategy_source(registry.get("premium_momentum")) or "PM_SOURCE_SHA"
+
+
 def make_deployment(last_evaluated_ts: int = 0) -> Dict[str, Any]:
     return {
         "id": "pm-deploy-1",
@@ -215,6 +231,7 @@ def make_deployment(last_evaluated_ts: int = 0) -> Dict[str, Any]:
         "instrument": "NIFTY",
         "timeframe": "1m",
         "confirmation_mode": "1m_close",
+        "strategy_source_sha": _premium_momentum_source_sha(),
         "option_policy": {"moneyness": ["atm"], "expiry_policy": "next_available"},
         "pretrade_profile": "Balanced",   # branch bypasses the score/regime filter (see test below with the REAL seeded profile)
         "mode": "shadow",

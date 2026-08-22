@@ -45,6 +45,15 @@ identically 0 for all four instruments so no relative-volume filter is possible;
 expiry weekday ROTATED TWICE inside the warehouse, so a weekday-derived DTE rule reproduces
 the real expiry on only 233/424 NIFTY sessions.
 
+**The evaluator's call site is closed too.** `deployment_evaluator.py` pre-filtered with
+`if pinned_sha:`, so the fail-closed `detect_drift` never ran for exactly the deployment that
+had never been verified. The pre-filter is gone; the check runs on every evaluation, and the
+three failing states are journalled under distinct reasons (`strategy_source_never_pinned`,
+`strategy_source_unreadable`, `strategy_source_drift`) because "never verified" and "the file
+changed under a running deployment" need different operator responses. Two more fixtures were
+omitting the pin real creation always sets and had encoded the bypass; both now pin like
+reality.
+
 **Also:** corrected the `OptimizerStartReq.option_config` contract comment, which claimed to
 mirror `OptionBacktestReq` while omitting `enabled` — the one field that gates the whole
 overlay, and which defaults to `False`, so replaying a stored optimizer config verbatim runs
