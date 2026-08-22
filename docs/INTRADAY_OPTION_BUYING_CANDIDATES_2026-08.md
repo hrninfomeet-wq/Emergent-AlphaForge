@@ -112,7 +112,11 @@ Optimizer-tunable indicator dimensions are limited to the ten in
 > strategy**, even though `options_1m.oi` exists in the warehouse. Verified by grep across
 > `indicators.py`, `indicator_groups.py` and `features/`.
 
-### 1.5 Strategy registry — 17 registered, all loading clean
+### 1.5 Strategy registry — 17 registered at audit time, all loading clean
+
+*(18 after this change adds `expiry_regime_trend_continuation`, §4.2. The table below is the
+registry as it stood when audited, which is the baseline the rest of this document reasons
+against.)*
 
 | id | ver | live lookback | instruments |
 |---|---|---|---|
@@ -762,13 +766,32 @@ replace the assumption with a measurement.
    `dte_opening_shock_breakout` re-derives it from a 400-bar window. One shared, tested
    column would remove a repeated source of the exact window-reach bug `fc424a1` fixed.
 
-### 7.8 Safety controls — one gap worth closing
+### 7.8 Safety controls — no gap found, but `HANDOFF.md` is stale and says otherwise
 
-`deployment_evaluator.py` still guards its own `detect_drift` call site with `if pinned_sha:`,
-so an unpinned deployment skips the check. It is documented as deliberate defence-in-depth
-(creation always pins), and it was left because a concurrent session held the file. It should
-be closed: after `fa2b65d`, "cannot verify" must return the DENY answer everywhere, and a
-call site that skips the check entirely is the one remaining place it does not.
+An earlier revision of this document listed the `detect_drift` call-site bypass in
+`deployment_evaluator.py` as an open safety gap, on the strength of the "Known open
+(deliberate)" note in [`HANDOFF.md`](HANDOFF.md) §2.0e. **That was wrong. The defect is
+closed**, by `6e6e1cc` — which is the head of `main` and the base of this branch.
+
+Verified in the current source (`deployment_evaluator.py:443-460`): the call site no longer
+pre-filters on `pinned_sha`, and the three failing states are journalled under distinct
+reasons — `strategy_source_never_pinned`, `strategy_source_unreadable` and
+`strategy_source_drift` — because "this was never verified" and "the file changed under a
+running deployment" need different operator responses. A drifted **live** deployment is also
+demoted to paper rather than merely paused, so a re-pin cannot silently resume real trading
+against the changed code.
+
+**The actionable item is documentation, not code.** `HANDOFF.md` is the designated entry
+point for every new engineer and agent, and it currently describes a closed live-safety
+defect as deliberately open. A reader who trusts it will either go hunting for a
+non-existent bug or, worse, believe an unpinned deployment can still evaluate. Update that
+§2.0e note to point at `6e6e1cc`.
+
+**The generalisable lesson, and the reason this is in the report at all:** I propagated a
+stale claim from a summary document into an audit finding without checking the code — in a
+repository whose own handoff opens by saying "the repository and `tests/` are the source of
+truth, not any prior chat." A summary is prior chat. Every other finding in §7 was read
+from source; this one was not, and it was the only one that was wrong.
 
 ---
 
