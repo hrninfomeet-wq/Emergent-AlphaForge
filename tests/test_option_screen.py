@@ -23,6 +23,7 @@ from app.option_screen import (  # noqa: E402
     HoldoutProtectionError,
     ScreenCell,
     SessionStat,
+    _contiguous_blocks,
     causal_session_stat,
     chronological_split,
     classify_cell,
@@ -345,6 +346,97 @@ def test_screen_rejects_a_mask_of_the_wrong_length():
 def test_screen_requires_its_columns():
     with pytest.raises(ValueError, match="missing required columns"):
         screen_condition(pd.DataFrame({"close": [1.0]}), label="x", horizons=[1])
+
+
+# ---------------------------------------------------------------------------
+# Block boundaries — a forward window must never cross one
+#
+# These exist because a mutation that deleted the block loop entirely (reverting
+# to the original whole-frame behaviour) passed every other test in this file.
+# The only guard was an end-to-end test in the CLI's test module, which is the
+# wrong place for an invariant this module owns.
+# ---------------------------------------------------------------------------
+
+def test_contiguous_blocks_splits_on_runs_not_groups():
+    """Two separated stretches of the same key are two blocks, not one.
+
+    A window may only look inside the bars it is physically contiguous with, so
+    grouping (which would rejoin them) would be wrong.
+    """
+    keys = np.array(["a", "a", "b", "b", "a"], dtype=object)
+    assert _contiguous_blocks(keys) == [(0, 2), (2, 4), (4, 5)]
+
+
+def test_contiguous_blocks_handles_the_trivial_shapes():
+    assert _contiguous_blocks(np.array([], dtype=object)) == []
+    assert _contiguous_blocks(np.array(["x"], dtype=object)) == [(0, 1)]
+    assert _contiguous_blocks(np.array(["x", "x", "x"], dtype=object)) == [(0, 3)]
+
+
+def _two_block_frame():
+    """Two 10-bar blocks. The second is priced far above the first, so a window
+    that leaks across the boundary produces an obviously wrong excursion."""
+    rows = []
+    for date, price in (("2026-01-01", 100.0), ("2026-01-02", 500.0)):
+        for i in range(10):
+            rows.append({"session_date": date, "high": price + 1,
+                         "low": price - 1, "close": price})
+    return pd.DataFrame(rows)
+
+
+def test_the_last_h_bars_of_every_block_are_ineligible():
+    """The mutation-killer.
+
+    With two 10-bar blocks and a 3-bar horizon, 3 bars at the end of EACH block
+    cannot fit a full window: 20 - 6 = 14. Measuring over the whole frame
+    instead would wrongly keep the first block's tail (20 - 3 = 17).
+    """
+    cells = screen_condition(_two_block_frame(), label="blocks", horizons=[3],
+                             spread_pct_per_side=0.0, min_sessions=1)
+    assert cells[0].n_bars == 14
+
+
+def test_a_window_never_borrows_the_next_blocks_prices():
+    """Block one sits at 100 and block two at 500. If the window crossed, the
+    first block's tail would show a ~400-point favourable excursion."""
+    frame = _two_block_frame()
+    cells = screen_condition(frame, label="blocks", horizons=[3],
+                             spread_pct_per_side=0.0, min_sessions=1)
+    # Every eligible bar is flat within its own block, so MFE is ~1 point, and
+    # the ratio is finite and near 1 — not the huge number a leak would give.
+    assert cells[0].mfe_mae == pytest.approx(1.0)
+
+
+def test_grouping_defaults_to_session_date():
+    """The safe behaviour is the default — a caller must not have to remember."""
+    frame = _two_block_frame()
+    default = screen_condition(frame, label="d", horizons=[3],
+                               spread_pct_per_side=0.0, min_sessions=1)
+    explicit = screen_condition(frame, label="e", horizons=[3],
+                                spread_pct_per_side=0.0, min_sessions=1,
+                                group_by=frame["session_date"])
+    assert default[0].n_bars == explicit[0].n_bars == 14
+
+
+def test_a_finer_group_key_splits_blocks_further():
+    """Stacking a CE and a PE leg inside one session needs a compound key."""
+    frame = _two_block_frame()
+    frame["side"] = ["CE"] * 5 + ["PE"] * 5 + ["CE"] * 5 + ["PE"] * 5
+    blocks = frame["session_date"] + "|" + frame["side"]
+
+    by_session = screen_condition(frame, label="s", horizons=[2],
+                                  spread_pct_per_side=0.0, min_sessions=1)
+    by_leg = screen_condition(frame, label="l", horizons=[2], group_by=blocks,
+                              spread_pct_per_side=0.0, min_sessions=1)
+
+    assert by_session[0].n_bars == 16      # 2 blocks  -> 20 - 2*2
+    assert by_leg[0].n_bars == 12          # 4 blocks  -> 20 - 4*2
+
+
+def test_a_mismatched_group_by_length_raises():
+    with pytest.raises(ValueError, match="group_by length"):
+        screen_condition(_two_block_frame(), label="bad", horizons=[2],
+                         group_by=["only-one-key"])
 
 
 def test_summary_flags_a_single_surviving_horizon_as_fragile():

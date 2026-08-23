@@ -846,7 +846,7 @@ from source; this one was not, and it was the only one that was wrong.
 |---|---|
 | `backend/app/option_screen.py` | New. The shipped pre-plugin screen (pure, no DB). |
 | `backend/scripts/screen_option_buying.py` | New. Read-only CLI: validate → split → baseline → conditions. |
-| `tests/test_option_screen.py` | New. 29 tests. |
+| `tests/test_option_screen.py` | New. 36 tests, including mutation-verified block-boundary guards. |
 | `tests/test_screen_option_buying_script.py` | New. 16 tests (pure helpers). |
 | `tests/test_screen_option_buying_db_paths.py` | New. 16 tests driving the DB-touching functions against a strict fake Mongo. |
 | `backend/app/strategies/plugins/expiry_regime_trend_continuation.py` | New. Candidate B as a registered research-only plugin. |
@@ -874,13 +874,44 @@ immediately. This repository's own record already says it twice — the `jData` 
 the `exit_controls` schema were both green in CI and both wrong in production, because the
 test shared the implementation's assumption. A docstring is not a test.
 
-**Verification baseline (host, 2026-08-22):** `5,063 passed, 2 failed, 10 skipped,
-4 xfailed` in 164s. The two failures are `test_premium_momentum_route.py`, which needs a
+**Verification baseline (host, 2026-08-23):** `5,070 passed, 2 failed, 10 skipped,
+4 xfailed` in 142s. The two failures are `test_premium_momentum_route.py`, which needs a
 live MongoDB on `localhost:27017` and fails with `ServerSelectionTimeoutError` in any
 environment without one; they are unrelated to this change. The host also needed
 `pytest-asyncio`, `pydantic`, `fastapi`, `httpx`, `optuna`, `motor` and `yfinance`
 installed before the suite would collect — all are already in
 `backend/requirements.txt`.
+
+### 9.2 The block-boundary fix was itself unguarded — found by mutating it
+
+§9.1 records fixing the excursion window so it cannot cross a contract boundary,
+and the commit message for it said "a docstring is not a test". Auditing that
+commit the way this repo demands — *audit your own commits with the same
+machinery you use on others'* — the fix turned out to be unguarded in exactly
+that way.
+
+Deleting the entire block loop, reverting to the original whole-frame behaviour,
+left **all 29 tests in `option_screen.py`'s own test file passing.** The single
+test that caught it lived in the CLI's test module, an end-to-end assertion two
+layers away from the invariant. Refactor or delete that one test and the core
+guarantee would have silently gone with it.
+
+`tests/test_option_screen.py` now owns the invariant directly (36 tests), and the
+guards are verified by killing three mutants rather than by inspection:
+
+| Mutant | Behaviour it restores | Killed by |
+|---|---|---|
+| Block loop deleted | Windows measured over the whole frame | 3 tests |
+| Run-detection disabled | Separated stretches of one key rejoined into a block | 4 tests |
+| Default grouping removed | Whole frame instead of `session_date` | 3 tests |
+
+**Worth stating plainly, because it is the third instance of one pattern in this
+document:** §7.8 was a claim propagated from a summary without reading the code;
+§9.1's third defect was a contract asserted in a docstring and broken by its only
+caller; this was a fix believed correct because it was *written* correctly rather
+than because anything would fail if it regressed. All three are the same error —
+treating an assertion as evidence. A mutation is cheap and answers the question
+directly: *if this were wrong, would anything go red?*
 
 Candidate B's plugin is registered but **unrun and undeployed**; candidate A's was
 deliberately not written (§5.1, §7.1). No deployment, preset, broker session or
