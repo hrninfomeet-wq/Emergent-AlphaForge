@@ -282,6 +282,39 @@ def test_the_cutoff_cannot_be_pushed_past_the_live_1450_block():
     assert STRAT.parameter_schema["entry_cutoff_minutes_after_open"]["max"] == 333
 
 
+@pytest.mark.parametrize("out_of_schema_cutoff", [400, 600, 10_000])
+def test_an_out_of_schema_cutoff_is_still_clamped_to_1448(out_of_schema_cutoff):
+    """The cap must hold for params that never passed schema validation.
+
+    Found by mutation: removing `min(..., _LAST_ELIGIBLE_MIN)` from the clamp
+    survived the whole suite, because the only test used cutoff 333 — which
+    EQUALS the cap, making the min() a no-op. The clamp only bites on a value
+    above the schema maximum, and nothing exercised that.
+
+    It is not a hypothetical path. Params reach a strategy as stored dicts from
+    saved presets and pinned deployment snapshots, and this repo has already
+    shipped a fix (`56bc3a9`) for a schema narrowing that broke saved presets —
+    i.e. stored params outliving the range that produced them is a real state.
+    If one leaked through, the strategy would emit signals after 14:48 that the
+    live evaluator refuses, which is exactly the backtest-counts-untradeable-
+    signals divergence the parity register warns about.
+    """
+    rows = _valid_ce_day(signal_time="14:49")
+    assert _run(rows, {"entry_cutoff_minutes_after_open": out_of_schema_cutoff}) == []
+
+
+def test_an_out_of_schema_cutoff_still_admits_a_1448_signal():
+    """Clamping must pin the boundary at 14:48, not collapse the window."""
+    rows = _valid_ce_day(signal_time="14:48")
+    assert len(_run(rows, {"entry_cutoff_minutes_after_open": 10_000})) == 1
+
+
+def test_a_negative_cutoff_cannot_reopen_the_window():
+    """The other end of the clamp: max(0, ...) must not wrap into a huge bound."""
+    rows = _valid_ce_day(signal_time="10:00")
+    assert _run(rows, {"entry_cutoff_minutes_after_open": -500}) == []
+
+
 def test_1448_fires_at_the_widest_permitted_cutoff():
     """14:48 is reachable, but only when the cutoff is opened to its maximum.
 

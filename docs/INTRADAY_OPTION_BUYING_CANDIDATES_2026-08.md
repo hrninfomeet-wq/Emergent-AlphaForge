@@ -850,7 +850,7 @@ from source; this one was not, and it was the only one that was wrong.
 | `tests/test_screen_option_buying_script.py` | New. 16 tests (pure helpers). |
 | `tests/test_screen_option_buying_db_paths.py` | New. 16 tests driving the DB-touching functions against a strict fake Mongo. |
 | `backend/app/strategies/plugins/expiry_regime_trend_continuation.py` | New. Candidate B as a registered research-only plugin. |
-| `tests/test_strategy_expiry_regime_trend_continuation.py` | New. 34 tests, including look-ahead safety and fail-closed paths. |
+| `tests/test_strategy_expiry_regime_trend_continuation.py` | New. 39 tests, including look-ahead safety, fail-closed paths and the clamped entry cutoff. |
 | `docs/INTRADAY_OPTION_BUYING_CANDIDATES_2026-08.md` | This document. |
 
 Every change is **additive** — eight new files, zero modifications to existing source.
@@ -874,8 +874,8 @@ immediately. This repository's own record already says it twice — the `jData` 
 the `exit_controls` schema were both green in CI and both wrong in production, because the
 test shared the implementation's assumption. A docstring is not a test.
 
-**Verification baseline (host, 2026-08-23):** `5,070 passed, 2 failed, 10 skipped,
-4 xfailed` in 142s. The two failures are `test_premium_momentum_route.py`, which needs a
+**Verification baseline (host, 2026-08-23):** `5,075 passed, 2 failed, 10 skipped,
+4 xfailed` in 140s. The two failures are `test_premium_momentum_route.py`, which needs a
 live MongoDB on `localhost:27017` and fails with `ServerSelectionTimeoutError` in any
 environment without one; they are unrelated to this change. The host also needed
 `pytest-asyncio`, `pydantic`, `fastapi`, `httpx`, `optuna`, `motor` and `yfinance`
@@ -912,6 +912,41 @@ caller; this was a fix believed correct because it was *written* correctly rathe
 than because anything would fail if it regressed. All three are the same error —
 treating an assertion as evidence. A mutation is cheap and answers the question
 directly: *if this were wrong, would anything go red?*
+
+### 9.3 A ten-mutant sweep over every shipped invariant
+
+§9.2 found one unguarded fix by mutating it. Rather than stop at the one that was
+already suspected, the same treatment was applied to every load-bearing invariant
+in this change — the ones whose silent regression would produce a strategy that
+looks profitable in backtest and is not.
+
+| Mutant | Restores | Result |
+|---|---|---|
+| `causal_session_stat` drops its `shift(1)` | Thresholds see their own session | KILLED |
+| `Split.unlock_holdout` becomes a no-op | Holdout readable without a reason | KILLED |
+| Session stats pool bars instead of collapsing | The redundancy hypothesis #5 died of | KILLED |
+| Excursion window includes the entry bar | A bar claims its own high | KILLED |
+| Stop uses `min` instead of `max` | Stops below the intrabar-ambiguity floor | KILLED |
+| Opening range accepts any 30 bars | A rolling window rebuilds a false "open" | KILLED |
+| Plugin takes the LAST qualifying bar | Look-ahead across the session | KILLED |
+| Three-way agreement loses its prior-close leg | A weaker, already-covered condition | KILLED |
+| Decisive-close confirmation removed | Breaks on indecisive bars | KILLED |
+| **Hard 14:48 live cap removed** | Signals live will refuse | **SURVIVED → now killed** |
+
+The survivor is worth recording precisely, because the test that should have
+caught it looked correct. It asserted a 14:49 signal does not fire at cutoff
+`333` — but 333 *equals* the cap, so `min(..., _LAST_ELIGIBLE_MIN)` was a no-op
+in the only case exercised. The clamp only bites above the schema maximum, and
+nothing tested that.
+
+That is not a hypothetical path. Params reach a strategy as stored dicts from
+saved presets and pinned deployment snapshots, and this repo has already shipped
+`56bc3a9` for a schema narrowing that broke saved presets — stored params
+outliving the range that produced them is a state this codebase has seen. Had one
+leaked, the strategy would emit entries after 14:48 that the live evaluator
+refuses: **precisely the backtest-counts-untradeable-signals divergence recorded
+as row 1 of the parity register in §3.3.** The guard now covers out-of-schema
+values in both directions, and all ten mutants die.
 
 Candidate B's plugin is registered but **unrun and undeployed**; candidate A's was
 deliberately not written (§5.1, §7.1). No deployment, preset, broker session or
