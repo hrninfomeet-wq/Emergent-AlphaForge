@@ -669,7 +669,7 @@ Pinned in `tests/test_screen_option_buying_script.py`.
 
 | Candidate | Verdict | Basis |
 |---|---|---|
-| **A — ATM Premium-Flow Scalp** | **RESEARCH-ONLY — blocked on a product change** | Not implementable: option-side volume/OI cannot reach `evaluate()` (§1.4, §7.1). Cannot be screened until built. |
+| **A — ATM Premium-Flow Scalp** | **RESEARCH-ONLY — premise CONFIRMED, build unblocked** | The blocking question is answered: OI is populated on **99.61% (NIFTY) / 99.86% (SENSEX)** of sampled option bars (measured 2026-08-23, §10). The data supports the hypothesis, so §7.1 is now justified work rather than a gamble. Still not implementable *today* — option-side features must reach `evaluate()` first — and still unscreened. |
 | **B — Expiry-Regime Trend Continuation, 1DTE arm** | **RESEARCH-ONLY — implemented, cleared to screen** | Plugin registers and loads (34 tests). No screen, backtest or paper evidence exists. Screen first (§5.1 step 2); a REJECT retires it unrun. |
 | **B — 0DTE arm** | **RESEARCH-ONLY, pre-registered as expected to FAIL** | Measured net −4.43% NIFTY / −2.01% SENSEX per 5-min ATM hold, ~3× the 1DTE bleed. Run it as the control arm, not as a hope. |
 
@@ -881,8 +881,8 @@ immediately. This repository's own record already says it twice — the `jData` 
 the `exit_controls` schema were both green in CI and both wrong in production, because the
 test shared the implementation's assumption. A docstring is not a test.
 
-**Verification baseline (host, 2026-08-23):** `5,075 passed, 2 failed, 10 skipped,
-4 xfailed` in 140s. The two failures are `test_premium_momentum_route.py`, which needs a
+**Verification baseline (host, 2026-08-23):** `5,081 passed, 2 failed, 10 skipped,
+4 xfailed` in 162s. The two failures are `test_premium_momentum_route.py`, which needs a
 live MongoDB on `localhost:27017` and fails with `ServerSelectionTimeoutError` in any
 environment without one; they are unrelated to this change. The host also needed
 `pytest-asyncio`, `pydantic`, `fastapi`, `httpx`, `optuna`, `motor` and `yfinance`
@@ -960,3 +960,57 @@ deliberately not written (§5.1, §7.1). No deployment, preset, broker session o
 live setting was created or altered. No order was placed, modified or cancelled. No live mode
 was enabled, and no Flattrade MCP login/logout was called. The screen CLI opens one read-only
 Mongo connection and writes nothing.
+
+---
+
+## 10. First real warehouse validation (2026-08-23)
+
+`--validate-only` was run by the operator against the live warehouse. This is the
+first section of this document containing measurements from the actual data
+rather than from source or a prior register.
+
+| | NIFTY | SENSEX |
+|---|---|---|
+| Spot sessions | 433 (2024-11-25 → 2026-08-21) | 433 (same span) |
+| Complete (≥95% bars) | **433 / 433** | **433 / 433** |
+| Option contracts | 22,345 | 37,574 |
+| Expiries | 107 (→ 2031-06-24) | 108 (→ 2031-06-26) |
+| Lot sizes present | **25, 65, 75** | **10, 20** |
+| `contract_key` coverage | 61.39% | **6.61%** |
+| **OI populated** | **99.61%** (19,922/20,000) | **99.86%** (19,971/20,000) |
+| Chain snapshots | 0 | 0 |
+| Ticks retained | 26,720,007 | (shared) |
+
+**Four things this changes or confirms.**
+
+1. **Candidate A's premise holds.** OI is populated on ~99.7% of bars. The §7.1
+   feature build is justified. This was the single go/no-go and it passed.
+
+2. **`contract_key` coverage is far worse than the provenance doc implied, and
+   SENSEX is the severe case at 6.61%.** The screen originally fell back to a
+   two-part `SEGMENT|TOKEN` lookup whenever the key was absent — which for SENSEX
+   would have been the *usual* path, not the exception, on exactly the identifier
+   the provenance audit found mapping to multiple contracts (8,714 tokens, 2,423
+   holding candles). **Fixed by not trusting the token at all:** `options_1m`
+   stores `underlying`/`expiry_date`/`strike`/`side` on every row and `db.py`
+   indexes precisely that tuple, so the screen now asks for a contract by what it
+   *is*. Token lookups survive only as a labelled `instrument_key_unverified`
+   fallback, counted and reported per run. Low `contract_key` coverage is
+   therefore no longer a blocker for this campaign.
+
+3. **Three NIFTY lot regimes in one window (25 → 75 → 65).** A single lot number
+   cannot size a run spanning 2024-11 → 2026-08; `resolve_lot_size` already warns
+   on this, and any rupee figure must be read per-regime. Statutory charges are
+   premium-invariant as a percentage (§6.1), so the screen's cost model is
+   unaffected — but a P&L in rupees is not.
+
+4. **Session coverage is perfect** — 433/433 complete on both indices, spanning
+   the full history. Data completeness is not a constraint on this campaign; the
+   constraints are the ones already recorded: no chain history, a 30-day tick TTL,
+   and ~30 never-optimised sessions (2026-07-11 → 2026-08-21, consistent with the
+   §5.3 estimate now that the data end date is confirmed as 2026-08-21).
+
+**Reporting defect found by this run:** both indices printed an identical
+7,967,661 "option candles" under a per-instrument heading. That was
+`estimated_document_count()` — the whole collection. Now reported per instrument
+alongside the global figure.

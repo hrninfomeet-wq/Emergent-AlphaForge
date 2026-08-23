@@ -213,6 +213,12 @@ def validate_options(db, instrument: str) -> Dict[str, Any]:
     keyed = sum(1 for c in contracts if c.get("contract_key"))
 
     total_candles = db.options_1m.estimated_document_count()
+    # Per-instrument, via the (underlying, expiry_date, strike, side, ts) index.
+    # The global count above answers "how big is the collection", which under an
+    # "option contracts / NIFTY" heading reads as a per-instrument figure and is
+    # not one — NIFTY and SENSEX both printed 7,967,661 on the first real run.
+    instrument_candles = db.options_1m.count_documents(
+        {"underlying": instrument.upper()})
     oi = _oi_population(db, instrument)
 
     return {
@@ -224,7 +230,8 @@ def validate_options(db, instrument: str) -> Dict[str, Any]:
         "lot_sizes_seen": lots,
         "lot_size_static_fallback": UNDERLYING_META.get(instrument.upper(), {}).get("lot_size"),
         "contract_key_coverage_pct": round(100.0 * keyed / len(contracts), 2),
-        "option_candles_total": total_candles,
+        "option_candles_all_instruments": total_candles,
+        "option_candles_this_instrument": instrument_candles,
         "oi_population": oi,
         "chain_snapshots": db.chain_snapshots.estimated_document_count(),
         "ticks_retained": db.ticks.estimated_document_count(),
@@ -237,6 +244,58 @@ def validate_options(db, instrument: str) -> Dict[str, Any]:
 
 def _atm_strike(spot: float, step: int) -> int:
     return int(round(float(spot) / step) * step)
+
+
+#: Projection for one option contract's bars.
+_BAR_FIELDS = {"_id": 0, "ts": 1, "open": 1, "high": 1, "low": 1, "close": 1, "oi": 1}
+
+
+def _fetch_contract_bars(db, *, instrument, expiry, strike, side, day_start, day_end,
+                         contract) -> tuple:
+    """One contract's bars for one session, preferring IDENTITY over the token.
+
+    Returns ``(rows, source)`` where source names which lookup answered.
+
+    Why identity first. A two-part ``SEGMENT|TOKEN`` value is a live routing
+    address, not a durable historical contract identity: the provenance audit
+    found 8,714 tokens mapping to more than one contract, 2,423 of them holding
+    candles. `contract_key` fixes that, but it only exists on rows written after
+    v0.56.1 — measured on this warehouse at **61.4% of NIFTY contracts and 6.6%
+    of SENSEX**, so a token fallback would be the *usual* path for SENSEX, not
+    the exception.
+
+    `options_1m` stores `underlying`, `expiry_date`, `strike` and `side` on every
+    row, and `db.py` carries a compound index on exactly
+    ``(underlying, expiry_date, strike, side, ts)`` — so asking for the contract
+    by what it *is* is both unambiguous and the indexed path. Token lookups
+    remain only as fallbacks for rows that predate those fields, and the caller
+    counts which path each contract-session came from so a run can report how
+    much of its sample was token-trusted rather than verified.
+    """
+    window = {"ts": {"$gte": day_start, "$lt": day_end}}
+
+    identity = list(db.options_1m.find(
+        {"underlying": str(instrument).upper(), "expiry_date": expiry,
+         "strike": float(strike), "side": side, **window}, _BAR_FIELDS,
+    ).sort("ts", 1))
+    if len(identity) >= 30:
+        return identity, "identity"
+
+    if contract.get("contract_key"):
+        by_key = list(db.options_1m.find(
+            {"contract_key": contract["contract_key"], **window}, _BAR_FIELDS,
+        ).sort("ts", 1))
+        if len(by_key) >= 30:
+            return by_key, "contract_key"
+
+    if contract.get("instrument_key"):
+        by_token = list(db.options_1m.find(
+            {"instrument_key": contract["instrument_key"], **window}, _BAR_FIELDS,
+        ).sort("ts", 1))
+        if len(by_token) >= 30:
+            return by_token, "instrument_key_unverified"
+
+    return identity, "insufficient"
 
 
 def build_atm_series(
@@ -258,6 +317,7 @@ def build_atm_series(
     })
 
     frames: List[pd.DataFrame] = []
+    sources: Dict[str, int] = {}
     for date in sessions:
         if dte_filter is not None:
             dte = compute_dte(date, expiries)
@@ -293,13 +353,11 @@ def build_atm_series(
             }, {"_id": 0, "instrument_key": 1, "contract_key": 1})
             if not contract:
                 continue
-            key_filter = ({"contract_key": contract["contract_key"]}
-                          if contract.get("contract_key")
-                          else {"instrument_key": contract["instrument_key"]})
-            rows = list(db.options_1m.find(
-                {**key_filter, "ts": {"$gte": day_start, "$lt": day_end}},
-                {"_id": 0, "ts": 1, "open": 1, "high": 1, "low": 1, "close": 1, "oi": 1},
-            ).sort("ts", 1))
+            rows, source = _fetch_contract_bars(
+                db, instrument=instrument, expiry=target_expiry, strike=strike,
+                side=side, day_start=day_start, day_end=day_end, contract=contract,
+            )
+            sources[source] = sources.get(source, 0) + 1
             if len(rows) < 30:
                 continue
             f = pd.DataFrame(rows)
@@ -310,9 +368,13 @@ def build_atm_series(
             frames.append(f)
 
     if not frames:
-        return pd.DataFrame(columns=["ts", "open", "high", "low", "close", "oi",
-                                     "session_date", "side", "strike", "ist"])
-    return pd.concat(frames, ignore_index=True).sort_values(["session_date", "side", "ts"])
+        empty = pd.DataFrame(columns=["ts", "open", "high", "low", "close", "oi",
+                                      "session_date", "side", "strike", "ist"])
+        empty.attrs["lookup_sources"] = sources
+        return empty
+    out = pd.concat(frames, ignore_index=True).sort_values(["session_date", "side", "ts"])
+    out.attrs["lookup_sources"] = sources
+    return out
 
 
 def charges_pct_for(instrument: str, premium: float, lot_size: int) -> float:
@@ -376,8 +438,12 @@ def main() -> int:
               f"({opts['first_expiry']} -> {opts['last_expiry']})")
         print(f"  lot sizes seen       : {opts['lot_sizes_seen']}  "
               f"(static fallback {opts['lot_size_static_fallback']})")
-        print(f"  contract_key coverage: {opts['contract_key_coverage_pct']}%")
-        print(f"  option candles       : {opts['option_candles_total']:,}")
+        _ck = opts["contract_key_coverage_pct"]
+        print(f"  contract_key coverage: {_ck}%"
+              + ("" if _ck >= 95 else
+                 "   <- low is OK: bars are fetched by IDENTITY, not by token"))
+        print(f"  option candles       : {opts['option_candles_this_instrument']:,} "
+              f"for {inst}  ({opts['option_candles_all_instruments']:,} all instruments)")
         _oi = opts["oi_population"]
         _pct = "n/a" if _oi["pct"] is None else f"{_oi['pct']}%"
         print(f"  OI populated         : {_pct}  "
@@ -416,6 +482,15 @@ def main() -> int:
         print("    filter excluded them. This is a DATA finding, not a strategy one.")
         _emit(report, args.json_out)
         return 3
+
+    src = frame.attrs.get("lookup_sources") or {}
+    if src:
+        print("  contract lookup      : "
+              + ", ".join(f"{k}={v}" for k, v in sorted(src.items())))
+        if src.get("instrument_key_unverified"):
+            print(f"      ! {src['instrument_key_unverified']} contract-sessions came from an "
+                  "UNVERIFIED token lookup — treat those cells as provisional")
+    report["lookup_sources"] = src
 
     lot = int(UNDERLYING_META.get(inst, {}).get("lot_size") or 1)
     median_premium = float(frame["close"].median())

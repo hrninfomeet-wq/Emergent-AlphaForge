@@ -363,6 +363,123 @@ def test_the_atm_strike_is_fixed_from_the_first_eligible_bar():
 # The screen consumes what the builder produces
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Identity-first contract lookup
+#
+# Measured on the real warehouse: contract_key exists on 61.4% of NIFTY contracts
+# and only 6.6% of SENSEX. A token fallback would therefore be the USUAL path for
+# SENSEX, and a two-part SEGMENT|TOKEN value is a live routing address, not a
+# durable identity (8,714 tokens map to more than one contract).
+# ---------------------------------------------------------------------------
+
+def test_bars_are_fetched_by_identity_not_by_token():
+    """The contract has no contract_key AND a token that points elsewhere.
+
+    Identity must still find the right bars, because `options_1m` stores
+    underlying/expiry_date/strike/side and db.py indexes exactly that tuple.
+    """
+    bars = _option_bars("2026-08-20", "TOK|CE", n=60)
+    for b in bars:
+        b["expiry_date"] = "2026-08-25"
+        b["strike"] = 24_500.0
+    contracts = _contracts()
+    for c in contracts:
+        c.pop("contract_key")
+        c["instrument_key"] = "NSE_FO|WRONG-REUSED-TOKEN"
+
+    db = FakeDB(candles_1m=_spot_session("2026-08-20"),
+                option_contracts=contracts, options_1m=bars)
+    frame = screen.build_atm_series(db, "NIFTY", ["2026-08-20"], dte_filter=None,
+                                    entry_from="09:25", entry_to="14:48")
+
+    assert not frame.empty
+    assert frame.attrs["lookup_sources"] == {"identity": 1, "insufficient": 1}
+
+
+def test_identity_wins_even_when_a_contract_key_exists():
+    """Ordering matters: identity is the indexed, unambiguous path."""
+    bars = _option_bars("2026-08-20", "TOK|CE", n=60)
+    for b in bars:
+        b["expiry_date"] = "2026-08-25"
+        b["strike"] = 24_500.0
+    db = FakeDB(candles_1m=_spot_session("2026-08-20"),
+                option_contracts=_contracts(), options_1m=bars)
+    frame = screen.build_atm_series(db, "NIFTY", ["2026-08-20"], dte_filter=None,
+                                    entry_from="09:25", entry_to="14:48")
+    assert frame.attrs["lookup_sources"].get("identity") == 1
+
+
+def test_the_token_fallback_is_labelled_unverified():
+    """When identity fields are missing (legacy rows), the run must say so
+    rather than quietly presenting token-sourced bars as verified."""
+    bars = _option_bars("2026-08-20", "TOK|CE", n=60)
+    for b in bars:                       # legacy shape: no identity fields
+        del b["underlying"]
+        b.pop("expiry_date", None)
+        b.pop("strike", None)
+    contracts = _contracts()
+    for c in contracts:
+        c.pop("contract_key")
+
+    db = FakeDB(candles_1m=_spot_session("2026-08-20"),
+                option_contracts=contracts, options_1m=bars)
+    frame = screen.build_atm_series(db, "NIFTY", ["2026-08-20"], dte_filter=None,
+                                    entry_from="09:25", entry_to="14:48")
+
+    assert frame.attrs["lookup_sources"].get("instrument_key_unverified") == 1
+    assert not frame.empty          # still usable, but flagged
+
+
+def test_contract_key_is_used_when_identity_is_absent_but_the_key_is_not():
+    bars = _option_bars("2026-08-20", "TOK|CE", n=60)
+    for b in bars:
+        del b["underlying"]
+    db = FakeDB(candles_1m=_spot_session("2026-08-20"),
+                option_contracts=_contracts(), options_1m=bars)
+    frame = screen.build_atm_series(db, "NIFTY", ["2026-08-20"], dte_filter=None,
+                                    entry_from="09:25", entry_to="14:48")
+    assert frame.attrs["lookup_sources"].get("contract_key") == 1
+
+
+def test_a_reused_token_cannot_pull_another_contracts_bars():
+    """The defect this ordering prevents.
+
+    Two contracts share one token. Identity keeps them apart; a token lookup
+    would merge them.
+    """
+    ce = _option_bars("2026-08-20", "TOK|CE", n=60, premium=140.0)
+    for b in ce:
+        b["expiry_date"], b["strike"], b["side"] = "2026-08-25", 24_500.0, "CE"
+    other = _option_bars("2026-08-20", "TOK|CE", n=60, premium=999.0)
+    for b in other:                      # same token, different contract
+        b["expiry_date"], b["strike"], b["side"] = "2031-06-24", 30_000.0, "CE"
+        b["ts"] += 1                     # keep the fake's rows distinct
+
+    db = FakeDB(candles_1m=_spot_session("2026-08-20"),
+                option_contracts=_contracts(), options_1m=ce + other)
+    frame = screen.build_atm_series(db, "NIFTY", ["2026-08-20"], dte_filter=None,
+                                    entry_from="09:25", entry_to="14:48")
+
+    ce_rows = frame[frame["side"] == "CE"]
+    assert not ce_rows.empty
+    assert ce_rows["close"].max() == pytest.approx(140.0)   # never 999
+
+
+def test_per_instrument_candle_count_is_not_the_global_one():
+    """Both indices printed 7,967,661 on the first real run, under a
+    per-instrument heading. That number was the whole collection."""
+    nifty = _option_bars("2026-08-20", "TOK|CE", n=10)
+    sensex = _option_bars("2026-08-20", "TOK|PE", n=25)
+    for b in sensex:
+        b["underlying"] = "SENSEX"
+
+    db = FakeDB(option_contracts=_contracts(), options_1m=nifty + sensex)
+    out = screen.validate_options(db, "NIFTY")
+
+    assert out["option_candles_all_instruments"] == 35
+    assert out["option_candles_this_instrument"] == 10
+
+
 def test_the_builder_output_screens_without_crossing_contracts():
     """End to end: build a stacked CE+PE frame and screen it blocked by leg."""
     from app.option_screen import screen_condition
