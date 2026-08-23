@@ -92,6 +92,15 @@ for the authoritative list.)
 
 ## 2. Verification — run this before changing anything
 
+> **Shell note — this cost a round trip.** The operator runs **Windows PowerShell
+> 5.1**, where `&&` is not a statement separator:
+> `The token '&&' is not a valid statement separator in this version.`
+> Every command below is on its own line for that reason. Do not hand the
+> operator chained one-liners. If you need chaining in PS 5.1, use `;` (runs the
+> next command regardless of failure) or `if ($?) { ... }` (runs only on
+> success) — `&&` works in PowerShell 7+ / `pwsh`, which is not what is
+> installed here. `cmd.exe` and bash accept `&&`; PowerShell 5.1 does not.
+
 ```powershell
 cd C:\Users\haroo\OneDrive\Documents\New project\Emergent-AlphaForge
 git fetch origin
