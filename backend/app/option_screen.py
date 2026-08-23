@@ -281,9 +281,17 @@ class HoldoutProtectionError(RuntimeError):
 
 @dataclass
 class Split:
-    """A frozen three-way chronological split. Holdout access is deliberately awkward."""
+    """A frozen chronological split. Holdout access is deliberately awkward.
+
+    ``consumed`` holds sessions that lie after the validation boundary but have
+    ALREADY been read by an earlier campaign. They are not train, not validation,
+    and emphatically **not holdout** — a holdout is untouched by definition, and
+    calling a spent window "protected" is the single most dangerous label this
+    module could print. Only sessions after every consumed window are holdout.
+    """
     train: List[str] = field(default_factory=list)
     validation: List[str] = field(default_factory=list)
+    consumed: List[str] = field(default_factory=list)
     _holdout: List[str] = field(default_factory=list, repr=False)
     unlocked: bool = field(default=False, repr=False)
 
@@ -308,6 +316,7 @@ class Split:
         return {
             "train": len(self.train),
             "validation": len(self.validation),
+            "consumed": len(self.consumed),
             "holdout": len(self._holdout),
         }
 
@@ -317,19 +326,40 @@ def chronological_split(
     *,
     train_end: str,
     validation_end: str,
+    consumed_until: Optional[str] = None,
 ) -> Split:
-    """Split ascending ISO session dates into train / validation / holdout.
+    """Split ascending ISO session dates into train / validation / consumed / holdout.
 
     Boundaries are INCLUSIVE of their slice: ``train`` is ``<= train_end``,
-    ``validation`` is ``(train_end, validation_end]``, holdout is everything after.
-    No shuffling, no interleaving — an intraday strategy tested on shuffled days
-    leaks tomorrow into today through the volatility regime.
+    ``validation`` is ``(train_end, validation_end]``. No shuffling, no
+    interleaving — an intraday strategy tested on shuffled days leaks tomorrow
+    into today through the volatility regime.
+
+    ``consumed_until`` names the last session an EARLIER campaign already read.
+    Sessions in ``(validation_end, consumed_until]`` are returned as ``consumed``
+    and are excluded from the holdout.
+
+    This parameter exists because omitting it produced a genuinely dangerous
+    number. Run against this warehouse the split reported **158 protected holdout
+    sessions**, while prior campaigns had already read 2026-01-01 → 2026-07-10
+    (see `PREMIUM_MOMENTUM_EDGE_VERDICT_2026-07.md`); only ~30 sessions were
+    actually untouched. A holdout is untouched by definition, so a spent window
+    counted into it does not merely inflate a number — it destroys the one
+    property the holdout exists to provide, while displaying the word PROTECTED.
     """
     ordered = sorted({str(s) for s in sessions})
     train = [s for s in ordered if s <= str(train_end)]
     validation = [s for s in ordered if str(train_end) < s <= str(validation_end)]
-    holdout = [s for s in ordered if s > str(validation_end)]
-    return Split(train=train, validation=validation, _holdout=holdout)
+
+    consumed: List[str] = []
+    boundary = str(validation_end)
+    if consumed_until and str(consumed_until) > boundary:
+        consumed = [s for s in ordered if boundary < s <= str(consumed_until)]
+        boundary = str(consumed_until)
+
+    holdout = [s for s in ordered if s > boundary]
+    return Split(train=train, validation=validation, consumed=consumed,
+                 _holdout=holdout)
 
 
 # ---------------------------------------------------------------------------

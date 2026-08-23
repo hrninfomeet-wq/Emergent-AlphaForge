@@ -862,6 +862,35 @@ from source; this one was not, and it was the only one that was wrong.
 
 Every change is **additive** — eight new files, zero modifications to existing source.
 
+### 10.2 The split called 158 spent sessions "PROTECTED"
+
+The first screen run printed:
+
+```
+holdout > 2025-12-31 : 158 sessions (PROTECTED — this script never reads it)
+```
+
+Prior campaigns had already read **2026-01-01 → 2026-07-10**
+([`PREMIUM_MOMENTUM_EDGE_VERDICT_2026-07.md`](PREMIUM_MOMENTUM_EDGE_VERDICT_2026-07.md)),
+so only ~30 sessions were untouched. The tool was reporting a holdout **5× larger
+than the one that exists**, under the word PROTECTED.
+
+This is worse than an inflated count. A holdout is untouched *by definition* — the
+label is the only thing that makes it evidence. Counting spent sessions into it
+does not weaken the holdout, it silently removes the property the whole protocol
+is built on, while displaying reassurance.
+
+`chronological_split` now takes `consumed_until` and returns a fourth slice,
+`consumed`: sessions after the validation boundary that an earlier campaign
+already read. They are excluded from the holdout. The CLI defaults it to
+**2026-07-10** with the source cited inline, prints the consumed count
+separately, and warns when the true holdout falls below the 60-session promotion
+minimum — which, at ~30 sessions, it does.
+
+Five tests cover it, including that the CLI default is exactly 2026-07-10:
+defaulting to `None` would reintroduce the mislabel silently, which is how it
+arrived in the first place.
+
 ### 10.1 The first screen run built no series — and the script could not say why
 
 Run on the train slice (191 sessions), both indices produced **no ATM option
@@ -914,8 +943,8 @@ immediately. This repository's own record already says it twice — the `jData` 
 the `exit_controls` schema were both green in CI and both wrong in production, because the
 test shared the implementation's assumption. A docstring is not a test.
 
-**Verification baseline (host, 2026-08-23):** `5,086 passed, 2 failed, 10 skipped,
-4 xfailed` in 161s. The two failures are `test_premium_momentum_route.py`, which needs a
+**Verification baseline (host, 2026-08-23):** `5,091 passed, 2 failed, 10 skipped,
+4 xfailed` in 162s. The two failures are `test_premium_momentum_route.py`, which needs a
 live MongoDB on `localhost:27017` and fails with `ServerSelectionTimeoutError` in any
 environment without one; they are unrelated to this change. The host also needed
 `pytest-asyncio`, `pydantic`, `fastapi`, `httpx`, `optuna`, `motor` and `yfinance`

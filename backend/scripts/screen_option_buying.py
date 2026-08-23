@@ -438,6 +438,13 @@ def main() -> int:
                     help="forward hold horizons in minutes")
     ap.add_argument("--train-end", default="2025-08-31")
     ap.add_argument("--validation-end", default="2025-12-31")
+    # Sessions an EARLIER campaign already read. The premium-momentum campaign's
+    # holdout was 2026-01-01 -> 2026-07-10 (PREMIUM_MOMENTUM_EDGE_VERDICT_2026-07.md),
+    # so those sessions are spent and must not be counted as protected holdout.
+    # Pass "" to disable only if you can show no prior campaign touched them.
+    ap.add_argument("--consumed-until", default="2026-07-10",
+                    help="last session already read by a prior campaign "
+                         "(excluded from the holdout; default 2026-07-10)")
     ap.add_argument("--entry-from", default="09:25", help="IST, inclusive")
     ap.add_argument("--entry-to", default="14:48", help="IST, inclusive")
     ap.add_argument("--spread-pct", type=float, default=1.0,
@@ -502,13 +509,23 @@ def main() -> int:
     all_sessions = sorted({_ist_date(r["ts"]) for r in
                            db.candles_1m.find({"instrument": inst}, {"_id": 0, "ts": 1})})
     split = chronological_split(all_sessions, train_end=args.train_end,
-                                validation_end=args.validation_end)
+                                validation_end=args.validation_end,
+                                consumed_until=args.consumed_until or None)
     report["split"] = split.counts()
     print(f"\n{'=' * 72}\n  SPLIT\n{'=' * 72}")
     print(f"  train      <= {args.train_end} : {len(split.train)} sessions")
     print(f"  validation <= {args.validation_end} : {len(split.validation)} sessions")
-    print(f"  holdout     > {args.validation_end} : {split.counts()['holdout']} sessions "
+    if split.consumed:
+        print(f"  CONSUMED   <= {args.consumed_until} : {len(split.consumed)} sessions "
+              f"(already read by an earlier campaign — NOT holdout)")
+    _hold = split.counts()["holdout"]
+    print(f"  holdout     > {args.consumed_until or args.validation_end} : {_hold} sessions "
           f"(PROTECTED — this script never reads it)")
+    if 0 < _hold < 60:
+        print(f"      ! {_hold} untouched sessions is below the 60-session promotion")
+        print("        minimum — a campaign started now cannot produce a")
+        print("        promotion-grade holdout result. Remaining evidence must")
+        print("        come forward from paper.")
 
     # --- 3/4. baseline then conditions ------------------------------------
     print(f"\n{'=' * 72}\n  SCREEN (train slice only)\n{'=' * 72}")

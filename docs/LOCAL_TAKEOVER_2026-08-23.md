@@ -38,8 +38,8 @@ flight**, not the whole app.
 > - Never place, modify or cancel a broker order. Never enable live mode. Never
 >   call the Flattrade MCP's `login`/`logout`.
 > - The protected holdout is read **once**, by recorded finalists, after
->   train+validation selection is frozen. See §5 — the script's current holdout
->   label is wrong and you must fix it before anyone reads a holdout number.
+>   train+validation selection is frozen. Read §5: only ~30 sessions are actually
+>   untouched, which is below the promotion minimum.
 > - A docstring is not a test. This branch found three defects that were
 >   "documented as correct" and weren't; mutate a guard before believing it.
 > - Report failures with their output. "Research-only" verdicts stay research-only
@@ -51,25 +51,29 @@ flight**, not the whole app.
 
 | | |
 |---|---|
-| Branch | `claude/hello-g2itta` @ `8987bf5` — **9 commits**, 8 files, 4,260 insertions, all additive |
+| Branch | `claude/hello-g2itta` — all changes **additive**; `git diff --name-status origin/main...HEAD` is every `A` |
 | Base | `origin/main` @ `6e6e1cc`, unmoved; 0 conflict markers |
 | PR | [#7](https://github.com/hrninfomeet-wq/Emergent-AlphaForge/pull/7), draft, no reviews, no comments |
 | CI | **None exists** — this repo has no `.github/workflows`. The host suite is the only evidence. |
-| Suite | `5,086 passed, 2 failed, 10 skipped, 4 xfailed`. The two failures are `test_premium_momentum_route.py`, which needs a live MongoDB — **they should PASS on your machine.** If they fail there too, that is a real finding. |
+| Suite | `5,091 passed, 2 failed, 10 skipped, 4 xfailed`. The two failures are `test_premium_momentum_route.py`, which needs a live MongoDB — **they should PASS on your machine.** If they fail there too, that is a real finding. |
 
 ### Commits, newest first
 
 ```
-8987bf5 fix(screen): diagnose an empty screen instead of shrugging at it
-cf8c1d6 fix(screen): fetch option bars by identity, not by a reusable token
-199f269 docs(screen): correct the run instructions — they would have failed first try
-0af9cf3 test: mutation-sweep every shipped invariant; one survivor, now killed
-78e1e37 test(screen): guard the block-boundary fix where it lives, verified by mutation
-6f41737 fix(screen): three defects the CLI's untested database path was hiding
-7220cf7 docs: correct a §7.8 finding that was wrong, and say why it was wrong
-4640856 feat(strategy): candidate B as a registered research-only plugin
-10390d5 research: option-buying audit, verified constraints, and two frozen candidates
+docs: local takeover handoff for the option-buying campaign
+fix(screen): diagnose an empty screen instead of shrugging at it
+fix(screen): fetch option bars by identity, not by a reusable token
+docs(screen): correct the run instructions — they would have failed first try
+test: mutation-sweep every shipped invariant; one survivor, now killed
+test(screen): guard the block-boundary fix where it lives, verified by mutation
+fix(screen): three defects the CLI's untested database path was hiding
+docs: correct a §7.8 finding that was wrong, and say why it was wrong
+feat(strategy): candidate B as a registered research-only plugin
+research: option-buying audit, verified constraints, and two frozen candidates
 ```
+
+(Plus this document's own commit. Run `git log --oneline origin/main..HEAD`
+for the authoritative list.)
 
 ### What was added
 
@@ -78,7 +82,7 @@ cf8c1d6 fix(screen): fetch option bars by identity, not by a reusable token
 | `backend/app/option_screen.py` | The pre-plugin screening gate. Pure — no DB. |
 | `backend/scripts/screen_option_buying.py` | Read-only CLI: validate → split → baseline → conditions. |
 | `backend/app/strategies/plugins/expiry_regime_trend_continuation.py` | Candidate B, registered, research-only, **never run**. |
-| `tests/test_option_screen.py` | 36 tests |
+| `tests/test_option_screen.py` | 41 tests |
 | `tests/test_screen_option_buying_script.py` | 16 tests |
 | `tests/test_screen_option_buying_db_paths.py` | 27 tests (strict fake Mongo) |
 | `tests/test_strategy_expiry_regime_trend_continuation.py` | 39 tests |
@@ -93,7 +97,10 @@ cd C:\Users\haroo\OneDrive\Documents\New project\Emergent-AlphaForge
 git fetch origin
 git checkout claude/hello-g2itta
 git pull origin claude/hello-g2itta
-git log --oneline -1          # expect 8987bf5
+# Confirm you are at the tip of the branch (deliberately not a pinned SHA —
+# this document should not rot every time the branch moves).
+git rev-parse HEAD
+git rev-parse origin/claude/hello-g2itta      # the two must match
 
 # The rebuild is REQUIRED. Dockerfile bakes source with `COPY . .` and compose
 # bind-mounts ONLY backend/app/strategies/plugins — so a new plugin appears live
@@ -106,7 +113,7 @@ docker compose up -d --build backend
 
 # The campaign's own tests
 .venv\Scripts\python.exe -m pytest tests\test_option_screen.py tests\test_screen_option_buying_script.py tests\test_screen_option_buying_db_paths.py tests\test_strategy_expiry_regime_trend_continuation.py -q
-# expect 118 passed
+# expect 123 passed
 ```
 
 **Confirm the plugin registered** — it is visible in the UI as
@@ -149,7 +156,7 @@ docker compose exec backend python -c "from app.strategies.base import get_regis
 ## 4. YOUR IMMEDIATE TASK — the screen builds no ATM series
 
 Run on the train slice (191 sessions), both indices returned **no ATM option
-series**. Cause unknown. `8987bf5` added a per-stage funnel so the next run
+series**. Cause unknown. A per-stage funnel was added so the next run
 diagnoses it instead of shrugging.
 
 **Do not accept the script's own error message at face value.** The first time it
@@ -199,28 +206,27 @@ rather than proceeding to conditions.
 
 ---
 
-## 5. Known defect you must fix before any holdout number is read
+## 5. The holdout mislabel — FIXED, but read this before using a holdout number
 
-The screen printed:
+The first screen run printed `holdout > 2025-12-31 : 158 sessions (PROTECTED)`.
+Prior campaigns had already read **2026-01-01 → 2026-07-10**
+(`PREMIUM_MOMENTUM_EDGE_VERDICT_2026-07.md`), so only ~30 sessions were
+untouched — the tool was reporting a holdout 5× larger than the one that exists.
 
-```
-holdout > 2025-12-31 : 158 sessions (PROTECTED)
-```
+**Fixed.** `chronological_split` takes `consumed_until` and returns a fourth
+slice, `consumed`, excluded from the holdout. The CLI defaults it to
+`2026-07-10`, prints the consumed count separately, and warns when the true
+holdout is under the 60-session promotion minimum.
 
-**That label is wrong and it is dangerous.** Prior campaigns already consumed
-**2026-01-01 → 2026-07-10** (the premium-momentum finalists read it — see
-`PREMIUM_MOMENTUM_EDGE_VERDICT_2026-07.md`). Only roughly **30 sessions**,
-2026-07-11 → 2026-08-21, are genuinely untouched.
+**The consequence stands and is not fixable by code:** ~30 untouched sessions is
+below the 60-session / 120-trade minimum, so **a campaign started now cannot
+produce a promotion-grade holdout result.** The remaining evidence has to come
+forward from paper, at roughly 20 sessions a month. Do not let a positive number
+on 30 sessions be read as promotion evidence — the CLI now prints that warning
+for you, and §5.3 of the deliverable says the same.
 
-The tool is telling the operator they hold 158 clean holdout sessions when they
-hold about 30. Acting on that number would invalidate the campaign's central
-claim. `chronological_split` needs to carry the consumed window explicitly and
-label those sessions `consumed`, not `holdout`. **Not started.**
-
-Note the consequence, which is already recorded in §5.3 of the deliverable: ~30
-sessions is below the 60-session / 120-trade promotion minimum, so a campaign
-started now **cannot** produce a promotion-grade holdout result. The remaining
-evidence has to come forward from paper, at roughly 20 sessions a month.
+If you ever pass `--consumed-until ""`, you must first be able to show no prior
+campaign touched those sessions.
 
 ---
 

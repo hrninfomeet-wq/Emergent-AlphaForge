@@ -238,7 +238,65 @@ def test_split_boundaries_are_inclusive_and_ordered():
                                 validation_end="2026-03-01")
     assert split.train == ["2026-01-01", "2026-01-03"]
     assert split.validation == ["2026-02-01", "2026-03-01"]   # end is inclusive
-    assert split.counts() == {"train": 2, "validation": 2, "holdout": 1}
+    assert split.counts() == {"train": 2, "validation": 2,
+                              "consumed": 0, "holdout": 1}
+
+
+def test_a_consumed_window_is_excluded_from_the_holdout():
+    """The defect this parameter exists for.
+
+    Against the real warehouse the split reported 158 "PROTECTED" holdout
+    sessions while an earlier campaign had already read 2026-01-01 -> 2026-07-10.
+    A spent window counted into the holdout does not merely inflate a number — it
+    destroys the one property a holdout has, under the word PROTECTED.
+    """
+    sessions = ["2025-06-01", "2025-11-01",
+                "2026-03-01", "2026-06-01",          # consumed by a prior campaign
+                "2026-08-01", "2026-08-15"]          # genuinely untouched
+    split = chronological_split(sessions, train_end="2025-08-31",
+                                validation_end="2025-12-31",
+                                consumed_until="2026-07-10")
+
+    assert split.counts() == {"train": 1, "validation": 1,
+                              "consumed": 2, "holdout": 2}
+    assert split.consumed == ["2026-03-01", "2026-06-01"]
+    assert split.unlock_holdout(reason="test") == ["2026-08-01", "2026-08-15"]
+
+
+def test_omitting_the_consumed_window_keeps_the_old_wider_holdout():
+    """Backwards compatible: no consumed_until means everything after validation."""
+    sessions = ["2025-06-01", "2026-03-01", "2026-08-01"]
+    split = chronological_split(sessions, train_end="2025-08-31",
+                                validation_end="2025-12-31")
+    assert split.counts()["consumed"] == 0
+    assert split.counts()["holdout"] == 2
+
+
+def test_a_consumed_boundary_at_or_before_validation_is_ignored():
+    """It can only ever shrink the holdout, never reclassify validation."""
+    sessions = ["2025-06-01", "2025-11-01", "2026-03-01"]
+    split = chronological_split(sessions, train_end="2025-08-31",
+                                validation_end="2025-12-31",
+                                consumed_until="2025-10-01")
+    assert split.counts() == {"train": 1, "validation": 1,
+                              "consumed": 0, "holdout": 1}
+
+
+def test_a_consumed_window_swallowing_everything_leaves_no_holdout():
+    sessions = ["2026-03-01", "2026-06-01"]
+    split = chronological_split(sessions, train_end="2025-08-31",
+                                validation_end="2025-12-31",
+                                consumed_until="2026-07-10")
+    assert split.counts()["holdout"] == 0
+    assert split.unlock_holdout(reason="test") == []
+
+
+def test_the_cli_defaults_the_consumed_window_to_the_spent_campaign():
+    """2026-07-10 is the premium-momentum campaign's holdout end. Defaulting to
+    None here would reintroduce the 158-session mislabel silently."""
+    source = (ROOT / "backend" / "scripts" / "screen_option_buying.py").read_text()
+    assert '"--consumed-until", default="2026-07-10"' in source
+    assert "consumed_until=args.consumed_until or None" in source
 
 
 def test_holdout_raises_until_explicitly_unlocked():
