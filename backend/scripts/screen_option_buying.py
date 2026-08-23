@@ -3,9 +3,31 @@
 Runs `app.option_screen` against the local warehouse and answers, before any
 plugin is written or any optimizer trial is spent: *is there anything to find?*
 
-    python backend/scripts/screen_option_buying.py --instrument NIFTY
-    python backend/scripts/screen_option_buying.py --instrument SENSEX --dte 1 2 3
-    python backend/scripts/screen_option_buying.py --instrument NIFTY --validate-only
+**Run it inside the backend container** — that is the only place every dependency
+(pandas, pymongo) is guaranteed present, and `MONGO_URL` / `DB_NAME` are already
+set there by `docker-compose.yml`:
+
+    docker compose up -d --build backend        # REQUIRED after pulling: see below
+    docker compose exec backend python scripts/screen_option_buying.py \
+        --instrument NIFTY --validate-only
+    docker compose exec backend python scripts/screen_option_buying.py \
+        --instrument SENSEX --dte 1 2 3
+
+⚠ **The rebuild is not optional after a `git pull`.** `backend/Dockerfile` bakes
+the source in with `COPY . .`, and `docker-compose.yml` bind-mounts ONLY
+`backend/app/strategies/plugins`. So a new plugin shows up in a running container
+immediately, but this script and `app/option_screen.py` do not exist inside it
+until the image is rebuilt — you would get `No such file or directory` and might
+reasonably blame the checkout.
+
+From the Windows host instead (Mongo is published on 127.0.0.1:27017), matching
+the invocation the other scripts in this directory document:
+
+    .venv/Scripts/python.exe backend/scripts/screen_option_buying.py \
+        --instrument NIFTY --validate-only
+
+That path needs `pandas` and `pymongo` in the venv; the container path needs
+neither.
 
 Order of operations is deliberate and matches the campaign protocol in
 [`docs/INTRADAY_OPTION_BUYING_CANDIDATES_2026-08.md`](../../docs/INTRADAY_OPTION_BUYING_CANDIDATES_2026-08.md):

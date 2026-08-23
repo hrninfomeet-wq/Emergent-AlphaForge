@@ -565,8 +565,9 @@ change to the exit engine, not to this plugin.
 ### 5.1 Order of operations, and the gate that comes first
 
 ```
-1. Validate data      backend/scripts/screen_option_buying.py --validate-only
-2. Screen             backend/scripts/screen_option_buying.py --instrument {NIFTY,SENSEX}
+0. Rebuild            docker compose up -d --build backend   <- REQUIRED after a pull
+1. Validate data      docker compose exec backend python scripts/screen_option_buying.py --validate-only
+2. Screen             docker compose exec backend python scripts/screen_option_buying.py --instrument {NIFTY,SENSEX}
    └─ REJECT here kills the candidate. No optimizer trial. No backtest.
 3. Plugin             candidate B: ALREADY WRITTEN (expiry_regime_trend_continuation)
                       candidate A: blocked on §7.1 and must not be written before it
@@ -576,6 +577,12 @@ change to the exit engine, not to this plugin.
 7. Holdout            ONE read, finalists only, with friction sensitivities
 8. Paper forward      frozen cohort, one lot, fill reconciliation
 ```
+
+> **Step 0 is not ceremony.** `backend/Dockerfile` bakes source in with `COPY . .`, and
+> `docker-compose.yml` bind-mounts only `backend/app/strategies/plugins`. After a pull the
+> new plugin is live in a running container, but `scripts/screen_option_buying.py` and
+> `app/option_screen.py` are not present until the image is rebuilt — the run fails with
+> `No such file or directory`, which looks like a bad checkout and is not one.
 
 Step 2 is not optional and not a formality. `OPTION_BUYING_MICROSTRUCTURE_2026-08.md` closes
 by saying the screen "kills candidates before a plugin is written", and the five scripts
