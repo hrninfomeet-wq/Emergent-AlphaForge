@@ -480,6 +480,75 @@ def test_per_instrument_candle_count_is_not_the_global_one():
     assert out["option_candles_this_instrument"] == 10
 
 
+# ---------------------------------------------------------------------------
+# The funnel — diagnostics must survive the empty path
+# ---------------------------------------------------------------------------
+
+def test_the_funnel_is_populated_when_the_frame_is_EMPTY():
+    """The whole point. An empty frame is when diagnostics matter most, and the
+    first version returned early before printing any."""
+    db = FakeDB(candles_1m=_spot_session("2026-08-20"),
+                option_contracts=[], options_1m=[])
+    frame = screen.build_atm_series(db, "NIFTY", ["2026-08-20"], dte_filter=None,
+                                    entry_from="09:25", entry_to="14:48")
+    assert frame.empty
+    funnel = frame.attrs["funnel"]
+    assert funnel["sessions_requested"] == 1
+    assert funnel["sessions_with_spot"] == 1
+    assert funnel["expiries_known"] == 0
+
+
+def test_the_funnel_names_the_stage_that_dropped_the_session():
+    """Contracts exist but hold no bars — must read as too_few_bars, not as a
+    contract-master gap. Those two point at completely different fixes."""
+    db = FakeDB(candles_1m=_spot_session("2026-08-20"),
+                option_contracts=_contracts(), options_1m=[])
+    frame = screen.build_atm_series(db, "NIFTY", ["2026-08-20"], dte_filter=None,
+                                    entry_from="09:25", entry_to="14:48")
+    funnel = frame.attrs["funnel"]
+    assert funnel["contracts_found"] == 2
+    assert funnel["dropped_too_few_bars"] == 2
+    assert "dropped_contract_not_found" not in funnel
+
+
+def test_a_contract_master_gap_is_named_distinctly():
+    db = FakeDB(candles_1m=_spot_session("2026-08-20"),
+                option_contracts=[{"underlying": "NIFTY", "strike": 99_999,
+                                   "side": "CE", "expiry_date": "2026-08-25",
+                                   "instrument_key": "x", "lot_size": 65}],
+                options_1m=[])
+    frame = screen.build_atm_series(db, "NIFTY", ["2026-08-20"], dte_filter=None,
+                                    entry_from="09:25", entry_to="14:48")
+    funnel = frame.attrs["funnel"]
+    assert funnel["dropped_contract_not_found"] == 2      # CE and PE at ATM
+    assert frame.attrs["misses"][0]["stage"] == "option_contracts.find_one"
+    assert frame.attrs["misses"][0]["strike"] == 24_500
+
+
+def test_the_dte_filter_is_distinguishable_from_missing_data():
+    """`dropped_dte_excluded` must not be confusable with absent coverage."""
+    db = _full_db()
+    frame = screen.build_atm_series(db, "NIFTY", ["2026-08-20"], dte_filter=[0],
+                                    entry_from="09:25", entry_to="14:48")
+    funnel = frame.attrs["funnel"]
+    assert funnel["dropped_dte_excluded"] == 1
+    assert funnel.get("sessions_past_dte", 0) == 0
+    assert "dropped_contract_not_found" not in funnel
+
+
+def test_passing_dte_with_no_values_disables_the_filter():
+    """`--dte` with no arguments yields [], and `args.dte or None` disables
+    filtering — the fastest way to separate 'the filter' from 'the data'."""
+    source = (ROOT / "backend" / "scripts" / "screen_option_buying.py").read_text()
+    assert "dte_filter=args.dte or None" in source
+
+    db = _full_db()
+    unfiltered = screen.build_atm_series(db, "NIFTY", ["2026-08-20"],
+                                         dte_filter=None, entry_from="09:25",
+                                         entry_to="14:48")
+    assert not unfiltered.empty
+
+
 def test_the_builder_output_screens_without_crossing_contracts():
     """End to end: build a stacked CE+PE frame and screen it blocked by leg."""
     from app.option_screen import screen_condition

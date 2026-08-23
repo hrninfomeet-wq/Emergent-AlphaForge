@@ -862,6 +862,39 @@ from source; this one was not, and it was the only one that was wrong.
 
 Every change is **additive** — eight new files, zero modifications to existing source.
 
+### 10.1 The first screen run built no series — and the script could not say why
+
+Run on the train slice (191 sessions), both indices produced **no ATM option
+series**, and the script's only explanation was *"Either option coverage is absent
+for these sessions or the DTE filter excluded them."* That is a shrug, not a
+diagnosis, and it names two causes with completely different fixes.
+
+Worse, the run printed no lookup summary at all. The empty-frame check returned
+**before** the diagnostics — so the one path where diagnostics are the only
+useful output was the one path that suppressed them. That is the same defect
+shape as §9.1's third item: the safe behaviour existed but was not reachable when
+it mattered.
+
+The builder now accumulates a per-stage funnel — sessions requested, DTE
+resolved / excluded (with the observed DTE distribution), spot bars present,
+target expiry resolved, contracts found vs missing, bars too few — plus up to
+five verbatim sample misses showing the exact failing lookup. It is printed on
+**every** run, before the empty check. The stage where the count collapses to
+zero *is* the cause:
+
+| Collapse at | Means | Fix lives in |
+|---|---|---|
+| `dropped_dte_unresolved` | `compute_dte` returned None — calendar or expiry metadata | `nse_calendar` / contract master |
+| `dropped_dte_excluded` | The `--dte` filter, not the data | the run's flags |
+| `dropped_contract_not_found` | Contract-master gap, or a wrong lookup key | `option_contracts` / this query |
+| `dropped_too_few_bars` | Genuine `options_1m` coverage | ingestion |
+
+**No rebuild is needed to separate the two biggest hypotheses.** `--dte` with no
+values yields `[]`, and `dte_filter=args.dte or None` disables filtering
+entirely — so a single run with a bare `--dte` distinguishes "the filter" from
+"the data" on the build already in place. Pinned by test so the flag keeps that
+meaning.
+
 ### 9.1 Three defects the CLI's database path was hiding
 
 The screen's pure helpers were tested from the start; its three DB-touching
@@ -881,8 +914,8 @@ immediately. This repository's own record already says it twice — the `jData` 
 the `exit_controls` schema were both green in CI and both wrong in production, because the
 test shared the implementation's assumption. A docstring is not a test.
 
-**Verification baseline (host, 2026-08-23):** `5,081 passed, 2 failed, 10 skipped,
-4 xfailed` in 162s. The two failures are `test_premium_momentum_route.py`, which needs a
+**Verification baseline (host, 2026-08-23):** `5,086 passed, 2 failed, 10 skipped,
+4 xfailed` in 161s. The two failures are `test_premium_momentum_route.py`, which needs a
 live MongoDB on `localhost:27017` and fails with `ServerSelectionTimeoutError` in any
 environment without one; they are unrelated to this change. The host also needed
 `pytest-asyncio`, `pydantic`, `fastapi`, `httpx`, `optuna`, `motor` and `yfinance`

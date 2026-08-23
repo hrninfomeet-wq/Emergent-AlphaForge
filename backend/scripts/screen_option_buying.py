@@ -318,11 +318,26 @@ def build_atm_series(
 
     frames: List[pd.DataFrame] = []
     sources: Dict[str, int] = {}
+    # A per-stage funnel. "No series could be built" is useless on its own — the
+    # first time this script printed that, the cause was a typo in its own query,
+    # not the warehouse. Every drop-off is counted and a sample of the exact
+    # failing lookup is kept, so the next run diagnoses instead of shrugging.
+    funnel: Dict[str, int] = defaultdict(int)
+    misses: List[Dict[str, Any]] = []
+    funnel["sessions_requested"] = len(list(sessions))
+    funnel["expiries_known"] = len(expiries)
     for date in sessions:
         if dte_filter is not None:
             dte = compute_dte(date, expiries)
-            if dte is None or dte not in dte_filter:
+            if dte is None:
+                funnel["dropped_dte_unresolved"] += 1
                 continue
+            if dte not in dte_filter:
+                funnel["dropped_dte_excluded"] += 1
+                funnel[f"dte_seen_{dte}"] += 1
+                continue
+            funnel[f"dte_seen_{dte}"] += 1
+        funnel["sessions_past_dte"] += 1
 
         day_start = int(datetime.strptime(date, "%Y-%m-%d")
                         .replace(tzinfo=IST).timestamp() * 1000)
@@ -333,12 +348,18 @@ def build_atm_series(
             {"_id": 0, "ts": 1, "close": 1},
         ).sort("ts", 1))
         eligible = [r for r in spot_rows if entry_from <= _ist_hhmm(r["ts"]) <= entry_to]
-        if not eligible:
+        if not spot_rows:
+            funnel["dropped_no_spot_rows"] += 1
             continue
+        if not eligible:
+            funnel["dropped_no_eligible_spot_bar"] += 1
+            continue
+        funnel["sessions_with_spot"] += 1
 
         strike = _atm_strike(eligible[0]["close"], step)
         target_expiry = next((e for e in expiries if e >= date), None)
         if target_expiry is None:
+            funnel["dropped_no_target_expiry"] += 1
             continue
 
         for side in ("CE", "PE"):
@@ -352,14 +373,28 @@ def build_atm_series(
                 "side": side, "expiry_date": target_expiry,
             }, {"_id": 0, "instrument_key": 1, "contract_key": 1})
             if not contract:
+                funnel["dropped_contract_not_found"] += 1
+                if len(misses) < 5:
+                    misses.append({"stage": "option_contracts.find_one",
+                                   "underlying": instrument.upper(), "strike": strike,
+                                   "side": side, "expiry_date": target_expiry,
+                                   "session": date})
                 continue
+            funnel["contracts_found"] += 1
             rows, source = _fetch_contract_bars(
                 db, instrument=instrument, expiry=target_expiry, strike=strike,
                 side=side, day_start=day_start, day_end=day_end, contract=contract,
             )
             sources[source] = sources.get(source, 0) + 1
             if len(rows) < 30:
+                funnel["dropped_too_few_bars"] += 1
+                if len(misses) < 5:
+                    misses.append({"stage": "options_1m bars", "rows": len(rows),
+                                   "source": source, "session": date,
+                                   "strike": strike, "side": side,
+                                   "expiry_date": target_expiry})
                 continue
+            funnel["contract_sessions_used"] += 1
             f = pd.DataFrame(rows)
             f["session_date"] = date
             f["side"] = side
@@ -371,9 +406,13 @@ def build_atm_series(
         empty = pd.DataFrame(columns=["ts", "open", "high", "low", "close", "oi",
                                       "session_date", "side", "strike", "ist"])
         empty.attrs["lookup_sources"] = sources
+        empty.attrs["funnel"] = dict(funnel)
+        empty.attrs["misses"] = misses
         return empty
     out = pd.concat(frames, ignore_index=True).sort_values(["session_date", "side", "ts"])
     out.attrs["lookup_sources"] = sources
+    out.attrs["funnel"] = dict(funnel)
+    out.attrs["misses"] = misses
     return out
 
 
@@ -476,21 +515,25 @@ def main() -> int:
     frame = build_atm_series(db, inst, split.train, dte_filter=args.dte or None,
                              entry_from=args.entry_from, entry_to=args.entry_to)
     report["train_frame_bars"] = int(len(frame))
+    _print_funnel(frame)
+    report["funnel"] = frame.attrs.get("funnel") or {}
+    report["misses"] = frame.attrs.get("misses") or []
+    src = frame.attrs.get("lookup_sources") or {}
+    report["lookup_sources"] = src
+
     if frame.empty:
-        print("  ! no ATM option series could be built for the train slice.")
-        print("    Either option coverage is absent for these sessions or the DTE")
-        print("    filter excluded them. This is a DATA finding, not a strategy one.")
+        print("\n  ! no ATM option series could be built for the train slice.")
+        print("    Read the funnel above: the stage where the count collapses to")
+        print("    zero IS the cause. A drop at `contract_not_found` is a contract-")
+        print("    master gap or a wrong lookup key; a drop at `too_few_bars` is")
+        print("    genuine option-candle coverage; a drop at `dte_excluded` means")
+        print("    the --dte filter, not the data.")
         _emit(report, args.json_out)
         return 3
 
-    src = frame.attrs.get("lookup_sources") or {}
-    if src:
-        print("  contract lookup      : "
-              + ", ".join(f"{k}={v}" for k, v in sorted(src.items())))
-        if src.get("instrument_key_unverified"):
-            print(f"      ! {src['instrument_key_unverified']} contract-sessions came from an "
-                  "UNVERIFIED token lookup — treat those cells as provisional")
-    report["lookup_sources"] = src
+    if src.get("instrument_key_unverified"):
+        print(f"      ! {src['instrument_key_unverified']} contract-sessions came from an "
+              "UNVERIFIED token lookup — treat those cells as provisional")
 
     lot = int(UNDERLYING_META.get(inst, {}).get("lot_size") or 1)
     median_premium = float(frame["close"].median())
@@ -523,6 +566,42 @@ def main() -> int:
     _emit(report, args.json_out)
     client.close()
     return 0
+
+
+def _print_funnel(frame) -> None:
+    """Print where contract-sessions were lost, and a sample of the exact misses.
+
+    Printed on EVERY run, before the empty-frame check. The first version of this
+    script returned early on an empty frame and printed the lookup summary after
+    it — suppressing the diagnostics precisely when they were the only thing worth
+    having.
+    """
+    funnel = frame.attrs.get("funnel") or {}
+    src = frame.attrs.get("lookup_sources") or {}
+    misses = frame.attrs.get("misses") or []
+    if not funnel and not src:
+        return
+
+    print("\n  FUNNEL (where contract-sessions were lost)")
+    order = ["sessions_requested", "expiries_known", "dropped_dte_unresolved",
+             "dropped_dte_excluded", "sessions_past_dte", "dropped_no_spot_rows",
+             "dropped_no_eligible_spot_bar", "sessions_with_spot",
+             "dropped_no_target_expiry", "contracts_found",
+             "dropped_contract_not_found", "dropped_too_few_bars",
+             "contract_sessions_used"]
+    for key in order:
+        if key in funnel:
+            print(f"    {key:<32} {funnel[key]:>7,}")
+    dte_seen = {k: v for k, v in funnel.items() if k.startswith("dte_seen_")}
+    if dte_seen:
+        print("    DTE distribution across sessions: "
+              + ", ".join(f"{k.replace('dte_seen_', 'DTE')}={v}"
+                          for k, v in sorted(dte_seen.items())))
+    if src:
+        print("    bar lookup source: "
+              + ", ".join(f"{k}={v}" for k, v in sorted(src.items())))
+    for m in misses:
+        print(f"    sample miss: {m}")
 
 
 def _print_cell(c) -> None:
