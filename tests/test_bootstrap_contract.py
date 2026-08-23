@@ -103,13 +103,15 @@ def test_windows_launcher_default_success_path_is_non_interactive():
 
 @pytest.mark.skipif(os.name != "nt", reason="executes the Windows batch launcher")
 def test_windows_launcher_rejects_metacharacter_arguments_without_execution():
+    # Absolute path, not a bare name: when NoDefaultCurrentDirectoryInExePath=1
+    # is set, cmd.exe refuses to resolve a command from the current directory.
     result = subprocess.run(
         [
             "cmd.exe",
             "/d",
             "/c",
             "call",
-            "start-app.bat",
+            str(ROOT / "start-app.bat"),
             "probe&echo INJECTION_MARKER",
         ],
         cwd=ROOT,
@@ -309,8 +311,12 @@ def _prepare_windows_launcher_sandbox(tmp_path):
 
 
 def _run_sandboxed_launcher(tmp_path, env, *args):
+    # Absolute path to the sandbox copy. A bare name is unresolvable when
+    # NoDefaultCurrentDirectoryInExePath=1, and the launcher re-anchors itself
+    # with `cd /d "%~dp0"` — so pointing at the repo's copy would escape the
+    # sandbox and run against the real backend/.env instead of tmp_path's.
     return subprocess.run(
-        ["cmd.exe", "/d", "/c", "call", "start-app.bat", *args],
+        ["cmd.exe", "/d", "/c", "call", str(tmp_path / "start-app.bat"), *args],
         cwd=tmp_path,
         env=env,
         text=True,
