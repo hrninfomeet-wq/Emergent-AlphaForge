@@ -449,6 +449,12 @@ def main() -> int:
     ap.add_argument("--entry-to", default="14:48", help="IST, inclusive")
     ap.add_argument("--spread-pct", type=float, default=1.0,
                     help="modelled bid-ask, %% of premium per side")
+    # LONG is every campaign this repo has run. SHORT is the mirror the
+    # register's own numbers point at and that nothing here has ever measured.
+    # Both sides cross the spread twice, so a short is NOT -1 x a long; both
+    # arms run through the same code path so they cannot drift apart.
+    ap.add_argument("--side", default="LONG", choices=["LONG", "SHORT", "BOTH"],
+                    help="option side to screen (default LONG; BOTH runs each arm)")
     ap.add_argument("--validate-only", action="store_true")
     ap.add_argument("--json-out", default=None)
     args = ap.parse_args()
@@ -562,17 +568,22 @@ def main() -> int:
     # session, and a forward window must never measure one contract's excursion
     # against another's prices.
     blocks = (frame["session_date"].astype(str) + "|" + frame["side"].astype(str))
-    cells = screen_condition(frame, label="unconditioned_atm", horizons=args.horizons,
-                             spread_pct_per_side=args.spread_pct,
-                             charges_pct_round_trip=charges_pct,
-                             group_by=blocks)
-    report["baseline"] = summarize_screen(cells)
-
+    sides = ["LONG", "SHORT"] if args.side == "BOTH" else [args.side]
     print(f"\n  {'condition':<24} {'H':>4} {'bars':>8} {'MFE/MAE':>9} "
           f"{'net%med':>9} {'t':>7} {'sess':>6}  verdict")
     print(f"  {'-' * 82}")
-    for c in cells:
-        _print_cell(c)
+    cells = []
+    for side in sides:
+        side_cells = screen_condition(
+            frame, label=f"unconditioned_{side.lower()}", horizons=args.horizons,
+            spread_pct_per_side=args.spread_pct,
+            charges_pct_round_trip=charges_pct,
+            group_by=blocks, side=side)
+        report[f"baseline_{side.lower()}"] = summarize_screen(side_cells)
+        for c in side_cells:
+            _print_cell(c)
+        cells = cells or side_cells
+    report["baseline"] = summarize_screen(cells)
 
     base_ratio = {c.horizon: c.mfe_mae for c in cells}
     print(f"\n  Reference: the register measured 0.90-0.95 unconditioned. A materially")

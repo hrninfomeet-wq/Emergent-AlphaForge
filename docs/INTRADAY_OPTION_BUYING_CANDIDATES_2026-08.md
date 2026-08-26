@@ -1346,3 +1346,146 @@ capability, compiler and grounding layers all validate names against
 unchanged. The fetch in `warehouse.attach_required_data` is currently hardcoded
 to `candles_1m` and needs a second source kind for ATM `options_1m` legs — joined
 by **identity**, never by token (§11.1).
+
+---
+
+## 13. The short side — first CANDIDATE in four campaigns (2026-08-27)
+
+Every campaign in this repo has screened option BUYING. §12.3's review closed by
+noting that the register's headline — ATM MFE/MAE of 0.86–0.95, **below 1.0 at
+every horizon** — is a measurement of what the BUYER gives up, and that the
+mirror had never been tested. This section is that test.
+
+**It is a research measurement on the train slice. It is not a strategy, not a
+backtest, and not permission to build anything.** The validation slice (84
+sessions) and the ~30-session holdout were not read.
+
+### 13.1 The trap that had to be avoided first
+
+The tempting inference — "buyers lose, therefore sellers collect" — is wrong in
+one decisive way: **both sides cross the spread twice.** A long buys the ask and
+sells the bid; a short sells the bid and buys back the ask. Neither escapes the
+friction, so a short is **not** `-1 x` a long, and the two arms do not sum to
+zero — they sum to minus the round trip.
+
+A screen that modelled SHORT as `-LONG` would hand the seller the buyer's losses
+as profit and report a large edge that is purely an accounting artefact. Both
+arms therefore run through **one** code path (`net_hold_return_pct(side=...)`)
+so they cannot drift apart, and the property is pinned by test:
+
+```
+premium unchanged, 1%/side spread + 0.186% charges
+   LONG  -2.166%      SHORT  -2.206%      <- BOTH lose the friction
+```
+
+Seven mutants were run against this model — SHORT as `-LONG`, favourable fills
+on both legs, no spread for the seller, charges dropped, excursions not swapped,
+an unknown side silently treated as LONG, and `screen_condition` ignoring the
+side it was handed. All seven now fail loudly. The last one **survived the first
+sweep**: the friction test asserted `long + short < 0`, which `2 x long`
+satisfies whenever the long is negative. It took a decaying-series test —
+`long < 0 < short` — to discriminate a real short from a mislabelled long.
+
+### 13.2 The result
+
+Train slice, DTE 1–3, ATM, 1%/side spread, statutory charges on. Session-level
+medians and a session-level t-stat across 116–118 independent sessions.
+
+| Horizon | NIFTY MFE/MAE | NIFTY net % | t | SENSEX MFE/MAE | SENSEX net % | t |
+|---|---|---|---|---|---|---|
+| 5 min | 1.122 | −1.982 | −81.2 | 1.141 | −2.002 | −88.8 |
+| 15 min | 1.114 | −1.377 | −23.3 | 1.152 | −1.441 | −21.9 |
+| 30 min | 1.122 | −0.319 | −3.0 | 1.143 | −0.751 | −4.7 |
+| **60 min** | 1.108 | **+1.340** | **+6.5** | 1.109 | **+0.602** | **+4.0** |
+| **120 min** | 1.077 | **+4.103** | **+9.0** | 1.092 | **+2.553** | **+7.1** |
+| **240 min** | 1.059 | **+8.693** | **+10.0** | 1.033 | **+6.147** | **+6.7** |
+
+Three things make this harder to dismiss than any prior positive cell in this
+project:
+
+1. **The gross ratio inverts exactly as predicted.** Short MFE/MAE is 1.03–1.16,
+   the reciprocal of the long's 0.86–0.95 on the identical series. Excursions are
+   gross and pay no friction, so this mirror genuinely holds — and it confirms
+   the two arms are measuring the same data correctly.
+2. **A monotonic dose–response in the horizon, on both indices.** Net rises with
+   hold time and crosses zero between 30 and 60 minutes on both. That is theta
+   accruing against a fixed round-trip cost, which is the mechanism the thesis
+   predicts — not a lucky cell. §11.5's contradiction test is the contrast: the
+   DTE story flipped sign between indices, this one does not.
+3. **The short arm is negative at the short horizons.** A screen that had been
+   rigged to favour the seller would not print −2.0% at 5 minutes. The friction
+   floor is visible and it is doing its job.
+
+The buyer's arm confirms the register from the other direction: net −2.4% at 5
+min degrading monotonically to −12.6% at 240 min. **Time is the buyer's enemy
+and the seller's asset, and the crossover sits at roughly one hour.**
+
+### 13.3 The tail — and why this changes nothing about defined risk
+
+A median hides precisely what ruins a short. Measured:
+
+| | H | sessions +ve | median % | mean % | worst SESSION | worst SINGLE BAR |
+|---|---|---|---|---|---|---|
+| NIFTY | 60 | 66.9% | +1.34 | +1.39 | −5.29 | **−293.9** |
+| NIFTY | 240 | 86.4% | +8.69 | +8.21 | −19.38 | **−359.1** |
+| SENSEX | 60 | 60.3% | +0.60 | +0.88 | −5.61 | **−275.6** |
+| SENSEX | 240 | 75.9% | +6.15 | +6.07 | −22.70 | **−501.7** |
+
+**Mean ≈ median at session level**, which is the reassuring part — the
+session-level distribution is not the pathological left-skew a naked short is
+feared for. But the worst single entry lost **5.0x the premium collected**
+(SENSEX, 240 min): ₹8,185 collected against roughly ₹41,000 lost on one trade.
+One such event consumes about 80 median winners.
+
+Two honest qualifications on that number, in both directions:
+
+* It **overstates** what a real strategy faces. It is the worst of ~31,000
+  heavily overlapping entry bars, not the worst of 118 trades. A strategy taking
+  one or two entries per session draws far fewer tickets.
+* It **understates** nothing about the mechanism. The screen holds a strike
+  fixed from session start; over four hours spot moves and that strike goes deep
+  ITM. That is exactly how a short premium position is killed, and it is why the
+  tail exists at all.
+
+**Naked selling is not on the table.** Defined-risk structures — bull put / bear
+call spreads, iron condors, a short straddle with wings — cap this by
+construction, at the cost of some of the collected premium. Flattrade's
+LMT/SL-LMT-only constraint suits them: spreads are limit structures anyway.
+
+### 13.4 What this does NOT establish
+
+Stated plainly, because this is the first positive result in four campaigns and
+that is exactly when a project talks itself into one:
+
+* **Return is on PREMIUM, not on MARGIN.** +8.7% of a ₹7,296 NIFTY ATM premium
+  is about ₹635, against roughly ₹1.2–1.5 lakh of SPAN+exposure margin — on the
+  order of **0.4% return on capital deployed per trade**. Every rupee figure in
+  §13.2 must be re-read against margin before it means anything about returns.
+* **Train slice only.** 118 sessions, 2024-11 → 2025-08. Validation is untouched
+  and the holdout stayed sealed.
+* **The 1%/side spread is still an assumption**, and it is now load-bearing in
+  the opposite direction: a tighter real spread makes the seller's edge LARGER,
+  a wider one erases it. The chain recorder (§12, shipped 2026-08-27) captures
+  per-strike bid/ask and is what will settle this.
+* **Every-bar entry is not a strategy.** A real policy enters once or twice per
+  session at a chosen time; the entry-timing distribution is unmeasured.
+* **No multi-leg engine exists.** The option backtest is long-only; the only
+  `SELL` in it is the exit of a long (register item #12).
+
+### 13.5 The next measurement, not the next build
+
+The screen has done its job: it has told us where to look, on evidence, for the
+first time in this project. The disciplined next step is **more measurement, not
+an engine**:
+
+1. Re-measure with a **realistic entry policy** — one or two entries per session
+   at fixed times — so the tail reflects trades rather than overlapping bars.
+2. Re-measure with **defined-risk wings** to see how much of the +6–9% survives
+   paying for protection. If the wings eat the edge, the thesis dies here and no
+   engine was built.
+3. Re-measure **return on margin**, not on premium.
+4. Once the chain recorder has a few weeks of data, **replace the 1%/side
+   assumption with the measured spread** and re-run all of the above.
+
+Only if all four survive does the multi-leg engine (register item #12, the one
+genuinely large build) become work that evidence has paid for.

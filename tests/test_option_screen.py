@@ -508,3 +508,133 @@ def test_summary_flags_a_single_surviving_horizon_as_fragile():
     assert summary["survives"] is True
     assert summary["fragile_single_horizon"] is True
     assert summary["candidate_horizons"] == [5]
+
+
+# ---------------------------------------------------------------------------
+# THE SHORT SIDE
+#
+# Every campaign in this repo has tested option BUYING, and the register's
+# headline (MFE/MAE 0.86-0.95, below 1.0 at every horizon) is a measurement of
+# what the buyer loses. The obvious reading is that the seller collects it. That
+# reading is WRONG in one specific and decisive way, and these tests exist to
+# stop the screen from making the error:
+#
+#   the spread is crossed twice by BOTH sides.
+#
+# A long buys the ask and sells the bid. A short sells the bid and buys back the
+# ask. Neither escapes the friction, so a short's return is NOT the arithmetic
+# negative of a long's — and a screen that models it as `-long` would manufacture
+# an edge out of an accounting mistake. That is precisely the class of error §11
+# of the campaign doc was written about.
+# ---------------------------------------------------------------------------
+
+def test_an_unchanged_premium_loses_money_for_BOTH_sides():
+    """The friction floor. If this ever shows a profit for either side, the cost
+    model has been broken."""
+    kw = dict(entry_premium=100.0, exit_premium=100.0, spread_pct_per_side=1.0,
+              charges_pct_round_trip=0.186)
+    long_r = net_hold_return_pct(side="LONG", **kw)
+    short_r = net_hold_return_pct(side="SHORT", **kw)
+    assert long_r < 0
+    assert short_r < 0
+    assert long_r == pytest.approx(-2.166, abs=0.01)
+    assert short_r == pytest.approx(-2.206, abs=0.01)
+
+
+def test_a_short_is_not_the_arithmetic_negative_of_a_long():
+    """Both pay the spread, so the two are not mirror images. A screen that
+    assumed they were would hand the seller the buyer's losses as profit."""
+    kw = dict(entry_premium=100.0, exit_premium=105.0, spread_pct_per_side=1.0,
+              charges_pct_round_trip=0.186)
+    long_r = net_hold_return_pct(side="LONG", **kw)
+    short_r = net_hold_return_pct(side="SHORT", **kw)
+    assert short_r != pytest.approx(-long_r, abs=0.05)
+    assert long_r + short_r < 0, "the pair must lose the round-trip friction"
+
+
+def test_the_seller_profits_only_when_decay_exceeds_the_friction():
+    """A premium that falls by less than the round trip costs is still a loss."""
+    def short_at(exit_premium):
+        return net_hold_return_pct(entry_premium=100.0, exit_premium=exit_premium,
+                                   spread_pct_per_side=1.0,
+                                   charges_pct_round_trip=0.186, side="SHORT")
+    assert short_at(99.0) < 0        # 1% decay does not cover ~2.2% friction
+    assert short_at(95.0) > 0        # 5% decay does
+    assert short_at(100.0) < short_at(98.0) < short_at(95.0)
+
+
+def test_side_defaults_to_long_so_every_existing_caller_is_unchanged():
+    kw = dict(entry_premium=100.0, exit_premium=110.0, spread_pct_per_side=1.0)
+    assert net_hold_return_pct(**kw) == net_hold_return_pct(side="LONG", **kw)
+
+
+def test_an_unknown_side_is_refused_rather_than_silently_treated_as_long():
+    with pytest.raises(ValueError):
+        net_hold_return_pct(entry_premium=100.0, exit_premium=100.0,
+                            spread_pct_per_side=1.0, side="sideways")
+
+
+def test_short_screen_swaps_the_excursions():
+    """For a seller a FALLING premium is favourable, so MFE and MAE swap. The
+    ratio of a short cell is therefore the reciprocal of the long cell's on the
+    same series — the one place where the mirror really does hold, because
+    excursions are gross and pay no friction."""
+    frame = _series(n_sessions=30, bars=40, drift=0.05)
+    long_cell = screen_condition(frame, label="L", horizons=[5], side="LONG")[0]
+    short_cell = screen_condition(frame, label="S", horizons=[5], side="SHORT")[0]
+    assert long_cell.mfe_mae is not None and short_cell.mfe_mae is not None
+    assert short_cell.mfe_mae == pytest.approx(1.0 / long_cell.mfe_mae, rel=1e-6)
+
+
+def test_short_screen_charges_the_seller_the_same_friction():
+    """The net columns must NOT be mirror images — see the module comment."""
+    frame = _series(n_sessions=30, bars=40, drift=0.05)
+    long_cell = screen_condition(frame, label="L", horizons=[5], side="LONG",
+                                 spread_pct_per_side=1.0,
+                                 charges_pct_round_trip=0.186)[0]
+    short_cell = screen_condition(frame, label="S", horizons=[5], side="SHORT",
+                                  spread_pct_per_side=1.0,
+                                  charges_pct_round_trip=0.186)[0]
+    lm = long_cell.net_pct.median_of_session_medians
+    sm = short_cell.net_pct.median_of_session_medians
+    assert lm is not None and sm is not None
+    assert lm + sm < 0, "both sides must be charged the round trip"
+
+
+def test_screen_condition_side_defaults_to_long():
+    frame = _series(n_sessions=30, bars=40, drift=0.05)
+    default = screen_condition(frame, label="d", horizons=[5])[0]
+    explicit = screen_condition(frame, label="e", horizons=[5], side="LONG")[0]
+    assert default.mfe_mae == pytest.approx(explicit.mfe_mae)
+
+
+def test_a_decaying_series_pays_the_seller_and_costs_the_buyer():
+    """The economic property the whole short-side thesis rests on, and the one
+    that discriminates a real short calculation from a mislabelled long one.
+
+    Caught by mutation: dropping `side=side` from screen_condition's net call
+    left every other test green, because asserting `long + short < 0` is
+    satisfied by `2 x long` whenever the long is negative.
+    """
+    frame = _series(n_sessions=30, bars=40, drift=-0.5)
+    kw = dict(horizons=[5], spread_pct_per_side=1.0, charges_pct_round_trip=0.186)
+    long_net = screen_condition(frame, label="L", side="LONG", **kw)[0] \
+        .net_pct.median_of_session_medians
+    short_net = screen_condition(frame, label="S", side="SHORT", **kw)[0] \
+        .net_pct.median_of_session_medians
+    assert long_net is not None and short_net is not None
+    assert long_net < 0 < short_net, (
+        f"a decaying premium must cost the buyer and pay the seller "
+        f"(long={long_net}, short={short_net})")
+
+
+def test_the_two_sides_never_report_the_same_net():
+    """A short computed as a long is the single most dangerous silent failure in
+    this module — it would report the buyer's losses as the seller's profit."""
+    frame = _series(n_sessions=30, bars=40, drift=0.05)
+    kw = dict(horizons=[5, 10], spread_pct_per_side=1.0, charges_pct_round_trip=0.186)
+    longs = screen_condition(frame, label="L", side="LONG", **kw)
+    shorts = screen_condition(frame, label="S", side="SHORT", **kw)
+    for lc, sc in zip(longs, shorts):
+        assert sc.net_pct.median_of_session_medians != pytest.approx(
+            lc.net_pct.median_of_session_medians, abs=1e-9)

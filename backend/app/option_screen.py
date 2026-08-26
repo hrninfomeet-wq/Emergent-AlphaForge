@@ -139,34 +139,76 @@ def mfe_mae_ratio(mfe: Sequence[float], mae: Sequence[float]) -> Optional[float]
 # Net-of-friction hold return
 # ---------------------------------------------------------------------------
 
+#: The two sides of the option book. Every campaign in this repo has tested
+#: LONG; SHORT is the axis the register's own measurements point at and that
+#: nothing here has ever screened.
+LONG = "LONG"
+SHORT = "SHORT"
+SIDES = (LONG, SHORT)
+
+
 def net_hold_return_pct(
     *,
     entry_premium: float,
     exit_premium: float,
     spread_pct_per_side: float,
     charges_pct_round_trip: float = 0.0,
+    side: str = LONG,
 ) -> Optional[float]:
-    """Net return on premium for one buy->sell round trip, as a percentage.
+    """Net return on premium for one round trip, as a percentage.
 
     ``spread_pct_per_side`` is the %-of-premium bid-ask model the app uses
-    (`app.option_costs.spread_pts_for_premium`): the buyer pays it on entry and
-    gives it up on exit. ``charges_pct_round_trip`` folds the statutory rupee
-    charges in as a percentage of entry turnover so the caller can pass the
-    figure `app.option_costs.round_trip_charges` produced for the real quantity
-    rather than re-deriving rates here.
+    (`app.option_costs.spread_pts_for_premium`). ``charges_pct_round_trip``
+    folds the statutory rupee charges in as a percentage of entry turnover so
+    the caller can pass the figure `app.option_costs.round_trip_charges`
+    produced for the real quantity rather than re-deriving rates here.
 
     This is the NET measurement §3 of the register turns on. Gross move over
     spread is the metric that made 0DTE look best and it is the wrong one.
+
+    **Both sides cross the spread twice.** A LONG buys the ask and sells the
+    bid; a SHORT sells the bid and buys back the ask. Neither escapes the
+    friction, so a short's return is **not** the arithmetic negative of a
+    long's, and the two do not sum to zero — they sum to minus the round trip.
+
+    That distinction is the whole reason this parameter exists rather than a
+    caller negating a long result. The register measures MFE/MAE below 1.0 at
+    every horizon, which describes what the BUYER gives up; the tempting
+    inference is that the seller collects it. They do not collect all of it,
+    because they pay the same spread and the same charges. A screen that
+    modelled SHORT as ``-LONG`` would hand the seller the buyer's losses as
+    profit and report an edge that is purely an accounting artefact.
+
+    Returns ``None`` for an unusable premium, and raises on an unknown side —
+    silently treating a typo as LONG is how a whole campaign gets measured on
+    the wrong side of the book.
     """
+    side = str(side).upper()
+    if side not in SIDES:
+        raise ValueError(f"side must be one of {SIDES}, got {side!r}")
+
     e = float(entry_premium)
     x = float(exit_premium)
     if not math.isfinite(e) or not math.isfinite(x) or e <= 0:
         return None
+
     s = max(0.0, float(spread_pct_per_side)) / 100.0
-    fill_in = e * (1.0 + s)
-    fill_out = x * (1.0 - s)
-    gross = (fill_out - fill_in) / fill_in
-    return float((gross - max(0.0, float(charges_pct_round_trip)) / 100.0) * 100.0)
+    charges = max(0.0, float(charges_pct_round_trip)) / 100.0
+
+    if side == SHORT:
+        # Sold at the bid, bought back at the ask. Profit is what was received
+        # minus what it cost to close, measured against the premium received.
+        fill_in = e * (1.0 - s)
+        fill_out = x * (1.0 + s)
+        if fill_in <= 0:
+            return None
+        gross = (fill_in - fill_out) / fill_in
+    else:
+        fill_in = e * (1.0 + s)
+        fill_out = x * (1.0 - s)
+        gross = (fill_out - fill_in) / fill_in
+
+    return float((gross - charges) * 100.0)
 
 
 # ---------------------------------------------------------------------------
@@ -447,6 +489,7 @@ def screen_condition(
     charges_pct_round_trip: float = 0.0,
     min_sessions: int = MIN_SESSIONS_FOR_STAT,
     group_by: Optional[Sequence] = None,
+    side: str = LONG,
 ) -> List[ScreenCell]:
     """Measure one entry condition across horizons on an option premium series.
 
@@ -466,6 +509,10 @@ def screen_condition(
     excursion was measured against a different contract. A contract a docstring
     states and nothing checks is a contract that gets broken.
     """
+    side = str(side).upper()
+    if side not in SIDES:
+        raise ValueError(f"side must be one of {SIDES}, got {side!r}")
+
     required = {"session_date", "high", "low", "close"}
     missing = required - set(frame.columns)
     if missing:
@@ -513,7 +560,15 @@ def screen_condition(
             continue
 
         idx = np.flatnonzero(eligible)
-        ratio = mfe_mae_ratio(mfe[idx], mae[idx])
+        # For a SHORT the excursions swap: a FALLING premium is favourable and a
+        # rising one is adverse. Excursions are gross and pay no friction, so
+        # this really is the reciprocal of the long ratio on the same series —
+        # unlike the net columns, which are not mirror images because both sides
+        # are charged the round trip.
+        if side == SHORT:
+            ratio = mfe_mae_ratio(mae[idx], mfe[idx])
+        else:
+            ratio = mfe_mae_ratio(mfe[idx], mae[idx])
 
         nets: List[float] = []
         for i in idx:
@@ -522,6 +577,7 @@ def screen_condition(
                 exit_premium=float(close[i + int(h)]),
                 spread_pct_per_side=spread_pct_per_side,
                 charges_pct_round_trip=charges_pct_round_trip,
+                side=side,
             )
             nets.append(np.nan if r is None else r)
 
