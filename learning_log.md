@@ -1135,6 +1135,113 @@ row and Google's displayed arithmetic both proved the immediately preceding offi
 
 ---
 
+## Session 2026-08-22 (14-Aug NIFTY outcome and CAS method audit) — a hit is not proof of the mechanism
+
+**Verified outcome:** NIFTY 50 officially closed at **24,366.00** on Friday, 14 August 2026.
+The locked 12:40:56 IST forecast of **24,375** missed by **9.00 points**
+(`9.00 / 24,366.00 = 0.0369%`), and its **24,350-24,400** range was a hit. The NIFTY
+15:14 continuous-session level was **24,354.45**, so the Friday CAS jump was **+11.55** points.
+The intraday low touched, but did not break below, the **24,296.80** invalidation level.
+
+**Source reconciliation:** Yahoo's dated daily row and Investing.com's dated historical table both
+reported NIFTY O/H/L/C of 24,361.90 / 24,405.20 / 24,296.80 / 24,366.00. The local Upstox
+warehouse had 375 NIFTY rows from 09:15 through its 15:29 auction bar and matched the official
+close. It likewise recorded SENSEX at **78,009.25** (O/H/L 77,903.43 / 78,048.91 /
+77,684.37) with a **+87.34**-point 15:14-to-15:29 auction move. No 14-Aug SENSEX forecast was
+locked, so it is reported but deliberately not scored as a prediction.
+
+**What actually made the NIFTY call work:** the forecast expected a -13.55-point continuous
+move and a +43.30-point CAS adjustment. The observed values were +11.80 and +11.55 points.
+Thus the continuous leg exceeded its estimate by 25.35 points while CAS undershot it by 31.75
+points; the two errors largely cancelled. The final midpoint was accurate, but this is not
+evidence that the auction estimate itself was accurate.
+
+**Forward-only historical check:** using only prior post-CAS sessions at each 12:40 observation,
+the mechanical point rule was `anchor + median(previous late move) + median(previous CAS gap)`.
+Across 12 walk-forward sessions from 6 August through 21 August:
+
+- NIFTY: rule MAE **49.05** points, median absolute error **32.95**; a no-change anchor had
+  MAE **30.69** and median absolute error **20.25** points.
+- SENSEX: rule MAE **103.89** points, median absolute error **64.91**; the no-change anchor had
+  MAE **100.88** and median absolute error **89.28** points.
+
+The NIFTY mechanical rule was therefore worse than a no-change baseline in this small sample.
+SENSEX has a lower median error but a slightly worse mean error than no-change. Neither result
+establishes predictive edge; the earlier NIFTY hit must remain one scored outcome, not validation
+of an "instinctive" trading system.
+
+**CAS regime check:** NIFTY's first five CAS gaps had a +54.45-point median and +86.15-point
+mean; its latest five had a +17.25-point median, +0.73-point mean, and included -51.95 points.
+SENSEX shifted from a first-five +71.71-point median to a latest-five +1.00-point median and
+-24.27-point mean. This is observed nonstationarity, not proof of a causal transition.
+
+**Core lesson:** before using a historical CAS uplift in a midpoint, compare an early and recent
+window and score it against a no-change baseline. Until at least 20 comparable out-of-sample
+sessions show a stable improvement, use CAS to reserve range risk, not to impose a directional
+point adjustment unless a live indicative equilibrium price is available.
+
+**Confirmed approaches:**
+- Preserve the pre-close NIFTY range exactly as locked, then score its point and interval
+  independently with `market_session_math.py`.
+- Use the warehouse only to obtain timestamped 12:40, 15:14, and 15:29 values after independently
+  reconciling official daily OHLC with public dated sources.
+- Test every candidate rule walk-forward with only previously available sessions and a no-change
+  benchmark. This exposed the NIFTY rule's weak general performance despite its Friday success.
+
+**Dead ends / traps:**
+- Do not credit the entire Friday result to a positive CAS bias: the cash-session and auction
+  forecast errors moved in opposite directions and largely offset.
+- Do not tune a new lookback window or a new CAS coefficient on these 12 observations. That would
+  optimize hindsight noise and make the next live call less trustworthy.
+
+---
+
+## Session 2026-08-22 (17-21 Aug completed-session audit) — CAS direction became mixed
+
+**Confirmed price record:** Yahoo's dated daily series matched the local Upstox warehouse's
+375 one-minute rows and 15:29 official-close bar for every NIFTY and SENSEX session below.
+All values are price-index points; CAS is official close minus the 15:14 continuous-session close.
+
+| Date | NIFTY close / daily change | NIFTY CAS | SENSEX close / daily change | SENSEX CAS |
+| --- | ---: | ---: | ---: | ---: |
+| 17 Aug | 24,287.65 / -78.35 (-0.32%) | -51.95 | 77,728.16 / -281.09 (-0.36%) | -116.27 |
+| 18 Aug | 24,154.90 / -132.75 (-0.55%) | -10.90 | 77,235.46 / -492.70 (-0.63%) | -77.56 |
+| 19 Aug | 24,078.30 / -76.60 (-0.32%) | +29.75 | 76,909.68 / -325.78 (-0.42%) | +1.00 |
+| 20 Aug | 24,231.85 / +153.55 (+0.64%) | +19.50 | 77,537.72 / +628.04 (+0.82%) | +49.53 |
+| 21 Aug | 24,252.00 / +20.15 (+0.08%) | +17.25 | 77,540.83 / +3.11 (+0.00%) | +21.94 |
+
+**Structure:** NIFTY and SENSEX made lower highs and lower lows through 19 August. The
+20-Aug gap-and-rebound and 21-Aug hold were stabilisation, not a confirmed reversal: NIFTY ended
+the five sessions down **114.00 points (-0.47%)** from 14 August, while SENSEX ended down
+**468.42 points (-0.60%)**. NIFTY closed at its day low on 18 August, while SENSEX closed only
+1.10 points above its day low. That is a materially different pattern from a healthy pullback
+that consistently closes in the upper half of its daily range.
+
+**Catalyst context:** Reuters attributed the 17-19 August pressure to elevated crude, Middle-East
+uncertainty and higher global bond yields. It attributed the 20-Aug rebound to a global recovery
+and IT/financial buying, while 21-Aug remained cautious under the same oil and bond-yield risks.
+These are contemporaneous reported drivers, not proof of individual-session causation.
+
+**CAS finding:** the two benchmark indices both had negative auction moves on 17-18 August and
+small, mixed-positive moves thereafter. This confirms that the original early-August positive
+auction cluster did not persist. A CAS move is now treated as index-specific closing-print risk;
+without a live indicative equilibrium price it has no assigned directional sign.
+
+**Core lesson:** distinguish a post-CAS "official-close jump" from a directional tradeable trend.
+The Monday and Tuesday auction declines would have made a blindly positive CAS adjustment wrong
+for both indices. Future forecasts must show (a) a continuous-session estimate, (b) a neutral
+CAS reserve, and (c) a separate tail scenario until more out-of-sample sessions establish a
+stable regime.
+
+**Dead ends / traps:**
+- These five completed sessions had no pre-close forecasts locked by this workflow. They can test
+  a rule walk-forward, but they cannot be claimed as five new successful or failed human calls.
+- Do not call the 20-21 August bounce a trend reversal merely because it followed seven NIFTY
+  declines. It did not recover the 14-August close by week-end and its supporting macro risks
+  remained in the contemporaneous reporting.
+
+---
+
 ## 2026-08-14 — Completing the audit verification after the agents died
 
 **Core lesson: an audit finding is a hypothesis, and roughly a third of them do not
@@ -1357,3 +1464,47 @@ executable bid/ask fills.
 
 **Checkpoint:** Gate 1 research is complete. No strategy implementation, warehouse query,
 Optimizer/Backtest run, broker action, or live-setting change has been made for this work.
+
+---
+
+## 2026-08-26 — A green suite can mean "we only ever ran it on a weekend"
+
+**Core lesson:** an environment-dependent test failure is indistinguishable from a regression until
+you reproduce it against clean HEAD. Eleven `test_deployment_live_routes.py` tests failed on this
+branch. They were not caused by it: `docs/LOCAL_TAKEOVER_2026-08-23.md` recorded them green, but
+**2026-08-23 was a Sunday**. The enable route consults the fail-closed `check_live_data_gate`, which
+short-circuits to `no_candles_expected` on a weekend or holiday and reads the warehouse on a trading
+day. `FakeDB` has no `candles_1m`, so the gate returned `unreadable` at 0.0% coverage and the route
+raised `409 incomplete_market_data`. The tests were never weekday-independent — they had simply
+never been run on a weekday.
+
+**Confirmed approaches:**
+- **Reproduce against clean HEAD before believing a regression.** `git worktree add --detach <short
+  path> HEAD` and run the failing file there. Same 11 failures with zero local changes settled it in
+  one command, with no risk to the working tree. (On Windows the deep scratchpad path exceeds
+  MAX_PATH on `docs/Resources/flattrade-pi-api/...`; use a short temp path.)
+- **Stub the seam, then pin what the stub removed.** `_install` now patches `check_live_data_gate`
+  deterministically, and a new `TestEnableDataGate` pins that a failing gate still blocks and does
+  not flip the deployment to live. Before this, the block path had *no* deliberate coverage: on a
+  weekend nothing exercised it, on a weekday it only ever appeared as an unrelated failure.
+- **Record a gap instead of quietly closing it.** `NON_ALPHA_PARAM_NAMES` argues generally that
+  trade-frequency knobs are exposure rather than alpha, but matches on the NAME — and eleven plugins
+  spell the same concept `cooldown_bars` and are still swept. Adding the name would silently change
+  the default search space of eleven already-optimized strategies. Registered as finding #32 in
+  `docs/BACKTEST_INTEGRITY_AUDIT.md` §5 with the decision criterion written down, not the fix.
+
+**Dead ends to avoid:**
+- **An escape hatch makes a pin vacuous.** The first version of the #32 consistency test allowed
+  `... or "Closed" in register`. The register already contains "Closed 2026-07-31" headings, so that
+  clause matched unconditionally and the test stayed green when the gap was closed in code with the
+  register untouched — the exact silent tidy-up it existed to prevent. Mutation caught it; reading it
+  did not. **Every doc-pinning assertion must be mutation-checked in both directions.**
+- **Patching the origin module does not patch a by-name import.** `deployments` does
+  `from app.live_data_gate import check_live_data_gate`, so monkeypatching `app.live_data_gate` never
+  reaches the route. A test written that way passes whether or not the seam exists. Assert the seam
+  (`dep.check_live_data_gate is not real_gate.check_live_data_gate`) instead.
+- Do not "fix" 11 red tests by weakening the gate. The gate is fail-closed on purpose; the tests were
+  wrong about the calendar, the gate was not wrong about the data.
+
+**Verification:** host suite **5,126 passed / 0 failed / 4 xfailed** (was 5,107 passed / 11 failed).
+8 mutants killed across the new tests; `compileall` clean.

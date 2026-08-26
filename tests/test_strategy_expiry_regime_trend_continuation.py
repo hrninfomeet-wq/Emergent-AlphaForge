@@ -517,3 +517,163 @@ def test_the_plugin_is_discovered_by_the_registry():
 def test_every_schema_default_is_inside_its_own_bounds():
     for name, spec in STRAT.parameter_schema.items():
         assert spec["min"] <= spec["default"] <= spec["max"], name
+
+
+# ---------------------------------------------------------------------------
+# Multi-entry: max_trades_per_session + cooldown
+#
+# B originally locked onto the session's FIRST qualifying bar and ignored every
+# later one, so the engine's `daily_caps.max_trades` could only ever cap a
+# budget of 1. These pin the knob that replaces that behaviour. The default
+# MUST stay 1 so the pre-registered single-entry spec is still reachable, and
+# every later entry must still obey the cutoff and the per-session reset.
+# ---------------------------------------------------------------------------
+
+def _multi_session(date, times, *, close=105.0):
+    """Opening range then a qualifying signal bar at each of `times`.
+
+    `close` matters when two of these are chained: a session's last close
+    becomes the next session's prior close, and entry needs close > prior close.
+    """
+    rows = _opening_range(date)
+    for hhmm in times:
+        rows.append(_signal_bar(date, hhmm, close=close))
+    return rows
+
+
+def test_default_max_trades_is_one_so_the_frozen_spec_is_unchanged():
+    assert STRAT.parameter_schema["max_trades_per_session"]["default"] == 1
+    rows = _prior_session() + _multi_session("2026-08-21", ["09:45", "10:30", "11:30"])
+    assert len(_run(rows)) == 1
+
+
+def test_max_trades_per_session_admits_exactly_that_many_entries():
+    rows = _prior_session() + _multi_session("2026-08-21", ["09:45", "10:30", "11:30"])
+    fired = _run(rows, {"max_trades_per_session": 3, "signal_cooldown_bars": 1})
+    assert len(fired) == 3
+    assert [s.direction for _, s in fired] == ["CE", "CE", "CE"]
+
+
+def test_cap_is_a_ceiling_not_a_target():
+    rows = _prior_session() + _multi_session(
+        "2026-08-21", ["09:45", "10:00", "10:30", "11:00", "11:30"])
+    fired = _run(rows, {"max_trades_per_session": 2, "signal_cooldown_bars": 1})
+    assert len(fired) == 2
+
+
+def test_cooldown_suppresses_a_qualifying_bar_that_is_too_close():
+    # Two qualifying bars one minute apart; a 30-bar cooldown must drop the second.
+    rows = _prior_session() + _multi_session("2026-08-21", ["09:45", "09:46"])
+    fired = _run(rows, {"max_trades_per_session": 5, "signal_cooldown_bars": 30})
+    assert len(fired) == 1
+    # Widening the budget without the cooldown lets both through, which proves
+    # the cooldown - not the cap - is what suppressed it above.
+    assert len(_run(rows, {"max_trades_per_session": 5,
+                           "signal_cooldown_bars": 1})) == 2
+
+
+def test_later_entries_still_obey_the_entry_cutoff():
+    rows = _prior_session() + _multi_session("2026-08-21", ["09:45", "14:00"])
+    # cutoff 30 min after open = 09:45, so the 14:00 bar is out of window.
+    fired = _run(rows, {"max_trades_per_session": 5, "signal_cooldown_bars": 1,
+                        "entry_cutoff_minutes_after_open": 30})
+    assert len(fired) == 1
+
+
+def test_later_entries_never_fire_past_the_hard_1448_cap():
+    rows = _prior_session() + _multi_session("2026-08-21", ["09:45", "14:49", "15:10"])
+    fired = _run(rows, {"max_trades_per_session": 5, "signal_cooldown_bars": 1,
+                        "entry_cutoff_minutes_after_open": 333})
+    assert len(fired) == 1
+    assert all(_minutes_of(rows[i]["ist_time"]) <= _LAST_ELIGIBLE_MIN for i, _ in fired)
+
+
+def test_the_budget_resets_each_session():
+    # Session 2 must close ABOVE session 1's last close, or its own entries fail
+    # the prior-close term and the test would pass for the wrong reason.
+    rows = (_prior_session()
+            + _multi_session("2026-08-21", ["09:45", "10:30"], close=105.0)
+            + _multi_session("2026-08-24", ["09:45", "10:30"], close=110.0))
+    fired = _run(rows, {"max_trades_per_session": 2, "signal_cooldown_bars": 1})
+    assert len(fired) == 4
+    # Two in each session, not four in one.
+    assert len({str(rows[i]["session_date"]) for i, _ in fired}) == 2
+
+
+def _filled_session(date, signal_times, *, close=105.0, end_min=12 * 60):
+    """Opening range then EVERY minute bar to `end_min`, qualifying only at
+    `signal_times`. Filler bars close inside the opening range, so they fail the
+    break term and are skipped — which makes row spacing equal minute spacing.
+    """
+    rows = _opening_range(date)
+    want = set(signal_times)
+    for minute in range(9 * 60 + 45, end_min):
+        hhmm = f"{minute // 60:02d}:{minute % 60:02d}"
+        if hhmm in want:
+            rows.append(_signal_bar(date, hhmm, close=close))
+        else:
+            rows.append(_bar(date, hhmm, 100.0, high=100.5, low=99.5))
+    return rows
+
+
+def _run_raw(rows, params):
+    """Like `_run` but passes `params` VERBATIM — no defaults merged in.
+
+    `_run` merges DEFAULTS, so it can never exercise an absent key. A preset or
+    deployment saved before a knob existed has exactly that shape.
+    """
+    df = pd.DataFrame(rows)
+    extras = STRAT.session_precompute(df, params)
+    fired = []
+    for i in range(len(df)):
+        ctx = build_eval_ctx(history_df=df, i=i, instrument="NIFTY",
+                             session_date=str(df.iloc[i]["session_date"]),
+                             session_extras=extras)
+        prev = df.iloc[i - 1] if i > 0 else df.iloc[i]
+        if STRAT.evaluate(df.iloc[i], prev, params, ctx).direction != "NONE":
+            fired.append(i)
+    return fired
+
+
+def test_a_preset_saved_before_this_knob_existed_still_takes_one_trade():
+    """The absent-key fallback must be the frozen spec's 1, not an open budget.
+
+    Caught by mutation: changing the `params.get(...)` fallback from 1 to 99 left
+    every other test in this module green, because they all merge DEFAULTS and
+    so always supply the key. A stale preset would have silently taken 99 entries
+    a session.
+    """
+    # Spaced with real filler bars so the DEFAULT cooldown cannot be what
+    # suppresses the extra entries — otherwise this test passes for the wrong
+    # reason and the mutant survives (it did, first time round).
+    rows = _prior_session() + _filled_session("2026-08-21", ["09:45", "10:30", "11:30"])
+    legacy = {k: v for k, v in DEFAULTS.items()
+              if k not in ("max_trades_per_session", "signal_cooldown_bars")}
+    assert "max_trades_per_session" not in legacy
+    assert len(_run_raw(rows, legacy)) == 1
+    # Control: the SAME frame with an explicit budget of 3 fires three times, so
+    # the spacing genuinely is not the limiting factor above.
+    assert len(_run_raw(rows, {**DEFAULTS, "max_trades_per_session": 3})) == 3
+
+
+def test_multi_entry_precompute_is_still_look_ahead_safe():
+    """Every admitted entry must be identical on a prefix ending at that entry.
+
+    The single-entry version was safe because the scan stopped at the first
+    match. With a budget > 1 the argument has to hold per entry, so it is
+    re-pinned here rather than assumed to carry over.
+    """
+    date = "2026-08-21"
+    rows = _prior_session() + _multi_session(date, ["09:45", "10:30", "11:30"])
+    p = {**DEFAULTS, "max_trades_per_session": 3, "signal_cooldown_bars": 1}
+    full = pd.DataFrame(rows)
+    full_signals = STRAT.session_precompute(full, p)[_CTX_KEY][date]["signals"]
+    assert len(full_signals) == 3
+
+    for pos in sorted(full_signals):
+        prefix = pd.DataFrame(rows[: pos + 1])
+        prefix_signals = STRAT.session_precompute(prefix, p)[_CTX_KEY][date]["signals"]
+        # The entries decided at or before `pos` are bit-identical, and no later
+        # entry has been invented from data the prefix cannot see.
+        expected = {k: v for k, v in full_signals.items() if k <= pos}
+        assert prefix_signals == expected

@@ -1076,3 +1076,273 @@ rather than from source or a prior register.
 7,967,661 "option candles" under a per-instrument heading. That was
 `estimated_document_count()` — the whole collection. Now reported per instrument
 alongside the global figure.
+
+---
+
+## 11. The empty screen — diagnosed and closed (2026-08-23, local warehouse)
+
+§10.1 recorded that the first screen run built **no ATM option series** on either
+index and left the cause open. It is now closed. **The warehouse was never the
+problem.** The cause was the screen's own bar lookup, and it had already been
+fixed — blind, in a container with no data — by `cf8c1d6`. This section is the
+first time that fix was run against the real warehouse.
+
+### 11.1 Root cause
+
+The pre-`cf8c1d6` builder fetched a contract's bars by token:
+
+```python
+key_filter = ({"contract_key": contract["contract_key"]}
+              if contract.get("contract_key")
+              else {"instrument_key": contract["instrument_key"]})
+```
+
+Both branches are unsatisfiable against this warehouse, for two independent
+reasons:
+
+| Branch | Why it returns nothing |
+|---|---|
+| `contract_key` | Present on **61.39%** of NIFTY `option_contracts`, but on only **823,829 / 7,967,661 (10.3%)** of `options_1m` rows — and on none of the train-slice bars. The field the query keys on mostly does not exist on the collection being queried. |
+| `instrument_key` | **Different formats on the two collections.** `option_contracts` stores a *three*-part value for expired contracts — `NSE_FO|42965|28-11-2024` — while `options_1m` stores the *two*-part `NSE_FO|42965`. A 30,000-row sample of each: `option_contracts` 4,055 two-part / **18,290 three-part**; `options_1m` **30,000 / 30,000 two-part**. The strings can never compare equal. |
+
+So every contract-session took one of two paths and both returned zero rows.
+Nothing about option coverage, the DTE filter, the contract master or the
+calendar was involved.
+
+### 11.2 Confirmed by mutation, not by reading
+
+Reverting `_fetch_contract_bars` to the verbatim pre-`cf8c1d6` logic and replaying
+it over the **same** 191 train sessions reproduces the reported failure exactly:
+
+```
+RESULT: frame empty? True   bars=0
+    contracts_found                      242
+    dropped_too_few_bars                 242
+    bar lookup source: contract_key_EMPTY=56, instrument_key_EMPTY=186
+```
+
+242 of 242 contract-sessions lost, split across both broken key paths in the
+proportion the coverage numbers predict. The shipped identity lookup on the same
+sessions returns **236 / 242**.
+
+### 11.3 The identity lookup returns the right contract, not merely a contract
+
+A fix that produced *some* bars would look identical in the funnel. Spot-checking
+the bars an identity lookup actually returns:
+
+| Requested | Bars | Distinct `trading_symbol` in the result |
+|---|---|---|
+| NIFTY 2024-11-28 24250 CE | 1,500 | `NIFTY 24250 CE 28 NOV 24` — one value |
+| SENSEX 2025-06-24 81500 PE | 1,500 | `SENSEX 81500 PE 24 JUN 25` — one value |
+
+`side`, `strike` and `expiry_date` are likewise single-valued across every row
+returned. No contamination from a reused token.
+
+### 11.4 What the screen actually measures
+
+Train slice only, DTE 1–3, entry-strike window 09:25–14:48, spread 1.0%/side.
+**The holdout was not read; its guard was left armed.**
+
+| | NIFTY | SENSEX |
+|---|---|---|
+| Contract-sessions used | 236 / 242 | 232 / 234 |
+| Bars | 88,500 | 86,997 |
+| Median ATM premium | ₹112.25 | ₹409.25 |
+| Statutory round trip | 0.186% | 0.180% |
+| Lookup source | `identity` × 236 | `identity` × 232 |
+
+| Horizon | NIFTY MFE/MAE | NIFTY net (session median) | SENSEX MFE/MAE | SENSEX net |
+|---|---|---|---|---|
+| 5 min | 0.892 | −2.38% | 0.876 | −2.35% |
+| 10 min | 0.898 | −2.74% | 0.863 | −2.58% |
+| 15 min | 0.897 | −2.96% | 0.868 | −2.89% |
+| 30 min | 0.892 | −3.98% | 0.875 | −3.55% |
+
+Every cell is **NO_EDGE**. Session-level t-stats run −32 to −109 across 116–118
+sessions — decisively negative, not merely unproven. This is the fourth
+independent confirmation of the register's §1 headline, and the first produced by
+shipped, tested code rather than a throwaway script.
+
+### 11.5 Reconciliation against the register — §5.2's gate
+
+The train-slice baseline (0.86–0.90) sits below the recorded **0.90–0.95**, which
+under §5.2 halts the campaign until explained. Two candidate explanations were
+tested and only one survives.
+
+**The DTE filter is innocent.** Rerunning the train slice with filtering disabled
+moves nothing: NIFTY 0.900 / 0.888 / 0.889 (all DTE) against 0.892 / 0.898 /
+0.897 (DTE 1–3) at 5 / 10 / 15 min; SENSEX 0.869 / 0.863 / 0.867 against 0.876 /
+0.863 / 0.868.
+
+**The date window explains it.** The register measured 428/426 sessions spanning
+2024-11-25 → 2026-08-14; the train slice is a 191-session sub-window ending
+2025-08-31. Re-measured over all **403 spent sessions** (2024-11-25 → 2026-07-10
+— train + validation + the premium-momentum campaign's consumed slice, all
+already read; the 30 untouched sessions were **not** read, and this measurement
+selects nothing), across 798 NIFTY and 802 SENSEX contract-sessions (298,620 and
+300,113 bars), all DTE:
+
+| Horizon | NIFTY | register | Δ | SENSEX | register | Δ |
+|---|---|---|---|---|---|---|
+| 5 min | 0.914 | 0.92 | −0.006 | 0.894 | 0.92 | −0.026 |
+| 10 min | 0.906 | 0.95 | −0.044 | 0.883 | 0.94 | −0.057 |
+| 15 min | 0.903 | 0.90 | +0.003 | 0.888 | 0.90 | −0.012 |
+
+NIFTY lands inside the recorded band at 5 and 15 minutes. **The residual is
+localised to the 10-minute horizon on both indices** (−0.044, −0.057) — not a
+general drift. The register's own 10-min cells (0.95, 0.94) are the high points
+of a non-monotonic row (0.92 / 0.95 / 0.90), whereas these measurements are
+essentially flat across horizons — which is what the register's §1 *predicts*
+("horizon-invariance is the signature of a random walk"). The register's
+generating scripts were discarded as "throwaway analysis", so its 10-min cell
+cannot be re-derived and this cannot be settled either way.
+
+**Verdict on the gate: passed, with the caveat recorded.** The data has not
+changed; the discrepancy is a sample-window effect plus one unresolvable horizon
+cell. No conclusion in this document depends on it — every measured cell sits far
+below the 0.95 base rate in both sources.
+
+### 11.6 Residual misses are real ingestion gaps
+
+Six NIFTY and two SENSEX contract-sessions still drop at `dropped_too_few_bars`
+(~2.5% and ~0.9% of train). Both were checked against the collection rather than
+assumed:
+
+- **NIFTY, expiry 2024-12-26** — `options_1m` holds **no bars for any strike
+  within ±300 of 23900**, though `option_contracts` lists the contracts. A
+  genuine gap covering three sessions (2024-12-20/23/24).
+- **SENSEX 80400 CE/PE, expiry 2024-11-29** — the contract has 1,500 bars, none
+  of them on 2024-11-26. A per-session gap, not a missing contract.
+
+Neither is a lookup defect. Both belong to ingestion.
+
+### 11.7 Two findings this run produced, neither blocking
+
+1. **`--entry-from` / `--entry-to` do not constrain what is measured.** They
+   select the ATM *strike* from the first eligible spot bar; the option frame is
+   then fetched for the whole day, so **13.6% of measured entry bars fall outside
+   the window** (09:15–09:24 and 14:49–15:29) — and outside live's hardcoded
+   09:25–14:50 (§7.2). The `build_atm_series` docstring is accurate about this;
+   the flag *names* are what mislead. Measured effect on the baseline is ≤0.010
+   MFE/MAE and ≤0.09pp net, so **no verdict here changes** — but a conditioned
+   cell that fires at the open would be scored on entries live cannot take.
+   Applying the window as a `screen_condition` mask is a small change and should
+   be made before the first conditioned run.
+
+2. **The host suite is 5,098 passed / 5 failed, and the 5 are unrelated.** As
+   §1 of the takeover note predicted, the two `test_premium_momentum_route.py`
+   failures cleared once a real MongoDB was present. The 5 failures are all in
+   `tests/test_bootstrap_contract.py`, which this branch cannot have caused — the
+   branch is nine files, every one an addition, none of them the launcher. Cause:
+   this environment sets **`NoDefaultCurrentDirectoryInExePath=1`**, so `cmd.exe`
+   will not resolve a bare `start-app.bat` from the working directory; the tests
+   invoke it by bare name with `cwd=ROOT`. Reproduced identically from PowerShell
+   and from bash, so it is not a harness artefact. Invoking the launcher by
+   absolute path would fix the tests; that is a separate change, on `main`.
+
+---
+
+## 12. Operator-directed build: both candidates as tunable plugins (2026-08-23)
+
+The operator directed that **both candidates be usable plugins**, optimized and
+backtested iteratively in the app, with full hand control of trades/session,
+target, stop and the rest — and that they will retire either one themselves if
+it does not earn its place. That decision supersedes the "stop here" reading of
+§6.3; the honest prior in §6.3 is unchanged and still expected to hold.
+
+### 12.1 Candidate B now takes multiple entries per session
+
+B locked onto the session's **first** qualifying bar (`first_signal_i`) and
+ignored every later one. The engine's `daily_caps.max_trades` can only *cap* a
+budget, never raise it, so a trades-per-session control was inert on B.
+
+Replaced with a real budget:
+
+| Parameter | Range | Default | |
+|---|---|---|---|
+| `max_trades_per_session` | 1–10 | **1** | Entries admitted per IST session |
+| `signal_cooldown_bars` | 1–120 | **15** | Minimum bars between two entries |
+
+The default is **1**, so the pre-registered single-entry spec of §4.2 is exactly
+what runs unless the operator asks for more, and the §4.2 kill thresholds still
+apply to that configuration. `evaluate` now fires on **membership** of an
+admitted set rather than equality with one index, and each entry carries its own
+side, so a session's second entry may break the other way.
+
+**Look-ahead safety was re-proved, not assumed.** The original argument rested on
+the scan stopping at the first match. Per entry it still holds — entry *k*
+depends only on bars at or before it plus the positions of entries 1..k−1, which
+are strictly earlier — and
+`test_multi_entry_precompute_is_still_look_ahead_safe` pins it by comparing every
+prefix against the full-history scan.
+
+**Five mutants, five kills.** Removing the cooldown guard, an off-by-one cap,
+neutering the admitted-set check, and dropping the cooldown floor all go red. The
+fifth — changing the *absent-key* fallback for `max_trades_per_session` from 1 to
+99 — **survived the first sweep**, because every test merged the schema defaults
+and so always supplied the key. A preset or deployment saved before this knob
+existed has exactly that shape and would silently have taken 99 entries a
+session. Now covered by
+`test_a_preset_saved_before_this_knob_existed_still_takes_one_trade`, which had
+itself to be corrected: its first version spaced the signal bars one minute
+apart, so the default 15-bar cooldown suppressed the extra entries and the test
+passed for the wrong reason.
+
+### 12.2 Optimizer policy — wide by hand, pinned by default
+
+Operator's decision: full ranges for manual control, but the optimizer must not
+search trade frequency unless asked. Implemented by adding
+`max_trades_per_session` and `signal_cooldown_bars` to
+`optimizer.NON_ALPHA_PARAM_NAMES`, the existing mechanism that pins `lots` and
+the session rupee caps.
+
+Consequences, all pinned by tests in `test_optimizer_param_space_hygiene.py`:
+
+- The **schema range stays wide** (1–10, 1–120) so the UI renders full hand control.
+- The optimizer's **default** space pins both to their defaults — pinned, not
+  dropped, so the configured value still reaches the strategy.
+- An **explicit min+max override on a run still sweeps them**, so widening is a
+  deliberate act rather than the default.
+- The real alpha knobs (`stop_bps`, `stop_atr_mult`, `target_mult`, `range_mult`,
+  `hold_max_minutes`, `entry_cutoff_minutes_after_open`) stay tunable.
+
+The justification is this repo's own measurement, not taste:
+`OPTION_BUYING_MICROSTRUCTURE_2026-08.md` §2 puts round-trip friction at 32–90%
+of the median favourable move at 3–5 minute horizons and concludes "more trades
+is the wrong direction in this app regardless of signal quality". A knob that
+multiplies trade count moves a rupee objective mostly by changing **exposure** —
+the `lots` failure mode under a different name.
+
+### 12.3 Candidate A — a blocking constraint the frozen spec did not account for
+
+§4.1 specifies `flow_imbalance` from z-scores "computed against a **causal
+20-session rolling distribution** for the same time-of-day bucket", and a
+liquidity floor of "ATM bar volume ≥ **20-session** causal median × 0.5".
+
+**Neither can be computed from the strategy's own frame at decision time.**
+`deployment_evaluator.py` clamps the live window:
+
+```python
+live_lookback = max(200, min(requested_lookback, 1_000))
+```
+
+A hard ceiling of **1,000 bars — under three sessions.** A `session_precompute`
+that derives a 20-session baseline would see the full history in backtest and
+under three sessions live, and would therefore compute a *different number* in
+the two paths while both looked healthy. That is exactly the failure recorded in
+`live-window-anchors-session-indicators`, where a session-VWAP anchor error of
+2.12 ATR silently inverted nine shipped strategies, and it is invisible to a
+backtest by construction.
+
+**Consequence for the build:** the 20-session statistics must be computed in the
+**data layer**, where the query window is independent of the strategy's frame,
+and delivered per-bar through the `required_data` seam — which is what §7.1
+proposed and is now load-bearing rather than stylistic. The strategy then reads a
+ready-made z-score and both paths are served by one builder.
+
+`required_data` is the right seam and needs no new declaration surface: the AI
+capability, compiler and grounding layers all validate names against
+`DATA_COLUMN_REGISTRY`, so option-flow columns registered there work everywhere
+unchanged. The fetch in `warehouse.attach_required_data` is currently hardcoded
+to `candles_1m` and needs a second source kind for ATM `options_1m` legs — joined
+by **identity**, never by token (§11.1).

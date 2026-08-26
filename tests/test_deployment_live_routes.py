@@ -182,7 +182,7 @@ def _install(monkeypatch, db, *, connected=True, can_trade=True, registry=None,
              retired=False, autoplace=False, guard_armed=False,
              promotion_allowed=True, account_max_lots=20,
              account_max_open=5, broker_expired=False, static_ip="1.2.3.4",
-             strategy_loaded=True):
+             strategy_loaded=True, data_gate_ok=True):
     """Patch all module-level seams the routes touch."""
     monkeypatch.setattr(dep, "get_db", lambda: db)
     fake_strategy = _FakeStrategy() if strategy_loaded else None
@@ -244,6 +244,38 @@ def _install(monkeypatch, db, *, connected=True, can_trade=True, registry=None,
         monkeypatch.setenv("LIVE_GUARD_ARMED", "1")
     else:
         monkeypatch.delenv("LIVE_GUARD_ARMED", raising=False)
+
+    # Pin the DATA-INTEGRITY gate, for the same reason the clock is pinned below.
+    #
+    # `enable_deployment_live` calls the real `check_live_data_gate`, which is
+    # fail-closed and reads the warehouse through `db`. `FakeDB` has no
+    # `candles_1m`, so on a TRADING DAY the gate cannot read what it expects,
+    # reports `reason="unreadable"` at 0.0% coverage and the route raises
+    # `409 incomplete_market_data` — failing 11 tests in this module that have
+    # nothing to do with market data. On a weekend or holiday the same gate
+    # short-circuits to `no_candles_expected` and every one of them passes.
+    #
+    # That is exactly what happened: the baseline in
+    # `docs/LOCAL_TAKEOVER_2026-08-23.md` was measured on Sunday 2026-08-23 and
+    # recorded these as green; the identical tree on Wednesday 2026-08-26 failed
+    # 11. The tests were never weekday-independent, they were only ever run on a
+    # weekend. Verified by running this file from a detached worktree at clean
+    # HEAD — same 11 failures with zero local changes.
+    #
+    # `test_the_gate_is_wired_only_to_the_live_enable_transition` in
+    # tests/test_live_data_gate.py still pins that the route CALLS the gate, and
+    # `TestEnableDataGate` below pins that a failing gate still blocks, so
+    # stubbing here removes no coverage — it removes a dependency on the calendar.
+    async def _fake_data_gate(_db, instruments, **_kw):
+        if data_gate_ok:
+            return {"ok": True, "reason": "no_candles_expected",
+                    "blocked_instruments": [], "detail": "", "report": {}}
+        blocked = [str(i).upper() for i in (instruments or ())]
+        return {"ok": False, "reason": "incomplete_market_data",
+                "blocked_instruments": blocked,
+                "detail": "stubbed incomplete market data",
+                "report": {i: {"complete": False, "coverage_pct": 12.5} for i in blocked}}
+    monkeypatch.setattr(dep, "check_live_data_gate", _fake_data_gate, raising=False)
 
     # Pin 'now' to a deterministic instant. Enabling live is no longer session-scoped
     # (the old "reject after 15:00 IST" arm-window check was removed), but `enabled_at`
@@ -1249,3 +1281,63 @@ class TestUnpinnedDeploymentCannotResume:
     # The positive path — a correctly pinned deployment still resuming — is
     # already covered by TestPauseDemotesLive, which drives the same route
     # through the now-pinned fixture. Not duplicated here.
+
+
+class TestEnableDataGate:
+    """The data-integrity gate on the live-enable transition.
+
+    This behaviour was previously covered only by ACCIDENT: no test stubbed the
+    gate, so on a trading day the real one fired and 11 unrelated tests failed,
+    while on a weekend it short-circuited and nothing checked it at all. Neither
+    state was a test of the gate. These are.
+    """
+
+    def test_a_failing_gate_blocks_the_transition(self, monkeypatch):
+        from fastapi import HTTPException
+        db = FakeDB()
+        db.strategy_deployments.rows.append(_deployment())
+        _install(monkeypatch, db, data_gate_ok=False)
+        with pytest.raises(HTTPException) as ei:
+            asyncio.run(dep.enable_deployment_live("dep-1", _enable_body()))
+        assert ei.value.status_code == 409
+        assert ei.value.detail["code"] == "incomplete_market_data"
+        assert ei.value.detail["blocked_instruments"] == ["NIFTY"]
+
+    def test_a_blocked_transition_does_not_flip_the_deployment_to_live(self, monkeypatch):
+        """Fail-closed means the write must not happen either."""
+        from fastapi import HTTPException
+        db = FakeDB()
+        db.strategy_deployments.rows.append(_deployment())
+        _install(monkeypatch, db, data_gate_ok=False)
+        with pytest.raises(HTTPException):
+            asyncio.run(dep.enable_deployment_live("dep-1", _enable_body()))
+        assert db.strategy_deployments.rows[0].get("mode") != "live"
+
+    def test_a_passing_gate_lets_the_transition_through(self, monkeypatch):
+        """Control for the two above: same call, gate ok, and it succeeds — so
+        the 409 really is the gate and not some unrelated precondition."""
+        db = FakeDB()
+        db.strategy_deployments.rows.append(_deployment())
+        _install(monkeypatch, db, data_gate_ok=True)
+        out = asyncio.run(dep.enable_deployment_live("dep-1", _enable_body()))
+        assert out is not None
+        assert db.strategy_deployments.rows[0].get("mode") == "live"
+
+    def test_install_really_removes_the_calendar_dependency(self, monkeypatch):
+        """The regression that motivated the stub, pinned honestly.
+
+        Note the shape of this assertion. `deployments` binds the gate by NAME at
+        import time (`from app.live_data_gate import check_live_data_gate`), so
+        monkeypatching the ORIGIN module does not affect the route at all — a
+        test written that way passes whether or not the seam exists, which is a
+        test of nothing. Assert the seam itself instead: after `_install`, the
+        name the route resolves must no longer be the real, calendar-driven
+        function.
+        """
+        import app.live_data_gate as real_gate
+        db = FakeDB()
+        db.strategy_deployments.rows.append(_deployment())
+        _install(monkeypatch, db)
+        assert dep.check_live_data_gate is not real_gate.check_live_data_gate, (
+            "_install no longer stubs the data gate, so this module is back to "
+            "passing only on weekends and holidays")

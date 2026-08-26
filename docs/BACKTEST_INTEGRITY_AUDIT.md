@@ -131,6 +131,54 @@ runtime payload/preflight checks and canonical-`localhost` browser smoke pass.
 |---|---|---|
 | 31 | LOW | `net_pnl_inr` ignores `option_config.lots` and converts SPOT points at the option lot size. One verifier refuted this; it remains explicitly disputed and was not folded into Stage 1. |
 
+### Still open — 1 deliberately deferred (recorded 2026-08-26)
+
+| # | Sev | Finding |
+|---|---|---|
+| 32 | MED | **`NON_ALPHA_PARAM_NAMES` states a general principle but enforces it narrowly.** The set pins trade-FREQUENCY knobs out of the optimizer's default search space on the argument that they move a rupee objective through *exposure*, not edge — `OPTION_BUYING_MICROSTRUCTURE_2026-08.md` §2 measured round-trip friction at 32–90% of the median favourable move, i.e. "more trades is the wrong direction in this app regardless of signal quality". But the set matches on the **name**, and the frequency spellings it carries (`max_trades_per_session`, `signal_cooldown_bars`) are declared by exactly one plugin, `expiry_regime_trend_continuation`. **Eleven** other shipped plugins spell the same concept `cooldown_bars` and the optimizer still sweeps it for them. |
+
+**Why it is deferred and not fixed.** Adding `cooldown_bars` to the set would
+silently change the DEFAULT search space of eleven strategies that have already
+been optimized, and in some cases deployed — every saved preset and stored study
+for them was produced under a space that swept it. That is an evidence-bearing
+decision about eleven live configurations, not a one-line rename, and it does not
+belong inside a change scoped to one research candidate.
+
+**Affected plugins** (verified 2026-08-26 by importing every plugin and reading
+`parameter_schema`, not by grep): `adaptive_regime_scalper`, `atr_sigma_router`,
+`explosive_reversal`, `explosive_reversal_atr`, `fibonacci_pullback`, `gap_fade`,
+`sensex_explosive_reversal`, `smc_liquidity_sweep_fvg`,
+`squeeze_expansion_breakout`, `vwap_mean_reversion`, `vwap_pullback_scalp`.
+
+**Reproduce the count** (must print `11`). Iterate EVERY attribute of each
+module — taking the first object that has a `parameter_schema` picks up the
+imported `StrategyBase` and silently prints an empty list:
+
+```python
+# scripts-free repro; save as repro32.py and run with .venv\Scripts\python.exe
+import sys, importlib, pkgutil
+sys.path.insert(0, "backend")
+import app.strategies.plugins as P
+
+hits = set()
+for m in pkgutil.iter_modules(P.__path__):
+    mod = importlib.import_module(f"app.strategies.plugins.{m.name}")
+    for attr in vars(mod).values():
+        schema = getattr(attr, "parameter_schema", None)
+        if isinstance(schema, dict) and "cooldown_bars" in schema:
+            hits.add(m.name)
+print(len(hits), sorted(hits))
+```
+
+**Before closing it, decide the actual question:** is a spacing knob *alpha*
+(it shapes which setups qualify) or *exposure* (it multiplies trade count)? For
+`cooldown_bars` in a mean-reversion strategy the honest answer may differ from
+the answer for a trend-continuation budget. Do not close this by making the
+names consistent; close it by deciding what the knob is, per strategy.
+
+Pinned so it cannot be silently "tidied" shut:
+`tests/test_optimizer_param_space_hygiene.py::test_the_cooldown_bars_gap_is_recorded_not_forgotten`.
+
 **SUPERSEDED BY OPERATOR POLICY:** #5's former zero-survivor refusal. A finite best
 candidate is now retained and `done_no_survivor` is accepted by apply-as-preset, with
 the failed survival screen carried as an acknowledgment warning.

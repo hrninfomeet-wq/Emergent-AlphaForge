@@ -223,3 +223,174 @@ def test_ordinary_strategies_are_untouched():
     space = {"ema_fast": {"type": "int", "min": 3, "max": 20, "default": 9}}
     out = restrict_space_to_engine_params(space, premium_native=False)
     assert out == space
+
+
+# --------------------------------------------------------------------------- #
+# Trade-FREQUENCY knobs are exposure, not alpha
+#
+# `OPTION_BUYING_MICROSTRUCTURE_2026-08.md` §2 measured round-trip friction at
+# 32-90% of the median favourable move at 3-5 minute horizons and concluded
+# "more trades is the wrong direction in this app regardless of signal quality".
+# A knob that multiplies trade count therefore moves a rupee objective mostly by
+# changing EXPOSURE, which is the same failure mode as searching `lots`.
+#
+# Policy (operator's decision, 2026-08-23): the schema range stays WIDE so the
+# knob is fully controllable by hand in the UI, while the optimizer leaves it
+# pinned unless the run explicitly supplies both bounds.
+# --------------------------------------------------------------------------- #
+
+from app.strategies.plugins.expiry_regime_trend_continuation import (  # noqa: E402
+    ExpiryRegimeTrendContinuation,
+)
+
+_B_SCHEMA = ExpiryRegimeTrendContinuation.parameter_schema
+
+
+def test_trade_frequency_knobs_are_pinned_by_default():
+    space = _build_param_space(_B_SCHEMA, None)
+    searched = _searchable(space)
+    assert "max_trades_per_session" not in searched
+    assert "signal_cooldown_bars" not in searched
+
+
+def test_pinned_frequency_knobs_still_reach_the_strategy_at_their_default():
+    """Pinned, NOT dropped — same contract as `lots`."""
+    space = _build_param_space(_B_SCHEMA, None)
+    assert space["max_trades_per_session"]["fixed"] == 1
+    assert space["signal_cooldown_bars"]["fixed"] == 15
+
+
+def test_the_real_alpha_knobs_stay_tunable():
+    """The pin must be surgical: stop/target/hold geometry is the hypothesis."""
+    searched = _searchable(_build_param_space(_B_SCHEMA, None))
+    for alpha in ("stop_bps", "stop_atr_mult", "target_mult", "range_mult",
+                  "hold_max_minutes", "entry_cutoff_minutes_after_open"):
+        assert alpha in searched, f"{alpha} is a real alpha knob and must stay tunable"
+
+
+def test_the_schema_range_stays_wide_for_manual_control():
+    """Pinning is an OPTIMIZER default, not a restriction on the operator. The
+    UI renders these bounds, so narrowing them here would remove hand control."""
+    assert _B_SCHEMA["max_trades_per_session"]["max"] >= 10
+    assert _B_SCHEMA["signal_cooldown_bars"]["max"] >= 120
+
+
+def test_an_explicit_override_can_still_sweep_trade_frequency():
+    space = _build_param_space(_B_SCHEMA, {
+        "max_trades_per_session": {"min": 1, "max": 4},
+        "signal_cooldown_bars": {"min": 5, "max": 60},
+    })
+    searched = _searchable(space)
+    assert "max_trades_per_session" in searched
+    assert "signal_cooldown_bars" in searched
+
+
+def test_signal_threshold_is_actually_pinned_not_just_documented_as_pinned():
+    """B's score is the constant 65, so every value <= 65 behaves identically and
+    every value above it suppresses EVERY signal. That makes the knob an on/off
+    switch, not a tuning dimension.
+
+    Left searchable, the optimizer learns the off switch and attributes the
+    result to it: the operator's 426-trial NIFTY job on 2026-08-23 assigned
+    **80.2%** of parameter importance to `signal_threshold`, burying the
+    dimensions that actually shape the trade. The schema comment already claimed
+    it was pinned; nothing enforced that.
+    """
+    space = _build_param_space(_B_SCHEMA, None)
+    assert "signal_threshold" not in _searchable(space)
+    assert space["signal_threshold"]["fixed"] <= 65, (
+        "a pinned value above the fixed score would suppress every signal")
+
+
+# --------------------------------------------------------------------------- #
+# Finding #32 — the gap between the stated principle and the enforced one
+#
+# `NON_ALPHA_PARAM_NAMES` argues generally ("more trades is the wrong direction
+# in this app regardless of signal quality") but matches on the NAME, and the
+# frequency spellings it carries are declared by ONE plugin. Eleven others spell
+# the same concept `cooldown_bars` and are still swept.
+#
+# The operator's decision (2026-08-26) was to RECORD that gap, not close it:
+# adding the name would silently change the default search space of eleven
+# already-optimized strategies, which is an evidence-bearing decision.
+#
+# These tests exist so the gap cannot drift shut — or drift WIDER — in silence.
+# They deliberately pin code against documentation: change one without the other
+# and this file goes red, which is the whole point.
+# --------------------------------------------------------------------------- #
+
+import importlib  # noqa: E402
+import pkgutil  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+_REGISTER = Path(__file__).resolve().parents[1] / "docs" / "BACKTEST_INTEGRITY_AUDIT.md"
+
+
+def _plugins_declaring(param_name):
+    """Every plugin module whose strategy declares `param_name` in its schema.
+
+    Iterates EVERY attribute of each module on purpose. Taking the first object
+    that has a `parameter_schema` picks up the imported `StrategyBase` and
+    silently returns an empty set — the exact bug that made the first version of
+    the documented repro command print `[]`.
+    """
+    import app.strategies.plugins as plugins
+    found = set()
+    for mod_info in pkgutil.iter_modules(plugins.__path__):
+        mod = importlib.import_module(f"app.strategies.plugins.{mod_info.name}")
+        for attr in vars(mod).values():
+            schema = getattr(attr, "parameter_schema", None)
+            if isinstance(schema, dict) and param_name in schema:
+                found.add(mod_info.name)
+    return found
+
+
+def test_the_helper_itself_finds_something():
+    """Guard the guard: an empty set would make every test below vacuously true."""
+    assert _plugins_declaring("cooldown_bars"), (
+        "the plugin scan found nothing — the scan is broken, not the codebase")
+
+
+def test_the_cooldown_bars_gap_is_recorded_not_forgotten():
+    """If the gap is open in code, the register must say so — and vice versa."""
+    register = _REGISTER.read_text(encoding="utf-8")
+    gap_open_in_code = "cooldown_bars" not in NON_ALPHA_PARAM_NAMES
+
+    if gap_open_in_code:
+        assert "| 32 |" in register, (
+            "`cooldown_bars` is still swept by the optimizer, but finding #32 is "
+            "missing from docs/BACKTEST_INTEGRITY_AUDIT.md. An undocumented gap "
+            "is an oversight; a documented one is a decision.")
+        assert "deliberately deferred" in register
+    else:
+        # NOT `or "Closed" in register`: the register already contains "Closed
+        # 2026-07-31" and "Closed 2026-08-01" headings for earlier findings, so
+        # that spelling matches unconditionally and the check never fires. A
+        # mutation run on 2026-08-26 confirmed it — closing the gap in code left
+        # this test GREEN with the register still calling #32 deferred, which is
+        # precisely the silent tidy-up the test exists to prevent.
+        assert "deliberately deferred" not in register, (
+            "`cooldown_bars` is now pinned, so finding #32 is no longer deferred "
+            "— move it out of the open section of "
+            "docs/BACKTEST_INTEGRITY_AUDIT.md and record which eleven "
+            "strategies' default search spaces this changed.")
+
+
+def test_the_register_count_matches_reality():
+    """The register commits to `11`. If a new plugin adds the knob, the recorded
+    finding is stale and understates the blast radius of closing it."""
+    actual = _plugins_declaring("cooldown_bars")
+    assert len(actual) == 11, (
+        f"{len(actual)} plugins now declare `cooldown_bars` ({sorted(actual)}), "
+        "but finding #32 in docs/BACKTEST_INTEGRITY_AUDIT.md says eleven. "
+        "Update the register — the blast radius of closing the gap has changed.")
+
+
+def test_the_narrow_spellings_really_are_narrow():
+    """The premise of #32: the pinned names cover exactly one plugin. If another
+    plugin adopts them, the gap has partially closed by accident."""
+    for name in ("max_trades_per_session", "signal_cooldown_bars"):
+        assert name in NON_ALPHA_PARAM_NAMES
+        assert _plugins_declaring(name) == {"expiry_regime_trend_continuation"}, (
+            f"`{name}` is no longer declared by exactly one plugin, so finding "
+            "#32's premise has changed and the register needs re-reading.")

@@ -116,19 +116,29 @@ def _close_location(high: float, low: float, close: float, direction: str) -> Op
 
 
 def _precompute_sessions(df: pd.DataFrame, params: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
-    """Per-session opening range, prior close, and the first qualifying bar.
+    """Per-session opening range, prior close, and the admitted entry bars.
 
     Scanning the whole frame is look-ahead safe for the same reason it is in
     `dte_opening_shock_breakout`: every condition tested at bar ``i`` reads only
-    data at or before ``i``, the scan stops at the FIRST match, and ``evaluate``
-    fires only when its own positional index equals that match. On a prefix
-    ending before the match the field is simply ``None``; once the bar arrives,
-    the chosen index is identical to the full-history scan.
+    data at or before ``i``, and ``evaluate`` fires only on a bar whose own
+    positional index was admitted here.
+
+    That argument has to hold PER ENTRY now that a session may admit up to
+    ``max_trades_per_session``. It does: entry *k* depends only on bars at or
+    before it, plus the positions of entries 1..k-1, which are all strictly
+    earlier. So on a prefix ending at any admitted bar, the admitted set is
+    exactly the full-history set truncated at that bar — nothing later is
+    invented and nothing earlier changes. Pinned by
+    ``test_multi_entry_precompute_is_still_look_ahead_safe``; an unpinned
+    version of this claim is what §7 of the takeover note calls treating an
+    assertion as evidence.
     """
     if df is None or df.empty or any(c not in df.columns for c in _REQUIRED_COLUMNS):
         return {}
 
     range_mult = float(params.get("range_mult", 1.2) or 0.0)
+    max_trades = max(1, int(params.get("max_trades_per_session", 1) or 1))
+    cooldown_bars = max(1, int(params.get("signal_cooldown_bars", 15) or 1))
     cutoff_offset = int(params.get("entry_cutoff_minutes_after_open", 255) or 0)
     # A parameter may shorten the entry window; it may never push past 14:48.
     cutoff_min = min(_SESSION_OPEN_MIN + max(0, cutoff_offset), _LAST_ELIGIBLE_MIN)
@@ -167,8 +177,8 @@ def _precompute_sessions(df: pd.DataFrame, params: Dict[str, Any]) -> Dict[str, 
         range_high = float(pd.to_numeric(opening["high"]).max())
         range_low = float(pd.to_numeric(opening["low"]).min())
 
-        first_i: Optional[int] = None
-        direction = ""
+        # (frame position, side) for every admitted entry, in time order.
+        signals: list = []
         for offset in range(len(_OPENING_TIMES), len(positions)):
             pos = int(positions[offset])
             minutes = _minutes_of(df.iloc[pos].get("ist_time"))
@@ -214,15 +224,28 @@ def _precompute_sessions(df: pd.DataFrame, params: Dict[str, Any]) -> Dict[str, 
             if location is None or location < _CLOSE_LOCATION_MIN:
                 continue
 
-            first_i, direction = pos, side
-            break
+            # 4. Spacing. Without a cooldown a trend day re-qualifies on almost
+            #    every bar above the range, so the budget would be spent in the
+            #    first few minutes on what is really one move.
+            if signals and (pos - signals[-1][0]) < cooldown_bars:
+                continue
+
+            signals.append((pos, side))
+            if len(signals) >= max_trades:
+                break
 
         sessions[session_date] = {
-            "direction": direction,
+            # The FIRST entry's side and index. Retained under the original names
+            # because the single-entry spec is still the default, and the
+            # look-ahead property is pinned against them.
+            "direction": signals[0][1] if signals else "",
             "prior_close": float(current_prior_close),
             "range_high": range_high,
             "range_low": range_low,
-            "first_signal_i": first_i,
+            "first_signal_i": signals[0][0] if signals else None,
+            # position -> side, for every admitted entry. `evaluate` fires only
+            # on a bar whose own index is a key here.
+            "signals": {pos: side for pos, side in signals},
         }
 
     return sessions
@@ -236,8 +259,9 @@ class ExpiryRegimeTrendContinuation(StrategyBase):
         "Unvalidated research hypothesis (candidate B): on a trend day — opening-range "
         "break agreeing with session VWAP and the prior session close, on an expanded "
         "bar with a decisive close — a 30-60 minute option-buying hold has better net "
-        "expectancy at 1DTE than at 0DTE. One signal per session, entries stop at the "
-        "tunable cutoff and never past 14:48. DTE and moneyness stay in the deployment's "
+        "expectancy at 1DTE than at 0DTE. One signal per session by default "
+        "(max_trades_per_session raises it, spaced by signal_cooldown_bars); entries "
+        "stop at the tunable cutoff and never past 14:48. DTE and moneyness stay in the deployment's "
         "option policy: run 1DTE and 0DTE as two separate cohorts and compare them. "
         "The 0DTE arm is pre-registered as expected to FAIL."
     )
@@ -266,9 +290,30 @@ class ExpiryRegimeTrendContinuation(StrategyBase):
         "entry_cutoff_minutes_after_open": {"type": "int", "min": 30, "max": 333,
                                             "default": 255},
         "hold_max_minutes": {"type": "int", "min": 15, "max": 120, "default": 60},
-        # Pinned. The score is fixed, so any value <= 65 behaves identically and
-        # any value above it suppresses every signal.
-        "signal_threshold": {"type": "int", "min": 30, "max": 90, "default": 60},
+        # Pinned — and now actually pinned, not merely described that way. The
+        # score is the constant 65, so every value <= 65 behaves identically and
+        # every value above it suppresses EVERY signal: an on/off switch wearing
+        # a threshold's name. Left searchable it does not tune anything, it just
+        # teaches the optimizer where the off switch is — the operator's
+        # 426-trial NIFTY job on 2026-08-23 attributed **80.2%** of parameter
+        # importance to this knob, burying the dimensions that shape the trade.
+        # `fixed` keeps it visible and settable in the UI while removing it from
+        # the search; an explicit per-run override can still unpin it.
+        "signal_threshold": {"type": "int", "min": 30, "max": 90, "default": 60,
+                             "fixed": 60},
+        # Entries admitted per IST session. DEFAULT 1 — the pre-registered spec
+        # is one trade per session, and the falsification thresholds in
+        # docs/INTRADAY_OPTION_BUYING_CANDIDATES_2026-08.md §4.2 were written
+        # against that. The range is wide so the operator can explore by hand;
+        # the optimizer's default search space deliberately does not.
+        # Note this is the strategy's own budget. The engine's
+        # `daily_caps.max_trades` is a separate, later CAP — it can lower this
+        # number but can never raise it.
+        "max_trades_per_session": {"type": "int", "min": 1, "max": 10, "default": 1},
+        # Minimum bars between two admitted entries. On a trend day almost every
+        # bar above the opening range re-qualifies, so without this the whole
+        # budget is spent inside a few minutes on what is really one move.
+        "signal_cooldown_bars": {"type": "int", "min": 1, "max": 120, "default": 15},
     }
 
     def session_precompute(self, df: pd.DataFrame, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -288,13 +333,22 @@ class ExpiryRegimeTrendContinuation(StrategyBase):
             current_i = int((ctx or {}).get("i"))
         except (TypeError, ValueError):
             return Signal(direction="NONE", blockers=["trend-continuation index unavailable"])
-        if current_i != int(info["first_signal_i"]):
+        # Membership, not equality: a session may admit up to
+        # `max_trades_per_session` entries. Absent `signals` (a precompute from
+        # an older cache) falls back to the single first index, so a stale ctx
+        # degrades to the frozen one-entry behaviour rather than firing nothing.
+        admitted = info.get("signals")
+        if admitted:
+            if current_i not in admitted:
+                return Signal(direction="NONE")
+        elif current_i != int(info["first_signal_i"]):
             return Signal(direction="NONE")
 
         if _FIXED_SCORE < int(params.get("signal_threshold", 60)):
             return Signal(direction="NONE", blockers=["fixed score below signal threshold"])
 
-        direction = str(info.get("direction") or "")
+        # Per-entry side: a session's second entry may break the other way.
+        direction = str((admitted or {}).get(current_i) or info.get("direction") or "")
         if direction not in ("CE", "PE"):
             return Signal(direction="NONE", blockers=["trend-continuation direction unresolved"])
 

@@ -30,9 +30,16 @@ flight**, not the whole app.
 >
 > **You are on branch `claude/hello-g2itta`** (draft PR #7). Do not push to `main`.
 >
-> **Your immediate task is §4 of this file: diagnose why the screen builds no ATM
-> option series.** Do not proceed to backtests, the Optimizer, or the holdout until
-> that is resolved — an empty screen means the campaign has measured nothing.
+> **§4 is now CLOSED** — the screen builds series on both indices, and the empty
+> screen was the script's own token lookup, not the warehouse. Read §4 before
+> doing anything: it also carries two findings that shape the next run, including
+> one you must apply *before* the first conditioned screen. The unconditioned
+> baseline is **NO_EDGE on both indices** (MFE/MAE 0.86–0.90, session-level t
+> −32 to −109), so the next step is a decision about whether to condition at all,
+> not a foregone one.
+>
+> **Still non-negotiable:** do not touch the Optimizer or the holdout. §5 stands —
+> only ~30 sessions are untouched, below the promotion minimum.
 >
 > **Standing rules for this campaign, inherited and non-negotiable:**
 > - Never place, modify or cancel a broker order. Never enable live mode. Never
@@ -55,7 +62,7 @@ flight**, not the whole app.
 | Base | `origin/main` @ `6e6e1cc`, unmoved; 0 conflict markers |
 | PR | [#7](https://github.com/hrninfomeet-wq/Emergent-AlphaForge/pull/7), draft, no reviews, no comments |
 | CI | **None exists** — this repo has no `.github/workflows`. The host suite is the only evidence. |
-| Suite | `5,091 passed, 2 failed, 10 skipped, 4 xfailed`. The two failures are `test_premium_momentum_route.py`, which needs a live MongoDB — **they should PASS on your machine.** If they fail there too, that is a real finding. |
+| Suite | **Measured locally 2026-08-23: `5,098 passed, 5 failed, 4 xfailed`.** The prediction held — the two `test_premium_momentum_route.py` failures cleared with a real MongoDB. The 5 remaining are all `tests/test_bootstrap_contract.py`, **pre-existing and unrelated to this branch** (nine added files, no launcher touched); cause and fix in §4.1. |
 
 ### Commits, newest first
 
@@ -162,56 +169,98 @@ docker compose exec backend python -c "from app.strategies.base import get_regis
 
 ---
 
-## 4. YOUR IMMEDIATE TASK — the screen builds no ATM series
+## 4. RESOLVED (2026-08-23, local) — the screen builds series on both indices
 
-Run on the train slice (191 sessions), both indices returned **no ATM option
-series**. Cause unknown. A per-stage funnel was added so the next run
-diagnoses it instead of shrugging.
+> This section was *"the screen builds no ATM series — cause unknown"*. It is
+> closed. Full evidence is **§11 of the deliverable**; the summary is here so a
+> future reader does not re-run the diagnosis.
 
-**Do not accept the script's own error message at face value.** The first time it
-printed "this is a DATA finding", the cause was a typo in its own query
-(`option_type` vs `side`) and it blamed the warehouse.
+**The warehouse was never the problem.** The empty screen was the screen's own
+bar lookup, and `cf8c1d6` had already fixed it — written blind in a container
+with no data and never run against real data until now.
 
-### Step 1 — the no-rebuild probe (separates filter from data)
+The pre-`cf8c1d6` builder fetched bars by token, and *both* branches were
+unsatisfiable against this warehouse:
 
-`--dte` with no values yields `[]`, and `dte_filter=args.dte or None` disables
-filtering entirely:
+- **`contract_key`** — on 61.39% of NIFTY `option_contracts` but only **10.3% of
+  `options_1m` rows** (823,829 / 7,967,661), and none in the train slice.
+- **`instrument_key`** — **stored in different formats on the two collections.**
+  `option_contracts` holds a three-part expired-contract value
+  (`NSE_FO|42965|28-11-2024`); `options_1m` holds the two-part `NSE_FO|42965`. In
+  a 30,000-row sample: `option_contracts` 18,290 of 22,345 three-part;
+  `options_1m` 30,000 / 30,000 two-part. The strings cannot compare equal.
 
-```powershell
-docker compose exec backend python scripts/screen_option_buying.py --instrument NIFTY --dte
-```
+Confirmed by mutation, not by reading: replaying the verbatim pre-fix lookup over
+the same 191 train sessions reproduces the failure exactly — `frame empty? True`,
+242/242 contract-sessions dropped, `contract_key_EMPTY=56,
+instrument_key_EMPTY=186`. The shipped identity lookup returns 236/242, and the
+bars it returns carry a single homogeneous `trading_symbol` matching the
+requested strike/side/expiry — the right contract, not merely a contract.
 
-- Still empty → the DTE filter is innocent; look at contract lookup or coverage.
-- Produces a baseline → the `[1,2,3]` filter excluded everything, which is itself
-  a finding about expiry metadata.
+**What the screen now measures** (train only, DTE 1–3; holdout untouched, guard
+left armed):
 
-### Step 2 — the funnel
-
-```powershell
-docker compose exec backend python scripts/screen_option_buying.py --instrument NIFTY --json-out /app/nifty_screen.json
-```
-
-The stage where the count collapses to zero **is** the cause:
-
-| Collapse at | Means | Fix lives in |
+| | NIFTY | SENSEX |
 |---|---|---|
-| `dropped_dte_unresolved` | `compute_dte` returned None | `nse_calendar` / expiry metadata |
-| `dropped_dte_excluded` | The `--dte` filter, not the data | the run's flags |
-| `dropped_contract_not_found` | Contract-master gap, or the lookup key is still wrong | `option_contracts` / the query |
-| `dropped_too_few_bars` | Genuine `options_1m` coverage | ingestion |
+| Contract-sessions | 236 / 242 | 232 / 234 |
+| Bars | 88,500 | 86,997 |
+| MFE/MAE @ 5/10/15/30 min | 0.892 / 0.898 / 0.897 / 0.892 | 0.876 / 0.863 / 0.868 / 0.875 |
+| Net %, session median | −2.38 / −2.74 / −2.96 / −3.98 | −2.35 / −2.58 / −2.89 / −3.55 |
+| Verdict, every cell | **NO_EDGE** | **NO_EDGE** |
 
-Up to five verbatim sample misses print with the exact failing lookup. Compare one
-against the real documents:
+Session-level t-stats −32 to −109 over 116–118 sessions. The unconditioned ATM
+buyer's payoff is negative before costs on both indices — a fourth independent
+confirmation of the register's headline, and the first from shipped tested code.
+
+**§5.2's reproduction gate: passed, with a caveat recorded.** The train-slice
+baseline is below the recorded 0.90–0.95 only because it is a 191-session
+sub-window. Re-measured over the 403 already-spent sessions (≤ 2026-07-10 — the
+window the register used; the 30 untouched sessions were **not** read), NIFTY
+gives 0.914 / 0.906 / 0.903 against the register's 0.92 / 0.95 / 0.90, and SENSEX
+0.894 / 0.883 / 0.888 against 0.92 / 0.94 / 0.90. The DTE filter was tested and
+is innocent. The residual is localised to the **10-minute horizon on both
+indices** (−0.044, −0.057); the register's throwaway scripts no longer exist, so
+that one cell cannot be re-derived. No conclusion depends on it — everything is
+far below the 0.95 base rate in both sources.
+
+Residual `dropped_too_few_bars` (6 NIFTY, 2 SENSEX) are genuine ingestion gaps,
+verified against the collection: NIFTY expiry 2024-12-26 has no bars for any
+strike within ±300 of 23900; SENSEX 80400 exp 2024-11-29 has 1,500 bars but none
+on 2024-11-26.
+
+### 4.1 Two findings, neither blocking — read before the first conditioned run
+
+1. **`--entry-from` / `--entry-to` do not constrain what is measured.** They pick
+   the ATM *strike*; the option frame is fetched for the whole day, so **13.6% of
+   measured entry bars are outside the window** — and outside live's hardcoded
+   09:25–14:50. Effect on the unconditioned baseline is ≤0.010 MFE/MAE, so no
+   verdict changes, but a condition that fires at the open would be scored on
+   entries live cannot take. Apply the window as a `screen_condition` mask before
+   conditioning. Deliverable §11.7.
+
+2. **The suite is 5,098 passed / 5 failed and the 5 are unrelated to this
+   branch.** §2's prediction held — the two `test_premium_momentum_route.py`
+   failures cleared with a real MongoDB. The 5 are all
+   `tests/test_bootstrap_contract.py`; this branch adds nine files and touches no
+   launcher. This environment sets `NoDefaultCurrentDirectoryInExePath=1`, so
+   `cmd.exe` will not resolve a bare `start-app.bat` from the cwd, and the tests
+   invoke it by bare name. Reproduced from PowerShell and bash alike. A fix
+   (absolute path) belongs on `main`, not here.
+
+### 4.2 How to re-run it
+
+The host venv has `pandas` and `pymongo`, so no rebuild is needed for the script
+path — and Mongo is published on **127.0.0.1** (dial the IPv4 literal, not
+`localhost`, which resolves to `::1` first and stalls):
 
 ```powershell
-docker compose exec backend python -c "from pymongo import MongoClient; d=MongoClient('mongodb://mongo:27017')['alphaforge']; print(d.option_contracts.find_one({'underlying':'NIFTY'}))"
+cd C:\Users\haroo\OneDrive\Documents\New project\Emergent-AlphaForge
+.venv\Scripts\python.exe backend\scripts\screen_option_buying.py --instrument NIFTY --mongo-url mongodb://127.0.0.1:27017
+.venv\Scripts\python.exe backend\scripts\screen_option_buying.py --instrument SENSEX --mongo-url mongodb://127.0.0.1:27017
 ```
 
-### Step 3 — what a healthy screen looks like
-
-The unconditioned ATM MFE/MAE must reproduce **0.90–0.95**. A materially different
-baseline means the data changed, and *that* is the finding — stop and report it
-rather than proceeding to conditions.
+The container path still works and still needs `docker compose up -d --build
+backend` after a pull, for the reason §2 gives.
 
 ---
 

@@ -467,9 +467,36 @@ def _indicator_key(merged: Dict[str, Any]) -> Tuple:
 #: never declares `lots`, and hand-writes `"fixed"` on its session risk caps.
 #: This set is what gives an AUTHORED plugin the same protection, since the AI
 #: compiler emits a bare {type, default} for every config key.
+#: Trade-FREQUENCY knobs are in here for the same reason, one step removed.
+#: `OPTION_BUYING_MICROSTRUCTURE_2026-08.md` §2 measured round-trip friction at
+#: 32-90% of the median favourable move at 3-5 minute horizons: "more trades is
+#: the wrong direction in this app regardless of signal quality". A knob that
+#: multiplies trade count therefore moves a rupee objective mainly by changing
+#: EXPOSURE, not by expressing edge — the `lots` failure mode wearing a
+#: different name. They stay WIDE in the schema so the operator keeps full hand
+#: control in the UI; only the optimizer's DEFAULT space pins them, and an
+#: explicit min+max override still sweeps them.
+#:
+#: KNOWN GAP - registered, deliberate, NOT an oversight. This set matches on the
+#: NAME, and the two frequency spellings above are declared by exactly one
+#: plugin: `expiry_regime_trend_continuation`. ELEVEN other shipped plugins spell
+#: the same concept `cooldown_bars` and the optimizer still sweeps it for them
+#: (adaptive_regime_scalper, atr_sigma_router, explosive_reversal,
+#: explosive_reversal_atr, fibonacci_pullback, gap_fade,
+#: sensex_explosive_reversal, smc_liquidity_sweep_fvg,
+#: squeeze_expansion_breakout, vwap_mean_reversion, vwap_pullback_scalp).
+#:
+#: So the friction argument above is stated GENERALLY but enforced NARROWLY.
+#: That asymmetry is intentional: adding `cooldown_bars` here would silently
+#: change the default search space of eleven strategies that have already been
+#: optimized and in some cases deployed, which is an evidence-bearing decision,
+#: not a rename. Tracked as finding #32 in `docs/BACKTEST_INTEGRITY_AUDIT.md`
+#: Section 5. Do not "tidy" this by adding the name without reading it first.
+#: Pinned by `test_the_cooldown_bars_gap_is_recorded_not_forgotten`.
 NON_ALPHA_PARAM_NAMES = frozenset({
     "lots", "max_lots", "fixed_lots", "quantity", "capital",
     "session_max_loss_rupees", "session_max_profit_rupees",
+    "max_trades_per_session", "signal_cooldown_bars",
 })
 
 
