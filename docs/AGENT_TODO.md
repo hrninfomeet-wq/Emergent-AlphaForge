@@ -496,3 +496,50 @@ Junior-agent prompt:
   C2 (transmit fence), H1 (CAS transitions), C3 (account-global caps) — before
   first real money. Next up: B4 (C5 browser check, needs Docker rebuild) then
   item 2 (lazy-leg).
+
+---
+
+## ★ Issue register from the 2026-08-23 → 08-27 capability review (Claude Opus 5)
+
+Every item below was **verified in code or measured on the warehouse**, not inferred
+from a doc. Evidence lives in `docs/INTRADAY_OPTION_BUYING_CANDIDATES_2026-08.md`
+§§11–12 and the capability review. Ordered by irreversibility first, then value per
+unit of effort.
+
+| # | Issue | Effort | Status |
+|---|---|---|---|
+| 1 | `chain_snapshots` had an index and **no writer** — option-chain history is the one dataset that cannot be backfilled | S | **DONE** (`feat/chain-recorder`) |
+| 2 | Vendor `pcr` is per-strike, not chain-level — first capture returned 789.09 | S | **DONE** — found by smoke-testing against the live API |
+| 3 | `capture_once` would store an off-hours read under today's `session_date` | S | **DONE** — writer now gates too, `force=` escape hatch |
+| 4 | `signal_threshold` documented as pinned, wasn't — took 80.2% of parameter importance | S | **DONE** 2026-08-23 |
+| 5 | Trade-frequency knobs searchable by the optimizer (exposure, not alpha) | S | **DONE** 2026-08-23 |
+| 6 | Live entry window hardcoded 09:25–14:50 vs backtest default 09:25–15:00 — every default backtest counts signals live refuses (§7.2) | S | OPEN |
+| 7 | Screen CLI's `--entry-from/--entry-to` select the ATM strike only; **13.6%** of measured entry bars fall outside the window (§11.7) | S | OPEN |
+| 8 | Option-chain analytics (PCR, max pain, ATM straddle, IV rank) reach **exactly one UI route** and nothing in the decision path | S–M | OPEN — unblocked by #1 |
+| 9 | `choch`, `fvg_zones`, `order_block` are `stateful_unbounded` → **backtest-only**; an SMC strategy built on them cannot deploy | M | OPEN |
+| 10 | Option-side flow (CE/PE volume, OI) does not reach `evaluate()` — blocks Candidate A (§7.1) | M | OPEN |
+| 11 | Live window hard-capped at **1,000 bars** (`max(200, min(requested, 1_000))`) — any multi-session baseline computes differently in backtest vs live, invisibly | M | OPEN — must be designed around, see §12.3 |
+| 12 | Option engine is **long-only**; the only `SELL` is exiting a long. No short leg, no credit structure, no multi-leg | L | OPEN — gated on the short-side screen |
+| 13 | Ingestion gaps: NIFTY expiry 2024-12-26 has no bars for any strike within ±300 of 23900 (3 sessions); SENSEX 80400 exp 2024-11-29 missing on 2026-11-26 | S | OPEN — data, not code |
+| 14 | A SENSEX optimizer job (`cac0151c`) referenced by a saved backtest run is **absent from `optimization_jobs`** — that result's search space and trial count are unauditable | S | OPEN — needs reproduction |
+| 15 | `HANDOFF.md` §2.0e stale — describes a closed defect as open | S | OPEN |
+
+### What #1 unlocks that was not obvious
+
+The Upstox `/v2/option/chain` response carries **`bid_price` / `ask_price` per strike**.
+That is the only stream that can ever clear the optimizer's own
+`research_eligibility` blocker `no_point_in_time_execution_surface`, and it calibrates
+the flat **1%-of-premium-per-side** spread constant — which was **54% of gross P&L** in
+the 2026-08-23 SENSEX run and is the least-validated number in the system. The
+recorder is therefore not only a research capture; it is a prerequisite for any
+promotion-grade result.
+
+### Deliberately NOT done
+
+- **Widening the live WS option universe.** It is sized from active deployments,
+  hard-clamped to ATM ± 5 / 60 keys, and changing it RESTARTS the stream the live
+  trading path depends on. The recorder uses a separate REST read instead and touches
+  nothing the trading path uses.
+- **Deriving anything at capture time.** PCR, max pain and OI walls are all
+  recomputable from a faithful snapshot; a derived value stored today freezes today's
+  definition into a record that cannot be re-derived.

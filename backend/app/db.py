@@ -91,6 +91,20 @@ async def ensure_indexes() -> None:
         name="ticks_30d_ttl",
     )
     await db.chain_snapshots.create_index([("created_at", -1)])
+    # Option-chain history. Read order is always (instrument, expiry, time), and
+    # the compound key is UNIQUE so a recorder restart inside one capture bucket
+    # is rejected rather than double-recorded.
+    #
+    # ⚠ NEVER put a TTL on this collection. `ticks` above expires after 30 days
+    # because a tick can be re-derived from candles; an option chain CANNOT be
+    # re-derived from anything — there is no historical chain endpoint. A minute
+    # deleted here is a minute that never existed. The recorder deliberately
+    # stores no BSON date field so a TTL index has nothing to key on.
+    await db.chain_snapshots.create_index(
+        [("instrument", 1), ("expiry_date", 1), ("ts", 1)],
+        unique=True, name="chain_snapshots_identity",
+    )
+    await db.chain_snapshots.create_index([("instrument", 1), ("session_date", 1)])
     await db.paper_trades.create_index([("created_at", -1)])
     await db.paper_trades.create_index([("status", 1), ("updated_at", -1)])
     await db.paper_trades.create_index([("deployment_id", 1), ("status", 1), ("closed_at", -1)])

@@ -320,6 +320,37 @@ async def fetch_market_quote_by_key(
     return normalize_market_quote(data, instrument or instrument_key)
 
 
+async def fetch_option_chain(
+    instrument_key: str,
+    expiry_date: str,
+    user_id: str = DEFAULT_USER_ID,
+) -> Dict[str, Any]:
+    """Raw Put/Call option-chain response for one underlying and expiry.
+
+    Returns the vendor payload UNTOUCHED. Parsing belongs to the pure
+    `app.chain_snapshot` normalizer, and the recorder stores raw fields rather
+    than derived ones — a derived value freezes today's definition into a
+    historical record that can never be re-derived, because an option chain has
+    no historical endpoint behind it.
+
+    Both parameters are required by the API. `expiry_date` is passed through as
+    given: the caller resolves it from the warehouse's own contract master
+    rather than the vendor's `current_week` keyword, because expiry weekday has
+    rotated twice in this data window (NIFTY Thu -> Tue, SENSEX Fri -> Tue ->
+    Thu) and the contract master is the only source that stayed right across it.
+    """
+    if not instrument_key:
+        raise ValueError("instrument_key is required")
+    if not expiry_date:
+        raise ValueError("expiry_date is required")
+    url = (
+        f"{_base_url()}/v2/option/chain"
+        f"?instrument_key={quote(str(instrument_key), safe='')}"
+        f"&expiry_date={quote(str(expiry_date), safe='')}"
+    )
+    return await _authenticated_get(url, user_id)
+
+
 async def fetch_market_data_feed_authorize_url(user_id: str = DEFAULT_USER_ID) -> str:
     """Return a one-time Upstox V3 market-data WebSocket URL."""
     url = f"{_base_url()}/v3/feed/market-data-feed/authorize"

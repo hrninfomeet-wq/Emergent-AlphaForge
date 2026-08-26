@@ -27,6 +27,7 @@ from fastapi import HTTPException
 from app.db import ensure_indexes, get_db
 from app.strategies.base import get_registry
 from app.option_coverage_cache import get_option_coverage_cached
+from app.chain_recorder import chain_recorder_loop
 from app.upstox_stream import DEFAULT_STREAM_MODE
 from app.warehouse_autoupdate import daily_autoupdate_loop
 from app import upstox_client
@@ -241,6 +242,13 @@ async def startup() -> None:
     asyncio.create_task(_risk_supervisor_loop(), name="risk-supervisor")
     asyncio.create_task(_preopen_readiness_loop(), name="preopen-readiness")
     log.info("Live-feed supervisor started")
+
+    # Option-chain history. Reads /v2/option/chain on a timer — a SEPARATE read
+    # from the trading WebSocket, so it cannot perturb the feed the live path
+    # depends on. This is the only unrecoverable dataset in the warehouse: an
+    # option chain has no historical endpoint behind it, so a session not
+    # recorded is a session that can never be studied.
+    asyncio.create_task(chain_recorder_loop(), name="chain-recorder")
 
     # Warehouse auto-update: catch up missing data to yesterday's close.
     # Runs once at startup (best-effort, only if Upstox is connected) and then
