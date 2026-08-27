@@ -1372,3 +1372,93 @@ async def test_tee_blocked_signal_takes_neither_path():
     assert len(db.live_trades.rows) == 0
     assert len(db.paper_trades.rows) == 0
     assert len(calls) == 0
+
+
+# ---------- register item #11: a short window is REPORTED, never refused -------
+
+@pytest.mark.asyncio
+async def test_a_short_window_still_evaluates_but_carries_a_window_note():
+    """MISSING DATA MUST DEGRADE THE APP, NEVER DISABLE IT.
+
+    `StubStrategy` declares more bars than this 80-bar frame supplies. The
+    evaluation must still run — refusing would stop a fresh warehouse, a newly
+    ingested instrument or an early backfill from ever producing a signal — but
+    the shortfall has to be visible, because ten shipped strategies declare 400
+    bars for their opening range, session-VWAP anchor and prior close, and a
+    measured VWAP anchor error of 2.12 ATR once silently inverted nine of them.
+    """
+    db = FakeDB()
+    candles = make_candles(n=80)
+    seed_db(db, candles=candles, deployment=make_deployment(),
+            contracts=make_contracts(), profiles=[make_profile()], option_candles=[])
+    StubStrategy.set_next(Signal(direction="CE", score=75, reasons=["short window"]))
+    StubStrategy.live_lookback_bars = 400
+    try:
+        res = await evaluate_deployment_on_close(db, db.strategy_deployments.rows[0])
+    finally:
+        StubStrategy.live_lookback_bars = 200
+
+    assert res["outcome"] != "skipped", "a short window must not stop evaluation"
+    note = res.get("window_note")
+    assert note, "the shortfall must be reported on the result"
+    assert "degraded_window" in note and "400" in note
+    # ...and it must NOT have changed the trading decision.
+    assert not any("degraded_window" in b for b in res.get("blockers") or [])
+
+
+@pytest.mark.asyncio
+async def test_a_sufficient_window_carries_no_note_at_all():
+    """The key's ABSENCE is the healthy signal, so it must really be absent."""
+    db = FakeDB()
+    candles = make_candles(n=80)
+    seed_db(db, candles=candles, deployment=make_deployment(),
+            contracts=make_contracts(), profiles=[make_profile()], option_candles=[])
+    StubStrategy.set_next(Signal(direction="CE", score=75, reasons=["ok"]))
+    StubStrategy.live_lookback_bars = 60          # 80 available >= 60 declared
+    try:
+        res = await evaluate_deployment_on_close(db, db.strategy_deployments.rows[0])
+    finally:
+        StubStrategy.live_lookback_bars = 200
+
+    assert "window_note" not in res
+
+
+@pytest.mark.asyncio
+async def test_a_declaration_above_the_cap_is_refused_outright():
+    """Unlike missing data, this is a coding error in the strategy — no amount
+    of history fixes it, so it is refused rather than degraded."""
+    from app.deployment_evaluator import LIVE_LOOKBACK_MAX
+
+    db = FakeDB()
+    candles = make_candles(n=80)
+    seed_db(db, candles=candles, deployment=make_deployment(),
+            contracts=make_contracts(), profiles=[make_profile()], option_candles=[])
+    StubStrategy.set_next(Signal(direction="CE", score=75, reasons=["too big"]))
+    StubStrategy.live_lookback_bars = LIVE_LOOKBACK_MAX + 1
+    try:
+        res = await evaluate_deployment_on_close(db, db.strategy_deployments.rows[0])
+    finally:
+        StubStrategy.live_lookback_bars = 200
+
+    assert res["outcome"] == "skipped"
+    assert "live_window_exceeds_cap" in res["reason"]
+
+
+@pytest.mark.asyncio
+async def test_a_frame_below_the_indicator_warmup_is_still_refused():
+    """The one hard refusal that remains. Below `MIN_BARS_FOR_EVALUATION` the
+    indicators themselves have not warmed up, so there is no signal to degrade —
+    softening this to a note would let an unwarmed indicator drive a trade."""
+    from app.deployment_evaluator import MIN_BARS_FOR_EVALUATION
+
+    db = FakeDB()
+    candles = make_candles(n=MIN_BARS_FOR_EVALUATION - 10)
+    seed_db(db, candles=candles, deployment=make_deployment(),
+            contracts=make_contracts(), profiles=[make_profile()], option_candles=[])
+    StubStrategy.set_next(Signal(direction="CE", score=75, reasons=["too few"]))
+
+    res = await evaluate_deployment_on_close(db, db.strategy_deployments.rows[0])
+
+    assert res["outcome"] == "skipped"
+    assert "insufficient_candles" in res["reason"]
+    assert len(db.signals.rows) == 0

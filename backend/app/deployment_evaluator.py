@@ -60,8 +60,81 @@ BLOCK_OPEN_UNTIL = time.fromisoformat(DEFAULT_ENTRY_START)   # 09:25
 BLOCK_CLOSE_FROM = time.fromisoformat(DEFAULT_ENTRY_END)     # 14:50
 SQUARE_OFF_AT = time(15, 0)           # paper-trade square-off cutoff (used elsewhere)
 
-# Minimum bars needed for indicators/strategy lookback.
+# Minimum bars needed for indicator warm-up. This is a FLOOR, never a substitute
+# for what a strategy declares it needs — see `required_bars_for`.
 MIN_BARS_FOR_EVALUATION = 50
+
+#: Default rolling live window when a strategy declares nothing.
+LIVE_LOOKBACK_FLOOR = 200
+
+#: Hard ceiling on the rolling live window. A resource bound: every ACTIVE
+#: deployment loads this many candles once per minute.
+#:
+#: Exceeding it is REFUSED rather than silently truncated (register item #11).
+#: The old arithmetic was `max(200, min(requested, 1_000))`, so a strategy asking
+#: for more got 1,000 and was never told: the backtest saw the whole history, live
+#: saw a slice, both looked healthy and computed different numbers. Candidate A's
+#: spec needs a 20-session baseline (~7,500 bars) and would have hit exactly this
+#: — which is why that baseline has to be computed in the DATA layer, where the
+#: query window is independent of the strategy's frame.
+LIVE_LOOKBACK_MAX = 1000
+
+
+def resolve_live_lookback(requested: Any) -> Tuple[int, Optional[str]]:
+    """How many candles to load, and a refusal reason if that is impossible.
+
+    Returns ``(bars, None)`` when the request can be honoured, or
+    ``(bars, reason)`` when it cannot — the caller must then SKIP rather than
+    evaluate on a window that cannot support the strategy's own contract.
+
+    Requests below the floor are raised to it: more history than asked for can
+    only add context, never invalidate a result.
+    """
+    try:
+        want = int(requested)
+    except (TypeError, ValueError):
+        return LIVE_LOOKBACK_FLOOR, None
+    if want != want or want <= 0:          # NaN or nonsense
+        return LIVE_LOOKBACK_FLOOR, None
+    if want > LIVE_LOOKBACK_MAX:
+        return (LIVE_LOOKBACK_MAX,
+                f"live_window_exceeds_cap (strategy needs {want} bars, "
+                f"the live window holds at most {LIVE_LOOKBACK_MAX})")
+    return max(LIVE_LOOKBACK_FLOOR, want), None
+
+
+def required_bars_for(declared: Any) -> int:
+    """Bars a strategy must actually HAVE before its signal can be trusted.
+
+    The gate used to compare the loaded frame against `MIN_BARS_FOR_EVALUATION`
+    alone, so a strategy declaring 400 bars — for its opening range, session VWAP
+    anchor and prior session close — evaluated happily on 50 and emitted a signal
+    computed from anchors that were simply wrong. Ten shipped strategies declare
+    400 for exactly those reasons, and a measured VWAP anchor error of 2.12 ATR
+    once silently inverted nine of them (`fc424a1`). The declaration IS the
+    requirement.
+    """
+    try:
+        want = int(declared)
+    except (TypeError, ValueError):
+        return MIN_BARS_FOR_EVALUATION
+    if want != want or want <= 0:            # NaN or nonsense
+        return MIN_BARS_FOR_EVALUATION
+    # The LOAD floor (`LIVE_LOOKBACK_FLOOR`) deliberately does NOT apply here.
+    # It governs how much history we fetch — always safe to over-fetch — whereas
+    # this is what the strategy has actually CLAIMED it needs. Folding the floor
+    # in would hold a strategy declaring 60 bars to 200 and report a degraded
+    # window it never asked about.
+    return max(MIN_BARS_FOR_EVALUATION, min(want, LIVE_LOOKBACK_MAX))
+
+
+def is_window_sufficient(available: int, declared: Any) -> bool:
+    """Whether `available` bars satisfy what `declared` asks for."""
+    try:
+        have = int(available)
+    except (TypeError, ValueError):
+        return False
+    return have >= required_bars_for(declared)
 
 
 def _ist_time_of_ts(ts_ms: int) -> time:
@@ -558,11 +631,16 @@ async def evaluate_deployment_on_close(
         }
     kill_block_reason = kill.get("block_reason")
 
-    try:
-        requested_lookback = int(getattr(strategy, "live_lookback_bars", 200) or 200)
-    except (TypeError, ValueError):
-        requested_lookback = 200
-    live_lookback = max(200, min(requested_lookback, 1_000))
+    declared_lookback = getattr(strategy, "live_lookback_bars", LIVE_LOOKBACK_FLOOR)
+    live_lookback, cap_reason = resolve_live_lookback(declared_lookback)
+    if cap_reason:
+        # Refuse rather than truncate. Evaluating a strategy on a window smaller
+        # than its own contract requires is a confident wrong answer.
+        return {
+            "deployment_id": deployment_id,
+            "outcome": "skipped",
+            "reason": cap_reason,
+        }
     df = await _load_recent_candles(db, instrument, lookback=live_lookback)
     if df.empty or len(df) < MIN_BARS_FOR_EVALUATION:
         return {
@@ -570,6 +648,27 @@ async def evaluate_deployment_on_close(
             "outcome": "skipped",
             "reason": f"insufficient_candles ({len(df)} < {MIN_BARS_FOR_EVALUATION})",
         }
+
+    # A window shorter than the strategy DECLARED is recorded, not refused.
+    #
+    # Refusing was the first attempt and it was wrong: `_load_recent_candles`
+    # returns min(available, requested), so any warehouse with less history than
+    # a strategy asks for — a fresh install, a newly ingested instrument, an
+    # early backfill — would have stopped evaluating entirely. Missing data must
+    # DEGRADE the app, never disable it.
+    #
+    # But it must not pass unnoticed either: ten shipped strategies declare 400
+    # bars for their opening range, session-VWAP anchor and prior close, and a
+    # measured VWAP anchor error of 2.12 ATR once silently inverted nine of them
+    # (`fc424a1`). So the shortfall rides along on the result, where the journal
+    # and the operator can see it, rather than being silently absorbed.
+    window_note = None
+    if not is_window_sufficient(len(df), declared_lookback):
+        window_note = (f"degraded_window ({len(df)} bars available < "
+                       f"{required_bars_for(declared_lookback)} declared by "
+                       f"{getattr(strategy, 'id', '?')}); session-anchored values "
+                       f"may be computed from a truncated window")
+        log.warning("deployment %s: %s", deployment_id, window_note)
 
     # Warehouse-backed columns (VIX, ...) join onto the RAW rolling window before
     # enrichment, so a live bar sees the SAME columns a backtest bar does. Lazy
@@ -986,7 +1085,7 @@ async def evaluate_deployment_on_close(
             outcome = "latch_refused"
     await _mark_deployment_evaluated(db, deployment_id, candle_ts)
 
-    return {
+    result = {
         "deployment_id": deployment_id,
         "outcome": outcome,
         "signal_id": signal_doc.get("id"),
@@ -997,6 +1096,13 @@ async def evaluate_deployment_on_close(
         "reasons": signal_doc.get("reasons", []),
         "tracked_for_pnl": audit_context.get("tracked_for_pnl"),
     }
+    # Deliberately NOT a blocker: a short window degrades confidence, it does not
+    # invalidate the evaluation, and refusing on it would stop a fresh warehouse
+    # from ever evaluating. Present only when the window really was short, so the
+    # key's absence is itself the healthy signal.
+    if window_note:
+        result["window_note"] = window_note
+    return result
 
 
 async def _mark_deployment_evaluated(db: Any, deployment_id: str, candle_ts: int) -> None:
