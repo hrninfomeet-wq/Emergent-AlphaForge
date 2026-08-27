@@ -676,3 +676,68 @@ def test_empty_metrics_has_attribution_keys():
     for k in ("option_trail_exits", "option_breakeven_exits", "skipped_by_cap",
               "skipped_daily_loss", "skipped_daily_target", "skipped_max_trades"):
         assert m.get(k) == 0
+
+
+# ---------------------------------------------------------------------------
+# Missing market data must DEGRADE the result, never inflate it (item #13)
+#
+# The warehouse has two confirmed vendor-side gaps that cannot be filled: NIFTY
+# expiry 2024-12-26 holds no bars for any strike within +/-300 of 23900 (three
+# sessions), and SENSEX 80400 exp 2024-11-29 is missing on 2024-11-26. Upstox's
+# expired-contract endpoint answers for both and returns ZERO rows, so this is
+# the source's gap, not an ingestion defect — it will never be repaired.
+#
+# That makes the app's behaviour ON those gaps the thing that matters. The
+# dangerous failure is not a crash, which is visible; it is a missing leg being
+# quietly counted as a trade, which silently improves every aggregate computed
+# from it.
+# ---------------------------------------------------------------------------
+
+def test_a_missing_contract_is_never_counted_as_a_paired_trade():
+    """The invariant that keeps a data gap from flattering a result."""
+    spot_trades = [{"trade_id": "t1", "entry_ts": 1_700_000_000_000,
+                    "exit_ts": 1_700_000_600_000, "direction": "CE",
+                    "entry_price": 100.0, "exit_price": 101.0}]
+    result = option_backtest.simulate_paired_option_trades(
+        spot_trades=spot_trades, contracts=[], option_candles=pd.DataFrame(),
+        underlying="NIFTY", moneyness="atm",
+    )
+    cov = result["coverage"]
+    assert cov["spot_trade_count"] == 1
+    assert cov["paired_trade_count"] == 0, (
+        "an unpairable trade must not appear in the paired count — every P&L "
+        "aggregate is computed from paired trades")
+    assert cov["missing_contract"] == 1
+    assert all(t["status"] != "PAIRED" for t in result["trades"])
+
+
+def test_the_coverage_arithmetic_always_balances():
+    """paired + every miss bucket must account for every spot trade. A bucket
+    that silently drops a trade would make coverage look complete while the
+    sample quietly shrank."""
+    spot_trades = [{"trade_id": f"t{i}", "entry_ts": 1_700_000_000_000,
+                    "exit_ts": 1_700_000_600_000, "direction": "CE",
+                    "entry_price": 100.0, "exit_price": 101.0} for i in range(4)]
+    result = option_backtest.simulate_paired_option_trades(
+        spot_trades=spot_trades, contracts=[], option_candles=pd.DataFrame(),
+        underlying="NIFTY", moneyness="atm",
+    )
+    cov = result["coverage"]
+    accounted = (cov["paired_trade_count"] + cov["missing_contract"]
+                 + cov["missing_entry_candle"] + cov["missing_exit_candle"]
+                 + cov.get("skipped_by_cap", 0))
+    assert accounted == cov["spot_trade_count"] == 4
+
+
+def test_every_unpaired_trade_says_WHY_it_could_not_be_paired():
+    """A gap the operator cannot diagnose is indistinguishable from a bug."""
+    spot_trades = [{"trade_id": "t1", "entry_ts": 1_700_000_000_000,
+                    "exit_ts": 1_700_000_600_000, "direction": "CE",
+                    "entry_price": 100.0, "exit_price": 101.0}]
+    result = option_backtest.simulate_paired_option_trades(
+        spot_trades=spot_trades, contracts=[], option_candles=pd.DataFrame(),
+        underlying="NIFTY", moneyness="atm",
+    )
+    for t in result["trades"]:
+        if t["status"] != "PAIRED":
+            assert t.get("miss_reason") or t.get("skip_reason"), t

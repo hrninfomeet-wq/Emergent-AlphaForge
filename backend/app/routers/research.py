@@ -700,9 +700,32 @@ async def get_opt_job(job_id: str):
 
 @api.delete("/optimize/jobs/{job_id}")
 async def delete_opt_job(job_id: str):
+    """Delete a job, PRESERVING the audit trail of any run it produced.
+
+    A saved backtest run records `config.optimization_job_id` but not the space
+    that was searched, so deleting the job used to orphan the result: +₹87,721
+    over 480 trials with no recoverable answer to "what was searched?".
+    A result whose search space is unknowable cannot be audited, and an
+    unauditable result is worse than none because it still looks like evidence
+    (register item #14).
+
+    The job's audit-critical fields are copied onto every referencing run first,
+    so deletion stays allowed and stops being destructive.
+    """
+    from app.optimizer_provenance import provenance_snapshot
+
     db = get_db()
+    job = await db.optimization_jobs.find_one({"id": job_id}, {"_id": 0})
+    preserved = 0
+    snapshot = provenance_snapshot(job)
+    if snapshot:
+        res_runs = await db.backtest_runs.update_many(
+            {"config.optimization_job_id": job_id},
+            {"$set": {"optimizer_provenance": snapshot}},
+        )
+        preserved = int(getattr(res_runs, "modified_count", 0) or 0)
     res = await db.optimization_jobs.delete_one({"id": job_id})
-    return {"deleted": res.deleted_count}
+    return {"deleted": res.deleted_count, "runs_preserved": preserved}
 
 
 @api.post("/optimize/jobs/{job_id}/cancel")
