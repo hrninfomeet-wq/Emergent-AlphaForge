@@ -66,10 +66,14 @@ def capability_summary() -> Dict[str, Any]:
     Tiers (each is genuinely different in practice):
       build_now       — indicator columns + live-feasible structural features:
                         work in BOTH backtest and live/paper, full fidelity.
-      backtest_only   — stateful structural features (choch/fvg_zones/order_block):
-                        build + backtest fine, but the ~200-bar live window may not
-                        contain the zone's origin, so LIVE fidelity isn't guaranteed
-                        yet (an engineering limit, not a permanent one).
+      backtest_only   — anything whose state can reach further back than the
+                        ~200-bar live window holds, so LIVE fidelity is not
+                        guaranteed. This tier is DERIVED from each feature's
+                        `live_feasible`, never hand-listed, so it empties itself
+                        as features are fixed. It used to name choch / fvg_zones /
+                        order_block; all three now bound their carry-forward with
+                        `smc_max_age_bars` and are live-deployable (register item
+                        #9), which is why the tier is currently empty.
       addable_data    — OI / PCR / greeks / IV: not stored today, but the broker
                         feed carries them — buildable once ingested + plumbed.
       needs_engine    — cross-instrument / relative-strength / pairs: needs a

@@ -18,6 +18,30 @@ from typing import Dict
 import numpy as np
 import pandas as pd
 
+#: How long a carried SMC zone stays alive without renewal, in bars.
+#:
+#: This bound is what makes `choch`, `fvg_zones` and `order_block` LIVE-
+#: DEPLOYABLE. All three used to carry the most recent zone forward INDEFINITELY
+#: until an invalidation event, so the state at any bar could depend on data
+#: arbitrarily far back — `stateful_unbounded=True`, and therefore backtest-only.
+#: An SMC strategy built on fair-value gaps or order blocks backtested fine and
+#: refused to deploy, which is half the SMC vocabulary unusable.
+#:
+#: Once state cannot reach further back than N bars, a rolling window longer than
+#: N reproduces the full-history answer ON ITS FINAL BAR — the only bar the live
+#: evaluator reads. That equivalence is asserted directly against full history in
+#: `test_a_rolling_window_reproduces_full_history_on_the_final_bar`, rather than
+#: argued for in a comment: the `live_window_anchors_session_indicators` trap
+#: (a session-VWAP anchor error of 2.12 ATR that silently inverted nine shipped
+#: strategies) is exactly what an unverified claim of this shape costs.
+#:
+#: 90 bars is 1.5 hours of 1-minute data. It is generous for intraday structure —
+#: a 90-minute-old unmitigated gap is stale by any SMC reading — and leaves
+#: headroom under `feature_live_feasible`'s 150-bar warm-up ceiling once each
+#: feature's own lookback is added.
+SMC_MAX_AGE_BARS = 90
+
+
 from app.features.registry import FeatureGroup
 from app.features.catalog import register_feature
 
@@ -145,13 +169,24 @@ def compute_choch(df: pd.DataFrame, params: dict) -> Dict[str, pd.Series]:
     n = len(df)
     up = np.zeros(n, dtype=bool)
     down = np.zeros(n, dtype=bool)
+    max_age = max(1, int(params.get("smc_max_age_bars", SMC_MAX_AGE_BARS)))
     direction = 0
+    age = 0
     for i in range(n):
         new = direction
         if bu[i]:
-            new = 1
+            new, age = 1, 0
         elif bd[i]:
-            new = -1
+            new, age = -1, 0
+        else:
+            age += 1
+            # An unrenewed direction expires. Without this the state reaches back
+            # to the last BOS however far away it is, and the whole feature is
+            # unbounded. Expiring to 0 is deliberately CONSERVATIVE: the next BOS
+            # then sets a direction without emitting a change-of-character, so a
+            # short window can under-report but never invent one.
+            if age > max_age:
+                new, direction = 0, 0
         if new == 1 and direction == -1:
             up[i] = True
         elif new == -1 and direction == 1:
@@ -167,12 +202,12 @@ register_feature(
     FeatureGroup(
         name="choch",
         columns=("choch_up", "choch_down"),
-        param_keys=(),
+        param_keys=("smc_max_age_bars",),
         requires=("displacement",),
         cost_class="session_loop",
         session_anchored=False,
-        stateful_unbounded=True,
-        min_history_bars=2,
+        stateful_unbounded=False,
+        min_history_bars=SMC_MAX_AGE_BARS + 5,
         compute=compute_choch,
     ),
     description="Change-of-character: the running market-structure direction flips "
@@ -198,20 +233,32 @@ def compute_fvg_zones(df: pd.DataFrame, params: dict) -> Dict[str, pd.Series]:
     ce = np.full(n, np.nan)
     state = np.empty(n, dtype=object)
     direction = np.empty(n, dtype=object)
+    max_age = max(1, int(params.get("smc_max_age_bars", SMC_MAX_AGE_BARS)))
     cur_top = cur_bot = np.nan
     cur_dir = None
     cur_state = "none"
+    age = 0
     for i in range(n):
         d = fdir[i]
         if d == "UP" and i >= 2:
-            cur_bot, cur_top, cur_dir, cur_state = high[i - 2], low[i], "UP", "active"
+            cur_bot, cur_top, cur_dir, cur_state, age = high[i - 2], low[i], "UP", "active", 0
         elif d == "DOWN" and i >= 2:
-            cur_bot, cur_top, cur_dir, cur_state = high[i], low[i - 2], "DOWN", "active"
-        elif cur_state == "active":
-            if cur_dir == "UP" and low[i] <= cur_bot:
-                cur_state = "filled"
-            elif cur_dir == "DOWN" and high[i] >= cur_top:
-                cur_state = "filled"
+            cur_bot, cur_top, cur_dir, cur_state, age = high[i], low[i - 2], "DOWN", "active", 0
+        else:
+            age += 1
+            if cur_state == "active":
+                if cur_dir == "UP" and low[i] <= cur_bot:
+                    cur_state = "filled"
+                elif cur_dir == "DOWN" and high[i] >= cur_top:
+                    cur_state = "filled"
+            # A gap nobody filled and nothing renewed goes stale rather than being
+            # carried forever. Clearing the LEVELS too matters: leaving a stale
+            # top/bottom behind an "expired" state would let a rule read a price
+            # band the window cannot justify.
+            if age > max_age and cur_state != "none":
+                cur_state = "expired"
+                cur_top = cur_bot = np.nan
+                cur_dir = None
         top[i] = cur_top
         bot[i] = cur_bot
         ce[i] = (cur_top + cur_bot) / 2.0 if cur_dir is not None else np.nan
@@ -231,12 +278,12 @@ register_feature(
     FeatureGroup(
         name="fvg_zones",
         columns=("fvg_top", "fvg_bottom", "fvg_ce", "fvg_dir", "fvg_state"),
-        param_keys=(),
+        param_keys=("smc_max_age_bars",),
         requires=(),
         cost_class="session_loop",
         session_anchored=False,
-        stateful_unbounded=True,
-        min_history_bars=3,
+        stateful_unbounded=False,
+        min_history_bars=SMC_MAX_AGE_BARS + 5,
         compute=compute_fvg_zones,
     ),
     description="Fair Value Gap zones: the active 3-candle imbalance boundaries "
@@ -262,27 +309,36 @@ def compute_order_block(df: pd.DataFrame, params: dict) -> Dict[str, pd.Series]:
     bot = np.full(n, np.nan)
     direction = np.empty(n, dtype=object)
     active = np.zeros(n, dtype=bool)
+    max_age = max(1, int(params.get("smc_max_age_bars", SMC_MAX_AGE_BARS)))
     cur_top = cur_bot = np.nan
     cur_dir = None
     cur_active = False
+    age = 0
     for i in range(n):
         if disp[i] and c[i] > o[i]:
             for j in range(i - 1, max(-1, i - 1 - lb), -1):
                 if c[j] < o[j]:
-                    cur_top, cur_bot, cur_dir, cur_active = h[j], l[j], "bull", True
+                    cur_top, cur_bot, cur_dir, cur_active, age = h[j], l[j], "bull", True, 0
                     break
             # no qualifying opposing candle in-window -> keep carrying the prior OB
         elif disp[i] and c[i] < o[i]:
             for j in range(i - 1, max(-1, i - 1 - lb), -1):
                 if c[j] > o[j]:
-                    cur_top, cur_bot, cur_dir, cur_active = h[j], l[j], "bear", True
+                    cur_top, cur_bot, cur_dir, cur_active, age = h[j], l[j], "bear", True, 0
                     break
             # no qualifying opposing candle in-window -> keep carrying the prior OB
-        elif cur_active:
-            if cur_dir == "bull" and l[i] <= cur_bot:
+        else:
+            age += 1
+            if cur_active:
+                if cur_dir == "bull" and l[i] <= cur_bot:
+                    cur_active = False
+                elif cur_dir == "bear" and h[i] >= cur_top:
+                    cur_active = False
+            # Unmitigated does not mean immortal. Same bound, same reason.
+            if age > max_age and cur_dir is not None:
                 cur_active = False
-            elif cur_dir == "bear" and h[i] >= cur_top:
-                cur_active = False
+                cur_top = cur_bot = np.nan
+                cur_dir = None
         top[i] = cur_top
         bot[i] = cur_bot
         direction[i] = cur_dir
@@ -300,16 +356,16 @@ register_feature(
     FeatureGroup(
         name="order_block",
         columns=("ob_top", "ob_bottom", "ob_dir", "ob_active"),
-        param_keys=("ob_lookback",),
+        param_keys=("ob_lookback", "smc_max_age_bars"),
         requires=("displacement",),
         cost_class="session_loop",
         session_anchored=False,
-        stateful_unbounded=True,
-        min_history_bars=22,
+        stateful_unbounded=False,
+        min_history_bars=SMC_MAX_AGE_BARS + 25,
         compute=compute_order_block,
     ),
     description="Order block: the last opposing candle before a displacement (bounded "
                 "lookback <=20), carried until mitigated. Requires displacement; "
-                "stateful -> backtest-only in v1.",
+                "carry-forward bounded by smc_max_age_bars -> live-deployable.",
     data_requirements=["ohlcv_1m"],
 )

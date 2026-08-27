@@ -41,12 +41,16 @@ def test_r4_order_flow_is_infeasible():
     assert v.feasibility == FC.INFEASIBLE
 
 
-def test_r5_fvg_maps_to_seed_feature_with_backtest_only_caveat():
+def test_r5_fvg_maps_to_a_seed_feature_that_is_now_live_safe():
+    """Was `..._with_backtest_only_caveat`. Register item #9 bounded the
+    fvg_zones carry-forward, so the caveat is gone and the rule is deployable.
+    The live-gated PATH is still covered by the long-window and
+    session-anchored cases below, which remain legitimately False."""
     v = classify_rule(T(concepts={"fvg"}))
     assert v.feasibility == FC.BUILDABLE_WITH_FEATURE
     assert v.feature == "fvg_zones"
-    assert v.live_feasible is False
-    assert "backtest" in v.message.lower()
+    assert v.live_feasible is True
+    assert "live" in v.message.lower()
 
 
 def test_r5_premium_discount_maps_to_live_feasible_feature():

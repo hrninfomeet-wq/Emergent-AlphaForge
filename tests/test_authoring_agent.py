@@ -67,7 +67,7 @@ def test_map_source_to_ruleset_build(monkeypatch):
     assert out["rules"][0]["decision_class"] == "BUILDABLE_NOW"
 
 
-def test_map_source_to_ruleset_fvg_is_advise(monkeypatch):
+def test_map_source_to_ruleset_fvg_now_builds(monkeypatch):
     from app.ai.authoring_agent import map_source_to_ruleset, ParsedRuleSet, ParsedRule
     parsed = ParsedRuleSet(rules=[
         ParsedRule(id="r1", text="enter at a bullish FVG", kind="ENTRY",
@@ -75,10 +75,15 @@ def test_map_source_to_ruleset_fvg_is_advise(monkeypatch):
     ])
     _patch_llm(monkeypatch, parsed)
     out = map_source_to_ruleset("buy when price returns to a bullish FVG")
-    assert out["decision"] == "ADVISE"
+    # Register item #9: `fvg_zones` bounded its carry-forward and became
+    # live-deployable, so an FVG rule is now a clean BUILD rather than an
+    # ADVISE carrying a backtest-only caveat. That IS the fix — an SMC
+    # strategy can be built AND deployed. The ADVISE path itself is still
+    # exercised by the dropped-optional-rule tests below.
+    assert out["decision"] == "BUILD"
     r = out["rules"][0]
     assert r["decision_class"] == "BUILDABLE_WITH_FEATURE"
-    assert r["feature"] == "fvg_zones" and r["live_feasible"] is False
+    assert r["feature"] == "fvg_zones" and r["live_feasible"] is True
 
 
 def test_map_source_to_ruleset_oi_core_is_reject(monkeypatch):
@@ -128,14 +133,19 @@ def test_dropped_optional_advise_summary_is_sensible(monkeypatch):
     assert "feature(s): ." not in out["summary"]
 
 
-def test_backtest_only_advise_summary_names_feature(monkeypatch):
+def test_a_bounded_structural_feature_builds_cleanly(monkeypatch):
     from app.ai.authoring_agent import map_source_to_ruleset, ParsedRuleSet, ParsedRule
     _patch_llm(monkeypatch, ParsedRuleSet(rules=[
         ParsedRule(id="r1", text="enter at FVG", kind="ENTRY", criticality="CORE",
                    concepts=["fvg"])]))
     out = map_source_to_ruleset("buy the bullish FVG")
-    assert out["decision"] == "ADVISE"
-    assert "fvg_zones" in out["summary"]
+    # Was an ADVISE whose summary had to name the backtest-only feature. Item #9
+    # bounded fvg_zones, so there is no caveat left to report and the summary is
+    # the clean-build one. The ADVISE-names-the-cause path is still covered by
+    # the dropped-optional-rule tests.
+    assert out["decision"] == "BUILD"
+    assert out["rules"][0]["feature"] == "fvg_zones"
+    assert "map cleanly" in out["summary"]
 
 
 def test_empty_parse_is_ask_not_build(monkeypatch):
@@ -147,25 +157,30 @@ def test_empty_parse_is_ask_not_build(monkeypatch):
     assert "couldn't extract" in out["summary"]
 
 
-def test_flagship_ict_multirule_advise(monkeypatch):
-    # The motivating case: a real ICT strategy whose FVG rule is backtest-only ->
-    # ADVISE (not a silently-degraded BUILD).
+def test_flagship_ict_multirule_now_builds_end_to_end(monkeypatch):
+    # The motivating case: a real ICT strategy. Its FVG rule USED to be
+    # backtest-only, which forced an ADVISE; item #9 made it live-deployable.
     from app.ai.authoring_agent import map_source_to_ruleset, ParsedRuleSet, ParsedRule
     parsed = ParsedRuleSet(rules=[
         ParsedRule(id="r1", text="bias from premium/discount", kind="FILTER",
                    criticality="CORE", concepts=["premium_discount"]),   # live ok
         ParsedRule(id="r2", text="enter at a bullish FVG", kind="ENTRY",
-                   criticality="CORE", concepts=["fvg"]),                 # backtest-only
+                   criticality="CORE", concepts=["fvg"]),                 # live ok since #9
         ParsedRule(id="r3", text="target the opposing liquidity", kind="EXIT",
                    criticality="CORE", concepts=["sweep"]),               # live ok
     ])
     _patch_llm(monkeypatch, parsed)
     out = map_source_to_ruleset("ICT: in discount, buy the bullish FVG, target liquidity")
-    assert out["decision"] == "ADVISE"
+    # The motivating ICT case now BUILDS end to end: all three rules are
+    # live-deployable since fvg_zones bounded its state (register item #9).
+    assert out["decision"] == "BUILD"
     classes = {r["id"]: r["decision_class"] for r in out["rules"]}
     assert classes == {"r1": "BUILDABLE_WITH_FEATURE", "r2": "BUILDABLE_WITH_FEATURE",
                        "r3": "BUILDABLE_WITH_FEATURE"}
-    # pin the per-rule live-feasibility so "only the FVG rule drives ADVISE" is load-bearing
+    # Pin per-rule live-feasibility. This used to make "only the FVG rule drives
+    # ADVISE" load-bearing; now it pins the stronger claim that EVERY rule of a
+    # real ICT strategy is deployable, which is what register item #9 bought.
     live = {r["id"]: r["live_feasible"] for r in out["rules"]}
-    assert live == {"r1": True, "r2": False, "r3": True}
-    assert "fvg_zones" in out["summary"]
+    assert live == {"r1": True, "r2": True, "r3": True}
+    # The summary is the clean-build one — there is no caveat left to name.
+    assert "map cleanly" in out["summary"]

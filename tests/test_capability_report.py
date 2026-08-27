@@ -24,7 +24,7 @@ def test_capability_report_composes_three_sources():
     feats = {f["feature"]: f for f in rep["features"]}
     assert {"swing_levels", "fvg_zones", "order_block"} <= set(feats)
     assert feats["swing_levels"]["live_feasible"] is True
-    assert feats["fvg_zones"]["live_feasible"] is False
+    assert feats["fvg_zones"]["live_feasible"] is True   # bounded since item #9
     assert rep["warehouse"]["has_oi_history"] is False
 
 
@@ -44,7 +44,7 @@ def test_flagship_ict_fvg_end_to_end():
 
     v = classify_rule(RuleTokens(concepts=frozenset({"fvg"})))
     assert v.feasibility == FeasibilityClass.BUILDABLE_WITH_FEATURE
-    assert v.feature == "fvg_zones" and v.live_feasible is False
+    assert v.feature == "fvg_zones" and v.live_feasible is True
 
     assert "fvg_top" in allowed_columns(["fvg_zones"])
     assert "fvg_top" not in allowed_columns()

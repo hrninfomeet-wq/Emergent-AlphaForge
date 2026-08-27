@@ -28,7 +28,11 @@ def test_capability_summary_has_honest_tiers():
     assert len(c["build_now"]["columns"]) > 0
     # backtest-only tier is derived from live_feasible==False -> the SMC/ICT trio
     bt = {f["name"] for f in c["backtest_only"]["features"]}
-    assert {"choch", "fvg_zones", "order_block"} <= bt
+    # The backtest_only tier is DERIVED from each feature's live_feasible, not
+    # hand-listed, so it empties itself as features are fixed. Register item #9
+    # bounded all three SMC zones, so the tier is now empty and they moved to
+    # build_now — which is the point of the tier being derived.
+    assert bt == set(), f"expected an empty backtest-only tier, got {bt}"
     # build-now features are all live-feasible (fidelity in both backtest and live)
     for f in c["build_now"]["features"]:
         assert f["live_feasible"] is not False

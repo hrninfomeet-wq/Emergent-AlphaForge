@@ -154,11 +154,14 @@ def test_choch_flips_on_direction_change():
     assert out["choch_up"].tolist() == [False, False, False, False, True, False]
 
 
-def test_choch_is_stateful_unbounded_and_backtest_only():
+def test_choch_is_bounded_and_live_deployable():
+    """Was `stateful_unbounded is True` / not live-feasible. The direction now
+    expires after `smc_max_age_bars` without a break of structure, so the state
+    cannot reach further back than the live window holds (register item #9)."""
     from app.features.registry import feature_live_feasible
     g = FEATURE_REGISTRY["choch"]
-    assert g.stateful_unbounded is True
-    assert feature_live_feasible(g) is False
+    assert g.stateful_unbounded is False
+    assert feature_live_feasible(g) is True
 
 
 def test_choch_causal_under_truncation():
@@ -258,9 +261,11 @@ def test_fvg_down_zone_forms_and_fills():
     assert out["fvg_state"].iloc[4] == "filled"   # DOWN filled when high>=top: bar4 high 100.5 >= 100
 
 
-def test_fvg_zones_backtest_only():
+def test_fvg_zones_is_live_deployable():
+    """Was backtest-only. An unfilled, unrenewed gap now expires instead of
+    being carried forever (register item #9)."""
     from app.features.registry import feature_live_feasible
-    assert feature_live_feasible(FEATURE_REGISTRY["fvg_zones"]) is False
+    assert feature_live_feasible(FEATURE_REGISTRY["fvg_zones"]) is True
 
 
 def test_fvg_zones_causal_under_truncation():
@@ -411,7 +416,194 @@ def test_catalog_advertises_all_seed_features():
     assert by["swing_levels"]["live_feasible"] is True
     assert by["premium_discount"]["live_feasible"] is True
     assert by["displacement"]["live_feasible"] is True
-    # stateful-unbounded => backtest-only in v1
-    assert by["fvg_zones"]["live_feasible"] is False
-    assert by["choch"]["live_feasible"] is False
-    assert by["order_block"]["live_feasible"] is False
+    # Bounded carry-forward => live-deployable too (register item #9). These
+    # three were backtest-only, which made half the SMC vocabulary — and the
+    # half most SMC traders key on — impossible to deploy however it backtested.
+    assert by["fvg_zones"]["live_feasible"] is True
+    assert by["choch"]["live_feasible"] is True
+    assert by["order_block"]["live_feasible"] is True
+
+
+# ---------------------------------------------------------------------------
+# Register item #9 — bounded carry-forward makes the SMC zones LIVE-DEPLOYABLE
+#
+# `choch`, `fvg_zones` and `order_block` all carried the most recent zone forward
+# INDEFINITELY until an invalidation event, so the state at any bar could depend
+# on data arbitrarily far back. That is what `stateful_unbounded=True` meant, and
+# it made all three backtest-only: an SMC strategy built on fair-value gaps or
+# order blocks would backtest beautifully and refuse to deploy.
+#
+# Bounding the carry-forward with an explicit max age fixes it BY CONSTRUCTION.
+# Once state cannot reach further back than N bars, a rolling window longer than
+# N reproduces the full-history answer on its final bar — which is the only bar
+# the live evaluator reads.
+# ---------------------------------------------------------------------------
+
+from app.features.registry import feature_live_feasible  # noqa: E402
+from app.features.structures import SMC_MAX_AGE_BARS  # noqa: E402
+
+_SMC = ("choch", "fvg_zones", "order_block")
+
+
+def test_the_smc_zones_are_no_longer_backtest_only():
+    for name in _SMC:
+        g = FEATURE_REGISTRY[name]
+        assert g.stateful_unbounded is False, name
+        assert feature_live_feasible(g) is True, name
+
+
+def test_every_registered_feature_is_now_live_feasible():
+    """The half-deployable vocabulary was the actual defect: three of six worked
+    live and the three most SMC traders key on did not."""
+    for name, g in FEATURE_REGISTRY.items():
+        assert feature_live_feasible(g) is True, f"{name} is still backtest-only"
+
+
+def test_the_declared_warmup_actually_covers_the_max_age():
+    """`feature_live_feasible` trusts `min_history_bars`. If that under-declares
+    the real reach of the state, the flag says live-correct and the values are
+    not — a worse failure than the honest backtest-only flag it replaces."""
+    for name in _SMC:
+        g = FEATURE_REGISTRY[name]
+        assert g.min_history_bars >= SMC_MAX_AGE_BARS, name
+
+
+def test_a_rolling_window_reproduces_full_history_on_the_final_bar():
+    """THE property that makes these live-correct, tested the only way that
+    counts: compute on full history, compute on the trailing window the live
+    evaluator would actually hold, and compare the bar live would read.
+
+    This is the check the `live_window_anchors_session_indicators` trap exists
+    for — a session-VWAP anchor error of 2.12 ATR silently inverted nine shipped
+    strategies precisely because nobody compared the two paths.
+    """
+    df = _enrich(_ohlcv(n=600), {})
+    params = {}
+    full = _materialize(df, params, list(_SMC))
+    window_len = 200                      # the live evaluator's default lookback
+    windowed = _materialize(df.iloc[-window_len:], params, list(_SMC))
+
+    cols = [c for name in _SMC for c in FEATURE_REGISTRY[name].columns]
+    for col in cols:
+        a = full[col].iloc[-1]
+        b = windowed[col].iloc[-1]
+        if pd.isna(a) and pd.isna(b):
+            continue
+        assert a == b, f"{col}: full-history={a!r} but live window={b!r}"
+
+
+def test_the_agreement_holds_across_many_window_positions():
+    """One matching bar could be luck. Slide the window and check every ending."""
+    df = _enrich(_ohlcv(n=700, seed=11), {})
+    full = _materialize(df, {}, list(_SMC))
+    cols = [c for name in _SMC for c in FEATURE_REGISTRY[name].columns]
+    for end in range(300, 700, 47):
+        w = _materialize(df.iloc[max(0, end - 200):end], {}, list(_SMC))
+        for col in cols:
+            a, b = full[col].iloc[end - 1], w[col].iloc[-1]
+            if pd.isna(a) and pd.isna(b):
+                continue
+            assert a == b, f"{col} @bar {end}: full={a!r} window={b!r}"
+
+
+def test_a_zone_expires_once_it_is_older_than_the_max_age():
+    """The bound is not decorative — an unrenewed zone must actually go away,
+    or the state still reaches back forever and the live flag is a lie."""
+    from app.features.structures import compute_fvg_zones
+    n = SMC_MAX_AGE_BARS + 60
+    # One UP gap at bar 2, then a long flat drift that neither fills nor renews it.
+    high = np.full(n, 101.0); low = np.full(n, 100.5); close = np.full(n, 100.8)
+    high[0], low[0], close[0] = 100.2, 99.8, 100.0
+    high[1], low[1], close[1] = 100.6, 100.1, 100.5
+    high[2], low[2], close[2] = 101.4, 100.9, 101.2      # low[2] > high[0] -> UP FVG
+    df = pd.DataFrame({"high": high, "low": low, "close": close,
+                       "open": close, "volume": np.ones(n)})
+    out = compute_fvg_zones(df, {})
+    assert out["fvg_state"].iloc[3] == "active"
+    assert out["fvg_state"].iloc[-1] != "active", "the gap never expired"
+    assert pd.isna(out["fvg_top"].iloc[-1])
+
+
+# The rolling-window equivalence test above passes on realistic data whether or
+# not the bound exists, because events recur often enough inside 200 bars that
+# bounded and unbounded agree anyway. It proves the features are live-CORRECT but
+# it does not exercise the BOUND. A mutation sweep made that concrete: removing
+# the expiry from choch and order_block, and removing the age reset from both
+# fvg and order_block, left it green. These construct the long quiet stretches
+# where the bound is the only thing that differs.
+
+def _flat(n, low=105.0, high=106.0, close=105.5):
+    return (np.full(n, high), np.full(n, low), np.full(n, close))
+
+
+def test_choch_direction_expires_so_it_cannot_reach_past_the_window():
+    from app.features.structures import compute_choch
+    n = SMC_MAX_AGE_BARS + 40
+    bu = np.zeros(n, dtype=bool); bd = np.zeros(n, dtype=bool)
+    bu[0] = True                      # trend up established at the very start
+    bd[n - 1] = True                  # ... and reversed far beyond the max age
+    out = compute_choch(pd.DataFrame({"bos_up": bu, "bos_down": bd}), {})
+    assert out["choch_down"].iloc[-1] is np.False_ or not out["choch_down"].iloc[-1], (
+        "an expired direction must not emit a change-of-character — that would be "
+        "state reaching back further than the live window holds")
+
+
+def test_choch_age_resets_on_a_renewing_break():
+    from app.features.structures import compute_choch
+    n = SMC_MAX_AGE_BARS + 40
+    bu = np.zeros(n, dtype=bool); bd = np.zeros(n, dtype=bool)
+    bu[0] = True
+    bu[n - 20] = True                 # renews the up-direction inside the bound
+    bd[n - 1] = True                  # now only 19 bars later -> still live
+    out = compute_choch(pd.DataFrame({"bos_up": bu, "bos_down": bd}), {})
+    assert bool(out["choch_down"].iloc[-1]), "a renewed direction must stay alive"
+
+
+def _ob_frame(n, *, renew_at=None):
+    """A bull order block at bar 3, a displacement at bar 5, then quiet."""
+    high, low, close = _flat(n)
+    open_ = close.copy()
+    disp = np.zeros(n, dtype=bool)
+    high[3], low[3], open_[3], close[3] = 101.0, 100.0, 100.9, 100.1   # bearish
+    disp[5] = True; open_[5], close[5] = 100.2, 102.0                  # bull displacement
+    if renew_at is not None:
+        high[renew_at - 2], low[renew_at - 2] = 104.0, 103.0
+        open_[renew_at - 2], close[renew_at - 2] = 103.9, 103.1        # bearish
+        disp[renew_at] = True; open_[renew_at], close[renew_at] = 103.2, 105.0
+    return pd.DataFrame({"high": high, "low": low, "close": close,
+                         "open": open_, "displacement": disp})
+
+
+def test_order_block_expires_when_nothing_renews_or_mitigates_it():
+    from app.features.structures import compute_order_block
+    n = SMC_MAX_AGE_BARS + 60
+    out = compute_order_block(_ob_frame(n), {})
+    assert bool(out["ob_active"].iloc[6]), "the block should form on the displacement"
+    assert not bool(out["ob_active"].iloc[-1]), "an unmitigated block is not immortal"
+    assert pd.isna(out["ob_top"].iloc[-1]), "an expired block must not leave a price band"
+
+
+def test_order_block_age_resets_when_a_new_block_forms():
+    from app.features.structures import compute_order_block
+    n = SMC_MAX_AGE_BARS + 60
+    out = compute_order_block(_ob_frame(n, renew_at=SMC_MAX_AGE_BARS + 20), {})
+    assert bool(out["ob_active"].iloc[-1]), (
+        "a block re-formed inside the bound must still be live at the end")
+
+
+def test_fvg_age_resets_when_a_new_gap_forms():
+    from app.features.structures import compute_fvg_zones
+    n = SMC_MAX_AGE_BARS + 60
+    renew = SMC_MAX_AGE_BARS + 20
+    high = np.full(n, 101.0); low = np.full(n, 100.5); close = np.full(n, 100.8)
+    high[0], low[0], close[0] = 100.2, 99.8, 100.0
+    high[2], low[2], close[2] = 101.4, 100.9, 101.2          # UP gap vs high[0]
+    high[renew - 2], low[renew - 2] = 100.6, 100.2
+    high[renew], low[renew], close[renew] = 101.9, 101.0, 101.5   # renewing UP gap
+    # Everything after the renewal must stay ABOVE the new gap's floor (100.6),
+    # or the zone reads as FILLED and the test would prove nothing about ageing.
+    high[renew + 1:], low[renew + 1:], close[renew + 1:] = 102.5, 101.2, 102.0
+    df = pd.DataFrame({"high": high, "low": low, "close": close,
+                       "open": close, "volume": np.ones(n)})
+    out = compute_fvg_zones(df, {})
+    assert out["fvg_state"].iloc[-1] == "active", "a renewed gap must not expire early"
