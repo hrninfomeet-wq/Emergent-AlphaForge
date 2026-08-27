@@ -856,3 +856,32 @@ class TestOptionFlowFetch:
             "the fetch queried a contract the builder does not match")
         assert (out["ce_volume"] == 100.0).all()
         assert (out["pe_volume"] == 200.0).all()
+
+    def test_a_session_with_no_option_data_is_named_not_just_averaged_away(self):
+        """A whole absent session and a scatter of thin minutes both reduce
+        coverage_pct. They are different facts and the operator must be able to
+        tell them apart: `attach_data_columns` can only attribute a gap to a
+        session when the frame carries `session_date`, and a raw candles frame
+        does not, so the fetch names them itself.
+        """
+        days, db = _build_warehouse(25)
+        gone = days[-2]
+        db.options_1m.rows = [r for r in db.options_1m.rows
+                              if not (ts_at(gone, "09:15") <= r["ts"]
+                                      < ts_at(gone, "09:15") + 86_400_000)]
+        out, cov = _attach(db, db.candles_1m.rows, ["ce_volume"])
+        info = cov["ce_volume"]
+        assert info["sessions_without_option_data_count"] == 1
+        assert info["sessions_without_option_data"] == [gone]
+        # and the surrounding sessions are untouched
+        others = out.loc[out["ts"] < ts_at(gone, "09:15"), "ce_volume"]
+        assert others.notna().all()
+
+    def test_thin_minutes_are_not_reported_as_a_missing_session(self):
+        """The converse: dropping scattered bars must NOT name a session."""
+        days, db = _build_warehouse(25)
+        drop = {ts_at(days[-2], "09:16"), ts_at(days[-3], "09:18")}
+        db.options_1m.rows = [r for r in db.options_1m.rows if r["ts"] not in drop]
+        out, cov = _attach(db, db.candles_1m.rows, ["ce_volume"])
+        assert cov["ce_volume"]["sessions_without_option_data_count"] == 0
+        assert cov["ce_volume"]["coverage_pct"] < 100.0

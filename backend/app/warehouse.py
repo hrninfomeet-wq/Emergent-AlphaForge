@@ -521,6 +521,23 @@ async def _fetch_option_flow_sources(
         spot_rows=spot_rows, option_rows=option_rows, expiries=expiries,
         strike_step=step, frame_ts=frame_ts,
     )
+    # Name the sessions inside the frame that produced NO ATM option bar at all.
+    # `attach_data_columns` can only attribute a gap to a session when the frame
+    # carries a `session_date` column, and a raw `candles_1m` frame does not — so
+    # a whole missing session would otherwise surface as "97.50%, 0 sessions
+    # missing", which reads like scattered thin minutes rather than one absent
+    # day. The fetch knows exactly which sessions came back empty; it says so.
+    # (Measured: 2026-08-27 has 375 spot bars and zero option bars at any strike.)
+    got: Dict[str, int] = {}
+    for r in rows:
+        s = session_date_of(r.get("ts"))
+        if s is None:
+            continue
+        got.setdefault(s, 0)
+        if r.get("ce_volume") == r.get("ce_volume") or r.get("pe_volume") == r.get("pe_volume"):
+            got[s] += 1
+    diag["sessions_without_option_data"] = sorted(s for s, n in got.items() if n == 0)[:50]
+    diag["sessions_without_option_data_count"] = sum(1 for n in got.values() if n == 0)
     diag["baseline_sessions_available"] = len(baseline)
     diag["baseline_sessions_wanted"] = BASELINE_SESSIONS
     # A short baseline is a REAL state (a fresh install, a newly ingested
@@ -592,7 +609,9 @@ async def attach_required_data(df: pd.DataFrame, required: Any,
             extra[spec.column] = {
                 k: diag[k] for k in
                 ("baseline_sessions_available", "baseline_sessions_wanted",
-                 "baseline_shortfall", "baseline_below_minimum") if k in diag
+                 "baseline_shortfall", "baseline_below_minimum",
+                 "sessions_without_option_data",
+                 "sessions_without_option_data_count") if k in diag
             }
 
     for spec in (s for s in specs if s.source_kind != SOURCE_OPTION_FLOW):
@@ -624,6 +643,13 @@ async def attach_required_data(df: pd.DataFrame, required: Any,
                 "%d session(s) missing) — any rule reading it is INERT on the rest",
                 col, info.get("coverage_pct", 0.0), info.get("present", 0),
                 info.get("bars", 0), info.get("sessions_missing_count", 0),
+            )
+        if info.get("sessions_without_option_data_count"):
+            log.warning(
+                "data column %r: %d session(s) in this window have NO ATM option "
+                "bar at all (%s) — that is an ingestion gap, not thin trading",
+                col, info["sessions_without_option_data_count"],
+                ", ".join(info.get("sessions_without_option_data") or []) or "?",
             )
         if info.get("baseline_shortfall"):
             log.warning(

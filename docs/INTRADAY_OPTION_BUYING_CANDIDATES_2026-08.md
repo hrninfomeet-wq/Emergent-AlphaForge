@@ -1594,3 +1594,161 @@ arithmetic tests replaced them.
 **Recommendation: close the option-selling line.** The engineering items on the
 register (#6–#11) remain worth doing on their own merits; this hypothesis does
 not.
+
+
+---
+
+## 15. Option flow reaches `evaluate()` — register item #10 (2026-08-28)
+
+`options_1m` has carried per-bar `volume` and `oi` for the whole history and no
+strategy could read either, because `build_eval_ctx` hands `evaluate()` a spot
+frame and nothing else. That blocked Candidate A (§4.1) — the only genuinely
+untried *information channel* left, since all 18 registered strategies are
+underlying-led and all 25 indicators read spot OHLCV.
+
+It is now built, through the existing `required_data` seam. **This buys the
+ability to TEST Candidate A. It is not an edge, and nothing here has been
+screened.** Four campaigns have failed, the unconditioned ATM baseline is
+NO_EDGE on both indices, and the short side is closed (§14).
+
+### 15.1 The precondition was measured before any code was written
+
+§7.1 made the build conditional: *"verify [`oi`] is non-trivially populated
+before building this. If historical `oi` is mostly zero, Candidate A is dead on
+arrival."* Sampled 20,000 real bars per index:
+
+| Index | `oi` field present | `oi > 0` | `volume > 0` |
+|---|---|---|---|
+| NIFTY | 100.00% | **99.58%** | 99.96% |
+| SENSEX | 100.00% | **99.86%** | 99.39% |
+| BANKNIFTY | 100.00% | **99.56%** | 98.26% |
+
+The gate passes. This reproduces §10's earlier figure independently.
+
+### 15.2 What shipped
+
+Eleven columns in `DATA_COLUMN_REGISTRY`, computed by a new pure module
+`backend/app/option_flow.py` and fetched by a new source kind in
+`warehouse.attach_required_data`:
+
+* raw — `ce_volume`, `pe_volume`, `ce_oi`, `pe_oi`
+* within-session change — `ce_oi_delta`, `pe_oi_delta`
+* causal same-minute z-scores — `ce_volume_z`, `pe_volume_z`, `ce_oi_delta_z`,
+  `pe_oi_delta_z`
+* liquidity floor — `atm_volume_median_20d`
+
+`flow_imbalance` is deliberately **not** a column. §4.1 defines it as
+`(ce_vol_z − pe_vol_z) + (ce_oi_delta_z − pe_oi_delta_z)`; the strategy composes
+it, because a derived value frozen into a column freezes today's definition into
+records that cannot be re-derived (the same reason the chain recorder stores no
+PCR).
+
+No new declaration surface: `DataColumn` gained `source_kind`, defaulting to the
+existing `candles_1m` behaviour so `vix` is untouched, and the AI capability,
+compiler and grounding layers keep validating `required_data` against the
+registry unchanged.
+
+### 15.3 The 1,000-bar constraint, and the test that proves it was honoured
+
+§12.3 recorded why the 20-session baseline cannot live in the strategy:
+`deployment_evaluator` clamps the live window to 1,000 bars — under three
+sessions — so a `session_precompute` would compute a *different number* in
+backtest and live while both looked healthy.
+
+The fetch therefore chooses its own query window, reaching `BASELINE_SESSIONS`
+sessions before the frame's first bar regardless of frame length. Verified on
+the **real warehouse**, both indices: a 1,000-bar live-sized frame and a
+15,000-bar / 40-session backtest frame produce **identical values for all eleven
+columns** on every overlapping bar.
+
+That equality is the load-bearing property, and it is the one a frame-derived
+baseline would fail while passing everything else. A mutation replacing the
+extended window with the frame's own span (`span_start = lo`) is killed by it.
+
+### 15.4 Three findings from the real warehouse
+
+**(a) One session in the last 40 has no option data at all.** 2026-08-27 has 375
+spot bars and **zero** `options_1m` rows at any strike — spot ingested, options
+not. Coverage reads 97.50% for exactly that reason. This is an ingestion gap,
+not a defect, and the fetch now names the session rather than letting a whole
+absent day look like scattered thin minutes (`attach_data_columns` can only
+attribute a gap to a session when the frame carries `session_date`, and a raw
+`candles_1m` frame does not).
+
+**(b) SENSEX OI-delta cannot be standardised 61% of the time — and that is the
+`std == 0` guard doing its job.** 63.1% of SENSEX `ce_oi_delta` values are
+exactly zero, and **60.8% of same-minute 20-session baselines are literally flat
+(std == 0)**. NIFTY: 12.1% zeros, **0.0%** flat baselines.
+
+| | NIFTY | SENSEX |
+|---|---|---|
+| `ce_oi_delta` exactly 0 | 12.1% | **63.1%** |
+| flat same-minute baselines | 0.0% | **60.8%** |
+| `ce_oi_delta_z` coverage | 97.24% | **38.56%** |
+
+A degenerate baseline cannot say whether a bar is typical, so the column is NaN.
+Returning `0.0` — the natural-looking alternative, and a mutation that was
+explicitly killed — would have told a SENSEX strategy "perfectly typical OI
+flow" on six of every ten bars. **Consequence for Candidate A: `flow_imbalance`
+is unavailable on roughly 61% of SENSEX bars**, because its OI half is. That is
+a real constraint on the SENSEX arm, and it must be counted as a no-trade
+condition rather than discovered as a mystery.
+
+**(c) The volume z-scores are one-sided, so a symmetric threshold is not.**
+Volume is bounded below by zero and spikes upward, so its z-score has a floor
+near −1 and a long right tail:
+
+| | p01 | p50 | p99 | ≤ −1.5 | ≥ +1.5 |
+|---|---|---|---|---|---|
+| NIFTY `ce_volume_z` | −0.92 | −0.39 | +5.08 | **0.0000%** | 8.79% |
+| NIFTY `pe_volume_z` | −0.88 | −0.33 | +6.54 | **0.0000%** | 8.91% |
+| SENSEX `ce_volume_z` | −0.76 | −0.36 | +7.63 | **0.0000%** | 8.44% |
+| SENSEX `pe_volume_z` | −0.72 | −0.41 | +5.03 | **0.0000%** | 8.01% |
+
+No volume z-score in the sample ever reached −1.5. §4.1's rule uses the
+*difference* of two such scores, so it can still resolve both ways and the spec
+is not broken — but the terms are not symmetric, and `flow_z_threshold` should
+not be reasoned about as if they were. Whoever writes the plugin should check
+the realised sign balance of `flow_imbalance` before trusting a symmetric band.
+
+### 15.5 Verification
+
+* Suite **5,332 passed / 0 failed** (floor was 5,287); 45 new tests.
+* **Mutation sweep: 34 mutants across both modules, 34 killed, 0 survivors.**
+  The first pure-module sweep had **11 survivors** and the first fetch sweep
+  **3** — every one a test that was true but not discriminating, the same
+  pattern §9.3 and §14.4 record. Fixing them found three things reading alone
+  would not have:
+  * a redundant `k <= min_count` early return that another guard always covered,
+    so neither could ever be pinned by a test (removed; one guard now does it);
+  * an unreachable `try/except` that would have turned a future schema bug into
+    silent NaN — the same face a real warehouse gap wears (removed; it raises);
+  * **a real defect**: the fetch had its own copy of the ATM-anchor rule, so the
+    contract it QUERIED could drift from the one the builder MATCHED — zero
+    rows, wearing the face of an empty warehouse, which is precisely the §11.1
+    failure. Both now share `first_close_by_session`.
+* Rebuilt container boots clean, 0 tracebacks, **173 routes**, 62/72
+  parameterless GETs return 200 (the other ten are missing-query-parameter 422s
+  and one tick-stream long poll — all structural).
+* Deployed image confirmed to carry the code by importing it in-container.
+* **Backtest determinism — 12 of 14 saved runs reproduce byte-identically** from
+  their stored configs against the rebuilt container (`trade_count`, `win_rate`,
+  `profit_factor`, `avg_pnl_pts`, `expectancy_pts`, `max_dd_pts`, and the
+  option-side paired counts). The two that do not are both `atr_sigma_router`,
+  and they were **proven pre-existing, not caused by this work**: reverting the
+  four changed files to `bd943e8` and rebuilding reproduces the NEW numbers
+  exactly, so the divergence entered on an earlier commit of this branch.
+  Replays are self-consistent (A == B), so the engine is deterministic; only the
+  stored-versus-current relationship moved. Filed as register item #16 rather
+  than fixed here — deciding whether the window unification was *meant* to change
+  those runs is not this item's call. Independently, no registered strategy
+  declares an option-flow column, so `attach_required_data` returns on its first
+  guard for every one of them and cannot perturb any existing path.
+
+### 15.6 What is NOT done
+
+Candidate A itself. §4.1's ordering is explicit and §12/§14 are the evidence for
+it: **screen before writing the plugin.** The columns exist so that screen can
+finally be run; running it, against the pre-registered kill thresholds in §4.1
+and with the holdout guard left armed, is the next step and it may well end the
+way the other four did.

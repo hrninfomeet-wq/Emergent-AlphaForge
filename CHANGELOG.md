@@ -2,6 +2,70 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [Unreleased] — option flow reaches `evaluate()` (2026-08-28)
+
+**`options_1m` has carried per-bar `volume` and `oi` for the whole history and no strategy
+could read either.** `build_eval_ctx` hands `evaluate()` a spot frame and nothing else, so the
+one genuinely untried information channel in this warehouse was unreachable: all 18 registered
+strategies are underlying-led and all 25 indicators read spot OHLCV. Eleven columns now reach a
+strategy through the existing `required_data` seam — `ce_volume`, `pe_volume`, `ce_oi`, `pe_oi`,
+within-session `ce_oi_delta` / `pe_oi_delta`, causal same-minute z-scores of those four flows,
+and `atm_volume_median_20d` for a liquidity floor. `flow_imbalance` is deliberately not a column:
+the strategy composes it, because a derived value frozen into a column freezes today's definition
+into records that cannot be re-derived.
+
+**The 20-session baseline is computed in the data layer, and that is the whole design.**
+`deployment_evaluator` clamps the live window to `LIVE_LOOKBACK_MAX = 1000` bars — under three
+sessions. A `session_precompute` deriving a 20-session distribution would see full history in a
+backtest and under three sessions live, computing a *different number* in each path while both
+looked healthy; that is the `live-window-anchors-session-indicators` failure, where a session-VWAP
+anchor error of 2.12 ATR silently inverted nine shipped strategies, and it is invisible to a
+backtest by construction. The fetch therefore chooses its own query window, reaching 20 sessions
+before the frame's first bar regardless of frame length. Verified on the real warehouse, both
+indices: a 1,000-bar live-sized frame and a 15,000-bar backtest frame produce **identical values
+for all eleven columns** on every overlapping bar.
+
+**Bars are joined by identity — `underlying` + `expiry_date` + `strike` + `side` + `ts` — never by
+token.** `option_contracts` stores a three-part `instrument_key` for expired contracts while
+`options_1m` stores a two-part one, and `contract_key` is on only ~10% of bars, so a token query
+returns zero rows and looks exactly like an empty warehouse. One `$or` clause per session pins that
+session's exact contract, keeping the query on the compound index instead of scanning a strike
+range that would pull most of the collection for a long backtest.
+
+**Missing degrades, never misleads.** Staleness is zero — exact-minute match — because volume and
+OI-delta are flows and carrying a previous minute forward would invent trading that did not happen.
+A flat baseline (`std == 0`) yields NaN, not 0: a degenerate distribution cannot say whether a bar
+is typical. A baseline shortfall and any session with no option bars at all are both named on the
+coverage record and in the log rather than being averaged into a percentage. An unresolvable or
+ambiguous frame instrument raises instead of returning an all-NaN column, which would be
+indistinguishable from an empty warehouse.
+
+No new declaration surface: `DataColumn` gained `source_kind`, defaulting to the existing
+`candles_1m` behaviour so `vix` is byte-identical, and the AI capability, compiler and grounding
+layers keep validating `required_data` against `DATA_COLUMN_REGISTRY` unchanged.
+
+**Measured before building, not assumed.** §7.1 made the work conditional on `oi` being
+non-trivially populated. Sampled 20,000 real bars per index: `oi > 0` on 99.58% (NIFTY), 99.86%
+(SENSEX), 99.56% (BANKNIFTY); `volume > 0` on 98.26–99.96%.
+
+**Three findings the real warehouse produced** (deliverable §15.4): 2026-08-27 has 375 spot bars and
+zero option bars at any strike — an ingestion gap, now named rather than averaged away; **60.8% of
+SENSEX same-minute 20-session OI-delta baselines are literally flat**, so `flow_imbalance` is
+unavailable on roughly 61% of SENSEX bars and must be treated as a no-trade condition; and the
+volume z-scores are one-sided — no volume z in the sample ever reached −1.5, against ~8.5% above
++1.5 — so a symmetric threshold on them will not behave symmetrically.
+
+Suite 5,332 passed / 0 failed (from 5,287), 45 new tests. Mutation sweep over every shipped guard:
+**34 mutants, 34 killed**. The first sweeps had 14 survivors — tests that were true but not
+discriminating — and fixing them found two guards no test could ever pin (a redundant early return,
+and an unreachable `except` that would have turned a schema bug into silent NaN) plus one real
+defect: the fetch carried its own copy of the ATM-anchor rule, so the contract it QUERIED could
+drift from the one the builder MATCHED — zero rows, wearing the face of an empty warehouse.
+
+**This unblocks Candidate A; it does not screen it.** Four campaigns have failed and the
+unconditioned ATM baseline is NO_EDGE on both indices. Screen against the pre-registered kill
+thresholds in §4.1 before any plugin is written.
+
 ## [Unreleased] — live-window integrity, fail-closed drift gate, ATR Sigma Router (2026-08-20)
 
 **A live-only defect class that no backtest could ever see.** Session-anchored values
