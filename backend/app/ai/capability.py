@@ -438,7 +438,7 @@ def classify_rule(tokens: RuleTokens, *, required_features=(), required_data=())
         spec = next(d for d in DATA_COLUMN_REGISTRY.values() if d.column == col)
         return Verdict(
             FeasibilityClass.BUILDABLE_WITH_FEATURE,
-            f"'{col}' IS stored in the warehouse (instrument {spec.instrument}) but "
+            f"'{col}' IS stored in the warehouse (source: {spec.source_label}) but "
             f"must be opted into: declare required_data=[{spec.name!r}] and the engine "
             "joins it as-of each bar at load time (causal — a bar only ever sees a "
             "print at or before its own timestamp).",

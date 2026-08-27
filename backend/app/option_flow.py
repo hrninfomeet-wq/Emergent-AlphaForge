@@ -101,7 +101,7 @@ def bucket_of(ts_ms: Any) -> Optional[str]:
         return None
 
 
-def _first_close_by_session(spot_rows: Iterable[Dict[str, Any]]) -> Dict[str, float]:
+def first_close_by_session(spot_rows: Iterable[Dict[str, Any]]) -> Dict[str, float]:
     """Each session's FIRST spot close, by ts.
 
     Deliberately the session's first bar rather than the first bar inside an
@@ -152,7 +152,7 @@ def _atm_series_by_session(
     close; re-selecting it intrabar would let a later price decide which
     contract an earlier bar "should" have watched, which is lookahead.
     """
-    first_close = _first_close_by_session(spot_rows)
+    first_close = first_close_by_session(spot_rows)
     diag: Dict[str, Any] = defaultdict(int)
 
     # Resolve each session's target contract identity up front.

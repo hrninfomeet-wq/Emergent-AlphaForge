@@ -43,13 +43,25 @@ from app.vix import VIX_ASOF_STALENESS_MS, VIX_INSTRUMENT, build_asof_index
 
 
 
+#: `source_kind` values. A source kind names WHERE the fetch reads the series
+#: from; the join, the causality guarantee and the coverage report are identical
+#: across all of them, which is the point of keeping this a seam and not a
+#: framework.
+SOURCE_CANDLES = "candles_1m"      # an AUX instrument in candles_1m (India VIX)
+SOURCE_OPTION_FLOW = "option_flow"  # ATM CE/PE legs in options_1m (see app.option_flow)
+
+
 @dataclass(frozen=True)
 class DataColumn:
     """A warehouse-backed column joined as-of the bar timestamp.
 
-    `instrument` is the `candles_1m.instrument` the source series lives under.
+    `instrument` is the `candles_1m.instrument` the source series lives under —
+    meaningful only for `SOURCE_CANDLES`. An option-flow column has no fixed
+    instrument: it is read from the ATM legs of whatever underlying the strategy
+    is running on, so it leaves this empty and `source_label` says so instead.
+
     `max_staleness_ms` bounds how far back the as-of lookup may reach; beyond it
-    the bar gets NaN rather than a stale print.
+    the bar gets NaN rather than a stale print. Zero means exact-ts match only.
     """
     name: str
     column: str
@@ -58,6 +70,12 @@ class DataColumn:
     description: str = ""
     source_field: str = "close"
     causal: bool = True
+    source_kind: str = SOURCE_CANDLES
+
+    @property
+    def source_label(self) -> str:
+        """Human-readable origin, for the authoring layer's explanations."""
+        return self.instrument or "the ATM options of the strategy's own underlying"
 
 
 # name -> DataColumn. Deliberately tiny: this is a seam, not a framework.
@@ -81,6 +99,57 @@ DATA_COLUMN_REGISTRY: Dict[str, DataColumn] = {
         ),
     ),
 }
+
+
+def _option_flow_column(name: str, description: str) -> DataColumn:
+    """One ATM option-flow column.
+
+    `max_staleness_ms=0` is exact-ts match only, and it is deliberate for every
+    one of these. Volume and OI-delta are FLOWS: carrying a previous minute's
+    print forward would invent trading that did not happen. OI is a level and
+    could defensibly be carried, but then a single minute's gap would leave
+    `ce_oi` populated beside a NaN `ce_oi_delta` — two different answers about
+    the same missing minute inside one bar. One rule instead: if the ATM
+    contract did not print in this minute, every flow column for that minute
+    reads NaN, which is the single honest fact about it.
+    """
+    return DataColumn(
+        name=name, column=name, instrument="", max_staleness_ms=0,
+        source_field=name, source_kind=SOURCE_OPTION_FLOW, description=description,
+    )
+
+
+#: The ATM option-flow columns. Registered individually rather than as one
+#: bundle so a strategy declares only what it reads, the coverage report is
+#: per-quantity, and the AI capability/compiler/grounding layers keep working
+#: unchanged — they all validate `required_data` names against this registry.
+#:
+#: `flow_imbalance` is deliberately NOT here. It is composed in the strategy
+#: from the four z-scores, because a derived value frozen into a column freezes
+#: today's definition of it into records that cannot be re-derived.
+for _name, _desc in (
+    ("ce_volume", "ATM call bar volume, nearest upcoming expiry."),
+    ("pe_volume", "ATM put bar volume, nearest upcoming expiry."),
+    ("ce_oi", "ATM call open interest as printed on this bar."),
+    ("pe_oi", "ATM put open interest as printed on this bar."),
+    ("ce_oi_delta", "Change in ATM call OI since the previous bar of the same "
+                    "contract. NaN on a session's first bar: a cross-session "
+                    "delta would straddle an expiry roll and a strike change."),
+    ("pe_oi_delta", "Change in ATM put OI since the previous bar of the same "
+                    "contract. NaN on a session's first bar."),
+    ("ce_volume_z", "ATM call volume as a z-score against a CAUSAL 20-session "
+                    "distribution for the same time-of-day minute. NaN below 10 "
+                    "usable prior sessions, or where that distribution is flat."),
+    ("pe_volume_z", "ATM put volume as a causal 20-session, same-minute z-score."),
+    ("ce_oi_delta_z", "ATM call OI change as a causal 20-session, same-minute z-score."),
+    ("pe_oi_delta_z", "ATM put OI change as a causal 20-session, same-minute z-score."),
+    ("atm_volume_median_20d",
+     "Causal 20-session median of ATM straddle bar volume (call + put), for a "
+     "liquidity floor. Not bucketed by time of day: it exists to exclude a dead "
+     "contract, not to normalize away the intraday volume shape."),
+):
+    DATA_COLUMN_REGISTRY[_name] = _option_flow_column(_name, _desc)
+del _name, _desc
 
 
 class DataColumnError(Exception):

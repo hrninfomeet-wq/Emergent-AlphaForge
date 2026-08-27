@@ -13,6 +13,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -504,3 +505,354 @@ class TestRawSanitising:
         assert math.isnan(rows[0]["ce_volume"]), "junk is UNKNOWN, not 0"
         assert math.isnan(rows[0]["ce_oi"])
         assert rows[0]["pe_volume"] == 170.0, "the good leg still arrives"
+
+
+# ---------------------------------------------------------------------------
+# Registry wiring - what makes these columns reachable from `required_data`,
+# and therefore from the AI authoring layer, with no new declaration surface.
+# ---------------------------------------------------------------------------
+
+class TestRegistry:
+    def test_every_flow_field_is_registered_under_its_own_name(self):
+        """The builder's schema and the registry must not drift: a field added
+        to one and not the other is a column a strategy can compute but never
+        declare, or declare but never receive."""
+        from app.data_columns import DATA_COLUMN_REGISTRY
+        from app.option_flow import OPTION_FLOW_FIELDS
+        for field in OPTION_FLOW_FIELDS:
+            assert field in DATA_COLUMN_REGISTRY, f"{field} is built but not registered"
+            spec = DATA_COLUMN_REGISTRY[field]
+            assert spec.column == field
+            assert spec.source_kind == "option_flow"
+
+    def test_the_registry_declares_no_flow_column_the_builder_cannot_fill(self):
+        from app.data_columns import DATA_COLUMN_REGISTRY
+        from app.option_flow import OPTION_FLOW_FIELDS
+        registered = {n for n, s in DATA_COLUMN_REGISTRY.items()
+                      if s.source_kind == "option_flow"}
+        assert registered == set(OPTION_FLOW_FIELDS)
+
+    def test_vix_keeps_the_candles_source_kind(self):
+        """The default must leave the one pre-existing column byte-identical."""
+        from app.data_columns import DATA_COLUMN_REGISTRY
+        assert DATA_COLUMN_REGISTRY["vix"].source_kind == "candles_1m"
+
+    def test_flow_columns_expire_after_their_own_minute(self):
+        """Staleness 0 = exact-ts match. Volume and OI-delta are FLOWS: carrying
+        a previous minute's print forward would invent trading that did not
+        happen, and would do it invisibly. A gap must read NaN."""
+        from app.data_columns import DATA_COLUMN_REGISTRY
+        from app.option_flow import OPTION_FLOW_FIELDS
+        for field in OPTION_FLOW_FIELDS:
+            assert DATA_COLUMN_REGISTRY[field].max_staleness_ms == 0
+
+    def test_declaring_a_flow_column_resolves(self):
+        from app.data_columns import data_column_names, resolve_data_columns
+        specs = resolve_data_columns(["ce_volume_z", "pe_volume_z"])
+        assert [s.name for s in specs] == ["ce_volume_z", "pe_volume_z"]
+        assert data_column_names(["ce_oi_delta"]) == ["ce_oi_delta"]
+
+    def test_the_ai_layer_advertises_them_without_a_new_surface(self):
+        """`ai.grounding` builds its column list straight off the registry, so
+        registering is all that is needed for authoring to know they exist."""
+        from app.ai.grounding import build_grounding_catalog
+        ctx = build_grounding_catalog()
+        for field in ("ce_volume_z", "pe_oi_delta", "atm_volume_median_20d"):
+            assert field in ctx["data_columns"]
+
+
+# ---------------------------------------------------------------------------
+# The fetch - `app.warehouse.attach_required_data`, option-flow source kind.
+#
+# This is where the item is won or lost. The whole reason the baseline lives in
+# the data layer is that `deployment_evaluator` clamps the live window to
+# LIVE_LOOKBACK_MAX = 1000 bars, under three sessions. If the fetch derived its
+# baseline from the frame it was handed, a strategy would read one number in a
+# backtest and a different one live, and both paths would look healthy.
+# ---------------------------------------------------------------------------
+
+import asyncio
+
+
+class _Cursor:
+    def __init__(self, rows):
+        self._rows = list(rows)
+
+    def sort(self, key, direction=1):
+        self._rows.sort(key=lambda r: r.get(key), reverse=(direction == -1))
+        return self
+
+    def limit(self, n):
+        self._rows = self._rows[:n]
+        return self
+
+    async def to_list(self, length=None):
+        return list(self._rows)[: length or len(self._rows)]
+
+
+def _matches(row, q):
+    for k, cond in (q or {}).items():
+        if k == "$or":
+            if not any(_matches(row, sub) for sub in cond):
+                return False
+            continue
+        val = row.get(k)
+        if isinstance(cond, dict):
+            for op, arg in cond.items():
+                if op == "$gte" and not (val is not None and val >= arg):
+                    return False
+                if op == "$gt" and not (val is not None and val > arg):
+                    return False
+                if op == "$lte" and not (val is not None and val <= arg):
+                    return False
+                if op == "$lt" and not (val is not None and val < arg):
+                    return False
+                if op == "$in" and val not in arg:
+                    return False
+                if op == "$exists" and (val is not None) != bool(arg):
+                    return False
+        elif val != cond:
+            return False
+    return True
+
+
+class _Coll:
+    def __init__(self, rows):
+        self.rows = list(rows)
+        self.queries = []
+
+    def find(self, q=None, proj=None):
+        self.queries.append(q)
+        return _Cursor([r for r in self.rows if _matches(r, q)])
+
+    async def distinct(self, field, q=None):
+        return sorted({r.get(field) for r in self.rows
+                       if _matches(r, q) and r.get(field) is not None})
+
+
+class _Db:
+    def __init__(self, *, candles=(), options=(), contracts=()):
+        self.candles_1m = _Coll(candles)
+        self.options_1m = _Coll(options)
+        self.option_contracts = _Coll(contracts)
+
+
+def _build_warehouse(n_sessions: int, *, bars_per_session: int = 20,
+                     instrument: str = "NIFTY", strike: int = 24000,
+                     spot: float = 24010.0, seed: int = 3):
+    """A synthetic warehouse: spot candles plus the ATM CE/PE legs."""
+    import random
+    rnd = random.Random(seed)
+    days = sessions(n_sessions)
+    candles, options, contracts = [], [], []
+    for s in days:
+        contracts.append({"underlying": instrument, "expiry_date": s,
+                          "strike": float(strike), "side": "CE"})
+        for i in range(bars_per_session):
+            hhmm = f"{9 + (15 + i) // 60:02d}:{(15 + i) % 60:02d}"
+            t = ts_at(s, hhmm)
+            candles.append({"instrument": instrument, "ts": t, "close": spot,
+                            "open": spot, "high": spot, "low": spot, "volume": 0.0})
+            for side, base in (("CE", 100.0), ("PE", 200.0)):
+                options.append({
+                    "underlying": instrument, "expiry_date": s,
+                    "strike": float(strike), "side": side, "ts": t,
+                    "volume": base + rnd.uniform(0, 20),
+                    "oi": 5000.0 + rnd.uniform(0, 500),
+                })
+    return days, _Db(candles=candles, options=options, contracts=contracts)
+
+
+def _attach(db, frame_rows, required, instrument="NIFTY"):
+    from app.warehouse import attach_required_data
+    df = pd.DataFrame(frame_rows)
+    return asyncio.run(
+        attach_required_data(df, required, db=db, instrument=instrument))
+
+
+class TestOptionFlowFetch:
+    def test_a_two_session_frame_still_gets_a_twenty_session_baseline(self):
+        """The frame holds far less history than the baseline needs. If the
+        fetch used the frame's own span there would be no distribution at all
+        and every z would be NaN."""
+        days, db = _build_warehouse(25)
+        candles = db.candles_1m.rows
+        last_two = [r for r in candles
+                    if r["ts"] >= ts_at(days[-2], "09:15")]
+        out, cov = _attach(db, last_two, ["ce_volume_z"])
+        assert "ce_volume_z" in out.columns
+        assert out["ce_volume_z"].notna().sum() > 0, (
+            "a frame of two sessions must still receive a 20-session baseline")
+
+    def test_the_same_bar_scores_identically_from_a_short_and_a_long_frame(self):
+        """THE regression test for this whole item. A 1,000-bar live window and
+        a full-history backtest must produce the SAME number for the same bar.
+        A frame-derived baseline passes every other test here and fails this
+        one, silently, in production only."""
+        days, db = _build_warehouse(25)
+        candles = db.candles_1m.rows
+        long_frame = candles
+        short_frame = [r for r in candles if r["ts"] >= ts_at(days[-2], "09:15")]
+
+        long_out, _ = _attach(db, long_frame, ["ce_volume_z", "pe_oi_delta_z",
+                                               "atm_volume_median_20d"])
+        short_out, _ = _attach(db, short_frame, ["ce_volume_z", "pe_oi_delta_z",
+                                                 "atm_volume_median_20d"])
+
+        merged = long_out.merge(short_out, on="ts", suffixes=("_long", "_short"))
+        assert len(merged) == len(short_frame)
+        for col in ("ce_volume_z", "pe_oi_delta_z", "atm_volume_median_20d"):
+            a = merged[f"{col}_long"]
+            b = merged[f"{col}_short"]
+            assert ((a.isna() & b.isna()) | (a == b)).all(), (
+                f"{col} differs between a long and a short frame -> the baseline "
+                "is being taken from the frame, not from the data layer")
+        assert merged["ce_volume_z_long"].notna().any(), "guard: the test would be vacuous"
+
+    def test_no_declaration_leaves_the_frame_untouched(self):
+        days, db = _build_warehouse(3)
+        out, cov = _attach(db, db.candles_1m.rows, [])
+        assert cov == {}
+        assert "ce_volume" not in out.columns
+
+    def test_coverage_is_reported_per_column(self):
+        days, db = _build_warehouse(25)
+        out, cov = _attach(db, db.candles_1m.rows, ["ce_volume", "ce_volume_z"])
+        assert set(cov) == {"ce_volume", "ce_volume_z"}
+        assert cov["ce_volume"]["coverage_pct"] == 100.0
+        # the first sessions cannot have a baseline, so the z column is partial
+        assert cov["ce_volume_z"]["coverage_pct"] < 100.0
+        assert cov["ce_volume_z"]["present"] > 0
+
+    def test_a_missing_minute_reads_nan_not_zero(self):
+        """A gap must be visible as a gap. Carrying the previous minute's volume
+        forward would invent trading that did not happen."""
+        days, db = _build_warehouse(25)
+        hole = ts_at(days[-1], "09:20")
+        db.options_1m.rows = [r for r in db.options_1m.rows if r["ts"] != hole]
+        out, _ = _attach(db, db.candles_1m.rows, ["ce_volume"])
+        row = out.loc[out["ts"] == hole, "ce_volume"]
+        assert len(row) == 1
+        assert pd.isna(row.iloc[0])
+
+    def test_a_baseline_shortfall_is_reported_not_absorbed(self):
+        """Fewer prior sessions than the baseline wants is a real state. It must
+        degrade the column AND say so."""
+        days, db = _build_warehouse(6)
+        out, cov = _attach(db, db.candles_1m.rows, ["ce_volume_z"])
+        assert out["ce_volume_z"].isna().all(), "6 sessions cannot support a baseline"
+        info = cov["ce_volume_z"]
+        assert info.get("baseline_sessions_available") is not None
+        assert info["baseline_sessions_available"] < 20
+        assert info.get("baseline_shortfall") is True
+
+    def test_the_instrument_falls_back_to_the_frames_own_column(self):
+        days, db = _build_warehouse(25)
+        from app.warehouse import attach_required_data
+        df = pd.DataFrame(db.candles_1m.rows)
+        out, _ = asyncio.run(
+            attach_required_data(df, ["ce_volume"], db=db))
+        assert out["ce_volume"].notna().any()
+
+    def test_an_unresolvable_instrument_raises_rather_than_returning_nan(self):
+        """A silent all-NaN column is indistinguishable from an empty warehouse.
+        The one thing this must not do is look like missing data."""
+        from app.data_columns import DataColumnError
+        from app.warehouse import attach_required_data
+        days, db = _build_warehouse(3)
+        df = pd.DataFrame([{"ts": r["ts"], "close": r["close"]}
+                           for r in db.candles_1m.rows])
+        with pytest.raises(DataColumnError):
+            asyncio.run(
+                attach_required_data(df, ["ce_volume"], db=db))
+
+    def test_vix_and_option_flow_can_be_declared_together(self):
+        days, db = _build_warehouse(25)
+        db.candles_1m.rows += [
+            {"instrument": "INDIAVIX", "ts": ts_at(days[0], "09:15"), "close": 14.5},
+        ]
+        out, cov = _attach(db, db.candles_1m.rows, ["vix", "ce_volume"])
+        assert set(cov) == {"vix", "ce_volume"}
+        assert out["vix"].notna().any()
+        assert out["ce_volume"].notna().any()
+
+    def test_option_bars_are_queried_by_identity_never_by_token(self):
+        """Deliverable 11.1: `option_contracts` stores a 3-part instrument_key
+        and `options_1m` a 2-part one, so a token query returns zero rows and
+        looks exactly like an empty warehouse."""
+        days, db = _build_warehouse(25)
+        _attach(db, db.candles_1m.rows, ["ce_volume"])
+        assert db.options_1m.queries, "the option collection was never queried"
+        for q in db.options_1m.queries:
+            flat = repr(q)
+            assert "instrument_key" not in flat, f"token query issued: {q}"
+            assert "contract_key" not in flat, f"token query issued: {q}"
+        joined = repr(db.options_1m.queries)
+        assert "expiry_date" in joined and "strike" in joined
+
+    def test_an_ambiguous_frame_instrument_raises_rather_than_guessing(self):
+        """Two instruments in one frame means the caller must say which. Picking
+        the first would silently score NIFTY bars against SENSEX option flow."""
+        from app.data_columns import DataColumnError
+        from app.warehouse import attach_required_data
+        days, db = _build_warehouse(25)
+        rows = [dict(r) for r in db.candles_1m.rows]
+        for r in rows[: len(rows) // 2]:
+            r["instrument"] = "SENSEX"
+        df = pd.DataFrame(rows)
+        with pytest.raises(DataColumnError):
+            asyncio.run(attach_required_data(df, ["ce_volume"], db=db))
+
+    def test_every_session_is_fetched_when_they_span_several_query_batches(self):
+        """The `$or` clauses are issued in batches. A loop that ran only the
+        first batch would leave the OLDEST sessions unfetched - which is exactly
+        the baseline - and the columns would still look populated."""
+        from app.warehouse import OPTION_FLOW_QUERY_BATCH
+        n = OPTION_FLOW_QUERY_BATCH * 2 + 5
+        days, db = _build_warehouse(n, bars_per_session=4)
+        out, cov = _attach(db, db.candles_1m.rows, ["ce_volume", "ce_volume_z"])
+
+        # every session in the frame must have its raw volume
+        assert out["ce_volume"].notna().all(), "a batch of sessions was never fetched"
+        # and the LAST session must have a baseline, which needs the oldest batch
+        last_start = ts_at(days[-1], "09:15")
+        tail = out.loc[out["ts"] >= last_start, "ce_volume_z"]
+        assert tail.notna().all()
+        assert len(db.options_1m.queries) > 1, "guard: this must actually batch"
+
+    def test_the_fetch_queries_the_strike_the_builder_will_look_for(self):
+        """The fetch decides which contract to QUERY and the pure builder decides
+        which contract to MATCH. Both must anchor on the session's first bar. If
+        they disagree the query returns a contract the builder then discards, and
+        the column goes all-NaN wearing the face of an empty warehouse.
+
+        The other fixtures hold spot constant, so first-bar and last-bar anchors
+        coincide and cannot tell the two apart. Here spot moves enough to change
+        the ATM strike within the session.
+        """
+        days = sessions(3)
+        candles, options, contracts = [], [], []
+        for s in days:
+            contracts.append({"underlying": "NIFTY", "expiry_date": s,
+                              "strike": 24000.0, "side": "CE"})
+            for i, close in enumerate((24010.0, 24120.0, 24240.0)):
+                hhmm = f"09:{15 + i:02d}"
+                t = ts_at(s, hhmm)
+                candles.append({"instrument": "NIFTY", "ts": t, "close": close,
+                                "open": close, "high": close, "low": close,
+                                "volume": 0.0})
+                for side, vol in (("CE", 100.0), ("PE", 200.0)):
+                    # the first-bar ATM (24000) carries the real print...
+                    options.append({"underlying": "NIFTY", "expiry_date": s,
+                                    "strike": 24000.0, "side": side, "ts": t,
+                                    "volume": vol, "oi": 5000.0})
+                    # ...and the last-bar ATM (24250) is the decoy
+                    options.append({"underlying": "NIFTY", "expiry_date": s,
+                                    "strike": 24250.0, "side": side, "ts": t,
+                                    "volume": 999999.0, "oi": 1.0})
+        db = _Db(candles=candles, options=options, contracts=contracts)
+        out, _ = _attach(db, candles, ["ce_volume", "pe_volume"])
+        assert out["ce_volume"].notna().all(), (
+            "the fetch queried a contract the builder does not match")
+        assert (out["ce_volume"] == 100.0).all()
+        assert (out["pe_volume"] == 200.0).all()

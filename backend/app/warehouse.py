@@ -4,7 +4,7 @@ import hashlib
 import logging
 import uuid
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 
 from app.db import get_db
@@ -13,6 +13,9 @@ from app.nse_calendar import trading_days_in_range, expected_candle_count, is_tr
 from app.session_spec import SPOT, expected_candle_count as expected_candles_for, session_rows_mask
 
 log = logging.getLogger(__name__)
+
+#: IST. Option-flow session boundaries are computed against this.
+IST_TZ = timezone(timedelta(hours=5, minutes=30))
 
 # Pre-2026-08-03 full cash session. Kept as a fallback only — the audit resolves
 # each date through the calendar instead, so a Muhurat evening session expects its
@@ -410,24 +413,152 @@ async def load_candles_df(instrument: str, start_ts: Optional[int] = None, end_t
     return df.sort_values("ts").reset_index(drop=True)
 
 
+#: Calendar days of slack used to reach `BASELINE_SESSIONS` trading sessions
+#: before a frame starts. 20 NSE sessions span ~29 calendar days; 75 clears even
+#: a Diwali-scale holiday cluster with room to spare. Any shortfall that remains
+#: is REPORTED on the coverage record rather than silently shrinking the sample.
+OPTION_FLOW_CALENDAR_SLACK_DAYS = 75
+
+#: Sessions per `$or` batch when fetching ATM option bars. Each clause pins one
+#: session's exact contract identity, so the query stays on the
+#: (underlying, expiry_date, strike, side, ts) index instead of scanning a
+#: strike range that would pull most of the collection for a long backtest.
+OPTION_FLOW_QUERY_BATCH = 40
+
+
+async def _fetch_option_flow_sources(
+    db: Any, df: pd.DataFrame, instrument: str, *, lo: int, hi: int,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """Fetch ATM option bars and build the per-bar flow rows.
+
+    The query window deliberately reaches `BASELINE_SESSIONS` sessions BEFORE
+    the frame's first bar. That independence from the frame is the entire point:
+    `deployment_evaluator` clamps the live window to 1,000 bars (under three
+    sessions), so a baseline taken from the frame would be computed over full
+    history in a backtest and over three sessions live — a different number in
+    each path, with both looking healthy. See `app.option_flow`, note 1.
+
+    Bars are selected by IDENTITY — underlying + expiry_date + strike + side +
+    ts. Never by token: `option_contracts` stores a three-part `instrument_key`
+    for expired contracts while `options_1m` stores a two-part one, and
+    `contract_key` is present on only ~10% of bars, so a token query returns
+    zero rows and looks exactly like an empty warehouse (deliverable §11.1).
+    """
+    from app.instruments import UNDERLYING_META
+    from app.option_flow import (BASELINE_SESSIONS, MIN_BASELINE_SESSIONS,
+                                 atm_strike, build_option_flow_rows,
+                                 first_close_by_session,
+                                 nearest_upcoming_expiry, session_date_of)
+
+    inst = str(instrument).upper()
+    step = int((UNDERLYING_META.get(inst) or {}).get("strike_step") or 50)
+    frame_start_session = session_date_of(lo)
+    span_start = lo - OPTION_FLOW_CALENDAR_SLACK_DAYS * 86_400_000
+
+    # 1. Spot bars over the EXTENDED window. These give both the trading
+    #    calendar and each session's ATM anchor.
+    spot_rows = await db.candles_1m.find(
+        {"instrument": inst, "ts": {"$gte": span_start}},
+        {"_id": 0, "ts": 1, "close": 1},
+    ).sort("ts", 1).to_list(length=2_000_000)
+    spot_rows = [r for r in spot_rows if int(r.get("ts") or 0) <= hi]
+
+    all_sessions = sorted({s for s in (session_date_of(r.get("ts")) for r in spot_rows) if s})
+    prior = [s for s in all_sessions if frame_start_session and s < frame_start_session]
+    baseline = prior[-BASELINE_SESSIONS:]
+    frame_sessions = [s for s in all_sessions
+                      if not frame_start_session or s >= frame_start_session]
+    wanted = sorted(set(baseline) | set(frame_sessions))
+
+    # Trim the spot rows to the sessions actually in play, so a long slack
+    # window does not drag an unbounded prefix into the pure builder.
+    keep = set(wanted)
+    spot_rows = [r for r in spot_rows if session_date_of(r.get("ts")) in keep]
+
+    # 2. Expiry calendar, from the contract master.
+    expiries = sorted({
+        str(e) for e in await db.option_contracts.distinct(
+            "expiry_date", {"underlying": inst}) if e
+    })
+
+    # 3. One `$or` clause per session, pinning that session's ATM identity.
+    #    The anchor comes from `option_flow.first_close_by_session` — the SAME
+    #    function the pure builder uses to decide which contract a session
+    #    watched. A second copy here would be two implementations of one rule,
+    #    and the query would eventually fetch a different contract than the
+    #    builder then looked for: zero matched rows, wearing the face of an
+    #    empty warehouse.
+    first_close = first_close_by_session(spot_rows)
+
+    clauses: List[Dict[str, Any]] = []
+    for s in wanted:
+        close = first_close.get(s)
+        expiry = nearest_upcoming_expiry(s, expiries)
+        if close is None or expiry is None:
+            continue
+        day_start = int(datetime.strptime(s, "%Y-%m-%d")
+                        .replace(tzinfo=IST_TZ).timestamp() * 1000)
+        clauses.append({
+            "expiry_date": expiry,
+            "strike": float(atm_strike(close, step)),
+            "ts": {"$gte": day_start, "$lt": day_start + 86_400_000},
+        })
+
+    option_rows: List[Dict[str, Any]] = []
+    for i in range(0, len(clauses), OPTION_FLOW_QUERY_BATCH):
+        batch = clauses[i:i + OPTION_FLOW_QUERY_BATCH]
+        if not batch:
+            continue
+        rows = await db.options_1m.find(
+            {"underlying": inst, "$or": batch},
+            {"_id": 0, "ts": 1, "side": 1, "strike": 1, "expiry_date": 1,
+             "volume": 1, "oi": 1},
+        ).sort("ts", 1).to_list(length=2_000_000)
+        option_rows.extend(rows)
+
+    frame_ts = [int(t) for t in pd.to_numeric(df["ts"], errors="coerce").dropna()]
+    rows, diag = build_option_flow_rows(
+        spot_rows=spot_rows, option_rows=option_rows, expiries=expiries,
+        strike_step=step, frame_ts=frame_ts,
+    )
+    diag["baseline_sessions_available"] = len(baseline)
+    diag["baseline_sessions_wanted"] = BASELINE_SESSIONS
+    # A short baseline is a REAL state (a fresh install, a newly ingested
+    # instrument, an early backfill). It degrades the column — the pure builder
+    # already returns NaN below MIN_BASELINE_SESSIONS — but it must never do so
+    # invisibly, so it rides out on the coverage record and into the log.
+    diag["baseline_shortfall"] = len(baseline) < BASELINE_SESSIONS
+    diag["baseline_below_minimum"] = len(baseline) < MIN_BASELINE_SESSIONS
+    return rows, diag
+
+
 async def attach_required_data(df: pd.DataFrame, required: Any,
-                               *, db: Any = None) -> tuple:
+                               *, db: Any = None, instrument: Any = None) -> tuple:
     """Join a strategy's declared `required_data` columns onto `df`, as-of each
     bar's own ts. Returns (df, coverage).
 
-    THE seam that makes warehouse-backed series (India VIX today) readable by a
-    strategy AT DECISION TIME rather than only as a post-hoc trade tag. Call it
-    on the RAW frame, right after `load_candles_df` and BEFORE indicator
-    enrichment: `precompute_all_indicators`, `enrich_with_cache` and
-    `materialize_features` all copy-and-add, so an extra raw column flows
-    through every path untouched and — importantly — is neutral to the
-    optimizer's indicator-param cache key.
+    THE seam that makes warehouse-backed series readable by a strategy AT
+    DECISION TIME rather than only as a post-hoc trade tag. Call it on the RAW
+    frame, right after `load_candles_df` and BEFORE indicator enrichment:
+    `precompute_all_indicators`, `enrich_with_cache` and `materialize_features`
+    all copy-and-add, so an extra raw column flows through every path untouched
+    and — importantly — is neutral to the optimizer's indicator-param cache key.
+
+    Two source kinds today, joined identically and reported identically:
+
+    * `SOURCE_CANDLES` — an AUX instrument in `candles_1m` (India VIX).
+    * `SOURCE_OPTION_FLOW` — the ATM CE/PE legs in `options_1m`, whose 20-session
+      baseline is computed over a window this function chooses, NOT over the
+      frame it is handed. `instrument` names the underlying; it falls back to the
+      frame's own `instrument` column and is a hard error if neither resolves,
+      because an all-NaN column is indistinguishable from an empty warehouse.
 
     No declaration => returns the frame unchanged, so every existing strategy
     stays byte-identical. The heavy lifting (and the causality guarantee) lives
-    in the pure `app.data_columns`; this function only does the I/O.
+    in the pure `app.data_columns` / `app.option_flow`; this does only the I/O.
     """
-    from app.data_columns import attach_data_columns, resolve_data_columns
+    from app.data_columns import (SOURCE_OPTION_FLOW, DataColumnError,
+                                  attach_data_columns, resolve_data_columns)
 
     specs = resolve_data_columns(list(required or ()))
     if not specs or df is None or df.empty or "ts" not in df.columns:
@@ -438,7 +569,33 @@ async def attach_required_data(df: pd.DataFrame, required: Any,
     hi = int(pd.to_numeric(df["ts"], errors="coerce").max())
 
     sources: Dict[str, List[Dict[str, Any]]] = {}
-    for spec in specs:
+    extra: Dict[str, Dict[str, Any]] = {}
+
+    flow_specs = [s for s in specs if s.source_kind == SOURCE_OPTION_FLOW]
+    if flow_specs:
+        resolved = instrument
+        if not resolved and "instrument" in df.columns:
+            vals = [str(v).upper() for v in df["instrument"].dropna().unique()]
+            resolved = vals[0] if len(vals) == 1 else None
+        if not resolved:
+            raise DataColumnError(
+                "option_flow_instrument_unresolved",
+                name=flow_specs[0].name,
+                available=[s.name for s in specs],
+            )
+        flow_rows, diag = await _fetch_option_flow_sources(
+            db, df, str(resolved), lo=lo, hi=hi)
+        # One row list serves every declared flow column; each spec picks its own
+        # field out of it via `source_field`.
+        for spec in flow_specs:
+            sources[spec.name] = flow_rows
+            extra[spec.column] = {
+                k: diag[k] for k in
+                ("baseline_sessions_available", "baseline_sessions_wanted",
+                 "baseline_shortfall", "baseline_below_minimum") if k in diag
+            }
+
+    for spec in (s for s in specs if s.source_kind != SOURCE_OPTION_FLOW):
         rows = await db.candles_1m.find(
             {"instrument": spec.instrument,
              "ts": {"$gte": lo - int(spec.max_staleness_ms)}},
@@ -455,6 +612,8 @@ async def attach_required_data(df: pd.DataFrame, required: Any,
         sources[spec.name] = [r for r in rows if int(r.get("ts") or 0) <= hi]
 
     out, coverage = attach_data_columns(df, specs, sources)
+    for col, info in coverage.items():
+        info.update(extra.get(col) or {})
     # Degrade LOUDLY. A partially-covered column is the exact failure mode that
     # made the old vix_boost_threshold knob worthless: a strategy scoring zero
     # on the missing bars looks identical to one scoring zero on real data.
@@ -465,6 +624,15 @@ async def attach_required_data(df: pd.DataFrame, required: Any,
                 "%d session(s) missing) — any rule reading it is INERT on the rest",
                 col, info.get("coverage_pct", 0.0), info.get("present", 0),
                 info.get("bars", 0), info.get("sessions_missing_count", 0),
+            )
+        if info.get("baseline_shortfall"):
+            log.warning(
+                "data column %r had only %d of %d baseline sessions available — "
+                "its causal distribution is %s",
+                col, info.get("baseline_sessions_available", 0),
+                info.get("baseline_sessions_wanted", 0),
+                "UNAVAILABLE (all NaN)" if info.get("baseline_below_minimum")
+                else "computed from a shorter history than intended",
             )
     return out, coverage
 
