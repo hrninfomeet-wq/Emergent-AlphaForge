@@ -8,16 +8,19 @@ import pandas as pd
 from dataclasses import dataclass, field, asdict
 from typing import Any, Dict, List, Optional, Tuple
 
+from app.entry_window import DEFAULT_ENTRY_END, DEFAULT_ENTRY_START
 from app.strategies.base import StrategyBase, Signal, build_eval_ctx, validate_signal
 from app.costs import apply_round_trip_cost
 from app.exit_engine import intrabar_exit
 from app.features import materialize_features
 
-TRADE_WINDOW_START = "09:25"
+TRADE_WINDOW_START = DEFAULT_ENTRY_START
 # Default session end for entries: 15:00 IST. Combined with the 09:25 start this
 # implements the discipline rule of no entries in the first 10 min or last 30 min
 # (09:15-09:25 and 15:00-15:30). Both ends are overridable per backtest.
-TRADE_WINDOW_END = "15:00"
+# Was an independent "15:00" while live blocked from 14:50 — ten minutes of
+# every default backtest scored signals live refuses (register item #6).
+TRADE_WINDOW_END = DEFAULT_ENTRY_END
 
 
 @dataclass

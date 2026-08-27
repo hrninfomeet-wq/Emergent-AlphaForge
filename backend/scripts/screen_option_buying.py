@@ -65,6 +65,7 @@ import pandas as pd  # noqa: E402
 from pymongo import MongoClient  # noqa: E402
 
 from app.dte import compute_dte  # noqa: E402
+from app.entry_window import DEFAULT_ENTRY_END, DEFAULT_ENTRY_START  # noqa: E402
 from app.instruments import INSTRUMENT_KEYS, UNDERLYING_META  # noqa: E402
 from app.option_costs import cost_config_for_exchange, round_trip_charges  # noqa: E402
 from app.option_screen import (  # noqa: E402
@@ -347,7 +348,8 @@ def build_atm_series(
             {"instrument": instrument.upper(), "ts": {"$gte": day_start, "$lt": day_end}},
             {"_id": 0, "ts": 1, "close": 1},
         ).sort("ts", 1))
-        eligible = [r for r in spot_rows if entry_from <= _ist_hhmm(r["ts"]) <= entry_to]
+        eligible = [r for r in spot_rows
+                    if entry_from <= _ist_hhmm(r["ts"]) < entry_to]
         if not spot_rows:
             funnel["dropped_no_spot_rows"] += 1
             continue
@@ -426,7 +428,32 @@ def charges_pct_for(instrument: str, premium: float, lot_size: int) -> float:
     return 100.0 * float(ch["total_charges"]) / turnover
 
 
-def main() -> int:
+def entry_window_mask(frame, entry_from: str, entry_to: str):
+    """Boolean mask of bars eligible as ENTRIES, half-open [from, to).
+
+    Register item #7. `--entry-from`/`--entry-to` used to pick the session's
+    ATM strike and NOTHING else: the option frame was fetched for the whole
+    day, so 13.6% of measured entry bars sat outside the window (09:15-09:24
+    and 14:49-15:29) — and outside the window live will take. The
+    unconditioned baseline barely moved (<= 0.010 MFE/MAE), which is exactly
+    why it survived unnoticed; a CONDITIONED cell firing at the open would
+    have been scored on entries live refuses.
+
+    Half-open to match `backtest._in_window` (`start <= ist < end`) and the
+    live evaluator (blocks at `>= end`). A `<=` end would measure one bar the
+    other two refuse — the same one-bar drift register item #6 was about.
+
+    Raises on a frame with no `ist` column rather than returning all-True:
+    silently unmasking would restore the exact defect this fixes, invisibly.
+    """
+    if "ist" not in getattr(frame, "columns", []):
+        raise ValueError("frame has no `ist` column; cannot apply an entry window")
+    ist = frame["ist"].astype(str)
+    return (ist >= str(entry_from)) & (ist < str(entry_to))
+
+
+def build_arg_parser():
+    """The CLI surface, extracted so its defaults are testable."""
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--mongo-url", default=os.environ.get("MONGO_URL", "mongodb://localhost:27017"))
@@ -445,8 +472,12 @@ def main() -> int:
     ap.add_argument("--consumed-until", default="2026-07-10",
                     help="last session already read by a prior campaign "
                          "(excluded from the holdout; default 2026-07-10)")
-    ap.add_argument("--entry-from", default="09:25", help="IST, inclusive")
-    ap.add_argument("--entry-to", default="14:48", help="IST, inclusive")
+    # The SAME window live and the backtest enforce (app.entry_window), so a
+    # screen cell can never be measured on an entry a deployment would refuse.
+    ap.add_argument("--entry-from", default=DEFAULT_ENTRY_START,
+                    help="IST, inclusive (start of the entry window)")
+    ap.add_argument("--entry-to", default=DEFAULT_ENTRY_END,
+                    help="IST, EXCLUSIVE (end of the entry window)")
     ap.add_argument("--spread-pct", type=float, default=1.0,
                     help="modelled bid-ask, %% of premium per side")
     # LONG is every campaign this repo has run. SHORT is the mirror the
@@ -457,6 +488,11 @@ def main() -> int:
                     help="option side to screen (default LONG; BOTH runs each arm)")
     ap.add_argument("--validate-only", action="store_true")
     ap.add_argument("--json-out", default=None)
+    return ap
+
+
+def main() -> int:
+    ap = build_arg_parser()
     args = ap.parse_args()
 
     client = MongoClient(args.mongo_url, serverSelectionTimeoutMS=5000)
@@ -572,13 +608,28 @@ def main() -> int:
     print(f"\n  {'condition':<24} {'H':>4} {'bars':>8} {'MFE/MAE':>9} "
           f"{'net%med':>9} {'t':>7} {'sess':>6}  verdict")
     print(f"  {'-' * 82}")
+    # Register item #7: entries are restricted to the window as well as the
+    # strike choice. Without this the frame carries all 375 bars of the session
+    # and 13.6% of measured entries sit outside the window live will take.
+    # The forward window may still run past `entry_to` — you enter by the cutoff
+    # and hold, exactly as a deployment does.
+    window = entry_window_mask(frame, args.entry_from, args.entry_to)
+    excluded = int((~window).sum())
+    if excluded:
+        print(f"  entry window {args.entry_from}-{args.entry_to}: "
+              f"{excluded:,} of {len(frame):,} bars ({100.0 * excluded / len(frame):.1f}%) "
+              f"excluded as untradeable entries")
+    report["entry_window"] = {"from": args.entry_from, "to": args.entry_to,
+                              "bars_total": int(len(frame)),
+                              "bars_excluded": excluded}
+
     cells = []
     for side in sides:
         side_cells = screen_condition(
             frame, label=f"unconditioned_{side.lower()}", horizons=args.horizons,
             spread_pct_per_side=args.spread_pct,
             charges_pct_round_trip=charges_pct,
-            group_by=blocks, side=side)
+            group_by=blocks, side=side, condition=window)
         report[f"baseline_{side.lower()}"] = summarize_screen(side_cells)
         for c in side_cells:
             _print_cell(c)

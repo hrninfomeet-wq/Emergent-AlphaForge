@@ -513,8 +513,8 @@ unit of effort.
 | 3 | `capture_once` would store an off-hours read under today's `session_date` | S | **DONE** — writer now gates too, `force=` escape hatch |
 | 4 | `signal_threshold` documented as pinned, wasn't — took 80.2% of parameter importance | S | **DONE** 2026-08-23 |
 | 5 | Trade-frequency knobs searchable by the optimizer (exposure, not alpha) | S | **DONE** 2026-08-23 |
-| 6 | Live entry window hardcoded 09:25–14:50 vs backtest default 09:25–15:00 — every default backtest counts signals live refuses (§7.2) | S | OPEN |
-| 7 | Screen CLI's `--entry-from/--entry-to` select the ATM strike only; **13.6%** of measured entry bars fall outside the window (§11.7) | S | OPEN |
+| 6 | Live entry window hardcoded 09:25–14:50 vs backtest default 09:25–15:00 — every default backtest counts signals live refuses (§7.2) | S | **DONE** — one resolver (`app/entry_window.py`) now serves live, backtest, optimizer, WFO and the screen; per-deployment override with hard bounds. The frontend hardcoded 15:00 in 3 places too — a backend-only fix would have changed nothing a user could see. |
+| 7 | Screen CLI's `--entry-from/--entry-to` select the ATM strike only; **13.6%** of measured entry bars fall outside the window (§11.7) | S | **DONE** — the window is now a `screen_condition` mask. Measured 11,800/88,500 bars (13.3%) excluded; horizons now share one entry set, so they are directly comparable. |
 | 8 | Option-chain analytics (PCR, max pain, ATM straddle, IV rank) reach **exactly one UI route** and nothing in the decision path | S–M | OPEN — unblocked by #1 |
 | 9 | `choch`, `fvg_zones`, `order_block` are `stateful_unbounded` → **backtest-only**; an SMC strategy built on them cannot deploy | M | OPEN |
 | 10 | Option-side flow (CE/PE volume, OI) does not reach `evaluate()` — blocks Candidate A (§7.1) | M | OPEN |

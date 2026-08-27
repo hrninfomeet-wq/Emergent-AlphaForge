@@ -119,7 +119,7 @@ export default function BacktestLab() {
     start_date: "",  // YYYY-MM-DD (IST)
     end_date: "",
     trade_window_start: "09:25",
-    trade_window_end: "15:00",
+    trade_window_end: "14:50",
     // ON by default: rupee-honest paired-option results are the primary
     // workflow; flip off for spot-only research.
     option_backtest_enabled: true,
@@ -560,7 +560,7 @@ export default function BacktestLab() {
     start_ts: dateToMs(config.start_date, false),
     end_ts: dateToMs(config.end_date, true),
     trade_window_start: config.trade_window_start || "09:25",
-    trade_window_end: config.trade_window_end || "15:00",
+    trade_window_end: config.trade_window_end || "14:50",
     option_backtest: {
       enabled: !!config.option_backtest_enabled,
       expiry_date: config.option_expiry_mode === "fixed" ? (config.option_expiry_date || null) : null,
@@ -835,7 +835,7 @@ export default function BacktestLab() {
         start_date: msToDate(r.config?.start_ts),
         end_date: msToDate(r.config?.end_ts),
         trade_window_start: r.config?.trade_window_start || "09:25",
-        trade_window_end: r.config?.trade_window_end || "15:00",
+        trade_window_end: r.config?.trade_window_end || "14:50",
         option_backtest_enabled: !!r.config?.option_backtest?.enabled,
         option_expiry_mode: r.config?.option_backtest?.expiry_date ? "fixed" : "auto",
         option_expiry_date: r.config?.option_backtest?.expiry_date || "",

@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Union
 
 from pydantic import BaseModel, Field, field_validator
 
+from app.entry_window import DEFAULT_ENTRY_END, DEFAULT_ENTRY_START
 from app.option_data_planner import DEFAULT_LEGS
 from app.upstox_stream import DEFAULT_STREAM_MODE
 from app.data_hygiene import DEFAULT_SAMPLE_INTERVAL_MIN as HYGIENE_DEFAULT_SAMPLE
@@ -94,8 +95,10 @@ class BacktestReq(BaseModel):
     # Intraday trade window (IST HH:MM). Default 09:25-15:00 implements the
     # user's discipline rule: no entries in the first 10 min (09:15-09:25) or the
     # last 30 min (15:00-15:30). Configurable per run.
-    trade_window_start: str = "09:25"
-    trade_window_end: str = "15:00"
+    trade_window_start: str = DEFAULT_ENTRY_START
+    # Was "15:00" while every live deployment blocked from 14:50 — ten minutes in
+    # which a default backtest scored signals live refuses (register item #6).
+    trade_window_end: str = DEFAULT_ENTRY_END
     name: str = "Untitled Run"
 
 
@@ -232,8 +235,8 @@ class OptimizerStartReq(BaseModel):
     # deployment enforces (09:25 open block → 14:50 close block, deployment_evaluator
     # BLOCK_OPEN_UNTIL/BLOCK_CLOSE_FROM) so the optimizer never rewards 14:50–15:00
     # entries that live can never take (O6). run_backtest's own default is 09:25–15:00.
-    trade_window_start: str = "09:25"
-    trade_window_end: str = "14:50"
+    trade_window_start: str = DEFAULT_ENTRY_START
+    trade_window_end: str = DEFAULT_ENTRY_END
 
 
 class WfoStartReq(BaseModel):
@@ -275,8 +278,8 @@ class WfoStartReq(BaseModel):
     # Entry-time window (IST HH:MM); live-effective 09:25–14:50 by default (O6),
     # threaded into every per-window run_backtest so OOS folds exclude un-takeable
     # 14:50–15:00 entries too.
-    trade_window_start: str = "09:25"
-    trade_window_end: str = "14:50"
+    trade_window_start: str = DEFAULT_ENTRY_START
+    trade_window_end: str = DEFAULT_ENTRY_END
 
 
 class UpstoxStreamStartReq(BaseModel):

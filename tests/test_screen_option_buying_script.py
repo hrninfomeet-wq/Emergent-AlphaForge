@@ -19,11 +19,23 @@ sys.path.insert(0, str(ROOT / "backend"))
 
 
 def _load_script_module():
-    """Import the CLI with `pymongo` stubbed out."""
+    """Import the CLI with `pymongo` stubbed out ONLY if it is genuinely absent.
+
+    The stub is installed into `sys.modules` permanently and never removed, so on
+    a host that HAS the driver it would shadow the real one for every test that
+    runs afterwards — `app.upstox_stream` imports `UpdateOne` from it and would
+    fail with a bare `cannot import name ... (unknown location)`. Whether that
+    happened depended purely on which test file pytest collected first, which is
+    exactly the kind of order-dependent flake that is miserable to diagnose
+    later. Prefer the real module whenever it can be imported.
+    """
     if "pymongo" not in sys.modules:
-        stub = types.ModuleType("pymongo")
-        stub.MongoClient = object          # never constructed in these tests
-        sys.modules["pymongo"] = stub
+        try:
+            import pymongo  # noqa: F401
+        except ImportError:
+            stub = types.ModuleType("pymongo")
+            stub.MongoClient = object      # never constructed in these tests
+            sys.modules["pymongo"] = stub
     path = ROOT / "backend" / "scripts" / "screen_option_buying.py"
     spec = importlib.util.spec_from_file_location("screen_option_buying", path)
     module = importlib.util.module_from_spec(spec)
@@ -178,8 +190,66 @@ def _build_parser():
 
 
 def test_the_shipped_parser_matches_this_expectation():
-    """Guard against the CLI drifting away from the defaults asserted above."""
+    """Guard against the CLI drifting away from the defaults asserted above.
+
+    The window bounds used to be literals here ("09:25" / "14:48"). They are now
+    read from `app.entry_window`, so the assertion moved from the source text to
+    the resolved value — a literal check would have passed happily while the CLI
+    screened a different window from the one live enforces, which is register
+    item #6 wearing a different hat.
+    """
+    from app.entry_window import DEFAULT_ENTRY_END, DEFAULT_ENTRY_START
+
     source = (ROOT / "backend" / "scripts" / "screen_option_buying.py").read_text()
     assert 'default=[1, 2, 3]' in source
-    assert 'default="09:25"' in source
-    assert 'default="14:48"' in source
+    assert '"09:25"' not in source, "the entry window must not be re-hardcoded"
+    assert '"14:48"' not in source, "the 14:48 literal is superseded by DEFAULT_ENTRY_END"
+
+    defaults = {a.dest: a.default for a in screen.build_arg_parser()._actions}
+    assert defaults["entry_from"] == DEFAULT_ENTRY_START
+    assert defaults["entry_to"] == DEFAULT_ENTRY_END
+
+
+# ---------------------------------------------------------------------------
+# Register item #7 — the entry window must constrain what is MEASURED
+#
+# `--entry-from` / `--entry-to` chose the session's ATM strike and nothing else.
+# The option frame was then fetched for the WHOLE day, so 13.6% of measured
+# entry bars sat outside the window (09:15-09:24 and 14:49-15:29) — and outside
+# the window live will actually take. The unconditioned baseline barely moved
+# (<= 0.010 MFE/MAE), which is exactly why it survived unnoticed; a CONDITIONED
+# cell that fires at the open would have been scored on entries live refuses.
+# ---------------------------------------------------------------------------
+
+def test_entry_window_mask_selects_only_bars_inside_the_window():
+    import pandas as pd
+    frame = pd.DataFrame({"ist": ["09:14", "09:15", "09:25", "12:00",
+                                  "14:49", "14:50", "15:29"]})
+    mask = screen.entry_window_mask(frame, "09:25", "14:50")
+    assert list(mask) == [False, False, True, True, True, False, False]
+
+
+def test_the_window_is_half_open_like_every_other_window_in_the_app():
+    """`backtest._in_window` is `start <= ist < end` and the live evaluator
+    blocks at `>= end`. A screen using `<=` on the end would measure one bar the
+    other two refuse — the same one-bar-at-a-time drift item #6 was about."""
+    import pandas as pd
+    frame = pd.DataFrame({"ist": ["14:49", "14:50"]})
+    assert list(screen.entry_window_mask(frame, "09:25", "14:50")) == [True, False]
+
+
+def test_the_screen_defaults_to_the_same_window_as_live_and_backtest():
+    from app.entry_window import DEFAULT_ENTRY_END, DEFAULT_ENTRY_START
+
+    parser = screen.build_arg_parser()
+    defaults = {a.dest: a.default for a in parser._actions}
+    assert defaults["entry_from"] == DEFAULT_ENTRY_START
+    assert defaults["entry_to"] == DEFAULT_ENTRY_END
+
+
+def test_a_frame_without_an_ist_column_is_refused_not_silently_unmasked():
+    """Returning all-True on a missing column would restore the exact defect
+    this fixes, invisibly."""
+    import pandas as pd
+    with pytest.raises(ValueError):
+        screen.entry_window_mask(pd.DataFrame({"close": [1.0]}), "09:25", "14:50")

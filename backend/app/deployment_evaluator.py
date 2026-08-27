@@ -38,15 +38,26 @@ from app.strategy_deployments import (
     resolve_deployment_premium_trigger,
 )
 from app.deployment_kill_switch import check_deployment_kill_switches
+from app.entry_window import (
+    DEFAULT_ENTRY_END,
+    DEFAULT_ENTRY_START,
+    resolve_entry_window,
+)
 
 log = logging.getLogger(__name__)
 
 # IST is UTC+5:30. We compute IST-time-of-day from candle ts to apply window guards.
 IST_OFFSET = timedelta(hours=5, minutes=30)
 
-# Time windows (IST). Block opening 10 min and last 30 min by user decision (2026-05-27).
-BLOCK_OPEN_UNTIL = time(9, 25)        # block 09:15 -> 09:25 (first 10 min)
-BLOCK_CLOSE_FROM = time(14, 50)       # block 14:50 -> 15:30 (last 30 min)
+# Time windows (IST). Block opening 10 min and last 40 min by user decision (2026-05-27).
+#
+# These are now DERIVED from `app.entry_window`, the single resolver the backtest
+# and the optimizer also read, so the three can never disagree again. They used
+# to be independent literals here while `backtest.run_backtest` defaulted to
+# 15:00 — ten minutes in which every default backtest scored signals live would
+# refuse (register item #6, deliverable §7.2). A test pins the equality.
+BLOCK_OPEN_UNTIL = time.fromisoformat(DEFAULT_ENTRY_START)   # 09:25
+BLOCK_CLOSE_FROM = time.fromisoformat(DEFAULT_ENTRY_END)     # 14:50
 SQUARE_OFF_AT = time(15, 0)           # paper-trade square-off cutoff (used elsewhere)
 
 # Minimum bars needed for indicators/strategy lookback.
@@ -64,13 +75,26 @@ def _ist_session_date_of_ts(ts_ms: int) -> str:
     return (dt_utc + IST_OFFSET).strftime("%Y-%m-%d")
 
 
-def _is_blocked_by_window(ts_ms: int) -> Optional[str]:
-    """Return blocker reason if the given bar timestamp falls in a blocked window."""
-    t = _ist_time_of_ts(ts_ms)
-    if t < BLOCK_OPEN_UNTIL:
-        return f"window_open_block (IST {t.strftime('%H:%M')} < 09:25)"
-    if t >= BLOCK_CLOSE_FROM:
-        return f"window_close_block (IST {t.strftime('%H:%M')} >= 14:50)"
+def _is_blocked_by_window(ts_ms: int, risk: Any = None) -> Optional[str]:
+    """Return a blocker reason if this bar falls outside the entry window.
+
+    ``risk`` is the deployment's risk dict; it may carry
+    ``trade_window_start`` / ``trade_window_end`` to narrow or (within
+    `entry_window`'s hard bounds) widen the window. Omitting it resolves to the
+    documented default, so every existing deployment behaves exactly as before.
+
+    The reason string reports the window ACTUALLY in force. It used to hardcode
+    "09:25" and "14:50" into its text, which was harmless only while the window
+    could not change — the moment it became configurable that string would have
+    lied about why a bar was refused, and a journalled blocker nobody can trust
+    is worse than none.
+    """
+    start, end = resolve_entry_window(risk)
+    hhmm = _ist_time_of_ts(ts_ms).strftime("%H:%M")
+    if hhmm < start:
+        return f"window_open_block (IST {hhmm} < {start})"
+    if hhmm >= end:
+        return f"window_close_block (IST {hhmm} >= {end})"
     return None
 
 
@@ -575,7 +599,7 @@ async def evaluate_deployment_on_close(
         }
 
     # Pre-flight: time-of-day window guard. Still record the bar as evaluated to advance pointer.
-    window_blocker = _is_blocked_by_window(candle_ts)
+    window_blocker = _is_blocked_by_window(candle_ts, deployment.get("risk"))
 
     # Pre-flight: expiry-day cutoff (15:00 IST on the day the deployment's instrument expires).
     next_expiry_iso = await next_expiry_for(db, instrument)
