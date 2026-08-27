@@ -30,6 +30,7 @@ from app.option_screen import (  # noqa: E402
     forward_excursions,
     mfe_mae_ratio,
     net_hold_return_pct,
+    net_vertical_return_pct,
     screen_condition,
     session_level_stats,
     summarize_screen,
@@ -638,3 +639,134 @@ def test_the_two_sides_never_report_the_same_net():
     for lc, sc in zip(longs, shorts):
         assert sc.net_pct.median_of_session_medians != pytest.approx(
             lc.net_pct.median_of_session_medians, abs=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# DEFINED-RISK VERTICALS — the kill test for the short-side thesis
+#
+# §13.3 measured the naked short's tail: the worst single entry lost 5.0x the
+# premium collected. Naked selling is therefore off the table, and the thesis
+# only matters if the edge SURVIVES paying for protection.
+#
+# A wing is expensive in a specific, non-obvious way. Friction scales with the
+# SUM of the two leg premiums (each leg crosses its own spread, twice), while
+# the credit scales with their DIFFERENCE. So a wing roughly doubles the cost
+# while cutting the collected premium — which is exactly why this has to be
+# measured rather than assumed either way.
+#
+# The denominator is MAX LOSS (width - credit), not premium. For a defined-risk
+# vertical that is what the broker blocks as margin, so the number is a return
+# on capital. It is NOT comparable to the naked screen's return-on-premium.
+# ---------------------------------------------------------------------------
+
+def _vert(short_entry, long_entry, short_exit, long_exit, *, width=150.0,
+          spread=1.0, charges=0.0):
+    return net_vertical_return_pct(
+        short_entry=short_entry, long_entry=long_entry,
+        short_exit=short_exit, long_exit=long_exit,
+        width_points=width, spread_pct_per_side=spread,
+        charges_pct_round_trip=charges)
+
+
+def test_an_unchanged_spread_loses_the_friction():
+    r = _vert(112.0, 40.0, 112.0, 40.0, charges=0.186)
+    assert r is not None and r < 0
+
+
+def test_friction_scales_with_the_SUM_of_the_legs_not_the_credit():
+    """The reason a wing is expensive. Same credit, fatter legs -> more cost."""
+    thin = _vert(112.0, 40.0, 112.0, 40.0)     # credit 72, legs sum 152
+    fat = _vert(312.0, 240.0, 312.0, 240.0)    # credit 72, legs sum 552
+    assert thin is not None and fat is not None
+    assert fat < thin, "a wider-premium pair must pay more friction for one credit"
+
+
+def test_max_profit_is_the_credit_over_the_capital_at_risk():
+    """Both legs worthless at exit — the seller keeps the whole credit."""
+    r = _vert(112.0, 40.0, 0.0, 0.0, width=150.0, spread=0.0, charges=0.0)
+    credit = 72.0
+    assert r == pytest.approx(100.0 * credit / (150.0 - credit), rel=1e-6)
+
+
+def test_max_loss_is_minus_one_hundred_percent_of_capital_at_risk():
+    """The spread widens to its full width — the defined-risk floor. This is the
+    property that makes a vertical survivable where a naked short is not."""
+    r = _vert(112.0, 40.0, 200.0, 50.0, width=150.0, spread=0.0, charges=0.0)
+    assert r == pytest.approx(-100.0, abs=1e-6)
+
+
+def test_the_loss_can_never_exceed_the_defined_floor():
+    """However violently the short leg moves, a vertical cannot lose more than
+    its width. §13.3's naked short lost 5.0x the premium collected; this is what
+    buying the wing purchases."""
+    for short_exit in (200.0, 500.0, 5000.0):
+        long_exit = short_exit - 150.0   # legs 150 apart => spread at full width
+        r = _vert(112.0, 40.0, short_exit, long_exit, width=150.0, spread=0.0)
+        assert r == pytest.approx(-100.0, abs=1e-6)
+
+
+def test_a_credit_wider_than_the_structure_is_refused_not_reported():
+    """Credit >= width means no capital at risk, which is arbitrage or bad data.
+    Reporting a return on a non-positive denominator would print a spectacular
+    number from a division artefact."""
+    assert _vert(160.0, 5.0, 100.0, 5.0, width=150.0, spread=0.0) is None
+
+
+@pytest.mark.parametrize("bad", [0.0, -5.0, float("nan"), float("inf")])
+def test_an_unusable_width_is_refused(bad):
+    assert _vert(112.0, 40.0, 100.0, 35.0, width=bad) is None
+
+
+def test_both_legs_pay_the_spread_in_the_punishing_direction():
+    """Short sold at the bid and bought back at the ask; wing bought at the ask
+    and sold at the bid. A model that gave either leg a favourable fill would
+    manufacture edge."""
+    frictionless = _vert(112.0, 40.0, 100.0, 36.0, spread=0.0)
+    charged = _vert(112.0, 40.0, 100.0, 36.0, spread=1.0)
+    assert charged < frictionless
+
+
+def test_vertical_arithmetic_is_pinned_exactly():
+    """Inequalities were not enough. A mutation sweep showed that giving the
+    SHORT leg a favourable entry fill, or the wing a favourable one, still
+    satisfied every `charged < frictionless` style assertion — the numbers moved
+    but stayed on the correct side of the comparison. Only exact arithmetic pins
+    which side of the book each leg is filled on.
+
+        credit_in  = 112 x 0.99 - 40 x 1.01 = 70.48   (sell bid, buy ask)
+        debit_out  = 100 x 1.01 - 36 x 0.99 = 65.36   (buy ask,  sell bid)
+        max_loss   = 150 - 70.48            = 79.52
+        charges    = 0.186% x (112 + 40)    =  0.28272
+        profit     = 70.48 - 65.36 - 0.28272 = 4.83728
+        return     = 100 x 4.83728 / 79.52   = 6.0831%
+    """
+    r = _vert(112.0, 40.0, 100.0, 36.0, width=150.0, spread=1.0, charges=0.186)
+    assert r == pytest.approx(6.0831, abs=1e-4)
+
+
+def test_charges_alone_scale_with_both_legs_turnover():
+    """Isolates CHARGES from the bid-ask. Same credit, same width, same exits —
+    only the leg premiums differ, so any difference is the charge base. With
+    charges levied on the credit (or dropped) these two are identical, which is
+    how both mutants survived the first sweep."""
+    thin = _vert(112.0, 40.0, 112.0, 40.0, width=150.0, spread=0.0, charges=0.186)
+    fat = _vert(312.0, 240.0, 312.0, 240.0, width=150.0, spread=0.0, charges=0.186)
+    assert thin is not None and fat is not None
+    assert fat < thin
+    assert thin == pytest.approx(100.0 * -(0.00186 * 152.0) / 78.0, rel=1e-6)
+    assert fat == pytest.approx(100.0 * -(0.00186 * 552.0) / 78.0, rel=1e-6)
+
+
+def test_charges_strictly_reduce_the_return():
+    free = _vert(112.0, 40.0, 100.0, 36.0, width=150.0, spread=0.0, charges=0.0)
+    paid = _vert(112.0, 40.0, 100.0, 36.0, width=150.0, spread=0.0, charges=0.186)
+    assert paid < free
+
+
+def test_a_non_positive_short_premium_is_refused():
+    """The `width > 0` guard is caught downstream by the max-loss check, but
+    `short_entry > 0` is not: a zero short leg produces a NEGATIVE credit, which
+    makes max_loss LARGER than the width and sails through. Selling something
+    for nothing is not a structure."""
+    assert _vert(0.0, 40.0, 100.0, 36.0, width=150.0) is None
+    assert _vert(-5.0, 40.0, 100.0, 36.0, width=150.0) is None

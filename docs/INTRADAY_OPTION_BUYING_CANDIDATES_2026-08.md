@@ -1489,3 +1489,108 @@ an engine**:
 
 Only if all four survive does the multi-leg engine (register item #12, the one
 genuinely large build) become work that evidence has paid for.
+
+---
+
+## 14. The short side is CLOSED — the wing eats the edge (2026-08-27)
+
+§13.5 pre-registered the kill test in one sentence: *"If the wings eat the edge,
+the thesis dies here and no engine was built."* They do. It does. No engine was
+built.
+
+### 14.1 The result
+
+Real vertical spreads built from the warehouse — short leg, protective wing N
+strikes away — measured as net return on **capital at risk** (`width - credit`),
+which for a defined-risk vertical is what a broker blocks as margin. Train slice,
+DTE 1–3, 1%/side spread, statutory charges on.
+
+**Twenty-four cells. Two indices. Three short-leg offsets (ATM, 2 and 4 strikes
+OTM). Two widths. Two horizons. Every single one negative.**
+
+| Index | short leg | width | H | sessions | median % | % sessions +ve | t |
+|---|---|---|---|---|---|---|---|
+| NIFTY | ATM | 2 | 240 | 108 | −13.62 | 7.4% | −10.64 |
+| NIFTY | ATM | 3 | 240 | 80 | −25.16 | 15.0% | −9.03 |
+| NIFTY | 2 OTM | 2 | 240 | 46 | −28.71 | 13.0% | −7.27 |
+| NIFTY | 4 OTM | 2 | 240 | 9 | −37.87 | 0.0% | −6.28 |
+| SENSEX | ATM | 2 | 240 | 116 | −15.55 | 0.0% | −11.11 |
+| SENSEX | ATM | 3 | 240 | 114 | −14.88 | 5.3% | −10.45 |
+| SENSEX | 2 OTM | 3 | 240 | 82 | −23.27 | 4.9% | −11.45 |
+| SENSEX | 4 OTM | 3 | 240 | 38 | −29.99 | 5.3% | −7.77 |
+
+Selling further OTM — how defined-risk credit spreads are normally written, and
+the one variant pre-registered before it was run — makes it **worse**, not
+better: `credit/width` falls from 0.43 to 0.20–0.30 while the friction is
+unchanged.
+
+The thin cells (NIFTY 4-OTM, 4–9 sessions) are underpowered and carry no weight.
+The verdict rests on the well-powered ones — ATM and 2-OTM, 80–116 sessions —
+which are unambiguous.
+
+### 14.2 The mechanism, validated on a single session
+
+A strong negative deserves the same scrutiny as a strong positive, so the
+measurement was checked against printed leg prices rather than believed.
+
+NIFTY 2025-08-28, short 24550 CE / long 24700 CE, 09:25 → 13:25:
+
+```
+entry 09:25   short 47.75   wing 12.90   credit 34.85   credit/width 0.232
+exit  13:25   short 35.00   wing  3.20   spread value 31.80
+   naked short on the same leg  : +25.03% of premium
+   the vertical                 :  +1.68% of capital at risk
+```
+
+The arithmetic is correct and the mechanism is plain. The short leg decayed
+12.75 points — real theta, exactly what the thesis is about. **But the wing
+decayed too**, from 12.90 to 3.20, handing back 9.70 of those 12.75 points. The
+spread narrowed only 3.05. And the denominator is no longer the ₹47.75 premium
+but the ₹115.15 of capital the structure forces you to post.
+
+**A near-ATM vertical is a poor theta harvester, because both legs share similar
+decay when they sit close together.** Buying protection does not shave a little
+off the edge — it removes most of it, and multiplies the capital required.
+Moving the pair further OTM widens the relative decay gap in the wrong
+direction: the credit collapses faster than the risk does.
+
+### 14.3 What this closes, and what remains true
+
+**Closed.** Defined-risk short verticals as an intraday premium harvester on
+these two indices. Comprehensively, on both indices, at every offset, width and
+horizon tested.
+
+**Still true, and now interpretable.** §13's naked short really does measure
+positive: +6–9% of premium at 2–4 hour holds, both indices, session-level t of
++6.7 to +10.0. That measurement stands. What §14 adds is the reading of it:
+
+> The naked short's edge is **compensation for the tail**, not a mispricing.
+> It measures positive precisely because it carries a loss of 5.0x the premium
+> collected on a single bad entry, and every structure that caps that tail also
+> removes the compensation. The market is pricing this approximately correctly.
+
+That is the most parsimonious explanation, it is consistent with everything
+measured across four campaigns, and it is what the register's §1 has been saying
+from the start: intraday index options on this data are close to efficiently
+priced, and the residual is friction.
+
+### 14.4 Cost and discipline
+
+The whole short-side campaign — screen extension, cost model, tail measurement,
+kill test and this verdict — cost roughly one working day and **no engine was
+built**. Register item #12 (multi-leg / short option engine, the one genuinely
+large build) is now explicitly NOT justified by evidence, which is the outcome
+the ordering in §13.5 was designed to produce.
+
+The reusable part ships: `net_hold_return_pct(side=...)` and
+`net_vertical_return_pct` are in `app/option_screen.py`, tested and
+mutation-verified, so the next campaign measures the short side in minutes
+rather than re-deriving it. Two mutation sweeps on the cost models found five
+survivors between them — every one an assertion that was true but not
+discriminating (`long + short < 0` is satisfied by `2 x long`; a favourable fill
+still lands on the correct side of a `charged < frictionless` comparison). Exact
+arithmetic tests replaced them.
+
+**Recommendation: close the option-selling line.** The engineering items on the
+register (#6–#11) remain worth doing on their own merits; this hypothesis does
+not.

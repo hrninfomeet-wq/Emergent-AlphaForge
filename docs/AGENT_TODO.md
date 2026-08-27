@@ -519,7 +519,7 @@ unit of effort.
 | 9 | `choch`, `fvg_zones`, `order_block` are `stateful_unbounded` → **backtest-only**; an SMC strategy built on them cannot deploy | M | OPEN |
 | 10 | Option-side flow (CE/PE volume, OI) does not reach `evaluate()` — blocks Candidate A (§7.1) | M | OPEN |
 | 11 | Live window hard-capped at **1,000 bars** (`max(200, min(requested, 1_000))`) — any multi-session baseline computes differently in backtest vs live, invisibly | M | OPEN — must be designed around, see §12.3 |
-| 12 | Option engine is **long-only**; the only `SELL` is exiting a long. No short leg, no credit structure, no multi-leg | L | OPEN — gated on the short-side screen |
+| 12 | Option engine is **long-only**; the only `SELL` is exiting a long. No short leg, no credit structure, no multi-leg | L | **NOT JUSTIFIED** — the short-side screen came back negative for every defined-risk vertical tested (deliverable §14). The gate did its job: no engine was built. |
 | 13 | Ingestion gaps: NIFTY expiry 2024-12-26 has no bars for any strike within ±300 of 23900 (3 sessions); SENSEX 80400 exp 2024-11-29 missing on 2026-11-26 | S | OPEN — data, not code |
 | 14 | A SENSEX optimizer job (`cac0151c`) referenced by a saved backtest run is **absent from `optimization_jobs`** — that result's search space and trial count are unauditable | S | OPEN — needs reproduction |
 | 15 | `HANDOFF.md` §2.0e stale — describes a closed defect as open | S | OPEN |

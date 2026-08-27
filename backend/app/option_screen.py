@@ -211,6 +211,78 @@ def net_hold_return_pct(
     return float((gross - charges) * 100.0)
 
 
+def net_vertical_return_pct(
+    *,
+    short_entry: float,
+    long_entry: float,
+    short_exit: float,
+    long_exit: float,
+    width_points: float,
+    spread_pct_per_side: float,
+    charges_pct_round_trip: float = 0.0,
+) -> Optional[float]:
+    """Net return of a SHORT vertical spread, as a % of the capital at risk.
+
+    A defined-risk structure: sell the near leg, buy a wing ``width_points``
+    away. §13.3 measured the naked short's tail at **5.0x the premium collected**
+    on a single entry, which takes naked selling off the table — so the thesis
+    only survives if the edge survives paying for that wing.
+
+    **Why a wing is expensive, precisely.** Each leg crosses its OWN bid-ask,
+    twice. Friction therefore scales with ``short + long`` while the credit
+    scales with ``short - long``. Buying protection roughly doubles the cost of
+    the position while cutting the premium collected — which is why this has to
+    be measured rather than assumed in either direction.
+
+    Fills are punishing on every leg, as they are in reality: the short leg is
+    SOLD at the bid and BOUGHT BACK at the ask; the wing is BOUGHT at the ask and
+    SOLD at the bid. A model that handed either leg a favourable fill would
+    manufacture edge out of accounting, the same failure
+    :func:`net_hold_return_pct` guards against for the naked case.
+
+    **The denominator is MAX LOSS**, ``width - credit``, not premium. For a
+    defined-risk vertical that is what a broker blocks as margin, so the result
+    is a return on CAPITAL and is directly comparable across structures. It is
+    NOT comparable to the naked screen's return-on-premium — §13.4 records why
+    that distinction matters: +8.7% of a ₹7,296 premium against ~₹1.3L of margin
+    is a very different number from +8.7% of capital.
+
+    Returns ``None`` when the structure is unusable — a non-positive or
+    non-finite width, or a credit that meets or exceeds the width (no capital at
+    risk, which is arbitrage or bad data). Reporting a return on a non-positive
+    denominator would print a spectacular number from a division artefact.
+    """
+    values = (short_entry, long_entry, short_exit, long_exit, width_points,
+              spread_pct_per_side, charges_pct_round_trip)
+    try:
+        se, le, sx, lx, width, spread_pct, charges_pct = (float(v) for v in values)
+    except (TypeError, ValueError):
+        return None
+    if not all(math.isfinite(v) for v in (se, le, sx, lx, width, spread_pct, charges_pct)):
+        return None
+    if width <= 0 or se <= 0:
+        return None
+
+    s = max(0.0, spread_pct) / 100.0
+
+    # Entry: sell the short leg at the bid, buy the wing at the ask.
+    credit_in = se * (1.0 - s) - le * (1.0 + s)
+    # Exit: buy the short leg back at the ask, sell the wing at the bid.
+    debit_out = sx * (1.0 + s) - lx * (1.0 - s)
+
+    # Capital the broker blocks: the worst the structure can do, less what was
+    # taken in for it.
+    max_loss = width - credit_in
+    if max_loss <= 0:
+        return None
+
+    # Statutory charges are a % of turnover, and BOTH legs turn over.
+    charge_points = max(0.0, charges_pct) / 100.0 * (se + le)
+
+    profit_points = credit_in - debit_out - charge_points
+    return float(100.0 * profit_points / max_loss)
+
+
 # ---------------------------------------------------------------------------
 # Session-level statistics — the only kind that count
 # ---------------------------------------------------------------------------
