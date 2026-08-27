@@ -5,6 +5,77 @@ so the next session starts smarter. Newest entry first.
 
 ---
 
+## 2026-08-28 — option flow into `evaluate()`, and what the mutants found (Claude Opus 5)
+
+**CORE LESSON — when the same rule is written twice, the second copy is the bug, and only
+a mutant will tell you.** The option-flow fetch decides which contract to QUERY; the pure
+builder decides which contract to MATCH. Both anchor the ATM strike on the session's first
+spot bar, and I wrote that rule in both places. Every test passed, because every fixture held
+spot constant — so "first bar" and "last bar" pointed at the same strike and the two copies
+could not disagree. A mutation flipping the fetch's anchor survived. The failure it was
+hiding is the nastiest shape this project knows: the query returns a contract the builder
+then discards, the column goes all-NaN, and that is *indistinguishable from an empty
+warehouse* — the exact §11.1 misdiagnosis that once cost a day. Fixed by deleting the copy,
+not by testing it: both now call `option_flow.first_close_by_session`.
+
+**14 survivors out of 32 on the first sweeps.** Eleven on the pure module, three on the
+fetch. Not one was a wrong assertion; every one was an assertion that was *true but not
+discriminating*, because the fixture could not distinguish the guard from its absence — one
+strike so identity did not matter, one expiry so the calendar did not matter, constant spot
+so the anchor did not matter, 21 sessions so the growing-window branch never ran. **Write the
+decoy into the fixture, or the identity test proves nothing.**
+
+**Two guards that no test could ever pin, both found by mutation, both deleted rather than
+tested.** A `k <= min_count` early return that the loop's own `range(min_count, ...)` already
+covered — two guards where one does the work means neither can be killed. And a `try/except`
+around a value the layer below had already coerced: unreachable, and worse than useless,
+because if a future field *did* arrive uncoerced it would have converted a schema bug into
+silent NaN — putting a code defect behind the same face a real data gap wears. It raises now.
+
+**`bool(NaN)`'s cousin: the 0.0 fallback.** `app.vix.build_asof_index` does
+`float(c.get(field, c.get("vix", 0.0)))` — a row that LACKS the field it is asked for silently
+becomes **0.0**. Harmless for VIX (the projection always includes it), lethal for a z-score,
+where 0.0 reads as "perfectly typical". Every emitted row therefore carries every field
+explicitly, NaN where unknown. Verified by experiment before writing a line, not by reading.
+
+**The guard that fired hardest was the one I nearly did not write.** `std == 0 → NaN` looked
+like pedantry. On the real warehouse **60.8% of SENSEX same-minute 20-session OI-delta
+baselines are literally flat** (63.1% of its OI deltas are exactly zero; NIFTY: 0.0% flat).
+Returning 0.0 there — the natural-looking alternative — would have told a SENSEX strategy
+"perfectly typical option flow" on six of every ten bars. Instead `flow_imbalance` is honestly
+unavailable on ~61% of SENSEX bars, which is now a documented no-trade condition for
+Candidate A instead of a future mystery.
+
+**Confirmed approach: prove the constraint with an equality, not an assertion.** The whole
+item exists because the live window is capped at 1,000 bars and a frame-derived 20-session
+baseline would differ between backtest and live *while both looked healthy*. That is not
+testable by inspection. It is testable by computing the same bar from a 1,000-bar frame and a
+15,000-bar frame and demanding the numbers be identical — which they are, on the real
+warehouse, for all eleven columns on both indices. A frame-derived baseline passes every
+other test in the file and fails only that one.
+
+**Dead end, and a hazard worth naming: never run two mutation sweeps concurrently.** A sweep
+*writes the file it is testing* and restores it from a copy read at its own start. I ran the
+pure-module and fetch sweeps at once; one restored a stale snapshot and left `warehouse.py`
+mutated on disk, which then produced one bogus survivor and one bogus missing anchor and sent
+me investigating a regression that did not exist. Run them serially, and diff against HEAD
+afterwards. Related: `git checkout HEAD -- <file>` during a revert-and-compare experiment
+silently discarded an *uncommitted* improvement I had made after the last commit — the full
+suite caught it two steps later. Commit before experimenting on the tree.
+
+**Confirmed approach: answer "did I break this?" by reverting and rebuilding, not by
+arguing.** The determinism replay found 2 of 14 saved runs no longer reproducing. Rather than
+reason from "my change is opt-in", I checked out the four changed files at `bd943e8`, deleted
+the new module, rebuilt the container and re-ran: the new numbers reproduced *exactly* without
+my work. Pre-existing, filed as register item #16, ten minutes to settle beyond doubt.
+
+**Not done, deliberately:** Candidate A itself. The columns unblock the screen; the screen has
+not been run. Four campaigns have failed and the unconditioned ATM baseline is NO_EDGE on both
+indices. Screen against the pre-registered kill thresholds in §4.1 before writing any plugin —
+that ordering is exactly why the short-side campaign cost one day and built no engine.
+
+---
+
 ## 2026-08-19 → 08-20 — the gates that were documented as conservative (Claude Opus 5)
 
 **CORE LESSON — in any gate, find the ALLOW answer first, then check that every
