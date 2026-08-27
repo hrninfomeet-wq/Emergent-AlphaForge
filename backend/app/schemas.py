@@ -92,9 +92,10 @@ class BacktestReq(BaseModel):
     n_folds: int = 3
     pretrade_filters: Dict[str, Any] = Field(default_factory=dict)
     option_backtest: OptionBacktestReq = Field(default_factory=OptionBacktestReq)
-    # Intraday trade window (IST HH:MM). Default 09:25-15:00 implements the
-    # user's discipline rule: no entries in the first 10 min (09:15-09:25) or the
-    # last 30 min (15:00-15:30). Configurable per run.
+    # Intraday trade window (IST HH:MM). Defaults to the LIVE-EFFECTIVE window
+    # (09:25-14:50) resolved by `app.entry_window`, which live, the optimizer,
+    # WFO and the screen all read — so a saved run and its deployment cannot
+    # disagree about which entries were possible. Configurable per run.
     trade_window_start: str = DEFAULT_ENTRY_START
     # Was "15:00" while every live deployment blocked from 14:50 — ten minutes in
     # which a default backtest scored signals live refuses (register item #6).

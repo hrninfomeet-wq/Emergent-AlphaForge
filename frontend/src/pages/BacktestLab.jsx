@@ -280,10 +280,12 @@ export default function BacktestLab() {
           option_brokerage_per_order: ex.cost_config.brokerage_per_order ?? 0,
           option_spread_pct: ex.cost_config.spread_pct_of_premium ?? 1.0,
         } : {}),
-        // Restore the ENTRY WINDOW the preset was validated under. The optimizer
-        // scores 09:25-14:50 (live-effective) while this page defaults to 15:00,
-        // so without this a loaded optimizer preset replayed a WIDER window than
-        // the optimizer scored — measured 5.4% net difference on one winner.
+        // Restore the ENTRY WINDOW the preset was validated under. This page now
+        // defaults to the same live-effective 09:25-14:50 the optimizer scores
+        // (backend app/entry_window.py), but a preset may have been validated
+        // under a DIFFERENT explicit window, so it still has to travel with it —
+        // replaying a preset under a wider window than it was scored on was
+        // measured at a 5.4% net difference on one winner.
         ...(ex.trade_window_start ? { trade_window_start: ex.trade_window_start } : {}),
         ...(ex.trade_window_end ? { trade_window_end: ex.trade_window_end } : {}),
         // Exit/risk overlay travels with the preset -> prefill the panel (fractions,
@@ -1008,7 +1010,7 @@ export default function BacktestLab() {
               </div>
             </div>
             <div className="pt-2 border-t border-line">
-              <Label className="text-xs text-dim">Trade window (IST entries)<Hint label="Trade window">Intraday entry window (IST). Default 09:25–15:00 skips the noisy first 10 minutes and stops NEW entries before the 15:30 square-off. Open to 09:15 only if the strategy is built for the open.</Hint></Label>
+              <Label className="text-xs text-dim">Trade window (IST entries)<Hint label="Trade window">Intraday entry window (IST). Default 09:25–14:50 is the LIVE-EFFECTIVE window every deployment enforces, so a backtest cannot score entries live would refuse. Open to 09:15 only if the strategy is built for the open; nothing may be set past the 15:00 square-off.</Hint></Label>
               <div className="grid grid-cols-2 gap-2 mt-1">
                 <Input
                   type="time"
@@ -1026,7 +1028,7 @@ export default function BacktestLab() {
                 />
               </div>
               <div className="text-[10px] text-dimmer mt-1">
-                No entries outside this window. Default 09:25–15:00 skips the first 10 min and last 30 min.
+                No entries outside this window. Default 09:25–14:50 matches live exactly.
               </div>
             </div>
           </div>
