@@ -1752,3 +1752,136 @@ it: **screen before writing the plugin.** The columns exist so that screen can
 finally be run; running it, against the pre-registered kill thresholds in §4.1
 and with the holdout guard left armed, is the next step and it may well end the
 way the other four did.
+
+
+---
+
+## 16. Candidate A — SCREENED and REJECTED (2026-08-28)
+
+§15 unblocked Candidate A by getting option flow into `evaluate()`. This is the
+screen §4.1 pre-registered, run against the frozen thresholds. **It fails, on
+both indices, at every pre-registered parameter value.** No plugin is written —
+which is the whole point of screening first, and the same discipline that ended
+the short-side campaign in §14 without building a multi-leg engine.
+
+**Train slice only. The holdout was not read and its guard was left armed. The
+validation slice was not read either.** Sessions 2026-08-27 and 2026-08-28 are
+excluded everywhere at the operator's instruction (option data not yet ingested).
+
+### 16.1 What was measured
+
+The trigger is §4.1 verbatim, nothing tuned:
+`flow_imbalance = (ce_vol_z − pe_vol_z) + (ce_oi_delta_z − pe_oi_delta_z)`,
+`≥ +1.5` → CE / `≤ −1.5` → PE, confirmed by close-versus-session-VWAP and
+`adx ≥ 20`, one signal per direction per 30-bar cooldown, ATM bar volume ≥ 20-session
+causal median × 0.5, DTE 1–3, window 09:25–14:48, spread 1.0%/side.
+
+Two things make this a test of the real thing rather than of a reimplementation:
+the flow columns are read **through `attach_required_data`** — the exact seam
+`evaluate()` uses — and the premium series is built on the **same contract
+identity** the data layer picked (`first_close_by_session` + `atm_strike`,
+joined by identity, never by token). Measuring flow on one contract and payoff
+on another would have produced a meaningless number that looked fine.
+
+| | NIFTY | SENSEX |
+|---|---|---|
+| train sessions (DTE 1–3) | 113 of 191 | 50 of 191 |
+| sessions with an ATM premium series | 111 | 49 |
+| `flow_imbalance` available on train bars | 61.7% | **28.6%** |
+| funnel: in-window → liquid → adx ≥ 20 | 36,497 → 24,936 → 11,114 | 16,149 → 12,305 → 2,525 |
+| entry bars after cooldown | 328 (148 CE / 180 PE) | 58 (22 CE / 36 PE) |
+
+SENSEX's 28.6% availability is §15.4(b) arriving exactly as predicted: 60.8% of
+its same-minute OI-delta baselines are flat, so the OI half of `flow_imbalance`
+is undefined and the whole quantity with it.
+
+### 16.2 The result
+
+MFE/MAE, and the session-level t-stat on net % after 1.0%/side spread:
+
+| Horizon | NIFTY conditioned | NIFTY baseline | SENSEX conditioned | SENSEX baseline |
+|---|---|---|---|---|
+| 5 min | 0.789 · t −3.51 | 0.900 | 0.808 · t −2.56 | 0.863 |
+| **10 min** | **0.856 · t −2.81** | 0.898 | **0.703 · t −2.24** | 0.856 |
+| 15 min | 0.869 · t −1.62 | 0.891 | 0.577 · t −1.89 | 0.860 |
+| 30 min | 0.879 · t −1.77 | 0.895 | 1.089 · t **+0.19** | 0.875 |
+
+Every conditioned cell on NIFTY, and three of four on SENSEX, verdicts **NO_EDGE**.
+
+**Against the pre-registered kill thresholds:**
+
+| Test | Threshold | NIFTY | SENSEX |
+|---|---|---|---|
+| Conditioned MFE/MAE at 10 min | must exceed **1.15** | 0.856 ❌ | 0.703 ❌ |
+| Session-level t-stat on net% | must exceed **+2.0** | −2.81 ❌ | −2.24 ❌ |
+| CANDIDATE at exactly one horizon | REJECT if so | none | none |
+
+**REJECT on both indices, on both binding tests.**
+
+### 16.3 Why this is not a near miss
+
+**The condition selects WORSE bars than no condition at all.** In 11 of the 12
+conditioned cells measured the ratio is *below* the unconditioned base rate on
+the same series. The hypothesis was that flow identifies bars whose forward
+excursion beats the 0.90–0.95 base rate; it identifies bars that fall short of
+it. There is no threshold at which that becomes an edge.
+
+**All three pre-registered `flow_z_threshold` values fail** — this is the frozen
+{1.0, 1.5, 2.0} budget from §4.1, so testing them is pre-registration rather than
+search:
+
+| `flow_z` | NIFTY 10 min | n | SENSEX 10 min | n |
+|---|---|---|---|---|
+| 1.0 | 0.842 · t −5.08 | 450 | 0.693 · t −2.69 | 96 |
+| 1.5 | 0.856 · t −2.81 | 328 | 0.703 · t −2.24 | 58 |
+| 2.0 | 0.848 · t −3.93 | 243 | 0.758 · t −1.39 | 41 |
+
+Loosening the threshold makes it worse, not better — the opposite of what a real
+but weak signal does.
+
+**The one cell above base rate is the artefact the spec pre-registered against.**
+SENSEX at 30 minutes reads 1.089, above its 0.875 baseline. It is a single cell,
+at the horizon furthest from the hypothesis's own 10 minutes, its neighbours at
+15 and 30 minutes read 0.577 and 1.089 with no monotonicity, and its t-stat is
+**+0.19** on 58 bars across 25 sessions. §4.1 names exactly this shape — "CANDIDATE
+at exactly one horizon with NO_EDGE either side → multiple-comparisons artefact,
+REJECT" — and it does not even reach CANDIDATE.
+
+### 16.4 Two checks run before believing the negative
+
+A broken pipeline produces a negative result that looks exactly like a real one.
+§10.1 recorded that happening: the first screen run built no series at all and
+the script could not say why.
+
+1. **The unconditioned base rate reproduces.** Measured 0.891–0.900 (NIFTY) and
+   0.856–0.875 (SENSEX) against the 0.90–0.95 recorded in §6 and
+   `OPTION_BUYING_MICROSTRUCTURE_2026-08.md`. That is §5.2's gate — the screen
+   reproduces a known quantity before its verdicts mean anything — and it passes.
+2. **Sign-inversion falsification.** Deliberately mapping the trigger to the
+   WRONG leg (CE on negative flow) is a wiring test, not a hypothesis: if the
+   real run had a sign bug, the inverse would come back strongly positive. It
+   does not — NIFTY 10 min reads 0.950 with t = −2.28, still failing both gates.
+   The signal is not predictive in either direction.
+
+The funnel is also healthy rather than starved: 328 entry bars over 91 NIFTY
+sessions is a real sample, and the condition maps 1:1 onto premium bars.
+
+### 16.5 What this closes, and what it does not
+
+**Closed: Candidate A as specified.** Five price-only hypotheses were already
+dead; option-side flow was the one untried information channel, and on this
+warehouse, at these horizons, it does not carry a directional edge in ATM
+premium. That is now measured rather than assumed, which is what §15 was built
+to make possible.
+
+**Not closed by this run:** option flow as a *feature* for anything other than
+this trigger. §16.2 tests one composition of four z-scores with two confirmations
+at four horizons. OI-delta as a *regime* filter rather than a directional
+trigger, flow measured on strikes other than ATM, or flow over a horizon longer
+than 30 minutes are all untouched — and the columns now exist to test any of
+them cheaply. None of that is a reason to keep spending on this line; it is only
+a statement of what was and was not measured.
+
+**Unchanged:** no strategy in this repo has a demonstrated edge, and this is the
+fifth campaign to end in a rejection. The screen did its job — it cost hours and
+built no plugin.
