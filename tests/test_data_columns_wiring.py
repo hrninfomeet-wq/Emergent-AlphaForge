@@ -294,15 +294,48 @@ def test_non_declaring_strategy_gets_a_byte_identical_frame():
 # capability surface
 # ---------------------------------------------------------------------------
 
-def test_required_data_defaults_empty_for_every_shipped_strategy():
+#: Strategies that declare `required_data` ON PURPOSE. The tripwire below is
+#: about ACCIDENTAL declarations — a column added to a plugin without anyone
+#: deciding that its runs should now depend on a warehouse join. Adding an id
+#: here is the deliberate act the original message asked for.
+INTENTIONAL_DATA_DECLARERS = {"atm_premium_flow_scalp"}
+
+
+def test_only_intentional_strategies_declare_required_data():
+    """Originally "nothing declares it"; updated deliberately when
+    `atm_premium_flow_scalp` became the first strategy to read option flow.
+
+    The tripwire still does its job: any OTHER strategy picking up a
+    `required_data` entry fails here. Declaring is not free — it changes what
+    the engine fetches on every path and makes the run depend on warehouse
+    coverage — so it should never happen by accident.
+    """
     reg = get_registry()
     if not reg.list_all():
         reg.auto_discover()
     for meta in reg.list_all():
-        assert meta.get("required_data", []) == [], (
-            f"{meta['id']} declares required_data; that is fine, but this test "
-            "pins that NOTHING declares it by default — update deliberately"
+        declared = meta.get("required_data", []) or []
+        if meta["id"] in INTENTIONAL_DATA_DECLARERS:
+            continue
+        assert declared == [], (
+            f"{meta['id']} declares required_data={declared}; that is fine, but "
+            "it must be deliberate — add the id to INTENTIONAL_DATA_DECLARERS"
         )
+
+
+def test_every_declared_data_column_actually_resolves():
+    """A declaration the registry cannot serve is a DataColumnError at load
+    time on every path — better to find it here than in a live evaluation."""
+    from app.data_columns import DATA_COLUMN_REGISTRY
+    reg = get_registry()
+    if not reg.list_all():
+        reg.auto_discover()
+    for meta in reg.list_all():
+        for name in meta.get("required_data", []) or []:
+            assert name in DATA_COLUMN_REGISTRY, (
+                f"{meta['id']} declares unknown data column {name!r}")
+        # and resolving the whole declaration must not raise
+        resolve_data_columns(meta.get("required_data", []) or [])
 
 
 def test_meta_exposes_required_data():
