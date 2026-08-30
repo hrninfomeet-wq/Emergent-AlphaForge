@@ -267,6 +267,12 @@ def best_so_far_doc(best_so_far: Dict[str, Any]) -> Dict[str, Any]:
         "trial_num": (best_so_far or {}).get("trial_num"),
         "guardrail_qualified": (best_so_far or {}).get("guardrail_qualified"),
         "finite_candidate_available": _has_finite_candidate(best_so_far),
+        # The Stage-1 SPOT objective of the promoted candidate, kept alongside the
+        # promoted value. `value` legitimately changes meaning at promotion — it is
+        # the spot objective during the trial loop and the option rupee (or calmar)
+        # afterwards — so without this the spot number is destroyed and any UI that
+        # still calls `value` "the spot objective" reports the option figure twice.
+        "spot_objective": (best_so_far or {}).get("spot_objective"),
     }
 
 
@@ -2491,6 +2497,9 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                     best_so_far = {
                         "value": (best["survival"].get("calmar") if survival.objective == "calmar"
                                   else best["option_pnl_value"]),
+                        "value_metric": ("survival_calmar" if survival.objective == "calmar"
+                                         else "option_pnl_value"),
+                        "spot_objective": best.get("spot_objective"),
                         "params": best["params"],
                         "metrics": {
                             **(best.get("spot_metrics") or {}),
@@ -2521,6 +2530,8 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                     if fallback is not None:
                         best_so_far = {
                             "value": fallback["option_pnl_value"],
+                            "value_metric": "option_pnl_value",
+                            "spot_objective": fallback.get("spot_objective"),
                             "params": dict(fallback["params"]),
                             "metrics": {
                                 **(fallback.get("spot_metrics") or {}),
@@ -2569,6 +2580,8 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                 best = ranked[0]
                 best_so_far = {
                     "value": best["option_pnl_value"],
+                    "value_metric": "option_pnl_value",
+                    "spot_objective": best.get("spot_objective"),
                     "params": best["params"],
                     "metrics": {
                         **(best.get("spot_metrics") or {}),
@@ -2684,9 +2697,17 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
             # `best_value = 134864.61` on a job whose `objective` read "sharpe".
             # A field that holds a Sharpe on one job and rupees on another cannot
             # be rendered or compared without this.
-            "best_value_metric": ("option_pnl_value"
-                                  if evaluation_mode == "option_rerank"
-                                  else objective),
+            # Prefer the label the PROMOTION SITE recorded: under an option re-rank with a
+            # calmar survival objective the promoted `value` is a calmar RATIO, not rupees,
+            # and deriving the label from evaluation_mode alone mislabelled it. Verified on
+            # two stored jobs: best_value 11.3084 and 4.904 (calmar) were both reported as
+            # `option_pnl_value`, whose real figures were Rs 696,158.70 and Rs 1,535.39 —
+            # so a ratio was being rendered and sorted as money. The derivation below stays
+            # as the fallback for jobs whose promotion site set nothing.
+            "best_value_metric": (best_so_far.get("value_metric")
+                                  or ("option_pnl_value"
+                                      if evaluation_mode == "option_rerank"
+                                      else objective)),
             "best_backtest_run_id": best_backtest_run_id,
             "top_n_alternatives": [{"params": t["params"], "metrics": t["metrics"], "objective_value": t["objective_value"]} for t in top_n],
             "parameter_importance": importance,

@@ -214,6 +214,32 @@ function loadSetup() {
 // sentinel (~ -1e9). Render that as "—" instead of a meaningless huge number.
 const fmtBest = (v) => (v == null || v <= -1e8) ? "—" : Number(v).toFixed(3);
 
+// Render a promoted "best" WITH its unit. `best_value` / `best_so_far.value` hold
+// different quantities depending on how the job was configured: option rupees under a
+// plain option re-rank, but a CALMAR RATIO when a calmar survival objective promoted the
+// winner. Two stored jobs carried 11.3084 and 4.904 (calmar) whose real rupee figures were
+// 696,158.70 and 1,535.39 — so the history column was showing a ratio beside rupees and
+// sorting the two against each other. Falls back to the bare number for older jobs that
+// never recorded a metric.
+const fmtBestMetric = (v, metric, corroborate) => {
+  if (v == null || v <= -1e8) return "—";
+  // Only assert a unit the value actually corroborates. Jobs written before the label
+  // followed the value store `option_pnl_value` even when a calmar survival objective
+  // promoted the winner — e.g. value 11.3084 labelled as rupees while the real option
+  // P&L was 696,158.70. Formatting those as "₹11" would assert a wrong unit rather
+  // than merely omit one, so when the label and the figure disagree, stay neutral.
+  const trusted = metric !== "option_pnl_value"
+    || corroborate == null
+    || Math.abs(Number(v) - Number(corroborate)) < 0.5;
+  if (metric === "option_pnl_value" && trusted) {
+    // NB: the component-local fmtINR further down is not in scope here; this reproduces
+    // its exact output using the module-level fmtNum import.
+    return `${v < 0 ? "-" : ""}₹${fmtNum(Math.abs(v), 0)}`;
+  }
+  if (metric === "survival_calmar") return `${Number(v).toFixed(2)} calmar`;
+  return Number(v).toFixed(3);
+};
+
 // Format an ETA in seconds as "Xh Ym" / "Ym Ss" / "Ss", or "—" when null/unknown.
 const fmtEta = (s) => {
   if (s == null) return "—";
@@ -378,7 +404,7 @@ export default function Optimizer() {
           refreshJobs();
           if (!alreadyDone) {
             if (j.status === "done") {
-              toast.success(`Optimization complete: best ${fmtBest(j.best_value)}`);
+              toast.success(`Optimization complete: best ${fmtBestMetric(j.best_value, j.best_value_metric, j.best_metrics?.option_pnl_value)}`);
             } else if (j.status === "cancelled") {
               toast.info("Optimization stopped. Best result so far was saved.");
             } else if (j.status === "paused") {
@@ -1519,9 +1545,23 @@ function CurrentJobView({ job, onApply, onStop, onPause, onResume, onOpenBest })
     : analyzeStoppedBy === "paused"
       ? "a pause request"
       : "the analyzing budget";
-  // The SPOT search objective (the live "best so far" value during the trial loop).
-  // NOT job.best_value, which for a survivor becomes the survival objective (e.g. calmar).
-  const spotObjective = bsf.value;
+  // The SPOT search objective of the promoted candidate.
+  //
+  // It is NOT `bsf.value`. That field legitimately changes meaning: it holds the spot
+  // objective while the trial loop runs, and is REPLACED at promotion with the option
+  // rupee P&L (or calmar under a survival objective). Reading it here printed the option
+  // figure twice — once as the rupee headline and again labelled "spot obj". Checked
+  // across 12 consecutive completed jobs: wrong in 12/12, e.g. 684,602 shown as the spot
+  // objective where the real one (total_pnl_pts x lot_size) was 333,689, and one job off
+  // by ~4x in the opposite direction (53,878 vs 218,607).
+  //
+  // The backend now carries `spot_objective` through promotion. While a job is still
+  // running nothing has been promoted yet, so `bsf.value` IS the spot objective and is
+  // the correct fallback. Older jobs have neither and must render nothing rather than a
+  // number that is quietly the wrong quantity.
+  const promoted = bsf.spot_objective != null;
+  const spotObjective = promoted ? bsf.spot_objective
+    : (finished || cancelled ? null : bsf.value);
   const fmtINR = (v) => (v == null ? "—" : `${v < 0 ? "-" : ""}₹${fmtNum(Math.abs(v), 0)}`);
 
   return (
@@ -1676,13 +1716,14 @@ function CurrentJobView({ job, onApply, onStop, onPause, onResume, onOpenBest })
                   <>
                     <div className={`font-mono text-base ${optionPnl >= 0 ? "text-emerald-400" : "text-rose-400"}`} data-testid="opt-headline-value">{fmtINR(optionPnl)}</div>
                     <div className="text-[10px] text-dimmer">
-                      {job.status === "done_no_survivor" ? "best candidate option ₹ · no survivor" : "promoted option ₹ (net of costs)"} · spot obj {fmtBest(spotObjective)}
+                      {job.status === "done_no_survivor" ? "best candidate option ₹ · no survivor" : "promoted option ₹ (net of costs)"}
+                      {spotObjective != null ? <> · spot obj {fmtBest(spotObjective)}</> : null}
                       {job.lot_size ? <> · lot {fmtInt(job.lot_size)}</> : null}
                     </div>
                   </>
                 ) : (
                   <>
-                    <div className="font-mono text-base text-foreground" data-testid="opt-headline-value">{fmtBest(spotObjective)}</div>
+                    <div className="font-mono text-base text-foreground" data-testid="opt-headline-value">{fmtBest(spotObjective ?? bsf.value)}</div>
                     <div className="text-[10px] text-dimmer">spot objective · option ₹ ranked after the search</div>
                   </>
                 )
@@ -2693,7 +2734,7 @@ function JobHistory({ jobs, onLoad, onClone, onResume, onDelete, onRefresh }) {
                 </td>
                 <td className="p-2 font-mono text-dim">{j.objective}</td>
                 <td className="p-2 font-mono text-right">{j.n_trials_completed || 0}/{j.n_trials_total}</td>
-                <td className="p-2 font-mono text-right text-foreground">{j.best_so_far?.value !== undefined ? fmtBest(j.best_so_far.value) : "–"}</td>
+                <td className="p-2 font-mono text-right text-foreground" title={j.best_value_metric || ""}>{j.best_so_far?.value !== undefined ? fmtBestMetric(j.best_so_far.value, j.best_value_metric, j.best_metrics?.option_pnl_value) : "–"}</td>
                 <td className="p-2" onClick={(e) => e.stopPropagation()}>
                   <div className="flex items-center justify-end gap-0.5">
                     {["paused", "interrupted", "failed"].includes(j.status) && (
