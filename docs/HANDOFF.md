@@ -12,6 +12,41 @@ _Entry point for the next engineer or AI agent. This is the shortest useful orie
 
 Stack: **React** (CRA + craco) frontend, **FastAPI** (Python) backend, **MongoDB** (motor), all in **Docker Compose**. Frontend `:3000`, backend `:8001` (**every route under `/api`**), mongo `:27017`. **Upstox** = market data feed; **Flattrade** (Noren / PiConnect OMS) = live broker execution.
 
+### 1.1 Where things live
+
+**Pages** (`frontend/src/App.js` -> `pages/`). The four that matter for research:
+
+| Route | Page | What it is |
+|---|---|---|
+| `/backtest` | Backtest Lab | Run a backtest; the **Backtest run journal** lists saved runs, each with a Trades pane and the Config / Result / Trades.csv / Save-as-preset / Deploy buttons |
+| `/optimizer` | Optimizer | Optimization setup form + its own saved-job history (separate from the Backtest journal) |
+| `/presets` | Saved Presets | Named strategy params + option execution policy; the deployable artifact |
+| `/warehouse` | Data Warehouse | 1-minute spot + option candle coverage, gap fill, hygiene |
+
+Others: `/` dashboard, `/strategies` library, `/journal` signals, `/paper` paper trading,
+`/live` + `/live-trading` execution, `/checklist` pre-trade, `/premium-momentum`.
+
+**Data** (MongoDB `alphaforge`, container `alphaforge_mongo`, named volume `mongo_data` -
+NOT inside the project/OneDrive folder). The collections you will actually reach for:
+
+| Collection | Holds |
+|---|---|
+| `backtest_runs` | every saved backtest result - `metrics`/`trades` (spot) **and** `option_backtest.*` (the real result for a premium-native run); this is what the Backtest journal lists |
+| `optimization_jobs` | optimizer jobs: `config`, `param_space` (the bounds actually searched), `incumbent_seeds`, `best_params`, `best_metrics`, `trial_log`, `top_n_alternatives` |
+| `presets` | saved presets (`config.params` + `config.execution`) |
+| `candles_1m` / `options_1m` / `option_contracts` | the warehouse: spot candles, option candles (~8M rows), contract universe |
+| `strategy_deployments` | deployments (paper/live) |
+
+Read them directly with:
+`docker exec alphaforge_mongo mongosh alphaforge --quiet --eval '<js>'`
+(in Git Bash a JS regex literal starting with `/` gets path-mangled - use `new RegExp("...")`).
+
+**Build / run.** `start-app.bat` is the supported launcher and rebuilds **both** halves:
+`start-app.bat --rebuild --no-browser` (flags: `--check-only`, `--rebuild`, `--no-browser`).
+It is a `cmd` batch file - call it by ABSOLUTE path, because
+`NoDefaultCurrentDirectoryInExePath=1` is set on the operator's box and a bare `call foo.bat`
+reads as "not recognized". The raw `docker compose` equivalents are in section 3.
+
 ## 2. Current state
 
 > **As of 2026-08-20 · v0.58.0 + unreleased live-integrity work.** Verification baseline:
@@ -145,7 +180,56 @@ payoff before costs**. Read it before proposing another option-buying campaign.
 only — creation always pins and the resume gate is the sole path to ACTIVE — left untouched
 because a concurrent session held uncommitted work in that file.
 
-### 2.1 ⚠ Two things that will bite you immediately
+### 2.0f What changed 2026-08-28 -> 08-30 (Backtest Lab action buttons, optimizer incumbent seeding)
+
+Rollback point: commit `cd6521e`, tag `checkpoint/pre-optimizer-perf-2026-08-30`
+(`git reset --hard checkpoint/pre-optimizer-perf-2026-08-30`). 73 focused tests green;
+optimizer/entry-window failures identical to clean HEAD.
+
+**Backtest Lab action buttons - FIXED.** `Trades.csv` exported `result.trades` verbatim while
+the pane rendered `displayTrades()` joined to `option_backtest.trades`. Option runs lost all 14
+option columns *including the rupee P&L*, and a premium-native run (spot `trades` empty by
+construction) downloaded the literal string `"(empty)"` despite showing trades and a large Rs
+P&L on screen. It now exports the pane's own rows; the CSV's `opt_pnl_value` column sums to
+`option_backtest.portfolio.net_pnl_value` on **every** option run in the corpus (105/105).
+`Save as preset` read sizing from `run.config.option_backtest` (the request echo) instead of
+`run.option_backtest` (the resolved envelope the optimizer rewrites), so a run that traded
+**100 lots produced a 5-lot preset**; it now reads the resolved block, matching what
+Deploy-from-run already did. `Config` / `Result` / `Deploy` were checked and are correct -
+Result is a lossless dump, Config carries `params_applied`, and Deploy only deep-links to the
+wizard (`navigate('/live?backtest=...')`), it never auto-deploys.
+
+**Optimizer "regression" on Confluence Scalper - diagnosed; it was NOT a code regression.**
+Ruled out with evidence: the engine reproduces the saved run (257/257 trades, within 1.3%);
+the optimizer's promoted result replays standalone **to the cent** (no evaluation drift); the
+sampler is seeded (`seed=42`) so repeat runs are deterministic, not variance; and the Backtest
+Lab frontend fix cannot reach the backend at all (0 backend files changed, the files do not
+exist inside `alphaforge_backend`, and there is no JS runtime there). What actually happened:
+
+- `optimize_indicator_periods` was switched **on** (it defaults to `false`), injecting 8
+  dimensions `confluence_scalper` does not declare. Turning it off moved the *same* config from
+  **-75,636 to +159,781** INR.
+- A leftover cross-strategy `param_overrides` had silently widened `spot_target_pts` past the
+  strategy-declared max of 200. It is now surfaced in the UI (setup form *and* finished job),
+  deliberately **not** auto-removed - it was beneficial, and the operator wants the choice.
+- **No code path called `study.enqueue_trial`**, so a known-good point inside the search space
+  was never evaluated: a clean 11-dim run returned **-19,957** while the operator's saved preset,
+  every value of which is inside those bounds, scores **+77,129**. FIXED - seeding presets /
+  prior job bests / strategy defaults took the same config to **+148,602** (independently
+  replayed, all 8 metrics identical). A deliberately under-budgeted 40-trial run returned
+  *exactly* the preset's +77,129.19, which is the "never worse than the incumbent" floor working.
+
+**STILL OPEN (deliberately deferred, not forgotten):** `net_pnl_inr` is
+`total_pnl_pts x a constant lot_size`, so it **ranks trials identically to `total_pnl_pts`** and
+models no premium - the search optimises a SPOT proxy and only the top-K finalists are re-scored
+on real option money. Measured: the trial it ranked best had MORE spot points (2548) but
+**-75,636** of option P&L, while a lower-spot config (2269 pts) made **+77,129**. Making it
+option-native is blocked on a measured ceiling - **4.38M option rows across 4,294 keys** for
+NIFTY over the 10-month window against `_option_rerank`'s **4M-row cap** - so it needs a
+chunked/cached loader, not a bigger query. See the proposal list in
+[`AGENT_TODO.md`](AGENT_TODO.md).
+
+### 2.1 ⚠ Three things that will bite you immediately
 
 1. **Every paired-option backtest saved before 2026-07-30 is wrong.** Option candles were
    grouped by a `contract_key` present on only ~2.3% of stored rows; the absent ones became
@@ -160,6 +244,16 @@ because a concurrent session held uncommitted work in that file.
    `option_backtest.dispatch == "premium_trigger_config"` (backend: `is_premium_trigger_strategy`;
    frontend: `isPremiumNative()` / `resultKpis()` in `lib/backtestMetrics.js`). This single mistake
    produced eight separate user-visible defects.
+
+3. **Option legs are SPARSE - never join them by array position.** 16 of 105 stored option
+   runs have far fewer legs than spot trades (one has **835 signals / 317 legs**), because a
+   signal with no option data never produces a leg. `index_trade_id` is the index of the spot
+   trade a leg belongs to; a positional fallback stamped ANOTHER trade's strike and rupee P&L
+   onto rows that should be blank - **1,100 rows corpus-wide** - and broke reconciliation (one
+   run summed to -104,324.65 against a true -63,181.45). Every leg in every stored run carries
+   `index_trade_id`, so there is no legacy case needing a fallback. Frontend:
+   `joinOptionLegs()` in `lib/backtestMetrics.js`; guarded by
+   `tests/test_backtest_lab_action_buttons.py`.
 
 ### 2.2 What landed most recently (2026-07-28 → 08-01, v0.57.5 + v0.58.0 + Stage 1)
 
@@ -462,6 +556,25 @@ Frontend → `http://localhost:3000`, backend → `http://localhost:8001` (route
 
 ## 4. Standing conventions
 
+- **Checkpoint before risky work.** Commit the current *validated* state (and tag it) before
+  starting anything that could need reverting, and keep unvalidated work out of that commit so
+  the checkpoint is genuinely last-known-good rather than a mix. Most recent:
+  `checkpoint/pre-optimizer-perf-2026-08-30`.
+- **Confirm before changing shared backtest/optimizer computation code.** `backtest.py`,
+  `optimizer.py`, `option_backtest.py`, `wfo.py` and friends are used by EVERY strategy, so a
+  change there silently reprices every future result. Show before/after evidence and get an
+  explicit go-ahead first; UI-only or export-only changes do not need it.
+- **Confirm before anything that could reach the broker or a deployment.** Deploy, arm, resume,
+  live-enable. Static inspection and dry runs are fine; triggering is not. (See also the
+  never-place-a-real-order rule below, which is absolute.)
+- **Verify a fix across MULTIPLE saved runs, not one.** Runs differ by family
+  (ordinary vs premium-native), by instrument, and by data shape. The positional-join bug in
+  2.1(3) passed every check on the four runs first sampled and was only caught by sweeping all
+  105 - dense-leg runs pass a positional join *by accident*. Prefer a corpus sweep over a sample.
+- **Never call something fixed without running it.** Reading the diff is not evidence. Reproduce
+  the failure first, then re-run the same path after the change - for UI work that means clicking
+  it in the browser, not grepping the JSX. A test that passes both before and after the fix has
+  not tested the fix; mutate the code and confirm the test actually fails.
 - **Per-changeset push approval.** Commit freely; **push only when the user explicitly says so.** Nothing is auto-pushed. On the default branch, branch first.
 - **Never place a real broker order.** The assistant never personally transmits or squares a real order, and never flips a deployment to live mode. Real live entries require the env gate `LIVE_AUTOPLACE_ARMED=1` **and** a deployment in **live mode** (set only by the user via Deploy-to-Live) within its caps and before the 15:00 IST entry cutoff. Offline-first: `LIVE_AUTOPLACE_ARMED` unset ⇒ dry-run logs, no transmit. **Auto-squares are no longer gated** — the software guard always transmits its exits (v0.56.0).
 - **IST everywhere.** NSE session 09:15–15:30 IST with a 15:00 square-off; the system is **holiday-aware** (`nse_calendar.py`).

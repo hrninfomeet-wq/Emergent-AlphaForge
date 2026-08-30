@@ -10,7 +10,59 @@
 > entry point) · [`STAGE1_INTEGRITY_SESSION_HANDOFF_2026-08-01.md`](STAGE1_INTEGRITY_SESSION_HANDOFF_2026-08-01.md)
 > (latest completed-session checkpoint) · `CHANGELOG.md`.
 
-**Last updated:** 2026-08-20 (Claude Opus 5 — live-window integrity + fail-closed drift gate)
+**Last updated:** 2026-08-30 (Claude Opus 5 — Backtest Lab action buttons, optimizer incumbent seeding, bounds transparency)
+
+### ★ Open follow-ups from the 2026-08-30 session
+
+Checkpoint before this work: `cd6521e` / tag `checkpoint/pre-optimizer-perf-2026-08-30`.
+Context and evidence: [`HANDOFF.md`](HANDOFF.md) §2.0f.
+
+**Done this session** (all verified against the running app, not just unit-tested):
+- [x] **Backtest Lab `Trades.csv` and `Save as preset`** — the export read the raw spot list
+  while the pane read the joined option rows; the preset read the request echo instead of the
+  resolved sizing envelope. Both fixed; `Config`/`Result`/`Deploy` checked and left alone.
+- [x] **Optimizer incumbent seeding** (`backend/app/incumbent_seed.py` + `study.enqueue_trial`)
+  — a known-good preset inside the search space was never evaluated. Same clean config went
+  from **-19,957 to +148,602** INR.
+- [x] **Bounds transparency** — effective bounds now visible in the setup form AND on a finished
+  job (`param_space` was also being stripped from the job export; it is 2% of the payload while
+  `trial_log` is the large field, so that was inverted).
+
+**Proposed next, in the order I would do them.** Nothing below is started; none of it is in the
+checkpoint commit. Ordered by value-to-risk, with the measurement behind each.
+
+- [ ] **1. Stop recomputing the spot backtest in Stage 2 (the keystone).** `_evaluate`
+  (`optimizer.py`) runs a full backtest per trial, uses `trades` only for `pnl_abs_sum`, then
+  **discards them**; `_option_rerank` re-runs the identical backtest per candidate to get them
+  back. The code's own timing note measures that re-run at **93% of the analyzing stage**
+  (60 candidates x 37.63s ~= 38 min) while the option sims took ~2 min total. Caching Stage-1
+  trades makes today's re-rank much faster AND removes the class of bug where Stage 1 and
+  Stage 2 disagree about the entry window (already hit once). *Shared engine — needs
+  confirmation before applying.*
+- [ ] **2. Option-native trial scoring — BLOCKED on #1 and on a loader.** `net_pnl_inr` is
+  `total_pnl_pts x a constant lot_size`, so it ranks identically to `total_pnl_pts` and models
+  no premium; only the top-K finalists ever see real option money. Measured divergence: the
+  best-ranked trial had MORE spot points (2548) but **-75,636** option P&L, while a lower-spot
+  config (2269) made **+77,129**. Blocked by data volume — **4.38M option rows / 4,294 keys**
+  for NIFTY over the 10-month window vs `_option_rerank`'s **4M-row cap** — so it needs a
+  chunked/cached candle loader, not a bigger query. Do NOT attempt before #1.
+- [ ] **3. Surface the 4M-row candle cap.** `optimizer.py` logs a warning and continues; trades
+  past the cap silently go unpaired, so results quietly understate. It should land on the job
+  document and render in the UI (same fail-loudly principle as the omitted drawdown/CI).
+- [ ] **4. Collapse or fix the duplicate objective.** `net_pnl_inr` and `total_pnl_pts` are the
+  same search. Either make it real (via #2) or remove one, so the dropdown cannot imply a choice
+  that does not exist. Changing the stored `objective` string affects saved jobs — check first.
+- [ ] **5-6. Small frontend wins.** `started_at` / `finished_at` / `timing` are persisted and
+  unused (no run-duration readout); `lot_size` is what converts points to rupees and is not shown
+  beside the ₹ headline.
+- [ ] **7. Optimizer poll payload.** Job detail is **77KB polled every 2s** while running, and
+  **83% is the static `rerank` blob**. Polling correctly stops on terminal status, so this is
+  bounded — only worth doing if it feels sluggish. A `?fields=` projection fixes it.
+- [ ] **8. Remaining orphaned job fields.** `best_survival_qualified` (a promotion-safety signal,
+  currently invisible), `best_exit_controls`, `best_daily_caps`, `finite_candidate_available`.
+
+**Scope note, stated plainly:** there is no roadmap beyond this list and the existing boards. The
+program is still "fix and harden what is here", not a feature plan.
 
 ### ★ Open follow-ups from the 2026-08-20 session
 
