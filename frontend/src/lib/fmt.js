@@ -50,6 +50,32 @@ export const tsToTime = (ts) => {
   return `${pad(d.getUTCDate())} ${MONTHS[d.getUTCMonth()]} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
 };
 
+/**
+ * Trades-table stamp WITH the year: "03-Nov-25 10:16".
+ *
+ * Separate from `tsToTime` on purpose. A multi-year backtest rendered "03 Nov"
+ * with no year, so January 2025 and January 2026 rows were indistinguishable in
+ * a sorted list. `tsToTime` is shared with the Signal Journal, which shows a
+ * live/near-term feed where the year is noise — changing it there was not the
+ * ask, so this is additive.
+ */
+export const tsToDateTime = (ts) => {
+  if (!ts) return "";
+  const d = new Date(Number(ts) + IST_OFFSET_MIN * 60 * 1000);
+  const yy = String(d.getUTCFullYear()).slice(-2);
+  return `${pad(d.getUTCDate())}-${MONTHS[d.getUTCMonth()]}-${yy} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
+};
+
+/** IST calendar date as "YYYY-MM-DD" — sorts and compares lexicographically,
+ *  which is what the trades date-range filter needs (and what <input type="date">
+ *  already speaks). Never build this from toISOString(): that is UTC, so an
+ *  09:15 IST bar would land on the previous day. */
+export const tsToIstDate = (ts) => {
+  if (!ts) return "";
+  const d = new Date(Number(ts) + IST_OFFSET_MIN * 60 * 1000);
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
+};
+
 export const tsToFull = (ts) => {
   if (!ts) return "";
   const d = new Date(Number(ts) + IST_OFFSET_MIN * 60 * 1000);

@@ -32,6 +32,7 @@ import pandas as pd
 
 from app.backtest import run_backtest
 from app.db import get_db
+from app.incumbent_seed import build_seed_trials
 from app.indicator_groups import enrich_with_cache
 from app.parallel_eval import (effective_workers, start_pool, shutdown_pool, parallel_backtest,
                                start_sim_pool, shutdown_sim_pool, sim_worker, trades_worker)
@@ -167,9 +168,25 @@ def _objective_value(
     if objective == "total_pnl_pts":
         return float(metrics.get("total_pnl_pts", 0) or 0)
     if objective == "net_pnl_inr":
-        # Net rupee P&L = net points (already cost-adjusted when costs_enabled)
-        # × lot size. This is an honest index-point→rupee conversion; it does
-        # not model option premium decay (see option-aware mode, future slice).
+        # SPOT PROXY, NOT OPTION MONEY. lot_size is a per-job constant (resolved
+        # once, ~line 1795), so this is a strictly monotone transform of
+        # total_pnl_pts: selecting "net_pnl_inr" and "total_pnl_pts" produces an
+        # IDENTICAL trial ranking, and neither models premium.
+        #
+        # That matters because spot and option P&L are not merely imperfectly
+        # correlated, they diverge in sign. Measured on confluence_scalper/NIFTY:
+        # the trial this objective ranked best had MORE spot points (2548) but
+        # -75,636 INR of real option P&L, while a config with FEWER points (2269)
+        # made +77,129 INR — the spot objective prefers many small-target trades,
+        # and each one pays option spread and charges.
+        #
+        # The real-premium score is applied in Stage 2 (_option_rerank), which is
+        # what `best_value_metric: option_pnl_value` reports. Scoring EVERY trial
+        # on premium instead would need the option candles preloaded for the union
+        # of strikes any trial could trade; measured for NIFTY over
+        # 2025-11-01..2026-08-26 that window holds 4.38M rows across 4,294 keys,
+        # against the 4M-row ceiling _option_rerank already warns about — so it
+        # needs a chunked/cached loader, not a bigger query.
         return float(metrics.get("total_pnl_pts", 0) or 0) * float(lot_size)
     if objective == "win_rate":
         return float(metrics.get("win_rate", 0) or 0)
@@ -638,6 +655,59 @@ def _build_param_space(
             info["_indicator_period"] = True  # tag for UI/debugging
             space[name] = info
     return space
+
+
+async def _gather_incumbents(
+    db, strategy_id: str, instrument: str, strategy,
+) -> List[Dict[str, Any]]:
+    """Known-good parameter sets to evaluate BEFORE the sampler starts guessing.
+
+    Ordered best-evidence-first: parameter sets an operator already validated, then
+    the best a previous job actually achieved, then the strategy's own defaults.
+    Every source is best-effort — a missing collection or a malformed document
+    degrades to "one fewer seed", never to a failed optimization.
+
+    Rationale (measured): with no seeding at all the optimizer returned -19,957 INR
+    on confluence_scalper/NIFTY while the operator's saved preset — entirely inside
+    the same declared bounds — scores +77,129 INR. Seeding makes the incumbent a
+    floor instead of something the search has to rediscover by luck.
+    """
+    out: List[Dict[str, Any]] = []
+    try:
+        async for doc in db.presets.find(
+            {"config.strategy_id": strategy_id}, {"name": 1, "config": 1, "_id": 0}
+        ):
+            cfg = doc.get("config") or {}
+            # Presets are per-instrument in practice but the field is optional on
+            # older documents; absent means "not pinned", so it stays eligible.
+            inst = str(cfg.get("instrument") or "").upper()
+            if inst and inst != str(instrument).upper():
+                continue
+            if isinstance(cfg.get("params"), dict) and cfg["params"]:
+                out.append({"source": f"preset:{doc.get('name') or '?'}",
+                            "params": dict(cfg["params"])})
+    except Exception as e:  # pragma: no cover - defensive
+        log.warning("incumbent seeding: preset lookup failed (%s)", e)
+
+    try:
+        async for doc in db.optimization_jobs.find(
+            {"strategy_id": strategy_id, "instrument": instrument,
+             "status": "done", "best_params": {"$type": "object"}},
+            {"id": 1, "best_params": 1, "best_value": 1, "_id": 0},
+        ).sort([("best_value", -1)]).limit(3):
+            if doc.get("best_params"):
+                out.append({"source": f"job:{str(doc.get('id') or '')[:8]}",
+                            "params": dict(doc["best_params"])})
+    except Exception as e:  # pragma: no cover - defensive
+        log.warning("incumbent seeding: prior-job lookup failed (%s)", e)
+
+    try:
+        defaults = strategy.merged_params({})
+        if isinstance(defaults, dict) and defaults:
+            out.append({"source": "strategy_defaults", "params": dict(defaults)})
+    except Exception as e:  # pragma: no cover - defensive
+        log.warning("incumbent seeding: strategy defaults unavailable (%s)", e)
+    return out
 
 
 def _suggest(trial: optuna.Trial, space: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
@@ -1955,6 +2025,30 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                 direction="maximize", sampler=_sampler,
                 study_name=f"alphaforge_{job_id}",
             )
+            # Seed the study with points that are ALREADY known to work, so the
+            # search starts from the incumbent instead of having to rediscover it.
+            # Fresh studies only: the resume branch above rebuilds from trial_log,
+            # and re-enqueueing there would re-run points already paid for.
+            seed_records: List[Dict[str, Any]] = []
+            try:
+                seed_records = build_seed_trials(
+                    space, await _gather_incumbents(get_db(), strategy.id, instrument, strategy))
+                for _seed in seed_records:
+                    # A partial dict is legal - Optuna samples the dimensions the
+                    # seed could not supply (e.g. one that fell outside the bounds).
+                    study.enqueue_trial(_seed["params"], skip_if_exists=True)
+            except Exception as e:
+                # Seeding is an optimisation, never a precondition: a bad preset
+                # document must not cost the operator a whole optimization run.
+                log.warning("incumbent seeding skipped (%s)", e)
+                seed_records = []
+            if seed_records:
+                log.info("seeded %d incumbent trial(s) for %s/%s: %s",
+                         len(seed_records), strategy.id, instrument,
+                         ", ".join(r["source"] for r in seed_records))
+            # Persisted so the operator can see WHICH known-good points were tried
+            # and which dimensions the current bounds made unreachable.
+            await _update_job(job_id, {"incumbent_seeds": seed_records})
             trial_history = []
             best_so_far = {"value": -float("inf"), "params": {}, "metrics": {}, "trial_num": -1}
             completed = 0

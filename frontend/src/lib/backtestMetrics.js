@@ -66,6 +66,82 @@ export function displayTrades(result) {
 }
 
 /**
+ * Flatten each trade's matched option leg onto the row, producing the EXACT
+ * projection the Trades pane renders.
+ *
+ * Extracted so the pane and the CSV export read one contract instead of two.
+ * They previously diverged: `TradesTable` computed this join inline while
+ * `exportTradesCsv` wrote `result.trades` verbatim, so every option column the
+ * user could see on screen — the ₹ P&L included — was silently absent from the
+ * download, and a premium-native run (whose spot `trades` is empty by
+ * construction) exported a file containing the string "(empty)".
+ *
+ * Joined by `index_trade_id`, NOT by array position. The two agree for every
+ * run currently stored, but position-joining is only accidentally correct: for
+ * a premium-native run `displayTrades` filters to PAIRED legs, so a single
+ * unpaired leg would shift every subsequent row onto the WRONG option — the
+ * exact index-remap class this project has already been bitten by. Position is
+ * kept only as a fallback for legacy legs that carry no id.
+ */
+export function joinOptionLegs(trades, optionBacktest) {
+  const byId = {};
+  for (const ot of (optionBacktest?.trades || [])) {
+    if (ot?.index_trade_id != null) byId[ot.index_trade_id] = ot;
+  }
+  return (trades || []).map((t, i) => {
+    // Strictly by id. `index_trade_id` IS the index of the spot trade the leg
+    // belongs to, so for a spot row the lookup key is its position; a premium
+    // native row carries the id explicitly because displayTrades filters to
+    // PAIRED legs and shifts positions.
+    //
+    // There is deliberately NO positional fallback. Option legs are SPARSE:
+    // across the stored corpus 16 runs have far fewer legs than spot trades
+    // (835 signals / 317 legs on one), because a signal with no option data
+    // never produced a leg. Falling back to `legs[i]` there stamps ANOTHER
+    // trade's strike and rupee P&L onto a row that had no leg at all — 1,100
+    // rows corpus-wide, and it broke the export's reconciliation (one run
+    // summed to -104,324.65 against a true -63,181.45). A row with no leg must
+    // stay blank.
+    const opt = (t?.index_trade_id != null ? byId[t.index_trade_id] : byId[i]) ?? null;
+    const paired = opt?.status === "PAIRED";
+    return {
+      ...t,
+      idx: i + 1,
+      opt_symbol: opt?.trading_symbol || opt?.instrument_key || null,
+      opt_strike: opt?.strike ?? null,
+      opt_side: opt?.side ?? null,
+      opt_entry: opt?.entry_option_price ?? null,
+      opt_exit: opt?.exit_option_price ?? null,
+      // Premium move in % — long-option (buying) semantics: exit vs entry.
+      opt_pnl_pct:
+        opt?.entry_option_price != null && opt?.exit_option_price != null && Number(opt.entry_option_price) !== 0
+          ? ((Number(opt.exit_option_price) - Number(opt.entry_option_price)) / Number(opt.entry_option_price)) * 100
+          : null,
+      // Gross premium move in points (exit - entry), taken from the engine's
+      // stored figure rather than recomputed: it is already the canonical value
+      // and stays consistent with how the engine books the leg. GROSS — the
+      // rupee column `opt_pnl_value` is NET of round-trip charges, so the two
+      // deliberately do not tie out by a simple x quantity.
+      opt_pnl_pts: opt?.option_pnl_pts ?? null,
+      opt_pnl_value: opt?.option_pnl_value ?? null,
+      opt_exit_reason: opt?.option_exit_reason ?? null,
+      opt_status: opt?.status ?? null,
+      opt_lots: opt?.lots ?? null,
+      opt_qty: opt?.quantity ?? null,
+      opt_charges: paired ? Number(opt.total_charges || 0) : null,
+      // Buy value loads all charges on entry so Sell - Buy = net option P&L
+      // (entry premium x qty + round-trip charges; sell = exit premium x qty).
+      opt_buy_value: paired
+        ? Number(opt.entry_option_price) * Number(opt.quantity) + Number(opt.total_charges || 0)
+        : null,
+      opt_sell_value: paired
+        ? Number(opt.exit_option_price) * Number(opt.quantity)
+        : null,
+    };
+  });
+}
+
+/**
  * The headline KPIs, read from whichever envelope actually describes the run.
  *
  * Returns a unit-tagged object rather than raw metrics because the two families

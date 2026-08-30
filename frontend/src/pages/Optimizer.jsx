@@ -68,7 +68,7 @@ const METHODS = [
 ];
 const OBJECTIVES = [
   { id: "risk_adjusted", name: "Risk-Adjusted Return (default)", desc: "Sharpe minus unitless drawdown/activity fraction" },
-  { id: "net_pnl_inr", name: "Maximize Net P&L (₹)", desc: "Net rupee P&L = net points × lot size (enable costs)" },
+  { id: "net_pnl_inr", name: "Maximize Net P&L (₹)", desc: "Trial ranking uses index points × lot size (a SPOT proxy, not premium). With Option re-rank on, the finalists and the reported best are scored on REAL traded option premium." },
   { id: "sharpe", name: "Maximize Sharpe Ratio", desc: "Risk-adjusted return per std-dev" },
   { id: "profit_factor", name: "Maximize Profit Factor", desc: "Gross profit / |gross loss|" },
   { id: "total_pnl_pts", name: "Maximize Net P&L (pts)", desc: "Raw profit; ignores drawdown" },
@@ -327,6 +327,34 @@ export default function Optimizer() {
       ([k, def]) => def.type === "int" || def.type === "float"
     );
   }, [selectedStrategy]);
+
+  // Which bounds are actually in force, and which overrides cannot bite.
+  //
+  // The strategy Select never cleared `param_overrides`, so a confluence_scalper
+  // job carried 12 overrides left over from earlier fibonacci/atr sessions. Eleven
+  // named params confluence_scalper does not declare and were silently ignored;
+  // the twelfth widened spot_target_pts from the declared max of 200 to 300 — and
+  // nothing on screen said so, because this panel only renders the SELECTED
+  // strategy's params. The widened bound is not removed here (it may well be what
+  // the operator wants); it is made visible, which is the part that was missing.
+  const boundsAudit = useMemo(() => {
+    const declared = new Set(Object.keys(selectedStrategy?.parameter_schema || {}));
+    const overrides = config.param_overrides || {};
+    const isSet = (o) => o && (o.min !== undefined || o.max !== undefined);
+    const active = [];
+    const foreign = [];
+    for (const [name, ov] of Object.entries(overrides)) {
+      if (!isSet(ov)) continue;
+      (declared.has(name) ? active : foreign).push(name);
+    }
+    return { active: active.sort(), foreign: foreign.sort() };
+  }, [selectedStrategy, config.param_overrides]);
+
+  const clearForeignOverrides = () => {
+    const next = { ...(config.param_overrides || {}) };
+    boundsAudit.foreign.forEach((k) => { delete next[k]; });
+    setConfig({ ...config, param_overrides: next });
+  };
 
   // Poll job progress
   useEffect(() => {
@@ -1339,12 +1367,24 @@ export default function Optimizer() {
               <div className="text-[10px] text-dimmer leading-snug mb-2">
                 Override the search range for any param. Leave blank to use the strategy's default bounds.
               </div>
+              {boundsAudit.foreign.length > 0 && (
+                <div className="text-[10px] rounded border border-amber-900 bg-amber-950 text-warning p-2 mb-2 flex items-start gap-2" data-testid="opt-foreign-overrides">
+                  <span className="flex-1">
+                    {boundsAudit.foreign.length} bound override{boundsAudit.foreign.length > 1 ? "s" : ""} below {boundsAudit.foreign.length > 1 ? "belong" : "belongs"} to a different strategy
+                    and cannot affect this search: <span className="font-mono">{boundsAudit.foreign.join(", ")}</span>.
+                  </span>
+                  <button type="button" onClick={clearForeignOverrides} className="underline shrink-0" data-testid="opt-clear-foreign-overrides">clear</button>
+                </div>
+              )}
               {numericParams.map(([name, def]) => {
                 const ov = config.param_overrides[name] || {};
                 const set = (k, v) => setConfig({ ...config, param_overrides: { ...config.param_overrides, [name]: { ...ov, [k]: v === "" ? undefined : Number(v) } } });
                 return (
                   <div key={name} className="grid grid-cols-[1fr_64px_64px] items-center gap-2 text-xs">
-                    <div className="text-dim font-mono truncate">{name}</div>
+                    <div className={`font-mono truncate ${(ov.min !== undefined || ov.max !== undefined) ? "text-warning" : "text-dim"}`}
+                         title={(ov.min !== undefined || ov.max !== undefined)
+                           ? `overridden — strategy declares [${def.min}, ${def.max}]`
+                           : `strategy bounds [${def.min}, ${def.max}]`}>{name}</div>
                     <Input type="number" placeholder={String(def.min ?? "")} value={ov.min ?? ""} onChange={(e) => set("min", e.target.value)} className="bg-bg-2 border-line h-7 text-xs font-mono text-right" data-testid={`override-${name}-min`} />
                     <Input type="number" placeholder={String(def.max ?? "")} value={ov.max ?? ""} onChange={(e) => set("max", e.target.value)} className="bg-bg-2 border-line h-7 text-xs font-mono text-right" data-testid={`override-${name}-max`} />
                   </div>
@@ -1352,7 +1392,23 @@ export default function Optimizer() {
               })}
             </div>
           ) : (
-            <div className="text-[11px] text-dimmer">Expand to widen/narrow the search range for individual parameters.</div>
+            <div className="text-[11px] text-dimmer" data-testid="opt-bounds-summary">
+              {boundsAudit.active.length === 0 && boundsAudit.foreign.length === 0
+                ? "Using the strategy's declared bounds for every parameter."
+                : <>
+                    {boundsAudit.active.length > 0 && (
+                      <span className="text-warning">
+                        {boundsAudit.active.length} bound{boundsAudit.active.length > 1 ? "s" : ""} overridden:{" "}
+                        <span className="font-mono">{boundsAudit.active.join(", ")}</span>.
+                      </span>
+                    )}
+                    {boundsAudit.foreign.length > 0 && (
+                      <span className="text-dimmer">
+                        {" "}{boundsAudit.foreign.length} left over from another strategy (ignored).
+                      </span>
+                    )}
+                  </>}
+            </div>
           )}
         </Panel>
 
@@ -1662,6 +1718,11 @@ function CurrentJobView({ job, onApply, onStop, onPause, onResume, onOpenBest })
           {(displayMetrics.ce_count != null || displayMetrics.pe_count != null) && (
             <DirectionSplit ce={displayMetrics.ce_count} pe={displayMetrics.pe_count} />
           )}
+
+          {/* What the search actually ran under. The setup form shows the bounds you
+              are ABOUT to use; this shows the ones a finished job DID use, which is the
+              half that was missing when reviewing a past result. */}
+          <RunProvenance job={job} />
         </div>
       )}
 
@@ -1996,6 +2057,62 @@ function StatusBadge({ status }) {
   };
   const m = map[status] || map.queued;
   return <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded border ${m.c}`}>{m.label}</span>;
+}
+
+// Bounds + seeded incumbents for a job that has already run.
+//
+// Two things were being written by the backend and shown nowhere. `param_space` is
+// the effective search range including any override, so without it a finished result
+// could not be audited: on a real confluence_scalper job a leftover override had
+// widened spot_target_pts from the strategy-declared 200 to 300 and nothing on screen
+// or in the export said so. `incumbent_seeds` records the known-good points the search
+// started from and — the part that matters — the dimensions the configured bounds made
+// UNREACHABLE, which is exactly when a search cannot beat a result you already have.
+function RunProvenance({ job }) {
+  const space = job?.param_space || {};
+  const seeds = job?.incumbent_seeds || [];
+  const bounded = Object.entries(space).filter(([, d]) => d && (d.min !== undefined || d.max !== undefined));
+  if (bounded.length === 0 && seeds.length === 0) return null;
+  const anyDropped = seeds.some((s) => Object.keys(s?.dropped || {}).length > 0);
+  return (
+    <details className="mt-3 rounded-md border border-line bg-bg-2 p-2" data-testid="opt-run-provenance">
+      <summary className="text-[11px] text-dim cursor-pointer select-none">
+        Search bounds &amp; seeded starting points
+        {seeds.length > 0 && <span className="text-dimmer"> · {seeds.length} incumbent{seeds.length > 1 ? "s" : ""} seeded</span>}
+        {anyDropped && <span className="text-warning"> · some values were outside the bounds</span>}
+      </summary>
+      {seeds.length > 0 && (
+        <div className="mt-2" data-testid="opt-provenance-seeds">
+          <div className="text-[10px] uppercase tracking-wider text-dimmer mb-1">Known-good points evaluated first</div>
+          {seeds.map((s, i) => {
+            const dropped = Object.entries(s?.dropped || {});
+            return (
+              <div key={i} className="text-[11px] font-mono text-dim leading-relaxed">
+                <span className="text-foreground">{s.source}</span>
+                <span className="text-dimmer"> · {Object.keys(s?.params || {}).length} params seeded</span>
+                {dropped.length > 0 && (
+                  <span className="text-warning"> · not seeded: {dropped.map(([k, why]) => `${k} (${String(why).replace(/_/g, " ")})`).join(", ")}</span>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {bounded.length > 0 && (
+        <div className="mt-2" data-testid="opt-provenance-bounds">
+          <div className="text-[10px] uppercase tracking-wider text-dimmer mb-1">Bounds this run searched</div>
+          <div className="grid grid-cols-2 lg:grid-cols-3 gap-x-3 gap-y-0.5">
+            {bounded.map(([name, d]) => (
+              <div key={name} className="text-[11px] font-mono text-dim truncate">
+                {name} <span className="text-dimmer">[{String(d.min)}, {String(d.max)}]</span>
+                {d._indicator_period && <span className="text-dimmer"> · indicator</span>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </details>
+  );
 }
 
 function SmallMetric({ label, value }) {

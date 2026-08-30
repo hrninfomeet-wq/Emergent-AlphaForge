@@ -1,5 +1,5 @@
 import { Link, NavLink, useLocation } from "react-router-dom";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Home, LineChart, Database, ListChecks, BookOpen,
   Briefcase, Gauge, Activity, FlaskConical, Library,
@@ -10,6 +10,7 @@ import { useJobs } from "@/lib/jobs";
 import { api } from "@/lib/api";
 import MarketHeader from "@/components/MarketHeader";
 import TokenCountdown from "@/components/TokenCountdown";
+import ScrollToTopButton from "@/components/common/ScrollToTopButton";
 
 const NAV_GROUPS = [
   {
@@ -42,6 +43,7 @@ const NAV_GROUPS = [
 ];
 
 export default function Layout({ children }) {
+  const scrollRef = useRef(null);
   const loc = useLocation();
   return (
     <div className="min-h-screen flex bg-bg-0">
@@ -103,9 +105,12 @@ export default function Layout({ children }) {
       <main className="flex-1 min-w-0 flex flex-col">
         <TopBar location={loc} />
         <MarketHeader />
-        <div className="flex-1 min-w-0 overflow-y-auto p-4" data-testid="page-content">
+        <div ref={scrollRef} className="flex-1 min-w-0 overflow-y-auto p-4" data-testid="page-content">
           {children}
         </div>
+        {/* Every research page lives in the scroller above, so one button here
+            serves all of them. */}
+        <ScrollToTopButton scrollRef={scrollRef} />
       </main>
     </div>
   );

@@ -2,7 +2,7 @@ import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
-import { fmtInt, fmtNum, fmtPct, fmtPnL, colorPnL, tsToTime } from "@/lib/fmt";
+import { fmtInt, fmtNum, fmtPct, fmtPnL, colorPnL, tsToDateTime, tsToIstDate } from "@/lib/fmt";
 import { exportBacktestConfig, exportBacktestResult, exportTradesCsv } from "@/lib/exports";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -21,7 +21,7 @@ import { TrustScorecard } from "@/components/TrustScorecard";
 import { useMaximize, MaximizeButton } from "@/components/MaximizeButton";
 import { useInteractiveColumns } from "@/components/common/useInteractiveColumns";
 import { ResetLayoutButton } from "@/components/common/ResetLayoutButton";
-import { buildPerformanceSeries, displayTrades, isPremiumNative, resultKpis } from "@/lib/backtestMetrics";
+import { buildPerformanceSeries, displayTrades, isPremiumNative, joinOptionLegs, resultKpis } from "@/lib/backtestMetrics";
 import { NumberSliderInput } from "@/components/NumberSliderInput";
 import BacktestRunJournal from "@/components/BacktestRunJournal";
 import { Play, Save, Filter, ChevronDown, ChevronRight, ChevronsUpDown, ArrowUp, ArrowDown, Download, FileJson, FileText, FolderOpen, ShieldCheck, Loader2, AlertTriangle, HelpCircle, Rocket } from "lucide-react";
@@ -436,7 +436,22 @@ export default function BacktestLab() {
     // that justified it. Omitted when absent, so "unset" stays distinguishable.
     if (run?.config?.trade_window_start) ex.trade_window_start = run.config.trade_window_start;
     if (run?.config?.trade_window_end) ex.trade_window_end = run.config.trade_window_end;
-    if (ob.sizing_config) ex.sizing_config = ob.sizing_config;
+    // Sizing comes from the RESOLVED option envelope (`run.option_backtest`),
+    // not from the request echo in `run.config.option_backtest`. The request
+    // holds what was asked for; the resolved block holds what the sim actually
+    // executed, and the optimizer rewrites it. Reading the request saved presets
+    // that never matched the run they were saved from: an optimizer-sized run
+    // that traded 100 lots produced a 5-lot preset, and one that traded 2 lots
+    // produced a 5-lot preset. Deploy-from-run already reads the resolved block
+    // (deployment_sizing_from_source), so this also makes the two buttons agree.
+    const resolvedSizing = run?.option_backtest?.sizing_config ?? ob.sizing_config;
+    if (resolvedSizing) ex.sizing_config = resolvedSizing;
+    // Effective lots when the resolved sizing pins a fixed size — otherwise the
+    // preset's `lots` scalar would still advertise the requested count.
+    if (resolvedSizing?.enabled && resolvedSizing?.mode === "fixed_lots"
+        && Number(resolvedSizing.fixed_lots) > 0) {
+      ex.lots = Math.max(1, Number(resolvedSizing.fixed_lots));
+    }
     if ((ob.exit_mode || "spot_exit") === "option_levels") {
       if (ob.option_target_pts != null) ex.option_target_pts = Number(ob.option_target_pts);
       if (ob.option_stop_pts != null) ex.option_stop_pts = Number(ob.option_stop_pts);
@@ -1976,6 +1991,10 @@ function RunningResults({ progress, config }) {
 
 function ResultsView({ result, onSaveAsPreset, onDeploy }) {
   const m = result.metrics || {};
+  // What the Trades pane is currently showing (rows + active filters). The CSV
+  // export reads this so the download matches the screen; null until the table
+  // mounts, at which point export falls back to the full run.
+  const [tradesView, setTradesView] = useState(null);
   const kpi = useMemo(() => resultKpis(result), [result]);
   const premiumNative = isPremiumNative(result);
   const tradeRows = useMemo(() => displayTrades(result), [result]);
@@ -2035,9 +2054,9 @@ function ResultsView({ result, onSaveAsPreset, onDeploy }) {
             size="sm"
             variant="secondary"
             className="h-7 text-xs"
-            onClick={() => exportTradesCsv(result)}
+            onClick={() => exportTradesCsv(result, tradesView?.runId === result.id ? tradesView : null)}
             data-testid="export-trades-csv-button"
-            title="Export trades table as CSV (Excel-friendly)"
+            title="Export the trades table as CSV (Excel-friendly) — exports exactly the rows currently shown, including any direction / exit / outcome / date-range filter"
           >
             <FileText className="w-3 h-3 mr-1" /> Trades.csv
           </Button>
@@ -2192,8 +2211,16 @@ function ResultsView({ result, onSaveAsPreset, onDeploy }) {
           executed OPTION trades for a premium-native one — otherwise the pane
           iterated an empty spot list and told the user "No trades were taken"
           while option_backtest.trades held every fill. */}
+      {/* Keyed by run id so loading a different run starts the table fresh.
+          Filters are component state: without this, a date range set on one run
+          stayed applied to the next one loaded, and a run from another period
+          rendered "Trades (0 of N)" — an empty table that reads as "this run
+          took no trades" rather than "your filter excludes everything". */}
       <TradesTable
+        key={result.id}
+        runId={result.id}
         trades={tradeRows}
+        onViewChange={setTradesView}
         optionBacktest={result.option_backtest}
         premiumNative={premiumNative}
       />
@@ -2947,64 +2974,40 @@ function SortHeader({ col, sort, onSort, headerProps, resizeHandleProps, width }
   );
 }
 
-function TradesTable({ trades, optionBacktest, premiumNative = false }) {
+function TradesTable({ trades, optionBacktest, premiumNative = false, onViewChange, runId = null }) {
   const { panelRef, maximized, toggleMaximize } = useMaximize();
   const [sort, setSort] = useState({ key: "idx", dir: "asc" });
   const [dirFilter, setDirFilter] = useState("ALL");
   const [reasonFilter, setReasonFilter] = useState("ALL");
   const [resultFilter, setResultFilter] = useState("ALL"); // ALL | win | loss
+  // Date range (IST calendar dates, "YYYY-MM-DD"). Empty = unbounded.
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
 
   const onSort = (key) => {
     setSort((s) => (s.key === key ? { key, dir: s.dir === "asc" ? "desc" : "asc" } : { key, dir: "asc" }));
   };
 
-  // When option backtest ran, build a map from the spot trade index to its
-  // matched option leg so the table can show the correlated option detail.
+  // When option backtest ran, each row carries its matched option leg so the
+  // table can show the correlated option detail.
   const optionEnabled = !!optionBacktest?.enabled;
-  const optionByTradeId = useMemo(() => {
-    const map = {};
-    for (const ot of (optionBacktest?.trades || [])) {
-      if (ot?.index_trade_id != null) map[ot.index_trade_id] = ot;
-    }
-    return map;
-  }, [optionBacktest]);
 
   // Stamp original index so "#" remains stable regardless of sort/filter, and
   // flatten the matched option leg fields onto each row for sorting/rendering.
+  // The join itself lives in backtestMetrics so the CSV export renders the same
+  // contract — it used to be inlined here and the download read the raw spot
+  // list, which is how every option column went missing from Trades.csv.
   const indexed = useMemo(
-    () => (trades || []).map((t, i) => {
-      const opt = optionByTradeId[i] || null;
-      return {
-        ...t,
-        idx: i + 1,
-        opt_symbol: opt?.trading_symbol || opt?.instrument_key || null,
-        opt_strike: opt?.strike ?? null,
-        opt_side: opt?.side ?? null,
-        opt_entry: opt?.entry_option_price ?? null,
-        opt_exit: opt?.exit_option_price ?? null,
-        // Premium move in % — long-option (buying) semantics: exit vs entry.
-        opt_pnl_pct:
-          opt?.entry_option_price != null && opt?.exit_option_price != null && Number(opt.entry_option_price) !== 0
-            ? ((Number(opt.exit_option_price) - Number(opt.entry_option_price)) / Number(opt.entry_option_price)) * 100
-            : null,
-        opt_pnl_value: opt?.option_pnl_value ?? null,
-        opt_exit_reason: opt?.option_exit_reason ?? null,
-        opt_status: opt?.status ?? null,
-        opt_lots: opt?.lots ?? null,
-        opt_qty: opt?.quantity ?? null,
-        opt_charges: opt?.status === "PAIRED" ? Number(opt.total_charges || 0) : null,
-        // Buy value loads all charges on entry so Sell − Buy = net option P&L
-        // (entry premium × qty + round-trip charges; sell = exit premium × qty).
-        opt_buy_value: opt?.status === "PAIRED"
-          ? Number(opt.entry_option_price) * Number(opt.quantity) + Number(opt.total_charges || 0)
-          : null,
-        opt_sell_value: opt?.status === "PAIRED"
-          ? Number(opt.exit_option_price) * Number(opt.quantity)
-          : null,
-      };
-    }),
-    [trades, optionByTradeId]
+    () => joinOptionLegs(trades, optionBacktest),
+    [trades, optionBacktest]
   );
+
+  // Bound the date pickers to the run's own span so a user cannot select a
+  // window the run never covered and read the empty result as "no trades".
+  const runDateBounds = useMemo(() => {
+    const ds = indexed.map((t) => tsToIstDate(t.entry_ts)).filter(Boolean).sort();
+    return { min: ds[0] || "", max: ds[ds.length - 1] || "" };
+  }, [indexed]);
 
   const exitReasons = useMemo(() => {
     const set = new Set();
@@ -3016,10 +3019,29 @@ function TradesTable({ trades, optionBacktest, premiumNative = false }) {
     let rows = indexed;
     if (dirFilter !== "ALL") rows = rows.filter((t) => t.direction === dirFilter);
     if (reasonFilter !== "ALL") rows = rows.filter((t) => t.exit_reason === reasonFilter);
-    if (resultFilter === "win") rows = rows.filter((t) => Number(t.pnl_pts) > 0);
-    if (resultFilter === "loss") rows = rows.filter((t) => Number(t.pnl_pts) <= 0);
+    // Win/Loss follows the leg that actually carries the money. On an option run
+    // the spot leg is only a signal: measured across the stored corpus the two
+    // disagree on 6-7% of trades, so filtering by `pnl_pts` showed 405 "wins" on
+    // a run where just 344 trades made money. A leg that never paired has no
+    // rupee outcome, so it is neither a win nor a loss and drops out of both.
+    if (resultFilter !== "ALL") {
+      const win = resultFilter === "win";
+      rows = rows.filter((t) => {
+        if (optionEnabled) {
+          if (t.opt_pnl_value == null) return false;
+          return win ? Number(t.opt_pnl_value) > 0 : Number(t.opt_pnl_value) <= 0;
+        }
+        if (t.pnl_pts == null) return false;  // same Number(null)===0 trap
+        return win ? Number(t.pnl_pts) > 0 : Number(t.pnl_pts) <= 0;
+      });
+    }
+    // Date range on the ENTRY stamp: a trade belongs to the session it was
+    // opened in. Filtering on exit instead would move a trade held over a
+    // boundary into a window it was never entered in.
+    if (dateFrom) rows = rows.filter((t) => tsToIstDate(t.entry_ts) >= dateFrom);
+    if (dateTo) rows = rows.filter((t) => tsToIstDate(t.entry_ts) <= dateTo);
     return rows;
-  }, [indexed, dirFilter, reasonFilter, resultFilter]);
+  }, [indexed, dirFilter, reasonFilter, resultFilter, optionEnabled, dateFrom, dateTo]);
 
   const sorted = useMemo(() => {
     const rows = [...filtered];
@@ -3036,6 +3058,22 @@ function TradesTable({ trades, optionBacktest, premiumNative = false }) {
     });
     return rows;
   }, [filtered, sort]);
+
+  // Publish the current view so the header's Trades.csv button exports exactly
+  // what is on screen. The button lives in ResultsView, the filters live here;
+  // without this the download silently ignored every filter the user had set.
+  const viewFilters = useMemo(() => ({
+    direction: dirFilter === "ALL" ? null : dirFilter,
+    exit_reason: reasonFilter === "ALL" ? null : reasonFilter,
+    outcome: resultFilter === "ALL" ? null : resultFilter,
+    date_from: dateFrom || null,
+    date_to: dateTo || null,
+  }), [dirFilter, reasonFilter, resultFilter, dateFrom, dateTo]);
+
+  useEffect(() => {
+    if (!onViewChange) return;
+    onViewChange({ rows: sorted, filters: viewFilters, total: indexed.length, runId });
+  }, [onViewChange, sorted, viewFilters, indexed.length, runId]);
 
   // Build column set: base spot columns, plus option columns when paired. This
   // is recomputed fresh every render (option legs vary run-to-run), which is
@@ -3058,8 +3096,11 @@ function TradesTable({ trades, optionBacktest, premiumNative = false }) {
     ...(premiumNative ? [] : [
       { key: "opt_entry", label: "Opt Entry", align: "right", sortable: true, defaultWidth: 90 },
       { key: "opt_exit", label: "Opt Exit", align: "right", sortable: true, defaultWidth: 90 },
+      { key: "opt_pnl_pts", label: "Opt P&L pts", align: "right", sortable: true, defaultWidth: 95 },
       { key: "opt_pnl_pct", label: "Opt P&L%", align: "right", sortable: true, defaultWidth: 90 },
-      { key: "opt_exit_reason", label: "Opt Exit", align: "left", sortable: true, defaultWidth: 100 },
+      // Was also labelled "Opt Exit" — two different columns (the premium fill
+      // and the reason it exited) rendered under one identical heading.
+      { key: "opt_exit_reason", label: "Opt Exit Reason", align: "left", sortable: true, defaultWidth: 110 },
     ]),
     { key: "opt_buy_value", label: "Buy ₹", align: "right", sortable: true, defaultWidth: 90 },
     { key: "opt_sell_value", label: "Sell ₹", align: "right", sortable: true, defaultWidth: 90 },
@@ -3073,11 +3114,20 @@ function TradesTable({ trades, optionBacktest, premiumNative = false }) {
         c.key === "entry_price" ? { ...c, label: "Entry Prem" }
         : c.key === "exit_price" ? { ...c, label: "Exit Prem" }
         : c.key === "pnl_pts" ? { ...c, label: "P&L (prem pts)" }
-        : c.key === "score" ? null
+        : c.key === "score" ? null  // also hidden globally via HIDDEN_COLUMN_KEYS
         : c))
       .filter(Boolean)
     : TRADE_COLUMNS;
-  const columns = optionEnabled ? [...baseColumns, ...optionColumns] : baseColumns;
+  // Columns HIDDEN from the table — the fields stay on every row and in the CSV
+  // export, they are just not rendered. `Opt Leg` already prints "25700 CE", so
+  // Dir and Strike repeat it; when option execution is OFF there is no Opt Leg,
+  // and Dir is then the only direction indicator, so it must come back.
+  const HIDDEN_COLUMN_KEYS = new Set([
+    "score",
+    ...(optionEnabled ? ["direction", "opt_strike"] : []),
+  ]);
+  const columns = (optionEnabled ? [...baseColumns, ...optionColumns] : baseColumns)
+    .filter((c) => !HIDDEN_COLUMN_KEYS.has(c.key));
 
   const { orderedColumns, getHeaderProps, getResizeHandleProps, resetLayout, isCustomized } = useInteractiveColumns({
     tableId: "backtest-trades",
@@ -3125,11 +3175,45 @@ function TradesTable({ trades, optionBacktest, premiumNative = false }) {
             <option value="ALL">All exits</option>
             {exitReasons.map((r) => <option key={r} value={r}>{r}</option>)}
           </FilterSelect>
-          <FilterSelect value={resultFilter} onChange={setResultFilter} testid="trades-filter-result" title="Filter by outcome">
+          <FilterSelect value={resultFilter} onChange={setResultFilter} testid="trades-filter-result" title={optionEnabled ? "Filter by outcome — decided by the option leg's rupee P&L, which is the money the run actually made" : "Filter by outcome"}>
             <option value="ALL">Win+Loss</option>
             <option value="win">Wins</option>
             <option value="loss">Losses</option>
           </FilterSelect>
+          {/* Date range. Filters rows by ENTRY date and, because Trades.csv
+              exports the view, scopes the export to a sub-period as well. */}
+          <input
+            type="date"
+            value={dateFrom}
+            min={runDateBounds.min || undefined}
+            max={runDateBounds.max || undefined}
+            onChange={(e) => setDateFrom(e.target.value)}
+            className="h-7 rounded-md border border-line bg-bg-2 px-1.5 text-[11px] text-foreground outline-none focus:ring-1 focus:ring-ring"
+            data-testid="trades-filter-date-from"
+            title="From date (entry, IST) — also scopes the Trades.csv export"
+          />
+          <span className="text-[11px] text-dimmer">-</span>
+          <input
+            type="date"
+            value={dateTo}
+            min={runDateBounds.min || undefined}
+            max={runDateBounds.max || undefined}
+            onChange={(e) => setDateTo(e.target.value)}
+            className="h-7 rounded-md border border-line bg-bg-2 px-1.5 text-[11px] text-foreground outline-none focus:ring-1 focus:ring-ring"
+            data-testid="trades-filter-date-to"
+            title="To date (entry, IST) — also scopes the Trades.csv export"
+          />
+          {(dateFrom || dateTo) && (
+            <button
+              type="button"
+              onClick={() => { setDateFrom(""); setDateTo(""); }}
+              className="h-7 px-1.5 text-[11px] text-dim hover:text-foreground"
+              data-testid="trades-filter-date-clear"
+              title="Clear date range"
+            >
+              clear
+            </button>
+          )}
           <ResetLayoutButton onReset={resetLayout} isCustomized={isCustomized} label="trades table" testid="trades-reset-layout" />
           <MaximizeButton maximized={maximized} onToggle={toggleMaximize} label="trades" testid="trades-maximize" />
         </div>
@@ -3172,9 +3256,9 @@ function TradesTable({ trades, optionBacktest, premiumNative = false }) {
               const cellRenderers = {
                 idx: <td className="p-2 font-mono">{t.idx}</td>,
                 direction: <td className={`p-2 font-mono font-medium ${t.direction === "CE" ? "text-emerald-300" : "text-rose-300"}`}>{t.direction}</td>,
-                entry_ts: <td className="p-2 text-dim">{tsToTime(t.entry_ts)}</td>,
+                entry_ts: <td className="p-2 text-dim whitespace-nowrap">{tsToDateTime(t.entry_ts)}</td>,
                 entry_price: <td className="p-2 text-right font-mono">{fmtNum(t.entry_price)}</td>,
-                exit_ts: <td className="p-2 text-dim">{tsToTime(t.exit_ts)}</td>,
+                exit_ts: <td className="p-2 text-dim whitespace-nowrap">{tsToDateTime(t.exit_ts)}</td>,
                 exit_price: <td className="p-2 text-right font-mono">{fmtNum(t.exit_price)}</td>,
                 exit_reason: <td className="p-2 text-[10px] text-dim">{t.exit_reason}</td>,
                 score: <td className="p-2 text-right font-mono text-dim">{t.score}</td>,
@@ -3203,6 +3287,12 @@ function TradesTable({ trades, optionBacktest, premiumNative = false }) {
                 ),
                 opt_entry: <td className="p-2 text-right font-mono">{t.opt_entry != null ? fmtNum(t.opt_entry) : "—"}</td>,
                 opt_exit: <td className="p-2 text-right font-mono">{t.opt_exit != null ? fmtNum(t.opt_exit) : "—"}</td>,
+                opt_pnl_pts: (
+                  <td className={`p-2 text-right font-mono ${colorPnL(t.opt_pnl_pts)}`}
+                      title="Gross premium move in points (Opt Exit - Opt Entry), before charges. The rupee column is NET of charges, so pts x Qty will not equal it.">
+                    {t.opt_pnl_pts != null ? fmtPnL(t.opt_pnl_pts) : "—"}
+                  </td>
+                ),
                 opt_pnl_pct: <td className={`p-2 text-right font-mono ${colorPnL(t.opt_pnl_pct)}`}>{t.opt_pnl_pct != null ? fmtPct(t.opt_pnl_pct, 1) : "—"}</td>,
                 opt_buy_value: <td className="p-2 text-right font-mono text-dim">{t.opt_buy_value != null ? `₹${fmtInt(t.opt_buy_value)}` : "—"}</td>,
                 opt_sell_value: <td className="p-2 text-right font-mono text-dim">{t.opt_sell_value != null ? `₹${fmtInt(t.opt_sell_value)}` : "—"}</td>,
@@ -3219,7 +3309,7 @@ function TradesTable({ trades, optionBacktest, premiumNative = false }) {
               );
             })}
             {sorted.length === 0 && (
-              <tr>
+              <tr data-testid="trades-empty-filtered">
                 <td colSpan={orderedColumns.length} className="p-4 text-center text-dimmer">No trades match the current filters.</td>
               </tr>
             )}
