@@ -229,7 +229,38 @@ NIFTY over the 10-month window against `_option_rerank`'s **4M-row cap** - so it
 chunked/cached loader, not a bigger query. See the proposal list in
 [`AGENT_TODO.md`](AGENT_TODO.md).
 
-### 2.1 ⚠ Three things that will bite you immediately
+### 2.0g What changed 2026-08-30 (optimizer reporting units, deploy gate)
+
+Three commits after the checkpoint: `2b47ed6`, `ff5e5a0`, `39e5f4f`. Tag
+`checkpoint/validated-3-5-6-2026-08-30` marks the first of them.
+
+**Optimizer now surfaces what it already knew.** The option re-rank loads candles under a
+hard 4,000,000-row cap; past it trades silently do not pair, so EVERY candidate's rupee
+P&L is understated — and the only signal was a `log.warning` inside the container. The cap
+is reachable with a realistic window (NIFTY over 2025-11-01..2026-08-26 holds 4.38M option
+rows across 4,294 keys). It now lands on the job as `rerank_coverage` and renders as a
+warning stating the DIRECTION of the error. Run duration (`Took 2m 9s for 210 trials ·
+0.61s/trial`) and `lot_size` are also shown; all three were persisted and rendered nowhere.
+
+**Two reported numbers carried the wrong quantity (`ff5e5a0`).** Both were found by
+reconciling stored jobs against recomputed truth, not by reading the UI:
+
+- `best_so_far.value` was labelled "spot obj". It is not: the field holds the Stage-1 spot
+  objective while the trial loop runs and is REPLACED at promotion with the option rupee
+  P&L (or calmar). Wrong on 12 of 12 completed jobs checked — 684,602 shown as the spot
+  objective where the real one (`total_pnl_pts x lot_size`) was 333,689, and one job ~4x
+  out the other way. The three promotion sites now carry `spot_objective` through and
+  `best_so_far_doc` persists it; older jobs render nothing rather than a wrong number.
+- `best_value_metric` was derived from `evaluation_mode` alone, so a winner promoted by a
+  CALMAR survival objective stored a RATIO under the label `option_pnl_value` — jobs
+  `fbf72695` (11.3084 vs a real Rs 696,158.70) and `427a5cb5` (4.904 vs Rs 1,535.39). The
+  sortable history column was ranking ratios against rupees. The label is now chosen in the
+  same expression as the value, and the renderer refuses to assert a unit the figure
+  contradicts (legacy calmar jobs therefore render bare, not as "Rs 11").
+
+**Deploy no longer blocks on the optimizer's search bounds (`39e5f4f`).** See §2.1(4).
+
+### 2.1 ⚠ Four things that will bite you immediately
 
 1. **Every paired-option backtest saved before 2026-07-30 is wrong.** Option candles were
    grouped by a `contract_key` present on only ~2.3% of stored rows; the absent ones became
@@ -254,6 +285,23 @@ chunked/cached loader, not a bigger query. See the proposal list in
    `index_trade_id`, so there is no legacy case needing a fallback. Frontend:
    `joinOptionLegs()` in `lib/backtestMetrics.js`; guarded by
    `tests/test_backtest_lab_action_buttons.py`.
+
+4. **`parameter_schema` min/max is the OPTIMIZER'S SEARCH RANGE, not a feasibility limit —
+   do not gate on it.** The same schema is what `_build_param_space` searches, and
+   `param_overrides` exist to WIDEN it, so the app routinely backtests, ranks and PROMOTES
+   values outside it (a promoted confluence winner sat at `spot_target_pts` 285.7 against a
+   declared max of 200). `_validate_strategy_deployment_config` used to raise HTTP 400 on
+   it, which made **4 of 12 saved presets undeployable** and had already forced
+   `atr_sigma_router` to keep a deliberate no-op 40-59 band just to avoid bricking saved
+   artifacts. Out-of-range is now an acknowledgeable warning; only genuine infeasibility
+   blocks (wrong type, non-finite, and non-positive where the schema declares a positive
+   minimum). The same principle is stated in `deployment_quality.py`: *"Surface them as
+   warnings - never block ... the app aids the user, never restricts."* Guarded by
+   `tests/test_deploy_param_range_is_advisory.py`.
+
+   The general shape of traps 2-4: **a stored field means different things in different
+   states, and something read it under a fixed label.** Before trusting any displayed
+   number, check what actually writes that field.
 
 ### 2.2 What landed most recently (2026-07-28 → 08-01, v0.57.5 + v0.58.0 + Stage 1)
 
@@ -552,6 +600,21 @@ Frontend → `http://localhost:3000`, backend → `http://localhost:8001` (route
   docker exec -w /app alphaforge_backend python -m pytest tests/<file> -q
   ```
 - **Frontend "tests"** are pytest string-pins over the JSX source (run on the host with the contract tests).
+- **There is no single green number — measure the DELTA, not the absolute.** Neither place
+  is zero-failure today, and both counts are dominated by environment rather than defects.
+  Measured 2026-08-30: **host** `python -m pytest tests -q` = 4,254 passed / 80 failed /
+  56 collection errors (the errors are `motor` absent on the host, and most failures follow
+  from that). **Container** (whole suite) = 4,870 passed / 309 failed / 68 errors, and those
+  failures are overwhelmingly UI source-pin tests — `test_live_cockpit_ui`,
+  `test_wizard_*_ui`, `test_backtest_performance_overview`, `test_safety_latch_ui_contract`
+  — which read `frontend/` files that **do not exist inside the backend container**, plus
+  the known `test_bootstrap_contract` launcher issue. Do NOT run the whole suite in the
+  container and read 309 as regressions.
+
+  The reliable method, and the one used for every fix in §2.0f/§2.0g: run your targeted
+  subset, save the FAILED list, `git stash` your change, re-run the identical command on
+  clean HEAD, and diff the two lists. Introduced-failures should be zero. A new test that
+  passes both before AND after has not tested your fix — confirm it fails on clean HEAD.
 - **Browser smoke** is the final check: open the app in Chrome and **hard-reload (Ctrl+Shift+R)** to drop the stale CRA bundle — client-side navigation does not reload the JS.
 
 ## 4. Standing conventions

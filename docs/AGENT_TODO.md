@@ -10,7 +10,7 @@
 > entry point) · [`STAGE1_INTEGRITY_SESSION_HANDOFF_2026-08-01.md`](STAGE1_INTEGRITY_SESSION_HANDOFF_2026-08-01.md)
 > (latest completed-session checkpoint) · `CHANGELOG.md`.
 
-**Last updated:** 2026-08-30 (Claude Opus 5 — Backtest Lab action buttons, optimizer incumbent seeding, bounds transparency)
+**Last updated:** 2026-08-30 (Claude Opus 5 — reporting units, candle-cap coverage, deploy gate)
 
 ### ★ Open follow-ups from the 2026-08-30 session
 
@@ -27,6 +27,18 @@ Context and evidence: [`HANDOFF.md`](HANDOFF.md) §2.0f.
 - [x] **Bounds transparency** — effective bounds now visible in the setup form AND on a finished
   job (`param_space` was also being stripped from the job export; it is 2% of the payload while
   `trial_log` is the large field, so that was inverted).
+
+**Also landed 2026-08-30, not previously on this board:**
+- [x] **Reported units (`ff5e5a0`).** `best_so_far.value` was labelled "spot obj" but holds
+  the OPTION figure after promotion (wrong on 12/12 jobs); and `best_value_metric` labelled a
+  calmar RATIO as `option_pnl_value` (jobs `fbf72695`, `427a5cb5`). Both fixed at the source —
+  the label is now chosen in the same expression as the value — and the renderer refuses to
+  assert a unit the figure contradicts. A reconciliation pass over 40 runs + 40 jobs found
+  **0 backtest-run failures**, confirming the engine was fine and only reporting was wrong.
+- [x] **Deploy gate (`39e5f4f`).** Deploy was hard-blocking on `parameter_schema` min/max,
+  which is the OPTIMIZER'S SEARCH RANGE — 4 of 12 saved presets were undeployable. Now an
+  acknowledgeable warning on the existing chain; only genuine infeasibility blocks. See
+  HANDOFF §2.1(4).
 
 **Proposed next, in the order I would do them.** Nothing below is started; none of it is in the
 checkpoint commit. Ordered by value-to-risk, with the measurement behind each.
@@ -46,13 +58,20 @@ checkpoint commit. Ordered by value-to-risk, with the measurement behind each.
   config (2269) made **+77,129**. Blocked by data volume — **4.38M option rows / 4,294 keys**
   for NIFTY over the 10-month window vs `_option_rerank`'s **4M-row cap** — so it needs a
   chunked/cached candle loader, not a bigger query. Do NOT attempt before #1.
-- [ ] **3. Surface the 4M-row candle cap.** `optimizer.py` logs a warning and continues; trades
+- [x] ~~**3. Surface the 4M-row candle cap.**~~ **DONE `2b47ed6`.** Lands on the job as
+  `rerank_coverage` and renders a warning naming the row/contract counts and the direction of
+  the error. Implemented as an optional `coverage_out` dict rather than a 6th tuple element,
+  because `_option_rerank` + `_option_rerank_premium_trigger` share a 5-tuple across six
+  return sites; the premium path is untouched. ORIGINAL: `optimizer.py` logs a warning and continues; trades
   past the cap silently go unpaired, so results quietly understate. It should land on the job
   document and render in the UI (same fail-loudly principle as the omitted drawdown/CI).
 - [ ] **4. Collapse or fix the duplicate objective.** `net_pnl_inr` and `total_pnl_pts` are the
   same search. Either make it real (via #2) or remove one, so the dropdown cannot imply a choice
   that does not exist. Changing the stored `objective` string affects saved jobs — check first.
-- [ ] **5-6. Small frontend wins.** `started_at` / `finished_at` / `timing` are persisted and
+- [x] ~~**5-6. Small frontend wins.**~~ **DONE `2b47ed6`.** Run duration reads
+  `started_at`/`finished_at` and shows per-trial cost ("Took 2m 9s for 210 trials ·
+  0.61s/trial"); `lot_size` sits beside the ₹ headline and is omitted on jobs predating the
+  field. ORIGINAL: `started_at` / `finished_at` / `timing` are persisted and
   unused (no run-duration readout); `lot_size` is what converts points to rupees and is not shown
   beside the ₹ headline.
 - [ ] **7. Optimizer poll payload.** Job detail is **77KB polled every 2s** while running, and

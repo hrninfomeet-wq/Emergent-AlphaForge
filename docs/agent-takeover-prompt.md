@@ -1,127 +1,108 @@
-# AI-agent takeover prompt (as of 2026-08-15, `main` @ `c2b3d7a` + verified working tree)
+# AI-agent takeover prompt
+
+_Current as of **2026-08-30**, branch `feat/chain-recorder` @ `39e5f4f`, clean working tree._
+_Copy everything below the line into a fresh agent session._
+
+---
 
 You are taking over active development of **AlphaForge Trading Lab** — a local-first
-research + forward-test + live-execution app for Indian index options (NIFTY / BANKNIFTY /
-SENSEX). Repo: `Emergent-AlphaForge` (GitHub: `hrninfomeet-wq/Emergent-AlphaForge`).
-React (CRA + craco) frontend `:3000`, FastAPI backend `:8001` (**all routes under `/api`**),
-MongoDB (motor), Docker Compose. **Upstox** = market data; **Flattrade** (Noren / PiConnect
-OMS) = live broker execution. It trades **real money** when the operator enables it.
+research, forward-test and live-execution app for Indian index options (NIFTY / BANKNIFTY /
+SENSEX). React (CRA + craco) frontend on `:3000`, FastAPI backend on `:8001` (**every route
+under `/api`**), MongoDB via motor, all in Docker Compose. **Upstox** supplies market data;
+**Flattrade** (Noren / PiConnect) is the live broker. **It trades real money when the
+operator enables it.**
 
-## Read these first, in this order — before writing any code
+The loop the app exists to serve: warehouse 1-minute spot + option candles → backtest or
+optimize a strategy → save a preset → deploy for signals, paper trading, and (only with
+explicit operator consent and hard gates) live execution.
 
-1. **`docs/HANDOFF.md`** — START HERE. Current state. Read §2 in full, especially **§2.0c**
-   (the 2026-08-14 live session and the two defects a green test suite did not catch).
-2. **`docs/TAKEOVER_CHECKLIST.md`** — what to DO, in order: safety rules, setup, verified
-   status, lessons, known limitations, and the one-source-of-truth map.
-3. **`docs/BACKTEST_INTEGRITY_AUDIT.md`** — read before trusting ANY number the app produces.
-4. **`docs/AGENT_TODO.md`** — the live work board. Do not invent priorities.
-5. `docs/DEVELOPER_GUIDE.md` (deep onboarding) and `docs/ARCHITECTURE.md` (module map) as needed.
+## Read before writing any code
 
-Then run the suite and confirm the baseline before changing anything:
-`.venv/Scripts/python.exe -m pytest tests -q` → **4,896 passed, 4 xfailed, 0 failed**.
+1. **`docs/HANDOFF.md`** — start here. §1.1 tells you where everything lives; §2.0f/§2.0g
+   are the most recent work; **§2.1 is four traps that will cost you hours** if you skip it.
+2. **`docs/AGENT_TODO.md`** — the live work board. Do not invent priorities.
+3. **`docs/BACKTEST_INTEGRITY_AUDIT.md`** — read before trusting any number the app produces.
+4. `docs/DEVELOPER_GUIDE.md` and `docs/ARCHITECTURE.md` as needed.
 
-## Where the app stands
+## Run it
 
-| | |
-|---|---|
-| Branch | `main` at `c2b3d7a`, **2 commits ahead of `origin/main` (`c5d380b`)**, plus the verified 2026-08-15 working tree; do not discard the existing prompt edit |
-| Suite | 4,896 passed / 4 xfailed / 0 failed |
-| Real money traded | **Twice** — 2026-08-04 (journalled wrong; fixed) and 2026-08-14 (exposed a live/paper parity break) |
-| Proven edge? | **No.** Three independent campaigns failed a holdout. Do not re-litigate without new data. |
-| What blocks live | Not code — a **Flattrade-registered static IP** and a market-hours validation session |
-| Active program | Capability work: make backtest/paper/live fully usable. Edge hunting is parked. |
+`start-app.bat --rebuild --no-browser` rebuilds **both** halves. Call it by ABSOLUTE path —
+this machine sets `NoDefaultCurrentDirectoryInExePath=1`, so a bare `call start-app.bat`
+reports "not recognized". Frontend `http://localhost:3000`, health
+`http://localhost:8001/api/health`.
 
-The 2026-08-14 live session is the most important recent context. Correlating the live trade
-against the SAME deployment's paper trade exposed that **live silently discarded
-`risk.exit_controls`** — paper ratcheted its stop and booked +₹4,882.69 while live dropped the
-trail entirely. Separately, a commit of mine had **broken every Flattrade API call** by
-percent-encoding `jData`; the suite was green because the implementation and its test shared the
-same wrong assumption about the server. Both are documented in `HANDOFF.md` §2.0c.
+Read the database directly with:
+`docker exec alphaforge_mongo mongosh alphaforge --quiet --eval '<js>'`
+In Git Bash a JS regex literal starting with `/` gets path-mangled — use `new RegExp("...")`.
 
-## ⛔ Non-negotiable safety rules — operator decisions, do not relitigate
+## Testing — there is no single green number
 
-**Two of these can silently destroy the operator's live broker session.**
+Neither the host nor the container is zero-failure, and both counts are dominated by
+environment, not defects (measured 2026-08-30: host 4,254 passed / 80 failed / 56 collection
+errors from missing `motor`; container whole-suite 4,870 passed / 309 failed, almost all UI
+source-pin tests that read `frontend/` files absent inside the backend container).
 
-1. **NEVER call `mcp__flattrade__login` / `mcp__flattrade__logout`.** The Flattrade MCP shares
-   AlphaForge's single API key and Flattrade is **last-login-wins** — a second login silently
-   invalidates the app's live token. Recover a stale MCP session with
-   `backend/scripts/resync_mcp_session.py --clean`. Read tools are fine and useful.
-2. **Never place, modify, cancel or square any broker order** — via the app or the MCP. Keep even
-   read calls sparse; the rate budget is shared with the operator's live account.
-3. **Never flip a deployment to live mode.** Going live is exclusively the operator's manual act.
-4. **Never refresh Flattrade OAuth while `LIVE_AUTOPLACE_ARMED` is on**; never create a second
-   Flattrade API key.
-5. **Do not add new live-ARMING gates or research-qualification gates.** Both were removed on
-   explicit instruction (v0.56.0). A **data-integrity** gate that blocks a NEW live activation
-   when today's candles cannot be verified is a different thing and is intentional.
-6. **Push only with per-changeset operator approval.** Commit freely at green milestones.
-7. **Never commit** `.env`, tokens, credentials, or MCP client configs.
-8. `realized_pnl` is the caps basis and stays **GROSS** — a ₹5,000 cap means ₹5,000 of premium
-   move, excluding charges. The operator confirmed this explicitly.
+**So measure the delta, never the absolute:** run your targeted subset, save the FAILED list,
+`git stash` your change, re-run the identical command on clean HEAD, diff the two. Introduced
+failures should be zero. And a new test that passes both before and after your fix has not
+tested your fix — confirm it fails on clean HEAD.
 
-## Load-bearing technical invariants — each closed a real bug
+Host tests are pure/contract/JSX-string-pins. Motor and route tests must run inside the
+container (`docker cp tests/. alphaforge_backend:/app/tests`, then
+`docker exec -w //app alphaforge_backend python -m pytest tests/<file> -q` — note the double
+slash on Windows).
 
-* **Two symbol spaces.** Upstox `trading_symbol` ("NIFTY 24300 PE 18 AUG 26") vs Noren
-  `noren_tsym` ("NIFTY18AUG26P24300"). Joining them wrongly once journalled an OPEN live position
-  as CLOSED. Always join by id/timestamp, never by array position.
-* **`exit_controls` has ONE decider.** `app/exit_controls.effective_premium_stop` is called by the
-  sim, by paper, and now by live. If you need the behaviour somewhere new, **call it** — do not
-  translate its config into another schema. That translation is exactly what silently dropped
-  every trail on the live path.
-* **The software guard is the real protection.** The broker OCO is a PC-down backstop and on this
-  account usually cannot rest (a resting NRML sell is margined as a naked short).
-* **Empty position book == UNKNOWN, never flat.** Fail safe.
-* **`_raise_stop` is a monotonic ratchet** — the sole writer of `stop_level`. Never bypass it.
-* **WebSockets cannot supply history.** Same-day candles come from Upstox's *intraday* endpoint
-  (no date args) or Flattrade TPSeries (explicit `st`/`et`); the plain historical endpoint is
-  empty for the current day. Never write the in-progress minute — `persist_candles_df` is
-  last-writer-wins with no merge.
-* **`candles_1m` has a unique index on `(instrument, ts)`.** Read `ts`, never the `datetime`
-  string — two datetime formats coexist and sort inverted against each other.
-* **Spot is 375 bars/day, options 385** (the index freezes 15:15–15:30 for the closing auction
-  while F&O runs to 15:40). `app/session_spec.py` models this; use it.
+## Rules this project has already paid for
 
-## How to work here — earned the hard way
+- **Checkpoint before risky work.** Commit the validated state and tag it; keep unvalidated
+  work out of that commit. Latest: `checkpoint/validated-3-5-6-2026-08-30`.
+- **Get confirmation before changing shared backtest/optimizer computation code**
+  (`backtest.py`, `optimizer.py`, `option_backtest.py`, `wfo.py`). A change there reprices
+  every future result for every strategy. UI/export-only changes do not need it.
+- **Get confirmation before anything that could reach the broker or activate a deployment.**
+  Static inspection and dry runs are fine; triggering is not.
+- **Never place, modify or cancel a real order**, and never flip a deployment to live mode.
+  Also never call the Flattrade MCP's `login`/`logout` — one API key, one redirect URI, and a
+  second login invalidates the app's token.
+- **Push only when the operator says so.** Commit freely; nothing is auto-pushed.
+- **Verify across multiple saved runs, not one.** A positional-join bug passed on all four
+  runs first sampled and was only caught by sweeping all 105 — dense-leg runs pass a
+  positional join by accident.
+- **Never call something fixed without running it.** For UI work that means clicking it in
+  the browser. A `CI=true` build compiled cleanly and still shipped a runtime
+  `fmtINR is not defined` that blanked a whole page — only opening it caught that.
+- **A subagent panel that returns 0 completed agents is not a passed check.** Two workflows
+  in the last session died on usage limits and returned nothing; treat that as unverified and
+  do the work yourself.
+- **Clean up test artifacts.** Probe runs, jobs, presets and deployments must be deleted, and
+  saved artifacts must never be modified while investigating.
 
-* **A contract cannot be validated against a mock that shares the implementation's assumption.**
-  When the thing under test is an INTERFACE (a wire format, a schema another module consumes),
-  hit the real other side at least once. This has bitten twice.
-* **Drive the code; never grep source for behaviour.** Source-text assertions have misfired 5+
-  times against CORRECT implementations. 112 test files still do this — converting them is a
-  standing backlog item.
-* **Test frontend logic through node**, not by reading JSX. Put logic in `frontend/src/lib/*.js`
-  and drive it from a test.
-* **Suspect the fixture before the code** when a brand-new test fails.
-* **Audit your own commits** with the same machinery you use on others'. Two regressions I
-  introduced passed the full suite and were caught only by an adversarial pass.
-* **Verify a claim before repeating it** — including one from a subagent. One "live-safety
-  escalation" dissolved on contact with the backend docstring.
-* **Red-before-green.** Write the failing test first; if you wrote the code first, mutate it and
-  confirm the test actually fails.
-* Backend edits need `docker compose up -d --build backend` (the image bakes code in). Frontend
-  edits need a hard reload (**Ctrl+Shift+R**) or you will debug a stale bundle. On Windows,
-  prefix `docker exec` paths with `MSYS_NO_PATHCONV=1`.
+## Where things stand
 
-## Current priorities (unless the operator redirects)
+Recently fixed and verified: Backtest Lab action buttons (Trades.csv exported the raw spot
+list and premium-native runs downloaded the literal string `"(empty)"`); optimizer incumbent
+seeding (a known-good preset inside the search space was never evaluated — the same clean
+config went from −19,957 to +148,602 INR); bounds transparency; two reporting-unit defects;
+and the deploy gate, which was blocking on the optimizer's search bounds and had made 4 of 12
+saved presets undeployable.
 
-1. **Market-session validation** of the live path — `docs/LIVE_VALIDATION_PLAN_2026-08.md`.
-   Most live-path changes have never run in a real session.
-2. The optimizer HIGH/MED register is **closed**; disputed LOW #31 remains separate —
-   `BACKTEST_INTEGRITY_AUDIT.md`.
-3. **38 UNVERIFIED findings** in `docs/live-cockpit-audit-2026-07-25.md` — that file is a live
-   backlog, not history.
-4. The evaluator's NIFTY-only wakeup was fixed in the 2026-08-15 working tree: NIFTY,
-   BANKNIFTY and SENSEX now wake evaluation independently. It is regression-tested but still
-   needs market-session validation.
-5. No same-day candle source for **option** contracts (Upstox intraday serves only the 3 index
-   keys). Live exits are unaffected — the guard marks from the broker position book.
-6. `frontend/src/components/live/PositionMonitor.jsx` is unmounted — an L2-era manual test-order panel. Wire it or delete it;
-   deployed-position exits do not depend on it.
+**Known open, deliberately deferred:** `net_pnl_inr` is `total_pnl_pts × a constant lot_size`,
+so it ranks trials identically to `total_pnl_pts` and models no premium — the search optimises
+a SPOT proxy while the operator only ever trades options. Making it option-native is blocked
+on a measured ceiling (4.38M option rows / 4,294 keys for NIFTY over a 10-month window against
+`_option_rerank`'s 4M-row cap) and on reusing Stage-1 trades in Stage 2. **Read the
+`AGENT_TODO.md` entry for #1 and #2 before attempting either** — the obvious version of #1
+(cache Stage-1 trades) fails validation: `_evaluate` runs in worker processes, so the trades
+would have to be pickled back at ~351 KB per trial (~99 MB per job), against an explicit
+design rule in `parallel_eval.py`.
 
-**Research verdicts are CLOSED questions.** `OPTIMIZER_VERDICT`, `POOLED_REGIME_VERDICT`,
-`PREMIUM_MOMENTUM_EDGE_VERDICT` and `PROFIT_LEVERAGE_ANALYSIS` each carry a **pre-registered**
-kill or revival criterion, and several are cited from source code. Do not reopen one without new
-data, and do not delete one — a deleted verdict gets re-litigated at real cost.
+There is no roadmap beyond that board. The program is "fix and harden what is here", not a
+feature plan. Ask the operator rather than inventing scope.
 
-Ask before any irreversible or outward-facing action. Report honestly: if a test fails, say so
-with the output; if something is unverified, say "unverified" rather than implying it works.
+## Configuration
+
+Secrets live in `backend/.env` (git-ignored) and are injected by Docker Compose — broker
+credentials, `FERNET_KEY`, and the `LIVE_AUTOPLACE_ARMED` gate. Never commit `.env`, tokens or
+any credential file, and never print secret values into logs, docs or commit messages. Live
+auto-placement requires `LIVE_AUTOPLACE_ARMED=1` **and** a deployment the operator personally
+set to live mode, within its caps and before the 15:00 IST cutoff.
