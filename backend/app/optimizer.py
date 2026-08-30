@@ -1504,6 +1504,7 @@ async def _option_rerank(
     *, analyze_t0: Optional[float] = None, analyze_budget_sec: int = 0, progress_cb=None,
     trade_window_start: Optional[str] = None, trade_window_end: Optional[str] = None,
     min_trades: int = 0, should_stop=None, opt_workers: int = 1, raw_df=None,
+    coverage_out: Optional[Dict[str, Any]] = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Any, bool, bool]:
     # (ranked, contracts, candles_df, budget_hit, stopped)
     """Stage 2: re-score the top-K spot candidates on REAL paired-option net
@@ -1661,6 +1662,14 @@ async def _option_rerank(
             # data — surface it instead of letting coverage quietly degrade.
             log.warning("option re-rank candle load hit the 4M-row cap (%d keys); "
                         "results beyond the cap window are not paired", len(union_keys))
+            # A log line only reaches whoever is tailing the container. The job
+            # document is what the operator actually sees, and an under-paired
+            # re-rank understates every candidate's rupee P&L — the same
+            # fail-loudly rule the omitted drawdown/CI follow.
+            if coverage_out is not None:
+                coverage_out["candle_cap_hit"] = True
+                coverage_out["candle_rows_loaded"] = len(rows)
+                coverage_out["contract_keys"] = len(union_keys)
         if rows:
             candles_df = pd.DataFrame(rows)
 
@@ -2353,6 +2362,9 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
             rerank_candles = pd.DataFrame()
             if candidates:
                 await _update_job(job_id, {"rerank_progress": {"stage": "option_rerank", "candidates": len(candidates)}})
+                # Filled by _option_rerank when the candle load hits its row cap;
+                # persisted below so the UI can say the pairing was incomplete.
+                _rr_coverage: Dict[str, Any] = {}
                 try:
                     ranked, rerank_contracts, rerank_candles, _rr_hit, _rr_stopped = await _option_rerank(
                         get_db(), strategy, get_enriched, candidates,
@@ -2363,7 +2375,10 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                         trade_window_end=trade_window_end,
                         min_trades=min_trades,
                         should_stop=_analyze_should_stop,
-                        opt_workers=opt_workers, raw_df=raw_df)
+                        opt_workers=opt_workers, raw_df=raw_df,
+                        coverage_out=_rr_coverage)
+                    if _rr_coverage.get("candle_cap_hit"):
+                        await _update_job(job_id, {"rerank_coverage": _rr_coverage})
                     analyze_budget_hit = analyze_budget_hit or _rr_hit
                     if _rr_hit:
                         analyze_stopped_by = analyze_stopped_by or "budget"

@@ -1677,6 +1677,7 @@ function CurrentJobView({ job, onApply, onStop, onPause, onResume, onOpenBest })
                     <div className={`font-mono text-base ${optionPnl >= 0 ? "text-emerald-400" : "text-rose-400"}`} data-testid="opt-headline-value">{fmtINR(optionPnl)}</div>
                     <div className="text-[10px] text-dimmer">
                       {job.status === "done_no_survivor" ? "best candidate option ₹ · no survivor" : "promoted option ₹ (net of costs)"} · spot obj {fmtBest(spotObjective)}
+                      {job.lot_size ? <> · lot {fmtInt(job.lot_size)}</> : null}
                     </div>
                   </>
                 ) : (
@@ -1722,6 +1723,8 @@ function CurrentJobView({ job, onApply, onStop, onPause, onResume, onOpenBest })
           {/* What the search actually ran under. The setup form shows the bounds you
               are ABOUT to use; this shows the ones a finished job DID use, which is the
               half that was missing when reviewing a past result. */}
+          <RerankCoverageWarning job={job} />
+          <RunDuration job={job} />
           <RunProvenance job={job} />
         </div>
       )}
@@ -2057,6 +2060,45 @@ function StatusBadge({ status }) {
   };
   const m = map[status] || map.queued;
   return <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded border ${m.c}`}>{m.label}</span>;
+}
+
+// The option re-rank loads candle rows under a hard cap. When it is hit, later trades
+// simply do not pair, so EVERY candidate's rupee P&L is understated — and until now that
+// only ever reached the container log. Same fail-loudly rule as the drawdown/CI that the
+// filtered export refuses to invent.
+function RerankCoverageWarning({ job }) {
+  const cov = job?.rerank_coverage;
+  if (!cov?.candle_cap_hit) return null;
+  return (
+    <div className="mt-3 rounded-md border border-warning/40 bg-warning/10 p-2 text-[11px] text-warning leading-relaxed"
+         data-testid="opt-rerank-coverage-warning">
+      <span className="font-semibold">Incomplete option pairing.</span>{" "}
+      The re-rank hit its candle-row cap at {fmtInt(cov.candle_rows_loaded)} rows across{" "}
+      {fmtInt(cov.contract_keys)} contracts, so trades beyond that window were not paired and
+      every candidate&apos;s rupee P&amp;L is understated. Narrow the date range or the DTE
+      filter and re-run before trusting these numbers.
+    </div>
+  );
+}
+
+// started_at / finished_at were persisted and never shown, so there was no way to tell
+// how long a job took — the number you need to size the next trial budget.
+function RunDuration({ job }) {
+  const start = job?.started_at ? Date.parse(job.started_at) : NaN;
+  const end = job?.finished_at ? Date.parse(job.finished_at) : NaN;
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return null;
+  const secs = Math.round((end - start) / 1000);
+  const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60), sc = secs % 60;
+  const human = h > 0 ? `${h}h ${m}m` : m > 0 ? `${m}m ${sc}s` : `${sc}s`;
+  const trials = job?.n_trials_completed;
+  const per = trials > 0 ? secs / trials : null;
+  return (
+    <div className="mt-3 text-[11px] text-dimmer" data-testid="opt-run-duration">
+      Took <span className="font-mono text-dim">{human}</span>
+      {trials > 0 && <> for <span className="font-mono text-dim">{fmtInt(trials)}</span> trials</>}
+      {per != null && <> · <span className="font-mono text-dim">{per < 1 ? per.toFixed(2) : per.toFixed(1)}s</span>/trial</>}
+    </div>
+  );
 }
 
 // Bounds + seeded incumbents for a job that has already run.
