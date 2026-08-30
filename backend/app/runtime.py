@@ -2283,6 +2283,7 @@ def _validate_strategy_deployment_config(
     instrument: Optional[str],
     timeframe: Optional[str],
     requested_params: Optional[Dict[str, Any]],
+    range_findings: Optional[List[Dict[str, Any]]] = None,
 ) -> tuple:
     """Validate + type-coerce a strategy deployment config against the strategy's
     declared capabilities and parameter schema. Returns
@@ -2294,7 +2295,22 @@ def _validate_strategy_deployment_config(
     instrument or unknown/invalid params is rejected here exactly like a direct
     strategy deploy, instead of silently producing a dead ACTIVE deployment
     (release-audit finding H5). A nullable param (schema default None) accepts
-    None (finding H4)."""
+    None (finding H4).
+
+    A value outside a param's declared ``min``/``max`` is NOT a hard failure. That
+    range is the OPTIMIZER'S SEARCH SPACE — `_build_param_space` builds the search
+    from this same schema, and `param_overrides` exist to widen it — so the app
+    routinely backtests, ranks and PROMOTES values outside it (measured: a promoted
+    confluence winner at spot_target_pts 285.7 against a declared max of 200).
+    Blocking on it made 4 of 12 saved presets undeployable, and previously forced
+    `atr_sigma_router` to keep a deliberate no-op 40-59 search band purely to avoid
+    bricking saved artifacts. Out-of-range values are appended to `range_findings`
+    (when a collector is supplied) so the caller can raise them through the existing
+    acknowledgment flow, per this app's stated rule: warn, never restrict.
+
+    Genuine infeasibility still raises: wrong type, non-finite, and a non-positive
+    value for a param whose schema declares a positive minimum (a zero or negative
+    target/stop/period cannot produce a valid order)."""
     supported_instruments = [str(v).upper() for v in strategy.supported_instruments]
     supported_timeframes = [str(v) for v in strategy.supported_timeframes]
     instrument = str(instrument or (supported_instruments[0] if supported_instruments else "")).upper()
@@ -2355,10 +2371,24 @@ def _validate_strategy_deployment_config(
             if not isinstance(value, str) or not value.strip():
                 raise HTTPException(400, f"Strategy parameter {param_name} must be non-empty text")
         if value_type in ("int", "float"):
-            if spec.get("min") is not None and value < spec["min"]:
-                raise HTTPException(400, f"Strategy parameter {param_name} must be >= {spec['min']}")
-            if spec.get("max") is not None and value > spec["max"]:
-                raise HTTPException(400, f"Strategy parameter {param_name} must be <= {spec['max']}")
+            lo, hi = spec.get("min"), spec.get("max")
+            # Genuine feasibility floor: a schema that declares a POSITIVE minimum is
+            # asserting the quantity must be positive (points, multiples, periods).
+            # Zero or negative there is structurally invalid, not merely unsearched.
+            if lo is not None and lo > 0 and value <= 0:
+                raise HTTPException(
+                    400,
+                    f"Strategy parameter {param_name} must be greater than 0 "
+                    f"(got {value}); a non-positive value cannot produce a valid order",
+                )
+            if (lo is not None and value < lo) or (hi is not None and value > hi):
+                if range_findings is not None:
+                    range_findings.append({
+                        "param": param_name,
+                        "value": value,
+                        "min": lo,
+                        "max": hi,
+                    })
             params[param_name] = value
     return instrument, timeframe, params
 
@@ -2369,7 +2399,11 @@ async def _load_deployment_source(
     source_id: str,
     *,
     strategy_config: Optional[Dict[str, Any]] = None,
+    range_findings: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
+    """Load + validate a deployment source. `range_findings`, when supplied, collects
+    params outside their declared search range instead of rejecting them — see
+    `_validate_strategy_deployment_config`."""
     source_type = str(source_type or "").lower()
     if source_type == "preset":
         doc = await db.presets.find_one({"name": source_id}, {"_id": 0})
@@ -2393,6 +2427,7 @@ async def _load_deployment_source(
             instrument=cfg.get("instrument"),
             timeframe=cfg.get("timeframe"),
             requested_params=cfg.get("params"),
+            range_findings=range_findings,
         )
         doc = {
             "id": strategy.id,
@@ -2442,6 +2477,7 @@ async def _load_deployment_source(
             instrument=_extract_instrument(doc),
             timeframe=_tf,
             requested_params=_extract_params(source_type, doc),
+            range_findings=range_findings,
         )
     return doc
 

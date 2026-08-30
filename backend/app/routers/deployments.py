@@ -476,10 +476,14 @@ async def create_deployment(req: DeploymentCreateReq):
     if nonfinite:
         raise HTTPException(
             400, f"Deployment numeric values must be finite: {', '.join(nonfinite)}")
+    # Params outside their declared search range are collected, not rejected — they
+    # become acknowledgeable warnings below. See _validate_strategy_deployment_config.
+    param_range_findings: List[Dict[str, Any]] = []
     source = await _load_deployment_source(
         db,
         req.source_type,
         req.source_id,
+        range_findings=param_range_findings,
         strategy_config={
             "instrument": req.source_instrument,
             "timeframe": req.source_timeframe,
@@ -501,6 +505,36 @@ async def create_deployment(req: DeploymentCreateReq):
         source_doc=source,
     )
     quality = evaluate_source_quality(source, evidence=evidence)
+    # A value outside the optimizer's search range is evidence to weigh, not a
+    # technical impossibility, so it rides the SAME acknowledgment chain as every
+    # other source-quality warning rather than getting its own gate.
+    for _f in param_range_findings:
+        _bounds = []
+        if _f.get("min") is not None:
+            _bounds.append(f"min {_f['min']}")
+        if _f.get("max") is not None:
+            _bounds.append(f"max {_f['max']}")
+        _label = f"{_f['param']} is outside the strategy's declared search range"
+        quality.setdefault("warnings", []).append({
+            "id": f"param_out_of_declared_range:{_f['param']}",
+            "severity": "warning",
+            "label": _label,
+            "title": _label,
+            "detail": (
+                f"{_f['param']} = {_f['value']} but the strategy declares "
+                f"{' / '.join(_bounds) or 'no range'}. That range is the optimizer's "
+                "search space, not a broker or exchange limit — this value is "
+                "executable, it was simply never searched. Confirm you intend it."
+            ),
+            "message": (
+                f"{_f['param']} = {_f['value']} vs declared {' / '.join(_bounds) or 'no range'} "
+                "(optimizer search range, not a technical limit)."
+            ),
+            "value": {"param": _f["param"], "value": _f["value"],
+                      "min": _f.get("min"), "max": _f.get("max")},
+        })
+    if param_range_findings:
+        quality["acknowledgment_required"] = True
     if quality["acknowledgment_required"] and not req.acknowledged_warnings:
         warning_summary = "; ".join(w["label"] for w in quality["warnings"])
         raise HTTPException(
