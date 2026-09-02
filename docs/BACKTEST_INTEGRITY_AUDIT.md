@@ -135,19 +135,20 @@ runtime payload/preflight checks and canonical-`localhost` browser smoke pass.
 
 | # | Sev | Finding |
 |---|---|---|
-| 32 | MED | **`NON_ALPHA_PARAM_NAMES` states a general principle but enforces it narrowly.** The set pins trade-FREQUENCY knobs out of the optimizer's default search space on the argument that they move a rupee objective through *exposure*, not edge — `OPTION_BUYING_MICROSTRUCTURE_2026-08.md` §2 measured round-trip friction at 32–90% of the median favourable move, i.e. "more trades is the wrong direction in this app regardless of signal quality". But the set matches on the **name**, and the frequency spellings it carries (`max_trades_per_session`, `signal_cooldown_bars`) are declared by exactly one plugin, `expiry_regime_trend_continuation`. **Eleven** other shipped plugins spell the same concept `cooldown_bars` and the optimizer still sweeps it for them. |
+| 32 | MED | **`NON_ALPHA_PARAM_NAMES` states a general principle but enforces it narrowly.** The set pins trade-FREQUENCY knobs out of the optimizer's default search space on the argument that they move a rupee objective through *exposure*, not edge — `OPTION_BUYING_MICROSTRUCTURE_2026-08.md` §2 measured round-trip friction at 32–90% of the median favourable move, i.e. "more trades is the wrong direction in this app regardless of signal quality". But the set matches on the **name**, and the frequency spellings it carries (`max_trades_per_session`, `signal_cooldown_bars`) are declared by exactly one plugin, `expiry_regime_trend_continuation`. **Twelve** other shipped plugins spell the same concept `cooldown_bars` and the optimizer still sweeps it for them. |
 
 **Why it is deferred and not fixed.** Adding `cooldown_bars` to the set would
-silently change the DEFAULT search space of eleven strategies that have already
+silently change the DEFAULT search space of twelve strategies that have already
 been optimized, and in some cases deployed — every saved preset and stored study
 for them was produced under a space that swept it. That is an evidence-bearing
-decision about eleven live configurations, not a one-line rename, and it does not
+decision about twelve live configurations, not a one-line rename, and it does not
 belong inside a change scoped to one research candidate.
 
 **Affected plugins** (verified 2026-08-26 by importing every plugin and reading
 `parameter_schema`, not by grep): `adaptive_regime_scalper`, `atr_sigma_router`,
 `explosive_reversal`, `explosive_reversal_atr`, `fibonacci_pullback`, `gap_fade`,
-`sensex_explosive_reversal`, `smc_liquidity_sweep_fvg`,
+`sensex_explosive_reversal`, `sensex_vwap_mean_reversion`,
+`smc_liquidity_sweep_fvg`,
 `squeeze_expansion_breakout`, `vwap_mean_reversion`, `vwap_pullback_scalp`.
 
 **Reproduce the count** (must print `11`). Iterate EVERY attribute of each

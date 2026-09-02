@@ -377,12 +377,12 @@ def test_the_cooldown_bars_gap_is_recorded_not_forgotten():
 
 
 def test_the_register_count_matches_reality():
-    """The register commits to `11`. If a new plugin adds the knob, the recorded
+    """The register commits to `12`. If a new plugin adds the knob, the recorded
     finding is stale and understates the blast radius of closing it."""
     actual = _plugins_declaring("cooldown_bars")
-    assert len(actual) == 11, (
+    assert len(actual) == 12, (
         f"{len(actual)} plugins now declare `cooldown_bars` ({sorted(actual)}), "
-        "but finding #32 in docs/BACKTEST_INTEGRITY_AUDIT.md says eleven. "
+        "but finding #32 in docs/BACKTEST_INTEGRITY_AUDIT.md says twelve. "
         "Update the register — the blast radius of closing the gap has changed.")
 
 

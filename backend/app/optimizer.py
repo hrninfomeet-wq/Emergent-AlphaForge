@@ -512,16 +512,16 @@ def _indicator_key(merged: Dict[str, Any]) -> Tuple:
 #:
 #: KNOWN GAP - registered, deliberate, NOT an oversight. This set matches on the
 #: NAME, and the two frequency spellings above are declared by exactly one
-#: plugin: `expiry_regime_trend_continuation`. ELEVEN other shipped plugins spell
+#: plugin: `expiry_regime_trend_continuation`. TWELVE other shipped plugins spell
 #: the same concept `cooldown_bars` and the optimizer still sweeps it for them
 #: (adaptive_regime_scalper, atr_sigma_router, explosive_reversal,
 #: explosive_reversal_atr, fibonacci_pullback, gap_fade,
-#: sensex_explosive_reversal, smc_liquidity_sweep_fvg,
+#: sensex_explosive_reversal, sensex_vwap_mean_reversion, smc_liquidity_sweep_fvg,
 #: squeeze_expansion_breakout, vwap_mean_reversion, vwap_pullback_scalp).
 #:
 #: So the friction argument above is stated GENERALLY but enforced NARROWLY.
 #: That asymmetry is intentional: adding `cooldown_bars` here would silently
-#: change the default search space of eleven strategies that have already been
+#: change the default search space of twelve strategies that have already been
 #: optimized and in some cases deployed, which is an evidence-bearing decision,
 #: not a rename. Tracked as finding #32 in `docs/BACKTEST_INTEGRITY_AUDIT.md`
 #: Section 5. Do not "tidy" this by adding the name without reading it first.

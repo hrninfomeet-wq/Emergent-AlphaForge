@@ -2,6 +2,50 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [Unreleased] — SENSEX VWAP Mean Reversion, shipped as capability after its edge gate failed (2026-09-02)
+
+**The premise was measured before any code was written, and it is false.** 441 SENSEX sessions
+(2024-11-25 .. 2026-09-02), forward 45-bar excursion, CAS-frozen bars excluded, every rule scored
+against the SAME-DTE baseline — does it beat doing nothing on that day type? Fading VWAP loses at
+every threshold from 1.5 to 3.0 ATR, on both sides, and RSI confirmation makes it WORSE (0.898
+against a 0.951 unconditional baseline). The only positive cells are DTE0/DTE1 puts (+0.319 /
++0.229) and their entire lift is first-half: -0.040 and -0.063 in the second. SENSEX fell 4.7%
+across the window, which manufactures the put-favourable base rate those cells were reading.
+
+**The best conditioned variant dissolved when the split got finer.** Stretch >2 ATR above VWAP
+plus ATM call aggression (`ce_volume_z - pe_volume_z` > 2) -> CE cleared a two-way half-split,
+then failed a four-way one: Q1 +0.139, Q2 -0.124, Q3 -0.419, Q4 **+1.594**. One quarter carries
+it. The signal fires on 64 of 441 sessions, 51 of them DTE0. Its mirror is -0.213 while the two
+triggers fire near-symmetrically (7,694 vs 7,592 bars) at near-identical z-score means
+(+0.254 / +0.250) — so the asymmetry is noise, not market structure. No VWAP-anchored variant
+survived. The plugin ships anyway, by operator decision, on the `premium_momentum` precedent:
+capability, not edge, with the numbers in its own docstring so no later session can confuse them.
+
+**What it fixes regardless of whether the edge exists.** The parent bounds exits in absolute
+points (`spot_target_pts` 5-80, `spot_stop_pts` 3-60) while SENSEX runs ~3.28x NIFTY's point
+scale at near-identical RELATIVE volatility, so NIFTY's working geometry is outside the box, not
+merely unfound (the `fde863a` failure). Exits here are ATR multiples converted per bar, floored
+above 0.5 ATR because a sub-ATR stop sits inside one bar's noise. Direction (`fade_mode`) and
+stretch basis (`use_sigma_basis`) are BOOL rather than str, because `_build_param_space` drops
+string params entirely — a str mode knob would have been a dead knob of the `vix_boost_threshold`
+class, present in the UI and invisible to the optimizer. A missing `regime` column now emits a
+NAMED blocker; the parent turns every signal into an unnamed one on any path that has not
+enriched it, which is indistinguishable from the filter working.
+
+**Unoptimized baseline, 2025-09-01 .. 2026-09-01, ATM, 1 lot, costs on:** fade 883 trades / 31.3%
+win / **-Rs 79,099** net (Rs 12,728 charges, PF 0.815); continuation 2,429 trades / 30.1% win /
+**-Rs 202,182** net (Rs 33,156 charges, PF 0.848). Continuation fires 2.8x the trades and loses
+2.6x as much — the `NON_ALPHA_PARAM_NAMES` principle ("more trades is the wrong direction in this
+app regardless of signal quality") demonstrated end to end.
+
+**Registers updated, not bypassed.** Two guard tests failed on the new plugin and both were
+answered rather than silenced: `sensex_vwap_mean_reversion` added to `INTENTIONAL_DATA_DECLARERS`,
+and finding #32's `cooldown_bars` count moved eleven -> twelve in `docs/BACKTEST_INTEGRITY_AUDIT.md`,
+`optimizer.py` and its pinning test. DTE stays in `option_backtest.dte_filter` and deliberately
+never reaches `evaluate()`: SENSEX DTE buckets are close to a weekday relabel and the mapping
+CHANGED mid-window (DTE2 was Friday in the first half, Tuesday in the second; DTE3 Thursday then
+Monday), so per-DTE tuning on ~46 sessions per half fits a weekday and deploys onto a different one.
+
 ## [Unreleased] — option flow reaches `evaluate()` (2026-08-28)
 
 **`options_1m` has carried per-bar `volume` and `oi` for the whole history and no strategy

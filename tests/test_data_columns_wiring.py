@@ -298,7 +298,7 @@ def test_non_declaring_strategy_gets_a_byte_identical_frame():
 #: about ACCIDENTAL declarations — a column added to a plugin without anyone
 #: deciding that its runs should now depend on a warehouse join. Adding an id
 #: here is the deliberate act the original message asked for.
-INTENTIONAL_DATA_DECLARERS = {"atm_premium_flow_scalp"}
+INTENTIONAL_DATA_DECLARERS = {"atm_premium_flow_scalp", "sensex_vwap_mean_reversion"}
 
 
 def test_only_intentional_strategies_declare_required_data():
