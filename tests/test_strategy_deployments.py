@@ -160,7 +160,44 @@ def test_direct_strategy_loader_rejects_unsupported_live_timeframe(monkeypatch):
         assert "require timeframe=1m" in str(exc.detail)
 
 
-def test_direct_strategy_loader_rejects_invalid_parameter(monkeypatch):
+def test_direct_strategy_loader_treats_out_of_range_as_advisory(monkeypatch):
+    """A param outside its declared min/max LOADS; it does not block.
+
+    That range is the OPTIMIZER'S SEARCH SPACE, not a broker limit, and the app
+    routinely promotes values outside it (a confluence winner at spot_target_pts
+    285.7 against a declared max of 200). Blocking on it made 4 of 12 saved
+    presets undeployable, so `39e5f4f` made it advisory: collected into
+    `range_findings` and surfaced through the acknowledgment flow.
+
+    This test asserted the OLD blocking behaviour and was left behind by that
+    commit. Rewritten to pin the CURRENT contract behaviourally — the advisory
+    tests in test_deploy_param_range_is_advisory.py are source-grep checks, so
+    this is the end-to-end proof that the direct path really does load.
+    """
+    _direct_registry(monkeypatch)
+    findings: list = []
+    source = asyncio.run(_load_deployment_source(
+        object(),
+        "strategy",
+        "direct_deploy_test",
+        strategy_config={
+            "instrument": "NIFTY",
+            "timeframe": "1m",
+            "params": {"period": 99},          # declared max is 50
+        },
+        range_findings=findings,
+    ))
+
+    assert source["params"]["period"] == 99, "the value must survive verbatim"
+    assert len(findings) == 1, "the operator must still be told it is out of range"
+    assert findings[0]["param"] == "period"
+    assert findings[0]["value"] == 99
+    assert findings[0]["max"] == 50
+
+
+def test_direct_strategy_loader_still_blocks_genuine_infeasibility(monkeypatch):
+    """Advisory ranges did NOT weaken the real gate: a non-positive value for a
+    param whose schema declares a positive minimum cannot produce a valid order."""
     from fastapi import HTTPException
 
     _direct_registry(monkeypatch)
@@ -172,13 +209,12 @@ def test_direct_strategy_loader_rejects_invalid_parameter(monkeypatch):
             strategy_config={
                 "instrument": "NIFTY",
                 "timeframe": "1m",
-                "params": {"period": 99},
+                "params": {"period": 0},       # schema min is 2 (positive)
             },
         ))
         assert False, "expected HTTPException"
     except HTTPException as exc:
         assert exc.status_code == 400
-        assert "period must be <= 50" in str(exc.detail)
 
 
 def test_direct_strategy_loader_rejects_nonfinite_numeric_parameters(monkeypatch):
@@ -352,17 +388,42 @@ def test_preset_source_rejects_unknown_param(monkeypatch):
         assert "unknown parameter" in str(exc.detail).lower()
 
 
-def test_preset_source_rejects_out_of_range_param(monkeypatch):
-    from fastapi import HTTPException
+def test_preset_source_treats_out_of_range_as_advisory(monkeypatch):
+    """H5 parity, current contract: the preset path treats an out-of-range param
+    exactly like the direct path — advisory, not a block.
+
+    This is the case that motivated `39e5f4f`: presets are SAVED FROM OPTIMIZER
+    WINNERS, which are routinely outside the declared search box, so blocking
+    here bricked saved artifacts the app itself had produced.
+
+    Asserted the OLD blocking behaviour until now; the commit that changed it
+    added source-grep coverage but never updated this file.
+    """
     _direct_registry(monkeypatch)
     db = _FakeDeployDB(presets={"p1": _preset(
         config={"timeframe": "1m", "params": {"period": 999}})})
+    findings: list = []
+    doc = asyncio.run(_load_deployment_source(
+        db, "preset", "p1", range_findings=findings))
+
+    assert doc["strategy_id"] == "direct_deploy_test"
+    assert len(findings) == 1
+    assert findings[0]["param"] == "period"
+    assert findings[0]["value"] == 999
+
+
+def test_preset_source_still_blocks_genuine_infeasibility(monkeypatch):
+    """The parity cuts both ways — the preset path must keep the HARD gate too,
+    or a stored config could create an ACTIVE deployment that can never trade."""
+    from fastapi import HTTPException
+    _direct_registry(monkeypatch)
+    db = _FakeDeployDB(presets={"p1": _preset(
+        config={"timeframe": "1m", "params": {"period": 0}})})
     try:
         asyncio.run(_load_deployment_source(db, "preset", "p1"))
         assert False, "expected HTTPException"
     except HTTPException as exc:
         assert exc.status_code == 400
-        assert "period must be <= 50" in str(exc.detail)
 
 
 def test_preset_source_accepts_valid_config(monkeypatch):
