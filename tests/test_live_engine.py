@@ -468,20 +468,27 @@ def test_can_trade_blocked_by_latch_without_halt():
 # ---------------------------------------------------------------------------
 
 def test_halt_keeps_first_reason():
-    """Multiple _halt calls keep the FIRST reason; subsequent reasons go to alerts."""
-    engine, _, _, _, _ = _make_engine()
+    """Multiple _halt calls keep the FIRST reason; subsequent reasons go to alerts.
 
-    engine._halt("first_reason", {"x": 1})
-    engine._halt("second_reason", {"x": 2})
-    engine._halt("third_reason", {"x": 3})
+    ``_halt`` became async when the halt started being persisted (so it survives
+    a restart); the idempotency contract it guards is unchanged.
+    """
+    async def go():
+        engine, _, _, _, _ = _make_engine()
 
-    assert engine.halt_reason == "first_reason"
-    assert engine.halted is True
-    # All three alerts are preserved
-    assert len(engine.alerts) == 3
-    assert engine.alerts[0]["reason"] == "first_reason"
-    assert engine.alerts[1]["reason"] == "second_reason"
-    assert engine.alerts[2]["reason"] == "third_reason"
+        await engine._halt("first_reason", {"x": 1})
+        await engine._halt("second_reason", {"x": 2})
+        await engine._halt("third_reason", {"x": 3})
+
+        assert engine.halt_reason == "first_reason"
+        assert engine.halted is True
+        # All three alerts are preserved
+        assert len(engine.alerts) == 3
+        assert engine.alerts[0]["reason"] == "first_reason"
+        assert engine.alerts[1]["reason"] == "second_reason"
+        assert engine.alerts[2]["reason"] == "third_reason"
+
+    asyncio.run(go())
 
 
 # ---------------------------------------------------------------------------

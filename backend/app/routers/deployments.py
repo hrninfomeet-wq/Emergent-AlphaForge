@@ -1226,7 +1226,15 @@ async def enable_deployment_live(deployment_id: str, body: _LiveEnableBody):
     except Exception:
         ok, reason = False, "engine_unavailable"
     if ok is not True:
-        raise HTTPException(400, f"Live engine cannot trade ({reason}) — clear the halt/latch before going live.")
+        # Name the ONE control that clears this, not the two internal gates:
+        # "clear the halt/latch" sent an operator who had just reset the latch
+        # looking for a second latch that does not exist (2026-09-02).
+        raise HTTPException(
+            400,
+            f"Live engine cannot trade ({reason}) — clear it with Reset on the "
+            f"safety-latch banner (Live Trading page), which lifts both the "
+            f"kill-switch halt and the stop-loss latch.",
+        )
 
     # DATA-INTEGRITY GATE (fail closed). A strategy evaluated over a hole is not
     # accepting known risk, it is computing on fiction: on 2026-08-14 NIFTY was

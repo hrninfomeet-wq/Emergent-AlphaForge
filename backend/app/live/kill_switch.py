@@ -67,6 +67,16 @@ DEFAULT_SAFETY_CONFIG: Dict[str, Any] = {
     # Written ONLY by trip()/reset(), never by put_config (see _PUT_CONFIG_WHITELIST).
     "latched_at": None,             # ISO-8601 UTC instant the latch tripped
     "latched_reason": None,         # short machine code, e.g. "broker_stop_loss"
+    # The ENGINE halt — the second of the two stops can_trade() reads. It used
+    # to live only in LiveEngine.halted (in-memory, on the module-level
+    # singleton), which made it both unclearable and non-durable: the operator's
+    # reset-latch could not clear it, while a process restart silently could.
+    # Persisting it here fixes both halves — the halt now survives a restart and
+    # is cleared by the same explicit reset() as the latch above.
+    # Written ONLY by halt_engine()/reset(), never by put_config.
+    "engine_halted": False,         # True once any halt fires; never self-clears
+    "engine_halted_at": None,       # ISO-8601 UTC instant the halt fired
+    "engine_halt_reason": None,     # FIRST cause, e.g. "reconcile_mismatch"
 }
 
 #: Keys that PUT /safety-config is allowed to touch.
@@ -238,6 +248,17 @@ def reset_latch(config: Dict[str, Any]) -> Dict[str, Any]:
 def is_entry_blocked(config: Dict[str, Any]) -> bool:
     """Return True iff the latch is set (no new entries allowed)."""
     return bool(config.get("blocked_until_reset", False))
+
+
+def is_engine_halted(config: Dict[str, Any]) -> bool:
+    """Return True iff a persisted engine halt is set (no new entries allowed).
+
+    Independent of ``is_entry_blocked``: most halt reasons
+    (``reconcile_mismatch``, ``order_sm_flagged``, ``om_for_unknown_order``,
+    ``post_place_protection_failed``, ``place_ack_lost:*``) never trip the latch,
+    so neither gate may be read as a proxy for the other.
+    """
+    return bool(config.get("engine_halted", False))
 
 
 # ---------------------------------------------------------------------------
@@ -1249,9 +1270,9 @@ class SafetyConfigStore:
         unknown = set(updates) - self._PUT_KEYS
         if unknown:
             raise ValueError(
-                f"Unknown safety config keys (or non-whitelisted — "
-                f"blocked_until_reset requires reset() / POST /safety-config/reset-latch): "
-                f"{sorted(unknown)}"
+                f"Unknown safety config keys (or non-whitelisted — the two stops "
+                f"blocked_until_reset and engine_halted require trip()/halt_engine()/"
+                f"reset() / POST /safety-config/reset-latch): {sorted(unknown)}"
             )
         # Validate max_lots_per_order: must be a non-bool int >= 1.
         if "max_lots_per_order" in updates:
@@ -1285,6 +1306,11 @@ class SafetyConfigStore:
             # the NEXT operator the desk is halted for a cause that no longer applies.
             updates["latched_at"] = None
             updates["latched_reason"] = None
+            # An operator reset clears BOTH stops in this one update, so the two
+            # can never disagree about whether the desk is stopped.
+            updates["engine_halted"] = False
+            updates["engine_halted_at"] = None
+            updates["engine_halt_reason"] = None
         await self._col.update_one(
             {"_id": self._SINGLETON_ID},
             {"$set": updates},
@@ -1301,11 +1327,40 @@ class SafetyConfigStore:
         """
         return await self._write_latch(True, reason=reason)
 
-    async def reset(self) -> Dict[str, Any]:
-        """Persist the blocked_until_reset=False latch (explicit operator reset).
+    async def halt_engine(self, reason: Optional[str] = None) -> Dict[str, Any]:
+        """Persist the engine halt, recording why and when.
 
-        This is the ONLY authorised way to clear the latch.  It is also called
-        by ``POST /safety-config/reset-latch``.
+        Idempotent on the REASON, mirroring ``LiveEngine._halt``: once a halt is
+        recorded the FIRST cause is kept, so the persisted reason can never
+        disagree with the in-memory one. Called by ``LiveEngine._halt`` — the
+        in-memory flag is always set first, so a DB failure here can only make
+        the stop less durable, never make it disappear within the process.
+        """
+        current = await self.get_config()
+        if is_engine_halted(current):
+            return current
+        await self._col.update_one(
+            {"_id": self._SINGLETON_ID},
+            {"$set": {
+                "engine_halted": True,
+                "engine_halted_at": datetime.now(timezone.utc).isoformat(),
+                # The time is always knowable; the reason may not be. Never invent one.
+                "engine_halt_reason": str(reason) if reason else "unspecified",
+            }},
+            upsert=True,
+        )
+        return await self.get_config()
+
+    async def reset(self) -> Dict[str, Any]:
+        """Clear BOTH stops — the latch and the engine halt (operator reset).
+
+        This is the ONLY authorised way to clear either one, and it clears them
+        together in a SINGLE update. They are one operator concept ("the desk is
+        stopped") behind one button; clearing only the latch is what let a
+        kill-switch halt outlive its own reset (2026-09-02 incident) and report
+        "reset the latch first" to an operator who just had.
+
+        Also called by ``POST /safety-config/reset-latch``.
         """
         return await self._write_latch(False)
 

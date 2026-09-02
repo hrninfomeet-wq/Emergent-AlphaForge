@@ -12,8 +12,10 @@ orchestrator:
 INVARIANTS (safe core — never broken before L3):
   1. No .place_order(  call anywhere in this file.
   2. No .cancel_order( call anywhere in this file.
-  3. halt is STICKY: once halted, no subsequent clean event clears it.
-     Only an explicit manual resume (external to this engine) should do that.
+  3. halt is STICKY: once halted, no subsequent clean event clears it, and it
+     is PERSISTED so a process restart cannot clear it either. The only exit is
+     the explicit operator reset (``resume()`` + ``SafetyConfigStore.reset()``,
+     both driven by POST /live-broker/safety-config/reset-latch).
   4. _halt is IDEMPOTENT on the halt flag: keeps the FIRST reason; additional
      halts append further alerts so the full incident trail is preserved.
 
@@ -38,7 +40,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from app.live.order_sm import apply_om
 from app.live.reconcile import reconcile
-from app.live.kill_switch import evaluate_guardrails, is_entry_blocked
+from app.live.kill_switch import evaluate_guardrails, is_engine_halted, is_entry_blocked
 
 log = logging.getLogger(__name__)
 
@@ -94,14 +96,19 @@ class LiveEngine:
 
         Idempotent: subsequent calls keep the FIRST reason and append alerts.
         """
-        self._halt(reason, {"caller": "executor"})
+        await self._halt(reason, {"caller": "executor"})
 
-    def _halt(self, reason: str, detail: Any) -> None:
+    async def _halt(self, reason: str, detail: Any) -> None:
         """Record a halt event.  Sets halted=True and halt_reason on first call;
         subsequent calls append alerts but keep the FIRST reason.
 
         This method is idempotent on halt_reason: calling it N times results in
         exactly one halt_reason (the first) and N alert entries.
+
+        The halt is ALSO persisted to the config store so it survives a process
+        restart.  Order matters and is deliberate: the in-memory flag is set
+        FIRST and unconditionally, so a DB outage can only make the stop less
+        durable — it can never stop the halt taking effect in this process.
         """
         if not self.halted:
             # First halt — establish the primary reason
@@ -110,6 +117,35 @@ class LiveEngine:
         # Always append to the alert trail so the full incident is preserved
         self.alerts.append({"reason": reason, "detail": detail})
         log.warning("LiveEngine halted: reason=%r detail=%r", reason, detail)
+        # Persist AFTER the in-memory stop is already in force. Best-effort:
+        # a failure here is logged loudly (the halt is then process-local, i.e.
+        # exactly the old behaviour) but must never propagate and abort the
+        # caller's own safety work — the kill switch still has flattening to do.
+        try:
+            await self._config_store.halt_engine(reason=self.halt_reason)
+        except Exception as exc:  # pragma: no cover - defensive
+            log.error(
+                "LiveEngine halt persist FAILED (halt is in force in-process but "
+                "will NOT survive a restart): reason=%r err=%s", reason, exc,
+            )
+
+    async def resume(self) -> None:
+        """Clear the in-memory halt — the explicit operator reset, and the ONLY
+        thing that ever sets ``halted`` back to False.
+
+        Deliberately does NOT clear the persisted halt: that is
+        ``SafetyConfigStore.reset()``'s job, and ``POST
+        /safety-config/reset-latch`` calls both. Splitting it this way means a
+        half-completed reset leaves the desk STOPPED (``can_trade`` reads both
+        gates), never half-open.
+        """
+        if not self.halted:
+            return
+        prior = self.halt_reason
+        self.halted = False
+        self.halt_reason = None
+        self.alerts.append({"reason": "operator_resume", "detail": {"cleared": prior}})
+        log.warning("LiveEngine resumed by operator reset (was halted: %r)", prior)
 
     # ------------------------------------------------------------------
     # on_om — feed an om event through the order state machine
@@ -133,7 +169,7 @@ class LiveEngine:
 
         if doc is None:
             # om for an order we don't track — never create a phantom doc
-            self._halt(
+            await self._halt(
                 "om_for_unknown_order",
                 {"norenordno": norenordno, "om_status": om.get("status")},
             )
@@ -154,7 +190,7 @@ class LiveEngine:
             or new_doc.get("nord_mismatch")
             or new_doc.get("overfill")
         ):
-            self._halt(
+            await self._halt(
                 "order_sm_flagged",
                 {
                     "norenordno": norenordno,
@@ -192,7 +228,7 @@ class LiveEngine:
         )
 
         if not report["ok"]:
-            self._halt("reconcile_mismatch", report["mismatches"])
+            await self._halt("reconcile_mismatch", report["mismatches"])
 
         return report
 
@@ -293,7 +329,7 @@ class LiveEngine:
             # the desk halted, and that fact belongs to this event, not the UI.
             await self._config_store.trip(reason=action)
             # Halt the engine
-            self._halt(
+            await self._halt(
                 f"guardrail:{action}",
                 {"mtm": mtm, "open_count": open_count, "action": action},
             )
@@ -307,9 +343,17 @@ class LiveEngine:
     async def can_trade(self) -> Tuple[bool, str]:
         """Return (True, "") if new entries are permitted; (False, reason) otherwise.
 
-        Blocks if:
-          - self.halted (any halt has occurred), OR
-          - the SafetyConfigStore latch is set (is_entry_blocked).
+        Blocks if ANY of the three stops is set:
+          - self.halted            — this process's in-memory halt, OR
+          - config.engine_halted   — a persisted halt (e.g. from before a
+                                     restart, or set by another worker), OR
+          - the SafetyConfigStore latch (is_entry_blocked).
+
+        The persisted halt is checked SEPARATELY from the in-memory one so that
+        a restart cannot be a way to clear a halt: a fresh LiveEngine starts
+        with halted=False, and before this gate existed that silently re-opened
+        trading after a reconcile mismatch. Neither halt gate may be read as a
+        proxy for the latch — most halt reasons never trip it.
 
         This is async because reading the config requires an async DB call.
         """
@@ -317,6 +361,8 @@ class LiveEngine:
             return False, f"engine halted: {self.halt_reason}"
 
         config = await self._config_store.get_config()
+        if is_engine_halted(config):
+            return False, f"engine halted: {config.get('engine_halt_reason')}"
         if is_entry_blocked(config):
             return False, "entry blocked: blocked_until_reset latch is set"
 

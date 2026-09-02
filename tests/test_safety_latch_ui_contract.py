@@ -46,10 +46,36 @@ def test_banner_is_actually_MOUNTED_in_the_cockpit():
 
 
 def test_banner_surfaces_why_and_when_not_just_that():
-    """'Trading halted' with no cause or time cannot be triaged."""
+    """'Trading halted' with no cause or time cannot be triaged.
+
+    The provenance now lives in lib/liveStopState.js (extracted so the verdict
+    can be unit-tested under node — see tests/frontend/liveStopState.test.mjs —
+    instead of asserted by grepping JSX), and the banner renders what it returns.
+    """
+    logic = _read("lib", "liveStopState.js")
+    assert "latched_reason" in logic
+    assert "latched_at" in logic
+
     src = _read("components", "live", "SafetyLatchBanner.jsx")
-    assert "latched_reason" in src
-    assert "latched_at" in src
+    assert "readStopState" in src, "the banner must consume the stop-state verdict"
+    assert "stop.title" in src and "stop.at" in src or "whenText(stop.at)" in src, (
+        "the banner must render the reason and the time it was reported")
+
+
+def test_banner_shows_the_ENGINE_HALT_not_only_the_latch():
+    """can_trade() has TWO stops; a banner that renders one hides the other.
+
+    2026-09-02: after a kill switch the operator reset the latch, the banner went
+    away, /arm-state read SAFE — and enabling still failed, because the engine
+    halt was set and rendered nowhere.
+    """
+    logic = _read("lib", "liveStopState.js")
+    for key in ("engine_halted", "engine_halt_reason", "engine_halted_at"):
+        assert key in logic, f"the stop verdict must read {key}"
+
+    src = _read("components", "live", "SafetyLatchBanner.jsx")
+    assert "kill_switch" in src and "reconcile_mismatch" in src, (
+        "halt causes must have operator-readable text, not raw machine codes")
 
 
 def test_reset_is_two_step_not_one_click():

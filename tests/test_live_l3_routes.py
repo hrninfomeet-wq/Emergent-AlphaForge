@@ -1923,3 +1923,113 @@ def test_put_safety_config_rejects_zero_max_lots_per_order():
         assert r.status_code == 400
     finally:
         _stop_patches(tc)
+
+
+# ---------------------------------------------------------------------------
+# END-TO-END: the 2026-09-02 incident, driven through the REAL routes
+#
+# Unit tests cover each gate; this covers the SEAM that actually broke — whether
+# POST /safety-config/reset-latch drives BOTH halves of the stop. It uses a real
+# LiveEngine (not FakeEngine) so the route's engine call is genuinely exercised.
+# ---------------------------------------------------------------------------
+
+def _real_engine_app(cs: SafetyConfigStore):
+    """Build the route app around a REAL LiveEngine sharing the given store."""
+    from app.live.engine import LiveEngine
+
+    eng = LiveEngine(
+        client=_make_mock_noren(),
+        orders_collection=FakeAsyncCollection(),
+        intent_store=_make_intent_store(),
+        config_store=cs,
+    )
+    return _make_app(config_store=cs, engine=eng), eng
+
+
+def test_kill_switch_then_reset_latch_actually_restores_trading():
+    """deploy -> Kill Switch -> Reset -> enable again. The reported incident.
+
+    Previously the reset cleared only `blocked_until_reset`; the engine halt set
+    by the same kill switch stayed set forever, so the next enable was refused
+    with "engine halted: kill_switch" telling the operator to reset a latch they
+    had just reset.
+    """
+    cs = _make_config_store()
+    tc, eng = _real_engine_app(cs)
+    try:
+        r = tc.post("/live-broker/kill-switch")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["stop_all"]["latch_tripped"] is True
+        assert body["stop_all"]["engine_halted"] is True
+
+        # Both stops are in force, and the enable gate refuses.
+        ok, why = asyncio.run(eng.can_trade())
+        assert ok is False and "kill_switch" in why
+
+        cfg = tc.get("/live-broker/safety-config").json()
+        assert cfg["blocked_until_reset"] is True
+        assert cfg["engine_halted"] is True
+
+        # The ONE operator action.
+        r = tc.post("/live-broker/safety-config/reset-latch")
+        assert r.status_code == 200
+        out = r.json()
+        assert out["blocked_until_reset"] is False
+        assert out["engine_halted"] is False
+        assert out["engine_resumed"] is True, (
+            "the route must clear the in-memory halt too, not just the DB latch")
+
+        # The desk actually trades again.
+        ok, why = asyncio.run(eng.can_trade())
+        assert ok is True, f"after the operator reset the desk must trade, got: {why}"
+        assert eng.halted is False
+    finally:
+        _stop_patches(tc)
+
+
+def test_reset_latch_reports_engine_resume_failure_instead_of_claiming_success():
+    """A half-completed reset must not read as a clean one.
+
+    The desk stays stopped by the in-memory halt in that case, which is the safe
+    direction — but the operator has to be told, or they will believe the reset
+    worked and be blocked again with no explanation.
+    """
+    class _ExplodingEngine:
+        halted = True
+        halt_reason = "kill_switch"
+
+        async def can_trade(self):
+            return False, "engine halted: kill_switch"
+
+        async def halt(self, reason):
+            pass
+
+        async def resume(self):
+            raise RuntimeError("engine unreachable")
+
+    cs = _make_config_store()
+    tc = _make_app(config_store=cs, engine=_ExplodingEngine())
+    try:
+        r = tc.post("/live-broker/safety-config/reset-latch")
+        assert r.status_code == 200
+        assert r.json()["engine_resumed"] is False, (
+            "a failed resume must be reported, never silently swallowed")
+    finally:
+        _stop_patches(tc)
+
+
+def test_a_paper_deployment_resume_does_not_touch_either_live_stop():
+    """Step 4 of the incident report: resuming on /paper-trade is NOT the culprit.
+
+    Pins that the paper-side resume path shares no state with the live stops, so
+    a future refactor cannot quietly couple them.
+    """
+    import inspect
+    from app.routers import deployments as _dep
+
+    src = inspect.getsource(_dep.resume_deployment)
+    for forbidden in ("_config_store", "blocked_until_reset", "engine_halted",
+                      "trip(", "reset(", "halt("):
+        assert forbidden not in src, (
+            f"resume_deployment must not touch live stop state (found {forbidden!r})")

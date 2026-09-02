@@ -3,6 +3,7 @@ import { ShieldAlert, Loader2, RotateCcw } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { getApiErrorMessage } from "@/lib/apiError";
+import { readStopState } from "@/lib/liveStopState";
 
 /**
  * The way back from a tripped broker-stop-loss latch.
@@ -40,6 +41,13 @@ const REASON_TEXT = {
   max_open_block: "the account hit its maximum open-position count",
   profit_lock: "the account profit-lock target was reached",
   unspecified: "the cause was not recorded",
+  // Engine-halt codes. These never trip the latch, so before the halt was
+  // surfaced here the banner stayed hidden while entries were in fact blocked.
+  kill_switch: "the kill switch was used to flatten everything",
+  reconcile_mismatch: "the broker's positions did not match our own record",
+  order_sm_flagged: "an order came back in an inconsistent state",
+  om_for_unknown_order: "the broker reported an order we have no record of",
+  post_place_protection_failed: "a stop could not be attached after a fill",
 };
 
 export default function SafetyLatchBanner({ onChanged }) {
@@ -62,15 +70,16 @@ export default function SafetyLatchBanner({ onChanged }) {
     return () => window.clearInterval(id);
   }, [load]);
 
-  const latched = cfg?.blocked_until_reset === true;
+  const stop = readStopState(cfg);
+  const stopped = stop.stopped;
   useEffect(() => {
-    if (!latched) setConfirming(false);
-  }, [latched]);
+    if (!stopped) setConfirming(false);
+  }, [stopped]);
 
-  if (!latched) return null;
+  if (!stopped) return null;
 
-  const reason = String(cfg?.latched_reason || "unspecified");
-  const when = whenText(cfg?.latched_at);
+  const reason = stop.reason;
+  const when = whenText(stop.at);
 
   const doReset = async () => {
     setBusy(true);
@@ -78,7 +87,7 @@ export default function SafetyLatchBanner({ onChanged }) {
       const next = await api.resetSafetyLatch();
       setCfg(next);
       setConfirming(false);
-      toast.success("Safety latch cleared — live entries are permitted again");
+      toast.success("Halt and latch cleared — live entries are permitted again");
       onChanged?.();
     } catch (e) {
       toast.error(getApiErrorMessage(e, "Could not clear the safety latch"));
@@ -97,7 +106,7 @@ export default function SafetyLatchBanner({ onChanged }) {
         <ShieldAlert className="w-4 h-4 text-danger shrink-0 mt-0.5" />
         <div className="min-w-0 flex-1">
           <div className="text-xs font-semibold text-danger uppercase tracking-wide">
-            Live trading halted — safety latch tripped
+            {stop.title}
           </div>
           <div className="text-[11.5px] text-foreground mt-0.5">
             No new live entries are being placed because{" "}

@@ -1620,9 +1620,31 @@ async def put_safety_config(body: _SafetyConfigBody):
 
 @api.post("/live-broker/safety-config/reset-latch")
 async def reset_safety_latch():
-    """Explicitly reset the broker-stop-loss latch."""
+    """Explicitly clear BOTH stops: the broker-stop-loss latch AND the engine halt.
+
+    ``can_trade()`` reads two independent gates and the kill switch sets both, so
+    an operator reset that cleared only the latch left the desk stopped by the
+    other one — with a message telling them to reset the latch they had just
+    reset (2026-09-02 incident). They are one operator concept behind one button.
+
+    Order is deliberate: persisted state FIRST, then the in-memory flag. If the
+    second step fails the desk stays stopped by the in-memory halt, which is the
+    safe direction; the reverse order could leave a cleared process flag over a
+    still-persisted halt, and the operator would see a reset that "worked" once
+    and then re-blocked on the next restart.
+    """
     store = _config_store()
-    return await store.reset()
+    config = await store.reset()
+    engine_resumed = False
+    try:
+        eng = _l3_engine()
+        if eng is not None and hasattr(eng, "resume"):
+            await eng.resume()
+            engine_resumed = True
+    except Exception as exc:
+        # Report it — never swallow. The desk is still stopped in this case.
+        log.error("reset-latch: engine resume FAILED (desk stays halted): %s", exc)
+    return {**config, "engine_resumed": engine_resumed}
 
 
 # ---------------------------------------------------------------------------
