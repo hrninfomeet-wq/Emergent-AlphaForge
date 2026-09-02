@@ -187,6 +187,18 @@ class OptimizerStartReq(BaseModel):
     pretrade_filters: Dict[str, Any] = Field(default_factory=dict)
     pretrade_profile: Optional[str] = None  # stored for lossless clone/display; engine uses pretrade_filters
     param_overrides: Dict[str, Any] = Field(default_factory=dict)
+    # Unit the point-denominated bounds in `param_overrides` are written in.
+    # "points" (default) is today's behaviour byte-for-byte; "pct_of_index"
+    # converts the params named in `bounds_pct_params` against the run window's
+    # median close, so a bound means the same thing on NIFTY and SENSEX despite
+    # their ~3.28x point-scale difference. See app/bounds_unit.py.
+    #
+    # These MUST be declared here: Pydantic ignores unknown fields, so a field
+    # the frontend sends but the model does not declare vanishes silently and
+    # never reaches the job config — the exact frontend/backend gap that let
+    # NIFTY's point bounds run unremarked on SENSEX.
+    bounds_unit: Optional[str] = None
+    bounds_pct_params: List[str] = Field(default_factory=list)
     start_ts: Optional[int] = None
     end_ts: Optional[int] = None
     name: str = "Optimization run"
@@ -253,6 +265,10 @@ class WfoStartReq(BaseModel):
     pretrade_filters: Dict[str, Any] = Field(default_factory=dict)
     pretrade_profile: Optional[str] = None
     param_overrides: Dict[str, Any] = Field(default_factory=dict)
+    # Same contract as OptimizerStartReq; WFO resolves against the FULL run
+    # window's median close so every training window searches one space.
+    bounds_unit: Optional[str] = None
+    bounds_pct_params: List[str] = Field(default_factory=list)
     start_ts: Optional[int] = None
     end_ts: Optional[int] = None
     name: str = "Walk-forward optimization"

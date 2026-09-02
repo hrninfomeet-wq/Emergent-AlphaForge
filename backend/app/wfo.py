@@ -539,6 +539,9 @@ async def run_wfo(job_id: str, payload: Dict[str, Any], resume: bool = False) ->
         trade_window_start = payload.get("trade_window_start") or None
         trade_window_end = payload.get("trade_window_end") or None
         param_overrides = payload.get("param_overrides", {})
+        # See app/bounds_unit.py. Default "points" == today's behaviour exactly.
+        bounds_unit = payload.get("bounds_unit")
+        bounds_pct_params = payload.get("bounds_pct_params") or []
         start_ts = payload.get("start_ts")
         end_ts = payload.get("end_ts")
         method = payload.get("method", "bayesian")
@@ -639,10 +642,32 @@ async def run_wfo(job_id: str, payload: Dict[str, Any], resume: bool = False) ->
 
         from app.optimizer import restrict_space_to_engine_params
 
+        # Percent-of-index bounds resolve against the FULL run window's median
+        # close, not per training window: a per-window reference would silently
+        # give every window a different search space and make the stitched OOS
+        # incomparable across windows.
+        from app.bounds_unit import (
+            BoundsUnitError, reference_index_price, resolve_bounds_overrides)
+        try:
+            resolved_overrides, bounds_audit = resolve_bounds_overrides(
+                overrides=param_overrides,
+                bounds_unit=bounds_unit,
+                pct_params=bounds_pct_params,
+                reference_price=reference_index_price(df),
+                parameter_schema=strategy.parameter_schema,
+            )
+        except BoundsUnitError as exc:
+            await _update_job(job_id, {
+                "status": "failed", "error": str(exc),
+                "finished_at": datetime.now(timezone.utc).isoformat()})
+            return
+        if bounds_audit.get("applied") or bounds_audit.get("ignored"):
+            await _update_job(job_id, {"bounds_resolution": bounds_audit})
+
         _premium_native = is_premium_trigger_strategy(strategy)
         space = restrict_space_to_engine_params(
             _build_param_space(
-                strategy.parameter_schema, param_overrides,
+                strategy.parameter_schema, resolved_overrides,
                 include_indicator_periods=resolve_indicator_period_search(
                     optimize_indicator_periods, premium_native=_premium_native,
                 )),

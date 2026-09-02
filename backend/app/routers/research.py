@@ -627,10 +627,31 @@ async def rename_preset(name: str, new_name: str = Query(...)):
     return {"ok": True, "name": target, "deployments_updated": int(ref.modified_count)}
 
 
+def _validate_bounds_unit(req) -> None:
+    """Reject a bad bounds unit at the API boundary, not two minutes into a job.
+
+    Shared by /optimize/start and /optimize/wfo so the two engines cannot drift
+    into accepting different units — a percentage understood by one and read as
+    points by the other would reproduce the SENSEX failure exactly.
+    """
+    from app.bounds_unit import BoundsUnitError, normalize_bounds_unit, BOUNDS_UNIT_PCT
+    try:
+        unit = normalize_bounds_unit(req.bounds_unit)
+    except BoundsUnitError as exc:
+        raise HTTPException(400, str(exc))
+    if unit != BOUNDS_UNIT_PCT and req.bounds_pct_params:
+        raise HTTPException(
+            400,
+            f"bounds_pct_params={list(req.bounds_pct_params)} was given but "
+            f"bounds_unit is '{unit}'. Those bounds would be searched as POINTS, "
+            f"not percentages — set bounds_unit='pct_of_index' or clear the list.")
+
+
 @api.post("/optimize/start")
 async def optimize_start(req: OptimizerStartReq):
     if req.method not in ("bayesian", "grid", "genetic"):
         raise HTTPException(400, f"Unknown method {req.method}")
+    _validate_bounds_unit(req)
     if not get_registry().get(req.strategy_id):
         raise HTTPException(404, f"Strategy {req.strategy_id} not found")
     if not (10 <= req.n_trials <= 5000):
@@ -774,6 +795,7 @@ async def resume_opt_job(job_id: str):
 async def optimize_wfo_start(req: WfoStartReq):
     if req.method not in ("bayesian", "genetic"):
         raise HTTPException(400, f"Unknown method {req.method} (wfo supports bayesian | genetic)")
+    _validate_bounds_unit(req)
     if not get_registry().get(req.strategy_id):
         raise HTTPException(404, f"Strategy {req.strategy_id} not found")
     if req.wf_mode not in ("rolling", "anchored"):

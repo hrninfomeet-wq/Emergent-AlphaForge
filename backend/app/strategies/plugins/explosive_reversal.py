@@ -72,6 +72,25 @@ class ExplosiveReversal(StrategyBase):
         "structure alone (the engine builds no per-bar VIX column). Flexible "
         "confluence score, not a hard gate."
     )
+    # NIFTY-ONLY, and this is a units decision, not a quality one.
+    #
+    # The exits below are ABSOLUTE INDEX POINTS. SENSEX runs at ~3.2x NIFTY's
+    # point scale at IDENTICAL relative volatility (median 1-minute true range
+    # 0.0320% of index vs 0.0328%), so the same point bounds are ~3.2x tighter
+    # there: NIFTY's winning stop of 0.317% of index needs ~250 SENSEX points
+    # and its 0.742% target needs ~580, against declared ceilings of 100 and
+    # 200. Measured 2026-09-01 on the same window and config — NIFTY +Rs 514,052
+    # (49.7% win rate), SENSEX -Rs 932,976 (13.4%), with all 50 re-ranked SENSEX
+    # candidates negative and the search driven into sub-noise stops (0.72x of a
+    # single 1m bar) that paid 348% of the gross edge away in spread.
+    #
+    # `supported_instruments` is enforced only at DEPLOYMENT
+    # (`_validate_strategy_deployment_config`), so this blocks deploying the
+    # strategy off NIFTY while leaving optimizer and backtest research on any
+    # instrument open — which is the intent. For SENSEX use
+    # `sensex_explosive_reversal`; for the instrument-agnostic form use
+    # `explosive_reversal_atr`. Both express exits in ATR multiples.
+    supported_instruments = ["NIFTY"]
     supported_modes = ["SCALP", "INTRADAY"]
     parameter_schema = {
         "sr_lookback": {"type": "int", "min": 20, "max": 120, "default": 60},

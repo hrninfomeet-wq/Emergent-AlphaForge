@@ -16,6 +16,14 @@ export const exportOptConfig = (job) => {
     objective: job?.objective,
     n_trials_total: job?.n_trials_total,
     param_overrides: job?.config?.param_overrides,
+    // The bounds are meaningless without their UNIT. An exported config that
+    // said `spot_stop_pts: {max: 0.32}` with no unit would be re-imported as a
+    // 0.32-POINT stop. `bounds_resolution` records the reference price the
+    // percentages were resolved against, so the exported file explains the
+    // point bounds in `param_space` rather than just asserting them.
+    bounds_unit: job?.config?.bounds_unit || "points",
+    bounds_pct_params: job?.config?.bounds_pct_params || [],
+    bounds_resolution: job?.bounds_resolution,
     pretrade_filters: job?.config?.pretrade_filters,
     saved_from: "AlphaForge Auto-Optimizer",
     saved_at: new Date().toISOString(),

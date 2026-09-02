@@ -6,6 +6,7 @@ import { fmtInt, fmtNum, fmtPct, isoToFull } from "@/lib/fmt";
 import { dateToMs, msToDate } from "@/lib/time";
 import { exportOptConfig, exportOptJob, exportOptAlternatives } from "@/lib/optExports";
 import { hasFiniteOptimizerCandidate } from "@/lib/optimizerCandidate";
+import { auditInstrumentScale, isPointDenominatedParam, pctToPointsPreview } from "@/lib/instrumentBounds";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
@@ -113,6 +114,28 @@ const DEFAULT_SETUP = {
   pretrade_filters: {},
   pretrade_profile: "None",
   param_overrides: {},
+  // Unit the point-denominated bounds above are written in. "points" is the
+  // historical behaviour and MUST stay the default — every stored job, preset
+  // and result was authored under it. "pct_of_index" converts the params listed
+  // in bounds_pct_params against the run window's median close, so a bound means
+  // the same thing on NIFTY and SENSEX despite the ~3.28x point-scale gap.
+  bounds_unit: "points",
+  bounds_pct_params: [],
+  // Instrument the point-denominated overrides above were last edited under.
+  // Point bounds do not transfer across instruments (SENSEX runs at ~3.2x
+  // NIFTY's scale at identical relative volatility), so this is what lets the
+  // scale guard tell a deliberate choice from a silent carry-over. null = the
+  // operator has not set an override yet, or the config predates the guard.
+  //
+  // CLIENT-SIDE ONLY — deliberately NOT sent to /optimize/start. The guard is a
+  // pre-submit advisory, and a job's overrides were by definition authored on
+  // the instrument that job ran; the clone path reconstructs authorship from
+  // `job.config.instrument`, which is exact. Adding it to OptimizerStartReq
+  // would persist a field nothing reads, and sending it WITHOUT adding it there
+  // would be worse still: Pydantic ignores unknown fields, so it would vanish
+  // silently — the precise class of frontend/backend gap this guard exists to
+  // prevent.
+  param_overrides_instrument: null,
   optimize_indicator_periods: false,
   guards_enabled: true,
   min_trades: 30,
@@ -382,6 +405,80 @@ export default function Optimizer() {
     setConfig({ ...config, param_overrides: next });
   };
 
+  // Point-denominated bounds carried over from a different instrument. This is
+  // the failure the 2026-09-01 explosive_reversal/SENSEX job walked into: the
+  // SAME box (target<=200, stop<=80) that holds NIFTY's +Rs 514,052 optimum is
+  // ~3.2x tighter on SENSEX, where the profitable geometry needs ~580/~250 pts
+  // and is therefore unreachable. Warn, never restrict — same rule the
+  // out-of-search-range deploy check follows.
+  const scaleAudit = useMemo(() => {
+    // A bound expressed as a PERCENT of index already means the same thing on
+    // every instrument, so it is exempt from the carry-over warning. Warning
+    // about it anyway would punish the operator for adopting the fix.
+    const pct = new Set(
+      config.bounds_unit === "pct_of_index" ? (config.bounds_pct_params || []) : []);
+    const overrides = Object.fromEntries(
+      Object.entries(config.param_overrides || {}).filter(([n]) => !pct.has(n)));
+    return auditInstrumentScale({
+      overrides,
+      authoredOn: config.param_overrides_instrument,
+      instrument: config.instrument,
+      parameterSchema: selectedStrategy?.parameter_schema,
+    });
+  }, [config.param_overrides, config.param_overrides_instrument, config.instrument,
+      config.bounds_unit, config.bounds_pct_params, selectedStrategy]);
+
+  // Adopt the rescaled bounds and re-anchor authorship to the new instrument.
+  const applyScaledBounds = () => {
+    const next = { ...(config.param_overrides || {}) };
+    scaleAudit.params.forEach((p) => {
+      const ov = { ...(next[p.name] || {}) };
+      if (p.suggestedMin !== null) ov.min = p.suggestedMin;
+      if (p.suggestedMax !== null) ov.max = p.suggestedMax;
+      next[p.name] = ov;
+    });
+    setConfig({ ...config, param_overrides: next,
+                param_overrides_instrument: config.instrument });
+  };
+
+  // Drop the carried-over bounds entirely and fall back to the strategy's own
+  // declared range, which is at least authored for the strategy.
+  const clearScaledOverrides = () => {
+    const next = { ...(config.param_overrides || {}) };
+    scaleAudit.params.forEach((p) => { delete next[p.name]; });
+    setConfig({ ...config, param_overrides: next,
+                param_overrides_instrument: config.instrument });
+  };
+
+  // "I meant these numbers on this instrument." Silences the warning without
+  // touching a single bound.
+  const keepBoundsAsAuthored = () =>
+    setConfig({ ...config, param_overrides_instrument: config.instrument });
+
+  // --- bounds unit (points | pct_of_index) ---------------------------------
+  const pctMode = config.bounds_unit === "pct_of_index";
+
+  // Leaving % mode CLEARS the per-param selection. Keeping a stale list would
+  // let the backend's own guard reject the run ("bounds_pct_params given but
+  // bounds_unit is points"), and worse, re-entering % mode later would silently
+  // reinterpret whatever numbers are in the boxes.
+  const setBoundsUnit = (unit) => setConfig({
+    ...config,
+    bounds_unit: unit,
+    bounds_pct_params: unit === "pct_of_index" ? (config.bounds_pct_params || []) : [],
+  });
+
+  const togglePctParam = (name) => {
+    const cur = config.bounds_pct_params || [];
+    setConfig({
+      ...config,
+      bounds_pct_params: cur.includes(name) ? cur.filter((n) => n !== name) : [...cur, name],
+      // A bound that is now a PERCENT is instrument-independent, so the scale
+      // guard's carry-over warning no longer applies to it — re-anchor.
+      param_overrides_instrument: config.instrument,
+    });
+  };
+
   // Poll job progress
   useEffect(() => {
     if (!currentJobId) return;
@@ -516,6 +613,8 @@ export default function Optimizer() {
             : {},
           pretrade_profile: config.pretrade_profile || "None",
           param_overrides: config.param_overrides,
+          bounds_unit: config.bounds_unit || "points",
+          bounds_pct_params: config.bounds_pct_params || [],
           optimize_indicator_periods: config.optimize_indicator_periods,
           min_trades: config.guards_enabled ? (Number(config.min_trades) || 0) : 0,
           min_direction_share: config.guards_enabled
@@ -563,6 +662,8 @@ export default function Optimizer() {
           : {},
         pretrade_profile: config.pretrade_profile || "None",
         param_overrides: config.param_overrides,
+        bounds_unit: config.bounds_unit || "points",
+        bounds_pct_params: config.bounds_pct_params || [],
         optimize_indicator_periods: config.optimize_indicator_periods,
         min_trades: config.guards_enabled ? (Number(config.min_trades) || 0) : 0,
         min_direction_share: config.guards_enabled
@@ -719,6 +820,19 @@ export default function Optimizer() {
       costs_enabled: c.costs_enabled ?? prev.costs_enabled,
       optimize_indicator_periods: !!c.optimize_indicator_periods,
       param_overrides: c.param_overrides || {},
+      // GAP: the bounds UNIT must clone with the bounds. Without these two
+      // lines a cloned pct_of_index config would come back as "points" and a
+      // 0.32% stop would be searched as a 0.32-POINT stop — a sub-tick stop,
+      // strictly worse than the bug this feature exists to fix.
+      bounds_unit: c.bounds_unit || "points",
+      bounds_pct_params: c.bounds_pct_params || [],
+      // A cloned job's bounds were authored for THAT job's instrument. Carrying
+      // it forward is what makes the scale guard work retroactively: clone the
+      // NIFTY run, switch to SENSEX, and the point bounds are flagged. Jobs
+      // saved before the guard existed have no field, so fall back to the
+      // instrument they actually ran on.
+      param_overrides_instrument:
+        c.param_overrides_instrument ?? c.instrument ?? null,
       guards_enabled: (Number(c.min_trades || 0) > 0 || share > 0),
       min_trades: Number(c.min_trades ?? 10),
       min_direction_pct: Math.round(share * 100),
@@ -1393,6 +1507,61 @@ export default function Optimizer() {
               <div className="text-[10px] text-dimmer leading-snug mb-2">
                 Override the search range for any param. Leave blank to use the strategy's default bounds.
               </div>
+              {/* Bounds unit. "points" is the historical behaviour and stays the
+                  default — switching to % is entirely opt-in, per param, and the
+                  backend converts against the run window's median close. */}
+              <div className="flex items-center gap-2 text-[10px] mb-2" data-testid="opt-bounds-unit">
+                <span className="text-dimmer">Point bounds are in</span>
+                <button type="button" onClick={() => setBoundsUnit("points")}
+                        className={`px-1.5 py-0.5 rounded border ${!pctMode ? "border-warning text-warning" : "border-line text-dim"}`}
+                        data-testid="opt-bounds-unit-points">index points</button>
+                <button type="button" onClick={() => setBoundsUnit("pct_of_index")}
+                        className={`px-1.5 py-0.5 rounded border ${pctMode ? "border-warning text-warning" : "border-line text-dim"}`}
+                        data-testid="opt-bounds-unit-pct">% of index</button>
+              </div>
+              {pctMode && (
+                <div className="text-[10px] text-dimmer leading-snug mb-2 rounded border border-line p-2" data-testid="opt-pct-help">
+                  Tick a parameter to read its bounds as a PERCENT of the index.
+                  0.317% is 78 pts on NIFTY and 254 on SENSEX — the same trade
+                  geometry on both. Unticked params stay in their own units.
+                  Previews are approximate; the run converts against the window's
+                  median close and records it on the job.
+                  {(config.bounds_pct_params || []).length === 0 && (
+                    <div className="text-warning mt-1">No parameter is ticked yet — nothing will be converted.</div>
+                  )}
+                </div>
+              )}
+              {scaleAudit.mismatch && (
+                <div className="text-[10px] rounded border border-amber-900 bg-amber-950 text-warning p-2 mb-2 space-y-1.5" data-testid="opt-scale-mismatch">
+                  <div>
+                    <span className="font-semibold">These bounds are in {scaleAudit.fromInstrument} points.</span>{" "}
+                    {scaleAudit.ratio
+                      ? <>{scaleAudit.toInstrument} trades at about <span className="font-mono">{scaleAudit.ratio}x</span> {scaleAudit.fromInstrument}&apos;s level at the same relative volatility, so the identical point range is ~{scaleAudit.ratio}x tighter here.</>
+                      : <>{scaleAudit.toInstrument} has no reference level on file, so the rescale cannot be computed — but point bounds still do not transfer between instruments.</>}
+                  </div>
+                  <div className="font-mono">
+                    {scaleAudit.params.map((p) => (
+                      <div key={p.name}>
+                        {p.name}: [{p.min ?? "—"}, {p.max ?? "—"}]
+                        {scaleAudit.ratio && <> → <span className="text-success">[{p.suggestedMin ?? "—"}, {p.suggestedMax ?? "—"}]</span></>}
+                      </div>
+                    ))}
+                  </div>
+                  <div className="flex gap-3 pt-0.5">
+                    {scaleAudit.ratio && (
+                      <button type="button" onClick={applyScaledBounds} className="underline" data-testid="opt-scale-apply">
+                        rescale to {scaleAudit.toInstrument}
+                      </button>
+                    )}
+                    <button type="button" onClick={clearScaledOverrides} className="underline" data-testid="opt-scale-clear">
+                      use strategy defaults
+                    </button>
+                    <button type="button" onClick={keepBoundsAsAuthored} className="underline text-dim" data-testid="opt-scale-keep">
+                      keep as-is
+                    </button>
+                  </div>
+                </div>
+              )}
               {boundsAudit.foreign.length > 0 && (
                 <div className="text-[10px] rounded border border-amber-900 bg-amber-950 text-warning p-2 mb-2 flex items-start gap-2" data-testid="opt-foreign-overrides">
                   <span className="flex-1">
@@ -1404,15 +1573,43 @@ export default function Optimizer() {
               )}
               {numericParams.map(([name, def]) => {
                 const ov = config.param_overrides[name] || {};
-                const set = (k, v) => setConfig({ ...config, param_overrides: { ...config.param_overrides, [name]: { ...ov, [k]: v === "" ? undefined : Number(v) } } });
+                // Editing a bound anchors it to the instrument on screen, which
+                // is what lets the scale guard distinguish a deliberate value
+                // from one that rode along through an instrument switch.
+                const set = (k, v) => setConfig({
+                  ...config,
+                  param_overrides: { ...config.param_overrides, [name]: { ...ov, [k]: v === "" ? undefined : Number(v) } },
+                  param_overrides_instrument: config.instrument,
+                });
+                const isPct = pctMode && (config.bounds_pct_params || []).includes(name);
+                const pv = (v) => pctToPointsPreview(v, config.instrument);
                 return (
-                  <div key={name} className="grid grid-cols-[1fr_64px_64px] items-center gap-2 text-xs">
-                    <div className={`font-mono truncate ${(ov.min !== undefined || ov.max !== undefined) ? "text-warning" : "text-dim"}`}
-                         title={(ov.min !== undefined || ov.max !== undefined)
-                           ? `overridden — strategy declares [${def.min}, ${def.max}]`
-                           : `strategy bounds [${def.min}, ${def.max}]`}>{name}</div>
-                    <Input type="number" placeholder={String(def.min ?? "")} value={ov.min ?? ""} onChange={(e) => set("min", e.target.value)} className="bg-bg-2 border-line h-7 text-xs font-mono text-right" data-testid={`override-${name}-min`} />
-                    <Input type="number" placeholder={String(def.max ?? "")} value={ov.max ?? ""} onChange={(e) => set("max", e.target.value)} className="bg-bg-2 border-line h-7 text-xs font-mono text-right" data-testid={`override-${name}-max`} />
+                  <div key={name} className="space-y-0.5">
+                    {/* The tick column only exists in % mode. Keeping it in
+                        points mode would steal 24px from the name column and
+                        truncate parameter names that fit before — the default
+                        view must stay visually identical, not just functionally. */}
+                    <div className={`grid ${pctMode ? "grid-cols-[16px_1fr_64px_64px]" : "grid-cols-[1fr_64px_64px]"} items-center gap-2 text-xs`}>
+                      {pctMode && (isPointDenominatedParam(name) ? (
+                        <input type="checkbox" checked={isPct} onChange={() => togglePctParam(name)}
+                               title="interpret this parameter's bounds as % of index"
+                               className="accent-warning" data-testid={`pct-param-${name}`} />
+                      ) : <span />)}
+                      <div className={`font-mono truncate ${(ov.min !== undefined || ov.max !== undefined) ? "text-warning" : "text-dim"}`}
+                           title={(ov.min !== undefined || ov.max !== undefined)
+                             ? `overridden — strategy declares [${def.min}, ${def.max}]`
+                             : `strategy bounds [${def.min}, ${def.max}]`}>{name}{isPct ? " %" : ""}</div>
+                      <Input type="number" placeholder={String(def.min ?? "")} value={ov.min ?? ""} onChange={(e) => set("min", e.target.value)} className="bg-bg-2 border-line h-7 text-xs font-mono text-right" data-testid={`override-${name}-min`} />
+                      <Input type="number" placeholder={String(def.max ?? "")} value={ov.max ?? ""} onChange={(e) => set("max", e.target.value)} className="bg-bg-2 border-line h-7 text-xs font-mono text-right" data-testid={`override-${name}-max`} />
+                    </div>
+                    {/* Approximate on purpose — the job converts against the run
+                        window's real median close, not this static level. Its
+                        job is to catch a 3.17-for-0.317 typo before launch. */}
+                    {isPct && (pv(ov.min) !== null || pv(ov.max) !== null) && (
+                      <div className="text-[10px] text-dimmer font-mono pl-6" data-testid={`pct-preview-${name}`}>
+                        ~[{pv(ov.min) ?? "—"}, {pv(ov.max) ?? "—"}] pts on {config.instrument}
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -1431,6 +1628,14 @@ export default function Optimizer() {
                     {boundsAudit.foreign.length > 0 && (
                       <span className="text-dimmer">
                         {" "}{boundsAudit.foreign.length} left over from another strategy (ignored).
+                      </span>
+                    )}
+                    {/* A collapsed panel must not hide the scale warning — that
+                        is exactly how the SENSEX bounds went unnoticed. */}
+                    {scaleAudit.mismatch && (
+                      <span className="text-warning" data-testid="opt-scale-mismatch-collapsed">
+                        {" "}Point bounds authored for {scaleAudit.fromInstrument}, now running {scaleAudit.toInstrument}
+                        {scaleAudit.ratio ? ` (~${scaleAudit.ratio}x scale)` : ""} — expand to rescale.
                       </span>
                     )}
                   </>}

@@ -42,6 +42,8 @@ from app.parallel_eval import (effective_workers, start_pool, shutdown_pool, par
 # LOCALLY inside dispatch helpers, so every optimization run raised
 # "name 'is_premium_trigger_strategy' is not defined".
 from app.premium_trigger_dispatch import is_premium_trigger_strategy
+from app.bounds_unit import BoundsUnitError, reference_index_price, resolve_bounds_overrides
+from app.instruments import UNDERLYING_META
 from app.strategies.base import get_registry
 from app.warehouse import attach_required_data, load_candles_df
 from app.option_backtest import simulate_paired_option_trades, build_candles_by_key
@@ -110,7 +112,15 @@ if set(INDICATOR_PARAM_KEYS) != set(_SHARED_KEYS):
 # "optimize indicator periods" AND the param isn't already in the strategy's
 # own schema (the strategy's bounds win).
 # Fallback lot sizes (used only if no contract metadata is found in the DB).
-_DEFAULT_LOT_SIZE = {"NIFTY": 75, "BANKNIFTY": 35, "SENSEX": 20}
+#
+# DERIVED, not copied. This was a second hand-maintained table and it had already
+# drifted: it said NIFTY 75 after NSE revised the F&O lot to 65, so any run that
+# fell back to it overstated every NIFTY quantity and rupee figure by 15.4%. That
+# is the same failure `instruments.UNDERLYING_META` documents for BANKNIFTY
+# (35 vs a real 30) — and the reason a duplicate cannot be allowed to exist:
+# fixing one copy leaves the other wrong. UNDERLYING_META is the single source;
+# contract metadata still wins over both (see instruments.resolve_lot_size).
+_DEFAULT_LOT_SIZE = {k: int(v["lot_size"]) for k, v in UNDERLYING_META.items()}
 
 # Max number of distinct indicator-period combinations to keep enriched frames
 # for. Bounds memory while still giving big speedups when only signal-threshold
@@ -1801,6 +1811,14 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
         costs = payload.get("costs_enabled", True)
         pretrade = payload.get("pretrade_filters", {})
         param_overrides = payload.get("param_overrides", {})
+        # Unit the point-denominated bounds above are written in. Default
+        # "points" == today's behaviour, byte-for-byte; "pct_of_index" converts
+        # the selected params against this window's median close once the
+        # candles are loaded (see below). The AUTHORED values stay in the job
+        # config; only the resolved copy handed to _build_param_space is in
+        # points, so a resume re-derives the identical space.
+        bounds_unit = payload.get("bounds_unit")
+        bounds_pct_params = payload.get("bounds_pct_params") or []
         start_ts = payload.get("start_ts")
         end_ts = payload.get("end_ts")
         mode = payload.get("mode", "SCALP")
@@ -1968,10 +1986,34 @@ async def run_optimization(job_id: str, payload: Dict[str, Any], resume: bool = 
                 min_trades=min_trades, min_direction_share=min_direction_share,
             )
 
+        # Resolve percent-of-index bounds into points BEFORE the space is built,
+        # so _build_param_space never learns about units. `df` is the same frame
+        # the backtests run on, so the reference is deterministic across resume.
+        # A conversion that cannot be done safely raises here rather than letting
+        # a 0.3% stop be searched as a 0.3-POINT stop.
+        try:
+            resolved_overrides, bounds_audit = resolve_bounds_overrides(
+                overrides=param_overrides,
+                bounds_unit=bounds_unit,
+                pct_params=bounds_pct_params,
+                reference_price=reference_index_price(df),
+                parameter_schema=strategy.parameter_schema,
+            )
+        except BoundsUnitError as exc:
+            await _update_job(job_id, {
+                "status": "failed", "error": str(exc),
+                "finished_at": datetime.now(timezone.utc).isoformat()})
+            return
+        if bounds_audit.get("applied") or bounds_audit.get("ignored"):
+            # Persist WHAT was converted and against WHICH reference — the job's
+            # `param_space` already records the resulting point bounds, and this
+            # is what explains how they were arrived at.
+            await _update_job(job_id, {"bounds_resolution": bounds_audit})
+
         _premium_native = is_premium_trigger_strategy(strategy)
         space = restrict_space_to_engine_params(
             _build_param_space(
-                strategy.parameter_schema, param_overrides,
+                strategy.parameter_schema, resolved_overrides,
                 include_indicator_periods=resolve_indicator_period_search(
                     optimize_indicator_periods, premium_native=_premium_native,
                 ),

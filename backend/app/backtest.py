@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from app.entry_window import DEFAULT_ENTRY_END, DEFAULT_ENTRY_START
 from app.strategies.base import StrategyBase, Signal, build_eval_ctx, validate_signal
-from app.costs import apply_round_trip_cost
+from app.costs import apply_round_trip_cost, cost_model_meta
 from app.exit_engine import intrabar_exit
 from app.features import materialize_features
 
@@ -246,6 +246,12 @@ def run_backtest(
         "metrics": metrics,
         "equity_curve": equity,
         "signal_funnel": funnel,
+        # Which friction schedule produced these points. A SENSEX run saved
+        # before cost-model v2 was charged NIFTY's 1.5 pts and is NOT comparable
+        # to one saved after (4.9 pts); without this stamp a 3.3x cost change
+        # reads as a strategy regression. Additive — nothing is required to
+        # consume it.
+        "cost_model": cost_model_meta(instrument, costs_enabled),
     }
 
 
