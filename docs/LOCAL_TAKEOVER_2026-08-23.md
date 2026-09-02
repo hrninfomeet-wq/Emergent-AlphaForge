@@ -28,7 +28,13 @@ flight**, not the whole app.
 > 4. `docs/HANDOFF.md` §2 and `docs/BACKTEST_INTEGRITY_AUDIT.md` — before trusting
 >    any number the app produces
 >
-> **You are on branch `claude/hello-g2itta`** (draft PR #7). Do not push to `main`.
+> **Branch state (updated 2026-08-26).** PR #7 is **MERGED** — everything below
+> has landed on `main`, and the local session has already pushed three further
+> commits there. A merged PR cannot be reused, so do **not** stack new work on
+> the old `claude/hello-g2itta` history: start from `main`
+> (`git fetch origin main && git checkout -B <branch> origin/main`) and follow
+> whatever push convention the operator is using at the time — the local session
+> has been committing to `main` directly.
 >
 > **§4 is now CLOSED** — the screen builds series on both indices, and the empty
 > screen was the script's own token lookup, not the warehouse. Read §4 before
@@ -58,11 +64,35 @@ flight**, not the whole app.
 
 | | |
 |---|---|
-| Branch | `claude/hello-g2itta` — all changes **additive**; `git diff --name-status origin/main...HEAD` is every `A` |
-| Base | `origin/main` @ `6e6e1cc`, unmoved; 0 conflict markers |
-| PR | [#7](https://github.com/hrninfomeet-wq/Emergent-AlphaForge/pull/7), draft, no reviews, no comments |
+| Branch | `claude/hello-g2itta` — all changes **additive**, and all now on `main`. The `git diff` against `origin/main` below is therefore empty; it was every `A` before the merge. |
+| Base | was `origin/main` @ `6e6e1cc`; **now merged into `main`** |
+| PR | [#7](https://github.com/hrninfomeet-wq/Emergent-AlphaForge/pull/7) — **MERGED 2026-08-26**. Closed outcome; do not reopen or reuse it. |
 | CI | **None exists** — this repo has no `.github/workflows`. The host suite is the only evidence. |
 | Suite | **Measured locally 2026-08-23: `5,098 passed, 5 failed, 4 xfailed`.** The prediction held — the two `test_premium_momentum_route.py` failures cleared with a real MongoDB. The 5 remaining are all `tests/test_bootstrap_contract.py`, **pre-existing and unrelated to this branch** (nine added files, no launcher touched); cause and fix in §4.1. |
+
+### The local commits were independently mutation-verified (2026-08-26, cloud)
+
+`2019b7a` claims to pin four things. Claims of that shape are what §7 calls
+treating an assertion as evidence, so they were re-checked from a second session
+that did not write them — by mutation, not by reading. **Seven mutants, seven
+killed**, each restored afterwards with a clean tree:
+
+| Mutation | Result |
+|---|---|
+| `max_trades_per_session` fallback `1` → `99` | 1 failed |
+| drop `"fixed": 60` from the `signal_threshold` schema | 1 failed |
+| `evaluate` fires on any bar (membership check removed) | 17 failed |
+| cooldown spacing removed | 1 failed |
+| frequency knobs dropped from `NON_ALPHA_PARAM_NAMES` | 3 failed |
+| opening range computed over the whole session (look-ahead) | 19 failed |
+| keep the **last** N entries instead of the first N (breaks prefix equality) | 1 failed |
+
+The last one matters most: it kills the per-entry look-ahead property with
+exactly one test, `test_multi_entry_precompute_is_still_look_ahead_safe`. The
+multi-entry look-ahead argument is therefore load-bearing, not decorative.
+
+Also re-verified: the holdout guard is still armed — `unlock_holdout` exists and
+**is called from nowhere**, in the CLI or anywhere else.
 
 ### Commits, newest first
 
@@ -110,13 +140,13 @@ for the authoritative list.)
 
 ```powershell
 cd C:\Users\haroo\OneDrive\Documents\New project\Emergent-AlphaForge
-git fetch origin
-git checkout claude/hello-g2itta
-git pull origin claude/hello-g2itta
-# Confirm you are at the tip of the branch (deliberately not a pinned SHA —
-# this document should not rot every time the branch moves).
+git fetch origin main
+git checkout main
+git pull origin main
+# This branch's work is MERGED, so `main` is the tip. Deliberately not a pinned
+# SHA - this document should not rot every time main moves.
 git rev-parse HEAD
-git rev-parse origin/claude/hello-g2itta      # the two must match
+git rev-parse origin/main                     # the two must match
 
 # The rebuild is REQUIRED. Dockerfile bakes source with `COPY . .` and compose
 # bind-mounts ONLY backend/app/strategies/plugins — so a new plugin appears live
@@ -129,7 +159,9 @@ docker compose up -d --build backend
 
 # The campaign's own tests
 .venv\Scripts\python.exe -m pytest tests\test_option_screen.py tests\test_screen_option_buying_script.py tests\test_screen_option_buying_db_paths.py tests\test_strategy_expiry_regime_trend_continuation.py -q
-# expect 123 passed
+# expect 132 passed (was 123 before the local multi-entry work added 9)
+.venv\Scripts\python.exe -m pytest tests\test_optimizer_param_space_hygiene.py -q
+# expect 27 passed - the optimizer-hygiene module added locally on 2026-08-26
 ```
 
 **Confirm the plugin registered** — it is visible in the UI as
