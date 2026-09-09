@@ -177,8 +177,10 @@ def build_sl_backstop_intent(
 # 3. square_position — executor (MockNoren in tests, FlattradeClient in L3)
 # ---------------------------------------------------------------------------
 
-def _marketable_prc(ref: float, trantype: str, band_pct: float, tick: float = 0.05) -> float:
-    """Compute a marketable-limit exit price rounded to the exchange tick.
+def _marketable_prc(ref: float, trantype: str, band_pct: float, tick: float = 0.05,
+                    *, lc: Optional[float] = None, uc: Optional[float] = None) -> float:
+    """Compute a marketable-limit exit price rounded to the exchange tick and
+    clamped inside the exchange price band.
 
     SELL (long exit): round_to_tick(ref * (1 - eff/100), tick, mode="down")
     BUY  (short exit): round_to_tick(ref * (1 + eff/100), tick, mode="up")
@@ -188,15 +190,32 @@ def _marketable_prc(ref: float, trantype: str, band_pct: float, tick: float = 0.
     BUY stays >= ref after rounding) while satisfying the broker's tick constraint.
     Broker rejects prices that are not exact multiples of the tick size.
 
+    ``lc``/``uc`` are the exchange's circuit / LPP band from a fresh GetQuotes
+    (#54). An order priced outside it is an AUTOMATIC reject — "SELL ORDER PRICE
+    [49.70] IS BEYOND LPP LIMIT: [87.65]" on 2026-09-03 — which for a square-off
+    means the position stays open. So a cross that would land outside the band is
+    pulled back to the nearest price the exchange will accept: still the most
+    marketable legal price, and a real order instead of a certain reject. The
+    clamped bound is rounded TOWARD the inside of the band (floor up, ceiling
+    down) because a bound that is not itself a tick multiple would otherwise
+    round straight back out of range. Either bound may be None (unknown → not
+    enforced); ``kill_switch._leg_price`` applies the same rule to flatten legs.
+
     tick defaults to 0.05 (NIFTY/BANKNIFTY/SENSEX index options).
     If tick <= 0 falls back to 0.05.
     """
     eff = abs(band_pct)
     _tick = tick if tick > 0 else 0.05
     if trantype == "S":
-        return round_to_tick(ref * (1.0 - eff / 100.0), _tick, mode="down")
+        prc = round_to_tick(ref * (1.0 - eff / 100.0), _tick, mode="down")
+        if lc is not None and prc < lc:
+            prc = round_to_tick(lc, _tick, mode="up")
+        return prc
     else:  # "B"
-        return round_to_tick(ref * (1.0 + eff / 100.0), _tick, mode="up")
+        prc = round_to_tick(ref * (1.0 + eff / 100.0), _tick, mode="up")
+        if uc is not None and prc > uc:
+            prc = round_to_tick(uc, _tick, mode="down")
+        return prc
 
 
 async def _fresh_book_state(client: Any, tsym: str) -> tuple:
@@ -577,6 +596,8 @@ async def _square_position_impl(
     # empty/Not_Ok payload, or a non-finite/≤0 lp) falls back to position["lp"].
     # ------------------------------------------------------------------
     token = position.get("token")
+    band_lc: Optional[float] = None
+    band_uc: Optional[float] = None
     if token and hasattr(client, "get_quotes"):
         try:
             q = await client.get_quotes(position.get("exch", "NFO"), token)
@@ -589,6 +610,12 @@ async def _square_position_impl(
                     ref = q_lp  # fresh, usable mark → price the exit off it
             except (TypeError, ValueError):
                 pass  # non-numeric lp → keep the position lp
+            # The same payload carries the exchange price band (lc/uc). An exit
+            # priced outside it is an automatic reject and the position stays
+            # OPEN, so carry it to the marketable-limit computation below. Left
+            # None when absent/unparseable — unknown is never enforced.
+            band_lc = _pos_float(q.get("lc"))
+            band_uc = _pos_float(q.get("uc"))
 
     # ------------------------------------------------------------------
     # Step 4 — MARGIN-SAFE cancel: clear ALL working orders for the scrip and
@@ -647,7 +674,7 @@ async def _square_position_impl(
     # ------------------------------------------------------------------
     trantype = "S" if netqty > 0 else "B"
     qty = abs(netqty)
-    prc = _marketable_prc(ref, trantype, band_pct)
+    prc = _marketable_prc(ref, trantype, band_pct, lc=band_lc, uc=band_uc)
 
     async def _try_place(cid: str) -> "OrderResult":  # type: ignore[name-defined]  # noqa: F821
         intent = OrderIntent(

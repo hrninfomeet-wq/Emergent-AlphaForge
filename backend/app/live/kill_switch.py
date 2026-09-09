@@ -630,19 +630,23 @@ def _leg_price(netqty: int, ref: Optional[float], band_pct: float,
         anchor = _pos_float(quote.get("bp1")) or ref
         if anchor is None:
             return None
-        prc = anchor * (1.0 - abs(band_pct) / 100.0)
+        prc = round_to_tick(anchor * (1.0 - abs(band_pct) / 100.0), tick, mode="down")
         lc = _pos_float(quote.get("lc"))
-        if lc is not None:
-            prc = max(prc, lc)
-        return round_to_tick(prc, tick, mode="down")
+        if lc is not None and prc < lc:
+            # Round the FLOOR up. Clamping first and tick-rounding down (the old
+            # order) walked the clamped price back below `lc` whenever `lc` was
+            # not itself a tick multiple — re-creating the out-of-band reject the
+            # clamp exists to prevent.
+            prc = round_to_tick(lc, tick, mode="up")
+        return prc
     anchor = _pos_float(quote.get("sp1")) or ref
     if anchor is None:
         return None
-    prc = anchor * (1.0 + abs(band_pct) / 100.0)
+    prc = round_to_tick(anchor * (1.0 + abs(band_pct) / 100.0), tick, mode="up")
     uc = _pos_float(quote.get("uc"))
-    if uc is not None:
-        prc = min(prc, uc)
-    return round_to_tick(prc, tick, mode="up")
+    if uc is not None and prc > uc:
+        prc = round_to_tick(uc, tick, mode="down")   # round the CEILING down
+    return prc
 
 
 def _freeze_qty_for_tsym(tsym: str) -> Optional[int]:

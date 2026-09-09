@@ -214,6 +214,10 @@ async def test_arm_for_places_resting_oco_with_catastrophe_band(monkeypatch):
     stop_pct=<catastrophe_stop_pct>, target_pct=<catastrophe_target_pct>); the OCO
     legs are NRML (prd='M'); the registry entry records the broker al_id; _arm
     returns the al_id."""
+    # The broker OCO is opt-in since 2026-09-03 (its stop leg fires at
+    # placement instead of resting — see _broker_oco_enabled). These tests
+    # pin the ENABLED path, so they turn it on explicitly.
+    monkeypatch.setenv("LIVE_BROKER_OCO_ENABLED", "1")
     reg = FakeRegistry()
     monkeypatch.setattr(ldc, "get_registry", lambda: reg)
     client = FakeOcoClient({"ok": True, "al_id": "OCO1"})
@@ -261,6 +265,10 @@ async def test_arm_for_points_stop_oco_sl_strictly_below_guard(monkeypatch):
     OCO SL trigger lands STRICTLY BELOW 30.0 and can never fire before the software
     guard. With the old code the band yielded an SL trigger of 50.0 (>= 30.0),
     inverting the design."""
+    # The broker OCO is opt-in since 2026-09-03 (its stop leg fires at
+    # placement instead of resting — see _broker_oco_enabled). These tests
+    # pin the ENABLED path, so they turn it on explicitly.
+    monkeypatch.setenv("LIVE_BROKER_OCO_ENABLED", "1")
     reg = FakeRegistry()
     monkeypatch.setattr(ldc, "get_registry", lambda: reg)
     client = FakeOcoClient({"ok": True, "al_id": "OCO_PTS"})

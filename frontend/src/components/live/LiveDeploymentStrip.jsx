@@ -78,17 +78,28 @@ function LiveRow({ dep, liveStatus, busy, onDisable, onStop }) {
         </div>
       </div>
 
-      {/* Today's stats */}
-      <span className="text-[11px] font-mono text-dim whitespace-nowrap ml-2">
-        {todayOrders} ord · {todayLots} lots
+      {/* Today's stats. The "today" prefix is load-bearing, not decoration: these
+          are CUMULATIVE counters for the IST day (every entry placed, closed ones
+          included), sitting one span away from a live open count. Unlabelled,
+          "2 ord · 4 lots" next to "0 open" reads as two orders still working —
+          which is exactly how it was misread on 2026-09-03, on a day whose two
+          entries had both been squared hours earlier. */}
+      <span
+        className="text-[11px] font-mono text-dim whitespace-nowrap ml-2"
+        title="Cumulative for the IST day: orders placed, lots traded, and realised P&L across ALL of this deployment's live trades today — closed ones included. Not a count of anything still working."
+      >
+        today {todayOrders} ord · {todayLots} lots
         {todayRealised != null && (
           <> · <span className={Number(todayRealised) >= 0 ? "text-success" : "text-danger"}>{fmtINR(todayRealised)}</span></>
         )}
       </span>
 
-      {/* Open positions */}
-      <span className="text-[11px] font-mono text-dimmer whitespace-nowrap">
-        {openPositions} open
+      {/* Open positions — the ONLY current-state number on this row. */}
+      <span
+        className="text-[11px] font-mono text-dimmer whitespace-nowrap"
+        title="Positions open RIGHT NOW and registered with the software exit guard."
+      >
+        · {openPositions} open
       </span>
 
       {/* Entry-refused chip — WHY a live deployment isn't placing (stale

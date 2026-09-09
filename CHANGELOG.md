@@ -2,6 +2,49 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [Unreleased] — The broker OCO never rested; it fired at entry and the exchange rejected it (2026-09-03)
+
+**The reported symptom was a price; the defect is a timing.** Two live BFO entries
+(`SENSEX2690376800PE`, filled 144.55 and 146.72) each had a SELL leg rejected one second later:
+
+    SELL ORDER PRICE [49.70000000] IS BEYOND LPP LIMIT: [87.65000000]
+    SELL ORDER PRICE [50.35000000] IS BEYOND LPP LIMIT: [89.15000000]
+
+Both are `LMT_BOS_O` — the broker's OCO engine, not `square_position`. A resting GTT/OCO never
+reaches the order book; it lives in `GetPendingGTTOrder` until its trigger fires. These reached
+it at the fill timestamp, carrying the broker's own note: `Ltp 144.85 is above 50.75`. The STOP
+leg fired on an LTP-**above** condition that was already true at placement. `gtt.py` documents
+the `oivariable` x/y -> leg pairing as UNCONFIRMED and asks for confirm-by-readback; this is that
+readback, and it says leg1/`x` is the ABOVE slot — stop and target are swapped.
+
+**The price was never checkable.** `compute_catastrophe_band` puts the stop at 35% of entry
+premium by design (50% guard stop + `MIN_GAP_PP` 15 = 65% below), which reproduces both rejected
+prices byte-for-byte. But the exchange's real LPP band is not knowable from any call this app
+makes: GetQuotes returns only the far wider STATIC circuit (`lc` 0.05 / `uc` 2015.75 on that
+contract), while the LPP ships as `le`/`ue` on the market-depth WebSocket, which is not
+subscribed. A REST-side price pre-check would not have caught this and was not kept.
+
+**Two consequences, both bad.** The PC-down catastrophe net never existed — `oco_verify` had
+already found a MARGIN route to the same false `al_id` claim; this is a second, independent one.
+And the LPP reject is the only thing that prevented harm: a SELL limit at 49.70 into a 144.85
+market is MARKETABLE, so an accepted leg would have flattened the position one second after entry.
+
+**Changed.** The broker OCO is now opt-in via `LIVE_BROKER_OCO_ENABLED` (default OFF), gated
+before any broker round-trip so a disabled OCO spends no rate budget. `oco_al_id` stays None,
+`auto_live` journals `oco_error="no_broker_backstop"`, and the Live cockpit alert rail says so —
+the operator is told there is no broker net instead of being shown an id for one that never
+rested. The in-process software guard is unchanged and remains the real protection; on
+2026-09-03 it squared both lots at 09:39. Re-enable only after a live `GetPendingGTTOrder`
+readback confirms the pairing (`docs/live-readback-checklist.md` §E).
+
+**Also, defence-in-depth on the exit paths.** `auto_square._marketable_prc` now clamps the
+square-off limit inside the exchange band it already fetches in Step 3.6 — the software square is
+the path that actually flattens positions, and a rejected exit leaves one OPEN. And
+`kill_switch._leg_price` clamped to `lc`/`uc` but then tick-rounded the clamped price *outward*,
+walking it back out of band whenever the bound was not itself a tick multiple; it now rounds the
+floor up and the ceiling down. These clamp the static circuit, not the LPP — they are not the fix
+for the above.
+
 ## [Unreleased] — SENSEX VWAP Mean Reversion, shipped as capability after its edge gate failed (2026-09-02)
 
 **The premise was measured before any code was written, and it is false.** 441 SENSEX sessions

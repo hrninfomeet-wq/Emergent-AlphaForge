@@ -55,6 +55,46 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _broker_oco_enabled() -> bool:
+    """Return True iff LIVE_BROKER_OCO_ENABLED is set to an affirmative value.
+
+    OFF by default (2026-09-03). The resting broker OCO does not rest: on BFO
+    SENSEX2690376800PE both live entries had their OCO stop leg reach the ORDER
+    BOOK one second after the fill — a resting GTT/OCO never does; it lives in
+    GetPendingGTTOrder until its trigger fires — and be rejected by the exchange:
+
+        SELL ORDER PRICE [49.70000000] IS BEYOND LPP LIMIT: [87.65000000]
+
+    The broker's own trigger note on the fired leg was "Ltp 144.85 is above
+    50.75": the STOP leg fired on an LTP-ABOVE condition that was already true
+    when the OCO was placed. ``gtt.py`` documents the ``oivariable`` x/y -> leg
+    pairing as UNCONFIRMED ("CONFIRM the mapping by reading one real GTT back")
+    and this is that readback — it says leg1/``x`` is the ABOVE slot, so the
+    stop and target legs are swapped.
+
+    Leaving it on costs a guaranteed reject per entry AND carries real risk: a
+    SELL limit at 49.70 into a 144.85 market is MARKETABLE, so the only reason
+    the position was not flattened one second after entry is that the LPP band
+    rejected it first. The exchange's real LPP band is not knowable from any
+    call this app makes — GetQuotes carries only the far wider STATIC circuit
+    (lc 0.05 / uc 2015.75 for that contract); the LPP ships as ``le``/``ue`` on
+    the market-depth WebSocket feed, which is not subscribed — so there is no
+    price-side pre-check that can be relied on to catch it either.
+
+    Nothing is lost by disabling it: the net never rested, so it never
+    protected anything. ``oco_al_id`` stays None, ``auto_live`` journals
+    ``oco_error="no_broker_backstop"``, and the Live cockpit's alert rail says
+    so out loud. The in-process software guard remains the real protection —
+    on 2026-09-03 it squared both lots at 09:39.
+
+    Flip this on only after a live GetPendingGTTOrder readback confirms the
+    pairing (see docs/live-readback-checklist.md §E).
+    """
+    import os
+    return os.environ.get("LIVE_BROKER_OCO_ENABLED", "0").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
 # --------------------------------------------------------------------------- #
 # arm_for — multi-position guard-registering arm factory
 # --------------------------------------------------------------------------- #
@@ -170,7 +210,19 @@ def arm_for(
         # transient OCO reject. Failure → oco_al_id stays None (auto_live journals
         # "no_broker_backstop"); the software guard remains the live protection.
         oco_al_id: Optional[str] = None
-        if client is not None:
+        if client is not None and not _broker_oco_enabled():
+            # OFF by default since 2026-09-03 — the leg does not rest, it fires at
+            # placement and is rejected (see _broker_oco_enabled). Placed BEFORE the
+            # band/margin work so a disabled OCO spends NO broker round-trip: the
+            # Noren rate budget is shared with the Flattrade MCP.
+            log.warning(
+                "auto_live arm: broker OCO is DISABLED (LIVE_BROKER_OCO_ENABLED "
+                "unset) — %s is software-guard-only and will journal "
+                "no_broker_backstop. The OCO stop leg fires at placement instead "
+                "of resting (2026-09-03 LPP rejects); re-enable only after a "
+                "GetPendingGTTOrder readback confirms the x/y leg pairing.",
+                getattr(intent, "tsym", "?"))
+        elif client is not None:
             try:
                 band = compute_catastrophe_band(
                     float(ref_ltp),

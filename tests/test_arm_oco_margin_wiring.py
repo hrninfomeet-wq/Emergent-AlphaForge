@@ -17,6 +17,8 @@ import asyncio
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 
 from app.live_deploy_context import arm_for  # noqa: E402
@@ -44,6 +46,14 @@ class _Client:
     async def place_oco(self, oco):
         self.oco_calls.append(oco)
         return {"ok": True, "al_id": "AL999"}
+
+
+@pytest.fixture(autouse=True)
+def _enable_broker_oco(monkeypatch):
+    """The broker OCO is opt-in since 2026-09-03 — its stop leg fires at placement
+    instead of resting (see live_deploy_context._broker_oco_enabled). Every test in
+    this file pins the margin gate on the ENABLED path, so turn it on."""
+    monkeypatch.setenv("LIVE_BROKER_OCO_ENABLED", "1")
 
 
 _PLAN = {"levels": {"stop_pct": 50.0}}
