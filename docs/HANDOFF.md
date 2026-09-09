@@ -49,12 +49,18 @@ reads as "not recognized". The raw `docker compose` equivalents are in section 3
 
 ## 2. Current state
 
-> **As of 2026-08-20 · v0.58.0 + unreleased live-integrity work.** Verification baseline:
-> **4,973 passed, 4 xfailed, 5 failed** — the five are `test_bootstrap_contract.py` and are a
-> pre-existing Windows-launcher working-directory issue (`'start-app.bat' is not recognized`),
-> unrelated to any strategy or live-path code. Both images rebuilt; `/api/health` returned
-> `{"db":"ok"}`, the frontend returned HTTP 200, and 17 strategies registered with zero load
-> failures.
+> **As of 2026-09-09 · `main` @ `0cc3969` == `origin/main`, clean working tree.**
+> Verification baseline: **5,702 passed, 4 xfailed, 0 failed** on the host `.venv`
+> (`python -m pytest tests/ -q`), frontend compiles clean under `CI=true`. Both images
+> rebuilt 2026-09-09 and verified by `docker exec` grep, not by assumption;
+> `/api/health` returns `{"db":"ok"}`.
+>
+> **⚠ READ THIS BEFORE TRADING LIVE.** The resting broker OCO is **OFF by default**
+> since 2026-09-03 (`LIVE_BROKER_OCO_ENABLED`) — its stop leg fired at placement
+> instead of resting and was LPP-rejected. **With it off there is NO PC-down net:**
+> the in-process software exit guard is the only protection and it runs only while
+> the app runs. Re-enable only after the pairing readback in
+> `docs/live-readback-checklist.md` §E1.
 >
 > ⚠ **A live-only defect class was closed on 2026-08-20 — read
 > [§2.0e](#20e-what-changed-2026-08-19--08-20-live-window-integrity-and-a-fail-open-safety-gate)

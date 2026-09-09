@@ -143,11 +143,26 @@ Detailed design and binary checks:
 
 ---
 
-## ★ START HERE — the state of play on 2026-08-15
+## ★ START HERE — the state of play on 2026-09-09
 
-**Repo:** `main` at `c2b3d7a`, 2 commits ahead of `origin/main` (`c5d380b`), plus the verified 2026-08-15 working tree.
-**Suite:** 4,896 passed · 4 xfailed · 0 failed.
+**Repo:** `main` at `0cc3969`, **in sync with `origin/main`, clean working tree.**
+**Suite:** 5,702 passed · 4 xfailed · 0 failed (host `.venv`; the container run reds
+pre-existing path-contract tests — use the host run as the gate).
 **Version:** v0.58.0 + unreleased live-integrity work.
+
+**Landed 2026-09-08/09, after a long-uncommitted working tree was audited and split:**
+- `f2aa106` — the broker OCO never rested; it is now opt-in via
+  `LIVE_BROKER_OCO_ENABLED` (**default OFF ⇒ there is NO PC-down net**), plus
+  exchange-band clamps on both exit paths.
+- `f33ff8c` — reversible live hold (`risk.live.paused`, gated in
+  `is_deployment_live_allowed`, does **not** demote `mode`); the typed-`ENABLE`
+  gate replaced by an always-rendered consent checkbox; Live Deployments pane
+  moved onto the page.
+- `0cc3969` — audit fixes: operator copy no longer promises the disabled OCO,
+  band clamp only toward the market, `/live/resume` CAS-guarded, docs caught up.
+
+**Deferred and specified, not built:** the Market Pulse / S-R rework —
+`docs/superpowers/specs/2026-09-08-live-controls-and-market-pulse-design.md` §4.
 
 ### Where the project actually is
 

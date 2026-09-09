@@ -1,6 +1,8 @@
 # AI-agent takeover prompt
 
-_Current as of **2026-08-30**, branch `feat/chain-recorder` @ `39e5f4f`, clean working tree._
+_Current as of **2026-09-09**, `main` @ `0cc3969` == `origin/main`, clean working tree._
+_(The previous header named branch `feat/chain-recorder` @ `39e5f4f`; that branch no longer
+exists and HEAD had moved eight commits past it.)_
 _Copy everything below the line into a fresh agent session._
 
 ---
