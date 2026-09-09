@@ -82,3 +82,6 @@ Strategy_note_self/
 .superpowers/
 backend/scripts/_*.log
 backend/scripts/pooled_regime_*.json
+
+# Windows shortcuts (a stray Documents.lnk landed at the repo root once)
+*.lnk
