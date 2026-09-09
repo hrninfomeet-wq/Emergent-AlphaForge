@@ -1,15 +1,16 @@
 import { useEffect, useRef } from "react";
 import { X } from "lucide-react";
-import LiveDeploymentStrip from "@/components/live/LiveDeploymentStrip";
 import GttBook from "@/components/live/GttBook";
 import OverallSettingsPanel from "@/components/live/OverallSettingsPanel";
 
 /**
  * Right slide-over drawer holding the set-and-forget config the trader does NOT
- * watch tick-by-tick: deployment control (enable/disable/stop with the typed
- * consent flow), the GTT/OCO PC-down backstop book, and the basket
- * SL/target/trailing overall controls. Every panel is the EXISTING component,
- * just relocated off the main cockpit.
+ * watch tick-by-tick: the GTT/OCO PC-down backstop book and the basket
+ * SL/target/trailing overall controls.
+ *
+ * Deployment control used to live here too; it moved to a full-width pane on the
+ * page (2026-09-08) because "what is trading right now, and can I stop it?" is
+ * the opposite of set-and-forget.
  */
 function DrawerSection({ title, badge, children }) {
   return (
@@ -27,7 +28,7 @@ function DrawerSection({ title, badge, children }) {
   );
 }
 
-export default function ConfigDrawer({ open, onClose, onArmedSummaryChange }) {
+export default function ConfigDrawer({ open, onClose }) {
   const panelRef = useRef(null);
   const restoreFocusRef = useRef(null);
 
@@ -98,9 +99,9 @@ export default function ConfigDrawer({ open, onClose, onArmedSummaryChange }) {
             cannot shrink below its content and no scrollbar ever appears. */}
         <div className="p-4 overflow-y-auto flex-1 flex flex-col gap-4" style={{ minHeight: 0 }}>
           <p className="text-[11px] text-dimmer">Set-and-forget controls — you don't watch these tick by tick, so they live off the main cockpit.</p>
-          <DrawerSection title="Deployment control" badge={<span className="text-[9px] uppercase tracking-wider text-dimmer border border-line bg-bg-3 rounded-full px-2 py-0.5">enable / disable / stop</span>}>
-            <LiveDeploymentStrip onArmedSummaryChange={onArmedSummaryChange} />
-          </DrawerSection>
+          {/* Deployment control MOVED OUT (2026-09-08) to a full-width pane on the
+              page itself. Not duplicated here: two mounts would give one
+              deployment two independently-clickable control surfaces. */}
           <DrawerSection title="GTT / OCO backstop" badge={<span className="text-[9px] uppercase tracking-wider text-dimmer border border-line bg-bg-3 rounded-full px-2 py-0.5">PC-down net</span>}>
             <GttBook />
           </DrawerSection>

@@ -15,6 +15,19 @@ def _src(rel: str) -> str:
     return (ROOT / "frontend" / "src" / rel).read_text(encoding="utf-8")
 
 
+def _code(rel: str) -> str:
+    """`_src` with comments removed — for assertions that a call is ABSENT.
+
+    A plain source scan cannot distinguish code from prose, so a comment that
+    explains why an API is the wrong one to use trips the very assertion that
+    bans it. Strips /* … */ blocks and whole-line // comments; a mid-line // is
+    left alone so URL literals ("https://…") survive intact.
+    """
+    import re
+    text = re.sub(r"/\*.*?\*/", "", _src(rel), flags=re.S)
+    return "\n".join(ln for ln in text.splitlines() if not ln.lstrip().startswith("//"))
+
+
 def test_cockpit_mounted_on_live_trading():
     page = _src("pages/LiveTrading.jsx")
     assert "LiveCockpit" in page
@@ -44,10 +57,23 @@ def test_account_tabs_present_and_wired():
         assert needle in acct, needle
 
 
-def test_config_drawer_hosts_deployment_backstop_controls():
+def test_config_drawer_hosts_the_set_and_forget_controls():
     drawer = _src("components/live/cockpit/ConfigDrawer.jsx")
-    for needle in ("LiveDeploymentStrip", "GttBook", "OverallSettingsPanel"):
+    for needle in ("GttBook", "OverallSettingsPanel"):
         assert needle in drawer, needle
+
+
+def test_deployment_control_lives_on_the_page_not_in_the_drawer():
+    """LiveDeploymentStrip moved out of the drawer onto the page (2026-09-08).
+
+    Pinned in BOTH directions. Present on the page: "what is trading right now,
+    and can I stop it?" must be answerable without opening a drawer. Absent from
+    the drawer: two mounts would give one live deployment two independently
+    clickable Stop/Disable surfaces, and would double-fire the armed-summary
+    callback that feeds the banner.
+    """
+    assert "LiveDeploymentStrip" in _src("components/live/LiveCockpit.jsx")
+    assert "LiveDeploymentStrip" not in _src("components/live/cockpit/ConfigDrawer.jsx")
 
 
 def test_cockpit_keeps_always_on_core_and_alerts():
@@ -178,3 +204,52 @@ def test_unconfirmed_place_blocks_replacing_and_does_not_stand_down():
     assert "!placedOk && !unconfirmed" in src
     # the operator can only re-enable deliberately
     assert "place-unconfirmed-dismiss" in src
+
+
+# --------------------------------------------------------------------------- #
+# Reversible live pause — the strip's hold controls (2026-09-08)
+# --------------------------------------------------------------------------- #
+
+def test_strip_hold_uses_the_live_pause_route_not_the_status_pause():
+    """THE distinction this feature exists for.
+
+    api.pauseDeployment() routes through the status path, which demotes a live
+    deployment back to paper (the v0.56.0 invariant in _set_deployment_status) and
+    costs the operator the full caps + consent ceremony to undo. The strip must
+    call the live-scoped hold instead, which flips risk.live.paused only.
+    """
+    strip = _code("components/live/LiveDeploymentStrip.jsx")
+    assert "api.pauseDeploymentLive(" in strip
+    assert "api.resumeDeploymentLive(" in strip
+    assert "api.pauseDeployment(" not in strip, (
+        "the strip calls the STATUS pause — that demotes the deployment out of live"
+    )
+    assert "api.resumeDeployment(" not in strip
+
+
+def test_strip_renders_the_hold_state_from_live_paused():
+    strip = _src("components/live/LiveDeploymentStrip.jsx")
+    assert "live_paused" in strip, "the row never reads the backend's hold flag"
+    for needle in ('data-testid="live-deploy-pause"',
+                   'data-testid="live-deploy-resume"',
+                   'data-testid="live-deploy-held"'):
+        assert needle in strip, needle
+
+
+def test_hold_copy_says_positions_stay_open():
+    """paused != flat. An operator who reads 'paused' as 'flattened' would walk
+    away from a live book. The row has to say so where the state is shown."""
+    strip = _src("components/live/LiveDeploymentStrip.jsx")
+    held = strip[strip.index('data-testid="live-deploy-held"') - 900:
+                 strip.index('data-testid="live-deploy-held"') + 200]
+    assert "stay OPEN" in held or "stay open" in held, (
+        "the held chip does not tell the operator their positions are still open"
+    )
+
+
+def test_api_client_exposes_the_live_hold_pair():
+    api = _src("lib/api.js")
+    assert "pauseDeploymentLive:" in api
+    assert "resumeDeploymentLive:" in api
+    assert "/live/pause" in api
+    assert "/live/resume" in api

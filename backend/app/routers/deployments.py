@@ -1443,12 +1443,96 @@ async def disable_deployment_live(deployment_id: str):
     live = dict(risk.get("live") or {})
     live["disabled_at"] = now_iso
     live["last_block_reason"] = "manual_disable"
+    # Leaving live clears any operator HOLD. A stale `paused` left behind would be
+    # inherited by a later /live/enable — which would go live and then silently
+    # place nothing, with the only explanation buried in an entry-refusal reason.
+    live.pop("paused", None)
+    live.pop("paused_at", None)
     risk["live"] = live
     await db.strategy_deployments.update_one(
         {"id": deployment_id},
         {"$set": {"mode": "paper", "risk": risk, "updated_at": now_iso}},
     )
     return serialize_doc({"deployment_id": deployment_id, "mode": "paper", "live": live})
+
+
+async def _set_live_paused(deployment_id: str, paused: bool) -> Dict[str, Any]:
+    """Flip risk.live.paused on a LIVE deployment. Shared by pause + resume.
+
+    Deliberately touches NOTHING else. `mode` and `status` are left alone, so the
+    v0.56.0 invariant in _set_deployment_status (any transition out of ACTIVE
+    demotes live -> paper) is never engaged and the operator keeps their live
+    authorization across the hold. The flag is read by
+    live.mode.is_deployment_live_allowed, which gates NEW ENTRIES only — the
+    software guard, the resting OCO and the exit monitor all run off the position
+    registry, so an open book keeps its stop/target while entries are held.
+    """
+    db = get_db()
+    deployment = await db.strategy_deployments.find_one({"id": deployment_id}, {"_id": 0})
+    if not deployment:
+        raise HTTPException(404, "Deployment not found")
+    # Pausing is only meaningful for a live deployment. Writing the live-hold flag
+    # onto a paper deployment would show as "held" in the UI while the paper sink
+    # kept trading it — the paper Pause is the right control there. Resume stays
+    # unconditional so a doc that somehow carries a stale flag can always be cleared.
+    if paused and str(deployment.get("mode") or "").strip().lower() != "live":
+        raise HTTPException(
+            409,
+            detail=(
+                f"deployment_not_live: {deployment_id} is in "
+                f"'{deployment.get('mode') or 'unknown'}' mode. The live hold only "
+                "gates the real-order path — use the paper Pause for a paper deployment."
+            ),
+        )
+    now_iso = datetime.now(timezone.utc).isoformat()
+    risk = dict(deployment.get("risk") or {})
+    live = dict(risk.get("live") or {})
+    if paused:
+        live["paused"] = True
+        live["paused_at"] = now_iso
+    else:
+        # Clear the keys rather than writing False, so a resumed deployment is
+        # byte-identical to one that was never paused.
+        live.pop("paused", None)
+        live.pop("paused_at", None)
+    risk["live"] = live
+    await db.strategy_deployments.update_one(
+        {"id": deployment_id},
+        {"$set": {"risk": risk, "updated_at": now_iso}},
+    )
+    return serialize_doc({
+        "deployment_id": deployment_id,
+        "live_paused": bool(paused),
+        # Echoed to make the invariant checkable from the response alone: a hold
+        # must never have demoted the deployment.
+        "mode": deployment.get("mode"),
+        "status": deployment.get("status"),
+        "live": live,
+    })
+
+
+@api.post("/deployments/{deployment_id}/live/pause")
+async def pause_deployment_live(deployment_id: str):
+    """HOLD a live deployment: no new real entries, everything else untouched.
+
+    The reversible alternative to /deployments/{id}/pause and /live/stop, both of
+    which demote the deployment back to paper and therefore cost the operator the
+    full caps + consent ceremony to undo.
+
+    Open positions are NOT flattened and NOT unguarded — they keep their stop,
+    target, trailing and resting OCO. Paused is not flat. Use /live/stop to flatten.
+    """
+    return await _set_live_paused(deployment_id, True)
+
+
+@api.post("/deployments/{deployment_id}/live/resume")
+async def resume_deployment_live(deployment_id: str):
+    """Lift the hold — new real entries resume under the unchanged caps.
+
+    Not a re-authorization: `mode` never left "live", so there is nothing to
+    re-consent. This is exactly why the hold is a separate flag from status.
+    """
+    return await _set_live_paused(deployment_id, False)
 
 
 @api.post("/deployments/{deployment_id}/live/stop")
@@ -1557,6 +1641,11 @@ async def _live_status_payload(db: Any, deployment_id: str) -> Optional[Dict[str
         # a genuinely-live deployment as armed:false. Report the real state instead.
         "armed": str(deployment.get("mode") or "").lower() == "live",
         "live_mode": str(deployment.get("mode") or "").lower() == "live",
+        # Operator HOLD. Orthogonal to live_mode on purpose: a held deployment is
+        # still LIVE (still authorized, still guarding its open book) — it is just
+        # refusing new entries. Rendering it as demoted would be a lie in the
+        # dangerous direction.
+        "live_paused": bool(live.get("paused")),
         "armed_until": None,
         "caps": {
             "lots": live.get("lots"),

@@ -19,6 +19,7 @@ import DeploymentSummary from "@/components/live/cockpit/DeploymentSummary";
 import AccountTabs from "@/components/live/cockpit/AccountTabs";
 import ConfigDrawer from "@/components/live/cockpit/ConfigDrawer";
 
+import LiveDeploymentStrip from "@/components/live/LiveDeploymentStrip";
 import ExecutionStateStrip from "@/components/live/ExecutionStateStrip";
 import SafetyLatchBanner from "@/components/live/SafetyLatchBanner";
 import RecoveryStatusBanner from "@/components/live/RecoveryStatusBanner";
@@ -30,8 +31,9 @@ import GreeksCard from "@/components/live/GreeksCard";
  * LiveCockpit — the trader-first re-organisation of the Live Trading terminal.
  *
  * An ALWAYS-ON CORE keeps market intelligence (left) and the book + quick actions
- * (right) in view; a slide-out CONFIG DRAWER holds the set-and-forget controls
- * (deployments, backstop, overall controls); a tabbed ACCOUNT panel gives the
+ * (right) in view; a full-width LIVE DEPLOYMENTS pane sits above them (what is
+ * trading, and the controls to hold/stop it); a slide-out CONFIG DRAWER holds
+ * the set-and-forget controls (backstop, overall); a tabbed ACCOUNT panel gives the
  * demat account detail. Every panel reuses an existing live component. Phase 1
  * ships this shell on the existing data; MarketPulse/MarketAnalysis fill in when
  * the /market/analysis engine lands (Phase 2).
@@ -183,6 +185,15 @@ export default function LiveCockpit() {
         authMsg={authMsg}
       />
 
+      {/* WHAT IS TRADING RIGHT NOW — full width, above the fold.
+          Previously this lived only inside the ⚙ config drawer, so the one
+          question an operator asks most ("which strategies are live, and can I
+          stop them?") needed two clicks and a scroll to answer. It is mounted
+          HERE ONLY — a second copy in the drawer would double-fire
+          onArmedSummaryChange and give the same deployment two control surfaces
+          that could be clicked concurrently. */}
+      <LiveDeploymentStrip />
+
       {/* Broker-data as-of stamp — a failing poll keeps the last-good value on
           screen, so this makes a STALE reading legible (never looks live). */}
       <div className="flex items-center justify-between px-0.5">
@@ -229,7 +240,7 @@ export default function LiveCockpit() {
         holdings={holdings} errors={errors}
       />
 
-      <ConfigDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} onArmedSummaryChange={() => {}} />
+      <ConfigDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} />
     </div>
   );
 }

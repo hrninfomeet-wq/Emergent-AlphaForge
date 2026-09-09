@@ -351,6 +351,14 @@ export const api = {
     apiClient.post(`/deployments/${id}/live/enable`, body).then((r) => r.data),
   disableDeploymentLive: (id) =>
     apiClient.post(`/deployments/${id}/live/disable`).then((r) => r.data),
+  // REVERSIBLE hold — blocks new real entries but leaves mode="live" and
+  // status=ACTIVE intact, so resuming needs no re-consent and the open book keeps
+  // its guard/OCO/exit-monitor coverage. NOT the same as pauseDeployment(), which
+  // routes through the status path and demotes a live deployment back to paper.
+  pauseDeploymentLive: (id) =>
+    apiClient.post(`/deployments/${id}/live/pause`).then((r) => r.data),
+  resumeDeploymentLive: (id) =>
+    apiClient.post(`/deployments/${id}/live/resume`).then((r) => r.data),
   liveStop: (id) =>
     apiClient.post(`/deployments/${id}/live/stop`).then((r) => r.data),
   liveStatus: (id) =>

@@ -1689,6 +1689,12 @@ async def get_arm_state():
         # daily-loss breaker fired) must NOT count toward "would transmit an entry
         # now" or the banner would read LIVE while the deployment is actually halted.
         # (The v0.56.0 invariant demotes mode on pause, so this is also defensive.)
+        #
+        # A deployment under the reversible HOLD (risk.live.paused) stays live AND
+        # ACTIVE, so this selector still returns it — is_deployment_live_allowed
+        # below is what drops it from the count. That is the intended split: it is
+        # still a live deployment (still guarding its open book), it just would not
+        # transmit an entry right now, which is exactly what this number means.
         cur = get_db().strategy_deployments.find(
             {"mode": "live", "status": "ACTIVE"}, {"_id": 0, "id": 1, "mode": 1, "risk": 1})
         for dep in await cur.to_list(length=500):

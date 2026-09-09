@@ -288,6 +288,24 @@ def is_deployment_live_allowed(deployment: "Dict[str, Any]", now_utc: "datetime"
         return False, "no_deployment"
     if str(deployment.get("mode") or "").strip().lower() != "live":
         return False, "not_live_mode"
+    # Operator HOLD (risk.live.paused) — checked BEFORE `connected` so a deliberate
+    # pause stays visible while the broker is down, instead of being masked by the
+    # not_connected every deployment reports in that state.
+    #
+    # This gates NEW ENTRIES ONLY and deliberately does NOT touch `mode` or
+    # `status`. Every other stop path routes through _set_deployment_status, which
+    # demotes mode live->paper on any transition out of ACTIVE (runtime.py, the
+    # v0.56.0 invariant) — so pausing via status costs the operator their live
+    # authorization and forces the full caps + consent ceremony to get it back.
+    # Holding here keeps the deployment ACTIVE and live, so its OPEN POSITIONS keep
+    # being managed by the software guard, the resting OCO and the exit monitor.
+    # Resume is a pure clear of this flag: authorization was never lost, so nothing
+    # is silently re-authorized.
+    _risk = deployment.get("risk")
+    _live = _risk.get("live") if isinstance(_risk, dict) else None
+    # Truthy-not-True: a safety flag must not be defeated by a non-bool value.
+    if isinstance(_live, dict) and _live.get("paused"):
+        return False, "live_paused"
     if connected is not True:
         return False, "not_connected"
     try:

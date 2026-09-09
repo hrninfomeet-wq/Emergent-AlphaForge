@@ -2,6 +2,50 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [Unreleased] — Live controls: a hold that doesn't cost you your live authorization (2026-09-08)
+
+Three operator-requested changes to `/live-trading`. The Market Pulse rework asked for
+alongside them is specified but NOT built — see
+`docs/superpowers/specs/2026-09-08-live-controls-and-market-pulse-design.md` §4.
+
+**The typed `ENABLE` gate is gone.** Step 2 of Enable Live Execution keeps its review
+content (caps, exits in force, arm advisories) and is now gated by a single consent
+checkbox. That checkbox is the reason this was safe to do: it previously rendered
+**only when forward validation FAILED**, so removing the typed gate on its own would
+have let a *passing* deployment go live on a bare button click. It now renders on both
+evidence paths, with wording that follows the evidence. The backend contract is
+unchanged — `accept_unvalidated_live` stays conjoined with `unvalidated`, so a
+validated enable still never claims an evidence override.
+
+**A live deployment can now be held without being demoted.** Pause and Stop both route
+through `_set_deployment_status`, which demotes `mode: live -> paper` on any transition
+out of ACTIVE (the v0.56.0 invariant). That is correct — it stops resume / re-pin /
+un-retire from silently re-authorizing real money — but it meant there was no way to
+say "stop entering, keep everything else" without paying the full caps + consent
+ceremony to undo it.
+
+`POST /deployments/{id}/live/pause` and `/live/resume` flip `risk.live.paused`, which
+`is_deployment_live_allowed` checks. That gates **new entries only**: `mode` and
+`status` are untouched, so the invariant is never engaged and Resume re-authorizes
+nothing that was ever lost. Critically, **a held deployment keeps managing its open
+book** — the software guard, the resting OCO and the exit monitor all run off the
+position registry, not this predicate. Paused is not flat, and the row says so. The
+flag is cleared by both `/live/enable` and `/live/disable`, so a stale hold can never
+be inherited by a fresh enable and silently place nothing.
+
+**The Live Deployments pane moved out of the ⚙ drawer onto the page.** "What is trading
+right now, and can I stop it?" is the opposite of set-and-forget; it took two clicks and
+a scroll to answer. Now full-width above the core, with Pause/Resume beside
+Disable/Stop, a `held` chip, and a collapsed summary that counts held deployments *out*
+of the live figure — that number answers "how many can place an order right now?".
+Mounted on the page only: a second copy in the drawer would give one deployment two
+independently clickable Stop surfaces.
+
+The consent gate is pinned by AST assertions (`tests/test_live_enable_consent_ui.py`
+driving `tests/jsx_probe/consent_probe.cjs`) rather than a source grep — "is the
+checkbox rendered unconditionally?" is a structural question a grep cannot answer
+honestly, and all three regressions were mutation-checked.
+
 ## [Unreleased] — The broker OCO never rested; it fired at entry and the exchange rejected it (2026-09-03)
 
 **The reported symptom was a price; the defect is a timing.** Two live BFO entries

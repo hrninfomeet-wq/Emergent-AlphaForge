@@ -13,8 +13,8 @@ import { isDriftPaused, pauseReasonOf, driftTooltip, statusPillOf } from "@/lib/
  * Carries the PAPER lifecycle controls inline (resume / pause / re-pin), because
  * paper testing is the everyday loop and should never require hunting across
  * pages. Real-money controls deliberately stay OUT of here — a live deployment
- * shows its state and sends the operator to the ⚙ drawer, where the consent flow
- * lives. Enabling live is a decision, not a quick action.
+ * shows its state and sends the operator to the Live Deployments pane, where the
+ * consent flow lives. Enabling live is a decision, not a quick action.
  */
 // Status/pause/drift semantics come from lib/deploymentState so this panel, the
 // /paper control strip and the /live card can never disagree about what a
@@ -66,7 +66,7 @@ function DeploymentRow({ dep, onDone }) {
 
       {/* Paper lifecycle — inline. Live deployments get no quick actions. */}
       {isLive ? (
-        <div className="text-[10.5px] text-dimmer">Real-money controls are in ⚙ Configure.</div>
+        <div className="text-[10.5px] text-dimmer">Real-money controls are in the Live Deployments pane above.</div>
       ) : (
         <div className="flex items-center gap-1.5 flex-wrap">
           {busy && <Loader2 className="w-3 h-3 animate-spin text-dimmer" />}

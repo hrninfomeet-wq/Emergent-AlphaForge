@@ -629,3 +629,80 @@ def test_legacy_armed_record_no_longer_authorizes():
 def test_armed_until_today_ist_is_1500_ist_in_utc():
     now = datetime(2026, 6, 25, 4, 0, tzinfo=timezone.utc)  # 09:30 IST
     assert armed_until_today_ist(now) == "2026-06-25T09:30:00+00:00"
+
+
+# ---------------------------------------------------------------------------
+# Reversible live pause (2026-09-08)
+#
+# `risk.live.paused` is an operator-set HOLD that blocks NEW ENTRIES without
+# touching `mode` or `status`. That distinction is the whole point: every other
+# stop path routes through _set_deployment_status, which demotes mode live->paper
+# on any transition out of ACTIVE (runtime.py, v0.56.0 invariant), so pausing via
+# status costs the operator their live authorization and forces the full caps +
+# consent ceremony to get it back. Gating here instead keeps the deployment
+# ACTIVE and live — so its OPEN POSITIONS keep being managed by the software
+# guard, the OCO backstop and the exit monitor — while refusing new entries.
+# ---------------------------------------------------------------------------
+
+
+def test_live_blocked_when_paused():
+    """The hold blocks new entries and reports its own distinct reason."""
+    now = datetime(2026, 6, 25, 6, 0, tzinfo=timezone.utc)  # 11:30 IST
+    assert is_deployment_live_allowed(_dep(paused=True), now, connected=True) == (False, "live_paused")
+
+
+def test_live_allowed_again_after_resume():
+    """Resume is a pure clear of the flag — authorization was never lost, so
+    nothing has to be re-consented. This is what the status-based pause could
+    not do."""
+    now = datetime(2026, 6, 25, 6, 0, tzinfo=timezone.utc)
+    assert is_deployment_live_allowed(_dep(paused=False), now, connected=True) == (True, "ok")
+    # A resumed doc clears the key entirely rather than writing False.
+    assert is_deployment_live_allowed(_dep(), now, connected=True) == (True, "ok")
+
+
+def test_live_paused_reported_over_not_connected():
+    """A deliberately paused deployment reports the state the OPERATOR set, even
+    while the broker is down — otherwise the hold is invisible exactly when the
+    whole page is reporting not_connected."""
+    now = datetime(2026, 6, 25, 6, 0, tzinfo=timezone.utc)
+    assert is_deployment_live_allowed(_dep(paused=True), now, connected=False) == (False, "live_paused")
+
+
+def test_live_pause_never_overrides_not_live_mode():
+    """mode is still the authorization. A paper deployment carrying a stale
+    paused flag is refused for NOT BEING LIVE, not for being paused."""
+    now = datetime(2026, 6, 25, 6, 0, tzinfo=timezone.utc)
+    dep = _dep(mode="paper", paused=True)
+    assert is_deployment_live_allowed(dep, now, connected=True) == (False, "not_live_mode")
+
+
+def test_live_pause_fails_closed_on_truthy_junk():
+    """Anything truthy in the flag holds. A safety flag must never be defeated by
+    a value that isn't literally True."""
+    now = datetime(2026, 6, 25, 6, 0, tzinfo=timezone.utc)
+    for junk in (True, 1, "yes", "true", "false", ["x"]):
+        ok, reason = is_deployment_live_allowed(_dep(paused=junk), now, connected=True)
+        assert (ok, reason) == (False, "live_paused"), f"{junk!r} did not hold the deployment"
+
+
+def test_live_pause_absent_or_falsey_does_not_block():
+    now = datetime(2026, 6, 25, 6, 0, tzinfo=timezone.utc)
+    for falsey in (False, None, 0, "", []):
+        assert is_deployment_live_allowed(_dep(paused=falsey), now, connected=True) == (True, "ok")
+
+
+def test_live_pause_survives_malformed_risk_live():
+    """A non-dict risk.live must not raise out of the authorization predicate."""
+    now = datetime(2026, 6, 25, 6, 0, tzinfo=timezone.utc)
+    for broken in ("x", 5, ["paused"], None):
+        dep = {"mode": "live", "risk": {"live": broken}}
+        ok, reason = is_deployment_live_allowed(dep, now, connected=True)
+        assert ok is True, f"malformed risk.live {broken!r} wrongly blocked entry"
+    assert is_deployment_live_allowed({"mode": "live", "risk": "x"}, now, connected=True)[0] is True
+
+
+def test_live_pause_still_blocked_after_cutoff():
+    """Two independent refusals; the deployment stays blocked either way."""
+    now = datetime(2026, 6, 25, 10, 0, tzinfo=timezone.utc)  # 15:30 IST
+    assert is_deployment_live_allowed(_dep(paused=True), now, connected=True)[0] is False

@@ -1056,3 +1056,39 @@ def test_live_deploy_context_exports_the_account_safety_config():
     from app import deployment_evaluator as de
     assert "account_safety_config" in inspect.getsource(de.evaluate_active_deployments), (
         "the evaluator's live_kwargs allowlist must forward account_safety_config")
+
+
+@pytest.mark.asyncio
+async def test_transmit_fence_refuses_when_the_live_hold_lands_mid_flight():
+    """A hold applied while the executor is mid-round-trip must fence the order.
+
+    The reversible hold (risk.live.paused) leaves mode=="live" and status=="ACTIVE"
+    on purpose — that is what makes Resume free of a re-consent. So neither of the
+    fence's other two checks sees it, and the ONLY thing that refuses this entry is
+    is_deployment_live_allowed reading the flag. Without that, clicking Pause on a
+    deployment whose signal was already authorised would still let the order out.
+    """
+    db = FakeDB()
+    sig = make_confirmed_signal()
+    db.signals.rows.append(dict(sig))
+    dep = make_live_deployment()
+    dep["status"] = "ACTIVE"
+    db.strategy_deployments.rows.append(dict(dep))
+    calls: List[Dict[str, Any]] = []
+    await auto_live_trade_for_signal(
+        db, dep, sig, latest_tick_lookup={KEY: _fresh_tick(151.5)}.get,
+        now_utc=NOW, place_fn=make_place_fn(_SUCCESS, calls),
+        clock_fn=lambda: NOW)
+    recheck = calls[0]["recheck_fn"]
+
+    ok, _ = await recheck()
+    assert ok is True
+
+    # The operator clicks Pause. Note what does NOT change:
+    row = db.strategy_deployments.rows[0]
+    row.setdefault("risk", {}).setdefault("live", {})["paused"] = True
+    assert row["mode"] == "live" and row["status"] == "ACTIVE"
+
+    ok, why = await recheck()
+    assert ok is False, "the fence let an order out of a HELD deployment"
+    assert why == "live_paused", why

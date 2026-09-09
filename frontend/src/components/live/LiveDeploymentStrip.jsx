@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Activity, ChevronDown, ChevronRight, Loader2, OctagonX, ShieldOff, Square } from "lucide-react";
+import { Activity, ChevronDown, ChevronRight, Loader2, OctagonX, Pause, Play, ShieldOff, Square } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { fmtINR } from "@/lib/fmt";
@@ -55,7 +55,7 @@ function entryErrorLabel(reason) {
 }
 
 // ── One live-mode deployment row ────────────────────────────────────────────
-function LiveRow({ dep, liveStatus, busy, onDisable, onStop }) {
+function LiveRow({ dep, liveStatus, busy, onDisable, onStop, onPause, onResume }) {
   // Status payload shape: { today: {orders, lots, realized_pnl}, open_positions: [...] }
   const today = liveStatus?.today || {};
   const todayOrders = today.orders ?? 0;
@@ -64,11 +64,20 @@ function LiveRow({ dep, liveStatus, busy, onDisable, onStop }) {
   const openPositions = Array.isArray(liveStatus?.open_positions)
     ? liveStatus.open_positions.length
     : (liveStatus?.open_positions ?? 0);
+  // The operator HOLD. Orthogonal to live/not-live: a held deployment is still
+  // fully live-authorized and still guarding its open book — it just refuses new
+  // entries. Rendering it as "not live" would be a lie in the dangerous direction.
+  const paused = Boolean(liveStatus?.live_paused);
 
   return (
     <div className="px-3 py-2 flex items-center gap-2 flex-wrap" data-testid="live-deploy-row">
-      {/* Live indicator */}
-      <span className="w-2 h-2 rounded-full bg-danger shrink-0 animate-pulse" title="LIVE" />
+      {/* Live indicator — amber (steady) while held, pulsing red while trading.
+          The pulse is the "orders can fire right now" cue, so a held deployment
+          must not keep it. */}
+      <span
+        className={`w-2 h-2 rounded-full shrink-0 ${paused ? "bg-warning" : "bg-danger animate-pulse"}`}
+        title={paused ? "LIVE — held (no new entries)" : "LIVE"}
+      />
       <div className="min-w-0">
         <div className="font-medium text-xs truncate max-w-[180px] text-foreground" title={dep.name}>
           {dep.name || dep.id?.slice(0, 8) || "—"}
@@ -116,8 +125,51 @@ function LiveRow({ dep, liveStatus, busy, onDisable, onStop }) {
         </span>
       )}
 
+      {/* HELD chip — states the one thing an operator could get wrong here:
+          paused is NOT flat. Open positions stay open and stay guarded. */}
+      {paused && (
+        <span
+          className="inline-flex items-center gap-1 text-[10px] font-medium text-warning bg-amber-500/10 border border-amber-500/30 rounded px-1.5 py-0.5 whitespace-nowrap"
+          title="No new entries. Open positions stay OPEN and keep their stop/target/trailing and resting OCO — this is a hold, not a flatten. Use Stop to flatten."
+          data-testid="live-deploy-held"
+        >
+          <Pause className="w-3 h-3 shrink-0" />
+          held — no new entries
+        </span>
+      )}
+
       {/* Controls */}
       <div className="ml-auto flex items-center gap-1.5">
+        {/* Pause/Resume is the REVERSIBLE control: it flips risk.live.paused only,
+            so mode stays "live" and Resume needs no re-consent. Deliberately NOT
+            api.pauseDeployment() — that routes through the status path, which
+            demotes a live deployment back to paper and costs the full caps +
+            consent ceremony to undo. */}
+        {paused ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={busy}
+            onClick={() => onResume(dep)}
+            className="h-7 text-xs text-success"
+            data-testid="live-deploy-resume"
+          >
+            <Play className="w-3 h-3 mr-1" />
+            Resume
+          </Button>
+        ) : (
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={busy}
+            onClick={() => onPause(dep)}
+            className="h-7 text-xs text-warning"
+            data-testid="live-deploy-pause"
+          >
+            <Pause className="w-3 h-3 mr-1" />
+            Pause
+          </Button>
+        )}
         <Button
           variant="ghost"
           size="sm"
@@ -215,6 +267,38 @@ export default function LiveDeploymentStrip({ onArmedSummaryChange }) {
     }
   };
 
+  // HOLD — no confirm dialog. It is reversible in one click, takes nothing away
+  // (caps, authorization and the guarded book all survive) and is the SAFE
+  // direction; a confirm here would only train the operator to click through the
+  // ones that do matter.
+  const doPause = async (dep) => {
+    setBusy(true);
+    try {
+      await api.pauseDeploymentLive(dep.id);
+      toast.success(
+        `Held "${dep.name || dep.id}" — no new entries. Open positions stay open and keep their exits.`,
+      );
+      await refreshAll();
+    } catch (e) {
+      toast.error(getApiErrorMessage(e, e.message));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const doResume = async (dep) => {
+    setBusy(true);
+    try {
+      await api.resumeDeploymentLive(dep.id);
+      toast.success(`Resumed "${dep.name || dep.id}" — live entries active again`);
+      await refreshAll();
+    } catch (e) {
+      toast.error(getApiErrorMessage(e, e.message));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const doStop = async (dep) => {
     if (!window.confirm(`Stop live trading for "${dep.name || dep.id}"? This disables live execution and squares off any open live positions.`)) return;
     setBusy(true);
@@ -270,12 +354,18 @@ export default function LiveDeploymentStrip({ onArmedSummaryChange }) {
   // Aggregate today's realized P&L across all live deployments, for the
   // always-visible header summary (matches LiveRow's own today-P&L coloring).
   let todayRealisedTotal = null;
+  let heldCount = 0;
   for (const dep of liveDeps) {
     const realised = liveStatuses[dep.id]?.today?.realized_pnl;
     if (realised != null) {
       todayRealisedTotal = (todayRealisedTotal ?? 0) + Number(realised);
     }
+    if (liveStatuses[dep.id]?.live_paused) heldCount += 1;
   }
+  // Held deployments are counted OUT of the "live" figure in the collapsed
+  // summary, because that number answers "how many can place an order right
+  // now?" — the only question the header is asked while collapsed.
+  const tradingCount = liveDeps.length - heldCount;
 
   // Lift the live-deployment summary to parent (for LiveBanner).
   // autoplace_armed is a backend env flag shared across all deployments —
@@ -330,7 +420,9 @@ export default function LiveDeploymentStrip({ onArmedSummaryChange }) {
 
         {/* Compact summary — visible whether expanded or collapsed */}
         <span className="text-[11px] text-dimmer font-mono whitespace-nowrap shrink-0" data-testid="live-deploy-strip-summary">
-          {liveDeps.length} live · {notLiveDeps.length} not live
+          {tradingCount} live
+          {heldCount > 0 && <span className="text-warning"> · {heldCount} held</span>}
+          {" · "}{notLiveDeps.length} not live
           {todayRealisedTotal != null && (
             <> · <span className={todayRealisedTotal >= 0 ? "text-success" : "text-danger"}>{fmtINR(todayRealisedTotal)}</span></>
           )}
@@ -372,6 +464,8 @@ export default function LiveDeploymentStrip({ onArmedSummaryChange }) {
                   busy={busy}
                   onDisable={doDisarm}
                   onStop={doStop}
+                  onPause={doPause}
+                  onResume={doResume}
                 />
               ))}
             </div>

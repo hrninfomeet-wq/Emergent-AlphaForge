@@ -234,10 +234,20 @@ def test_the_preview_is_not_a_gate():
 
 
 def test_the_panel_renders_the_card_without_gating_enable():
-    """The ENABLE button's disabled condition must not mention the preview."""
+    """The ENABLE button's disabled condition must not mention the preview.
+
+    Anchored on the submit button's own data-testid rather than on the text of
+    the condition, so the assertion survives a change to WHAT gates ENABLE (the
+    typed-"ENABLE" confirm became a consent checkbox on 2026-09-08) and only
+    fails if the exit preview starts gating it.
+    """
     src = open(_PANEL, encoding="utf-8").read()
     assert 'data-testid="live-exit-preview"' in src
-    disabled = src[src.index("disabled={confirmText"):]
+    submit = src.index('data-testid="deploy-to-live-arm-submit"')
+    # The <Button …> attributes for the submit, scanning back to the tag open.
+    button = src[src.rindex("<Button", 0, submit):submit]
+    disabled = button[button.index("disabled={"):]
     disabled = disabled[:disabled.index("}")]
+    assert disabled.strip(), "submit button has no disabled condition at all"
     for token in ("exitPreview", "exitRows", "hasExitPreview"):
         assert token not in disabled, f"{token} gates ENABLE"

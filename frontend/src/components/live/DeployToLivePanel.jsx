@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { AlertTriangle, Loader2, Zap } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
@@ -18,8 +18,12 @@ import {
  *
  * Opens a caps form (lots/signal, max_lots_per_day, max_concurrent,
  * daily_loss_cap) validated against the account ceiling from getSafetyConfig().
- * The form's submit opens a DANGER typed-confirm dialog: the user must type
- * ENABLE exactly before the enable call goes through.
+ * The form's submit opens a DANGER review step: the caps summary, the exits that
+ * would actually be in force, and any arm advisories — gated by a single consent
+ * checkbox. (It replaced a typed-"ENABLE" confirm on 2026-09-08; the checkbox is
+ * rendered on BOTH evidence paths, because the older red consent box appeared only
+ * when forward validation FAILED, so a passing deployment would otherwise have gone
+ * live on a bare button click.)
  *
  * There is no per-session arm ceremony: authorization is simply
  * deployment.mode === "live". Once enabled, the deployment trades on its own
@@ -52,7 +56,10 @@ export default function DeployToLivePanel({ dep, onArmed }) {
   const [exitPreview, setExitPreview] = useState(null);
   const [forwardValidation, setForwardValidation] = useState(null);
   const [validationLoaded, setValidationLoaded] = useState(false);
-  const [acceptUnvalidated, setAcceptUnvalidated] = useState(false);
+  // The single affirmative consent for BOTH evidence paths. Only the unvalidated
+  // variant is forwarded as accept_unvalidated_live, so the backend contract is
+  // unchanged: a validated enable still never claims an evidence override.
+  const [consent, setConsent] = useState(false);
 
   // Caps form fields
   const [lots, setLots] = useState("1");
@@ -63,12 +70,10 @@ export default function DeployToLivePanel({ dep, onArmed }) {
   const [catStopPct, setCatStopPct] = useState("");
   const [catTargetPct, setCatTargetPct] = useState("");
 
-  // ── Phase 2: danger typed-confirm ─────────────────────────────────────────
+  // ── Phase 2: danger review + consent ──────────────────────────────────────
   const [confirmOpen, setConfirmOpen] = useState(false);
-  const [confirmText, setConfirmText] = useState("");
   const [busy, setBusy] = useState(false);
   const [dryRunWarning, setDryRunWarning] = useState(false);
-  const confirmInputRef = useRef(null);
 
   // Load safety config when the form opens so we can show the ceiling.
   useEffect(() => {
@@ -122,13 +127,6 @@ export default function DeployToLivePanel({ dep, onArmed }) {
     return () => { cancelled = true; };
   }, [formOpen, dep?.id]);
 
-  // Focus the confirm input when the dialog reaches the confirm step.
-  useEffect(() => {
-    if (formOpen && confirmOpen && confirmInputRef.current) {
-      confirmInputRef.current.focus();
-    }
-  }, [formOpen, confirmOpen]);
-
   const maxLots = safetyConfig?.max_lots_per_order ?? null;
   const maxOpen = safetyConfig?.max_open_positions ?? null;
   const lotsNum = Math.max(1, parseInt(lots, 10) || 1);
@@ -158,9 +156,8 @@ export default function DeployToLivePanel({ dep, onArmed }) {
     && lotsNum >= 1 && maxDayNum >= 1 && maxConcurrentNum >= 1;
 
   const openForm = () => {
-    setConfirmText("");
     setDryRunWarning(false);
-    setAcceptUnvalidated(false);
+    setConsent(false);
     setSafetyConfig(null);
     setSafetyLoaded(false);
     setSafetyError(false);
@@ -171,12 +168,11 @@ export default function DeployToLivePanel({ dep, onArmed }) {
   const handleFormSubmit = (e) => {
     e.preventDefault();
     if (!canProceedToConfirm) return;
-    setConfirmText("");
     // Advance to the confirm STEP inside the SAME dialog. The caps form and the
-    // typed-ENABLE confirm are two VIEWS of ONE Radix Dialog, never two stacked
-    // modals — stacking made the second dialog's dismissable layer swallow the
-    // submit's own click and close instantly (the "Continue does nothing" bug,
-    // C5 in the 2026-07-21 release audit).
+    // consent step are two VIEWS of ONE Radix Dialog, never two stacked modals —
+    // stacking made the second dialog's dismissable layer swallow the submit's own
+    // click and close instantly (the "Continue does nothing" bug, C5 in the
+    // 2026-07-21 release audit).
     setConfirmOpen(true);
   };
 
@@ -184,11 +180,10 @@ export default function DeployToLivePanel({ dep, onArmed }) {
   // are preserved because it is the same open dialog, just a different step).
   const closeConfirmBackToForm = () => {
     setConfirmOpen(false);
-    setConfirmText("");
   };
 
   const handleArm = async () => {
-    if (confirmText !== "ENABLE" || (unvalidated && !acceptUnvalidated)) return;
+    if (!consent) return;
     setBusy(true);
     setDryRunWarning(false);
     try {
@@ -197,7 +192,7 @@ export default function DeployToLivePanel({ dep, onArmed }) {
         max_lots_per_day: maxDayNum,
         max_concurrent: maxConcurrentNum,
         confirm: true,
-        accept_unvalidated_live: Boolean(unvalidated && acceptUnvalidated),
+        accept_unvalidated_live: Boolean(unvalidated && consent),
         ...(dailyLossCapNum != null ? { daily_loss_cap: dailyLossCapNum } : {}),
         // PC-down OCO backstop — only sent when the operator entered a value;
         // a blank field omits the key so the backend default band applies.
@@ -222,7 +217,7 @@ export default function DeployToLivePanel({ dep, onArmed }) {
           failed_checks: ["forward_validation_unavailable"],
         });
         setValidationLoaded(true);
-        setAcceptUnvalidated(false);
+        setConsent(false);
         toast.error("Forward evidence changed. Review the failed checks and explicitly approve unvalidated live trading to continue.");
         return;
       }
@@ -259,7 +254,7 @@ export default function DeployToLivePanel({ dep, onArmed }) {
       </Button>
 
       {/* ── Caps form dialog ──────────────────────────────────────────────── */}
-      <Dialog open={formOpen} onOpenChange={(o) => { if (!busy) { setFormOpen(o); if (!o) { setConfirmOpen(false); setConfirmText(""); } } }}>
+      <Dialog open={formOpen} onOpenChange={(o) => { if (!busy) { setFormOpen(o); if (!o) setConfirmOpen(false); } }}>
         <DialogContent className={`max-w-sm bg-bg-1 ${confirmOpen ? "border-danger/60" : "border-line"}`}>
           {!confirmOpen && (
           <>
@@ -513,34 +508,43 @@ export default function DeployToLivePanel({ dep, onArmed }) {
                 ))}
               </div>
             )}
-            {unvalidated && (
-              <label className="flex items-start gap-2 rounded-md border border-danger/60 bg-danger/10 px-3 py-2 text-[11px] text-danger" data-testid="accept-unvalidated-live">
-                <input
-                  type="checkbox"
-                  checked={acceptUnvalidated}
-                  onChange={(e) => setAcceptUnvalidated(e.target.checked)}
-                  className="mt-0.5 h-4 w-4 shrink-0"
-                />
+            {/* THE consent. Always rendered (2026-09-08): it replaced the typed
+                "ENABLE" gate, which was previously the ONLY affirmative act on the
+                validated path — this checkbox used to appear for unvalidated
+                deployments only, so dropping the typed gate without this would
+                have left a passing deployment going live on a bare button click.
+                Wording follows the evidence; only the unvalidated variant feeds
+                accept_unvalidated_live. */}
+            <label
+              className={`flex items-start gap-2 rounded-md border px-3 py-2 text-[11px] ${
+                unvalidated
+                  ? "border-danger/60 bg-danger/10 text-danger"
+                  : "border-line bg-bg-2 text-dim"
+              }`}
+              data-testid={unvalidated ? "accept-unvalidated-live" : "accept-live"}
+            >
+              <input
+                type="checkbox"
+                checked={consent}
+                onChange={(e) => setConsent(e.target.checked)}
+                className="mt-0.5 h-4 w-4 shrink-0"
+                disabled={busy}
+                data-testid="deploy-to-live-consent"
+              />
+              {unvalidated ? (
                 <span>
                   <strong>Yes, I explicitly approve unvalidated real-money trading.</strong>{" "}
                   I understand the failed checks ({(forwardValidation?.failed_checks || ["evidence unavailable"]).join(", ")}) and accept the loss risk.
                 </span>
-              </label>
-            )}
-            <p className="text-dimmer">
-              Type <strong className="text-danger font-mono">ENABLE</strong> below to go live for{" "}
-              <em>{depLabel}</em>.
-            </p>
-            <Input
-              ref={confirmInputRef}
-              value={confirmText}
-              onChange={(e) => setConfirmText(e.target.value)}
-              placeholder="Type ENABLE to confirm"
-              className="bg-bg-2 border-danger/40 h-9 text-sm font-mono tracking-widest"
-              data-testid="deploy-to-live-confirm-input"
-              disabled={busy}
-              onKeyDown={(e) => { if (e.key === "Enter" && confirmText === "ENABLE") handleArm(); }}
-            />
+              ) : (
+                <span>
+                  <strong className="text-foreground">
+                    Yes, enable real-money trading for {depLabel}.
+                  </strong>{" "}
+                  It will trade on its own logic under the caps above until I disable it.
+                </span>
+              )}
+            </label>
           </div>
 
           {/* Non-blocking arm advisories (S19/B8) — thin/negative forward record,
@@ -578,7 +582,7 @@ export default function DeployToLivePanel({ dep, onArmed }) {
             <Button
               type="button"
               size="sm"
-              disabled={confirmText !== "ENABLE" || busy || (unvalidated && !acceptUnvalidated)}
+              disabled={!consent || busy}
               onClick={handleArm}
               className="h-8 text-xs flex-1 bg-danger text-white hover:bg-danger/80 disabled:opacity-40"
               data-testid="deploy-to-live-arm-submit"

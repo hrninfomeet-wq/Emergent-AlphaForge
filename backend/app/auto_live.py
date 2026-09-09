@@ -474,6 +474,12 @@ async def auto_live_trade_for_signal(
     # `status` is checked explicitly: pause writes ONLY status (mode stays "live"),
     # so is_deployment_live_allowed alone would still say yes for a paused
     # deployment. Fail CLOSED — a doc we cannot re-read must not transmit.
+    #
+    # The reversible live HOLD (risk.live.paused, 2026-09-08) is the mirror case:
+    # it leaves BOTH mode and status untouched by design, so neither check above
+    # sees it and the predicate is the only thing that refuses. That is why the
+    # re-read matters here — clicking Pause on a deployment whose signal was
+    # already authorised must still fence the order.
     if clock_fn is None:
         def clock_fn():  # noqa: E306 - real wall clock, the production default
             return datetime.now(timezone.utc)

@@ -1341,3 +1341,168 @@ class TestEnableDataGate:
         assert dep.check_live_data_gate is not real_gate.check_live_data_gate, (
             "_install no longer stubs the data gate, so this module is back to "
             "passing only on weekends and holidays")
+
+
+# ===========================================================================
+# live/pause + live/resume — the REVERSIBLE hold (2026-09-08)
+#
+# Distinct from every other stop path. /deployments/{id}/pause and /live/stop both
+# route through _set_deployment_status, which demotes mode live->paper on any
+# transition out of ACTIVE (the v0.56.0 invariant) — so they cost the operator
+# their live authorization and force the full caps + consent ceremony to return.
+# These two routes flip risk.live.paused ONLY: mode stays "live", status stays
+# ACTIVE, open positions keep their guard/OCO/exit-monitor coverage, and Resume
+# is a pure clear rather than a re-authorization.
+# ===========================================================================
+
+class TestLivePauseResume:
+    def test_pause_holds_entries_without_touching_mode_or_status(self, monkeypatch):
+        db = FakeDB()
+        d = _deployment(mode="live")
+        d["risk"]["live"] = {"lots": 3}
+        db.strategy_deployments.rows.append(d)
+        _install(monkeypatch, db)
+
+        out = asyncio.run(dep.pause_deployment_live("dep-1"))
+
+        row = db.strategy_deployments.rows[0]
+        assert row["risk"]["live"]["paused"] is True
+        assert row["risk"]["live"].get("paused_at")
+        # THE point of this route: authorization and activity are both preserved.
+        assert row["mode"] == "live"
+        assert row["status"] == "ACTIVE"
+        # caps survive — resuming must not need them re-entered
+        assert row["risk"]["live"]["lots"] == 3
+        assert out["live_paused"] is True
+        assert out["mode"] == "live"
+
+    def test_paused_deployment_is_refused_by_the_authorization_predicate(self, monkeypatch):
+        """End-to-end: the route's write is what the entry gate actually reads."""
+        from app.live.mode import is_deployment_live_allowed
+        now = datetime(2026, 6, 25, 6, 0, tzinfo=timezone.utc)  # 11:30 IST
+        db = FakeDB()
+        db.strategy_deployments.rows.append(_deployment(mode="live"))
+        _install(monkeypatch, db)
+
+        row = db.strategy_deployments.rows[0]
+        assert is_deployment_live_allowed(row, now, connected=True) == (True, "ok")
+
+        asyncio.run(dep.pause_deployment_live("dep-1"))
+        row = db.strategy_deployments.rows[0]
+        assert is_deployment_live_allowed(row, now, connected=True) == (False, "live_paused")
+
+        asyncio.run(dep.resume_deployment_live("dep-1"))
+        row = db.strategy_deployments.rows[0]
+        assert is_deployment_live_allowed(row, now, connected=True) == (True, "ok")
+
+    def test_pause_does_not_flatten_open_positions(self, monkeypatch):
+        """A hold is not a flatten. The book stays registered with the software
+        guard so its stop/target keep running while entries are held."""
+        db = FakeDB()
+        db.strategy_deployments.rows.append(_deployment(mode="live"))
+        reg = LiveMonitorRegistry()
+        reg.register(key="o1", tsym="NIFTY25000CE", exch="NFO", qty=65, prd="I",
+                     entry_price=100.0, state=build_monitor_state(100.0, stop_pct=50),
+                     deployment_id="dep-1")
+        _install(monkeypatch, db, registry=reg)
+
+        asyncio.run(dep.pause_deployment_live("dep-1"))
+        assert len(reg) == 1
+
+    def test_resume_clears_the_flag_entirely(self, monkeypatch):
+        db = FakeDB()
+        d = _deployment(mode="live")
+        d["risk"]["live"] = {"lots": 3, "paused": True, "paused_at": "2026-09-08T04:00:00+00:00"}
+        db.strategy_deployments.rows.append(d)
+        _install(monkeypatch, db)
+
+        out = asyncio.run(dep.resume_deployment_live("dep-1"))
+
+        live = db.strategy_deployments.rows[0]["risk"]["live"]
+        assert not live.get("paused")
+        assert not live.get("paused_at")
+        assert live["lots"] == 3
+        assert out["live_paused"] is False
+
+    def test_pause_refuses_a_non_live_deployment(self, monkeypatch):
+        """Category error: a paper deployment's hold is the paper Pause. Allowing
+        it here would write a live-hold flag onto a doc the live path never reads,
+        which reads to the operator as 'held' while paper keeps trading."""
+        from fastapi import HTTPException
+        db = FakeDB()
+        db.strategy_deployments.rows.append(_deployment(mode="paper"))
+        _install(monkeypatch, db)
+
+        with pytest.raises(HTTPException) as ei:
+            asyncio.run(dep.pause_deployment_live("dep-1"))
+        assert ei.value.status_code == 409
+        assert "not_live" in str(ei.value.detail)
+
+    def test_pause_and_resume_404_on_unknown_deployment(self, monkeypatch):
+        from fastapi import HTTPException
+        db = FakeDB()
+        _install(monkeypatch, db)
+        for fn in (dep.pause_deployment_live, dep.resume_deployment_live):
+            with pytest.raises(HTTPException) as ei:
+                asyncio.run(fn("nope"))
+            assert ei.value.status_code == 404
+
+    def test_resume_is_idempotent_on_an_unpaused_deployment(self, monkeypatch):
+        db = FakeDB()
+        db.strategy_deployments.rows.append(_deployment(mode="live"))
+        _install(monkeypatch, db)
+        out = asyncio.run(dep.resume_deployment_live("dep-1"))
+        assert out["live_paused"] is False
+        assert db.strategy_deployments.rows[0]["mode"] == "live"
+
+    def test_disable_clears_a_stale_pause(self, monkeypatch):
+        """Leaving live must not leave a hold behind for a later /live/enable to
+        inherit — that would go live and silently place nothing."""
+        db = FakeDB()
+        d = _deployment(mode="live")
+        d["risk"]["live"] = {"lots": 3, "paused": True, "paused_at": "2026-09-08T04:00:00+00:00"}
+        db.strategy_deployments.rows.append(d)
+        _install(monkeypatch, db)
+
+        asyncio.run(dep.disable_deployment_live("dep-1"))
+
+        live = db.strategy_deployments.rows[0]["risk"]["live"]
+        assert not live.get("paused")
+        assert not live.get("paused_at")
+
+    def test_live_status_reports_the_hold(self, monkeypatch):
+        db = FakeDB()
+        d = _deployment(mode="live")
+        d["risk"]["live"] = {"lots": 3, "paused": True}
+        db.strategy_deployments.rows.append(d)
+        _install(monkeypatch, db)
+
+        out = asyncio.run(dep._live_status_payload(db, "dep-1"))
+        assert out["live_paused"] is True
+        # Still LIVE — the strip must not render a held deployment as demoted.
+        assert out["live_mode"] is True
+
+    def test_live_status_reports_not_paused_by_default(self, monkeypatch):
+        db = FakeDB()
+        db.strategy_deployments.rows.append(_deployment(mode="live"))
+        _install(monkeypatch, db)
+        out = asyncio.run(dep._live_status_payload(db, "dep-1"))
+        assert out["live_paused"] is False
+
+    def test_enable_does_not_inherit_a_stale_pause(self, monkeypatch):
+        """SAFETY: /live/enable rebuilds risk.live from the request, so a hold left
+        on a previously-live deployment cannot survive into the new authorization.
+        Pinned because a future refactor to MERGE into the existing risk.live
+        (rather than replace it) would go live and then silently place nothing."""
+        db = FakeDB()
+        d = _deployment()
+        d["risk"]["live"] = {"paused": True, "paused_at": "2026-09-08T04:00:00+00:00"}
+        db.strategy_deployments.rows.append(d)
+        _install(monkeypatch, db)
+
+        asyncio.run(dep.enable_deployment_live("dep-1", _enable_body()))
+
+        row = db.strategy_deployments.rows[0]
+        assert row["mode"] == "live"
+        assert not row["risk"]["live"].get("paused")
+        assert not row["risk"]["live"].get("paused_at")
