@@ -48,10 +48,12 @@ export default function AlertRail({
           <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
           <span>
             <span className="font-bold">{noBackstopPositions.length} live position{noBackstopPositions.length !== 1 ? "s" : ""} have no broker backstop (software-guard-only)</span>{" "}
-            — the resting broker OCO failed to place for{" "}
+            — the resting broker OCO is OFF by default for{" "}
             {noBackstopPositions.map((p) => p.tsym).filter(Boolean).slice(0, 4).join(", ")}
-            {noBackstopPositions.length > 4 ? "…" : ""}. The software guard protects
-            {noBackstopPositions.length !== 1 ? " these" : " this"} while the app is running, but there is NO PC-down net. Square manually or re-place the OCO if the app may go offline.
+            {noBackstopPositions.length > 4 ? "…" : ""}. Nothing failed: it was disabled on
+            2026-09-03 because its stop leg fired at placement instead of resting. The software
+            guard protects{noBackstopPositions.length !== 1 ? " these" : " this"} while the app is
+            running, but there is NO PC-down net — if this PC goes offline, square manually.
           </span>
         </div>
       )}

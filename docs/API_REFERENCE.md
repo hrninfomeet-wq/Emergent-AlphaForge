@@ -209,7 +209,9 @@ gate chain) · [DEVELOPER_GUIDE.md](./DEVELOPER_GUIDE.md) · [USER_MANUAL.md](./
 | Method | Path | Purpose |
 |---|---|---|
 | POST | `/api/deployments/{deployment_id}/live/enable` | Switch to persistent LIVE mode. Requires ACTIVE/not-retired/no-drift, a current post-06:00 Flattrade session with static-IP config, engine can-trade, positive deployment caps + `daily_loss_cap`, account lot/position ceilings, and strict `confirm=true`. Failed/missing forward evidence returns a consent challenge unless strict `accept_unvalidated_live=true`; the decision and evidence snapshot are persisted. |
-| POST | `/api/deployments/{deployment_id}/live/disable` | Revert to paper mode (does NOT flatten open positions). |
+| POST | `/api/deployments/{deployment_id}/live/pause` | **Reversible hold.** Sets `risk.live.paused`; blocks new live ENTRIES only. `mode` stays `live` and `status` stays `ACTIVE`, so open positions keep their guard/exits — paused is NOT flat. 409 if the deployment is not in live mode. |
+| POST | `/api/deployments/{deployment_id}/live/resume` | Lift the hold. No consent is re-collected (authorization was never lost). Compare-and-swap on `updated_at`; 409 `deployment_changed_during_resume` if anything changed in flight. |
+| POST | `/api/deployments/{deployment_id}/live/disable` | Revert to paper mode (does NOT flatten open positions). Clears any `paused` hold. |
 | POST | `/api/deployments/{deployment_id}/live/stop` | Flatten THIS deployment's open live positions, then disarm (user-initiated exit — transmits directly). |
 | GET | `/api/deployments/live/status` | Batched live status for many deployments in one call (`ids=` comma-separated). |
 | GET | `/api/deployments/{deployment_id}/live/status` | One deployment's live arm state, caps, today's counters, open live positions, transmit gates. |

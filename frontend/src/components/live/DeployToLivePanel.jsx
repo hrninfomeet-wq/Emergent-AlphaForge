@@ -386,9 +386,14 @@ export default function DeployToLivePanel({ dep, onArmed }) {
             <div className="rounded-md border border-line bg-bg-2/40 px-3 py-2 space-y-3">
               <p className="text-[10px] uppercase tracking-wider text-dimmer">
                 PC-down OCO backstop{" "}
-                <span className="text-dimmer/60 normal-case tracking-normal">
-                  — resting broker OCO if the PC/guard is down (optional)
+                <span className="text-warning normal-case tracking-normal">
+                  — inactive: the broker OCO is OFF by default
                 </span>
+              </p>
+              <p className="text-[10px] text-dimmer leading-snug" data-testid="cat-band-inactive-note">
+                These values are stored but have no effect unless{" "}
+                <code className="font-mono">LIVE_BROKER_OCO_ENABLED=1</code>. The broker OCO was
+                disabled on 2026-09-03 — its stop leg fired at placement instead of resting.
               </p>
               {/* Catastrophe stop % */}
               <div>
@@ -478,7 +483,7 @@ export default function DeployToLivePanel({ dep, onArmed }) {
               )}
             </div>
             <p className="text-dimmer">
-              Deployed entries go live as NRML with a resting OCO backstop; the catastrophe band is auto-widened to stay clear of the software guard stop.
+              Deployed entries go live as NRML. The <strong className="text-foreground">software exit guard is the only protection</strong>, and it runs only while this app is running — there is <strong className="text-foreground">no PC-down net</strong>. The resting broker OCO backstop is OFF by default since 2026-09-03 (its stop leg fired at placement instead of resting and was rejected); set <code className="font-mono">LIVE_BROKER_OCO_ENABLED=1</code> to re-enable it, after a GetPendingGTTOrder readback confirms the leg pairing.
             </p>
             <div className="rounded-md border border-line bg-bg-2 px-3 py-2 text-[11px] space-y-1">
               <div>Strategy: <span className="text-foreground">{dep.strategy_id || "—"}</span></div>

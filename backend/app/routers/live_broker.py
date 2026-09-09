@@ -1379,6 +1379,15 @@ def _build_gtt_or_oco(body: "_GttBody") -> tuple[str, Optional[Dict[str, Any]]]:
     intent is None when the builder rejects (NRML/tick/qty/ai_t validation)."""
     kind = (body.kind or "oco").strip().lower()
     if kind == "oco":
+        # ⚠ 2026-09-03 READBACK: the oivariable x/y -> leg pairing this builder uses
+        # is SWAPPED (leg1/`x` is the ABOVE slot), so a transmitted kind="oco" fires
+        # its STOP leg at placement instead of resting, and the exchange rejects it
+        # ("BEYOND LPP LIMIT"). The AUTOMATIC arm path is gated off by
+        # LIVE_BROKER_OCO_ENABLED for exactly this reason. This manual route is left
+        # ungated deliberately — an operator hitting the API explicitly is a different
+        # decision from an automatic arm — but it carries the identical defect.
+        # Confirm the pairing per docs/live-readback-checklist.md §E1 before
+        # transmitting one for real.
         return kind, _gtt_mod.build_oco_intent(
             exch=body.exch, tsym=body.tsym, qty=body.qty, prd=body.prd,
             sl_trigger=body.sl_trigger, sl_limit=body.sl_limit,

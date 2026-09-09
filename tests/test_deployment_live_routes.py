@@ -1506,3 +1506,41 @@ class TestLivePauseResume:
         assert row["mode"] == "live"
         assert not row["risk"]["live"].get("paused")
         assert not row["risk"]["live"].get("paused_at")
+
+    def test_resume_is_cas_guarded_but_pause_is_not(self, monkeypatch):
+        """ASYMMETRY, per runtime.py's rule: the restrictive direction always lands,
+        the permissive one must not race.
+
+        A Stop landing between the resume's read and its write must WIN — otherwise
+        resume resurrects the real-order path on a deployment the operator just
+        stopped. Pause has the opposite requirement and stays unconditional.
+        """
+        from fastapi import HTTPException
+        db = FakeDB()
+        d = _deployment(mode="live")
+        d["risk"]["live"] = {"lots": 3, "paused": True}
+        db.strategy_deployments.rows.append(d)
+        _install(monkeypatch, db)
+
+        # Simulate a concurrent write landing after the route's read: any change to
+        # updated_at invalidates the CAS token.
+        real_find = db.strategy_deployments.find_one
+
+        async def _racing_find(*a, **kw):
+            doc = await real_find(*a, **kw)
+            db.strategy_deployments.rows[0]["updated_at"] = "2026-09-09T00:00:00+00:00"
+            return doc
+
+        db.strategy_deployments.find_one = _racing_find
+        with pytest.raises(HTTPException) as ei:
+            asyncio.run(dep.resume_deployment_live("dep-1"))
+        assert ei.value.status_code == 409
+        assert ei.value.detail["code"] == "deployment_changed_during_resume"
+        # The hold must still be in force — the race must not have half-applied.
+        assert db.strategy_deployments.rows[0]["risk"]["live"]["paused"] is True
+
+        # PAUSE under the identical race still lands: safety direction.
+        db.strategy_deployments.rows[0]["risk"]["live"].pop("paused")
+        out = asyncio.run(dep.pause_deployment_live("dep-1"))
+        assert out["live_paused"] is True
+        assert db.strategy_deployments.rows[0]["risk"]["live"]["paused"] is True

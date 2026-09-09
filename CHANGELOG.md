@@ -2,6 +2,63 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [Unreleased] — The OCO is off; the product copy now says so (2026-09-09)
+
+A worktree audit surfaced a class of defect the two preceding entries created and
+did not close: **changeset A disabled the resting broker OCO and left A's own
+operator-facing copy asserting it.**
+
+The worst instance was the consent screen itself. `DeployToLivePanel` told the
+operator "Deployed entries go live as NRML with a resting OCO backstop" at the exact
+moment they authorize real money — and, below it, presented a *PC-down OCO backstop*
+form asking them to set catastrophe stop/target percentages for a net that
+`LIVE_BROKER_OCO_ENABLED=0` means will never be placed. Both now state the truth: the
+software exit guard is the only protection, it runs only while the app runs, and
+**there is no PC-down net**. The band inputs persist but are labelled inactive.
+
+Two more surfaces said the same false thing in the other direction. The alert rail
+and the blotter chip both read "the resting broker OCO **failed to place**" — but
+nothing failed, because nothing was attempted; with the flag off this banner is the
+steady state on every live position, not an exception. The rail also advised
+"re-place the OCO", which no component can do. Reworded to name the actual cause.
+
+**A real correctness bug in A's own band clamp.** `auto_square._marketable_prc` and
+`kill_switch._leg_price` clamped an exit into the exchange band without checking
+which side of the market the bound sat on. `ref` can fall back to `position["lp"]`
+from an older vintage than the quote the band came from, so a floor at or above the
+mark would lift a SELL exit ABOVE the market — where it RESTS UNFILLED instead of
+crossing. That is the dangerous direction: `_square_position_impl` reports
+`squared: True` on an *accepted* limit, so a position that never flattened would be
+reported flat. An out-of-band reject is loud; a resting exit is silent. Both now
+clamp only toward the market and fall back to the computed cross otherwise.
+
+**`/live/resume` is compare-and-swap guarded.** It blind-wrote the entire `risk`
+subtree, so a Stop landing between its read and its write would have been reverted
+and the real-order path resurrected on a deployment the operator had just stopped.
+`pause` stays deliberately unconditional — the restrictive direction must always
+land — matching the rule `runtime.py::_set_deployment_status` already states.
+
+**Documentation caught up with both changesets.** `LIVE_BROKER_OCO_ENABLED` existed
+nowhere an operator would look; `backend/.env.example` still called
+`LIVE_AUTOPLACE_ARMED` "the single master switch". The readback checklist's §E told
+the reader to type `ENABLE` (removed 2026-09-08) and made "a two-leg resting OCO
+appears at Flattrade" a *stop condition*, which now trips on every correct run — and
+it never contained the `GetPendingGTTOrder` pairing readback the code cites it for.
+That procedure now exists as **§E1**. `DEVELOPER_GUIDE`, `ARCHITECTURE` and
+`STRATEGY_DEPLOYMENTS` each carried a PC-down-net claim that is no longer true, and
+the deployment lifecycle is documented with the live hold. Dated audit records were
+left alone — they correctly describe their moment.
+
+Also: the dead `onArmedSummaryChange` plumbing is gone (its only consumer,
+`LiveBanner`, is imported by nothing; `ExecutionStateStrip` renders the dry-run
+verdict instead); the held dot uses a real amber, since `bg-warning` resolves to a
+rose indistinguishable from `bg-danger` at 8px and `bg-amber` had no utility at all;
+`tests/frontend/liveStopState.test.mjs` — 113 assertions committed in `ed737d1` and
+executed by nothing since — now runs from a pytest wrapper; the two node-test
+locations are consolidated under `tests/frontend/`; and five unanchored `.gitignore`
+patterns are anchored (`*credentials*` would have swallowed a future
+`backend/app/credentials_store.py` at any depth).
+
 ## [Unreleased] — Live controls: a hold that doesn't cost you your live authorization (2026-09-08)
 
 Three operator-requested changes to `/live-trading`. The Market Pulse rework asked for

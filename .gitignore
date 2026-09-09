@@ -14,7 +14,7 @@ __pycache__/
 .venv/
 venv/
 env/
-build/
+/build/
 dist/
 *.egg-info/
 .pytest_cache/
@@ -24,8 +24,8 @@ dist/
 # Node
 node_modules/
 .next/
-out/
-build/
+/frontend/out/
+/frontend/build/
 .cache/
 .parcel-cache/
 npm-debug.log*
@@ -44,7 +44,7 @@ yarn-error.log*
 Thumbs.db
 
 # Logs
-logs/
+/logs/
 *.log
 
 # OS
@@ -71,9 +71,11 @@ credentials.json
 !backend/.env.example
 !frontend/.env.example
 
-# Local-only memory and credential scratch (never commit)
-memory/
-*credentials*
+# Local-only memory and credential scratch (never commit).
+# Anchored: an unanchored *credentials* would swallow a future
+# backend/app/credentials_store.py at any depth.
+/memory/
+/memory/*credentials*
 
 # Personal strategy notes — local only, never commit
 Strategy_note_self/

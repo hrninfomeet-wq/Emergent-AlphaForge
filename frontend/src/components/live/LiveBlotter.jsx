@@ -220,7 +220,7 @@ export default function LiveBlotter({ rows, gtt }) {
                         {r?.oco_error ? (
                           <span
                             className="inline-block px-1.5 py-0.5 rounded text-[10px] border border-amber-500/40 bg-amber-500/10 text-warning"
-                            title="The resting broker OCO failed to place — this position has NO PC-down broker backstop, only the software guard while the app is running."
+                            title="The resting broker OCO is OFF by default (disabled 2026-09-03 — its stop leg fired at placement instead of resting). Nothing failed; none was attempted. This position has NO PC-down broker backstop, only the software guard while the app is running."
                           >
                             no broker net
                           </span>

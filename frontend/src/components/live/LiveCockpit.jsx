@@ -189,9 +189,8 @@ export default function LiveCockpit() {
           Previously this lived only inside the ⚙ config drawer, so the one
           question an operator asks most ("which strategies are live, and can I
           stop them?") needed two clicks and a scroll to answer. It is mounted
-          HERE ONLY — a second copy in the drawer would double-fire
-          onArmedSummaryChange and give the same deployment two control surfaces
-          that could be clicked concurrently. */}
+          HERE ONLY — a second copy would give one live deployment two
+          independently clickable Stop/Disable surfaces. */}
       <LiveDeploymentStrip />
 
       {/* Broker-data as-of stamp — a failing poll keeps the last-good value on

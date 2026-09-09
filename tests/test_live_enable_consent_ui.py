@@ -10,7 +10,7 @@ These assertions run against the JSX ABSTRACT SYNTAX TREE, not a source grep.
 The property that matters — "is the checkbox rendered unconditionally?" — is
 structural, and a grep cannot answer it: `{unvalidated && <label><input/></label>}`
 and a plain `<label><input/></label>` differ only in their enclosing expression.
-The probe (tests/jsx_probe/consent_probe.cjs) parses with the frontend's own
+The probe (tests/frontend/consent_probe.cjs) parses with the frontend's own
 @babel/parser and reports each checkbox's guard chain.
 """
 from __future__ import annotations
@@ -24,7 +24,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 _PANEL = ROOT / "frontend" / "src" / "components" / "live" / "DeployToLivePanel.jsx"
-_PROBE = ROOT / "tests" / "jsx_probe" / "consent_probe.cjs"
+_PROBE = ROOT / "tests" / "frontend" / "consent_probe.cjs"
 _PARSER = ROOT / "frontend" / "node_modules" / "@babel" / "parser"
 
 

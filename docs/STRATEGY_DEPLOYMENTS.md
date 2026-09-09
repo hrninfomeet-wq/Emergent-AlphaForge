@@ -275,11 +275,30 @@ still applies to every individual entry, every day). The accepted account
 ceilings are snapshotted at activation, and the executor re-applies the current
 ceiling at order time.
 
+- `POST /deployments/{id}/live/pause` — the **reversible HOLD** (2026-09-08).
+  Sets `risk.live.paused = true`, which `is_deployment_live_allowed` checks. This
+  gates NEW ENTRIES ONLY: `mode` stays `"live"` and `status` stays `ACTIVE`, so
+  the deployment keeps managing its open book (guard, exit monitor, and the
+  resting OCO when enabled). **Paused is not flat.** Use `/live/stop` to flatten.
+- `POST /deployments/{id}/live/resume` — lift the hold. Not a re-authorization:
+  `mode` never left `"live"`, so no consent is re-collected. Compare-and-swap
+  guarded on `updated_at` (the permissive direction must lose a race against a
+  concurrent Stop); `pause` is deliberately unconditional, matching the rule in
+  `runtime.py::_set_deployment_status`.
 - `POST /deployments/{id}/live/disable` — revert `mode` to `"paper"`; stops new
   live placing. Does **not** flatten open positions — they stay registered with
   the guard and keep their stop/target/trail and the resting OCO. The live
   config (`risk.live` caps + catastrophe band) is retained so re-enabling
-  doesn't require re-entering it.
+  doesn't require re-entering it, and any `paused` hold is cleared so a stale
+  one cannot be inherited by a later `/live/enable`.
+
+> **Why the hold is a separate flag and not `status`.** Every other stop path
+> routes through `_set_deployment_status`, which demotes `mode: live -> paper` on
+> ANY transition out of `ACTIVE` (the v0.56.0 invariant). That is deliberate — it
+> stops resume / re-pin / un-retire from silently re-authorizing real money — but
+> it means a `status`-based pause costs the operator their live authorization and
+> the full caps + consent ceremony to undo. Gating in the authorization predicate
+> instead leaves the invariant untouched.
 - `POST /deployments/{id}/live/stop` — flatten THIS deployment's open live
   positions (margin-safe square path), revert `mode` to `"paper"`, **and** set
   `status="PAUSED"` — reverting mode alone would leave an ACTIVE deployment
@@ -339,6 +358,14 @@ boundary (`LIVE_AUTOPLACE_ARMED`), and a SEBI rate throttle — only then does
 `_transmit_and_arm` place the order and arm protection.
 
 ### Catastrophe backstop + software guard
+> **⚠ OFF BY DEFAULT SINCE 2026-09-03.** The resting broker OCO does not rest: its
+> stop leg reached the ORDER BOOK one second after the fill and was LPP-rejected,
+> because the `oivariable` x/y -> leg pairing is SWAPPED (leg1/`x` is the ABOVE
+> slot). It is now opt-in via `LIVE_BROKER_OCO_ENABLED` (default `0`). **With it
+> off there is NO PC-down net** — the in-process software guard is the only
+> protection and it runs only while the app runs. Re-enable only after the pairing
+> readback in `docs/live-readback-checklist.md` §E1.
+
 On a real fill, `arm` best-effort places a **resting broker OCO** (NRML product,
 the PC-down catastrophe net) whose `al_id` is journaled (`oco_al_id`;
 `oco_error="no_broker_backstop"` if it couldn't rest). Independently, the

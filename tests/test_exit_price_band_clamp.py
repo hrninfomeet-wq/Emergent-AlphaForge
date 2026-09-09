@@ -1,9 +1,10 @@
 """An exit limit outside the exchange price band is an automatic reject.
 
 2026-09-03, live: "SELL ORDER PRICE [49.70000000] IS BEYOND LPP LIMIT:
-[87.65000000]". The order was the catastrophe OCO's stop leg (fixed by
-``oco_band_skip_reason``), but the SAME defect class sits on the paths that
-actually flatten a position:
+[87.65000000]". The order was the catastrophe OCO's stop leg — the OCO itself is
+now OFF by default (see ``live_deploy_context._broker_oco_enabled``); no
+REST-side price pre-check was kept, because GetQuotes cannot see the LPP band.
+But the SAME defect class sits on the paths that actually flatten a position:
 
   * ``kill_switch._leg_price`` DOES clamp to the band — but then rounds the
     clamped price DOWN to the tick, which walks it back below ``lc`` whenever
@@ -149,3 +150,61 @@ class TestSquarePositionClampsToTheBand:
         run(square_position(client, pos, reason="stop_hit", band_pct=1.0))
         assert _sell_orders(client)[0]["prc"] == round_to_tick(
             200.0 * (1 - 1.0 / 100), 0.05, mode="down")
+
+
+# ---------------------------------------------------------------------------
+# A band on the WRONG SIDE of the market must not be honoured (2026-09-09)
+#
+# The clamp added above assumed lc < market < uc. It is not guaranteed: `ref`
+# falls back to position["lp"] when the fresh quote's `lp` is unusable, while
+# lc/uc are still read from that (different-vintage) quote payload. A floor at
+# or ABOVE the market would lift a SELL exit out of the market — where it RESTS
+# UNFILLED rather than crossing. That is the dangerous direction, because
+# _square_position_impl reports squared=True on an ACCEPTED limit: a position
+# that never flattened is reported flat. An out-of-band reject is loud and
+# leaves the position visibly open. Prefer the reject.
+# ---------------------------------------------------------------------------
+
+class TestBandOnTheWrongSideIsIgnored:
+    def test_sell_is_not_lifted_above_the_market_by_a_floor_above_ref(self):
+        """lc ABOVE the mark: honouring it would price the exit through the top
+        of the book and leave it resting."""
+        client = MockNoren()
+        # Fresh quote carries a floor ABOVE the last price — stale/nonsensical band.
+        client.set_quotes({"stat": "Ok", "lp": "100", "lc": "150"})
+        client.set_position_book([
+            {"tsym": "NIFTY2662221000CE", "exch": "NFO", "netqty": "65", "lp": "100"}
+        ])
+        run(square_position(client, _pos(), reason="stop_hit", band_pct=1.0))
+        prc = _sell_orders(client)[0]["prc"]
+        assert prc == 99.00, f"expected the unclamped marketable cross, got {prc}"
+        assert prc < 100.0, "a SELL exit must still be priced THROUGH the market"
+
+    def test_buy_is_not_pushed_below_the_market_by_a_ceiling_under_ref(self):
+        """uc BELOW the mark, on a short position — mirror image."""
+        client = MockNoren()
+        client.set_quotes({"stat": "Ok", "lp": "100", "uc": "50"})
+        client.set_position_book([
+            {"tsym": "NIFTY2662221000CE", "exch": "NFO", "netqty": "-65", "lp": "100"}
+        ])
+        run(square_position(client, _pos(netqty="-65"), reason="stop_hit", band_pct=1.0))
+        buys = [o for o in client._orders.values() if o["trantype"] == "B"]
+        assert len(buys) == 1
+        assert buys[0]["prc"] == 101.00, buys[0]["prc"]
+        assert buys[0]["prc"] > 100.0, "a BUY exit must still be priced THROUGH the market"
+
+    def test_leg_price_ignores_a_floor_above_the_anchor(self):
+        """kill_switch._leg_price carries the same guard against its own anchor."""
+        prc = _leg_price(65, 100.0, 50.0, 0.05, {"lc": "150"})
+        assert prc == round_to_tick(100.0 * 0.5, 0.05, mode="down"), prc
+        assert prc < 100.0
+
+    def test_leg_price_ignores_a_ceiling_below_the_anchor(self):
+        prc = _leg_price(-65, 100.0, 50.0, 0.05, {"uc": "50"})
+        assert prc == round_to_tick(100.0 * 1.5, 0.05, mode="up"), prc
+        assert prc > 100.0
+
+    def test_a_sane_band_still_clamps(self):
+        """Regression floor: the wrong-side guard must not disable the real clamp."""
+        prc = _leg_price(65, 100.0, 50.0, 0.05, {"lc": "87.63"})
+        assert prc >= 87.63, f"{prc} fell back below the floor"

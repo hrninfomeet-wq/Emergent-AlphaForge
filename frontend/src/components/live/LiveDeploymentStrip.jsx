@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Activity, ChevronDown, ChevronRight, Loader2, OctagonX, Pause, Play, ShieldOff, Square } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
@@ -75,7 +75,7 @@ function LiveRow({ dep, liveStatus, busy, onDisable, onStop, onPause, onResume }
           The pulse is the "orders can fire right now" cue, so a held deployment
           must not keep it. */}
       <span
-        className={`w-2 h-2 rounded-full shrink-0 ${paused ? "bg-warning" : "bg-danger animate-pulse"}`}
+        className={`w-2 h-2 rounded-full shrink-0 ${paused ? "bg-amber" : "bg-danger animate-pulse"}`}
         title={paused ? "LIVE — held (no new entries)" : "LIVE"}
       />
       <div className="min-w-0">
@@ -222,7 +222,7 @@ function NotLiveRow({ dep, busy, onArmed }) {
 const COLLAPSED_STORAGE_KEY = "af.liveDeploymentStrip.collapsed";
 
 // ── Main strip ─────────────────────────────────────────────────────────────
-export default function LiveDeploymentStrip({ onArmedSummaryChange }) {
+export default function LiveDeploymentStrip() {
   // Deployments + the batched per-deployment live status come from the shared
   // LiveDataProvider (one 10s batched poll); this strip no longer self-polls.
   // `liveStatuses` is the provider's deployLive byId map (today's counters/open
@@ -367,23 +367,12 @@ export default function LiveDeploymentStrip({ onArmedSummaryChange }) {
   // now?" — the only question the header is asked while collapsed.
   const tradingCount = liveDeps.length - heldCount;
 
-  // Lift the live-deployment summary to parent (for LiveBanner).
-  // autoplace_armed is a backend env flag shared across all deployments —
-  // take it from any live status that has the field set.
-  useEffect(() => {
-    if (!onArmedSummaryChange) return;
-    const armedCount = liveDeps.length;
-    let autoplaceArmed = null;
-    for (const dep of liveDeps) {
-      const st = liveStatuses[dep.id];
-      if (st && "autoplace_armed" in st) {
-        autoplaceArmed = st.autoplace_armed;
-        break;
-      }
-    }
-    onArmedSummaryChange({ armedCount, autoplaceArmed });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [liveDeps.length, liveStatuses, onArmedSummaryChange]);
+  // The armed-summary lift to a parent is GONE (2026-09-09). Its only consumer was
+  // LiveBanner, which is imported by nothing since the cockpit redesign, so the
+  // effect short-circuited on every render. Nothing is lost: the dry-run condition
+  // it carried is rendered persistently by ExecutionStateStrip, from the arm-state
+  // verdict — arm_state.py emits "N deployment(s) armed but LIVE_AUTOPLACE_ARMED
+  // off (dry-run)" and drops would_transmit_entry to false.
 
   if (!deployments || deployments.length === 0) return null;
 

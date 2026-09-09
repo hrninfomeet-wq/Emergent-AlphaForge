@@ -632,7 +632,10 @@ def _leg_price(netqty: int, ref: Optional[float], band_pct: float,
             return None
         prc = round_to_tick(anchor * (1.0 - abs(band_pct) / 100.0), tick, mode="down")
         lc = _pos_float(quote.get("lc"))
-        if lc is not None and prc < lc:
+        # `lc < anchor` guard: a floor at or above the market would lift this SELL
+        # leg out of the market, resting unfilled instead of flattening. Same
+        # reasoning as auto_square._marketable_prc — prefer the loud reject.
+        if lc is not None and lc < anchor and prc < lc:
             # Round the FLOOR up. Clamping first and tick-rounding down (the old
             # order) walked the clamped price back below `lc` whenever `lc` was
             # not itself a tick multiple — re-creating the out-of-band reject the
@@ -644,7 +647,7 @@ def _leg_price(netqty: int, ref: Optional[float], band_pct: float,
         return None
     prc = round_to_tick(anchor * (1.0 + abs(band_pct) / 100.0), tick, mode="up")
     uc = _pos_float(quote.get("uc"))
-    if uc is not None and prc > uc:
+    if uc is not None and uc > anchor and prc > uc:
         prc = round_to_tick(uc, tick, mode="down")   # round the CEILING down
     return prc
 

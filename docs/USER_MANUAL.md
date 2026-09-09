@@ -199,10 +199,17 @@ Execution**, choose lots/signal, lots/day, concurrent positions, the mandatory
 positive daily-loss cap, and optional catastrophe OCO band. Values must fit the
 account lot and open-position ceilings shown in the dialog.
 
-If the forward policy passes, review the summary and type `ENABLE`. If it has not
-passed (including missing evidence), the dialog shows the failed checks and also
-requires **Yes, I explicitly approve unvalidated real-money trading** before the
-typed confirmation is accepted. This evidence override is persisted. Broker OAuth,
+If the forward policy passes, review the summary and tick **Yes, enable real-money
+trading for this deployment**. If it has not passed (including missing evidence),
+the dialog shows the failed checks and the checkbox instead reads **Yes, I
+explicitly approve unvalidated real-money trading**; that evidence override is
+persisted. (Until 2026-09-08 this step also required typing `ENABLE`; the checkbox
+replaced it, and now renders on both paths.)
+
+The optional catastrophe OCO band is **inactive by default** — the resting broker
+OCO has been off since 2026-09-03 (`LIVE_BROKER_OCO_ENABLED`). Values you enter are
+stored but have no effect until it is switched on, and there is no PC-down net
+meanwhile. Broker OAuth,
 engine/kill-switch, capital ceilings, order safety, and exit protection remain hard
 gates. `LIVE_AUTOPLACE_ARMED=1` is also required for automatic entries to transmit;
 otherwise the backend dry-runs them.

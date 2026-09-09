@@ -1496,10 +1496,40 @@ async def _set_live_paused(deployment_id: str, paused: bool) -> Dict[str, Any]:
         live.pop("paused", None)
         live.pop("paused_at", None)
     risk["live"] = live
-    await db.strategy_deployments.update_one(
-        {"id": deployment_id},
+    # ASYMMETRIC BY DESIGN, following runtime.py's rule for _set_deployment_status:
+    # the RESTRICTIVE direction must always land, the PERMISSIVE one must not race.
+    #
+    #   pause  — unconditional. A hold is the safety direction; it must win even
+    #            under a concurrent write, exactly as stop/archive do.
+    #   resume — compare-and-swap on `updated_at`, the same optimistic-concurrency
+    #            token /live/enable uses. Resume re-opens the real-order path, so a
+    #            Stop / Disable / demotion landing between our read and our write
+    #            must beat it. A blind $set here would resurrect entries on a
+    #            deployment the operator had just stopped — and, because this
+    #            writes the WHOLE `risk` subtree, would also revert any concurrent
+    #            change to risk.sizing / risk.exit_controls / caps.
+    _filter: Dict[str, Any] = {"id": deployment_id}
+    if not paused:
+        _filter["updated_at"] = deployment.get("updated_at")
+    res = await db.strategy_deployments.update_one(
+        _filter,
         {"$set": {"risk": risk, "updated_at": now_iso}},
     )
+    if not paused and int(getattr(res, "matched_count", 0) or 0) != 1:
+        current = await db.strategy_deployments.find_one({"id": deployment_id}, {"_id": 0}) or {}
+        raise HTTPException(
+            409,
+            detail={
+                "code": "deployment_changed_during_resume",
+                "message": (
+                    "This deployment changed while the resume was in flight (it may "
+                    "have been stopped, disabled or demoted), so the hold was NOT "
+                    "lifted. Re-check its state and resume again if you still intend to."
+                ),
+                "current_status": current.get("status"),
+                "current_mode": current.get("mode"),
+            },
+        )
     return serialize_doc({
         "deployment_id": deployment_id,
         "live_paused": bool(paused),

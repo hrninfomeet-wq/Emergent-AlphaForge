@@ -263,10 +263,13 @@ which defaults to OFF:
 | Env var | Gates | Default | If unset |
 |---|---|---|---|
 | `LIVE_AUTOPLACE_ARMED` | **auto entries** (deployment path) | `0` | a live-mode deployment still only **dry-runs** — builds + validates the full intent, transmits nothing |
+| `LIVE_BROKER_OCO_ENABLED` | the **PC-down resting broker OCO** | `0` | no OCO is attempted; `oco_al_id` stays null and `auto_live` journals `oco_error="no_broker_backstop"`. **There is no PC-down net.** Off since 2026-09-03 — see §E1 of the readback checklist |
 
 `executor._autoplace_armed()` reads `LIVE_AUTOPLACE_ARMED` and accepts only `1/true/yes/on`;
 anything else (including unset) means dry-run. This is the "safe by default even if a deployment is
-switched to live" backstop — and it is now the **sole** remaining transmit env gate.
+switched to live" backstop, and the only gate on ENTRY transmission. It is no longer the sole
+live env gate: `LIVE_BROKER_OCO_ENABLED` (added 2026-09-03, default `0`) gates the PC-down
+resting broker OCO, and the software exit guard is gated by neither — it always transmits.
 
 **`LIVE_GUARD_ARMED` is REMOVED.** The software exit guard (stop/target/trailing squares and its
 Layer-2 widening re-price) now **always transmits** — a deployed strategy's own exits are part of the
@@ -357,6 +360,14 @@ caps is refused rather than traded unbounded.
   `max_consecutive_losses`, `daily_loss_cutoff_pct`, `max_open_paper_trades`).
 
 ### The catastrophe backstop (PC-down)
+
+> **⚠ OFF BY DEFAULT SINCE 2026-09-03.** The resting broker OCO does not rest: its
+> stop leg reached the ORDER BOOK one second after the fill and was LPP-rejected,
+> because the `oivariable` x/y -> leg pairing is SWAPPED (leg1/`x` is the ABOVE
+> slot). It is now opt-in via `LIVE_BROKER_OCO_ENABLED` (default `0`). **With it
+> off there is NO PC-down net** — the in-process software guard is the only
+> protection and it runs only while the app runs. Re-enable only after the pairing
+> readback in `docs/live-readback-checklist.md` §E1.
 
 Because a resting SL-LMT on a short option margin-rejects, the software exit guard
 (`app/live/live_position_guard.py`, started in `server.py` lifespan) reads the **broker** position

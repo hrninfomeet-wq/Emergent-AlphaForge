@@ -69,8 +69,7 @@ def test_deployment_control_lives_on_the_page_not_in_the_drawer():
     Pinned in BOTH directions. Present on the page: "what is trading right now,
     and can I stop it?" must be answerable without opening a drawer. Absent from
     the drawer: two mounts would give one live deployment two independently
-    clickable Stop/Disable surfaces, and would double-fire the armed-summary
-    callback that feeds the banner.
+    clickable Stop/Disable surfaces.
     """
     assert "LiveDeploymentStrip" in _src("components/live/LiveCockpit.jsx")
     assert "LiveDeploymentStrip" not in _src("components/live/cockpit/ConfigDrawer.jsx")
@@ -253,3 +252,62 @@ def test_api_client_exposes_the_live_hold_pair():
     assert "resumeDeploymentLive:" in api
     assert "/live/pause" in api
     assert "/live/resume" in api
+
+
+# --------------------------------------------------------------------------- #
+# The OCO is OFF by default — operator copy must not promise it (2026-09-09)
+#
+# Changeset A disabled the resting broker OCO but left A's own product copy
+# asserting it. The worst instance was the Enable dialog, which promised "a
+# resting OCO backstop" at the exact moment the operator authorizes real money,
+# and a form asking them to configure that disabled net.
+# --------------------------------------------------------------------------- #
+
+def test_the_enable_dialog_does_not_promise_a_resting_oco():
+    panel = _src("components/live/DeployToLivePanel.jsx")
+    assert "go live as NRML with a resting OCO backstop" not in panel, (
+        "the consent screen promises a backstop that is off by default"
+    )
+    # It must say what is actually true: guard-only, no PC-down net.
+    assert "no PC-down net" in panel
+    assert "LIVE_BROKER_OCO_ENABLED" in panel
+
+
+def test_the_catastrophe_band_form_says_it_is_inactive():
+    """The form collects a stop/target band for a net that will not be placed.
+    It may stay (the values persist for when the flag is turned on) but it must
+    not read as active protection."""
+    panel = _src("components/live/DeployToLivePanel.jsx")
+    assert 'data-testid="cat-band-inactive-note"' in panel
+    assert "resting broker OCO if the PC/guard is down (optional)" not in panel, (
+        "the catastrophe band still advertises itself as live protection"
+    )
+
+
+def test_no_backstop_copy_does_not_claim_a_failure():
+    """With the OCO off, nothing was attempted — so nothing 'failed to place'.
+    This banner is now the steady state on EVERY live position, and its old
+    're-place the OCO' advice was unactionable (no component can place one)."""
+    for rel in ("components/live/cockpit/AlertRail.jsx", "components/live/LiveBlotter.jsx"):
+        src = _src(rel)
+        assert "failed to place" not in src, f"{rel} still claims the OCO failed"
+    rail = _src("components/live/cockpit/AlertRail.jsx")
+    assert "re-place the OCO" not in rail, "unactionable advice is still on screen"
+    assert "OFF by default" in rail
+
+
+def test_the_held_dot_uses_a_real_amber():
+    """bg-warning resolves to a rose in both themes and reads as red at 8px, which
+    defeats the amber-vs-red distinction the code comment describes."""
+    strip = _src("components/live/LiveDeploymentStrip.jsx")
+    assert '"bg-amber"' in strip
+    css = _src("index.css")
+    assert ".bg-amber {" in css, "bg-amber has no utility — it would silently do nothing"
+
+
+def test_the_dead_armed_summary_plumbing_is_gone():
+    """Its only consumer, LiveBanner, is imported by nothing; the effect
+    short-circuited on every render. The dry-run condition it carried is rendered
+    by ExecutionStateStrip from the arm-state verdict instead."""
+    strip = _code("components/live/LiveDeploymentStrip.jsx")
+    assert "onArmedSummaryChange" not in strip

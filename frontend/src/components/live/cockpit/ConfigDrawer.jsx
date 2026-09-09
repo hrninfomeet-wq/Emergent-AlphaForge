@@ -79,7 +79,7 @@ export default function ConfigDrawer({ open, onClose }) {
         tabIndex={-1}
         role="dialog"
         aria-modal="true"
-        aria-label="Configure and deploy"
+        aria-label="Configure backstop and overall controls"
         // A closed drawer is only translated off-screen, so without aria-hidden +
         // pointer-events-none every control inside stays in the tab order and the
         // accessibility tree — keyboard users could tab into an invisible panel
@@ -88,7 +88,7 @@ export default function ConfigDrawer({ open, onClose }) {
         className={`fixed top-0 right-0 h-full w-[min(460px,94vw)] bg-bg-1 border-l border-line z-50 flex flex-col transition-transform motion-reduce:transition-none focus:outline-none ${open ? "translate-x-0" : "translate-x-full pointer-events-none"}`}
       >
         <div className="flex items-center justify-between px-4 py-3 border-b border-line bg-bg-2/50">
-          <span className="text-sm font-semibold text-foreground">⚙ Configure &amp; deploy</span>
+          <span className="text-sm font-semibold text-foreground">⚙ Backstop &amp; overall controls</span>
           <button type="button" onClick={onClose} className="w-7 h-7 rounded-md border border-line bg-bg-3 text-dim hover:text-foreground flex items-center justify-center" aria-label="Close">
             <X className="w-4 h-4" />
           </button>

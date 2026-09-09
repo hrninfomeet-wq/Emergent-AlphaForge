@@ -154,6 +154,10 @@ code, .font-mono {
     .bg-success { background-color: var(--color-success); }
     .bg-danger { background-color: var(--color-danger); }
     .bg-warning { background-color: var(--color-warning); }
+    /* --color-amber had no utility, so `bg-amber` silently did nothing. The
+       held-deployment dot needs a tone genuinely distinct from bg-danger;
+       --color-warning is a rose in both themes and reads as red at 8px. */
+    .bg-amber { background-color: var(--color-amber); }
     .bg-bg-0 { background: var(--bg-0); }
     .bg-bg-1 { background: var(--bg-1); }
     .bg-bg-2 { background: var(--bg-2); }

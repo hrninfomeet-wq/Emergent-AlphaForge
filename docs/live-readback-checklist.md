@@ -115,17 +115,48 @@ not evidence that this is safe or profitable.
 
 - [ ] Review the deployment's frozen strategy hash, option policy, one-lot sizing,
   no-overnight rule, and live caps.
-- [ ] User reviews forward evidence; if it failed/is unavailable, separately
-  checks the explicit unvalidated real-money consent, then types `ENABLE`.
+- [ ] User reviews forward evidence and ticks the consent checkbox. If evidence
+  failed or is unavailable the checkbox instead reads "I explicitly approve
+  unvalidated real-money trading" and lists the failed checks. (Before
+  2026-09-08 this step also required typing `ENABLE`; the checkbox replaced it.)
 - [ ] User sets `LIVE_AUTOPLACE_ARMED=1` and verifies the execution strip.
 - [ ] On a signal, margin pre-check passes before order transmit.
 - [ ] Entry order fills as NRML; the guard registers the actual filled quantity.
-- [ ] A two-leg resting OCO appears at Flattrade and the blotter shows its ID and
-  catastrophe band. An OCO creation failure is a stop condition.
+- [ ] **No broker OCO is expected.** `LIVE_BROKER_OCO_ENABLED` is 0 by default, so
+  `oco_al_id` stays null, the blotter shows a "no broker net" chip and the alert
+  rail shows the software-guard-only banner. On the default path that is the PASS
+  condition, not a failure — **there is no PC-down net during this exercise.**
 - [ ] Software stop/target/time exit submits at most one tracked flatten attempt.
-- [ ] After submission, guard and OCO remain present until broker-confirmed flat.
-- [ ] Only after flat confirmation does OCO cancellation/final journal completion
-  occur.
+- [ ] After submission the guard remains present until broker-confirmed flat.
+- [ ] Only after flat confirmation does the final journal completion occur.
+
+### E1. Re-enabling the broker OCO — the pairing readback
+
+This is the procedure `live_deploy_context._broker_oco_enabled` points at. Do NOT
+set `LIVE_BROKER_OCO_ENABLED=1` for real trading until every box here is ticked.
+
+Background: on 2026-09-03 the OCO stop leg reached the order book one second after
+the fill and was LPP-rejected. A resting GTT/OCO never reaches the order book — it
+lives in `GetPendingGTTOrder` until its trigger fires. The broker's trigger note
+was "Ltp 144.85 is above 50.75", i.e. the STOP leg fired on an LTP-**above**
+condition that was already true at placement. `gtt.py` documents the `oivariable`
+x/y -> leg mapping as UNCONFIRMED; that readback says leg1/`x` is the ABOVE slot,
+so stop and target are swapped.
+
+- [ ] With `LIVE_BROKER_OCO_ENABLED=1`, arm ONE lot and let a single entry fill.
+- [ ] Immediately call `GetPendingGTTOrder` (Flattrade MCP read tools are fine) and
+  capture the raw payload. Do not rely on the app's own view of it.
+- [ ] In that payload, confirm the leg whose `oivariable` is the ABOVE condition
+  carries the **TARGET** price, and the BELOW condition carries the **STOP**. If
+  the ABOVE leg carries the stop, the pairing is still swapped — **abort, set the
+  flag back to 0**, and fix `gtt.build_oco_intent` before retrying.
+- [ ] Confirm the order book is EMPTY of both legs — a leg in the order book means
+  it fired at placement rather than resting, which is the original defect.
+- [ ] Confirm neither leg is priced through the market: a stop priced far below a
+  marketable level is a guaranteed reject; a stop priced marketably would flatten
+  the position immediately on acceptance.
+- [ ] Only after all four hold, record the readback in this file with the date and
+  the raw payload, and leave the flag on.
 
 ## F. Stop, Stop-all, or kill verification
 

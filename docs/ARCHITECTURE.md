@@ -339,6 +339,14 @@ record, no arm expiry).
 
 ### PC-down catastrophe backstop (GTT / OCO)
 
+> **⚠ OFF BY DEFAULT SINCE 2026-09-03.** The resting broker OCO does not rest: its
+> stop leg reached the ORDER BOOK one second after the fill and was LPP-rejected,
+> because the `oivariable` x/y -> leg pairing is SWAPPED (leg1/`x` is the ABOVE
+> slot). It is now opt-in via `LIVE_BROKER_OCO_ENABLED` (default `0`). **With it
+> off there is NO PC-down net** — the in-process software guard is the only
+> protection and it runs only while the app runs. Re-enable only after the pairing
+> readback in `docs/live-readback-checklist.md` §E1.
+
 A **GTT / OCO-GTT** rests on the **broker's** server, blocks no margin, and never
 sits in the order book until triggered — so if the PC/backend dies mid-session it
 still stops-out (and/or takes profit). Hard invariants (`gtt.py` + `oco_levels.py`):

@@ -208,12 +208,22 @@ def _marketable_prc(ref: float, trantype: str, band_pct: float, tick: float = 0.
     _tick = tick if tick > 0 else 0.05
     if trantype == "S":
         prc = round_to_tick(ref * (1.0 - eff / 100.0), _tick, mode="down")
-        if lc is not None and prc < lc:
+        # Clamp UP to the floor only when the floor is genuinely BELOW the market.
+        # A band whose floor sits at or above `ref` is stale or nonsensical — `ref`
+        # can fall back to position["lp"] from an older vintage than the quote the
+        # band was read from (Step 3.6). Honouring such a bound would lift a SELL
+        # exit ABOVE the market, where it RESTS UNFILLED instead of crossing. That
+        # is the dangerous failure: _square_position_impl reports squared=True on an
+        # ACCEPTED limit, so a position that never flattened would be reported flat.
+        # An out-of-band reject is loud and leaves the position visibly open; a
+        # resting exit is silent. Fall back to the computed cross instead.
+        if lc is not None and lc < ref and prc < lc:
             prc = round_to_tick(lc, _tick, mode="up")
         return prc
     else:  # "B"
         prc = round_to_tick(ref * (1.0 + eff / 100.0), _tick, mode="up")
-        if uc is not None and prc > uc:
+        # Mirror image: only clamp DOWN to a ceiling that is above the market.
+        if uc is not None and uc > ref and prc > uc:
             prc = round_to_tick(uc, _tick, mode="down")
         return prc
 
