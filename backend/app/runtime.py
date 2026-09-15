@@ -97,6 +97,10 @@ live_exit_monitor = LiveExitMonitor(
     # Basket-level overall controls (Paper page parity with Live): evaluated
     # every cycle after per-leg marking; supervisor-reconciled with the monitor.
     overall_fn=check_paper_overall_controls,
+    # Wake on a tick for a contract we actually hold instead of sleeping out the
+    # full interval. The interval stays as the floor, so a dead feed still cycles.
+    subscribe=upstox_stream_manager.subscribe,
+    unsubscribe=upstox_stream_manager.unsubscribe,
 )
 
 from app.live_feed_health import supervise_once as _supervise_once, decide_exit_monitor_action, SUPERVISE_POLL_SEC as _SUPERVISE_POLL_SEC
@@ -518,6 +522,15 @@ live_position_guard = LivePositionGuard(
     reprice_fn=_live_guard_reprice_fn,
     overall_provider=_live_guard_overall_provider,
     spot_tick_fn=_live_guard_spot_tick_fn,
+    # TICK-PRIMARY real-money stops. The same in-memory tick map already feeding
+    # the spot-mirror now also supplies the OPTION PREMIUM the stop is decided on,
+    # and a tick on a held contract wakes the loop instead of waiting out the 1.5s
+    # sleep. Measured detection latency ~1.5s mean (worst ~3s, on a mark itself up
+    # to 1.5s old) -> ~200ms. The broker position_book read stays on its own 1.5s
+    # cadence, so this adds ZERO calls to the rate budget shared with the MCP.
+    premium_tick_fn=_live_guard_spot_tick_fn,
+    subscribe=upstox_stream_manager.subscribe,
+    unsubscribe=upstox_stream_manager.unsubscribe,
     eod_square_ist=dtime(15, 0),
     on_close=_live_guard_on_close,
     on_expire=_live_guard_on_expire,
@@ -1004,6 +1017,27 @@ DEFAULT_PROFILES = {
 OPTION_CHAIN_BASELINE_RADIUS = 3
 
 
+async def _evaluator_wait(timeout: float) -> bool:
+    """Pace the deployment-evaluator loop. True ⇒ a closed bar just landed.
+
+    Wakes the instant the candle roller flushes a bar instead of sleeping out the
+    full interval (measured: mean ~1s, max ~2s of pure delay between a 1m bar
+    closing and anyone evaluating it). ``timeout`` stays as the floor, so a
+    stopped or silent roller behaves exactly like the old fixed-interval poll.
+
+    This does NOT change which bar is evaluated: the caller's new-bar gate still
+    requires `candles_1m` to hold a newer timestamp, so entries remain on the
+    CLOSED bar and keep parity with the backtest. It only removes the wait between
+    the bar existing and the loop noticing.
+
+    Kept as a module-level function ON PURPOSE: it is the loop's single pacing
+    seam, which is what lets tests drive an otherwise-infinite loop
+    deterministically.
+    """
+    from app.bar_events import wait_for_bar
+    return await wait_for_bar(timeout)
+
+
 async def _deployment_evaluator_loop() -> None:
     """Wake up ~10s after each minute boundary and evaluate ACTIVE deployments.
 
@@ -1030,7 +1064,7 @@ async def _deployment_evaluator_loop() -> None:
     EVAL_POLL_SECONDS = 2.0
     while True:
         try:
-            await asyncio.sleep(EVAL_POLL_SECONDS)
+            await _evaluator_wait(EVAL_POLL_SECONDS)
 
             # Skip outside NSE market hours (Mon-Fri, 09:15-15:30 IST)
             ist_now = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
@@ -2482,6 +2516,22 @@ async def _load_deployment_source(
     return doc
 
 
+def _live_position_tick_keys() -> List[str]:
+    """Upstox instrument_keys for the contracts the REAL-MONEY book currently holds.
+
+    Reads the live-marks service's existing cache — never forces a broker read,
+    so keeping a live position's feed subscribed costs zero rate budget. Returns
+    [] when the service is cold (no page has opened yet) or unavailable; the next
+    pass picks it up.
+    """
+    try:
+        from app.routers.live_broker import _marks_service
+        return _marks_service().last_tick_keys()
+    except Exception as exc:  # a stream-subscription hint must never break the loop
+        log.debug("live position tick keys unavailable: %s", exc)
+        return []
+
+
 async def _auto_follow_option_stream(min_radius: int = 0) -> Dict[str, Any]:
     """Align the live option subscription with ACTIVE paper deployments — and,
     when `min_radius` > 0, keep a baseline ATM-centered universe subscribed even
@@ -2513,14 +2563,23 @@ async def _auto_follow_option_stream(min_radius: int = 0) -> Dict[str, Any]:
             radius_for_deployments(deployments) if deployments else 0,
             int(min_radius or 0),
         )
-        if radius <= 0:
+        # Contracts held by the REAL-MONEY broker book. Until this existed the
+        # auto-follow pinned paper deployments and paper open trades only, so a
+        # live position's premium reached the Live page only if its strike
+        # happened to fall inside the ATM band — and the tick-marked LTP/MTM
+        # would silently fall back to the 15s broker value. Read from the marks
+        # service's EXISTING 15s cache: no extra broker call.
+        live_keys = _live_position_tick_keys()
+        if radius <= 0 and not live_keys:
             return {"restarted": False, "reason": "no_active_paper_deployments"}
-        universe = await build_live_option_universe(
-            db,
-            latest_ticks=upstox_stream_manager.latest_tick_map(),
-            radius=radius,
-        )
-        option_keys = universe.get("instrument_keys") or []
+        option_keys: List[str] = []
+        if radius > 0:
+            universe = await build_live_option_universe(
+                db,
+                latest_ticks=upstox_stream_manager.latest_tick_map(),
+                radius=radius,
+            )
+            option_keys = universe.get("instrument_keys") or []
         # Always keep EVERY open paper trade's contract subscribed, even if its
         # strike has drifted out of the ATM band — else the exit monitor loses its
         # premium feed and a stop could blow past un-monitored.
@@ -2533,6 +2592,7 @@ async def _auto_follow_option_stream(min_radius: int = 0) -> Dict[str, Any]:
             *option_keys,
             *(str(k) for k in open_keys if k),
             *(str(k) for k in pin_keys if k),
+            *(str(k) for k in live_keys if k),
         ]))
         if not option_keys:
             return {"restarted": False, "reason": "no_option_keys", "radius": radius}
@@ -2547,8 +2607,10 @@ async def _auto_follow_option_stream(min_radius: int = 0) -> Dict[str, Any]:
         await upstox_stream_manager.start(
             instrument_keys=stream_keys, mode=DEFAULT_STREAM_MODE, persist=True,
         )
-        log.info("option stream auto-follow: restarted with %d keys (radius=%d)", len(stream_keys), radius)
-        return {"restarted": True, "radius": radius, "option_keys": len(option_keys)}
+        log.info("option stream auto-follow: restarted with %d keys (radius=%d, %d live-position)",
+                 len(stream_keys), radius, len(live_keys))
+        return {"restarted": True, "radius": radius, "option_keys": len(option_keys),
+                "live_position_keys": len(live_keys)}
     except Exception as exc:  # never block deployment lifecycle on stream issues
         log.exception("option stream auto-follow failed")
         return {"restarted": False, "reason": f"error: {exc}"}

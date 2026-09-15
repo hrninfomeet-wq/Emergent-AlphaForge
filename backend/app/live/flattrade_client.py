@@ -161,6 +161,14 @@ class FlattradeClient:
         body = self._make_body(jdata)
         headers = {"Content-Type": "application/x-www-form-urlencoded"}
 
+        # Every Flattrade REST call funnels through here, so this is the one place
+        # that can honestly answer "did we spend more of the shared rate budget?".
+        try:
+            from app.live.broker_call_meter import record_broker_call
+            record_broker_call(route)
+        except Exception:  # metering must never break a broker call
+            pass
+
         async with httpx.AsyncClient(timeout=20.0, transport=ipv4_transport()) as client:
             resp = await client.post(url, content=body, headers=headers)
 

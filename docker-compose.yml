@@ -34,6 +34,10 @@ services:
       MONGO_URL: mongodb://mongo:27017
       DB_NAME: alphaforge
       CORS_ORIGINS: "http://localhost:3000"
+      # Latency measurement harness. OFF unless explicitly set to 1.
+      # Injects only into the reserved HARNESS| key namespace (see
+      # backend/app/tick_replay.py) and never persists.
+      ALPHAFORGE_TICK_REPLAY: "${ALPHAFORGE_TICK_REPLAY:-0}"
       # Flattrade MCP session auto-sync target (host ~/.flattrade bind below).
       # Machine-specific by design — this compose file is single-machine.
       FLATTRADE_MCP_SESSION_DIR: /host-flattrade

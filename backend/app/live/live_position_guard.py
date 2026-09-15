@@ -60,6 +60,38 @@ from app.live.overall_controls import build_overall_state, evaluate_overall
 log = logging.getLogger(__name__)
 
 POLL_SECONDS = 1.5
+#: Minimum gap between TICK-driven premium passes. Ticks arrive at a measured p50
+#: 40/s; a premium pass is pure in-memory arithmetic, but there is no value in
+#: re-deciding a stop more often than this and a floor keeps the loop honest.
+TICK_FLOOR_SECONDS = 0.2
+#: A premium tick older than this is treated as absent and the broker mark is used
+#: instead. Deliberately far tighter than the display path's 10s: this number
+#: fires real exit orders.
+PREMIUM_TICK_MAX_AGE_MS = 2_000
+#: How stale the cached broker book may be before the fast pass stands down. The
+#: fast pass sizes its square off the cached netqty, so an unrefreshed snapshot
+#: (broker down, slow cycle wedged) must not be acted on.
+BOOK_SNAPSHOT_MAX_AGE_S = 5.0
+
+#: Noren exchange -> Upstox segment. Options only; anything else returns None
+#: rather than guessing, because a wrong key marks a position against a DIFFERENT
+#: contract's premium.
+_EXCH_TO_SEGMENT = {"NFO": "NSE_FO", "BFO": "BSE_FO"}
+
+
+def premium_tick_key(exch: Any, token: Any) -> Optional[str]:
+    """Upstox instrument_key for a broker position row, or None.
+
+    The broker row's ``token`` IS the exchange token, and for a position the
+    account currently holds it unambiguously names the live contract — so unlike
+    the display path (which must join through option_contracts, where recycled
+    tokens also match long-expired rows) this needs no lookup and no DB.
+    """
+    segment = _EXCH_TO_SEGMENT.get(str(exch or "").strip().upper())
+    tok = str(token or "").strip()
+    if not segment or not tok:
+        return None
+    return f"{segment}|{tok}"
 _IST = timedelta(hours=5, minutes=30)
 # A non-confirming square whose reason is one of these placed NOTHING at the
 # broker, so it must not burn the square-retry exhaustion budget (whose whole
@@ -448,6 +480,16 @@ class LivePositionGuard:
         max_square_retries: int = 25,
         overall_provider: Optional[Callable[[], Awaitable[Optional[Dict[str, Any]]]]] = None,
         spot_tick_fn: Optional[Callable[[], Dict[str, Any]]] = None,
+        # Live OPTION premium ticks: () -> {instrument_key: tick}. When wired, a
+        # FRESH tick is the PRIMARY input to the stop decision and the broker's
+        # `lp` becomes the fallback. None ⇒ byte-identical to the broker-only
+        # behaviour this replaced.
+        premium_tick_fn: Optional[Callable[[], Dict[str, Any]]] = None,
+        premium_max_age_ms: int = PREMIUM_TICK_MAX_AGE_MS,
+        tick_floor_seconds: float = TICK_FLOOR_SECONDS,
+        subscribe: Optional[Callable[..., "asyncio.Queue"]] = None,
+        unsubscribe: Optional[Callable[["asyncio.Queue"], None]] = None,
+        in_market_hours: Callable[[], bool] = _in_market_hours,
         eod_square_ist: dtime = dtime(15, 0),
         now_fn: Optional[Callable[[], datetime]] = None,
         on_close: Optional[Callable[..., Awaitable[None]]] = None,
@@ -503,6 +545,23 @@ class LivePositionGuard:
         # "ts"/"received_ts"}}. None ⇒ spot-mirror is skipped entirely (the manual
         # path never sets a spot_exit, so this is a no-op for it regardless).
         self._spot_tick_fn = spot_tick_fn
+        # Premium tick wiring. `_ticks` caches the map for the duration of one
+        # pass so a single failing read degrades the whole pass consistently
+        # rather than per-entry.
+        self._premium_tick_fn = premium_tick_fn
+        self._premium_max_age_ms = int(premium_max_age_ms)
+        self._tick_floor_seconds = float(tick_floor_seconds)
+        self._subscribe = subscribe
+        self._unsubscribe = unsubscribe
+        self._in_market_hours = in_market_hours
+        self._queue: Optional["asyncio.Queue"] = None
+        self._ticks: Dict[str, Any] = {}
+        # Book snapshot carried BETWEEN broker reads so the tick-driven fast pass
+        # can size a square without spending a broker call. Refreshed only by the
+        # slow cycle; `_book_at` is what the fast pass checks before trusting it.
+        self._book_by_tsym: Dict[str, Dict[str, Any]] = {}
+        self._book_at: Optional[float] = None
+        self._book_known: bool = False
         # 15:00 IST EOD square cutoff for DEPLOYED (source != "manual") positions.
         self._eod_square_ist = eod_square_ist
         # Injectable clock (time-stop elapsed + EOD + market hours where the cycle
@@ -612,6 +671,15 @@ class LivePositionGuard:
                 by_tsym[str(p.get("tsym", ""))] = p
 
             now = self._now_fn()
+            # Hand the tick-driven fast pass a book to size squares off between
+            # broker reads. Only a KNOWN book is cached — an UNKNOWN read must not
+            # become a snapshot the fast pass then trusts for 5 seconds.
+            if book_is_known:
+                self._book_by_tsym = by_tsym
+                self._book_at = now.timestamp()
+                self._book_known = True
+            # One tick snapshot for the whole cycle (see _refresh_ticks).
+            self._refresh_ticks()
             # Read the live spot tick map ONCE per cycle (None when no source is
             # wired ⇒ spot-mirror is skipped). A factory error is non-fatal — the
             # whole cycle is already wrapped, but degrade to "no spot data" so the
@@ -790,11 +858,20 @@ class LivePositionGuard:
                 entry["seen_filled"] = True
                 entry["misses"] = 0
                 entry["flat_reads"] = 0
-                lp = _finite_pos(pos.get("lp"))
+                # TICK-PRIMARY: the freshest premium decides the stop. The broker
+                # `lp` is up to one poll interval old by the time it is read, so
+                # deciding a real-money stop on it means acting on a price that has
+                # already moved. `_premium_for` falls back to exactly that `lp`
+                # whenever a fresh tick is not available, so every degraded path is
+                # the behaviour this replaced.
+                broker_lp = _finite_pos(pos.get("lp"))
+                lp, premium_source = self._premium_for(entry, pos, now)
                 # Refresh the square dict from the broker truth.
                 entry["position"].update({
                     "netqty": netqty,
                     "lp": lp,
+                    "broker_lp": broker_lp,
+                    "premium_source": premium_source,
                     "exch": pos.get("exch", entry["exch"]),
                     # Capture the broker book row's contract token (best-effort;
                     # None if the row has no token). The depth-aware square refreshes
@@ -1166,6 +1243,114 @@ class LivePositionGuard:
             log.warning("guard: cancel orphaned OCO %s for %s failed (%s): %s",
                         al_id, entry.get("tsym"), why, exc)
 
+    # ── Premium ticks: the primary input to the stop decision ──────────────
+    def _refresh_ticks(self) -> None:
+        """Snapshot the premium tick map once per pass. Never raises — a broken
+        tick source degrades the whole pass to the broker mark rather than
+        half-deciding some entries on ticks and some on `lp`."""
+        if self._premium_tick_fn is None:
+            self._ticks = {}
+            return
+        try:
+            self._ticks = self._premium_tick_fn() or {}
+        except Exception as exc:  # noqa: BLE001
+            log.warning("guard: premium tick source failed, falling back to broker lp: %s", exc)
+            self._ticks = {}
+
+    def _premium_for(
+        self, entry: Dict[str, Any], pos: Optional[Dict[str, Any]], now: datetime,
+    ) -> tuple:
+        """(price, source) for the stop decision: the FRESH tick if there is one,
+        otherwise the broker's `lp`.
+
+        A tick is used only when it is positive, finite, and younger than
+        ``premium_max_age_ms`` by OUR local ingest clock. Anything else is treated
+        as absent — never as a price — so every failure mode lands on exactly the
+        broker-only behaviour this replaced.
+        """
+        broker_lp = _finite_pos((pos or {}).get("lp"))
+        key = (premium_tick_key((pos or {}).get("exch") or entry.get("exch"),
+                                (pos or {}).get("token")
+                                or (entry.get("position") or {}).get("token")))
+        if not key:
+            return broker_lp, "broker"
+        tick = self._ticks.get(key)
+        if not tick:
+            return broker_lp, "broker"
+        price = _finite_pos(tick.get("last_price"))
+        if price is None:
+            return broker_lp, "broker"
+        # `ingest_ts` is OUR receive clock. `received_ts`/`ts` are broker-side and
+        # sit a measured p50 254ms apart from each other, so they cannot bound our
+        # own staleness. Fall back to them only when ingest_ts is absent.
+        age_ref = tick.get("ingest_ts") or tick.get("received_ts") or tick.get("ts")
+        if age_ref is not None:
+            try:
+                if int(now.timestamp() * 1000) - int(age_ref) > self._premium_max_age_ms:
+                    return broker_lp, "broker"
+            except (TypeError, ValueError, OverflowError, OSError):
+                return broker_lp, "broker"
+        return price, "tick"
+
+    def _watched_tick_keys(self) -> set:
+        """Tick keys the guard actually holds — the only ones worth waking for."""
+        keys = set()
+        for entry in self._registry.snapshot():
+            key = premium_tick_key(entry.get("exch"),
+                                   (entry.get("position") or {}).get("token"))
+            if key:
+                keys.add(key)
+        return keys
+
+    async def _fast_premium_pass(self, now: datetime) -> List[Dict[str, Any]]:
+        """Tick-driven stop evaluation against the CACHED book. NEVER raises.
+
+        Deliberately does a strict subset of `_cycle`: premium stop only. It does
+        NOT read the broker, advance flat/miss counters, finalize, re-price, run
+        the basket or EOD paths, or persist marks — all of those need a fresh
+        authenticated book and are irreversible, so they stay on the slow cycle.
+        """
+        exits: List[Dict[str, Any]] = []
+        try:
+            if len(self._registry) == 0 or not self._book_known:
+                return exits
+            # An unrefreshed snapshot means the slow cycle has stopped seeing the
+            # broker; its netqty is no longer something to size a square off.
+            if self._book_at is None or (now.timestamp() - self._book_at) > BOOK_SNAPSHOT_MAX_AGE_S:
+                return exits
+            self._refresh_ticks()
+            if not self._ticks:
+                return exits
+            client = await self._client_factory()
+            if client is None:
+                return exits
+            for entry in self._registry.snapshot():
+                if entry.get("squaring") or entry.get("dry_run_exit_logged")                         or entry.get("square_stopped") or not entry.get("seen_filled"):
+                    continue
+                pos = self._book_by_tsym.get(entry["tsym"])
+                if pos is None:
+                    continue
+                netqty = _parse_netqty(pos.get("netqty"))
+                if netqty is None or netqty == 0:
+                    continue
+                price, source = self._premium_for(entry, pos, now)
+                if source != "tick" or price is None:
+                    continue  # nothing new since the slow cycle already decided
+                entry["position"]["lp"] = price
+                entry["position"]["premium_source"] = source
+                verdict = evaluate_exit(entry["state"], price)
+                entry["state"] = verdict["state"]
+                if verdict["exit"]:
+                    self._stats["tick_exits"] = int(self._stats.get("tick_exits") or 0) + 1
+                    await self._issue_square(
+                        client, entry, f"software_{verdict['reason']}",
+                        verdict["reason"], exits, now)
+            self._stats["fast_passes"] = int(self._stats.get("fast_passes") or 0) + 1
+        except Exception as exc:  # noqa: BLE001 — the slow cycle must still run
+            self._stats["last_error"] = str(exc)[:240]
+            log.exception("guard fast premium pass failed: %s", exc)
+        return exits
+
     def _fresh_spot_price(
         self, spot_map: Dict[str, Any], instrument_key: str, now: datetime
     ) -> Optional[float]:
@@ -1356,19 +1541,69 @@ class LivePositionGuard:
                 client, entry, f"software_{ov['reason']}", ov["reason"], exits, now)
         self._overall_state = None  # basket squared → reset
 
+    async def _wait_for_work(self) -> bool:
+        """Block until work is due. True ⇒ a tick on a contract we hold.
+
+        With no stream wired this is the original ``sleep(poll_seconds)``. With
+        one, the poll interval becomes a TIMEOUT: a tick on a held contract cuts
+        the wait short so the stop is re-decided in ~200ms instead of ~1.5s, while
+        the broker read stays on its own interval. Ticks for the other ~50
+        subscribed instruments are drained and ignored.
+        """
+        if self._queue is None:
+            await asyncio.sleep(self._poll_seconds)
+            return False
+
+        watched = self._watched_tick_keys()
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + self._poll_seconds
+        while True:
+            timeout = deadline - loop.time()
+            if timeout <= 0:
+                return False
+            try:
+                tick = await asyncio.wait_for(self._queue.get(), timeout=timeout)
+            except asyncio.TimeoutError:
+                return False
+            hit = str((tick or {}).get("instrument_key") or "") in watched
+            while True:
+                try:
+                    other = self._queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                hit = hit or str((other or {}).get("instrument_key") or "") in watched
+            if hit:
+                return True
+
     async def _run(self) -> None:
         self._stats["running"] = True
         self._stats["started_at"] = datetime.now(timezone.utc).isoformat()
+        self._queue = self._subscribe(max_queue=512) if self._subscribe else None
+        last_fast = 0.0
+        loop = asyncio.get_event_loop()
         try:
             while True:
-                await asyncio.sleep(self._poll_seconds)
-                if not _in_market_hours():
+                woke_on_tick = await self._wait_for_work()
+                if not self._in_market_hours():
+                    continue
+                if woke_on_tick:
+                    # Floor the tick path so a 40/s feed cannot spin the premium
+                    # evaluation, then run the CHEAP pass — no broker read. The
+                    # slow cycle below still runs on its own interval.
+                    wait = (last_fast + self._tick_floor_seconds) - loop.time()
+                    if wait > 0:
+                        await asyncio.sleep(wait)
+                    last_fast = loop.time()
+                    await self._fast_premium_pass(self._now_fn())
                     continue
                 await self._cycle()
         except asyncio.CancelledError:
             raise
         finally:
             self._stats["running"] = False
+            if self._queue is not None and self._unsubscribe is not None:
+                self._unsubscribe(self._queue)
+            self._queue = None
 
     async def rehydrate_from_broker(
         self, *, default_stop_pct: float = 50.0,

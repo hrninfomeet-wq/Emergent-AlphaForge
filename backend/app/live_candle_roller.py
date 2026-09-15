@@ -280,6 +280,11 @@ class LiveCandleRoller:
             await self._persister(instrument, df, db)
             self._stats["bars_flushed"] = int(self._stats.get("bars_flushed") or 0) + 1
             self._stats["last_flush_at"] = datetime.now(timezone.utc).isoformat()
+            # Tell the deployment evaluator a closed bar just landed, so it does
+            # not sit out its poll interval before looking. Fire-and-forget: the
+            # evaluator's timeout is the floor, so a dropped signal costs nothing.
+            from app.bar_events import signal_bar_flushed
+            signal_bar_flushed()
             log.debug(
                 "flushed live bar %s ts=%s ohlc=%s/%s/%s/%s ticks=%d reason=%s",
                 instrument, bucket["ts"], bucket["open"], bucket["high"],

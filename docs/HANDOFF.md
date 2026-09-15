@@ -309,6 +309,88 @@ reconciling stored jobs against recomputed truth, not by reading the UI:
    states, and something read it under a fixed label.** Before trusting any displayed
    number, check what actually writes that field.
 
+### 2.1c Latency inventory — every cadence that matters (2026-09-15)
+
+Three layers, deliberately on different clocks. **Do not collapse them.**
+
+| Path | Clock | Measured |
+|---|---|---|
+| Display (marks, header) | tick, 50ms coalescing window | p50 96ms tick→DOM |
+| Option chain / analysis | tick, 250ms window over a 1s price cache | p50 504ms |
+| Paper exits (`LiveExitMonitor`) | tick-woken, 200ms floor, 1.5s backstop | ~200ms |
+| **Live exits (`live_position_guard`)** | **tick-PRIMARY**, 200ms floor, 1.5s broker read | ~200ms |
+| **Entries (`_deployment_evaluator_loop`)** | **CLOSED 1m bar**, woken by `bar_events` | ~0 after bar close |
+
+Things that will bite you here:
+
+- **The live guard's stop is tick-primary now.** `_premium_for()` returns the fresh
+  tick premium, falling back to the broker `lp`. Every degraded path — no tick
+  source, tick older than 2s by `ingest_ts`, non-finite/non-positive price, unknown
+  exchange, tick source raising — lands on the broker `lp`, which is exactly the
+  old behaviour. If you change this, keep that property: the guard must survive a
+  dead Upstox feed.
+- **`_fast_premium_pass` must never read the broker.** It evaluates stops against
+  the *cached* book between the 1.5s reads. That is the only reason tick-speed
+  exits are affordable: waking the full cycle on ticks would be ~300
+  `position_book` calls/min on a key shared with the MCP. It also deliberately does
+  NOT finalize, advance flat/miss counters, re-price, or run the basket/EOD paths —
+  those are irreversible and need a fresh authenticated book.
+- **Entries are still gated on the closed bar.** `bar_events` only removes the
+  *polling delay* between the bar landing and the loop noticing. It does not change
+  which bar is evaluated. Tick-driven entries would repaint signals and break
+  parity with the backtest that chose the strategy.
+- **`_evaluator_wait` is the evaluator loop's pacing seam.** Tests drive the
+  infinite loop through it. Change the pacing primitive without updating them and
+  the suite HANGS at ~84% rather than failing — which is exactly what happened
+  while building this.
+- **Analysis payload has two clocks.** Indicator/trend/IV stages ~195ms to build
+  (8s cache); the chain 8.3ms (1s single-flight cache). Caching them together is
+  what made the chain ~18s stale. Keep them split.
+- **Only ATM±3 strikes are WS-subscribed** (`OPTION_CHAIN_BASELINE_RADIUS = 3`,
+  60-key cap). A strike outside that band has no live tick at all — no transport
+  change makes it fast.
+
+### 2.1b Live display freshness — how the money numbers reach the screen (2026-09-14)
+
+The LTP / open P&L / MTM on **/live-trading** and **/paper** are pushed over SSE,
+not polled. Read this before touching either page's data flow.
+
+- **Two streams, one coalescer.** `/live-broker/marks/stream` and
+  `/paper/open-positions/stream` both run `app/tick_stream.py`, which emits once on
+  connect, then once per drained tick batch capped at ~10/s, plus a `heartbeat`
+  **event** every 15s (a `: comment` heartbeat is invisible to EventSource, so the
+  client could not watchdog a silently-dead stream).
+- **The broker keeps its own clock.** `/live-broker/marks` re-marks the Flattrade
+  position book against the in-memory Upstox tick. Quantity, average price and
+  realized P&L stay broker-owned; only `lp` and `urmtom` move at tick rate. The
+  book itself is read at most once per 15s through one `SnapshotCache` shared by
+  every stream and tab — **the stream costs no extra broker calls**, and
+  `/live-broker/call-meter` will tell you so (measured 35.9/min streaming vs ~36
+  before). /paper costs the broker nothing at all.
+- **Never re-derive Noren's MTM.** `live_marks.py` applies a delta to the broker's
+  own `urmtom` rather than recomputing it, because Noren's base price differs
+  between carry-forward and intraday positions. Anchoring on the broker's number is
+  what makes the re-mark exactly right instead of plausibly wrong.
+- **Join contracts by identity, not exchange token.** Tokens are recycled across
+  expiries (47291 is three different contracts). A token join resolves to something
+  that expired years ago and never ticks.
+- **`ingest_ts` is the only local clock.** `ts` and `received_ts` are both
+  broker-side and sit a measured p50 254ms / p95 1.7s apart. Staleness gates and all
+  latency measurement key off `ingest_ts`.
+- **Degradation is the normal case, not an edge case.** `useTickStream` falls back
+  to the pre-existing polling endpoints on three independent signals (no
+  EventSource, `onerror`, or the heartbeat watchdog), and the raw
+  `/live-broker/positions` poll re-enables only when the marks path has nothing at
+  all. Measured tick-to-DOM: /live-trading p50 195ms / p95 225ms, /paper p50 209ms /
+  p95 225ms, against ~7.8s / ~1.3s before.
+- **Layers, deliberately separate.** Display = tick-driven. Exit monitoring =
+  tick-woken with a 200ms floor and the 1.5s interval as a backstop. **Entry
+  evaluation stays on the CLOSED 1m bar** — tick-driven entries would repaint
+  signals and break backtest parity. Do not collapse these.
+- **Measuring it out of hours:** `ALPHAFORGE_TICK_REPLAY=1` + `POST
+  /_diag/tick-replay`. It injects only into the reserved `HARNESS|` namespace that
+  nothing references, and never persists. Off by default.
+
 ### 2.2 What landed most recently (2026-07-28 → 08-01, v0.57.5 + v0.58.0 + Stage 1)
 
 A full reporting-integrity audit of the backtest → optimizer → results → journal chain.

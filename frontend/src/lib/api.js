@@ -292,6 +292,16 @@ export const api = {
   disconnectFlattrade: () => apiClient.post("/flattrade/disconnect").then((r) => r.data),
   liveBrokerLimits: () => apiClient.get("/live-broker/limits").then((r) => r.data),
   liveBrokerPositions: () => apiClient.get("/live-broker/positions").then((r) => r.data),
+  // Tick-marked position book: broker qty/avg/realized x live Upstox LTP. Same
+  // shape as liveBrokerPositions plus lp/urmtom re-marked and mark_source per row.
+  // `refresh` forces a broker read (post-square/kill), otherwise it is served from
+  // the shared 15s cache and costs no broker call.
+  liveBrokerMarks: (refresh = false) =>
+    apiClient.get("/live-broker/marks", { params: refresh ? { refresh: true } : {} })
+      .then((r) => r.data),
+  brokerCallMeter: (reset = false) =>
+    apiClient.get("/live-broker/call-meter", { params: reset ? { reset: true } : {} })
+      .then((r) => r.data),
   liveBrokerHoldings: () => apiClient.get("/live-broker/holdings").then((r) => r.data),
   liveBrokerOrders: () => apiClient.get("/live-broker/orders").then((r) => r.data),
   liveBrokerReconcile: () => apiClient.get("/live-broker/reconcile").then((r) => r.data),

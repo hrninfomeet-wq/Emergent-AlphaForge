@@ -75,6 +75,40 @@ async def market_analysis_snapshot(instrument: str = Query("NIFTY")):
         }
 
 
+@api.get("/market/analysis/stream")
+async def market_analysis_sse(request: Request, instrument: str = Query("NIFTY")):
+    """SSE feed of the market-analysis payload (option chain, PCR, max pain, ATM
+    straddle, spot, structure, trend).
+
+    Pushed on the Upstox tick rather than polled at 10s. The payload's two halves
+    are cached at their own natural speeds underneath (~8s for the indicator /
+    trend stages, ~1s single-flight for the chain), so emitting at stream rate
+    costs about one chain build per second and zero broker calls — the chain is
+    derived from the in-memory tick map, not from Flattrade.
+    """
+    from app.market_analysis_build import cached_market_analysis
+    from app.tick_stream import SSE_HEADERS, tick_event_stream
+
+    inst = str(instrument or "NIFTY").upper()
+
+    async def build():
+        return await cached_market_analysis(get_db(), inst)
+
+    return StreamingResponse(
+        tick_event_stream(
+            subscribe=upstox_stream_manager.subscribe,
+            unsubscribe=upstox_stream_manager.unsubscribe,
+            build_payload=build,
+            is_disconnected=request.is_disconnected,
+            # The chain is ~8ms to rebuild and a human reads it a few times a
+            # second; 4/s is plenty and keeps this well clear of the money streams.
+            min_interval_s=0.25,
+        ),
+        media_type="text/event-stream",
+        headers=SSE_HEADERS,
+    )
+
+
 @api.get("/market/header/stream")
 async def market_header_sse(request: Request):
     """Server-Sent Events feed of market header snapshots.
@@ -140,6 +174,32 @@ async def market_header_sse(request: Request):
             "Connection": "keep-alive",
         },
     )
+
+
+@api.post("/_diag/tick-replay")
+async def diag_tick_replay(
+    rate_hz: float = Query(40.0), duration_s: float = Query(10.0), keys: int = Query(4),
+):
+    """Inject synthetic ticks to measure tick-to-pixel latency out of market hours.
+
+    Disabled unless ALPHAFORGE_TICK_REPLAY=1. Injects only into the reserved
+    HARNESS| key namespace, which nothing in this system references — so no
+    position can be marked, exited or squared against an injected price — and
+    never persists. See app/tick_replay.py for the full safety argument.
+    """
+    from app.tick_replay import replay
+    try:
+        return await replay(upstox_stream_manager, rate_hz=rate_hz,
+                            duration_s=duration_s, keys=keys)
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc)) from exc
+
+
+@api.post("/_diag/tick-replay/purge")
+async def diag_tick_replay_purge():
+    """Drop every harness key from the live tick map."""
+    from app.tick_replay import purge
+    return {"purged": purge(upstox_stream_manager)}
 
 
 @api.get("/live-candles/status")

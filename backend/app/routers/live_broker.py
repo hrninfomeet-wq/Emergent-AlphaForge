@@ -47,10 +47,10 @@ import os
 import uuid
 import re
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import RedirectResponse
+from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import RedirectResponse, StreamingResponse
 from pydantic import BaseModel, StrictBool
 from typing import Literal as _Literal
 
@@ -99,6 +99,9 @@ from app.live.overall_settings_store import (
 from app.live import gtt as _gtt_mod
 from app.live.live_position_guard import get_registry as _get_live_registry
 from app.live.live_sl_monitor import build_monitor_state
+
+if TYPE_CHECKING:  # import-time-free: the real import is lazy inside _marks_service()
+    from app.live_marks_service import LiveMarksService
 
 log = logging.getLogger(__name__)
 
@@ -555,6 +558,111 @@ async def live_broker_positions():
     except Exception as exc:
         log.exception("live_broker_positions failed")
         raise HTTPException(400, f"Flattrade position_book error: {str(exc)[:300]}") from exc
+
+
+# ---------------------------------------------------------------------------
+# Tick-fresh marks — the Live page's LTP / MTM without extra broker calls
+#
+# /live-broker/positions above is the raw broker book at the broker's own
+# cadence. The routes here re-mark that book against the Upstox WS tick already
+# in memory, so LTP and unrealized MTM move at tick rate while quantity, average
+# price and realized P&L stay broker-owned.
+#
+# Broker cost: ONE position_book per BROKER_REFRESH_S, shared by every connected
+# stream and every tab — strictly less than the old per-tab 15s poll.
+# ---------------------------------------------------------------------------
+
+_live_marks_service: Optional["LiveMarksService"] = None
+
+
+def _marks_service() -> "LiveMarksService":
+    """Process-wide marks service (monkeypatched by tests).
+
+    A singleton ON PURPOSE: the broker snapshot cache inside it is what makes N
+    streams cost one broker read. A per-request service would restore the old
+    one-poll-per-client behaviour and quietly multiply the shared rate budget.
+    """
+    global _live_marks_service
+    if _live_marks_service is None:
+        from app.live_marks_service import LiveMarksService, load_contracts_for
+        from app.runtime import upstox_stream_manager
+
+        async def fetch_positions() -> List[Dict[str, Any]]:
+            client = await _get_client()
+            return await client.position_book()
+
+        async def load_contracts(idents):
+            from app.db import get_db
+            return await load_contracts_for(get_db(), idents)
+
+        _live_marks_service = LiveMarksService(
+            fetch_positions=fetch_positions,
+            load_contracts=load_contracts,
+            tick_map_factory=upstox_stream_manager.latest_tick_map,
+        )
+    return _live_marks_service
+
+
+@api.get("/live-broker/marks")
+async def live_broker_marks(refresh: bool = Query(False)):
+    """One-shot tick-marked position book — the polling fallback for the stream.
+
+    ``refresh=true`` forces a broker read instead of serving the cached book. Used
+    right after a square / kill so the screen shows the real post-action book, not
+    the pre-action snapshot. Costs exactly the one broker call the old
+    /live-broker/positions refetch cost.
+    """
+    service = _marks_service()
+    if refresh:
+        service.invalidate()
+    try:
+        payload = await service.payload()
+    except HTTPException:
+        raise
+    except BrokerReadError as exc:
+        raise _broker_read_400(exc, "position_book") from exc
+    except Exception as exc:
+        log.exception("live_broker_marks failed")
+        raise HTTPException(400, f"Flattrade marks error: {str(exc)[:300]}") from exc
+    payload["source"] = "poll"
+    return payload
+
+
+@api.get("/live-broker/marks/stream")
+async def live_broker_marks_stream(request: Request):
+    """SSE feed of the tick-marked position book.
+
+    Pushes on connect, then on every Upstox tick (coalesced to ~10/s), with a
+    15s heartbeat. The client falls back to polling /live-broker/marks if SSE is
+    unavailable or the stream drops.
+    """
+    from app.runtime import upstox_stream_manager
+    from app.tick_stream import SSE_HEADERS, tick_event_stream
+
+    service = _marks_service()
+    return StreamingResponse(
+        tick_event_stream(
+            subscribe=upstox_stream_manager.subscribe,
+            unsubscribe=upstox_stream_manager.unsubscribe,
+            build_payload=service.payload,
+            is_disconnected=request.is_disconnected,
+        ),
+        media_type="text/event-stream",
+        headers=SSE_HEADERS,
+    )
+
+
+@api.get("/live-broker/call-meter")
+async def live_broker_call_meter(reset: bool = Query(False)):
+    """Flattrade REST calls made by this process — the shared-rate-budget readout.
+
+    Every REST call funnels through FlattradeClient._post, so this counts all of
+    them. ``reset=true`` zeroes the window to take a clean before/after reading.
+    """
+    from app.live.broker_call_meter import broker_call_snapshot, reset_broker_calls
+    if reset:
+        return {"reset": True, "before": reset_broker_calls()}
+    return broker_call_snapshot()
 
 
 @api.get("/live-broker/holdings")

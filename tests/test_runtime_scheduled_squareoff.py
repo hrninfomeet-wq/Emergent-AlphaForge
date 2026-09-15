@@ -37,7 +37,7 @@ def test_runtime_15_00_cycle_calls_squareoff_with_overnight_policy(monkeypatch):
             # Runtime adds IST_OFFSET itself: 09:30 UTC -> 15:00 IST on Friday.
             return datetime(2026, 8, 14, 9, 30, tzinfo=timezone.utc)
 
-    async def _sleep(_seconds):
+    async def _sleep(_timeout):
         nonlocal sleep_calls
         sleep_calls += 1
         if sleep_calls > 1:
@@ -48,7 +48,7 @@ def test_runtime_15_00_cycle_calls_squareoff_with_overnight_policy(monkeypatch):
         return []
 
     monkeypatch.setattr(runtime, "datetime", _FridayAtSquareoff)
-    monkeypatch.setattr(runtime.asyncio, "sleep", _sleep)
+    monkeypatch.setattr(runtime, "_evaluator_wait", _sleep)
     monkeypatch.setattr(runtime, "get_db", lambda: _DB())
     monkeypatch.setattr(runtime, "is_square_off_due", lambda _now: True)
     monkeypatch.setattr(runtime, "square_off_open_paper_trades", _squareoff)
@@ -92,7 +92,7 @@ def test_sensex_bar_wakes_evaluator_while_nifty_is_stalled(monkeypatch):
     class _InstrumentDB:
         candles_1m = _InstrumentCandles()
 
-    async def _sleep(_seconds):
+    async def _sleep(_timeout):
         nonlocal sleep_calls
         sleep_calls += 1
         if sleep_calls > 2:
@@ -106,7 +106,7 @@ def test_sensex_bar_wakes_evaluator_while_nifty_is_stalled(monkeypatch):
         return {"restarted": False}
 
     monkeypatch.setattr(runtime, "datetime", _FridayDuringMarket)
-    monkeypatch.setattr(runtime.asyncio, "sleep", _sleep)
+    monkeypatch.setattr(runtime, "_evaluator_wait", _sleep)
     monkeypatch.setattr(runtime, "get_db", lambda: _InstrumentDB())
     monkeypatch.setattr(runtime, "is_square_off_due", lambda _now: False)
     monkeypatch.setattr(runtime, "evaluate_active_deployments", _evaluate)

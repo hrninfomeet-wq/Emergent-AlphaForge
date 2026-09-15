@@ -10,6 +10,7 @@ import json
 import logging
 import math
 import struct
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional
@@ -752,7 +753,15 @@ class UpstoxMarketStreamManager:
                         ticks = normalize_feed_response(decoded)
                         if not ticks:
                             continue
+                        # OUR local receive clock. `ts` (last-traded) and
+                        # `received_ts` (Upstox frame clock) are both broker-side
+                        # and sit a measured p50 254ms / p95 1.7s apart, so neither
+                        # can time our own pipeline. `ingest_ts` is the only stamp
+                        # that makes tick-to-pixel measurable end to end, and it is
+                        # what the staleness gates key off.
+                        ingest_ts = int(time.time() * 1000)
                         for tick in ticks:
+                            tick["ingest_ts"] = ingest_ts
                             self._latest_ticks[tick["instrument_key"]] = tick
                         self._session["tick_count"] = int(self._session.get("tick_count") or 0) + len(ticks)
                         self._session["last_tick_at"] = _now_iso()

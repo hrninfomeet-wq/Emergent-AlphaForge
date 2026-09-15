@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api, API } from "@/lib/api";
+import { useTickStream } from "@/hooks/useTickStream";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -166,20 +167,16 @@ export default function PaperTrading() {
     return () => window.clearInterval(id);
   }, [fetchRows]);
 
-  // Fast live open-positions poll (~2s) — overlays live P&L/premium onto OPEN rows only.
-  const [livePos, setLivePos] = useState({ items: [], open_mtm: 0 });
-  useEffect(() => {
-    let alive = true;
-    const tick = async () => {
-      try {
-        const d = await api.openPositions();
-        if (alive) setLivePos(d || { items: [], open_mtm: 0 });
-      } catch { /* transient; keep last value */ }
-    };
-    tick();
-    const id = window.setInterval(tick, 2000);
-    return () => { alive = false; window.clearInterval(id); };
-  }, []);
+  // Live open-positions feed — overlays live P&L/premium onto OPEN rows only.
+  // Was a 2s poll (measured tick-to-pixel p50 ~1.3s / p95 ~2.2s, of which ~99%
+  // was the poll wait). Now pushed on every Upstox tick, coalesced server-side to
+  // ~10/s, with the same 2s poll kept as the automatic fallback on stream loss.
+  // Costs no broker calls at all — paper marks come from the Upstox WS.
+  const liveStream = useTickStream("/paper/open-positions/stream", {
+    fallback: () => api.openPositions(),
+    fallbackMs: 2000,
+  });
+  const livePos = liveStream.data || { items: [], open_mtm: 0 };
 
   // Per-deployment OPEN count + MTM for the control strip. The strip is GLOBAL,
   // so it must NOT inherit the table's deployment filter — prefer the global live
@@ -211,13 +208,17 @@ export default function PaperTrading() {
   }, [statsRows, livePos]);
 
   // Feed-health chip: green "Live" when we have fresh marks, amber otherwise.
+  // The transport is named too ("Live · tick" vs "Live · 2s poll") so a silent
+  // fall back to polling is visible rather than something the user only notices
+  // as numbers that feel sluggish.
   const livePosHealth = useMemo(() => {
     const live = livePos.items || [];
+    const via = liveStream.source === "stream" ? "tick" : "2s poll";
     if (live.length === 0) return { live: false, label: "Estimated / stale" };
     const allStale = live.every((p) => p.live_stale);
     if (allStale) return { live: false, label: "Estimated / stale" };
-    return { live: true, label: "Live" };
-  }, [livePos]);
+    return { live: true, label: `Live · ${via}` };
+  }, [livePos, liveStream.source]);
 
   // Live-feed health from the backend endpoint (drives the banner + LED truthfulness).
   const [feedHealth, setFeedHealth] = useState(null);

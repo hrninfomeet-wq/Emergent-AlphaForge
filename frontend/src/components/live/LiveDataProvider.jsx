@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo } from "react";
 import { api } from "@/lib/api";
 import { usePoll } from "@/hooks/usePoll";
+import { useTickStream } from "@/hooks/useTickStream";
 
 /**
  * LiveDataProvider — the SINGLE owner of all Live-Trading-page polling.
@@ -47,7 +48,30 @@ export function LiveDataProvider({ children }) {
   //    isolation (a single failing endpoint never blanks the others). ──────────
   const { data: status, error: eStatus, refetch: rStatus } = usePoll(() => api.flattradeStatus(), SLOW_MS);
   const { data: limits, error: eLimits, lastSuccess: lsLimits, refetch: rLimits } = usePoll(() => api.liveBrokerLimits(), SLOW_MS);
-  const { data: positions, error: ePositions, lastSuccess: lsPositions, refetch: rPositions } = usePoll(() => api.liveBrokerPositions(), SLOW_MS);
+  // ── Tick-fresh position marks (SSE) ─────────────────────────────────────────
+  // The money numbers (LTP, open P&L, day MTM) come from here, pushed on every
+  // Upstox tick. The 15s /live-broker/positions poll below is DISABLED while the
+  // stream is connected — running both would double position_book calls on a key
+  // whose rate budget is shared with the Flattrade MCP. On stream loss the poll
+  // resumes automatically and the page is exactly what it was before.
+  const marks = useTickStream("/live-broker/marks/stream", {
+    fallback: () => api.liveBrokerMarks(),
+    fallbackMs: SLOW_MS,
+  });
+  // Gate on the marks path DELIVERING, not on it streaming. /live-broker/marks
+  // returns the same book as /live-broker/positions (marked where a tick exists),
+  // so whenever marks has data — over SSE or over its own 15s poll — the raw
+  // positions poll is pure duplication. Gating on `source === "stream"` alone made
+  // the degraded path fetch both books, which is measurably MORE broker traffic
+  // than before the change. Only a marks path with nothing at all falls back.
+  const marksUsable = marks.data != null && !marks.error;
+
+  const { data: polledPositions, error: ePositions, lastSuccess: lsPolledPositions, refetch: rPositions } =
+    usePoll(() => api.liveBrokerPositions(), SLOW_MS, { enabled: !marksUsable });
+  // Marked rows ARE broker rows with lp/urmtom overwritten, so every consumer
+  // (PositionsBlotter, RiskKpis, deriveDayPnl, isOpenPosition) works unchanged.
+  const positions = marksUsable ? marks.data : polledPositions;
+  const lsPositions = marksUsable ? marks.lastAt : lsPolledPositions;
   const { data: orders, error: eOrders, lastSuccess: lsOrders, refetch: rOrders } = usePoll(() => api.liveBrokerOrders(), SLOW_MS);
   const { data: reconcile, error: eReconcile, refetch: rReconcile } = usePoll(() => api.liveBrokerReconcile(), SLOW_MS);
   const { data: armState, error: eArmState, refetch: rArmState } = usePoll(() => api.getArmState(), SLOW_MS);
@@ -66,8 +90,17 @@ export function LiveDataProvider({ children }) {
   // marketAnalysis is server-cached ~8s so a 10s poll costs almost nothing; a
   // failure here is NON-money (it degrades the analysis panels to "—") and so is
   // deliberately kept OUT of the `health.degraded` money-slice set below.
-  const { data: marketAnalysis, error: eMarketAnalysis, refetch: rMarketAnalysis } =
-    usePoll(() => api.marketAnalysis("NIFTY"), ANALYSIS_MS);
+  // Option chain / PCR / max pain / ATM straddle, pushed on the tick. Was a 10s
+  // poll over an 8s server cache — up to ~18s stale on data that is derived from
+  // the live tick map. The 10s poll remains as the automatic fallback.
+  const analysisStream = useTickStream("/market/analysis/stream?instrument=NIFTY", {
+    fallback: () => api.marketAnalysis("NIFTY"),
+    fallbackMs: ANALYSIS_MS,
+  });
+  const { data: polledAnalysis, error: eMarketAnalysis, refetch: rMarketAnalysis } =
+    usePoll(() => api.marketAnalysis("NIFTY"), ANALYSIS_MS,
+            { enabled: analysisStream.data == null });
+  const marketAnalysis = analysisStream.data ?? polledAnalysis;
   const { data: holdings, error: eHoldings, refetch: rHoldings } =
     usePoll(() => api.liveBrokerHoldings(), HOLDINGS_MS);
 
@@ -101,10 +134,18 @@ export function LiveDataProvider({ children }) {
   // a busy flag (LiveDeploymentStrip does exactly this). Returning undefined made
   // that await resolve instantly, so the UI un-greyed before the refreshed broker
   // data had landed and briefly showed the pre-action state as if it were current.
+  // After a square / kill the point IS to spend one broker call and show the real
+  // post-action book — a cached snapshot would render the pre-action state as if
+  // it were current. When streaming, that call goes through the marks cache
+  // (refresh=true) instead of the now-disabled positions poll: same one call.
+  const rPositionsNow = useCallback(
+    () => (marksUsable ? api.liveBrokerMarks(true) : rPositions()),
+    [marksUsable, rPositions],
+  );
   const refetchSlow = useCallback(() => Promise.all([
-    rStatus(), rLimits(), rPositions(), rOrders(),
+    rStatus(), rLimits(), rPositionsNow(), rOrders(),
     rReconcile(), rArmState(), rBlotter(), rDeployments(), rGreeks(),
-  ]), [rStatus, rLimits, rPositions, rOrders, rReconcile, rArmState, rBlotter, rDeployments, rGreeks]);
+  ]), [rStatus, rLimits, rPositionsNow, rOrders, rReconcile, rArmState, rBlotter, rDeployments, rGreeks]);
 
   const refetchAll = useCallback(() => Promise.all([
     refetchSlow(),
@@ -144,6 +185,9 @@ export function LiveDataProvider({ children }) {
       status, limits, positions, orders, reconcile, armState, blotter, deployments,
       guard, session, gtt, greeks, feedHealth, marketAnalysis, holdings,
       deployLive: deployLiveData || {},
+      // Freshness of the money slice: "stream" (tick-fresh) | "poll" (15s) | null.
+      marksSource: marks.source,
+      marksAt: marks.lastAt,
       // per-slice last error (null when the latest call succeeded)
       errors: {
         status: eStatus, limits: eLimits, positions: ePositions, orders: eOrders,
@@ -159,6 +203,7 @@ export function LiveDataProvider({ children }) {
     [
       status, limits, positions, orders, reconcile, armState, blotter, deployments,
       guard, session, gtt, greeks, feedHealth, deployLiveData, marketAnalysis, holdings,
+      marks.source, marks.lastAt,
       eStatus, eLimits, ePositions, eOrders, eReconcile, eArmState, eBlotter, eDeployments,
       eGuard, eSession, eGtt, eDeployLive, eGreeks, eFeedHealth, eMarketAnalysis, eHoldings,
       lsLimits, lsPositions, lsOrders, health, refetch,

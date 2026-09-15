@@ -7,7 +7,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.db import get_db, serialize_doc
@@ -469,10 +470,8 @@ async def list_paper_trades(
     return {"items": serialize_doc(rows), "count": len(rows), "total": total, "skip": skip, "limit": limit}
 
 
-@api.get("/paper/open-positions")
-async def paper_open_positions():
-    """Live OPEN positions: unrealized P&L from the latest tick at request time.
-    Lightweight (OPEN only) so the Paper page can poll it every ~2s."""
+async def _open_trade_rows() -> List[Dict[str, Any]]:
+    """OPEN paper trades with their deployment names attached."""
     db = get_db()
     rows = await db.paper_trades.find({"status": "OPEN"}, {"_id": 0, "events": 0}).to_list(length=500)
     dep_ids = sorted({str(r.get("deployment_id")) for r in rows if r.get("deployment_id")})
@@ -481,9 +480,75 @@ async def paper_open_positions():
                  await db.strategy_deployments.find({"id": {"$in": dep_ids}}, {"_id": 0, "id": 1, "name": 1}).to_list(length=len(dep_ids))}
         for r in rows:
             r["deployment_name"] = names.get(str(r.get("deployment_id") or ""), "")
+    return rows
+
+
+#: The OPEN-rows Mongo read behind the stream. The *set* of open trades changes a
+#: few times a session (and never faster than the 1.5s exit monitor), while the
+#: premium on those rows moves at tick rate — so the rows are cached for ~1s and
+#: the tick overlay is recomputed on every emit. Without this a 10Hz stream would
+#: be a 10Hz `paper_trades` query (measured ~16ms each).
+_OPEN_ROWS_TTL_S = 1.0
+_open_rows_cache = None
+
+
+def _open_rows_source():
+    global _open_rows_cache
+    if _open_rows_cache is None:
+        from app.live_mark_cache import SnapshotCache
+        _open_rows_cache = SnapshotCache(fetch=_open_trade_rows, refresh_s=_OPEN_ROWS_TTL_S)
+    return _open_rows_cache
+
+
+async def _open_positions_payload(*, cached: bool) -> Dict[str, Any]:
+    """Shape OPEN paper trades against the latest tick.
+
+    ``cached=False`` for the one-shot route (a user-visible refresh must see the
+    book as it is right now); ``cached=True`` for the stream, where the same rows
+    are re-marked ten times a second.
+    """
     from app.runtime import upstox_stream_manager  # lazy: avoid circular import at module load
+    rows = await (_open_rows_source().get() if cached else _open_trade_rows())
     out = build_open_positions(rows, latest_tick_lookup=upstox_stream_manager.latest_tick_map().get)
+    out["emitted_at_ms"] = int(datetime.now(timezone.utc).timestamp() * 1000)
+    return out
+
+
+@api.get("/paper/open-positions")
+async def paper_open_positions():
+    """Live OPEN positions: unrealized P&L from the latest tick at request time.
+    Lightweight (OPEN only) so the Paper page can poll it every ~2s."""
+    out = await _open_positions_payload(cached=False)
+    out["source"] = "poll"
     return serialize_doc(out)
+
+
+@api.get("/paper/open-positions/stream")
+async def paper_open_positions_stream(request: Request):
+    """SSE feed of the OPEN paper positions.
+
+    Same payload as /paper/open-positions, pushed on every Upstox tick (coalesced
+    to ~10/s) instead of waiting out a 2s poll. Costs no broker calls at all —
+    paper marks come entirely from the Upstox WS already in memory.
+    """
+    from app.runtime import upstox_stream_manager
+    from app.tick_stream import SSE_HEADERS, tick_event_stream
+
+    async def build():
+        out = await _open_positions_payload(cached=True)
+        out["source"] = "stream"
+        return serialize_doc(out)
+
+    return StreamingResponse(
+        tick_event_stream(
+            subscribe=upstox_stream_manager.subscribe,
+            unsubscribe=upstox_stream_manager.unsubscribe,
+            build_payload=build,
+            is_disconnected=request.is_disconnected,
+        ),
+        media_type="text/event-stream",
+        headers=SSE_HEADERS,
+    )
 
 
 @api.post("/paper/trades/purge")

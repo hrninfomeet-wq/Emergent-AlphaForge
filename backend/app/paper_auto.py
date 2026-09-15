@@ -992,6 +992,9 @@ async def mark_open_deployment_trades(
             closed = str(updated.get("status") or "").upper() == "CLOSED"
             summaries.append({
                 "id": trade["id"],
+                # Carried so LiveExitMonitor can build its watch set (the contracts
+                # whose ticks should wake it) without a second DB round-trip.
+                "instrument_key": trade.get("instrument_key"),
                 "last_price": updated.get("last_price"),
                 "closed": closed, "exit_reason": updated.get("exit_reason"),
                 "realized_pnl": updated.get("realized_pnl") if closed else None,
@@ -1004,5 +1007,7 @@ async def mark_open_deployment_trades(
                 await _maybe_arm_paper_lazy_leg(db, updated)
         except Exception as exc:
             log.exception("mark failed for paper trade %s: %s", trade.get("id"), exc)
-            summaries.append({"id": trade.get("id"), "error": str(exc)})
+            summaries.append({"id": trade.get("id"),
+                              "instrument_key": trade.get("instrument_key"),
+                              "error": str(exc)})
     return summaries

@@ -267,17 +267,90 @@ def _fresh(entry: Optional[Dict[str, Any]]) -> bool:
     return (datetime.now(timezone.utc).timestamp() - entry.get("_cached_at", 0)) < _CACHE_TTL_S
 
 
+async def refresh_price_layer(payload: Dict[str, Any], db: Any, instrument: str) -> Dict[str, Any]:
+    """Re-derive the TICK-PRICED half of an analysis payload over a cached one.
+
+    The payload has two populations with wildly different clocks, and caching them
+    together was making the fast half as stale as the slow half:
+
+      * Slow (measured p50 ~195ms to build): intraday indicators / structure /
+        S-R, multi-timeframe trend, IV rank. These read candles and dailies —
+        they cannot change faster than a 1m bar, so an 8s cache costs nothing.
+      * Fast (measured p50 8.3ms): the option chain and everything derived from
+        it — strike prices, PCR, max pain, ATM straddle, implied move, spot. This
+        comes straight from the in-memory tick map and moves continuously.
+
+    Recomputing only the fast half is what lets the chain be seconds-fresh (or
+    stream-fresh) instead of inheriting the slow half's 8s cache.
+
+    Degrades by KEEPING the cached prices: a failed refresh must never blank a
+    chain that was populated a moment ago.
+    """
+    try:
+        chain, chain_spot, expiry, oi_seen = await _price_cache(db, instrument).get()
+    except Exception as exc:
+        log.warning("market_analysis: price-layer refresh failed (%s)", exc)
+        return payload
+    if not chain:
+        return payload
+
+    out = {**payload, "options": dict(payload.get("options") or {})}
+    opts = out["options"]
+    opts["chain"] = chain
+    opts["expiry"] = expiry
+    spot = float(chain_spot) if chain_spot is not None else out.get("spot")
+    out["spot"] = spot
+    if oi_seen:
+        opts["pcr_oi"] = put_call_ratio(chain)
+        opts["max_pain"] = max_pain(chain)
+    if spot:
+        strad = atm_straddle(chain, spot=spot)
+        if strad:
+            opts["atm_straddle"] = strad["straddle"]
+            opts["implied_move_pct"] = strad["implied_move_pct"]
+    out["as_of"] = _now_ist_iso()
+    return out
+
+
+#: The price layer measured p50 8.3ms but p95 705ms (a cold option_contracts
+#: query). Recomputing it on EVERY request would put that p95 in front of a
+#: cockpit poll — and in front of a stream emitting up to 20/s. A 1s single-flight
+#: cache bounds it to one build per second while still being ~8x fresher than the
+#: 8s cache it replaced for these fields.
+_PRICE_TTL_S = 1.0
+_PRICE_CACHES: Dict[str, Any] = {}
+
+
+def _price_cache(db: Any, instrument: str):
+    from app.live_mark_cache import SnapshotCache
+    cache = _PRICE_CACHES.get(instrument)
+    if cache is None:
+        async def fetch():
+            return await _option_chain(db, instrument)
+        cache = SnapshotCache(fetch=fetch, refresh_s=_PRICE_TTL_S)
+        _PRICE_CACHES[instrument] = cache
+    return cache
+
+
 async def cached_market_analysis(db: Any, instrument: str) -> Dict[str, Any]:
-    """Cached wrapper: bounds cost when several cockpit clients poll at ~10s."""
+    """Analysis payload: heavy stages on an ~8s cache, prices on a ~1s one.
+
+    The two halves move at completely different speeds (measured: ~195ms to build
+    the indicator/trend half, which cannot change faster than a 1m bar, against
+    8.3ms for the chain, which moves continuously). Caching them together made the
+    chain as stale as the trend.
+    """
     key = str(instrument or "NIFTY").upper()
     entry = _CACHE.get(key)
     if _fresh(entry):
-        return {k: v for k, v in entry.items() if k != "_cached_at"}
+        base = {k: v for k, v in entry.items() if k != "_cached_at"}
+        return await refresh_price_layer(base, db, key)
     lock = _LOCKS.setdefault(key, asyncio.Lock())
     async with lock:
         entry = _CACHE.get(key)
         if _fresh(entry):  # another caller filled it while we waited
-            return {k: v for k, v in entry.items() if k != "_cached_at"}
+            base = {k: v for k, v in entry.items() if k != "_cached_at"}
+            return await refresh_price_layer(base, db, key)
         result = await build_market_analysis(db, key)
         _CACHE[key] = {**result, "_cached_at": datetime.now(timezone.utc).timestamp()}
         return result

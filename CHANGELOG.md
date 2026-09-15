@@ -2,6 +2,175 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [Unreleased] — Terminal-speed: the real-money stop, the entry, and the chain (2026-09-15)
+
+A follow-up sweep after the display work, driven by one question: *where else is
+something waiting when it does not have to?* A full inventory of every cadence
+constant in the backend found three, and the biggest was embarrassing.
+
+**The paper exit monitor was 7x faster than the real-money one.** The previous
+changeset tick-woke `LiveExitMonitor` — which guards PAPER trades. Live exits run
+through `live_position_guard`, still a flat `await asyncio.sleep(1.5)`. Worse, its
+stop was evaluated against `pos["lp"]` from the REST position book, itself up to
+1.5s old by the time it was read. Measured detection latency for a real-money
+stop: **mean ~1.5s, worst ~3s**, on a price that had already moved.
+
+The guard is now **tick-primary**: a fresh premium tick decides the stop, and the
+broker `lp` is the fallback. Detection drops to **~200ms**. Crucially it costs
+**zero extra broker calls** — the `position_book` read stays on its own 1.5s
+cadence and a new tick-driven fast pass evaluates stops against the *cached* book
+between reads. Naively tick-waking the whole cycle would have been 300
+`position_book` calls/min on a key whose rate budget is shared with the MCP.
+
+The safety properties are pinned by test, because this fires real orders:
+- No tick source, a stale tick (>2s by our local `ingest_ts`), a non-finite or
+  non-positive price, an unknown exchange, or a tick source that raises → the
+  broker `lp`, i.e. exactly the behaviour this replaced.
+- The fast pass never reads the broker, never advances the flat/miss counters,
+  never finalizes, and stands down entirely if the cached book is older than 5s
+  (its netqty would no longer be safe to size a square from).
+- It cannot double-square: `squaring`, `square_stopped` and `dry_run_exit_logged`
+  are all honoured, and it does not run outside market hours.
+- The broker→Upstox join is `exch`+`token` (NFO→NSE_FO, BFO→BSE_FO) with no
+  guessing — an unknown exchange returns None rather than a key that would mark a
+  position against a different contract.
+
+**Entries stopped waiting to be noticed.** Entry evaluation stays on the CLOSED 1m
+bar — that is a parity requirement and did not change. But the evaluator was
+*polling* `candles_1m` every 2s, so a signal fully determined at bar close waited a
+further mean ~1s. The candle roller now signals on flush (`app/bar_events.py`) and
+the evaluator waits on that with `EVAL_POLL_SECONDS` as the timeout — so a stopped
+or silent roller behaves exactly as before. Same bar, same signal, ~1s sooner.
+
+**The option chain was the stalest thing on screen.** It is built from the live
+tick map, then buried under an 8s server cache behind a 10s client poll: up to
+**~18s** stale. Profiling the payload showed two populations — the indicator /
+trend / IV stages cost ~195ms and cannot change faster than a 1m bar, while the
+chain itself costs **8.3ms**. They are now cached separately (8s and 1s
+single-flight) and the payload is streamed on `/market/analysis/stream`. Measured
+tick-to-DOM for the chain: **p50 504ms**.
+
+**Display latency halved.** The coalescing window was the dominant term (188ms of
+a 195ms p50). Measured React commit cost is ~7ms, so 20/s is affordable; the
+window is now 50ms.
+
+**Measured, one tab, 40 ticks/s replayed, 300 samples per stream:**
+
+| Surface | before | after (p50 / p95) |
+|---|---|---|
+| Live position LTP / MTM | 195 / 225 ms | **96 / 111 ms** |
+| Paper position P&L | 209 / 225 ms | **120 / 178 ms** |
+| Option chain, PCR, max pain, ATM straddle | up to ~18 s | **504 / 715 ms** |
+| Real-money stop detection | ~1.5 s mean, ~3 s worst | **~200 ms** |
+| Entry, bar close → evaluation | ~1 s mean, ~2 s max | **~0** |
+
+Broker calls held at **35.8/min** (PositionBook 12/min), unchanged. /paper still
+costs the Flattrade key zero.
+
+Also fixed: `_deployment_evaluator_loop` now has an explicit pacing seam
+(`_evaluator_wait`). The two scheduler tests drove the otherwise-infinite loop by
+monkeypatching `asyncio.sleep`, which the bar-signal change silently broke — the
+suite hung at 84% rather than failing. A loop that can only be stopped by patching
+an implementation detail should say so; it now does.
+
+## [Unreleased] — Tick-fresh money values on /live-trading and /paper (2026-09-14)
+
+The LTP, open P&L and MTM on both trading screens refreshed too slowly to trade
+against. **Measured first, and the answer was unambiguous: the frontend poll
+interval was ~99% of the latency.** Every hop below it is three to five orders of
+magnitude cheaper.
+
+| Hop | p50 | p95 | How measured |
+|---|---|---|---|
+| Broker -> our socket (Upstox frame clock - last-trade time) | 254 ms | 1717 ms | 277k stored ticks |
+| `persist_ticks` blocking the WS recv loop (53 ticks/frame) | 6.4 ms | 10.3 ms | in-container bench, real Mongo |
+| Store read `latest_tick_map()` (53 keys) | 0.007 ms | 0.010 ms | 2000 iterations |
+| Shape `build_open_positions` (20 open) | 0.025 ms | 0.030 ms | 1000 iterations |
+| API `/paper/open-positions` (HTTP e2e) | 16 ms | 67 ms | in-page |
+| API `/live-broker/positions` (1 Flattrade REST) | 115 ms | 150 ms | in-page |
+| **Poll wait — /paper** | **2002 ms** | 2032 ms | observed request gaps |
+| **Poll wait — /live-trading** | **15007 ms** | 15041 ms | observed request gaps |
+
+So nothing on the server needed optimising. What needed removing was the wait.
+
+**Two structural findings shaped the fix.** First, `/live-trading` was not
+connected to the tick stream at all: `lp`, `urmtom` and `rpnl` all came from the
+Flattrade REST position book at 15s, while the Upstox WS was already streaming
+ticks for those same contracts into `_latest_ticks`, unused. Second,
+`_auto_follow_option_stream` pinned paper deployments and paper open trades only —
+a real-money position's contract was subscribed only if its strike happened to
+fall inside the ATM band.
+
+**The fix: push on the tick, keep the broker on its own clock.** Two SSE streams
+(`/live-broker/marks/stream`, `/paper/open-positions/stream`) share one tested
+coalescer (`app/tick_stream.py`), extracted from the market-header SSE that
+already proved the transport works here. The broker book stays the source of
+truth for quantity, average price and realized P&L; only LTP and unrealized MTM
+are re-marked, and **never by re-deriving Noren's MTM formula** — Noren's base
+price varies by position vintage, so `live_marks.py` applies the delta
+`urmtom + (lp_tick - lp_broker) * netqty * prcftr * mult`, which is exact whatever
+base the broker chose and collapses to the broker's own number when the tick
+equals its `lp`. Every row carries `mark_source` ("tick" | "broker") and
+`mark_age_ms`, so a broker-stale number is never shown as live.
+
+The broker -> Upstox contract join is by **identity** (underlying, expiry, strike,
+side), not exchange token: token 47291 is a Dec-2024 22600 PE, an Aug-2025 25350 PE
+*and* the Sep-2026 23350 CE currently held. A token join silently resolves to a
+contract that expired years ago and will never tick.
+
+**Broker call volume, measured, not argued.** `FlattradeClient._post` is the single
+choke point for every REST call, so it now feeds a meter exposed at
+`/live-broker/call-meter`. One tab on /live-trading, 120s, 40 ticks/s replayed:
+
+| | calls/min | PositionBook/min |
+|---|---|---|
+| Streaming | 35.9 | 12 |
+| Polling fallback (same build, EventSource disabled) | 33.9 | 10 |
+| Before (15s positions poll; same per-route composition) | ~36 | 12 |
+
+Flat. The 15s `/live-broker/positions` poll is *disabled* whenever the marks path
+has data, and the marks book is served from one 15s cache shared by every stream
+and tab — so the position read no longer scales with tab count (two tabs measured
+22.6 PositionBook/min against 24 before). /paper costs the Flattrade key **zero**
+calls: paper marks come entirely from the Upstox WS.
+
+**Result — tick to DOM commit, 40 ticks/s replayed, 300 samples each:**
+
+| Page | before p50 | before p95 | after p50 | after p95 |
+|---|---|---|---|---|
+| /live-trading | ~7.8 s | ~14.5 s | **195 ms** | **225 ms** |
+| /paper | ~1.3 s | ~2.2 s | **209 ms** | **225 ms** |
+
+**Layer 2 — exit monitoring.** `LiveExitMonitor` slept a flat 1.5s between cycles,
+so a breached stop waited on average 750ms (p95 ~1425ms) of pure dead time. A cycle
+costs a measured 3ms idle / 13ms at 20 open trades (p95 25ms), so the interval was
+almost entirely sleep. It now wakes on a tick **for a contract it actually holds**
+(the other ~50 subscribed instruments cost nothing), floored at 200ms so a 40/s feed
+cannot busy-loop a 13ms cycle. The 1.5s interval remains as a floor, so a dead feed
+still cycles exactly as before. It also cycles once on start rather than sleeping
+first — a restart used to leave open positions unwatched for 1.5s.
+
+**Layer 3 — entry evaluation is untouched.** Entries stay gated on the closed 1m
+bar in `runtime.py`; tick-driven entries would repaint signals and break backtest
+parity.
+
+Supporting changes:
+- `ingest_ts` — the pipeline had **no local receive timestamp**. `ts` and
+  `received_ts` are both broker-side clocks sitting a measured p50 254ms apart, so
+  neither could time our own pipeline. Staleness gates now key off `ingest_ts`, and
+  the stream stamps the waking tick's onto each payload, which is what makes
+  tick-to-pixel measurable in production with real ticks.
+- The SSE heartbeat is a real `heartbeat` **event**, not an SSE `: comment` —
+  EventSource discards comments without firing any listener, so a client had no way
+  to distinguish a live-but-quiet stream from a silently dead one. `useTickStream`
+  watchdogs on it and falls back to polling.
+- `_auto_follow_option_stream` now also pins live broker positions' contracts, read
+  from the marks cache so it costs no extra broker call.
+- `app/tick_replay.py` + `POST /_diag/tick-replay` — the measurement harness.
+  Disabled unless `ALPHAFORGE_TICK_REPLAY=1`, injects only into the reserved
+  `HARNESS|` key namespace that nothing in this system references, and never
+  persists.
+
 ## [Unreleased] — The OCO is off; the product copy now says so (2026-09-09)
 
 A worktree audit surfaced a class of defect the two preceding entries created and
