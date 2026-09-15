@@ -309,6 +309,29 @@ reconciling stored jobs against recomputed truth, not by reading the UI:
    states, and something read it under a fixed label.** Before trusting any displayed
    number, check what actually writes that field.
 
+### 2.1d ⚠ A cache that serves last-good must back off AND refuse (2026-09-15)
+
+`SnapshotCache` is in front of the broker position book. Its FAILURE path is the
+dangerous part, and it burned us live:
+
+- **A failure must advance a backoff clock.** If it only leaves the cache expired,
+  every read re-attempts the source. Measured: 286 broker calls/min against a
+  12/min baseline, on a key shared with the Flattrade MCP.
+- **Last-good has an expiry.** Past `max_stale_s` it raises `StaleSnapshotError`.
+  Serving a 77-minute-old book put a squared-off position on screen.
+- **Never re-mark a stale book against live ticks.** That is what made the number
+  MOVE, which is what made it believable. Stale must look stale.
+- **A cold cache must refuse, not return an empty value.** A book-shaped nothing
+  renders as a flat account — app flat while the broker holds is the worse
+  direction.
+- **HTTP 200 is not "usable".** The frontend gated `marksUsable` on `!error`, and
+  the endpoint returns 200 while serving last-good. Gate on `broker_stale` too.
+
+Diagnostic order that worked: MCP read tools for ground truth -> each AlphaForge
+route -> the marks payload's own `broker_age_ms` / `broker_stale` -> the call
+meter. The call meter is what turned "the page looks wrong" into "286 calls/min",
+and closing the tab (0.0/min) is what proved causation.
+
 ### 2.1c Latency inventory — every cadence that matters (2026-09-15)
 
 Three layers, deliberately on different clocks. **Do not collapse them.**

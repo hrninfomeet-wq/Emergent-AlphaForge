@@ -64,7 +64,12 @@ export function LiveDataProvider({ children }) {
   // positions poll is pure duplication. Gating on `source === "stream"` alone made
   // the degraded path fetch both books, which is measurably MORE broker traffic
   // than before the change. Only a marks path with nothing at all falls back.
-  const marksUsable = marks.data != null && !marks.error;
+  // `broker_stale` matters as much as `error` here. The marks endpoint returns
+  // HTTP 200 while it is serving a last-good book, so gating on `error` alone let
+  // a squared-off position render as open (2026-09-15) AND kept the honest
+  // positions poll disabled behind it. A stale book is not a usable book.
+  const marksUsable =
+    marks.data != null && !marks.error && !marks.data.broker_stale;
 
   const { data: polledPositions, error: ePositions, lastSuccess: lsPolledPositions, refetch: rPositions } =
     usePoll(() => api.liveBrokerPositions(), SLOW_MS, { enabled: !marksUsable });

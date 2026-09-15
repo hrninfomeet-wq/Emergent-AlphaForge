@@ -67,6 +67,7 @@ from app.live.flattrade_token import (
 )
 from app.live.flattrade_client import FlattradeClient
 from app.live.broker_protocol import BrokerReadError, TOKEN_EXPIRED_HINT
+from app.live_mark_cache import StaleSnapshotError
 from app.live.reconcile import reconcile
 from app.live.flattrade_symbol import (
     SymbolResolutionError,
@@ -619,6 +620,12 @@ async def live_broker_marks(refresh: bool = Query(False)):
         payload = await service.payload()
     except HTTPException:
         raise
+    except StaleSnapshotError as exc:
+        # The book aged past the staleness bound while the broker stayed
+        # unreadable. Fail like every other broker route rather than returning
+        # 200 with a position that may no longer exist — a 400 is what makes the
+        # client drop back to its honest polling path instead of rendering this.
+        raise HTTPException(400, f"Flattrade position_book: {exc}") from exc
     except BrokerReadError as exc:
         raise _broker_read_400(exc, "position_book") from exc
     except Exception as exc:

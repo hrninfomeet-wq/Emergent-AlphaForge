@@ -2,6 +2,72 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [Unreleased] — The cache lied when the broker went quiet (2026-09-15, live session)
+
+Found during a live session with an expired Flattrade token. /live-trading showed
+an open position with a Day P&L that MOVED, against an account that was flat.
+
+**One defect in `SnapshotCache`'s failure path; three symptoms.** A failed fetch
+left `_fetched_at` untouched, so `_is_fresh()` stayed False and every subsequent
+`get()` re-attempted the broker, while `_value` kept being served as if current.
+
+1. **Retry storm.** With the SSE stream building payloads continuously, measured
+   **286.76 broker calls/min (132 PositionBook in 30s)** against a 12/min
+   baseline — a 22x blowout on a rate budget shared with the Flattrade MCP.
+   Closing the page dropped it to 0.0/min, which is how causation was pinned.
+2. **Phantom position.** The last-good book (measured `broker_age_ms` 4,652,351 —
+   77 minutes) was re-marked against ticks 598ms old. A stale number that moves is
+   indistinguishable from a live one; a frozen one is not. That is what put a
+   squared-off position and a −₹8,743 Day P&L on a real-money screen.
+3. **Latency collapse.** Every emit blocked on a failing HTTP round-trip:
+   tick-to-DOM 96ms -> 355ms, emit rate 20/s -> 4.5/s.
+
+Which layer was wrong, precisely: **broker fetch was correct** (401 raised
+honestly); **the direct routes were correct** (positions / limits / orders /
+reconcile all 400); **the cache, the aggregation and the frontend gate were
+wrong.** The two panels that looked broken — AVAIL MARGIN and WORKING ORD showing
+"..." — were the only honest ones on the page. DAY STOP's "no live deployment" was
+also correct, and is our own risk config, not broker state.
+
+Fixes, all in the failure path:
+- **Back off.** A failed fetch starts a backoff window defaulting to the refresh
+  interval, so a failing source can never cost more rate budget than a healthy one.
+- **Refuse rather than lie.** Past `max_stale_s` (60s — four missed refreshes) the
+  cache raises `StaleSnapshotError` naming the underlying cause, so the operator
+  reads "Session Expired", not a generic staleness message.
+- **Never tick-mark a stale book.** When the source is failing, marks fall back to
+  the broker's own last numbers and every row reports `mark_source: "broker"`, so
+  the number freezes instead of moving convincingly.
+- **A cold cache in backoff refuses too.** It previously returned `None`, which
+  only failed by accident (`'NoneType' object is not iterable`). A book-shaped
+  nothing renders as a FLAT account — the inverse and more dangerous direction.
+- **Frontend gate.** `marksUsable` now requires `!broker_stale`; gating on HTTP
+  error alone let a 200-with-stale-data through AND kept the honest positions poll
+  disabled behind it.
+
+**Guard-layer exposure: disproven.** No exit path consumes the marks cache
+(grep-verified: only the two display routes and the WS subscription hint). The
+guard reads the broker itself and treats an unreadable book as UNKNOWN, holding —
+pinned by the pre-existing `test_read_error_never_drops_or_squares`. The
+tick-driven `_fast_premium_pass` is separately bounded by `BOOK_SNAPSHOT_MAX_AGE_S`
+and its own test. The inverse (app flat, broker holding) is closed by
+`book_is_known` on the guard side and by the cold-cache refusal here.
+
+Measured after: **286.76 -> 57.87 calls/min** with the broker still unreadable and
+the page open (the residual is the honest polling path, which 400s on every
+endpoint and resolves on re-auth).
+
+**Live-tick latency, measured this session from `localhost:3000` to React commit:**
+
+| Stream | p50 | p95 | notes |
+|---|---|---|---|
+| `/paper/open-positions` | **21 ms** | **51 ms** | 78 ticks/s live, no broker in path |
+| `/market/analysis` | 445 ms | 553 ms | 250ms coalescing floor by design |
+| `/live-broker/marks` | — | — | not measurable until Flattrade is re-authed |
+
+The paper number is the honest read on the transport: at 78 ticks/s the queue is
+never empty, so there is no coalescing wait to pay.
+
 ## [Unreleased] — Terminal-speed: the real-money stop, the entry, and the chain (2026-09-15)
 
 A follow-up sweep after the display work, driven by one question: *where else is

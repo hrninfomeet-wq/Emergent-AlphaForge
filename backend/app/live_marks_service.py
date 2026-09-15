@@ -85,9 +85,17 @@ class LiveMarksService:
         positions = await self._cache.get()
         index = await self._index_for_positions(positions)
         now_ms = self._now_ms()
+        # NEVER tick-mark a stale book. Re-marking a book we can no longer read
+        # against live ticks produces a number that MOVES — which is exactly how a
+        # squared-off position came to show a real-time Day P&L on 2026-09-15.
+        # A frozen broker value reads as stale; a moving one reads as live. When
+        # the source is failing, fall back to the broker's own last numbers and
+        # let every row say mark_source="broker".
+        tick_lookup = ({}.get if self._cache.stale
+                       else self._tick_map_factory().get)
         marked = mark_positions(
             positions,
-            tick_lookup=self._tick_map_factory().get,
+            tick_lookup=tick_lookup,
             now_ms=now_ms,
             max_age_ms=self._max_age_ms,
             contract_index=index,

@@ -125,3 +125,34 @@ def test_no_contract_row_degrades_to_the_broker_value_rather_than_guessing():
     row = out["positions"][0]
     assert row["mark_source"] == "broker"
     assert row["lp"] == 161.90
+
+
+# ---------------------------------------------------------------------------
+# Regression 2026-09-15: a stale book must not be dressed up as a live one
+# ---------------------------------------------------------------------------
+def test_a_stale_book_is_not_tick_marked():
+    """Captured live: an expired Flattrade session left a 77-minute-old book in
+    the cache, and the service kept re-marking it against 600ms-old ticks. The
+    result was a squared-off position showing a Day P&L that MOVED — a stale
+    number that looks live is worse than one that looks stale."""
+    svc, _ = _svc(ticks={"NSE_FO|47291": {"last_price": 87.35, "ingest_ts": 999_900}})
+
+    async def run():
+        await svc.payload()               # seed a good book
+        svc._cache.stale = True           # broker has since gone unreadable
+        return await svc.payload()
+
+    out = asyncio.run(run())
+    row = out["positions"][0]
+    assert row["mark_source"] == "broker", "a stale book was tick-marked"
+    assert row["lp"] == 161.90, "the tick price leaked onto a stale book"
+    assert out["broker_stale"] is True
+    assert out["marked"] == 0
+
+
+def test_a_healthy_book_still_tick_marks():
+    """The stale guard must not break the normal path."""
+    svc, _ = _svc(ticks={"NSE_FO|47291": {"last_price": 171.90, "ingest_ts": 999_900}})
+    out = asyncio.run(svc.payload())
+    assert out["positions"][0]["mark_source"] == "tick"
+    assert out["marked"] == 1
