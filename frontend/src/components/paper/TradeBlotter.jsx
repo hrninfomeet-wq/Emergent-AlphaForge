@@ -48,6 +48,12 @@ export default function TradeBlotter({
   rows, sort, onToggleSort, onCloseAtMarket, busy,
   selected, onToggleRow, onToggleAll, allClosedSelected,
   filters = {}, onSetFilter, strategyOptions = [],
+  // Tick-rate marks for OPEN rows, keyed by trade id (Map). The row payload
+  // itself arrives on a slow poll because it is bundled with per-strategy drift
+  // attribution; without this overlay P&L%, Net P&L and the P&L curve could only
+  // move as fast as that poll, which is what made the blotter feel frozen next to
+  // a real terminal. Absent/empty map = exactly the previous behaviour.
+  liveById = null,
 }) {
   const { panelRef, maximized, toggleMaximize } = useMaximize();
   const [open, setOpen] = useState(() => new Set());
@@ -128,7 +134,7 @@ export default function TradeBlotter({
       <td className="px-1.5 py-1 text-right font-mono text-danger">{fmtINRSigned(ctx.a.mae_value)}</td>
     ),
     pnl_pct: (t, ctx) => (
-      <td className={`px-1.5 py-1 text-right font-mono ${colorPnL(ctx.pct)}`}>{ctx.pct == null ? "—" : fmtPct(ctx.pct, 1)}</td>
+      <td className={`px-1.5 py-1 text-right font-mono ${colorPnL(ctx.pct)} ${ctx.liveStale ? "opacity-60" : ""}`}>{ctx.pct == null ? "—" : fmtPct(ctx.pct, 1)}</td>
     ),
     charges: (t, ctx) => (
       <td className="px-1.5 py-1 text-right font-mono text-dimmer"
@@ -137,10 +143,16 @@ export default function TradeBlotter({
       </td>
     ),
     net_pnl: (t, ctx) => (
-      <td className={`px-1.5 py-1 text-right font-mono ${colorPnL(ctx.net)}`}>{fmtINRSigned(ctx.net)}</td>
+      <td className={`px-1.5 py-1 text-right font-mono ${colorPnL(ctx.net)} ${ctx.liveStale ? "opacity-60" : ""}`}
+        data-testid={ctx.isLiveMarked ? "paper-net-pnl-live" : undefined}
+        title={ctx.isLiveMarked
+          ? (ctx.liveStale ? "Last known mark — the feed has gone quiet for this contract" : "Marked on the live tick")
+          : undefined}>
+        {fmtINRSigned(ctx.net)}
+      </td>
     ),
     curve: (t, ctx) => (
-      <td className="px-1.5 py-1 text-right"><div className="flex justify-end"><TradeSparkline points={ctx.a.spark} /></div></td>
+      <td className="px-1.5 py-1 text-right"><div className="flex justify-end"><TradeSparkline points={ctx.spark} /></div></td>
     ),
     status: (t, ctx) => (
       <td className="px-1.5 py-1 text-right"><span className={`text-[10px] px-1.5 py-0.5 rounded border font-mono ${ctx.isOpen ? "border-emerald-500/40 text-emerald-300" : "border-line text-dim"}`}>{t.status}</span></td>
@@ -237,11 +249,30 @@ export default function TradeBlotter({
               const a = t.analytics || {};
               const entry = istParts(t.created_at);
               const exit = istParts(t.closed_at);
-              const net = isOpen ? a.running_pnl : Number(t.realized_pnl || 0);
+              // LIVE OVERLAY (open rows only). A closed trade's realized P&L is
+              // final and must never be re-marked. `unrealized_pnl` here is the
+              // same number the open-positions stream feeds the rest of the page,
+              // so the blotter can no longer disagree with the header.
+              const lm = isOpen && liveById ? liveById.get(t.id) : null;
+              const liveNet = lm != null && Number.isFinite(Number(lm.unrealized_pnl))
+                ? Number(lm.unrealized_pnl) : null;
+              const net = isOpen
+                ? (liveNet != null ? liveNet : a.running_pnl)
+                : Number(t.realized_pnl || 0);
               const notional = Number(t.entry_price || 0) * Number(t.quantity || 0);
               const pct = notional ? (Number(net || 0) / notional) * 100 : null;
+              // Extend the curve with the live point so the sparkline moves too.
+              // `t` on a spark point is a ms epoch (paper_analytics builds it from
+              // event timestamps), so Date.now() is on the same scale.
+              const baseSpark = Array.isArray(a.spark) ? a.spark : null;
+              const spark = (isOpen && liveNet != null && baseSpark && baseSpark.length)
+                ? [...baseSpark, { t: Date.now(), pnl: liveNet }]
+                : baseSpark;
+              // A mark the backend flagged stale is still the last known price, so
+              // it is shown — but dimmed, so "not moving" never reads as "flat".
+              const liveStale = Boolean(lm && lm.live_stale);
               const reason = isOpen ? null : classifyExitReason(t.exit_reason);
-              const ctx = { isOpen, a, entry, exit, net, pct, reason };
+              const ctx = { isOpen, a, entry, exit, net, pct, reason, spark, liveStale, isLiveMarked: liveNet != null };
               return (
                 <Fragment key={t.id}>
                   <tr className="border-b border-line hover:bg-bg-2 cursor-pointer" onClick={() => toggle(t.id)} data-testid="paper-trade-row">

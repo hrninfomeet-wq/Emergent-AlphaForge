@@ -2,6 +2,66 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [Unreleased] — /paper's Trades panel marks on the tick (2026-09-16)
+
+Reported: P&L%, Net P&L and the P&L curve on `/paper` do not move like a real
+terminal. **The backend was not the cause.** `/paper/open-positions/stream` was
+already pushing 7.4 events/s with live positions on it, and the paper exit monitor
+was already tick-driven (`TICK_FLOOR_SECONDS = 0.2`, wired to the Upstox fan-out).
+The blotter simply never received any of it: `PaperTrading` rendered
+`<TradeBlotter rows={data.items} …>` with no live marks, so all three columns read
+`t.analytics.running_pnl` — a value fixed at poll time.
+
+**And that poll was 30s because it was bundled with the wrong thing.** `fetchRows`
+awaited four calls in one `Promise.all`; measured on the live app they were 85ms
+(rows), 19ms (account analytics), 12ms (open positions) — and **1554ms** for
+`/paper/strategy-stats`, which is per-deployment drift attribution. The whole page
+refresh ran at the speed of its slowest member, and drift attribution is
+slow-moving data that never belonged on the same clock as money.
+
+Three changes, in order of how much they matter:
+
+**The blotter takes the tick.** Open rows prefer the streamed `unrealized_pnl`;
+P&L% derives from the same number so a row can no longer disagree with itself; and
+the sparkline gets a live point appended (spark `t` is a ms epoch, so it is on
+scale). A CLOSED trade is never re-marked — realized P&L is final. A mark the
+backend flags `live_stale` is still shown, because the last known price beats no
+price, but dimmed: a number that has stopped moving must not look like one that is
+flat. The account hero's "Live MTM" — which was labelled live and was not — is
+rebuilt by swapping the poll's `open_pnl` for the streamed one.
+
+**The clocks are split.** Rows + analytics now refresh every 5s as the fallback
+floor beneath the tick overlay; drift attribution moved to its own 60s clock. The
+path the money numbers wait on went **1554ms -> ~62ms**.
+
+**`/paper/strategy-stats` itself: ~1.55s -> ~0.8s.** Two of the three things tried
+were measured and kept; the honest record of all three:
+
+* `_session_counts` pulled every 1m candle ts in range into Python purely to count
+  distinct minutes per day — ~29k documents per call, 16 calls per request. It is
+  now a server-side `$group`. **Byte-identical output**, verified against the live
+  warehouse across 2 instruments x 4 day-ranges x 2 windows: 0 mismatches. Worth
+  only 1.2x on its own.
+* The same call repeated with only 5 distinct keys out of 16, so it is memoised —
+  single-flight, TTL 20s, **scoped to the database object by weak reference**. That
+  scoping is not a nicety: without it the full suite reddened
+  `test_forward_metrics_hides_strategy_library_until_ten_complete_sessions`, which
+  passed in isolation, because a previous case's stand-in DB had cached an answer
+  under the same key. These counts gate the forward-validation completeness
+  verdict, so a cache that can answer for the wrong dataset is a correctness bug
+  wearing a performance hat.
+* The per-deployment `find_one` looked like a classic N+1 and **was not the
+  problem** — measured 6ms. It is batched anyway, for tidiness. Unbounded
+  `asyncio.gather` over the deployments came out at **0.85x — slower than serial**,
+  because every unit issues ~6 Mongo reads and a full fan-out just queues them
+  behind one connection pool and one mongod. The fan-out is therefore bounded
+  (`PAPER_DRIFT_CONCURRENCY`, default 4) so the bound can be re-measured on other
+  hardware without a code change.
+
+Also fixed in passing: `livePos` was `liveStream.data || {…}`, a fresh object
+literal on every render, so every memo downstream of it recomputed forever. CRA's
+lint caught it once the overlay added consumers.
+
 ## [Unreleased] — The cache lied when the broker went quiet (2026-09-15, live session)
 
 Found during a live session with an expired Flattrade token. /live-trading showed

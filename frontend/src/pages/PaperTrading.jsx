@@ -125,24 +125,34 @@ export default function PaperTrading() {
       .sort((a, b) => a.label.localeCompare(b.label));
   }, [deployments]);
 
+  // SPLIT (2026-09-16). These four used to be one Promise.all, so the whole page
+  // refresh ran at the speed of its slowest member: /paper/strategy-stats measured
+  // ~1.55s (per-deployment drift attribution) against 85ms for the trade rows and
+  // 19ms for the account analytics. Bundling them forced the poll interval up to
+  // 30s, which is why the money numbers felt frozen. Drift attribution is
+  // slow-moving by nature and does not belong on the same clock as P&L.
   const fetchRows = useCallback(async () => {
     try {
-      const [page, stats, an, ss] = await Promise.all([
+      const [page, stats, an] = await Promise.all([
         api.listPaperTrades(params),
         api.listPaperTrades(statsParams),
         api.paperAnalytics().catch(() => null),
-        api.paperStrategyStats().catch(() => null),
       ]);
       setData({ items: page.items || [], total: page.total || 0 });
       setStatsRows(stats.items || []);
       if (an) setAnalytics(an);
-      if (ss) setStrategyStats(ss.items || []);
     } catch (e) {
       toast.error(`Paper trades load failed: ${e.response?.data?.detail || e.message}`);
     } finally {
       setLoading(false);
     }
   }, [params, statsParams]);
+
+  // Per-strategy drift attribution — its own slow clock.
+  const fetchStrategyStats = useCallback(async () => {
+    const ss = await api.paperStrategyStats().catch(() => null);
+    if (ss) setStrategyStats(ss.items || []);
+  }, []);
 
   useEffect(() => {
     api.listDeployments({ limit: 200 }).then((d) => setDeployments(d.items || [])).catch(() => {});
@@ -161,11 +171,20 @@ export default function PaperTrading() {
 
   useEffect(() => { fetchRows(); }, [fetchRows]);
 
-  // Auto-refresh ≤30s (the evaluator marks open trades each market minute).
+  // Rows + account analytics now cost ~100ms together, so they can refresh far
+  // more often. They are the FALLBACK floor beneath the tick overlay below, not
+  // the primary path — open-row money numbers re-mark on every tick.
   useEffect(() => {
-    const id = window.setInterval(fetchRows, 30000);
+    const id = window.setInterval(fetchRows, 5000);
     return () => window.clearInterval(id);
   }, [fetchRows]);
+
+  // Drift attribution stays on the slow clock it actually needs.
+  useEffect(() => {
+    fetchStrategyStats();
+    const id = window.setInterval(fetchStrategyStats, 60000);
+    return () => window.clearInterval(id);
+  }, [fetchStrategyStats]);
 
   // Live open-positions feed — overlays live P&L/premium onto OPEN rows only.
   // Was a 2s poll (measured tick-to-pixel p50 ~1.3s / p95 ~2.2s, of which ~99%
@@ -176,7 +195,14 @@ export default function PaperTrading() {
     fallback: () => api.openPositions(),
     fallbackMs: 2000,
   });
-  const livePos = liveStream.data || { items: [], open_mtm: 0 };
+  // Memoised, not a bare `||` fallback: an inline object literal is a NEW
+  // reference on every render whenever the stream has not produced data yet, so
+  // every memo downstream of it (the id map, the hero overlay, per-deployment
+  // aggregates) would recompute on each render for no reason.
+  const livePos = useMemo(
+    () => liveStream.data || { items: [], open_mtm: 0 },
+    [liveStream.data],
+  );
 
   // Per-deployment OPEN count + MTM for the control strip. The strip is GLOBAL,
   // so it must NOT inherit the table's deployment filter — prefer the global live
@@ -206,6 +232,33 @@ export default function PaperTrading() {
     if (live.length) return live.length;
     return statsRows.filter((t) => String(t.status || "").toUpperCase() === "OPEN").length;
   }, [statsRows, livePos]);
+
+  // Tick marks keyed by trade id, for the blotter's open rows.
+  const liveById = useMemo(() => {
+    const m = new Map();
+    for (const p of livePos.items || []) if (p && p.id) m.set(p.id, p);
+    return m;
+  }, [livePos]);
+
+  // The hero's two open-position figures re-marked on the tick. "Live MTM" was
+  // labelled live but came off the same slow poll as everything else — measured
+  // 2026-09-16 mid-session, account_value_mtm sat 48.75 away from the streamed
+  // open_mtm. Only the two OPEN-derived fields are overlaid: account_value_mtm is
+  // rebuilt by swapping the poll's open_pnl for the streamed one, which is exact
+  // whatever the rest of the payload is made of. Realized/drawdown/return are
+  // left alone — they are closed-trade facts and must not be re-marked.
+  const analyticsLive = useMemo(() => {
+    if (!analytics) return analytics;
+    const streamed = Number(livePos.open_mtm);
+    if (!Number.isFinite(streamed)) return analytics;
+    const polled = Number(analytics.open_pnl || 0);
+    const mtm = Number(analytics.account_value_mtm);
+    return {
+      ...analytics,
+      open_pnl: streamed,
+      account_value_mtm: Number.isFinite(mtm) ? mtm - polled + streamed : mtm,
+    };
+  }, [analytics, livePos]);
 
   // Feed-health chip: green "Live" when we have fresh marks, amber otherwise.
   // The transport is named too ("Live · tick" vs "Live · 2s poll") so a silent
@@ -484,7 +537,7 @@ export default function PaperTrading() {
       </div>
 
       {/* Account hero — value + equity curve + editable starting capital */}
-      <AccountHero analytics={analytics} startingCapital={startingCapital} capitalConfig={acctCapCfg} onSetCapital={handleSetCapital} busy={busy} />
+      <AccountHero analytics={analyticsLive} startingCapital={startingCapital} capitalConfig={acctCapCfg} onSetCapital={handleSetCapital} busy={busy} />
 
       {/* Period P&L cards */}
       <PeriodPnlCards period={analytics?.period_pnl} />
@@ -608,7 +661,7 @@ export default function PaperTrading() {
       {/* Redesigned flat sortable blotter (per-trade analytics) */}
       <TradeBlotter rows={data.items} sort={sort} onToggleSort={toggleSort} onCloseAtMarket={closeAtMarket} busy={busy}
         selected={selected} onToggleRow={toggleRow} onToggleAll={toggleAll} allClosedSelected={allClosedSelected}
-        filters={filters} onSetFilter={setFilter} strategyOptions={strategyOptions} />
+        filters={filters} onSetFilter={setFilter} strategyOptions={strategyOptions} liveById={liveById} />
 
       {/* Pagination */}
       <div className="rounded-lg border border-line bg-bg-1 px-3 py-2 flex items-center gap-2 text-[11px] text-dimmer">

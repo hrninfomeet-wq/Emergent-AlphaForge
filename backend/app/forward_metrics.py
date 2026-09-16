@@ -6,9 +6,16 @@ runtime does not make a deployment look better or worse than it really was.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import math
+import weakref
 from datetime import date, datetime, time, timedelta, timezone
+# NOT `import time` — the name is already bound to datetime.time above.
+from time import monotonic as _monotonic
 from typing import Any, Dict, Iterable, List, Optional, Set
+
+log = logging.getLogger(__name__)
 
 from app.nse_calendar import trading_days_in_range
 
@@ -130,6 +137,36 @@ def _promotion_trade_pnl(trade: Dict[str, Any], *, is_live: bool = False) -> flo
     return min(realized, 0.0)
 
 
+#: IST offset in milliseconds, for server-side date maths in the aggregation.
+_IST_OFFSET_MS = 5 * 3600 * 1000 + 30 * 60 * 1000
+
+#: Memo for `_session_counts`. The paper strategy-stats route computes forward
+#: metrics for every deployment, and they overwhelmingly share an instrument and
+#: an overlapping day range — measured 2026-09-16: 16 calls, 5 distinct keys,
+#: 1102ms, of which ~758ms was pure duplication. Keyed on the exact query so a
+#: hit is byte-identical to a miss.
+#:
+#: TTL is deliberately short. These are per-day COUNTS of distinct traded
+#: minutes: every historical day is immutable, and only TODAY moves — by one
+#: minute per minute, while the roller appends. A few seconds of lag on today's
+#: count cannot change a completeness verdict, which is a whole-session question.
+_SESSION_COUNTS_TTL_S = 20.0
+_SESSION_COUNTS_CACHE: Dict[Any, tuple] = {}
+#: SINGLE-FLIGHT. The strategy-stats route now fans its deployments out with
+#: asyncio.gather, so without this every one of them would miss the empty cache
+#: in the same tick and run the same aggregation concurrently — the memo would
+#: only ever help across requests, never within one, which is the case that
+#: actually hurts. One lock per key: the first caller computes, the rest wait
+#: and read the value it stored.
+_SESSION_COUNTS_LOCKS: Dict[Any, "asyncio.Lock"] = {}
+
+
+def _session_counts_cache_clear() -> None:
+    """Drop the memo. Tests use this so one case cannot leak into the next."""
+    _SESSION_COUNTS_CACHE.clear()
+    _SESSION_COUNTS_LOCKS.clear()
+
+
 async def _session_counts(
     db: Any,
     *,
@@ -143,6 +180,109 @@ async def _session_counts(
         return {}
     start_ts = _ist_ms(days[0], window_start)
     end_ts = _ist_ms(days[-1], window_end)
+
+    # SCOPED TO THE DATABASE OBJECT. Production has exactly one, so this is inert
+    # there — but the test suite builds a fresh stand-in DB per case, and without
+    # this two cases sharing a query shape would read each other's counts. That is
+    # not a test-only nicety: these counts gate the forward-validation completeness
+    # verdict, so a cache that can answer for the wrong dataset is a correctness
+    # bug wearing a performance hat. Found by the full suite, which reddened
+    # test_forward_metrics_hides_strategy_library_until_ten_complete_sessions while
+    # it passed in isolation.
+    key = (id(db), str(instrument), start_ts, end_ts,
+           window_start.hour * 60 + window_start.minute,
+           window_end.hour * 60 + window_end.minute,
+           tuple(days))
+    # id() alone is not enough: CPython recycles ids, so a GC'd stand-in DB could
+    # hand its id to a new one and serve it the old counts. Hold a WEAK reference
+    # and verify identity on read — a dead referent reads as a miss, and a live one
+    # proves the entry belongs to THIS database. Weak refs keep nothing alive.
+    try:
+        db_ref: Any = weakref.ref(db)
+    except TypeError:
+        db_ref = None  # unweakrefable stand-in -> simply do not cache
+
+    def _fresh() -> Optional[Dict[str, int]]:
+        hit = _SESSION_COUNTS_CACHE.get(key)
+        if hit is None or (_monotonic() - hit[0]) >= _SESSION_COUNTS_TTL_S:
+            return None
+        ref = hit[2]
+        if ref is not None and ref() is not db:
+            return None  # recycled id, or a different database — treat as a miss
+        return dict(hit[1])
+
+    cached = _fresh()
+    if cached is not None:
+        return cached
+
+    lock = _SESSION_COUNTS_LOCKS.setdefault(key, asyncio.Lock())
+    async with lock:
+        # Re-check: a concurrent caller may have filled it while we queued.
+        cached = _fresh()
+        if cached is not None:
+            return cached
+        try:
+            counts = await _session_counts_grouped(
+                db, instrument=instrument, days=days, start_ts=start_ts, end_ts=end_ts,
+                window_start=window_start, window_end=window_end,
+            )
+        except Exception as exc:  # aggregation unsupported / stand-in DB in tests
+            log.debug("session_counts: aggregation unavailable (%s) — scanning", exc)
+            counts = await _session_counts_scan(
+                db, instrument=instrument, days=days, start_ts=start_ts, end_ts=end_ts,
+                window_start=window_start, window_end=window_end,
+            )
+        if db_ref is not None:
+            # Bound the dict so a long-lived process cannot accumulate keys
+            # forever; entries are cheap and the TTL is short, so a crude clear is
+            # fine and keeps this free of an LRU dependency.
+            if len(_SESSION_COUNTS_CACHE) > 512:
+                _SESSION_COUNTS_CACHE.clear()
+                _SESSION_COUNTS_LOCKS.clear()
+            _SESSION_COUNTS_CACHE[key] = (_monotonic(), dict(counts), db_ref)
+        return counts
+
+
+async def _session_counts_grouped(
+    db: Any, *, instrument: str, days: List[str], start_ts: int, end_ts: int,
+    window_start: time, window_end: time,
+) -> Dict[str, int]:
+    """Per-day distinct traded-minute counts, grouped SERVER-SIDE.
+
+    The scan below pulled every 1m candle ts in range into Python purely to count
+    distinct minutes per day — ~78 sessions x 375 minutes is ~29k documents per
+    call, and the paper strategy-stats route made 16 such calls. This returns one
+    row per day instead. Semantics are identical to `_session_counts_scan`, which
+    remains as the fallback and as the oracle the equality test compares against.
+    """
+    start_min = window_start.hour * 60 + window_start.minute
+    end_min = window_end.hour * 60 + window_end.minute
+    pipeline = [
+        {"$match": {"instrument": instrument, "ts": {"$gte": start_ts, "$lt": end_ts}}},
+        # Shift to IST before extracting the day and minute-of-day, mirroring
+        # `_ist_from_ts_ms`. Same +5:30 trick the warehouse day-aggregation uses.
+        {"$project": {"_id": 0, "ist": {"$add": [{"$toDate": "$ts"}, _IST_OFFSET_MS]}}},
+        {"$project": {
+            "day": {"$dateToString": {"format": "%Y-%m-%d", "date": "$ist"}},
+            "mod": {"$add": [{"$multiply": [{"$hour": "$ist"}, 60]}, {"$minute": "$ist"}]},
+        }},
+        # Half-open [start, end) — the scan uses `window_start <= t < window_end`.
+        {"$match": {"mod": {"$gte": start_min, "$lt": end_min}}},
+        {"$group": {"_id": "$day", "minutes": {"$addToSet": "$mod"}}},
+        {"$project": {"_id": 1, "n": {"$size": "$minutes"}}},
+    ]
+    rows = await db.candles_1m.aggregate(pipeline).to_list(length=None)
+    by_day = {str(r.get("_id")): int(r.get("n") or 0) for r in rows}
+    # Every requested day is present, missing ones at 0 — the scan seeded its dict
+    # from `days`, and callers index it directly.
+    return {day: by_day.get(day, 0) for day in days}
+
+
+async def _session_counts_scan(
+    db: Any, *, instrument: str, days: List[str], start_ts: int, end_ts: int,
+    window_start: time, window_end: time,
+) -> Dict[str, int]:
+    """The original client-side scan. Kept as the fallback and the test oracle."""
     cursor = db.candles_1m.find(
         {
             "instrument": instrument,

@@ -5,6 +5,8 @@ Moved verbatim from backend/server.py (quality-hardening Slice C).
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import asyncio
+import os
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -131,9 +133,14 @@ async def paper_strategy_stats():
              "exit_reason": 1, "risk_amount": 1, "total_charges": 1},
     ).to_list(length=100000)
     dep_ids = sorted({str(r.get("deployment_id")) for r in rows if r.get("deployment_id")})
+    # ONE batched read of the FULL docs. The drift loop below used to re-fetch each
+    # deployment individually with find_one; measured only ~6ms, so this is tidiness
+    # rather than the win — the win is the concurrency below.
+    dep_by_id: Dict[str, Dict[str, Any]] = {}
     names = {}
     if dep_ids:
-        for d in await db.strategy_deployments.find({"id": {"$in": dep_ids}}, {"_id": 0, "id": 1, "name": 1}).to_list(length=len(dep_ids)):
+        for d in await db.strategy_deployments.find({"id": {"$in": dep_ids}}, {"_id": 0}).to_list(length=len(dep_ids)):
+            dep_by_id[str(d["id"])] = d
             names[str(d["id"])] = str(d.get("name") or "")
     stats = paper_analytics.per_strategy_stats(rows)
     for s in stats:
@@ -143,15 +150,20 @@ async def paper_strategy_stats():
     from app.forward_metrics import compute_forward_metrics_for_deployment  # noqa: PLC0415
     from app.routers.deployments import _gather_deployment_evidence  # noqa: PLC0415
 
-    for s in stats:
+    # CONCURRENT, not serial (2026-09-16). This enrichment was ~1.5s of a ~1.6s
+    # endpoint, and the /paper page awaits it in the same Promise.all as the trade
+    # rows — so the whole page refresh was gated by it, which is why the P&L numbers
+    # could only ever be polled slowly. Every unit of the work is I/O-bound (each
+    # compute_forward_metrics_for_deployment makes ~6 awaited Mongo reads), so
+    # gather actually overlaps it. Exceptions are captured per deployment and still
+    # degrade to {"state": "no_baseline"} exactly as the serial version did.
+    async def _drift_for(s: Dict[str, Any]) -> Dict[str, Any]:
         dep_id = s.get("deployment_id")
         if not dep_id:
-            s["drift"] = {"state": "no_baseline"}
-            continue
-        dep = await db.strategy_deployments.find_one({"id": dep_id}, {"_id": 0})
+            return {"state": "no_baseline"}
+        dep = dep_by_id.get(str(dep_id))
         if not dep:
-            s["drift"] = {"state": "no_baseline"}
-            continue
+            return {"state": "no_baseline"}
         try:
             fm = await compute_forward_metrics_for_deployment(db, dep)
             live = {"win_rate": fm.get("win_rate"), "avg": fm.get("avg_pnl"),
@@ -169,9 +181,27 @@ async def paper_strategy_stats():
             base_avg = (oe.get("net_pnl_value") / paired) if paired else None
             baseline = {"win_rate": oe.get("win_rate"), "avg": base_avg,
                         "params_match": bool(oe.get("params_match"))}
-            s["drift"] = paper_analytics.drift_compare(live, baseline)
+            return paper_analytics.drift_compare(live, baseline)
         except Exception:
-            s["drift"] = {"state": "no_baseline"}
+            return {"state": "no_baseline"}
+
+    # Concurrency is BOUNDED, and the bound was measured rather than assumed.
+    # Unbounded gather over 11 deployments came out at 0.85x of serial on this box
+    # — every unit issues ~6 Mongo reads, so a full fan-out just queues them behind
+    # the same connection pool and the same mongod. PAPER_DRIFT_CONCURRENCY exists
+    # so the bound can be re-measured on different hardware without a code change.
+    _limit = max(1, int(os.environ.get("PAPER_DRIFT_CONCURRENCY", "4") or 4))
+    _sem = asyncio.Semaphore(_limit)
+
+    async def _bounded(s: Dict[str, Any]) -> Dict[str, Any]:
+        async with _sem:
+            return await _drift_for(s)
+
+    drifts = await asyncio.gather(*(_bounded(s) for s in stats), return_exceptions=True)
+    for s, d in zip(stats, drifts):
+        # return_exceptions keeps one bad deployment from failing the whole page;
+        # an exception here means the same thing the inner except does.
+        s["drift"] = d if isinstance(d, dict) else {"state": "no_baseline"}
 
     return serialize_doc(paper_analytics.json_safe_floats({"items": stats, "count": len(stats)}))
 
