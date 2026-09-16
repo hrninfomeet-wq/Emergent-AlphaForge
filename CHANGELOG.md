@@ -2,6 +2,65 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [Unreleased] — SENSEX positions were never tick-marked (2026-09-16)
+
+Reported live, with real money open: a 5-lot SENSEX 17 SEP 74300 PE showed Day
+P&L crawling while the index strip on the same page updated instantly, and the
+Live Deployments pane showed no live P&L at all.
+
+**Exits were never at risk, and that was established before anything was
+changed.** Two different resolvers exist, and only one was broken:
+
+* the **guard** (exit evaluation) uses `premium_tick_key(exch, token)`, which maps
+  `BFO -> BSE_FO|<token>` and works correctly for SENSEX;
+* the **display** uses `resolve_tick_key`, which resolves by IDENTITY — and the
+  identity parser knew only the NFO symbol conventions.
+
+Corroborated from the trade's own record: the last persisted mark was 360.80 at
+10:20:27 against an actual fill of 361.00 at 10:20:47 — 20 seconds and ₹0.20
+apart. The stop (`stop_pct: 50` on a 352.78 fill, i.e. ~176) was never approached.
+
+**The display bug.** Flattrade's BFO symbols share no format with NFO's:
+
+    NFO   dname "NIFTY 15SEP26 23350 CE"    tsym "NIFTY15SEP26C23350"
+    BFO   dname "SENSEX 17 SEP 74300 PE"    tsym "SENSEX2691774300PE"
+
+The BFO dname carries **no year at all**, and the tsym is `<SYM><YY><M><DD>
+<STRIKE><CE|PE>` with a single-character month (1-9, then O/N/D). Neither regex
+matched, so `parse_position_identity` returned None for every SENSEX position,
+`resolve_tick_key` returned None, and `mark_positions` fell through to
+`mark_source="broker"` — pricing a real-money position off the 15s REST book while
+every NIFTY position marked on the tick.
+
+`_BFO_TSYM_RE` closes it. The dname is deliberately NOT parsed for BFO: without a
+year, inferring one risks marking a position against a different expiry's premium,
+which is exactly what that function's contract forbids. Token joins were likewise
+not an option — `build_contract_index` avoids them on purpose, because exchange
+tokens are recycled across expiries.
+
+Verified live on the actual contract, before and after:
+
+    before   tick_key=null              mark_source=broker   marked 0/2
+    after    tick_key=BSE_FO|862237     mark_source=tick     marked 2/2
+
+Measured over 30s / 210 snapshots: marks emit p50 150ms / p95 236ms; tick age at
+emit p50 428ms / p95 924ms. Against the 15s book it replaced, ~35x at p50.
+
+**The Live Deployments pane now shows live P&L.** It never had the field: `LiveRow`
+rendered today's CUMULATIVE realised P&L and an open COUNT, nothing else. It now
+consumes the marked book and attributes MTM per deployment **by trading symbol**,
+via the open positions the guard records. A position the guard does not own is
+deliberately left unattributed rather than folded into someone's total — the alert
+rail exists to surface it. A row priced off the broker rather than a tick is
+labelled `(broker)` and dimmed.
+
+**Known, NOT fixed — flagged rather than patched.** A trade closed via
+`exit_reason="reconciled_closed"` never gets `realized_pnl` written, so
+`daily_realized_summary` sums null and the pane shows ₹0 for a trade the broker
+booked at ₹822. The reconcile path does not know the exit fill price, and
+attributing a contract's day-`rpnl` to one specific trade is ambiguous when
+several trades touch the same symbol. That needs a design decision, not a patch.
+
 ## [Unreleased] — /paper's Trades panel marks on the tick (2026-09-16)
 
 Reported: P&L%, Net P&L and the P&L curve on `/paper` do not move like a real

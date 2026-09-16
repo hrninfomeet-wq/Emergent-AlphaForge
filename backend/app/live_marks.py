@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import math
 import re
+from datetime import date
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 TickLookup = Callable[[str], Optional[Dict[str, Any]]]
@@ -50,11 +51,34 @@ _DNAME_RE = re.compile(
     r"^\s*(?P<sym>[A-Z0-9&\-]+)\s+(?P<d>\d{1,2})(?P<mon>[A-Z]{3})(?P<y>\d{2,4})\s+"
     r"(?P<strike>\d+(?:\.\d+)?)\s+(?P<side>CE|PE)\s*$"
 )
-# "NIFTY15SEP26C23350" — the Flattrade trading symbol.
+# "NIFTY15SEP26C23350" — the Flattrade NFO trading symbol.
 _TSYM_RE = re.compile(
     r"^(?P<sym>[A-Z0-9&\-]+?)(?P<d>\d{1,2})(?P<mon>[A-Z]{3})(?P<y>\d{2,4})"
     r"(?P<cp>[CP])(?P<strike>\d+(?:\.\d+)?)$"
 )
+
+# "SENSEX2691774300PE" — the Flattrade BFO trading symbol, a COMPLETELY different
+# convention from NFO's: <SYM><YY><M><DD><STRIKE><CE|PE>, where the month is a
+# single character (1-9, then O/N/D for Oct/Nov/Dec) and the side is a suffix
+# rather than an infix.
+#
+# This gap is why the fix exists. Neither regex above matches a SENSEX position,
+# so parse_position_identity returned None for every one of them, resolve_tick_key
+# returned None, and mark_positions fell through to mark_source="broker" — i.e.
+# SENSEX positions were priced off the 15s broker book while NIFTY positions were
+# marked on the tick. Observed 2026-09-16 on a real 5-lot SENSEX 74300 PE.
+#
+# The broker's `dname` ("SENSEX 17 SEP 74300 PE") is deliberately NOT parsed for
+# BFO: it carries no year, and inferring one would risk marking a position against
+# a different expiry's premium — exactly what parse_position_identity's contract
+# forbids. The tsym carries the year, so it is the only source used here.
+_BFO_TSYM_RE = re.compile(
+    r"^(?P<sym>[A-Z&\-]+?)(?P<y>\d{2})(?P<mon>[1-9OND])(?P<d>\d{2})"
+    r"(?P<strike>\d+(?:\.\d+)?)(?P<side>CE|PE)$"
+)
+
+#: Single-character month codes used by the BFO weekly symbol.
+_BFO_MONTH = {**{str(i): i for i in range(1, 10)}, "O": 10, "N": 11, "D": 12}
 
 
 def _to_float(value: Any) -> Optional[float]:
@@ -106,6 +130,20 @@ def parse_position_identity(pos: Dict[str, Any]) -> Optional[Identity]:
         if expiry and strike is not None:
             side = "CE" if match.group("cp") == "C" else "PE"
             return (match.group("sym"), expiry, strike, side)
+
+    # BFO (SENSEX / BANKEX) — a different symbol convention entirely; see
+    # _BFO_TSYM_RE. Tried last so NFO parsing is byte-for-byte unchanged.
+    match = _BFO_TSYM_RE.match(tsym)
+    if match:
+        month = _BFO_MONTH.get(match.group("mon"))
+        strike = _to_float(match.group("strike"))
+        if month is not None and strike is not None:
+            try:
+                expiry = date(2000 + int(match.group("y")), month,
+                              int(match.group("d"))).isoformat()
+            except ValueError:
+                return None  # impossible calendar date -> refuse rather than guess
+            return (match.group("sym"), expiry, strike, match.group("side"))
     return None
 
 

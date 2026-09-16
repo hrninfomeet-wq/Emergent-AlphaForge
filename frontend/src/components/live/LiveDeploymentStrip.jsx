@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Activity, ChevronDown, ChevronRight, Loader2, OctagonX, Pause, Play, ShieldOff, Square } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
@@ -7,6 +7,7 @@ import { getApiErrorMessage } from "@/lib/apiError";
 import { Button } from "@/components/ui/button";
 import DeployToLivePanel from "@/components/live/DeployToLivePanel";
 import { useLiveData } from "@/components/live/LiveDataProvider";
+import { asPositionRows } from "@/components/live/liveHelpers";
 
 /**
  * LiveDeploymentStrip — per-deployment live-execution controls for the Live
@@ -55,7 +56,7 @@ function entryErrorLabel(reason) {
 }
 
 // ── One live-mode deployment row ────────────────────────────────────────────
-function LiveRow({ dep, liveStatus, busy, onDisable, onStop, onPause, onResume }) {
+function LiveRow({ dep, liveStatus, busy, onDisable, onStop, onPause, onResume, liveMtm }) {
   // Status payload shape: { today: {orders, lots, realized_pnl}, open_positions: [...] }
   const today = liveStatus?.today || {};
   const todayOrders = today.orders ?? 0;
@@ -103,13 +104,32 @@ function LiveRow({ dep, liveStatus, busy, onDisable, onStop, onPause, onResume }
         )}
       </span>
 
-      {/* Open positions — the ONLY current-state number on this row. */}
+      {/* Open positions — a CURRENT-state number. */}
       <span
         className="text-[11px] font-mono text-dimmer whitespace-nowrap"
         title="Positions open RIGHT NOW and registered with the software exit guard."
       >
         · {openPositions} open
       </span>
+
+      {/* LIVE MTM — the number this pane never had. Until 2026-09-16 the row
+          showed only today's CUMULATIVE realised P&L, so a deployment sitting on
+          an open position displayed no live P&L whatsoever. Sourced from the
+          marks book, which re-marks urmtom on the Upstox tick. */}
+      {liveMtm && liveMtm.count > 0 && (
+        <span
+          className={`text-[11px] font-mono whitespace-nowrap ${liveMtm.stale ? "opacity-60" : ""}`}
+          title={liveMtm.stale
+            ? `MTM on ${liveMtm.count} open position(s) — priced off the broker book, not a live tick`
+            : `Live mark-to-market on ${liveMtm.count} open position(s), re-marked on the Upstox tick`}
+          data-testid="live-deploy-mtm"
+        >
+          · MTM <span className={Number(liveMtm.value) >= 0 ? "text-success" : "text-danger"}>
+            {fmtINR(liveMtm.value)}
+          </span>
+          {liveMtm.stale && <span className="text-warning"> (broker)</span>}
+        </span>
+      )}
 
       {/* Entry-refused chip — WHY a live deployment isn't placing (stale
           premium / throttle / gate block). Surfaces the previously write-only
@@ -228,7 +248,10 @@ export default function LiveDeploymentStrip() {
   // `liveStatuses` is the provider's deployLive byId map (today's counters/open
   // positions/last-entry per deployment — its own `armed` field is dead, see
   // the partition comment below; live/not-live is read off `deployments[].mode`).
-  const { deployments, deployLive: liveStatuses, refetch } = useLiveData();
+  // `positions` is the MARKED broker book: the same rows, with lp/urmtom
+  // re-marked on the Upstox tick where one is available, plus mark_source and
+  // mark_age_ms per row. Consuming it here is what puts live P&L on this pane.
+  const { deployments, deployLive: liveStatuses, positions, refetch } = useLiveData();
   const [busy, setBusy] = useState(false);
   const [collapsed, setCollapsed] = useState(() => {
     try {
@@ -351,6 +374,40 @@ export default function LiveDeploymentStrip() {
   const notLiveDeps = (deployments || []).filter((d) => d?.mode !== "live");
   const hasLive = liveDeps.length > 0;
 
+  // Attribute the marked book to deployments. The broker book has no
+  // deployment_id — the link is the trading symbol, which the guard records per
+  // deployment in its live-status open_positions. A position the guard does not
+  // own is deliberately NOT attributed to anyone: an unguarded broker position is
+  // surfaced by the alert rail, and silently folding it into some deployment's
+  // MTM would hide it.
+  const mtmByDeployment = useMemo(() => {
+    const out = {};
+    const rows = asPositionRows(positions) || [];
+    if (!rows.length) return out;
+    const byTsym = new Map();
+    for (const r of rows) {
+      const t = r?.tsym;
+      if (t) byTsym.set(String(t), r);
+    }
+    for (const dep of deployments || []) {
+      const open = liveStatuses?.[dep.id]?.open_positions;
+      if (!Array.isArray(open) || open.length === 0) continue;
+      let value = 0, count = 0, stale = false;
+      for (const op of open) {
+        const row = byTsym.get(String(op?.tsym || ""));
+        if (!row) continue;
+        const v = Number(row.urmtom);
+        if (!Number.isFinite(v)) continue;
+        value += v; count += 1;
+        // "broker" means no live tick backed this row — say so rather than
+        // letting a 15s REST price render as a live mark.
+        if (String(row.mark_source || "") !== "tick") stale = true;
+      }
+      if (count > 0) out[dep.id] = { value, count, stale };
+    }
+    return out;
+  }, [positions, deployments, liveStatuses]);
+
   // Aggregate today's realized P&L across all live deployments, for the
   // always-visible header summary (matches LiveRow's own today-P&L coloring).
   let todayRealisedTotal = null;
@@ -455,6 +512,7 @@ export default function LiveDeploymentStrip() {
                   onStop={doStop}
                   onPause={doPause}
                   onResume={doResume}
+                  liveMtm={mtmByDeployment[dep.id]}
                 />
               ))}
             </div>
