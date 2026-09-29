@@ -1607,18 +1607,76 @@ async def stop_deployment_live(deployment_id: str):
     })
 
 
-async def _live_status_payload(db: Any, deployment_id: str) -> Optional[Dict[str, Any]]:
+async def _live_account_ctx(db: Any) -> Dict[str, Any]:
+    """What every deployment's governor view shares, read ONCE per request.
+
+    ``config`` — the account safety config (None if unreadable: the governor view
+    then reports ``account_config_unavailable``, as the entry path would refuse);
+    ``rows`` — ALL ``live_trades`` (the account layer needs them; each deployment's
+    own rows are filtered from them, so a batch of N costs one read, not N);
+    ``connected`` — broker session connected AND not expired, the entry path's own
+    test. An unreadable status reads as not connected: fail closed.
+    """
+    ctx: Dict[str, Any] = {"config": None, "rows": None, "connected": False}
+    try:
+        ctx["config"] = await _live_safety_config()
+    except Exception as exc:
+        logging.getLogger(__name__).debug("live_status: safety config unreadable: %s", exc)
+    try:
+        ctx["rows"] = await db.live_trades.find({}).to_list(length=None)
+    except Exception as exc:
+        logging.getLogger(__name__).debug("live_status: live_trades unreadable: %s", exc)
+    try:
+        st = await _live_broker_status()
+        ctx["connected"] = bool(st.get("connected")) and not bool(st.get("expired"))
+    except Exception as exc:
+        logging.getLogger(__name__).debug("live_status: broker status unreadable: %s", exc)
+    return ctx
+
+
+def _finite_or_none(value: Any) -> Any:
+    """A non-finite float → None. The response serializes with allow_nan=False, so
+    one NaN cap would otherwise 500 the per-id route AND the whole batch."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
+
+
+async def _live_status_payload(
+    db: Any, deployment_id: str, *,
+    now_utc: Optional[datetime] = None,
+    account_ctx: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
     """Build one deployment's live-status dict, or None if the deployment is absent.
 
     Shared by the per-id route and the batched ?ids= route so both emit the
     identical shape. Returns the UN-serialized dict; callers ``serialize_doc`` it.
+
+    ``governor`` is the governor's OWN answer to "why can't this trade right now?"
+    (``live_deploy_governor.describe_live_caps``): the caps, what is consumed
+    against them, and the verdicts the entry path would reach. The UI must render
+    it rather than re-derive enforcement — a realized-only loss figure, for one,
+    under-reports consumption exactly when a losing position is open.
     """
     deployment = await db.strategy_deployments.find_one({"id": deployment_id}, {"_id": 0})
     if not deployment:
         return None
+    now = now_utc or datetime.now(timezone.utc)
+    if account_ctx is None:
+        account_ctx = await _live_account_ctx(db)
     live = dict((deployment.get("risk") or {}).get("live") or {})
-    rows = await db.live_trades.find({"deployment_id": deployment_id}).to_list(length=None)
-    today = _live_today_counters(rows, datetime.now(timezone.utc))
+    if account_ctx.get("rows") is not None:
+        rows = [r for r in account_ctx["rows"]
+                if str(r.get("deployment_id") or "") == str(deployment_id)]
+    else:
+        rows = await db.live_trades.find({"deployment_id": deployment_id}).to_list(length=None)
+    today = _live_today_counters(rows, now)
+    from app.live_deploy_governor import describe_live_caps
+    governor = await describe_live_caps(
+        db, deployment, now_utc=now, rows=rows,
+        account_config=account_ctx.get("config"),
+        account_rows=account_ctx.get("rows"),
+        connected=account_ctx.get("connected"))
     reg = _live_registry()
     open_positions = []
     for e in reg.snapshot():
@@ -1678,16 +1736,17 @@ async def _live_status_payload(db: Any, deployment_id: str) -> Optional[Dict[str
         "live_paused": bool(live.get("paused")),
         "armed_until": None,
         "caps": {
-            "lots": live.get("lots"),
-            "max_lots_per_day": live.get("max_lots_per_day"),
-            "max_concurrent": live.get("max_concurrent"),
-            "daily_loss_cap": live.get("daily_loss_cap"),
+            "lots": _finite_or_none(live.get("lots")),
+            "max_lots_per_day": _finite_or_none(live.get("max_lots_per_day")),
+            "max_concurrent": _finite_or_none(live.get("max_concurrent")),
+            "daily_loss_cap": _finite_or_none(live.get("daily_loss_cap")),
         },
         "today": today,
         "open_positions": open_positions,
         "last_entry": last_entry,
         "autoplace_armed": _live_autoplace_armed(),
         "guard_armed": _live_guard_armed(),
+        "governor": governor,
     }
 
 
@@ -1713,8 +1772,10 @@ async def deployments_live_status_batch(
             id_list.append(i)
     id_list = id_list[:200]  # bound the batch size
     out: Dict[str, Any] = {}
+    now = datetime.now(timezone.utc)
+    ctx = await _live_account_ctx(db)   # ONE read shared by every id
     for i in id_list:
-        payload = await _live_status_payload(db, i)
+        payload = await _live_status_payload(db, i, now_utc=now, account_ctx=ctx)
         if payload is not None:
             out[i] = serialize_doc(payload)
     return out

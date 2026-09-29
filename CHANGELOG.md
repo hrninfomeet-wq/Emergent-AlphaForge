@@ -2,6 +2,50 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [Unreleased] — One honest answer to "why can't this trade right now?" (2026-09-29)
+
+Phase 1 of the Live Deployments uplift. `/deployments/live/status` (batch and
+per-id) gains an additive `governor` key: the governor's OWN answer, for display.
+
+**Why server-side, and why not "realized ÷ cap".** The first draft of this work
+rendered loss headroom as `today.realized_pnl ÷ daily_loss_cap` in JavaScript. The
+governor gates on realized **+ open-unrealized**, so that figure under-reported
+consumption exactly when a losing position was open — the moment it matters (an
+open −₹3,200 loser read as "₹0 of ₹3,000 used"). Two derivations of one rule is
+the defect class of the 09-16 BFO marking bug; there is now one.
+
+**One computation, two callers.** `check_live_caps` / `check_account_caps` were
+split, extract-only, into pure steps — `precheck_live_caps` → `measure_exposure` →
+`decide_live_caps` / `decide_account_caps` — which the enforcing checks and the new
+read-only `describe_live_caps` both run. The only enforcement change is deliberate
+and tested: a poisoned `lots` value used to RAISE out of the check (fail-closed but
+inexplicable); it now refuses as `lots_unmeasurable`. describe takes no `engine`, so
+it can never trip the account latch the enforcing account check trips on a breach.
+
+**What the block says** (per deployment): the caps (null when unset, never 0);
+what is consumed against them (lots today, concurrent now, realized, open
+unrealized, day P&L, loss headroom — all **null, not 0, when exposure is
+unknown**); the deployment, account and authorization verdicts; and `binding` —
+the first refusal in the entry path's own order (authorization → account →
+deployment). Authorization uses the entry path's own `connected` test — a token
+that exists but has EXPIRED is not connected, the state an operator read as
+"connected" on 2026-09-26. Two diagnostics feed no decision: OPEN rows from an
+earlier day (they hold a concurrency slot outside the loss sum — the stale 09-16
+row held one of its deployment's two for eleven days) and today's closes with no
+journalled P&L (counted as zero by the loss sum).
+
+**Cost, measured.** The account context (safety config, all `live_trades`, broker
+session) is read ONCE per request and each deployment's rows are filtered from it,
+so the 10-second batch poll does one `live_trades` read instead of one per
+deployment. Batch route over the real 9 deployments before this change: p50
+132 ms / max 166 ms. The existing `caps` echo is also sanitized: a NaN cap used to
+500 the per-id route and the whole batch (`allow_nan=False`).
+
+Tests: 3 new files; **14/14 mutants killed**, including the one the handoff
+required — make describe use realized-only, and a test fails. A timestamp the first
+draft added (`as_of`) made the existing batch-vs-per-id identity test fail 5/5 in
+isolation; it was removed rather than weakening that test. Full suite 5980 passed.
+
 ## [Unreleased] — Reconcile: partial-fill exits, stale OPEN trades, a flat account that never "recovered" (2026-09-29)
 
 Phase 0 of the Live Deployments uplift
