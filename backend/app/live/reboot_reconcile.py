@@ -909,6 +909,9 @@ async def reconcile_on_startup(
         contradicts them: the account holds nothing, which is a COMPLETE answer
         (it used to be reported as UNKNOWN, so the supervisor retried recovery every
         tick, all day, on the shared broker rate budget);
+      * ``trade_book_unreadable`` — the position book was read and flat docs were
+        closed, but their exit prices could not be — INCOMPLETE, so the repair
+        gets another chance on the supervisor's retry;
       * ``unknown_position_book`` — the book could not be read or confirmed, OR it
         was confirmed empty while a same-day / undatable OPEN doc remains. Such a
         doc's entry order may still be working; recovery must stay INCOMPLETE so
@@ -976,13 +979,19 @@ async def reconcile_on_startup(
     open_tsyms = _open_tsyms(book)
 
     # Read the trade book ONCE for both phases that need it (shared rate budget).
+    # An unreadable one still lets flat docs close (flatness comes from the
+    # position book) but costs their prices, and the repair that could recover
+    # them runs only inside a reconcile — so report it, and the runtime treats the
+    # run as INCOMPLETE and retries while the book is still today's.
     try:
         trade_book = await client.trade_book()
         if not isinstance(trade_book, list):
             trade_book = []
+            summary["status"] = "trade_book_unreadable"
     except Exception as exc:
         log.warning("reboot reconcile: trade_book fetch failed: %s", exc)
         trade_book = []
+        summary["status"] = "trade_book_unreadable"
 
     # Phase 2 — close OPEN-but-flat docs.
     try:

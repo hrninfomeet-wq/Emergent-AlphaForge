@@ -887,7 +887,10 @@ async def live_startup_recovery() -> bool:
         # rehydrate almost certainly saw nothing either ⇒ recovery is NOT complete.
         # "flat_confirmed" IS complete: a flat account used to report UNKNOWN, so
         # the supervisor re-ran recovery every tick, all day, on the broker budget.
-        if res.get("status") == "unknown_position_book":
+        # Only a readable, fully-processed book is COMPLETE. Anything else —
+        # unknown_position_book, trade_book_unreadable, a status added later —
+        # keeps recovery retrying: an unrecognised answer is not a yes.
+        if res.get("status") not in ("ok", "flat_confirmed"):
             complete = False
     except Exception as exc:
         complete = False

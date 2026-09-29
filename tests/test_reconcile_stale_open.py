@@ -316,6 +316,8 @@ def test_a_held_position_is_never_closed_by_the_calendar():
     ("flat_confirmed", True),
     ("ok", True),
     ("unknown_position_book", False),
+    ("trade_book_unreadable", False),
+    ("some_status_added_later", False),
 ])
 def test_recovery_completeness_follows_the_reconcile_status(monkeypatch, status, complete):
     from tests.test_premium_momentum_recovery import _DB, _Locks, _Reg, _wire
@@ -361,3 +363,17 @@ def test_a_same_day_WORKING_entry_stays_open_and_recovery_stays_incomplete():
     out = _run(db, _Orders([[], []]))
     assert db.live_trades.rows[0]["status"] == "OPEN"
     assert out["status"] == "unknown_position_book"
+
+
+def test_an_unreadable_trade_book_reports_itself():
+    """Flat docs still close (flatness is the position book's call) but their
+    prices are lost unless the repair gets another run — so it must not read ok."""
+    class _NoTrades(FakeClient):
+        async def trade_book(self):
+            raise RuntimeError("TradeBook 502")
+
+    db = FakeDB()
+    db.live_trades.rows.append(_stale_doc(noren_tsym=LIVE_TSYM))
+    out = _run(db, _NoTrades(position_book=[{"tsym": "OTHER", "netqty": "5"}]))
+    assert out["status"] == "trade_book_unreadable"
+    assert db.live_trades.rows[0]["status"] == "CLOSED"
