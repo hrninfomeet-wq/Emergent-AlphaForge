@@ -2150,6 +2150,38 @@ async def list_deployment_signals(deployment_id: str, limit: int = Query(100, le
     return {"items": serialize_doc(rows), "count": len(rows)}
 
 
+@api.get("/deployments/{deployment_id}/timeline")
+async def deployment_session_timeline(
+    deployment_id: str,
+    date: Optional[str] = Query(None, description="IST calendar date YYYY-MM-DD (default today IST)"),
+):
+    """One live deployment's day as a single ascending list — signals, refusals,
+    entries, exits, orders and the latest hold/disable/caps events — plus ``gaps``
+    stating what is NOT recorded anywhere (skipped entries, halt/latch history).
+
+    READ-ONLY and never raises: a source that cannot be read degrades into a gap,
+    and a bad date or an unreadable deployment answers 200 with an empty list and
+    the reason, so the operator's page never dies on the diagnostic that explains it.
+    """
+    from app.deployment_kill_switch import IST
+    from app.live_timeline import GAP_HALT_HISTORY, GAP_SKIPPED_ENTRIES, build_session_timeline
+    today = _utcnow().astimezone(IST).date().isoformat()
+    day = (date or today).strip()
+    empty = lambda why: {  # noqa: E731 — one shape for every degraded answer
+        "date": day, "events": [],
+        "gaps": [f"No events returned: {why}.", GAP_SKIPPED_ENTRIES, GAP_HALT_HISTORY]}
+    try:
+        datetime.strptime(day, "%Y-%m-%d")
+    except ValueError:
+        return empty("the date must be YYYY-MM-DD")
+    try:
+        bounds = _ist_day_bounds_ms_full(day, day)
+        return serialize_doc(await build_session_timeline(get_db(), deployment_id, day, bounds))
+    except Exception as exc:  # noqa: BLE001 — see the docstring: a diagnostic must not 500
+        logging.getLogger(__name__).warning("session timeline failed for %s: %s", deployment_id, exc)
+        return empty(f"the timeline could not be built ({type(exc).__name__})")
+
+
 @api.post("/deployments/{deployment_id}/evaluate-on-close")
 async def evaluate_deployment_now(deployment_id: str):
     """Run the 1-minute close evaluator against this deployment once.

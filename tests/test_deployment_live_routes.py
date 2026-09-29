@@ -104,6 +104,14 @@ def _match(row: Dict[str, Any], query: Dict[str, Any]) -> bool:
         elif isinstance(v, dict) and "$ne" in v:
             if rv == v["$ne"]:
                 return False
+        elif isinstance(v, dict) and ("$gte" in v or "$lt" in v):
+            # A half-open range ({"$gte": a, "$lt": b}); a missing field never matches.
+            if rv is None:
+                return False
+            if "$gte" in v and rv < v["$gte"]:
+                return False
+            if "$lt" in v and not rv < v["$lt"]:
+                return False
         elif rv != v:
             return False
     return True
