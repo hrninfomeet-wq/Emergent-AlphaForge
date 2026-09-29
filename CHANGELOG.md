@@ -2,6 +2,47 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [Unreleased] — A server-side trading clock: countdowns that cannot drift (2026-09-29)
+
+Phase 3 of the Live Deployments uplift. The operator learned of the 15:00 entry
+cutoff only afterwards, and every clock on the page was the browser's own.
+
+**Measured first — the handoff's premise was wrong twice.** The entry cutoff and the
+EOD square are NOT one value: they are two separate 15:00 literals
+(`mode.armed_until_today_ist`, `runtime`'s guard `eod_square_ist`) — two of **eight**
+15:00 literals in the codebase — equal only by coincidence. And for most deployments
+the binding entry time is not 15:00 at all: the default entry window ends **14:50**,
+applied by the evaluator before the live gate, so a 15:00 countdown would be ten
+minutes wrong.
+
+**`live/session_clock.describe_session`** (pure) derives each boundary from what
+ENFORCES it — the cutoff from the gate's own function, the EOD square from the
+guard's own configured time (a new read-only `eod_square_ist` property; unknown →
+null, never a literal), the trading day from the holiday-aware NSE calendar — and
+returns every boundary as an absolute epoch-ms plus `phase` (closed_day / pre_open /
+session / after_cutoff / after_eod) and `next_event`. It rides the existing 15 s
+arm-state poll (`session`, one clock read shared with the verdict) and has its own
+`GET /live-broker/session-clock`. The live-status payload gains each deployment's
+`entry_window.effective_end`.
+
+**The browser never consults its own clock.** `lib/sessionClock.js` anchors the
+server instant to `performance.now()` (monotonic — immune to a skewed PC clock, NTP
+jumps and sleep), re-anchors every poll, and shows "clock stale" rather than
+counting on a dead anchor. Pinned by a test that skews `Date.now` by ten minutes.
+The execution strip counts down to the next boundary; a row shows "entries until
+14:50" when its window closes before the cutoff.
+
+**Two more false statuses, fixed in the views.** The live gate has no calendar of
+its own (orders are impossible off-session only because the evaluator does not run
+then), so arm-state counted live deployments as "would transmit" on holidays and at
+08:00, and the governor view said "can trade now". Both now read the session phase
+(`market_closed_today` / `before_market_open`). The cockpit's market pill — which
+knew weekdays but not NSE holidays and read MARKET OPEN on them (next: Fri 02 Oct) —
+defers to the server's day. The gate itself is deliberately unchanged.
+
+10/10 mutants killed (EOD from a literal, UTC day, holiday-blind next session, phase
+order, browser wall clock, stale anchor, …); CI build clean; full suite 6052 passed.
+
 ## [Unreleased] — The Live Deployments pane renders the governor, and stops lying (2026-09-29)
 
 Phase 2 of the Live Deployments uplift, plus the UI half of the false-status audit.

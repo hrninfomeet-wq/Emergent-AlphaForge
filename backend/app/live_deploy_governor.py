@@ -539,6 +539,16 @@ async def describe_live_caps(
             from app.live.mode import is_deployment_live_allowed
             ok, why = is_deployment_live_allowed(deployment, now_utc,
                                                  connected=bool(connected))
+            if ok:
+                # The gate has no calendar of its own — entries are impossible off
+                # session only because the evaluator does not run then. Say so,
+                # rather than "can trade now" at 08:00 or on a market holiday.
+                from app.live.session_clock import describe_session
+                phase = describe_session(now_utc, eod_square_ist=None)["phase"]
+                if phase == "closed_day":
+                    ok, why = False, "market_closed_today"
+                elif phase == "pre_open":
+                    ok, why = False, "before_market_open"
             out["authorization"] = {"allow": bool(ok), "reason": str(why)}
 
         # --- account layer ------------------------------------------------------

@@ -144,6 +144,7 @@ export default function LiveCockpit() {
       <CommandBar
         flattradeStatus={status} onConfigure={openDrawer} onChanged={fetchAll}
         openPositions={openPositionCount}
+        session={armState?.session || null}
       />
 
       {/* THE execution-state verdict: will a signal transmit a REAL order right

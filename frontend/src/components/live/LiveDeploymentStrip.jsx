@@ -12,6 +12,7 @@ import {
   bindingView, capHeadroom, describeIntended, entryRefusalView, openPositionRows,
   readGovernor, sortDeploymentRows,
 } from "@/lib/liveDeploymentView";
+import { deploymentEntryEnd } from "@/lib/sessionClock";
 
 /**
  * LiveDeploymentStrip — per-deployment live-execution controls for the Live
@@ -148,7 +149,7 @@ function RowDetail({ liveStatus, gov, markedRows }) {
 }
 
 // ── One live-mode deployment row ────────────────────────────────────────────
-function LiveRow({ dep, liveStatus, busy, onDisable, onStop, onPause, onResume, liveMtm, markedRows, nowMs }) {
+function LiveRow({ dep, liveStatus, busy, onDisable, onStop, onPause, onResume, liveMtm, markedRows, nowMs, session }) {
   const [open, setOpen] = useState(false);
   // Status payload shape: { today: {orders, lots, realized_pnl}, open_positions: [...] }
   const today = liveStatus?.today || {};
@@ -246,6 +247,16 @@ function LiveRow({ dep, liveStatus, busy, onDisable, onStop, onPause, onResume, 
 
       {/* Cap headroom — what is consumed against each live cap, from the governor. */}
       <Headroom gov={gov} />
+
+      {/* This deployment's own last entry time, when earlier than the global
+          15:00 cutoff (the default entry window ends 14:50). */}
+      {deploymentEntryEnd(liveStatus?.entry_window, session) && (
+        <span className="text-[10px] font-mono text-dimmer whitespace-nowrap"
+              title="This deployment's entry window closes before the 15:00 IST live cutoff."
+              data-testid="live-deploy-entry-end">
+          {deploymentEntryEnd(liveStatus?.entry_window, session)}
+        </span>
+      )}
 
       {/* WHY it cannot place an entry right now — the first refusal in the entry
           path's own order (authorization → account → deployment). The held case
@@ -390,7 +401,7 @@ export default function LiveDeploymentStrip() {
   // `positions` is the MARKED broker book: the same rows, with lp/urmtom
   // re-marked on the Upstox tick where one is available, plus mark_source and
   // mark_age_ms per row. Consuming it here is what puts live P&L on this pane.
-  const { deployments, deployLive: liveStatuses, positions, refetch } = useLiveData();
+  const { deployments, deployLive: liveStatuses, positions, refetch, armState } = useLiveData();
   const [busy, setBusy] = useState(false);
   const [collapsed, setCollapsed] = useState(() => {
     try {
@@ -676,6 +687,7 @@ export default function LiveDeploymentStrip() {
                   liveMtm={mtmByDeployment[dep.id]}
                   markedRows={markedRows}
                   nowMs={nowMs}
+                  session={armState?.session}
                 />
               ))}
             </div>

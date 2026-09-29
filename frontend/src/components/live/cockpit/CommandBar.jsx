@@ -1,5 +1,6 @@
 import { Settings2, Zap } from "lucide-react";
 import BrokerConnect from "@/components/live/cockpit/BrokerConnect";
+import { marketPillOverride } from "@/lib/sessionClock";
 
 /**
  * Cockpit command bar — the persistent control row: brand, a live market-status
@@ -48,20 +49,22 @@ export function marketPhase({ day, mins, iso }) {
     return {
       open: true,
       label: "CLOSING AUCTION · F&O to 15:40",
-      title: "Cash in closing auction 15:15–15:35 — the index is frozen. F&O trades until 15:40 IST",
+      title: "Cash in closing auction 15:15–15:30 — the index is frozen. F&O trades until 15:40 IST",
     };
   }
   return {
     open: true,
     label: cas ? "MARKET OPEN · 15:40 F&O close" : "MARKET OPEN · 15:30 close",
     title: cas
-      ? "NSE cash open 09:15–15:15 (auction to 15:35); F&O to 15:40 IST"
+      ? "NSE cash open 09:15–15:15 (auction to 15:30); F&O to 15:40 IST"
       : "NSE cash/F&O open 09:15–15:30 IST",
   };
 }
 
-export default function CommandBar({ flattradeStatus, onConfigure, onChanged, openPositions = 0 }) {
-  const phase = marketPhase(istNow());
+export default function CommandBar({ flattradeStatus, onConfigure, onChanged, openPositions = 0, session = null }) {
+  // The server's holiday-aware day wins when it says CLOSED — the client-side
+  // phase below knows weekdays but not NSE holidays, and read MARKET OPEN on them.
+  const phase = marketPillOverride(session) || marketPhase(istNow());
   const open = phase.open;
   return (
     <div className="sticky top-0 z-20 flex items-center gap-3 flex-wrap rounded-lg border border-line bg-bg-1/90 backdrop-blur px-3 py-2">

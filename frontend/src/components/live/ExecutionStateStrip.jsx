@@ -1,5 +1,26 @@
 import { Zap, Shield, ShieldCheck, Loader2, PowerOff, AlertTriangle, KeyRound } from "lucide-react";
 import { executionLegs } from "@/lib/liveDeploymentView";
+import { sessionCountdown } from "@/lib/sessionClock";
+import useServerClock from "@/components/live/useServerClock";
+
+/**
+ * The trading clock — counts down to the NEXT boundary (open / entry cutoff / EOD
+ * square / next session) against the server's instants. Its own component so the
+ * 1 s tick re-renders only this line.
+ */
+function SessionCountdown({ session }) {
+  const { anchor, perfNow } = useServerClock(session);
+  const cd = sessionCountdown(session, anchor, perfNow);
+  return (
+    <span
+      className={cd.tone === "warn" ? "text-warning" : "text-dimmer"}
+      title="Server trading clock — the entry cutoff and EOD square are the times the gate and the guard enforce, counted against the server's clock, not this PC's."
+      data-testid="execution-session-countdown"
+    >
+      &middot; {cd.text}
+    </span>
+  );
+}
 
 /**
  * ExecutionStateStrip — the SINGLE "will a signal place a REAL order right now?"
@@ -88,6 +109,7 @@ export default function ExecutionStateStrip({ armState, onStandDown, standingDow
         &middot; auto-squares:{" "}
         <b className={legs.squares.tone === "danger" ? "text-danger" : "text-dim"}>{legs.squares.text}</b>
       </span>
+      <SessionCountdown session={armState.session} />
       {manualLive && (
         <span className="text-dimmer">
           &middot; manual: <b className="text-current">LIVE_TEST</b>

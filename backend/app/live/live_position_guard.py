@@ -662,6 +662,12 @@ class LivePositionGuard:
             "escalations": 0, "last_escalation": None,
         }
 
+    @property
+    def eod_square_ist(self):
+        """The IST wall-clock time this guard squares deployed positions at — the
+        ONE source for any EOD countdown (read-only; not a copy of the literal)."""
+        return self._eod_square_ist
+
     def status(self) -> Dict[str, Any]:
         st = dict(self._stats)
         st["guarded"] = len(self._registry)

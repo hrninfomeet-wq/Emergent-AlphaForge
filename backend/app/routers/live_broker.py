@@ -1796,6 +1796,10 @@ async def get_arm_state():
     from app.live.arm_state import compute_arm_state
     from app.live.mode import is_deployment_live_allowed
 
+    # ONE clock read for the whole verdict, so the deployment scan and the session
+    # clock returned beside it can never disagree about which side of a boundary
+    # "now" is on.
+    now = datetime.now(timezone.utc)
     # mode singleton
     try:
         mode_doc = await _mode_store().get()
@@ -1830,7 +1834,6 @@ async def get_arm_state():
     armed_n = 0
     try:
         from app.db import get_db
-        now = datetime.now(timezone.utc)
         # status=="ACTIVE" as well as mode=="live": a PAUSED live deployment (e.g.
         # daily-loss breaker fired) must NOT count toward "would transmit an entry
         # now" or the banner would read LIVE while the deployment is actually halted.
@@ -1843,18 +1846,49 @@ async def get_arm_state():
         # transmit an entry right now, which is exactly what this number means.
         cur = get_db().strategy_deployments.find(
             {"mode": "live", "status": "ACTIVE"}, {"_id": 0, "id": 1, "mode": 1, "risk": 1})
+        # Off session nothing can transmit (the evaluator does not run), but the
+        # gate itself has no calendar — without this a holiday or 08:00 read as
+        # "LIVE — entries transmit real orders" whenever a token was stored.
+        _phase = _session_clock(now).get("phase")
         for dep in await cur.to_list(length=500):
             ok, _reason = is_deployment_live_allowed(dep, now, connected=connected)
-            if ok:
+            if ok and _phase not in ("closed_day", "pre_open"):
                 armed_n += 1
     except Exception as exc:
         log.debug("arm-state: deployment scan failed: %s", exc)
-    return compute_arm_state(
+    out = compute_arm_state(
         mode_doc=mode_doc, connected=connected,
         autoplace_armed=autoplace_armed,
         armed_deployment_count=armed_n,
         session_expired=session_expired,
     )
+    out["session"] = _session_clock(now)
+    return out
+
+
+def _session_clock(now_utc: datetime) -> Dict[str, Any]:
+    """The trading clock (live/session_clock.describe_session) with the guard's
+    OWN EOD time. Never raises: an unreadable guard leaves the EOD fields null
+    rather than substituting a literal; a failure yields {"error": ...}."""
+    try:
+        from app.runtime import live_position_guard as _guard
+        eod = getattr(_guard, "eod_square_ist", None)
+    except Exception:
+        eod = None
+    try:
+        from app.live.session_clock import describe_session
+        return describe_session(now_utc, eod_square_ist=eod)
+    except Exception as exc:
+        log.warning("session clock failed: %s", exc)
+        return {"error": f"session_clock_failed:{type(exc).__name__}"}
+
+
+@api.get("/live-broker/session-clock")
+async def live_session_clock():
+    """The trading clock on its own, for pages that do not poll arm-state:
+    phase, the entry cutoff, the EOD square, the next event — each as an absolute
+    epoch-ms so a browser counts down against the SERVER's instants."""
+    return _session_clock(datetime.now(timezone.utc))
 
 
 # ---------------------------------------------------------------------------

@@ -1700,6 +1700,19 @@ async def _live_status_payload(
     else:
         rows = await db.live_trades.find({"deployment_id": deployment_id}).to_list(length=None)
     today = _live_today_counters(rows, now)
+    # When THIS deployment stops taking entries. Its own entry window (default end
+    # 14:50) is applied by the evaluator BEFORE the live gate's 15:00 cutoff, so for
+    # most deployments a countdown to 15:00 would be ten minutes wrong.
+    entry_window = None
+    try:
+        from app.entry_window import resolve_entry_window
+        from app.live.mode import entry_cutoff_today_ist
+        _start, _end = resolve_entry_window(deployment.get("risk") or {})
+        _cut = (datetime.fromisoformat(entry_cutoff_today_ist(now))
+                + timedelta(hours=5, minutes=30)).strftime("%H:%M")
+        entry_window = {"start": _start, "end": _end, "effective_end": min(_end, _cut)}
+    except Exception as exc:
+        logging.getLogger(__name__).debug("live_status: entry window unresolved: %s", exc)
     from app.live_deploy_governor import describe_live_caps
     governor = await describe_live_caps(
         db, deployment, now_utc=now, rows=rows,
@@ -1776,6 +1789,7 @@ async def _live_status_payload(
         "autoplace_armed": _live_autoplace_armed(),
         "guard_armed": _live_guard_armed(),
         "governor": governor,
+        "entry_window": entry_window,
     }
 
 

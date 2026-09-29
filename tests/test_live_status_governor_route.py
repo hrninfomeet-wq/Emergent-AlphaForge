@@ -98,3 +98,16 @@ def test_an_unreadable_broker_status_reads_as_not_connected(monkeypatch):
     monkeypatch.setattr(dep, "_live_broker_status", _boom)
     gov = asyncio.run(dep.deployment_live_status("dep-1"))["governor"]
     assert gov["authorization"]["allow"] is False
+
+
+def test_the_payload_says_when_this_deployment_stops_taking_entries(monkeypatch):
+    """The default entry window ends 14:50 — ten minutes before the 15:00 live
+    cutoff — and a later window is still clamped to the cutoff."""
+    default = _live("dep-1")
+    late = _live("dep-2")
+    late["risk"]["trade_window_end"] = "15:20"
+    db = _db_with(default, late)
+    _install(monkeypatch, db)
+    out = asyncio.run(dep.deployments_live_status_batch(ids="dep-1,dep-2"))
+    assert out["dep-1"]["entry_window"]["effective_end"] == "14:50"
+    assert out["dep-2"]["entry_window"]["effective_end"] == "15:00"

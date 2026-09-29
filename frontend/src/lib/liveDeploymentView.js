@@ -69,6 +69,8 @@ const REASON_TEXT = {
   not_connected: "broker session not connected (or expired)",
   entry_cutoff_unresolvable: "entry cutoff unresolvable",
   after_entry_cutoff: "after the 15:00 IST entry cutoff",
+  market_closed_today: "market closed today",
+  before_market_open: "before the 09:15 open",
   // account layer
   account_latched: "account safety latch is set — reset required",
   account_max_open_block: "account max open positions reached",
