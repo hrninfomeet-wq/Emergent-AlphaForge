@@ -330,3 +330,34 @@ def test_recovery_completeness_follows_the_reconcile_status(monkeypatch, status,
 
     monkeypatch.setattr("app.live.reboot_reconcile.reconcile_on_startup", _reconcile)
     assert asyncio.run(rt.live_startup_recovery()) is complete
+
+
+def test_a_same_day_REJECTED_entry_closes_on_a_flat_book_and_recovery_completes():
+    """Its entry order ended unfilled, so nothing can fill later: close it
+    never_filled instead of letting it hold a concurrency slot all session."""
+    class _Orders(_SeqClient):
+        async def order_book(self):
+            return [{"norenordno": "26092800000001", "status": "REJECTED"}]
+
+    db = FakeDB()
+    db.live_trades.rows.append(_stale_doc(norenordno="26092800000001",
+                                          noren_tsym=LIVE_TSYM,
+                                          created_at="2026-09-28T03:50:00+00:00"))
+    out = _run(db, _Orders([[], []]))
+    doc = db.live_trades.rows[0]
+    assert doc["status"] == "CLOSED" and doc["exit_reason"] == "never_filled"
+    assert out["status"] == "flat_confirmed"
+
+
+def test_a_same_day_WORKING_entry_stays_open_and_recovery_stays_incomplete():
+    class _Orders(_SeqClient):
+        async def order_book(self):
+            return [{"norenordno": "26092800000001", "status": "OPEN"}]
+
+    db = FakeDB()
+    db.live_trades.rows.append(_stale_doc(norenordno="26092800000001",
+                                          noren_tsym=LIVE_TSYM,
+                                          created_at="2026-09-28T03:50:00+00:00"))
+    out = _run(db, _Orders([[], []]))
+    assert db.live_trades.rows[0]["status"] == "OPEN"
+    assert out["status"] == "unknown_position_book"

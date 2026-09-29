@@ -825,7 +825,8 @@ async def _close_expired_open_docs(db: Any, *, today_ist: date) -> Dict[str, int
     return out
 
 
-async def _close_prior_day_open_docs(db: Any, *, today_ist: date) -> Dict[str, int]:
+async def _close_prior_day_open_docs(db: Any, *, today_ist: date,
+                                     client: Any = None) -> Dict[str, int]:
     """On a CONFIRMED-flat account, close OPEN docs entered on an EARLIER IST day.
 
     A doc entered TODAY while the book is empty is a contradiction — its entry
@@ -833,8 +834,13 @@ async def _close_prior_day_open_docs(db: Any, *, today_ist: date) -> Dict[str, i
     fill a second later — so it is left OPEN and counted in ``same_day``; an
     undatable doc likewise in ``undated``. The caller must treat either count as
     UNKNOWN, not as a completed recovery.
+
+    One same-day case IS provable: the order book says the entry ended unfilled
+    (rejected / cancelled). That doc is closed ``never_filled`` rather than left
+    holding a concurrency slot for the rest of the session.
     """
-    out = {"closed": 0, "same_day": 0, "undated": 0}
+    out = {"closed": 0, "same_day": 0, "undated": 0, "never_filled": 0}
+    order_cache: Dict[str, Any] = {}
     for doc in await _open_docs(db):
         try:
             entered = _entry_ist_date(doc)
@@ -842,6 +848,15 @@ async def _close_prior_day_open_docs(db: Any, *, today_ist: date) -> Dict[str, i
                 out["undated"] += 1
                 continue
             if entered >= today_ist:
+                ordno = str(doc.get("norenordno") or "")
+                if client is not None and ordno:
+                    status = await _entry_order_status(client, ordno, order_cache)
+                    if status in _TERMINAL_UNFILLED:
+                        if await close_live_trade(db, norenordno=ordno, exit_price=None,
+                                                  fill_price=None,
+                                                  exit_reason="never_filled"):
+                            out["never_filled"] += 1
+                        continue
                 out["same_day"] += 1
                 log.warning("reboot reconcile: %s entered today but the position book "
                             "is empty — contradiction, leaving OPEN",
@@ -947,7 +962,8 @@ async def reconcile_on_startup(
         # the OCO is off by default anyway (LIVE_BROKER_OCO_ENABLED).
         await _calendar()
         try:
-            prior = await _close_prior_day_open_docs(db, today_ist=today_ist)
+            prior = await _close_prior_day_open_docs(db, today_ist=today_ist,
+                                                     client=client)
             summary["closed"] += prior["closed"]
             summary["prior_day_detail"] = prior
             contradicted = prior["same_day"] > 0 or prior["undated"] > 0
