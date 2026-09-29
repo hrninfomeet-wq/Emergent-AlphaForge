@@ -121,7 +121,9 @@ def transition_signal(
 #: the sink path is seconds, this is minutes — because the cost of being wrong is
 #: expiring a signal that was about to trade.
 UNACTIONED_AFTER_MINUTES = 15
-UNACTIONED_REASON = "session_ended_unactioned"
+# Not "session ended": the 15:00 sweep retires bars from earlier TODAY, while the
+# session is still open. What is true for every retired signal is that its bar passed.
+UNACTIONED_REASON = "unactioned_bar_passed"
 
 
 def signal_bar_ms(sig: Dict[str, Any]) -> Optional[int]:
@@ -159,7 +161,7 @@ async def expire_unactioned_signals(
     ``CONFIRMED`` reads as "awaiting approval". After its bar's evaluator pass it is
     not: no code acts on it again, so it sat CONFIRMED for good and the Signal
     Journal showed past-day signals as pending. ``CONFIRMED -> AUDITED`` is an
-    allowed transition; the reason is ``session_ended_unactioned``.
+    allowed transition; the reason is ``unactioned_bar_passed``.
 
     NEVER touches a signal the evaluator may still act on:
       * the bar must be OLDER than ``older_than_minutes`` (routing takes seconds);
@@ -203,6 +205,15 @@ async def expire_unactioned_signals(
                     sig, "AUDITED", reason=UNACTIONED_REASON, at=stamp,
                     snapshot={"bar_ts": bar_ms, "expired_after_minutes": older_than_minutes},
                 )
+                # Housekeeping, not activity: keep the signal's own updated_at. The
+                # retirement time is recorded in audited_at and the appended event.
+                # updated_at is read as the refusal time (live-status `last_entry.at`,
+                # the timeline's "Entry refused" row) and as the age for "purge older
+                # than N days" — stamping the sweep instant on ~1366 signals at once
+                # moved every refusal to the sweep time and re-dated June's signals to
+                # today.
+                if sig.get("updated_at"):
+                    audited["updated_at"] = sig["updated_at"]
                 res = await db.signals.replace_one(
                     {"id": sig["id"], "state": "CONFIRMED",
                      "paper_trade_claim": {"$exists": False},

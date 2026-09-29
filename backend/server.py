@@ -172,6 +172,20 @@ async def startup() -> None:
     except Exception as exc:
         log.warning("Stranded paper-trade reconciliation failed: %s", exc)
 
+    # Retire CONFIRMED signals nothing will ever act on. A signal is acted on only
+    # inside the evaluator pass for its own bar; on a machine that is rarely up in
+    # market hours the 15:00 sweep that also does this is usually missed, so the
+    # boot pass covers it. Bar-age guarded and claim-aware (never touches a signal a
+    # sink may still route), idempotent, never raises. Operator-approved 2026-09-29.
+    try:
+        from app.signal_lifecycle import expire_unactioned_signals
+        _expired_sigs = await expire_unactioned_signals(db)
+        if _expired_sigs:
+            log.info("Boot reconcile: %d unactioned CONFIRMED signal(s) -> AUDITED",
+                     _expired_sigs)
+    except Exception as exc:
+        log.warning("Unactioned-signal sweep failed: %s", exc)
+
     # Warm the option-coverage cache in the background so the first Data Warehouse
     # page load is fast. The persisted cache from the previous run is still valid
     # at boot (the backend is the only writer to options_1m and refreshes the

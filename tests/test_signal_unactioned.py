@@ -8,7 +8,7 @@ releases its claim but nothing retries, and a signal-only deployment has no sink
 So a CONFIRMED signal older than its pass reads "awaiting approval" for good.
 
 `expire_unactioned_signals` moves such a signal CONFIRMED -> AUDITED
-(`session_ended_unactioned`). These tests EXECUTE it against an in-memory collection that
+(`unactioned_bar_passed`). These tests EXECUTE it against an in-memory collection that
 honours `$lt` / `$exists` / conditional replace, and pin what it must NEVER touch.
 """
 from __future__ import annotations
@@ -304,7 +304,7 @@ def test_the_write_condition_alone_protects_a_signal_claimed_or_linked_mid_sweep
 def test_the_reason_is_the_documented_literal():
     db = _DB([_confirmed()])
     _run(db)
-    assert _state(db)["events"][-1]["reason"] == "session_ended_unactioned"
+    assert _state(db)["events"][-1]["reason"] == "unactioned_bar_passed"
 
 
 # --------------------------------------------------------------------------- #
@@ -343,15 +343,63 @@ def test_the_query_asks_only_for_confirmed_signals_older_than_the_cutoff():
 
 
 # --------------------------------------------------------------------------- #
-# NOT wired into any sweep — pending an explicit operator decision
+# wired into the sweeps that already exist (no new timer)
 # --------------------------------------------------------------------------- #
 
-def test_no_sweep_runs_the_expiry_until_the_operator_approves_it():
-    """Wired into the boot reconcile + 15:00 sweep, this retires every historical
-    CONFIRMED signal on its first run (1366 on 2026-09-29) — and the Signal
-    Journal's opt-in retention then DELETES AUDITED signals N days later. That is
-    a data decision for the operator, not a display fix, so the helper ships
-    unwired; the Signal Journal's EXPIRED chip already tells the truth without it."""
-    for rel in ("backend/server.py", "backend/app/runtime.py"):
-        src = (ROOT / rel).read_text(encoding="utf-8")
-        assert "expire_unactioned_signals" not in src, f"{rel} runs the bulk expiry"
+def test_the_15_00_sweep_in_the_evaluator_loop_runs_the_expiry(monkeypatch):
+    """Drive one real scheduler cycle (the pattern of test_runtime_scheduled_squareoff)."""
+    from app import runtime
+
+    calls = []
+
+    class _Friday1500:
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 8, 14, 9, 30, tzinfo=timezone.utc)
+
+    class _Candles:
+        async def find_one(self, *a, **k):
+            return None
+
+    class _Db:
+        candles_1m = _Candles()
+
+    sleeps = 0
+
+    async def _sleep(_t):
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps > 1:
+            raise asyncio.CancelledError
+
+    async def _squareoff(*a, **k):
+        return []
+
+    async def _expire(db, **kw):
+        calls.append((db, kw))
+        return 3
+
+    import app.signal_lifecycle as sl
+    monkeypatch.setattr(runtime, "datetime", _Friday1500)
+    monkeypatch.setattr(runtime, "_evaluator_wait", _sleep)
+    monkeypatch.setattr(runtime, "get_db", lambda: _Db())
+    monkeypatch.setattr(runtime, "is_square_off_due", lambda _now: True)
+    monkeypatch.setattr(runtime, "square_off_open_paper_trades", _squareoff)
+    monkeypatch.setattr(runtime.upstox_stream_manager, "latest_tick_map", lambda: {})
+    monkeypatch.setattr(sl, "expire_unactioned_signals", _expire)
+    try:
+        asyncio.run(runtime._deployment_evaluator_loop())
+    except asyncio.CancelledError:
+        pass
+    assert len(calls) == 1, "the once-a-day sweep did not run the signal expiry"
+    assert calls[0][1]["now_utc"] == datetime(2026, 8, 14, 9, 30, tzinfo=timezone.utc)
+
+
+def test_the_boot_reconcile_also_runs_the_expiry():
+    """server.py's startup is monolithic; pin that the boot reconcile calls the helper
+    inside a try/except so a failure can never break startup."""
+    src = (ROOT / "backend" / "server.py").read_text(encoding="utf-8")
+    i = src.index("expire_unactioned_signals")
+    block = src[max(0, i - 300): i + 400]
+    assert "try:" in block and "except Exception" in block
+    assert "await expire_unactioned_signals(db)" in block

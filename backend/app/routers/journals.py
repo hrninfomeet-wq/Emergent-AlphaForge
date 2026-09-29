@@ -421,6 +421,11 @@ async def purge_signals(req: SignalsPurgeReq):
         q["updated_at"] = {"$lt": cutoff}
     if req.states:
         q["state"] = {"$in": [str(s).upper() for s in req.states]}
+    if req.blocked is not None:
+        # AUDITED used to mean "blocked by the pre-trade filter"; it now also holds
+        # clean signals retired after their session. Retention asks for blocked=True
+        # so it keeps deleting the noise it was built for and never the clean history.
+        q["blocked"] = True if req.blocked else {"$ne": True}
     res = await get_db().signals.delete_many(q)
     return {"deleted": int(res.deleted_count)}
 

@@ -54,8 +54,10 @@ const inr = (v) =>
   v == null ? "—" : `₹${Number(v).toLocaleString("en-IN", { maximumFractionDigits: 0 })}`;
 
 // Opt-in client-side retention (quality-hardening Slice A item 4). Persisted in
-// localStorage; auto-purges AUDITED signals older than N days at most once per
+// localStorage; auto-purges BLOCKED signals older than N days at most once per
 // IST day. Empty = off (default off); confirm-free because the user opted in.
+// Blocked, not "AUDITED": AUDITED now also holds clean signals retired after their
+// session (never traded), and those are trade-recommendation history, not noise.
 const RETENTION_DAYS_KEY = "signalRetentionDays";
 const RETENTION_LAST_RUN_KEY = "signalRetentionLastRun";
 const istDateStr = () => new Date(Date.now() + (5 * 60 + 30) * 60 * 1000).toISOString().slice(0, 10);
@@ -114,17 +116,17 @@ export default function SignalJournal() {
     api.listDeployments({ limit: 200 }).then((d) => setDeployments(d.items || [])).catch(() => {});
   }, []);
 
-  // Opt-in retention: auto-purge old AUDITED signals at most once per IST day.
+  // Opt-in retention: auto-purge old BLOCKED signals at most once per IST day.
   useEffect(() => {
     const n = parseInt(localStorage.getItem(RETENTION_DAYS_KEY) || "", 10);
     if (!n || n < 1) return;
     const today = istDateStr();
     if (localStorage.getItem(RETENTION_LAST_RUN_KEY) === today) return;
     localStorage.setItem(RETENTION_LAST_RUN_KEY, today);
-    api.purgeSignals({ older_than_days: n, states: ["AUDITED"] })
+    api.purgeSignals({ older_than_days: n, states: ["AUDITED"], blocked: true })
       .then((res) => {
         if (res?.deleted > 0) {
-          toast.info(`Retention: purged ${res.deleted} AUDITED signal${res.deleted === 1 ? "" : "s"} older than ${n} days.`);
+          toast.info(`Retention: purged ${res.deleted} blocked signal${res.deleted === 1 ? "" : "s"} older than ${n} days.`);
           fetchRows();
         }
       })
@@ -331,12 +333,12 @@ export default function SignalJournal() {
             Purge this deployment
           </Button>
 
-          {/* Opt-in retention: auto-purge old AUDITED signals once per day (Slice A). */}
+          {/* Opt-in retention: auto-purge old BLOCKED signals once per day (Slice A). */}
           <div className="ml-auto flex items-center gap-1.5" data-testid="ledger-retention">
-            <span className="text-dimmer">Auto-purge AUDITED older than</span>
+            <span className="text-dimmer">Auto-purge blocked older than</span>
             <Input value={retentionDays} onChange={(e) => setRetention(e.target.value)} type="number" min={1}
               placeholder="off" className="bg-bg-2 border-line h-6 text-[11px] w-16" data-testid="ledger-retention-days"
-              title="Persisted locally. AUDITED signals older than this are purged automatically, at most once per day. Empty = off." />
+              title="Persisted locally. BLOCKED signals (failed the pre-trade filter) older than this are purged automatically, at most once per day. Clean signals that were never traded are kept. Empty = off." />
             <span>days</span>
           </div>
         </div>

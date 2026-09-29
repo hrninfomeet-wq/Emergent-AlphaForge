@@ -126,6 +126,8 @@ class SignalsPurgeReq(BaseModel):
     deployment_id: Optional[str] = None
     older_than_days: Optional[int] = None
     states: Optional[List[str]] = None
+    # True = only signals that FAILED the pre-trade filter; False = only clean ones.
+    blocked: Optional[bool] = None
 
 
 class TradesPurgeReq(BaseModel):

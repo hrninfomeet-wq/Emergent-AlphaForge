@@ -37,6 +37,27 @@ const refusalOf = (sig) => (
  */
 export function signalDisplay(sig, nowMs = Date.now()) {
   const state = String(sig?.state || "").toUpperCase();
+  if (state === "AUDITED" && sig?.blocked === false
+      && !sig?.paper_trade_id && !sig?.live_trade_id && !sig?.paper_trade_claim) {
+    // A CLEAN signal that was retired (expire_unactioned_signals) — never traded.
+    // A bare "AUDITED" chip reads as "blocked by the filter", which it was not.
+    // `blocked === false` exactly: an unknown blocked flag stays a plain AUDITED.
+    const refusal = refusalOf(sig);
+    return refusal
+      ? { state, label: "NOT ACTED ON", tone: "expired", expired: true,
+          note: `Not traded — refused: ${refusal}` }
+      : { state, label: "EXPIRED", tone: "expired", expired: true,
+          note: "Passed the filter but was never traded; retired once its bar had passed "
+            + "(nothing revisits a CONFIRMED signal after its own bar)." };
+  }
+  if (state === "AUDITED" && sig?.blocked === false && sig?.paper_trade_id
+      && sig?.trade_status === null) {
+    // Linked to a paper trade that no longer exists (/signals/enriched found no
+    // trade for the id — `trade_status` null, not merely absent). These were
+    // retired by the 2026-09-29 cleanup; a bare "AUDITED" read as "blocked".
+    return { state, label: "RETIRED", tone: "expired", expired: true,
+             note: "Its linked paper trade no longer exists; retired from ACTIVE." };
+  }
   if (state !== "CONFIRMED") {
     return { state, label: state || "—", tone: "normal", expired: false, note: null };
   }

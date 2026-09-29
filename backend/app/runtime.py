@@ -1128,6 +1128,16 @@ async def _deployment_evaluator_loop() -> None:
                 )
                 if summaries:
                     log.info("paper square-off at 15:00 IST closed %d open trades", len(summaries))
+                # The same once-a-day sweep retires CONFIRMED signals nothing will ever
+                # act on (a refused / signal-only / orphaned pass): they would otherwise
+                # read as "awaiting approval" for good. Bar-age guarded and claim-aware —
+                # a signal the evaluator may still route is never touched. Never raises.
+                # Operator-approved 2026-09-29.
+                from app.signal_lifecycle import expire_unactioned_signals
+                _expired = await expire_unactioned_signals(
+                    db, now_utc=datetime.now(timezone.utc))
+                if _expired:
+                    log.info("signal sweep: %d unactioned CONFIRMED signal(s) -> AUDITED", _expired)
                 last_squareoff_ist_date = today_ist
 
             # Skip outside NSE market hours (Mon-Fri, 09:15-15:30 IST)
@@ -2376,8 +2386,10 @@ _ENRICHED_SORT_FIELDS = {"bar_ts", "updated_at", "confidence", "instrument", "st
 
 
 _ENRICHED_CSV_COLUMNS = [
+    # `blocked` beside `state`: AUDITED holds both blocked signals and clean ones
+    # retired after their session, so state alone no longer says which a row is.
     "bar_ist", "deployment_name", "strategy_id", "instrument", "direction", "state",
-    "score", "contract", "spot_entry", "entry_premium", "exit_premium", "exit_reason",
+    "blocked", "paper_trade_id", "trade_status", "score", "contract", "spot_entry", "entry_premium", "exit_premium", "exit_reason",
     "pnl_value", "pnl_premium_pts", "lots", "quantity", "reasons", "blockers",
 ]
 

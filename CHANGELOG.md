@@ -123,13 +123,35 @@ acted on**; a refused one (`live_trade_error` / `paper_trade_error` / `paper_tra
 renders **NOT ACTED ON** at once; one a sink *claimed* but recorded no trade on is
 **UNVERIFIED** (a crash between the two writes may have left a trade) — never "not acted on".
 Server side: `signal_lifecycle.expire_unactioned_signals` moves such signals CONFIRMED ->
-AUDITED (`session_ended_unactioned`). It never touches a bar under 15 min old, a claimed or
+AUDITED (`unactioned_bar_passed`). It never touches a bar under 15 min old, a claimed or
 trade-linked signal, a blocked or manual one, or one with an unreadable bar time, and its
 write is conditional on `state == CONFIRMED` and on the absence of any claim / trade link,
-so a racing sink is never overwritten. **It is NOT wired into any sweep** (review, on
-merge): its first run would retire every historical CONFIRMED signal (1366 on 2026-09-29),
-and the opt-in Signal Journal retention then deletes AUDITED signals N days later — a data
-decision for the operator, not a display fix. The EXPIRED chip tells the truth without it.
+so a racing sink is never overwritten. It runs in the boot reconcile (awaited BEFORE the
+evaluator task starts) and in the once-a-day 15:00 sweep — **operator-approved 2026-09-29**
+after first being held back on merge. Its first run retires all 1366 historical CONFIRMED
+signals (18 paper deployments, bars 2026-06-17 → 09-29); a full backup of the 1366 docs was
+taken first. Signals from bars after 14:45 are younger than 15 min at 15:00 and wait for the
+next boot or the next day's sweep (their chip already reads EXPIRED).
+
+A three-angle audit of every consumer of signal state / `updated_at`, then an adversarial
+review of the change (13 findings, 6 confirmed), shaped how it runs:
+- the sweep **keeps each signal's own `updated_at`** (the retirement time is `audited_at`
+  and the appended event): `updated_at` is read as the REFUSAL time (Live strip
+  `last_entry.at`, the timeline's "Entry refused" row) and as the age for "purge older than
+  N days" — one sweep would have moved every refusal to the sweep instant and re-dated
+  June's signals to today;
+- the Journal's opt-in **retention now deletes BLOCKED signals only** (`POST /signals/purge`
+  gained an optional `blocked` criterion): it was built when AUDITED meant "blocked", and
+  would otherwise have started deleting clean trade-recommendation history;
+- the CSV gains `blocked`, `paper_trade_id` and `trade_status`, so a retired clean row is
+  distinguishable from a blocked one and a dangling trade link is visible;
+- the chip labels a retired clean signal **EXPIRED** / **NOT ACTED ON** (with the refusal),
+  and the 646 signals retired earlier today whose paper trade no longer exists **RETIRED** —
+  a bare "AUDITED" read as "blocked";
+- the event reason is `unactioned_bar_passed`, not "session ended" (the 15:00 sweep retires
+  bars from earlier today while the session is still open).
+Refuted on review: a boot race with the evaluator, batch starvation, guard ordering.
+21 mutants across these, all killed.
 The enriched-signals route also exposes `live_trade_error` / `live_trade_id` /
 `paper_trade_claim`, and the ledger's Notes column shows a live refusal.
 
