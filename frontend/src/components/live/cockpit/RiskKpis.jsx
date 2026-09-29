@@ -5,34 +5,26 @@ import {
   asPositionRows, asOrderRows, isOpenPosition, isWorkingOrder,
   deriveDayPnl, deriveCash, signedINR,
 } from "@/components/live/liveHelpers";
+import { guardHealthView, worstDayStop } from "@/lib/liveDeploymentView";
 
 /**
  * Compact live-risk KPI grid for the cockpit's right column — reuses MetricCard
  * and the exact derivations from liveHelpers so the numbers match the broker
  * blotters below.
+ *
+ * Day Stop shows the WORST live deployment (worstDayStop), not a pooled sum: caps
+ * are enforced per deployment, and pooling one at 95% of its cap with one at 0%
+ * read ~48% and calm. Its "used" is the governor's own day P&L (realized + open),
+ * not realized alone.
  */
-/**
- * Day-stop tile data: today's realised loss against the configured daily-loss
- * cap, aggregated across LIVE deployments only (a paper deployment's cap does
- * not gate real money). Returns nulls when nothing is live, so the tile says
- * "no live deployment" instead of rendering a permanently blank "—".
- */
-function deriveDayStop(deployments, deployLive) {
-  const live = (deployments || []).filter(
-    (d) => String(d?.mode || "").toLowerCase() === "live",
-  );
-  if (!live.length) return { cap: null, used: null, any: false };
-  let cap = 0;
-  let used = 0;
-  let sawCap = false;
-  for (const d of live) {
-    const st = (deployLive || {})[d.id];
-    const c = Number(st?.caps?.daily_loss_cap);
-    if (Number.isFinite(c) && c > 0) { cap += c; sawCap = true; }
-    const r = Number(st?.today?.realized_pnl);
-    if (Number.isFinite(r) && r < 0) used += Math.abs(r);
-  }
-  return { cap: sawCap ? cap : null, used: sawCap ? used : null, any: true };
+
+function dayStopSub(ds) {
+  if (!ds.any) return "no live deployment";
+  if (!ds.anyCap) return "no cap configured";
+  if (!ds.worst) return "loss unknown — a mark is stale";
+  const pct = Math.round(ds.worst.ratio * 100);
+  return `${ds.worst.name}: ${pct}% (${fmtINR(ds.worst.used)} used)`
+    + (ds.anyUnknown ? " · some unknown" : "");
 }
 
 export default function RiskKpis({ limits, positions, orders, guard, deployments, deployLive }) {
@@ -42,11 +34,11 @@ export default function RiskKpis({ limits, positions, orders, guard, deployments
   const workCount = ordRows != null ? ordRows.filter(isWorkingOrder).length : null;
   const dayPnl = deriveDayPnl(positions);
   const cash = deriveCash(limits);
-  // Match GuardPanel EXACTLY: default to armed when the field is absent. `!!undefined`
-  // would render "DRY-RUN" over positions that are in fact being auto-exited for real —
-  // the fail-DANGEROUS direction. Only an explicit `false` downgrades it.
-  const guardArmed = guard?.armed !== false;
-  const dayStop = deriveDayStop(deployments, deployLive);
+  // The guard card reports what the guard is DOING (its own health: watching /
+  // idle / blind / stalled / not running), never the constant `armed` — which read
+  // "ARMED" while an expired token left the guard unable to read a single price.
+  const guardView = guardHealthView(guard);
+  const dayStop = worstDayStop(deployments, deployLive);
 
   return (
     <div className="grid grid-cols-3 gap-2">
@@ -55,25 +47,20 @@ export default function RiskKpis({ limits, positions, orders, guard, deployments
         loading={positions == null} icon={<TrendingUp className="w-3.5 h-3.5" />} sub="MTM + realised" />
       <MetricCard label="Open Pos" value={openCount != null ? String(openCount) : null}
         loading={positions == null} icon={<Layers className="w-3.5 h-3.5" />} sub="from broker" />
-      <MetricCard label="Guard" value={guard == null ? null : guardArmed ? "ARMED" : "DRY-RUN"}
-        tone={guard == null ? "default" : guardArmed ? "danger" : "warn"}
-        loading={guard == null} icon={<Shield className="w-3.5 h-3.5" />} sub="auto-exit" />
+      <MetricCard label="Guard" value={guardView.label}
+        tone={guard == null ? "default" : guardView.tone}
+        loading={guard == null} icon={<Shield className="w-3.5 h-3.5" />}
+        sub={guardView.title || "auto-exit"} />
       <MetricCard label="Avail Margin" value={cash != null ? fmtINR(cash) : null}
         loading={limits == null} icon={<Wallet className="w-3.5 h-3.5" />} sub="broker net" />
       <MetricCard label="Working Ord" value={workCount != null ? String(workCount) : null}
         loading={orders == null} icon={<ClipboardList className="w-3.5 h-3.5" />} sub="from broker" />
       <MetricCard
         label="Day Stop"
-        value={dayStop.cap != null ? fmtINR(dayStop.cap) : "—"}
-        tone={dayStop.cap != null && dayStop.used >= dayStop.cap * 0.75 ? "danger" : "default"}
+        value={dayStop.worst ? fmtINR(dayStop.worst.cap) : "—"}
+        tone={dayStop.tone === "danger" ? "danger" : dayStop.tone === "warn" ? "warn" : "default"}
         icon={<OctagonAlert className="w-3.5 h-3.5" />}
-        sub={
-          dayStop.cap != null
-            ? `${fmtINR(dayStop.used || 0)} used today`
-            : dayStop.any
-            ? "no cap configured"
-            : "no live deployment"
-        }
+        sub={dayStopSub(dayStop)}
       />
     </div>
   );

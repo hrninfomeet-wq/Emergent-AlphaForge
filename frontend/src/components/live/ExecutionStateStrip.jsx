@@ -1,4 +1,5 @@
-import { Zap, Shield, ShieldCheck, Loader2, PowerOff, AlertTriangle } from "lucide-react";
+import { Zap, Shield, ShieldCheck, Loader2, PowerOff, AlertTriangle, KeyRound } from "lucide-react";
+import { executionLegs } from "@/lib/liveDeploymentView";
 
 /**
  * ExecutionStateStrip — the SINGLE "will a signal place a REAL order right now?"
@@ -20,15 +21,13 @@ export default function ExecutionStateStrip({ armState, onStandDown, standingDow
     label,
     mode,
     single_shot_consumed: latchConsumed,
-    would_transmit_entry: entryTx,
-    // Absent must NOT read as dry-run: the software guard always transmits now, so
-    // a missing field means "payload older than v0.56.0", not "exits are logs only".
-    // Rendering "auto-squares: dry-run" over live positions is the dangerous direction.
-    would_transmit_exit: exitTx = true,
     exit_gap: exitGap,
     warning,
     reasons,
   } = armState;
+  // Both legs come from one tested helper: "dry-run" is a gate choosing not to
+  // send; an unusable broker session means NOTHING can be sent — labelled so.
+  const legs = executionLegs(armState);
 
   const tone =
     verdict === "LIVE"
@@ -46,6 +45,21 @@ export default function ExecutionStateStrip({ armState, onStandDown, standingDow
 
   return (
     <div className="space-y-1.5">
+    {legs.sessionExpired && (
+      <div
+        className="rounded-lg px-3 py-2 flex items-start gap-2 text-xs font-mono border-2 border-rose-500/60 bg-rose-500/10 text-rose-300"
+        data-testid="execution-session-expired"
+        role="alert"
+      >
+        <KeyRound className="w-4 h-4 shrink-0 mt-0.5" />
+        <span>
+          <b className="uppercase tracking-wider">Flattrade session expired:</b>{" "}
+          nothing reaches the broker — no entry, no guard exit, no kill switch. The
+          software guard cannot read a price, so stops and targets cannot fire. Log in to
+          Flattrade to restore (the daily token can be regenerated after 06:00 IST).
+        </span>
+      </div>
+    )}
     {(exitGap || warning) && (
       <div
         className="rounded-lg px-3 py-2 flex items-start gap-2 text-xs font-mono border-2 border-amber-500 bg-amber-500/15 text-warning"
@@ -68,11 +82,11 @@ export default function ExecutionStateStrip({ armState, onStandDown, standingDow
       <span className="font-bold uppercase tracking-wider">{label}</span>
       <span className="ml-1">
         entries:{" "}
-        <b className={entryTx ? "text-danger" : "text-dim"}>{entryTx ? "TRANSMIT" : "dry-run"}</b>
+        <b className={legs.entries.tone === "danger" ? "text-danger" : "text-dim"}>{legs.entries.text}</b>
       </span>
       <span>
         &middot; auto-squares:{" "}
-        <b className={exitTx ? "text-danger" : "text-dim"}>{exitTx ? "TRANSMIT" : "dry-run"}</b>
+        <b className={legs.squares.tone === "danger" ? "text-danger" : "text-dim"}>{legs.squares.text}</b>
       </span>
       {manualLive && (
         <span className="text-dimmer">

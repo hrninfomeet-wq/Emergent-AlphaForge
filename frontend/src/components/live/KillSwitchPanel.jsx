@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { api } from "@/lib/api";
 import { getApiErrorMessage } from "@/lib/apiError";
+import { brokerConnectionState } from "@/lib/liveCockpitActions";
 import { useLiveData } from "@/components/live/LiveDataProvider";
 
 /**
@@ -111,7 +112,12 @@ function LegReport({ panic }) {
 }
 
 export default function KillSwitchPanel() {
-  const { positions, orders, errors, refetch } = useLiveData();
+  const { positions, orders, errors, refetch, status } = useLiveData();
+  // The kill reads the broker directly — which it CANNOT do on an expired or absent
+  // session: the route then transmits nothing (fail-safe) and says so only AFTER
+  // firing. Say it BEFORE. `status` null = not loaded yet: no claim either way.
+  const broker = status == null ? null : brokerConnectionState(status);
+  const brokerUnreachable = broker != null && !broker.connected;
   const openPositions = asRows(positions).filter(isOpenPosition);
   const workingOrders = asRows(orders).filter(isWorkingOrder);
 
@@ -161,7 +167,13 @@ export default function KillSwitchPanel() {
       </div>
 
       <div className="px-4 py-3 space-y-3">
-        {brokerUnknown && (
+        {brokerUnreachable ? (
+          <div className="text-[11px] font-mono text-rose-300 font-semibold" data-testid="kill-switch-no-broker">
+            The kill switch CANNOT reach the broker — the Flattrade session is{" "}
+            {broker.expired ? "EXPIRED" : "not connected"}. Firing now transmits nothing.
+            Log in to Flattrade first, or flatten in the Flattrade terminal.
+          </div>
+        ) : brokerUnknown && (
           <div className="text-[11px] font-mono text-warning" data-testid="kill-switch-degraded">
             Broker state UNKNOWN (no/failed book read) — the kill will still attempt to
             flatten whatever the broker holds (it reads the broker directly).

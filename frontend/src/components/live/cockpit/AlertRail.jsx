@@ -20,7 +20,9 @@ export default function AlertRail({
           <span>
             <span className="font-bold">Broker data may be STALE</span> — the last poll failed for{" "}
             {(health.errorSlices || []).map((s) => SLICE_LABEL[s] || s).join(", ")}. The values below are the
-            LAST-KNOWN reading, not live. The kill switch still works; reconnect / reload if this persists.
+            LAST-KNOWN reading, not live. The kill switch reads the broker directly — unless the
+            Flattrade session has expired, in which case nothing can reach the broker until you log
+            in. Reconnect / reload if this persists.
           </span>
         </div>
       )}

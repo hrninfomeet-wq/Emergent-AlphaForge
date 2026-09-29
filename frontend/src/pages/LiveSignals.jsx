@@ -211,7 +211,12 @@ export default function LiveSignals() {
         })()}
         <HeaderStat label="Today MTM" value={inr(todayMtm)} tone={todayMtm} />
         <HeaderStat label="Realized today" value={inr(totals.realized_today)} tone={totals.realized_today} />
-        <HeaderStat label="Open trades" value={totals.open_trades ?? 0} />
+        <HeaderStat
+          label="Open trades"
+          value={totals.open_unverified
+            ? `${totals.open_trades ?? 0} (${totals.open_unverified} unverified)`
+            : (totals.open_trades ?? 0)}
+        />
         <HeaderStat label="Signals today" value={totals.signals_today ?? 0} />
         <div className="ml-auto flex items-center gap-1.5">
           <Button size="sm" variant="ghost" className="h-7 text-xs" disabled={busy}
@@ -338,7 +343,12 @@ function DeploymentCard({ item, busy, onPause, onResume, onRepin, onEvaluate, on
 
       <div className="grid grid-cols-3 lg:grid-cols-6 gap-2 text-xs">
         <CardStat label="Signals today" value={`${t.clean_signals}${t.blocked_signals ? ` (+${t.blocked_signals} blocked)` : ""}`} />
-        <CardStat label="Open trades" value={t.open_trades} />
+        {/* "unverified" = an OPEN live row with no fresh guard mark: its frozen P&L
+            is NOT in Open MTM (a stale mark read as live was the old lie). */}
+        <CardStat
+          label="Open trades"
+          value={t.open_unverified ? `${t.open_trades} (${t.open_unverified} unverified)` : t.open_trades}
+        />
         <CardStat label="Open MTM" value={inr(t.open_unrealized)} tone={t.open_unrealized} />
         <CardStat label="Today ₹" value={inr(mtm)} tone={mtm} />
         <CardStat label="Lifetime ₹" value={inr(lt.realized_pnl)} tone={lt.realized_pnl} />

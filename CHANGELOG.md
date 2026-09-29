@@ -2,6 +2,53 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [Unreleased] — The Live Deployments pane renders the governor, and stops lying (2026-09-29)
+
+Phase 2 of the Live Deployments uplift, plus the UI half of the false-status audit.
+Every decision the pane shows now lives in `frontend/src/lib/liveDeploymentView.js`
+(no imports, no JSX) and is tested by EXECUTING it through node
+(`tests/test_live_deployment_view.py`), never by grepping JSX.
+
+**Each live row** now shows cap headroom straight from the governor — lots today,
+positions open, loss today (realized + open; "—" when a mark is stale, never 0;
+"no cap" when unset, never an implied limit) — and, when it cannot place an entry,
+a **blocked:** chip naming the first refusal in the entry path's order
+(authorization → account → deployment). The status dot **pulses only when the
+governor says an entry could fire now**; it pulsed on mode alone, straight through
+an expired token, the 15:00 cutoff and market holidays. Expanding a row lists the
+open positions (entry, last, stop, **distance to stop**, target — last price dimmed
+when no live tick backs it), the last intended entry, and two diagnostics: OPEN rows
+from an earlier day holding a concurrency slot, and today's closes with no P&L. The
+entry-refused chip is date-bounded — a refusal from an earlier session is dimmed
+and dated instead of reading as current. Rows sort open → held → idle (the
+deployment holding real money could render seventh); not-live rows collapse behind
+a count; the header counts **can trade / blocked / held** instead of "N live".
+
+**Day Stop shows the worst deployment, not a pooled sum.** Caps are enforced per
+deployment; pooling one at 95% of its cap with one at 0% read ~48% in a calm tone.
+Pinned: that pair now reads 95% and danger. It also stopped using realized P&L
+alone (the handoff's Correction 1 applied to this card too).
+
+**False-status fixes (UI):**
+* the execution strip shows a **Flattrade session expired** alert, and an unusable
+  session reads "BLOCKED — no broker", never "dry-run" (a dry-run is a gate choosing
+  not to send; here nothing CAN be sent);
+* the Guard card and Software Guard pill show the guard's own health (WATCHING /
+  IDLE / BLIND / STALLED / NOT RUNNING) instead of a constant "ARMED" /
+  "Auto-exit live"; the blind-guard hint — which could never show, and promised
+  "the resting OCO is the only backstop" although the OCO has been off since
+  09-03 — now shows and says there is no broker-side backstop;
+* the kill-switch panel says it **cannot reach the broker** on an expired session
+  BEFORE it is fired (it used to learn that only afterwards), and the stale-data
+  banner no longer promises "the kill switch still works" unconditionally;
+* the Deploy Strategies cards and header show "N (M unverified)" open trades.
+
+Gates: CI build compiled clean (warnings are errors); **12/12 frontend mutants
+killed** (incl. pooled day stop, realized-only, unknown-as-zero, missing governor
+read as OK). Two of the previous commit's tests were corrected: one used a fixed
+timestamp against a route that reads the real clock (it passed only near 05:00Z),
+and two let a route read the real database. Full suite 6025 passed.
+
 ## [Unreleased] — Status indicators say what is true, not what was configured (2026-09-29)
 
 On 2026-09-26 the operator read Flattrade as "connected" while every broker call

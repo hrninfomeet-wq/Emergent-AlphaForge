@@ -931,7 +931,8 @@ async def deployments_overview():
             trade_stats[str(r.get("_id") or "")] = r
 
     items = []
-    totals = {"open_trades": 0, "open_unrealized": 0.0, "realized_today": 0.0, "signals_today": 0}
+    totals = {"open_trades": 0, "open_unrealized": 0.0, "open_unverified": 0,
+              "realized_today": 0.0, "signals_today": 0}
     for d in deployments:
         dep_id = str(d.get("id"))
         sig = sig_stats.get(dep_id, {"clean": 0, "blocked": 0})
@@ -964,6 +965,7 @@ async def deployments_overview():
         }
         items.append(item)
         totals["open_trades"] += item["today"]["open_trades"]
+        totals["open_unverified"] += item["today"]["open_unverified"]
         totals["open_unrealized"] = round(totals["open_unrealized"] + item["today"]["open_unrealized"], 2)
         totals["realized_today"] = round(totals["realized_today"] + item["today"]["realized_pnl"], 2)
         totals["signals_today"] += sig["clean"] + sig["blocked"]

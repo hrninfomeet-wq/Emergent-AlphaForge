@@ -44,6 +44,24 @@ def test_session_expired_is_never_reported_alongside_connected():
     assert st["session_expired"] is False
 
 
+def _no_real_db(monkeypatch):
+    """get_arm_state scans deployments through app.db.get_db — never the real one."""
+    import app.db
+
+    class _Cur:
+        async def to_list(self, length=None):
+            return []
+
+    class _Coll:
+        def find(self, *a, **k):
+            return _Cur()
+
+    class _DB:
+        strategy_deployments = _Coll()
+
+    monkeypatch.setattr(app.db, "get_db", lambda: _DB())
+
+
 def test_the_arm_state_route_does_not_count_an_expired_token_as_connected(monkeypatch):
     """The route used to set connected=True whenever a token doc EXISTED."""
     import app.live.flattrade_token as ft
@@ -62,6 +80,7 @@ def test_the_arm_state_route_does_not_count_an_expired_token_as_connected(monkey
     monkeypatch.setattr(lb, "_get_token_doc", _doc)
     monkeypatch.setattr(ft, "get_status", _status)
     monkeypatch.setattr(lb, "_mode_store", lambda: _Mode())
+    _no_real_db(monkeypatch)
     st = asyncio.run(lb.get_arm_state())
     assert st["connected"] is False and st["session_expired"] is True
     assert st["would_transmit_exit"] is False
@@ -84,6 +103,7 @@ def test_a_valid_session_is_still_connected(monkeypatch):
     monkeypatch.setattr(lb, "_get_token_doc", _doc)
     monkeypatch.setattr(ft, "get_status", _status)
     monkeypatch.setattr(lb, "_mode_store", lambda: _Mode())
+    _no_real_db(monkeypatch)
     st = asyncio.run(lb.get_arm_state())
     assert st["connected"] is True and st["would_transmit_exit"] is True
 
@@ -125,7 +145,10 @@ def test_the_guard_status_route_carries_health(monkeypatch):
 
     class _G:
         def status(self):
-            return _stats(last_error=TOKEN_EXPIRED_HINT)
+            # The ROUTE reads the real clock, so the last cycle must be recent in
+            # real time. A fixed timestamp here made this pass only near 05:00Z.
+            fresh = (datetime.now(timezone.utc) - timedelta(seconds=2)).isoformat()
+            return _stats(last_error=TOKEN_EXPIRED_HINT, last_run_at=fresh)
 
     monkeypatch.setattr(rt, "live_position_guard", _G())
     out = asyncio.run(lb.guard_status())

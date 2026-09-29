@@ -7,6 +7,7 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { fmtINR } from "@/lib/fmt";
+import { guardHealthView } from "@/lib/liveDeploymentView";
 import { useLiveData } from "@/components/live/LiveDataProvider";
 
 /**
@@ -180,12 +181,11 @@ export default function GuardPanel() {
   }, [refetch]);
 
   // ── Defensive derivation ──────────────────────────────────────────────────
-  // The software guard ALWAYS transmits (the LIVE_GUARD_ARMED env gate was removed).
-  // Default to TRUE when the field is absent: `!!undefined` would render "Dry-run ·
-  // logs only" over positions that are in fact being auto-exited for real — the
-  // fail-DANGEROUS direction. Only an explicit `false` from the server downgrades it.
-  const armed = status?.armed !== false;
-  const mode = status?.mode;
+  // The pill reports what the guard is DOING — its own health from the backend
+  // (watching / idle / blind / stalled / not running) — never the constant
+  // `armed`, which read "Auto-exit live" while an expired token left the guard
+  // unable to read a single price. A payload without health reads UNKNOWN.
+  const health = guardHealthView(status);
   const guarded = Array.isArray(status?.guarded) ? status.guarded : [];
   // Trust the server count when sane; otherwise fall back to the list length.
   const rawCount = Number(status?.count);
@@ -204,22 +204,30 @@ export default function GuardPanel() {
       <div className="px-4 py-2.5 border-b border-line bg-bg-2/40 flex items-center gap-2 flex-wrap">
         <span className="text-sm font-semibold text-foreground">Software Guard</span>
 
-        {/* ARMED / DRY-RUN pill */}
-        {armed ? (
-          <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full border border-danger/60 bg-danger/15 text-danger text-[10px] font-mono font-bold uppercase tracking-wider">
-            <ShieldAlert className="w-3 h-3 shrink-0" />
-            Auto-exit live
-          </span>
-        ) : (
-          <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full border border-amber-500/60 bg-amber-500/15 text-warning text-[10px] font-mono font-bold uppercase tracking-wider">
-            <ShieldCheck className="w-3 h-3 shrink-0" />
-            Guard unreachable
+        {/* Health pill — what the guard is actually doing */}
+        {status != null && (
+          <span
+            className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full border text-[10px] font-mono font-bold uppercase tracking-wider ${
+              health.tone === "success"
+                ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-300"
+                : health.tone === "danger"
+                ? "border-rose-500/60 bg-rose-500/15 text-rose-300"
+                : health.tone === "warn"
+                ? "border-amber-500/60 bg-amber-500/15 text-warning"
+                : "border-line bg-bg-2 text-dim"
+            }`}
+            title={health.title}
+            data-testid="guard-health"
+          >
+            {health.tone === "success"
+              ? <ShieldCheck className="w-3 h-3 shrink-0" />
+              : <ShieldAlert className="w-3 h-3 shrink-0" />}
+            {health.label}
           </span>
         )}
-
-        {mode && (
-          <span className="text-[10px] font-mono text-dimmer uppercase tracking-wider">
-            {mode}
+        {status != null && health.title && (
+          <span className="text-[10px] font-mono text-dimmer truncate max-w-[40ch]" title={health.title}>
+            {health.title}
           </span>
         )}
 
@@ -292,17 +300,19 @@ export default function GuardPanel() {
           </div>
         )}
 
-        {/* Guard-unreachable hint. The old copy here told the operator to set
-            LIVE_GUARD_ARMED=1 — that variable no longer exists, so leaving it would
-            send someone chasing a useless env change while positions are live. The
-            only reason the guard can't transmit now is that it can't reach the
-            broker, which is an entirely different (and more urgent) problem. */}
-        {!armed && (guarded.length > 0 || count > 0) && (
-          <div className="flex items-start gap-1.5 text-[11px] font-mono text-dimmer pt-1 border-t border-line/60">
+        {/* Guard-blind hint. It used to key off the constant `armed` and so could
+            never show; and it promised "the resting OCO is the only backstop" —
+            the broker OCO has been OFF by default since 2026-09-03 (its stop leg
+            fires at placement), so there is NO broker-side backstop at all. */}
+        {["blind", "stalled", "not_running"].includes(status?.health?.state)
+          && (guarded.length > 0 || count > 0) && (
+          <div className="flex items-start gap-1.5 text-[11px] font-mono text-rose-300 pt-1 border-t border-line/60"
+               data-testid="guard-blind-hint">
             <AlertTriangle className="w-3.5 h-3.5 shrink-0 text-warning mt-0.5" />
             <span>
-              Guard cannot reach the broker — auto-exits are NOT transmitting.
-              Re-connect Flattrade; the resting OCO is the only backstop meanwhile.
+              The guard is not protecting these positions ({health.title}). There is no
+              broker-side backstop (the OCO is off). Reconnect Flattrade, or manage the
+              position in the Flattrade terminal.
             </span>
           </div>
         )}
