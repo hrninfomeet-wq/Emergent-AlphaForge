@@ -16,7 +16,7 @@ from pydantic import BaseModel
 from app.db import get_db, serialize_doc
 from app.strategies.base import get_registry
 from app.paper_trading import close_trade, mark_trade_to_market, premium_sanity_error
-from app.signal_lifecycle import SignalStateError, transition_signal
+from app.signal_lifecycle import SignalStateError, signal_bar_ms, transition_signal
 from app.paper_squareoff import square_off_open_paper_trades
 from app.warehouse import get_coverage
 
@@ -329,15 +329,20 @@ async def list_signals_enriched(
             rng["$gte"] = start_ms
         if end_ms is not None:
             rng["$lt"] = end_ms
-        q["bar_ts"] = rng
+        # A signal doc stores its bar as `candle_ts`; `bar_ts` (the AUDIT record's
+        # name) is on none of them, so filtering on it matched NOTHING — every date
+        # filter in the Signal Journal came back empty.
+        q["candle_ts"] = rng
 
     field = sort.lstrip("-")
     direction = -1 if sort.startswith("-") else 1
     if field not in _ENRICHED_SORT_FIELDS:
         field, direction = "bar_ts", -1
 
+    # `bar_ts` stays the API's name for "the bar minute"; the stored field is candle_ts.
+    sort_key = "candle_ts" if field == "bar_ts" else field
     total = await db.signals.count_documents(q)
-    rows = await db.signals.find(q, {"_id": 0}).sort(field, direction).skip(skip).limit(limit).to_list(length=limit)
+    rows = await db.signals.find(q, {"_id": 0}).sort(sort_key, direction).skip(skip).limit(limit).to_list(length=limit)
 
     trade_ids = [str(r.get("paper_trade_id")) for r in rows if r.get("paper_trade_id")]
     trades_by_id: Dict[str, Dict[str, Any]] = {}
@@ -371,9 +376,14 @@ async def list_signals_enriched(
                 # a refused / claimed-but-untraded signal must not read as "pending".
                 "live_trade_error", "live_trade_id", "paper_trade_claim",
             )},
+            # The bar minute. A signal doc stores it as `candle_ts` (+ context.candle.ts);
+            # `bar_ts` is the evaluation AUDIT record's name and is absent from every
+            # real signal, so this column was always empty and the journal could not
+            # tell a stale CONFIRMED signal from one being routed right now.
+            "bar_ts": signal_bar_ms(s),
             "score": s.get("confidence"),
             "spot_entry": s.get("entry_price"),
-            "bar_ist": ((s.get("context") or {}).get("candle") or {}).get("ist_time") or _ts_ms_to_ist_date_str(int(s.get("bar_ts") or 0)),
+            "bar_ist": ((s.get("context") or {}).get("candle") or {}).get("ist_time") or _ts_ms_to_ist_date_str(int(signal_bar_ms(s) or 0)),
             "deployment_name": dep_names.get(str(s.get("deployment_id") or ""), ""),
             "contract": (str(contract.get("strike") or "") + " " + str(contract.get("side") or "")).strip(),
             "contract_expiry": contract.get("expiry_date"),

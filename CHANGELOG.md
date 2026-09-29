@@ -123,14 +123,26 @@ acted on**; a refused one (`live_trade_error` / `paper_trade_error` / `paper_tra
 renders **NOT ACTED ON** at once; one a sink *claimed* but recorded no trade on is
 **UNVERIFIED** (a crash between the two writes may have left a trade) — never "not acted on".
 Server side: `signal_lifecycle.expire_unactioned_signals` moves such signals CONFIRMED ->
-AUDITED (`session_ended_unactioned`) inside the two sweeps that already exist (the
-once-a-day 15:00 sweep and the boot reconcile — no new timer). It never touches a bar under
-15 min old, a claimed or trade-linked signal, a blocked or manual one, or one with an
-unreadable bar time, and its write is conditional on `state == CONFIRMED` and on the absence
-of any claim / trade link, so a racing sink is never overwritten. Note: the opt-in Signal
-Journal retention purges AUDITED signals, so with retention on these are now purged with
-them. The enriched-signals route also exposes `live_trade_error` / `live_trade_id` /
+AUDITED (`session_ended_unactioned`). It never touches a bar under 15 min old, a claimed or
+trade-linked signal, a blocked or manual one, or one with an unreadable bar time, and its
+write is conditional on `state == CONFIRMED` and on the absence of any claim / trade link,
+so a racing sink is never overwritten. **It is NOT wired into any sweep** (review, on
+merge): its first run would retire every historical CONFIRMED signal (1366 on 2026-09-29),
+and the opt-in Signal Journal retention then deletes AUDITED signals N days later — a data
+decision for the operator, not a display fix. The EXPIRED chip tells the truth without it.
+The enriched-signals route also exposes `live_trade_error` / `live_trade_id` /
 `paper_trade_claim`, and the ledger's Notes column shows a live refusal.
+
+**Found on merge — every read of a signal's bar was blind.** A signal doc stores its bar as
+`candle_ts` (+ `context.candle.ts`); `bar_ts` is the evaluation AUDIT record's name. Measured
+2026-09-29: **0 of 4020** signals had `bar_ts`, 4010 had `candle_ts`. So the Signal Journal's
+date filter matched **nothing** for any date, its default "newest bar" sort sorted on a
+missing field, the overview's **"Signals today" was 0 for every deployment, every day**, and
+the new chip and sweep above saw no bar at all (the fixtures had used `bar_ts`). All of them
+now read `candle_ts` (`signal_lifecycle.signal_bar_ms`, with `context.candle.ts` and a legacy
+`bar_ts` as fallbacks); the enriched row's `bar_ts` is resolved from it. Tests build signals
+in the shape sampled from the real database (`tests/test_signal_bar_field.py`); 7/7 mutants
+killed.
 
 **7. Persisted reasons without a date.** `kill_switch_reason` / `drift_reason` persist on the
 deployment and are not cleared by a manual pause or resume (verified), so "auto-paused:

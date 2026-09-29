@@ -166,3 +166,14 @@ def test_chip_classes():
     assert out[0] == "border-line text-dimmer"
     assert "rose" in out[1]
     assert out[2:] == ["F", "F", "F"]
+
+
+def test_a_raw_signal_doc_reads_its_bar_from_candle_ts():
+    """A raw signal doc has NO bar_ts (that name belongs to the audit record) — the
+    bar is candle_ts / context.candle.ts. Measured: 0 of 4020 real signals had bar_ts."""
+    v = _view(f"{{state: 'CONFIRMED', candle_ts: {_bar(60)}}}")
+    assert v["label"] == "EXPIRED"
+    v = _view(f"{{state: 'CONFIRMED', context: {{candle: {{ts: {_bar(60)}}}}}}}")
+    assert v["label"] == "EXPIRED"
+    v = _view(f"{{state: 'CONFIRMED', candle_ts: {_bar(1)}}}")
+    assert v["label"] == "CONFIRMED" and v["expired"] is False

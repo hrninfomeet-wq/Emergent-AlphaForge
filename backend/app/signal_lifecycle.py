@@ -124,16 +124,26 @@ UNACTIONED_AFTER_MINUTES = 15
 UNACTIONED_REASON = "session_ended_unactioned"
 
 
-def _signal_bar_ms(sig: Dict[str, Any]) -> Optional[int]:
+def signal_bar_ms(sig: Dict[str, Any]) -> Optional[int]:
     """The bar's epoch-ms, or None when it cannot be read (an unknown age is never
-    'old enough')."""
-    try:
-        v = sig.get("bar_ts")
-        if v not in (None, ""):
+    'old enough').
+
+    A signal DOC stores its bar as ``candle_ts`` (and ``context.candle.ts``).
+    ``bar_ts`` is the evaluation AUDIT record's name for the same minute and is
+    absent from every real signal — on 2026-09-29 all 1366 CONFIRMED signals had
+    ``bar_ts`` None, so a sweep keyed on it alone moved nothing.
+    """
+    candle = ((sig.get("context") or {}).get("candle") or {}) \
+        if isinstance(sig.get("context"), dict) else {}
+    for v in (sig.get("candle_ts"), candle.get("ts"), sig.get("bar_ts")):
+        try:
+            if v in (None, ""):
+                continue
             n = int(float(v))
-            return n if n > 0 else None
-    except (TypeError, ValueError):
-        pass
+        except (TypeError, ValueError):
+            continue
+        if n > 0:
+            return n
     return None
 
 
@@ -171,7 +181,11 @@ async def expire_unactioned_signals(
         now = now_utc or datetime.now(timezone.utc)
         cutoff_ms = int((now.timestamp() - float(older_than_minutes) * 60.0) * 1000)
         rows = await db.signals.find(
-            {"state": "CONFIRMED", "bar_ts": {"$lt": cutoff_ms}}, {"_id": 0},
+            {"state": "CONFIRMED", "$or": [
+                {"candle_ts": {"$lt": cutoff_ms}},
+                {"context.candle.ts": {"$lt": cutoff_ms}},
+                {"bar_ts": {"$lt": cutoff_ms}},
+            ]}, {"_id": 0},
         ).to_list(length=int(limit))
         stamp = now.isoformat()
         for sig in rows:
@@ -182,7 +196,7 @@ async def expire_unactioned_signals(
                     continue
                 if sig.get("paper_trade_claim") or sig.get("paper_trade_id") or sig.get("live_trade_id"):
                     continue
-                bar_ms = _signal_bar_ms(sig)
+                bar_ms = signal_bar_ms(sig)
                 if bar_ms is None or bar_ms >= cutoff_ms:
                     continue
                 audited = transition_signal(

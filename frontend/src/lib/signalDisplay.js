@@ -62,7 +62,9 @@ export function signalDisplay(sig, nowMs = Date.now()) {
              note: `Not traded — refused: ${refusal}` };
   }
 
-  const barMs = toEpochMs(sig?.bar_ts);
+  // /signals/enriched resolves the bar into `bar_ts`; a raw signal doc stores it as
+  // `candle_ts` / `context.candle.ts` (bar_ts belongs to the audit record) — read all.
+  const barMs = toEpochMs(sig?.bar_ts ?? sig?.candle_ts ?? sig?.context?.candle?.ts);
   if (barMs === null) {
     return { state, label: "CONFIRMED", tone: "pending", expired: false,
              note: "bar time not recorded — cannot tell whether it is still being routed" };

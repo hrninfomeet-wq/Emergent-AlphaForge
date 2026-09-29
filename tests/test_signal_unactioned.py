@@ -35,9 +35,20 @@ def _ms(dt: datetime) -> int:
     return int(dt.timestamp() * 1000)
 
 
+def _get(row: Dict[str, Any], dotted: str) -> Any:
+    cur: Any = row
+    for part in dotted.split("."):
+        cur = cur.get(part) if isinstance(cur, dict) else None
+    return cur
+
+
 def _match(row: Dict[str, Any], query: Dict[str, Any], honour_exists: bool = True) -> bool:
     for k, v in (query or {}).items():
-        rv = row.get(k)
+        if k == "$or":
+            if not any(_match(row, sub, honour_exists) for sub in v):
+                return False
+            continue
+        rv = _get(row, k)
         if isinstance(v, dict) and "$lt" in v:
             if rv is None or not rv < v["$lt"]:
                 return False
@@ -90,11 +101,16 @@ class _DB:
 
 
 def _confirmed(sig_id="s1", *, bar_age_min=60, deployment_id="D1", **extra):
+    """The REAL signal-doc shape: the bar is `candle_ts` + `context.candle.ts`.
+    (`bar_ts` belongs to the evaluation AUDIT record; no real signal carries it —
+    fixtures that set it hid a sweep that moved nothing on the real database.)"""
     sig = create_signal_doc(instrument="NIFTY", direction="CE", strategy_id="s",
                             entry_price=25000.0, confidence=70)
     sig["id"] = sig_id
     sig["deployment_id"] = deployment_id
-    sig["bar_ts"] = _ms(NOW - timedelta(minutes=bar_age_min))
+    bar = _ms(NOW - timedelta(minutes=bar_age_min))
+    sig["candle_ts"] = bar
+    sig["context"] = {"candle": {"ts": bar, "ist_time": "14:00"}}
     sig["blocked"] = False
     sig = transition_signal(sig, "FORMING", reason="t")
     sig = transition_signal(sig, "CONFIRMED", reason="passed")
@@ -205,11 +221,38 @@ def test_a_blocked_signal_and_a_manual_signal_are_ignored():
 
 def test_a_signal_whose_bar_time_is_unreadable_is_skipped_never_expired():
     junk = _confirmed("j")
-    junk["bar_ts"] = "garbage"
+    junk["candle_ts"] = "garbage"
+    junk["context"] = {"candle": {"ts": "garbage"}}
     missing = _confirmed("k")
-    del missing["bar_ts"]
+    del missing["candle_ts"]
+    missing["context"] = {}
     db = _DB([junk, missing])
     assert _run(db) == 0
+
+
+def test_the_real_signal_shape_moves_by_candle_ts():
+    """A CONFIRMED signal exactly as the evaluator writes it (sampled from the real
+    database 2026-09-29): `candle_ts` and `context.candle.ts`, `bar_ts` absent."""
+    sig = _confirmed("real", bar_age_min=90)
+    assert "bar_ts" not in sig
+    db = _DB([sig])
+    assert _run(db) == 1 and _state(db, "real")["state"] == "AUDITED"
+
+
+def test_only_the_nested_candle_time_is_enough():
+    sig = _confirmed("nested", bar_age_min=90)
+    del sig["candle_ts"]
+    db = _DB([sig])
+    assert _run(db) == 1
+
+
+def test_a_legacy_bar_ts_still_reads():
+    sig = _confirmed("legacy", bar_age_min=90)
+    del sig["candle_ts"]
+    sig["context"] = {}
+    sig["bar_ts"] = _ms(NOW - timedelta(minutes=90))
+    db = _DB([sig])
+    assert _run(db) == 1
 
 
 def test_a_racing_sink_claim_is_never_overwritten():
@@ -295,67 +338,20 @@ def test_the_query_asks_only_for_confirmed_signals_older_than_the_cutoff():
     _run(db)
     q = db.signals.queries[0]
     assert q["state"] == "CONFIRMED"
-    assert q["bar_ts"]["$lt"] == _ms(NOW - timedelta(minutes=UNACTIONED_AFTER_MINUTES))
+    cutoff = _ms(NOW - timedelta(minutes=UNACTIONED_AFTER_MINUTES))
+    assert {"candle_ts": {"$lt": cutoff}} in q["$or"]
 
 
 # --------------------------------------------------------------------------- #
-# wired into the sweeps that already exist (no new timer)
+# NOT wired into any sweep — pending an explicit operator decision
 # --------------------------------------------------------------------------- #
 
-def test_the_15_00_sweep_in_the_evaluator_loop_runs_the_expiry(monkeypatch):
-    """Drive one real scheduler cycle (the pattern of test_runtime_scheduled_squareoff)."""
-    from app import runtime
-
-    calls = []
-
-    class _Friday1500:
-        @classmethod
-        def now(cls, tz=None):
-            return datetime(2026, 8, 14, 9, 30, tzinfo=timezone.utc)
-
-    class _Candles:
-        async def find_one(self, *a, **k):
-            return None
-
-    class _Db:
-        candles_1m = _Candles()
-
-    sleeps = 0
-
-    async def _sleep(_t):
-        nonlocal sleeps
-        sleeps += 1
-        if sleeps > 1:
-            raise asyncio.CancelledError
-
-    async def _squareoff(*a, **k):
-        return []
-
-    async def _expire(db, **kw):
-        calls.append((db, kw))
-        return 3
-
-    import app.signal_lifecycle as sl
-    monkeypatch.setattr(runtime, "datetime", _Friday1500)
-    monkeypatch.setattr(runtime, "_evaluator_wait", _sleep)
-    monkeypatch.setattr(runtime, "get_db", lambda: _Db())
-    monkeypatch.setattr(runtime, "is_square_off_due", lambda _now: True)
-    monkeypatch.setattr(runtime, "square_off_open_paper_trades", _squareoff)
-    monkeypatch.setattr(runtime.upstox_stream_manager, "latest_tick_map", lambda: {})
-    monkeypatch.setattr(sl, "expire_unactioned_signals", _expire)
-    try:
-        asyncio.run(runtime._deployment_evaluator_loop())
-    except asyncio.CancelledError:
-        pass
-    assert len(calls) == 1, "the once-a-day sweep did not run the signal expiry"
-    assert calls[0][1]["now_utc"] == datetime(2026, 8, 14, 9, 30, tzinfo=timezone.utc)
-
-
-def test_the_boot_reconcile_also_runs_the_expiry():
-    """server.py's startup is monolithic; pin that the boot reconcile calls the helper
-    inside a try/except so a failure can never break startup."""
-    src = (ROOT / "backend" / "server.py").read_text(encoding="utf-8")
-    i = src.index("expire_unactioned_signals")
-    block = src[max(0, i - 300): i + 400]
-    assert "try:" in block and "except Exception" in block
-    assert "await expire_unactioned_signals(db)" in block
+def test_no_sweep_runs_the_expiry_until_the_operator_approves_it():
+    """Wired into the boot reconcile + 15:00 sweep, this retires every historical
+    CONFIRMED signal on its first run (1366 on 2026-09-29) — and the Signal
+    Journal's opt-in retention then DELETES AUDITED signals N days later. That is
+    a data decision for the operator, not a display fix, so the helper ships
+    unwired; the Signal Journal's EXPIRED chip already tells the truth without it."""
+    for rel in ("backend/server.py", "backend/app/runtime.py"):
+        src = (ROOT / rel).read_text(encoding="utf-8")
+        assert "expire_unactioned_signals" not in src, f"{rel} runs the bulk expiry"

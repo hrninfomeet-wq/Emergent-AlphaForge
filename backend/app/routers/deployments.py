@@ -967,7 +967,10 @@ async def deployments_overview():
     sig_stats: Dict[str, Dict[str, int]] = {}
     if dep_ids:
         rows = await db.signals.aggregate([
-            {"$match": {"deployment_id": {"$in": dep_ids}, "bar_ts": {"$gte": start_ms, "$lt": end_ms}}},
+            # `candle_ts` is the signal's bar. `bar_ts` is the evaluation AUDIT
+            # record's name and is on no signal, so matching it counted ZERO signals
+            # today for every deployment ("Signals today: 0" whatever happened).
+            {"$match": {"deployment_id": {"$in": dep_ids}, "candle_ts": {"$gte": start_ms, "$lt": end_ms}}},
             {"$group": {"_id": {"dep": "$deployment_id", "blocked": {"$eq": ["$blocked", True]}}, "n": {"$sum": 1}}},
         ]).to_list(length=None)
         for r in rows:
