@@ -522,7 +522,26 @@ async def auto_live_trade_for_signal(
         # deployment that crossed its late-entry cutoff while we were doing
         # broker round-trips must be refused. Injectable only so tests can be
         # deterministic; production always gets the real current time.
-        return is_deployment_live_allowed(fresh, clock_fn(), connected=connected)
+        fence_now = clock_fn()
+        allowed, why = is_deployment_live_allowed(fresh, fence_now, connected=connected)
+        if not allowed:
+            return allowed, why
+        # CAPS, against the same fresh doc. `capped` and the governor verdict at
+        # (c) came from the signal-time doc, and /live/caps TIGHTENS a live
+        # deployment without taking it out of live — so without this an entry
+        # already in flight when the operator lowered the caps still went out at
+        # the old size, past the new loss cap or concurrency ceiling. The order
+        # is already built for `capped` lots (margin, intent qty), so a smaller
+        # size cannot be applied here: refuse, and the next signal sizes fresh.
+        fresh_lots = resolve_capped_lots(fresh, account_max)
+        if fresh_lots < capped:
+            return False, f"caps_tightened:lots {capped}->{fresh_lots}"
+        # The fresh caps against fresh exposure — also catches this deployment's
+        # own entry that was journalled while this one was in flight.
+        verdict = await check_live_caps(db, fresh, capped_lots=capped, now_utc=fence_now)
+        if not verdict.get("allow"):
+            return False, f"caps:{verdict.get('reason')}"
+        return True, why
 
     result = await place_fn(
         contract,

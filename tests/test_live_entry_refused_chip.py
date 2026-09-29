@@ -43,8 +43,8 @@ def test_strip_renders_entry_refused_chip():
     assert "last_entry" in STRIP_SRC
     assert "entry refused" in STRIP_SRC
     assert 'data-testid="live-entry-refused"' in STRIP_SRC
-    # a human label mapper (not the raw snake_case reason)
-    assert "entryErrorLabel" in STRIP_SRC
-    # the specific stale-premium reason gets a friendly label
-    assert "live_entry_premium_unavailable_or_stale" in STRIP_SRC
-    assert "no fresh premium" in STRIP_SRC
+    # a human label mapper (not the raw snake_case reason). The mapping itself now
+    # lives in lib/liveDeploymentView.js and is EXECUTED by
+    # test_live_deployment_view.py::test_entry_refusals_read_as_words (which pins
+    # the stale-premium reason -> "no fresh premium").
+    assert "entryRefusalText(refusal.reason)" in STRIP_SRC

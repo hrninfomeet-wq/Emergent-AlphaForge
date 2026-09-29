@@ -13,7 +13,7 @@ import { isDriftPaused, driftTooltip } from "@/lib/deploymentState";
 import { useLiveData } from "@/components/live/LiveDataProvider";
 import { asPositionRows } from "@/components/live/liveHelpers";
 import {
-  bindingView, capHeadroom, describeIntended, entryRefusalView, openPositionRows,
+  bindingView, capHeadroom, describeIntended, entryRefusalText, entryRefusalView, openPositionRows,
   positionValue, readGovernor, sortDeploymentRows, stopAllLiveVerdict, summarizeExitReport,
 } from "@/lib/liveDeploymentView";
 import { deploymentEntryEnd } from "@/lib/sessionClock";
@@ -40,30 +40,6 @@ import { deploymentEntryEnd } from "@/lib/sessionClock";
 
 // Map a backend live-entry refusal reason to a short human label. The full
 // reason is always available in the chip's tooltip.
-function entryErrorLabel(reason) {
-  if (!reason) return null;
-  const map = {
-    live_entry_premium_unavailable_or_stale: "no fresh premium",
-    signal_claimed_elsewhere: "claimed elsewhere",
-    dry_run_failed: "pre-trade gate",
-    not_within_lot_cap: "lot cap",
-    cannot_trade: "engine halted",
-    premium_trigger_not_met: "premium fell back below the trigger before placement",
-    strike_lock_failed: "could not lock the strike at the reference time",
-    ref_premium_unavailable: "no fresh option tick to capture the reference premium",
-    // Phase 5B B8: multi-leg/lazy gate + day-stop refusal reasons (A3/A4/deployment
-    // day-stop gate). vix_unverifiable/vix_gate/day_stop are LIVE reasons today;
-    // both_mode_live_pending_b6_b7 is the removed Cluster-A interim guard (B7,
-    // d110a1e) — kept here only so a historical journaled signal from before that
-    // removal still renders a readable label instead of the raw reason string.
-    vix_gate: "VIX gate blocked the session",
-    vix_unverifiable: "VIX unverifiable - session skipped",
-    day_stop: "session day-stop hit",
-    both_mode_live_pending_b6_b7: "multi-leg live was pending completion",
-  };
-  return map[reason] || String(reason).replace(/[_:]/g, " ").trim();
-}
-
 // ── Cap headroom — the governor's own numbers, never re-derived here ────────
 const ratioClass = (r) =>
   r == null ? "text-dim" : r >= 1 ? "text-rose-300 font-semibold" : r >= 0.75 ? "text-warning" : "text-dim";
@@ -366,7 +342,7 @@ function LiveRow({ dep, liveStatus, busy, onDisable, onStop, onPause, onResume, 
           data-testid="live-entry-refused"
         >
           <OctagonX className="w-3 h-3 shrink-0" />
-          {refusal.stale ? `entry refused ${refusal.dateLabel}` : "entry refused"}: {entryErrorLabel(refusal.reason)}
+          {refusal.stale ? `entry refused ${refusal.dateLabel}` : "entry refused"}: {entryRefusalText(refusal.reason)}
         </span>
       )}
 

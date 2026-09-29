@@ -390,11 +390,17 @@ def test_sim_applies_costs_when_configured():
 # ---------------------------------------------------------------------------
 
 def test_frontend_live_strip_has_premium_momentum_refusal_labels():
-    # The three premium-momentum refusal reasons must map to human labels in
-    # LiveDeploymentStrip's entryErrorLabel map (else the chip shows raw keys).
-    from pathlib import Path
-    fe = Path(__file__).resolve().parents[1] / "frontend" / "src"
-    strip = (fe / "components" / "live" / "LiveDeploymentStrip.jsx").read_text(encoding="utf-8")
-    assert "premium_trigger_not_met:" in strip
-    assert "strike_lock_failed:" in strip
-    assert "ref_premium_unavailable:" in strip
+    # The three premium-momentum refusal reasons must map to human labels (else
+    # the chip shows raw keys). The map moved from LiveDeploymentStrip into
+    # lib/liveDeploymentView.entryRefusalText — executed through node, not grepped.
+    import shutil
+
+    import pytest
+    if shutil.which("node") is None:
+        pytest.skip("node required")
+    from tests.test_live_deployment_view import _run_js
+    got = _run_js("return ['premium_trigger_not_met', 'strike_lock_failed', "
+                  "'ref_premium_unavailable'].map((k) => M.entryRefusalText(k));")
+    assert got == ["premium fell back below the trigger before placement",
+                   "could not lock the strike at the reference time",
+                   "no fresh option tick to capture the reference premium"]

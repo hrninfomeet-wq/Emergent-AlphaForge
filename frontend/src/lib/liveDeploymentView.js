@@ -98,6 +98,52 @@ export function reasonText(reason) {
   return REASON_TEXT[s] || REASON_TEXT[head] || s.replace(/[_:]/g, " ").trim();
 }
 
+// Refusals the entry path writes to signals.live_trade_error that are not
+// governor reasons. Exact-matched, as before: `cannot_trade:<why>` keeps its detail.
+const ENTRY_REFUSAL_TEXT = {
+  live_entry_premium_unavailable_or_stale: "no fresh premium",
+  signal_claimed_elsewhere: "claimed elsewhere",
+  dry_run_failed: "pre-trade gate",
+  not_within_lot_cap: "lot cap",
+  cannot_trade: "engine halted",
+  premium_trigger_not_met: "premium fell back below the trigger before placement",
+  strike_lock_failed: "could not lock the strike at the reference time",
+  ref_premium_unavailable: "no fresh option tick to capture the reference premium",
+  // Phase 5B B8: vix_unverifiable/vix_gate/day_stop are LIVE reasons today;
+  // both_mode_live_pending_b6_b7 is the removed Cluster-A interim guard (B7,
+  // d110a1e) — kept only so a historical journaled signal still reads.
+  vix_gate: "VIX gate blocked the session",
+  vix_unverifiable: "VIX unverifiable - session skipped",
+  day_stop: "session day-stop hit",
+  both_mode_live_pending_b6_b7: "multi-leg live was pending completion",
+  // transmit fence (auto_live._recheck_authorization)
+  status_paused: "deployment paused",
+  deployment_missing: "deployment deleted",
+  recheck_failed: "could not re-check",
+};
+
+const IN_FLIGHT = "stale_authorization:";
+
+/**
+ * The last refused live entry, in words. Governor reasons (now persisted too)
+ * read exactly as the binding chip does. A `stale_authorization:` refusal is the
+ * transmit fence: the order was built and then NOT sent because the deployment
+ * changed during the broker round-trips — say that, then why.
+ */
+export function entryRefusalText(reason) {
+  if (!reason) return null;
+  const s = String(reason);
+  if (s.startsWith(IN_FLIGHT)) {
+    const rest = s.slice(IN_FLIGHT.length).replace(/^caps:/, "");
+    const lots = /^caps_tightened:lots (\d+)->(\d+)$/.exec(rest);
+    const why = lots ? `lot size lowered ${lots[1]} → ${lots[2]}` : entryRefusalText(rest);
+    return `not sent — changed in flight: ${why}`;
+  }
+  const head = s.split(":")[0];
+  return ENTRY_REFUSAL_TEXT[s] || REASON_TEXT[s] || REASON_TEXT[head]
+    || s.replace(/[_:]/g, " ").trim();
+}
+
 /**
  * What stops this deployment from placing an entry right now.
  * `canTrade` is true ONLY when the governor answered and nothing binds.

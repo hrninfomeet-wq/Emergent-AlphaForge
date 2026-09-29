@@ -556,6 +556,22 @@ def test_deployed_recheck_blocks_transmit_when_authorization_went_stale(monkeypa
     assert arm_calls == []
 
 
+def test_deployed_recheck_that_raises_transmits_nothing(monkeypatch):
+    """The fence now reads the database (the caps re-check). A read that fails
+    must refuse the order, never wave it through."""
+    monkeypatch.setenv("LIVE_AUTOPLACE_ARMED", "1")
+    client = MockNoren(limits_data={"cash": "99999999"})
+
+    async def broken_recheck():
+        raise RuntimeError("mongo unavailable")
+
+    result = _run(_place_deployed(client=client, capped_lots=2, recheck_fn=broken_recheck))
+
+    assert result["placed"] is False
+    assert result["reason"] == "stale_authorization:recheck_failed"
+    assert _book(client) == []
+
+
 def test_deployed_recheck_allows_transmit_when_still_authorized(monkeypatch):
     """Control: a passing recheck must not disturb the normal armed transmit."""
     monkeypatch.setenv("LIVE_AUTOPLACE_ARMED", "1")

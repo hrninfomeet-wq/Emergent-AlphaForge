@@ -15,6 +15,7 @@ Trading-critical invariants covered here:
 """
 from __future__ import annotations
 
+import copy
 import os
 import sys
 from datetime import datetime, timedelta, timezone
@@ -955,6 +956,166 @@ async def test_transmit_fence_fails_closed_when_deployment_vanishes():
     db.strategy_deployments.rows.clear()
     ok, why = await recheck()
     assert ok is False and why == "deployment_missing"
+
+
+# --------------------------------------------------------------------------- #
+# G2 — caps tightened while an entry is in flight
+#
+# /live/caps lowers a live deployment's caps WITHOUT taking it out of live, so the
+# authorization re-check above passes. The size and the governor verdict were
+# decided on the signal-time doc; the fence must re-decide both on the fresh one.
+# --------------------------------------------------------------------------- #
+
+def _fencing_place_fn(calls: List[Dict[str, Any]], mid_flight=None):
+    """Behaves like the executor: whatever lands during the broker round-trips
+    (``mid_flight``) happens BEFORE the fence runs, and nothing is journalled yet."""
+    async def _place(contract, **kwargs):
+        calls.append({"contract": contract, **kwargs})
+        if mid_flight is not None:
+            mid_flight()
+        ok, why = await kwargs["recheck_fn"]()
+        if not ok:
+            return {"placed": False, "reason": f"stale_authorization:{why}", "verdicts": []}
+        return dict(_SUCCESS)
+    return _place
+
+
+def _fence_setup(**live):
+    db = FakeDB()
+    sig = make_confirmed_signal()
+    db.signals.rows.append(dict(sig))
+    dep = make_live_deployment(**live)
+    dep["status"] = "ACTIVE"
+    # DEEP copy: the signal-time doc and the stored one must not share `risk`, or a
+    # mid-flight write also rewrites the stale doc and a fence that reads the stale
+    # doc looks correct (two mutants survived exactly that way).
+    db.strategy_deployments.rows.append(copy.deepcopy(dep))
+    return db, sig, dep
+
+
+async def _run_fenced(db, sig, dep, calls, mid_flight=None, clock=NOW):
+    return await auto_live_trade_for_signal(
+        db, dep, sig, latest_tick_lookup={KEY: _fresh_tick(151.5)}.get,
+        now_utc=NOW, place_fn=_fencing_place_fn(calls, mid_flight),
+        clock_fn=lambda: clock)
+
+
+def _live_caps(db):
+    return db.strategy_deployments.rows[0]["risk"]["live"]
+
+
+@pytest.mark.asyncio
+async def test_fence_refuses_when_lots_are_lowered_mid_flight():
+    db, sig, dep = _fence_setup(lots=3)
+    calls: List[Dict[str, Any]] = []
+
+    def tighten():
+        _live_caps(db)["lots"] = 1
+
+    out = await _run_fenced(db, sig, dep, calls, tighten)
+    assert calls[0]["capped_lots"] == 3, "the order was built at the signal-time size"
+    assert out["created"] is False
+    assert out["reason"] == "stale_authorization:caps_tightened:lots 3->1"
+    assert db.live_trades.rows == [], "a refused entry was journalled"
+    assert db.signals.rows[0].get("live_trade_error") == out["reason"]
+    assert "paper_trade_claim" not in db.signals.rows[0], "claim not released"
+
+
+@pytest.mark.asyncio
+async def test_fence_passes_when_nothing_changed():
+    db, sig, dep = _fence_setup(lots=3)
+    calls: List[Dict[str, Any]] = []
+    out = await _run_fenced(db, sig, dep, calls)
+    assert out["created"] is True and out["lots"] == 3
+
+
+@pytest.mark.asyncio
+async def test_fence_keeps_the_smaller_size_when_lots_are_raised_mid_flight():
+    """Raising needs Disable -> re-Enable; an order built at the old, smaller size
+    is the conservative direction and still goes out at that size."""
+    db, sig, dep = _fence_setup(lots=2)
+    calls: List[Dict[str, Any]] = []
+
+    def raise_lots():
+        _live_caps(db)["lots"] = 5
+
+    out = await _run_fenced(db, sig, dep, calls, raise_lots)
+    assert out["created"] is True and out["lots"] == 2
+    assert db.live_trades.rows[0]["lots"] == 2
+
+
+@pytest.mark.asyncio
+async def test_fence_refuses_when_max_concurrent_is_lowered_mid_flight():
+    db, sig, dep = _fence_setup(lots=1, max_concurrent=3)
+    db.live_trades.rows.append({"id": "t0", "deployment_id": "dep-1", "status": "OPEN",
+                                "lots": 1, "created_at": NOW.isoformat(),
+                                "marked_at": NOW.isoformat(), "unrealized_pnl": 0.0})
+    calls: List[Dict[str, Any]] = []
+
+    def tighten():
+        _live_caps(db)["max_concurrent"] = 1
+
+    out = await _run_fenced(db, sig, dep, calls, tighten)
+    assert out["created"] is False and out["reason"] == "stale_authorization:caps:max_concurrent"
+
+
+@pytest.mark.asyncio
+async def test_fence_refuses_when_the_loss_cap_is_lowered_below_todays_loss():
+    db, sig, dep = _fence_setup(lots=1, daily_loss_cap=5000.0)
+    db.live_trades.rows.append({"id": "t0", "deployment_id": "dep-1", "status": "CLOSED",
+                                "lots": 1, "created_at": NOW.isoformat(),
+                                "closed_at": NOW.isoformat(), "realized_pnl": -2000.0})
+    calls: List[Dict[str, Any]] = []
+
+    def tighten():
+        _live_caps(db)["daily_loss_cap"] = 1000.0
+
+    out = await _run_fenced(db, sig, dep, calls, tighten)
+    assert out["created"] is False and out["reason"] == "stale_authorization:caps:daily_loss_cap"
+
+
+@pytest.mark.asyncio
+async def test_fence_refuses_when_the_daily_lot_cap_is_lowered_mid_flight():
+    db, sig, dep = _fence_setup(lots=2, max_lots_per_day=10)
+    db.live_trades.rows.append({"id": "t0", "deployment_id": "dep-1", "status": "CLOSED",
+                                "lots": 2, "created_at": NOW.isoformat(),
+                                "closed_at": NOW.isoformat(), "realized_pnl": 50.0})
+    calls: List[Dict[str, Any]] = []
+
+    def tighten():
+        _live_caps(db)["max_lots_per_day"] = 3
+
+    out = await _run_fenced(db, sig, dep, calls, tighten)
+    assert out["created"] is False and out["reason"] == "stale_authorization:caps:max_lots_per_day"
+
+
+@pytest.mark.asyncio
+async def test_fence_counts_a_sibling_entry_journalled_while_in_flight():
+    """The signal-time governor saw no open position; this deployment's OTHER signal
+    was journalled during the round-trips. At max_concurrent=1 the second must not go."""
+    db, sig, dep = _fence_setup(lots=1, max_concurrent=1)
+    calls: List[Dict[str, Any]] = []
+
+    def sibling_lands():
+        db.live_trades.rows.append({"id": "t9", "deployment_id": "dep-1", "status": "OPEN",
+                                    "lots": 1, "created_at": NOW.isoformat(),
+                                    "marked_at": NOW.isoformat(), "unrealized_pnl": 0.0})
+
+    out = await _run_fenced(db, sig, dep, calls, sibling_lands)
+    assert out["created"] is False and out["reason"] == "stale_authorization:caps:max_concurrent"
+
+
+@pytest.mark.asyncio
+async def test_fence_measures_exposure_on_its_own_fresh_clock():
+    """A mark fresh at signal time but older than the staleness bound by the fence is
+    UNKNOWN exposure — the fence must not reuse the frozen signal-time clock."""
+    db, sig, dep = _fence_setup(lots=1, daily_loss_cap=5000.0)
+    db.live_trades.rows.append({"id": "t0", "deployment_id": "dep-1", "status": "OPEN",
+                                "lots": 1, "created_at": NOW.isoformat(),
+                                "marked_at": NOW.isoformat(), "unrealized_pnl": -10.0})
+    calls: List[Dict[str, Any]] = []
+    out = await _run_fenced(db, sig, dep, calls, clock=NOW + timedelta(minutes=5))
+    assert out["created"] is False and out["reason"] == "stale_authorization:caps:exposure_unknown"
 
 
 # --------------------------------------------------------------------------- #

@@ -163,6 +163,35 @@ def test_binding_reasons_read_as_words(reason, fragment):
     assert out["canTrade"] is False and fragment in out["text"]
 
 
+@pytest.mark.parametrize("reason,text", [
+    # the chip's own labels, unchanged by the move out of the JSX
+    ("live_entry_premium_unavailable_or_stale", "no fresh premium"),
+    ("signal_claimed_elsewhere", "claimed elsewhere"),
+    ("vix_gate", "VIX gate blocked the session"),
+    # exact match only, as before: the detail after the colon is kept
+    ("cannot_trade:kill_switch", "cannot trade kill switch"),
+    # governor refusals are persisted too — they read as the binding chip does
+    ("max_concurrent", "max concurrent positions open"),
+    ("account_exposure_unavailable:mongo down", "account exposure unreadable"),
+    # the transmit fence: built, then NOT sent, because the deployment changed
+    ("stale_authorization:caps_tightened:lots 3->1",
+     "not sent — changed in flight: lot size lowered 3 → 1"),
+    ("stale_authorization:caps:daily_loss_cap",
+     "not sent — changed in flight: daily loss cap hit"),
+    ("stale_authorization:status_paused", "not sent — changed in flight: deployment paused"),
+    ("stale_authorization:after_entry_cutoff",
+     "not sent — changed in flight: after the 15:00 IST entry cutoff"),
+    ("stale_authorization:recheck_failed", "not sent — changed in flight: could not re-check"),
+    ("brand_new_reason", "brand new reason"),
+])
+def test_entry_refusals_read_as_words(reason, text):
+    assert _run_js(f"return M.entryRefusalText({json.dumps(reason)});") == text
+
+
+def test_no_refusal_is_no_text():
+    assert _run_js("return [M.entryRefusalText(null), M.entryRefusalText('')];") == [None, None]
+
+
 def test_a_pausing_breach_is_danger():
     out = _run_js("return M.bindingView(M.readGovernor({governor: {binding: "
                   "{layer: 'deployment', reason: 'daily_loss_cap', pause: true}}}));")

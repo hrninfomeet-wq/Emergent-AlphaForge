@@ -158,15 +158,20 @@ def test_api_deployment_metrics_helper_exists():
 # --- 3. frontend: LiveDeploymentStrip refusal labels ----------------------------
 
 def test_strip_entry_error_label_map_has_new_premium_labels():
-    src = (_ROOT / "frontend" / "src" / "components" / "live" / "LiveDeploymentStrip.jsx").read_text(encoding="utf-8")
-    i = src.index("function entryErrorLabel(reason)")
-    body = src[i:i + 1600]
+    """The labels moved from the JSX into lib/liveDeploymentView.entryRefusalText;
+    executed through node rather than grepped (the project's own rule)."""
+    import shutil
+
+    import pytest
+    if shutil.which("node") is None:
+        pytest.skip("node required")
+    from tests.test_live_deployment_view import _run_js
     expected = {
         "vix_gate": "VIX gate blocked the session",
         "vix_unverifiable": "VIX unverifiable - session skipped",
         "day_stop": "session day-stop hit",
         "both_mode_live_pending_b6_b7": "multi-leg live was pending completion",
     }
-    for key, label in expected.items():
-        assert f"{key}:" in body, f"entryErrorLabel map missing key {key!r}"
-        assert label in body, f"entryErrorLabel map missing label {label!r} for {key!r}"
+    got = _run_js(f"return Object.fromEntries({list(expected)!r}"
+                  ".map((k) => [k, M.entryRefusalText(k)]));")
+    assert got == expected
