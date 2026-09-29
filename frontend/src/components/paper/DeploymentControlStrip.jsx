@@ -4,7 +4,7 @@ import { api } from "@/lib/api";
 import { toast } from "sonner";
 import { fmtNum, colorPnL } from "@/lib/fmt";
 import { Pause, Play, Square, OctagonX, Activity, SlidersHorizontal, Pin } from "lucide-react";
-import { isDriftPaused, pauseReasonOf, driftTooltip } from "@/lib/deploymentState";
+import { isDriftPaused, pauseReasonOf, pauseReasonView, driftTooltip } from "@/lib/deploymentState";
 import { deploymentLiveness } from "@/lib/deploymentLiveness";
 import { getApiErrorMessage } from "@/lib/apiError";
 
@@ -98,6 +98,7 @@ function DeploymentControlRow({ dep, open, busy, feedHealth, onPause, onResume, 
   // recovery action has to live HERE, next to the strategy it applies to.
   const driftPaused = isDriftPaused(dep);
   const pausedReason = pauseReasonOf(dep);
+  const pauseView = pauseReasonView(dep);   // the reason WITH its recorded date
   const live = deploymentLiveness(dep, feedHealth);
   const openCount = open?.openCount || 0;
   const openMtm = open?.openMtm || 0;
@@ -148,9 +149,9 @@ function DeploymentControlRow({ dep, open, busy, feedHealth, onPause, onResume, 
     </div>
     {pausedReason && (
       <div className="px-3 pb-2 -mt-1 text-[10.5px] font-mono text-warning truncate"
-           title={driftPaused ? driftTooltip(dep) : pausedReason}
+           title={driftPaused ? driftTooltip(dep) : (pauseView ? pauseView.title : pausedReason)}
            data-testid="paper-deploy-pause-reason">
-        auto-paused: {pausedReason}
+        {pauseView ? pauseView.text : `auto-paused: ${pausedReason}`}
         {driftPaused && <span className="text-dimmer"> — the strategy code changed; use “Re-pin &amp; resume”</span>}
       </div>
     )}

@@ -366,6 +366,10 @@ async def list_signals_enriched(
                 "bar_ts", "decision_ts", "updated_at", "blocked", "blockers", "reasons",
                 "risk_hints", "paper_trade_id", "paper_trade_error", "paper_trade_skip",
                 "tracked_for_pnl",
+                # Why a CONFIRMED signal was never acted on (a refused live entry) and
+                # whether a sink claimed it: the ledger labels CONFIRMED from these —
+                # a refused / claimed-but-untraded signal must not read as "pending".
+                "live_trade_error", "live_trade_id", "paper_trade_claim",
             )},
             "score": s.get("confidence"),
             "spot_entry": s.get("entry_price"),

@@ -1,19 +1,49 @@
 import { AlertTriangle } from "lucide-react";
 import FeedHealthBanner from "@/components/live/FeedHealthBanner";
 import { SLICE_LABEL } from "@/components/live/liveHelpers";
+import { preopenToneClass } from "@/lib/preopenReadinessView";
 
 /**
  * The cockpit's alert rail — the safety banners relocated VERBATIM from the old
  * LiveDashboard (degraded-data, unguarded-positions, no-broker-backstop, auth
  * message, feed health). data-testids are preserved. Each banner renders only
  * when its condition fires, so a healthy cockpit shows an empty rail.
+ *
+ * `preopen` is the already-decided view of the 08:45 IST readiness verdict
+ * (lib/preopenReadinessView.js: null unless there is something to say, and a
+ * previous day's verdict is muted and dated as NOT today's).
  */
 export default function AlertRail({
   health, unguardedPositions = [], noBackstopPositions = [],
-  feedHealth, activeCount, authMsg, rehydratedPositions = [],
+  feedHealth, activeCount, authMsg, rehydratedPositions = [], preopen = null,
 }) {
   return (
     <div className="space-y-3">
+      {preopen && (
+        <div
+          className={`text-sm font-mono px-3 py-2.5 rounded-lg border-2 ${preopenToneClass(preopen.tone)}`}
+          data-testid="preopen-readiness-banner"
+          data-preopen-today={preopen.isToday ? "true" : "false"}
+          data-preopen-tone={preopen.tone}
+        >
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+            <div className="min-w-0">
+              <div className="font-bold">{preopen.title}</div>
+              <ul className="mt-1 space-y-0.5">
+                {preopen.items.map((item) => (
+                  <li key={`${item.kind}:${item.id}`} data-testid="preopen-readiness-item">
+                    <span className="font-bold">{item.label}</span>
+                    {item.detail ? <span> — {item.detail}</span> : null}
+                  </li>
+                ))}
+              </ul>
+              <div className="mt-1 text-[11px] opacity-80">{preopen.sub}</div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {health?.degraded && (
         <div className="text-sm font-mono px-3 py-2.5 rounded-lg border-2 border-amber-500 bg-amber-500/15 text-warning flex items-start gap-2" data-testid="live-degraded-banner">
           <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />

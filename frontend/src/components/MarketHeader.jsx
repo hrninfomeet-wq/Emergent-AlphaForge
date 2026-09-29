@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { ChevronDown, ChevronUp, Play, RefreshCw, Square, Wifi, WifiOff } from "lucide-react";
 import { api, API } from "@/lib/api";
+import { deriveFeedIndicator, feedToneClass } from "@/lib/marketFeedHealth";
 
 const PRIMARY_FALLBACK = [
   "NIFTY 50",
@@ -168,8 +169,17 @@ export default function MarketHeader() {
     ? primary
     : PRIMARY_FALLBACK.map((label) => ({ key: label, label, group: "primary", status: "loading" }));
   const okCount = [...primary, ...global].filter((item) => item.status === "ok").length;
-  const liveTickMode = snapshot?.source_mode === "live_ticks" || streamStatus?.running;
-  const statusText = loading ? "loading" : error ? "offline" : liveTickMode ? "live ticks" : `${okCount}/${primary.length + global.length || primaryItems.length} quotes`;
+  // "live ticks" is claimed ONLY by deriveFeedIndicator (lib/marketFeedHealth.js):
+  // socket connected + a fresh tick + header quotes that really are WS ticks. The
+  // old `stream.running` test was "the task exists", true through every retry.
+  const feed = deriveFeedIndicator({
+    loading,
+    error,
+    snapshot,
+    streamStatus,
+    quotesText: `${okCount}/${primary.length + global.length || primaryItems.length} quotes`,
+  });
+  const statusText = feed.text;
   const StatusIcon = error ? WifiOff : Wifi;
 
   return (
@@ -179,9 +189,16 @@ export default function MarketHeader() {
       aria-label="Market header"
     >
       <div className="flex items-center gap-2 text-[11px] text-dimmer">
-        <StatusIcon className={`h-3.5 w-3.5 ${error ? "text-red-400" : "text-emerald-400"}`} />
-        <span className="font-mono uppercase tracking-wide">{statusText}</span>
-        <span className="hidden sm:inline">{liveTickMode ? "Upstox WebSocket" : "API fallback"}</span>
+        <StatusIcon className={`h-3.5 w-3.5 ${feedToneClass(feed.tone)}`} />
+        <span
+          className={`font-mono uppercase tracking-wide ${feed.tone === "warn" ? "text-amber-400" : ""}`}
+          data-testid="market-header-feed-status"
+          data-feed-tone={feed.tone}
+          title={feed.title}
+        >
+          {statusText}
+        </span>
+        <span className="hidden sm:inline" data-testid="market-header-feed-detail">{feed.detail}</span>
         <button
           type="button"
           onClick={toggleStream}

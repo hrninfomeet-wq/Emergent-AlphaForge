@@ -1,13 +1,18 @@
 // Maps a deployment's lifecycle status + the GLOBAL live-feed health into the
 // truthful status LED. Green ("ACTIVE · LIVE") appears ONLY when the strategy can
-// actually trade right now (fresh candles_1m bars). Pure — no React, no imports.
+// actually trade right now (fresh candles_1m bars). Pure — no React.
 // feedHealth = { state, reason, cta } from GET /live-feed/health (null while loading).
+import { pauseReasonView } from "./deploymentState.js";
+
 export function deploymentLiveness(dep, feedHealth) {
   const status = String(dep?.status || "").toUpperCase();
   if (status === "PAUSED") {
+    // The persisted reason WITH its recorded date: it survives across sessions and a
+    // bare "max_consecutive_losses" reads as this morning's whatever its age.
+    const why = pauseReasonView(dep);
     return {
       dot: "bg-amber-400", text: "text-warning", label: "PAUSED",
-      tooltip: dep?.paused_reason || dep?.kill_switch_reason || "Paused",
+      tooltip: dep?.paused_reason || (why ? why.title : "Paused"),
     };
   }
   if (status !== "ACTIVE") {

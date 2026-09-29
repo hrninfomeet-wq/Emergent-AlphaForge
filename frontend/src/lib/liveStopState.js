@@ -17,6 +17,34 @@
  * directly under node instead of asserted by grepping JSX.
  */
 
+import { formatIstWhen } from "./istWhen.js";
+
+/**
+ * WHEN the stop was tripped, as the banner's provenance line.
+ *
+ * A latch never self-clears, so the banner can be showing a stop from days ago; the
+ * date is what stops it reading as this morning's. A stop with NO timestamp (one
+ * persisted before `latched_at` existed, or an unparseable value) says so — it must
+ * not simply omit the line, because an absent line reads as "nothing to note".
+ *
+ * @returns {{known: boolean, text: string}}
+ */
+export function stopWhen(at, nowMs = Date.now()) {
+  const w = formatIstWhen(at, nowMs);
+  if (w === null) {
+    return {
+      known: false,
+      text: at
+        ? `trip time unreadable (${String(at)}) — this stop may date from an earlier session`
+        : "trip time not recorded — this stop may date from an earlier session",
+    };
+  }
+  const mins = Math.max(0, Math.round((Number(nowMs) - w.ms) / 60000));
+  const ago = mins < 1 ? "just now" : mins < 60 ? `${mins} min ago`
+    : mins < 1440 ? `${Math.round(mins / 60)} h ago` : `${Math.round(mins / 1440)} d ago`;
+  return { known: true, text: `${w.label} · ${ago}` };
+}
+
 /** @returns {{stopped: boolean, latched?: boolean, halted?: boolean,
  *             reason?: string, at?: string|null, title?: string}} */
 export function readStopState(cfg) {

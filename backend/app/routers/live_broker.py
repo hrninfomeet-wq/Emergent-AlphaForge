@@ -46,7 +46,7 @@ import logging
 import os
 import uuid
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -76,6 +76,7 @@ from app.live.flattrade_symbol import (
     _strike_from_dname,
 )
 from app.live.portfolio_greeks import compute_portfolio_greeks
+from app.live.greeks_book import FLAT as _BOOK_FLAT, OPEN as _BOOK_OPEN, classify_broker_book, open_rows as _book_open_rows
 from app.live.kill_switch import (
     panic_squareoff_verified,
     SafetyConfigStore,
@@ -903,6 +904,33 @@ async def live_broker_blotter(limit: int = Query(100, ge=1, le=500)):
             "broker_read_error": broker_read_error}
 
 
+def _open_verification_clock():
+    """(today_ist, fresh_cut, now) for judging whether an OPEN journal row is still
+    being marked by the guard. The same freshness bound the governor and the
+    deployments overview use (``MARK_STALE_AFTER_SECONDS``)."""
+    from app.live_deploy_governor import MARK_STALE_AFTER_SECONDS
+    now = datetime.now(timezone.utc)
+    today_ist = (now + timedelta(hours=5, minutes=30)).date().isoformat()
+    return today_ist, now - timedelta(seconds=MARK_STALE_AFTER_SECONDS), now
+
+
+def _annotate_open_verification(stats: List[Dict[str, Any]], rows: List[Dict[str, Any]]) -> None:
+    """Add ``open_unverified`` / ``open_carried`` / ``open_carried_oldest`` to each
+    per-strategy row of /live-broker/trade-stats (in place)."""
+    from app.overview_open import summarize_open_rows
+    today_ist, fresh_cut, _ = _open_verification_clock()
+    opens: Dict[str, List[Dict[str, Any]]] = {}
+    for r in rows:
+        if str(r.get("status") or "").upper() == "OPEN":
+            opens.setdefault(str(r.get("strategy_id") or "—"), []).append(r)
+    for s in stats:
+        o = summarize_open_rows(opens.get(str(s.get("strategy_id") or "—"), []),
+                                book="live", today_ist=today_ist, fresh_cut=fresh_cut)
+        s["open_unverified"] = o["open_unverified"]
+        s["open_carried"] = o["open_carried"]
+        s["open_carried_oldest"] = o["open_carried_oldest"]
+
+
 @api.get("/live-broker/trade-stats")
 async def live_trade_stats():
     """Aggregate statistics over the journaled live_trades for analysis:
@@ -918,10 +946,14 @@ async def live_trade_stats():
         {}, {"_id": 0, "status": 1, "realized_pnl": 1, "unrealized_pnl": 1,
              "closed_at": 1, "updated_at": 1, "created_at": 1,
              "strategy_id": 1, "deployment_id": 1, "exit_reason": 1,
-             "risk_amount": 1, "total_charges": 1},
+             "risk_amount": 1, "total_charges": 1, "marked_at": 1},
     ).to_list(length=100000)
     closed = [r for r in rows if str(r.get("status") or "").upper() == "CLOSED"]
     stats = paper_analytics.per_strategy_stats(rows)
+    # An OPEN row's status is the journal's word, not the broker's. Say how many of each
+    # strategy's OPEN rows nobody is vouching for (no fresh guard mark) and how many are
+    # carried from an earlier day, so "Open 1" is never read as "a live position".
+    _annotate_open_verification(stats, rows)
     dep_ids = sorted({str(s.get("deployment_id")) for s in stats if s.get("deployment_id")})
     if dep_ids:
         deps = await db.strategy_deployments.find(
@@ -966,8 +998,15 @@ async def live_trade_history(limit: int = Query(100, ge=1, le=500),
             {"id": {"$in": dep_ids}}, {"_id": 0, "id": 1, "name": 1},
         ).to_list(length=len(dep_ids))
         names = {str(d["id"]): str(d.get("name") or "") for d in deps}
+    # An OPEN row is the JOURNAL's word, not the broker's. Say whether the app's own
+    # guard is still marking it (open_state verified / unverified, mark_age_s) and
+    # whether it was entered on an earlier day, so a stranded row never reads as a
+    # live position. CLOSED rows get nothing added.
+    from app.overview_open import annotate_live_open_row
+    today_ist, fresh_cut, now = _open_verification_clock()
     for r in rows:
         r["deployment_name"] = names.get(str(r.get("deployment_id") or ""), "")
+        r.update(annotate_live_open_row(r, today_ist=today_ist, fresh_cut=fresh_cut, now=now))
     return {"items": rows, "count": len(rows), "total": total,
             "skip": skip, "limit": limit}
 
@@ -1617,6 +1656,32 @@ async def guard_status():
     }
 
 
+@api.get("/live-broker/preopen-readiness")
+async def live_preopen_readiness():
+    """The latest 08:45 IST pre-open readiness verdict, read-only.
+
+    The check (runtime._run_preopen_readiness) detects e.g. "Flattrade token expired
+    while live deployments are armed" but only persisted it and logged it — no
+    surface showed it. This returns the latest stored verdict wrapped with
+    ``is_today`` / ``days_ago`` so a previous day's verdict is never mistaken for
+    today's. ``verdict`` is None when the check has never run (a PC that is rarely up
+    at 08:45) — that is "no verdict", not "all clear". Reads Mongo only; no broker
+    call, and it never raises: an unreadable store is reported as ``error``.
+    """
+    from app.db import get_db
+    from app.preopen_readiness import describe_stored_verdict
+
+    ist_now = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+    today = ist_now.date().isoformat()
+    try:
+        doc = await get_db().preopen_readiness.find_one(
+            {}, {"_id": 0}, sort=[("session_date", -1), ("evaluated_at", -1)])
+    except Exception as exc:  # noqa: BLE001 - a status read must not 500
+        log.debug("preopen readiness: store unreadable: %s", exc)
+        return {**describe_stored_verdict(None, today), "error": "verdict store unreadable"}
+    return {**describe_stored_verdict(doc, today), "error": None}
+
+
 @api.get("/live-broker/recovery-status")
 async def live_recovery_status_route():
     """Did overnight-position recovery run for the CURRENT Flattrade token? Lets the
@@ -1635,10 +1700,46 @@ async def live_recovery_status_route():
 
 _greeks_contract_cache: dict = {}
 
+#: Returned ONLY when the broker book was read and is genuinely flat — the one case
+#: in which zero is a fact rather than a guess.
 _GREEKS_EMPTY = {
     "net_delta_rupees_per_point": 0.0, "net_theta_rupees_per_day": 0.0,
     "n_computed": 0, "n_skipped": 0, "positions": [],
 }
+
+
+def _greeks_unknown(book: Dict[str, Any], error: Optional[str] = None,
+                    n_skipped: int = 0) -> Dict[str, Any]:
+    """No figure could be produced. Net Δ/Θ are ``None`` — NEVER 0.0, which would
+    render as a calm "₹0" beside a position the card simply could not price."""
+    return {
+        "net_delta_rupees_per_point": None, "net_theta_rupees_per_day": None,
+        "n_computed": 0, "n_skipped": n_skipped, "positions": [],
+        "book": book, "error": error,
+    }
+
+
+async def _greeks_broker_book() -> Dict[str, Any]:
+    """Read the broker's raw position book from the SHARED marks cache — zero extra
+    broker calls (one PositionBook per 15s serves every stream, tab and this route).
+
+    Returns ``{"rows": list | None, "stale": bool, "error": str | None}``; ``rows``
+    is None whenever the book could not be read. Never raises.
+    """
+    try:
+        snap = await _marks_service().book()
+        return {"rows": snap.get("rows"), "stale": bool(snap.get("stale")),
+                "error": snap.get("error")}
+    except HTTPException as exc:          # no stored token: "Flattrade not connected"
+        return {"rows": None, "stale": False, "error": str(exc.detail)[:240]}
+    except StaleSnapshotError as exc:
+        return {"rows": None, "stale": True, "error": str(exc)[:240]}
+    except BrokerReadError as exc:
+        return {"rows": None, "stale": False,
+                "error": TOKEN_EXPIRED_HINT if exc.is_session_expired else str(exc.emsg)[:240]}
+    except Exception as exc:              # noqa: BLE001 - a status read must not raise
+        log.debug("greeks: broker book unreadable: %s", exc)
+        return {"rows": None, "stale": False, "error": "broker unreachable"}
 
 
 async def _resolve_greeks_client():
@@ -1663,17 +1764,38 @@ async def _resolve_greeks_client():
 async def live_broker_greeks():
     """Portfolio net-Δ (₹/index point) + net-Θ (₹/day) across live positions.
 
-    Fail-soft: not connected / no positions → zeros. General API (40/s); never on
-    the guard hot path. IV solved from the GetQuotes premium (no market IV exists).
+    Fail-soft, and honest about what it cannot know. The figures are computed over the
+    positions the BROKER holds (its position book, read through the shared marks cache
+    — no extra broker call), not over the software guard's registry: an empty
+    registry means the guard watches nothing, not that the account is flat. The
+    response carries ``book`` = ``{state: flat|open|unknown, open_count, unguarded,
+    error}``. Zeros are returned ONLY for a book that was read and is flat; anything
+    that could not be read or priced has ``None`` figures. General API (40/s); never
+    on the guard hot path. IV solved from the GetQuotes premium (no market IV exists).
     """
     from datetime import date as _date
 
+    snap = await _greeks_broker_book()
+    try:
+        registry = _get_live_registry().snapshot()
+    except Exception:
+        registry = []
+    book = classify_broker_book(
+        snap["rows"], [e.get("tsym") for e in registry],
+        error=snap["error"], stale=snap["stale"],
+    )
+    if book["state"] == _BOOK_FLAT:
+        return {**_GREEKS_EMPTY, "book": book, "error": None}
+
+    # Open at the broker -> price THOSE rows (guarded or not). Unreadable book ->
+    # all we can still see is the guard's registry; the figures are then partial and
+    # the response says so via book.state == "unknown".
+    positions = _book_open_rows(snap["rows"]) if book["state"] == _BOOK_OPEN else registry
     client = await _resolve_greeks_client()
     if client is None:
-        return dict(_GREEKS_EMPTY)
-    positions = _get_live_registry().snapshot()
+        return _greeks_unknown(book, "Flattrade not connected — positions cannot be priced")
     if not positions:
-        return dict(_GREEKS_EMPTY)
+        return _greeks_unknown(book)
 
     async def _resolve(tsym: str, exch: str):
         if tsym in _greeks_contract_cache:
@@ -1706,14 +1828,23 @@ async def live_broker_greeks():
         return None
 
     try:
-        return await compute_portfolio_greeks(
+        out = await compute_portfolio_greeks(
             positions,
             get_quote_fn=client.get_quotes,
             resolve_contract_fn=_resolve,
             today=_date.today(),
         )
     except Exception:
-        return dict(_GREEKS_EMPTY)
+        log.exception("greeks: compute failed")
+        return _greeks_unknown(book, "greeks computation failed", n_skipped=len(positions))
+    out["book"] = book
+    out["error"] = None
+    if out.get("n_computed", 0) == 0:
+        # Positions exist but none could be priced: a sum over nothing is "we do
+        # not know", not "zero exposure".
+        out["net_delta_rupees_per_point"] = None
+        out["net_theta_rupees_per_day"] = None
+    return out
 
 
 # ---------------------------------------------------------------------------

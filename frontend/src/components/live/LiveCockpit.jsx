@@ -3,6 +3,7 @@ import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { getApiErrorMessage } from "@/lib/apiError";
 import { brokerConnectionState, standDownManualExecution } from "@/lib/liveCockpitActions";
+import { preopenView, upstoxConnectedFrom } from "@/lib/preopenReadinessView";
 import { useLiveData } from "@/components/live/LiveDataProvider";
 import { useLiveNotifications } from "@/components/live/useLiveNotifications";
 import {
@@ -43,13 +44,24 @@ export default function LiveCockpit() {
   const {
     status, limits, positions, orders, reconcile, armState, blotter, guard, gtt,
     refetch, feedHealth, deployments, health, lastSuccess,
-    marketAnalysis, holdings, greeks, errors, deployLive,
+    marketAnalysis, holdings, greeks, errors, deployLive, preopen,
   } = useLiveData();
   const fetchAll = refetch.all;
   // Opt-in, default-off live alerts (fill / exit / refusal / blocked / halt). Mounted
   // ONCE, here; the toggle lives in the Live Deployments header.
   useLiveNotifications();
   const brokerConnection = useMemo(() => brokerConnectionState(status), [status]);
+  // The 08:45 IST readiness verdict, decided by lib/preopenReadinessView.js: null
+  // unless it holds a blocker/warning; muted + dated when it is not from today; a
+  // blocker the broker chips now disprove is dropped. `status`/`feedHealth` null =
+  // unknown, never "connected".
+  const preopenBanner = useMemo(
+    () => preopenView(preopen, {
+      flattradeConnected: status ? brokerConnection.connected : null,
+      upstoxConnected: upstoxConnectedFrom(feedHealth),
+    }),
+    [preopen, status, brokerConnection.connected, feedHealth],
+  );
 
   const [authMsg, setAuthMsg] = useState(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -188,6 +200,7 @@ export default function LiveCockpit() {
         feedHealth={feedHealth}
         activeCount={activeCount}
         authMsg={authMsg}
+        preopen={preopenBanner}
       />
 
       {/* WHAT IS TRADING RIGHT NOW — full width, above the fold.

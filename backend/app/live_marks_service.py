@@ -81,6 +81,28 @@ class LiveMarksService:
         self.index_builds += 1
         return self._index
 
+    async def book(self) -> Dict[str, Any]:
+        """The broker's RAW position rows from the same shared, single-flight cache.
+
+        For a reader that wants the book's truth and nothing else (the Greeks card:
+        "is anything open at the broker?") without marking it against ticks or
+        touching the contract index — and without a broker call of its own: it
+        rides the one ``position_book`` per ``BROKER_REFRESH_S`` that every stream
+        and tab already share.
+
+        Raises exactly as :meth:`payload` does (the source failing with nothing
+        safe to serve, or ``StaleSnapshotError`` past the staleness bound), so the
+        caller can tell "flat" from "could not read". ``stale`` means last-good is
+        being served while the source is failing: NOT a confirmation of anything.
+        """
+        rows = await self._cache.get()
+        return {
+            "rows": list(rows or []),
+            "stale": bool(self._cache.stale),
+            "age_ms": self._cache.age_ms(),
+            "error": self._cache.last_error,
+        }
+
     async def payload(self) -> Dict[str, Any]:
         positions = await self._cache.get()
         index = await self._index_for_positions(positions)

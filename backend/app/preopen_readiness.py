@@ -134,3 +134,43 @@ def evaluate_preopen_readiness(
         "warnings": warnings,
         "checks": checks,
     }
+
+
+def describe_stored_verdict(doc: Optional[Dict[str, Any]], today_ist: str) -> Dict[str, Any]:
+    """Wrap the latest PERSISTED verdict for the UI, and say how old it is.
+
+    The verdict is computed once, at 08:45 IST, and written to ``preopen_readiness``
+    keyed by ``session_date``. Nothing displayed it, so a morning's ``NOT READY`` was
+    invisible. Showing it raises the opposite risk: yesterday's ``NOT READY`` painted as
+    if it were today's. So this always reports ``is_today`` and ``days_ago`` (both None
+    when the stored date cannot be read — never guessed) and the UI labels a
+    previous-day verdict as such.
+
+    Pure — the caller supplies today's IST date (``YYYY-MM-DD``).
+    """
+    if not doc:
+        return {"verdict": None, "today": today_ist, "is_today": None, "days_ago": None}
+    from datetime import date
+    session_date = str(doc.get("session_date") or "")
+    is_today: Optional[bool] = None
+    days_ago: Optional[int] = None
+    try:
+        days_ago = (date.fromisoformat(today_ist) - date.fromisoformat(session_date)).days
+        is_today = days_ago == 0
+    except (TypeError, ValueError):
+        pass
+    return {
+        "verdict": {
+            "session_date": session_date or None,
+            "evaluated_at": doc.get("evaluated_at"),
+            "trigger": doc.get("trigger"),
+            "ready": bool(doc.get("ready")),
+            "reason": doc.get("reason"),
+            "blockers": list(doc.get("blockers") or []),
+            "warnings": list(doc.get("warnings") or []),
+            "live_deployment_count": doc.get("live_deployment_count"),
+        },
+        "today": today_ist,
+        "is_today": is_today,
+        "days_ago": days_ago,
+    }

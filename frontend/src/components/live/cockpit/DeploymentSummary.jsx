@@ -5,7 +5,7 @@ import { api } from "@/lib/api";
 import { getApiErrorMessage } from "@/lib/apiError";
 import { SectionCard } from "@/components/live/liveHelpers";
 import { useLiveData } from "@/components/live/LiveDataProvider";
-import { isDriftPaused, pauseReasonOf, driftTooltip, statusPillOf } from "@/lib/deploymentState";
+import { isDriftPaused, pauseReasonOf, pauseReasonView, driftTooltip, statusPillOf } from "@/lib/deploymentState";
 
 /**
  * Deployments panel for the cockpit core.
@@ -28,6 +28,9 @@ function DeploymentRow({ dep, onDone }) {
   // WHY it paused is the actionable part: a drift pause needs a RE-PIN, not a
   // plain resume — resuming alone just gets auto-paused again on the next bar.
   const pausedReason = pauseReasonOf(dep);
+  // The reason persists across sessions: show WHEN it was recorded so an old one
+  // cannot read as this morning's.
+  const pauseView = pauseReasonView(dep);
   const driftPaused = isDriftPaused(dep);
 
   const run = async (fn, okMsg) => {
@@ -59,8 +62,10 @@ function DeploymentRow({ dep, onDone }) {
       </div>
 
       {pausedReason && (
-        <div className="text-[10.5px] text-warning font-mono truncate" title={pausedReason}>
-          auto-paused: {pausedReason}
+        <div className="text-[10.5px] text-warning font-mono truncate"
+             title={pauseView ? pauseView.title : pausedReason}
+             data-testid="deployment-summary-pause-reason">
+          {pauseView ? pauseView.text : `auto-paused: ${pausedReason}`}
         </div>
       )}
 

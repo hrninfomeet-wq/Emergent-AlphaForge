@@ -20,6 +20,9 @@ export const LONG_TIMEOUT_MS = parseInt(process.env.REACT_APP_API_TIMEOUT_LONG |
 export const api = {
   // Health/Summary
   summary: () => apiClient.get("/dashboard/summary").then((r) => r.data),
+  // Light reachability probe (a Mongo ping) for the sidebar's API-status dot. A short
+  // per-request timeout: a wedged backend must read as "not responding", not hang 60s.
+  health: () => apiClient.get("/health", { timeout: 5000 }).then((r) => r.data),
   marketHeader: () => apiClient.get("/market/header").then((r) => r.data),
   // Deterministic market analysis for the live cockpit (read-only, server-cached
   // ~8s): structure/regime, multi-timeframe trend, S/R, and option analytics.
@@ -408,6 +411,8 @@ export const api = {
     apiClient.get("/live-broker/guard-status").then((r) => r.data),
   getLiveGreeks: () =>
     apiClient.get("/live-broker/greeks").then((r) => r.data),
+  getPreopenReadiness: () =>
+    apiClient.get("/live-broker/preopen-readiness").then((r) => r.data),
 
   // Presets
   listPresets: () => apiClient.get("/presets").then((r) => r.data),

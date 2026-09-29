@@ -3,7 +3,7 @@ import { ShieldAlert, Loader2, RotateCcw } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { getApiErrorMessage } from "@/lib/apiError";
-import { readStopState } from "@/lib/liveStopState";
+import { readStopState, stopWhen } from "@/lib/liveStopState";
 
 /**
  * The way back from a tripped broker-stop-loss latch.
@@ -23,16 +23,6 @@ import { readStopState } from "@/lib/liveStopState";
  * click away.
  */
 const POLL_MS = 20000;
-
-function whenText(iso) {
-  if (!iso) return null;
-  const t = Date.parse(iso);
-  if (Number.isNaN(t)) return String(iso);
-  const mins = Math.max(0, Math.round((Date.now() - t) / 60000));
-  const ago = mins < 1 ? "just now" : mins < 60 ? `${mins} min ago`
-    : mins < 1440 ? `${Math.round(mins / 60)} h ago` : `${Math.round(mins / 1440)} d ago`;
-  return `${new Date(t).toLocaleString()} · ${ago}`;
-}
 
 // Machine codes come from the engine's own guardrail verdict — render them in
 // plain language, but never invent a cause the backend did not report.
@@ -79,7 +69,9 @@ export default function SafetyLatchBanner({ onChanged }) {
   if (!stopped) return null;
 
   const reason = stop.reason;
-  const when = whenText(stop.at);
+  // The provenance line is ALWAYS rendered: a latch never self-clears, so it can be
+  // days old, and a stop with no recorded time says so rather than showing nothing.
+  const when = stopWhen(stop.at);
 
   const doReset = async () => {
     setBusy(true);
@@ -112,11 +104,12 @@ export default function SafetyLatchBanner({ onChanged }) {
             No new live entries are being placed because{" "}
             {REASON_TEXT[reason] || `the guardrail reported “${reason}”`}.
           </div>
-          {when && (
-            <div className="text-[10.5px] font-mono text-dim mt-0.5" data-testid="safety-latch-when">
-              tripped {when}
-            </div>
-          )}
+          <div
+            className={`text-[10.5px] font-mono mt-0.5 ${when.known ? "text-dim" : "text-warning"}`}
+            data-testid="safety-latch-when"
+          >
+            {when.known ? `tripped ${when.text}` : when.text}
+          </div>
           <div className="text-[10.5px] text-dimmer mt-1">
             Open positions are unaffected and existing exits still run. Clearing this
             re-authorises real-money entries — check today’s P&amp;L first.

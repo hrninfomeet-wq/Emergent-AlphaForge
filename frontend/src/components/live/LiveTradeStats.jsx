@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { fmtINRSigned, fmtNum, fmtPct, colorPnL } from "@/lib/fmt";
 import { BarChart3, RefreshCw } from "lucide-react";
+import { openCountView, tradeChipClass, tradeStatusChip } from "@/lib/liveTradeView";
 
 const IST_OFFSET_MS = 330 * 60 * 1000;
 const pad = (n) => String(n).padStart(2, "0");
@@ -109,7 +110,8 @@ export default function LiveTradeStats() {
                       <td className="p-1.5 text-right font-mono text-dim">{s.closed_trades}</td>
                       <td className="p-1.5 text-right font-mono">{s.win_rate == null ? "—" : fmtPct(s.win_rate, 0)}</td>
                       <td className={`p-1.5 text-right font-mono ${colorPnL(s.expectancy)}`}>{s.expectancy == null ? "—" : fmtINRSigned(s.expectancy)}</td>
-                      <td className="p-1.5 text-right font-mono text-dim">{s.open_count}</td>
+                      <td className={`p-1.5 text-right font-mono ${openCountView(s).tone === "warn" ? "text-warning" : "text-dim"}`}
+                          title={openCountView(s).title} data-testid="live-trade-stats-open">{openCountView(s).text}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -153,7 +155,11 @@ export default function LiveTradeStats() {
                         <td className="p-1.5 font-mono text-dim">{istStamp(t.closed_at) || "—"}</td>
                         <td className={`p-1.5 text-right font-mono ${colorPnL(t.realized_pnl)}`}>{t.realized_pnl != null ? fmtINRSigned(t.realized_pnl) : "—"}</td>
                         <td className="p-1.5 text-dim"><div className="truncate max-w-[140px]" title={t.exit_reason || ""}>{t.exit_reason || "—"}</div></td>
-                        <td className="p-1.5 text-right"><span className={`text-[10px] px-1.5 py-0.5 rounded border font-mono ${String(t.status).toUpperCase() === "OPEN" ? "border-emerald-500/40 text-emerald-300" : "border-line text-dim"}`}>{t.status}</span></td>
+                        {/* An OPEN row is the JOURNAL's word, not the broker's: green only when the
+                            app's guard is still marking it (lib/liveTradeView.js). */}
+                        <td className="p-1.5 text-right"><span className={`text-[10px] px-1.5 py-0.5 rounded border font-mono ${tradeChipClass(tradeStatusChip(t).tone)}`}
+                            title={tradeStatusChip(t).title} data-testid="live-trade-status-chip"
+                            data-trade-state={tradeStatusChip(t).tone}>{tradeStatusChip(t).label}</span></td>
                       </tr>
                     ))}
                   </tbody>
