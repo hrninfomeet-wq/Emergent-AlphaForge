@@ -1092,3 +1092,144 @@ async def test_transmit_fence_refuses_when_the_live_hold_lands_mid_flight():
     ok, why = await recheck()
     assert ok is False, "the fence let an order out of a HELD deployment"
     assert why == "live_paused", why
+
+
+# ====================== silent refusals are persisted ===========================
+#
+# The account-caps, deployment-caps and no-contract refusals used to return with no
+# trace (only the stale-premium refusal wrote signals.live_trade_error), so a
+# deployment that "never placed" had nothing on screen to explain it. They now
+# write the SAME field the stale-premium path does — best-effort, and without
+# touching any return value.
+
+def _two_signals(db: FakeDB, **kw):
+    """The signal under test plus a bystander that must never be written."""
+    sig = make_confirmed_signal(**kw)
+    other = make_confirmed_signal()
+    # The bystander goes FIRST: a write with a loose filter hits the first match, so
+    # this is what proves the write is keyed on the signal's own id.
+    db.signals.rows.append(dict(other))
+    db.signals.rows.append(dict(sig))
+    return sig, other
+
+
+def _stored(db: FakeDB, signal_id: str) -> Dict[str, Any]:
+    return next(r for r in db.signals.rows if r["id"] == signal_id)
+
+
+@pytest.mark.asyncio
+async def test_account_caps_refusal_is_recorded_on_the_signal():
+    db = FakeDB()
+    sig, other = _two_signals(db)
+    for i in range(5):
+        db.live_trades.rows.append({
+            "id": f"t{i}", "deployment_id": f"other-{i}", "status": "OPEN",
+            "created_at": NOW.isoformat(), "lots": 1, "unrealized_pnl": 0.0,
+        })
+    out = await auto_live_trade_for_signal(
+        db, make_live_deployment(lots=2), sig,
+        latest_tick_lookup={KEY: _fresh_tick(151.5)}.get, now_utc=NOW,
+        place_fn=make_place_fn(_SUCCESS, []), account_max=20,
+        account_safety_config=dict(_ACCT_CFG))
+    # return value untouched
+    assert out == {"created": False, "reason": "account_max_open_block",
+                   "account_blocked": True}
+    assert _stored(db, sig["id"])["live_trade_error"] == "account_max_open_block"
+    assert "live_trade_error" not in _stored(db, other["id"])
+
+
+@pytest.mark.asyncio
+async def test_deployment_caps_refusal_is_recorded_on_the_signal():
+    db = FakeDB()
+    sig, other = _two_signals(db)
+    db.live_trades.rows.append({
+        "deployment_id": "dep-1", "status": "OPEN", "lots": 1,
+        "created_at": NOW.isoformat(),
+    })
+    out = await auto_live_trade_for_signal(
+        db, make_live_deployment(max_concurrent=1), sig,
+        latest_tick_lookup={KEY: _fresh_tick(151.5)}.get, now_utc=NOW,
+        place_fn=make_place_fn(_SUCCESS, []))
+    assert out == {"created": False, "reason": "max_concurrent"}
+    assert _stored(db, sig["id"])["live_trade_error"] == "max_concurrent"
+    assert "live_trade_error" not in _stored(db, other["id"])
+
+
+@pytest.mark.asyncio
+async def test_pausing_caps_refusal_is_recorded_and_still_pauses():
+    db = FakeDB()
+    sig, other = _two_signals(db)
+    db.live_trades.rows.append({
+        "deployment_id": "dep-1", "status": "CLOSED", "lots": 1,
+        "realized_pnl": -8000.0,
+        "created_at": NOW.isoformat(), "closed_at": NOW.isoformat(),
+    })
+    dep = make_live_deployment(daily_loss_cap=5000.0)
+    db.strategy_deployments.rows.append(dict(dep))
+    out = await auto_live_trade_for_signal(
+        db, dep, sig, latest_tick_lookup={KEY: _fresh_tick(151.5)}.get,
+        now_utc=NOW, place_fn=make_place_fn(_SUCCESS, []))
+    assert out == {"created": False, "reason": "daily_loss_cap", "paused": True}
+    assert _stored(db, sig["id"])["live_trade_error"] == "daily_loss_cap"
+    assert "live_trade_error" not in _stored(db, other["id"])
+    # enforcement is unchanged: the deployment is still paused and demoted
+    assert db.strategy_deployments.rows[0]["status"] == "PAUSED"
+    assert db.strategy_deployments.rows[0]["mode"] == "paper"
+
+
+@pytest.mark.asyncio
+async def test_no_option_contract_refusal_is_recorded_on_the_signal():
+    db = FakeDB()
+    sig, other = _two_signals(db, instrument_key="")
+    out = await auto_live_trade_for_signal(
+        db, make_live_deployment(), sig,
+        latest_tick_lookup={KEY: _fresh_tick(151.5)}.get, now_utc=NOW,
+        place_fn=make_place_fn(_SUCCESS, []))
+    assert out == {"created": False, "reason": "no_option_contract"}
+    assert _stored(db, sig["id"])["live_trade_error"] == "no_option_contract"
+    assert "live_trade_error" not in _stored(db, other["id"])
+
+
+class _ExplodingSignals(FakeCollection):
+    async def update_one(self, query, update, upsert=False):
+        raise RuntimeError("mongo is down")
+
+
+@pytest.mark.asyncio
+async def test_a_failed_refusal_write_never_changes_or_raises_out_of_the_refusal():
+    """The write is observability only: the entry is refused either way, with the
+    same return value, and the exception does not escape the entry path."""
+    db = FakeDB()
+    db.signals = _ExplodingSignals()
+    sig = make_confirmed_signal(instrument_key="")
+    out = await auto_live_trade_for_signal(
+        db, make_live_deployment(), sig,
+        latest_tick_lookup={KEY: _fresh_tick(151.5)}.get, now_utc=NOW,
+        place_fn=make_place_fn(_SUCCESS, []))
+    assert out == {"created": False, "reason": "no_option_contract"}
+
+    db2 = FakeDB()
+    db2.signals = _ExplodingSignals()
+    db2.live_trades.rows.append({
+        "deployment_id": "dep-1", "status": "OPEN", "lots": 1,
+        "created_at": NOW.isoformat(),
+    })
+    out2 = await auto_live_trade_for_signal(
+        db2, make_live_deployment(max_concurrent=1), make_confirmed_signal(),
+        latest_tick_lookup={KEY: _fresh_tick(151.5)}.get, now_utc=NOW,
+        place_fn=make_place_fn(_SUCCESS, []))
+    assert out2 == {"created": False, "reason": "max_concurrent"}
+
+
+@pytest.mark.asyncio
+async def test_a_placed_entry_leaves_no_refusal_behind():
+    """Control: the recording must not become a blanket write on the success path."""
+    db = FakeDB()
+    sig = make_confirmed_signal()
+    db.signals.rows.append(dict(sig))
+    out = await auto_live_trade_for_signal(
+        db, make_live_deployment(), sig,
+        latest_tick_lookup={KEY: _fresh_tick(151.5)}.get, now_utc=NOW,
+        place_fn=make_place_fn(_SUCCESS, []), arm_for=_arm_for_factory([]))
+    assert out["created"] is True
+    assert "live_trade_error" not in _stored(db, sig["id"])

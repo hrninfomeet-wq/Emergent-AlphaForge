@@ -247,6 +247,28 @@ def resolve_live_exit_plan(signal_doc: Dict[str, Any], deployment: Dict[str, Any
 # 6. orchestrator
 # ---------------------------------------------------------------------------
 
+async def _record_refusal(db: Any, signal_id: str, reason: Any) -> None:
+    """Persist WHY a confirmed signal was refused BEFORE any claim/place work.
+
+    The account-caps, deployment-caps and no-contract refusals returned to the
+    evaluator and left no trace, so a deployment that "never placed" had no
+    on-screen explanation — only the stale-premium refusal wrote
+    ``signals.live_trade_error`` (which /live/status and the session timeline
+    read). Same collection, filter and field as that write. BEST-EFFORT: a failed
+    write must never change the refusal the caller is about to return, nor raise
+    out of the entry path.
+    """
+    try:
+        await db.signals.update_one(
+            {"id": signal_id},
+            {"$set": {"live_trade_error": str(reason or "entry_refused"),
+                      "updated_at": datetime.now(timezone.utc).isoformat()}},
+        )
+    except Exception as exc:  # noqa: BLE001 — observability only
+        log.warning("auto-live could not record the refusal for signal %s: %s",
+                    signal_id, exc)
+
+
 async def auto_live_trade_for_signal(
     db: Any,
     deployment: Dict[str, Any],
@@ -317,6 +339,7 @@ async def auto_live_trade_for_signal(
         if not acct.get("allow"):
             log.warning("auto-live refused signal %s on ACCOUNT caps: %s",
                         signal_id, acct.get("reason"))
+            await _record_refusal(db, signal_id, acct.get("reason"))
             return {"created": False, "reason": acct.get("reason"),
                     "account_blocked": True}
 
@@ -356,13 +379,16 @@ async def auto_live_trade_for_signal(
                 }},
             )
             log.warning("auto-live PAUSED deployment %s on %s", dep_id, gov.get("reason"))
+            await _record_refusal(db, signal_id, gov.get("reason"))
             return {"created": False, "reason": gov.get("reason"), "paused": True}
+        await _record_refusal(db, signal_id, gov.get("reason"))
         return {"created": False, "reason": gov.get("reason")}
 
     # (d) option contract present
     contract_doc = signal_doc.get("option_contract") or {}
     instrument_key = str(contract_doc.get("instrument_key") or "")
     if not instrument_key:
+        await _record_refusal(db, signal_id, "no_option_contract")
         return {"created": False, "reason": "no_option_contract"}
 
     # (e) ATOMIC CLAIM before any place work — paper↔live mutual exclusion.
