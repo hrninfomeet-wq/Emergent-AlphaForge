@@ -29,6 +29,7 @@ const GTT_MS = 6_000; // resting GTT/OCO backstop
 const DEPLOY_MS = 10_000; // batched per-deployment live status
 const ANALYSIS_MS = 10_000; // market analysis (server-cached ~8s, so this is cheap)
 const HOLDINGS_MS = 30_000; // DP/demat holdings — changes slowly
+const PREOPEN_MS = 60_000; // the 08:45 IST readiness verdict — written once a day, a Mongo read
 
 const LiveDataContext = createContext(null);
 
@@ -108,6 +109,9 @@ export function LiveDataProvider({ children }) {
   const marketAnalysis = analysisStream.data ?? polledAnalysis;
   const { data: holdings, error: eHoldings, refetch: rHoldings } =
     usePoll(() => api.liveBrokerHoldings(), HOLDINGS_MS);
+  // The morning's readiness verdict. Non-money and read-only (Mongo, no broker call):
+  // like marketAnalysis a failure here is kept OUT of `health.degraded`.
+  const { data: preopen } = usePoll(() => api.getPreopenReadiness(), PREOPEN_MS);
 
   // Non-archived deployments drive the strip rows AND the fan-out key set.
   const deployments = useMemo(
@@ -188,7 +192,7 @@ export function LiveDataProvider({ children }) {
     () => ({
       // data (null until the first successful fetch — consumers treat null = loading)
       status, limits, positions, orders, reconcile, armState, blotter, deployments,
-      guard, session, gtt, greeks, feedHealth, marketAnalysis, holdings,
+      guard, session, gtt, greeks, feedHealth, marketAnalysis, holdings, preopen,
       deployLive: deployLiveData || {},
       // Freshness of the money slice: "stream" (tick-fresh) | "poll" (15s) | null.
       marksSource: marks.source,
@@ -207,7 +211,7 @@ export function LiveDataProvider({ children }) {
     }),
     [
       status, limits, positions, orders, reconcile, armState, blotter, deployments,
-      guard, session, gtt, greeks, feedHealth, deployLiveData, marketAnalysis, holdings,
+      guard, session, gtt, greeks, feedHealth, deployLiveData, marketAnalysis, holdings, preopen,
       marks.source, marks.lastAt,
       eStatus, eLimits, ePositions, eOrders, eReconcile, eArmState, eBlotter, eDeployments,
       eGuard, eSession, eGtt, eDeployLive, eGreeks, eFeedHealth, eMarketAnalysis, eHoldings,

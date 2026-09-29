@@ -987,30 +987,22 @@ async def deployments_overview():
                  if str(d.get("mode") or "").lower() == "live"]
     _paper_ids = [i for i in dep_ids if i not in set(_live_ids)]
 
-    # A LIVE open row's unrealized_pnl is the guard's last persisted mark. Once the
-    # guard stops marking it (restart, expired token) that number is frozen, and
-    # summing it as "today's MTM" presents a stale figure as live. Same rule as the
-    # governor (open_unrealized_today): a mark older than MARK_STALE_AFTER_SECONDS
-    # is UNKNOWN — excluded from the sum and counted as `open_unverified` instead.
+    # OPEN rows are NOT aggregated here any more. Which of them count toward "today's"
+    # MTM (a LIVE row needs a fresh guard mark, a carried PAPER row a fresh marker
+    # stamp), which are CARRIED from an earlier IST day, and which sit in the OTHER
+    # book (a live deployment demoted to paper still owns real-money OPEN rows) is
+    # decided by `overview_open` from the OPEN rows themselves — a Mongo $group cannot
+    # parse the mixed-format timestamps. This pipeline is the mode-aware LIFETIME
+    # stats only.
     from app.live_deploy_governor import MARK_STALE_AFTER_SECONDS
-    _fresh_cut_iso = (datetime.now(timezone.utc)
-                      - timedelta(seconds=MARK_STALE_AFTER_SECONDS)).isoformat()
+    from app.overview_open import summarize_open_rows, summarize_other_book
+    _fresh_cut = datetime.now(timezone.utc) - timedelta(seconds=MARK_STALE_AFTER_SECONDS)
 
-    def _trade_pipeline(ids, *, fresh_cut_iso=None):
-        _open = {"$eq": ["$status", "OPEN"]}
-        if fresh_cut_iso is None:            # paper: no guard marks to age
-            _fresh_open, _unverified_open = _open, {"$literal": False}
-        else:
-            _fresh = {"$gte": [{"$ifNull": ["$marked_at", ""]}, fresh_cut_iso]}
-            _fresh_open = {"$and": [_open, _fresh]}
-            _unverified_open = {"$and": [_open, {"$not": [_fresh]}]}
+    def _trade_pipeline(ids):
         return [
             {"$match": {"deployment_id": {"$in": ids}}},
             {"$group": {
                 "_id": "$deployment_id",
-                "open_count": {"$sum": {"$cond": [_open, 1, 0]}},
-                "open_unrealized": {"$sum": {"$cond": [_fresh_open, {"$ifNull": ["$unrealized_pnl", 0]}, 0]}},
-                "open_unverified": {"$sum": {"$cond": [_unverified_open, 1, 0]}},
                 "closed_count": {"$sum": {"$cond": [{"$eq": ["$status", "CLOSED"]}, 1, 0]}},
                 "realized_total": {"$sum": {"$cond": [{"$eq": ["$status", "CLOSED"]}, {"$ifNull": ["$realized_pnl", 0]}, 0]}},
                 "wins": {"$sum": {"$cond": [{"$and": [{"$eq": ["$status", "CLOSED"]}, {"$gt": [{"$ifNull": ["$realized_pnl", 0]}, 0]}]}, 1, 0]}},
@@ -1026,13 +1018,27 @@ async def deployments_overview():
     # on today's IST date begins with today's date or (00:00-05:30 IST) yesterday's.
     _closed_since = (ist_now - timedelta(days=1)).strftime("%Y-%m-%d")
 
-    for _ids, _col, _cut in ((_paper_ids, db.paper_trades, None),
-                             (_live_ids, db.live_trades, _fresh_cut_iso)):
-        if not _ids:
+    # Both BOOKS are read for EVERY deployment — the deployment's CURRENT mode only
+    # says which book is its primary one. A live deployment demoted to paper (pause /
+    # kill switch) still owns OPEN and just-closed live_trades; reading the paper
+    # book alone made those real-money rows vanish from the card.
+    open_by_book: Dict[str, Dict[str, list]] = {"paper": {}, "live": {}}
+    realized_by_book: Dict[str, Dict[str, float]] = {"paper": {}, "live": {}}
+    for _book, _col, _ids in (("paper", db.paper_trades, _paper_ids),
+                              ("live", db.live_trades, _live_ids)):
+        if _ids:
+            rows = await _col.aggregate(_trade_pipeline(_ids)).to_list(length=None)
+            for r in rows:
+                trade_stats[str(r.get("_id") or "")] = r
+        if not dep_ids:
             continue
-        rows = await _col.aggregate(_trade_pipeline(_ids, fresh_cut_iso=_cut)).to_list(length=None)
-        for r in rows:
-            trade_stats[str(r.get("_id") or "")] = r
+        open_docs = await _col.find(
+            {"deployment_id": {"$in": dep_ids}, "status": "OPEN"},
+            {"_id": 0, "deployment_id": 1, "created_at": 1, "marked_at": 1,
+             "updated_at": 1, "unrealized_pnl": 1},
+        ).to_list(length=None)
+        for _doc in open_docs:
+            open_by_book[_book].setdefault(str(_doc.get("deployment_id") or ""), []).append(_doc)
         # Today's realized P&L, summed over PARSED close instants. `closed_at` is
         # written in two timezone formats (the paper square-off stamps IST "+05:30",
         # the marker / manual / live closes stamp UTC), so the pipeline's old
@@ -1041,36 +1047,64 @@ async def deployments_overview():
         # stale doc the reconcile closed days later) is not TODAY's P&L —
         # daily_realized_summary excludes it too, and so does this.
         closed_rows = await _col.find(
-            {"deployment_id": {"$in": _ids}, "status": "CLOSED",
+            {"deployment_id": {"$in": dep_ids}, "status": "CLOSED",
              "closed_at": {"$gte": _closed_since}},
             {"_id": 0, "deployment_id": 1, "closed_at": 1, "realized_pnl": 1,
              "exit_day_unknown": 1},
         ).to_list(length=None)
-        for _dep, _pnl in realized_in_window(closed_rows, _day_start_dt, _day_end_dt).items():
-            trade_stats.setdefault(_dep, {})["realized_today"] = _pnl
+        realized_by_book[_book] = realized_in_window(closed_rows, _day_start_dt, _day_end_dt)
 
+    _live_id_set = set(_live_ids)
     items = []
     totals = {"open_trades": 0, "open_unrealized": 0.0, "open_unverified": 0,
-              "realized_today": 0.0, "signals_today": 0}
+              "open_carried": 0, "realized_today": 0.0, "signals_today": 0,
+              # REAL-MONEY live_trades still owned by deployments that are no longer
+              # in live mode (demoted by a pause / kill switch). NOT part of any
+              # figure above — paper and live are never summed into one number.
+              "other_book_live_open": 0, "other_book_live_realized_today": 0.0}
     for d in deployments:
         dep_id = str(d.get("id"))
         sig = sig_stats.get(dep_id, {"clean": 0, "blocked": 0})
         tr = trade_stats.get(dep_id, {})
         closed = int(tr.get("closed_count") or 0)
         wins = int(tr.get("wins") or 0)
+        _primary = "live" if dep_id in _live_id_set else "paper"
+        _other = "paper" if _primary == "live" else "live"
+        _open = summarize_open_rows(
+            open_by_book[_primary].get(dep_id, []), book=_primary,
+            today_ist=today_iso, fresh_cut=_fresh_cut)
+        # The other book. A paper book beside a LIVE deployment only matters for a
+        # stray OPEN row (today's paper P&L is not real money and is not reported);
+        # a LIVE book beside a paper deployment is real money and is reported whole.
+        _other_book = summarize_other_book(
+            open_by_book[_other].get(dep_id, []), book=_other, today_ist=today_iso,
+            realized_today=(realized_by_book["live"].get(dep_id, 0.0) if _other == "live" else 0.0))
         item = {
             "deployment": {k: d.get(k) for k in (
                 "id", "name", "mode", "status", "instrument", "strategy_id", "source_type", "source_id",
                 "option_policy", "risk", "pretrade_profile", "created_at", "kill_switch_reason", "drift_reason",
+                # WHEN those reasons were recorded. Both reasons persist across
+                # sessions and are not cleared by a manual pause / resume, so without
+                # their dates an old one reads as the reason for the CURRENT pause.
+                "kill_switch_paused_at", "drift_detected_at",
             )},
             "today": {
                 "clean_signals": sig["clean"],
                 "blocked_signals": sig["blocked"],
-                "realized_pnl": round(float(tr.get("realized_today") or 0.0), 2),
-                "open_trades": int(tr.get("open_count") or 0),
-                "open_unrealized": round(float(tr.get("open_unrealized") or 0.0), 2),
-                # OPEN rows whose P&L is not in open_unrealized: no fresh guard mark.
-                "open_unverified": int(tr.get("open_unverified") or 0),
+                "realized_pnl": round(float(realized_by_book[_primary].get(dep_id, 0.0)), 2),
+                "open_trades": _open["open_trades"],
+                "open_unrealized": _open["open_unrealized"],
+                # OPEN rows whose P&L is not in open_unrealized: no fresh mark (a live
+                # row's guard stamp; a carried paper row's marker stamp).
+                "open_unverified": _open["open_unverified"],
+                # OPEN rows entered on an EARLIER IST day (and the earliest such day):
+                # "open trades" is open-right-now, not entered-today.
+                "open_carried": _open["open_carried"],
+                "open_carried_oldest": _open["open_carried_oldest"],
+                # OPEN / just-closed rows in the book that does NOT match the current
+                # mode (None = nothing there). For a demoted deployment this is its
+                # real-money live_trades. Reported separately, never added above.
+                "other_book": _other_book,
             },
             "lifetime": {
                 "closed_trades": closed,
@@ -1085,6 +1119,11 @@ async def deployments_overview():
         items.append(item)
         totals["open_trades"] += item["today"]["open_trades"]
         totals["open_unverified"] += item["today"]["open_unverified"]
+        totals["open_carried"] += item["today"]["open_carried"]
+        if _other_book and _other_book["book"] == "live":
+            totals["other_book_live_open"] += _other_book["open_trades"]
+            totals["other_book_live_realized_today"] = round(
+                totals["other_book_live_realized_today"] + _other_book["realized_today"], 2)
         totals["open_unrealized"] = round(totals["open_unrealized"] + item["today"]["open_unrealized"], 2)
         totals["realized_today"] = round(totals["realized_today"] + item["today"]["realized_pnl"], 2)
         totals["signals_today"] += sig["clean"] + sig["blocked"]

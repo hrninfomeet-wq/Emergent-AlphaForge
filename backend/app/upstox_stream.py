@@ -57,6 +57,24 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _age_seconds(iso_ts: Any, now: Optional[datetime] = None) -> Optional[float]:
+    """Seconds since an ISO timestamp we wrote ourselves; ``None`` when unknown.
+
+    Computed on the SERVER so a viewer's PC clock can never move it. ``None`` is
+    "never / unparseable" and must not be rendered as a fresh feed.
+    """
+    if not iso_ts:
+        return None
+    try:
+        then = datetime.fromisoformat(str(iso_ts).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if then.tzinfo is None:
+        then = then.replace(tzinfo=timezone.utc)
+    age = ((now or datetime.now(timezone.utc)) - then).total_seconds()
+    return round(max(0.0, age), 1)
+
+
 def _to_float(value: Any) -> Optional[float]:
     try:
         if value in (None, ""):
@@ -600,6 +618,11 @@ class UpstoxMarketStreamManager:
             "tick_count": 0,
             "reconnect_count": 0,
             "last_error": None,
+            # True only while a websocket is actually open. `running` cannot say
+            # this: start() sets it before any connection exists and `status()`
+            # reports the TASK being alive, which is also true through every
+            # backoff-and-retry cycle.
+            "connected": False,
         }
 
     def configure_session(
@@ -624,7 +647,15 @@ class UpstoxMarketStreamManager:
 
     def status(self) -> Dict[str, Any]:
         status = dict(self._session)
-        status["running"] = bool(self._task and not self._task.done())
+        # `running` stays "the task is alive" — the feed supervisor keys its
+        # start/stop decisions on it. It is NOT a health claim: a task looping in
+        # backoff after a dropped socket is alive too. `connected` and
+        # `last_tick_age_s` are the health facts a UI may show; a stale/never
+        # value is None, never 0.
+        alive = bool(self._task and not self._task.done())
+        status["running"] = alive
+        status["connected"] = alive and bool(self._session.get("connected"))
+        status["last_tick_age_s"] = _age_seconds(self._session.get("last_tick_at"))
         status["instrument_count"] = len(status.get("instrument_keys") or [])
         status["latest_tick_count"] = len(self._latest_ticks)
         return status
@@ -697,6 +728,7 @@ class UpstoxMarketStreamManager:
             "reconnect_count": 0,
             "last_tick_at": None,
             "last_error": None,
+            "connected": False,
         })
         self._stop_event = asyncio.Event()
         self._task = asyncio.create_task(self._run(), name=f"upstox-market-stream-{session_id}")
@@ -712,6 +744,7 @@ class UpstoxMarketStreamManager:
             except asyncio.CancelledError:
                 pass
         self._session["running"] = False
+        self._session["connected"] = False
         self._session["updated_at"] = _now_iso()
         return self.status()
 
@@ -739,6 +772,7 @@ class UpstoxMarketStreamManager:
                 async with connector as websocket:
                     attempt = 0
                     self._session["running"] = True
+                    self._session["connected"] = True
                     self._session["updated_at"] = _now_iso()
                     await websocket.send(build_subscription_message(
                         guid=str(uuid.uuid4()),
@@ -774,6 +808,7 @@ class UpstoxMarketStreamManager:
             except Exception as exc:
                 attempt += 1
                 self._session["running"] = False
+                self._session["connected"] = False
                 self._session["reconnect_count"] = int(self._session.get("reconnect_count") or 0) + 1
                 self._session["last_error"] = str(exc)[:240]
                 self._session["updated_at"] = _now_iso()
@@ -784,4 +819,5 @@ class UpstoxMarketStreamManager:
                 except asyncio.TimeoutError:
                     continue
         self._session["running"] = False
+        self._session["connected"] = False
         self._session["updated_at"] = _now_iso()

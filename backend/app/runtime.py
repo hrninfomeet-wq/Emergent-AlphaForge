@@ -1103,6 +1103,15 @@ async def _deployment_evaluator_loop() -> None:
                 )
                 if summaries:
                     log.info("paper square-off at 15:00 IST closed %d open trades", len(summaries))
+                # The same once-a-day sweep retires CONFIRMED signals nothing will ever
+                # act on (a refused / signal-only / orphaned pass): they would otherwise
+                # read as "awaiting approval" for good. Bar-age guarded and claim-aware —
+                # a signal the evaluator may still route is never touched. Never raises.
+                from app.signal_lifecycle import expire_unactioned_signals
+                _expired = await expire_unactioned_signals(
+                    db, now_utc=datetime.now(timezone.utc))
+                if _expired:
+                    log.info("signal sweep: %d unactioned CONFIRMED signal(s) -> AUDITED", _expired)
                 last_squareoff_ist_date = today_ist
 
             # Skip outside NSE market hours (Mon-Fri, 09:15-15:30 IST)

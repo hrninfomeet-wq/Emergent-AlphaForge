@@ -2,6 +2,117 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [Unreleased] — Misleading status indicators: eight surfaces that said "live" / "none" / "pending" without knowing (2026-09-29)
+
+An adversarial audit found eight indicators that read as calm or current while the
+underlying state was not. Each was re-verified against the current code before it was
+touched. Every decision now lives in a pure module tested by EXECUTING it (node for the
+frontend `lib/*.js`, real code against in-memory collections for the backend); the JSX
+only renders what those modules return. No broker call, order path, gate or timer was
+added or changed.
+
+**1. Global market header** painted a green "LIVE TICKS · Upstox WebSocket" whenever the
+stream *task* existed (`status()["running"]` is `task and not task.done()`), which is also
+true through every backoff-and-retry after the socket drops. The manager now records
+`connected` (True only while a socket is open) and the status exposes it plus
+`last_tick_age_s` (computed server-side, so a skewed PC clock cannot move it); `running`
+keeps its meaning — the feed supervisor decides start/stop on it. `lib/marketFeedHealth.js`
+turns those facts into one verdict: green only for open socket + a tick within 30 s + header
+quotes that really are WS ticks; amber for reconnecting (with the last error), connected
+but silent, stale, or a status that does not say `connected`; red only when the header API
+itself is down; grey for the REST fallback. Unknown is never green.
+
+**2. Pre-open readiness** (`preopen_readiness`) detected "flattrade_token_expired while live
+deployments are armed" at 08:45 and only wrote it to Mongo — no route, no UI (verified: no
+`preopen` in any router or in `frontend/src`). New read-only `GET /live-broker/preopen-readiness`
+returns the latest stored verdict with `is_today` / `days_ago`; `/live-trading`'s alert rail
+shows it only when it holds a blocker or warning. A previous day's verdict is muted, dated
+and labelled "NOT today's"; today's blockers the broker chips now disprove (Flattrade
+connected / Upstox token good) are dropped; an unknown `is_today` is never treated as today.
+
+**3. Greeks card** said "No open live positions." for an empty guard *registry* and for any
+failure (`_GREEKS_EMPTY` zeros), and `Number(null)` rendered a missing figure as ₹0. The route
+now prices the positions the **broker** holds, read through the shared marks cache
+(`LiveMarksService.book()` — no extra broker call), and returns `book` =
+`flat | open | unknown` with the unguarded tsyms. Zeros exist only for a book that was read
+and is flat; a stale last-good, an expired session, no client or a failed compute give `None`
+figures and the card says "—" and why. Open broker positions the guard is not watching are
+called out in danger. Existing route tests keep their assertions (their fixtures now supply
+the broker row).
+
+**4. Sidebar footer** was a hard-coded green "local API live". It now follows a 15 s
+`GET /api/health` poll (`lib/apiHealth.js`): grey until the first answer, green, amber for one
+missed check or an HTTP error (reachable but unhealthy), red with "last OK …" after two
+misses. (The backend route already existed; nothing on the client called it.)
+
+**5. Deployment overview "today"** counted every OPEN row of the current-mode collection
+whatever day it was entered, and a live deployment demoted to paper by a pause / kill switch
+read only `paper_trades`, so its OPEN real-money `live_trades` vanished from the card. The
+live path's stale-mark exclusion (`open_unverified`, 597b8b3) already existed and is kept.
+OPEN accounting moved out of the Mongo `$group` (it cannot parse mixed-format timestamps)
+into `overview_open.py`: `open_trades` stays "open right now", plus `open_carried` /
+`open_carried_oldest`; a carried PAPER row is trusted only while the marker still stamps it
+(`updated_at`), else it is `open_unverified` and out of MTM; a carried LIVE row with a fresh
+guard mark is real and counted. Both books are now read for every deployment and the *other*
+book is reported separately as `other_book` (+ `totals.other_book_live_*`) — never added to
+the primary figures, so paper and real money are not summed and nothing is double-counted.
+The card shows "carried" and "OPEN LIVE trade (real money) under a now-PAPER deployment"
+lines.
+
+**6. CONFIRMED signals** ("awaiting manual approval") were verified to have no consumer: the
+only sinks run inside the evaluator pass for that bar's fresh results, no route calls the
+claim helpers, a refused sink releases its claim but nothing retries, and a signal-only or
+`latch_refused` deployment has no sink. Display rule (`lib/signalDisplay.js`): a CONFIRMED
+signal whose bar is from an earlier IST day or older than 15 min renders **EXPIRED · not
+acted on**; a refused one (`live_trade_error` / `paper_trade_error` / `paper_trade_skip`)
+renders **NOT ACTED ON** at once; one a sink *claimed* but recorded no trade on is
+**UNVERIFIED** (a crash between the two writes may have left a trade) — never "not acted on".
+Server side: `signal_lifecycle.expire_unactioned_signals` moves such signals CONFIRMED ->
+AUDITED (`session_ended_unactioned`) inside the two sweeps that already exist (the
+once-a-day 15:00 sweep and the boot reconcile — no new timer). It never touches a bar under
+15 min old, a claimed or trade-linked signal, a blocked or manual one, or one with an
+unreadable bar time, and its write is conditional on `state == CONFIRMED` and on the absence
+of any claim / trade link, so a racing sink is never overwritten. Note: the opt-in Signal
+Journal retention purges AUDITED signals, so with retention on these are now purged with
+them. The enriched-signals route also exposes `live_trade_error` / `live_trade_id` /
+`paper_trade_claim`, and the ledger's Notes column shows a live refusal.
+
+**7. Persisted reasons without a date.** `kill_switch_reason` / `drift_reason` persist on the
+deployment and are not cleared by a manual pause or resume (verified), so "auto-paused:
+max_consecutive_losses" could be a fortnight old. The three surfaces that print it
+(Deployed Strategies card, cockpit summary, paper control strip) and the paused-dot tooltip
+now show the recorded date (`kill_switch_paused_at` / `drift_detected_at`, added to the
+overview projection) or "date not recorded"; when both reasons are stored the newest wins.
+The safety-latch banner already dated a recorded trip time; a latch with none now says "trip
+time not recorded — may date from an earlier session" instead of omitting the line.
+
+**8. Live Trade Stats tab** rendered `status: "OPEN"` from the raw journal as a green chip.
+The stale-doc root cause is fixed (the reconcile closes them), but a row can still be OPEN
+while the guard has stopped marking it. `/live-broker/trade-history` now annotates each OPEN
+row (`open_state` verified / unverified from `marked_at`, `mark_age_s`, `carried`) and
+`/trade-stats` counts `open_unverified` / `open_carried` per strategy — from the app's own
+data, no broker call. Green is reserved for `verified`; a stale or never-marked row is amber
+"OPEN · unverified"; a row from an older backend with no field is never green.
+
+**Confirmed, not changed:** "Last evaluated HH:MM with no date" was already fixed in ee631a0
+(`lib/lastEvaluated.js`, dated + amber when not today) and is pinned by its own test.
+
+**Found while testing:** two date formatters accepted an impossible date ("2026-13-40" rolled
+over to 9 Feb) — fixed to return null. Dropped two long-unused imports in `Layout.jsx`.
+
+**Verification:** 15 new test files plus a reworked Greeks route test, all through executed
+code. Mutation check: 160 mutants, each guarded rule broken in turn — the first run killed
+150/161 and its 11 survivors were fixed (two redundant guards deleted as dead code, nine
+tests strengthened: stale-book passthrough, oldest-carried date, the read-time and
+write-time claim guards tested independently, the documented reason literal, and others),
+final run **160/160 killed**. Full suite: 6483 passed, 5 skipped, 4 xfailed.
+A jsdom + react-dom smoke of the changed components (Greeks card, alert rail, market header,
+sidebar footer, Signal Journal, Deployed Strategies, Live Trade Stats, latch banner,
+deployment summary / control strip) confirmed the rendered DOM matches each view. ESLint
+(react-app config, `--max-warnings 0`) clean on every changed frontend file. Not run against
+a real Mongo, Docker or the broker; `tests/test_overview_pipeline_mongo.py` still skips
+without Mongo, its expectations are now also enforced by an executed in-memory test.
+
 ## [Unreleased] — Signals follow their trades out of ACTIVE; a missed square-off stops booking into the wrong day (2026-09-29)
 
 An adversarial audit of the signal / paper-trade lifecycle confirmed the defects below;

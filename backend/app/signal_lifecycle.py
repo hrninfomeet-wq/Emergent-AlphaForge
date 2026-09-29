@@ -113,6 +113,99 @@ def transition_signal(
     return updated
 
 
+#: A CONFIRMED signal is acted on ONLY inside the evaluator pass for its own bar:
+#: `evaluate_active_deployments` routes the pass's fresh results to the paper / live
+#: sink seconds after the bar closes, and nothing revisits it (no manual-approve route
+#: exists; a refused sink releases its claim but nothing retries). So a CONFIRMED signal
+#: whose bar is older than this has been passed over for good. Generous on purpose —
+#: the sink path is seconds, this is minutes — because the cost of being wrong is
+#: expiring a signal that was about to trade.
+UNACTIONED_AFTER_MINUTES = 15
+UNACTIONED_REASON = "session_ended_unactioned"
+
+
+def _signal_bar_ms(sig: Dict[str, Any]) -> Optional[int]:
+    """The bar's epoch-ms, or None when it cannot be read (an unknown age is never
+    'old enough')."""
+    try:
+        v = sig.get("bar_ts")
+        if v not in (None, ""):
+            n = int(float(v))
+            return n if n > 0 else None
+    except (TypeError, ValueError):
+        pass
+    return None
+
+
+async def expire_unactioned_signals(
+    db: Any,
+    *,
+    now_utc: Optional[datetime] = None,
+    older_than_minutes: int = UNACTIONED_AFTER_MINUTES,
+    limit: int = 2000,
+) -> int:
+    """Move CONFIRMED signals nothing will ever act on to AUDITED (terminal).
+
+    ``CONFIRMED`` reads as "awaiting approval". After its bar's evaluator pass it is
+    not: no code acts on it again, so it sat CONFIRMED for good and the Signal
+    Journal showed past-day signals as pending. ``CONFIRMED -> AUDITED`` is an
+    allowed transition; the reason is ``session_ended_unactioned``.
+
+    NEVER touches a signal the evaluator may still act on:
+      * the bar must be OLDER than ``older_than_minutes`` (routing takes seconds);
+      * a signal with a claim (``paper_trade_claim`` — a sink is mid-flight, or crashed
+        between the trade insert and the signal write) or a trade link
+        (``paper_trade_id`` / ``live_trade_id``) is left exactly as found;
+      * only engine-produced signals (a string ``deployment_id``) are considered;
+      * a blocked signal is already terminal, and one with an unreadable bar is skipped;
+      * the write is conditional on ``state == CONFIRMED`` and on the ABSENCE of any
+        claim / trade link, so a racing writer's claim is never overwritten.
+
+    Idempotent, and NEVER raises: it is a housekeeping sweep and runs on the far side
+    of paths that must not be disturbed. Returns how many signals THIS call moved.
+    """
+    if db is None:
+        return 0
+    moved = 0
+    try:
+        now = now_utc or datetime.now(timezone.utc)
+        cutoff_ms = int((now.timestamp() - float(older_than_minutes) * 60.0) * 1000)
+        rows = await db.signals.find(
+            {"state": "CONFIRMED", "bar_ts": {"$lt": cutoff_ms}}, {"_id": 0},
+        ).to_list(length=int(limit))
+        stamp = now.isoformat()
+        for sig in rows:
+            try:
+                if not isinstance(sig.get("deployment_id"), str) or not sig.get("id"):
+                    continue
+                if sig.get("blocked"):
+                    continue
+                if sig.get("paper_trade_claim") or sig.get("paper_trade_id") or sig.get("live_trade_id"):
+                    continue
+                bar_ms = _signal_bar_ms(sig)
+                if bar_ms is None or bar_ms >= cutoff_ms:
+                    continue
+                audited = transition_signal(
+                    sig, "AUDITED", reason=UNACTIONED_REASON, at=stamp,
+                    snapshot={"bar_ts": bar_ms, "expired_after_minutes": older_than_minutes},
+                )
+                res = await db.signals.replace_one(
+                    {"id": sig["id"], "state": "CONFIRMED",
+                     "paper_trade_claim": {"$exists": False},
+                     "paper_trade_id": {"$exists": False},
+                     "live_trade_id": {"$exists": False}},
+                    audited, upsert=False)
+                matched = getattr(res, "matched_count", None)
+                if matched is None or matched:
+                    moved += 1
+            except Exception as exc:  # noqa: BLE001 — one bad doc must not stop the sweep
+                log.warning("expire_unactioned_signals: signal %s skipped (%s: %s)",
+                            sig.get("id"), type(exc).__name__, str(exc)[:160])
+    except Exception as exc:  # noqa: BLE001 — see docstring
+        log.warning("expire_unactioned_signals failed (%s: %s)", type(exc).__name__, str(exc)[:160])
+    return moved
+
+
 async def exit_linked_signal(
     db: Any,
     signal_id: Any,

@@ -3,11 +3,12 @@ import { useEffect, useRef, useState } from "react";
 import {
   Home, LineChart, Database, ListChecks, BookOpen,
   Briefcase, Gauge, Activity, FlaskConical, Library,
-  Zap, Monitor, Moon, Sun, Loader2, Clock, AlertTriangle, Bookmark,
+  Zap, Monitor, Moon, Sun, Loader2, Bookmark,
 } from "lucide-react";
 import { useTheme } from "@/lib/theme";
 import { useJobs } from "@/lib/jobs";
 import { api } from "@/lib/api";
+import { apiDotClass, describeApiHealth, initialApiHealth, nextApiHealth } from "@/lib/apiHealth";
 import MarketHeader from "@/components/MarketHeader";
 import TokenCountdown from "@/components/TokenCountdown";
 import ScrollToTopButton from "@/components/common/ScrollToTopButton";
@@ -94,10 +95,7 @@ export default function Layout({ children }) {
           ))}
         </nav>
         <div className="px-3 py-3 border-t border-line text-[11px] text-dimmer">
-          <div className="flex items-center gap-1.5">
-            <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
-            <span>local API live</span>
-          </div>
+          <ApiStatus />
           <div className="mt-1 font-mono">local Docker workspace</div>
         </div>
       </aside>
@@ -112,6 +110,54 @@ export default function Layout({ children }) {
             serves all of them. */}
         <ScrollToTopButton scrollRef={scrollRef} />
       </main>
+    </div>
+  );
+}
+
+const API_HEALTH_POLL_MS = 15000;
+
+/**
+ * The sidebar footer's backend-reachability dot. It was a hard-coded green "local API
+ * live" — still green while the backend container was down. Now fed by a light
+ * periodic GET /api/health; the verdict (checking / up / amber / red, with the time of
+ * the last success) is decided by lib/apiHealth.js.
+ */
+function ApiStatus() {
+  const [state, setState] = useState(initialApiHealth);
+  const [now, setNow] = useState(Date.now());
+
+  useEffect(() => {
+    let cancelled = false;
+    async function check() {
+      let result;
+      try {
+        await api.health();
+        result = { ok: true };
+      } catch (err) {
+        result = {
+          ok: false,
+          httpStatus: err?.response?.status ?? null,
+          detail: err?.response?.data?.detail || err?.message || "",
+        };
+      }
+      if (cancelled) return;
+      const at = Date.now();
+      setNow(at);
+      setState((prev) => nextApiHealth(prev, result, at));
+    }
+    check();
+    const timer = window.setInterval(check, API_HEALTH_POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  const view = describeApiHealth(state, now);
+  return (
+    <div className="flex items-center gap-1.5" data-testid="api-status" data-api-state={state.status} title={view.title}>
+      <span className={`w-2 h-2 rounded-full ${apiDotClass(view.tone)}`}></span>
+      <span>{view.label}</span>
     </div>
   );
 }

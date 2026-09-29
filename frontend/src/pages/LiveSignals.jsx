@@ -8,6 +8,8 @@ import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { fmtNum } from "@/lib/fmt";
 import { formatLastEvaluated } from "@/lib/lastEvaluated";
+import { pauseReasonView } from "@/lib/deploymentState";
+import { headerOtherBookNote, openNotes } from "@/lib/overviewOpenView";
 import { getApiErrorMessage, getDeploymentErrorMessage } from "@/lib/apiError";
 import {
   buildRiskPayload,
@@ -216,6 +218,15 @@ export default function LiveSignals() {
             : (totals.open_trades ?? 0)}
         />
         <HeaderStat label="Signals today" value={totals.signals_today ?? 0} />
+        {(() => {
+          const note = headerOtherBookNote(totals);
+          return note ? (
+            <span className="text-[11px] font-mono text-danger" title={note.title}
+                  data-testid="header-other-book-note">
+              {note.text}
+            </span>
+          ) : null;
+        })()}
         <div className="ml-auto flex items-center gap-1.5">
           <Button size="sm" variant="ghost" className="h-7 text-xs" disabled={busy}
             onClick={() => act(() => api.evaluateActiveDeployments(), "Evaluation triggered")}
@@ -296,6 +307,10 @@ function DeploymentCard({ item, busy, onPause, onResume, onRepin, onEvaluate, on
     ? `from preset "${d.source_id}"`
     : d.source_type === "strategy" ? "from Strategy Library" : "from backtest run";
   const pausedReason = d.kill_switch_reason || d.drift_reason;
+  // The reason persists across sessions (a manual pause / resume does not clear it):
+  // show WHEN it was recorded so an old one cannot read as the current cause.
+  const pauseView = pauseReasonView(d);
+  const notes = openNotes(t, d.mode);
   const isDriftPaused = paused && d.drift_reason === "strategy_source_drift";
   const mtm = Number(t.realized_pnl || 0) + Number(t.open_unrealized || 0);
   const lastEval = formatLastEvaluated(item.last_evaluated_ts);
@@ -330,7 +345,9 @@ function DeploymentCard({ item, busy, onPause, onResume, onRepin, onEvaluate, on
       {paused && pausedReason && (
         <div className="flex items-center gap-1.5 text-[11px] text-warning" data-testid="deployment-pause-reason">
           <ShieldAlert className="w-3.5 h-3.5 shrink-0" />
-          <span className="truncate" title={pausedReason}>Auto-paused: {pausedReason}</span>
+          <span className="truncate" title={pauseView ? pauseView.title : pausedReason}>
+            {pauseView ? pauseView.text.replace(/^auto-paused/, "Auto-paused") : `Auto-paused: ${pausedReason}`}
+          </span>
           {isDriftPaused && (
             <Button size="sm" variant="ghost"
               className="ml-auto h-6 text-[11px] text-info hover:text-info shrink-0"
@@ -355,6 +372,18 @@ function DeploymentCard({ item, busy, onPause, onResume, onRepin, onEvaluate, on
         <CardStat label="Lifetime ₹" value={inr(lt.realized_pnl)} tone={lt.realized_pnl} />
         <CardStat label="Win rate" value={lt.win_rate != null ? `${lt.win_rate}% (${lt.closed_trades})` : `— (${lt.closed_trades})`} />
       </div>
+
+      {/* Open positions beyond the bare count: rows CARRIED from an earlier day, and
+          rows in the OTHER book (a demoted deployment's real-money live trades) —
+          separate lines, never folded into the figures above. */}
+      {notes.map((n) => (
+        <div key={n.id}
+             className={`flex items-center gap-1.5 text-[11px] ${n.tone === "danger" ? "text-danger" : "text-warning"}`}
+             title={n.title} data-testid={`deployment-open-note-${n.id}`}>
+          <ShieldAlert className="w-3.5 h-3.5 shrink-0" />
+          <span>{n.text}</span>
+        </div>
+      ))}
 
       <div className="flex items-center gap-1.5 pt-1 border-t border-line flex-wrap">
         {paused ? (

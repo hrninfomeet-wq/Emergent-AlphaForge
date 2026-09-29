@@ -11,6 +11,7 @@ import {
   ChevronLeft, BookOpen,
 } from "lucide-react";
 import JournalLiveLane from "@/components/journal/JournalLiveLane";
+import { signalChipClass, signalDisplay } from "@/lib/signalDisplay";
 
 /**
  * Signals ledger (route /journal, rebuilt 2026-06-12, forward-surfaces R3).
@@ -377,6 +378,9 @@ export default function SignalJournal() {
               const reasons = s.reasons || [];
               const blockers = s.blockers || [];
               const rh = s.risk_hints || {};
+              // CONFIRMED is only "pending" while its own bar's routing pass runs; after
+              // that nothing ever acts on it (lib/signalDisplay.js) — label it truthfully.
+              const view = signalDisplay(s);
               const exitBits = [];
               if (s.exit_premium != null) exitBits.push(`₹${fmtNum(s.exit_premium)}`);
               if (s.exit_reason) exitBits.push(s.exit_reason);
@@ -407,10 +411,20 @@ export default function SignalJournal() {
                     <td className={`p-2 font-mono text-right ${colorPnL(s.pnl_value)}`}>{s.pnl_value != null ? inr(s.pnl_value) : "—"}</td>
                     <td className={`p-2 font-mono text-right ${colorPnL(s.pnl_premium_pts)}`}>{s.pnl_premium_pts != null ? fmtNum(s.pnl_premium_pts) : "—"}</td>
                     <td className="p-2 font-mono text-right">{fmtNum(s.score, 0)}</td>
-                    <td className="p-2"><span className={`text-[10px] px-1.5 py-0.5 rounded border font-mono ${STATE_STYLE[s.state] || "border-line text-dim"}`}>{s.state}</span></td>
-                    <td className="p-2 text-dimmer truncate max-w-[180px]" title={[...(s.paper_trade_error ? [s.paper_trade_error] : []), ...(s.paper_trade_skip ? [s.paper_trade_skip] : []), ...blockers].join("; ")}>
+                    <td className="p-2">
+                      <span
+                        className={`text-[10px] px-1.5 py-0.5 rounded border font-mono ${signalChipClass(view, STATE_STYLE[s.state] || "border-line text-dim")}`}
+                        title={view.note || ""}
+                        data-testid="signal-state-chip"
+                        data-signal-display={view.tone}
+                      >
+                        {view.label}
+                      </span>
+                    </td>
+                    <td className="p-2 text-dimmer truncate max-w-[180px]" title={[...(s.paper_trade_error ? [s.paper_trade_error] : []), ...(s.paper_trade_skip ? [s.paper_trade_skip] : []), ...(s.live_trade_error ? [s.live_trade_error] : []), ...blockers].join("; ")}>
                       {s.paper_trade_error ? <span className="text-rose-300">{s.paper_trade_error}</span>
                         : s.paper_trade_skip ? <span className="text-warning">{s.paper_trade_skip}</span>
+                        : s.live_trade_error ? <span className="text-warning">{s.live_trade_error}</span>
                         : (blockers.length ? blockers.join("; ") : "—")}
                     </td>
                   </tr>
