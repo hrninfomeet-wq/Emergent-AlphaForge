@@ -314,7 +314,7 @@ export function guardHealthView(guard) {
              title: "guard health not reported" };
   }
   const tone = {
-    watching: "success", idle: "default",
+    watching: "success", idle: "default", off_hours: "default",
     blind: "danger", stalled: "danger", not_running: "danger",
   }[h.state] || "warn";
   return { label: h.label || String(h.state).toUpperCase(), tone, title: h.reason || "" };

@@ -129,9 +129,43 @@ def _stats(**kw):
     (_stats(last_run_at=(NOW - timedelta(seconds=45)).isoformat()), "stalled"),
     (_stats(last_run_at=None), "stalled"),
     (_stats(last_error="NIFTY..: reprice unpriced (no quote) — retrying"), "watching"),
+    # outside the session `_run` skips every cycle on purpose: never "stalled"
+    (_stats(in_market_hours=False, last_run_at=None), "off_hours"),
+    (_stats(in_market_hours=False, last_error=TOKEN_EXPIRED_HINT), "off_hours"),
+    # ...but a real stall inside the session is still a stall, and an unknown
+    # window keeps the old reading
+    (_stats(in_market_hours=True, last_run_at=None), "stalled"),
+    (_stats(in_market_hours=None, last_run_at=None), "stalled"),
+    # a dead task outranks the clock
+    (_stats(in_market_hours=False, running=False), "not_running"),
 ])
 def test_guard_health(stats, state):
     assert guard_health(stats, now_utc=NOW)["state"] == state
+
+
+def test_off_hours_names_the_positions_waiting_for_the_open():
+    h = guard_health(_stats(in_market_hours=False, guarded=2), now_utc=NOW)
+    assert h["label"] == "OFF HOURS" and "2 registered position(s)" in h["reason"]
+    assert "registered" not in guard_health(_stats(in_market_hours=False, guarded=0),
+                                            now_utc=NOW)["reason"]
+
+
+def test_the_guard_reports_its_own_trading_window():
+    from app.live.live_position_guard import LiveMonitorRegistry, LivePositionGuard
+
+    async def _none():
+        return None
+
+    for inside in (True, False):
+        g = LivePositionGuard(registry=LiveMonitorRegistry(), client_factory=_none,
+                              square_fn=None, in_market_hours=lambda v=inside: v)
+        assert g.status()["in_market_hours"] is inside
+
+    def _boom():
+        raise RuntimeError("clock")
+    g = LivePositionGuard(registry=LiveMonitorRegistry(), client_factory=_none,
+                          square_fn=None, in_market_hours=_boom)
+    assert g.status()["in_market_hours"] is None
 
 
 def test_a_blind_guard_says_stops_cannot_fire():

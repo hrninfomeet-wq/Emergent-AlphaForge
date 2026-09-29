@@ -472,6 +472,9 @@ def guard_health(stats: Dict[str, Any], *, now_utc: datetime) -> Dict[str, Any]:
     ``{"state", "label", "reason"}`` where state is:
 
       * ``not_running`` — its task is not running;
+      * ``off_hours``   — outside the options session, where ``_run`` skips every
+                          cycle on purpose (reading that as ``stalled`` called a
+                          sleeping guard broken every evening and weekend);
       * ``stalled``     — no cycle has completed for GUARD_STALLED_AFTER_SECONDS;
       * ``blind``       — cycling, but every cycle stops at an unreadable position
                           book (e.g. the daily token expired) — no stop or target
@@ -487,6 +490,12 @@ def guard_health(stats: Dict[str, Any], *, now_utc: datetime) -> Dict[str, Any]:
     if not stats.get("running"):
         return {"state": "not_running", "label": "NOT RUNNING",
                 "reason": "the guard task is not running — nothing is watching stops"}
+    if stats.get("in_market_hours") is False:
+        held = int(stats.get("guarded") or 0)
+        return {"state": "off_hours", "label": "OFF HOURS",
+                "reason": "outside the options session — the guard cycles only while the "
+                          "market is open" + (f"; {held} registered position(s) resume "
+                                              "being watched at the next open" if held else "")}
     last = stats.get("last_run_at")
     try:
         last_dt = datetime.fromisoformat(str(last)) if last else None
@@ -680,6 +689,13 @@ class LivePositionGuard:
         st["stuck"] = sum(1 for e in self._registry.snapshot()
                           if e.get("reprice_exhausted") or e.get("reprice_stopped")
                           or e.get("square_stopped"))
+        # `_run` skips every cycle outside this window BY DESIGN, so "no cycle for
+        # 30 s" means nothing then. guard_health reads this to say OFF HOURS
+        # instead of STALLED. None when the window cannot be evaluated.
+        try:
+            st["in_market_hours"] = bool(self._in_market_hours())
+        except Exception:  # noqa: BLE001 — a status read never raises
+            st["in_market_hours"] = None
         return st
 
     async def _cycle(self) -> List[Dict[str, Any]]:

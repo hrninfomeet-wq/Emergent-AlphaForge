@@ -277,7 +277,7 @@ def test_the_ist_day_boundary_decides_staleness():
 
 @pytest.mark.parametrize("state,tone", [
     ("watching", "success"), ("idle", "default"), ("blind", "danger"),
-    ("stalled", "danger"), ("not_running", "danger"),
+    ("stalled", "danger"), ("not_running", "danger"), ("off_hours", "default"),
 ])
 def test_guard_health_tones(state, tone):
     out = _run_js(f"return M.guardHealthView({{health: {{state: {json.dumps(state)}, "

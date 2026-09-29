@@ -144,6 +144,15 @@ now read `candle_ts` (`signal_lifecycle.signal_bar_ms`, with `context.candle.ts`
 in the shape sampled from the real database (`tests/test_signal_bar_field.py`); 7/7 mutants
 killed.
 
+**Found on merge — the guard read STALLED every evening.** `LivePositionGuard._run` skips
+every cycle outside the options session by design, but `guard_health` (Phase 0) called any
+30 s without a cycle STALLED, so after 15:40, overnight and at weekends the Software Guard
+and the GUARD KPI showed a red fault on a sleeping guard. `status()` now carries
+`in_market_hours`; outside it the health is **OFF HOURS** (neutral tone, and the number of
+registered positions that resume at the open). A dead task still reads NOT RUNNING, a stall
+inside the session still reads STALLED, and an unknown window keeps the old reading. 5/5
+mutants killed.
+
 **7. Persisted reasons without a date.** `kill_switch_reason` / `drift_reason` persist on the
 deployment and are not cleared by a manual pause or resume (verified), so "auto-paused:
 max_consecutive_losses" could be a fortnight old. The three surfaces that print it
