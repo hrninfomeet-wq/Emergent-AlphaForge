@@ -290,3 +290,27 @@ def test_a_connected_session_keeps_transmit_and_dry_run():
     assert out[1]["entries"]["text"] == "dry-run" and out[1]["squares"]["text"] == "TRANSMIT"
     # an older payload without `connected` or the exit field keeps the old reading
     assert out[2]["squares"]["text"] == "TRANSMIT"
+
+
+# --------------------------------------------------------------------------- #
+# Exit reports — never "flattened"
+# --------------------------------------------------------------------------- #
+
+def test_a_submitted_exit_is_not_called_flat():
+    out = _run_js("return M.summarizeExitReport({exit_submitted_tsyms: ['X'], "
+                  "flat_confirmation_pending_tsyms: ['X']});")
+    assert out["ok"] is True and "awaiting fill confirmation" in out["message"]
+    assert "flattened" not in out["message"].lower()
+
+
+@pytest.mark.parametrize("key", ["failed_tsyms", "deferred_tsyms", "skipped_shared_tsyms",
+                                 "unguarded_open_tsyms"])
+def test_any_problem_makes_the_report_not_ok(key):
+    out = _run_js(f"return M.summarizeExitReport({{exit_submitted_tsyms: ['A'], {key}: ['B']}});")
+    assert out["ok"] is False and out["tone"] == "danger" and "B" in out["message"]
+
+
+def test_an_empty_report_says_nothing_was_open():
+    out = _run_js("return [M.summarizeExitReport({}), M.summarizeExitReport(null)];")
+    assert out[0]["ok"] is True and "nothing" in out[0]["message"]
+    assert out[1]["ok"] is False

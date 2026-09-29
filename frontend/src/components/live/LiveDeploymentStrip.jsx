@@ -1,16 +1,18 @@
 import { useMemo, useState } from "react";
-import { Activity, ChevronDown, ChevronRight, Loader2, OctagonX, Pause, Play, ShieldOff, Square } from "lucide-react";
+import { Activity, ChevronDown, ChevronRight, Loader2, LogOut, OctagonX, Pause, Play, RefreshCw, ShieldOff, Square } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { fmtINR } from "@/lib/fmt";
 import { getApiErrorMessage } from "@/lib/apiError";
 import { Button } from "@/components/ui/button";
 import DeployToLivePanel from "@/components/live/DeployToLivePanel";
+import ConfirmActionDialog from "@/components/live/ConfirmActionDialog";
+import { isDriftPaused, driftTooltip } from "@/lib/deploymentState";
 import { useLiveData } from "@/components/live/LiveDataProvider";
 import { asPositionRows } from "@/components/live/liveHelpers";
 import {
   bindingView, capHeadroom, describeIntended, entryRefusalView, openPositionRows,
-  readGovernor, sortDeploymentRows,
+  readGovernor, sortDeploymentRows, summarizeExitReport,
 } from "@/lib/liveDeploymentView";
 import { deploymentEntryEnd } from "@/lib/sessionClock";
 
@@ -84,13 +86,61 @@ function Headroom({ gov }) {
   );
 }
 
+// ── Tighten-only caps form ───────────────────────────────────────────────────
+const CAP_FIELDS = [
+  ["lots", "lots / entry"], ["max_lots_per_day", "max lots / day"],
+  ["max_concurrent", "max open"], ["daily_loss_cap", "daily loss cap ₹"],
+];
+
+function TightenCaps({ caps, busy, onTighten }) {
+  const [vals, setVals] = useState({});
+  const changed = {};
+  for (const [k] of CAP_FIELDS) {
+    const raw = vals[k];
+    if (raw === undefined || raw === "") continue;
+    const n = Number(raw);
+    if (Number.isFinite(n) && n !== Number(caps?.[k])) changed[k] = n;
+  }
+  return (
+    <div className="flex items-center gap-2 flex-wrap" data-testid="live-deploy-tighten">
+      <span className="text-dimmer">tighten caps:</span>
+      {CAP_FIELDS.map(([k, label]) => (
+        <label key={k} className="inline-flex items-center gap-1">
+          <span className="text-dimmer">{label}</span>
+          <input
+            type="number"
+            min="0"
+            step={k === "daily_loss_cap" ? "100" : "1"}
+            placeholder={caps?.[k] ?? "—"}
+            value={vals[k] ?? ""}
+            onChange={(e) => setVals((v) => ({ ...v, [k]: e.target.value }))}
+            className="w-20 h-6 px-1 rounded border border-line bg-bg-2 text-foreground"
+          />
+        </label>
+      ))}
+      <Button
+        variant="outline" size="sm"
+        disabled={busy || Object.keys(changed).length === 0}
+        onClick={() => onTighten(changed).then(() => setVals({}))}
+        className="h-6 text-[11px]"
+        title="Lower only. Any increase is refused — raising a cap needs Disable → re-Enable."
+        data-testid="live-deploy-tighten-go"
+      >
+        Apply
+      </Button>
+      <span className="text-dimmer">lower only — raising needs Disable → re-Enable</span>
+    </div>
+  );
+}
+
 // ── Expanded detail: open positions, intended entry, diagnostics ────────────
-function RowDetail({ liveStatus, gov, markedRows }) {
+function RowDetail({ liveStatus, gov, markedRows, busy, onTighten }) {
   const rows = openPositionRows(liveStatus?.open_positions, markedRows);
   const intended = describeIntended(liveStatus?.last_entry?.intended);
   const c = gov?.available ? gov.consumed || {} : {};
   return (
     <div className="px-3 pb-2 pl-7 space-y-1.5 text-[11px] font-mono" data-testid="live-deploy-detail">
+      <TightenCaps caps={liveStatus?.caps} busy={busy} onTighten={onTighten} />
       {rows.length === 0 ? (
         <div className="text-dimmer">No open positions registered with the guard.</div>
       ) : (
@@ -149,8 +199,10 @@ function RowDetail({ liveStatus, gov, markedRows }) {
 }
 
 // ── One live-mode deployment row ────────────────────────────────────────────
-function LiveRow({ dep, liveStatus, busy, onDisable, onStop, onPause, onResume, liveMtm, markedRows, nowMs, session }) {
+function LiveRow({ dep, liveStatus, busy, onDisable, onStop, onPause, onResume, onFlatten, onTighten, liveMtm, markedRows, nowMs, session }) {
   const [open, setOpen] = useState(false);
+  const [flattenOpen, setFlattenOpen] = useState(false);
+  const [holdAfter, setHoldAfter] = useState(true);
   // Status payload shape: { today: {orders, lots, realized_pnl}, open_positions: [...] }
   const today = liveStatus?.today || {};
   const todayOrders = today.orders ?? 0;
@@ -307,6 +359,19 @@ function LiveRow({ dep, liveStatus, busy, onDisable, onStop, onPause, onResume, 
 
       {/* Controls */}
       <div className="ml-auto flex items-center gap-1.5">
+        {/* Flatten — exit THIS deployment's positions and stay live. */}
+        <Button
+          variant="ghost"
+          size="sm"
+          disabled={busy || openPositions === 0}
+          onClick={() => { setHoldAfter(true); setFlattenOpen(true); }}
+          className="h-7 text-xs text-rose-300"
+          title={openPositions === 0 ? "No open positions" : "Exit this deployment's open positions — it stays live"}
+          data-testid="live-deploy-flatten"
+        >
+          <LogOut className="w-3 h-3 mr-1" />
+          Flatten
+        </Button>
         {/* Pause/Resume is the REVERSIBLE control: it flips risk.live.paused only,
             so mode stays "live" and Resume needs no re-consent. Deliberately NOT
             api.pauseDeployment() — that routes through the status path, which
@@ -361,13 +426,41 @@ function LiveRow({ dep, liveStatus, busy, onDisable, onStop, onPause, onResume, 
         </Button>
       </div>
     </div>
-    {open && <RowDetail liveStatus={liveStatus} gov={gov} markedRows={markedRows} />}
+    {open && <RowDetail liveStatus={liveStatus} gov={gov} markedRows={markedRows}
+                        busy={busy} onTighten={(body) => onTighten(dep, body)} />}
+    <ConfirmActionDialog
+      open={flattenOpen}
+      onOpenChange={setFlattenOpen}
+      title={`Flatten "${dep.name || dep.id}"?`}
+      confirmLabel={holdAfter ? "Flatten & hold" : "Flatten, keep trading"}
+      busy={busy}
+      onConfirm={async () => { await onFlatten(dep, holdAfter); setFlattenOpen(false); }}
+    >
+      <p>Sends REAL exit orders (marketable limit, re-priced until filled) for:</p>
+      <ul className="list-disc pl-4">
+        {openPositionRows(liveStatus?.open_positions, markedRows).map((p) => (
+          <li key={p.tsym}>
+            {p.tsym} · qty {p.qty ?? "—"}
+            {p.ltp != null && p.qty != null ? ` · ≈ ${fmtINR(p.ltp * p.qty)}` : " · value unknown"}
+          </li>
+        ))}
+      </ul>
+      <p>The deployment stays LIVE. A contract shared with another position is NOT sent.
+         Outside market hours nothing is sent.</p>
+      <label className="flex items-center gap-2 text-foreground">
+        <input type="checkbox" checked={holdAfter} onChange={(e) => setHoldAfter(e.target.checked)}
+               data-testid="live-deploy-flatten-hold" />
+        also HOLD new entries (recommended — otherwise the next signal can re-enter
+        while this exit is still working)
+      </label>
+    </ConfirmActionDialog>
     </div>
   );
 }
 
 // ── One non-live deployment row (shows Enable Live Execution trigger) ──────
-function NotLiveRow({ dep, busy, onArmed }) {
+function NotLiveRow({ dep, busy, onArmed, onRepin }) {
+  const drift = isDriftPaused(dep);
   return (
     <div className="px-3 py-2 flex items-center gap-2 flex-wrap">
       <span className="w-2 h-2 rounded-full bg-slate-500 shrink-0" />
@@ -380,6 +473,18 @@ function NotLiveRow({ dep, busy, onArmed }) {
         </div>
       </div>
       <span className="text-[11px] text-dimmer uppercase tracking-wider ml-1">Not live</span>
+      {drift && (
+        <Button
+          variant="ghost" size="sm" disabled={busy}
+          onClick={() => onRepin(dep)}
+          className="h-7 text-xs text-warning"
+          title={`${driftTooltip(dep)} — re-pins to the current strategy code and resumes PAPER. Live must be re-enabled separately.`}
+          data-testid="live-deploy-repin"
+        >
+          <RefreshCw className="w-3 h-3 mr-1" />
+          Re-pin & resume paper
+        </Button>
+      )}
       <div className="ml-auto">
         {/* eslint-disable-next-line react/prop-types */}
         <DeployToLivePanel dep={dep} onArmed={onArmed} />
@@ -500,6 +605,53 @@ export default function LiveDeploymentStrip() {
       await refreshAll();
     } catch (e) {
       toast.error(e.response?.data?.detail || e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Flatten WITHOUT demoting: this deployment's positions only; it stays live.
+  // The toast reports what was SUBMITTED — never "flattened" (a broker
+  // acceptance is not a fill) — and turns red for anything failed or skipped.
+  const doFlatten = async (dep, hold) => {
+    setBusy(true);
+    try {
+      const res = await api.liveFlatten(dep.id, { hold: Boolean(hold) });
+      const s = summarizeExitReport(res);
+      (s.ok ? toast.success : toast.error)(
+        `${dep.name || dep.id}${res?.held ? " (held)" : ""}: ${s.message}`,
+        { duration: s.ok ? 6000 : 15000 },
+      );
+      await refreshAll();
+    } catch (e) {
+      toast.error(getApiErrorMessage(e, e.message));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const doTighten = async (dep, body) => {
+    setBusy(true);
+    try {
+      const res = await api.liveCaps(dep.id, body);
+      const adv = (res?.advisories || []).map((a) => a.message).join(" ");
+      toast.success(`Caps tightened for "${dep.name || dep.id}": ${(res?.changed || []).join(", ") || "no change"}${adv ? ` — ${adv}` : ""}`);
+      await refreshAll();
+    } catch (e) {
+      toast.error(getApiErrorMessage(e, e.message));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const doRepin = async (dep) => {
+    setBusy(true);
+    try {
+      await api.repinDeploymentSource(dep.id);
+      toast.success(`Re-pinned "${dep.name || dep.id}" — resuming in PAPER. Re-enable live separately.`);
+      await refreshAll();
+    } catch (e) {
+      toast.error(getApiErrorMessage(e, e.message));
     } finally {
       setBusy(false);
     }
@@ -684,6 +836,8 @@ export default function LiveDeploymentStrip() {
                   onStop={doStop}
                   onPause={doPause}
                   onResume={doResume}
+                  onFlatten={doFlatten}
+                  onTighten={doTighten}
                   liveMtm={mtmByDeployment[dep.id]}
                   markedRows={markedRows}
                   nowMs={nowMs}
@@ -715,6 +869,7 @@ export default function LiveDeploymentStrip() {
                   dep={dep}
                   busy={busy}
                   onArmed={refreshAll}
+                  onRepin={doRepin}
                 />
               ))}
             </div>

@@ -2,6 +2,61 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [Unreleased] — Controls a trader reaches for: tighten caps, flatten and stay live (2026-09-29)
+
+Phase 4 of the Live Deployments uplift — the only new write paths, landed after the
+read-only phases so the operator could see the caps before being able to change them.
+
+**Found first: the risk supervisor's per-deployment loss pause had never worked**
+(committed separately, `35a33fe`): `_set_deployment_status(db, dep_id, "PAUSED")`
+passed three arguments to a two-argument function, so from 2026-08-06 every breach
+raised TypeError into the loop's catch-all. Its only test checked by AST that the
+call's name appeared.
+
+**And a prerequisite the plan missed: `/live/pause` could silently revert a caps
+change.** It `$set` the whole `risk` subtree it had read, so a tighten landing inside
+that window was undone on a deployment that stayed live. Pause/resume now write only
+their own leaves (`risk.live.paused` / `paused_at`); the route harness's fake Mongo
+gained dotted-path `$set`/`$unset` to model it. The regression test's first version
+passed against the bug — its "race" mutated the very object pause had read (a shallow
+copy); a real read is a snapshot, and the test now deep-copies.
+
+**`POST /deployments/{id}/live/caps` — tighten only.** Lowers lots / max_lots_per_day /
+max_concurrent / daily_loss_cap without leaving live. Any increase — even one field of
+a request that lowers others — is refused whole (409 `caps_loosening_refused`, nothing
+written): raising a cap keeps the Disable → re-Enable ceremony, the repo's own
+restrictive-vs-permissive asymmetry. A missing stored `lots` counts as the 1 lot
+`resolve_capped_lots` trades. Validation is `/live/enable`'s own — its cap checks were
+extracted into shared helpers both routes call — but broker readiness, the data gate
+and forward validation are not required: tightening must work with the broker down.
+The write touches only the cap leaves, compare-and-swap on `updated_at` + ACTIVE +
+live: a Stop wins, and a concurrent tighten from another tab (to 1 lot) cannot be
+loosened back by a stale request (for 2). Advisories say when the new cap is already
+reached.
+
+**`POST /deployments/{id}/live/flatten` — exit and stay live.** Squares this
+deployment's positions through the same margin-safe path as `/live/stop` and never
+touches mode or status (optional `hold` sets the live HOLD *before* squaring, so the
+next signal cannot re-enter while the exit works). Honest by construction: outside
+market hours it refuses and sends nothing (409 `market_closed` — the plan assumed the
+exchange would reject; nothing in the code checked); a contract shared with another
+position is skipped (squaring clamps to the ACCOUNT's netqty on that scrip); OPEN
+journal rows the guard does not hold — after a restart a rehydrated entry has no owner
+— are named `unguarded_open_tsyms`, never squared; `fill_confirmed` is always false.
+`/live/stop` is unchanged (the skips are opt-in).
+
+**On the pane:** Flatten (a real dialog naming each contract, quantity and ≈ value;
+"hold" pre-ticked), a tighten-caps form in the row detail, re-pin & resume PAPER on
+drift-paused rows (it never restores live — drift demotes). Exit reports are
+summarized by one tested helper that never says "flattened".
+
+Also: an unreadable trade book no longer ends recovery as `ok` (its prices would be
+lost for the day), and a same-day entry the broker rejected closes `never_filled` on
+a flat book instead of holding a concurrency slot all session.
+
+Tests: 31 route tests; **12/12 mutants killed** after two survivors exposed two weak
+tests (above). CI build clean; full suite 6096 passed.
+
 ## [Unreleased] — A server-side trading clock: countdowns that cannot drift (2026-09-29)
 
 Phase 3 of the Live Deployments uplift. The operator learned of the 15:00 entry

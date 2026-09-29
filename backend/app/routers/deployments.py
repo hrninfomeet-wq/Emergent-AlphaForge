@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel, StrictBool
+from pydantic import BaseModel, ConfigDict, StrictBool
 
 from app.db import get_db, serialize_doc
 from app.strategies.base import get_registry
@@ -205,7 +205,8 @@ def _utcnow() -> datetime:
 
 
 async def _square_live_positions_for_deployment(
-    deployment_id: str, *, reason: str
+    deployment_id: str, *, reason: str,
+    skip_shared: bool = False, skip_squaring: bool = False,
 ) -> Dict[str, List[str]]:
     """Submit flatten attempts for this deployment and keep guarding to flat.
 
@@ -213,6 +214,16 @@ async def _square_live_positions_for_deployment(
     position therefore remains in the live registry with its OCO intact.  The
     background guard is the sole owner of irreversible finalization after its
     consecutive authenticated flat reads.
+
+    Two opt-in refusals, used by the flatten-without-demote route (defaults leave
+    /live/stop exactly as it was):
+
+      * ``skip_shared`` — a contract ALSO held by another registry entry (another
+        deployment, a rehydrated entry with no owner, a manual one) is not sent:
+        square_position clamps to the ACCOUNT's netqty and cancels every working
+        order on the scrip, so it would flatten the other position too;
+      * ``skip_squaring`` — an entry already squaring is not re-sent (a re-send
+        resets the guard's re-price band state).
     """
     reg = _live_registry()
     report: Dict[str, List[str]] = {
@@ -223,7 +234,30 @@ async def _square_live_positions_for_deployment(
         "deferred_tsyms": [],
         "failed_tsyms": [],
     }
-    targets = [e for e in reg.snapshot() if str(e.get("deployment_id") or "") == str(deployment_id)]
+    if skip_shared:
+        report["skipped_shared_tsyms"] = []
+    if skip_squaring:
+        report["already_squaring_tsyms"] = []
+    snapshot = reg.snapshot()
+    targets = [e for e in snapshot if str(e.get("deployment_id") or "") == str(deployment_id)]
+    if skip_shared:
+        others = {str(e.get("tsym") or "") for e in snapshot
+                  if str(e.get("deployment_id") or "") != str(deployment_id)}
+        kept = []
+        for e in targets:
+            if str(e.get("tsym") or "") in others:
+                report["skipped_shared_tsyms"].append(str(e.get("tsym") or ""))
+            else:
+                kept.append(e)
+        targets = kept
+    if skip_squaring:
+        kept = []
+        for e in targets:
+            if e.get("squaring"):
+                report["already_squaring_tsyms"].append(str(e.get("tsym") or ""))
+            else:
+                kept.append(e)
+        targets = kept
     if not targets:
         return report
     # Resolve a broker client + uid/actid (best-effort). This is a USER-INITIATED
@@ -278,6 +312,75 @@ def _live_today_counters(rows: List[Dict[str, Any]], now_utc: datetime) -> Dict[
     lots = sum(int(_float(r.get("lots"))) for r in todays)
     realized = daily_realized_summary(rows, today)["net"]
     return {"orders": orders, "lots": lots, "realized_pnl": realized}
+
+
+def _validate_live_cap_values(lots: Any, max_lots_per_day: Any, max_concurrent: Any,
+                              daily_loss_cap: Any) -> None:
+    """The cap-value rules for live — ONE copy, used by /live/enable and by the
+    tighten-only /live/caps, so the two can never accept different values."""
+    if int(lots) < 1 or int(max_lots_per_day) < 1 or int(max_concurrent) < 1:
+        raise HTTPException(
+            400,
+            "lots, max_lots_per_day and max_concurrent must all be >= 1 — a live "
+            "deployment without caps would trade unbounded.",
+        )
+    # daily_loss_cap is MANDATORY for live. It is the only day-level realized-loss
+    # halt a live deployment has: the deployment-level kill switches
+    # (check_deployment_kill_switches / check_soft_daily_governor) are paper-only by
+    # construction. Under the old per-session ARM this was less acute — a forgotten
+    # arm auto-expired at 15:00, bounding exposure to one session — but v0.56.0 live
+    # deployments persist across sessions, so an omitted cap means indefinite
+    # unbounded daily loss. Require a positive value; the governor pauses the
+    # deployment (and demotes it to paper) when realized+unrealized breaches it.
+    if (daily_loss_cap is None
+            or not math.isfinite(float(daily_loss_cap))
+            or float(daily_loss_cap) <= 0):
+        raise HTTPException(
+            400,
+            "daily_loss_cap (a positive rupee amount) is required to go live — it is "
+            "the only day-level loss halt a live deployment has.",
+        )
+
+
+async def _validate_live_caps_against_account(lots: Any, max_concurrent: Any) -> Dict[str, Any]:
+    """Account-level capital ceilings — ONE copy for /live/enable and /live/caps.
+    The executor checks them again at order time. Returns the ceilings it checked
+    against (and the raw config) for the caller to snapshot."""
+    try:
+        account_safety = await _live_safety_config()
+        account_max_lots = max(1, int(account_safety.get("max_lots_per_order") or 1))
+        account_max_open = max(1, int(account_safety.get("max_open_positions") or 1))
+    except Exception as exc:
+        raise HTTPException(
+            503,
+            "Account-level live safety configuration is unavailable; cannot verify capital ceilings.",
+        ) from exc
+    if int(lots) > account_max_lots:
+        raise HTTPException(
+            400,
+            detail={
+                "code": "account_lot_ceiling_exceeded",
+                "message": (
+                    f"lots={int(lots)} exceeds the account ceiling of {account_max_lots}. "
+                    "Change the account safety setting first or choose a lower value."
+                ),
+                "max_lots_per_order": account_max_lots,
+            },
+        )
+    if int(max_concurrent) > account_max_open:
+        raise HTTPException(
+            400,
+            detail={
+                "code": "account_position_ceiling_exceeded",
+                "message": (
+                    f"max_concurrent={int(max_concurrent)} exceeds the account ceiling "
+                    f"of {account_max_open}. Change the account safety setting first or choose a lower value."
+                ),
+                "max_open_positions": account_max_open,
+            },
+        )
+    return {"config": account_safety, "max_lots_per_order": account_max_lots,
+            "max_open_positions": account_max_open}
 
 
 class _LiveEnableBody(BaseModel):
@@ -1205,28 +1308,8 @@ async def enable_deployment_live(deployment_id: str, body: _LiveEnableBody):
     """
     if body.confirm is not True:
         raise HTTPException(400, "Enabling live execution requires confirm=True (literal boolean).")
-    if int(body.lots) < 1 or int(body.max_lots_per_day) < 1 or int(body.max_concurrent) < 1:
-        raise HTTPException(
-            400,
-            "lots, max_lots_per_day and max_concurrent must all be >= 1 — a live "
-            "deployment without caps would trade unbounded.",
-        )
-    # daily_loss_cap is MANDATORY for live. It is the only day-level realized-loss
-    # halt a live deployment has: the deployment-level kill switches
-    # (check_deployment_kill_switches / check_soft_daily_governor) are paper-only by
-    # construction. Under the old per-session ARM this was less acute — a forgotten
-    # arm auto-expired at 15:00, bounding exposure to one session — but v0.56.0 live
-    # deployments persist across sessions, so an omitted cap means indefinite
-    # unbounded daily loss. Require a positive value; the governor pauses the
-    # deployment (and demotes it to paper) when realized+unrealized breaches it.
-    if (body.daily_loss_cap is None
-            or not math.isfinite(float(body.daily_loss_cap))
-            or float(body.daily_loss_cap) <= 0):
-        raise HTTPException(
-            400,
-            "daily_loss_cap (a positive rupee amount) is required to go live — it is "
-            "the only day-level loss halt a live deployment has.",
-        )
+    _validate_live_cap_values(body.lots, body.max_lots_per_day, body.max_concurrent,
+                              body.daily_loss_cap)
     for field_name, value in (
         ("catastrophe_stop_pct", body.catastrophe_stop_pct),
         ("catastrophe_target_pct", body.catastrophe_target_pct),
@@ -1301,39 +1384,10 @@ async def enable_deployment_live(deployment_id: str, body: _LiveEnableBody):
     # This is independent of research evidence: the operator may change these
     # ceilings explicitly on Live Trading, but a single deployment cannot bypass
     # them by crafting an API request. The executor checks them again at order time.
-    try:
-        account_safety = await _live_safety_config()
-        account_max_lots = max(1, int(account_safety.get("max_lots_per_order") or 1))
-        account_max_open = max(1, int(account_safety.get("max_open_positions") or 1))
-    except Exception as exc:
-        raise HTTPException(
-            503,
-            "Account-level live safety configuration is unavailable; cannot verify capital ceilings.",
-        ) from exc
-    if int(body.lots) > account_max_lots:
-        raise HTTPException(
-            400,
-            detail={
-                "code": "account_lot_ceiling_exceeded",
-                "message": (
-                    f"lots={int(body.lots)} exceeds the account ceiling of {account_max_lots}. "
-                    "Change the account safety setting first or choose a lower value."
-                ),
-                "max_lots_per_order": account_max_lots,
-            },
-        )
-    if int(body.max_concurrent) > account_max_open:
-        raise HTTPException(
-            400,
-            detail={
-                "code": "account_position_ceiling_exceeded",
-                "message": (
-                    f"max_concurrent={int(body.max_concurrent)} exceeds the account ceiling "
-                    f"of {account_max_open}. Change the account safety setting first or choose a lower value."
-                ),
-                "max_open_positions": account_max_open,
-            },
-        )
+    _acct = await _validate_live_caps_against_account(body.lots, body.max_concurrent)
+    account_safety = _acct["config"]
+    account_max_lots = _acct["max_lots_per_order"]
+    account_max_open = _acct["max_open_positions"]
 
     # Evidence is a warning/consent gate, not an irrevocable capital veto.  The
     # user explicitly requested freedom to authorize a compatible strategy even
@@ -1537,13 +1591,21 @@ async def _set_live_paused(deployment_id: str, paused: bool) -> Dict[str, Any]:
     #            deployment the operator had just stopped — and, because this
     #            writes the WHOLE `risk` subtree, would also revert any concurrent
     #            change to risk.sizing / risk.exit_controls / caps.
+    #
+    # Both write ONLY the flag's own leaves (dotted paths), never the whole `risk`
+    # subtree. The unconditional pause used to $set the entire risk it had read,
+    # so a live-caps TIGHTEN landing between that read and this write was silently
+    # reverted — on a deployment that stayed live (2026-09-29 Phase 4 review).
     _filter: Dict[str, Any] = {"id": deployment_id}
-    if not paused:
+    if paused:
+        _update: Dict[str, Any] = {"$set": {"risk.live.paused": True,
+                                            "risk.live.paused_at": now_iso,
+                                            "updated_at": now_iso}}
+    else:
         _filter["updated_at"] = deployment.get("updated_at")
-    res = await db.strategy_deployments.update_one(
-        _filter,
-        {"$set": {"risk": risk, "updated_at": now_iso}},
-    )
+        _update = {"$unset": {"risk.live.paused": "", "risk.live.paused_at": ""},
+                   "$set": {"updated_at": now_iso}}
+    res = await db.strategy_deployments.update_one(_filter, _update)
     if not paused and int(getattr(res, "matched_count", 0) or 0) != 1:
         current = await db.strategy_deployments.find_one({"id": deployment_id}, {"_id": 0}) or {}
         raise HTTPException(
@@ -1832,6 +1894,198 @@ async def deployment_live_status(deployment_id: str):
     if payload is None:
         raise HTTPException(404, "Deployment not found")
     return serialize_doc(payload)
+
+
+class _LiveCapsBody(BaseModel):
+    """A TIGHTEN of a live deployment's caps. Any omitted field keeps its value."""
+    model_config = ConfigDict(extra="forbid")
+    lots: Optional[int] = None
+    max_lots_per_day: Optional[int] = None
+    max_concurrent: Optional[int] = None
+    daily_loss_cap: Optional[float] = None
+
+
+_LIVE_CAP_FIELDS = ("lots", "max_lots_per_day", "max_concurrent", "daily_loss_cap")
+
+
+def _effective_cap(field: str, value: Any) -> float:
+    """What a stored cap ENFORCES, for the tighten test. A missing / non-positive
+    ceiling is unbounded (+inf); a missing lots is 1 (resolve_capped_lots)."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        v = float("nan")
+    if field == "lots":
+        return v if math.isfinite(v) and v >= 1 else 1.0
+    return v if math.isfinite(v) and v > 0 else float("inf")
+
+
+@api.post("/deployments/{deployment_id}/live/caps")
+async def tighten_deployment_live_caps(deployment_id: str, body: _LiveCapsBody):
+    """TIGHTEN a live deployment's caps without leaving live. Loosening → 409.
+
+    Follows the repo's own pause/resume asymmetry: the RESTRICTIVE direction is
+    safe without re-consent, the permissive one keeps the ceremony. So this only
+    ever lowers lots / max_lots_per_day / max_concurrent / daily_loss_cap; any
+    increase — even one field of a request that lowers others — is refused whole
+    and nothing is written, and the operator uses Disable -> re-Enable.
+
+    Validation is /live/enable's own (the shared _validate_* helpers). Broker
+    readiness, the data gate and forward validation are NOT required: those
+    authorize going live, and tightening must work with the broker down.
+
+    The write touches only the cap leaves, guarded by a compare-and-swap on
+    `updated_at` (as /live/resume) plus mode/status, so a Stop / Disable /
+    demotion landing between the read and the write wins (409). It applies to
+    signals evaluated AFTER the write.
+    """
+    requested = {f: getattr(body, f) for f in _LIVE_CAP_FIELDS if getattr(body, f) is not None}
+    if not requested:
+        raise HTTPException(400, detail={"code": "no_caps_supplied",
+                                         "message": "Supply at least one cap to tighten."})
+    db = get_db()
+    deployment = await db.strategy_deployments.find_one({"id": deployment_id}, {"_id": 0})
+    if not deployment:
+        raise HTTPException(404, "Deployment not found")
+    if (str(deployment.get("mode") or "").lower() != "live"
+            or str(deployment.get("status") or "").upper() != "ACTIVE"):
+        raise HTTPException(409, detail={
+            "code": "deployment_not_live",
+            "message": "Only an ACTIVE live deployment's caps can be tightened here."})
+    from app.live_deploy_governor import describe_live_caps, precheck_live_caps
+    _live, _pre = precheck_live_caps(deployment)
+    if _pre is not None and not _pre.get("allow"):
+        # The governor refuses every entry on this doc already; any value written
+        # would be a loosening. Disable -> re-Enable writes a complete set.
+        raise HTTPException(409, detail={
+            "code": "stored_caps_invalid",
+            "message": f"The stored caps are invalid ({_pre.get('reason')}); "
+                       "disable and re-enable live to set them."})
+    live = dict((deployment.get("risk") or {}).get("live") or {})
+    current = {f: live.get(f) for f in _LIVE_CAP_FIELDS}
+    merged = {**current, **requested}
+    _validate_live_cap_values(merged["lots"], merged["max_lots_per_day"],
+                              merged["max_concurrent"], merged["daily_loss_cap"])
+    await _validate_live_caps_against_account(merged["lots"], merged["max_concurrent"])
+    loosened = [
+        {"field": f, "current": current[f], "requested": v}
+        for f, v in requested.items()
+        if _effective_cap(f, v) > _effective_cap(f, current[f])
+    ]
+    if loosened:
+        raise HTTPException(409, detail={
+            "code": "caps_loosening_refused",
+            "message": "Only tightening is allowed here — nothing was changed. To "
+                       "raise a cap, disable and re-enable live execution.",
+            "loosened": loosened})
+    changed = [f for f, v in requested.items()
+               if _effective_cap(f, v) != _effective_cap(f, current[f])]
+    base = {"deployment_id": deployment_id, "mode": deployment.get("mode"),
+            "status": deployment.get("status"), "live_paused": bool(live.get("paused"))}
+    if not changed:
+        return serialize_doc({**base, "changed": [], "caps": current, "advisories": []})
+    now_iso = datetime.now(timezone.utc).isoformat()
+    _set: Dict[str, Any] = {f"risk.live.{f}": requested[f] for f in changed}
+    _set["risk.live.last_caps_change"] = {
+        "at": now_iso, "from": {f: current[f] for f in changed},
+        "to": {f: requested[f] for f in changed}}
+    _set["updated_at"] = now_iso
+    res = await db.strategy_deployments.update_one(
+        {"id": deployment_id, "status": "ACTIVE", "mode": "live",
+         "updated_at": deployment.get("updated_at")},
+        {"$set": _set})
+    if int(getattr(res, "matched_count", 0) or 0) != 1:
+        now_doc = await db.strategy_deployments.find_one({"id": deployment_id}, {"_id": 0}) or {}
+        raise HTTPException(409, detail={
+            "code": "deployment_changed_during_caps_update",
+            "message": "This deployment changed while the update was in flight (it "
+                       "may have been stopped, disabled or re-evaluated), so the caps "
+                       "were NOT changed. Re-check it and retry.",
+            "current_status": now_doc.get("status"), "current_mode": now_doc.get("mode")})
+    advisories: List[Dict[str, Any]] = []
+    try:
+        fresh = await db.strategy_deployments.find_one({"id": deployment_id}, {"_id": 0}) or {}
+        cfg = await _live_safety_config()
+        gov = await describe_live_caps(db, fresh, account_config=cfg)
+        reason = (gov.get("verdict") or {}).get("reason")
+        if reason in ("daily_loss_cap", "max_lots_per_day", "max_concurrent"):
+            advisories.append({
+                "code": f"already_at_{reason}",
+                "message": "The new cap is already reached — the next entry will be "
+                           "refused" + (" and the deployment paused" if reason == "daily_loss_cap"
+                                        else "") + "."})
+    except Exception:
+        pass  # advisories never fail the write that already landed
+    return serialize_doc({**base, "changed": changed, "caps": merged,
+                          "advisories": advisories})
+
+
+class _LiveFlattenBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    hold: StrictBool = False
+
+
+@api.post("/deployments/{deployment_id}/live/flatten")
+async def flatten_deployment_live(deployment_id: str, body: Optional[_LiveFlattenBody] = None):
+    """Exit THIS deployment's open live positions and keep it LIVE.
+
+    /live/stop flattens and ALSO demotes to paper + PAUSED. This only squares —
+    through the same margin-safe path (_square_live_positions_for_deployment) —
+    and never touches mode or status. `hold=true` first sets the live HOLD
+    (risk.live.paused, entries only) so the next signal cannot re-enter while the
+    exit is still working.
+
+    Honest by construction:
+      * out of market hours it REFUSES (409 market_closed) and sends nothing —
+        an order the exchange would reject is not a flatten;
+      * a contract shared with another registry entry is skipped, not squared
+        (squaring clamps to the whole account's netqty on that scrip);
+      * OPEN journal rows the guard does not hold (e.g. after a restart, a
+        rehydrated entry has no owner) are listed as `unguarded_open_tsyms`,
+        never squared automatically;
+      * `fill_confirmed` is always False — a submitted exit is not a fill; the
+        guard finalizes after its consecutive flat reads.
+    """
+    body = body or _LiveFlattenBody()
+    db = get_db()
+    deployment = await db.strategy_deployments.find_one({"id": deployment_id}, {"_id": 0})
+    if not deployment:
+        raise HTTPException(404, "Deployment not found")
+    ms = market_status(datetime.now(timezone.utc) + timedelta(hours=5, minutes=30))
+    if not ms.get("is_open"):
+        raise HTTPException(409, detail={
+            "code": "market_closed",
+            "message": f"The market is not open ({ms.get('phase')}) — nothing was sent. "
+                       "An exit placed now would be rejected by the exchange.",
+            "phase": ms.get("phase")})
+    held = False
+    if body.hold and str(deployment.get("mode") or "").lower() == "live":
+        await _set_live_paused(deployment_id, True)
+        held = True
+    report = await _square_live_positions_for_deployment(
+        deployment_id, reason="manual_flatten", skip_shared=True, skip_squaring=True)
+    guarded = {str(e.get("tsym") or "") for e in _live_registry().snapshot()
+               if str(e.get("deployment_id") or "") == str(deployment_id)}
+    try:
+        open_rows = await db.live_trades.find(
+            {"deployment_id": deployment_id, "status": "OPEN"}).to_list(length=None)
+    except Exception:
+        open_rows = []
+    unguarded = sorted({str(r.get("noren_tsym") or r.get("trading_symbol") or "?")
+                        for r in open_rows
+                        if str(r.get("noren_tsym") or "") not in guarded})
+    fresh = await db.strategy_deployments.find_one({"id": deployment_id}, {"_id": 0}) or {}
+    complete = not (report["failed_tsyms"] or report["deferred_tsyms"]
+                    or report.get("skipped_shared_tsyms") or unguarded)
+    return serialize_doc({
+        "deployment_id": deployment_id, **report,
+        "unguarded_open_tsyms": unguarded,
+        "complete": bool(complete),
+        "fill_confirmed": False,
+        "held": held,
+        "mode": fresh.get("mode"),
+        "status": fresh.get("status"),
+    })
 
 
 @api.post("/deployments/{deployment_id}/repin-source")

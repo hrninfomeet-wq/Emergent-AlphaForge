@@ -71,6 +71,30 @@ def _get_dotted(row: Dict[str, Any], key: str) -> Any:
     return cur
 
 
+def _apply_update(row: Dict[str, Any], update: Dict[str, Any]) -> None:
+    """$set / $unset with Mongo's DOTTED-path semantics. A targeted write such as
+    {"$set": {"risk.live.paused": True}} must change one leaf and nothing else —
+    which is the whole point of writing it that way (a whole-subtree write loses a
+    concurrent change to a sibling field)."""
+    for key, value in (update.get("$set") or {}).items():
+        parts = key.split(".")
+        cur = row
+        for part in parts[:-1]:
+            if not isinstance(cur.get(part), dict):
+                cur[part] = {}
+            cur = cur[part]
+        cur[parts[-1]] = value
+    for key in (update.get("$unset") or {}):
+        parts = key.split(".")
+        cur = row
+        for part in parts[:-1]:
+            cur = cur.get(part) if isinstance(cur, dict) else None
+            if not isinstance(cur, dict):
+                break
+        else:
+            cur.pop(parts[-1], None)
+
+
 def _match(row: Dict[str, Any], query: Dict[str, Any]) -> bool:
     for k, v in query.items():
         rv = _get_dotted(row, k)
@@ -106,8 +130,7 @@ class _Collection:
     async def update_one(self, query, update, upsert=False):
         for r in self.rows:
             if _match(r, query):
-                if "$set" in update:
-                    r.update(update["$set"])
+                _apply_update(r, update)
                 return type("R", (), {"matched_count": 1})()
         return type("R", (), {"matched_count": 0})()
 
@@ -115,8 +138,7 @@ class _Collection:
         n = 0
         for r in self.rows:
             if _match(r, query):
-                if "$set" in update:
-                    r.update(update["$set"])
+                _apply_update(r, update)
                 n += 1
         return type("R", (), {"matched_count": n})()
 

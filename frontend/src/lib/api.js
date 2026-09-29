@@ -371,6 +371,13 @@ export const api = {
     apiClient.post(`/deployments/${id}/live/resume`).then((r) => r.data),
   liveStop: (id) =>
     apiClient.post(`/deployments/${id}/live/stop`).then((r) => r.data),
+  // TIGHTEN-only live caps (any loosening is a 409 — use Disable → re-Enable).
+  liveCaps: (id, body) =>
+    apiClient.post(`/deployments/${id}/live/caps`, body).then((r) => r.data),
+  // Exit this deployment's positions and STAY live (hold=true also blocks new
+  // entries). Never "flattened": the response says what was submitted.
+  liveFlatten: (id, body = { hold: true }) =>
+    apiClient.post(`/deployments/${id}/live/flatten`, body).then((r) => r.data),
   liveStatus: (id) =>
     apiClient.get(`/deployments/${id}/live/status`).then((r) => r.data),
   // Batched: one request for many deployments → { id: <same per-id payload> }.

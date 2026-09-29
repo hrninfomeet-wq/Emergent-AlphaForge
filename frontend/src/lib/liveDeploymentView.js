@@ -273,3 +273,35 @@ export function guardHealthView(guard) {
   }[h.state] || "warn";
   return { label: h.label || String(h.state).toUpperCase(), tone, title: h.reason || "" };
 }
+
+/**
+ * An exit report (/live/stop, /live/flatten, stop-all's per-deployment reports)
+ * in one honest line. A broker ACCEPTANCE is not a fill, so nothing here ever
+ * says "flattened"; anything failed, deferred, skipped or unguarded makes the
+ * result not-ok. The old Stop toast said "Stopped" whatever the report held.
+ */
+export function summarizeExitReport(r) {
+  if (!r || typeof r !== "object") return { ok: false, tone: "danger", message: "no response from the exit request" };
+  const list = (k) => (Array.isArray(r[k]) ? r[k] : []);
+  const done = [];
+  const problems = [];
+  const s = list("exit_submitted_tsyms");
+  if (s.length) done.push(`exit submitted: ${s.join(", ")} — awaiting fill confirmation`);
+  const f = list("already_flat_tsyms");
+  if (f.length) done.push(`already flat: ${f.join(", ")}`);
+  const c = list("cancel_confirmed_tsyms");
+  if (c.length) done.push(`unfilled entry cancelled: ${c.join(", ")}`);
+  const q = list("already_squaring_tsyms");
+  if (q.length) done.push(`already exiting: ${q.join(", ")}`);
+  const failed = list("failed_tsyms");
+  if (failed.length) problems.push(`FAILED — still open: ${failed.join(", ")}`);
+  const deferred = list("deferred_tsyms");
+  if (deferred.length) problems.push(`deferred (another exit in flight): ${deferred.join(", ")}`);
+  const shared = list("skipped_shared_tsyms");
+  if (shared.length) problems.push(`NOT sent — contract shared with another position: ${shared.join(", ")}`);
+  const ung = list("unguarded_open_tsyms");
+  if (ung.length) problems.push(`open in the journal but not held by the guard: ${ung.join(", ")} — check the broker`);
+  const ok = problems.length === 0;
+  if (!done.length && ok) done.push("nothing was open to exit");
+  return { ok, tone: ok ? "success" : "danger", message: [...done, ...problems].join(" · ") };
+}
