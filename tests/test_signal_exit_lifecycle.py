@@ -550,3 +550,26 @@ def test_backfill_one_bad_signal_does_not_abort_the_rest():
     out = _bf(db, apply=True)
     assert out["errors"] == 1 and out["moved"] == 2
     assert _state(db, s["s1"]) == "ACTIVE"
+
+
+def test_backfill_follows_the_trades_back_reference_past_a_dangling_signal_id():
+    """The real database (2026-09-29): 697 of 705 ACTIVE signals carried a
+    paper_trade_id, only 108 paper trades existed, and 49 ACTIVE signals were
+    referenced by a CLOSED paper trade's own signal_id. Following only the
+    signal-side id moved none of them."""
+    db = FakeDB()
+    sig = make_signal("ACTIVE", paper_trade_id="PURGED-ID")
+    db.signals.rows.append(sig)
+    db.paper_trades.rows.append({"id": "PT9", "signal_id": sig["id"], "status": "CLOSED",
+                                 "closed_at": "2026-09-28T15:00:00+05:30"})
+    out = _bf(db, apply=True)
+    assert out["moved"] == 1 and _state(db, sig) == "EXITED"
+
+
+def test_a_back_referencing_trade_still_open_keeps_the_signal_active():
+    db = FakeDB()
+    sig = make_signal("ACTIVE", paper_trade_id="PURGED-ID")
+    db.signals.rows.append(sig)
+    db.paper_trades.rows.append({"id": "PT9", "signal_id": sig["id"], "status": "OPEN"})
+    out = _bf(db, apply=True)
+    assert out["moved"] == 0 and _state(db, sig) == "ACTIVE"

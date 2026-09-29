@@ -53,10 +53,18 @@ async def _find_one(coll: Any, query: Dict[str, Any]) -> Optional[Dict[str, Any]
 async def _linked_trades(db: Any, sig: Dict[str, Any]) -> list:
     """Every trade doc this signal is linked to, as (collection_name, doc)."""
     found = []
+    paper = None
     if sig.get("paper_trade_id"):
-        doc = await _find_one(db.paper_trades, {"id": sig["paper_trade_id"]})
-        if doc is not None:
-            found.append(("paper_trades", doc))
+        paper = await _find_one(db.paper_trades, {"id": sig["paper_trade_id"]})
+    # The TRADE's own back-reference is authoritative. On the real database
+    # (2026-09-29) 697 of 705 ACTIVE signals carried a paper_trade_id but only 108
+    # paper trades existed — most of those ids dangled — while 49 ACTIVE signals
+    # were referenced by a CLOSED paper trade's signal_id. Following only the
+    # signal-side id moved none of them.
+    if paper is None and sig.get("id"):
+        paper = await _find_one(db.paper_trades, {"signal_id": sig["id"]})
+    if paper is not None:
+        found.append(("paper_trades", paper))
     live = None
     if sig.get("live_trade_id"):
         live = await _find_one(db.live_trades, {"id": sig["live_trade_id"]})
