@@ -1334,19 +1334,43 @@ async def _risk_supervisor_loop() -> None:
                 log.warning("risk supervisor: OCO backstop check failed: %s", exc)
 
             for dep_id in verdict["pause_deployment_ids"]:
-                await _set_deployment_status(db, dep_id, "PAUSED")
-                await db.strategy_deployments.update_one(
-                    {"id": dep_id},
-                    {"$set": {"risk.live.last_block_reason": "daily_loss_cap"}})
-                log.warning("risk supervisor: deployment %s breached its daily "
-                            "loss cap — PAUSED (entries only; nothing squared)",
-                            dep_id)
+                await _supervisor_pause_for_loss_cap(db, dep_id)
         except asyncio.CancelledError:
             log.info("Risk supervisor loop cancelled")
             return
         except Exception as exc:
             log.exception("Risk supervisor loop error: %s", exc)
             await asyncio.sleep(15.0)
+
+
+async def _supervisor_pause_for_loss_cap(db: Any, dep_id: str) -> bool:
+    """Pause ONE deployment whose daily loss cap the supervisor found breached.
+
+    This call was written as ``_set_deployment_status(db, dep_id, "PAUSED")`` —
+    three arguments to a two-argument function — from 2026-08-06 to 2026-09-29.
+    Every breach raised TypeError into the loop's catch-all, so the timer-based
+    pause this supervisor exists for (a HELD position bleeding past the cap, with
+    no new signal to trip the per-entry check) never landed once. Its only test
+    checked by AST that the call's NAME appeared. The pause is now its own
+    function, executed by tests, and one deployment's failure cannot abort the
+    rest.
+
+    Same outcome as auto_live's own daily-loss pause: PAUSED (which demotes live to
+    paper — the v0.56.0 invariant) with ``last_block_reason = "daily_loss_cap"``.
+    Entries only; nothing is squared. Never raises.
+    """
+    try:
+        await _set_deployment_status(dep_id, "PAUSED")
+        await db.strategy_deployments.update_one(
+            {"id": dep_id},
+            {"$set": {"risk.live.last_block_reason": "daily_loss_cap"}})
+        log.warning("risk supervisor: deployment %s breached its daily loss cap — "
+                    "PAUSED (entries only; nothing squared)", dep_id)
+        return True
+    except Exception as exc:
+        log.error("risk supervisor: FAILED to pause %s after a daily-loss-cap "
+                  "breach: %s", dep_id, exc)
+        return False
 
 
 def _live_engine_for_supervision():

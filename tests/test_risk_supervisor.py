@@ -171,7 +171,64 @@ def test_the_loop_never_places_or_squares_an_order():
         f"entries, it does not liquidate")
     # It SHOULD reach the halt/pause levers.
     assert "guardrail_tick" in called
-    assert "_set_deployment_status" in called
+    assert "_supervisor_pause_for_loss_cap" in called
+
+
+def test_the_loss_cap_pause_actually_pauses(monkeypatch):
+    """EXECUTED, not grepped. The pause was written as
+    `_set_deployment_status(db, dep_id, "PAUSED")` — three arguments to a
+    two-argument function — and every breach raised TypeError for seven weeks,
+    while the AST check above (that the call's NAME appeared) passed."""
+    import asyncio
+
+    import app.runtime as rt
+
+    class _Coll:
+        def __init__(self, rows):
+            self.rows = rows
+
+        async def find_one(self, q, proj=None):
+            return next((dict(r) for r in self.rows if r.get("id") == q.get("id")), None)
+
+        async def update_one(self, q, upd):
+            for r in self.rows:
+                if r.get("id") == q.get("id"):
+                    for k, v in (upd.get("$set") or {}).items():
+                        if "." in k:
+                            head, *rest = k.split(".")
+                            cur = r.setdefault(head, {})
+                            for part in rest[:-1]:
+                                cur = cur.setdefault(part, {})
+                            cur[rest[-1]] = v
+                        else:
+                            r[k] = v
+                    return type("R", (), {"matched_count": 1, "modified_count": 1})()
+            return type("R", (), {"matched_count": 0, "modified_count": 0})()
+
+    class _DB:
+        def __init__(self, rows):
+            self.strategy_deployments = _Coll(rows)
+
+    dep = {"id": "d1", "mode": "live", "status": "ACTIVE",
+           "risk": {"live": {"daily_loss_cap": 3000.0}}}
+    db = _DB([dep])
+    monkeypatch.setattr(rt, "get_db", lambda: db)
+    assert asyncio.run(rt._supervisor_pause_for_loss_cap(db, "d1")) is True
+    row = db.strategy_deployments.rows[0]
+    assert row["status"] == "PAUSED"
+    assert row["mode"] == "paper"
+    assert row["risk"]["live"]["last_block_reason"] == "daily_loss_cap"
+
+
+def test_one_failed_pause_never_raises(monkeypatch):
+    import asyncio
+
+    import app.runtime as rt
+
+    async def _boom(*a, **k):
+        raise RuntimeError("mongo down")
+    monkeypatch.setattr(rt, "_set_deployment_status", _boom)
+    assert asyncio.run(rt._supervisor_pause_for_loss_cap(object(), "d1")) is False
 
 
 def test_the_loop_is_market_hours_gated():
