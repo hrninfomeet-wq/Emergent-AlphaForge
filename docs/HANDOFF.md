@@ -49,11 +49,13 @@ reads as "not recognized". The raw `docker compose` equivalents are in section 3
 
 ## 2. Current state
 
-> **As of 2026-09-09 · `main` @ `0cc3969` == `origin/main`, clean working tree.**
-> Verification baseline: **5,702 passed, 4 xfailed, 0 failed** on the host `.venv`
-> (`python -m pytest tests/ -q`), frontend compiles clean under `CI=true`. Both images
-> rebuilt 2026-09-09 and verified by `docker exec` grep, not by assumption;
-> `/api/health` returns `{"db":"ok"}`.
+> **As of 2026-09-29 · local `main` is ahead of `origin/main` by the Live Deployments
+> uplift (unpushed — the operator approves each push).** Verification baseline: **6,256
+> passed, 4 xfailed, 0 failed** on the host `.venv` (`python -m pytest tests/ -q`), frontend
+> compiles clean under `CI=true`. Both images rebuilt 2026-09-29 and verified by `docker exec`
+> grep and in the browser pane. Read [§2.0h](#20h-what-changed-2026-09-26--09-29-the-live-deployments-uplift)
+> first — it changed the reconcile, the governor, every live status indicator and added
+> the first live write routes since v0.56.
 >
 > **⚠ READ THIS BEFORE TRADING LIVE.** The resting broker OCO is **OFF by default**
 > since 2026-09-03 (`LIVE_BROKER_OCO_ENABLED`) — its stop leg fired at placement
@@ -88,6 +90,33 @@ reads as "not recognized". The raw `docker compose` equivalents are in section 3
 | Can I trust a saved backtest? | **Only if it was run on/after 2026-07-30.** Every paired-option backtest saved before then is wrong — see the ⚠ below. |
 | What is the active work program? | The **capability phase**: make backtest/paper/live fully usable, and make a plain-English strategy deployable. Edge hunting is explicitly parked. [`AGENT_TODO.md`](AGENT_TODO.md) is the live board. |
 | Where do I look first when a number looks wrong? | [`BACKTEST_INTEGRITY_AUDIT.md`](BACKTEST_INTEGRITY_AUDIT.md) — it names the defect class, reproductions, and the closed HIGH/MED register. Disputed LOW #31 remains separate. |
+
+### 2.0h What changed 2026-09-26 → 09-29 (the Live Deployments uplift)
+
+Spec: [`superpowers/specs/2026-09-26-live-deployments-uplift-handoff.md`](superpowers/specs/2026-09-26-live-deployments-uplift-handoff.md).
+Every phase has a CHANGELOG entry stating what was measured; every new rule was
+mutation-checked (≈260 mutants across the work, all killed). Where things live now:
+
+| Area | Where | What to know |
+|---|---|---|
+| Reconcile exit pricing | `live/reboot_reconcile._match_close` / `_proven_round_trip` | An exit price is attributed only on PROOF: this entry's own fills in today's book, account flat on the contract at entry, no other order interleaved, one product, no carried-forward position (`_carry_free`: position-book `cfbuyqty`/`cfsellqty`), SELLs summing to what FILLED. P&L is measured from the entry's OWN fills, never the blended `daybuyavgprc`. |
+| Stale OPEN docs | same module | Confirmed-empty book (2 reads, 1.5 s apart) closes docs entered on an EARLIER IST day; an unreadable book closes only EXPIRED contracts (`live_marks.expired_before`); a same-day OPEN doc beside an empty book keeps recovery INCOMPLETE (its entry may still fill) unless the order book says it ended unfilled (→ `never_filled`). Such closes carry `exit_day_unknown` and are excluded from `daily_realized_summary`. Recovery is complete only for status `ok`/`flat_confirmed`. |
+| One P&L formula | `live/close_loop.realized_fields` | Used by every close path and the backfills. Recorded fills for a past day: `backend/scripts/backfill_realized_from_recorded_fills.py` (dry-run, attestation, provenance). |
+| Guard ownership | `live/ownership.resolve_owned_tsyms` | Intents never leave `SUBMITTED`; an intent whose journal row is CLOSED, or whose contract expired, no longer confers ownership (a hand-bought position on a once-traded contract was adoptable after a restart). |
+| Governor | `live_deploy_governor` | Pure `precheck_live_caps → measure_exposure → decide_live_caps / decide_account_caps`, shared by enforcement and the read-only `describe_live_caps` (the `governor` key on `/deployments/live/status`). Loss = realized + open unrealized; unknown is null, never 0. |
+| Truthful status | `live/arm_state`, `live_position_guard.guard_health`, `/deployments/overview` | Connected = stored AND not expired; guard health watching/idle/blind/stalled/not_running; stale marks excluded from MTM (`open_unverified`). |
+| Trading clock | `live/session_clock.describe_session` (on arm-state + `GET /live-broker/session-clock`) | Cutoff from the gate's own function, EOD from the guard's own time — they are two separate 15:00 literals; the default entry window actually ends 14:50 (`entry_window.effective_end`). Browser counts against `performance.now()`-anchored server instants. |
+| Live writes | `POST /deployments/{id}/live/caps`, `/live/flatten` | Caps: tighten-only (any loosening 409, nothing written), CAS on `updated_at`+ACTIVE+live. Flatten: squares and STAYS live (optional hold first), refuses out of hours, skips shared contracts, names unguarded journal rows. `/live/pause` now writes only its leaves (it used to revert concurrent caps changes). |
+| Pane logic | `frontend/src/lib/liveDeploymentView.js`, `sessionClock.js`, `liveNotify.js`, `liveTimelineView.js` | Pure, node-executed tests. Timeline: `GET /deployments/{id}/timeline?date=`. Alerts are opt-in, default off. |
+| Signals | `signal_lifecycle.exit_linked_signal` | Every paper and live close moves its signal ACTIVE→EXITED; `backend/scripts/backfill_signal_exits.py` applied 2026-09-29 (56 moved). 649 ACTIVE signals point at paper trades that no longer exist — left ACTIVE (not provable). |
+
+**Found and fixed on the way:** the risk supervisor's daily-loss pause was a TypeError from
+2026-08-06 to 09-29 (it had never paused anything); a stale OPEN row from 09-16 held a
+concurrency slot for 11 days; the 09-16 partial-fill trade was backfilled to ₹822 from the
+recorded trade book (operator-approved).
+
+**Not verified in a market session:** everything above. The broker token was expired and the
+operator was off the static IP for the whole of this work.
 
 ### 2.0b What changed on the live path (2026-07-29 → 2026-08-11)
 
