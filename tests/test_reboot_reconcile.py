@@ -186,6 +186,17 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+@pytest.fixture(autouse=True)
+def _no_confirm_delay(monkeypatch):
+    monkeypatch.setattr("app.live.reboot_reconcile._CONFIRM_READ_DELAY_S", 0)
+
+
+def _flat_row(tsym="NIFTY24X25000CE"):
+    """The position-book row a traded-and-closed contract leaves for the day. Its
+    zero carry-forward is what lets an untagged SELL be attributed."""
+    return {"tsym": tsym, "netqty": "0", "cfbuyqty": "0", "cfsellqty": "0"}
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -212,8 +223,11 @@ def test_open_doc_flat_with_remarks_fill_is_closed_with_realized_pnl():
 
 
 def test_transient_empty_position_book_leaves_open_and_cancels_nothing():
-    """TRANSIENT-EMPTY GUARD: position_book=[] (broker hiccup) → the OPEN doc stays
-    OPEN (nothing closed) AND gtt_book OCOs are NOT cancelled."""
+    """EMPTY-BOOK GUARD: position_book=[] → a doc that cannot be placed on an
+    earlier day stays OPEN (nothing closed) AND gtt_book OCOs are NOT cancelled.
+    (An empty book is now CONFIRMED evidence of flat — see
+    tests/test_reconcile_stale_open.py — but it only ever closes a doc entered on an
+    earlier IST day, and it never cancels a resting OCO.)"""
     db = FakeDB()
     db.live_trades.rows.append(_open_doc())
     client = FakeClient(
@@ -273,15 +287,22 @@ def test_flat_with_zero_netqty_row_is_closed():
 
 
 def test_no_matching_fill_closes_with_realized_pnl_none():
-    """Flat but NO matchable fill (no remarks, and >1 same-tsym SELL fills =
-    ambiguous) → CLOSED but realized_pnl left None (never fabricated)."""
+    """Flat, the entry's own fill present, but the SELLs after it overshoot its
+    size (40 + 40 for a 65 entry) - not provably its exit - so CLOSED with
+    realized_pnl left None (never fabricated). The rows are realistic (fill time,
+    filled qty, order number): an earlier fixture lacked them and passed only
+    because such rows are unorderable, not because of any ambiguity."""
     db = FakeDB()
     db.live_trades.rows.append(_open_doc())
     client = FakeClient(
-        position_book=[{"tsym": "OTHER", "netqty": "30"}],
+        position_book=[{"tsym": "OTHER", "netqty": "30"}, _flat_row()],
         trade_book=[
-            {"tsym": "NIFTY24X25000CE", "trantype": "S", "flprc": "130"},
-            {"tsym": "NIFTY24X25000CE", "trantype": "S", "flprc": "999"},  # ambiguous
+            {"tsym": "NIFTY24X25000CE", "trantype": "B", "flprc": "100", "flqty": "65",
+             "fltm": "14-08-2026 09:30:00", "norenordno": "N1"},
+            {"tsym": "NIFTY24X25000CE", "trantype": "S", "flprc": "130", "flqty": "40",
+             "fltm": "14-08-2026 10:00:00", "norenordno": "X1"},
+            {"tsym": "NIFTY24X25000CE", "trantype": "S", "flprc": "999", "flqty": "40",
+             "fltm": "14-08-2026 10:01:00", "norenordno": "X2"},
         ],
     )
     _run(reconcile_on_startup(db, client))
@@ -293,20 +314,48 @@ def test_no_matching_fill_closes_with_realized_pnl_none():
 
 
 def test_single_same_tsym_sell_fallback_matches_price():
-    """Flat, no remarks tag, but EXACTLY ONE same-tsym SELL fill → fallback uses it."""
+    """Flat, no remarks tag, EXACTLY ONE same-tsym SELL after THIS entry's own fill
+    → it is the exit. Real Noren fill rows always carry `norenordno` and `fltm`; an
+    earlier version of this fixture omitted both on the entry row, modelling a book
+    that cannot occur."""
     db = FakeDB()
     db.live_trades.rows.append(_open_doc())
     client = FakeClient(
-        position_book=[{"tsym": "OTHER", "netqty": "30"}],
+        position_book=[{"tsym": "OTHER", "netqty": "30"}, _flat_row()],
         trade_book=[
-            {"tsym": "NIFTY24X25000CE", "trantype": "S", "flprc": "150"},
-            {"tsym": "NIFTY24X25000CE", "trantype": "B", "flprc": "100"},  # entry, ignored
+            {"tsym": "NIFTY24X25000CE", "trantype": "S", "flprc": "150",
+             "flqty": "65", "fltm": "14-08-2026 10:44:00", "norenordno": "X2"},
+            {"tsym": "NIFTY24X25000CE", "trantype": "B", "flprc": "100",
+             "flqty": "65", "fltm": "14-08-2026 09:30:00", "norenordno": "N1"},
         ],
     )
     _run(reconcile_on_startup(db, client))
     doc = db.live_trades.rows[0]
     assert doc["status"] == "CLOSED"
     assert doc["realized_pnl"] == (150.0 - 100.0) * 65
+
+
+def test_a_lone_sell_is_not_borrowed_without_this_entrys_own_fills():
+    """The trade book is DAY-SCOPED. A doc left OPEN from an earlier day has no
+    fills in today's book, so a lone same-tsym SELL today belongs to some OTHER
+    round trip. The old fallback took it anyway; it must close without a price."""
+    db = FakeDB()
+    db.live_trades.rows.append(_open_doc())
+    client = FakeClient(
+        position_book=[{"tsym": "OTHER", "netqty": "30"}],
+        trade_book=[
+            # today's unrelated round trip on the same contract
+            {"tsym": "NIFTY24X25000CE", "trantype": "B", "flprc": "90",
+             "flqty": "65", "fltm": "15-08-2026 09:20:00", "norenordno": "TODAY1"},
+            {"tsym": "NIFTY24X25000CE", "trantype": "S", "flprc": "150",
+             "flqty": "65", "fltm": "15-08-2026 09:40:00", "norenordno": "TODAY2"},
+        ],
+    )
+    _run(reconcile_on_startup(db, client))
+    doc = db.live_trades.rows[0]
+    assert doc["status"] == "CLOSED"
+    assert doc["realized_pnl"] is None
+    assert "exit_price" not in doc
 
 
 def test_doc_without_norenordno_is_skipped():

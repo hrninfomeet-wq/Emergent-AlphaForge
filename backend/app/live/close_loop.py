@@ -54,6 +54,84 @@ def _finite(v: Any) -> Optional[float]:
     return f
 
 
+def realized_fields(doc: Dict[str, Any], exit_px: float, *,
+                    entry_px: Optional[float] = None,
+                    quantity: Optional[float] = None) -> Dict[str, Any]:
+    """The journal fields a close writes for an exit at ``exit_px``.
+
+    THE one realized-P&L computation for ``live_trades``. Every path that puts a
+    number on a live close — ``close_live_trade`` and the reconcile backfill
+    (``reboot_reconcile._repair_missing_realized``) — calls this, so the two can
+    never disagree about the formula, the rounding or the costing.
+
+    ``entry_px`` / ``quantity`` override the doc when the caller has PROVEN them
+    from this entry's own fills (``reboot_reconcile._match_close``). The doc's
+    ``entry_fill_price`` is the broker's ``daybuyavgprc``, which blends every entry
+    on the contract that day, and its ``quantity`` is what was ORDERED, not what
+    filled; proven values beat both. When used they are journalled beside the
+    result (``entry_basis_price`` / ``filled_quantity``) so the number can be
+    re-derived.
+
+    Always returns ``exit_price``. Adds ``realized_pnl`` only when a finite quantity
+    and entry price exist, and the charges trio only when costing succeeds — a
+    missing input leaves the field absent, never fabricated.
+    """
+    fields: Dict[str, Any] = {"exit_price": round(exit_px, 4)}
+    proven_qty = _finite(quantity)
+    qty = proven_qty if proven_qty is not None else _finite(doc.get("quantity"))
+    if proven_qty is not None and proven_qty != _finite(doc.get("quantity")):
+        fields["filled_quantity"] = proven_qty
+    proven_px = _finite(entry_px)
+    if proven_px is not None:
+        entry_px = proven_px
+        fields["entry_basis"] = "own_fills"
+        fields["entry_basis_price"] = round(proven_px, 4)
+    else:
+        # Measure from the price the account ACTUALLY PAID. `entry_price` is the
+        # pre-trade REFERENCE premium used to band the limit order — an intent —
+        # so P&L measured against it silently excluded all entry slippage.
+        # `entry_fill_price` is the broker's own average, captured by the guard's
+        # mark cycle from the position book. Falls back to the reference for any
+        # trade the guard never marked, so no historical row changes meaning.
+        entry_px = _finite(doc.get("entry_fill_price"))
+        if entry_px is None:
+            entry_px = _finite(doc.get("entry_price"))
+    if qty is None or entry_px is None:
+        return fields
+    # Round like every other money field here (close_economics,
+    # option_backtest): an unrounded product yields -227.4999999999986.
+    gross = round(qty * (exit_px - entry_px), 2)
+    fields["realized_pnl"] = gross
+    # What the exchange actually took. Paper and backtest both apply this
+    # model; live did not, so the three were never measuring the same
+    # quantity — and `routers/live_broker` already PROJECTS total_charges,
+    # reading a field nothing wrote. Parity is by SHARED CODE: the same
+    # `round_trip_charges` paper's close path uses, levied on the prices
+    # actually transacted (STT is a turnover tax).
+    #
+    # `realized_pnl` deliberately stays GROSS — `close_economics` records
+    # the project's decision that kill-switch / caps / analytics semantics
+    # are unchanged. The day-stop sums it; making the loss cap
+    # net-of-charges is an explicit operator policy call, not a side
+    # effect of journalling charges.
+    if int(qty) > 0:
+        try:
+            from app.option_costs import (cost_config_for_exchange,
+                                           round_trip_charges)
+            _ch = round_trip_charges(
+                entry_premium=float(entry_px), exit_premium=float(exit_px),
+                quantity=int(qty),
+                cfg=cost_config_for_exchange(doc.get("exch")))
+            _total = round(float(_ch["total_charges"]), 2)
+            fields["total_charges"] = _total
+            fields["charges"] = _ch
+            fields["net_realized_pnl"] = round(gross - _total, 2)
+        except Exception as exc:      # never block the close on costing
+            log.warning("realized_fields: charge computation failed for %s (%s) "
+                        "— realized_pnl still journalled", doc.get("norenordno"), exc)
+    return fields
+
+
 async def close_live_trade(
     db: Any,
     *,
@@ -62,6 +140,9 @@ async def close_live_trade(
     exit_reason: str,
     fill_price: Optional[float] = None,
     now_iso: Optional[str] = None,
+    entry_px: Optional[float] = None,
+    quantity: Optional[float] = None,
+    extra_fields: Optional[Dict[str, Any]] = None,
 ) -> bool:
     """Idempotently mark the non-CLOSED ``live_trades`` doc for ``norenordno`` CLOSED.
 
@@ -98,49 +179,10 @@ async def close_live_trade(
     fp = _finite(fill_price)
     ep = fp if fp is not None else _finite(exit_price)
     if ep is not None:
-        set_fields["exit_price"] = ep
-        qty = _finite(doc.get("quantity"))
-        # Measure from the price the account ACTUALLY PAID. `entry_price` is the
-        # pre-trade REFERENCE premium used to band the limit order — an intent —
-        # so P&L measured against it silently excluded all entry slippage.
-        # `entry_fill_price` is the broker's own average, captured by the guard's
-        # mark cycle from the position book. Falls back to the reference for any
-        # trade the guard never marked, so no historical row changes meaning.
-        entry_px = _finite(doc.get("entry_fill_price"))
-        if entry_px is None:
-            entry_px = _finite(doc.get("entry_price"))
-        if qty is not None and entry_px is not None:
-            # Round like every other money field here (close_economics,
-            # option_backtest): an unrounded product yields -227.4999999999986.
-            gross = round(qty * (ep - entry_px), 2)
-            set_fields["realized_pnl"] = gross
-            # What the exchange actually took. Paper and backtest both apply this
-            # model; live did not, so the three were never measuring the same
-            # quantity — and `routers/live_broker` already PROJECTS total_charges,
-            # reading a field nothing wrote. Parity is by SHARED CODE: the same
-            # `round_trip_charges` paper's close path uses, levied on the prices
-            # actually transacted (STT is a turnover tax).
-            #
-            # `realized_pnl` deliberately stays GROSS — `close_economics` records
-            # the project's decision that kill-switch / caps / analytics semantics
-            # are unchanged. The day-stop sums it; making the loss cap
-            # net-of-charges is an explicit operator policy call, not a side
-            # effect of journalling charges.
-            if int(qty) > 0:
-                try:
-                    from app.option_costs import (cost_config_for_exchange,
-                                                   round_trip_charges)
-                    _ch = round_trip_charges(
-                        entry_premium=float(entry_px), exit_premium=float(ep),
-                        quantity=int(qty),
-                        cfg=cost_config_for_exchange(doc.get("exch")))
-                    _total = round(float(_ch["total_charges"]), 2)
-                    set_fields["total_charges"] = _total
-                    set_fields["charges"] = _ch
-                    set_fields["net_realized_pnl"] = round(gross - _total, 2)
-                except Exception as exc:      # never block the close on costing
-                    log.warning("close_live_trade: charge computation failed for "
-                                "%s (%s) — realized_pnl still journalled", norenordno, exc)
+        set_fields.update(realized_fields(doc, ep, entry_px=entry_px,
+                                          quantity=quantity))
+    if extra_fields:
+        set_fields.update(extra_fields)
     res = await db.live_trades.update_one(flt, {"$set": set_fields})
     modified = getattr(res, "modified_count", None)
     if modified is None:  # FakeDB / drivers without modified_count

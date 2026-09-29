@@ -2,6 +2,123 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [Unreleased] — Reconcile: partial-fill exits, stale OPEN trades, a flat account that never "recovered" (2026-09-29)
+
+Phase 0 of the Live Deployments uplift
+(`docs/superpowers/specs/2026-09-26-live-deployments-uplift-handoff.md`). Every
+later phase renders numbers built on `realized_pnl`, so this lands first.
+
+**Measured before changing anything** (Mongo, 2026-09-27): 13 `live_trades` rows —
+12 CLOSED, **6 with `realized_pnl = null`**, and **1 still OPEN from 2026-09-16**.
+
+**1. A split exit journalled no P&L.** A 5-lot SENSEX 74300 PE (`26091600102830`)
+exited as 60 + 40 @ 361.00; the matcher demanded exactly one SELL, found two, and
+closed the trade with a null. Because a null counts as 0 in the day-stop sum, the
+06:49 `daily_loss` pause of deployment `95667ed5` (cap ₹3000) saw −₹2475 realized
+where the truth was −₹1653 — the pause may have been caused by the null. The
+matcher now sums the SELLs **proven** to close the entry to exactly its size,
+quantity-weighted. "Proven" is stricter than the uncommitted first draft of this
+fix, which bounded only by time and quantity: that draft handed one position's
+exit to another whenever two overlapped on a strike (two deployments, or an
+MCP-placed position). The proof now also requires the account to be FLAT on the
+contract when the entry began, and stops at the first BUY from any other order.
+
+**2. The lone-SELL fallback could borrow another trade's exit.** It accepted any
+single same-symbol SELL with no evidence the entry traded that day. The broker's
+trade book is day-scoped, so a doc left OPEN from an earlier day would have taken
+the exit price of an unrelated round trip on the same contract today. It now
+requires the entry's own fills in the book.
+
+**3. The vendor's 1980 placeholder parsed as a fill time.** The TradeBook sample
+carries `fltm "01-01-1980 00:00:00"`, which sorts before every real fill — an
+exit would appear to precede its own entry. Pre-2000 times are now ignored, and
+the TIME-first `exch_tm` / `norentm` layouts parse.
+
+**4. A position closed while the PC was down stayed OPEN for eleven days.**
+`26091600196209` (SENSEX 17 SEP 74400 PE, 3 lots) was held when the PC went down
+at 13:21 IST on 09-16 and squared by the operator the same day. Every restart
+since met an expired token (unreadable → UNKNOWN, correctly) or a flat account,
+whose empty book was ALSO treated as UNKNOWN — a rule that predates the client
+contract (`23a61c1`) under which `[]` means only Noren's "no data". The row held
+one of the deployment's `max_concurrent` slots and one of the account's five.
+Now: two consecutive confirmed-empty reads (the guard's own `flat_confirm_reads`)
+close docs entered on an **earlier IST day**; a same-day doc beside an empty book
+is a contradiction and stays OPEN; an unreadable book falls back to calendar proof
+(expiry date passed). No price is fabricated for either — the exit fill has left
+the day-scoped book — and no resting OCO is ever cancelled on an empty book.
+
+**5. A flat account never finished recovery.** The same empty-book rule reported
+`unknown_position_book`, which the runtime reads as INCOMPLETE, so live recovery
+re-ran every supervisor tick, all day, on the shared broker rate budget. A
+confirmed-flat account now reports `flat_confirmed`, which is complete.
+
+**6. Every contract AlphaForge ever traded stayed "owned" forever.** Found while
+auditing for more states of this kind: nothing ever moves an order intent out of
+`SUBMITTED` — on 2026-09-29 **all 21 intents, back to June, read SUBMITTED** — and
+the guard's ownership boundary treats SUBMITTED as position-bearing. It already
+ignored CLOSED *journal* rows for exactly this reason ("the contract may since have
+been reused"), but the intent path walked straight past that rule. So a position
+the operator bought BY HAND on any contract AlphaForge had once traded would have
+been adopted after a restart — invented stop, EOD square: the 2026-08-04 incident
+on a new path. An intent now stops conferring ownership when its entry's journal
+row is CLOSED (by order number, so a newer AlphaForge entry on the same strike
+stays owned), or when its contract provably expired. The runtime now hands the
+resolver the CLOSED rows it needs. `live_marks.expired_before` is the one expiry
+rule for both this and the reconcile, and it also proves expiry for the day-less
+BFO monthly symbol (`SENSEX26JUN76500CE`) at month granularity.
+
+**Also found, not changed (display only):** a live close never moves its signal to
+`EXITED`, so old live signals read `ACTIVE` in the Signal Journal; nothing consumes
+a signal except by id at creation time, so no decision is affected.
+
+**7. An adversarial review of the above found five more, all fixed here:**
+
+* **A same-strike re-entry was measured from a BLENDED entry price.** The doc's
+  `entry_fill_price` is the broker's `daybuyavgprc`, which averages every entry on
+  the contract that day: a ₹6,000 second trade journalled as ₹8,500. The proof now
+  returns the entry's own fills, and P&L is measured from them (recorded as
+  `entry_basis_price`). It also prices what FILLED, not what was ordered.
+* **A position carried forward from an earlier day was invisible** to the
+  "flat at entry" proof (the trade book is day-scoped), so its exit could be read as
+  ours: −₹3,000 booked for a +₹6,000 trade. An untagged exit is now attributed only
+  when the position book shows zero `cfbuyqty`/`cfsellqty` on the contract.
+* **A confirmed-flat account with a same-day OPEN doc reported recovery COMPLETE.**
+  That doc's entry order may still be working; once recovery latched, nothing would
+  re-attach the guard when it filled. That combination is now UNKNOWN (incomplete).
+* **Phase 2 closed a same-day doc whose entry order was still working** (pre-existing).
+  It now stays OPEN unless the order book shows it ended unfilled (→ `never_filled`).
+* **A prior-day doc closed today took today's `closed_at`,** so a later backfill would
+  have charged its P&L to today's day-stop. Such closes are flagged
+  `exit_day_unknown` and excluded from `daily_realized_summary`; the backfill script
+  re-dates them from the proven exit fill.
+
+Plus: an OCO leg filled in parts is quantity-weighted; the weighted price is no
+longer rounded before multiplying by quantity (drifted from the broker's `rpnl` by up
+to qty × 0.005); a fill row's ORDER quantity and the ORDER-ENTRY time are no longer
+mistaken for fill quantity/time; MIS and NRML fills on one symbol refuse the proof;
+the two confirming reads are 1.5 s apart like the guard's; calendar proof also runs on
+a confirmed-flat book; and the orphan-OCO sweep, which looked up open docs by the
+Upstox symbol (never equal to the Noren one in hand), now uses `noren_tsym`.
+
+**One formula.** The realized-P&L backfill carried its own copy of
+`close_live_trade`'s P&L + costing. Both now call `close_loop.realized_fields`; a
+test pins that the two paths journal identical fields for the same fill.
+
+**Backfill.** `backend/scripts/backfill_realized_from_recorded_fills.py` applies
+recorded fills to ONE closed trade through the same proof (dry run by default,
+never overwrites, stamps provenance). Recorded fills cannot show a carried-forward
+position, so it also requires an explicit operator attestation, stamped on the row.
+
+Tests: 9 new/extended files, **50/50 mutants killed** (each guarded rule broken in
+a sandbox copy; a test went red every time). The first pass left one survivor —
+nothing proved the runtime passes CLOSED rows to the resolver, because the shared
+recovery harness's fake collection ignores `$ne` — and gained an end-to-end test.
+Four pre-existing fixtures were corrected: they passed only because their rows
+lacked a fill time or order number (unorderable), not for the reason their names
+claimed. Full suite 5940 passed. One pre-existing fixture was
+corrected — its "entry" row had no `norenordno` or fill time, a book that cannot
+occur.
+
 ## [Unreleased] — SENSEX positions were never tick-marked (2026-09-16)
 
 Reported live, with real money open: a 5-lot SENSEX 17 SEP 74300 PE showed Day

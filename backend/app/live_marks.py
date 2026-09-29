@@ -147,6 +147,42 @@ def parse_position_identity(pos: Dict[str, Any]) -> Optional[Identity]:
     return None
 
 
+# "SENSEX26JUN76500CE" — the BFO MONTHLY symbol: <SYM><YY><MON><STRIKE><CE|PE>.
+# It carries no day, so it can never yield an exact expiry (and is deliberately
+# NOT an Identity — marking needs the exact contract). It can still prove a
+# contract EXPIRED at month granularity: a month that has fully passed.
+_BFO_MONTHLY_RE = re.compile(
+    r"^(?P<sym>[A-Z&\-]+?)(?P<y>\d{2})(?P<mon>JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)"
+    r"(?P<strike>\d+(?:\.\d+)?)(?P<side>CE|PE)$"
+)
+
+
+def expired_before(tsym: Any, today_iso: str) -> bool:
+    """True only when the contract named by ``tsym`` PROVABLY expired before
+    ``today_iso`` (IST calendar date, ``YYYY-MM-DD``).
+
+    Proof comes from the symbol alone: an exact expiry date earlier than today, or
+    (for the day-less BFO monthly form) a contract month that has fully passed.
+    Anything unparseable — or expiring TODAY, which still trades — is False: this
+    answers "is it certainly gone?", never "might it be gone?".
+    """
+    s = str(tsym or "").strip().upper()
+    if not s:
+        return False
+    ident = parse_position_identity({"tsym": s})
+    if ident is not None:
+        return ident[1] < today_iso
+    m = _BFO_MONTHLY_RE.match(s)
+    if m is None:
+        return False
+    try:
+        contract_month = (2000 + int(m.group("y")), _MONTHS[m.group("mon")])
+        today_month = (int(today_iso[0:4]), int(today_iso[5:7]))
+    except (KeyError, ValueError):
+        return False
+    return contract_month < today_month
+
+
 def build_contract_index(contracts: Iterable[Dict[str, Any]]) -> Dict[Identity, str]:
     """Index option contracts by identity -> Upstox instrument_key.
 

@@ -836,9 +836,11 @@ async def live_startup_recovery() -> bool:
     _owned_tsyms: set = set()
     try:
         from app.live.ownership import resolve_owned_tsyms
+        # ALL journal rows, CLOSED included: a CLOSED row is what proves its
+        # intent's contract is no longer ours (the intent itself never leaves
+        # SUBMITTED). Projected to three small fields — the collection is tiny.
         _lt = [d async for d in get_db().live_trades.find(
-            {"status": {"$ne": "CLOSED"}},
-            {"norenordno": 1, "cid": 1, "status": 1, "_id": 0})]
+            {}, {"norenordno": 1, "cid": 1, "status": 1, "_id": 0})]
         _lo = [d async for d in get_db().live_orders.find(
             {}, {"norenordno": 1, "client_order_id": 1, "state": 1,
                  "intent": 1, "_id": 0})]
@@ -848,7 +850,9 @@ async def live_startup_recovery() -> bool:
             _ob = []          # secondary path only — the intent store still owns
         _owned_tsyms = resolve_owned_tsyms(
             live_trades=_lt, live_orders=_lo,
-            order_book=_ob if isinstance(_ob, list) else [])
+            order_book=_ob if isinstance(_ob, list) else [],
+            today_iso=(datetime.now(timezone.utc)
+                       + timedelta(hours=5, minutes=30)).date().isoformat())
     except Exception as exc:
         # Unresolvable ownership => adopt NOTHING (fail closed) and retry later.
         complete = False
@@ -867,7 +871,8 @@ async def live_startup_recovery() -> bool:
         _log.warning("live startup recovery: guard rehydrate failed: %s", exc)
     # 4. transient-safe reboot reconciliation — journal any OCO that fired (or any
     #    position closed externally) while the PC was down + sweep orphan OCOs.
-    #    Empty position_book == UNKNOWN (no close, no cancel); never raises.
+    #    Unreadable position_book == UNKNOWN (no close, no cancel); a CONFIRMED-empty
+    #    one (two reads) is "flat_confirmed" — complete. Never raises.
     try:
         from app.live.reboot_reconcile import reconcile_on_startup
         res = await reconcile_on_startup(get_db(), client)
@@ -875,11 +880,13 @@ async def live_startup_recovery() -> bool:
                   "relinked=%s no_backstop=%s status=%s",
                   res.get("closed"), res.get("cancelled"),
                   res.get("relinked"), res.get("no_backstop"), res.get("status"))
-        # reconcile reads the position book directly and reports an unreadable/
-        # empty read as "unknown_position_book". Both rehydrate (steps 2–3) and
-        # reconcile swallow read failures internally, so this status is the honest
-        # broker-readability signal for the whole run: unreadable ⇒ the rehydrate
-        # almost certainly saw nothing either ⇒ recovery is NOT complete.
+        # reconcile reads the position book directly and reports an unreadable or
+        # unconfirmed-empty read as "unknown_position_book". Both rehydrate (steps
+        # 2–3) and reconcile swallow read failures internally, so this status is the
+        # honest broker-readability signal for the whole run: unreadable ⇒ the
+        # rehydrate almost certainly saw nothing either ⇒ recovery is NOT complete.
+        # "flat_confirmed" IS complete: a flat account used to report UNKNOWN, so
+        # the supervisor re-ran recovery every tick, all day, on the broker budget.
         if res.get("status") == "unknown_position_book":
             complete = False
     except Exception as exc:

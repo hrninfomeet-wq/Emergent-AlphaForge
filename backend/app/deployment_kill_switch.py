@@ -86,11 +86,20 @@ def trailing_consecutive_losses(closed_trades: List[Dict[str, Any]]) -> int:
 
 
 def daily_realized_summary(closed_trades: List[Dict[str, Any]], today_ist: str) -> Dict[str, float]:
-    """Net realized P&L and gross entry capital for trades closed today (IST)."""
+    """Net realized P&L and gross entry capital for trades closed today (IST).
+
+    A row flagged ``exit_day_unknown`` is skipped: the live reconcile closes a
+    position that the broker squared on some EARLIER, unrecorded day, and its
+    ``closed_at`` is only the moment that was noticed. Counting it — or a price
+    backfilled onto it later — as today's P&L would trip today's day-stop for a
+    deployment that traded nothing today.
+    """
     net = 0.0
     capital = 0.0
     count = 0
     for trade in closed_trades:
+        if trade.get("exit_day_unknown"):
+            continue
         if _ist_date(trade.get("closed_at")) != today_ist:
             continue
         net += _float(trade.get("realized_pnl"))
