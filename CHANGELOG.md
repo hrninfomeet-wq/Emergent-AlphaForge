@@ -2,6 +2,61 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [Unreleased] — A restarted position still belongs to its deployment; tightened caps stop an order already in flight (2026-09-29)
+
+Two gaps left open by the Live Deployments uplift, both re-verified against the code
+before anything changed. Neither has run in a market session yet.
+
+**G1 — after a restart, a recovered position had no owner.** `rehydrate_from_broker`
+re-registered every proven-owned position keyed by its tsym with no `deployment_id`.
+Everything that finds a position does so by one of those two fields, so after a restart
+with a position open:
+- that deployment's **Flatten / Stop found nothing** and listed the contract under
+  `unguarded_open_tsyms`;
+- the guard's **P&L marks never reached the OPEN journal row** (they are written by the
+  entry key as `norenordno`), so the row's `marked_at` went stale;
+- the guard's own **confirmed-flat close never journalled** (same key), so after the guard
+  squared the position the row stayed OPEN until the next restart.
+
+The recovery now resolves which journal row each position belongs to
+(`live/ownership.resolve_rehydrate_attribution`, pure) and the guard re-attaches it keyed
+by that row's order number with its `deployment_id`, exactly like the original arm.
+Attribution is never a guess: a contract whose OPEN rows span deployments, include a row
+with no deployment, or whose held quantity exceeds what the rows ordered
+(`attribution_for`; a hand-placed add would otherwise put the whole contract's MTM on this
+deployment's day-stop) stays unattributed, as before. Ownership still gates adoption, and
+the levels are still the default stop with `source="rehydrated"`. A re-attached entry now
+starts `seen_filled` (it was adopted because the book showed it held); otherwise a position
+that went flat before the first guard cycle would have aged out as `never_filled` and, with
+the real order number as its key, been journalled as a trade that never filled.
+
+Because an attributed entry now carries its deployment and order number, the guard's
+premium-momentum close hook reaches it for the first time. Its leg bookkeeping runs (a
+one-and-done session is finalized instead of staying open for a same-day re-entry), but a
+recovered entry's stop **never arms the lazy reversal leg**: it fired at the DEFAULT
+catastrophe level, not the strategy's stop, and a degraded recovery path must not open a
+new position.
+
+**G2 — an entry in flight when caps were tightened went out at the old size.** The
+transmit fence re-read the deployment but re-checked authorization only; the size and the
+governor verdict came from the signal-time doc, and `/live/caps` tightens without leaving
+live. The fence now refuses when the fresh `lots` is below the size the order was built
+at (`stale_authorization:caps_tightened:lots 3->1`; a raise keeps the smaller built size),
+and re-runs `check_live_caps` on the fresh doc, fresh rows and the fence's own clock
+(`stale_authorization:caps:<reason>`). That also catches this deployment's own sibling
+entry journalled while this one was in flight. A fence that cannot read the database
+refuses (`recheck_failed`, now pinned by a test).
+
+The last-refusal chip reads these in words (`entryRefusalText`, moved out of the JSX so
+node tests execute it): "not sent — changed in flight: lot size lowered 3 → 1".
+Governor refusals persisted since Phase 5 now read as the binding chip does.
+
+Tests: `test_rehydrate_attribution.py` (31, including the full startup recovery against
+a projection-honouring fake DB and the deployment's Flatten), 8 fence tests in
+`test_auto_live.py`, 1 in `test_live_executor_deployed.py`, 16 view cases. Mutants:
+20/20 (G1, incl. the lazy-leg gate) and 9/9 (G2) killed. Two G2 mutants first SURVIVED because the fixture stored a
+shallow copy of the deployment, so a mid-flight write also rewrote the "stale" doc.
+
 ## [Unreleased] — Signals follow their trades out of ACTIVE; a missed square-off stops booking into the wrong day (2026-09-29)
 
 An adversarial audit of the signal / paper-trade lifecycle confirmed the defects below;

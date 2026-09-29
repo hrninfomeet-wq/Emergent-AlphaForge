@@ -10,7 +10,33 @@
 > entry point) · [`STAGE1_INTEGRITY_SESSION_HANDOFF_2026-08-01.md`](STAGE1_INTEGRITY_SESSION_HANDOFF_2026-08-01.md)
 > (latest completed-session checkpoint) · `CHANGELOG.md`.
 
-**Last updated:** 2026-08-30 (Claude Opus 5 — reporting units, candle-cap coverage, deploy gate)
+**Last updated:** 2026-09-29 (Claude Opus 5.5 — Live Deployments uplift; market-session validation scheduled)
+
+### ★ Future action: Live Deployments uplift — market-session validation (reminder 2026-10-06)
+
+The operator will run this as soon as they are back on the Flattrade **static IP**. A one-time
+cloud reminder fires **Tue 2026-10-06 09:00 IST** (routine `trig_015gQkZhxcrRmVnN14CEDrNU`).
+Context: [`HANDOFF.md`](HANDOFF.md) §2.0h. Every item below shipped and was unit/mutant-tested
+and checked in the browser pane on 2026-09-29, but **none has run in a market session** — the
+broker token was expired and the operator was off the static IP.
+
+- [ ] Log in to Flattrade **from AlphaForge** after 06:00 IST (never `mcp__flattrade__login` /
+      `logout` — last-login-wins would kill AlphaForge's token). The execution strip must drop
+      its "Flattrade session expired" alert.
+- [ ] With **nothing open**, `docker compose up -d --build`. The backend log must show the startup
+      reconcile ending `ok` or `flat_confirmed`, then `live recovery: completed`.
+- [ ] Live Deployments pane: cap headroom and the binding chip per live row; `blocked: …` reason
+      when it cannot trade; session countdown to the entry cutoff.
+- [ ] Enable **one** deployment live at **1 lot**. Tighten caps (a lower loss cap is accepted;
+      raising any cap must 409 with "disable and re-enable").
+- [ ] When it takes a position: expand the row (positions, distance to stop, timeline). Restart
+      once while it is open — the rehydrated guard entry must still belong to the deployment
+      (Flatten finds it; it is not listed under `unguarded_open_tsyms`).
+- [ ] **Flatten & hold** → the toast says "exit submitted — awaiting fill confirmation", never
+      "flattened". After the guard confirms flat, journal `realized_pnl` must match the broker's
+      own P&L for that trade, and the Day Stop card must have counted the open loss.
+- [ ] Resume; optionally turn on the opt-in alerts. Then continue with
+      [`LIVE_VALIDATION_PLAN_2026-08.md`](LIVE_VALIDATION_PLAN_2026-08.md).
 
 ### ★ Open follow-ups from the 2026-08-30 session
 
