@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -21,6 +21,12 @@ export default function ConfirmActionDialog({
 }) {
   const [typed, setTyped] = useState("");
   const armed = !requireText || typed.trim().toUpperCase() === String(requireText).toUpperCase();
+  // The typed word must not survive the dialog. A caller closes it by flipping `open`
+  // after the action completes (not through onOpenChange), and a stale "STOP ALL"
+  // would arm the very next opening before the operator typed anything.
+  useEffect(() => {
+    if (!open) setTyped("");
+  }, [open]);
   const close = (v) => {
     if (!v) setTyped("");
     onOpenChange?.(v);

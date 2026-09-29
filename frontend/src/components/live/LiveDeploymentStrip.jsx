@@ -7,12 +7,14 @@ import { getApiErrorMessage } from "@/lib/apiError";
 import { Button } from "@/components/ui/button";
 import DeployToLivePanel from "@/components/live/DeployToLivePanel";
 import ConfirmActionDialog from "@/components/live/ConfirmActionDialog";
+import LiveAlertsToggle from "@/components/live/LiveAlertsToggle";
+import SessionTimeline from "@/components/live/SessionTimeline";
 import { isDriftPaused, driftTooltip } from "@/lib/deploymentState";
 import { useLiveData } from "@/components/live/LiveDataProvider";
 import { asPositionRows } from "@/components/live/liveHelpers";
 import {
   bindingView, capHeadroom, describeIntended, entryRefusalView, openPositionRows,
-  readGovernor, sortDeploymentRows, summarizeExitReport,
+  positionValue, readGovernor, sortDeploymentRows, stopAllLiveVerdict, summarizeExitReport,
 } from "@/lib/liveDeploymentView";
 import { deploymentEntryEnd } from "@/lib/sessionClock";
 
@@ -134,7 +136,7 @@ function TightenCaps({ caps, busy, onTighten }) {
 }
 
 // ── Expanded detail: open positions, intended entry, diagnostics ────────────
-function RowDetail({ liveStatus, gov, markedRows, busy, onTighten }) {
+function RowDetail({ depId, liveStatus, gov, markedRows, busy, onTighten }) {
   const rows = openPositionRows(liveStatus?.open_positions, markedRows);
   const intended = describeIntended(liveStatus?.last_entry?.intended);
   const c = gov?.available ? gov.consumed || {} : {};
@@ -194,7 +196,29 @@ function RowDetail({ liveStatus, gov, markedRows, busy, onTighten }) {
           the loss figure counts them as zero.
         </div>
       )}
+      <SessionTimeline depId={depId} />
     </div>
+  );
+}
+
+// The contracts a confirmation is about to act on: symbol, quantity and approximate
+// value (last price x qty). No price -> "value unknown", never a made-up number.
+function PositionLines({ rows }) {
+  if (rows.length === 0) {
+    return <p>No open positions are registered with the guard.</p>;
+  }
+  return (
+    <ul className="list-disc pl-4" data-testid="confirm-position-lines">
+      {rows.map((p) => {
+        const value = positionValue(p);
+        return (
+          <li key={p.tsym}>
+            {p.tsym} · qty {p.qty ?? "—"}
+            {value !== null ? ` · ≈ ${fmtINR(value)}` : " · value unknown"}
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 
@@ -202,6 +226,8 @@ function RowDetail({ liveStatus, gov, markedRows, busy, onTighten }) {
 function LiveRow({ dep, liveStatus, busy, onDisable, onStop, onPause, onResume, onFlatten, onTighten, liveMtm, markedRows, nowMs, session }) {
   const [open, setOpen] = useState(false);
   const [flattenOpen, setFlattenOpen] = useState(false);
+  const [disableOpen, setDisableOpen] = useState(false);
+  const [stopOpen, setStopOpen] = useState(false);
   const [holdAfter, setHoldAfter] = useState(true);
   // Status payload shape: { today: {orders, lots, realized_pnl}, open_positions: [...] }
   const today = liveStatus?.today || {};
@@ -406,7 +432,7 @@ function LiveRow({ dep, liveStatus, busy, onDisable, onStop, onPause, onResume, 
           variant="ghost"
           size="sm"
           disabled={busy}
-          onClick={() => onDisable(dep)}
+          onClick={() => setDisableOpen(true)}
           className="h-7 text-xs text-warning"
           data-testid="live-deploy-disarm"
         >
@@ -417,7 +443,7 @@ function LiveRow({ dep, liveStatus, busy, onDisable, onStop, onPause, onResume, 
           variant="outline"
           size="sm"
           disabled={busy}
-          onClick={() => onStop(dep)}
+          onClick={() => setStopOpen(true)}
           className="h-7 text-xs border-rose-500/40 text-rose-300 hover:text-rose-200"
           data-testid="live-deploy-stop"
         >
@@ -426,7 +452,7 @@ function LiveRow({ dep, liveStatus, busy, onDisable, onStop, onPause, onResume, 
         </Button>
       </div>
     </div>
-    {open && <RowDetail liveStatus={liveStatus} gov={gov} markedRows={markedRows}
+    {open && <RowDetail depId={dep.id} liveStatus={liveStatus} gov={gov} markedRows={markedRows}
                         busy={busy} onTighten={(body) => onTighten(dep, body)} />}
     <ConfirmActionDialog
       open={flattenOpen}
@@ -437,14 +463,7 @@ function LiveRow({ dep, liveStatus, busy, onDisable, onStop, onPause, onResume, 
       onConfirm={async () => { await onFlatten(dep, holdAfter); setFlattenOpen(false); }}
     >
       <p>Sends REAL exit orders (marketable limit, re-priced until filled) for:</p>
-      <ul className="list-disc pl-4">
-        {openPositionRows(liveStatus?.open_positions, markedRows).map((p) => (
-          <li key={p.tsym}>
-            {p.tsym} · qty {p.qty ?? "—"}
-            {p.ltp != null && p.qty != null ? ` · ≈ ${fmtINR(p.ltp * p.qty)}` : " · value unknown"}
-          </li>
-        ))}
-      </ul>
+      <PositionLines rows={openPositionRows(liveStatus?.open_positions, markedRows)} />
       <p>The deployment stays LIVE. A contract shared with another position is NOT sent.
          Outside market hours nothing is sent.</p>
       <label className="flex items-center gap-2 text-foreground">
@@ -453,6 +472,38 @@ function LiveRow({ dep, liveStatus, busy, onDisable, onStop, onPause, onResume, 
         also HOLD new entries (recommended — otherwise the next signal can re-enter
         while this exit is still working)
       </label>
+    </ConfirmActionDialog>
+    {/* Disable — replaces a bare window.confirm. It names the one thing an operator
+        could get wrong: disable is NOT flatten. */}
+    <ConfirmActionDialog
+      open={disableOpen}
+      onOpenChange={setDisableOpen}
+      title={`Disable live execution for "${dep.name || dep.id}"?`}
+      confirmLabel="Disable live"
+      danger={false}
+      busy={busy}
+      onConfirm={async () => { await onDisable(dep); setDisableOpen(false); }}
+    >
+      <p>No more live orders will be placed for this deployment; it goes back to PAPER.</p>
+      <p>Its {openPositions} open position{openPositions === 1 ? "" : "s"} are NOT closed —
+         they stay open and guarded (stop / target / trailing and the resting OCO) until they
+         exit. Use Flatten or Stop to exit them.</p>
+    </ConfirmActionDialog>
+    {/* Stop — squares this deployment's positions, then demotes it to paper AND
+        pauses it. Lists exactly what will be sent, like Flatten does. */}
+    <ConfirmActionDialog
+      open={stopOpen}
+      onOpenChange={setStopOpen}
+      title={`Stop "${dep.name || dep.id}"?`}
+      confirmLabel="Stop & flatten"
+      busy={busy}
+      onConfirm={async () => { await onStop(dep); setStopOpen(false); }}
+    >
+      <p>Sends REAL exit orders (marketable limit, re-priced until filled) for:</p>
+      <PositionLines rows={openPositionRows(liveStatus?.open_positions, markedRows)} />
+      <p>Then the deployment is taken OUT of live (demoted to paper) and PAUSED. Going live
+         again needs Enable Live Execution — caps and consent — from scratch. A contract
+         shared with another position is NOT sent; outside market hours nothing is sent.</p>
     </ConfirmActionDialog>
     </div>
   );
@@ -508,6 +559,7 @@ export default function LiveDeploymentStrip() {
   // mark_age_ms per row. Consuming it here is what puts live P&L on this pane.
   const { deployments, deployLive: liveStatuses, positions, refetch, armState } = useLiveData();
   const [busy, setBusy] = useState(false);
+  const [stopAllOpen, setStopAllOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(() => {
     try {
       return localStorage.getItem(COLLAPSED_STORAGE_KEY) === "1";
@@ -550,15 +602,16 @@ export default function LiveDeploymentStrip() {
   // After any enable/disable/stop, re-pull everything (statuses + roster + arm-state).
   const refreshAll = refetch.all;
 
+  // Disable / Stop / Stop ALL confirm in a ConfirmActionDialog (rendered by the row /
+  // the header), never a bare window.confirm — the dialog names what will happen.
   const doDisarm = async (dep) => {
-    if (!window.confirm(`Disable live execution for "${dep.name || dep.id}"? No more live orders will be placed.`)) return;
     setBusy(true);
     try {
       await api.disableDeploymentLive(dep.id);
       toast.success(`Disabled live execution for "${dep.name || dep.id}"`);
       await refreshAll();
     } catch (e) {
-      toast.error(e.response?.data?.detail || e.message);
+      toast.error(getApiErrorMessage(e, e.message));
     } finally {
       setBusy(false);
     }
@@ -596,15 +649,20 @@ export default function LiveDeploymentStrip() {
     }
   };
 
+  // The toast reports what the exit report says, not that a button was pressed: the
+  // old "Stopped" arrived green whether or not a position was still open.
   const doStop = async (dep) => {
-    if (!window.confirm(`Stop live trading for "${dep.name || dep.id}"? This disables live execution and squares off any open live positions.`)) return;
     setBusy(true);
     try {
-      await api.liveStop(dep.id);
-      toast.success(`Stopped "${dep.name || dep.id}"`);
+      const res = await api.liveStop(dep.id);
+      const s = summarizeExitReport(res);
+      (s.ok ? toast.success : toast.error)(
+        `Stopped "${dep.name || dep.id}" (paper + paused): ${s.message}`,
+        { duration: s.ok ? 6000 : 15000 },
+      );
       await refreshAll();
     } catch (e) {
-      toast.error(e.response?.data?.detail || e.message);
+      toast.error(getApiErrorMessage(e, e.message));
     } finally {
       setBusy(false);
     }
@@ -657,27 +715,32 @@ export default function LiveDeploymentStrip() {
     }
   };
 
+  // The confirmation (with the honest blast radius) is the requireText dialog
+  // rendered in the header; this runs only after it is armed and confirmed.
   const doStopAll = async () => {
-    // Honest blast radius: /deployments/stop-all squares EVERY open paper trade,
-    // pauses EVERY active deployment (paper included), AND disables every live
-    // deployment — not just "live" as the button label implies.
-    if (!window.confirm(
-      "Stop ALL trading?\n\n"
-      + "• squares off EVERY open PAPER trade\n"
-      + "• pauses EVERY active deployment (paper included)\n"
-      + "• disables live execution + flattens every LIVE deployment\n\n"
-      + "Continue?"
-    )) return;
     setBusy(true);
     try {
       const res = await api.stopAllDeployments();
       const squared = res?.squared_off_count ?? (res?.squared_off?.length ?? 0);
       const paused = (res?.paused_deployment_ids || []).length;
       const disabledLive = (res?.disarmed_live_deployment_ids || []).length;
-      toast.success(
-        `Stopped ALL — ${squared} paper position(s) squared · ${paused} deployment(s) `
-        + `paused · ${disabledLive} live deployment(s) disabled`,
-      );
+      const base = `Stopped ALL — ${squared} paper position(s) squared · ${paused} deployment(s) `
+        + `paused · ${disabledLive} live deployment(s) disabled`;
+      // The live half is judged by each deployment's own exit report. "N disabled"
+      // says nothing about whether a position is still open on the broker.
+      const names = {};
+      for (const d of deployments || []) names[d.id] = d.name || d.id;
+      const live = stopAllLiveVerdict(res, names);
+      if (live.ok) {
+        toast.success(
+          live.submitted > 0
+            ? `${base} · ${live.submitted} live exit(s) submitted — awaiting fill confirmation`
+            : base,
+          { duration: 8000 },
+        );
+      } else {
+        toast.error(`${base} — but NOT every live exit went clean: ${live.message}`, { duration: 20000 });
+      }
       await refreshAll();
     } catch (e) {
       toast.error(getApiErrorMessage(e, e.message));
@@ -692,6 +755,11 @@ export default function LiveDeploymentStrip() {
   // holding real money could be seventh); not-live rows collapse behind a count.
   const { live: liveDeps, notLive: notLiveDeps } = sortDeploymentRows(deployments, liveStatuses);
   const hasLive = liveDeps.length > 0;
+  // What Stop ALL is about to touch, from the guard's own open-position lists.
+  const openLiveCount = liveDeps.reduce((n, d) => {
+    const open = liveStatuses?.[d.id]?.open_positions;
+    return n + (Array.isArray(open) ? open.length : 0);
+  }, 0);
   const markedRows = useMemo(() => asPositionRows(positions) || [], [positions]);
   const nowMs = Date.now();
 
@@ -805,11 +873,12 @@ export default function LiveDeploymentStrip() {
           </span>
         )}
         {busy && <Loader2 className="w-3.5 h-3.5 animate-spin text-dimmer ml-1 shrink-0" />}
+        <LiveAlertsToggle />
         <Button
           variant="outline"
           size="sm"
           disabled={busy || !hasLive}
-          onClick={doStopAll}
+          onClick={() => setStopAllOpen(true)}
           // Theme tokens, not raw rose-*: rose-300 on the light theme's white
           // ground is washed out to near-illegible for a destructive control.
           className="ml-auto shrink-0 h-7 text-xs border-danger/40 text-danger hover:bg-danger/10"
@@ -820,6 +889,27 @@ export default function LiveDeploymentStrip() {
           Stop ALL live
         </Button>
       </div>
+
+      {/* Stop ALL — the gravest action on the page, so it must be TYPED. The body is
+          the honest blast radius: /deployments/stop-all reaches paper as well as live. */}
+      <ConfirmActionDialog
+        open={stopAllOpen}
+        onOpenChange={setStopAllOpen}
+        title="Stop ALL trading?"
+        confirmLabel="Stop ALL"
+        requireText="STOP ALL"
+        busy={busy}
+        onConfirm={async () => { await doStopAll(); setStopAllOpen(false); }}
+      >
+        <ul className="list-disc pl-4">
+          <li>squares off EVERY open PAPER trade</li>
+          <li>pauses EVERY active deployment (paper included)</li>
+          <li>disables live execution + flattens every LIVE deployment
+              ({liveDeps.length} live now, {openLiveCount} open live position{openLiveCount === 1 ? "" : "s"})</li>
+        </ul>
+        <p>Exit orders for live positions are SUBMITTED, not confirmed filled — check the
+           blotter afterwards. Outside market hours nothing is sent.</p>
+      </ConfirmActionDialog>
 
       {!collapsed && (
         <>

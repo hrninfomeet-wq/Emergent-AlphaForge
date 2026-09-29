@@ -305,3 +305,53 @@ export function summarizeExitReport(r) {
   if (!done.length && ok) done.push("nothing was open to exit");
   return { ok, tone: ok ? "success" : "danger", message: [...done, ...problems].join(" · ") };
 }
+
+/**
+ * Approximate value of an open position row (from openPositionRows): last price ×
+ * quantity, or null when either is unknown. Null renders "value unknown" — never 0,
+ * so a position with no price cannot read as a position worth nothing.
+ */
+export function positionValue(p) {
+  const ltp = fin(p?.ltp);
+  const qty = fin(p?.qty);
+  return ltp !== null && qty !== null ? ltp * qty : null;
+}
+
+/**
+ * The LIVE half of a Stop ALL response, judged per deployment.
+ *
+ * /deployments/stop-all returns `live_exit_reports` ({deployment_id: exit report}).
+ * The old toast said "N live deployment(s) disabled" whatever those reports held, so
+ * a failed exit — a position still open on the broker — arrived under a green
+ * banner. Here EVERY deployment stop-all touched (the disarmed ids AND any report
+ * keys) must have a report, and each report must be clean by summarizeExitReport's
+ * rule; a missing report is a problem, not a pass. `nameById` names them for the
+ * operator. `submitted` counts exits sent (an acceptance, not a fill).
+ */
+export function stopAllLiveVerdict(res, nameById) {
+  const names = nameById || {};
+  const reports = res && typeof res.live_exit_reports === "object" && res.live_exit_reports
+    ? res.live_exit_reports : {};
+  const disarmed = Array.isArray(res?.disarmed_live_deployment_ids)
+    ? res.disarmed_live_deployment_ids : [];
+  const ids = [...new Set([...disarmed, ...Object.keys(reports)])];
+  const problems = [];
+  let submitted = 0;
+  for (const id of ids) {
+    const name = names[id] || String(id);
+    const report = reports[id];
+    if (report === undefined || report === null) {
+      problems.push({ id, name, message: "no exit report returned — check the broker" });
+      continue;
+    }
+    const s = summarizeExitReport(report);
+    if (!s.ok) problems.push({ id, name, message: s.message });
+    if (Array.isArray(report.exit_submitted_tsyms)) submitted += report.exit_submitted_tsyms.length;
+  }
+  return {
+    ok: problems.length === 0,
+    problems,
+    submitted,
+    message: problems.map((p) => `${p.name}: ${p.message}`).join(" · "),
+  };
+}

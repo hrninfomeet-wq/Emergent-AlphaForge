@@ -314,3 +314,93 @@ def test_an_empty_report_says_nothing_was_open():
     out = _run_js("return [M.summarizeExitReport({}), M.summarizeExitReport(null)];")
     assert out[0]["ok"] is True and "nothing" in out[0]["message"]
     assert out[1]["ok"] is False
+
+
+# --------------------------------------------------------------------------- #
+# Confirmation dialogs: what a position is worth, and how Stop ALL is judged
+# --------------------------------------------------------------------------- #
+
+def test_position_value_is_last_price_times_quantity_and_unknown_stays_null():
+    out = _run_js("""
+      const rows = M.openPositionRows(
+        [{tsym: "A", qty: 150, entry_price: 100}, {tsym: "B", qty: 75}, {tsym: "C"}],
+        [{tsym: "A", lp: 12.5, mark_source: "tick"}, {tsym: "C", lp: 9}]);
+      return [rows.map((r) => M.positionValue(r)), M.positionValue(null), M.positionValue({}),
+              M.positionValue({ltp: 0, qty: 10}), M.positionValue({ltp: "x", qty: 10})];
+    """)
+    # A: 12.5 x 150; B: no mark -> unknown; C: a price but no qty -> unknown
+    assert out[0] == [1875.0, None, None]
+    assert out[1] is None and out[2] is None
+    assert out[3] == 0.0            # a real zero price is a value, not "unknown"
+    assert out[4] is None
+
+
+def _stop_all(res: str, names: str = "{}"):
+    return _run_js(f"return M.stopAllLiveVerdict({res}, {names});")
+
+
+def test_stop_all_is_ok_only_when_every_live_deployments_report_is_clean():
+    out = _stop_all("""{
+      disarmed_live_deployment_ids: ["a", "b"],
+      live_exit_reports: {
+        a: {exit_submitted_tsyms: ["X", "Y"]},
+        b: {already_flat_tsyms: ["Z"]},
+      }}""", '{a: "Alpha", b: "Beta"}')
+    assert out["ok"] is True and out["problems"] == [] and out["submitted"] == 2
+    assert out["message"] == ""
+
+
+def test_stop_all_names_the_deployment_whose_exit_failed():
+    out = _stop_all("""{
+      disarmed_live_deployment_ids: ["a", "b"],
+      live_exit_reports: {
+        a: {exit_submitted_tsyms: ["X"]},
+        b: {failed_tsyms: ["Q"], exit_submitted_tsyms: []},
+      }}""", '{a: "Alpha", b: "Beta"}')
+    assert out["ok"] is False
+    assert [p["name"] for p in out["problems"]] == ["Beta"]
+    assert "Beta" in out["message"] and "Q" in out["message"] and "Alpha" not in out["message"]
+    assert out["submitted"] == 1
+
+
+def test_stop_all_reports_every_bad_deployment_not_just_the_first():
+    out = _stop_all("""{
+      disarmed_live_deployment_ids: ["a", "b"],
+      live_exit_reports: {a: {failed_tsyms: ["Q1"]}, b: {deferred_tsyms: ["Q2"]}}}""",
+                    '{a: "Alpha", b: "Beta"}')
+    assert [p["name"] for p in out["problems"]] == ["Alpha", "Beta"]
+    assert "Alpha" in out["message"] and "Beta" in out["message"]
+
+
+def test_stop_all_treats_a_missing_report_as_a_problem_not_a_pass():
+    """The deployment was disabled but no exit report came back for it: nothing says
+    its positions were sent, so it cannot be called clean."""
+    out = _stop_all("""{
+      disarmed_live_deployment_ids: ["a", "b"],
+      live_exit_reports: {a: {exit_submitted_tsyms: ["X"]}}}""", '{a: "Alpha", b: "Beta"}')
+    assert out["ok"] is False
+    assert [p["name"] for p in out["problems"]] == ["Beta"]
+    assert "no exit report" in out["message"]
+
+
+def test_stop_all_with_no_live_report_block_at_all_is_a_problem_when_live_was_touched():
+    out = _stop_all("{disarmed_live_deployment_ids: ['a']}", '{a: "Alpha"}')
+    assert out["ok"] is False and out["problems"][0]["name"] == "Alpha"
+
+
+def test_stop_all_with_nothing_live_is_simply_ok():
+    out = _run_js("""return [M.stopAllLiveVerdict({}, {}),
+                             M.stopAllLiveVerdict({disarmed_live_deployment_ids: [], live_exit_reports: {}}),
+                             M.stopAllLiveVerdict(null, null)];""")
+    assert all(o["ok"] is True and o["problems"] == [] for o in out)
+
+
+def test_stop_all_judges_a_report_the_disarmed_list_does_not_mention():
+    out = _stop_all("{disarmed_live_deployment_ids: [], live_exit_reports: {z: {failed_tsyms: ['Q']}}}",
+                    '{z: "Zed"}')
+    assert out["ok"] is False and out["problems"][0]["name"] == "Zed"
+
+
+def test_stop_all_falls_back_to_the_id_when_a_name_is_unknown():
+    out = _stop_all("{disarmed_live_deployment_ids: ['dep-9'], live_exit_reports: {'dep-9': {failed_tsyms: ['Q']}}}")
+    assert out["problems"][0]["name"] == "dep-9"

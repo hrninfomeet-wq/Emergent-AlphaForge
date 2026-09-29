@@ -2,6 +2,60 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [Unreleased] — Confirmations that say what will happen, refusals that leave a trace, a session timeline, opt-in alerts (2026-09-29)
+
+Phase 5 of the Live Deployments uplift.
+
+**Found first: three of the four ways `auto_live_trade_for_signal` refuses an entry left
+no trace.** Only the stale-premium refusal wrote `signals.live_trade_error`; the
+account-caps, deployment-caps (pausing and non-pausing) and no-option-contract refusals
+just returned, so a deployment that "never placed" had nothing on screen to explain it.
+They now write the same field the same way, best-effort — a failed write cannot change
+the refusal or raise (a test forces the write to explode and pins the return value).
+
+**Found on the pane: the three bare `window.confirm`s were the least informative
+prompts on the page, and two toasts lied.** Stop's toast said "Stopped" whatever the exit
+report held (a position still open on the broker arrived green), and Stop ALL's said "N live
+deployment(s) disabled" without reading `live_exit_reports` at all. Disable / Stop / Stop
+ALL are now one `ConfirmActionDialog` each: Disable names the deployment and says it does
+NOT flatten; Stop lists this deployment's open positions (contract, qty, ≈ value or "value
+unknown" — never a made-up 0) and says it demotes to paper AND pauses; Stop ALL keeps the
+pinned blast-radius copy and must be typed (`STOP ALL`). Toasts now come from the exit
+report: Stop uses `summarizeExitReport`; Stop ALL judges every deployment it touched via
+`stopAllLiveVerdict` — a missing report is a problem, not a pass — and names the ones that
+did not go clean. Errors go through `getApiErrorMessage` (the raw `detail` can be an object).
+**And a latent hazard the new dialog would have exposed:** `ConfirmActionDialog` kept the
+typed word after the caller closed it by flipping `open` (not via `onOpenChange`), so a
+second opening of Stop ALL would have been pre-armed; it now clears on close (verified by
+mutating it in a jsdom render of the real strip).
+
+**`GET /deployments/{id}/timeline?date=` — read-only session timeline.** One ascending
+list (`{date, events:[{ts, kind, label, detail, source}], gaps}`) merging the IST day's
+signals (blocked + blockers, refusals, intended entries, lifecycle transitions),
+live_trades (entry on its created day, exit on its closed day — a null P&L stays "—",
+backfilled / exit-day-unknown rows are flagged), live_orders, and the deployment's latest
+hold / disable / caps change. It never raises: an unreadable source, a bad date or an
+unknown deployment degrades into `gaps`. `gaps` always states what is recorded nowhere —
+entries skipped while held / after the cutoff / broker not connected (the evaluator never
+calls the live sink then) and halt/latch history (only current state exists; a reset wipes
+it) — plus that order outcomes carry no timestamp and point events keep only the latest.
+Shown as a collapsible "Today's timeline" in the row detail, fetched only when opened.
+
+**Opt-in alerts, default OFF** (`lib/liveNotify.js`): fill / exit / refusal / blocked /
+halt from the diff of two snapshots of the live book. Silent on the first snapshot; a
+deployment (or the account state) unknown in either snapshot is never diffed, so a status
+fetch that failed for one poll cannot read as "every position just filled". Desktop
+notifications ask permission only from their own checkbox click; sound is a WebAudio tone
+created lazily; everything also toasts. Alerts fire only while the tab is open — the UI says
+so, because a PC that is down alerts nobody.
+
+Measured: **87/87 mutants killed** (auto_live refusal recording, timeline day bounds /
+scoping / ordering / never-raises, notify diff and settings, timeline formatting, Stop-ALL
+verdict); backend 32 new tests, frontend logic executed through node (47 across three
+modules). The JSX itself could not be built in this sandbox; it was compiled with the main
+repo's webpack + babel and driven under jsdom (dialogs, typed arming, toasts, timeline
+fetch-on-open, permission prompt, the hook) — 51 checks, out of tree.
+
 ## [Unreleased] — Controls a trader reaches for: tighten caps, flatten and stay live (2026-09-29)
 
 Phase 4 of the Live Deployments uplift — the only new write paths, landed after the

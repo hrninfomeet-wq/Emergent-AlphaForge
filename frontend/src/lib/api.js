@@ -243,6 +243,11 @@ export const api = {
     apiClient.post("/deployments/evaluate-active").then((r) => r.data),
   listDeploymentSignals: (id, params = {}) =>
     apiClient.get(`/deployments/${id}/signals`, { params }).then((r) => r.data),
+  // Read-only session timeline for ONE live deployment (signals, refusals, entries,
+  // exits, orders + `gaps` for what is never recorded). `date` = IST YYYY-MM-DD
+  // (default today). Fetched on demand only — never polled.
+  deploymentTimeline: (id, date) =>
+    apiClient.get(`/deployments/${id}/timeline`, { params: date ? { date } : {} }).then((r) => r.data),
   listDeploymentMetrics: (params = {}) =>
     apiClient.get("/deployments/metrics", { params }).then((r) => r.data),
   deploymentMetrics: (id) =>

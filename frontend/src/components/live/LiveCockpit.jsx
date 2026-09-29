@@ -4,6 +4,7 @@ import { api } from "@/lib/api";
 import { getApiErrorMessage } from "@/lib/apiError";
 import { brokerConnectionState, standDownManualExecution } from "@/lib/liveCockpitActions";
 import { useLiveData } from "@/components/live/LiveDataProvider";
+import { useLiveNotifications } from "@/components/live/useLiveNotifications";
 import {
   SectionCard, ReconcileChip, PositionsBlotter, fmtAsOf,
   asPositionRows, isOpenPosition,
@@ -45,6 +46,9 @@ export default function LiveCockpit() {
     marketAnalysis, holdings, greeks, errors, deployLive,
   } = useLiveData();
   const fetchAll = refetch.all;
+  // Opt-in, default-off live alerts (fill / exit / refusal / blocked / halt). Mounted
+  // ONCE, here; the toggle lives in the Live Deployments header.
+  useLiveNotifications();
   const brokerConnection = useMemo(() => brokerConnectionState(status), [status]);
 
   const [authMsg, setAuthMsg] = useState(null);
