@@ -21,6 +21,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
+from app.signal_lifecycle import exit_linked_signal
+
 log = logging.getLogger(__name__)
 
 
@@ -187,4 +189,16 @@ async def close_live_trade(
     modified = getattr(res, "modified_count", None)
     if modified is None:  # FakeDB / drivers without modified_count
         modified = getattr(res, "matched_count", 0)
-    return bool(modified)
+    if not modified:
+        return False
+    # The trade is CLOSED and persisted; now close the loop on its signal. Every
+    # live exit funnels through here (guard, reboot reconcile, kill switch), and
+    # none of them ever moved the signal, so every live signal stayed ACTIVE for
+    # good. The helper is a no-op unless the signal is ACTIVE and NEVER raises, so
+    # it can neither fail nor delay the close it follows.
+    await exit_linked_signal(
+        db, doc.get("signal_id"),
+        reason=f"live_trade_closed ({exit_reason})",
+        trade_id=doc.get("id") or norenordno,
+        realized_pnl=set_fields.get("realized_pnl"), at=now_iso)
+    return True

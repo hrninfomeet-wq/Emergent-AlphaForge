@@ -61,7 +61,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from app.instruments import INSTRUMENT_KEYS
 from app.paper_trading import close_trade, mark_trade_to_market, paper_trade_from_signal, _iso_to_ms
-from app.signal_lifecycle import SignalStateError, transition_signal
+from app.signal_lifecycle import SignalStateError, exit_linked_signal, transition_signal
 
 log = logging.getLogger(__name__)
 
@@ -839,20 +839,14 @@ async def mark_open_deployment_trades(
         return float(quote["price"]) if quote else None
 
     async def _exit_linked_signal(trade_doc: Dict[str, Any]) -> None:
-        if not trade_doc.get("signal_id"):
-            return
-        sig = await db.signals.find_one({"id": trade_doc["signal_id"]}, {"_id": 0})
-        if sig and str(sig.get("state") or "").upper() == "ACTIVE":
-            try:
-                exited = transition_signal(
-                    sig, "EXITED",
-                    reason=f"paper_trade_auto_closed ({trade_doc.get('exit_reason')})",
-                    snapshot={"trade_id": trade_doc["id"],
-                              "realized_pnl": trade_doc.get("realized_pnl")},
-                )
-                await db.signals.replace_one({"id": sig["id"]}, exited, upsert=False)
-            except SignalStateError:
-                pass
+        # The shared helper (signal_lifecycle.exit_linked_signal) — the same one
+        # the square-off sweep and every live close use — so a signal write that
+        # fails can no longer skip the lazy-leg arm that follows this call.
+        await exit_linked_signal(
+            db, trade_doc.get("signal_id"),
+            reason=f"paper_trade_auto_closed ({trade_doc.get('exit_reason')})",
+            trade_id=trade_doc.get("id"),
+            realized_pnl=trade_doc.get("realized_pnl"))
 
     cursor = db.paper_trades.find({"status": "OPEN"}, {"_id": 0})
     open_trades = await cursor.to_list(length=None)

@@ -18,6 +18,7 @@ from typing import Any, Dict, Iterable, List, Optional, Set
 log = logging.getLogger(__name__)
 
 from app.nse_calendar import trading_days_in_range
+from app.trade_time import instant_sort_key
 
 
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -374,7 +375,13 @@ async def _closed_trades(db: Any, deployment_id: str, *,
         {"deployment_id": deployment_id, "status": "CLOSED"},
         {"_id": 0},
     ).sort("closed_at", 1)
-    return await cursor.to_list(length=None)
+    rows = await cursor.to_list(length=None)
+    # Mongo's sort above is a STRING sort, and closed_at is written in two
+    # timezone formats (paper square-off: IST "+05:30"; everything else: UTC
+    # "+00:00"), so it can interleave closes out of time order. Every consumer
+    # of this list (streaks, drawdown, equity) is order sensitive — re-sort by
+    # instant. Stable: equal instants keep the query's order.
+    return sorted(rows, key=lambda t: instant_sort_key(t.get("closed_at")))
 
 
 async def _open_trades(db: Any, deployment_id: str, *,

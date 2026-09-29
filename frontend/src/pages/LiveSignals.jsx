@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   Activity, Archive, ChevronLeft, ChevronRight, Layers, Pause, Pin, Play, Plus,
@@ -7,6 +7,7 @@ import {
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { fmtNum } from "@/lib/fmt";
+import { formatLastEvaluated } from "@/lib/lastEvaluated";
 import { getApiErrorMessage, getDeploymentErrorMessage } from "@/lib/apiError";
 import {
   buildRiskPayload,
@@ -45,9 +46,6 @@ const toneClass = (v) =>
 // the backend, which is holiday-aware). en-GB gives 24h HH:MM:SS.
 const istNowClock = () =>
   new Date().toLocaleTimeString("en-GB", { timeZone: "Asia/Kolkata", hour12: false });
-const fmtIstHm = (ms) =>
-  ms == null ? null
-    : new Date(Number(ms)).toLocaleTimeString("en-GB", { timeZone: "Asia/Kolkata", hour12: false, hour: "2-digit", minute: "2-digit" });
 
 // Map the backend market_status phase to a label + chip classes.
 const MARKET_PHASE = {
@@ -300,6 +298,7 @@ function DeploymentCard({ item, busy, onPause, onResume, onRepin, onEvaluate, on
   const pausedReason = d.kill_switch_reason || d.drift_reason;
   const isDriftPaused = paused && d.drift_reason === "strategy_source_drift";
   const mtm = Number(t.realized_pnl || 0) + Number(t.open_unrealized || 0);
+  const lastEval = formatLastEvaluated(item.last_evaluated_ts);
   return (
     <div className="rounded-lg border border-line bg-bg-1 p-3 space-y-2" data-testid="deployment-card">
       <div className="flex items-start gap-2">
@@ -310,10 +309,12 @@ function DeploymentCard({ item, busy, onPause, onResume, onRepin, onEvaluate, on
             {" · DTE "}{(d.option_policy?.dte_filter || []).join(",") || "all"}
             {" · "}{sourceLabel}
           </div>
-          <div className="text-[10px] text-dimmer" data-testid="deployment-last-evaluated">
-            {item.last_evaluated_ts
-              ? `Last evaluated ${fmtIstHm(item.last_evaluated_ts)} IST`
-              : "Not yet evaluated this deployment"}
+          {/* The date appears whenever the last evaluation was not TODAY (IST): a
+              bare "15:29" made a deployment idle for days read as current. Amber
+              then, since the ACTIVE chip beside it would otherwise say all is well. */}
+          <div className={`text-[10px] ${lastEval && !lastEval.today ? "text-warning" : "text-dimmer"}`}
+               data-testid="deployment-last-evaluated">
+            {lastEval ? lastEval.label : "Not yet evaluated this deployment"}
           </div>
         </div>
         <div className="ml-auto flex items-center gap-1.5 shrink-0">

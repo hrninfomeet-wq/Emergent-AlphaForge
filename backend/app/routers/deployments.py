@@ -32,6 +32,7 @@ from app.live_data_gate import check_live_data_gate
 from app.live_exit_preview import describe_live_exits
 from app.nse_calendar import market_status
 from app.paper_squareoff import square_off_open_paper_trades
+from app.trade_time import realized_in_window
 from app.finite_values import nonfinite_numeric_paths as _nonfinite_numeric_paths
 
 from app.runtime import (
@@ -962,7 +963,6 @@ async def deployments_overview():
     ist_now = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
     today_iso = ist_now.strftime("%Y-%m-%d")
     start_ms, end_ms = _ist_day_bounds_ms_full(today_iso, today_iso)
-    utc_day_start_iso = datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc).isoformat()
 
     sig_stats: Dict[str, Dict[str, int]] = {}
     if dep_ids:
@@ -1014,16 +1014,17 @@ async def deployments_overview():
                 "closed_count": {"$sum": {"$cond": [{"$eq": ["$status", "CLOSED"]}, 1, 0]}},
                 "realized_total": {"$sum": {"$cond": [{"$eq": ["$status", "CLOSED"]}, {"$ifNull": ["$realized_pnl", 0]}, 0]}},
                 "wins": {"$sum": {"$cond": [{"$and": [{"$eq": ["$status", "CLOSED"]}, {"$gt": [{"$ifNull": ["$realized_pnl", 0]}, 0]}]}, 1, 0]}},
-                # A close whose exit day is unknown (a stale doc the reconcile
-                # closed days later) is not TODAY's P&L — daily_realized_summary
-                # excludes it too.
-                "realized_today": {"$sum": {"$cond": [{"$and": [
-                    {"$eq": ["$status", "CLOSED"]},
-                    {"$ne": [{"$ifNull": ["$exit_day_unknown", False]}, True]},
-                    {"$gte": [{"$ifNull": ["$closed_at", ""]}, utc_day_start_iso]}]},
-                    {"$ifNull": ["$realized_pnl", 0]}, 0]}},
+                # `realized_today` is NOT computed here: it needs `closed_at` compared
+                # as an INSTANT, and Mongo can only compare the strings (see below).
             }},
         ]
+
+    _day_start_dt = datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc)
+    _day_end_dt = datetime.fromtimestamp(end_ms / 1000, tz=timezone.utc)
+    # A string prefilter that is a guaranteed SUPERSET of today's closes in either
+    # format: an IST-stamped close begins with its IST date, and a UTC-stamped close
+    # on today's IST date begins with today's date or (00:00-05:30 IST) yesterday's.
+    _closed_since = (ist_now - timedelta(days=1)).strftime("%Y-%m-%d")
 
     for _ids, _col, _cut in ((_paper_ids, db.paper_trades, None),
                              (_live_ids, db.live_trades, _fresh_cut_iso)):
@@ -1032,6 +1033,21 @@ async def deployments_overview():
         rows = await _col.aggregate(_trade_pipeline(_ids, fresh_cut_iso=_cut)).to_list(length=None)
         for r in rows:
             trade_stats[str(r.get("_id") or "")] = r
+        # Today's realized P&L, summed over PARSED close instants. `closed_at` is
+        # written in two timezone formats (the paper square-off stamps IST "+05:30",
+        # the marker / manual / live closes stamp UTC), so the pipeline's old
+        # `$gte closed_at, <utc day start>` string compare could count a close on
+        # the wrong side of the day boundary. A close whose exit day is unknown (a
+        # stale doc the reconcile closed days later) is not TODAY's P&L —
+        # daily_realized_summary excludes it too, and so does this.
+        closed_rows = await _col.find(
+            {"deployment_id": {"$in": _ids}, "status": "CLOSED",
+             "closed_at": {"$gte": _closed_since}},
+            {"_id": 0, "deployment_id": 1, "closed_at": 1, "realized_pnl": 1,
+             "exit_day_unknown": 1},
+        ).to_list(length=None)
+        for _dep, _pnl in realized_in_window(closed_rows, _day_start_dt, _day_end_dt).items():
+            trade_stats.setdefault(_dep, {})["realized_today"] = _pnl
 
     items = []
     totals = {"open_trades": 0, "open_unrealized": 0.0, "open_unverified": 0,

@@ -1,9 +1,12 @@
 """Auditable live-signal lifecycle helpers."""
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, Optional
+
+log = logging.getLogger(__name__)
 
 
 class SignalStateError(ValueError):
@@ -108,3 +111,52 @@ def transition_signal(
     if target == "SKIPPED":
         updated["skipped_at"] = timestamp
     return updated
+
+
+async def exit_linked_signal(
+    db: Any,
+    signal_id: Any,
+    *,
+    reason: str,
+    trade_id: Any = None,
+    realized_pnl: Any = None,
+    at: Optional[str] = None,
+) -> bool:
+    """Idempotently move the signal behind a CLOSED trade ACTIVE -> EXITED.
+
+    The ONE place a trade close reaches back to its signal. Before this existed the
+    only ACTIVE -> EXITED transitions were the paper marker's own stop/target
+    auto-close and the manual single-trade close, so a signal whose trade was
+    squared by ANY other route (the 15:00 sweep, the boot reconcile, Stop /
+    Stop-ALL, the basket controls, retire) stayed ACTIVE for good — and EVERY live
+    close (guard, reconcile, kill switch) never touched it, so every live signal
+    was ACTIVE forever. The Signal Journal then showed a wall of "active" signals
+    for positions that were long flat.
+
+    Returns True iff THIS call moved it. Only an ACTIVE signal moves: EXITED /
+    AUDITED / SKIPPED, a missing doc or a blank id is left exactly as found, so a
+    repeat call (and a second close route racing this one) is a harmless no-op.
+    The write is conditional on ``state == ACTIVE`` for the same reason.
+
+    NEVER raises. It runs on the far side of a close that has already been
+    persisted — a journal failure here must not turn a real, completed exit into an
+    error or stop the rest of a sweep — so any failure is logged and swallowed.
+    """
+    if not signal_id or db is None:
+        return False
+    try:
+        sig = await db.signals.find_one({"id": signal_id}, {"_id": 0})
+        if not sig or str(sig.get("state") or "").upper() != "ACTIVE":
+            return False
+        exited = transition_signal(
+            sig, "EXITED", reason=reason, at=at,
+            snapshot={"trade_id": trade_id, "realized_pnl": realized_pnl},
+        )
+        res = await db.signals.replace_one(
+            {"id": signal_id, "state": "ACTIVE"}, exited, upsert=False)
+        matched = getattr(res, "matched_count", None)
+        return True if matched is None else bool(matched)
+    except Exception as exc:  # noqa: BLE001 — see docstring: the close already happened
+        log.warning("exit_linked_signal: signal %s not moved to EXITED (%s: %s)",
+                    signal_id, type(exc).__name__, str(exc)[:160])
+        return False

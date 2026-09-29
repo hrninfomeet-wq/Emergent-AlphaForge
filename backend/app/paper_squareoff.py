@@ -9,11 +9,13 @@ Configurable per deployment in a future slice via deployment.risk.square_off_tim
 from __future__ import annotations
 
 import logging
-from datetime import datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional
 
 from app.nse_calendar import is_trading_day
 from app.paper_trading import close_trade
+from app.signal_lifecycle import exit_linked_signal
+from app.trade_time import parse_instant
 
 log = logging.getLogger(__name__)
 
@@ -99,6 +101,11 @@ async def _resolve_exit_price(
         return 0.0, "entry_fallback", True
 
 
+def _entry_instant(trade: Dict[str, Any]) -> Optional[datetime]:
+    """The trade's entry as an aware UTC instant, or None when unparseable."""
+    return parse_instant(trade.get("created_at") or trade.get("entry_time"))
+
+
 def _entry_ist_date(trade: Dict[str, Any]) -> Optional[str]:
     """The trade's entry date in IST ("YYYY-MM-DD"), or None when unparseable.
 
@@ -106,16 +113,25 @@ def _entry_ist_date(trade: Dict[str, Any]) -> Optional[str]:
     before comparing: 20:00 UTC on the 6th is 01:30 IST on the 7th, and a naive
     string slice would mis-classify it as the previous day.
     """
-    raw = trade.get("created_at") or trade.get("entry_time")
-    if not raw:
+    dt = _entry_instant(trade)
+    if dt is None:
         return None
-    try:
-        dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
-    except (TypeError, ValueError):
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return (dt.astimezone(timezone.utc) + IST_OFFSET).date().isoformat()
+    return (dt + IST_OFFSET).date().isoformat()
+
+
+def missed_squareoff_instant(entry_ist_date: str, entered_at: Optional[datetime] = None,
+                             *, cutoff: time = DEFAULT_SQUARE_OFF_IST) -> datetime:
+    """The instant the scheduled square-off of ``entry_ist_date`` was due, as UTC.
+
+    Used to stamp a close that should have happened on the entry day and did not
+    (this machine was off). Never earlier than the entry itself: a trade opened at
+    15:10, after the day's 15:00 sweep had run, cannot have closed before it opened.
+    """
+    day = date.fromisoformat(str(entry_ist_date))
+    due = datetime.combine(day, cutoff, tzinfo=timezone(IST_OFFSET)).astimezone(timezone.utc)
+    if entered_at is not None and entered_at > due:
+        return entered_at
+    return due
 
 
 async def square_off_open_paper_trades(
@@ -157,6 +173,19 @@ async def square_off_open_paper_trades(
     into an unintended exit. A trade with no parseable entry timestamp is NOT
     treated as stale: absent is not old, and we never square on an unknown date.
 
+    A trade entered on an EARLIER IST day than `now` (a missed square-off, or an
+    `allow_overnight` position being closed by hand) is exited on a stored mark, not
+    a fill at this instant, so it is never labelled a fresh exit: it carries
+    `exit_price_stale` plus `exit_mark_stale` / `exit_mark_age_s`. And unless its
+    deployment holds overnight on purpose, `closed_at` is stamped at the scheduled
+    square-off of its ENTRY day (`missed_squareoff_instant`), not at `now` — with
+    `now` as the stamp, a boot days later booked the stranded trade's P&L into the
+    boot day, where the daily-loss kill switch could pause a deployment that never
+    traded that day. A fresh live tick is a real fill now, so it keeps `now`.
+
+    Every trade closed here also moves its linked signal ACTIVE -> EXITED
+    (`signal_lifecycle.exit_linked_signal`); that write can never fail the close.
+
     Returns a list of summaries with id, exit_price, realized_pnl per closed trade.
     Safe to call multiple times - only OPEN trades are touched.
     """
@@ -183,7 +212,12 @@ async def square_off_open_paper_trades(
         for dep in await deps_cursor.to_list(length=None):
             overnight_allowed[dep.get("id")] = bool((dep.get("risk") or {}).get("allow_overnight"))
 
-    closed_at = (now_ist or _ist_now()).strftime("%Y-%m-%dT%H:%M:%S+05:30")
+    now = now_ist or _ist_now()
+    today_ist = now.date().isoformat()
+    closed_at = now.strftime("%Y-%m-%dT%H:%M:%S+05:30")
+    # `now` is IST WALL-CLOCK (labelled either way), so the real instant is the
+    # wall time minus the offset.
+    now_instant = now.replace(tzinfo=timezone.utc) - IST_OFFSET
     summaries: List[Dict[str, Any]] = []
     for trade in open_trades:
         if honour_allow_overnight and overnight_allowed.get(trade.get("deployment_id"), False):
@@ -192,13 +226,44 @@ async def square_off_open_paper_trades(
         try:
             exit_price, price_source, price_stale = await _resolve_exit_price(
                 db, trade, latest_tick_lookup=latest_tick_lookup)
-            updated = close_trade(trade, exit_price=exit_price, reason=reason, at=closed_at)
+            trade_closed_at = closed_at
+            retro = False
+            stale_fields: Dict[str, Any] = {}
+            entry_day = _entry_ist_date(trade)
+            if entry_day is not None and entry_day < today_ist and price_source != "live_tick":
+                # Carried over from an earlier day and NOT priced by a fresh tick:
+                # the exit is the last stored mark, whatever `_resolve_exit_price`
+                # called it (it reports a days-old `last_mark` as fresh).
+                price_stale = True
+                close_instant = now_instant
+                if not overnight_allowed.get(trade.get("deployment_id"), False):
+                    close_instant = missed_squareoff_instant(entry_day, _entry_instant(trade))
+                    trade_closed_at = close_instant.isoformat()
+                    retro = True
+                mark_at = parse_instant(trade.get("updated_at")) if price_source == "last_mark" else None
+                stale_fields = {
+                    "exit_mark_stale": True,
+                    # None when the mark's time is unknown — never a made-up age.
+                    "exit_mark_age_s": (max(0, int((close_instant - mark_at).total_seconds()))
+                                        if mark_at is not None else None),
+                }
+            updated = close_trade(trade, exit_price=exit_price, reason=reason, at=trade_closed_at)
             # Provenance: a stale-tick / never-marked (entry-fallback) close is an
             # estimate, not a real fill — flag it so the journal/metrics can see it.
             updated["exit_price_source"] = price_source
             updated["exit_price_stale"] = bool(price_stale)
+            updated.update(stale_fields)
             await db.paper_trades.replace_one({"id": trade["id"]}, updated, upsert=False)
-            summaries.append({
+            # Close the loop on the signal, after the close is safely persisted.
+            # This sweep has seven callers (boot reconcile, the 15:00 sweep, basket
+            # controls, manual square-off, Stop, Stop-ALL, retire) and none of them
+            # ever moved the signal, so it stayed ACTIVE for good.
+            await exit_linked_signal(
+                db, trade.get("signal_id"),
+                reason=f"paper_trade_squared_off ({reason})",
+                trade_id=trade["id"], realized_pnl=updated.get("realized_pnl"),
+                at=trade_closed_at if retro else None)
+            summary = {
                 "id": trade["id"],
                 "instrument_key": trade.get("instrument_key"),
                 "exit_price": exit_price,
@@ -206,7 +271,11 @@ async def square_off_open_paper_trades(
                 "exit_price_stale": bool(price_stale),
                 "realized_pnl": updated.get("realized_pnl"),
                 "reason": reason,
-            })
+            }
+            if stale_fields:
+                summary.update(stale_fields)
+                summary["closed_at"] = updated.get("closed_at")
+            summaries.append(summary)
         except Exception as exc:
             log.exception("square-off failed for trade %s: %s", trade.get("id"), exc)
             summaries.append({"id": trade.get("id"), "error": str(exc)})
