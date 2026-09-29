@@ -139,3 +139,95 @@ def resolve_owned_tsyms(
             owned.add(tsym)
 
     return owned
+
+
+def _positive_qty(value: Any) -> Optional[float]:
+    try:
+        q = float(value)
+    except (TypeError, ValueError):
+        return None
+    return q if q == q and 0 < q < float("inf") else None
+
+
+def resolve_rehydrate_attribution(
+    *,
+    live_trades: Iterable[Optional[Dict[str, Any]]],
+    order_book: Iterable[Optional[Dict[str, Any]]] = (),
+) -> Dict[str, Dict[str, Any]]:
+    """Which deployment — and which journal row — does each Noren tsym belong to?
+
+    Ownership (above) proves a position is AlphaForge's; it does not say WHOSE.
+    After a restart the guard re-attaches every owned position as a bare entry
+    keyed by tsym, with no ``deployment_id``. Three things then silently miss it:
+    that deployment's Flatten / Stop (they select registry entries by
+    ``deployment_id``), the guard's P&L marks (written to the journal row whose
+    ``norenordno`` equals the entry key), and the guard's own confirmed-flat close
+    (same key) — so the row stayed OPEN after the guard squared it.
+
+    Pure, like ``resolve_owned_tsyms``. Considers non-CLOSED journal rows only. A
+    row's tsym is its own ``noren_tsym`` (written from the executor's result),
+    else the broker order book's tsym for its ``norenordno`` (legacy rows).
+
+    Per tsym, only when EVERY candidate row names the same deployment:
+      ``{"norenordno": <the row's order number, or None when 2+ rows>,
+         "deployment_id": ..., "quantity": <sum of the rows' quantity, or None
+         when any is unreadable>, "rows": n}``.
+    A tsym whose rows span deployments, or include a row with no deployment, is
+    left out — it stays unattributed, exactly as before. Guessing an owner would
+    let one deployment's Flatten square another's position.
+    """
+    tsym_by_ordno: Dict[str, str] = {}
+    for row in order_book or ():
+        if isinstance(row, dict) and row.get("norenordno") and row.get("tsym"):
+            tsym_by_ordno.setdefault(_s(row["norenordno"]), _s(row["tsym"]).strip())
+
+    rows_by_tsym: Dict[str, list] = {}
+    for doc in live_trades or ():
+        if not isinstance(doc, dict):
+            continue
+        if _s(doc.get("status")).upper() == "CLOSED":
+            continue
+        ordno = _s(doc.get("norenordno")).strip()
+        if not ordno:
+            continue
+        tsym = _s(doc.get("noren_tsym")).strip() or tsym_by_ordno.get(ordno, "")
+        if tsym:
+            rows_by_tsym.setdefault(tsym, []).append(doc)
+
+    out: Dict[str, Dict[str, Any]] = {}
+    for tsym, docs in rows_by_tsym.items():
+        deps = {_s(d.get("deployment_id")).strip() for d in docs}
+        if len(deps) != 1 or "" in deps:
+            continue
+        qtys = [_positive_qty(d.get("quantity")) for d in docs]
+        out[tsym] = {
+            "norenordno": _s(docs[0]["norenordno"]).strip() if len(docs) == 1 else None,
+            "deployment_id": deps.pop(),
+            "quantity": None if any(q is None for q in qtys) else sum(qtys),
+            "rows": len(docs),
+        }
+    return out
+
+
+def attribution_for(tsym: str, netqty: Any,
+                    attribution: Optional[Dict[str, Dict[str, Any]]]) -> Optional[Dict[str, Any]]:
+    """The attribution to apply to a re-attached position, or None.
+
+    Declines unless the journal rows account for the WHOLE held quantity. More
+    contracts than the rows ordered means something else is in that position (a
+    hand-placed add, another entry this resolver could not see); attributing it
+    would put the whole contract's broker MTM on this deployment's day-stop — a
+    profit elsewhere could mask this deployment's loss — and let its Flatten
+    square quantity it never bought. Fewer is fine: a partial fill.
+    """
+    att = (attribution or {}).get(str(tsym or ""))
+    if not isinstance(att, dict):
+        return None
+    try:
+        held = abs(float(netqty))
+    except (TypeError, ValueError):
+        return None
+    qty = att.get("quantity")
+    if qty is None or held <= 0 or held > float(qty):
+        return None
+    return att

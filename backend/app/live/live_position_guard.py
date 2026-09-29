@@ -55,6 +55,7 @@ from app.session_spec import OPTIONS, segment_close_time
 from app.live.broker_protocol import BrokerReadError, TOKEN_EXPIRED_HINT
 from app.live.kill_switch import _parse_netqty
 from app.live.live_sl_monitor import build_monitor_state, evaluate_exit
+from app.live.ownership import attribution_for
 from app.live.overall_controls import build_overall_state, evaluate_overall
 
 log = logging.getLogger(__name__)
@@ -1664,6 +1665,7 @@ class LivePositionGuard:
     async def rehydrate_from_broker(
         self, *, default_stop_pct: float = 50.0,
         owned_tsyms: Optional[set] = None,
+        attribution: Optional[Dict[str, Dict[str, Any]]] = None,
     ) -> int:
         """Re-attach the software guard to open broker positions after a restart.
 
@@ -1687,6 +1689,20 @@ class LivePositionGuard:
         ``evaluate_exit`` are LONG-only, so a short's "stop" sits below its entry
         and would fire on profit while never firing on loss.
 
+        ``attribution`` (``ownership.resolve_rehydrate_attribution``) gives the
+        position back to its deployment. When ``attribution_for`` accepts it, the
+        entry carries that ``deployment_id`` (so the deployment's Flatten / Stop
+        reach it) and, for a single journal row, is keyed by that row's
+        ``norenordno`` exactly like the original arm — the guard's marks and its
+        confirmed-flat close are written by that key. Anything unproven stays a
+        bare tsym-keyed entry, as before. Levels are NOT restored: still the
+        default stop, still ``source="rehydrated"``.
+
+        A re-attached entry starts ``seen_filled``: it was adopted BECAUSE the book
+        showed it held. Left False, a position that went flat before the first
+        cycle would age out as ``never_filled`` — and with the real order number as
+        its key, that would journal a filled trade as never filled.
+
         Best-effort: returns the count rehydrated; never raises out (a broker/feed
         error logs and returns 0). Safe to re-run — already-watched tsyms are
         skipped — which matters because live recovery retries while incomplete.
@@ -1703,6 +1719,7 @@ class LivePositionGuard:
         # norenordno, but the guard matches positions to entries by tsym — so a
         # fresh arm for this tsym must NOT be double-watched/clobbered).
         watched_tsyms = {str(e.get("tsym") or "") for e in self._registry.snapshot()}
+        watched_ids = {str(e.get("id") or "") for e in self._registry.snapshot()}
         rehydrated = 0
         for pos in (book or []):
             try:
@@ -1729,23 +1746,47 @@ class LivePositionGuard:
                          or _finite_pos(pos.get("daybuyavgprc")))
                 if entry is None:
                     continue
+                key, dep_id = tsym, None
+                att = attribution_for(tsym, netqty, attribution)
+                if att is not None:
+                    ordno = str(att.get("norenordno") or "")
+                    if ordno and ordno in watched_ids:
+                        # That order is already guarded under a different tsym —
+                        # the journal and the registry disagree. Own nothing.
+                        log.warning(
+                            "guard rehydrate: %s maps to order %s, already guarded "
+                            "under another symbol — re-attaching UNATTRIBUTED",
+                            tsym, ordno)
+                    else:
+                        key = ordno or tsym
+                        dep_id = str(att.get("deployment_id") or "") or None
+                elif (attribution or {}).get(tsym):
+                    log.warning(
+                        "guard rehydrate: %s netqty=%s exceeds its journal rows' "
+                        "quantity %s — re-attaching UNATTRIBUTED (no deployment's "
+                        "Flatten will reach it)", tsym, netqty,
+                        (attribution or {})[tsym].get("quantity"))
                 state = build_monitor_state(float(entry), stop_pct=default_stop_pct)
                 self._registry.register(
-                    key=tsym, tsym=tsym, exch=str(pos.get("exch", "NFO")),
+                    key=key, tsym=tsym, exch=str(pos.get("exch", "NFO")),
                     qty=abs(int(netqty)), prd=str(pos.get("prd", "I")),
                     entry_price=float(entry), state=state, source="rehydrated",
+                    deployment_id=dep_id,
                 )
                 # entry_price above is the RECOVERY-TIME MARK, not the true entry.
                 # basket_premium (premium_pct thresholds only) is therefore
                 # approximate for this row; basket_mtm stays exact.
-                _reg_entry = self._registry.get(tsym)
+                _reg_entry = self._registry.get(key)
                 if isinstance(_reg_entry, dict):
                     _reg_entry["entry_price_is_mark"] = True
+                    _reg_entry["seen_filled"] = True
                 watched_tsyms.add(tsym)  # guard against duplicate tsyms in the book
+                watched_ids.add(key)
                 rehydrated += 1
                 log.warning(
                     "guard rehydrate: re-attached %s (netqty=%s) at default %.0f%% stop "
-                    "— original levels lost on restart", tsym, netqty, default_stop_pct,
+                    "— original levels lost on restart; deployment=%s key=%s",
+                    tsym, netqty, default_stop_pct, dep_id or "unattributed", key,
                 )
             except Exception as exc:
                 log.warning("guard rehydrate: register failed for %s: %s", pos.get("tsym"), exc)

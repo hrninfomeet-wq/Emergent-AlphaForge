@@ -220,7 +220,7 @@ async def _square_live_positions_for_deployment(
     /live/stop exactly as it was):
 
       * ``skip_shared`` — a contract ALSO held by another registry entry (another
-        deployment, a rehydrated entry with no owner, a manual one) is not sent:
+        deployment, an unattributed rehydrated entry, a manual one) is not sent:
         square_position clamps to the ACCOUNT's netqty and cancels every working
         order on the scrip, so it would flatten the other position too;
       * ``skip_squaring`` — an entry already squaring is not re-sent (a re-send
@@ -2056,9 +2056,10 @@ async def flatten_deployment_live(deployment_id: str, body: Optional[_LiveFlatte
         an order the exchange would reject is not a flatten;
       * a contract shared with another registry entry is skipped, not squared
         (squaring clamps to the whole account's netqty on that scrip);
-      * OPEN journal rows the guard does not hold (e.g. after a restart, a
-        rehydrated entry has no owner) are listed as `unguarded_open_tsyms`,
-        never squared automatically;
+      * OPEN journal rows the guard does not hold for this deployment (e.g. a
+        position re-attached after a restart that could not be proven to be
+        this deployment's alone) are listed as `unguarded_open_tsyms`, never
+        squared automatically;
       * `fill_confirmed` is always False — a submitted exit is not a fill; the
         guard finalizes after its consecutive flat reads.
     """

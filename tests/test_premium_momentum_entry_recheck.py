@@ -382,6 +382,19 @@ def test_b6_stop_close_marks_leg_exited_and_arms_opposite_lazy(monkeypatch):
         "armed lazy + never-triggered ppe must keep the session alive"
 
 
+def test_b6_a_restart_recovered_stop_finalizes_the_leg_but_never_arms_lazy(monkeypatch):
+    """Since restart attribution (G1) a recovered primary carries its deployment and
+    order number, so this hook now reaches it. It is guarded at the DEFAULT
+    catastrophe stop, not the strategy's — its stop must not open the reversal."""
+    rt, db, closed = _wire_hook_both(monkeypatch)
+    entry = {**_B6_ENTRY, "source": "rehydrated"}
+    run(rt._live_guard_on_close(entry, 57.0, "stop", dict(_CONFIRMED_FLAT)))
+    assert closed == ["N1"], "the journal row must still close"
+    doc = run(db.premium_locks.find_one({"deployment_id": "D1"}))
+    assert doc.get("ce_exited") is True, "the leg bookkeeping must still run"
+    assert "lazy_armed_pe" not in doc and "lazy_armed_ce" not in doc
+
+
 def test_b6_target_close_never_arms_lazy(monkeypatch):
     rt, db, closed = _wire_hook_both(monkeypatch)
     run(rt._live_guard_on_close(dict(_B6_ENTRY), 140.0, "target", dict(_CONFIRMED_FLAT)))

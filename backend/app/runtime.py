@@ -386,8 +386,10 @@ async def _live_guard_on_close(entry, exit_price, reason, result) -> None:
     Safety (both adversarially verified): only journals a CONFIRMED close —
     ``should_journal_close`` skips a dry-run / non-squared result and ``source==
     "manual"`` single-shots (no live_trades doc). Links by the entry norenordno
-    (== entry["id"] for an auto_live entry; a rehydrated entry is keyed by tsym and
-    has no doc, so the update no-ops). exit_price is the last broker mark (an
+    (== entry["id"] for an auto_live entry, and for a rehydrated entry attributed
+    to exactly one journal row; an unattributed rehydrated entry is keyed by tsym,
+    so the update no-ops and the next reboot reconcile journals it). exit_price is
+    the last broker mark (an
     estimate; reboot reconcile back-fills the true fill price). Idempotent
     (status != CLOSED). NEVER raises (the guard wraps this call)."""
     from app.live.close_loop import should_journal_close, close_live_trade
@@ -479,9 +481,17 @@ async def _live_guard_on_close(entry, exit_price, reason, result) -> None:
                         )
                         _now_hhmm = ((datetime.now(timezone.utc)
                                       + timedelta(hours=5, minutes=30)).strftime("%H:%M"))
+                        # A restart-recovered entry (source "rehydrated") is
+                        # watched at the DEFAULT catastrophe stop, not this
+                        # strategy's stop, so its "stop" is not the event the
+                        # lazy reversal is conditioned on — and a degraded
+                        # recovery path must not open a new position. Its leg
+                        # bookkeeping above still runs.
+                        _recovered = str((entry or {}).get("source") or "") == "rehydrated"
                         _lazy_side = lazy_arm_side(
                             _leg,
-                            is_stop_class=str(reason or "").lower() in LIVE_STOP_CLASS_REASONS,
+                            is_stop_class=(not _recovered
+                                           and str(reason or "").lower() in LIVE_STOP_CLASS_REASONS),
                             params=_params, now_hhmm=_now_hhmm)
                         if _lazy_side:
                             # lazy_armed_<side> names the side of the LAZY leg
@@ -834,13 +844,16 @@ async def live_startup_recovery() -> bool:
     #          cid BEFORE the POST, so an order that crashed between the POST and
     #          mark_submitted is still provably ours.
     _owned_tsyms: set = set()
+    _attribution: Dict[str, Any] = {}
     try:
-        from app.live.ownership import resolve_owned_tsyms
+        from app.live.ownership import (resolve_owned_tsyms,
+                                        resolve_rehydrate_attribution)
         # ALL journal rows, CLOSED included: a CLOSED row is what proves its
         # intent's contract is no longer ours (the intent itself never leaves
-        # SUBMITTED). Projected to three small fields — the collection is tiny.
+        # SUBMITTED). Projected to a few small fields — the collection is tiny.
         _lt = [d async for d in get_db().live_trades.find(
-            {}, {"norenordno": 1, "cid": 1, "status": 1, "_id": 0})]
+            {}, {"norenordno": 1, "cid": 1, "status": 1, "noren_tsym": 1,
+                 "deployment_id": 1, "quantity": 1, "_id": 0})]
         _lo = [d async for d in get_db().live_orders.find(
             {}, {"norenordno": 1, "client_order_id": 1, "state": 1,
                  "intent": 1, "_id": 0})]
@@ -853,6 +866,17 @@ async def live_startup_recovery() -> bool:
             order_book=_ob if isinstance(_ob, list) else [],
             today_iso=(datetime.now(timezone.utc)
                        + timedelta(hours=5, minutes=30)).date().isoformat())
+        # WHOSE each owned position is, so it re-attaches to its deployment and
+        # journal row. Separate from ownership on purpose: failing here only
+        # leaves positions unattributed (the old behaviour), never unguarded.
+        try:
+            _attribution = resolve_rehydrate_attribution(
+                live_trades=_lt, order_book=_ob if isinstance(_ob, list) else [])
+        except Exception as exc:
+            _attribution = {}
+            _log.warning("live startup recovery: could not attribute recovered "
+                         "positions to deployments (%s) — they re-attach "
+                         "unattributed", exc)
     except Exception as exc:
         # Unresolvable ownership => adopt NOTHING (fail closed) and retry later.
         complete = False
@@ -860,7 +884,8 @@ async def live_startup_recovery() -> bool:
         _log.warning("live startup recovery: could not resolve guard ownership "
                      "(%s) — adopting no positions this pass", exc)
     try:
-        n = await live_position_guard.rehydrate_from_broker(owned_tsyms=_owned_tsyms)
+        n = await live_position_guard.rehydrate_from_broker(
+            owned_tsyms=_owned_tsyms, attribution=_attribution)
         if n:
             _log.warning("live startup recovery: guard re-attached to %s open position(s) "
                          "at the default catastrophe stop (original levels lost on restart)", n)

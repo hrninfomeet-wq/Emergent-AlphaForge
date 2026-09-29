@@ -529,8 +529,8 @@ def _relink_held_ocos(
     HELD (in the non-empty position_book) and whose ``oco_al_id`` is falsy, looks for a
     resting OCO in ``gtt_book`` with the SAME tsym; if found it stores the al_id back
     onto the LIVE registry entry (``get_registry().get(key)["oco_al_id"] = al_id``).
-    Matching is by tsym because rehydrated entries carry no norenordno and one open
-    position per tsym is the norm.
+    Matching is by tsym because an unattributed rehydrated entry carries no
+    norenordno and one open position per tsym is the norm.
 
     Held entries that still have NO oco_al_id after the attempt are counted as
     ``no_backstop`` (software-guard-only) and each gets a loud WARNING. An entry that
