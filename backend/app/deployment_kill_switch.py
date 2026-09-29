@@ -26,6 +26,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
+from app.trade_time import instant_sort_key
+
 IST = timezone(timedelta(hours=5, minutes=30))
 
 
@@ -210,6 +212,11 @@ async def check_deployment_kill_switches(
         .sort("closed_at", 1)
         .to_list(length=None)
     )
+    # `closed_at` is written in two timezone formats (the square-off sweep stamps
+    # IST "+05:30", every other close UTC "+00:00"), so Mongo's STRING sort above
+    # can put a later close before an earlier one. The trailing-loss run is order
+    # sensitive — re-sort by instant. Stable, so equal instants keep query order.
+    closed.sort(key=lambda t: instant_sort_key(t.get("closed_at")))
     open_trade_count = await db.paper_trades.count_documents(
         {"deployment_id": deployment_id, "status": "OPEN"}
     )
@@ -255,7 +262,7 @@ async def check_soft_daily_governor(db, deployment, *, today_ist=None):
     entry_count = len(entered_today)
     closed_today = sorted(
         [t for t in entered_today if str(t.get("status") or "").upper() == "CLOSED"],
-        key=lambda t: str(t.get("closed_at") or ""))
+        key=lambda t: instant_sort_key(t.get("closed_at")))
     cum = cmin = cmax = 0.0
     for t in closed_today:
         cum += _float(t.get("realized_pnl"))

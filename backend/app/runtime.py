@@ -1076,18 +1076,23 @@ async def _deployment_evaluator_loop() -> None:
         try:
             await _evaluator_wait(EVAL_POLL_SECONDS)
 
-            # Skip outside NSE market hours (Mon-Fri, 09:15-15:30 IST)
             ist_now = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
             today_ist = ist_now.strftime("%Y-%m-%d")
-            if ist_now.weekday() >= 5:
-                continue
-            t = ist_now.time()
-            if t < _time(9, 15) or t >= _time(15, 30):
-                continue
 
             # 15:00 IST square-off is TIME-based + safety-critical, so it runs on
             # EVERY cycle (~2s) — never gated behind a fresh bar, so positions are
             # flattened on time even if the candle feed stalls near the cutoff.
+            #
+            # It sits ABOVE the market-hours gate on purpose. It used to sit below
+            # it, which made the sweep fire only in the 15:00-15:30 window: a backend
+            # that came up (or woke from sleep) at 15:45 skipped every cycle, the
+            # boot sweep is stale-only by design (it never touches TODAY's entries),
+            # and that day's OPEN trade rode overnight — holding a max_concurrent
+            # slot, and disabling the paper basket stop for the whole book, until the
+            # next 15:00 or the next restart. `is_square_off_due` already means "a
+            # trading day and now >= 15:00", holiday-aware, so it needs no window;
+            # the per-process date latch keeps it to one sweep a day, and the sweep
+            # itself is idempotent (only OPEN trades are touched).
             if last_squareoff_ist_date != today_ist and is_square_off_due(ist_now):
                 summaries = await square_off_open_paper_trades(
                     db,
@@ -1099,6 +1104,13 @@ async def _deployment_evaluator_loop() -> None:
                 if summaries:
                     log.info("paper square-off at 15:00 IST closed %d open trades", len(summaries))
                 last_squareoff_ist_date = today_ist
+
+            # Skip outside NSE market hours (Mon-Fri, 09:15-15:30 IST)
+            if ist_now.weekday() >= 5:
+                continue
+            t = ist_now.time()
+            if t < _time(9, 15) or t >= _time(15, 30):
+                continue
 
             # New-bar gate. Exits are owned by LiveExitMonitor (~1.5s) — this loop
             # only journals signals + auto-opens entries, once per fresh bar.

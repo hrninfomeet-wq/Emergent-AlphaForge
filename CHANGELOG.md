@@ -2,6 +2,74 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [Unreleased] — Signals follow their trades out of ACTIVE; a missed square-off stops booking into the wrong day (2026-09-29)
+
+An adversarial audit of the signal / paper-trade lifecycle confirmed the defects below;
+each was re-verified against the current code before it was touched.
+
+**Found: signals never left ACTIVE.** The only ACTIVE -> EXITED writers were the paper
+marker's own stop/target close and the manual single-trade close. The shared
+`square_off_open_paper_trades` (7 callers: boot reconcile, the 15:00 sweep, basket
+controls, manual square-off, Stop, Stop-ALL, retire) and **every** live close
+(`close_live_trade` — guard, reconcile, kill switch) never touched the signal, so every
+live signal, and every paper signal not closed by the marker, stayed ACTIVE for good.
+One helper, `signal_lifecycle.exit_linked_signal`, now moves a linked signal
+ACTIVE -> EXITED after each persisted close: idempotent, only an ACTIVE signal moves,
+the write is conditional on `state == ACTIVE` so it never clobbers a racing writer, and
+it **never raises** into the close path (a failing signal write is logged and the close
+stands — pinned by a test that fails the write). The marker's own exit now uses it too,
+which also stops a failed signal write from skipping the lazy-leg arm that follows.
+`backend/scripts/backfill_signal_exits.py` repairs history (dry run by default,
+`--apply` writes; ACTIVE signals whose paper/live trade is CLOSED -> EXITED with reason
+`backfill_trade_closed`, `exited_at` = the trade's own close in UTC; idempotent; an OPEN
+or unfindable trade leaves the signal alone). Not run against any database.
+
+**Found: a boot-time square booked its P&L into the boot day.** The sweep stamped
+`closed_at` = boot time, so a loss on a trade entered days earlier counted as *today's*
+realized P&L — enough for the daily-loss kill switch to pause a deployment that never
+traded that day — and a days-old `last_mark` was labelled a fresh, non-stale exit. A
+trade entered on an earlier IST day is now stamped at its ENTRY day's scheduled
+square-off (15:00 IST, in UTC; never before the entry itself) and carries
+`exit_price_stale`, `exit_mark_stale` and `exit_mark_age_s` (None when the mark's time is
+unknown, never invented). Kept as before: a same-day square; a fresh live tick (a real
+fill now); and `allow_overnight` positions closed by hand, which keep `now` but are
+still flagged stale.
+
+**Found: a late backend left the day's trade open overnight.** The evaluator loop only
+swept inside 15:00-15:30 and the boot sweep is stale-only, so a backend up at 15:45
+skipped every cycle. The sweep now sits above the market-hours gate: any cycle on a
+trading day at or after 15:00 (holiday-aware) sweeps once per process per day
+(idempotent).
+
+**Found: `closed_at` compared as text.** The sweep writes IST `+05:30`, everything else
+UTC `+00:00`; `...T15:00:00+05:30` (09:30Z) sorts AFTER `...T10:00:00+00:00`. The kill
+switch's trailing-loss run (and the soft daily governor and forward-metrics streaks) fed
+on a Mongo string sort, and the overview's "realized today" compared strings to a UTC
+day start (it also had no upper bound). New `app/trade_time.py` parses to instants; the
+three sorts re-sort by instant and the overview sums closes over a parsed
+`[IST day start, end)` window (with a superset string prefilter for the index).
+
+**Frontend:** the deployment card printed "Last evaluated 15:29 IST" with no date, so a
+deployment idle for days looked current. `lib/lastEvaluated.js` (node-tested) adds
+"Fri 25 Sep" when the last evaluation is not today in IST (amber), independent of the
+viewer's timezone. Also dropped a pre-existing unused `useMemo` import in that file.
+
+**Measured, not changed:** the paper basket stop going dark when ONE open leg has no
+live tick is the module's documented fail-closed design (a whole-book square on a
+partial mark is the alternative risk) and `test_partial_mark_is_stale_no_exit` pins it,
+so it is a policy decision, not a bug. Its real cause — a stranded trade that never
+closes — is what the two square-off fixes above remove. Not done: expiry-aware close for
+`allow_overnight` trades whose contract has expired; the deployments overview still
+counts open trades from past days as "today's"; CONFIRMED signals still have no terminal
+transition.
+
+**Tests:** 81 new executed tests (`test_signal_exit_lifecycle`,
+`test_paper_missed_squareoff`, `test_last_evaluated_view` — the frontend one runs the
+module through node). Mutation check: **48/48 killed** (the helper's conditional write,
+never-raise and race handling; each back-dating rule; the 15:30 window; the per-day
+latch; both timezone sorts; the overview window; the backfill's dry-run / open-trade /
+link rules; the date label). Full suite green.
+
 ## [Unreleased] — Confirmations that say what will happen, refusals that leave a trace, a session timeline, opt-in alerts (2026-09-29)
 
 Phase 5 of the Live Deployments uplift.
