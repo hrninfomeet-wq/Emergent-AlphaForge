@@ -2,6 +2,34 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [Unreleased] — Status indicators say what is true, not what was configured (2026-09-29)
+
+On 2026-09-26 the operator read Flattrade as "connected" while every broker call
+was 401ing on an expired daily token. A false-status audit (DB sweep + code
+lifecycle + UI truthfulness, each finding adversarially verified) followed. The
+backend half of what it confirmed:
+
+* **The execution strip said "LIVE — entries transmit real orders" /
+  "auto-squares: TRANSMIT" on an expired token.** `/live-broker/arm-state` counted a
+  STORED token as connected. Connected now means what the entry path itself
+  requires — stored AND not expired — and an expired session is named
+  (`session_expired`, reason "Flattrade session EXPIRED — log in to trade").
+* **Every guard indicator read "ARMED" from a constant.** The guard already
+  recorded its own health — `running`, `last_run_at`, and a token-expired
+  `last_error` on every cycle it could not read the book — and nothing read it.
+  `/live-broker/guard-status` now carries `health`: `watching` / `idle` / `blind`
+  (cycling, but no stop or target can fire) / `stalled` / `not_running`.
+* **The Deploy Strategies cards summed frozen marks as today's MTM.** A live OPEN
+  row's `unrealized_pnl` is the guard's last persisted mark; once the guard stops
+  marking it, that number is stale. The same rule as the governor now applies —
+  a mark older than 120 s is excluded and counted as `open_unverified` — and a
+  close with an unknown exit day is no longer today's realized P&L. On the audit's
+  fixture: open MTM −₹1,003 → −₹100 (the one fresh mark), realized −₹9,499 → +₹500.
+  Verified by running the REAL route against a REAL Mongo on a throwaway database
+  (`tests/test_overview_pipeline_mongo.py`; no other test executes that pipeline).
+
+8/8 mutants killed; full suite 5996 passed.
+
 ## [Unreleased] — One honest answer to "why can't this trade right now?" (2026-09-29)
 
 Phase 1 of the Live Deployments uplift. `/deployments/live/status` (batch and

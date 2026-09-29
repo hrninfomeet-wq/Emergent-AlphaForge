@@ -1597,12 +1597,23 @@ async def guard_status():
             "source": e.get("source"),
         })
     rehydrated = sum(1 for g in guarded if g.get("source") == "rehydrated")
+    # What the guard is ACTUALLY doing — `armed` above is a constant and says
+    # nothing about whether the guard can read a price. An expired token leaves it
+    # cycling "blind": running, but stopping every cycle at an unreadable book.
+    try:
+        from app.live.live_position_guard import guard_health
+        from app.runtime import live_position_guard as _guard
+        health = guard_health(_guard.status(), now_utc=datetime.now(timezone.utc))
+    except Exception as exc:  # never fail the status route over its own health
+        health = {"state": "unknown", "label": "UNKNOWN",
+                  "reason": f"guard status unreadable: {str(exc)[:120]}"}
     return {
         "armed": armed,
         "mode": "ARMED — transmits real squares" if armed else "dry-run — logs intended squares, no transmit",
         "count": len(reg),
         "rehydrated_count": rehydrated,
         "guarded": guarded,
+        "health": health,
     }
 
 
@@ -1790,11 +1801,22 @@ async def get_arm_state():
         mode_doc = await _mode_store().get()
     except Exception:
         mode_doc = None
-    # broker connectivity (a token is stored)
+    # Broker connectivity. A STORED token is not a USABLE one: Flattrade's daily
+    # token expires, after which every call 401s. This used to read "connected"
+    # whenever a token doc existed, so on an expired token the strip said
+    # "LIVE — entries transmit real orders" / "auto-squares: TRANSMIT" while nothing
+    # could reach the broker (seen 2026-09-26: the operator read Flattrade as
+    # connected while every broker call was 401ing). Connected now means what the
+    # entry path itself requires (build_live_deploy_context): a token that exists
+    # AND has not expired.
     connected = False
+    session_expired = False
     try:
         await _get_token_doc()
-        connected = True
+        from app.live.flattrade_token import DEFAULT_USER_ID, get_status
+        st = await get_status(DEFAULT_USER_ID)
+        session_expired = bool(st.get("expired"))
+        connected = bool(st.get("connected")) and not session_expired
     except Exception:
         connected = False
     # offline-first env gates
@@ -1831,6 +1853,7 @@ async def get_arm_state():
         mode_doc=mode_doc, connected=connected,
         autoplace_armed=autoplace_armed,
         armed_deployment_count=armed_n,
+        session_expired=session_expired,
     )
 
 

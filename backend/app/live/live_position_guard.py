@@ -456,6 +456,56 @@ class LiveMonitorRegistry:
 # 2. Async guard loop
 # ---------------------------------------------------------------------------
 
+#: A guard that has not completed a cycle for this long is not watching anything,
+#: whatever its last successful cycle said. Cycles run every POLL_SECONDS.
+GUARD_STALLED_AFTER_SECONDS = 30.0
+
+#: last_error values that mean the guard cannot SEE the book — it is running, but
+#: every cycle ends before a single stop or target is evaluated.
+_BLIND_ERROR_PREFIXES = (TOKEN_EXPIRED_HINT, "position read failed", "no client")
+
+
+def guard_health(stats: Dict[str, Any], *, now_utc: datetime) -> Dict[str, Any]:
+    """What the software guard is ACTUALLY doing, from its own ``status()``. PURE.
+
+    ``{"state", "label", "reason"}`` where state is:
+
+      * ``not_running`` — its task is not running;
+      * ``stalled``     — no cycle has completed for GUARD_STALLED_AFTER_SECONDS;
+      * ``blind``       — cycling, but every cycle stops at an unreadable position
+                          book (e.g. the daily token expired) — no stop or target
+                          can fire;
+      * ``idle``        — cycling with nothing registered to guard;
+      * ``watching``    — cycling over registered positions.
+
+    Every guard indicator used to read "ARMED" / "Auto-exit live" from a constant
+    (the transmit gate that no longer exists). An operator looking at a real
+    position on an expired token saw a guard described as live that could not
+    read a single price.
+    """
+    if not stats.get("running"):
+        return {"state": "not_running", "label": "NOT RUNNING",
+                "reason": "the guard task is not running — nothing is watching stops"}
+    last = stats.get("last_run_at")
+    try:
+        last_dt = datetime.fromisoformat(str(last)) if last else None
+    except ValueError:
+        last_dt = None
+    if last_dt is not None and last_dt.tzinfo is None:
+        last_dt = last_dt.replace(tzinfo=timezone.utc)
+    if last_dt is None or (now_utc - last_dt).total_seconds() > GUARD_STALLED_AFTER_SECONDS:
+        return {"state": "stalled", "label": "STALLED",
+                "reason": f"no guard cycle completed since {last or 'start'}"}
+    err = str(stats.get("last_error") or "")
+    if err and err.startswith(_BLIND_ERROR_PREFIXES):
+        return {"state": "blind", "label": "BLIND",
+                "reason": f"{err} — stops and targets cannot fire"}
+    if not int(stats.get("guarded") or 0):
+        return {"state": "idle", "label": "IDLE", "reason": "nothing to guard"}
+    return {"state": "watching", "label": "WATCHING",
+            "reason": err or "cycling over the guarded positions"}
+
+
 class LivePositionGuard:
     """Polls the broker position book and software-squares a guarded position on
     a stop/target/trailing breach. Mirrors LiveExitMonitor's lifecycle.

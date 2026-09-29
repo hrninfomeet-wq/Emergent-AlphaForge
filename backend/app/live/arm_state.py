@@ -25,13 +25,18 @@ def compute_arm_state(
     connected: bool,
     autoplace_armed: bool,
     armed_deployment_count: int,
+    session_expired: bool = False,
 ) -> Dict[str, Any]:
     """Collapse the five live-execution inputs into one verdict.
 
     Parameters
     ----------
     mode_doc:               the ModeStore singleton doc ({mode, single_shot_consumed}).
-    connected:              a Flattrade token is stored (broker reachable).
+    connected:              a Flattrade session that can actually be used — a token
+                            that is stored AND not expired (broker reachable).
+    session_expired:        a token IS stored but has expired. Named separately so
+                            the strip can say WHY nothing transmits: the operator
+                            has a login to do, not a connection to diagnose.
     autoplace_armed:        LIVE_AUTOPLACE_ARMED env — the AUTO-entry transmit gate
                             (the sole remaining master switch).
     armed_deployment_count: LIVE-mode deployments currently inside the entry window.
@@ -58,7 +63,8 @@ def compute_arm_state(
 
     reasons: List[str] = []
     if not connected:
-        reasons.append("broker not connected")
+        reasons.append("Flattrade session EXPIRED — log in to trade"
+                       if session_expired else "broker not connected")
     if manual_armed:
         reasons.append("manual LIVE_TEST single-shot armed")
     if auto_armed and autoplace_armed:
@@ -87,6 +93,7 @@ def compute_arm_state(
         "mode": mode,
         "single_shot_consumed": single_shot_consumed,
         "connected": bool(connected),
+        "session_expired": bool(session_expired) and not bool(connected),
         "autoplace_armed": bool(autoplace_armed),
         "guard_armed": True,  # retained for payload compat; the guard is always armed
         "armed_deployments": int(armed_deployment_count),

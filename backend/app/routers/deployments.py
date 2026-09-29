@@ -884,24 +884,49 @@ async def deployments_overview():
                  if str(d.get("mode") or "").lower() == "live"]
     _paper_ids = [i for i in dep_ids if i not in set(_live_ids)]
 
-    def _trade_pipeline(ids):
+    # A LIVE open row's unrealized_pnl is the guard's last persisted mark. Once the
+    # guard stops marking it (restart, expired token) that number is frozen, and
+    # summing it as "today's MTM" presents a stale figure as live. Same rule as the
+    # governor (open_unrealized_today): a mark older than MARK_STALE_AFTER_SECONDS
+    # is UNKNOWN — excluded from the sum and counted as `open_unverified` instead.
+    from app.live_deploy_governor import MARK_STALE_AFTER_SECONDS
+    _fresh_cut_iso = (datetime.now(timezone.utc)
+                      - timedelta(seconds=MARK_STALE_AFTER_SECONDS)).isoformat()
+
+    def _trade_pipeline(ids, *, fresh_cut_iso=None):
+        _open = {"$eq": ["$status", "OPEN"]}
+        if fresh_cut_iso is None:            # paper: no guard marks to age
+            _fresh_open, _unverified_open = _open, {"$literal": False}
+        else:
+            _fresh = {"$gte": [{"$ifNull": ["$marked_at", ""]}, fresh_cut_iso]}
+            _fresh_open = {"$and": [_open, _fresh]}
+            _unverified_open = {"$and": [_open, {"$not": [_fresh]}]}
         return [
             {"$match": {"deployment_id": {"$in": ids}}},
             {"$group": {
                 "_id": "$deployment_id",
-                "open_count": {"$sum": {"$cond": [{"$eq": ["$status", "OPEN"]}, 1, 0]}},
-                "open_unrealized": {"$sum": {"$cond": [{"$eq": ["$status", "OPEN"]}, {"$ifNull": ["$unrealized_pnl", 0]}, 0]}},
+                "open_count": {"$sum": {"$cond": [_open, 1, 0]}},
+                "open_unrealized": {"$sum": {"$cond": [_fresh_open, {"$ifNull": ["$unrealized_pnl", 0]}, 0]}},
+                "open_unverified": {"$sum": {"$cond": [_unverified_open, 1, 0]}},
                 "closed_count": {"$sum": {"$cond": [{"$eq": ["$status", "CLOSED"]}, 1, 0]}},
                 "realized_total": {"$sum": {"$cond": [{"$eq": ["$status", "CLOSED"]}, {"$ifNull": ["$realized_pnl", 0]}, 0]}},
                 "wins": {"$sum": {"$cond": [{"$and": [{"$eq": ["$status", "CLOSED"]}, {"$gt": [{"$ifNull": ["$realized_pnl", 0]}, 0]}]}, 1, 0]}},
-                "realized_today": {"$sum": {"$cond": [{"$and": [{"$eq": ["$status", "CLOSED"]}, {"$gte": [{"$ifNull": ["$closed_at", ""]}, utc_day_start_iso]}]}, {"$ifNull": ["$realized_pnl", 0]}, 0]}},
+                # A close whose exit day is unknown (a stale doc the reconcile
+                # closed days later) is not TODAY's P&L — daily_realized_summary
+                # excludes it too.
+                "realized_today": {"$sum": {"$cond": [{"$and": [
+                    {"$eq": ["$status", "CLOSED"]},
+                    {"$ne": [{"$ifNull": ["$exit_day_unknown", False]}, True]},
+                    {"$gte": [{"$ifNull": ["$closed_at", ""]}, utc_day_start_iso]}]},
+                    {"$ifNull": ["$realized_pnl", 0]}, 0]}},
             }},
         ]
 
-    for _ids, _col in ((_paper_ids, db.paper_trades), (_live_ids, db.live_trades)):
+    for _ids, _col, _cut in ((_paper_ids, db.paper_trades, None),
+                             (_live_ids, db.live_trades, _fresh_cut_iso)):
         if not _ids:
             continue
-        rows = await _col.aggregate(_trade_pipeline(_ids)).to_list(length=None)
+        rows = await _col.aggregate(_trade_pipeline(_ids, fresh_cut_iso=_cut)).to_list(length=None)
         for r in rows:
             trade_stats[str(r.get("_id") or "")] = r
 
@@ -924,6 +949,8 @@ async def deployments_overview():
                 "realized_pnl": round(float(tr.get("realized_today") or 0.0), 2),
                 "open_trades": int(tr.get("open_count") or 0),
                 "open_unrealized": round(float(tr.get("open_unrealized") or 0.0), 2),
+                # OPEN rows whose P&L is not in open_unrealized: no fresh guard mark.
+                "open_unverified": int(tr.get("open_unverified") or 0),
             },
             "lifetime": {
                 "closed_trades": closed,
