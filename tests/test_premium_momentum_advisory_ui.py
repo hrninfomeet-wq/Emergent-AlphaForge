@@ -1,6 +1,6 @@
 """Phase 5B B8 — advisory surface + UI states (premium_momentum multi-leg).
 
-Recon correction 5 (docs/superpowers/plans/2026-07-15-premium-momentum-phase5b-execution.md):
+Recon correction 5 (Phase 5B plan, shipped as CHANGELOG.md [0.55.0]):
 `build_arm_advisories`/`deploymentMetrics` had ZERO frontend consumers before this
 task — `deploymentMetrics` was defined in `frontend/src/lib/api.js` but never called
 anywhere. This file pins:

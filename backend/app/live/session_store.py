@@ -15,8 +15,8 @@ DB-agnostic: constructor takes any async collection that exposes find_one /
 update_one (upsert=True) / find.  Tests pass FakeAsyncCollection; production
 code uses ``default_store()``.
 
-The 10-minute auto-square timer was removed (see docs/superpowers/specs/
-2026-07-09-remove-manual-livetest-10min-timer-design.md), so there is no longer a
+The 10-minute auto-square timer was removed (see docs/DEVELOPER_GUIDE.md, section
+"auto_square.py's manual 10-minute timer is gone"), so there is no longer a
 ``deadline`` or a ``remaining_secs`` countdown — the software guard's premium stop
 plus the 15:00 IST EOD square are the manual position's backstops.
 """

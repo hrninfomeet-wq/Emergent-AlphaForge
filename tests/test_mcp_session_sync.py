@@ -3,7 +3,7 @@
 Single-key coexistence (2026-07-18 design): AlphaForge is the sole OAuth owner
 and mirrors its jKey into the MCP's session.json after each login. The payload
 is a SUPERSET of plausible field aliases because Go's json.Unmarshal ignores
-unknown fields — see docs/superpowers/specs/2026-07-18-flattrade-mcp-token-share-design.md.
+unknown fields — see docs/flattrade-mcp-integration.md, section "The superset-payload trick".
 """
 
 import json

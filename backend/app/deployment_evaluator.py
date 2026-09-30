@@ -441,7 +441,7 @@ async def _resolve_vix_asof(db: Any, candle_ts: int) -> Optional[float]:
 
 async def _resolve_realized_today_rupees(db: Any, deployment: Dict[str, Any], *, today_ist: str) -> float:
     """Realized-ONLY session P&L for THIS deployment's own trades (Phase 5B
-    Task A4 day-stop accumulator). Recon correction #4: the existing
+    Task A4 day-stop accumulator). Why not reuse the governor: the existing
     ``live_deploy_governor`` daily_loss_cap is mark-to-market (realized +
     open-unrealized) and cannot be reused for a realized-only gate — this
     reuses ONLY ``daily_realized_summary`` (the same net-P&L math the paper
@@ -466,7 +466,8 @@ async def _premium_day_stop_fire_once(db: Any, deployment: Dict[str, Any], *,
     deployment's open premium positions through the EXISTING deployment-stop
     path (routers.deployments._square_live_positions_for_deployment — the
     guard/auto_square machinery; never a new placement path). Paper/shadow:
-    block-only, per the plan's parity table. Returns True only for the winner."""
+    block-only (see the parity notes in docs/STRATEGY_DEPLOYMENTS.md, "Multi-leg
+    mode (Phase 5B, v0.55.0)"). Returns True only for the winner."""
     from app.premium_lock_store import get_or_create_lock, mark_day_stop
     dep_id = str(deployment.get("id") or "")
     await get_or_create_lock(db.premium_locks, deployment_id=dep_id, session_date=session_date)
@@ -711,7 +712,8 @@ async def evaluate_deployment_on_close(
     # ---- Track B: premium-momentum deployments use the premium session engine
     # instead of the generic spot evaluate + per-bar contract re-resolution. The
     # branch REJOINS the shared signal pipeline below (audit/lifecycle/dedupe all
-    # apply). See docs/superpowers/specs/2026-07-10-premium-momentum-track-b-*.md
+    # apply). See docs/STRATEGY_DEPLOYMENTS.md, "premium_momentum: a
+    # lock-driven deployment variant".
     pm_result = None
     # Routes on CAPABILITY (the strategy's own declared defaults), NOT on the
     # deployment's block. Track B replaces strategy.evaluate() entirely, so only
@@ -739,7 +741,8 @@ async def evaluate_deployment_on_close(
 
         # ---- 5B A4: realized-only session day-stop gate. Checked BEFORE the
         # session engine so a breached day stops immediately (no new triggers,
-        # no lazy armings). Realized-only by design (plan parity table): an
+        # no lazy armings). Realized-only by design (parity notes in
+        # docs/STRATEGY_DEPLOYMENTS.md, "Multi-leg mode (Phase 5B, v0.55.0)"): an
         # open leg's unrealized bleed never trips this — that would be the
         # deferred mark-to-market variant, not this rule.
         _pm_sess = _ist_session_date_of_ts(candle_ts)
@@ -994,9 +997,10 @@ async def evaluate_deployment_on_close(
         }
         # 5B A4: per-deployment hard square time as a risk hint, clamped
         # STRICTLY BEFORE the system 15:00 EOD square — the EOD backstop
-        # always wins (plan parity table: EXP2's 15:13 is backtest-only). The
-        # guard-side honoring lands in Task B5; until then this hint is
-        # journaled but inert.
+        # always wins (EXP2's 15:13 is backtest-only; parity notes in
+        # docs/STRATEGY_DEPLOYMENTS.md, "Multi-leg mode (Phase 5B, v0.55.0)").
+        # Live honors it through the guard (live_deploy_context passes it to
+        # live_position_guard.register, Task B5); paper through paper_auto.
         from app.premium_momentum import normalize_hhmm as _norm_hhmm
         _pm_exit_t = _norm_hhmm(merged_params.get("exit_time"))
         if _pm_exit_t and _pm_exit_t < "15:00":

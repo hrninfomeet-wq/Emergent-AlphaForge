@@ -1,8 +1,8 @@
 """TDD tests for backend/app/live/auto_square.py (Task L3.3).
 
 The time-cap primitives (deadline_iso / is_due / SQUARE_HORIZON_SEC) were removed
-with the manual 10-minute auto-square timer (see docs/superpowers/specs/
-2026-07-09-remove-manual-livetest-10min-timer-design.md); only the square executor
+with the manual 10-minute auto-square timer (see docs/DEVELOPER_GUIDE.md, section
+"auto_square.py's manual 10-minute timer is gone"); only the square executor
 and the SL-LMT backstop builder remain.
 
 Coverage

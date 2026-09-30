@@ -12,11 +12,13 @@ the session state machine over the premium_locks store:
 Uses the SAME pure helpers as the backtest (lock_reference_strike,
 momentum_triggered) and the SAME live price contract as entries
 (option_premium.resolve_premium, fresh-only). Stale/absent ticks HOLD — this
-module never invents a price. It does NOT latch the trigger (spec: latch only
-after the signal journals clean) and never touches order placement.
+module never invents a price. It does NOT latch the trigger (latch only after
+the signal journals clean -- docs/STRATEGY_DEPLOYMENTS.md, "premium_momentum: a
+lock-driven deployment variant", step 4) and never touches order placement.
 
-Phase 5B (docs/superpowers/plans/2026-07-15-premium-momentum-phase5b-
-execution.md Task A3) adds four things, all default-OFF and additive:
+Phase 5B (CHANGELOG.md [0.55.0]; behaviour and backtest/live parity notes in
+docs/STRATEGY_DEPLOYMENTS.md, section "Multi-leg mode (Phase 5B, v0.55.0)") adds
+four things, all default-OFF and additive:
   - ``leg_mode="both"``: CE and PE primaries resolve INDEPENDENTLY instead of
     one whole-session winner. ``leg_mode="first_to_trigger"`` (the default)
     is BYTE-IDENTICAL to the pre-5B engine — see the terminal check below,
@@ -267,7 +269,8 @@ async def evaluate_premium_momentum_bar(
     else:
         # both mode: skip only INDIVIDUALLY resolved legs so an unresolved
         # sibling leg keeps being evaluated on later bars. This is how a
-        # same-bar double-cross resolves live (parity-divergence table): CE
+        # same-bar double-cross resolves live (parity notes: docs/
+        # STRATEGY_DEPLOYMENTS.md, "Multi-leg mode (Phase 5B, v0.55.0)"): CE
         # wins THIS bar (the CE-first loop order below reports one trigger
         # per bar); PE's still-true momentum condition re-fires on the NEXT
         # bar via its own still-unlatched leg -- live is later/fewer than the
@@ -386,7 +389,8 @@ async def evaluate_premium_momentum_bar(
 
     # --- Phase 5B: lazy reversal leg pickup + monitor ------------------------
     # Armed by the guard-close hook (Task B6, out of this module's scope) on
-    # a confirmed-flat STOP exit. Live semantic (parity-divergence table): the
+    # a confirmed-flat STOP exit. Live semantic (parity notes: docs/
+    # STRATEGY_DEPLOYMENTS.md, "Multi-leg mode (Phase 5B, v0.55.0)"): the
     # backtest arms + locks at the SAME stop-out bar (that bar's close as
     # spot_at_ref); live arms on guard-confirmed-flat, then locks HERE on the
     # NEXT evaluator bar from THIS bar's live spot -- later by flat-confirm +

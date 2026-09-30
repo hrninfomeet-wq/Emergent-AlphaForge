@@ -338,8 +338,8 @@ def _make_arm(
     2. Records the session doc via session_store.arm(...). A failure here RAISES
        (so the executor's _abort_protect path runs).
 
-    The manual 10-minute auto-square timer was removed (see docs/superpowers/specs/
-    2026-07-09-remove-manual-livetest-10min-timer-design.md); the armed position is
+    The manual 10-minute auto-square timer was removed (see docs/DEVELOPER_GUIDE.md,
+    section "auto_square.py's manual 10-minute timer is gone"); the armed position is
     protected by the software guard's premium stop and the guard's 15:00 IST EOD
     square (a manual position is no longer EOD-exempt), plus manual Square / Kill.
 
@@ -500,7 +500,7 @@ async def flattrade_auth_callback(
         await save_token(DEFAULT_USER_ID, jKey=jKey, uid=uid, actid=actid)
         # Mirror the fresh token into the Flattrade MCP's session file so the one
         # daily login serves both consumers (one-key policy; see
-        # docs/superpowers/specs/2026-07-18-flattrade-mcp-token-share-design.md).
+        # docs/flattrade-mcp-integration.md).
         # Best-effort: a sync failure must never break the login flow.
         try:
             from app.live.mcp_session_sync import sync_session_file
@@ -2296,8 +2296,8 @@ async def live_test_session():
     """Return the current test-session state (heartbeat, status, entry order).
 
     The 10-minute auto-square timer was removed, so there is no ``deadline`` or
-    ``remaining_secs`` countdown (see docs/superpowers/specs/
-    2026-07-09-remove-manual-livetest-10min-timer-design.md). The armed position is
+    ``remaining_secs`` countdown (see docs/DEVELOPER_GUIDE.md, section
+    "auto_square.py's manual 10-minute timer is gone"). The armed position is
     protected by the software guard's premium stop + the 15:00 IST EOD square.
 
     Auto-detects a rejected/canceled entry order:

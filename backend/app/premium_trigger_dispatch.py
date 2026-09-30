@@ -13,9 +13,8 @@ This is a LIFT of the existing bespoke path, not a rewrite. The parity invariant
       ==  dispatch_backtest(cfg, ..., inputs) [byte-identical `trades`]
 
 Session 3 adds `dispatch_full_backtest` — the Optimizer/Backtest Lab wiring that was
-deferred at the end of session 2 (see
-docs/superpowers/specs/2026-07-13-premium-momentum-phase4-5-full-contingency-design.md
-§3.2). Running the shipped `premium_momentum` plugin through the general Optimizer or
+deferred at the end of session 2 (the Phase 4-5 design; shipped as
+CHANGELOG.md [0.53.1], "Phase 4 engine dispatch"). Running the shipped `premium_momentum` plugin through the general Optimizer or
 Backtest Lab called `strategy.evaluate()` (a deliberate stub — the real logic lives only
 in deployment_evaluator.py's dedicated branch), producing zero spot signals and the
 literal "Option re-rank produced no paired results" message. `dispatch_full_backtest`

@@ -56,8 +56,8 @@ TUNABLE_KEYS = {
     "vix_min", "vix_max", "entry_cutoff", "exit_time",
 }
 
-# The VIX gate's asof fallback window (route section 2 of the 5A.2 plan):
-# "previous session's last close within 5 calendar days".
+# The VIX gate's asof fallback window, passed to app.vix.vix_by_session_map as
+# max_staleness_ms: "previous session's last close within 5 calendar days".
 VIX_ASOF_STALENESS_MS = 5 * 24 * 3600 * 1000
 
 class PremiumMomentumBacktestReq(BaseModel):

@@ -6,19 +6,20 @@ trips the naked-short margin trap.
 
 History: this module once also owned an "L3.3 hard cap (≤10 minutes)" time-square
 for manual live-test positions (``SQUARE_HORIZON_SEC`` / ``deadline_iso`` /
-``is_due``). That timer was removed (see docs/superpowers/specs/
-2026-07-09-remove-manual-livetest-10min-timer-design.md) — deployed strategies
-follow their strategy rules + a resting OCO, and the 15:00 IST EOD square is the
-manual position's "never left open" backstop. Only the executor and the SL builder
-remain here.
+``is_due``). That timer was removed (see docs/DEVELOPER_GUIDE.md, section
+"auto_square.py's manual 10-minute timer is gone") — deployed strategies follow
+their strategy rules under the software guard (the resting broker OCO is opt-in
+via ``LIVE_BROKER_OCO_ENABLED``, off by default since 2026-09-03), and the
+15:00 IST EOD square is the manual position's "never left open" backstop. Only
+the executor and the SL builder remain here.
 
 Architecture
 ------------
 * ``build_sl_backstop_intent`` creates a protective SL-LMT exit for a LONG option.
   Returns None for any invalid/sub-tick stop_trigger instead of asserting/raising —
   a sub-0.05 premium is real deep-OTM market data, not a programming error.
-  The time-square hard cap remains the primary protection; the SL backstop is
-  supplementary.
+  The SL backstop is supplementary; the primary protection is the software
+  guard (``live_position_guard``: premium stop + the 15:00 IST EOD square).
 
 * ``square_position`` is the executor:
   - Parses filled netqty; if 0 (entry never filled) cancels the working

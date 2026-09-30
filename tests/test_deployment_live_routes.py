@@ -285,9 +285,9 @@ def _install(monkeypatch, db, *, connected=True, can_trade=True, registry=None,
     # nothing to do with market data. On a weekend or holiday the same gate
     # short-circuits to `no_candles_expected` and every one of them passes.
     #
-    # That is exactly what happened: the baseline in
-    # `docs/LOCAL_TAKEOVER_2026-08-23.md` was measured on Sunday 2026-08-23 and
-    # recorded these as green; the identical tree on Wednesday 2026-08-26 failed
+    # That is exactly what happened: a local takeover baseline was measured on
+    # Sunday 2026-08-23 and recorded these as green (learning_log.md, entry
+    # 2026-08-26); the identical tree on Wednesday 2026-08-26 failed
     # 11. The tests were never weekday-independent, they were only ever run on a
     # weekend. Verified by running this file from a detached worktree at clean
     # HEAD — same 11 failures with zero local changes.

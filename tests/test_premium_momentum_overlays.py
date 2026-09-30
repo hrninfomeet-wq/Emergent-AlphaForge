@@ -1,9 +1,8 @@
 # tests/test_premium_momentum_overlays.py
 """Phase 5A.2 -- session day-stop + India VIX gate overlays.
 
-Covers the eleven items (a)-(k) in
-docs/superpowers/plans/2026-07-14-premium-momentum-phase5a2-overlays-edge-hunt.md
-section 4. Fixture style mirrors tests/test_premium_momentum_contingency.py.
+Covers the eleven items (a)-(k) of the Phase 5A.2 plan (shipped as CHANGELOG.md
+[0.54.2]; verdict in docs/PREMIUM_MOMENTUM_EDGE_VERDICT_2026-07.md). Fixture style mirrors tests/test_premium_momentum_contingency.py.
 
 Instrument is always "NIFTY" (lot_size 65, see app.instruments.UNDERLYING_META)
 so every rupee figure below is premium_pts * 65 (lots default 1, costs

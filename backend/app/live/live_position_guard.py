@@ -37,10 +37,11 @@ Safety properties
 - The square is the SAME cancel-all-then-confirm-then-close path used everywhere
   (no naked-short margin trap).
 - The 15:00 IST EOD square is the ultimate "never left open" backstop for every
-  guarded position (manual + deployed); deployed positions additionally carry a
-  resting broker OCO for the PC-down case. (The old 10-minute manual auto-square
-  timer was removed — see docs/superpowers/specs/2026-07-09-remove-manual-livetest
-  -10min-timer-design.md.)
+  guarded position (manual + deployed); deployed positions can additionally carry
+  a resting broker OCO for the PC-down case (opt-in via ``LIVE_BROKER_OCO_ENABLED``,
+  off by default since 2026-09-03). (The old 10-minute manual auto-square timer
+  was removed — see docs/DEVELOPER_GUIDE.md, section "auto_square.py's manual
+  10-minute timer is gone".)
 """
 from __future__ import annotations
 

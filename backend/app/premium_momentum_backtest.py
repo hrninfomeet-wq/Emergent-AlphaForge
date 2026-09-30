@@ -9,8 +9,8 @@ strike lacks a premium series are excluded and counted, never mis-filled.
 Phase 1: single position, first side to trigger wins (``leg_mode`` defaults to
 "first_to_trigger" -> byte-identical to that original behavior).
 
-Phase 5A (EXP2 full contingency, backtest-only -- see
-docs/superpowers/plans/2026-07-14-premium-momentum-phase5a-backtest-contingency.md):
+Phase 5A (EXP2 full contingency; shipped backtest-only in CHANGELOG.md
+[0.54.0], live/paper execution followed in Phase 5B, CHANGELOG.md [0.55.0]):
   - ``leg_mode="both"``: CE and PE primaries are fully independent -- either,
     both, or neither may enter in a session.
   - ``lazy_enabled``: when a PRIMARY leg exits with reason STOP (never
@@ -21,8 +21,8 @@ docs/superpowers/plans/2026-07-14-premium-momentum-phase5a-backtest-contingency.
   - ``entry_cutoff`` / ``exit_time``: session-level entry gate and hard exit
     bound (both "HH:MM" IST), applied identically to primaries and lazies.
 
-Phase 5A.2 (session day-stop + VIX gate, backtest-only -- see
-docs/superpowers/plans/2026-07-14-premium-momentum-phase5a2-overlays-edge-hunt.md):
+Phase 5A.2 (session day-stop + VIX gate; shipped backtest-only in CHANGELOG.md
+[0.54.2], live/paper counterparts in Phase 5B, CHANGELOG.md [0.55.0]):
   - ``session_max_loss_rupees`` / ``session_max_profit_rupees``: a REALIZED,
     bar-close-honest, per-SESSION day-stop. It is a ONE-PASS post-process over
     that session's already-walked trades (primaries + lazies): sort completed

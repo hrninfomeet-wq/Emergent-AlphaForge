@@ -486,11 +486,12 @@ def classify_rule(tokens: RuleTokens, *, required_features=(), required_data=())
             feature="deployment_layer", live_feasible=True,
         )
 
-    # NEW (Phase 4/5 gate): honest scoping for lazy-leg contingency — genuinely
-    # NOT shipped yet (design lives in
-    # docs/superpowers/specs/2026-07-13-premium-momentum-phase4-5-full-contingency-design.md),
-    # but it IS a defined future-work item, so refusing to acknowledge it (R9
-    # blanket reject) mis-frames it as impossible. Verdict: buildable-with-a-
+    # NEW (Phase 4/5 gate): honest scoping for lazy-leg contingency. Originally a
+    # defined future-work item (the Phase 4-5 design); it has since SHIPPED
+    # (CHANGELOG.md [0.54.0] backtest, [0.55.0] live/paper; behaviour in
+    # docs/STRATEGY_DEPLOYMENTS.md "Multi-leg mode (Phase 5B, v0.55.0)"), and the
+    # verdict below says so. A blanket R9 reject would mis-frame it as impossible.
+    # History of this block: verdict was buildable-with-a-
     # future-feature, live-gated until Phase 5 ships.
     for c in sorted(tokens.concepts):
         if c in PHASE5_FUTURE_CONCEPTS:

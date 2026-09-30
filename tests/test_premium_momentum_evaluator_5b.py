@@ -1,7 +1,8 @@
 # tests/test_premium_momentum_evaluator_5b.py
 """Phase 5B Task A4 — evaluator + auto_live per-leg plumbing.
 
-Covers, per docs/superpowers/plans/2026-07-15-premium-momentum-phase5b-execution.md A4:
+Covers, per Phase 5B plan task A4 (CHANGELOG.md [0.55.0]; docs/STRATEGY_DEPLOYMENTS.md
+"Multi-leg mode (Phase 5B, v0.55.0)"):
   - both-mode: two bars -> two independent CONFIRMED signals (one per leg),
     per-leg latches (ce_triggered/pe_triggered), never the session-global
     triggered_side; leg identity in the signal doc's premium_momentum sub-dict.

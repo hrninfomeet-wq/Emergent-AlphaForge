@@ -13,8 +13,8 @@ import { useLiveData } from "@/components/live/LiveDataProvider";
  *   squared / kill_switch       → compact GREEN card + Dismiss
  *   none                        → nothing rendered
  *
- * The 10-minute auto-square countdown was removed (see docs/superpowers/specs/
- * 2026-07-09-remove-manual-livetest-10min-timer-design.md); the position is
+ * The 10-minute auto-square countdown was removed (see docs/DEVELOPER_GUIDE.md,
+ * section "auto_square.py's manual 10-minute timer is gone"); the position is
  * protected by the software guard's stop + the 15:00 IST EOD square, and can be
  * closed any time with Square (or the account-wide Kill switch).
  */

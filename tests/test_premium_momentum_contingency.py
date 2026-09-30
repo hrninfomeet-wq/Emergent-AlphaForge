@@ -1,9 +1,7 @@
 # tests/test_premium_momentum_contingency.py
 """Phase 5A — full contingency ("lazy legs") session state machine.
 
-Covers the 11 items in
-docs/superpowers/plans/2026-07-14-premium-momentum-phase5a-backtest-contingency.md
-section 3. Fixture style mirrors tests/test_premium_momentum_backtest.py.
+Covers the 11 items of the Phase 5A plan (shipped as CHANGELOG.md [0.54.0]). Fixture style mirrors tests/test_premium_momentum_backtest.py.
 """
 import sys
 from pathlib import Path

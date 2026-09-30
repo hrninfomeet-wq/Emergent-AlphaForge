@@ -61,8 +61,7 @@ class PremiumMomentum(StrategyBase):
         # dict with only the original 8 keys above merges to these defaults
         # with zero migration — see merged_params, base.py:88-102). Multi-leg
         # exposure is deliberately kept OUT of the general Optimizer's search
-        # space (see docs/superpowers/specs/2026-07-15-premium-momentum-
-        # phase5b-live-multileg-design.md §1 OUT-of-scope): "fixed" pins a
+        # space (a Phase 5B scoping decision, CHANGELOG.md [0.55.0]): "fixed" pins a
         # float/bool value; str-typed params are excluded from that space
         # unconditionally by optimizer.py's _build_param_space.
         "leg_mode": {"type": "str", "default": "first_to_trigger",
