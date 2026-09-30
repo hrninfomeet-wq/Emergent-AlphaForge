@@ -5,6 +5,58 @@ so the next session starts smarter. Newest entry first.
 
 ---
 
+## 2026-09-26 → 09-30 — the Live Deployments uplift, and what real data said about green tests (Claude Opus 5.5)
+
+**CORE LESSON — a test suite is evidence about the code, not about the data.** A subagent built
+the Signal Journal's EXPIRED chip and an unactioned-signal sweep with 160/160 mutants killed and
+the suite green. Both did nothing on the real database: every fixture put the bar on `bar_ts`,
+while a real signal doc stores it as `candle_ts` (+ `context.candle.ts`). `bar_ts` lives only on
+the evaluation AUDIT record — **0 of 4020** real signals had it. The same blind read had also
+emptied the Journal's date filter and zeroed "Signals today" for every deployment for weeks. The
+subagent's sandbox could not reach Mongo, so it could not have known. **Sample one real document
+before trusting any fixture** — `find_one` costs a second; the miss cost three features.
+
+Confirmed approaches:
+- **Deepcopy the signal-time doc in fixtures.** Two transmit-fence mutants ("read the STALE doc")
+  survived because the fake stored `dict(dep)`: a shallow copy shares `risk`, so a mid-flight
+  tighten also rewrote the "stale" doc and the wrong read looked right.
+- **Never edit files while the full suite runs.** Five source-inspecting tests went red because
+  `runtime.py` changed under them mid-run; a clean re-run was 6312/0.
+- **Housekeeping transitions keep the doc's own `updated_at`.** `updated_at` is read as a refusal
+  time (Live strip `last_entry.at`, timeline "Entry refused") and as the age for "purge older than
+  N days". A sweep that stamped it would have moved every refusal to the sweep instant and
+  re-dated June's signals to today. The retirement time lives in `audited_at` + the event.
+- **Model designed idleness.** The guard skips every cycle outside the options session on purpose;
+  `guard_health` read that as STALLED — a red fault every evening. It now says OFF HOURS.
+- **Audit consumers before a bulk state change.** Retiring 1366 CONFIRMED signals looked like a
+  relabel; a three-angle consumer audit found the Journal retention (built when AUDITED meant
+  "blocked") would have started deleting clean history. Retention is now blocked-only.
+- **A fix that newly reaches a hook changes that hook's behaviour.** Keying a restart-recovered
+  guard entry by its real order number (G1) made the premium-momentum close hook reach it for the
+  first time — including lazy-leg arming off a DEFAULT-level stop. Gate new reachability explicitly.
+- **Reproduce against clean HEAD before believing a regression** (again): a failing
+  premium-momentum test also failed on HEAD outside the full suite — an order dependency, not ours.
+
+Earned rules carried over from the retired `TAKEOVER_CHECKLIST.md` (§5), kept here so they survive:
+- **Test frontend logic through node, not by reading JSX** — put logic in `frontend/src/lib/*.js`
+  and drive it. Specimen: a card used a `text-warn` class this theme does not define; it would have
+  rendered colourless and no grep would have shown it.
+- **Suspect the fixture before the code.** Four separate false failures: a wrong epoch constant, a
+  stub missing `prd`, a clock mismatch, an assumed field.
+- **When two modules must agree, make one call the other** — do not translate between them. Live
+  spoke a different `exit_controls` dialect than paper/sim and silently discarded the config; the
+  fix delegates to the shared decider.
+- **Verify a claim before repeating it.** An audit agent reported "the per-position Square is
+  unreachable, FLATTEN is your only manual exit". The backend showed that route squares the manual
+  **test** position; deployed exits were never affected.
+
+Dead ends: running 15-60 subagents at once repeatedly exhausted the usage window mid-run (three
+workflows died with all agents failed, after partial edits that then had to be verified by hand).
+Run agents in batches of three with one consolidated checker per batch, and verify any partial
+edits a failed agent left behind (for code: compare the AST with docstrings stripped).
+
+---
+
 ## 2026-08-28 — option flow into `evaluate()`, and what the mutants found (Claude Opus 5)
 
 **CORE LESSON — when the same rule is written twice, the second copy is the bug, and only

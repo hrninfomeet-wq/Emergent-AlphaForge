@@ -2,6 +2,11 @@
 
 > Entry point for state & architecture is **`docs/HANDOFF.md`** + `CHANGELOG.md`. The notes
 > below are always-loaded capabilities/assets that every session should know about.
+>
+> **Read order for a new session:** `docs/HANDOFF.md` (current state, traps, run/test, standing
+> conventions) → `docs/AGENT_TODO.md` (the only live work board; the next market-session
+> checklist is at the top) → `docs/BACKTEST_INTEGRITY_AUDIT.md` (before trusting any number).
+> Paste-in onboarding prompt for a fresh agent: `docs/agent-takeover-prompt.md`.
 
 ## Flattrade MCP server — shared broker session (2026-07-19)
 The user has the **official Flattrade Trading MCP** installed (tools appear as `mcp__flattrade__*`).

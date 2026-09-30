@@ -1,5 +1,17 @@
 # AlphaForge next-stage roadmap — 2026-07-31
 
+> **Status (checked 2026-09-30):** Stage 1 is complete. Stages 2, 2a and 2b (Dashboard v2, live
+> index chart, option chart) are **still unbuilt and are the live part of this doc**; `AGENT_TODO.md`
+> now schedules Stage 2 after the E1/E2 ledgers. Superseded: Gate A and Stage 6 by
+> [`LIVE_VALIDATION_PLAN_2026-08.md`](LIVE_VALIDATION_PLAN_2026-08.md) and
+> [`live-readback-checklist.md`](live-readback-checklist.md) (the scripted readback harness is
+> still unbuilt, `AGENT_TODO.md` row O9); Stages 3–4 by
+> [`AUTONOMY_DEVELOPMENT_PLAN_2026-08.md`](AUTONOMY_DEVELOPMENT_PLAN_2026-08.md) §6; Stage 5 by the
+> closed 2026-08 campaigns, which found no edge; the deferred "Historical OI" item partly by option
+> flow reaching `evaluate()` (2026-08-28) and "Short premium and defined-risk spreads" by the
+> short-side verdict (`INTRADAY_OPTION_BUYING_CANDIDATES_2026-08.md` §13–14). The "Verified
+> snapshot" is a 2026-07-31 record, not current counts.
+
 ## Decision
 
 The next stage is **capability validation and evidence integrity**, followed by a
@@ -226,8 +238,8 @@ strategy edge.
 These prompts keep delegated work bounded. The primary reviewer owns trading-risk and
 cross-component decisions.
 
-1. **Market validation assistant:** `Execute docs/phase5b-market-validation-runbook.md in
-   PAPER + READ-ONLY mode. Do not call any broker login/logout/order mutation. Return one
+1. **Market validation assistant:** `Execute the paper and read-only phases of
+   docs/LIVE_VALIDATION_PLAN_2026-08.md. Do not call any broker login/logout/order mutation. Return one
    evidence row per checklist item with timestamp, observed value and reproduction for any
    failure. Stop on unexplained broker activity or non-finite/reconciliation failure.`
 2. **Optimizer assistant:** `Take exactly one confirmed MED finding from

@@ -7,10 +7,10 @@
 >
 > Companion files: [`learning_log.md`](../learning_log.md) (lessons per session, verified
 > audit-finding evidence table) · [`docs/HANDOFF.md`](HANDOFF.md) (architecture/state
-> entry point) · [`STAGE1_INTEGRITY_SESSION_HANDOFF_2026-08-01.md`](STAGE1_INTEGRITY_SESSION_HANDOFF_2026-08-01.md)
-> (latest completed-session checkpoint) · `CHANGELOG.md`.
+> entry point) · [`LIVE_VALIDATION_PLAN_2026-08.md`](LIVE_VALIDATION_PLAN_2026-08.md) (the next
+> market session) · `CHANGELOG.md` (what shipped, per release).
 
-**Last updated:** 2026-09-29 (Claude Opus 5.5 — Live Deployments uplift; market-session validation scheduled)
+**Last updated:** 2026-09-30 (Claude Opus 5.5 — repo cleanup, docs refresh, open items after the Live Deployments uplift)
 
 ### ★ Future action: Live Deployments uplift — market-session validation (reminder 2026-10-06)
 
@@ -37,6 +37,30 @@ broker token was expired and the operator was off the static IP.
       own P&L for that trade, and the Day Stop card must have counted the open loss.
 - [ ] Resume; optionally turn on the opt-in alerts. Then continue with
       [`LIVE_VALIDATION_PLAN_2026-08.md`](LIVE_VALIDATION_PLAN_2026-08.md).
+
+### ★ Open items after 2026-09-30 (verified against the code on 2026-09-30)
+
+State: `origin/main` = `13f06f4`; local and unpushed: `6c949ad` (signal retirement) plus the
+2026-09-30 cleanup/docs commits. Suite 6586 passed / 0 failed; frontend CI build compiles.
+
+| # | Item | Why it matters / what to do |
+|---|---|---|
+| O1 | **Partial fills: the guard's confirmed-flat close journals realized P&L on the ORDERED quantity** | `runtime._live_guard_on_close` calls `close_live_trade` with no `quantity`, so `close_loop.realized_fields` uses the journal row's `quantity` (what was ordered). The boot reconcile proves filled qty from the trade book, but a live-session guard close does not. Pass the guard's observed held qty (or the trade-book fill) into the close. The 2026-09-16 partial fill was corrected by hand. |
+| O2 | The 15:00 unactioned-signal sweep leaves bars after 14:45 CONFIRMED | They are < 15 min old at 15:00 and wait for the next boot or the next day's sweep. The Journal chip already reads EXPIRED, so the display is truthful. A 15:30 latch would close it; low priority. |
+| O3 | `tests/test_premium_momentum_entry_recheck.py::test_guard_on_close_marks_premium_lock_done_exited` fails when run alone | Also fails on clean HEAD outside the full suite: it needs the strategy registry loaded by an earlier test. Make the test load the registry itself. |
+| O4 | `PositionMonitor.jsx` is unmounted — wire it or delete it | An L2-era manual test-order panel; nothing imports it, yet `LiveDataProvider.jsx:90` still polls `getLiveTestSession` at `FAST_MS` for it. Deployed-position exits do not depend on it. |
+| O5 | 112 test files assert on SOURCE TEXT | A conversion backlog (drive the code / node for frontend libs), not a removal list. Specimen: `tests/test_intraday_backfill.py` "..._are_wired" only checks a route is declared. |
+| O6 | Flattrade TPSeries fallback vs Upstox | Implemented and live-verified, but Upstox stays primary: the two vendors disagree on the `open` of ~2 bars in 60 (max 1.85 pts), so mixing sources within one day mixes conventions. |
+| O7 | No same-day candle source for OPTION contracts | Upstox intraday serves only the 3 index keys. Live exits are unaffected (the guard marks from the broker position book). |
+| O8 | Warehouse integrity hash has two implementations | `routers/warehouse.py` hashes only the incoming chunk; `warehouse.persist_candles_df` re-reads the whole IST day — the same day ingested two ways gets two different `integrity_hash` values. Make one call the other. |
+| O9 | Scripted live readback harness (not blocked on the static IP) | Turn `live-readback-checklist.md` into one command + a checklist so the market-session validation is repeatable. |
+| O10 | Market-session validation of the 2026-09-26..30 live controls | Unchanged: the block above; reminder fires 2026-10-06 09:00 IST. |
+
+Authoring stack — do not rebuild (from the retired capability plan): Spec mode compiles
+deterministically (no eval/exec, literals `repr()`'d, columns pre-whitelisted — `ai/compiler.py`);
+Full-Python mode uses an AST allowlist plus a subprocess smoke test with an `RLIMIT_AS` cap
+(`ai/py_sandbox.py`); feasibility is decided by `classify_rule`, never the LLM; install rollback
+restores the previous file / deletes the orphan (`routers/strategies_admin.py`).
 
 ### ★ Open follow-ups from the 2026-08-30 session
 
@@ -247,7 +271,7 @@ stale audit rows already subsumed by HIGH #18/#28; disputed LOW #31 remains sepa
 3. **The pre-real-money code blockers are closed.** H2/H3/C1/C2/C4/H1/C3 have landed;
    do not treat green code as broker validation. The remaining prerequisite is operational:
    registered static IP, market-hours PAPER/read-only Gate A, then a user-authorized live
-   readback if the user decides — see §2 and the Stage 1 session handoff.
+   readback if the user decides — see §2 and [`live-readback-checklist.md`](live-readback-checklist.md).
 4. **Current priorities:** dated market-hours PAPER/read-only Gate A → durable execution
    episode ledger → Experiment/Cohort Ledger → real-LLM
    author/install/backtest/optimize/paper acceptance. Edge research and live activation
@@ -403,8 +427,8 @@ evaluator cadence. Fix v2 (atomicity): reserve-then-place via a Mongo
 ### Item 2 — Lazy-leg contingency (opposite-side activation on primary-leg SL)
 
 **GAP ANALYSIS DONE 2026-07-21 (verified against code, not memory/docs).** The design
-doc (`docs/superpowers/specs/2026-07-13-premium-momentum-phase4-5-full-contingency-design.md`)
-is STALE — its "nothing implemented" header predates the 2026-07-17 Phase 5B build. The
+doc (the Phase 4-5 contingency design spec, since removed; see CHANGELOG [0.53.x]-[0.55.0])
+was STALE — its "nothing implemented" header predates the 2026-07-17 Phase 5B build. The
 lazy-leg contingency IS shipped on two of three rails:
 
 | Rail | Lazy-leg status | Evidence |
