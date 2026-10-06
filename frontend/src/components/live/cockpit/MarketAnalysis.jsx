@@ -1,6 +1,7 @@
 import { BarChart3 } from "lucide-react";
 import { fmtINR, fmtINRSigned } from "@/lib/fmt";
 import { SectionCard } from "@/components/live/liveHelpers";
+import { ivSourceLabel } from "@/lib/marketAnalysisView";
 
 /**
  * Market Analysis — PCR, max-pain, IV rank, ATM straddle, net greeks + ATM option
@@ -36,12 +37,6 @@ function fmtOI(v) {
   return String(Math.round(n));
 }
 
-function humanizeIvSource(src) {
-  if (src === "atm_iv") return "ATM IV";
-  if (src === "vix_proxy") return "VIX proxy";
-  if (!src) return "unavailable";
-  return src;
-}
 
 // Humanised forms of the warning codes GET /market/analysis actually emits.
 // Anything unmapped renders verbatim rather than being hidden — an unexplained
@@ -74,14 +69,18 @@ function Tile({ label, value, valueClass = "text-foreground", meterPct, meterCla
   );
 }
 
-export default function MarketAnalysis({ analysis }) {
+// `instrument` is the SELECTED index (cockpit tabs); `analysis` is null until a payload
+// for that index has arrived.
+export default function MarketAnalysis({ analysis, instrument }) {
   if (!analysis) {
     return (
       <div className="rounded-lg border border-line bg-bg-1 px-4 py-5 flex items-center gap-3 text-dim">
         <BarChart3 className="w-4 h-4 text-dimmer" />
         <div className="text-xs">
-          <div className="font-semibold text-foreground">Market Analysis</div>
-          <div className="text-dimmer">PCR, max-pain, IV rank, ATM straddle &amp; the option chain come online with the analysis engine.</div>
+          <div className="font-semibold text-foreground">Market analysis{instrument ? ` · ${instrument}` : ""}</div>
+          <div className="text-dimmer" data-testid="market-analysis-waiting">
+            No {instrument || "market"} analysis yet — PCR, max pain, IV rank, ATM straddle and the option chain appear with its first payload.
+          </div>
         </div>
       </div>
     );
@@ -108,7 +107,8 @@ export default function MarketAnalysis({ analysis }) {
   // IV rank (30d)
   const ivRank = numOrNull(options.iv_rank_30d);
   const ivRankPct = ivRank !== null ? Math.round(ivRank * 100) : null;
-  const ivSourceLabel = humanizeIvSource(options.iv_rank_source);
+  // India VIX is NIFTY 50 implied vol: on SENSEX / BANKNIFTY the label says it is borrowed.
+  const ivLabel = ivSourceLabel(options.iv_rank_source, analysis.instrument);
   const ivSourceClass = options.iv_rank_source === "vix_proxy" ? "text-warning" : "text-dimmer";
 
   // ATM straddle
@@ -150,7 +150,7 @@ export default function MarketAnalysis({ analysis }) {
           value={ivRankPct !== null ? `${ivRankPct}%` : "—"}
           meterPct={ivRankPct}
           meterClass="bg-warning"
-          sub={ivSourceLabel}
+          sub={ivLabel}
           subClass={ivSourceClass}
         />
         <Tile

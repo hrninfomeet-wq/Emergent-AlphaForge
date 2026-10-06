@@ -2,6 +2,27 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [Unreleased] — Market pulse + Market analysis for SENSEX and BANKNIFTY too (2026-10-06)
+
+The /live-trading cockpit's two market cards were hard-wired to NIFTY, although
+`GET /market/analysis(/stream)?instrument=X` already served every index (checked live: spot,
+multi-timeframe trend and a 7-strike chain for NIFTY, SENSEX and BANKNIFTY — BANKNIFTY on its
+monthly expiry). An **Index** tab row (NIFTY / SENSEX / BANKNIFTY) now drives both cards.
+
+- One stream at a time: the selected index streams; a switch reconnects it. The choice is
+  remembered per browser (`localStorage`, every access guarded; unknown values fall back to NIFTY).
+- A payload renders only under its own index (`lib/marketAnalysisView.analysisForInstrument`):
+  after a switch the stream still holds the previous index's payload until the new one arrives,
+  and a SENSEX tab must never show NIFTY's chain. The cards say "No SENSEX analysis yet …"
+  meanwhile (the old placeholder read like an unbuilt feature).
+- IV rank's `vix_proxy` is India VIX — NIFTY 50 implied vol. On SENSEX / BANKNIFTY the label now
+  reads "India VIX proxy (NIFTY 50 IV, not SENSEX)" instead of presenting a borrowed 28% as the
+  index's own.
+- Net Δ / Θ in the analysis card remain portfolio-wide (every open position), not per index.
+
+Tests: `tests/test_market_analysis_view.py` (17, node-executed + wiring pins); 5/5 mutants killed.
+Verified in the browser: each tab switches both cards and the S/R level to that index's scale.
+
 ## [Unreleased] — Repo cleanup and a takeover-ready documentation set (2026-09-30 → 10-06)
 
 **Removed 29 obsolete files** after a two-pass audit (six auditors over 469 files, then an independent

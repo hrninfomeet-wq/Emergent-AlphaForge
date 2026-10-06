@@ -41,14 +41,18 @@ const TIMEFRAMES = [
   ["Monthly", "monthly"],
 ];
 
-export default function MarketPulse({ analysis }) {
+// `instrument` is the SELECTED index (cockpit tabs); `analysis` is null until a payload
+// for that index has arrived (the cockpit filters out the previous index's payload).
+export default function MarketPulse({ analysis, instrument }) {
   if (!analysis) {
     return (
       <div className="rounded-lg border border-line bg-bg-1 px-4 py-5 flex items-center gap-3 text-dim">
         <Activity className="w-4 h-4 text-dimmer" />
         <div className="text-xs">
-          <div className="font-semibold text-foreground">Market Pulse</div>
-          <div className="text-dimmer">Regime, multi-timeframe trend &amp; S/R come online with the analysis engine.</div>
+          <div className="font-semibold text-foreground">Market pulse{instrument ? ` · ${instrument}` : ""}</div>
+          <div className="text-dimmer" data-testid="market-pulse-waiting">
+            No {instrument || "market"} analysis yet — regime, multi-timeframe trend and S/R appear with its first payload.
+          </div>
         </div>
       </div>
     );

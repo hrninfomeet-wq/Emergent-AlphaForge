@@ -1,7 +1,8 @@
-import { createContext, useCallback, useContext, useEffect, useMemo } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
 import { usePoll } from "@/hooks/usePoll";
 import { useTickStream } from "@/hooks/useTickStream";
+import { ANALYSIS_INSTRUMENT_KEY, normalizeAnalysisInstrument } from "@/lib/marketAnalysisView";
 
 /**
  * LiveDataProvider — the SINGLE owner of all Live-Trading-page polling.
@@ -99,12 +100,30 @@ export function LiveDataProvider({ children }) {
   // Option chain / PCR / max pain / ATM straddle, pushed on the tick. Was a 10s
   // poll over an 8s server cache — up to ~18s stale on data that is derived from
   // the live tick map. The 10s poll remains as the automatic fallback.
-  const analysisStream = useTickStream("/market/analysis/stream?instrument=NIFTY", {
-    fallback: () => api.marketAnalysis("NIFTY"),
-    fallbackMs: ANALYSIS_MS,
+  //
+  // The index is the viewer's choice (NIFTY / SENSEX / BANKNIFTY tabs on the
+  // cockpit). Only the SELECTED index streams — a switch reconnects the stream
+  // rather than opening three. The previous index's payload lingers until the new
+  // stream's first message; the cards filter it out (analysisForInstrument).
+  const [analysisInstrument, setAnalysisInstrumentState] = useState(() => {
+    try {
+      return normalizeAnalysisInstrument(window.localStorage.getItem(ANALYSIS_INSTRUMENT_KEY));
+    } catch {
+      return "NIFTY";   // storage blocked / private window: default, never throw
+    }
   });
+  const setAnalysisInstrument = useCallback((next) => {
+    const inst = normalizeAnalysisInstrument(next);
+    setAnalysisInstrumentState(inst);
+    try { window.localStorage.setItem(ANALYSIS_INSTRUMENT_KEY, inst); } catch { /* convenience only */ }
+  }, []);
+  const analysisStream = useTickStream(
+    `/market/analysis/stream?instrument=${encodeURIComponent(analysisInstrument)}`, {
+      fallback: () => api.marketAnalysis(analysisInstrument),
+      fallbackMs: ANALYSIS_MS,
+    });
   const { data: polledAnalysis, error: eMarketAnalysis, refetch: rMarketAnalysis } =
-    usePoll(() => api.marketAnalysis("NIFTY"), ANALYSIS_MS,
+    usePoll(() => api.marketAnalysis(analysisInstrument), ANALYSIS_MS,
             { enabled: analysisStream.data == null });
   const marketAnalysis = analysisStream.data ?? polledAnalysis;
   const { data: holdings, error: eHoldings, refetch: rHoldings } =
@@ -193,6 +212,8 @@ export function LiveDataProvider({ children }) {
       // data (null until the first successful fetch — consumers treat null = loading)
       status, limits, positions, orders, reconcile, armState, blotter, deployments,
       guard, session, gtt, greeks, feedHealth, marketAnalysis, holdings, preopen,
+      // Which index the market cards show, and the tab setter.
+      analysisInstrument, setAnalysisInstrument,
       deployLive: deployLiveData || {},
       // Freshness of the money slice: "stream" (tick-fresh) | "poll" (15s) | null.
       marksSource: marks.source,
@@ -212,6 +233,7 @@ export function LiveDataProvider({ children }) {
     [
       status, limits, positions, orders, reconcile, armState, blotter, deployments,
       guard, session, gtt, greeks, feedHealth, deployLiveData, marketAnalysis, holdings, preopen,
+      analysisInstrument, setAnalysisInstrument,
       marks.source, marks.lastAt,
       eStatus, eLimits, ePositions, eOrders, eReconcile, eArmState, eBlotter, eDeployments,
       eGuard, eSession, eGtt, eDeployLive, eGreeks, eFeedHealth, eMarketAnalysis, eHoldings,

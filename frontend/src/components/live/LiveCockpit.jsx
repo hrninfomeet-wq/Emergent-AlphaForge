@@ -15,6 +15,7 @@ import CommandBar from "@/components/live/cockpit/CommandBar";
 import AlertRail from "@/components/live/cockpit/AlertRail";
 import MarketPulse from "@/components/live/cockpit/MarketPulse";
 import MarketAnalysis from "@/components/live/cockpit/MarketAnalysis";
+import { ANALYSIS_INSTRUMENTS, analysisForInstrument } from "@/lib/marketAnalysisView";
 import RiskKpis from "@/components/live/cockpit/RiskKpis";
 import QuickTrade from "@/components/live/cockpit/QuickTrade";
 import DeploymentSummary from "@/components/live/cockpit/DeploymentSummary";
@@ -45,6 +46,7 @@ export default function LiveCockpit() {
     status, limits, positions, orders, reconcile, armState, blotter, guard, gtt,
     refetch, feedHealth, deployments, health, lastSuccess,
     marketAnalysis, holdings, greeks, errors, deployLive, preopen,
+    analysisInstrument, setAnalysisInstrument,
   } = useLiveData();
   const fetchAll = refetch.all;
   // Opt-in, default-off live alerts (fill / exit / refusal / blocked / halt). Mounted
@@ -143,17 +145,22 @@ export default function LiveCockpit() {
   // position-driven, already polled at /live-broker/greeks, and would cost a
   // duplicate broker read). Merge that slice in here so MarketAnalysis renders
   // one coherent payload — and so the panel still works when disconnected.
+  //
+  // Only a payload FOR THE SELECTED INDEX is rendered: right after a tab switch the
+  // previous index's payload is still in hand until the new stream's first message.
+  // Net greeks are portfolio-wide (every open position), not per-index.
   const analysis = useMemo(() => {
-    if (!marketAnalysis) return null;
+    const shown = analysisForInstrument(marketAnalysis, analysisInstrument);
+    if (!shown) return null;
     return {
-      ...marketAnalysis,
+      ...shown,
       options: {
-        ...(marketAnalysis.options || {}),
+        ...(shown.options || {}),
         net_delta_rupee: greeks?.net_delta_rupees_per_point ?? null,
         net_theta_rupee: greeks?.net_theta_rupees_per_day ?? null,
       },
     };
-  }, [marketAnalysis, greeks]);
+  }, [marketAnalysis, analysisInstrument, greeks]);
 
   return (
     <div className="space-y-4">
@@ -228,8 +235,34 @@ export default function LiveCockpit() {
       <div className="grid grid-cols-1 lg:grid-cols-[1.55fr_1fr] gap-4">
         {/* LEFT — market intelligence */}
         <div className="space-y-4">
-          <MarketPulse analysis={analysis} />
-          <MarketAnalysis analysis={analysis} />
+          {/* Which index the two market cards show. One stream at a time: a switch
+              reconnects it; the choice is remembered per browser. */}
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] uppercase tracking-wider text-dimmer">Index</span>
+            <div role="tablist" aria-label="Market analysis index"
+                 className="flex gap-0.5 rounded-md border border-line bg-bg-2/40 p-0.5"
+                 data-testid="analysis-index-tabs">
+              {ANALYSIS_INSTRUMENTS.map((inst) => (
+                <button
+                  key={inst}
+                  type="button"
+                  role="tab"
+                  aria-selected={analysisInstrument === inst}
+                  onClick={() => setAnalysisInstrument(inst)}
+                  className={`px-3 py-1 text-xs font-semibold rounded ${
+                    analysisInstrument === inst
+                      ? "bg-bg-1 text-foreground border border-line"
+                      : "text-dim hover:text-foreground border border-transparent"
+                  }`}
+                  data-testid={`analysis-index-${inst}`}
+                >
+                  {inst}
+                </button>
+              ))}
+            </div>
+          </div>
+          <MarketPulse analysis={analysis} instrument={analysisInstrument} />
+          <MarketAnalysis analysis={analysis} instrument={analysisInstrument} />
           <GreeksCard />
         </div>
 
