@@ -330,13 +330,10 @@ stale audit rows already subsumed by HIGH #18/#28; disputed LOW #31 remains sepa
 7. **Broker safety (permanent):** never call the Flattrade MCP login/logout; never
    place/modify/cancel broker orders from an agent; AlphaForge's own OAuth is the only
    login. Never refresh Flattrade OAuth while `LIVE_AUTOPLACE_ARMED` is on.
-   *2026-10-06 note — OPEN for the operator, unchanged until they decide:* HANDOFF §4.1 item 2
-   carries the OAuth half of this rule, but no doc records its rationale or a daily procedure. As
-   written, it conflicts with the required daily Flattrade OAuth (LIVE_VALIDATION_PLAN U1: log in
-   after 06:00 IST) whenever the running backend has `LIVE_AUTOPLACE_ARMED=1`. The operator should
-   either write the procedure into HANDOFF §4.1 (for example, log in with ARMED=0 or before any
-   deployment is live) or retire the rule. Either way, OAuth belongs to the operator, never an
-   agent (LIVE_VALIDATION_PLAN §0).
+   *~~2026-10-06 note — OPEN for the operator~~* **DECIDED 2026-10-06 by the operator: the rule
+   stands — never refresh Flattrade OAuth while `LIVE_AUTOPLACE_ARMED` is on.** Procedure (also in
+   HANDOFF §4.1 and LIVE_VALIDATION_PLAN U1): Before ANY Flattrade login (including the daily U1 login) check the running flag: `docker exec alphaforge_backend printenv LIVE_AUTOPLACE_ARMED` (Git Bash: prefix `MSYS_NO_PATHCONV=1`). If it is on (1/true/yes/on): do not log in — set `LIVE_AUTOPLACE_ARMED=0` in `backend/.env`, recreate the backend (`docker compose up -d --force-recreate backend`; the flag is read from the container's environment, so a plain restart keeps the old value; recreating stops the guard until boot recovery — check for an open live position first, HANDOFF §3), log in, and only then re-arm the same way. OAuth is always the operator's act, never an agent's. On 2026-10-06 the running backend had
+   `LIVE_AUTOPLACE_ARMED=1`.
 
 ---
 

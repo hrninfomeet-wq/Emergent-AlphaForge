@@ -61,7 +61,7 @@ follow-ups (e.g. O1, partial fills) are tracked in [`AGENT_TODO.md`](AGENT_TODO.
 
 | ID | Operator action | Pass evidence |
 |---|---|---|
-| U1 | Log in to Flattrade **from AlphaForge** after 06:00 IST | The execution strip drops its "Flattrade session expired" alert; `GET /api/flattrade/status` connected and not expired. |
+| U1 | Log in to Flattrade **from AlphaForge** after 06:00 IST — **only while `LIVE_AUTOPLACE_ARMED` is off** (operator rule, 2026-10-06: check `docker exec alphaforge_backend printenv LIVE_AUTOPLACE_ARMED`; if on, set it to 0 in `backend/.env` and `docker compose up -d --force-recreate backend` with no live position open, log in, then re-arm the same way; HANDOFF §4.1) | The execution strip drops its "Flattrade session expired" alert; `GET /api/flattrade/status` connected and not expired. |
 | U2 | With **nothing open**, `docker compose up -d --build` | Backend log shows `live startup recovery: reboot reconcile ... status=ok` (or `status=flat_confirmed`), then `live recovery: completed`; `GET /api/live-broker/recovery-status` agrees. Any other status keeps recovery INCOMPLETE and retrying — FAIL until explained. |
 | U3 | Open the Live Deployments pane | Each live row shows cap headroom and the binding chip (from the `governor` key of `GET /api/deployments/live/status?ids=`); a `blocked: …` reason whenever it cannot trade; a countdown to the entry cutoff that matches `GET /api/live-broker/session-clock`. |
 | U4 | Enable one deployment live at 1 lot, then tighten its caps | A lower loss cap is accepted (`changed` lists it; `risk.live.last_caps_change` recorded). Raising any cap returns 409 `caps_loosening_refused` with "disable and re-enable" and changes nothing. |

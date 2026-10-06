@@ -2,6 +2,33 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [Unreleased] — Repo cleanup and a takeover-ready documentation set (2026-09-30 → 10-06)
+
+**Removed 29 obsolete files** after a two-pass audit (six auditors over 469 files, then an independent
+dependency + knowledge-loss check per candidate; a file went only if nothing reads it and its unique facts
+were folded into a kept doc first): dated takeover/handoff snapshots (TAKEOVER_CHECKLIST, LOCAL_TAKEOVER,
+STAGE1 / OPTION_FLOW handoffs), finished plans (CAPABILITY_PHASE_PLAN, repo-audit-2026-08-15, all five
+`docs/superpowers/plans/`), ten superseded design specs, LOCAL_SETUP (folded into STARTUP_MANUAL),
+optimizer-user-guide, the phase5b runbook (folded into LIVE_VALIDATION_PLAN), two dated notes, the atr
+winners JSON, the spent `backend/scripts/repair_option_leg_index.py` and the unimported
+`MultiPaneChart.jsx`. Research verdicts are kept. Anything removed is recoverable from git (HANDOFF §5.3).
+Three merged agent worktrees and their branches were also removed.
+
+**Documentation rewritten for a new agent:** HANDOFF current-state-first (841 → ~430 lines: read order,
+state, traps T1–T16, run/test, conventions, where to go deep); README, agent-takeover-prompt, AGENTS.md,
+DEVELOPER_GUIDE, ARCHITECTURE (stale per-deployment ARM removed; the four core flows), API_REFERENCE (routes
+diffed against the code), STARTUP / USER manuals, PROJECT_OVERVIEW, STRATEGY_DEPLOYMENTS (unpinned
+deployments auto-pause — they were documented as exempt), and AGENT_TODO (stale blocks struck through;
+verified open items O1–O10). `LIVE_VALIDATION_PLAN_2026-08.md` §1 is the one market-session checklist.
+Each batch was fact-checked against the code, and a fresh agent reading only the docs could take over
+(its 19 gaps were fixed). Comment-only repoints in code (AST-identical) plus two stale "manual positions
+are EOD-exempt" comments corrected.
+
+**Operator decision recorded (2026-10-06):** never refresh Flattrade OAuth while `LIVE_AUTOPLACE_ARMED` is
+on — the procedure is in HANDOFF §4.1 and LIVE_VALIDATION_PLAN U1.
+
+Suite 6,586 passed / 0 failed; frontend CI build compiles; 0 broken relative links in 105 Markdown files.
+
 ## [Unreleased] — A restarted position still belongs to its deployment; tightened caps stop an order already in flight (2026-09-29)
 
 Two gaps left open by the Live Deployments uplift, both re-verified against the code

@@ -341,8 +341,8 @@ curl -s http://127.0.0.1:8001/api/health            # {"db":"ok"}
    the MCP opens are invisible to AlphaForge's guard and kill switch. Read tools are fine; keep them
    sparse (shared rate budget). Full rules: [`flattrade-mcp-integration.md`](flattrade-mcp-integration.md).
 2. **Never place, modify, cancel or square a real broker order** — through the app or the MCP.
-   Never refresh Flattrade OAuth while `LIVE_AUTOPLACE_ARMED` is on (standing decision,
-   [`AGENT_TODO.md`](AGENT_TODO.md) §0 item 7).
+   **Never refresh Flattrade OAuth while `LIVE_AUTOPLACE_ARMED` is on** (operator decision,
+   re-confirmed 2026-10-06; [`AGENT_TODO.md`](AGENT_TODO.md) §0 item 7). Before ANY Flattrade login (including the daily U1 login) check the running flag: `docker exec alphaforge_backend printenv LIVE_AUTOPLACE_ARMED` (Git Bash: prefix `MSYS_NO_PATHCONV=1`). If it is on (1/true/yes/on): do not log in — set `LIVE_AUTOPLACE_ARMED=0` in `backend/.env`, recreate the backend (`docker compose up -d --force-recreate backend`; the flag is read from the container's environment, so a plain restart keeps the old value; recreating stops the guard until boot recovery — check for an open live position first, HANDOFF §3), log in, and only then re-arm the same way. OAuth is always the operator's act, never an agent's.
 3. **Never flip a deployment to live mode.** Going live is the operator's act (Deploy-to-Live →
    `POST /deployments/{id}/live/enable`, the only writer of live mode). Confirm before anything that
    could reach the broker or a deployment (deploy, resume, enable); static inspection and dry runs
