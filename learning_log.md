@@ -1631,3 +1631,65 @@ never been run on a weekday.
 
 **Verification:** host suite **5,126 passed / 0 failed / 4 xfailed** (was 5,107 passed / 11 failed).
 8 mutants killed across the new tests; `compileall` clean.
+
+## 2026-10-06 — NIFTY 50 morning forecast checkpoint (outcome pending)
+
+- Decision use: a dated closing forecast, not permission to trade. Critical input: the current
+  spot baseline; done-test: two-source reconciliation, one point/range and an invalidation,
+  with the eventual official close scored without rewriting this entry.
+- Confirmed: Tuesday 6 October is NIFTY weekly expiry, not Wednesday 7 October (NSE current
+  contract specifications, updated 11 August 2026; calendar weekday independently calculated).
+- Confirmed baseline: Yahoo `^NSEI` at **10:57:10 IST**, **22,657.45**; immediately preceding
+  official close on 5 October **22,555.75**; open **22,603.25**, high **22,677.95**, low
+  **22,561.60**. Change = **+101.70 points / +0.4509%**; opening gap = **+47.50 points**.
+  Google Finance's earlier 10:26:17 quote was 22,651.05, with the same open/low and a lower
+  then-observed high. Prior close also reconciled with dated Investing/Reuters reporting.
+  Quotes have different timestamps; they were not averaged or described as synchronized.
+- Confirmed chart observations (user snapshots, around 10:40, not the latest quote): 1-minute
+  close 22,668.80, EMA 22,659.11, RSI 62.82; 5-minute close 22,671.75, EMA 22,627.58,
+  RSI 70.66; hourly close 22,676.75, EMA 22,576.55, RSI 54.33. Intraday higher lows and
+  recovery above hourly EMA coexist with the broader hourly decline. EMA periods are not
+  displayed; neither usable volume nor VWAP values are visible.
+- Confirmed arithmetic: current range **116.35 points** versus **208.70 points** median of
+  the last ten completed daily ranges (mean 218.395); ratio **55.75%**, not a guarantee of
+  further expansion. Current level is **82.38%** of the way from today's low to high.
+- Historical cross-check: ten recent sessions with an available 10:50 five-minute candle,
+  ending 5 October; dates Sep 18, 22, 23, 24, 25, 28, 29, 30, Oct 1 and 5. Sep 21 was
+  excluded because the exact anchor was missing. These are mixed expiry/non-expiry days.
+  Anchor-to-official-close moves in points: [37.20, -46.70, 30.05, -173.95, 80.15,
+  -47.55, 106.65, -92.90, -135.00, 82.85]. Median **-8.325**, median absolute move
+  **81.50**, observed range **-173.95 to +106.65**. Neutral historical estimate from the
+  latest quote is **22,649.125**; it does NOT independently confirm the bullish point call.
+- Closing-print proxy: official close minus the 15:10 candle close (through about 15:14)
+  on those ten sessions had median **+5.40**, median absolute gap **16.875**, minimum
+  **-23.65** and maximum **+35.30 points**. This proxy does not isolate the auction's causal
+  effect or reproduce each stock's reference VWAP; do not call it a pure CAS jump.
+  Applied CAS directional adjustment: **zero**; approximately **35 points** of the working
+  half-band are reserved for late closing-print uncertainty, not a calibrated tail bound.
+- Confirmed sourced news: Reuters dated 6 October reports firmer Asian markets after US
+  gains, softer oil, positive bank business updates and the RBI decision on Wednesday.
+  Persistent foreign selling and oil above USD 100/barrel temper the recovery inference.
+- Locked judgment: **point 22,700; official-closing working range 22,620–22,780** (width
+  160 points), moderate subjective confidence, not a statistical confidence interval.
+  Likely: consolidation followed by another upward attempt, because higher lows, bank
+  support and improving hourly momentum outweigh the neutral historical median for this
+  call. This is a discretionary bullish tilt of 50.875 points over the neutral estimate.
+- Flip claim: the reclaimed 22,620 area remains support. A completed **15-minute candle
+  below 22,620** invalidates the bullish premise and raises the risk of revisiting 22,560.
+  Opposite explanation retained: an overbought 5-minute relief rally inside a downtrend can
+  fade. Expiry positioning/OI and auction imbalance were not verified; no pinning claim.
+- Verification: skill arithmetic script ran with bundled Python; independent JavaScript
+  matched range/change/medians. Default `python`/`py` launchers were unavailable. Broker
+  access and all trading state were left untouched. Post-close score remains pending.
+- Core lesson: verify expiry before interpreting expiry behavior; multi-timeframe recovery
+  can justify a directional judgment without pretending that a neutral historical check agrees.
+- Confirmed approaches: reconcile dated prior close and timestamped independent snapshots;
+  lock raw inputs before outcome; separate the closing-print proxy from pure CAS causation.
+- Dead ends: delayed widgets as synchronized live quotes; absent VWAP/volume as confirmation;
+  an automatic positive CAS uplift; narrowing a morning interval to imply unsupported certainty.
+- Sources: [Yahoo intraday](https://query1.finance.yahoo.com/v8/finance/chart/%5ENSEI?interval=1m&range=1d&includePrePost=true),
+  [Yahoo history](https://query1.finance.yahoo.com/v8/finance/chart/%5ENSEI?interval=5m&range=1mo&includePrePost=true),
+  [Google Finance](https://www.google.com/finance/quote/NIFTY_50:INDEXNSE),
+  [NSE expiry](https://www.nseindia.com/static/products-services/equity-derivatives-contract-specifications),
+  [NSE CAS](https://www.nseindia.com/static/products-services/closing-auction-session),
+  [Reuters pre-open](https://www.brecorder.com/news/40442855/indian-shares-poised-to-extend-rebound-ahead-of-rbi-policy-verdict).
