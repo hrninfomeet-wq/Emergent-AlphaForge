@@ -114,6 +114,13 @@ JS regex literal starting with `/` gets path-mangled — use `new RegExp("...")`
 days, 2026-08-04 → 2026-09-16, all CLOSED (checked 2026-09-30). **No strategy has a demonstrated
 edge** — see the closed verdicts in §5.2.
 
+**Live posture — check it, do not assume it.** Last verified 2026-09-29: no deployment was in live
+mode (the Live Deployments pane read "0 can trade · 9 not live") and the Flattrade session had
+expired. Before anything that could reach the broker or restart the backend, read the current state:
+`curl -s http://127.0.0.1:8001/api/live-broker/arm-state` (connected / session expired / whether an
+entry or exit would transmit), `curl -s http://127.0.0.1:8001/api/deployments/overview` (each
+deployment's `mode`), and the two position reads in §3.
+
 ### 2.2 Verified vs not verified
 
 | Verified | How |
@@ -132,10 +139,12 @@ position, a lost ACK treated as indeterminate). Fill-based P&L has run: the real
 
 ### 2.3 The next gate
 
-1. **Market-session validation of the live controls on the static IP** — the checklist at the top of
-   [`AGENT_TODO.md`](AGENT_TODO.md) (a cloud reminder fires 2026-10-06 09:00 IST), then
-   [`LIVE_VALIDATION_PLAN_2026-08.md`](LIVE_VALIDATION_PLAN_2026-08.md) and
-   [`live-readback-checklist.md`](live-readback-checklist.md).
+1. **Market-session validation of the live controls on the static IP.** The checklist is
+   [`LIVE_VALIDATION_PLAN_2026-08.md`](LIVE_VALIDATION_PLAN_2026-08.md) §1 (U1–U8), the one
+   canonical copy, followed by the rest of that plan and
+   [`live-readback-checklist.md`](live-readback-checklist.md). The one-time cloud reminder fired
+   2026-10-06 09:00 IST. The gate stays open until the plan's §11 records an outcome. A
+   journal-vs-broker realized-P&L difference reads `ESTIMATED_EXIT`, not PASS (plan U7 / L6).
 2. **Next development:** E1 — a durable live execution episode ledger with a fail-closed admission
    reservation ([`AUTONOMY_DEVELOPMENT_PLAN_2026-08.md`](AUTONOMY_DEVELOPMENT_PLAN_2026-08.md),
    tracked in `AGENT_TODO.md`).
@@ -292,6 +301,17 @@ curl -s http://127.0.0.1:8001/api/health            # {"db":"ok"}
 - **Host scripts dial `127.0.0.1`, never `localhost`** (e.g. `--mongo-url mongodb://127.0.0.1:27017`):
   `localhost` resolves to `::1` first and stalls ~2 s against IPv4-only Docker. MongoDB has no auth
   and listens on loopback only.
+- **Before a rebuild, check that no live position is open** (read-only):
+  `curl -s http://127.0.0.1:8001/api/live-broker/positions` (the broker's book) and
+  `curl -s http://127.0.0.1:8001/api/live-broker/guard-status` (what the guard holds). Recreating the
+  backend stops the software guard until boot recovery re-attaches it; a recovered position comes back
+  at the DEFAULT 50% catastrophe stop with `source="rehydrated"` (its strategy levels are not
+  restored), re-keyed to its journal row and deployment only when that is provable (§2.6, G1). With
+  the broker OCO off by default (T1), nothing protects it in between.
+- **Host test environment** (the `.venv` at the repo root, not `backend/.venv`): Python 3.12,
+  `py -3.12 -m venv .venv` then `.venv/Scripts/python.exe -m pip install -r backend/requirements.txt`
+  (it carries pytest and pytest-asyncio). The working one has pandas 3.0.3, motor 3.3.1, pytest 9.0.3.
+  Node must be on PATH for the `frontend/src/lib` tests.
 - **Tests — there is no CI; the local suite is the only evidence.**
   `./.venv/Scripts/python.exe -m pytest tests/ -q -p no:cacheprovider` on the host (~4 min; node is
   required for the `frontend/src/lib` tests). Baseline 2026-09-30: **6,586 passed, 4 xfailed, 0
@@ -301,7 +321,9 @@ curl -s http://127.0.0.1:8001/api/health            # {"db":"ok"}
 - **Frontend gate:** `cd frontend && CI=true npx --no-install craco build` — `CI=true` turns warnings
   into errors (PowerShell: `$env:CI = "true"` then `npx --no-install craco build` from `frontend/`).
 - **Prove the test bites.** Reproduce the failure first; save the FAILED list, re-run the identical
-  command on clean HEAD (`git stash`) and diff. A new test that passes both before and after has not
+  command on clean HEAD and diff — use a throwaway worktree (`git worktree add --detach <tmp> HEAD`,
+  run there, then `git worktree remove <tmp>`), not `git stash`: the stash is shared with every
+  worktree and session on this repo. A new test that passes both before and after has not
   tested the fix — mutate the code and confirm it fails.
 - **Determinism replay is the strongest backtest regression check:** replay saved runs against their
   STORED configs and require identical `trade_count` / `win_rate` / `profit_factor` /
@@ -319,6 +341,8 @@ curl -s http://127.0.0.1:8001/api/health            # {"db":"ok"}
    the MCP opens are invisible to AlphaForge's guard and kill switch. Read tools are fine; keep them
    sparse (shared rate budget). Full rules: [`flattrade-mcp-integration.md`](flattrade-mcp-integration.md).
 2. **Never place, modify, cancel or square a real broker order** — through the app or the MCP.
+   Never refresh Flattrade OAuth while `LIVE_AUTOPLACE_ARMED` is on (standing decision,
+   [`AGENT_TODO.md`](AGENT_TODO.md) §0 item 7).
 3. **Never flip a deployment to live mode.** Going live is the operator's act (Deploy-to-Live →
    `POST /deployments/{id}/live/enable`, the only writer of live mode). Confirm before anything that
    could reach the broker or a deployment (deploy, resume, enable); static inspection and dry runs
@@ -405,7 +429,7 @@ maintained — trust `git log` and CHANGELOG over them.
 | [`durable-static-ip-deployment.md`](durable-static-ip-deployment.md) | The approved always-on static-IP host design |
 | [`flattrade-mcp-integration.md`](flattrade-mcp-integration.md) | The Flattrade MCP: token sharing, runbook, hard rules |
 | [`Resources/flattrade-pi-api/INDEX.md`](Resources/flattrade-pi-api/INDEX.md) | Decoded Flattrade API (58 endpoints; `catalog.json`, `endpoints/`) |
-| [`live-cockpit-audit-2026-07-25.md`](live-cockpit-audit-2026-07-25.md) | /live-trading findings register (live backlog) |
+| [`live-cockpit-audit-2026-07-25.md`](live-cockpit-audit-2026-07-25.md) | /live-trading findings register: 38 claims still UNVERIFIED — a source register; the work board is AGENT_TODO, which tracks it as one item |
 | [`audit-report-2026-07.md`](audit-report-2026-07.md) | Decoder for `L##` / `O##` / `S##` IDs in commit messages (historical; O1/O7 remain open by design) |
 | [`audit-verification-2026-08-14.json`](audit-verification-2026-08-14.json) | Decoder for "finding [n]" cited in code and tests (e.g. `live_exit_preview.py`, `exitPreview.js`) |
 | [`NF_CE_PE_EXP2_Strategy_Spec.md`](NF_CE_PE_EXP2_Strategy_Spec.md) · [`DTE_OPENING_SHOCK_STRATEGY.md`](DTE_OPENING_SHOCK_STRATEGY.md) | Strategy specs (EXP2 blueprint; DTE opening shock and its required run config) |

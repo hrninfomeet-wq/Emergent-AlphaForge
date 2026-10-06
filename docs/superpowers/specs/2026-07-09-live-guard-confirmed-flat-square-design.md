@@ -163,8 +163,9 @@ the close truthfully. The position is never simultaneously open, unprotected, an
 
 Layer 1 does not re‑price a resting exit. On a fully blown‑through market the guard's own 1% exit
 may sit unfilled until the resting OCO fires or the 15:00 IST EOD square acts. (The manual 10‑minute
-auto‑square cap that once backstopped this was removed first — see
-`2026-07-09-remove-manual-livetest-10min-timer-design.md`.) Layer 1's contract is *keep it protected
+auto‑square cap that once backstopped this was removed first — see `docs/DEVELOPER_GUIDE.md`,
+"auto_square.py's manual 10-minute timer is gone"; the original timer-removal spec was retired
+2026-09-30 and is recoverable from git history.) Layer 1's contract is *keep it protected
 and honestly journaled*; **Layer 2** (follow‑up) adds the 1 → 2 → 4 % escalation (mirroring
 `kill_switch.panic_squareoff_verified`) that forces the fill, plus interval‑gated retry so a
 hard‑rejecting square doesn't re‑place every cycle.

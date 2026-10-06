@@ -1,5 +1,10 @@
 # Optimizer Decision Guide
 
+The single guide to the `/optimizer` page's *decisions*. It covers what each control is worth,
+the first run to make, and how to read a result. Click-by-click UI steps are in
+[`USER_MANUAL.md`](USER_MANUAL.md) §Optimizer. The paper-to-live promotion gates are in
+[`forward-validation-policy.md`](forward-validation-policy.md).
+
 ## Practical verdict
 
 The optimizer is useful for **hypothesis triage and parameter sensitivity**, not as
@@ -12,7 +17,9 @@ Current important limitations:
 - A Single run is in-sample.
 - Walk-forward re-optimizes on spot and then reports option-bar OOS P&L; the option
   result does not re-rank each window.
-- Single-run option re-rank considers only a top-K shortlist selected on spot.
+- Single-run option re-rank considers only a top-K shortlist selected on spot. Stage 1 ranks
+  every trial on a spot proxy (`net_pnl_inr` = points × lot size). The re-rank loader stops at
+  4,000,000 option rows, surfaced as `rerank_coverage` (HANDOFF T16).
 - The promoted WFO `final_params` are the last training window's winner, not one
   universal parameter set validated across all windows.
 - Grid is silently converted to Bayesian in walk-forward.
@@ -38,9 +45,28 @@ Click **Apply ₹2L evidence profile**:
 | Indicator-period search | Off |
 | Exit-control search | Off |
 | Analysis budget | 0 (finish all planned analysis) |
+| Evaluation mode | Option re-rank |
+| Option capital | ₹2,00,000 |
+| Survivability screen | Off; its thresholds are preset to a ₹1,00,000 floor, 25% max drawdown and 30% max stress RoR |
+
+ATM moneyness, the Mirror-spot option exit and the 09:25–14:50 entry window are the page
+defaults; the profile leaves them unchanged.
 
 This is deliberately a stable comparison profile. It is not a promise that 40
 trials or six windows are universally optimal.
+
+## Recommended first run
+
+1. Click **Apply ₹2L evidence profile**.
+2. Select the instrument and the strategy hypothesis you actually intend to test.
+3. Fix the intended pre-trade profile and date range **before** running.
+4. Keep ATM, one lot, option costs on, workers at one and the 09:25–14:50 entry window, unless
+   the deployment contract deliberately differs.
+5. Run the walk-forward job.
+6. Treat the option-OOS result as a **rejection screen**. Negative option ₹ rejects the
+   hypothesis; positive option ₹ only nominates a research preset.
+7. Save a qualifying result as a **Research Preset**, freeze its strategy hash, and collect a new
+   one-lot paper cohort. Do not take it live from the optimizer.
 
 ## Control-by-control value audit
 
@@ -62,7 +88,7 @@ trials or six windows are universally optimal.
 | Parallel workers | Low/negative for decisions | Keep 1. Use >1 only for explicitly exploratory speed tests. |
 | Option-aware OOS | High rejection value | Keep on. A negative result rejects a spot winner; a positive result remains research-only. |
 | Evaluation mode | High in Single runs | Option re-rank for triage; spot-only only for cheap early exploration. WFO ignores this selector for window fitting. |
-| Re-rank top-K | Medium | 25–50. It is a heuristic; raising K is not proof of an option-native optimum. |
+| Re-rank top-K | Medium | 25–50 (UI default 50; the page warns above 80, where Analyzing gets slow). It is a heuristic; raising K is not proof of an option-native optimum. |
 | Diversity shortlist | Medium exploratory | Can rescue spot-mediocre candidates, but expands researcher degrees of freedom. Predeclare it. |
 | Analysis budget | High | Use 0 for evidence. A timed partial result is exploration-only. |
 | Moneyness | Essential | ATM default. Treat ATM/ITM/OTM comparisons as separate hypotheses. |
@@ -95,19 +121,28 @@ trials or six windows are universally optimal.
 3. Inspect parameter stability. Wildly changing winners mean the model is fitting
    regimes or noise; the final window's params are not a durable answer.
 4. Inspect paired coverage and trade count. Missing option bars can change both who
-   trades and who wins.
+   trades and who wins. The optimizer's 30-trade minimum is only a few-trade screen.
+   Promotion later needs ≥95% point-in-time option coverage, 60 complete sessions and 120
+   closed trades (`forward-validation-policy.md`).
 5. Save the winner as a **research preset**, freeze its hash, and start a new one-lot
    forward cohort. Do not keep optimizing the same holdout after disappointment.
 
 ## Current evidence
 
-The strongest available WFO records do not survive option modelling:
+The strongest WFO records on file showed no option edge:
+
+> **Dated caveat.** These records predate 2026-07-30. Every paired-option backtest saved
+> before that date mis-keyed its option candles (HANDOFF T12,
+> [`BACKTEST_INTEGRITY_AUDIT.md`](BACKTEST_INTEGRITY_AUDIT.md)), so the option-₹ columns below
+> are not reliable until re-run. The spot columns do not read option candles and are not
+> affected by that bug.
 
 | Strategy | OOS windows | Spot OOS | Option OOS | Option-positive windows |
 |---|---:|---:|---:|---:|
 | VWAP pullback | 6 | +874.51 points / 526 trades | −₹1,03,157 | 1 of 6 |
 | SMC | 6 | −1,090.74 points / 313 trades | −₹1,14,304 | 0 of 6 |
 
-The correct optimizer decision today is therefore **reject both for promotion**,
-not spend more trials trying to turn the same evidence green.
+Neither record is promotion evidence either way. SMC is negative even on spot, and the VWAP
+option figures would need a re-run before they could support anything. The decision stays
+**reject both for promotion**; do not spend more trials trying to turn the same evidence green.
 

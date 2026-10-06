@@ -96,6 +96,26 @@ than a misconfiguration. Force `enabled: True` when replaying a stored config.
   26 or 44 paired trades cannot support a conclusion in either direction. The
   forward-validation policy's ≥120 closed trades is the right bar.
 
-**Winning parameter sets** (for reproduction, not for deployment):
-`scratchpad/atr_sigma_router_winners.json` from the 2026-08-16 session; the four `job_id`s
-above are also queryable via `GET /api/optimize/jobs/{id}`.
+## Reproducing the winners (not for deployment)
+
+The raw dump of the four winners (job id, trials, search window, `option_config`, full
+params, in-sample metrics) was removed from the tree in the 2026-09-30 docs cleanup. Recover
+it from git: `git show 3c43752:docs/atr-sigma-router-winners-2026-08-16.json`. Each job is
+also queryable via `GET /api/optimize/jobs/{job_id}` while its `optimization_jobs` row exists.
+
+| Job (full id) | Index | `option_config` | `weekday_mask` / `trend_filter` / `signal_threshold` |
+|---|---|---|---|
+| `72c2b408-d84b-4c53-9cb9-e46c9d38630c` | SENSEX | A | 21 / false / 50 |
+| `7124d77b-e397-41f5-8a09-bde6fd5d78d3` | NIFTY | A | 13 / false / 54 |
+| `6f9c1698-4b9f-4c2c-b373-b1b3422e9e86` | NIFTY | A | 31 / false / 60 |
+| `19489eba-6500-4bff-9552-a48f88dedf8a` | NIFTY | B | 27 / true / 75 |
+
+All four winners have `entry_family: 2`.
+
+- **A** (the three large runs): ATM, 5 lots, `exit_mode: spot_exit`, `dte_filter: null`,
+  `entry_max_age_sec: 120`, `exit_max_age_sec: 180`, costs on with `brokerage_per_order: 0`
+  and `spread_pct_of_premium: 1`, sizing capital ₹2,00,000. No `enabled` key: see the
+  replay defect above.
+- **B** (`19489eba`): `enabled: true`, ATM, 1 lot, `exit_mode: spot_exit`,
+  `dte_filter: [1, 2]`, costs on with `brokerage_per_order: 0`, `spread_pct_of_premium: 0.4`,
+  `spread_min_pts: 0.05`.

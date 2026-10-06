@@ -3,8 +3,9 @@
 _How the official Flattrade Trading MCP server shares AlphaForge's single Flattrade API key,
 what it can do, and the rules that keep it from breaking live execution._
 
-**Status:** built + live-validated 2026-07-19 (v0.55.2, commit `f67f463`).
-**Design spec:** [`superpowers/specs/2026-07-18-flattrade-mcp-token-share-design.md`](superpowers/specs/2026-07-18-flattrade-mcp-token-share-design.md).
+**Status:** built + live-validated 2026-07-19 (v0.55.2, commit `f67f463`); still current.
+This guide and the `backend/app/live/mcp_session_sync.py` module docstring are the design record
+(the original 2026-07-18 design spec was retired in the 2026-09-30 docs cleanup; it is in git history).
 
 ---
 
@@ -153,14 +154,15 @@ Capabilities AlphaForge does **not** otherwise wrap: native `get_option_chain`, 
 2. **The AI assistant never places, modifies, or cancels orders.** The write tools exist for the
    *user's* direct use. This mirrors AlphaForge's own standing rule (`HANDOFF.md` §4) — the
    assistant never personally transmits a real order, regardless of which surface is available.
-3. **MCP-placed positions are invisible to AlphaForge's protections.** The guard, OCO backstop,
-   SL monitor and kill switch reconcile against AlphaForge's own intent store; a foreign order has
+3. **MCP-placed positions are invisible to AlphaForge's protections.** The guard, the broker OCO
+   backstop (when enabled; off by default since 2026-09-03), SL monitor and kill switch reconcile against AlphaForge's own intent store; a foreign order has
    no matching intent record. The user has explicitly accepted this trade-off — but never assume a
    position seen in the MCP is protected by AlphaForge.
 4. **Rate budget is shared.** PiConnect caps are per key: **40 req/s, 200 req/min** globally and
    **10 req/s, 40 req/min** on order endpoints
    (`Resources/flattrade-pi-api/endpoints/57-api-rate-limits.md`). AlphaForge's reconcile/guard
-   polling is safety-critical — **keep MCP queries sparse while deployments are armed.**
+   polling is safety-critical — **keep MCP queries sparse while any deployment is live**
+   (`mode == "live"`).
 5. **Never create a second API key** to "fix" a conflict — that path leads to the ₹5,000 tier and
    the user has declined it. See §2.
 
@@ -177,7 +179,7 @@ a once-per-trading-day action, exactly as before.
 ```bash
 # host
 python -c "import json;d=json.load(open(r'C:\Users\<you>\.flattrade\session.json'));print(sorted(d))"
-curl -s localhost:8001/api/flattrade/status      # connected:true, expired:false
+curl -s http://127.0.0.1:8001/api/flattrade/status   # connected:true, expired:false
 ```
 Then, from an MCP-enabled session: `check_login` → "Authenticated", and `get_limits` → `stat: Ok`.
 
@@ -186,7 +188,9 @@ Then, from an MCP-enabled session: `check_login` → "Authenticated", and `get_l
 .venv/Scripts/python.exe backend/scripts/resync_mcp_session.py --clean
 ```
 Then restart the MCP client session. If AlphaForge itself reports `expired`, do the AlphaForge
-login first — the script syncs a token, it cannot mint one.
+login first — the script syncs a token, it cannot mint one. The script's `--mongo-url` defaults to
+`$MONGO_URL`, else `mongodb://localhost:27017`; on Windows `localhost` can resolve to `::1` and
+stall against the IPv4-only Docker port, so pass `--mongo-url mongodb://127.0.0.1:27017` if it hangs.
 
 ### The MCP rejects the injected session (future binary version)
 1. Inspect the new schema: `strings` the binary for `json:"…"` tags near session fields.

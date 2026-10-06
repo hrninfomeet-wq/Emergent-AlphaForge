@@ -4,7 +4,8 @@ periods without duplicating bounds in JS.
 
 Pure + host-safe: imports app.optimizer directly (no DB/motor) and
 string-asserts on the router source via the shared contract corpus, rather
-than hitting the DB-backed route (see docs/HANDOFF.md section 3).
+than hitting the DB-backed route. (Written when the host venv had no motor;
+the host .venv now runs the whole suite — docs/HANDOFF.md §3.)
 """
 import sys
 from pathlib import Path

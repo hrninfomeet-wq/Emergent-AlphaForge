@@ -123,8 +123,9 @@ def arm_for(
          - ``spot_exit`` (the live ``spot_exit`` mode — close when the underlying hits
            a level);
          - ``time_stop_minutes`` (close after N minutes from entry);
-         - ``source="auto_live"`` (so the guard's 15:00 IST EOD square applies — manual
-           single-shots are EOD-exempt) and ``deployment_id`` for audit.
+         - ``source="auto_live"`` (marks a deployed entry; the guard's 15:00 IST EOD
+           square applies to every guarded position, manual included) and
+           ``deployment_id`` for audit.
 
     2. BEST-EFFORT places a resting broker OCO (stop+target) so a PC-down position
        still has a broker-side catastrophe net. The OCO levels come from

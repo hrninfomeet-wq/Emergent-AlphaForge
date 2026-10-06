@@ -623,7 +623,8 @@ class LivePositionGuard:
         self._book_by_tsym: Dict[str, Dict[str, Any]] = {}
         self._book_at: Optional[float] = None
         self._book_known: bool = False
-        # 15:00 IST EOD square cutoff for DEPLOYED (source != "manual") positions.
+        # 15:00 IST EOD square cutoff for EVERY guarded position, manual and deployed
+        # (no source is EOD-exempt since the manual 10-minute timer was removed).
         self._eod_square_ist = eod_square_ist
         # Injectable clock (time-stop elapsed + EOD + market hours where the cycle
         # needs "now"). Default → wall-clock UTC.

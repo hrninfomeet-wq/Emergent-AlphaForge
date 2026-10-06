@@ -1,7 +1,15 @@
 # Live Trading — Supervised Real-Money Readback Checklist
 
 > **Purpose:** validate AlphaForge's Flattrade execution path without confusing an
-> accepted order with a filled order. Current model: v0.56.1.
+> accepted order with a filled order. Current model: the v0.56.0 authorization
+> (`mode == "live"`, no per-deployment ARM) plus the 2026-09-26..30 live controls;
+> checked against the code 2026-09-30.
+>
+> **Where this sits:** the market-session runbook is
+> [`LIVE_VALIDATION_PLAN_2026-08.md`](LIVE_VALIDATION_PLAN_2026-08.md) — run its
+> §1 (the Live Deployments controls) and its paper phases first. This checklist is
+> the supervised real-money drill that plan's live phase follows. Route and
+> field reference: [`STRATEGY_DEPLOYMENTS.md`](STRATEGY_DEPLOYMENTS.md) "Live path".
 >
 > **Operator boundary:** only the account owner authorizes live mode, places a
 > manual order, or invokes a square/kill action. An assistant may inspect read-only
@@ -10,8 +18,13 @@
 
 ## The authorization model
 
-- A deployment is authorized only when `mode == "live"`, it is `ACTIVE`, the
-  broker is connected, the live caps are valid, and the time is before 15:00 IST.
+- A deployment is authorized only when `mode == "live"`, it is `ACTIVE`, no
+  operator hold (`risk.live.paused`) is set, the broker is connected, the live
+  caps (account and per-deployment) allow the entry, and the time is before
+  15:00 IST. Just before transmit the executor's fence re-reads the deployment
+  and re-checks status, mode, hold, the cutoff (fresh clock) and the
+  per-deployment caps (`auto_live._recheck_authorization`; refusals read
+  `stale_authorization:*`).
 - `POST /api/deployments/{id}/live/enable` is the only transition into live mode.
   There is no per-deployment ARM record and no `LIVE_GUARD_ARMED` setting.
 - Passing forward validation is the recommended evidence path. A failed,
@@ -20,19 +33,26 @@
   `risk.live.evidence_consent` and does not bypass the controls in this checklist.
 - `LIVE_AUTOPLACE_ARMED=1` is the one machine-level switch for automated entries.
   Keep it `0` until the intended deployment and caps have been reviewed.
-- Software guard exits always transmit for a monitored real position. The resting
-  broker OCO is the PC-down catastrophe backstop.
-- Stop, Stop-all, drift pause, daily-loss halt, and kill pause the deployment and
-  prevent re-entry. Resume returns it to paper; going live again requires a fresh
-  live-enable confirmation.
+- Software guard exits always transmit for a monitored real position. The broker
+  OCO is **off by default** (`LIVE_BROKER_OCO_ENABLED=0` since 2026-09-03), so
+  there is **no PC-down net**: the in-process guard runs only while the app runs.
+  Re-enable the OCO only after §E1.
+- Stop, Stop-all, drift pause, daily-loss halt, and kill pause the deployment,
+  demote it to paper and prevent re-entry. Resume returns it to paper; going live
+  again requires a fresh live-enable confirmation.
+- Three controls keep the deployment live: **Pause** (`/live/pause`, a hold on new
+  entries; the open book stays guarded), **Tighten caps** (`/live/caps`,
+  loosening refused with 409) and **Flatten** (`/live/flatten`, optionally with the
+  hold). None of them re-collects consent.
 
 ## The most important close rule
 
 **Exit submitted is not flat.** A successful order-place response only proves that
 Flattrade accepted an exit instruction. AlphaForge must keep the position in the
-guard registry and keep its OCO intact until authenticated broker reads confirm the
+guard registry (and any OCO intact) until authenticated broker reads confirm the
 position flat. Only then may it cancel any remaining OCO and journal the realized
-close.
+close. The UI says "exit submitted — awaiting fill confirmation", never
+"flattened", and `/live/flatten` always returns `fill_confirmed: false`.
 
 The Stop APIs therefore report separate states:
 
@@ -52,11 +72,20 @@ AlphaForge blotter/journal is CLOSED with realized P&L.
 
 ## A. Before market hours — read-only checks
 
-- [ ] Re-login through **AlphaForge's** Flattrade login. Never call the MCP login or
-  logout; AlphaForge owns the only OAuth redirect and last-login-wins token.
+- [ ] Re-login through **AlphaForge's** Flattrade login, after 06:00 IST (a token
+  issued earlier counts as expired). Never call the MCP login or logout;
+  AlphaForge owns the only OAuth redirect and last-login-wins token.
 - [ ] `GET /api/flattrade/status`: connected, token not expired, correct UID, and
   registered static IP.
-- [ ] Running services match the intended local commit; backend health is OK.
+- [ ] Running services match the intended local commit (rebuilt with
+  `docker compose up -d --build`, never a plain restart); backend health is OK.
+- [ ] Backend log: `live startup recovery: reboot reconcile ... status=ok` (or
+  `status=flat_confirmed`), then `live recovery: completed`;
+  `GET /api/live-broker/recovery-status` agrees. Any other status
+  (`unknown_position_book`, `trade_book_unreadable`) leaves recovery INCOMPLETE and
+  it retries every supervisor tick: the broker books could not be read or
+  confirmed, so OPEN journal rows are unproven — resolve it before trading.
+- [ ] `GET /api/live-broker/preopen-readiness` reports today's verdict (08:45 run).
 - [ ] Broker positions are flat and no unexpected GTT/OCO is resting.
 - [ ] `/live-trading` loads positions, orders, cash, reconcile, Greeks, guard, and
   deployment blotter without console errors.
@@ -96,7 +125,8 @@ The user performs every action in this section.
 - [ ] Review the irreversible confirmation and place once.
 - [ ] Wait for broker **COMPLETE/FILLED**; do not infer a fill from order acceptance.
 - [ ] Confirm the same net quantity in broker positions and AlphaForge.
-- [ ] Confirm the live blotter and Greeks card resolve the contract.
+- [ ] Confirm the live blotter and Greeks card resolve the contract (the Greeks
+  card is priced off the broker book).
 - [ ] Invoke Square once. If the API says submitted, wait; do not submit a second
   sell while an exit is in flight.
 - [ ] Observe any widening/re-price through the same tracked exit order path.
@@ -105,7 +135,26 @@ The user performs every action in this section.
 
 This manual MIS path does not prove deployment auto-entry or the broker OCO.
 
-## E. Stage 3 — deployed one-lot path with OCO
+### D1. Manual ticket — the transmission-unconfirmed branch
+
+`LiveOrderTicket.jsx`'s transmission-unconfirmed branch (`3da45b6`) is unit-pinned
+but has never met a real transmit. Why it exists: a transport failure on the
+approve/redeem call (no response, timeout, dropped connection, or any 5xx) can
+happen AFTER the order reached Flattrade, so treating it as "Place failed" invites a
+duplicate live position. Only a structured 4xx from our backend is a genuine
+refusal. During market hours, with the operator placing one lot, force a lost
+response on the approve call (DevTools offline or throttling) and confirm:
+
+- [ ] the amber **TRANSMISSION UNCONFIRMED** panel renders (not a red failure);
+- [ ] Place stays disabled while the panel is shown (the preview is cleared);
+- [ ] live execution mode is NOT stood down to `LIVE_OFFLINE`;
+- [ ] **Refresh order book** re-reads the broker books, and placing comes back only
+  through the explicit "I've checked — re-enable placing" button plus a fresh
+  preview;
+- [ ] the broker order book shows whether the order actually went out; reconcile
+  before anything else is placed.
+
+## E. Stage 3 — deployed one-lot path (software guard; no broker OCO by default)
 
 The recommended path is to run this only after Stage 2 passes and a paper
 candidate meets the forward-validation policy. If the user chooses the explicit
@@ -122,6 +171,8 @@ not evidence that this is safe or profitable.
 - [ ] User sets `LIVE_AUTOPLACE_ARMED=1` and verifies the execution strip.
 - [ ] On a signal, margin pre-check passes before order transmit.
 - [ ] Entry order fills as NRML; the guard registers the actual filled quantity.
+- [ ] The Live Deployments row shows cap headroom and the binding chip from the
+  `governor` payload, and a `blocked: …` reason whenever it cannot trade.
 - [ ] **No broker OCO is expected.** `LIVE_BROKER_OCO_ENABLED` is 0 by default, so
   `oco_al_id` stays null, the blotter shows a "no broker net" chip and the alert
   rail shows the software-guard-only banner. On the default path that is the PASS
@@ -129,6 +180,11 @@ not evidence that this is safe or profitable.
 - [ ] Software stop/target/time exit submits at most one tracked flatten attempt.
 - [ ] After submission the guard remains present until broker-confirmed flat.
 - [ ] Only after flat confirmation does the final journal completion occur.
+- [ ] Compare journal `realized_pnl` with the broker's own P&L for that trade. The
+  guard journals its close at the last-seen broker `lp` (an estimate), so record
+  a difference as `ESTIMATED_EXIT` rather than a pass; a partial fill is still
+  journaled on the ORDERED quantity by a live guard close (AGENT_TODO O1), so
+  check the filled quantity too.
 
 ### E1. Re-enabling the broker OCO — the pairing readback
 
@@ -168,6 +224,13 @@ so stop and target are swapped.
   book and AlphaForge close loop.
 - [ ] Confirm no orphan OCO remains.
 - [ ] Resume returns paper mode; live requires a fresh authorization.
+- [ ] **Flatten & hold** (`/live/flatten` with `hold`) squares only this
+  deployment, keeps it `mode == "live"` + ACTIVE with the hold set, and lists any
+  position it could not attribute under `unguarded_open_tsyms`. Out of market
+  hours it refuses with 409 `market_closed` and sends nothing.
+- [ ] Stop-all lists every live deployment in `disarmed_live_deployment_ids`; the
+  kill switch lists them in `stop_all.disarmed_deployment_ids`. An empty list
+  while a live deployment exists is a FAIL — stop and investigate.
 
 If the application and broker disagree, the broker book is the exposure truth.
 Use the broker terminal to manage risk, then preserve logs and reconcile—do not try
@@ -175,8 +238,9 @@ repeated blind API closes.
 
 ## G. Optional PC-down proof
 
-This intentionally exposes one real position to its broker-resting OCO and should
-only be attempted after the normal OCO path is proven.
+Only possible with `LIVE_BROKER_OCO_ENABLED=1` after §E1 has passed; on the default
+path there is no broker net to prove, so skip this stage. It intentionally exposes
+one real position to its broker-resting OCO.
 
 - [ ] With one NRML position and verified resting OCO, stop only the backend.
 - [ ] Confirm the OCO remains visible at the broker while AlphaForge is offline.
@@ -188,7 +252,8 @@ only be attempted after the normal OCO path is proven.
 
 - [ ] Account flat; no pending or rejected close; no resting orphan OCO.
 - [ ] All AlphaForge live rows CLOSED with realized P&L.
-- [ ] All deployments paper/paused; `LIVE_AUTOPLACE_ARMED=0`.
+- [ ] All deployments paper/paused (live mode persists across sessions, so end a
+  live day by explicitly disabling it); `LIVE_AUTOPLACE_ARMED=0`.
 - [ ] Save broker order IDs, timestamps, relevant logs, observed slippage, margin,
   and any divergence in the market-validation record.
 

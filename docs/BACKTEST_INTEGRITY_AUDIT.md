@@ -151,7 +151,8 @@ belong inside a change scoped to one research candidate.
 `smc_liquidity_sweep_fvg`,
 `squeeze_expansion_breakout`, `vwap_mean_reversion`, `vwap_pullback_scalp`.
 
-**Reproduce the count** (must print `11`). Iterate EVERY attribute of each
+**Reproduce the count** (must print `12`, the count
+`test_the_register_count_matches_reality` pins). Iterate EVERY attribute of each
 module — taking the first object that has a `parameter_schema` picks up the
 imported `StrategyBase` and silently prints an empty list:
 
@@ -187,9 +188,11 @@ the failed survival screen carried as an acknowledgment warning.
 **REFUTED — do not re-raise:** #13 (`search_exit_controls` no-op grid) · #21 was
 refuted by me and later **CONFIRMED** and fixed — see §7.
 
-**Code handoff audit complete; broker validation still absent.** Promotion/deployment
-competency and resume/live-enable revalidation were audited with the HIGH closure. No live
-order has ever occurred, so real broker behavior remains unvalidated; see `AGENT_TODO.md`.
+**Code handoff audit complete.** Promotion/deployment competency and resume/live-enable
+revalidation were audited with the HIGH closure. When this was written (2026-08-01) no live
+order had occurred. Live orders have run since (13 `live_trades` rows, 2026-08-04 → 2026-09-16,
+per `docs/HANDOFF.md` §2), but the live controls shipped 2026-09-26..30 have not yet run in a
+market session; see `docs/LIVE_VALIDATION_PLAN_2026-08.md`.
 
 ## 6. Strategy verdict (do not re-litigate without new data)
 
@@ -264,7 +267,7 @@ strategy tuned across this boundary is fitting an artifact.**
 ### What was done
 
 `backend/app/session_spec.py` is the single date- and segment-aware source of
-session bounds, keyed on `CAS_EFFECTIVE_DATE`. Auction bars are flagged
+session bounds, keyed on `CAS_EFFECTIVE_ISO` (`"2026-08-03"`). Auction bars are flagged
 `in_cas_window` and **excluded from every indicator's input** (state indicators
 hold their last real value; event markers read empty), while remaining in the
 candle series because the 15:29 bar carries the official close. Live guards now
@@ -325,6 +328,35 @@ So the real exposure was never the dead auction window — it was **the first ~7
 minutes of every trading day from 2026-08-03 onward**, covering the whole morning
 trend-development window the strategies actually trade. Anything ATR-scaled — stop
 sizing, volatility gates, regime classification, breakout thresholds — was affected.
+
+### Session mechanics (for reference)
+
+The cash auction runs in phases: 15:15–15:20 transition (no orders); 15:20–15:25 order
+entry I (market + limit); 15:25–15:30 order entry II (limit only, random close between
+15:28 and 15:30); 15:30–15:35 matching. For F&O-eligible stocks the official close changed
+from the 15:00–15:30 VWAP to the auction equilibrium price. Non-F&O cash stocks are
+unchanged at 09:15–15:30.
+
+`session_spec(iso_date, segment)` returns spot 09:15–15:30 / 375 bars (auction flagged
+15:15–15:30 from 2026-08-03) and options 09:15–15:40 / 385 bars from 2026-08-03. Any segment
+other than `"options"` is treated as spot, on purpose: a wrong or unknown segment narrows a
+caller's window rather than widening it.
+
+### Deliberately not changed — do not "fix" these
+
+| Left as is | Why |
+|---|---|
+| `market_context.time_of_day_bucket` is not CAS-aware | It takes only an `HH:MM` string, no date, so a CAS bucket would retroactively relabel pre-2026-08-03 trades. No entry lands in the window: the entry window ends 14:50 by default and can be widened only to 15:00 (`entry_window.HARD_LATEST`). |
+| `nse_calendar.SESSION_CLOSE_MIN` / `REGULAR_SESSION_CANDLES` stay 15:30 / 375 | Correct for cash/index; both carry pointer comments to `session_spec`. |
+| `warehouse_ohlc` and `live_candle_roller` keep their 15:30 bounds (`SESSION_END_MINUTE_EXCLUSIVE`) | Both are index-only paths, where 15:30 is right. |
+| No CAS entry gate | Entries already stop by 14:50 (default) and 15:00 at the latest, well before the 15:15 auction. |
+
+**Impact on stored results:** none for premium-native strategies, because
+`premium_momentum_backtest` bounds exits at `min(session_end_ts, exit_time bar)` and EXP2's
+`exit_time` (15:13) resolves first. Presets with `exit_time` unset were bounded by the last
+spot bar: 23:47 on 2026-05-29 (an off-session artifact), now 15:29, because
+`warehouse.load_candles_df` filters off-session rows at read (`session_rows_mask`;
+`include_off_session=True` opts out for repair tooling).
 
 ### Resolved — the BANKNIFTY gap
 

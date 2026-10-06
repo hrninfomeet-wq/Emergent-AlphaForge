@@ -19,9 +19,9 @@ research verdicts below. The latest work, the Live Deployments uplift of 2026-09
 (reconcile from the trade book, the caps governor, truthful status, a server trading clock, the
 tighten-caps and flatten routes, restart attribution, signal retirement), is unit- and
 mutation-tested but **has not yet run in a market session**. The next gate is that market-session
-validation on the Flattrade-registered static IP: the checklist is at the top of
-[docs/AGENT_TODO.md](docs/AGENT_TODO.md), followed by
-[docs/LIVE_VALIDATION_PLAN_2026-08.md](docs/LIVE_VALIDATION_PLAN_2026-08.md). The resting broker
+validation on the Flattrade-registered static IP. The checklist is
+[docs/LIVE_VALIDATION_PLAN_2026-08.md](docs/LIVE_VALIDATION_PLAN_2026-08.md) §1, followed by the
+rest of that plan. The gate stays open until the plan's §11 records an outcome. The resting broker
 OCO is **off by default** (`LIVE_BROKER_OCO_ENABLED=0`), so the in-process software exit guard is
 the only protection for an open position, and it runs only while the app runs. Detail:
 [docs/HANDOFF.md](docs/HANDOFF.md) §2.
@@ -70,7 +70,9 @@ docker compose ps                # alphaforge_mongo / alphaforge_backend healthy
 | Backend | `http://localhost:8001/api` (every route is under `/api`; health at `/api/health` returns `{"db":"ok"}`) |
 | MongoDB | `127.0.0.1:27017`, container `alphaforge_mongo`, named volume `mongo_data` (no auth; loopback only) |
 
-**Backend code is baked into the image.** Only `backend/app/strategies/plugins` is bind-mounted,
+**Backend code is baked into the image.** Only `backend/app/strategies/plugins` is bind-mounted
+(plus the machine-specific `C:/Users/haroo/.flattrade` -> `/host-flattrade`, the Flattrade MCP
+session-sync target),
 so after changing backend code run `docker compose up -d --build` (with no open live position:
 recreating the backend pauses the guard). A plain restart, or
 `start-app.bat` without `--rebuild` while the backend is healthy, keeps running the old code.
@@ -103,7 +105,7 @@ Never run `docker compose down -v`: it deletes the warehouse volume.
 | Doc | Purpose |
 |---|---|
 | [docs/HANDOFF.md](docs/HANDOFF.md) | **START HERE.** Current state, traps, run and test, standing conventions, where to go deep |
-| [docs/AGENT_TODO.md](docs/AGENT_TODO.md) | The only live work board; the next market-session checklist is at the top |
+| [docs/AGENT_TODO.md](docs/AGENT_TODO.md) | The only live work board. The next market-session checklist is [docs/LIVE_VALIDATION_PLAN_2026-08.md](docs/LIVE_VALIDATION_PLAN_2026-08.md) §1, which AGENT_TODO points to |
 | [docs/agent-takeover-prompt.md](docs/agent-takeover-prompt.md) | Paste-in prompt for a new AI agent |
 | [docs/PROJECT_OVERVIEW.md](docs/PROJECT_OVERVIEW.md) | What the app is and the research → deploy workflow at a glance |
 | [CHANGELOG.md](CHANGELOG.md) | What shipped, with what was measured |

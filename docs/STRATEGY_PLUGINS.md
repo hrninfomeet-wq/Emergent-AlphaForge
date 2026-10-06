@@ -1,6 +1,9 @@
 # Writing a Custom Strategy Plugin
 
-Drop a single Python file into `backend/app/strategies/plugins/`. It will be auto-discovered on backend restart and appear in the **Strategy Library** + **Backtest Lab** + **Optimizer** automatically.
+Drop a single Python file into `backend/app/strategies/plugins/`. It is auto-discovered at backend start (or on `POST /api/strategies/reload`, see below) and appears in the **Strategy Library** + **Backtest Lab** + **Optimizer** automatically.
+
+> Checked against the code on 2026-09-30. For the deployment side (paper/live, caps, signal
+> lifecycle) see [Strategy Deployments](STRATEGY_DEPLOYMENTS.md).
 
 Important: a successfully loaded, non-retired plugin that supports the current `1m` evaluator can be deployed directly from Strategy Library. AlphaForge freezes the selected instrument, timeframe, complete parameter set, strategy version, and source SHA into an immutable deployment snapshot. Saving a preset/backtest first is still the recommended evidence workflow but is no longer a technical prerequisite. An unregistered, failed-to-load, retired, or non-1m plugin is not compatible. Editing deployed plugin code later auto-pauses its deployments through drift detection. See [Strategy Deployments](STRATEGY_DEPLOYMENTS.md).
 
@@ -122,9 +125,43 @@ The returned dict is available in every `evaluate()` call as `ctx["orb_hi"]`, `c
 
 Helpers for common session-level calculations (session open, first-bar typical price, etc.) live in `app/strategies/session_features.py`. See `opening_range_breakout.py` for a worked example of the full pattern.
 
-## Restart Backend
+## The live window: declare `live_lookback_bars`
 
-The plugins directory is volume-mounted into the backend container (`docker-compose.yml`), so a restart is enough — no image rebuild:
+A backtest sees the whole history; a paper/live deployment sees only a rolling window of
+`max(200, live_lookback_bars)` closed 1-minute bars (`StrategyBase.live_lookback_bars`, default
+200, hard cap 1,000 — a larger declaration is refused and the deployment skips the bar rather than
+evaluating on a truncated frame). Fewer than 50 loaded bars skips the bar
+(`insufficient_candles`). A window shorter than the declared `live_lookback_bars` (a young
+warehouse) is still evaluated, but the result carries a `degraded_window` note and a warning is
+logged (`deployment_evaluator.required_bars_for` / `is_window_sufficient`).
+
+Anything **session-anchored** — `vwap` (computed per `session_date` over the frame it is given),
+an opening range, the session high/low so far, the prior session's close — is computed over that
+window. With 200 bars the window starts mid-session after about 12:35, so the anchor is wrong and
+the live signal diverges from the backtest with nothing looking broken (a measured session-VWAP
+anchor error of 2.12 ATR once inverted nine shipped strategies; fixed in `fc424a1`). If your
+strategy uses a session anchor, set:
+
+```python
+    live_lookback_bars = 400   # a full 375-bar session plus warm-up
+```
+
+Most shipped strategies declare 400. A baseline longer than the 1,000-bar cap (e.g. 20 sessions)
+cannot live in the strategy at all: it belongs in the data layer, as a `required_data` column
+(below), whose query window is independent of the strategy's frame.
+
+## Restart Backend (or reload)
+
+The plugins directory is volume-mounted into the backend container (`docker-compose.yml`), so no
+image rebuild is needed for a plugin. Either re-scan without a restart:
+
+```bash
+curl -X POST http://127.0.0.1:8001/api/strategies/reload     # -> {"count": <strategies loaded>}
+```
+
+`POST /api/strategies/reload` clears the registry and re-imports every plugin module fresh
+(dropping it from `sys.modules` first), so it picks up added, edited and deleted plugin files.
+Or restart the backend:
 
 ```bash
 docker compose restart backend
@@ -132,9 +169,13 @@ docker compose logs --tail 20 backend
 # look for: "Strategy registered: my_strategy_v1 (My Strategy v1)"
 ```
 
+A restart is enough ONLY for plugins: everything else under `backend/app` is baked into the
+image, so any other backend change needs `docker compose up -d --build`.
+
 If you see `Failed to import strategy my_strategy` or `Failed to instantiate MyStrategy`, check the backend log for the full Python traceback. The Strategy Library page also surfaces failed plugins with the error message.
 
-**No hot-reload at startup.** Plugin discovery runs once at process start; if you edit a file that is already loaded you need a full backend restart to pick up the changes. In-app reload (without a restart) will arrive with the strategy authoring tool.
+Editing a plugin that a deployment uses changes its source SHA, and the deployment auto-pauses on
+drift until it is re-pinned (`POST /deployments/{id}/repin-source`).
 
 ## Available Indicators (pre-computed)
 
@@ -150,7 +191,7 @@ Every `row` provided to `evaluate()` already has these columns computed by `prec
 | `atr`, `atr_avg` | Average True Range (Wilder) + 100-bar rolling mean |
 | `adx` | ADX trend strength |
 | `chop` | Choppiness Index (>60 = ranging, <40 = trending) |
-| `vwap` | Anchored session VWAP (falls back to typical-price MA for indices) |
+| `vwap` | Session-anchored VWAP, computed per `session_date` over the frame it is given; with zero volume (index spot) it is the session's expanding mean of typical price. Live, that frame is the rolling window — see "The live window" above |
 | `fvg` | "UP" / "DOWN" / None (Fair Value Gap at this bar) |
 | `is_swing_high`, `is_swing_low` | Boolean swing detection (5-bar default) |
 | `session_date`, `ist_time` | For session-anchored logic |
@@ -217,6 +258,34 @@ Per-bar candle geometry, computed for every bar (no params, no carry-forward):
 
 If you need a column that isn't here, add it to `app/indicators.py:precompute_all_indicators()`.
 
+### Warehouse-backed data columns (`required_data`)
+
+These are NOT computed from the spot frame: each is a separate warehouse series joined onto the bar
+AS-OF the bar's own timestamp (at or before, never after) at load time, before indicator enrichment
+(`app/data_columns.py`, fetched by `app.warehouse.attach_required_data`). A strategy gets them only
+by declaring them — an empty `required_data` means no join runs and the frame is byte-identical:
+
+```python
+    required_data = ["ce_volume_z", "pe_volume_z"]
+```
+
+Declaring a name the engine cannot supply raises `DataColumnError`. Where no print reaches a bar
+within the staleness bound the value is **NaN, never 0**, so guard for NaN in `evaluate()`.
+
+| Column | Description |
+|---|---|
+| `vix` | India VIX (INDIAVIX) close, as-of this bar |
+| `ce_volume`, `pe_volume` | ATM call / put bar volume, nearest upcoming expiry |
+| `ce_oi`, `pe_oi` | ATM call / put open interest printed on this bar |
+| `ce_oi_delta`, `pe_oi_delta` | Change in ATM OI since the previous bar of the same contract (NaN on a session's first bar) |
+| `ce_volume_z`, `pe_volume_z`, `ce_oi_delta_z`, `pe_oi_delta_z` | Causal z-scores against a 20-session distribution for the same time-of-day minute (NaN with fewer than 10 usable prior sessions) |
+| `atm_volume_median_20d` | Causal 20-session median of ATM straddle bar volume, for a liquidity floor |
+
+The option-flow columns are built in `app/option_flow.py`; contracts are joined by identity
+(underlying + expiry + strike + side + ts), never by token. Spot index volume is always 0, so there
+is no relative-volume filter on spot — use these instead. Examples: `sensex_vwap_mean_reversion.py`,
+`atm_premium_flow_scalp.py`.
+
 ## Signal Fields Reference
 
 `Signal` is a dataclass — every field not listed here defaults to `None` (optional). The engine reads:
@@ -238,7 +307,7 @@ If you need a column that isn't here, add it to `app/indicators.py:precompute_al
 
 ## Risk Hints Drive Live Exits
 
-The exit fields you return on `Signal` are not just backtest inputs — in forward testing the deployment evaluator captures them as `risk_hints` on every journaled signal, and auto-created paper trades use them as live exit levels:
+The exit fields you return on `Signal` are not just backtest inputs — in forward testing the deployment evaluator captures them as `risk_hints` on every journaled signal, and auto-created paper trades (`paper_auto.compute_auto_risk_levels`) and live orders (`auto_live.resolve_live_exit_plan`) use them as exit levels:
 
 | Signal field | Meaning | Live behaviour (auto paper trade) |
 |---|---|---|
@@ -246,7 +315,7 @@ The exit fields you return on `Signal` are not just backtest inputs — in forwa
 | `target_pct` / `stop_pct` | Exit as % of the option entry premium | Premium stop/target on the trade itself (`target_hit`/`stop_hit`) |
 | `time_stop_minutes` | Maximum holding time | Captured AND enforced live (reason `time_stop`, backtest parity) |
 
-Strategy hints take priority over the deployment's `auto_paper_target_pct`/`auto_paper_stop_pct` fallbacks. If your strategy returns no exit fields and the deployment sets no fallbacks, an auto trade only closes at the 15:00 IST square-off — so always return explicit exits for SCALP/INTRADAY modes.
+Strategy hints take priority over the deployment's `auto_paper_*` fallbacks (points before percent). If your strategy returns no exit fields and the deployment sets no fallbacks, a paper trade only closes at the 15:00 IST square-off, and a live position gets only the 50% catastrophe premium stop the live sink seeds so the guard can register it — so always return explicit exits for SCALP/INTRADAY modes.
 
 ## Optional Base Classes
 
@@ -258,7 +327,7 @@ For advanced patterns you can subclass beyond `StrategyBase`:
 ## Test Your Plugin Quickly
 
 ```bash
-curl -X POST http://localhost:8001/api/backtest/run \
+curl -X POST http://127.0.0.1:8001/api/backtest/run \
   -H "Content-Type: application/json" \
   -d '{
     "instrument":"NIFTY",
@@ -275,17 +344,24 @@ Or open the UI → Backtest Lab → pick your strategy from the dropdown.
 
 ## Then Optimize It
 
-Open the **Optimizer** page → pick your strategy → method=bayesian → objective=risk_adjusted → click Auto-Optimize. The system finds the best params automatically.
+Open the **Optimizer** page → pick your strategy → method=bayesian → objective=risk_adjusted → click Auto-Optimize. Keep the default `evaluation_mode: option_rerank` and judge a result on its option-rupee re-rank, never the spot objective: across this project spot-positive winners have repeatedly been option-negative. Before believing any optimizer winner read [`BACKTEST_INTEGRITY_AUDIT.md`](BACKTEST_INTEGRITY_AUDIT.md) and hold out an untouched window.
 
 ## Examples to Study
 
 Look at the shipped strategies for working patterns — `confluence_scalper.py`
 (the one permanent built-in) lives in `backend/app/strategies/builtin/`; the
-other 11 ship as regular plugins in `backend/app/strategies/plugins/` so they
-can be retired AND deleted like any custom strategy:
+other 19 ship as regular plugins in `backend/app/strategies/plugins/` so they
+can be retired AND deleted like any custom strategy (use the Strategy Library's
+Retire/Delete lifecycle, not a file delete, for a strategy with saved runs or
+deployments). None of them has a demonstrated after-cost edge; they are working
+patterns, not recommendations.
 - `builtin/confluence_scalper.py` — multi-factor scoring with VWAP inhibit + regime gate
 - `plugins/opening_range_breakout.py` — uses `session_precompute` to set `ctx["orb_hi"]` / `ctx["orb_lo"]`
 - `plugins/smc_liquidity_sweep_fvg.py` — uses `ctx["history_df"]` for lookback
 - `plugins/vwap_mean_reversion.py` — regime-conditional (only in chop)
 - `plugins/gap_fade.py` — `AdaptiveStrategyBase` example with `session_precompute`
-- `opening_range_regime_router.py` — `ScenarioRoutedStrategyBase` example
+- `plugins/opening_range_regime_router.py` — `ScenarioRoutedStrategyBase` example
+- `plugins/explosive_reversal_atr.py` — exits scaled by ATR rather than absolute index points (point-bounded exits do not transfer between NIFTY and SENSEX)
+- `plugins/sensex_vwap_mean_reversion.py`, `plugins/atm_premium_flow_scalp.py` — declare `required_data` option-flow columns
+- `plugins/dte_opening_shock_breakout.py` — needs non-default run config (entry window end, pinned `signal_threshold`, BFO transaction rate); see [`DTE_OPENING_SHOCK_STRATEGY.md`](DTE_OPENING_SHOCK_STRATEGY.md)
+- `plugins/premium_momentum.py` — premium-native: its `evaluate()` is inert and the premium session engine drives it (see STRATEGY_DEPLOYMENTS.md, "premium_momentum: a lock-driven deployment variant")

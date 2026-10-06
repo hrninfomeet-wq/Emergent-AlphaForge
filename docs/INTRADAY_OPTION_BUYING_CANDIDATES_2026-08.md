@@ -777,7 +777,7 @@ replace the assumption with a measurement.
 
 An earlier revision of this document listed the `detect_drift` call-site bypass in
 `deployment_evaluator.py` as an open safety gap, on the strength of the "Known open
-(deliberate)" note in [`HANDOFF.md`](HANDOFF.md) §2.0e. **That was wrong. The defect is
+(deliberate)" note in [`HANDOFF.md`](HANDOFF.md) §2.0e (since 2026-09-30: traps T10/T11). **That was wrong. The defect is
 closed**, by `6e6e1cc` — which is the head of `main` and the base of this branch.
 
 Verified in the current source (`deployment_evaluator.py:443-460`): the call site no longer
@@ -792,7 +792,7 @@ against the changed code.
 point for every new engineer and agent, and it currently describes a closed live-safety
 defect as deliberately open. A reader who trusts it will either go hunting for a
 non-existent bug or, worse, believe an unpinned deployment can still evaluate. Update that
-§2.0e note to point at `6e6e1cc`.
+§2.0e note (now HANDOFF T10/T11) to point at `6e6e1cc`.
 
 **The generalisable lesson, and the reason this is in the report at all:** I propagated a
 stale claim from a summary document into an audit finding without checking the code — in a

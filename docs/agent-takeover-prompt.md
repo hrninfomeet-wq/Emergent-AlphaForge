@@ -23,8 +23,9 @@ live → the software exit guard manages the position.
 1. **`docs/HANDOFF.md`**: start here. §1.1 is where everything lives and §1.2 the four core flows,
    §2 is the current state (§2.5 lists the traps that cost previous agents hours, §2.6 is the
    latest work), §3 is run and test, and §4 is the full set of standing conventions.
-2. **`docs/AGENT_TODO.md`**: the only live work board. The next market-session checklist is at the
-   top. Do not invent priorities; ask the operator rather than adding scope.
+2. **`docs/AGENT_TODO.md`**: the only live work board. The next market-session checklist is
+   `docs/LIVE_VALIDATION_PLAN_2026-08.md` §1, and AGENT_TODO points to it. Do not invent
+   priorities; ask the operator rather than adding scope.
 3. **`docs/BACKTEST_INTEGRITY_AUDIT.md`**: read before trusting any number the app produces.
 4. `learning_log.md` (dead ends and lessons), then `docs/DEVELOPER_GUIDE.md` and
    `docs/ARCHITECTURE.md` as needed. `CLAUDE.md` / `AGENTS.md` load automatically.
@@ -56,9 +57,10 @@ live → the software exit guard manages the position.
     ACTIVE → EXITED. `expire_unactioned_signals` (at boot and at 15:00) retires CONFIRMED signals
     that were never acted on to AUDITED with reason `unactioned_bar_passed`.
 - **None of the live parts has run in a market session.** The next gate is the market-session
-  validation at the top of `docs/AGENT_TODO.md` (a reminder fires 2026-10-06 09:00 IST). The
-  operator runs it on the Flattrade-registered static IP. After it comes
-  `docs/LIVE_VALIDATION_PLAN_2026-08.md`.
+  validation in `docs/LIVE_VALIDATION_PLAN_2026-08.md`: §1 (U1–U8) first, then the rest of the
+  plan. The operator runs it on the Flattrade-registered static IP. The reminder fired 2026-10-06
+  09:00 IST. The gate stays open until the plan's §11 records an outcome. Realized-P&L
+  differences read `ESTIMATED_EXIT`, not PASS (U7 / L6).
 - **Next development:** E1, the durable live execution episode ledger with a fail-closed admission
   reservation (`docs/AUTONOMY_DEVELOPMENT_PLAN_2026-08.md`). Then E2 (experiment/cohort ledger),
   then the Stage 2 Dashboard v2 built on it.

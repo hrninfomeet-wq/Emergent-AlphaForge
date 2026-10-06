@@ -4,7 +4,48 @@
 untouched 2026 holdout at honest friction — and none beats the plain both-legs baseline
 there.** Phase 5B (live multi-leg execution) is therefore NOT justified by this campaign.
 
-## Method (pre-registered in `docs/superpowers/plans/2026-07-14-premium-momentum-phase5a2-overlays-edge-hunt.md` §5)
+> **Status: CLOSED, binding.** Do not re-run without a never-touched forward window (the
+> revival criterion is at the end). Phase 5B was later built anyway as a **pure capability,
+> by operator decision** (CHANGELOG `[0.55.0]`); this verdict travels with every multi-leg
+> deployment as the informational `premium_edge_verdict` advisory, which never gates. The
+> advisory text in `backend/app/forward_metrics.py` cites this file by name
+> (`tests/test_premium_momentum_advisory_ui.py` pins it), so do not rename it.
+
+## Method
+
+### Pre-registered campaign (written 2026-07-14, before the run)
+
+The grids and the gate were fixed in the Phase 5A.2 plan before any config was scored. That
+plan was retired in the 2026-09-30 docs cleanup; its campaign section is reproduced here.
+
+- **Windows.** SEARCH 2024-11-25 → 2025-12-31; the tuner's internal chronological
+  train/validation split does the selection. HOLDOUT 2026-01-01 → 2026-07-10, touched once,
+  by the finalists only.
+- **Stage 1 (structure).** Both-legs fixed (the 0.54.0 finding). `momentum_pct` {10, 15, 20, 25}
+  × `stop_pct` {10, 15, 20, 25, 30} × trail pct pair {none, 5/5, 10/5} × `target_pct`
+  {none, 25, 50}. Reference 09:31, ITM1, costs 1%/side, no lazy legs.
+- **Stage 2 (time).** Top-5 re-tuned at `reference_time` {09:46, 10:01, 10:16} ×
+  `entry_cutoff` {11:30, 13:00, 14:40} × `exit_time` {14:30, 15:13, none}.
+  `reference_time` is deliberately NOT a tunable key (it changes the preload's strike locks),
+  so it was swept across separate tune calls.
+- **Stage 3 (overlays).** Top-5 × day-stop loss {₹3k, ₹5k, ₹8k} / profit {₹4k, ₹8k, none}
+  per 2 lots × VIX gate {none, ≥12, ≥14, ≤20, 12–20}. VIX rows ran on the 2025-06+
+  subwindow only, with N reported.
+- **Stage 4 (contingency).** Lazy legs (mom {10, 15, 20}, stop {10, 15}, trail 5/5) added to
+  the top-3; lazy had to out-rank no-lazy to survive.
+- **Stage 5 (verdict).** Top-3 finalists get one HOLDOUT run at friction 0.5 / 1.0 / 1.5%
+  per side, plus an entry-hour P&L histogram (informational).
+- **GATE for 5B.** A finalist must be net-positive on the holdout at 1%/side AND
+  non-catastrophic at 1.5%/side AND beat plain both-legs on the holdout. Otherwise report
+  honestly and return the 5B build decision to the user.
+- **Caveat on record.** The EXP2-default configs A/B/C had already seen the holdout in the
+  0.54.0 verdict; configs new to this campaign saw it fresh.
+
+The overlay params (`session_max_loss_rupees`, `session_max_profit_rupees`, `vix_min`,
+`vix_max`) were deliberately API/tuner-only: the `/premium-momentum` page has no fields for
+them (still true: `frontend/src/pages/PremiumMomentum.jsx` does not reference them).
+
+### Split as run
 
 Three-way chronological split — the standard discipline:
 
@@ -66,12 +107,14 @@ single rupee of friction.
 Buying option premium AFTER a 10-25% spike pays the momentum-chaser's tax: entries are
 systematically into decaying, spread-widened premium. Across ~600 configurations of
 structure, timing, session overlays, VIX regimes and reversal legs, no variant paid its
-own friction out-of-sample. This matches [[option-buying-edge-hunt-2026]]'s earlier
-finding that the bottleneck is directional signal quality, not exit engineering.
+own friction out-of-sample. This matches the earlier survival-gated optimizer finding
+(CHANGELOG `[0.45.x]`: no deployable survivor across three strategies and several NIFTY
+windows) that the bottleneck is directional signal quality, not exit engineering.
 
 **Do not build Phase 5B live execution for this family on current evidence.** The full
-capability to keep hunting stays in the app (the `/premium-momentum` page's honest
-tuner now sweeps 16 tunable keys including day-stop, VIX gates and session windows) —
+capability to keep hunting stays in the app (`POST /api/premium-momentum/tune` accepts 22
+grid keys, `TUNABLE_KEYS` in `routers/premium_momentum_routes.py`, including the day-stop,
+VIX-gate and session-window overlays; the `/premium-momentum` page exposes only part of that grid) —
 the kill-criterion for reviving 5B is unchanged and pre-registered: a config
 net-positive on a NEVER-TOUCHED forward window at ≥1%/side friction that also beats
 plain both-legs there.
