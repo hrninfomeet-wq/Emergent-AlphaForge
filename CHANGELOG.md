@@ -18,6 +18,12 @@ Each finding was verified against the code first, then fixed test-first (one com
   then asks the ORDER BOOK (at most every 5 s): dead with zero fill (CANCELED/REJECTED, any spelling) → age out +
   journal `never_filled`; still working → cancel (at most once per minute) but keep guarding until the book confirms
   it dead, so a fill racing the cancel is never unwatched; any fill / unreadable book / order not visible → hold.
+- **The known-book never-filled age-out no longer drops on the cancel REQUEST.** Past its 40-miss grace on a
+  non-empty position book the guard sent the entry's cancel, cancelled its OCO, journalled `never_filled` and
+  de-registered it in the same cycle — a fill that raced the cancel was a live position with no software guard and
+  no OCO. It now goes through the same order-book resolver as the flat-account path: cancel and keep guarding (OCO
+  resting) until the order book shows it CANCELED/REJECTED with zero fill, then age out exactly once; an order
+  already dead is aged out without spending a cancel; any fill / unreadable book / order not visible → hold.
 - **Key-wide ORDER-API budget with an exit reserve** (`app/live/order_budget.py`). Flattrade allows 10/s AND 40/min
   order calls per API key; the only local limiter was `RateThrottle` (9/s token bucket, deployed entries only, no
   per-minute window), while cancels/modifies/exits/GTT-OCO from the guard, kill switch and auto-square were never

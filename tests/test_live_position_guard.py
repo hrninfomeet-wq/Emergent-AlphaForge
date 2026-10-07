@@ -271,10 +271,16 @@ class TestGuardCycle:
 
     def test_never_filled_dropped_after_grace(self):
         # never-filling entry ages out after max_pending_misses KNOWN-book reads
-        # (the book carries another scrip, so each read is authenticated-known).
+        # (the book carries another scrip, so each read is authenticated-known)
+        # once the ORDER BOOK shows it dead with nothing filled.
+        class _RejectedEntryClient(_FakeClient):
+            async def order_book(self):
+                return [{"norenordno": "ORD1", "tsym": _TSYM,
+                         "status": "REJECTED", "fillshares": "0"}]
+
         r = LiveMonitorRegistry()
         _registered(r)
-        client = _FakeClient([_pos(netqty=10, lp=50.0, tsym="OTHERSCRIP")])
+        client = _RejectedEntryClient([_pos(netqty=10, lp=50.0, tsym="OTHERSCRIP")])
         rec = _Recorder()
         g = LivePositionGuard(registry=r, client_factory=lambda: _aw(client),
                               square_fn=rec.square_fn, max_pending_misses=3,
