@@ -2,15 +2,18 @@
 
 Execution model (docs/scalping/04-execution-and-protection.md §6):
 * An order sent at t arrives at the exchange at t + latency (default 140 ms = measured p50 of the
-  21 real Flattrade PlaceOrder round-trips, 65-320 ms). It can only match quotes observed AFTER
-  arrival — never the quote the decision was made on (the feed is ~1 Hz, so in practice the next
-  snapshot). This is the conservative choice; it costs the 1-s quote drift a real order also pays.
-* Marketable matching walks the 5-level book on the opposite side, taking at most
-  ``depth_take_ratio`` of each displayed level (others compete for the same liquidity). Shortfall
-  stays working at the limit and keeps matching later snapshots while marketable -> partial fills.
-* NO passive fills by default: a resting buy fills only when an offer at/below it appears. (M5
-  measured that passive fills are adversely selected; optimistic fills would flatter results.)
-* Exchange LPP: a limit beyond reference +/- max(40 %, Rs 20) is rejected, reference = last LTP.
+  21 real Flattrade PlaceOrder round-trips, 65-320 ms). Its FIRST match is against the FIRST snapshot
+  ingested at/after arrival — never the quote the decision was made on (the feed is ~1 Hz).
+* First match = taker: walk the 5-level book on the opposite side, taking at most ``depth_take_ratio``
+  of each displayed level (others compete for the same liquidity). Each snapshot is consumed at most
+  once per order (a snapshot repeated because no new tick arrived adds no liquidity).
+* Remainder RESTS at its limit. A resting order fills only at ITS OWN limit price, when a later snapshot
+  shows the opposite side crossing it (an incoming aggressor trades at the resting price), up to the
+  crossing quantity x ``depth_take_ratio`` -> partial fills.
+* NO passive fills by default (a trade printing through the resting price does not fill it). M5
+  measured that passive fills are adversely selected; optimistic fills would flatter results.
+* Exchange LPP: a limit beyond reference +/- max(40 %, Rs 20) is rejected; reference = the CURRENT
+  market quote's LTP (``set_reference``), not a quote cached from an earlier order.
 * Cancels arrive after ``cancel_latency_ms``; fills before arrival stand (the cancel/fill race).
 * Fault injection (seeded): definite rejects, indeterminate submits (order exists or not, 50/50),
   dropped and duplicated order updates. ``reconcile()`` always returns broker truth.
@@ -64,9 +67,20 @@ class SimBroker:
 
     # ------------------------------------------------------------------ market input
     def on_quote(self, q: Quote, depth: Optional[List[dict]] = None) -> None:
+        """Feed one snapshot (in ingest order). Matches working orders on that contract immediately."""
         self.last_quote[q.instrument_key] = q
         if depth is not None:
             self.depth[q.instrument_key] = depth
+        for o in self.orders.values():
+            if o["status"] != "OPEN" or o["key"] != q.instrument_key:
+                continue
+            if o["cancel_at_ms"] is not None and q.ingest_ms >= o["cancel_at_ms"]:
+                self._cancel_now(o)
+                continue
+            if q.ingest_ms < o["arrive_ms"] or q.ingest_ms <= o["last_match_ingest"]:
+                continue                                   # not yet at the exchange / already consumed
+            o["last_match_ingest"] = q.ingest_ms
+            self._match(o, q, q.ingest_ms)
 
     def ref_quote(self, key: str) -> Optional[Quote]:
         return self._ref.get(key) if hasattr(self, "_ref") else None
@@ -76,6 +90,7 @@ class SimBroker:
         self._ref = quotes
 
     def _levels(self, key: str, side: str) -> List[Tuple[float, int]]:
+        """Opposite-side levels to consume: asks for a buy, bids for a sell."""
         q = self.last_quote.get(key)
         if q is None:
             return []
@@ -103,7 +118,7 @@ class SimBroker:
         self._n += 1
         nord = f"SIM{self._n:08d}"
         if exists:
-            q = self.last_quote.get(a.instrument_key) or self.ref_quote(a.instrument_key)
+            q = self.ref_quote(a.instrument_key) or self.last_quote.get(a.instrument_key)
             if q is not None:
                 lo, hi = lpp_bounds(q.ltp or q.mid)
                 if (a.side == "B" and a.price > hi) or (a.side == "S" and a.price < lo):
@@ -115,7 +130,8 @@ class SimBroker:
                     return SubmitResult(False, ack_ms, norenordno=nord,
                                         reject_reason=f"ORDER PRICE [{a.price}] IS BEYOND LPP LIMIT")
             self.orders[a.cid] = self._doc(a, nord, now_ms, "OPEN")
-            self._emit(ack_ms, self._om(self.orders[a.cid]))
+            # OPEN is reported when the order is at the exchange, not when the broker acknowledged it
+            self._emit(self.orders[a.cid]["arrive_ms"], self._om(self.orders[a.cid]))
         if indeterminate:
             self.stats["indeterminate"] += 1
             return SubmitResult(False, ack_ms, indeterminate=True)
@@ -124,7 +140,8 @@ class SimBroker:
     def _doc(self, a: Action, nord: str, now_ms: int, status: str, reason: Optional[str] = None) -> Dict[str, Any]:
         return {"cid": a.cid, "norenordno": nord, "key": a.instrument_key, "side": a.side, "qty": int(a.qty),
                 "price": float(a.price), "filled": 0, "cost": 0.0, "status": status, "rejreason": reason,
-                "arrive_ms": now_ms + self.p.exchange_latency_ms, "cancel_at_ms": None, "sent_ms": now_ms}
+                "arrive_ms": now_ms + self.p.exchange_latency_ms, "cancel_at_ms": None, "sent_ms": now_ms,
+                "last_match_ingest": -1, "tried": False}
 
     def cancel(self, cid: str, now_ms: int) -> bool:
         o = self.orders.get(cid)
@@ -134,17 +151,15 @@ class SimBroker:
         return True
 
     # ------------------------------------------------------------------ matching
+    def _cancel_now(self, o: Dict[str, Any]) -> None:
+        o["status"] = "CANCELED"
+        self._emit(o["cancel_at_ms"], self._om(o))
+
     def advance(self, now_ms: int) -> List[Tuple[int, Dict[str, Any]]]:
-        """Match working orders against the latest quotes, process due cancels, deliver due events."""
+        """Process cancels that have landed, then deliver due order events (matching happens in on_quote)."""
         for o in self.orders.values():
-            if o["status"] != "OPEN":
-                continue
-            q = self.last_quote.get(o["key"])
-            if q is not None and now_ms >= o["arrive_ms"] and q.ingest_ms >= o["arrive_ms"]:
-                self._match(o, q, now_ms)
             if o["status"] == "OPEN" and o["cancel_at_ms"] is not None and now_ms >= o["cancel_at_ms"]:
-                o["status"] = "CANCELED"
-                self._emit(o["cancel_at_ms"], self._om(o))
+                self._cancel_now(o)
         due = [(t, om) for t, om in self._pending if t <= now_ms]
         self._pending = [(t, om) for t, om in self._pending if t > now_ms]
         out: List[Tuple[int, Dict[str, Any]]] = []
@@ -166,6 +181,8 @@ class SimBroker:
             return
         took = 0
         cost = 0.0
+        resting = o["tried"]
+        o["tried"] = True
         for px, avail in self._levels(o["key"], o["side"]):
             marketable = px <= o["price"] if o["side"] == "B" else px >= o["price"]
             if not marketable:
@@ -174,10 +191,11 @@ class SimBroker:
             if n <= 0:
                 continue
             took += n
-            cost += n * px
+            # taker on arrival pays the displayed level; a RESTING order trades at its own limit
+            cost += n * (o["price"] if resting else px)
             if took >= remaining:
                 break
-        if took == 0 and self.p.allow_passive_fills and q.ltp is not None:
+        if took == 0 and resting and self.p.allow_passive_fills and q.ltp is not None:
             if (o["side"] == "B" and q.ltp < o["price"]) or (o["side"] == "S" and q.ltp > o["price"]):
                 took, cost = remaining, remaining * o["price"]
         if took <= 0:

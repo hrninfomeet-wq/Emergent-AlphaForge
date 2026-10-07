@@ -18,8 +18,8 @@ Previously 2026-09-30 (repo cleanup, docs refresh, open items after the Live Dep
 
 Record: [`scalping/README.md`](scalping/README.md) (deliverables 01–06). Paper/replay only; no broker path exists.
 - [ ] **Operator decision** ([`scalping/06-go-no-go.md`](scalping/06-go-no-go.md)): (1) stop, keep the tape archive;
-  (2) paper falsification run (`SCALP_PAPER_ENABLED=1`, rebuild with nothing open; stop at 20 NIFTY sessions /
-  12 SENSEX expiry days and apply the doc-03 criteria); (3) measure first (Flattrade depth WS rate + LPP, futures in
+  (2) S1-E paper falsification run (`SCALP_PAPER_ENABLED=1`, rebuild with nothing open; stop at 12 SENSEX expiry
+  Thursdays and apply the doc-03 criteria); (3) measure first (Flattrade depth WS rate + LPP, futures in
   the tape, record a SENSEX expiry Thursday).
 - [ ] **Operator decision:** update app-wide statutory constants in `backend/app/option_costs.py` (STT 0.001 → 0.0015,
   NSE 0.0003503 → 0.0003553) — reprices every saved result by ~+21.6 % of charges.
@@ -27,6 +27,8 @@ Record: [`scalping/README.md`](scalping/README.md) (deliverables 01–06). Paper
 - [ ] Spun-off task: live-path integrity (non-200 PlaceOrder as indeterminate, 40/min order budget, freeze 3,510,
   holiday gaps 2026-10-20 / 11-10 / 11-24, `REJECT` spelling in `order_sm`).
 - [x] Tape preservation: 3,201,938 depth ticks archived to `tick_archive` on 2026-10-06; daily archive loop (default on).
+- [x] Adversarial review of `app/scalping` (17 findings, all reproduced and fixed test-first) + exit livelock fix; stage-2
+  replay re-run on the corrected simulator: **N1 KILLED** (−₹15.5/trade). Paper runner now defaults to S1-E only.
 
 ### ★ Next gate: market-session validation of the Live Deployments uplift
 

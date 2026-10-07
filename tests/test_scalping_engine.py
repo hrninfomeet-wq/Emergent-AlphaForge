@@ -229,6 +229,7 @@ def test_single_working_exit_and_reprice_requires_cancel_confirmation(force_sign
     s1 = [x for x in acts if x.kind == "place" and x.side == "S"][0]
     assert s1.price == pytest.approx(60.0 - 2 * 0.05)
     e.on_submit_result(s1.cid, T0 + 2100, ok=True, norenordno="S1")
+    e.on_order_event(om(s1.cid, "OPEN", 0, nord="S1"), T0 + 2200)          # at the exchange (I13 clock)
     acts = e.on_second(T0 + 3000, market_at(T0 + 3000))
     assert not [x for x in acts if x.kind == "place"]                     # still working, no second exit
     acts = e.on_second(T0 + 4000, market_at(T0 + 4000))
@@ -250,7 +251,7 @@ def test_exit_ladder_never_gives_up_and_respects_lpp_floor(force_signal):
     force_signal["on"] = False
     now = T0 + 2000
     placed = 0
-    for _ in range(12):
+    for _ in range(20):
         acts = e.on_second(now, market_at(now))
         for x in acts:
             if x.kind == "place":
@@ -258,6 +259,7 @@ def test_exit_ladder_never_gives_up_and_respects_lpp_floor(force_signal):
                 lo, _ = lpp_bounds(60.05)
                 assert x.price >= lo, "exit priced below the exchange LPP floor would be rejected"
                 e.on_submit_result(x.cid, now, ok=True, norenordno=f"S{placed}")
+                e.on_order_event(om(x.cid, "OPEN", 0, nord=f"S{placed}"), now + 100)
             if x.kind == "cancel":
                 e.on_order_event(om(x.cid, "CANCELED", 0, nord=f"S{placed}"), now + 200)
         now += 1000
@@ -320,9 +322,12 @@ def test_indeterminate_entry_blocks_entries_until_reconciled(force_signal):
     a = enter(e)
     acts = e.on_submit_result(a.cid, T0 + 100, ok=False, indeterminate=True)
     assert e.reconcile_required and any(x.kind == "reconcile" for x in acts)
-    e.on_reconcile(T0 + 2000, broker_orders=[], broker_net_qty=0)      # broker never saw it
-    assert e.reconcile_required is None and e.orders == {} or e.trip is None
-    acts = e.on_second(T0 + 3000, market_at(T0 + 3000))
+    e.on_reconcile(T0 + 2000, broker_orders=[], broker_net_qty=0)      # one read: may still be in flight
+    assert e.reconcile_required and e.trip is not None                 # I12: one absence proves nothing
+    assert not [x for x in e.on_second(T0 + 3000, market_at(T0 + 3000)) if x.kind == "place"]
+    e.on_reconcile(T0 + 7000, broker_orders=[], broker_net_qty=0)      # 2nd read, > 2 x ack timeout later
+    assert e.reconcile_required is None and e.trip is None
+    acts = e.on_second(T0 + 8000, market_at(T0 + 8000))
     assert [x for x in acts if x.kind == "place"]                      # entries resume
 
 

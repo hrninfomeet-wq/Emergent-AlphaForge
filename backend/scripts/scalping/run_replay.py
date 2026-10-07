@@ -31,15 +31,24 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--days", nargs="*", default=DAYS)
     ap.add_argument("--out", default=str(ROOT / "docs" / "scalping" / "results"))
+    ap.add_argument("--tape-cache", default=None,
+                    help="directory of tape_<day>.pkl files ({'tape', 'contracts'}) to replay without Mongo load")
     args = ap.parse_args()
-    db = _db()
+    db = None if args.tape_cache else _db()
     specs = [NIFTY_N1, SENSEX_S1E, S1E_ENGINE_CHECK]
     scen = stress_variants(SimParams())
     results = []
     for day in args.days:
-        contracts = load_contracts(db, day)
-        keys = set(INDEX_KEYS.values()) | {c.instrument_key for c in contracts}
-        tape = load_tape(db, day, keys)
+        cached = Path(args.tape_cache) / f"tape_{day}.pkl" if args.tape_cache else None
+        if cached is not None and cached.exists():
+            import pickle
+            blob = pickle.loads(cached.read_bytes())
+            tape, contracts = blob["tape"], blob["contracts"]
+        else:
+            db = db or _db()
+            contracts = load_contracts(db, day)
+            keys = set(INDEX_KEYS.values()) | {c.instrument_key for c in contracts}
+            tape = load_tape(db, day, keys)
         for name, sp in scen.items():
             r = replay_session(day, specs, sim=sp, tape=tape, contracts=contracts)
             for e in r["engines"]:

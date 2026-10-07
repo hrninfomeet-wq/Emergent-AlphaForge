@@ -2,6 +2,27 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [Unreleased] — Scalper lab: adversarial-review fixes; N1 KILLED at replay (2026-10-07)
+
+An adversarial review (3 lenses) reported 17 findings in `app/scalping`, each with a reproduction; all were
+reproduced and fixed test-first (`tests/test_scalping_review_regressions.py`, 16 tests failing before their fix).
+
+- Engine: I11 (an unpriced fill or a COMPLETE without a full parsable fill quantity keeps the trip open and requires a
+  reconcile — never valued at Rs 0 or booked unfilled); I12 (an unknown order is declared never-accepted only after two
+  consecutive SUCCESSFUL reads without it, >= 2 x ack timeout after sending; a failed read changes nothing; an order
+  found by a read is known again; a refused/lost cancel is re-sent with backoff); I13 (exit re-price clock starts at the
+  broker's OPEN report, wait grows per rung — fixes a cancel-before-arrival livelock found while verifying, 49/300 fuzz
+  seeds stuck before, 0 after); `last_quote` scoped to the trip's contract.
+- Simulator realism (results were optimistic): LPP checked against the current quote; first match = first snapshot
+  after arrival (ticks fed in ingest order); each snapshot consumed once per order; resting orders fill at their own
+  limit; OPEN reported at exchange arrival.
+- Paper runner: full day state restored on restart; kill executes its cancels; every iteration guarded and logged
+  (`status.last_error`); open position at session rollover journaled.
+- Indexes for the status/events routes; boot tape-archive deferred while the market is open and bounded to 31 days.
+- **Stage-2 replay re-run with the corrected simulator: N1 base −Rs 605 over 39 trades (−Rs 15.5/trade, median −Rs 36,
+  1/4 sessions) → KILLED by its pre-registered gate** (it had shown +Rs 745 under the optimistic simulator).
+- `run_replay.py --tape-cache` replays cached tapes without loading Mongo.
+
 ## [Unreleased] — Scalper lab: NIFTY / SENSEX sub-minute option buying, paper + replay only (2026-10-07)
 
 Research verdict: **NO-GO for real money** (`docs/scalping/06-go-no-go.md`). Two pre-registered hypothesis

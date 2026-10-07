@@ -4,7 +4,7 @@
 
 | Question | Answer | Label |
 |---|---|---|
-| Is there evidence of positive expectancy after costs for a sub-minute option-buying scalp on NIFTY? | No. The best-supported rule (N1) failed its stage-2 gate; its positive mean came from one session; the median trade loses. | Confirmed |
+| Is there evidence of positive expectancy after costs for a sub-minute option-buying scalp on NIFTY? | No. The best-supported rule (N1) was KILLED by its pre-registered stage-2 replay gate: −₹15.5 per trade over 39 trades, median −₹36, 1 of 4 sessions positive (corrected simulator). | Confirmed |
 | …on SENSEX? | No. Every SENSEX impulse rule lost in both samples and both directions; the expiry-day variant cannot be tested because no SENSEX expiry day has been recorded. | Confirmed |
 | Can the infrastructure execute and protect a same-minute scalp safely with real money today? | No. Fills are not pushed (no order-update stream), the LPP band is not known at order time, there is no usable broker-held stop on this account, protection stops when the PC stops, and the existing live guard has a reproduced starvation defect. | Confirmed |
 | Is the scalper engine itself safe to run in PAPER? | Yes: it cannot reach a broker (no import path; AST-tested); its invariants hold under fault fuzzing. | Confirmed (simulation) |
@@ -16,10 +16,11 @@ with no supporting evidence. The cheapest next move is passive data collection, 
 
 1. **Stop here, keep the instruments (recommended default).** Keep `tick_archive` growing (on by default), leave the
    paper runner off. Cost: nothing. Revisit only if new data arrives (option 2 or 3).
-2. **Paper-run N1 and S1-E as a falsification test.** Set `SCALP_PAPER_ENABLED=1`, rebuild when no live position
-   is open. Stop at the pre-registered sample (20 NIFTY sessions / 12 SENSEX expiry days) and apply the doc-03
-   criteria mechanically. Expected outcome on current evidence: KILL. Requires the PC (or an always-on host) to run
-   through market hours.
+2. **Paper-run S1-E only, as a falsification test** (N1 is already killed; paper-running it would test a dead
+   rule). Set `SCALP_PAPER_ENABLED=1` (it runs only S1-E by default; `SCALP_PAPER_STRATEGIES` selects presets) and
+   rebuild when no live position is open. Stop at 12 SENSEX expiry Thursdays and apply the doc-03 criteria
+   mechanically. Expected outcome on current evidence: KILL. Requires the PC (or an always-on host) to run through
+   market hours on Thursdays (~3 months).
 3. **Measure before hypothesising again:** subscribe read-only to the Flattrade depth WebSocket and record its
    update rate and `le`/`ue`; add NIFTY/SENSEX near-month futures to the recorded universe; record at least one
    SENSEX expiry Thursday. Only a finer or earlier signal source could change the stage-1 picture.
@@ -30,7 +31,7 @@ with no supporting evidence. The cheapest next move is passive data collection, 
 
 | # | Blocker | Owner | Measurable completion check |
 |---|---|---|---|
-| B1 | No positive forward evidence | data | doc 03 stage-3 PASS on sessions recorded after 2026-10-07 |
+| B1 | No positive evidence (N1 killed at stage 2; S1-E untested) | data | a NEW pre-registered hypothesis, or S1-E, passing stage 2 and stage 3 on sessions recorded after 2026-10-07 |
 | B2 | No pushed fills (order-update WebSocket unwired; wrong login frame) | engineering | a read-only connection from the static IP receives `om` events for a manual order placed by the operator |
 | B3 | LPP band unknown at order time | engineering | depth WebSocket `le`/`ue` recorded for every held contract; zero LPP rejects in a paper week using it |
 | B4 | No usable broker-held protection; app-down = unprotected | broker/policy | Flattrade confirms in writing whether MIS option positions are auto-squared and when; or an always-on host is in place |

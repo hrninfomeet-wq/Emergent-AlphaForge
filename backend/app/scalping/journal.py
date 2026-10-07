@@ -14,6 +14,9 @@ from typing import Any, Dict, Iterable, List
 async def ensure_indexes(db) -> None:
     await db.scalp_events.create_index([("strategy_id", 1), ("session_date", 1), ("ts_ms", 1)])
     await db.scalp_events.create_index([("kind", 1), ("ts_ms", -1)])
+    # GET /scalping/events filters by session_date (optionally kind) and sorts by ts_ms
+    await db.scalp_events.create_index([("session_date", 1), ("ts_ms", -1)])
+    await db.scalp_events.create_index([("session_date", 1), ("kind", 1), ("ts_ms", -1)])
     await db.scalp_paper_trades.create_index([("strategy_id", 1), ("session_date", 1), ("closed_ms", 1)])
     await db.scalp_engine_state.create_index([("strategy_id", 1), ("session_date", 1)], unique=True)
 

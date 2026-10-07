@@ -212,3 +212,15 @@ def test_specs_are_paper_and_distinct_per_index():
     assert NIFTY_N1.signal_kind != SENSEX_S1E.signal_kind
     assert SENSEX_S1E.allowed_dte == frozenset({0})
     assert all(k in NIFTY_N1.provenance for k in ("signal", "max_spread_pct", "money"))
+
+
+
+def test_paper_runner_defaults_to_s1e_only_and_rejects_unknown_ids(monkeypatch):
+    from app.scalping import paper_runner as pr
+    monkeypatch.delenv("SCALP_PAPER_STRATEGIES", raising=False)
+    assert [c.strategy_id for c in pr.configured_strategies()] == ["scalp_sensex_s1e_expiry_joint_impulse"]
+    monkeypatch.setenv("SCALP_PAPER_STRATEGIES", "scalp_nifty_n1_synthetic_impulse, scalp_sensex_s1e_expiry_joint_impulse")
+    assert len(pr.configured_strategies()) == 2
+    monkeypatch.setenv("SCALP_PAPER_STRATEGIES", "nope")
+    with pytest.raises(ValueError):
+        pr.configured_strategies()

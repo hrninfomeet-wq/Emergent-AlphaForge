@@ -47,15 +47,27 @@ def execute_actions(engine: ScalperEngine, broker: SimBroker, actions: List[Acti
 
 
 def drive_second(now_ms: int, market: MarketState, engines: Iterable[Tuple[ScalperEngine, SimBroker]],
-                 log: List[Dict[str, Any]]) -> None:
-    """One decision second: (ticks already fed) -> grid advance -> broker events -> engine step."""
+                 log: List[Dict[str, Any]], second_ticks: Optional[List[dict]] = None) -> None:
+    """One decision second: (ticks already fed to `market`) -> grid advance -> every snapshot of the second
+    that touches a working order, IN INGEST ORDER, to the simulator (so an order meets the first snapshot
+    after its arrival) -> broker events -> engine step. Without `second_ticks` the latest quote per working
+    contract stands in (coarser, kept for callers that do not collect ticks)."""
     market.on_second(now_ms)
     for engine, broker in engines:
         broker.set_reference(market.quotes)
-        for key in broker.orders_keys():
-            q = market.quotes.get(key)
-            if q is not None:
-                broker.on_quote(q, market.depth.get(key))
+        keys = broker.orders_keys()
+        if keys:
+            if second_ticks is not None:
+                for tk in second_ticks:
+                    if tk.get("instrument_key") in keys:
+                        q = quote_from_tick(tk)
+                        if q is not None:
+                            broker.on_quote(q, list(tk.get("market_depth") or []))
+            else:
+                for key in keys:
+                    q = market.quotes.get(key)
+                    if q is not None:
+                        broker.on_quote(q, market.depth.get(key))
         for t, om in broker.advance(now_ms):
             execute_actions(engine, broker, engine.on_order_event(om, t), now_ms, log)
         execute_actions(engine, broker, engine.on_second(now_ms, market), now_ms, log)
@@ -139,10 +151,11 @@ def replay_session(day: str, cfgs: List[ScalperConfig], *, sim: Optional[SimPara
     _, hi_ms = session_bounds_ms(day)
     for s in range(lo_s, hi_ms // 1000):
         end_ms = s * 1000 + 999
+        j = i
         while i < n and int(tape[i]["ingest_ts"]) <= end_ms:
             market.on_tick(tape[i])
             i += 1
-        drive_second(end_ms, market, pairs, log)
+        drive_second(end_ms, market, pairs, log, second_ticks=tape[j:i])
     out = {"day": day, "ticks": n, "engines": []}
     for engine, broker in pairs:
         out["engines"].append({"strategy_id": engine.cfg.strategy_id, "underlying": engine.cfg.underlying,

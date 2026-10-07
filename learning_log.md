@@ -38,8 +38,17 @@ Confirmed approaches:
 Dead ends (measured, do not re-run without new data): sub-minute index-impulse fade and momentum; synthetic-forward
 impulse; touch order-book imbalance (no information); passive inside-spread entry (adverse selection > spread
 saved); NIFTY→SENSEX lead–lag (real, ~0.1 % of premium vs ~0.46 % friction); joint-impulse SENSEX momentum. The
-last spec standing (N1, NIFTY synthetic impulse, 30-s hold) failed its stage-2 replay gate: +₹745 over 38 trades,
-all from one session; median trade −₹19; 1 of 4 sessions positive.
+last spec standing (N1, NIFTY synthetic impulse, 30-s hold) was KILLED by its stage-2 replay gate: −₹605 over 39
+trades (−₹15.5/trade, median −₹36, 1 of 4 sessions positive).
+
+**Second lesson — audit the simulator before believing a replay.** The first replay said N1 made +₹745. An
+adversarial review found the fill model optimistic in three ways (a resting limit filled at a better displayed
+price; one 1 Hz snapshot re-consumed every second; first match on the wrong snapshot). Correcting it turned +₹745 into
+−₹605 on the same tape — a ₹1,350 swing from fill assumptions alone, bigger than any edge claimed. The same review
+found latent safety holes that only a real broker would hit (one missing order-book read treated as "never
+accepted" → a possible double SELL; a refused cancel never re-sent; unpriced fills valued at ₹0), and verifying the
+fixes exposed an exit livelock (re-price interval shorter than exchange latency cancels every exit before it lands).
+A fault-injecting simulator plus a 300-seed fuzz with a "long held > 5 min" check is what caught it.
 
 Open for the operator: stop vs paper falsification run vs measure-first (`docs/scalping/06-go-no-go.md`); the
 app-wide STT update; the two spun-off live-path tasks.

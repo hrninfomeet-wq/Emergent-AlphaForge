@@ -1,8 +1,9 @@
 # 04 — Execution and protection design (with failure handling)
 
 _Implemented in `backend/app/scalping/engine.py` (deterministic, no I/O) and exercised by
-`tests/test_scalping_engine.py` (invariants I1–I10, a seeded 12-seed fault fuzz in the suite, and a 300-seed /
-12,600-trade harsh-fault fuzz run during development: 0 shorts, worst engine/broker divergence 6 s, 0 halts).
+`tests/test_scalping_engine.py` and `tests/test_scalping_review_regressions.py` (invariants I1–I13, a seeded 12-seed
+fault fuzz in the suite, and a 300-seed / 15,600-trade harsh-fault fuzz run after the review fixes: 0 shorts,
+0 positions stuck, worst engine/broker divergence 9 s, 0 halts).
 The only execution adapter is the simulator; §9 lists what a real-money adapter would need._
 
 ## 1. Principles
@@ -56,7 +57,10 @@ alert (I8). With a stale feed the reference bid is cut 5 % before laddering (def
 | Failure | What the engine does | Residual risk |
 |---|---|---|
 | **Order rejected** (definite) | entry: trip closes, no position; exit: alert, next second places a new SELL | repeated LPP rejects in a crash → the ladder walks down to the LPP floor; still bounded by the band |
-| **Unknown status** (transport error / no ack in 3 s / cancel unconfirmed in 3 s) | order marked UNKNOWN; entries blocked; reconcile requested every 5 s; **no new SELL while any SELL is unknown** | position may be held a few seconds longer than intended |
+| **Unknown status** (transport error / no ack in 3 s / cancel unconfirmed in 3 s) | order marked UNKNOWN; entries blocked; reconcile requested every 5 s; **no new SELL while any SELL is unknown**; an order found by a successful read is known again; one declared never-accepted only after **two** consecutive successful reads without it, ≥ 6 s after sending (I12) | position may be held a few seconds longer than intended |
+| **Cancel refused or lost** | re-sent with backoff 1, 2, 4 … 30 s; an order still working after its cancel deadline gets its cancel re-armed (I12) | a refusal caused by a fill resolves itself when the fill arrives |
+| **Slow exchange** (latency > re-price interval) | the re-price clock starts when the broker reports the order OPEN (fallback 3 × the wait) and the wait grows per rung (I13) — no cancel-before-arrival livelock | exits slower under stress (worst 93 s at 2.5 s latency in fuzz) |
+| **Malformed broker data** (fill without price; COMPLETE without a parsable fill quantity) | never valued at ₹0 or booked as unfilled: the round trip stays open, reconcile required; only non-price exits (time / forced / stale) can fire until priced (I11) | — |
 | **Duplicate / out-of-order events** | `apply_om`: rank never regresses, terminal sticky, fills = cumulative max | none observed in fuzz |
 | **Lost events** | routine reconcile every 10 s; cancel-confirm timeout | divergence bounded (fuzz worst 6 s) |
 | **Partial fills** | entry: remainder cancelled at timeout; exit: remaining confirmed qty re-offered | — |

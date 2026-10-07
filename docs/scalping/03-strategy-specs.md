@@ -6,7 +6,7 @@ _Both specs are implemented exactly as written in `backend/app/scalping/config.p
 deliberate safety rule), **hypothesis** (the rule under test)._
 
 > **Read this first.** Neither spec has positive evidence. Five hypothesis families failed on the data available
-> (doc 02), and N1 failed its stage-2 replay gate (doc 05). These are **pre-registered falsification tests**: the
+> (doc 02), and **N1 was KILLED by its stage-2 replay gate** (doc 05). These are **pre-registered falsification tests**: the
 > cheapest honest way to collect a clean forward sample, with kill criteria fixed in advance. They are not
 > recommended for real money, and the engine cannot place a real order.
 
@@ -30,8 +30,9 @@ NIFTY is the only index where any momentum cell was positive out of sample (hold
 trade at H30, t 1.50; 64 % of sessions positive) and it has the deepest book and fastest quotes.
 **Why it might not survive costs (the honest case against):** the same rule on the index print was negative on the
 discovery sample; the holdout cell was found by looking at the holdout (HARKing — that sample cannot confirm it);
-round-trip friction is 0.47 % of premium, and limit entries tend to miss the trades that run away (stage-2 replay:
-19 unfilled entries vs 38 trades).
+round-trip friction is 0.47 % of premium, and limit entries tend to miss the trades that run away.
+**Status: KILLED at stage 2** (−₹15.5 per trade over 39 replayed trades, median −₹36; doc 05). Kept for the record
+and as the reference configuration of the engine; do not paper-run it as a candidate.
 
 | Rule | Value | Unit | Provenance |
 |---|---|---|---|

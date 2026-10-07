@@ -56,12 +56,17 @@ async def ensure_archive_indexes(db) -> None:
     await db[ARCHIVE_COLLECTION].create_index([("stored_at_ms", -1)])
 
 
-async def archive_once(db) -> Dict[str, Any]:
-    """Copy new full-mode ticks into the archive. Returns counts; never raises on an empty source."""
+async def archive_once(db, *, now: Optional[datetime] = None) -> Dict[str, Any]:
+    """Copy new full-mode ticks into the archive. Returns counts; never raises on an empty source.
+
+    The scan is always bounded through the ``stored_at`` TTL index: from the archive's high-water mark
+    (minus an overlap), or - on an empty archive - from 31 days ago, which covers everything the TTL
+    still holds. An unbounded match would walk the whole 27M-doc collection."""
     await ensure_archive_indexes(db)
     last = await db[ARCHIVE_COLLECTION].find_one({"stored_at_ms": {"$ne": None}}, {"stored_at_ms": 1},
                                                  sort=[("stored_at_ms", -1)])
-    since = None
+    now = now or datetime.now(timezone.utc)
+    since = now - timedelta(days=31)
     if last and last.get("stored_at_ms"):
         since = datetime.fromtimestamp(int(last["stored_at_ms"]) / 1000, timezone.utc) - OVERLAP
     before = await db[ARCHIVE_COLLECTION].estimated_document_count()
@@ -74,12 +79,20 @@ async def archive_once(db) -> Dict[str, Any]:
 
 
 async def tape_archive_loop() -> None:
-    """Archive at boot (catch-up) and daily after the close. Never kills the process."""
+    """Archive at boot (catch-up, only OUTSIDE market hours) and daily after the close. Never kills the
+    process. The archive indexes are created regardless of the flag, so the status route never scans."""
+    from app.db import get_db
+    from app.nse_calendar import market_status
+    try:
+        await ensure_archive_indexes(get_db())
+    except Exception:  # noqa: BLE001
+        log.exception("Tape archive index creation failed")
     if not archive_enabled():
         log.info("Tape archive disabled (%s=0)", ENV_FLAG)
         return
-    from app.db import get_db
-    first = True
+    # A mid-session redeploy must not start a bulk write into the mongod the live path is using; the
+    # boot catch-up is deferred to the post-close run when the market is open.
+    first = not market_status(datetime.now(IST)).get("is_open", False)
     while True:
         try:
             now = datetime.now(IST)

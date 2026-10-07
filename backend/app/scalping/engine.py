@@ -30,6 +30,14 @@ SAFETY INVARIANTS (each pinned by tests/test_scalping_engine.py):
   I9  Kill switch: cancel working entries, exit the position, HALT (no automatic resume).
   I10 Entries respect the order-rate budget with a reserve kept for exits; exits are deferred (never
       dropped) when the budget is exhausted.
+  I11 Malformed broker data never becomes a price or a quantity: a fill without a valid average price, or a
+      COMPLETE without a full parsable fill quantity, keeps the round trip open and requires a reconcile.
+  I13 An exit is never re-priced before it could have executed: the re-price clock starts when the broker
+      reports the order OPEN at the exchange (fallback 3x the wait from sending, if that event is lost)
+      and the wait grows with each rung, so latency longer than the re-price interval cannot livelock exits.
+  I12 Absence from one order-book read proves nothing: an unknown order is declared never-accepted only
+      after two consecutive SUCCESSFUL reads without it and >= 2 x ack timeout since it was sent; an order
+      found by a read is known again; a refused or lost cancel is re-sent with backoff.
 """
 from __future__ import annotations
 
@@ -56,6 +64,16 @@ def _hhmm(now_ms: int) -> str:
 
 def _ist_date(now_ms: int) -> str:
     return datetime.fromtimestamp(now_ms / 1000, IST).strftime("%Y-%m-%d")
+
+
+def _valid_px(v: Any) -> Optional[float]:
+    if isinstance(v, bool):
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) and f > 0 else None
 
 
 def round_to_tick(px: float, tick: float, up: bool) -> float:
@@ -143,15 +161,18 @@ class ScalperEngine:
         return out
 
     def position(self) -> Dict[str, Any]:
-        """Confirmed position from cumulative fills only (I1)."""
-        bq = sum(int(o.get("fillshares") or 0) for o in self.orders.values() if o["side"] == "B")
-        sq = sum(int(o.get("fillshares") or 0) for o in self.orders.values() if o["side"] == "S")
-        bcost = sum(int(o.get("fillshares") or 0) * float(o.get("avgprc") or 0)
-                    for o in self.orders.values() if o["side"] == "B")
-        scost = sum(int(o.get("fillshares") or 0) * float(o.get("avgprc") or 0)
-                    for o in self.orders.values() if o["side"] == "S")
-        return {"qty": bq - sq, "bought": bq, "sold": sq,
-                "avg_buy": (bcost / bq) if bq else None, "avg_sell": (scost / sq) if sq else None}
+        """Confirmed position from cumulative fills only (I1). An average is reported only when EVERY
+        filled order on that side carries a valid price (I11) - an unpriced fill is never priced at 0."""
+        def side(sd):
+            filled = [o for o in self.orders.values() if o["side"] == sd and int(o.get("fillshares") or 0) > 0]
+            q = sum(int(o["fillshares"]) for o in filled)
+            if not filled or any(_valid_px(o.get("avgprc")) is None for o in filled):
+                return q, None
+            return q, sum(int(o["fillshares"]) * float(o["avgprc"]) for o in filled) / q
+        bq, ab = side("B")
+        sq, as_ = side("S")
+        return {"qty": bq - sq, "bought": bq, "sold": sq, "avg_buy": ab, "avg_sell": as_,
+                "price_unknown": (bq > 0 and ab is None) or (sq > 0 and as_ is None)}
 
     def working(self, side: Optional[str] = None, purpose: Optional[str] = None) -> List[Dict[str, Any]]:
         return [o for o in self.orders.values()
@@ -205,6 +226,9 @@ class ScalperEngine:
     def _cancel(self, now_ms: int, o: Dict[str, Any], reason: str) -> Optional[Action]:
         if o["state"] in TERMINAL or o["cancel_sent_ms"] is not None:
             return None
+        if now_ms < int(o.get("cancel_retry_after_ms") or 0):
+            return None
+        o["cancel_attempts"] = int(o.get("cancel_attempts") or 0) + 1
         o["cancel_sent_ms"] = now_ms
         o["cancel_deadline_ms"] = now_ms + self.cfg.cancel_confirm_timeout_ms
         self._spend(now_ms)
@@ -247,7 +271,21 @@ class ScalperEngine:
         if o is None:
             return []
         self._event("cancel_result", now_ms, cid=cid, ok=ok, error=error)
-        return []
+        if ok or o["state"] in TERMINAL:
+            return []
+        # Refused (session/throttle error, or the order already traded). Re-arm the cancel with backoff so
+        # an exit never rests at a stale price forever (I8/I12); a fill that explains the refusal makes the
+        # order terminal first, and then no re-send happens.
+        self._rearm_cancel(now_ms, o, f"cancel_refused:{error}")
+        return [Action("alert", now_ms, cid=cid, level="warning", reason=f"cancel refused: {error}")]
+
+    def _rearm_cancel(self, now_ms: int, o: Dict[str, Any], why: str) -> None:
+        n = int(o.get("cancel_attempts") or 1)
+        o["cancel_sent_ms"] = None
+        o["cancel_deadline_ms"] = None
+        o["cancel_retry_after_ms"] = now_ms + min(30_000, 1000 * (2 ** n))
+        self._event("cancel_rearmed", now_ms, cid=o["client_order_id"], why=why,
+                    retry_after_ms=o["cancel_retry_after_ms"])
 
     def on_order_event(self, om: Dict[str, Any], now_ms: int) -> List[Action]:
         cid = om.get("remarks") or om.get("client_order_id")
@@ -275,9 +313,17 @@ class ScalperEngine:
         om2 = dict(om)
         om2.setdefault("qty", o["qty"])
         o2 = apply_om(o, om2)
+        # apply_om stores avgprc only on the event whose fills increased; accept a valid price from a later
+        # event while none is stored (I11).
+        if (_valid_px(o2.get("avgprc")) is None and int(o2.get("fillshares") or 0) > 0
+                and _valid_px(om.get("avgprc")) is not None):
+            o2["avgprc"] = _valid_px(om.get("avgprc"))
         if o2.get("unknown") and (o2["state"] != o["state"] or int(o2.get("fillshares") or 0) != before):
             o2["unknown"] = False
         after = int(o2.get("fillshares") or 0)
+        malformed = self._malformed(o2)
+        if malformed:
+            o2["unknown"] = True
         if after > before:
             o2["first_fill_ms"] = o2["first_fill_ms"] or now_ms
             o2["last_fill_ms"] = now_ms
@@ -287,8 +333,14 @@ class ScalperEngine:
         if o2["state"] != o["state"]:
             self._event("state", now_ms, cid=o2["client_order_id"], frm=o["state"], to=o2["state"],
                         reason=o2.get("rejreason"))
+        if o2.get("open_ms") is None and o2["state"] in ("OPEN", "PARTIAL", "COMPLETE"):
+            o2["open_ms"] = now_ms          # at the exchange: the earliest moment it could execute (I13)
         self.orders[o2["client_order_id"]] = o2
         acts: List[Action] = []
+        if malformed:
+            self._event("malformed_order_event", now_ms, cid=o2["client_order_id"], why=malformed,
+                        status=om.get("status"), fillshares=om.get("fillshares"), avgprc=om.get("avgprc"))
+            acts += self._require_reconcile_acts(now_ms, f"{malformed}:{o2['client_order_id']}")
         if o2.get("reconcile_required") and not o.get("reconcile_required"):
             acts += self._require_reconcile_acts(now_ms, f"order_sm_flag:{o2['client_order_id']}")
         if o2["side"] == "B" and after > before and self.trip is not None:
@@ -301,27 +353,57 @@ class ScalperEngine:
         acts += self._maybe_close_trip(now_ms)
         return acts
 
+    @staticmethod
+    def _malformed(o: Dict[str, Any]) -> Optional[str]:
+        filled = int(o.get("fillshares") or 0)
+        if filled > 0 and _valid_px(o.get("avgprc")) is None:
+            return "fill_without_price"
+        if o["state"] == "COMPLETE" and filled != int(o["qty"]):
+            return "complete_without_full_fill"
+        return None
+
     def on_reconcile(self, now_ms: int, *, broker_orders: List[Dict[str, Any]], broker_net_qty: Optional[int]) -> List[Action]:
         """Authoritative read. Apply every broker order status we know by cid/norenordno; then compare
         the broker net quantity with our fill-derived position. Any mismatch HALTS (never guess)."""
         acts: List[Action] = []
+        found = set()
         self._in_reconcile = True
         try:
             for om in broker_orders or []:
+                cid = om.get("remarks") or om.get("client_order_id")
+                o = self.orders.get(cid) if cid else None
+                if o is None and om.get("norenordno"):
+                    o = next((x for x in self.orders.values() if x.get("norenordno") == om["norenordno"]), None)
+                if o is not None:
+                    found.add(o["client_order_id"])
                 acts += self.on_order_event(dict(om), now_ms)
         finally:
             self._in_reconcile = False
-        # orders still unknown after a successful read were never accepted by the broker
-        known_cids = {om.get("remarks") or om.get("client_order_id") for om in broker_orders or []}
-        for o in list(self.orders.values()):
-            if o.get("unknown") and o["client_order_id"] not in known_cids and o["state"] not in TERMINAL:
-                self.orders[o["client_order_id"]] = dict(o, state="REJECTED", unknown=False,
-                                                         rejreason="not_found_at_broker_on_reconcile")
-                self._event("unknown_resolved_not_found", now_ms, cid=o["client_order_id"])
         self.last_reconcile_ms = now_ms
         if broker_net_qty is None:
+            # A failed read proves nothing about any order (I12): no conversion, no clearing.
             self._event("reconcile_unreadable", now_ms)
             return acts + [Action("alert", now_ms, level="warning", reason="reconcile read failed; still blocked")]
+        for cid in found:
+            o = self.orders.get(cid)
+            if o is None:
+                continue
+            o["absent_reads"] = 0
+            if o.get("unknown") and not self._malformed(o):
+                o["unknown"] = False            # found by a successful read: its status is known (I12)
+            if (o["state"] not in TERMINAL and o["cancel_sent_ms"] is not None
+                    and o["cancel_deadline_ms"] is not None and now_ms >= o["cancel_deadline_ms"]):
+                self._rearm_cancel(now_ms, o, "cancel_unconfirmed_order_still_working")
+        # Still unknown and absent from TWO consecutive successful reads, long after it was sent: it never
+        # reached the broker. One read is not enough - a slow PlaceOrder may still be in flight.
+        for o in list(self.orders.values()):
+            if o.get("unknown") and o["client_order_id"] not in found and o["state"] not in TERMINAL:
+                o["absent_reads"] = int(o.get("absent_reads") or 0) + 1
+                if o["absent_reads"] >= 2 and now_ms - o["sent_ms"] >= 2 * self.cfg.ack_timeout_ms:
+                    self.orders[o["client_order_id"]] = dict(o, state="REJECTED", unknown=False,
+                                                             rejreason="not_found_at_broker_on_reconcile")
+                    self._event("unknown_resolved_not_found", now_ms, cid=o["client_order_id"],
+                                absent_reads=o["absent_reads"])
         pos = self.position()
         if int(broker_net_qty) != pos["qty"]:
             # The order book and the position book are two separate broker reads, so one mismatch can be
@@ -495,6 +577,7 @@ class ScalperEngine:
             self._event("signal_filtered", now_ms, reason="entry_limit_beyond_lpp", signal=sig.reason)
             return []
         qty = c.lots * self.lot_size
+        self.last_quote = q
         self.trip = {"opened_ms": now_ms, "side": sig.side, "instrument_key": sig.contract.instrument_key,
                      "trading_symbol": sig.contract.trading_symbol, "signal": sig.reason,
                      "signal_metrics": dict(sig.metrics), "entry_quote": {"bid": q.bid, "ask": q.ask,
@@ -518,8 +601,9 @@ class ScalperEngine:
         if self.paused_for_day:
             return f"daily_loss_limit"
         if q is None:
-            last = self.last_quote
-            if last is None or now_ms - last.ingest_ms >= c.stale_feed_exit_ms:
+            last = self._trip_quote()
+            seen_ms = last.ingest_ms if last is not None else (trip.get("first_fill_ms") or trip["opened_ms"])
+            if now_ms - seen_ms >= c.stale_feed_exit_ms:
                 return "stale_feed"
             return None
         bid = q.bid
@@ -549,7 +633,7 @@ class ScalperEngine:
         if q is not None:
             self.last_quote = q
         # mark-to-market risk: realized + open at the bid
-        if pos["qty"] > 0 and pos["avg_buy"] and q is not None and self.paused_for_day is None:
+        if pos["qty"] > 0 and pos["avg_buy"] is not None and q is not None and self.paused_for_day is None:
             open_mtm = (q.bid - pos["avg_buy"]) * pos["qty"] - costs.charges_inr(c.exchange, pos["avg_buy"], q.bid, pos["qty"])
             if self.stats.realized_net_inr + open_mtm <= -c.daily_loss_limit_inr:
                 self.paused_for_day = "daily_loss_limit"
@@ -560,9 +644,11 @@ class ScalperEngine:
             return acts + self._maybe_close_trip(now_ms)
         # cancel any working entry remainder before/while exiting (I6); the fill race is handled by
         # sizing exits from confirmed fills only
-        entry_px = pos["avg_buy"] or 0.0
+        entry_px = pos["avg_buy"]
         if trip.get("exit_reason") is None:
-            r = self._exit_reason(now_ms, market, q, entry_px)
+            # With an unpriced fill (I11) only non-price exits can fire (NaN comparisons are all False);
+            # stop/target/trail wait for the reconcile that supplies the price.
+            r = self._exit_reason(now_ms, market, q, entry_px if entry_px is not None else float("nan"))
             if r is None:
                 return acts
             trip["exit_reason"] = r
@@ -582,7 +668,10 @@ class ScalperEngine:
             return acts                                                        # I2: wait for reconcile
         if sells:                                                              # I3: one working exit
             o = sells[0]
-            if now_ms - o["sent_ms"] >= c.exit_reprice_ms and o["cancel_sent_ms"] is None:
+            wait = c.exit_reprice_ms * min(1 + int(o.get("attempt") or 0), 4)
+            ripe = ((o.get("open_ms") is not None and now_ms - o["open_ms"] >= wait)
+                    or now_ms - o["sent_ms"] >= 3 * wait)                     # I13: no cancel-before-arrival
+            if ripe and o["cancel_sent_ms"] is None:
                 a = self._cancel(now_ms, o, "exit_reprice")
                 if a:
                     acts.append(a)
@@ -593,7 +682,7 @@ class ScalperEngine:
         if not self._budget_ok(now_ms, 0):                                     # I10: defer, never drop
             self._event("exit_deferred_rate", now_ms)
             return acts
-        ref = q or self.last_quote
+        ref = q or self._trip_quote()
         if ref is None:
             return acts + [Action("alert", now_ms, level="critical", reason="no quote ever seen for held contract")]
         attempt = min(trip["exit_attempt"] + 1, len(c.exit_cross_ticks) - 1)
@@ -617,8 +706,10 @@ class ScalperEngine:
     def _maybe_close_trip(self, now_ms: int) -> List[Action]:
         if self.trip is None or self.working():
             return []
+        if any(o.get("unknown") for o in self.orders.values()):
+            return []                       # I11/I12: never book or archive what is not yet known
         pos = self.position()
-        if pos["qty"] != 0:
+        if pos["qty"] != 0 or pos["price_unknown"]:
             return []
         trip = self.trip
         acts: List[Action] = []
@@ -633,7 +724,7 @@ class ScalperEngine:
                    "side": trip.get("side"), "qty": qty, "lots": qty // self.lot_size,
                    "entry_avg": round(ent, 4), "exit_avg": round(ex, 4),
                    "gross_inr": round(gross, 2), "charges_inr": round(ch, 2), "net_inr": round(net, 2),
-                   "ret_pct": round(100 * (ex - ent) / ent, 4), "exit_reason": trip.get("exit_reason"),
+                   "ret_pct": round(100 * (ex - ent) / ent, 4) if ent else None, "exit_reason": trip.get("exit_reason"),
                    "signal": trip.get("signal"), "signal_metrics": trip.get("signal_metrics"),
                    "entry_quote": trip.get("entry_quote"), "opened_ms": trip["opened_ms"],
                    "first_fill_ms": trip.get("first_fill_ms"), "closed_ms": now_ms,
@@ -668,7 +759,14 @@ class ScalperEngine:
                 self._hist_by_id[o["norenordno"]] = o
         self.orders = {}
         self.trip = None
+        self.last_quote = None
         return acts
+
+    def _trip_quote(self) -> Optional[Quote]:
+        """The last quote seen for the CURRENT trip's contract (never another contract's)."""
+        q = self.last_quote
+        key = (self.trip or {}).get("instrument_key")
+        return q if (q is not None and key is not None and q.instrument_key == key) else None
 
     # ------------------------------------------------------------------ restart
     def snapshot(self) -> Dict[str, Any]:
