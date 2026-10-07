@@ -211,17 +211,17 @@ class TestStopLimit:
 # Freeze-qty splitting — > freeze qty produces multiple children
 # ---------------------------------------------------------------------------
 class TestFreezeSplit:
-    def test_thirty_lots_splits_into_two_children(self):
-        # 30 lots * 65 = 1950 > freeze 1800 -> [1800, 150]
-        children, verdicts = validate_and_build(_ticket(lots=30, fat_finger_cap=50))
+    def test_sixty_lots_splits_into_two_whole_lot_children(self):
+        # 60 lots * 65 = 3900 > freeze 3510 (54 lots) -> [3510, 390], whole lots each
+        children, verdicts = validate_and_build(_ticket(lots=60, fat_finger_cap=100))
         assert children is not None
         assert len(children) == 2
-        assert [c.qty for c in children] == [1800, 150]
-        assert sum(c.qty for c in children) == 1950
+        assert [c.qty for c in children] == [3510, 390]
+        assert sum(c.qty for c in children) == 3900
         assert _all_ok(verdicts)
 
     def test_freeze_children_have_distinct_client_order_ids(self):
-        children, _ = validate_and_build(_ticket(lots=30, fat_finger_cap=50))
+        children, _ = validate_and_build(_ticket(lots=60, fat_finger_cap=100))
         cids = [c.client_order_id for c in children]
         assert len(set(cids)) == len(cids)
         assert cids == ["cid-xyz-0", "cid-xyz-1"]
@@ -229,10 +229,10 @@ class TestFreezeSplit:
         assert [c.remarks for c in children] == cids
 
     def test_every_freeze_child_is_tick_valid(self):
-        children, _ = validate_and_build(_ticket(lots=30, fat_finger_cap=50))
+        children, _ = validate_and_build(_ticket(lots=60, fat_finger_cap=100))
         for c in children:
             assert _is_tick(c.prc)
-            assert 0 < c.qty <= 1800
+            assert 0 < c.qty <= 3510 and c.qty % 65 == 0
 
 
 # ---------------------------------------------------------------------------

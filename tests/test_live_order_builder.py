@@ -21,52 +21,64 @@ from app.execution_policy import resolve_premium_levels
 # slice_to_freeze — freeze-qty order splitting (P1.2)
 # ---------------------------------------------------------------------------
 def test_slice_to_freeze_single_lot():
-    assert slice_to_freeze(65, 1800) == [65]
+    assert slice_to_freeze(65, 3510, lot_size=65) == [65]
 
 
 def test_slice_to_freeze_exact_multiple():
-    assert slice_to_freeze(3600, 1800) == [1800, 1800]
+    assert slice_to_freeze(7020, 3510, lot_size=65) == [3510, 3510]
 
 
 def test_slice_to_freeze_with_remainder():
-    assert slice_to_freeze(1900, 1800) == [1800, 100]
+    assert slice_to_freeze(3575, 3510, lot_size=65) == [3510, 65]
 
 
 def test_slice_to_freeze_sum_equals_qty():
-    for qty in (65, 130, 1755, 1800, 1801, 3599, 9000):
-        chunks = slice_to_freeze(qty, 1800)
+    for qty in (65, 130, 3445, 3510, 3575, 7085, 9100):
+        chunks = slice_to_freeze(qty, 3510, lot_size=65)
         assert sum(chunks) == qty
-        assert all(0 < c <= 1800 for c in chunks)
+        assert all(0 < c <= 3510 and c % 65 == 0 for c in chunks)
+
+
+def test_slice_to_freeze_children_are_whole_lots():
+    # A freeze that is not a lot multiple (NIFTY's pre-2026-10-05 1,800 = 27.69
+    # lots of 65) caps each child at the largest whole-lot qty below it.
+    assert slice_to_freeze(1950, 1800, lot_size=65) == [1755, 195]
 
 
 def test_slice_to_freeze_sensex():
-    assert slice_to_freeze(20, 1000) == [20]
-    assert slice_to_freeze(2500, 1000) == [1000, 1000, 500]
+    assert slice_to_freeze(20, 1000, lot_size=20) == [20]
+    assert slice_to_freeze(2500, 1000, lot_size=20) == [1000, 1000, 500]
 
 
 def test_slice_to_freeze_zero_or_negative():
-    assert slice_to_freeze(0, 1800) == []
-    assert slice_to_freeze(-65, 1800) == []
+    assert slice_to_freeze(0, 3510, lot_size=65) == []
+    assert slice_to_freeze(-65, 3510, lot_size=65) == []
 
 
 def test_slice_to_freeze_hard_cap():
     # qty > 10x freeze is rejected as a fat-finger
     with pytest.raises(ValueError):
-        slice_to_freeze(18001, 1800)
+        slice_to_freeze(35165, 3510, lot_size=65)
     # exactly 10x is allowed
-    assert sum(slice_to_freeze(18000, 1800)) == 18000
+    assert sum(slice_to_freeze(35100, 3510, lot_size=65)) == 35100
 
 
 @pytest.mark.parametrize("bad_freeze", [0, -1, 1.5, "1800", True, None])
 def test_slice_to_freeze_bad_freeze(bad_freeze):
     with pytest.raises(ValueError):
-        slice_to_freeze(65, bad_freeze)
+        slice_to_freeze(65, bad_freeze, lot_size=65)
+
+
+@pytest.mark.parametrize("bad_lot", [0, -1, 1.5, "65", True, None])
+def test_slice_to_freeze_bad_lot_size(bad_lot):
+    with pytest.raises(ValueError):
+        slice_to_freeze(65, 3510, lot_size=bad_lot)
 
 
 @pytest.mark.parametrize("bad_qty", [1.5, "65", True])
 def test_slice_to_freeze_bad_qty(bad_qty):
     with pytest.raises(ValueError):
-        slice_to_freeze(bad_qty, 1800)
+        slice_to_freeze(bad_qty, 3510, lot_size=65)
 
 # ---------------------------------------------------------------------------
 # Shared test fixtures

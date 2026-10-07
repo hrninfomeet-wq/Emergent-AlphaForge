@@ -34,8 +34,8 @@ const OPTION_SIDES = ["CE", "PE"];
 // Values MIRROR the backend flattrade_symbol.EXCHANGE_RULES (incl. the snake_case
 // expiry_cadence tokens the server returns) so the offline preview matches.
 const DEFAULT_RULES = {
-  NIFTY: { exch: "NFO", lot_size: 65, freeze_qty: 1800, tick: 0.05, products: ["NRML", "MIS"], price_types: ["LIMIT", "MARKET", "SL-LMT"], expiry_cadence: "weekly_tue" },
-  BANKNIFTY: { exch: "NFO", lot_size: 30, freeze_qty: 600, tick: 0.05, products: ["NRML", "MIS"], price_types: ["LIMIT", "MARKET", "SL-LMT"], expiry_cadence: "monthly_last_tue" },
+  NIFTY: { exch: "NFO", lot_size: 65, freeze_qty: 3510, tick: 0.05, products: ["NRML", "MIS"], price_types: ["LIMIT", "MARKET", "SL-LMT"], expiry_cadence: "weekly_tue" },
+  BANKNIFTY: { exch: "NFO", lot_size: 30, freeze_qty: 1440, tick: 0.05, products: ["NRML", "MIS"], price_types: ["LIMIT", "MARKET", "SL-LMT"], expiry_cadence: "monthly_last_tue" },
   SENSEX: { exch: "BFO", lot_size: 20, freeze_qty: 1000, tick: 0.05, products: ["NRML", "MIS"], price_types: ["LIMIT", "MARKET", "SL-LMT"], expiry_cadence: "weekly_thu" },
 };
 

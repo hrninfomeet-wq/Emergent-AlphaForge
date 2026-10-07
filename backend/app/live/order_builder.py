@@ -107,32 +107,47 @@ def round_to_tick(
     return round(float(multiplier * d_tick), 2)
 
 
-def slice_to_freeze(qty: int, freeze_qty: int) -> List[int]:
+def slice_to_freeze(qty: int, freeze_qty: int, *, lot_size: int,
+                    cap: bool = True) -> List[int]:
     """Split ``qty`` into child orders each no larger than the exchange freeze qty.
 
     The exchange/broker rejects any single order whose quantity exceeds the
-    instrument's freeze quantity, so a large order MUST be sent as multiple child
-    orders — the API does NOT auto-slice. The children sum to ``qty``; each is
-    ``<= freeze_qty`` (the last carries the remainder).
+    instrument's freeze quantity (the maximum quantity of one order), so a large
+    order MUST be sent as multiple child orders — the API does NOT auto-slice.
 
-    Hard-rejects ``qty > 10 * freeze_qty`` (a sanity cap — that many lots is a
-    fat-finger, not a real order). ``qty <= 0`` returns ``[]``.
+    Every child is a WHOLE number of lots: F&O order quantity must be a lot
+    multiple, so a child is capped at the largest lot multiple <= ``freeze_qty``
+    (NIFTY's old 1,800 is 27.69 lots of 65 — a 1,800-unit child is an exchange
+    reject). The children sum to ``qty``; for a lot-multiple ``qty`` the
+    remainder child is a lot multiple too (a non-multiple ``qty`` cannot be made
+    valid by slicing — its odd remainder is left for the exchange to reject
+    loudly).
 
-    Raises ValueError on a non-positive-int freeze_qty / non-int qty / the cap.
+    ``cap`` (entries): hard-reject ``qty > 10 * freeze_qty`` — that many lots is a
+    fat-finger, not a real order. A flatten passes ``cap=False``: it must always
+    exit whatever the account holds. ``qty <= 0`` returns ``[]``.
+
+    Raises ValueError on a non-positive-int freeze_qty / lot_size, a freeze below
+    one lot, a non-int qty, or the cap.
     """
     if not isinstance(qty, int) or isinstance(qty, bool):
         raise ValueError(f"qty must be an int, got {qty!r}")
     if not isinstance(freeze_qty, int) or isinstance(freeze_qty, bool) or freeze_qty <= 0:
         raise ValueError(f"freeze_qty must be a positive int, got {freeze_qty!r}")
+    if not isinstance(lot_size, int) or isinstance(lot_size, bool) or lot_size <= 0:
+        raise ValueError(f"lot_size must be a positive int, got {lot_size!r}")
+    child_max = (freeze_qty // lot_size) * lot_size
+    if child_max <= 0:
+        raise ValueError(f"freeze_qty {freeze_qty} is below one lot ({lot_size})")
     if qty <= 0:
         return []
-    if qty > 10 * freeze_qty:
+    if cap and qty > 10 * freeze_qty:
         raise ValueError(
             f"qty {qty} exceeds 10x the freeze quantity ({freeze_qty}) — rejected as a fat-finger"
         )
-    n = math.ceil(qty / freeze_qty)
-    children = [freeze_qty] * (n - 1)
-    children.append(qty - freeze_qty * (n - 1))
+    n = math.ceil(qty / child_max)
+    children = [child_max] * (n - 1)
+    children.append(qty - child_max * (n - 1))
     return children
 
 
@@ -370,24 +385,24 @@ def _fail2(verdicts: List[Verdict], check: str, detail: str) -> Tuple[None, List
 
 
 def _validate_child_intent(
-    intent: OrderIntent, *, freeze_qty: int, is_market: bool
+    intent: OrderIntent, *, freeze_qty: int, lot_size: int, is_market: bool
 ) -> Tuple[bool, Optional[str]]:
     """Field-level validation for one freeze child.
 
-    Unlike validate_jdata, a freeze child qty is NOT required to be a lot
-    multiple — 1800 units of a 65-lot instrument is a valid child carved out of
-    a lot-multiple parent. The PARENT qty carries the lot-multiple invariant
-    (checked once in validate_and_build); each CHILD must only be a positive int
-    no larger than the freeze cap, with valid prctyp/prd/ret, a finite positive
-    trigger for SL-LMT, and a price that is exactly 0 for MARKET or finite
-    positive otherwise.
+    Each CHILD is itself an exchange order, so its qty must be a positive whole
+    number of lots no larger than the freeze cap (an exchange rejects any F&O
+    order that is not a lot multiple — a 1,800-unit child of a 65-lot instrument
+    is NOT valid), with valid prctyp/prd/ret, a finite positive trigger for
+    SL-LMT, and a price that is exactly 0 for MARKET or finite positive otherwise.
     """
     if not (
         isinstance(intent.qty, int)
         and not isinstance(intent.qty, bool)
         and 0 < intent.qty <= freeze_qty
+        and intent.qty % lot_size == 0
     ):
-        return False, f"child qty {intent.qty!r} must be a positive int <= freeze {freeze_qty}"
+        return False, (f"child qty {intent.qty!r} must be a positive whole number of "
+                       f"lots ({lot_size}) <= freeze {freeze_qty}")
     if intent.prctyp not in _CHOKE_PRCTYP:
         return False, f"prctyp {intent.prctyp!r} not allowed; permitted {_CHOKE_PRCTYP}"
     if intent.prd not in ALLOWED_PRD:
@@ -522,7 +537,7 @@ def validate_and_build(
     if qty % lot_size != 0:  # invariant guard (always true by construction)
         return _fail2(verdicts, "qty", f"parent qty {qty} is not a multiple of lot_size {lot_size}")
     try:
-        child_qtys = slice_to_freeze(qty, rules["freeze_qty"])
+        child_qtys = slice_to_freeze(qty, rules["freeze_qty"], lot_size=lot_size)
     except ValueError as exc:
         return _fail2(verdicts, "qty", str(exc))
     if not child_qtys:
@@ -636,12 +651,12 @@ def validate_and_build(
         ))
 
     # ------------------------------------------------------------------
-    # jdata — field-validate EACH child (qty<=freeze, prctyp/prd/ret, trigger, prc).
-    # Parent lot-multiple was already enforced; children need not be lot multiples.
+    # jdata — field-validate EACH child (whole lots <= freeze, prctyp/prd/ret,
+    # trigger, prc). Every child is its own exchange order.
     # ------------------------------------------------------------------
     for i, intent in enumerate(children):
         jd_ok, jd_reason = _validate_child_intent(
-            intent, freeze_qty=rules["freeze_qty"], is_market=is_market
+            intent, freeze_qty=rules["freeze_qty"], lot_size=lot_size, is_market=is_market
         )
         if not jd_ok:
             return _fail2(verdicts, "jdata", f"child {i} ({intent.tsym} qty={intent.qty}): {jd_reason}")

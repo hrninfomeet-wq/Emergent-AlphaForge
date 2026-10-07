@@ -31,6 +31,7 @@ Key safety properties
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
@@ -39,6 +40,8 @@ from app.live.broker_protocol import OrderIntent
 from app.live.idempotency import new_client_order_id
 from app.live.order_builder import round_to_tick, slice_to_freeze
 from app.live.safety import validate_jdata
+
+log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -589,13 +592,16 @@ FLATTEN_BAND_SCHEDULE: Tuple[float, ...] = (1.0, 2.0, 4.0)
 #: Seconds to wait after each placement pass before polling the order book.
 FLATTEN_POLL_SECONDS: float = 2.0
 
-#: tsym prefix → exchange single-order freeze qty. Position-book rows don't
-#: name their underlying, so the tsym prefix is the only local signal (order
-#: matters: BANKNIFTY before NIFTY). Unknown prefix → no slicing; an oversize
-#: reject is then surfaced per-leg, never swallowed. Values mirror
-#: flattrade_symbol.EXCHANGE_RULES freeze_qty.
-_FREEZE_BY_TSYM_PREFIX: Tuple[Tuple[str, int], ...] = (
-    ("BANKNIFTY", 600), ("NIFTY", 1800), ("BSXOPT", 1000), ("SENSEX", 1000))
+#: tsym prefix → underlying, for the freeze slicer. Position-book rows don't name
+#: their underlying, so the tsym prefix is the only local signal (order matters:
+#: BANKNIFTY before NIFTY). The prefix must be followed by the expiry's digits,
+#: so NIFTYNXT50 is NOT read as NIFTY. Unknown → no slicing; an oversize reject
+#: is then surfaced per-leg, never swallowed. The freeze qty and lot size come
+#: from flattrade_symbol.EXCHANGE_RULES — the ONE freeze table, read at call
+#: time (a hard-coded copy here went stale at NSE's 2026-10-05 revision).
+_UNDERLYING_BY_TSYM_PREFIX: Tuple[Tuple[str, str], ...] = (
+    ("BANKNIFTY", "BANKNIFTY"), ("NIFTY", "NIFTY"),
+    ("BSXOPT", "SENSEX"), ("SENSEX", "SENSEX"))
 
 #: Leg outcomes (report vocabulary — the UI colors off these strings).
 LEG_FILLED = "FILLED"
@@ -652,11 +658,16 @@ def _leg_price(netqty: int, ref: Optional[float], band_pct: float,
     return prc
 
 
-def _freeze_qty_for_tsym(tsym: str) -> Optional[int]:
+def _freeze_rules_for_tsym(tsym: str) -> Optional[Tuple[int, int]]:
+    """(freeze_qty, lot_size) for a position's tsym, or None when unknown."""
+    from app.live.flattrade_symbol import EXCHANGE_RULES
     t = str(tsym or "").upper()
-    for prefix, freeze in _FREEZE_BY_TSYM_PREFIX:
-        if t.startswith(prefix):
-            return freeze
+    for prefix, underlying in _UNDERLYING_BY_TSYM_PREFIX:
+        if t.startswith(prefix) and t[len(prefix):len(prefix) + 1].isdigit():
+            rules = EXCHANGE_RULES.get(underlying)
+            if not rules:
+                return None
+            return int(rules["freeze_qty"]), int(rules["lot_size"])
     return None
 
 
@@ -700,18 +711,23 @@ def _build_flatten_legs(open_positions: List[Dict[str, Any]],
             "ref": ref,
         }
         qty = abs(netqty)
-        freeze = _freeze_qty_for_tsym(tsym)
-        if freeze and qty > freeze:
+        freeze_rules = _freeze_rules_for_tsym(tsym)
+        slices = [qty]
+        if freeze_rules and qty > freeze_rules[0]:
+            freeze, lot = freeze_rules
+            # The broker row's own lot size wins: a contract listed before a lot
+            # revision keeps its old lot until expiry.
+            row_lot = _parse_netqty(pos.get("ls"))
+            if row_lot and row_lot > 0:
+                lot = row_lot
             try:
-                slices = slice_to_freeze(qty, freeze)
-            except ValueError:
-                # slice_to_freeze fat-finger-caps at 10x freeze — an ENTRY
-                # safeguard. A flatten must always exit what the account holds:
-                # slice unbounded.
-                n = math.ceil(qty / freeze)
-                slices = [freeze] * (n - 1) + [qty - freeze * (n - 1)]
-        else:
-            slices = [qty]
+                # Whole-lot children, UNcapped: the 10x fat-finger cap is an ENTRY
+                # safeguard — a flatten must always exit what the account holds.
+                slices = slice_to_freeze(qty, freeze, lot_size=lot, cap=False)
+            except ValueError as exc:
+                # A freeze below one lot (bad table data) — send it whole; the
+                # oversize reject is surfaced per-leg, never swallowed.
+                log.warning("flatten: cannot freeze-slice %s qty %s: %s", tsym, qty, exc)
         for i, sqty in enumerate(slices):
             legs.append({
                 **base,

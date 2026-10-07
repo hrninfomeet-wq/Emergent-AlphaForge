@@ -26,6 +26,16 @@ Each finding was verified against the code first, then fixed test-first (one com
   a skip, not a halt, before the claim — once taking it would cut into the 12/min + 4/s exit reserve or the
   4/min + 1/s headroom for unseen MCP traffic (entries get ≤ 24/min, ≤ 5/s). Exits and cancels are never refused
   locally; they count.
+- **Freeze quantities updated (NSE/FAOP/76693, 2026-10-01, effective 2026-10-05): NIFTY 1,800 → 3,510 (54 lots),
+  BANKNIFTY 600 → 1,440 (48 lots); slicing now emits whole lots from ONE table.** The old NIFTY 1,800 is 27.69 lots
+  of 65, and both slicers (the order choke-point and the kill switch's emergency flatten) cut children at exactly
+  `freeze_qty` — any NIFTY order or flatten of ≥ 28 lots produced a 1,800-unit child the exchange rejects. The
+  kill switch also carried its own hard-coded copy of the table. `slice_to_freeze` now requires `lot_size` and caps
+  each child at the largest whole-lot qty ≤ freeze (`cap=False` for a flatten, replacing the kill switch's private
+  unbounded fallback); the choke-point's child validation requires whole lots (its docstring had called a 1,800-unit
+  NIFTY child valid); the flatten maps tsym prefix → underlying and reads `EXCHANGE_RULES` at call time, prefers the
+  position row's own `ls` (a contract listed before a lot revision keeps its old lot), and no longer reads
+  NIFTYNXT50 as NIFTY. The frontend ticket's offline fallback mirror is updated to match.
 
 ## [Unreleased] — Scalper lab: adversarial-review fixes; N1 KILLED at replay (2026-10-07)
 

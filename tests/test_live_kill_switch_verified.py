@@ -269,11 +269,12 @@ def test_quote_priced_leg_uses_touch_and_leg_tick():
 
 
 def test_freeze_qty_slicing_builds_child_legs():
-    big = _pos(tsym="NIFTY26JUN26C25000", netqty="4000", lp="200.0")
+    # 120 lots of 65 against NIFTY's 3,510 freeze (54 lots): whole-lot children.
+    big = _pos(tsym="NIFTY26JUN26C25000", netqty="7800", lp="200.0")
     cl = MockNoren(position_book_data=[big])
     out = _run(panic_squareoff_verified(cl, [], [big], sleep=_nosleep))
     slices = [l for l in out["legs"]]
-    assert [l["qty"] for l in slices] == [1800, 1800, 400]
+    assert [l["qty"] for l in slices] == [3510, 3510, 780]
     assert slices[0]["slice"] == "1/3" and slices[2]["slice"] == "3/3"
 
 

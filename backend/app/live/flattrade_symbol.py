@@ -82,15 +82,19 @@ LOT_SIZE_EXPECTED: Dict[str, int] = {u: spec[2] for u, spec in UNDERLYING_SPEC.i
 # NOTE: lot_size + freeze_qty are exchange figures that change periodically —
 # re-verify against the live broker before relying on them (lot sizes have moved
 # NIFTY 75->65, BANKNIFTY 30<->35; freeze quantities are revised by NSE/BSE).
+# freeze_qty = the maximum quantity of ONE order. NSE/FAOP/76693 (2026-10-01),
+# effective 2026-10-05: NIFTY 1,800 -> 3,510 (54 lots), BANKNIFTY 600 -> 1,440
+# (48 lots). This table is the ONLY copy — the order choke-point and the kill
+# switch's emergency-flatten slicer both read it (slices are whole lots).
 # ---------------------------------------------------------------------------
 EXCHANGE_RULES: Dict[str, Dict[str, Any]] = {
     "NIFTY": {
-        "exch": "NFO", "lot_size": 65, "freeze_qty": 1800, "tick": 0.05,
+        "exch": "NFO", "lot_size": 65, "freeze_qty": 3510, "tick": 0.05,
         "products": ["NRML", "MIS"], "price_types": ["LIMIT", "MARKET", "SL-LMT"],
         "expiry_cadence": "weekly_tue",
     },
     "BANKNIFTY": {
-        "exch": "NFO", "lot_size": 30, "freeze_qty": 600, "tick": 0.05,
+        "exch": "NFO", "lot_size": 30, "freeze_qty": 1440, "tick": 0.05,
         "products": ["NRML", "MIS"], "price_types": ["LIMIT", "MARKET", "SL-LMT"],
         "expiry_cadence": "monthly_last_tue",
     },

@@ -18,7 +18,7 @@ class TestRulesFor:
         r = rules_for("NIFTY")
         assert r["exch"] == "NFO"
         assert r["lot_size"] == 65
-        assert r["freeze_qty"] == 1800
+        assert r["freeze_qty"] == 3510   # NSE/FAOP/76693, from 2026-10-05
         assert r["tick"] == 0.05
         assert r["products"] == ["NRML", "MIS"]
         assert r["price_types"] == ["LIMIT", "MARKET", "SL-LMT"]
@@ -28,7 +28,7 @@ class TestRulesFor:
         r = rules_for("BANKNIFTY")
         assert r["exch"] == "NFO"
         assert r["lot_size"] == 30
-        assert r["freeze_qty"] == 600
+        assert r["freeze_qty"] == 1440   # NSE/FAOP/76693, from 2026-10-05
         assert r["expiry_cadence"] == "monthly_last_tue"
 
     def test_sensex(self):
