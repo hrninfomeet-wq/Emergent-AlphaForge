@@ -197,6 +197,24 @@ def _valid_avgprc(value: Any) -> float | None:
 # Status mapping — raw Noren om status → ORDER_STATES member
 # ---------------------------------------------------------------------------
 
+#: Noren status spellings that drift across surfaces → the canonical spelling.
+#: "REJECT" is the decoded OrderBook sample (endpoints/10-order-book.md);
+#: "CANCELLED" is the double-L drift kill_switch.TERMINAL already absorbs.
+_STATUS_ALIASES: Dict[str, str] = {
+    "REJECT": "REJECTED",
+    "CANCELLED": "CANCELED",
+}
+
+
+def canonical_status(raw: Any) -> str:
+    """Upper-case, stripped Noren status with known spelling drift folded onto
+    the canonical form ("REJECT" → "REJECTED", "CANCELLED" → "CANCELED").
+    Anything else is returned upper-cased as-is (unknown stays unknown)."""
+    # M1: coerce to str before .upper() so non-string status values never crash
+    s = str(raw or "").upper().strip()
+    return _STATUS_ALIASES.get(s, s)
+
+
 def map_status(om: Dict[str, Any], current_state: str = "INTENT") -> str:
     """Map a raw Noren om event status to an ORDER_STATES member.
 
@@ -221,9 +239,12 @@ def map_status(om: Dict[str, Any], current_state: str = "INTENT") -> str:
     PARTIALLY_FILLED  → PARTIAL
     PARTIAL           → PARTIAL  (Noren sometimes uses this directly)
     <unknown/missing> → current_state unchanged  (never invent a state)
+
+    Spelling drift is normalised first (see ``canonical_status``): ``REJECT``
+    (the decoded OrderBook sample) → REJECTED, ``CANCELLED`` → CANCELED. Unmapped,
+    those fell through to "unknown" and a rejected order never went terminal.
     """
-    # M1: coerce to str before .upper() so non-string status values never crash
-    raw = str(om.get("status") or "").upper().strip()
+    raw = canonical_status(om.get("status"))
 
     if raw == "PENDING":
         return "SUBMITTED"

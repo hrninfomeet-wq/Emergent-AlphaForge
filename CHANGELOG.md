@@ -41,6 +41,11 @@ Each finding was verified against the code first, then fixed test-first (one com
   2026-11-24 (Guru Nanak); the last three are NIFTY weekly-expiry Tuesdays. DTE (`app/dte.py` counts trading days —
   Fri 09-11 read as DTE 2 for Tue 09-15) and the live session clock treated those closed days as open. Labels for
   03-26 (was "Eid-ul-Fitr" → Shri Ram Navami) and 06-26 (→ Muharram) corrected.
+- **`order_sm.map_status` normalises status spelling drift.** It matched only `REJECTED` / `CANCELED`; the decoded
+  OrderBook sample spells a reject `REJECT`, and `CANCELLED` is the double-L drift `kill_switch` already absorbed.
+  Either fell through to "unknown → keep current state", so a rejected order never went terminal in `apply_om`
+  (live engine + scalping engine). New `order_sm.canonical_status` folds both; the guard's flat-account age-out
+  (above) now uses it instead of its own spelling list.
 
 ## [Unreleased] — Scalper lab: adversarial-review fixes; N1 KILLED at replay (2026-10-07)
 

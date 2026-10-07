@@ -54,8 +54,9 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 from app.execution_policy import spot_mirror_exit_reason
 from app.session_spec import OPTIONS, segment_close_time
 from app.live.broker_protocol import BrokerReadError, TOKEN_EXPIRED_HINT
-from app.live.kill_switch import _normalize_status, _parse_netqty
+from app.live.kill_switch import _parse_netqty
 from app.live.live_sl_monitor import build_monitor_state, evaluate_exit
+from app.live.order_sm import canonical_status
 from app.live.ownership import attribution_for
 from app.live.overall_controls import build_overall_state, evaluate_overall
 
@@ -68,8 +69,9 @@ POLL_SECONDS = 1.5
 PENDING_MAX_SECONDS = 60.0
 #: Minimum gap between order-book checks for one such entry (shared key budget).
 PENDING_ORDERBOOK_RECHECK_SECONDS = 5.0
-#: Entry-order statuses that can never fill again (both spellings Noren emits).
-_ENTRY_DEAD_STATUSES = frozenset({"CANCELED", "CANCELLED", "REJECTED", "REJECT"})
+#: Entry-order statuses that can never fill again (canonical spellings — the
+#: order book's REJECT / CANCELLED drift is folded by order_sm.canonical_status).
+_ENTRY_DEAD_STATUSES = frozenset({"CANCELED", "REJECTED"})
 #: Minimum gap between TICK-driven premium passes. Ticks arrive at a measured p50
 #: 40/s; a premium pass is pure in-memory arithmetic, but there is no value in
 #: re-deciding a stop more often than this and a floor keeps the loop honest.
@@ -1384,7 +1386,7 @@ class LivePositionGuard:
                     if str(o.get("norenordno")) == str(entry["id"])), None)
         if row is None:
             return
-        status = _normalize_status(row.get("status"))
+        status = canonical_status(row.get("status"))
         if (_parse_netqty(row.get("fillshares")) or 0) > 0 or status == "COMPLETE":
             return  # a position exists — the empty book is the anomaly
         if status in _ENTRY_DEAD_STATUSES:
