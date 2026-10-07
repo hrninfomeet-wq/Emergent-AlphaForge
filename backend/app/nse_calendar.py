@@ -63,20 +63,28 @@ _HOLIDAYS_2025: Set[str] = {
     "2025-12-25",  # Christmas
 }
 
+# 2026: NSE/FAOP/71777 (2025-12-12, "Trading holidays for the calendar year
+# 2026", F&O segment) — 15 weekday holidays + 4 on weekends — plus the declared
+# 2026-01-15 civic-election closure. Re-verified against that circular 2026-10-07
+# (four weekday holidays had been missed: 09-14, 10-20, 11-10, 11-24).
 _HOLIDAYS_2026: Set[str] = {
     "2026-01-15",  # Maharashtra municipal corporation/BMC civic elections (sudden, declared)
     "2026-01-26",  # Republic Day
     "2026-03-03",  # Holi
-    "2026-03-26",  # Eid-ul-Fitr
-    "2026-03-31",  # Mahavir Jayanti / Annual financial close
+    "2026-03-26",  # Shri Ram Navami
+    "2026-03-31",  # Shri Mahavir Jayanti
     "2026-04-03",  # Good Friday
-    "2026-04-14",  # Dr. Ambedkar Jayanti
+    "2026-04-14",  # Dr. Baba Saheb Ambedkar Jayanti
     "2026-05-01",  # Maharashtra Day
-    "2026-05-28",  # Eid-ul-Adha (Bakri Id)
-    "2026-06-26",  # Market closure — no NSE session (Upstox has no historical; only stale-feed artifacts were stored). Confirmed 2026-06-30.
+    "2026-05-28",  # Bakri Id
+    "2026-06-26",  # Muharram (no NSE session; only stale-feed artifacts were stored — confirmed 2026-06-30)
     "2026-08-15",  # Independence Day (Saturday this year, but listed for safety)
+    "2026-09-14",  # Ganesh Chaturthi
     "2026-10-02",  # Mahatma Gandhi Jayanti
-    "2026-11-08",  # Diwali Laxmi Pujan (Sunday) - special session
+    "2026-10-20",  # Dussehra (Tuesday — NIFTY weekly expiry day)
+    "2026-11-08",  # Diwali Laxmi Pujan (Sunday) - Muhurat session, timing TBA
+    "2026-11-10",  # Diwali-Balipratipada (Tuesday — NIFTY weekly expiry day)
+    "2026-11-24",  # Prakash Gurpurb Sri Guru Nanak Dev (Tuesday — NIFTY weekly expiry day)
     "2026-12-25",  # Christmas
 }
 
@@ -145,16 +153,20 @@ HOLIDAY_LABELS: dict = {
     "2026-01-15": "Maharashtra civic elections",
     "2026-01-26": "Republic Day",
     "2026-03-03": "Holi",
-    "2026-03-26": "Eid-ul-Fitr",
-    "2026-03-31": "Mahavir Jayanti / Annual close",
+    "2026-03-26": "Shri Ram Navami",
+    "2026-03-31": "Shri Mahavir Jayanti",
     "2026-04-03": "Good Friday",
     "2026-04-14": "Dr. Ambedkar Jayanti",
     "2026-05-01": "Maharashtra Day",
     "2026-05-28": "Eid-ul-Adha (Bakri Id)",
-    "2026-06-26": "Market holiday",
+    "2026-06-26": "Muharram",
     "2026-08-15": "Independence Day",
+    "2026-09-14": "Ganesh Chaturthi",
     "2026-10-02": "Mahatma Gandhi Jayanti",
+    "2026-10-20": "Dussehra",
     "2026-11-08": "Diwali Laxmi Pujan",
+    "2026-11-10": "Diwali-Balipratipada",
+    "2026-11-24": "Prakash Gurpurb Sri Guru Nanak Dev",
     "2026-12-25": "Christmas",
 }
 

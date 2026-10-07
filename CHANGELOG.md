@@ -36,6 +36,11 @@ Each finding was verified against the code first, then fixed test-first (one com
   NIFTY child valid); the flatten maps tsym prefix → underlying and reads `EXCHANGE_RULES` at call time, prefers the
   position row's own `ls` (a contract listed before a lot revision keeps its old lot), and no longer reads
   NIFTYNXT50 as NIFTY. The frontend ticket's offline fallback mirror is updated to match.
+- **2026 holiday calendar re-verified against NSE/FAOP/71777** (2025-12-12, F&O trading holidays 2026): four weekday
+  holidays were missing — 2026-09-14 (Ganesh Chaturthi), 2026-10-20 (Dussehra), 2026-11-10 (Diwali-Balipratipada),
+  2026-11-24 (Guru Nanak); the last three are NIFTY weekly-expiry Tuesdays. DTE (`app/dte.py` counts trading days —
+  Fri 09-11 read as DTE 2 for Tue 09-15) and the live session clock treated those closed days as open. Labels for
+  03-26 (was "Eid-ul-Fitr" → Shri Ram Navami) and 06-26 (→ Muharram) corrected.
 
 ## [Unreleased] — Scalper lab: adversarial-review fixes; N1 KILLED at replay (2026-10-07)
 
