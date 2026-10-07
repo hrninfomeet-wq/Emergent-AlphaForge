@@ -1,0 +1,1838 @@
+[
+ {
+  "day": "2026-09-07",
+  "underlying": "NIFTY",
+  "lot_size": 65,
+  "index_ticks": 22537,
+  "index_interarrival_ms": {
+   "p50": 1048.0,
+   "p90": 1054.0,
+   "p99": 1065.0
+  },
+  "index_share_of_seconds_with_update": 0.7395,
+  "index_distinct_exchange_ts_per_min": 59.99,
+  "index_ts_to_ingest_ms": {
+   "p50": 1030.0,
+   "p90": 1096.0
+  },
+  "index_received_to_ingest_ms": {
+   "p50": 0.0,
+   "p90": 0.0
+  },
+  "option_instruments_seen": 18,
+  "expiries_seen": [
+   "2026-09-08"
+  ],
+  "atm_dte": 1,
+  "atm_quote_updates": 68760,
+  "atm_quote_interarrival_ms": {
+   "p50": 735.0,
+   "p90": 1050.0,
+   "p99": 1220.0
+  },
+  "atm_ts_to_ingest_ms": {
+   "p50": 152.0,
+   "p90": 234.0
+  },
+  "atm_trade_tick_share": 1.0,
+  "atm_by_tod": {
+   "09:15-09:45": {
+    "n": 5349,
+    "premium_mid_p50": 71.675,
+    "spread_pts": {
+     "p25": 0.15,
+     "p50": 0.15,
+     "p90": 0.2
+    },
+    "spread_pct_mid": {
+     "p50": 0.2197,
+     "p90": 0.291
+    },
+    "touch_lots": {
+     "p10": 1.0,
+     "p50": 8.0
+    },
+    "ask_touch_lots_p10": 2.0,
+    "ask5_lots": {
+     "p10": 102.0,
+     "p50": 202.0
+    },
+    "bid5_lots": {
+     "p10": 116.8,
+     "p50": 219.0
+    }
+   },
+   "09:45-11:30": {
+    "n": 19242,
+    "premium_mid_p50": 71.05,
+    "spread_pts": {
+     "p25": 0.15,
+     "p50": 0.15,
+     "p90": 0.25
+    },
+    "spread_pct_mid": {
+     "p50": 0.226,
+     "p90": 0.3085
+    },
+    "touch_lots": {
+     "p10": 1.0,
+     "p50": 10.0
+    },
+    "ask_touch_lots_p10": 2.0,
+    "ask5_lots": {
+     "p10": 129.0,
+     "p50": 333.0
+    },
+    "bid5_lots": {
+     "p10": 141.0,
+     "p50": 357.0
+    }
+   },
+   "11:30-13:30": {
+    "n": 22039,
+    "premium_mid_p50": 63.275,
+    "spread_pts": {
+     "p25": 0.1,
+     "p50": 0.15,
+     "p90": 0.3
+    },
+    "spread_pct_mid": {
+     "p50": 0.2278,
+     "p90": 0.3256
+    },
+    "touch_lots": {
+     "p10": 1.0,
+     "p50": 10.0
+    },
+    "ask_touch_lots_p10": 2.0,
+    "ask5_lots": {
+     "p10": 101.0,
+     "p50": 329.0
+    },
+    "bid5_lots": {
+     "p10": 103.0,
+     "p50": 335.0
+    }
+   },
+   "13:30-15:00": {
+    "n": 16610,
+    "premium_mid_p50": 54.4,
+    "spread_pts": {
+     "p25": 0.1,
+     "p50": 0.15,
+     "p90": 0.25
+    },
+    "spread_pct_mid": {
+     "p50": 0.2438,
+     "p90": 0.3494
+    },
+    "touch_lots": {
+     "p10": 1.0,
+     "p50": 10.0
+    },
+    "ask_touch_lots_p10": 3.0,
+    "ask5_lots": {
+     "p10": 102.0,
+     "p50": 336.0
+    },
+    "bid5_lots": {
+     "p10": 95.0,
+     "p50": 330.0
+    }
+   },
+   "15:00-15:30": {
+    "n": 5512,
+    "premium_mid_p50": 46.175,
+    "spread_pts": {
+     "p25": 0.1,
+     "p50": 0.15,
+     "p90": 0.3
+    },
+    "spread_pct_mid": {
+     "p50": 0.2577,
+     "p90": 0.3839
+    },
+    "touch_lots": {
+     "p10": 1.0,
+     "p50": 8.0
+    },
+    "ask_touch_lots_p10": 3.0,
+    "ask5_lots": {
+     "p10": 69.0,
+     "p50": 162.0
+    },
+    "bid5_lots": {
+     "p10": 55.0,
+     "p50": 138.0
+    }
+   },
+   "15:30-15:40": {
+    "n": 8,
+    "premium_mid_p50": 61.4375,
+    "spread_pts": {
+     "p25": 0.2,
+     "p50": 0.225,
+     "p90": 0.25
+    },
+    "spread_pct_mid": {
+     "p50": 0.3654,
+     "p90": 0.3967
+    },
+    "touch_lots": {
+     "p10": 19.0,
+     "p50": 20.5
+    },
+    "ask_touch_lots_p10": 19.0,
+    "ask5_lots": {
+     "p10": 101.0,
+     "p50": 194.5
+    },
+    "bid5_lots": {
+     "p10": 114.0,
+     "p50": 130.5
+    }
+   }
+  },
+  "atm_all": {
+   "premium_mid_p50": 71.35,
+   "spread_pts": {
+    "p25": 0.1,
+    "p50": 0.15,
+    "p75": 0.2,
+    "p90": 0.25,
+    "p99": 0.3
+   },
+   "spread_ticks_p50": 3.0,
+   "spread_pct_mid": {
+    "p50": 0.2356,
+    "p90": 0.3244
+   },
+   "touch_lots": {
+    "p10": 1.0,
+    "p50": 9.0
+   },
+   "ask5_lots": {
+    "p10": 101.0,
+    "p50": 296.0
+   }
+  }
+ },
+ {
+  "day": "2026-09-07",
+  "underlying": "SENSEX",
+  "lot_size": 20,
+  "index_ticks": 22473,
+  "index_interarrival_ms": {
+   "p50": 1048.0,
+   "p90": 1055.0,
+   "p99": 1067.0
+  },
+  "index_share_of_seconds_with_update": 0.9652,
+  "index_distinct_exchange_ts_per_min": 59.82,
+  "index_ts_to_ingest_ms": {
+   "p50": 1521.0,
+   "p90": 1609.0
+  },
+  "index_received_to_ingest_ms": {
+   "p50": 0.0,
+   "p90": 0.0
+  },
+  "option_instruments_seen": 22,
+  "expiries_seen": [
+   "2026-09-10"
+  ],
+  "atm_dte": 3,
+  "atm_quote_updates": 45453,
+  "atm_quote_interarrival_ms": {
+   "p50": 1050.0,
+   "p90": 1199.0,
+   "p99": 3151.0
+  },
+  "atm_ts_to_ingest_ms": {
+   "p50": 373.0,
+   "p90": 1058.0
+  },
+  "atm_trade_tick_share": 1.0,
+  "atm_by_tod": {
+   "09:15-09:45": {
+    "n": 3703,
+    "premium_mid_p50": 361.0,
+    "spread_pts": {
+     "p25": 0.6,
+     "p50": 0.75,
+     "p90": 1.05
+    },
+    "spread_pct_mid": {
+     "p50": 0.2193,
+     "p90": 0.2727
+    },
+    "touch_lots": {
+     "p10": 1.0,
+     "p50": 2.0
+    },
+    "ask_touch_lots_p10": 1.0,
+    "ask5_lots": {
+     "p10": 12.0,
+     "p50": 24.0
+    },
+    "bid5_lots": {
+     "p10": 14.0,
+     "p50": 28.0
+    }
+   },
+   "09:45-11:30": {
+    "n": 12495,
+    "premium_mid_p50": 341.2,
+    "spread_pts": {
+     "p25": 0.6,
+     "p50": 0.75,
+     "p90": 1.15
+    },
+    "spread_pct_mid": {
+     "p50": 0.2228,
+     "p90": 0.2722
+    },
+    "touch_lots": {
+     "p10": 1.0,
+     "p50": 3.0
+    },
+    "ask_touch_lots_p10": 1.0,
+    "ask5_lots": {
+     "p10": 17.0,
+     "p50": 33.0
+    },
+    "bid5_lots": {
+     "p10": 18.0,
+     "p50": 33.0
+    }
+   },
+   "11:30-13:30": {
+    "n": 14327,
+    "premium_mid_p50": 300.775,
+    "spread_pts": {
+     "p25": 0.6,
+     "p50": 0.75,
+     "p90": 1.25
+    },
+    "spread_pct_mid": {
+     "p50": 0.228,
+     "p90": 0.2754
+    },
+    "touch_lots": {
+     "p10": 1.0,
+     "p50": 3.0
+    },
+    "ask_touch_lots_p10": 1.0,
+    "ask5_lots": {
+     "p10": 18.0,
+     "p50": 36.0
+    },
+    "bid5_lots": {
+     "p10": 20.0,
+     "p50": 36.0
+    }
+   },
+   "13:30-15:00": {
+    "n": 11090,
+    "premium_mid_p50": 280.8,
+    "spread_pts": {
+     "p25": 0.6,
+     "p50": 0.7,
+     "p90": 1.3
+    },
+    "spread_pct_mid": {
+     "p50": 0.2411,
+     "p90": 0.2847
+    },
+    "touch_lots": {
+     "p10": 1.0,
+     "p50": 3.0
+    },
+    "ask_touch_lots_p10": 2.0,
+    "ask5_lots": {
+     "p10": 22.0,
+     "p50": 40.0
+    },
+    "bid5_lots": {
+     "p10": 20.0,
+     "p50": 37.0
+    }
+   },
+   "15:00-15:30": {
+    "n": 3835,
+    "premium_mid_p50": 293.075,
+    "spread_pts": {
+     "p25": 0.6,
+     "p50": 0.8,
+     "p90": 1.4
+    },
+    "spread_pct_mid": {
+     "p50": 0.256,
+     "p90": 0.3166
+    },
+    "touch_lots": {
+     "p10": 1.0,
+     "p50": 3.0
+    },
+    "ask_touch_lots_p10": 1.0,
+    "ask5_lots": {
+     "p10": 21.0,
+     "p50": 38.0
+    },
+    "bid5_lots": {
+     "p10": 19.0,
+     "p50": 34.0
+    }
+   },
+   "15:30-15:40": {
+    "n": 3,
+    "premium_mid_p50": 262.325,
+    "spread_pts": {
+     "p25": 0.75,
+     "p50": 0.85,
+     "p90": 1.33
+    },
+    "spread_pct_mid": {
+     "p50": 0.324,
+     "p90": 0.3401
+    },
+    "touch_lots": {
+     "p10": 2.6,
+     "p50": 5.0
+    },
+    "ask_touch_lots_p10": 2.6,
+    "ask5_lots": {
+     "p10": 21.4,
+     "p50": 27.0
+    },
+    "bid5_lots": {
+     "p10": 18.4,
+     "p50": 24.0
+    }
+   }
+  },
+  "atm_all": {
+   "premium_mid_p50": 349.875,
+   "spread_pts": {
+    "p25": 0.6,
+    "p50": 0.75,
+    "p75": 1.0,
+    "p90": 1.25,
+    "p99": 1.45
+   },
+   "spread_ticks_p50": 15.0,
+   "spread_pct_mid": {
+    "p50": 0.2311,
+    "p90": 0.2803
+   },
+   "touch_lots": {
+    "p10": 1.0,
+    "p50": 3.0
+   },
+   "ask5_lots": {
+    "p10": 18.0,
+    "p50": 35.0
+   }
+  }
+ },
+ {
+  "day": "2026-09-09",
+  "underlying": "NIFTY",
+  "lot_size": 65,
+  "index_ticks": 3844,
+  "index_interarrival_ms": {
+   "p50": 1046.0,
+   "p90": 1058.0,
+   "p99": 1074.0
+  },
+  "index_share_of_seconds_with_update": 0.9776,
+  "index_distinct_exchange_ts_per_min": 59.95,
+  "index_ts_to_ingest_ms": {
+   "p50": 1102.0,
+   "p90": 1168.0
+  },
+  "index_received_to_ingest_ms": {
+   "p50": 0.0,
+   "p90": 0.0
+  },
+  "option_instruments_seen": 14,
+  "expiries_seen": [
+   "2026-09-15"
+  ],
+  "atm_dte": 4,
+  "atm_quote_updates": 11359,
+  "atm_quote_interarrival_ms": {
+   "p50": 742.0,
+   "p90": 1051.0,
+   "p99": 1189.44
+  },
+  "atm_ts_to_ingest_ms": {
+   "p50": 202.0,
+   "p90": 339.0
+  },
+  "atm_trade_tick_share": 1.0,
+  "atm_by_tod": {
+   "11:30-13:30": {
+    "n": 9366,
+    "premium_mid_p50": 102.15,
+    "spread_pts": {
+     "p25": 0.2,
+     "p50": 0.25,
+     "p90": 0.4
+    },
+    "spread_pct_mid": {
+     "p50": 0.2202,
+     "p90": 0.269
+    },
+    "touch_lots": {
+     "p10": 1.0,
+     "p50": 5.0
+    },
+    "ask_touch_lots_p10": 2.0,
+    "ask5_lots": {
+     "p10": 67.0,
+     "p50": 124.0
+    },
+    "bid5_lots": {
+     "p10": 61.0,
+     "p50": 129.5
+    }
+   },
+   "13:30-15:00": {
+    "n": 1993,
+    "premium_mid_p50": 143.375,
+    "spread_pts": {
+     "p25": 0.2,
+     "p50": 0.25,
+     "p90": 0.4
+    },
+    "spread_pct_mid": {
+     "p50": 0.2278,
+     "p90": 0.2664
+    },
+    "touch_lots": {
+     "p10": 1.0,
+     "p50": 5.0
+    },
+    "ask_touch_lots_p10": 2.0,
+    "ask5_lots": {
+     "p10": 67.2,
+     "p50": 125.0
+    },
+    "bid5_lots": {
+     "p10": 60.0,
+     "p50": 122.0
+    }
+   }
+  },
+  "atm_all": {
+   "premium_mid_p50": 102.15,
+   "spread_pts": {
+    "p25": 0.2,
+    "p50": 0.25,
+    "p75": 0.35,
+    "p90": 0.4,
+    "p99": 0.45
+   },
+   "spread_ticks_p50": 5.0,
+   "spread_pct_mid": {
+    "p50": 0.2203,
+    "p90": 0.2686
+   },
+   "touch_lots": {
+    "p10": 1.0,
+    "p50": 5.0
+   },
+   "ask5_lots": {
+    "p10": 67.0,
+    "p50": 124.0
+   }
+  }
+ },
+ {
+  "day": "2026-09-09",
+  "underlying": "SENSEX",
+  "lot_size": 20,
+  "index_ticks": 3834,
+  "index_interarrival_ms": {
+   "p50": 1046.0,
+   "p90": 1057.0,
+   "p99": 1071.0
+  },
+  "index_share_of_seconds_with_update": 0.9599,
+  "index_distinct_exchange_ts_per_min": 59.77,
+  "index_ts_to_ingest_ms": {
+   "p50": 2546.0,
+   "p90": 2612.0
+  },
+  "index_received_to_ingest_ms": {
+   "p50": 0.0,
+   "p90": 0.0
+  },
+  "option_instruments_seen": 16,
+  "expiries_seen": [
+   "2026-09-10"
+  ],
+  "atm_dte": 1,
+  "atm_quote_updates": 8862,
+  "atm_quote_interarrival_ms": {
+   "p50": 1043.0,
+   "p90": 1060.0,
+   "p99": 1949.0
+  },
+  "atm_ts_to_ingest_ms": {
+   "p50": 281.5,
+   "p90": 838.0
+  },
+  "atm_trade_tick_share": 1.0,
+  "atm_by_tod": {
+   "11:30-13:30": {
+    "n": 7322,
+    "premium_mid_p50": 242.2375,
+    "spread_pts": {
+     "p25": 0.4,
+     "p50": 0.55,
+     "p90": 0.7
+    },
+    "spread_pct_mid": {
+     "p50": 0.227,
+     "p90": 0.2729
+    },
+    "touch_lots": {
+     "p10": 1.0,
+     "p50": 3.0
+    },
+    "ask_touch_lots_p10": 1.0,
+    "ask5_lots": {
+     "p10": 30.0,
+     "p50": 58.0
+    },
+    "bid5_lots": {
+     "p10": 29.0,
+     "p50": 55.0
+    }
+   },
+   "13:30-15:00": {
+    "n": 1540,
+    "premium_mid_p50": 238.625,
+    "spread_pts": {
+     "p25": 0.45,
+     "p50": 0.5,
+     "p90": 0.65
+    },
+    "spread_pct_mid": {
+     "p50": 0.2264,
+     "p90": 0.2701
+    },
+    "touch_lots": {
+     "p10": 1.0,
+     "p50": 3.0
+    },
+    "ask_touch_lots_p10": 1.0,
+    "ask5_lots": {
+     "p10": 32.0,
+     "p50": 60.0
+    },
+    "bid5_lots": {
+     "p10": 33.0,
+     "p50": 59.0
+    }
+   }
+  },
+  "atm_all": {
+   "premium_mid_p50": 239.675,
+   "spread_pts": {
+    "p25": 0.4,
+    "p50": 0.55,
+    "p75": 0.65,
+    "p90": 0.7,
+    "p99": 0.85
+   },
+   "spread_ticks_p50": 11.0,
+   "spread_pct_mid": {
+    "p50": 0.2269,
+    "p90": 0.2722
+   },
+   "touch_lots": {
+    "p10": 1.0,
+    "p50": 3.0
+   },
+   "ask5_lots": {
+    "p10": 30.0,
+    "p50": 59.0
+   }
+  }
+ },
+ {
+  "day": "2026-09-15",
+  "underlying": "NIFTY",
+  "lot_size": 65,
+  "index_ticks": 4181,
+  "index_interarrival_ms": {
+   "p50": 1039.0,
+   "p90": 1073.0,
+   "p99": 1343.68
+  },
+  "index_share_of_seconds_with_update": 0.0613,
+  "index_distinct_exchange_ts_per_min": 3.81,
+  "index_ts_to_ingest_ms": {
+   "p50": 1193.0,
+   "p90": 1293.0
+  },
+  "index_received_to_ingest_ms": {
+   "p50": 192.0,
+   "p90": 239.0
+  },
+  "option_instruments_seen": 32,
+  "expiries_seen": [
+   "2026-09-15"
+  ],
+  "atm_dte": 0,
+  "atm_quote_updates": 12627,
+  "atm_quote_interarrival_ms": {
+   "p50": 645.0,
+   "p90": 1055.0,
+   "p99": 1506.0
+  },
+  "atm_ts_to_ingest_ms": {
+   "p50": 334.0,
+   "p90": 494.0
+  },
+  "atm_trade_tick_share": 1.0,
+  "atm_by_tod": {
+   "09:15-09:45": {
+    "n": 5440,
+    "premium_mid_p50": 56.125,
+    "spread_pts": {
+     "p25": 0.1,
+     "p50": 0.15,
+     "p90": 0.2
+    },
+    "spread_pct_mid": {
+     "p50": 0.2581,
+     "p90": 0.3284
+    },
+    "touch_lots": {
+     "p10": 1.0,
+     "p50": 8.0
+    },
+    "ask_touch_lots_p10": 2.0,
+    "ask5_lots": {
+     "p10": 108.9,
+     "p50": 213.0
+    },
+    "bid5_lots": {
+     "p10": 126.0,
+     "p50": 232.0
+    }
+   },
+   "09:45-11:30": {
+    "n": 6797,
+    "premium_mid_p50": 61.0,
+    "spread_pts": {
+     "p25": 0.1,
+     "p50": 0.15,
+     "p90": 0.2
+    },
+    "spread_pct_mid": {
+     "p50": 0.2489,
+     "p90": 0.318
+    },
+    "touch_lots": {
+     "p10": 1.0,
+     "p50": 8.0
+    },
+    "ask_touch_lots_p10": 2.0,
+    "ask5_lots": {
+     "p10": 127.0,
+     "p50": 226.0
+    },
+    "bid5_lots": {
+     "p10": 140.0,
+     "p50": 248.0
+    }
+   },
+   "15:00-15:30": {
+    "n": 281,
+    "premium_mid_p50": 28.65,
+    "spread_pts": {
+     "p25": 0.05,
+     "p50": 0.1,
+     "p90": 0.15
+    },
+    "spread_pct_mid": {
+     "p50": 0.3643,
+     "p90": 40.0
+    },
+    "touch_lots": {
+     "p10": 1.0,
+     "p50": 14.0
+    },
+    "ask_touch_lots_p10": 2.0,
+    "ask5_lots": {
+     "p10": 139.0,
+     "p50": 280.0
+    },
+    "bid5_lots": {
+     "p10": 113.0,
+     "p50": 300.0
+    }
+   }
+  },
+  "atm_all": {
+   "premium_mid_p50": 59.125,
+   "spread_pts": {
+    "p25": 0.1,
+    "p50": 0.15,
+    "p75": 0.15,
+    "p90": 0.2,
+    "p99": 0.25
+   },
+   "spread_ticks_p50": 3.0,
+   "spread_pct_mid": {
+    "p50": 0.2526,
+    "p90": 0.3306
+   },
+   "touch_lots": {
+    "p10": 1.0,
+    "p50": 8.0
+   },
+   "ask5_lots": {
+    "p10": 119.0,
+    "p50": 222.0
+   }
+  }
+ },
+ {
+  "day": "2026-09-15",
+  "underlying": "SENSEX",
+  "lot_size": 20,
+  "index_ticks": 4168,
+  "index_interarrival_ms": {
+   "p50": 1040.0,
+   "p90": 1073.4,
+   "p99": 1488.46
+  },
+  "index_share_of_seconds_with_update": 0.0592,
+  "index_distinct_exchange_ts_per_min": 3.8,
+  "index_ts_to_ingest_ms": {
+   "p50": 353.0,
+   "p90": 457.0
+  },
+  "index_received_to_ingest_ms": {
+   "p50": 191.0,
+   "p90": 239.0
+  },
+  "option_instruments_seen": 38,
+  "expiries_seen": [
+   "2026-09-17"
+  ],
+  "atm_dte": 2,
+  "atm_quote_updates": 9396,
+  "atm_quote_interarrival_ms": {
+   "p50": 1036.0,
+   "p90": 1115.0,
+   "p99": 4035.32
+  },
+  "atm_ts_to_ingest_ms": {
+   "p50": 500.0,
+   "p90": 1136.0
+  },
+  "atm_trade_tick_share": 1.0,
+  "atm_by_tod": {
+   "09:15-09:45": {
+    "n": 4337,
+    "premium_mid_p50": 365.5,
+    "spread_pts": {
+     "p25": 0.65,
+     "p50": 0.85,
+     "p90": 1.05
+    },
+    "spread_pct_mid": {
+     "p50": 0.2288,
+     "p90": 0.2817
+    },
+    "touch_lots": {
+     "p10": 1.0,
+     "p50": 2.0
+    },
+    "ask_touch_lots_p10": 1.0,
+    "ask5_lots": {
+     "p10": 13.0,
+     "p50": 22.0
+    },
+    "bid5_lots": {
+     "p10": 14.0,
+     "p50": 25.0
+    }
+   },
+   "09:45-11:30": {
+    "n": 4792,
+    "premium_mid_p50": 391.4,
+    "spread_pts": {
+     "p25": 0.7,
+     "p50": 0.85,
+     "p90": 1.05
+    },
+    "spread_pct_mid": {
+     "p50": 0.2199,
+     "p90": 0.2695
+    },
+    "touch_lots": {
+     "p10": 1.0,
+     "p50": 2.0
+    },
+    "ask_touch_lots_p10": 1.0,
+    "ask5_lots": {
+     "p10": 13.0,
+     "p50": 22.0
+    },
+    "bid5_lots": {
+     "p10": 15.0,
+     "p50": 26.0
+    }
+   },
+   "15:00-15:30": {
+    "n": 188,
+    "premium_mid_p50": 376.65,
+    "spread_pts": {
+     "p25": 0.8,
+     "p50": 1.0,
+     "p90": 1.35
+    },
+    "spread_pct_mid": {
+     "p50": 0.2572,
+     "p90": 0.359
+    },
+    "touch_lots": {
+     "p10": 1.0,
+     "p50": 2.0
+    },
+    "ask_touch_lots_p10": 1.0,
+    "ask5_lots": {
+     "p10": 12.0,
+     "p50": 22.0
+    },
+    "bid5_lots": {
+     "p10": 12.7,
+     "p50": 22.0
+    }
+   }
+  },
+  "atm_all": {
+   "premium_mid_p50": 379.4625,
+   "spread_pts": {
+    "p25": 0.65,
+    "p50": 0.85,
+    "p75": 0.95,
+    "p90": 1.05,
+    "p99": 1.4
+   },
+   "spread_ticks_p50": 17.0,
+   "spread_pct_mid": {
+    "p50": 0.2248,
+    "p90": 0.2768
+   },
+   "touch_lots": {
+    "p10": 1.0,
+    "p50": 2.0
+   },
+   "ask5_lots": {
+    "p10": 13.0,
+    "p50": 22.0
+   }
+  }
+ },
+ {
+  "day": "2026-09-16",
+  "underlying": "NIFTY",
+  "lot_size": 65,
+  "index_ticks": 11885,
+  "index_interarrival_ms": {
+   "p50": 1042.0,
+   "p90": 1086.0,
+   "p99": 2754.27
+  },
+  "index_share_of_seconds_with_update": 0.8634,
+  "index_distinct_exchange_ts_per_min": 59.16,
+  "index_ts_to_ingest_ms": {
+   "p50": 2194.0,
+   "p90": 2377.0
+  },
+  "index_received_to_ingest_ms": {
+   "p50": 1195.0,
+   "p90": 1368.6
+  },
+  "option_instruments_seen": 20,
+  "expiries_seen": [
+   "2026-09-22"
+  ],
+  "atm_dte": 4,
+  "atm_quote_updates": 35197,
+  "atm_quote_interarrival_ms": {
+   "p50": 668.0,
+   "p90": 1054.0,
+   "p99": 2866.48
+  },
+  "atm_ts_to_ingest_ms": {
+   "p50": 1364.0,
+   "p90": 1668.0
+  },
+  "atm_trade_tick_share": 1.0,
+  "atm_by_tod": {
+   "09:45-11:30": {
+    "n": 15752,
+    "premium_mid_p50": 162.3875,
+    "spread_pts": {
+     "p25": 0.3,
+     "p50": 0.35,
+     "p90": 0.45
+    },
+    "spread_pct_mid": {
+     "p50": 0.2254,
+     "p90": 0.2654
+    },
+    "touch_lots": {
+     "p10": 1.0,
+     "p50": 3.0
+    },
+    "ask_touch_lots_p10": 1.0,
+    "ask5_lots": {
+     "p10": 42.0,
+     "p50": 70.0
+    },
+    "bid5_lots": {
+     "p10": 37.0,
+     "p50": 68.0
+    }
+   },
+   "11:30-13:30": {
+    "n": 19445,
+    "premium_mid_p50": 160.525,
+    "spread_pts": {
+     "p25": 0.3,
+     "p50": 0.35,
+     "p90": 0.4
+    },
+    "spread_pct_mid": {
+     "p50": 0.2186,
+     "p90": 0.258
+    },
+    "touch_lots": {
+     "p10": 1.0,
+     "p50": 4.0
+    },
+    "ask_touch_lots_p10": 2.0,
+    "ask5_lots": {
+     "p10": 48.0,
+     "p50": 79.0
+    },
+    "bid5_lots": {
+     "p10": 41.0,
+     "p50": 74.0
+    }
+   }
+  },
+  "atm_all": {
+   "premium_mid_p50": 160.925,
+   "spread_pts": {
+    "p25": 0.3,
+    "p50": 0.35,
+    "p75": 0.4,
+    "p90": 0.45,
+    "p99": 0.5
+   },
+   "spread_ticks_p50": 7.0,
+   "spread_pct_mid": {
+    "p50": 0.2217,
+    "p90": 0.2625
+   },
+   "touch_lots": {
+    "p10": 1.0,
+    "p50": 4.0
+   },
+   "ask5_lots": {
+    "p10": 45.0,
+    "p50": 75.0
+   }
+  }
+ },
+ {
+  "day": "2026-09-16",
+  "underlying": "SENSEX",
+  "lot_size": 20,
+  "index_ticks": 11852,
+  "index_interarrival_ms": {
+   "p50": 1041.0,
+   "p90": 1090.0,
+   "p99": 2700.0
+  },
+  "index_share_of_seconds_with_update": 0.892,
+  "index_distinct_exchange_ts_per_min": 58.97,
+  "index_ts_to_ingest_ms": {
+   "p50": 1350.0,
+   "p90": 1561.0
+  },
+  "index_received_to_ingest_ms": {
+   "p50": 1196.0,
+   "p90": 1371.0
+  },
+  "option_instruments_seen": 20,
+  "expiries_seen": [
+   "2026-09-17"
+  ],
+  "atm_dte": 1,
+  "atm_quote_updates": 29482,
+  "atm_quote_interarrival_ms": {
+   "p50": 923.0,
+   "p90": 1103.0,
+   "p99": 5189.51
+  },
+  "atm_ts_to_ingest_ms": {
+   "p50": 1339.0,
+   "p90": 2128.0
+  },
+  "atm_trade_tick_share": 1.0,
+  "atm_by_tod": {
+   "09:45-11:30": {
+    "n": 13283,
+    "premium_mid_p50": 333.875,
+    "spread_pts": {
+     "p25": 0.6,
+     "p50": 0.75,
+     "p90": 0.9
+    },
+    "spread_pct_mid": {
+     "p50": 0.225,
+     "p90": 0.2665
+    },
+    "touch_lots": {
+     "p10": 1.0,
+     "p50": 2.0
+    },
+    "ask_touch_lots_p10": 1.0,
+    "ask5_lots": {
+     "p10": 17.0,
+     "p50": 32.0
+    },
+    "bid5_lots": {
+     "p10": 18.0,
+     "p50": 32.0
+    }
+   },
+   "11:30-13:30": {
+    "n": 16199,
+    "premium_mid_p50": 320.45,
+    "spread_pts": {
+     "p25": 0.6,
+     "p50": 0.7,
+     "p90": 0.85
+    },
+    "spread_pct_mid": {
+     "p50": 0.2245,
+     "p90": 0.2642
+    },
+    "touch_lots": {
+     "p10": 1.0,
+     "p50": 2.0
+    },
+    "ask_touch_lots_p10": 1.0,
+    "ask5_lots": {
+     "p10": 20.0,
+     "p50": 37.0
+    },
+    "bid5_lots": {
+     "p10": 20.0,
+     "p50": 37.0
+    }
+   }
+  },
+  "atm_all": {
+   "premium_mid_p50": 326.15,
+   "spread_pts": {
+    "p25": 0.6,
+    "p50": 0.75,
+    "p75": 0.8,
+    "p90": 0.9,
+    "p99": 1.0
+   },
+   "spread_ticks_p50": 15.0,
+   "spread_pct_mid": {
+    "p50": 0.2247,
+    "p90": 0.2652
+   },
+   "touch_lots": {
+    "p10": 1.0,
+    "p50": 2.0
+   },
+   "ask5_lots": {
+    "p10": 19.0,
+    "p50": 35.0
+   }
+  }
+ },
+ {
+  "day": "2026-09-29",
+  "underlying": "NIFTY",
+  "lot_size": 65,
+  "index_ticks": 19727,
+  "index_interarrival_ms": {
+   "p50": 1046.0,
+   "p90": 1060.0,
+   "p99": 1367.75
+  },
+  "index_share_of_seconds_with_update": 0.9737,
+  "index_distinct_exchange_ts_per_min": 59.09,
+  "index_ts_to_ingest_ms": {
+   "p50": 1154.0,
+   "p90": 1227.0
+  },
+  "index_received_to_ingest_ms": {
+   "p50": 74.0,
+   "p90": 99.0
+  },
+  "option_instruments_seen": 22,
+  "expiries_seen": [
+   "2026-09-29"
+  ],
+  "atm_dte": 0,
+  "atm_quote_updates": 60189,
+  "atm_quote_interarrival_ms": {
+   "p50": 728.0,
+   "p90": 1052.0,
+   "p99": 1733.44
+  },
+  "atm_ts_to_ingest_ms": {
+   "p50": 219.0,
+   "p90": 297.0
+  },
+  "atm_trade_tick_share": 1.0,
+  "atm_by_tod": {
+   "09:45-11:30": {
+    "n": 16239,
+    "premium_mid_p50": 61.225,
+    "spread_pts": {
+     "p25": 0.1,
+     "p50": 0.15,
+     "p90": 0.2
+    },
+    "spread_pct_mid": {
+     "p50": 0.2446,
+     "p90": 0.3234
+    },
+    "touch_lots": {
+     "p10": 1.0,
+     "p50": 8.0
+    },
+    "ask_touch_lots_p10": 2.0,
+    "ask5_lots": {
+     "p10": 114.0,
+     "p50": 191.0
+    },
+    "bid5_lots": {
+     "p10": 111.0,
+     "p50": 193.0
+    }
+   },
+   "11:30-13:30": {
+    "n": 21968,
+    "premium_mid_p50": 55.425,
+    "spread_pts": {
+     "p25": 0.1,
+     "p50": 0.15,
+     "p90": 0.2
+    },
+    "spread_pct_mid": {
+     "p50": 0.2449,
+     "p90": 0.335
+    },
+    "touch_lots": {
+     "p10": 1.0,
+     "p50": 7.0
+    },
+    "ask_touch_lots_p10": 2.0,
+    "ask5_lots": {
+     "p10": 143.0,
+     "p50": 261.0
+    },
+    "bid5_lots": {
+     "p10": 143.0,
+     "p50": 268.0
+    }
+   },
+   "13:30-15:00": {
+    "n": 16455,
+    "premium_mid_p50": 45.125,
+    "spread_pts": {
+     "p25": 0.1,
+     "p50": 0.1,
+     "p90": 0.15
+    },
+    "spread_pct_mid": {
+     "p50": 0.2706,
+     "p90": 0.3724
+    },
+    "touch_lots": {
+     "p10": 1.0,
+     "p50": 9.0
+    },
+    "ask_touch_lots_p10": 2.0,
+    "ask5_lots": {
+     "p10": 165.0,
+     "p50": 281.0
+    },
+    "bid5_lots": {
+     "p10": 164.0,
+     "p50": 282.0
+    }
+   },
+   "15:00-15:30": {
+    "n": 5493,
+    "premium_mid_p50": 28.7,
+    "spread_pts": {
+     "p25": 0.05,
+     "p50": 0.1,
+     "p90": 0.15
+    },
+    "spread_pct_mid": {
+     "p50": 0.3552,
+     "p90": 2.2472
+    },
+    "touch_lots": {
+     "p10": 1.0,
+     "p50": 11.0
+    },
+    "ask_touch_lots_p10": 3.0,
+    "ask5_lots": {
+     "p10": 52.0,
+     "p50": 288.0
+    },
+    "bid5_lots": {
+     "p10": 59.0,
+     "p50": 292.0
+    }
+   },
+   "15:30-15:40": {
+    "n": 34,
+    "premium_mid_p50": 8.1375,
+    "spread_pts": {
+     "p25": 0.05,
+     "p50": 0.05,
+     "p90": 0.1
+    },
+    "spread_pct_mid": {
+     "p50": 33.642,
+     "p90": 66.6667
+    },
+    "touch_lots": {
+     "p10": 19.7,
+     "p50": 43320.5
+    },
+    "ask_touch_lots_p10": 1067.0,
+    "ask5_lots": {
+     "p10": 1935.0,
+     "p50": 55260.5
+    },
+    "bid5_lots": {
+     "p10": 57490.0,
+     "p50": 126733.0
+    }
+   }
+  },
+  "atm_all": {
+   "premium_mid_p50": 53.475,
+   "spread_pts": {
+    "p25": 0.1,
+    "p50": 0.15,
+    "p75": 0.15,
+    "p90": 0.2,
+    "p99": 0.25
+   },
+   "spread_ticks_p50": 3.0,
+   "spread_pct_mid": {
+    "p50": 0.2565,
+    "p90": 0.3578
+   },
+   "touch_lots": {
+    "p10": 1.0,
+    "p50": 8.0
+   },
+   "ask5_lots": {
+    "p10": 132.0,
+    "p50": 243.0
+   }
+  }
+ },
+ {
+  "day": "2026-09-29",
+  "underlying": "SENSEX",
+  "lot_size": 20,
+  "index_ticks": 19667,
+  "index_interarrival_ms": {
+   "p50": 1046.0,
+   "p90": 1061.0,
+   "p99": 1500.4
+  },
+  "index_share_of_seconds_with_update": 0.9427,
+  "index_distinct_exchange_ts_per_min": 58.91,
+  "index_ts_to_ingest_ms": {
+   "p50": 242.0,
+   "p90": 319.0
+  },
+  "index_received_to_ingest_ms": {
+   "p50": 75.0,
+   "p90": 100.0
+  },
+  "option_instruments_seen": 26,
+  "expiries_seen": [
+   "2026-10-01"
+  ],
+  "atm_dte": 2,
+  "atm_quote_updates": 41151,
+  "atm_quote_interarrival_ms": {
+   "p50": 1048.0,
+   "p90": 1199.0,
+   "p99": 3318.92
+  },
+  "atm_ts_to_ingest_ms": {
+   "p50": 466.0,
+   "p90": 1128.0
+  },
+  "atm_trade_tick_share": 1.0,
+  "atm_by_tod": {
+   "09:45-11:30": {
+    "n": 10816,
+    "premium_mid_p50": 423.1375,
+    "spread_pts": {
+     "p25": 0.75,
+     "p50": 0.9,
+     "p90": 1.25
+    },
+    "spread_pct_mid": {
+     "p50": 0.235,
+     "p90": 0.2765
+    },
+    "touch_lots": {
+     "p10": 1.0,
+     "p50": 2.0
+    },
+    "ask_touch_lots_p10": 1.0,
+    "ask5_lots": {
+     "p10": 13.0,
+     "p50": 24.0
+    },
+    "bid5_lots": {
+     "p10": 13.0,
+     "p50": 24.0
+    }
+   },
+   "11:30-13:30": {
+    "n": 15018,
+    "premium_mid_p50": 421.6875,
+    "spread_pts": {
+     "p25": 0.75,
+     "p50": 0.9,
+     "p90": 1.25
+    },
+    "spread_pct_mid": {
+     "p50": 0.2427,
+     "p90": 0.2855
+    },
+    "touch_lots": {
+     "p10": 1.0,
+     "p50": 2.0
+    },
+    "ask_touch_lots_p10": 1.0,
+    "ask5_lots": {
+     "p10": 14.0,
+     "p50": 24.0
+    },
+    "bid5_lots": {
+     "p10": 14.0,
+     "p50": 26.0
+    }
+   },
+   "13:30-15:00": {
+    "n": 11162,
+    "premium_mid_p50": 434.5875,
+    "spread_pts": {
+     "p25": 0.7,
+     "p50": 0.85,
+     "p90": 1.3
+    },
+    "spread_pct_mid": {
+     "p50": 0.2526,
+     "p90": 0.2911
+    },
+    "touch_lots": {
+     "p10": 1.0,
+     "p50": 2.0
+    },
+    "ask_touch_lots_p10": 1.0,
+    "ask5_lots": {
+     "p10": 15.0,
+     "p50": 26.0
+    },
+    "bid5_lots": {
+     "p10": 15.0,
+     "p50": 26.0
+    }
+   },
+   "15:00-15:30": {
+    "n": 4129,
+    "premium_mid_p50": 440.525,
+    "spread_pts": {
+     "p25": 0.65,
+     "p50": 0.85,
+     "p90": 1.5
+    },
+    "spread_pct_mid": {
+     "p50": 0.2685,
+     "p90": 0.3499
+    },
+    "touch_lots": {
+     "p10": 1.0,
+     "p50": 3.0
+    },
+    "ask_touch_lots_p10": 1.0,
+    "ask5_lots": {
+     "p10": 17.0,
+     "p50": 31.0
+    },
+    "bid5_lots": {
+     "p10": 15.0,
+     "p50": 27.0
+    }
+   },
+   "15:30-15:40": {
+    "n": 26,
+    "premium_mid_p50": 509.075,
+    "spread_pts": {
+     "p25": 0.8125,
+     "p50": 1.025,
+     "p90": 1.675
+    },
+    "spread_pct_mid": {
+     "p50": 0.3144,
+     "p90": 0.3719
+    },
+    "touch_lots": {
+     "p10": 1.5,
+     "p50": 3.5
+    },
+    "ask_touch_lots_p10": 2.0,
+    "ask5_lots": {
+     "p10": 23.5,
+     "p50": 38.0
+    },
+    "bid5_lots": {
+     "p10": 23.5,
+     "p50": 43.5
+    }
+   }
+  },
+  "atm_all": {
+   "premium_mid_p50": 424.75,
+   "spread_pts": {
+    "p25": 0.7,
+    "p50": 0.9,
+    "p75": 1.15,
+    "p90": 1.3,
+    "p99": 1.55
+   },
+   "spread_ticks_p50": 18.0,
+   "spread_pct_mid": {
+    "p50": 0.2446,
+    "p90": 0.2903
+   },
+   "touch_lots": {
+    "p10": 1.0,
+    "p50": 2.0
+   },
+   "ask5_lots": {
+    "p10": 14.0,
+    "p50": 25.0
+   }
+  }
+ },
+ {
+  "day": "2026-10-06",
+  "underlying": "NIFTY",
+  "lot_size": 65,
+  "index_ticks": 4164,
+  "index_interarrival_ms": {
+   "p50": 1047.0,
+   "p90": 1056.0,
+   "p99": 1077.0
+  },
+  "index_share_of_seconds_with_update": 0.9978,
+  "index_distinct_exchange_ts_per_min": 60.01,
+  "index_ts_to_ingest_ms": {
+   "p50": 1148.0,
+   "p90": 1222.0
+  },
+  "index_received_to_ingest_ms": {
+   "p50": 139.0,
+   "p90": 147.0
+  },
+  "option_instruments_seen": 14,
+  "expiries_seen": [
+   "2026-10-06"
+  ],
+  "atm_dte": 0,
+  "atm_quote_updates": 12794,
+  "atm_quote_interarrival_ms": {
+   "p50": 707.0,
+   "p90": 1049.0,
+   "p99": 1186.11
+  },
+  "atm_ts_to_ingest_ms": {
+   "p50": 271.0,
+   "p90": 344.0
+  },
+  "atm_trade_tick_share": 1.0,
+  "atm_by_tod": {
+   "13:30-15:00": {
+    "n": 7239,
+    "premium_mid_p50": 29.35,
+    "spread_pts": {
+     "p25": 0.05,
+     "p50": 0.1,
+     "p90": 0.15
+    },
+    "spread_pct_mid": {
+     "p50": 0.3231,
+     "p90": 0.4255
+    },
+    "touch_lots": {
+     "p10": 2.0,
+     "p50": 25.0
+    },
+    "ask_touch_lots_p10": 5.0,
+    "ask5_lots": {
+     "p10": 457.0,
+     "p50": 959.0
+    },
+    "bid5_lots": {
+     "p10": 438.0,
+     "p50": 1028.0
+    }
+   },
+   "15:00-15:30": {
+    "n": 5517,
+    "premium_mid_p50": 25.45,
+    "spread_pts": {
+     "p25": 0.05,
+     "p50": 0.1,
+     "p90": 0.15
+    },
+    "spread_pct_mid": {
+     "p50": 0.3731,
+     "p90": 3.049
+    },
+    "touch_lots": {
+     "p10": 2.0,
+     "p50": 27.0
+    },
+    "ask_touch_lots_p10": 4.0,
+    "ask5_lots": {
+     "p10": 73.0,
+     "p50": 974.0
+    },
+    "bid5_lots": {
+     "p10": 71.6,
+     "p50": 985.0
+    }
+   },
+   "15:30-15:40": {
+    "n": 38,
+    "premium_mid_p50": 12.0125,
+    "spread_pts": {
+     "p25": 0.05,
+     "p50": 0.075,
+     "p90": 0.115
+    },
+    "spread_pct_mid": {
+     "p50": 33.6462,
+     "p90": 66.6667
+    },
+    "touch_lots": {
+     "p10": 75.6,
+     "p50": 75537.5
+    },
+    "ask_touch_lots_p10": 78.0,
+    "ask5_lots": {
+     "p10": 1416.9,
+     "p50": 124818.5
+    },
+    "bid5_lots": {
+     "p10": 86121.0,
+     "p50": 143531.5
+    }
+   }
+  },
+  "atm_all": {
+   "premium_mid_p50": 27.85,
+   "spread_pts": {
+    "p25": 0.05,
+    "p50": 0.1,
+    "p75": 0.1,
+    "p90": 0.15,
+    "p99": 0.2
+   },
+   "spread_ticks_p50": 2.0,
+   "spread_pct_mid": {
+    "p50": 0.3396,
+    "p90": 0.6135
+   },
+   "touch_lots": {
+    "p10": 2.0,
+    "p50": 26.0
+   },
+   "ask5_lots": {
+    "p10": 265.0,
+    "p50": 969.0
+   }
+  }
+ },
+ {
+  "day": "2026-10-06",
+  "underlying": "SENSEX",
+  "lot_size": 20,
+  "index_ticks": 4154,
+  "index_interarrival_ms": {
+   "p50": 1047.0,
+   "p90": 1056.0,
+   "p99": 1097.92
+  },
+  "index_share_of_seconds_with_update": 0.9726,
+  "index_distinct_exchange_ts_per_min": 59.9,
+  "index_ts_to_ingest_ms": {
+   "p50": 302.0,
+   "p90": 374.7
+  },
+  "index_received_to_ingest_ms": {
+   "p50": 139.0,
+   "p90": 147.0
+  },
+  "option_instruments_seen": 20,
+  "expiries_seen": [
+   "2026-10-08"
+  ],
+  "atm_dte": 2,
+  "atm_quote_updates": 8692,
+  "atm_quote_interarrival_ms": {
+   "p50": 1048.0,
+   "p90": 1063.0,
+   "p99": 2123.53
+  },
+  "atm_ts_to_ingest_ms": {
+   "p50": 445.0,
+   "p90": 1064.0
+  },
+  "atm_trade_tick_share": 1.0,
+  "atm_by_tod": {
+   "13:30-15:00": {
+    "n": 4922,
+    "premium_mid_p50": 347.775,
+    "spread_pts": {
+     "p25": 0.65,
+     "p50": 0.8,
+     "p90": 0.95
+    },
+    "spread_pct_mid": {
+     "p50": 0.2312,
+     "p90": 0.2749
+    },
+    "touch_lots": {
+     "p10": 1.0,
+     "p50": 2.0
+    },
+    "ask_touch_lots_p10": 1.0,
+    "ask5_lots": {
+     "p10": 13.0,
+     "p50": 26.0
+    },
+    "bid5_lots": {
+     "p10": 13.0,
+     "p50": 24.0
+    }
+   },
+   "15:00-15:30": {
+    "n": 3743,
+    "premium_mid_p50": 343.5,
+    "spread_pts": {
+     "p25": 0.65,
+     "p50": 0.8,
+     "p90": 1.1
+    },
+    "spread_pct_mid": {
+     "p50": 0.2436,
+     "p90": 0.3136
+    },
+    "touch_lots": {
+     "p10": 1.0,
+     "p50": 3.0
+    },
+    "ask_touch_lots_p10": 2.0,
+    "ask5_lots": {
+     "p10": 14.0,
+     "p50": 29.0
+    },
+    "bid5_lots": {
+     "p10": 14.0,
+     "p50": 27.0
+    }
+   },
+   "15:30-15:40": {
+    "n": 27,
+    "premium_mid_p50": 295.075,
+    "spread_pts": {
+     "p25": 0.85,
+     "p50": 1.0,
+     "p90": 1.25
+    },
+    "spread_pct_mid": {
+     "p50": 0.3208,
+     "p90": 0.3515
+    },
+    "touch_lots": {
+     "p10": 1.0,
+     "p50": 3.0
+    },
+    "ask_touch_lots_p10": 3.0,
+    "ask5_lots": {
+     "p10": 13.0,
+     "p50": 22.0
+    },
+    "bid5_lots": {
+     "p10": 10.2,
+     "p50": 23.0
+    }
+   }
+  },
+  "atm_all": {
+   "premium_mid_p50": 347.025,
+   "spread_pts": {
+    "p25": 0.65,
+    "p50": 0.8,
+    "p75": 0.9,
+    "p90": 1.0,
+    "p99": 1.3
+   },
+   "spread_ticks_p50": 16.0,
+   "spread_pct_mid": {
+    "p50": 0.2362,
+    "p90": 0.2924
+   },
+   "touch_lots": {
+    "p10": 1.0,
+    "p50": 3.0
+   },
+   "ask5_lots": {
+    "p10": 14.0,
+    "p50": 27.0
+   }
+  }
+ }
+]

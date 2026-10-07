@@ -14,6 +14,20 @@
 `LIVE_VALIDATION_PLAN_2026-08.md` §1; stale blocks below reconciled with the 2026-09-30 state).
 Previously 2026-09-30 (repo cleanup, docs refresh, open items after the Live Deployments uplift).
 
+### Scalper lab — NIFTY / SENSEX sub-minute option buying (2026-10-07): NO-GO, awaiting operator decision
+
+Record: [`scalping/README.md`](scalping/README.md) (deliverables 01–06). Paper/replay only; no broker path exists.
+- [ ] **Operator decision** ([`scalping/06-go-no-go.md`](scalping/06-go-no-go.md)): (1) stop, keep the tape archive;
+  (2) paper falsification run (`SCALP_PAPER_ENABLED=1`, rebuild with nothing open; stop at 20 NIFTY sessions /
+  12 SENSEX expiry days and apply the doc-03 criteria); (3) measure first (Flattrade depth WS rate + LPP, futures in
+  the tape, record a SENSEX expiry Thursday).
+- [ ] **Operator decision:** update app-wide statutory constants in `backend/app/option_costs.py` (STT 0.001 → 0.0015,
+  NSE 0.0003503 → 0.0003553) — reprices every saved result by ~+21.6 % of charges.
+- [ ] Spun-off task: live guard slow-cycle starvation under continuous ticks (REAL-MONEY; reproduced).
+- [ ] Spun-off task: live-path integrity (non-200 PlaceOrder as indeterminate, 40/min order budget, freeze 3,510,
+  holiday gaps 2026-10-20 / 11-10 / 11-24, `REJECT` spelling in `order_sm`).
+- [x] Tape preservation: 3,201,938 depth ticks archived to `tick_archive` on 2026-10-06; daily archive loop (default on).
+
 ### ★ Next gate: market-session validation of the Live Deployments uplift
 
 **The checklist is [`LIVE_VALIDATION_PLAN_2026-08.md`](LIVE_VALIDATION_PLAN_2026-08.md) §1

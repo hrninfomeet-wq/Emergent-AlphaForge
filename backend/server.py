@@ -264,6 +264,22 @@ async def startup() -> None:
     # recorded is a session that can never be studied.
     asyncio.create_task(chain_recorder_loop(), name="chain-recorder")
 
+    # Scalper lab (docs/scalping/) — PAPER / REPLAY ONLY; app.scalping has no path to a broker.
+    # Tape archive (default ON, SCALP_TAPE_ARCHIVE): copies full-depth index/option ticks out of the
+    # 30-day-TTL `ticks` collection into `tick_archive` so recorded sessions stay replayable.
+    # Paper runner (default OFF, SCALP_PAPER_ENABLED=1): live-tick paper trading of the specs.
+    try:
+        from app.scalping.paper_runner import ScalpPaperRunner
+        from app.scalping.recorder import tape_archive_loop
+        from app.routers import scalping as scalping_routes
+
+        asyncio.create_task(tape_archive_loop(), name="scalp-tape-archive")
+        _scalp_runner = ScalpPaperRunner(upstox_stream_manager, db_factory=get_db)
+        scalping_routes.set_runner(_scalp_runner)
+        _scalp_runner.start()
+    except Exception as exc:  # noqa: BLE001 — a lab feature must never block startup
+        log.warning("Scalper lab start skipped: %s", exc)
+
     # Warehouse auto-update: catch up missing data to yesterday's close.
     # Runs once at startup (best-effort, only if Upstox is connected) and then
     # daily at ~18:00 IST. Today's intraday bars come from the live roller.
@@ -329,7 +345,7 @@ async def health():
 # the Slice C first-match probe), so matching behavior is unchanged.
 # ---------------------------------------------------------------------------
 
-from app.routers import broker, deployments, journals, live_broker, premium_momentum_routes, research, strategies_admin, warehouse  # noqa: E402
+from app.routers import broker, deployments, journals, live_broker, premium_momentum_routes, research, scalping, strategies_admin, warehouse  # noqa: E402
 
 api.include_router(research.api)
 api.include_router(strategies_admin.api)
@@ -339,6 +355,7 @@ api.include_router(deployments.api)
 api.include_router(broker.api)
 api.include_router(live_broker.api)
 api.include_router(premium_momentum_routes.api)
+api.include_router(scalping.api)
 
 app.include_router(api)
 

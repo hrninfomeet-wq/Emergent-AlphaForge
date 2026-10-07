@@ -1,0 +1,38 @@
+{
+ "NIFTY": {
+  "primary": {
+   "und": "NIFTY",
+   "sig": "FADE_30_2.5",
+   "H": 30,
+   "n": 424,
+   "sessions": 22,
+   "gross_sess": -0.5386,
+   "net_sess": -0.7746,
+   "t_net": -1.88,
+   "share_sess_net_pos": 0.318,
+   "hit": 0.453
+  },
+  "family_net_pos": 0,
+  "family_cells": 12,
+  "imp_net_neg": 1,
+  "imp_cells": 12
+ },
+ "SENSEX": {
+  "primary": {
+   "und": "SENSEX",
+   "sig": "FADE_30_3.0",
+   "H": 60,
+   "n": 293,
+   "sessions": 22,
+   "gross_sess": -0.2917,
+   "net_sess": -0.521,
+   "t_net": -1.14,
+   "share_sess_net_pos": 0.409,
+   "hit": 0.471
+  },
+  "family_net_pos": 0,
+  "family_cells": 12,
+  "imp_net_neg": 12,
+  "imp_cells": 12
+ }
+}

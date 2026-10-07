@@ -5,6 +5,47 @@ so the next session starts smarter. Newest entry first.
 
 ---
 
+## 2026-10-06 → 10-07 — Sub-minute option-buying scalping, NIFTY and SENSEX: NO-GO (Claude Opus 5.5)
+
+**CORE LESSON — best-of-grid on a small discovery sample is a hypothesis generator, never evidence; pre-register
+and the answer usually flips.** On 6 recorded depth sessions, "fade a 30-s index impulse" topped both indices
+(SENSEX +2.66 %/trade gross, t 2.28, 5/6 sessions). Written down with thresholds and kill rules BEFORE touching
+the 22-session June–July holdout, it went **0/12 cells net-positive on both indices**; the NIFTY mirror even
+flipped sign. A second pre-registered idea (joint NIFTY+SENSEX impulse) died the same way. The regime simply
+differs between Sep–Oct and Jun–Jul, and nothing measurable predicts which regime a session is in. Full record:
+`docs/scalping/` (README → 01–06).
+
+Confirmed approaches:
+- **Preserve before you measure.** The only full-depth option quotes this app ever recorded (6 sessions) sat in
+  `ticks` under a 30-day TTL; the 09-07 session would have been deleted the next morning. Copying them into
+  `tick_archive` (no TTL, no date field) was the first act; `recorder.py` now does it daily (default on).
+- **Measure the feed before designing for it.** Upstox `full` is a ~1 Hz snapshot (index p50 1,046 ms), not
+  tick-by-tick; the NIFTY index print is ~1 s stale on arrival and the options-implied synthetic forward leads it.
+  "Same-minute scalping" therefore means ~60 observations a minute — nothing sub-second is testable.
+- **Measure friction instead of assuming it.** ATM spreads are ~0.23 % of mid on BOTH indices (SENSEX 5× wider in
+  ticks only because its premium is 5× larger). The app's 1 % round-trip spread assumption is ~4× too pessimistic,
+  but STT rose to 0.15 % on 2026-04-01 and the app still charges 0.10 % — statutory costs are ~21.6 % too LOW.
+- **Verify capability claims at the broker-product level.** "CO/BO for NIFTY but not SENSEX" was false for the
+  API: Flattrade blocks CO/BO/MKT on every segment; LMT/SL-LMT work on both; and a resting SL-LMT sell for a long
+  option is margin-rejected on this account — so protection is software-only on both indices.
+- **Adversarial verifiers earn their cost.** The exec-map verifier reproduced a real-money defect in the EXISTING
+  live guard (continuous ~1 Hz ticks starve the 1.5 s broker cycle; a stop breach went unenforced for 5 s) — spun
+  off as its own task. The broker-caps verifier corrected "SL-LMT not verified live" (it was — margin-rejected).
+- **Fuzz the order state machine against a fault-injecting simulator.** The seeded fuzz found a reconcile storm
+  (archived orders re-read on reconcile re-triggered reconcile — 120,960 reconciles in one run) that 28 scenario
+  tests missed. After the fix: 300 seeds, 12,621 trades, 25 % dropped/duplicated events, 0 shorts.
+
+Dead ends (measured, do not re-run without new data): sub-minute index-impulse fade and momentum; synthetic-forward
+impulse; touch order-book imbalance (no information); passive inside-spread entry (adverse selection > spread
+saved); NIFTY→SENSEX lead–lag (real, ~0.1 % of premium vs ~0.46 % friction); joint-impulse SENSEX momentum. The
+last spec standing (N1, NIFTY synthetic impulse, 30-s hold) failed its stage-2 replay gate: +₹745 over 38 trades,
+all from one session; median trade −₹19; 1 of 4 sessions positive.
+
+Open for the operator: stop vs paper falsification run vs measure-first (`docs/scalping/06-go-no-go.md`); the
+app-wide STT update; the two spun-off live-path tasks.
+
+---
+
 ## 2026-09-26 → 09-30 — the Live Deployments uplift, and what real data said about green tests (Claude Opus 5.5)
 
 **CORE LESSON — a test suite is evidence about the code, not about the data.** A subagent built

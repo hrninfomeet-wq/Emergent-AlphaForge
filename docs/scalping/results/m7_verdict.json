@@ -1,0 +1,30 @@
+{
+ "primary_holdout": [
+  {
+   "sample": "holdout",
+   "sig": "MOM_20_2.5",
+   "H": 60,
+   "n": 302,
+   "sess": 22,
+   "gross": -0.271,
+   "net": -0.501,
+   "t_net": -0.89,
+   "share_pos": 0.364
+  }
+ ],
+ "primary_discovery": [
+  {
+   "sample": "discovery",
+   "sig": "MOM_20_2.5",
+   "H": 60,
+   "n": 56,
+   "sess": 6,
+   "gross": -2.366,
+   "net": -2.592,
+   "t_net": -2.47,
+   "share_pos": 0.0
+  }
+ ],
+ "family_holdout_net_pos": 3,
+ "family_cells": 18
+}

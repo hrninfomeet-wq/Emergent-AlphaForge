@@ -108,6 +108,7 @@ JS regex literal starting with `/` gets path-mangled — use `new RegExp("...")`
 | Deployments | Immutable snapshot (version, params, source SHA pinned); evaluated on the closed 1-minute bar; modes signal_only / paper / live | `deployment_evaluator.py`, `routers/deployments.py` |
 | Paper | Tick-woken exits, top-of-book P&L after charges, account-capital gate, forward metrics and the pre-registered promotion policy | `paper_auto.py`, `paper_trading.py`, `live_exit_monitor.py`, `forward_metrics.py`, `forward_validation.py` |
 | Live (Flattrade) | Auto entries need `LIVE_AUTOPLACE_ARMED=1` **and** `mode == "live"` **and** broker connected **and** before the 15:00 IST entry cutoff, within per-deployment and account caps; tick-primary software guard; boot/OAuth reconcile; kill switch; Greeks; pre-open readiness at 08:45 | `live/executor.py`, `auto_live.py`, `live/mode.py`, `live_deploy_governor.py`, `live/live_position_guard.py`, `live/reboot_reconcile.py`, `live/kill_switch.py`, `preopen_readiness.py` |
+| Scalper lab | Sub-minute NIFTY/SENSEX option-buying specs on a deterministic engine; recorded-tape replay; env-gated paper runner (`SCALP_PAPER_ENABLED`, off); `tick_archive` preservation (`SCALP_TAPE_ARCHIVE`, on). **No real-money path.** | `scalping/` (docs/scalping/) |
 | Premium momentum | Time-locked strike + real option-premium trigger; multi-leg live/paper (both legs, one-shot lazy reversal, `exit_time`, realized-only day-stop, VIX gate). A capability — **no demonstrated edge** | `premium_momentum*.py`, `premium_lock_store.py`, `strategies/plugins/premium_momentum.py` |
 
 **Real money:** the operator has enabled live trading. `live_trades` holds 13 journal rows on seven
@@ -449,6 +450,7 @@ maintained — trust `git log` and CHANGELOG over them.
 | `atr_sigma_router` optimizer winners | All four failed out-of-sample | [`atr-sigma-router-optimizer-results-2026-08-16.md`](atr-sigma-router-optimizer-results-2026-08-16.md) |
 | Intraday option buying (Candidates A/B, short side) | Unconditioned ATM baseline NO_EDGE on both indices; Candidate A rejected; every defined-risk short vertical negative (24/24) | [`INTRADAY_OPTION_BUYING_CANDIDATES_2026-08.md`](INTRADAY_OPTION_BUYING_CANDIDATES_2026-08.md) §11, §14, §16 |
 | SENSEX VWAP fade / continuation | No variant survives a four-quarter split; shipped as capability only | CHANGELOG "SENSEX VWAP Mean Reversion" (2026-09-02) and the plugin docstring |
+| Sub-minute option-buying scalping (NIFTY, SENSEX) | NO-GO: two pre-registered families killed on a 22-session holdout; last spec failed its replay gate; protection is software-only on both indices (no API CO/BO; resting stop margin-rejected). Paper/replay lab shipped (`app/scalping`) | [`scalping/README.md`](scalping/README.md) |
 
 ### 5.3 Removed docs
 

@@ -2,6 +2,40 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [Unreleased] — Scalper lab: NIFTY / SENSEX sub-minute option buying, paper + replay only (2026-10-07)
+
+Research verdict: **NO-GO for real money** (`docs/scalping/06-go-no-go.md`). Two pre-registered hypothesis
+families were killed on a 22-session holdout; the remaining NIFTY spec failed its replay gate; SENSEX expiry day
+has never been recorded. What shipped is the apparatus to test such hypotheses honestly, and nothing that can
+reach a broker.
+
+- **`backend/app/scalping/`** — `config` (NIFTY_N1, SENSEX_S1E; units + provenance; refuses any mode but
+  paper/replay), `costs` (2026 schedule: STT 0.15 % sell from 2026-04-01, NSE 0.03553 %, BSE 0.0325 %),
+  `market` (1-s grid, synthetic forward, z-scores), `signals`, `engine` (deterministic order/position state
+  machine reusing `live.order_sm.apply_om`; invariants: ack ≠ fill, no unintended short, one working exit,
+  cancel-confirm before re-price, exit ladder that never gives up and respects the LPP floor, unknown status →
+  reconcile, routine 10-s reconcile, two-read mismatch halt, kill, daily-loss / loss-streak pauses, per-second
+  and per-minute order budget with an exit reserve), `sim_broker` (latency, depth walk, partial fills, LPP
+  rejects, cancel race, fault injection), `replay`, `recorder`, `paper_runner`, `journal`.
+- **Tape preservation (default ON, `SCALP_TAPE_ARCHIVE`)** — copies full-depth NIFTY/SENSEX index and option
+  ticks out of the 30-day-TTL `ticks` collection into `tick_archive` at boot and daily at 15:50 IST. 3,201,938
+  ticks (6 sessions) were archived by hand on 2026-10-06, the night before the first would have expired.
+- **Paper runner (default OFF, `SCALP_PAPER_ENABLED=1`)** — runs the two specs on live Upstox ticks with
+  simulated fills; journals `scalp_events`, `scalp_paper_trades`, `scalp_engine_state`.
+- **Routes** — `GET /api/scalping/status | /config | /paper/trades?date= | /events?date=`,
+  `POST /api/scalping/paper/kill`.
+- **Scripts** — `backend/scripts/scalping/run_replay.py` (stage-2 replay); `backend/scripts/scalping/research/`
+  (measurements M1–M7). Pre-registrations and results under `docs/scalping/prereg/`, `docs/scalping/results/`.
+
+Tests: `tests/test_scalping_engine.py` (30 invariant scenarios + 12-seed fault fuzz),
+`tests/test_scalping_sim_costs_runner.py` (20: costs vs the verified schedule, simulator, replay determinism,
+no import path to the broker). Full host suite 6,665 passed, 4 xfailed, 0 failed.
+
+Found, not changed (operator decision or separate task): app-wide statutory constants are stale (STT 0.10 %,
+NSE 0.03503 % → ~21.6 % under-charged); the existing live guard's slow cycle starves under continuous ticks
+(reproduced); non-200 PlaceOrder treated as a clean reject; no 40/min order budget; NIFTY freeze limit 1,800 →
+3,510 from 2026-10-05; three likely-missing 2026 holidays.
+
 ## [Unreleased] — Market pulse + Market analysis for SENSEX and BANKNIFTY too (2026-10-06)
 
 The /live-trading cockpit's two market cards were hard-wired to NIFTY, although
