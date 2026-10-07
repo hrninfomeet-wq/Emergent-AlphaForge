@@ -4,9 +4,10 @@
 a Noren norenordno is an acceptance, not a fill, and the entry is a marketable
 LMT that the market can simply walk away from.
 
-When such an entry never appears in the position book, the guard ages it out
-(`_max_pending_misses` cycles), best-effort cancels the order and its OCO, and
-`self._registry.remove(...)`s it. It never journalled the row terminal, and
+When such an entry never appears in the position book, the guard cancels it after
+`_max_pending_misses` cycles and, once the order book confirms it dead with
+nothing filled, cancels its OCO and `self._registry.remove(...)`s it. It never
+journalled the row terminal, and
 `close_live_trade` is only reached from `_finalize_flat` (a CONFIRMED-flat exit,
 which never happens for a position that never existed) or from reboot reconcile
 (boot only).
@@ -23,6 +24,7 @@ than fabricating one.
 from __future__ import annotations
 
 import sys
+from datetime import timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
@@ -31,19 +33,42 @@ from tests.test_live_position_guard import (  # noqa: E402
     _FakeClient, _Recorder, _TSYM, run,
 )
 from app.live.live_position_guard import (  # noqa: E402
-    LiveMonitorRegistry, LivePositionGuard,
+    PENDING_ORDERBOOK_RECHECK_SECONDS, LiveMonitorRegistry, LivePositionGuard,
 )
 from app.live.live_sl_monitor import build_monitor_state  # noqa: E402
 
 
 class _CancelClient(_FakeClient):
+    """Known position book + an order book in which the pending entry is OPEN
+    until a cancel arrives; the broker then reports it CANCELED, nothing filled.
+    (The guard ages out only on that confirmation, never on the request.)"""
+
     def __init__(self, positions):
         super().__init__(positions)
         self.cancelled = []
+        self._status = "OPEN"
+
+    async def order_book(self):
+        return [{"norenordno": "N-PENDING", "tsym": _TSYM,
+                 "status": self._status, "fillshares": "0", "qty": "65"}]
 
     async def cancel_order(self, ordno):
         self.cancelled.append(ordno)
+        self._status = "CANCELED"
         return {"stat": "Ok"}
+
+
+class _TickingClock:
+    """Advances one order-book re-check interval per read (the guard reads it
+    once per cycle), so the next cycle sees the broker's confirmed cancel."""
+
+    def __init__(self):
+        self._reads = 0
+
+    def __call__(self):
+        t = _NOW + timedelta(seconds=self._reads * PENDING_ORDERBOOK_RECHECK_SECONDS)
+        self._reads += 1
+        return t
 
 
 def _guard_with_expiry(reg, client, rec, expired, *, misses=2):
@@ -56,7 +81,7 @@ def _guard_with_expiry(reg, client, rec, expired, *, misses=2):
         square_fn=rec.square_fn,
         max_pending_misses=misses,
         on_expire=on_expire,
-        now_fn=lambda: _NOW,
+        now_fn=_TickingClock(),
     )
 
 
@@ -113,7 +138,8 @@ def test_expiry_fires_exactly_once():
 
 
 def test_entry_is_still_removed_and_cancelled():
-    """No behaviour regression: the age-out still cancels and de-registers."""
+    """No behaviour regression: the age-out still cancels the working order and,
+    once the broker confirms the cancel, de-registers it."""
     reg = LiveMonitorRegistry()
     _register_pending(reg)
     client = _CancelClient([_other_position()])
@@ -149,7 +175,7 @@ def test_expiry_hook_failure_never_breaks_the_age_out():
     client = _CancelClient([_other_position()])
     g = LivePositionGuard(registry=reg, client_factory=lambda: _aw(client),
                           square_fn=_Recorder().square_fn, max_pending_misses=2,
-                          on_expire=boom, now_fn=lambda: _NOW)
+                          on_expire=boom, now_fn=_TickingClock())
     for _ in range(3):
         run(g._cycle())
     assert len(reg) == 0, "a failing on_expire must not leave the entry registered"

@@ -20,13 +20,14 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
 from app.live.arm_state import compute_arm_state  # noqa: E402
 from app.live.live_position_guard import (  # noqa: E402
+    PENDING_ORDERBOOK_RECHECK_SECONDS,
     LiveMonitorRegistry,
     LivePositionGuard,
 )
@@ -294,35 +295,48 @@ def test_flat_drop_cancels_orphaned_oco():
 
 
 class _OcoOrderClient(_OcoClient):
-    """_OcoClient that also records cancel_order calls (the age-out path now
-    best-effort cancels the still-working ENTRY order before dropping)."""
+    """_OcoClient with an order book: the entry order is OPEN until a cancel
+    arrives, then the broker reports it CANCELED with nothing filled."""
 
     def __init__(self, positions):
         super().__init__(positions)
         self.cancel_order_calls = []
+        self.entry_status = "OPEN"
+
+    async def order_book(self):
+        return [{"norenordno": "ORD1", "tsym": _TSYM,
+                 "status": self.entry_status, "fillshares": "0"}]
 
     async def cancel_order(self, norenordno):
         self.cancel_order_calls.append(str(norenordno))
+        self.entry_status = "CANCELED"
         return {"stat": "Ok"}
 
 
 def test_age_out_cancels_entry_order_and_orphaned_oco():
     # The book must be KNOWN (non-empty, other scrip) for misses to advance — an
-    # empty book is UNKNOWN and never ages anything out. On age-out the guard now
-    # cancels the possibly-still-working ENTRY order (its id IS the norenordno)
-    # AND the resting OCO, so a late fill can't arrive unwatched with a live OCO.
+    # empty book is UNKNOWN and never ages anything out. Past the grace the guard
+    # cancels the still-working ENTRY order (its id IS the norenordno) but KEEPS
+    # guarding it, OCO resting, until the order book confirms it dead — a fill
+    # can race the cancel. Only then does it cancel the OCO and drop the entry.
     reg = LiveMonitorRegistry()
     _registered(reg, oco_al_id="OCO2")
     client = _OcoOrderClient([_pos(netqty=10, lp=50.0, tsym="SOMEOTHER")])
     sq = _ScriptedSquare({"squared": True})
+    clock = [_NOW]
     g = LivePositionGuard(registry=reg, client_factory=lambda: _aw(client),
                           square_fn=sq.square_fn, max_pending_misses=2,
-                          now_fn=lambda: _NOW)
+                          now_fn=lambda: clock[0])
     run(g._cycle())                              # misses=1
     assert client.cancel_oco_calls == []
-    run(g._cycle())                              # misses=2 → age-out drop + cancels
+    run(g._cycle())                              # misses=2 → cancel REQUEST only
+    assert client.cancel_order_calls == ["ORD1"]
+    assert len(reg) == 1, "dropped on the cancel request"
+    assert client.cancel_oco_calls == [], "OCO cancelled while a fill could race"
+    clock[0] = _NOW + timedelta(seconds=PENDING_ORDERBOOK_RECHECK_SECONDS)
+    run(g._cycle())                              # order book: CANCELED, 0 filled
     assert len(reg) == 0
-    assert client.cancel_order_calls == ["ORD1"]  # entry order cancelled first
+    assert client.cancel_order_calls == ["ORD1"]
     assert client.cancel_oco_calls == ["OCO2"]
 
 

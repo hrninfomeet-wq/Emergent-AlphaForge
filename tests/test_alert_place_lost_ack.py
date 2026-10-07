@@ -404,7 +404,7 @@ def test_age_out_cancels_the_unresolved_oco():
     client = _GttClient([], book=[{"Al_id": "AL_OURS", "tsym": _GTSYM, "Remarks": _TAG}])
     reg, g = _guard_with(client)
     entry = reg.get("ORD1")
-    run(g._age_out(client, entry, cancel_entry=False))
+    run(g._age_out(client, entry))
     assert client.cancel_oco_calls == ["AL_OURS"]
     assert len(reg) == 0
 
