@@ -54,7 +54,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 from app.execution_policy import spot_mirror_exit_reason
 from app.session_spec import OPTIONS, segment_close_time
 from app.live.broker_protocol import BrokerReadError, TOKEN_EXPIRED_HINT
-from app.live.kill_switch import _parse_netqty
+from app.live.kill_switch import _normalize_status, _parse_netqty
 from app.live.live_sl_monitor import build_monitor_state, evaluate_exit
 from app.live.ownership import attribution_for
 from app.live.overall_controls import build_overall_state, evaluate_overall
@@ -62,6 +62,14 @@ from app.live.overall_controls import build_overall_state, evaluate_overall
 log = logging.getLogger(__name__)
 
 POLL_SECONDS = 1.5
+#: Wall-clock grace for an entry that never appears in the position book while
+#: that book is EMPTY (a flat account before the day's first fill). An empty book
+#: is UNKNOWN and cannot advance `misses`, so past this the ORDER BOOK decides.
+PENDING_MAX_SECONDS = 60.0
+#: Minimum gap between order-book checks for one such entry (shared key budget).
+PENDING_ORDERBOOK_RECHECK_SECONDS = 5.0
+#: Entry-order statuses that can never fill again (both spellings Noren emits).
+_ENTRY_DEAD_STATUSES = frozenset({"CANCELED", "CANCELLED", "REJECTED", "REJECT"})
 #: Minimum gap between TICK-driven premium passes. Ticks arrive at a measured p50
 #: 40/s; a premium pass is pure in-memory arithmetic, but there is no value in
 #: re-deciding a stop more often than this and a floor keeps the loop honest.
@@ -537,6 +545,7 @@ class LivePositionGuard:
         square_fn: Callable[..., Awaitable[Dict[str, Any]]],
         poll_seconds: float = POLL_SECONDS,
         max_pending_misses: int = 40,
+        max_pending_seconds: float = PENDING_MAX_SECONDS,
         flat_confirm_reads: int = 2,
         max_square_retries: int = 25,
         overall_provider: Optional[Callable[[], Awaitable[Optional[Dict[str, Any]]]]] = None,
@@ -640,6 +649,10 @@ class LivePositionGuard:
         # (40 × ~1.5s ≈ 60s — well past a marketable fill, short enough to clean up
         # a rejected/canceled entry).
         self._max_pending_misses = int(max_pending_misses)
+        # The same grace on the wall clock, for an EMPTY (flat-account) book that
+        # cannot advance `misses` — the order book then decides (see
+        # _resolve_pending_on_empty_book).
+        self._max_pending_seconds = float(max_pending_seconds)
         # A seen-filled position that reads flat is FINALIZED (OCO cancelled,
         # close journaled, entry dropped) ONLY after this many CONSECUTIVE
         # AUTHENTICATED flat reads — a single flat read (broker book eventual-
@@ -852,6 +865,9 @@ class LivePositionGuard:
             # reset does NOT clobber a signal a re-price / finalize sets THIS cycle
             # (e.g. exit exhausted / rejected / unpriced — never a silent stuck exit).
             _err_at_start = self._stats.get("last_error")
+            # At most ONE order-book read per cycle, and only if a pending entry
+            # on an empty book actually needs it.
+            order_book_cache: Dict[str, Any] = {}
 
             for entry in self._registry.snapshot():
                 pos = by_tsym.get(entry["tsym"])
@@ -864,39 +880,17 @@ class LivePositionGuard:
                         # (rejected/canceled) entry by a grace window. An UNKNOWN
                         # book gives NO information about the fill, so it must not
                         # advance the age-out counter (60s of broker blips would
-                        # otherwise age out a perfectly pending entry).
+                        # otherwise age out a perfectly pending entry). That
+                        # includes the EMPTY book of a flat account before the
+                        # day's first fill — there the ORDER BOOK decides, on
+                        # the wall clock, so the entry cannot rest forever.
                         if not book_is_known:
+                            await self._resolve_pending_on_empty_book(
+                                client, entry, now, order_book_cache)
                             continue
                         entry["misses"] = int(entry.get("misses", 0)) + 1
                         if entry["misses"] >= self._max_pending_misses:
-                            # Aging out an entry that never showed in the position
-                            # book: the ENTRY ORDER may still be WORKING (a resting
-                            # LMT the market walked away from) — a later fill would
-                            # be unwatched. Best-effort cancel it (the registry key
-                            # IS its norenordno) BEFORE dropping, then cancel the
-                            # resting OCO so no stray alert survives (audit L21). A
-                            # confirmed-flat drop cancels its OCO via _finalize_flat
-                            # instead.
-                            if hasattr(client, "cancel_order"):
-                                try:
-                                    await client.cancel_order(entry["id"])
-                                except Exception as exc:
-                                    log.warning(
-                                        "guard age-out: cancel entry order %s failed "
-                                        "(may already be terminal): %s",
-                                        entry["id"], exc)
-                            await self._cancel_oco_best_effort(
-                                client, entry, "age_out")
-                            if self._on_expire is not None:
-                                try:
-                                    await self._on_expire(entry, "never_filled")
-                                except Exception as exc:
-                                    log.warning(
-                                        "guard age-out: journalling %s as never_filled "
-                                        "failed (its live_trades row may still count "
-                                        "against max_concurrent): %s",
-                                        entry.get("id"), exc)
-                            self._registry.remove(entry["id"])
+                            await self._age_out(client, entry, cancel_entry=True)
                         continue
                     # seen_filled: decide CONFIRMED-FLAT vs UNKNOWN. Finalizing
                     # (cancel OCO + journal close + drop) is IRREVERSIBLE, so it must
@@ -1317,6 +1311,100 @@ class LivePositionGuard:
         except Exception as exc:  # never breaks the cycle — the drop still proceeds
             log.warning("guard: cancel orphaned OCO %s for %s failed (%s): %s",
                         al_id, entry.get("tsym"), why, exc)
+
+    async def _age_out(self, client: Any, entry: Dict[str, Any], *,
+                       cancel_entry: bool) -> None:
+        """Drop a pending entry that never filled: journal ``never_filled`` and
+        cancel its resting OCO so no stray alert survives (audit L21). A
+        confirmed-flat drop cancels its OCO via _finalize_flat instead.
+
+        ``cancel_entry``: the ENTRY ORDER may still be WORKING (a resting LMT the
+        market walked away from) — a later fill would be unwatched — so
+        best-effort cancel it (the registry key IS its norenordno) before
+        dropping. False when the order book already shows it dead."""
+        if cancel_entry and hasattr(client, "cancel_order"):
+            try:
+                await client.cancel_order(entry["id"])
+            except Exception as exc:
+                log.warning("guard age-out: cancel entry order %s failed "
+                            "(may already be terminal): %s", entry["id"], exc)
+        await self._cancel_oco_best_effort(client, entry, "age_out")
+        if self._on_expire is not None:
+            try:
+                await self._on_expire(entry, "never_filled")
+            except Exception as exc:
+                log.warning("guard age-out: journalling %s as never_filled failed "
+                            "(its live_trades row may still count against "
+                            "max_concurrent): %s", entry.get("id"), exc)
+        self._registry.remove(entry["id"])
+
+    async def _resolve_pending_on_empty_book(
+        self, client: Any, entry: Dict[str, Any], now: datetime,
+        order_book_cache: Dict[str, Any],
+    ) -> None:
+        """Age out a never-filled entry while the position book is EMPTY.
+
+        Before the day's first fill the account is flat and PositionBook is ``[]``,
+        which the guard reads as UNKNOWN (never as flat), so ``misses`` cannot
+        advance and a resting DAY LMT would never be cancelled. Past a wall-clock
+        grace the ORDER BOOK answers instead:
+
+          * dead with nothing filled (CANCELED / REJECTED, any spelling) → age out;
+          * still working → cancel it, but KEEP guarding until the book confirms
+            it dead — a fill can race the cancel, and dropping on the request
+            would leave that fill unwatched;
+          * any fill, an unreadable book, or the order not visible → HOLD.
+        """
+        since = entry.get("pending_since")
+        if since is None:
+            entry["pending_since"] = now
+            return
+        if (now - since).total_seconds() < self._max_pending_seconds:
+            return
+        checked = entry.get("pending_ob_checked_at")
+        if (checked is not None and (now - checked).total_seconds()
+                < PENDING_ORDERBOOK_RECHECK_SECONDS):
+            return
+        entry["pending_ob_checked_at"] = now
+
+        if "rows" not in order_book_cache:
+            rows: Optional[List[Dict[str, Any]]] = None
+            if hasattr(client, "order_book"):
+                try:
+                    got = await client.order_book()
+                    rows = got if isinstance(got, list) else None
+                except Exception as exc:  # unreadable == UNKNOWN → hold
+                    log.warning("guard: order book unreadable while resolving "
+                                "pending entry %s — holding: %s", entry["id"], exc)
+            order_book_cache["rows"] = rows
+        rows = order_book_cache["rows"]
+        if rows is None:
+            return
+        row = next((o for o in rows
+                    if str(o.get("norenordno")) == str(entry["id"])), None)
+        if row is None:
+            return
+        status = _normalize_status(row.get("status"))
+        if (_parse_netqty(row.get("fillshares")) or 0) > 0 or status == "COMPLETE":
+            return  # a position exists — the empty book is the anomaly
+        if status in _ENTRY_DEAD_STATUSES:
+            await self._age_out(client, entry, cancel_entry=False)
+            return
+        # Still working. Re-send at most once per grace window: cancels spend the
+        # per-key ORDER budget, which exits need more.
+        sent = entry.get("pending_cancel_at")
+        if sent is not None and (now - sent).total_seconds() < self._max_pending_seconds:
+            return
+        entry["pending_cancel_at"] = now
+        if hasattr(client, "cancel_order"):
+            try:
+                await client.cancel_order(entry["id"])
+                log.info("guard: cancelled unfilled entry %s (%s) after %.0fs on a "
+                         "flat account", entry["id"], entry.get("tsym"),
+                         (now - since).total_seconds())
+            except Exception as exc:
+                log.warning("guard: cancel of unfilled entry %s failed: %s",
+                            entry["id"], exc)
 
     # ── Premium ticks: the primary input to the stop decision ──────────────
     def _refresh_ticks(self) -> None:

@@ -12,6 +12,12 @@ Each finding was verified against the code first, then fixed test-first (one com
   `auto_square` retried blind with a fresh cid (a second sell next to a landed one → naked short). It now raises,
   and every caller's existing lost-ack handling applies: entry halts `place_ack_lost:<cid>` and leaves the intent
   claimed for remarks adoption; exits resolve `remarks==cid` against the order book before any retry.
+- **An unfilled entry now ages out on a flat account.** The guard's never-filled age-out advanced only on a KNOWN
+  (non-empty) position book; before the day's first fill PositionBook is `[]` (read as UNKNOWN), so the ~60 s cancel
+  never fired and a DAY BUY LMT rested indefinitely. On an empty book the guard now waits a 60 s wall-clock grace,
+  then asks the ORDER BOOK (at most every 5 s): dead with zero fill (CANCELED/REJECTED, any spelling) → age out +
+  journal `never_filled`; still working → cancel (at most once per minute) but keep guarding until the book confirms
+  it dead, so a fill racing the cancel is never unwatched; any fill / unreadable book / order not visible → hold.
 
 ## [Unreleased] — Scalper lab: adversarial-review fixes; N1 KILLED at replay (2026-10-07)
 
