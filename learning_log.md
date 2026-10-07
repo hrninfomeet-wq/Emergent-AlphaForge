@@ -5,6 +5,22 @@ so the next session starts smarter. Newest entry first.
 
 ---
 
+## 2026-10-07 — Live guard slow-cycle starvation under continuous ticks (Claude Opus 5.5)
+
+**CORE LESSON — an event-woken loop tested on a frozen clock cannot show starvation.** The guard's tick wake
+restarted the 1.5 s timeout of its only broker read. A held contract ticks ~1/s, so the read never ran and the
+fast pass went blind once its cached book passed 5 s. Every loop test injected `now_fn=lambda: _NOW`, so the cached
+book never aged and a guard with zero broker reads still squared. The storm test bounded reads only from above
+(`<= 5`), and zero passed it.
+
+Confirmed approaches:
+- **Pin the timing with a virtual-clock event loop at production constants.** A `SelectorEventLoop` whose
+  selector advances `time()` by the select timeout when idle runs 15 s of 1.5 s / 0.2 s / 5 s timers in
+  milliseconds and in a fixed order. The guard's `now_fn` follows the loop clock, so the cached book ages for real.
+  A wall-clock run of the same driver confirmed it agrees.
+- **Bound a rate-limited read from both sides.** An upper bound protects the shared budget. Only a lower bound
+  catches the read that never happens.
+
 ## 2026-10-06 → 10-07 — Sub-minute option-buying scalping, NIFTY and SENSEX: NO-GO (Claude Opus 5.5)
 
 **CORE LESSON — best-of-grid on a small discovery sample is a hypothesis generator, never evidence; pre-register

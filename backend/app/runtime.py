@@ -538,6 +538,9 @@ live_position_guard = LivePositionGuard(
     # sleep. Measured detection latency ~1.5s mean (worst ~3s, on a mark itself up
     # to 1.5s old) -> ~200ms. The broker position_book read stays on its own 1.5s
     # cadence, so this adds ZERO calls to the rate budget shared with the MCP.
+    # That cadence is a fixed deadline a tick never moves; until 2026-10-07 each
+    # wake restarted it, and a contract ticking ~1/s starved the read entirely
+    # (pinned by TestSlowCycleUnderLiveFeed).
     premium_tick_fn=_live_guard_spot_tick_fn,
     subscribe=upstox_stream_manager.subscribe,
     unsubscribe=upstox_stream_manager.unsubscribe,
