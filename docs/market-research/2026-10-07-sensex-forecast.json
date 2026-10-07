@@ -1,0 +1,41 @@
+{
+  "anchor": 72955.609375,
+  "cutoff": "10:30",
+  "point": 73000,
+  "low": 72450,
+  "high": 73350,
+  "unshiftedMedian": 72897.60686002672,
+  "unroundedLower": 72455.99503382512,
+  "unroundedUpper": 73310.36938695874,
+  "tiltFromSpot": 44.390625,
+  "tiltFromHistorical": 102.39313997328281,
+  "changeVsPrevious": -67.80999999999767,
+  "lastNiftyError": 76.09999999999854,
+  "lastNiftyBandHit": true,
+  "recorded_at_utc": "2026-10-07 05:23:35 UTC",
+  "session_date": "2026-10-07",
+  "instrument": "SENSEX spot",
+  "target": "official_close",
+  "live_snapshot": {
+    "observedAtIST": "2026-10-07 10:52",
+    "source": "AlphaForge UI, Upstox WebSocket",
+    "sensex": 72863.35,
+    "sensexChange": -204.46,
+    "sensexLow": 72520.73,
+    "sensexHigh": 72969.57,
+    "nifty": 22667.75,
+    "niftyChange": -108.35,
+    "banknifty": 55176.15,
+    "bankniftyChange": 47.75,
+    "usdinr": 96.5325
+  },
+  "historical_anchor": {
+    "cutoff_ist": "10:30",
+    "available_bar": "2026-10-07 10:25 start-labelled five-minute bar",
+    "spot": 72955.609375
+  },
+  "evidence_tier": "Historically benchmarked, exploratory; discretionary point overlay is not forward-validated",
+  "interval_note": "Preserved 10:30 historical interval, endpoints rounded outward. Live 10:52 tick used for structure judgment, not silently substituted into 10:30 residuals. Not an 80% confidence interval.",
+  "invalidation": "A completed 15-minute close below 72,780 invalidates the modest-recovery premise.",
+  "outcome": null
+}
