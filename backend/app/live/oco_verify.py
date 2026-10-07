@@ -26,7 +26,9 @@ job here is to tell the truth about the al_id, not to build a new surface.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List, Optional
+import math
+import re
+from typing import Any, Dict, FrozenSet, Iterable, List, Optional
 
 #: Keys a GTT/OCO row may carry its alert id under. GetPendingGTTOrder returns a
 #: stored GTT in a WRAPPED representation that differs from the write contract, so
@@ -76,4 +78,110 @@ def unbacked_norenordnos(
             ordno = str(trade.get("norenordno") or "").strip()
             if ordno:
                 out.append(ordno)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Lost-ACK resolution: which resting alert IS this one?
+#
+# A non-200 / timeout on PlaceGTTOrder / PlaceOCOOrder leaves the outcome
+# UNKNOWN (the gateway can fail after the OMS created the alert), so there is no
+# al_id to track it by. The GTT book is the only place to find it again. Rows
+# come back in the documented mixed case (``Al_id``, ``Remarks``) and the broker
+# DECORATES remarks ("LMT_BOS_O: oco:<n>: Ltp ... is above ..."), so matching
+# is case-insensitive on keys and token-bounded on the tag.
+# ---------------------------------------------------------------------------
+
+def _ci(row: Dict[str, Any], name: str) -> Any:
+    """``row[name]`` with a case-insensitive key lookup."""
+    if name in row:
+        return row[name]
+    for key, value in row.items():
+        if isinstance(key, str) and key.lower() == name:
+            return value
+    return None
+
+
+def _book_al_id(row: Dict[str, Any]) -> str:
+    value = _ci(row, "al_id")
+    return str(value).strip() if value is not None else ""
+
+
+def _price(value: Any) -> Optional[float]:
+    try:
+        p = float(value)
+    except (TypeError, ValueError):
+        return None
+    return round(p, 2) if math.isfinite(p) and p > 0 else None
+
+
+def _trigger_sets(alert: Dict[str, Any]) -> List[FrozenSet[float]]:
+    """Every trigger representation an alert carries: the ``oivariable`` ``d``
+    values (OCO request; the wrapped read form of any stored alert) and a flat
+    ``d`` (single-GTT request)."""
+    out: List[FrozenSet[float]] = []
+    oiv = _ci(alert, "oivariable")
+    if isinstance(oiv, list):
+        prices = {_price(v.get("d")) for v in oiv if isinstance(v, dict)}
+        prices.discard(None)
+        if prices:
+            out.append(frozenset(prices))
+    d = _price(_ci(alert, "d"))
+    if d is not None:
+        out.append(frozenset({d}))
+    return out
+
+
+def alert_triggers(alert: Dict[str, Any]) -> Optional[FrozenSet[float]]:
+    """The trigger prices of a GTT/OCO request (``oivariable`` first, else ``d``)."""
+    sets = _trigger_sets(alert) if isinstance(alert, dict) else []
+    return sets[0] if sets else None
+
+
+def _has_tag(remarks: Any, tag: str) -> bool:
+    if not isinstance(remarks, str):
+        return False
+    pattern = r"(?<![0-9A-Za-z])" + re.escape(tag) + r"(?![0-9A-Za-z])"
+    return re.search(pattern, remarks) is not None
+
+
+def matching_alert_ids(
+    gtt_book: Optional[Iterable[Any]],
+    *,
+    tsym: Any,
+    remarks: Optional[str] = None,
+    triggers: Optional[Iterable[float]] = None,
+) -> List[str]:
+    """al_ids of GTT-book rows that are provably the alert described.
+
+    A row must be on the same ``tsym``. Then, when BOTH the request and the row
+    carry remarks, the request's remarks must appear in the row's as a whole
+    token; otherwise the row's trigger prices must equal ``triggers`` exactly.
+    With neither usable there is no proof and nothing matches.
+
+    Pure. The caller decides what a count means: lost-ack resolution adopts only
+    an EXACTLY-one match, while an orphan sweep cancels every row carrying its
+    tag.
+    """
+    want_tsym = str(tsym or "").strip()
+    tag = str(remarks or "").strip()
+    want = frozenset(_price(t) for t in triggers) if triggers is not None else frozenset()
+    if None in want:
+        want = frozenset()
+    if not want_tsym:
+        return []
+    out: List[str] = []
+    for row in gtt_book or ():
+        if not isinstance(row, dict):
+            continue
+        al_id = _book_al_id(row)
+        if not al_id or str(_ci(row, "tsym") or "").strip() != want_tsym:
+            continue
+        row_remarks = _ci(row, "remarks")
+        if tag and isinstance(row_remarks, str) and row_remarks.strip():
+            matched = _has_tag(row_remarks, tag)
+        else:
+            matched = bool(want) and want in _trigger_sets(row)
+        if matched:
+            out.append(al_id)
     return out

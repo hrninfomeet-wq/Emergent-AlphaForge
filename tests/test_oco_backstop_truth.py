@@ -111,12 +111,26 @@ def test_the_backstop_check_runs_in_the_supervisor():
 
 def test_it_does_not_run_inside_the_15s_guard_cycle():
     """Rate budget: the guard cycles ~1.5s. Polling the GTT book there would be
-    ~40x the broker calls for a fact that changes rarely."""
+    ~40x the broker calls for a fact that changes rarely.
+
+    The one permitted read is ``_cancel_unresolved_oco``: a one-shot lookup when
+    an entry whose OCO PLACEMENT outcome was unknown leaves the guard (no al_id,
+    only its remarks tag). test_alert_place_lost_ack pins that an entry without
+    that tag never reads the book."""
+    import ast
     from pathlib import Path
     guard = (Path(__file__).resolve().parents[1] / "backend" / "app" / "live"
              / "live_position_guard.py").read_text(encoding="utf-8")
     assert "unbacked_norenordnos" not in guard
-    assert "gtt_book" not in guard
+    readers = set()
+    for fn in ast.walk(ast.parse(guard)):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for node in ast.walk(fn):
+            if ((isinstance(node, ast.Attribute) and node.attr == "gtt_book")
+                    or (isinstance(node, ast.Constant) and node.value == "gtt_book")):
+                readers.add(fn.name)
+    assert readers <= {"_cancel_unresolved_oco"}, readers
 
 
 def test_the_supervisor_never_places_or_cancels_an_order():

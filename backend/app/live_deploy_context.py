@@ -95,6 +95,22 @@ def _broker_oco_enabled() -> bool:
         "1", "true", "yes", "on")
 
 
+def _mark_oco_unresolved(norenordno: str, oco_tag: str) -> None:
+    """Record on the guard entry that an OCO placement's outcome is UNKNOWN.
+
+    A non-200 / timeout the GTT book could not resolve leaves no al_id, only the
+    remarks tag. The guard looks the tag up and cancels whatever rests under it
+    when the position leaves the guard, so a created-but-unacknowledged OCO
+    cannot outlive its position. Best-effort: never raises.
+    """
+    try:
+        ent = get_registry().get(norenordno)
+        if ent is not None:
+            ent["oco_unresolved_remarks"] = oco_tag
+    except Exception as exc:  # noqa: BLE001 - must not unwind a filled entry
+        log.warning("auto_live arm: could not mark unresolved OCO %s: %s", oco_tag, exc)
+
+
 # --------------------------------------------------------------------------- #
 # arm_for — multi-position guard-registering arm factory
 # --------------------------------------------------------------------------- #
@@ -211,6 +227,10 @@ def arm_for(
         # transient OCO reject. Failure → oco_al_id stays None (auto_live journals
         # "no_broker_backstop"); the software guard remains the live protection.
         oco_al_id: Optional[str] = None
+        # The remarks tag the broker echoes on the GTT-book row: the only handle
+        # on an OCO whose placement outcome came back UNKNOWN (no al_id).
+        oco_tag = f"oco:{norenordno}"
+        oco_sent = False
         if client is not None and not _broker_oco_enabled():
             # OFF by default since 2026-09-03 — the leg does not rest, it fires at
             # placement and is rejected (see _broker_oco_enabled). Placed BEFORE the
@@ -242,7 +262,7 @@ def arm_for(
                         sl_limit=sl_l,
                         tp_trigger=tp_t,
                         tp_limit=tp_l,
-                        remarks=f"oco:{norenordno}",
+                        remarks=oco_tag,
                     )
                     if oco:
                         # Ask the broker whether a RESTING sell can even be
@@ -276,6 +296,7 @@ def arm_for(
                                 "The software guard remains the live protection.",
                                 getattr(intent, "tsym", "?"), _skip)
                         else:
+                            oco_sent = True
                             res = await client.place_oco(oco)
                             if res.get("ok"):
                                 oco_al_id = res.get("al_id")
@@ -284,6 +305,13 @@ def arm_for(
                                     ent["oco_al_id"] = oco_al_id
                                 log.info("auto_live arm: resting OCO placed for %s (al_id=%s)",
                                          getattr(intent, "tsym", "?"), oco_al_id)
+                            elif res.get("indeterminate"):
+                                _mark_oco_unresolved(norenordno, oco_tag)
+                                log.error(
+                                    "auto_live arm: OCO placement for %s is UNKNOWN (%s) — "
+                                    "it may be resting at the broker untracked. The guard "
+                                    "cancels any alert tagged %s when this position leaves it.",
+                                    getattr(intent, "tsym", "?"), res.get("emsg"), oco_tag)
                             else:
                                 log.warning("auto_live arm: OCO rejected for %s: %s",
                                             getattr(intent, "tsym", "?"), res)
@@ -299,6 +327,8 @@ def arm_for(
                 log.warning("auto_live arm: resting OCO place failed for %s (%s) — "
                             "no broker backstop (software guard still protects)",
                             getattr(intent, "tsym", "?"), exc)
+                if oco_sent:      # raised mid-flight: the alert may exist anyway
+                    _mark_oco_unresolved(norenordno, oco_tag)
                 oco_al_id = None
 
         return oco_al_id

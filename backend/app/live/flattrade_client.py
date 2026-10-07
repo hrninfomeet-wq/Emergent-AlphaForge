@@ -29,6 +29,7 @@ import httpx
 
 from app.live._net import force_ipv4, ipv4_transport
 from app.live.broker_protocol import BrokerReadError, OrderIntent, OrderResult
+from app.live.oco_verify import alert_triggers, matching_alert_ids
 from app.live.order_budget import OrderRateBudget, budget_for
 
 log = logging.getLogger(__name__)
@@ -525,17 +526,21 @@ class FlattradeClient:
         """Transmit a single-leg GTT (built by gtt.build_gtt_intent).
 
         Injects identity, POSTs PlaceGTTOrder, returns the parsed alert result
-        {ok, al_id, stat, emsg, raw}.
+        {ok, al_id, stat, emsg, raw} — plus ``indeterminate`` on a lost ACK
+        (see ``_post_alert``).
         """
-        return await self._post_alert("PlaceGTTOrder", self._inject_identity(intent))
+        return await self._post_alert(
+            "PlaceGTTOrder", self._inject_identity(intent), placement=True)
 
     async def place_oco(self, intent: Dict[str, Any]) -> Dict[str, Any]:
         """Transmit a two-leg OCO (built by gtt.build_oco_intent).
 
         Injects identity into the top level + both leg blocks, POSTs
-        PlaceOCOOrder, returns the parsed alert result.
+        PlaceOCOOrder, returns the parsed alert result (``indeterminate`` on a
+        lost ACK — see ``_post_alert``).
         """
-        return await self._post_alert("PlaceOCOOrder", self._inject_identity(intent))
+        return await self._post_alert(
+            "PlaceOCOOrder", self._inject_identity(intent), placement=True)
 
     async def cancel_gtt(self, al_id: Any) -> Dict[str, Any]:
         """Cancel a single-leg GTT by alert id (POST CancelGTTOrder)."""
@@ -573,7 +578,9 @@ class FlattradeClient:
             ]
         return []
 
-    async def _post_alert(self, route: str, jdata: Dict[str, Any]) -> Dict[str, Any]:
+    async def _post_alert(
+        self, route: str, jdata: Dict[str, Any], *, placement: bool = False,
+    ) -> Dict[str, Any]:
         """POST a GTT/OCO place/cancel and parse the alert response.
 
         Handles the documented response quirks: success may be a single-element
@@ -581,12 +588,65 @@ class FlattradeClient:
         ``stat`` is "Oi created"/"OI created"/"Oi delete success" (NOT "Ok").
         Returns {ok, al_id, stat, emsg, raw}. ``ok`` requires a non-empty al_id
         and a stat that is not "Not_Ok".
+
+        Only a 200 is an answer. A non-200 (or, for a placement, a timeout / an
+        unparseable body) can land AFTER the broker acted, so the outcome is
+        UNKNOWN — the same lost-ACK class as PlaceOrder (0068f4c):
+
+        * PLACEMENT → resolved against the GTT book (``_resolve_lost_alert``).
+          Reporting it "not placed" orphaned a possibly-resting alert: no al_id
+          anywhere, nothing ever cancels it, and once its position closes the
+          resting SELL legs can fire against a flat account (a naked short).
+        * CANCEL → ``ok=False`` + ``indeterminate``: unknown is never cancelled.
+          No book lookup — an absent row must not be read as a cancellation.
         """
         try:
             data = await self._post(route, jdata)
-        except RuntimeError as exc:
-            return {"ok": False, "al_id": None, "stat": None, "emsg": str(exc), "raw": {}}
+        except RuntimeError as exc:                    # non-200
+            if placement:
+                return await self._resolve_lost_alert(route, jdata, exc)
+            return {"ok": False, "al_id": None, "stat": None, "emsg": str(exc),
+                    "raw": {}, "indeterminate": True}
+        except (httpx.HTTPError, ValueError) as exc:   # timeout / garbled 200
+            if not placement:
+                raise
+            return await self._resolve_lost_alert(route, jdata, exc)
         return _parse_alert_response(data)
+
+    async def _resolve_lost_alert(
+        self, route: str, jdata: Dict[str, Any], exc: BaseException,
+    ) -> Dict[str, Any]:
+        """Find a placement whose ACK was lost in the GTT book.
+
+        Exactly one row matching (tsym + remarks tag, else tsym + triggers) →
+        that IS the alert: adopt its al_id (``ok=True``). Zero, several, or an
+        unreadable book → ``indeterminate``. Zero is not proof of absence: a
+        gateway timeout can answer before the OMS has persisted the alert, and
+        ``gtt_book`` reads a Not_Ok (e.g. an expired session) as empty.
+        """
+        emsg = str(exc) or type(exc).__name__
+        unknown: Dict[str, Any] = {"ok": False, "al_id": None, "stat": None,
+                                   "emsg": emsg, "raw": {}, "indeterminate": True}
+        try:
+            book = await self.gtt_book()
+        except Exception as read_exc:
+            unknown["emsg"] = f"{emsg}; GTT book unreadable: {read_exc}"
+            log.error("Flattrade %s outcome UNKNOWN (%s) and the GTT book could not "
+                      "be read to resolve it: %s", route, emsg, read_exc)
+            return unknown
+        ids = matching_alert_ids(book, tsym=jdata.get("tsym"),
+                                 remarks=jdata.get("remarks"),
+                                 triggers=alert_triggers(jdata))
+        if len(ids) == 1:
+            log.warning("Flattrade %s failed (%s) but the alert IS resting — "
+                        "adopted al_id %s from the GTT book", route, emsg, ids[0])
+            return {"ok": True, "al_id": ids[0], "stat": None, "emsg": emsg,
+                    "raw": {}, "indeterminate": False, "resolved_from": "gtt_book"}
+        unknown["emsg"] = (f"{emsg}; {len(ids)} matching alert(s) in the GTT book "
+                           "— outcome unknown")
+        log.error("Flattrade %s outcome UNKNOWN (%s): %d matching GTT-book row(s); "
+                  "an untracked alert may be resting", route, emsg, len(ids))
+        return unknown
 
     # ------------------------------------------------------------------
     # WebSocket: order management stream

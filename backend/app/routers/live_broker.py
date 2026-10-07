@@ -1590,7 +1590,10 @@ async def place_gtt(body: _GttBody):
     except HTTPException:
         raise
     res = await (client.place_oco(intent) if kind == "oco" else client.place_gtt(intent))
-    return {"placed": bool(res.get("ok")), "kind": kind, "intent": intent, "result": res}
+    # indeterminate: the broker answered non-200 and the GTT book could not show
+    # whether it was created — "not placed" would be a guess. Check the book.
+    return {"placed": bool(res.get("ok")), "indeterminate": bool(res.get("indeterminate")),
+            "kind": kind, "intent": intent, "result": res}
 
 
 @api.delete("/live-broker/gtt/{al_id}")

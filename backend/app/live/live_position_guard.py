@@ -56,6 +56,7 @@ from app.session_spec import OPTIONS, segment_close_time
 from app.live.broker_protocol import BrokerReadError, TOKEN_EXPIRED_HINT
 from app.live.kill_switch import _parse_netqty
 from app.live.live_sl_monitor import build_monitor_state, evaluate_exit
+from app.live.oco_verify import matching_alert_ids
 from app.live.order_sm import canonical_status
 from app.live.ownership import attribution_for
 from app.live.overall_controls import build_overall_state, evaluate_overall
@@ -1274,6 +1275,7 @@ class LivePositionGuard:
                 log.exception(
                     "guard cancel_oco failed for %s (al_id=%s): %s",
                     entry["tsym"], entry.get("oco_al_id"), exc)
+        await self._cancel_unresolved_oco(client, entry, "confirmed_flat")
         sq_ordno = entry.get("square_ordno")
         if sq_ordno and hasattr(client, "cancel_order"):
             try:
@@ -1303,6 +1305,7 @@ class LivePositionGuard:
         A confirmed square cancels via the confirmed-square gate in
         ``_square_and_record`` instead; a retry / exhaustion drop deliberately KEEPS
         the OCO as the remaining backstop, so those paths never call this."""
+        await self._cancel_unresolved_oco(client, entry, why)
         al_id = entry.get("oco_al_id")
         if not al_id or not hasattr(client, "cancel_oco"):
             return
@@ -1313,6 +1316,40 @@ class LivePositionGuard:
         except Exception as exc:  # never breaks the cycle — the drop still proceeds
             log.warning("guard: cancel orphaned OCO %s for %s failed (%s): %s",
                         al_id, entry.get("tsym"), why, exc)
+
+    async def _cancel_unresolved_oco(
+        self, client: Any, entry: Dict[str, Any], why: str
+    ) -> None:
+        """Cancel an OCO whose PLACEMENT outcome was unknown, as its position
+        leaves the guard. NEVER raises.
+
+        A non-200 / timeout on PlaceOCOOrder that the GTT book could not resolve
+        leaves no al_id — only the remarks tag the arm recorded as
+        ``oco_unresolved_remarks``. If the broker did create it, it rests
+        untracked, and once the position is gone its SELL legs could fire
+        against a flat account (a naked short). Look the tag up now and cancel
+        whatever rests under it. Costs one GetPendingGTTOrder, and only for such
+        an entry. An unreadable book is left to reboot reconcile, which sweeps a
+        tagged OCO once its trade is CLOSED."""
+        tag = entry.get("oco_unresolved_remarks")
+        if entry.get("oco_al_id") or not tag:
+            return
+        if not (hasattr(client, "gtt_book") and hasattr(client, "cancel_oco")):
+            return
+        try:
+            book = await client.gtt_book()
+        except Exception as exc:
+            log.warning("guard: GTT book unreadable — cannot clear unresolved OCO %s "
+                        "for %s (%s): %s", tag, entry.get("tsym"), why, exc)
+            return
+        for al_id in matching_alert_ids(book, tsym=entry.get("tsym"), remarks=tag):
+            try:
+                await client.cancel_oco(al_id)
+                log.warning("guard: canceled UNTRACKED OCO %s (%s) for %s (%s)",
+                            al_id, tag, entry.get("tsym"), why)
+            except Exception as exc:
+                log.warning("guard: cancel untracked OCO %s (%s) for %s failed (%s): %s",
+                            al_id, tag, entry.get("tsym"), why, exc)
 
     async def _age_out(self, client: Any, entry: Dict[str, Any], *,
                        cancel_entry: bool) -> None:

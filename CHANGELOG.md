@@ -12,6 +12,19 @@ Each finding was verified against the code first, then fixed test-first (one com
   `auto_square` retried blind with a fresh cid (a second sell next to a landed one → naked short). It now raises,
   and every caller's existing lost-ack handling applies: entry halts `place_ack_lost:<cid>` and leaves the intent
   claimed for remarks adoption; exits resolve `remarks==cid` against the order book before any retry.
+- **Non-200 GTT/OCO placement is indeterminate too, resolved against the GTT book.** `_post_alert` (PlaceGTTOrder /
+  PlaceOCOOrder / Cancel*) had the same swallow: a non-200 placement reported `ok=False`, so an OCO the broker created
+  before the gateway failed rested with no `al_id` anywhere — nothing ever cancelled it, and once its position closed
+  its SELL legs could fire against a flat account (naked short). A placement non-200, timeout or garbled 200 now reads
+  GetPendingGTTOrder: exactly one row on the same tsym carrying the remarks tag (token-bounded — the broker decorates
+  remarks) or, without remarks, the same triggers → its `al_id` is adopted (`ok=True`); zero, several, or an
+  unreadable book → `indeterminate=True` (absent is not proof — a timeout can answer before the OMS persists). A
+  200 `Not_Ok` stays a known reject with no read. The auto_live arm records an unresolved placement as
+  `oco_unresolved_remarks` on the guard entry, and the guard (confirmed-flat finalize + never-filled age-out) cancels
+  every alert under that tag with one GetPendingGTTOrder, only for such an entry; reboot reconcile still sweeps a
+  tagged OCO once its trade is CLOSED. The manual `POST /live-broker/gtt` returns `indeterminate`. Cancel non-200
+  stays fail-safe — `ok=False` (unknown ≠ cancelled), now flagged `indeterminate`, never "resolved" by an absent row.
+  Dormant while `LIVE_BROKER_OCO_ENABLED` is off.
 - **An unfilled entry now ages out on a flat account.** The guard's never-filled age-out advanced only on a KNOWN
   (non-empty) position book; before the day's first fill PositionBook is `[]` (read as UNKNOWN), so the ~60 s cancel
   never fired and a DAY BUY LMT rested indefinitely. On an empty book the guard now waits a 60 s wall-clock grace,
