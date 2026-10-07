@@ -18,6 +18,14 @@ Each finding was verified against the code first, then fixed test-first (one com
   then asks the ORDER BOOK (at most every 5 s): dead with zero fill (CANCELED/REJECTED, any spelling) → age out +
   journal `never_filled`; still working → cancel (at most once per minute) but keep guarding until the book confirms
   it dead, so a fill racing the cancel is never unwatched; any fill / unreadable book / order not visible → hold.
+- **Key-wide ORDER-API budget with an exit reserve** (`app/live/order_budget.py`). Flattrade allows 10/s AND 40/min
+  order calls per API key; the only local limiter was `RateThrottle` (9/s token bucket, deployed entries only, no
+  per-minute window), while cancels/modifies/exits/GTT-OCO from the guard, kill switch and auto-square were never
+  counted. `FlattradeClient._post` now counts every order route per account in sliding 1 s / 60 s windows, and
+  `_transmit_and_arm` (the entry chokepoint, manual + deployed) refuses an entry — `rate_throttled:order_budget_*`,
+  a skip, not a halt, before the claim — once taking it would cut into the 12/min + 4/s exit reserve or the
+  4/min + 1/s headroom for unseen MCP traffic (entries get ≤ 24/min, ≤ 5/s). Exits and cancels are never refused
+  locally; they count.
 
 ## [Unreleased] — Scalper lab: adversarial-review fixes; N1 KILLED at replay (2026-10-07)
 

@@ -29,6 +29,7 @@ import httpx
 
 from app.live._net import force_ipv4, ipv4_transport
 from app.live.broker_protocol import BrokerReadError, OrderIntent, OrderResult
+from app.live.order_budget import OrderRateBudget, budget_for
 
 log = logging.getLogger(__name__)
 
@@ -117,6 +118,11 @@ class FlattradeClient:
         self._uid = uid
         self._actid = actid
 
+    def order_budget(self) -> "OrderRateBudget":
+        """This account's key-wide ORDER-API budget (shared by every client
+        instance for the same uid). The executor gates entries on it."""
+        return budget_for(self._uid)
+
     # ------------------------------------------------------------------
     # Internal transport
     # ------------------------------------------------------------------
@@ -167,6 +173,12 @@ class FlattradeClient:
             from app.live.broker_call_meter import record_broker_call
             record_broker_call(route)
         except Exception:  # metering must never break a broker call
+            pass
+        # ...and the same place counts the key-wide ORDER-API budget (10/s, 40/min)
+        # that gates entries so exits/cancels always keep a reserve.
+        try:
+            self.order_budget().record(route)
+        except Exception:  # counting must never break a broker call
             pass
 
         async with httpx.AsyncClient(timeout=20.0, transport=ipv4_transport()) as client:

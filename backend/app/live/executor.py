@@ -164,6 +164,19 @@ async def _transmit_and_arm(
     ok, why = await engine.can_trade()
     if not ok:
         return _blocked(f"cannot_trade:{why}", verdicts)
+    # Key-wide ORDER-API budget (10/s + 40/min per key, shared with exits, cancels
+    # and the MCP): an entry may never spend the capacity reserved for exits. A
+    # skip, not a halt — the next bar may retry. Before the claim, so a refusal
+    # leaves nothing dangling. Only the real broker client carries a budget; a
+    # budget that cannot be read fails CLOSED.
+    budget_fn = getattr(client, "order_budget", None)
+    if callable(budget_fn):
+        try:
+            room, why_not = budget_fn().entry_allowed()
+        except Exception as exc:
+            room, why_not = False, f"order_budget_unreadable:{type(exc).__name__}"
+        if not room:
+            return _blocked(f"rate_throttled:{why_not}", verdicts)
     if not await intent_store.claim_for_submit(cid):
         return _blocked("already_claimed", verdicts)
     try:
