@@ -5,6 +5,22 @@ so the next session starts smarter. Newest entry first.
 
 ---
 
+## 2026-10-07 — Live guard slow-cycle starvation under continuous ticks (Claude Opus 5.5)
+
+**CORE LESSON — an event-woken loop tested on a frozen clock cannot show starvation.** The guard's tick wake
+restarted the 1.5 s timeout of its only broker read. A held contract ticks ~1/s, so the read never ran and the
+fast pass went blind once its cached book passed 5 s. Every loop test injected `now_fn=lambda: _NOW`, so the cached
+book never aged and a guard with zero broker reads still squared. The storm test bounded reads only from above
+(`<= 5`), and zero passed it.
+
+Confirmed approaches:
+- **Pin the timing with a virtual-clock event loop at production constants.** A `SelectorEventLoop` whose
+  selector advances `time()` by the select timeout when idle runs 15 s of 1.5 s / 0.2 s / 5 s timers in
+  milliseconds and in a fixed order. The guard's `now_fn` follows the loop clock, so the cached book ages for real.
+  A wall-clock run of the same driver confirmed it agrees.
+- **Bound a rate-limited read from both sides.** An upper bound protects the shared budget. Only a lower bound
+  catches the read that never happens.
+
 ## 2026-10-06 → 10-07 — Sub-minute option-buying scalping, NIFTY and SENSEX: NO-GO (Claude Opus 5.5)
 
 **CORE LESSON — best-of-grid on a small discovery sample is a hypothesis generator, never evidence; pre-register
@@ -1743,3 +1759,57 @@ never been run on a weekday.
   [NSE expiry](https://www.nseindia.com/static/products-services/equity-derivatives-contract-specifications),
   [NSE CAS](https://www.nseindia.com/static/products-services/closing-auction-session),
   [Reuters pre-open](https://www.brecorder.com/news/40442855/indian-shares-poised-to-extend-rebound-ahead-of-rbi-policy-verdict).
+
+## 2026-10-07 — SENSEX morning closing forecast and live-source improvement
+
+- Confirmed: AlphaForge's Chrome dashboard at localhost:3000 displayed Upstox WebSocket
+  live ticks updated 10:52 IST: SENSEX 72,863.35, change -204.46 (-0.28%),
+  low 72,520.73, high 72,969.57; NIFTY 22,667.75 (-0.48%) and BANKNIFTY
+  55,176.15 (+0.09%). The derived previous close 73,067.81 agrees with dated Yahoo,
+  Investing.com and the RBI homepage's Oct 6 capital-market table.
+- Likely: modest recovery/chop toward a near-flat close, because price recovered from
+  the morning low and remains above the 10:15 breakout base while BANKNIFTY is positive.
+  Resistance is approximately 72,970–73,070 (day high and previous close).
+- Locked discretionary point: **73,000**; working official-closing interval
+  **72,450–73,350**. Limited confidence; historically benchmarked, not forward-validated.
+  Point is 136.65 points above the 10:52 live snapshot and 67.81 below yesterday's close.
+- Historical benchmark retained separately: completed 10:25 five-minute bar available
+  at 10:30 = 72,955.609375; latest ten same-time-to-official-close returns give a
+  median point of 72,897.606860 and empirical 10th/90th endpoints
+  72,455.995034 / 73,310.369387. Endpoints rounded outward; discretionary point tilt
+  +102.393140 versus the historical point. The later live tick updates structure judgment,
+  not the cutoff of this already-computed historical interval.
+- Confirmed: bundled closing_range_audit.py ran on 19 dated sessions with independent
+  official-close checks. Nine rolling tests: fixed +/-100-point proxy hit 1/9,
+  empirical-return interval hit 5/9, absolute-return rank interval hit 6/9.
+  Empirical method point MAE 328.57 points, mean width 693.57, largest miss 169.48;
+  its terminal five dates hit only 2/5. Small event-mixed samples are exploratory;
+  nominal 80% is not demonstrated coverage and no universal winner is promoted.
+- Confirmed: Moneycontrol's Oct 7 liveblog reports a 25-bp repo increase to 5.50%,
+  calibrated tightening, and FY27 real-growth forecast raised to 7.1% from 6.7%.
+  RBI's dated resolution page was visible but its decision body was not extracted.
+  This is an attributed secondary-source report, not independently verified primary text.
+- Risk / flip: a completed 15-minute close below 72,780 invalidates the recovery premise;
+  a relief rally fading under resistance is the competing explanation. Today's final
+  close, options OI and live auction imbalance remain unknown. Do not turn the point
+  estimate into a concentrated near-expiry option bet.
+- CAS: direct historical official-close residuals already include the closing print.
+  No extra uplift/reserve added. A 15:10 candle-to-close difference is a descriptive
+  closing-print proxy, not an isolated causal CAS effect.
+- Core lesson: use the user's timestamped AlphaForge/Upstox dashboard for live context;
+  preserve exact-cutoff historical calibration separately instead of relabelling delayed
+  or mismatched-time observations as synchronized live data.
+- Confirmed approaches: sparse read-only dashboard inspection; independent dated prior-close
+  reconciliation; save inputs, audit and discretionary overlay before the outcome.
+- Dead ends: Yahoo's one-month chartPreviousClose is the window-start value, not yesterday;
+  its public BSE quote lagged about 15 minutes. Broker MCP was unauthenticated; no login,
+  logout or recovery was attempted. Direct Moneycontrol URL reopening failed, but the
+  earlier retrieved page reference remained readable. No trading controls/orders changed.
+- Checkpoint artifacts: docs/market-research/2026-10-07-sensex-input.json,
+  docs/market-research/2026-10-07-sensex-audit.json,
+  docs/market-research/2026-10-07-sensex-source-snapshot.json,
+  docs/market-research/2026-10-07-sensex-forecast.json. Official post-close scoring pending.
+- Sources: [AlphaForge dashboard](http://localhost:3000/),
+  [Moneycontrol policy liveblog](https://www.moneycontrol.com/news/business/markets/stock-market-live-updates-nifty50-share-price-sensex-share-price-crude-fii-gift-nifty-rupee-latest-updates-07-10-2026-alpha-liveblog-14046173.html),
+  [Yahoo historical candles](https://query1.finance.yahoo.com/v8/finance/chart/%5EBSESN?interval=5m&range=1mo&includePrePost=true),
+  [NSE CAS](https://www.nseindia.com/static/products-services/closing-auction-session).

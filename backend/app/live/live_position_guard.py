@@ -1752,22 +1752,27 @@ class LivePositionGuard:
                 client, entry, f"software_{ov['reason']}", ov["reason"], exits, now)
         self._overall_state = None  # basket squared → reset
 
-    async def _wait_for_work(self) -> bool:
-        """Block until work is due. True ⇒ a tick on a contract we hold.
+    async def _wait_for_work(self, deadline: float) -> bool:
+        """Block until ``deadline`` (the slow cycle is due) or a tick on a contract
+        we hold. True ⇒ the tick.
 
-        With no stream wired this is the original ``sleep(poll_seconds)``. With
-        one, the poll interval becomes a TIMEOUT: a tick on a held contract cuts
-        the wait short so the stop is re-decided in ~200ms instead of ~1.5s, while
-        the broker read stays on its own interval. Ticks for the other ~50
-        subscribed instruments are drained and ignored.
+        With no stream wired this is a plain sleep to the deadline. With one, a
+        tick on a held contract cuts the wait short so the stop is re-decided in
+        ~200ms instead of ~1.5s. Ticks for the other ~50 subscribed instruments
+        are drained and ignored.
+
+        ``deadline`` belongs to ``_run`` and a tick wake never moves it. It used to
+        be restarted from "now" on every call, so while a held contract ticked
+        faster than ``poll_seconds`` (Upstox full mode: ~1/s per option) the slow
+        cycle — the only broker read — never ran, and the fast pass went blind
+        once its cached book passed BOOK_SNAPSHOT_MAX_AGE_S (2026-10-07).
         """
+        loop = asyncio.get_event_loop()
         if self._queue is None:
-            await asyncio.sleep(self._poll_seconds)
+            await asyncio.sleep(max(0.0, deadline - loop.time()))
             return False
 
         watched = self._watched_tick_keys()
-        loop = asyncio.get_event_loop()
-        deadline = loop.time() + self._poll_seconds
         while True:
             timeout = deadline - loop.time()
             if timeout <= 0:
@@ -1792,22 +1797,28 @@ class LivePositionGuard:
         self._queue = self._subscribe(max_queue=512) if self._subscribe else None
         last_fast = 0.0
         loop = asyncio.get_event_loop()
+        next_cycle = loop.time() + self._poll_seconds
         try:
             while True:
-                woke_on_tick = await self._wait_for_work()
-                if not self._in_market_hours():
-                    continue
+                woke_on_tick = await self._wait_for_work(next_cycle)
                 if woke_on_tick:
-                    # Floor the tick path so a 40/s feed cannot spin the premium
-                    # evaluation, then run the CHEAP pass — no broker read. The
-                    # slow cycle below still runs on its own interval.
-                    wait = (last_fast + self._tick_floor_seconds) - loop.time()
-                    if wait > 0:
-                        await asyncio.sleep(wait)
-                    last_fast = loop.time()
-                    await self._fast_premium_pass(self._now_fn())
+                    if self._in_market_hours():
+                        # Floor the tick path so a 40/s feed cannot spin the premium
+                        # evaluation, then run the CHEAP pass — no broker read.
+                        wait = (last_fast + self._tick_floor_seconds) - loop.time()
+                        if wait > 0:
+                            await asyncio.sleep(wait)
+                        last_fast = loop.time()
+                        await self._fast_premium_pass(self._now_fn())
                     continue
-                await self._cycle()
+                if self._in_market_hours():
+                    await self._cycle()
+                # The slow-cycle deadline moves ONLY here, once it has come due, and
+                # is measured from the end of the cycle — so the broker read period
+                # is poll_seconds + cycle time with or without ticks: no faster (the
+                # rate budget is shared with the Flattrade MCP), and no tick can
+                # push it out.
+                next_cycle = loop.time() + self._poll_seconds
         except asyncio.CancelledError:
             raise
         finally:

@@ -66,6 +66,38 @@ Each finding was verified against the code first, then fixed test-first (one com
   (live engine + scalping engine). New `order_sm.canonical_status` folds both; the guard's flat-account age-out
   (above) now uses it instead of its own spelling list.
 
+## [Unreleased] — Live guard: the slow cycle no longer starves while a held contract ticks (2026-10-07)
+
+**REAL-MONEY safety fix. Takes effect only after a rebuild** (`docker compose up -d --build`), which the operator
+runs with no live position open.
+
+`live_position_guard._wait_for_work` restarted its 1.5 s timeout on every call, and `_run` went back to waiting
+after each tick-woken fast pass. So `_cycle()` ran only after 1.5 s with **no** tick on a held contract. `_cycle()`
+is the only broker read, and it also does fill detection, the never-filled age-out, re-pricing, EOD and finalize.
+Upstox full mode ticks each option about once a second (p50 0.7–1.05 s). While a position was held, the book was
+never read. After `BOOK_SNAPSHOT_MAX_AGE_S` (5 s) the fast pass stood down, and the guard was blind with the
+position open. An adversarial verifier reproduced it on the real guard: 0 position-book reads in 9 s of 0.5 s or
+1.0 s ticks, and a 175 stop with the price at 100 squared only after a 2 s tick gap. The claim in the tick-primary
+entry below, that the read "stays on its own 1.5s cadence", was false under a live feed until this fix.
+
+- `_run` now owns the slow-cycle deadline and passes it to `_wait_for_work(deadline)`. A tick wake runs the fast
+  pass and never moves the deadline. The deadline is re-armed only after a due cycle, measured from its end. The
+  read period is therefore `poll_seconds` + cycle time with or without ticks: never faster (the rate budget is
+  shared with the Flattrade MCP), and no tick can push it out. Without a stream the loop is the same
+  fixed-interval loop as before.
+- The paper `LiveExitMonitor` uses the same wait pattern but runs its full cycle on every wake, so it cannot
+  starve. It is unchanged.
+
+Tests (`tests/test_live_guard_tick_primary.py`): the earlier loop tests used a frozen clock, so the cached book
+never aged and a guard that made zero broker reads still squared. That is how this shipped green. The new
+`TestSlowCycleUnderLiveFeed` drives the real loop at its production constants on a virtual-clock event loop
+(15 s in milliseconds, deterministic), with a held contract ticking every 0.5 s or 1.0 s. It asserts position-book
+reads at a 1.5 s cadence (no gap over 1.75 s, none under 1.45 s), and a stop breached after 10 s of continuous
+ticks squared once, at the breaching tick. 4 cases; all fail on the old loop (0 reads, 0 squares). The tick-storm
+test now also requires a minimum read count (`2 <= reads <= 5`); its old `<= 5` bound passed a fully starved
+guard. A wall-clock run of the same scenario on a real event loop agreed: read gaps 1.48–1.52 s, square 0–15 ms
+after the breach.
+
 ## [Unreleased] — Scalper lab: adversarial-review fixes; N1 KILLED at replay (2026-10-07)
 
 An adversarial review (3 lenses) reported 17 findings in `app/scalping`, each with a reproduction; all were

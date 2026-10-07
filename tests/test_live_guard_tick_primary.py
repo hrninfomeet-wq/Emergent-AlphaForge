@@ -17,8 +17,9 @@ These tests pin the safety properties, not just the speed:
 from __future__ import annotations
 
 import asyncio
+import selectors
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -26,6 +27,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
 from app.live.live_position_guard import (  # noqa: E402
+    BOOK_SNAPSHOT_MAX_AGE_S,
+    POLL_SECONDS,
     LiveMonitorRegistry,
     LivePositionGuard,
     premium_tick_key,
@@ -276,7 +279,7 @@ class TestLoop:
 
         async def drive():
             task = asyncio.create_task(g._run())
-            deadline = asyncio.get_event_loop().time() + 0.6
+            deadline = asyncio.get_event_loop().time() + 1.0
             while asyncio.get_event_loop().time() < deadline:
                 stream.queue.put_nowait({"instrument_key": _KEY})
                 await asyncio.sleep(0.003)
@@ -287,9 +290,10 @@ class TestLoop:
                 pass
 
         run(drive())
-        # 0.6s at a 0.3s broker cadence => ~2-3 reads. Anything near the tick rate
-        # (200/s) would be a rate-budget blowout.
-        assert c.book_reads <= 5, f"{c.book_reads} broker reads under a tick storm"
+        # 1.0s at a 0.3s broker cadence => ~3 reads. Anything near the tick rate
+        # (200/s) would be a rate-budget blowout — and ZERO is the guard starved
+        # blind by the ticks, which this bound alone once let pass (2026-10-07).
+        assert 2 <= c.book_reads <= 5, f"{c.book_reads} broker reads under a tick storm"
 
     def test_without_a_stream_it_is_the_old_fixed_interval_loop(self):
         r, c, rec = _registry(), _FakeClient([_pos(lp=250.0)]), _Recorder()
@@ -344,3 +348,143 @@ class TestLoop:
 
         run(drive())
         assert stream.unsubscribed == 1, "the guard leaked its tick queue"
+
+
+# ---------------------------------------------------------------------------
+# The loop under a LIVE feed — the slow cycle must not starve
+# ---------------------------------------------------------------------------
+# 2026-10-07, reproduced by an adversarial verifier: `_wait_for_work` restarted
+# its 1.5s timeout on every call and `_run` went back to waiting after each
+# tick-woken fast pass, so `_cycle()` (the ONLY broker read, fill detection,
+# re-price, EOD, finalize) ran only after 1.5s with NO tick on a held contract.
+# Upstox full mode ticks each option ~1/s, so while a position was held the
+# broker book was never read, and the fast pass stood down once its cached book
+# passed BOOK_SNAPSHOT_MAX_AGE_S: the guard went blind with the position open.
+# Every test above used a frozen clock, so the cached book never aged and a
+# guard with zero broker reads still squared — that is how it shipped.
+
+
+class _VirtualClockLoop(asyncio.SelectorEventLoop):
+    """An event loop whose clock jumps to the next timer whenever it is idle.
+
+    Every sleep, wait_for timeout and timer in asyncio runs on ``loop.time()``,
+    so a 15s scenario at the PRODUCTION constants (1.5s poll, 0.2s tick floor,
+    5s book age) runs in milliseconds and in the same order every time.
+    """
+
+    def __init__(self):
+        self._virtual_now = 0.0
+        loop = self
+
+        class _Selector(selectors.DefaultSelector):
+            def select(self, timeout=None):
+                ready = super().select(0)
+                if not ready and timeout:
+                    loop._virtual_now += timeout
+                return ready
+
+        super().__init__(_Selector())
+        self._clock_resolution = 1e-9
+
+    def time(self):
+        return self._virtual_now
+
+
+def run_virtual(coro):
+    loop = _VirtualClockLoop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+
+class _ClockedClient(_FakeClient):
+    def __init__(self, positions, clock):
+        super().__init__(positions)
+        self._clock = clock
+        self.read_times = []
+
+    async def position_book(self):
+        self.read_times.append(self._clock())
+        return await super().position_book()
+
+
+async def _drive_live_feed(*, tick_every, seconds, price_at):
+    """Run the REAL guard loop, with its production defaults, while the held
+    contract ticks every ``tick_every`` seconds for ``seconds``.
+
+    Returns (broker read times, squares as (time, reason, lp)), both relative to
+    the start. The clock the guard sees advances with the loop, so the cached
+    book ages exactly as it does in production.
+    """
+    loop = asyncio.get_running_loop()
+    t0 = loop.time()
+
+    def clock():
+        return loop.time() - t0
+
+    def now():
+        return _NOW + timedelta(seconds=clock())
+
+    stream = _Stream()
+    ticks = {}
+    client = _ClockedClient([_pos(lp=250.0)], clock)  # broker lp never catches up
+    squares = []
+
+    async def square_fn(_client, position, *, reason):
+        squares.append((clock(), reason, position.get("lp")))
+        return {"squared": True, "reason": reason}
+
+    g = LivePositionGuard(
+        registry=_registry(), client_factory=lambda: _aw(client), square_fn=square_fn,
+        now_fn=now, premium_tick_fn=lambda: ticks,
+        subscribe=stream.subscribe, unsubscribe=stream.unsubscribe,
+        in_market_hours=lambda: True,
+    )
+    task = asyncio.create_task(g._run())
+    i = 0
+    while i * tick_every <= seconds:
+        t = i * tick_every
+        ms = int(now().timestamp() * 1000)
+        ticks[_KEY] = {"instrument_key": _KEY, "last_price": price_at(t),
+                       "ingest_ts": ms, "ts": ms}
+        stream.queue.put_nowait({"instrument_key": _KEY})
+        i += 1
+        await asyncio.sleep(max(0.0, i * tick_every - clock()))
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    return client.read_times, squares
+
+
+class TestSlowCycleUnderLiveFeed:
+    @pytest.mark.parametrize("tick_every", [0.5, 1.0])
+    def test_the_broker_read_keeps_its_own_cadence_while_a_held_contract_ticks(self, tick_every):
+        seconds = 12.0
+        reads, squares = run_virtual(_drive_live_feed(
+            tick_every=tick_every, seconds=seconds, price_at=lambda t: 250.0))
+        assert squares == []
+        assert len(reads) >= int(seconds / POLL_SECONDS) - 1, (
+            f"{len(reads)} broker reads in {seconds}s of {tick_every}s ticks — "
+            "the slow cycle is starved by the tick wake-ups")
+        gaps = [b - a for a, b in zip([0.0] + reads, reads)]
+        assert max(gaps) <= POLL_SECONDS + 0.25, f"broker read gaps {gaps}"
+        # ...and never faster than it was: the rate budget is shared with the MCP.
+        assert min(gaps) >= POLL_SECONDS - 0.05, f"broker read gaps {gaps}"
+
+    @pytest.mark.parametrize("tick_every", [0.5, 1.0])
+    def test_a_stop_breach_under_continuous_ticks_is_squared_on_the_breaching_tick(self, tick_every):
+        breach_at = 10.0  # well past BOOK_SNAPSHOT_MAX_AGE_S of uninterrupted ticks
+        assert breach_at > BOOK_SNAPSHOT_MAX_AGE_S
+        _, squares = run_virtual(_drive_live_feed(
+            tick_every=tick_every, seconds=15.0,
+            price_at=lambda t: 100.0 if t >= breach_at else 250.0))
+        assert len(squares) == 1, (
+            f"{len(squares)} squares for a 175 stop breached at {breach_at}s with the "
+            "contract still ticking — the guard is blind")
+        when, reason, lp = squares[0]
+        assert reason == "software_stop"
+        assert lp == 100.0
+        assert when - breach_at <= 0.5, f"squared {when - breach_at:.2f}s after the breach"

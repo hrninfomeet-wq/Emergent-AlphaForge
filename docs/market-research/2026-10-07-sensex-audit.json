@@ -1,0 +1,567 @@
+{
+  "instrument": "SENSEX spot",
+  "cutoff_ist": "10:30",
+  "target": "official_close",
+  "sources": [
+    "Yahoo Finance ^BSESN five-minute candles and dated daily series",
+    "Investing.com dated daily close table, 2026-09-08 through 2026-10-06"
+  ],
+  "caller_data_validation": "All 19 daily close values matched independent Investing.com table to rounding tolerance of 0.0051 index points. Oct 6 close also agrees with RBI homepage dated Oct 6. Yahoo intraday bar timestamps label start; 10:25 close is available at 10:30; public BSE feed is approximately 15 minutes delayed.",
+  "regime": "post_CAS",
+  "as_of_date": "2026-10-07",
+  "lookback": 10,
+  "nominal_coverage": 0.8,
+  "source_sessions": 19,
+  "first_session": "2026-09-08",
+  "last_session": "2026-10-06",
+  "holdout_dates": [
+    "2026-09-29",
+    "2026-09-30",
+    "2026-10-01",
+    "2026-10-05",
+    "2026-10-06"
+  ],
+  "summaries": {
+    "fixed_100_proxy": {
+      "all": {
+        "n": 9,
+        "hits": 1,
+        "coverage": 0.1111111111111111,
+        "mae": 303.47093750000283,
+        "bias": 49.244340277778164,
+        "mean_width": 200,
+        "max_miss": 418.6709375000064,
+        "interval_score": 2270.178125000029
+      },
+      "development": {
+        "n": 4,
+        "hits": 1,
+        "coverage": 0.25,
+        "mae": 245.08875000000262,
+        "bias": 105.46484375,
+        "mean_width": 200,
+        "max_miss": 418.6709375000064,
+        "interval_score": 1730.6921875000264
+      },
+      "terminal_holdout": {
+        "n": 5,
+        "hits": 0,
+        "coverage": 0,
+        "mae": 350.176687500003,
+        "bias": 4.2679375000006985,
+        "mean_width": 200,
+        "max_miss": 394.6203125000029,
+        "interval_score": 2701.7668750000307
+      }
+    },
+    "half_daily_range_proxy": {
+      "all": {
+        "n": 9,
+        "hits": 4,
+        "coverage": 0.4444444444444444,
+        "mae": 303.47093750000283,
+        "bias": 49.244340277778164,
+        "mean_width": 556.0290798611111,
+        "max_miss": 259.1357812500064,
+        "interval_score": 1376.7955729166895
+      },
+      "development": {
+        "n": 4,
+        "hits": 3,
+        "coverage": 0.75,
+        "mae": 245.08875000000262,
+        "bias": 105.46484375,
+        "mean_width": 523.97265625,
+        "max_miss": 259.1357812500064,
+        "interval_score": 1171.812109375016
+      },
+      "terminal_holdout": {
+        "n": 5,
+        "hits": 1,
+        "coverage": 0.2,
+        "mae": 350.176687500003,
+        "bias": 4.2679375000006985,
+        "mean_width": 581.67421875,
+        "max_miss": 207.5109375000029,
+        "interval_score": 1540.782343750028
+      }
+    },
+    "empirical_returns": {
+      "all": {
+        "n": 9,
+        "hits": 5,
+        "coverage": 0.5555555555555556,
+        "mae": 328.5676629241902,
+        "bias": -60.61951419563169,
+        "mean_width": 693.5742944978184,
+        "max_miss": 169.47709320842114,
+        "interval_score": 1256.1102126370663
+      },
+      "development": {
+        "n": 4,
+        "hits": 3,
+        "coverage": 0.75,
+        "mae": 266.2053292690907,
+        "bias": 8.63193215400679,
+        "mean_width": 710.0925399048319,
+        "max_miss": 96.84087044179614,
+        "interval_score": 952.1947160093223
+      },
+      "terminal_holdout": {
+        "n": 5,
+        "hits": 2,
+        "coverage": 0.4,
+        "mae": 378.45752984826976,
+        "bias": -116.02067127534247,
+        "mean_width": 680.3596981722076,
+        "max_miss": 169.47709320842114,
+        "interval_score": 1499.2426099392615
+      }
+    },
+    "absolute_return_band": {
+      "all": {
+        "n": 9,
+        "hits": 6,
+        "coverage": 0.6666666666666666,
+        "mae": 303.47093750000283,
+        "bias": 49.244340277778164,
+        "mean_width": 940.3903586939527,
+        "max_miss": 105.64041687625286,
+        "interval_score": 1124.3666032933268
+      },
+      "development": {
+        "n": 4,
+        "hits": 3,
+        "coverage": 0.75,
+        "mae": 245.08875000000262,
+        "bias": 105.46484375,
+        "mean_width": 981.9209266839025,
+        "max_miss": 52.043408564830315,
+        "interval_score": 1112.0294480959783
+      },
+      "terminal_holdout": {
+        "n": 5,
+        "hits": 3,
+        "coverage": 0.6,
+        "mae": 350.176687500003,
+        "bias": 4.2679375000006985,
+        "mean_width": 907.1659043019929,
+        "max_miss": 105.64041687625286,
+        "interval_score": 1134.2363274512056
+      }
+    }
+  },
+  "closing_print_proxy": null,
+  "predictions": {
+    "fixed_100_proxy": [
+      {
+        "date": "2026-09-23",
+        "train_start": "2026-09-08",
+        "train_end": "2026-09-22",
+        "n_train": 10,
+        "point": 74760.171875,
+        "low": 74660.171875,
+        "high": 74860.171875,
+        "actual": 74828.25,
+        "anchor": 74760.171875
+      },
+      {
+        "date": "2026-09-24",
+        "train_start": "2026-09-09",
+        "train_end": "2026-09-23",
+        "n_train": 10,
+        "point": 74099.2109375,
+        "low": 73999.2109375,
+        "high": 74199.2109375,
+        "actual": 73580.54,
+        "anchor": 74099.2109375
+      },
+      {
+        "date": "2026-09-25",
+        "train_start": "2026-09-10",
+        "train_end": "2026-09-24",
+        "n_train": 10,
+        "point": 73684.5703125,
+        "low": 73584.5703125,
+        "high": 73784.5703125,
+        "actual": 73895.74,
+        "anchor": 73684.5703125
+      },
+      {
+        "date": "2026-09-28",
+        "train_start": "2026-09-11",
+        "train_end": "2026-09-25",
+        "n_train": 10,
+        "point": 72954.15625,
+        "low": 72854.15625,
+        "high": 73054.15625,
+        "actual": 72771.72,
+        "anchor": 72954.15625
+      },
+      {
+        "date": "2026-09-29",
+        "train_start": "2026-09-15",
+        "train_end": "2026-09-28",
+        "n_train": 10,
+        "point": 72182.3125,
+        "low": 72082.3125,
+        "high": 72282.3125,
+        "actual": 72529.07,
+        "anchor": 72182.3125
+      },
+      {
+        "date": "2026-09-30",
+        "train_start": "2026-09-16",
+        "train_end": "2026-09-29",
+        "n_train": 10,
+        "point": 72871.78125,
+        "low": 72771.78125,
+        "high": 72971.78125,
+        "actual": 72480.29,
+        "anchor": 72871.78125
+      },
+      {
+        "date": "2026-10-01",
+        "train_start": "2026-09-17",
+        "train_end": "2026-09-30",
+        "n_train": 10,
+        "point": 72404.3203125,
+        "low": 72304.3203125,
+        "high": 72504.3203125,
+        "actual": 71909.7,
+        "anchor": 72404.3203125
+      },
+      {
+        "date": "2026-10-05",
+        "train_start": "2026-09-18",
+        "train_end": "2026-10-01",
+        "n_train": 10,
+        "point": 72256.296875,
+        "low": 72156.296875,
+        "high": 72356.296875,
+        "actual": 72382.47,
+        "anchor": 72256.296875
+      },
+      {
+        "date": "2026-10-06",
+        "train_start": "2026-09-21",
+        "train_end": "2026-10-05",
+        "n_train": 10,
+        "point": 72675.96875,
+        "low": 72575.96875,
+        "high": 72775.96875,
+        "actual": 73067.81,
+        "anchor": 72675.96875
+      }
+    ],
+    "half_daily_range_proxy": [
+      {
+        "date": "2026-09-23",
+        "train_start": "2026-09-08",
+        "train_end": "2026-09-22",
+        "n_train": 10,
+        "point": 74760.171875,
+        "low": 74500.63671875,
+        "high": 75019.70703125,
+        "actual": 74828.25,
+        "anchor": 74760.171875
+      },
+      {
+        "date": "2026-09-24",
+        "train_start": "2026-09-09",
+        "train_end": "2026-09-23",
+        "n_train": 10,
+        "point": 74099.2109375,
+        "low": 73839.67578125,
+        "high": 74358.74609375,
+        "actual": 73580.54,
+        "anchor": 74099.2109375
+      },
+      {
+        "date": "2026-09-25",
+        "train_start": "2026-09-10",
+        "train_end": "2026-09-24",
+        "n_train": 10,
+        "point": 73684.5703125,
+        "low": 73420.1328125,
+        "high": 73949.0078125,
+        "actual": 73895.74,
+        "anchor": 73684.5703125
+      },
+      {
+        "date": "2026-09-28",
+        "train_start": "2026-09-11",
+        "train_end": "2026-09-25",
+        "n_train": 10,
+        "point": 72954.15625,
+        "low": 72689.71875,
+        "high": 73218.59375,
+        "actual": 72771.72,
+        "anchor": 72954.15625
+      },
+      {
+        "date": "2026-09-29",
+        "train_start": "2026-09-15",
+        "train_end": "2026-09-28",
+        "n_train": 10,
+        "point": 72182.3125,
+        "low": 71917.875,
+        "high": 72446.75,
+        "actual": 72529.07,
+        "anchor": 72182.3125
+      },
+      {
+        "date": "2026-09-30",
+        "train_start": "2026-09-16",
+        "train_end": "2026-09-29",
+        "n_train": 10,
+        "point": 72871.78125,
+        "low": 72607.34375,
+        "high": 73136.21875,
+        "actual": 72480.29,
+        "anchor": 72871.78125
+      },
+      {
+        "date": "2026-10-01",
+        "train_start": "2026-09-17",
+        "train_end": "2026-09-30",
+        "n_train": 10,
+        "point": 72404.3203125,
+        "low": 72117.2109375,
+        "high": 72691.4296875,
+        "actual": 71909.7,
+        "anchor": 72404.3203125
+      },
+      {
+        "date": "2026-10-05",
+        "train_start": "2026-09-18",
+        "train_end": "2026-10-01",
+        "n_train": 10,
+        "point": 72256.296875,
+        "low": 71947.267578125,
+        "high": 72565.326171875,
+        "actual": 72382.47,
+        "anchor": 72256.296875
+      },
+      {
+        "date": "2026-10-06",
+        "train_start": "2026-09-21",
+        "train_end": "2026-10-05",
+        "n_train": 10,
+        "point": 72675.96875,
+        "low": 72346.796875,
+        "high": 73005.140625,
+        "actual": 73067.81,
+        "anchor": 72675.96875
+      }
+    ],
+    "empirical_returns": [
+      {
+        "date": "2026-09-23",
+        "train_start": "2026-09-08",
+        "train_end": "2026-09-22",
+        "n_train": 10,
+        "point": 74600.15181423372,
+        "low": 74334.5791066517,
+        "high": 74993.64233291442,
+        "actual": 74828.25,
+        "anchor": 74760.171875
+      },
+      {
+        "date": "2026-09-24",
+        "train_start": "2026-09-09",
+        "train_end": "2026-09-23",
+        "n_train": 10,
+        "point": 74022.90502777742,
+        "low": 73677.38087044179,
+        "high": 74330.61726355288,
+        "actual": 73580.54,
+        "anchor": 74099.2109375
+      },
+      {
+        "date": "2026-09-25",
+        "train_start": "2026-09-10",
+        "train_end": "2026-09-24",
+        "n_train": 10,
+        "point": 73608.69139153612,
+        "low": 73149.99644768218,
+        "high": 73914.68174671193,
+        "actual": 73895.74,
+        "anchor": 73684.5703125
+      },
+      {
+        "date": "2026-09-28",
+        "train_start": "2026-09-11",
+        "train_end": "2026-09-25",
+        "n_train": 10,
+        "point": 72879.02949506877,
+        "low": 72424.8814629491,
+        "high": 73188.26670416487,
+        "actual": 72771.72,
+        "anchor": 72954.15625
+      },
+      {
+        "date": "2026-09-29",
+        "train_start": "2026-09-15",
+        "train_end": "2026-09-28",
+        "n_train": 10,
+        "point": 72027.81020629455,
+        "low": 71658.63735877349,
+        "high": 72382.96331960951,
+        "actual": 72529.07,
+        "anchor": 72182.3125
+      },
+      {
+        "date": "2026-09-30",
+        "train_start": "2026-09-16",
+        "train_end": "2026-09-29",
+        "n_train": 10,
+        "point": 72796.73932322326,
+        "low": 72475.53650826805,
+        "high": 73094.74452754912,
+        "actual": 72480.29,
+        "anchor": 72871.78125
+      },
+      {
+        "date": "2026-10-01",
+        "train_start": "2026-09-17",
+        "train_end": "2026-09-30",
+        "n_train": 10,
+        "point": 72249.34282320905,
+        "low": 72003.5576822846,
+        "high": 72625.85331592978,
+        "actual": 71909.7,
+        "anchor": 72404.3203125
+      },
+      {
+        "date": "2026-10-05",
+        "train_start": "2026-09-18",
+        "train_end": "2026-10-01",
+        "n_train": 10,
+        "point": 72097.1557308192,
+        "low": 71761.47156316716,
+        "high": 72477.37697621972,
+        "actual": 72382.47,
+        "anchor": 72256.296875
+      },
+      {
+        "date": "2026-10-06",
+        "train_start": "2026-09-21",
+        "train_end": "2026-10-05",
+        "n_train": 10,
+        "point": 72618.18856007722,
+        "low": 72178.26944274537,
+        "high": 72898.33290679158,
+        "actual": 73067.81,
+        "anchor": 72675.96875
+      }
+    ],
+    "absolute_return_band": [
+      {
+        "date": "2026-09-23",
+        "train_start": "2026-09-08",
+        "train_end": "2026-09-22",
+        "n_train": 10,
+        "point": 74760.171875,
+        "low": 74289.38205384758,
+        "high": 75230.96169615242,
+        "actual": 74828.25,
+        "anchor": 74760.171875
+      },
+      {
+        "date": "2026-09-24",
+        "train_start": "2026-09-09",
+        "train_end": "2026-09-23",
+        "n_train": 10,
+        "point": 74099.2109375,
+        "low": 73632.58340856482,
+        "high": 74565.83846643518,
+        "actual": 73580.54,
+        "anchor": 74099.2109375
+      },
+      {
+        "date": "2026-09-25",
+        "train_start": "2026-09-10",
+        "train_end": "2026-09-24",
+        "n_train": 10,
+        "point": 73684.5703125,
+        "low": 73168.80172765629,
+        "high": 74200.33889734371,
+        "actual": 73895.74,
+        "anchor": 73684.5703125
+      },
+      {
+        "date": "2026-09-28",
+        "train_start": "2026-09-11",
+        "train_end": "2026-09-25",
+        "n_train": 10,
+        "point": 72954.15625,
+        "low": 72443.5003315635,
+        "high": 73464.8121684365,
+        "actual": 72771.72,
+        "anchor": 72954.15625
+      },
+      {
+        "date": "2026-09-29",
+        "train_start": "2026-09-15",
+        "train_end": "2026-09-28",
+        "n_train": 10,
+        "point": 72182.3125,
+        "low": 71677.05924262224,
+        "high": 72687.56575737776,
+        "actual": 72529.07,
+        "anchor": 72182.3125
+      },
+      {
+        "date": "2026-09-30",
+        "train_start": "2026-09-16",
+        "train_end": "2026-09-29",
+        "n_train": 10,
+        "point": 72871.78125,
+        "low": 72488.18479469835,
+        "high": 73255.37770530167,
+        "actual": 72480.29,
+        "anchor": 72871.78125
+      },
+      {
+        "date": "2026-10-01",
+        "train_start": "2026-09-17",
+        "train_end": "2026-09-30",
+        "n_train": 10,
+        "point": 72404.3203125,
+        "low": 72015.34041687625,
+        "high": 72793.30020812375,
+        "actual": 71909.7,
+        "anchor": 72404.3203125
+      },
+      {
+        "date": "2026-10-05",
+        "train_start": "2026-09-18",
+        "train_end": "2026-10-01",
+        "n_train": 10,
+        "point": 72256.296875,
+        "low": 71762.68776457464,
+        "high": 72749.90598542536,
+        "actual": 72382.47,
+        "anchor": 72256.296875
+      },
+      {
+        "date": "2026-10-06",
+        "train_start": "2026-09-21",
+        "train_end": "2026-10-05",
+        "n_train": 10,
+        "point": 72675.96875,
+        "low": 72179.49270797355,
+        "high": 73172.44479202646,
+        "actual": 73067.81,
+        "anchor": 72675.96875
+      }
+    ]
+  },
+  "warnings": [
+    "Coverage is realized on dependent time-series sessions, not a future guarantee.",
+    "Fixed and daily-range bands are proxies, not a reconstruction of discretionary forecasts.",
+    "Official-close residuals already include the closing print: do not add another auction reserve.",
+    "Data-source reconciliation and bar-label semantics must be checked before calling this script."
+  ]
+}

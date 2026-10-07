@@ -190,7 +190,9 @@ work (§4.3).
   254 ms / p95 1.7 s apart). Staleness gates and latency measurement key off `ingest_ts`.
 - **T9 — Three layers on three clocks; do not collapse them.** Display = tick (SSE
   `/live-broker/marks/stream`, `/paper/open-positions/stream`, ~10/s coalesced, heartbeat event every
-  15 s). Exits = tick-woken, 200 ms floor, 1.5 s broker read as backstop; `_premium_for()` falls back
+  15 s). Exits = tick-woken, 200 ms floor, 1.5 s broker read as backstop. That read runs on a fixed
+  deadline that a tick wake must never move: until 2026-10-07 every wake restarted it, so a contract
+  ticking ~1/s starved the read and blinded the guard (`TestSlowCycleUnderLiveFeed`). `_premium_for()` falls back
   to broker `lp` on every degraded path (the guard must survive a dead Upstox feed), and
   `_fast_premium_pass` must never read the broker. **Entries stay on the CLOSED 1-minute bar**
   (`bar_events` only removes polling delay); tick-driven entries would repaint signals and break

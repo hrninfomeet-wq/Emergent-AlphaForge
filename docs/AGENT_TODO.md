@@ -23,7 +23,12 @@ Record: [`scalping/README.md`](scalping/README.md) (deliverables 01–06). Paper
   the tape, record a SENSEX expiry Thursday).
 - [ ] **Operator decision:** update app-wide statutory constants in `backend/app/option_costs.py` (STT 0.001 → 0.0015,
   NSE 0.0003503 → 0.0003553) — reprices every saved result by ~+21.6 % of charges.
-- [ ] Spun-off task: live guard slow-cycle starvation under continuous ticks (REAL-MONEY; reproduced).
+- [x] ~~Spun-off task: live guard slow-cycle starvation under continuous ticks (REAL-MONEY; reproduced).~~
+  **Fixed and pushed to `origin/main` 2026-10-07** (CHANGELOG "Live guard: the slow cycle no longer
+  starves"). The slow-cycle deadline is fixed and a tick no longer moves it. Pinned by
+  `TestSlowCycleUnderLiveFeed`.
+  - [ ] **Operator:** in the main checkout, `git merge --ff-only origin/main`, then `docker compose up -d --build`
+    with NO live position open. Until that rebuild the running backend still has the starving loop.
 - [ ] Spun-off task: live-path integrity (non-200 PlaceOrder as indeterminate, 40/min order budget, freeze 3,510,
   holiday gaps 2026-10-20 / 11-10 / 11-24, `REJECT` spelling in `order_sm`).
 - [x] Tape preservation: 3,201,938 depth ticks archived to `tick_archive` on 2026-10-06; daily archive loop (default on).
