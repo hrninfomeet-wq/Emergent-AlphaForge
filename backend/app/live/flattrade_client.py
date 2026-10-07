@@ -414,12 +414,17 @@ class FlattradeClient:
         Builds jData from intent.to_jdata(uid, actid). Parses Noren response:
           success: {stat:"Ok", norenordno:<id>}
           failure: {stat:<other>, emsg:<reason>}
+
+        A non-200 RAISES (``_post``'s RuntimeError is NOT converted into
+        ``ok=False``). Only a 200 carrying stat!="Ok" is a known reject; a gateway
+        5xx/429 can land after the OMS accepted the order, so its outcome is
+        UNKNOWN — the same as an httpx timeout. Every caller already treats a
+        raised place as a possible lost ACK (entry: halt + adopt by remarks==cid;
+        exits: resolve against the order book before any retry). Swallowing it as
+        a reject released the entry claim un-halted and let exits retry blind.
         """
         jdata = intent.to_jdata(uid=self._uid, actid=self._actid)
-        try:
-            data = await self._post("PlaceOrder", jdata)
-        except RuntimeError as exc:
-            return OrderResult(ok=False, rejreason=str(exc), raw={})
+        data = await self._post("PlaceOrder", jdata)
 
         if data.get("stat") == "Ok":
             return OrderResult(

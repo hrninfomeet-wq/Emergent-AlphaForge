@@ -96,6 +96,46 @@ def test_connection_error_before_send_still_halts():
     assert engine.halt_calls
 
 
+class _GatewayErrorClient(MockNoren):
+    """MockNoren for every gate, but the transmit runs the REAL
+    FlattradeClient.place_order against a gateway that answers non-200."""
+
+    def __init__(self, status: int, **kw):
+        super().__init__(**kw)
+        self._status = status
+        self.place_calls = 0
+
+    async def place_order(self, intent):
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from app.live.flattrade_client import FlattradeClient
+        self.place_calls += 1
+        resp = MagicMock()
+        resp.status_code = self._status
+        resp.text = "<html>502 Bad Gateway</html>"
+        http = MagicMock()
+        http.__aenter__ = AsyncMock(return_value=http)
+        http.__aexit__ = AsyncMock(return_value=False)
+        http.post = AsyncMock(return_value=resp)
+        real = FlattradeClient(jKey="K", uid="U", actid="A")
+        with patch("app.live.flattrade_client.httpx.AsyncClient", return_value=http):
+            return await real.place_order(intent)
+
+
+def test_gateway_5xx_on_place_is_indeterminate_and_halts():
+    """A 5xx can arrive AFTER the OMS accepted the order. It must take the
+    lost-ack path (halt + leave the intent claimed for remarks adoption), never
+    the clean-reject path that releases the claim with the engine still live."""
+    engine = FakeEngine()
+    client = _GatewayErrorClient(502, limits_data=_GOOD_LIMITS)
+    res = _run(_place_deployed(client=client, engine=engine, capped_lots=1, autoplace_armed=True))
+    assert client.place_calls == 1, "never reached the transmit — wrong-reason pass"
+    assert res["placed"] is False
+    assert res.get("indeterminate") is True, (
+        f"a gateway 5xx was reported as a clean reject: {res.get('reason')!r}")
+    assert "ack_lost" in res["reason"]
+    assert any("ack_lost" in r for r in engine.halt_calls), "engine not halted"
+
+
 def test_a_clean_broker_reject_is_NOT_indeterminate():
     """No over-firing: an explicit reject is a known outcome, engine stays live."""
     engine = FakeEngine()

@@ -2,6 +2,17 @@
 
 All notable changes to AlphaForge Trading Lab.
 
+## [Unreleased] — Live-path integrity fixes from the 2026-10-07 scalping feasibility audit
+
+Each finding was verified against the code first, then fixed test-first (one commit per item).
+
+- **Non-200 PlaceOrder is indeterminate, never a clean reject.** `FlattradeClient.place_order` swallowed `_post`'s
+  non-200 `RuntimeError` into `OrderResult(ok=False)`. A gateway 5xx can follow an OMS accept, so the entry path
+  reported `reject:` (claim released, engine NOT halted → a live, unguarded position) and both exit primitives in
+  `auto_square` retried blind with a fresh cid (a second sell next to a landed one → naked short). It now raises,
+  and every caller's existing lost-ack handling applies: entry halts `place_ack_lost:<cid>` and leaves the intent
+  claimed for remarks adoption; exits resolve `remarks==cid` against the order book before any retry.
+
 ## [Unreleased] — Scalper lab: adversarial-review fixes; N1 KILLED at replay (2026-10-07)
 
 An adversarial review (3 lenses) reported 17 findings in `app/scalping`, each with a reproduction; all were

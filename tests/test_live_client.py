@@ -577,15 +577,24 @@ def test_place_order_not_ok_response_maps_rejreason():
     assert "RMS limit exceeded" in result.rejreason
 
 
-def test_place_order_http_error_returns_not_ok():
-    """HTTP error → OrderResult(ok=False) — never raises."""
+@pytest.mark.parametrize("status", [500, 502, 503, 504, 429])
+def test_place_order_non_200_raises_never_a_clean_reject(status):
+    """A non-200 PlaceOrder is INDETERMINATE, not a reject — it must RAISE.
+
+    A gateway 5xx can arrive after the OMS already accepted the order. Returning
+    OrderResult(ok=False) told every caller "known not placed": the entry path
+    released its claim without halting (a live, unguarded position), and the
+    exit paths retried blind with a fresh cid (a second sell next to a landed
+    one → naked short). Raising routes it into the callers' existing lost-ack
+    handling (halt + adopt by remarks==cid), exactly like an httpx timeout.
+    Only a 200 carrying stat!="Ok" is a clean broker reject.
+    """
     client = _client()
-    mock_httpx, _ = _make_httpx_mock(503, {})
-    mock_httpx.post.return_value.text = "Service Unavailable"
+    mock_httpx, _ = _make_httpx_mock(status, {})
+    mock_httpx.post.return_value.text = "Bad Gateway"
     with patch("app.live.flattrade_client.httpx.AsyncClient", return_value=mock_httpx):
-        result = run(client.place_order(_intent()))
-    assert result.ok is False
-    assert result.rejreason  # non-empty reason
+        with pytest.raises(RuntimeError, match=f"HTTP {status}"):
+            run(client.place_order(_intent()))
 
 
 # ---------------------------------------------------------------------------
