@@ -1,0 +1,81 @@
+{
+  "checked_at": "2026-10-26T15:00:35.2049034Z",
+  "commit": "91a5977289a607fedbe3ac895fb9122122b01fb4",
+  "health": {
+    "db": "ok"
+  },
+  "build": {
+    "schema": 1,
+    "scope": "alphaforge-source-v1",
+    "status": "known",
+    "source_sha256": "99fc7ff8793c04d00faaeade1e019a0c26ca27795a09ce16069a2bf498ef7f5f",
+    "built_at": "2026-10-26T20:25:04.947062+05:30",
+    "git_revision": "91a5977289a607fedbe3ac895fb9122122b01fb4",
+    "git_dirty": true,
+    "checkout_status": "unverified"
+  },
+  "conditional_health": {
+    "running": true,
+    "heartbeat": 1793026824.0290353,
+    "stale": false,
+    "local_progress": 1793026824.0308335,
+    "last_error": null,
+    "watchdog": false
+  },
+  "conditional_order_count": 0,
+  "controls": {
+    "paper": {
+      "blocked": false,
+      "generation": 0
+    },
+    "live": {
+      "blocked": false,
+      "generation": 0
+    }
+  },
+  "mode": "LIVE_OFFLINE",
+  "metadata": {
+    "SENSEX": {
+      "contracts": 2978,
+      "first_expiry": "2026-10-29",
+      "expiry_count": 19
+    },
+    "BANKNIFTY": {
+      "contracts": 1003,
+      "first_expiry": "2026-10-27",
+      "expiry_count": 6
+    },
+    "NIFTY": {
+      "contracts": 1828,
+      "first_expiry": "2026-10-27",
+      "expiry_count": 18
+    }
+  },
+  "mongo_identity": "eb10b0b16368fc752e98efef3c931211c332d233c3222840168c3168fe1c5fab 2026-10-26T14:45:40.370619714Z",
+  "browser_observed": [
+    "Conditional orders tab selected",
+    "Paper - simulated selected",
+    "Master expiry options loaded",
+    "Manual live ticket tab present",
+    "Frontend/backend fingerprint match"
+  ],
+  "limitations": [
+    "No order armed or submitted",
+    "No behavioural acceptance suite or paper trade run",
+    "Broker acceptance unverified",
+    "Existing unrelated dirty source retained in build",
+    "Remote origin/main not pushed"
+  ],
+  "conditional_backend_source_parity": {
+    "backend/app/conditional/__init__.py": true,
+    "backend/app/conditional/broker.py": true,
+    "backend/app/conditional/engine.py": true,
+    "backend/app/conditional/market.py": true,
+    "backend/app/conditional/models.py": true,
+    "backend/app/conditional/rules.py": true,
+    "backend/app/conditional/service.py": true,
+    "backend/app/conditional/store.py": true,
+    "backend/app/conditional/watchdog.py": true,
+    "backend/app/routers/conditional_orders.py": true
+  }
+}

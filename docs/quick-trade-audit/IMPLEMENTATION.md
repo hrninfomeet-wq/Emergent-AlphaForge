@@ -1,5 +1,7 @@
 # Conditional Quick Trade — implementation checkpoint
 
+**Latest deployment status:** [ROLLOUT.md](ROLLOUT.md) records the user-authorized local-main commit, rebuild and visible panel verification. The implementation-only snapshot below predates that deployment; behavioural/live-trading validation remains open.
+
 The user authorized proceeding after the audit, then requested implementation only and deferred the test campaign. The design below was recorded before coding. The audit remains historical evidence, not a live certification.
 
 ## Design (one page)
