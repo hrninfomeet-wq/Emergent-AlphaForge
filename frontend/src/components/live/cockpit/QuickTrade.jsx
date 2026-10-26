@@ -1,26 +1,30 @@
+import { useState } from "react";
 import LiveOrderTicket from "@/components/live/LiveOrderTicket";
+import ConditionalOrderPanel from "@/components/live/ConditionalOrderPanel";
 import { SectionCard } from "@/components/live/liveHelpers";
 import { useLiveData } from "@/components/live/LiveDataProvider";
 
 /**
- * Quick-trade card — a thin wrapper around the existing one-click LiveOrderTicket
- * so manual real-money entry stays in the always-on core. No trade logic here.
+ * Conditional orders default to paper. The existing supervised live ticket
+ * remains available in its own tab; trading logic stays on the server.
  */
 export default function QuickTrade({ mode }) {
   const { refetch } = useLiveData();
+  const [tab, setTab] = useState("conditional");
   return (
     <SectionCard
       title="Quick Trade"
       badge={
         <span className="text-[10px] font-mono text-danger px-2 py-0.5 rounded-full border border-danger/40 bg-danger/10 uppercase tracking-wider font-bold">
-          real money · 1-click
+          {tab === "conditional" ? "conditional · paper default" : "manual · real money"}
         </span>
       }
     >
-      {/* onPlaced refreshes the shared broker slices the moment a real order
-          fills, so positions / orders / day-P&L reflect the trade immediately
-          instead of lagging up to a full poll cycle. */}
-      <LiveOrderTicket mode={mode} disabled={false} onPlaced={refetch.all} />
+      <div role="tablist" aria-label="Quick Trade type" className="flex gap-2 mb-4">
+        <button type="button" role="tab" aria-selected={tab === "conditional"} onClick={() => setTab("conditional")} className="rounded border border-border px-3 py-2 text-sm">Conditional orders</button>
+        <button type="button" role="tab" aria-selected={tab === "manual"} onClick={() => setTab("manual")} className="rounded border border-border px-3 py-2 text-sm">Manual live ticket</button>
+      </div>
+      {tab === "conditional" ? <ConditionalOrderPanel /> : <LiveOrderTicket mode={mode} disabled={false} onPlaced={refetch.all} />}
     </SectionCard>
   );
 }

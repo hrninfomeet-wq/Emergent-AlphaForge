@@ -1,0 +1,17 @@
+2026-10-26 — implementation-only checks (no behavioural acceptance claim)
+
+Python:
+.venv/Scripts/python.exe -m compileall -q backend/app/conditional backend/app/routers/conditional_orders.py backend/app/routers/live_broker.py backend/app/routers/deployments.py backend/app/live/executor.py backend/app/upstox_stream.py backend/server.py tests/test_conditional_adapters.py
+Observed exit code: 0. No compiler output.
+
+Frontend (cwd frontend; @babel/parser, sourceType module, JSX plugin):
+PARSE OK src/components/live/ConditionalOrderPanel.jsx
+PARSE OK src/components/live/cockpit/QuickTrade.jsx
+PARSE OK src/lib/conditionalApi.js
+Observed exit code: 0.
+
+git diff --check
+Observed exit code: 0. Only existing LF-to-CRLF warnings for unrelated dirty files.
+
+Not executed: behavioural suites, E2E paper runs, production build, browser run,
+broker calls, database initialization, Compose rollout, live orders.

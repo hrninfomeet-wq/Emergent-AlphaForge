@@ -604,6 +604,9 @@ class UpstoxMarketStreamManager:
         self._task: Optional[asyncio.Task] = None
         self._stop_event: Optional[asyncio.Event] = None
         self._latest_ticks: Dict[str, Dict[str, Any]] = {}
+        self._required_keys: set[str] = set()
+        self._active_websocket = None
+        self._subscription_lock = asyncio.Lock()
         # Per-subscriber asyncio.Queue for fan-out pub/sub (used by SSE/WebSocket consumers).
         self._tick_subscribers: "set[asyncio.Queue]" = set()
         self._session: Dict[str, Any] = {
@@ -639,7 +642,7 @@ class UpstoxMarketStreamManager:
         self._session.update({
             "session_id": session_id,
             "mode": mode,
-            "instrument_keys": list(dict.fromkeys(instrument_keys)),
+            "instrument_keys": list(dict.fromkeys([*instrument_keys, *sorted(self._required_keys)])),
             "persist": bool(persist),
             "updated_at": _now_iso(),
             "last_error": None,
@@ -670,6 +673,32 @@ class UpstoxMarketStreamManager:
 
     def latest_tick_map(self) -> Dict[str, Dict[str, Any]]:
         return {key: dict(value) for key, value in self._latest_ticks.items()}
+
+    async def ensure_instruments(self, instrument_keys: List[str]) -> None:
+        """Add held/conditional instruments without restarting the shared feed.
+
+        Keys survive reconnect and subsequent baseline reconfiguration. No fresh
+        quote is invented while disconnected; consumers still enforce tick age.
+        """
+        clean = {str(k).strip() for k in instrument_keys if str(k or "").strip()}
+        async with self._subscription_lock:
+            self._required_keys.update(clean)
+            existing = set(self._session.get("instrument_keys") or [])
+            added = sorted(clean - existing)
+            if not added:
+                return
+            # Preserve intent for reconnect even if the current send fails.
+            self._session["instrument_keys"] = sorted(existing | clean)
+            if self._active_websocket is not None:
+                try:
+                    await self._active_websocket.send(build_subscription_message(
+                        guid=str(uuid.uuid4()), instrument_keys=added,
+                        mode=self._session["mode"]))
+                except Exception:
+                    # Retry on the next ensure call; required keys still survive
+                    # reconnect even if no consumer gets another call through.
+                    self._session["instrument_keys"] = sorted(existing)
+                    raise
 
     # --- pub/sub for SSE/WebSocket consumers ---------------------------------
 
@@ -743,6 +772,7 @@ class UpstoxMarketStreamManager:
                 await self._task
             except asyncio.CancelledError:
                 pass
+        self._active_websocket = None
         self._session["running"] = False
         self._session["connected"] = False
         self._session["updated_at"] = _now_iso()
@@ -774,11 +804,15 @@ class UpstoxMarketStreamManager:
                     self._session["running"] = True
                     self._session["connected"] = True
                     self._session["updated_at"] = _now_iso()
-                    await websocket.send(build_subscription_message(
-                        guid=str(uuid.uuid4()),
-                        instrument_keys=self._session["instrument_keys"],
-                        mode=self._session["mode"],
-                    ))
+                    async with self._subscription_lock:
+                        self._active_websocket = websocket
+                        self._session["instrument_keys"] = sorted(
+                            set(self._session["instrument_keys"]) | self._required_keys)
+                        await websocket.send(build_subscription_message(
+                            guid=str(uuid.uuid4()),
+                            instrument_keys=self._session["instrument_keys"],
+                            mode=self._session["mode"],
+                        ))
                     while not self._stop_event.is_set():
                         frame = await websocket.recv()
                         if not isinstance(frame, (bytes, bytearray)):
@@ -804,8 +838,10 @@ class UpstoxMarketStreamManager:
                         if self._session.get("persist"):
                             await persist_ticks(self._db_factory(), ticks, str(self._session["session_id"]))
             except asyncio.CancelledError:
+                self._active_websocket = None
                 raise
             except Exception as exc:
+                self._active_websocket = None
                 attempt += 1
                 self._session["running"] = False
                 self._session["connected"] = False
@@ -818,6 +854,7 @@ class UpstoxMarketStreamManager:
                     await asyncio.wait_for(self._stop_event.wait(), timeout=delay)
                 except asyncio.TimeoutError:
                     continue
+        self._active_websocket = None
         self._session["running"] = False
         self._session["connected"] = False
         self._session["updated_at"] = _now_iso()

@@ -301,9 +301,22 @@ async def startup() -> None:
     )
     log.info("Warehouse auto-update scheduler started")
 
+    # Independent lifecycle; never arms a live order at startup. Persisted
+    # actions are reconciled before dispatch, and paper remains the UI default.
+    try:
+        from app.conditional.service import start as start_conditional
+        await start_conditional(db)
+    except Exception:
+        log.exception("Conditional-order service failed to start; its API remains unavailable")
+
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
+    try:
+        from app.conditional.service import stop as stop_conditional
+        await stop_conditional()
+    except Exception as exc:
+        log.warning("conditional.stop() failed: %s", exc)
     try:
         await live_candle_roller.stop()
     except Exception as exc:
@@ -356,6 +369,8 @@ api.include_router(broker.api)
 api.include_router(live_broker.api)
 api.include_router(premium_momentum_routes.api)
 api.include_router(scalping.api)
+from app.routers import conditional_orders
+api.include_router(conditional_orders.api)
 
 app.include_router(api)
 

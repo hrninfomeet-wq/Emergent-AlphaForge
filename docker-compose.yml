@@ -21,8 +21,11 @@ services:
 
   backend:
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: backend/Dockerfile
+      args:
+        ALPHAFORGE_BUILD_REVISION: "${ALPHAFORGE_BUILD_REVISION:-}"
+        ALPHAFORGE_BUILD_DIRTY: "${ALPHAFORGE_BUILD_DIRTY:-}"
     container_name: alphaforge_backend
     restart: unless-stopped
     env_file:
@@ -48,12 +51,34 @@ services:
       - ./backend/app/strategies/plugins:/app/app/strategies/plugins
       - C:/Users/haroo/.flattrade:/host-flattrade
 
+  conditional-watchdog:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: alphaforge_conditional_watchdog
+    restart: unless-stopped
+    command: ["python", "-m", "app.conditional.watchdog"]
+    env_file:
+      - ./backend/.env
+    environment:
+      MONGO_URL: mongodb://mongo:27017
+      DB_NAME: alphaforge
+      CONDITIONAL_BACKEND_URL: http://backend:8001
+    depends_on:
+      mongo:
+        condition: service_healthy
+    # This worker intentionally serves no HTTP listener.
+    healthcheck:
+      disable: true
+
   frontend:
     build:
-      context: ./frontend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: frontend/Dockerfile
       args:
         REACT_APP_BACKEND_URL: http://localhost:8001
+        ALPHAFORGE_BUILD_REVISION: "${ALPHAFORGE_BUILD_REVISION:-}"
+        ALPHAFORGE_BUILD_DIRTY: "${ALPHAFORGE_BUILD_DIRTY:-}"
     container_name: alphaforge_frontend
     restart: unless-stopped
     depends_on:

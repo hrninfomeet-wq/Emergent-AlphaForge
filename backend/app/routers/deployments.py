@@ -1228,6 +1228,51 @@ async def resume_deployment(deployment_id: str):
     return serialize_doc({**doc, "option_stream": stream})
 
 
+@api.post("/deployments/paper/stop-all")
+async def stop_all_paper_deployments():
+    """Pause paper/signal-only deployments and close paper positions only.
+
+    This route has no live exit, mode change, latch or engine-halt operation.
+    The existing global stop route retains its explicit account-wide behavior.
+    """
+    db = get_db()
+    from app.conditional.service import block_mode as block_conditional_mode
+    try:
+        conditional_result = await block_conditional_mode('paper')
+    except Exception as exc:
+        conditional_result = {'blocked': False, 'error': str(exc)}
+    selector = {"status": "ACTIVE", "mode": {"$in": ["paper", "signal_only"]}}
+    active = await db.strategy_deployments.find(selector, {"_id": 0, "id": 1}).to_list(length=None)
+    ids = [d["id"] for d in active]
+    paused_ids = []
+    # Recheck mode on the write: a deployment enabled live after the read must
+    # not be paused or demoted by a paper-only action.
+    for dep_id in ids:
+        updated = await db.strategy_deployments.update_one(
+            {**selector, "id": dep_id},
+            {"$set": {"status": "PAUSED", "updated_at": datetime.now(timezone.utc).isoformat()}},
+        )
+        if updated.modified_count:
+            paused_ids.append(dep_id)
+    summaries = await square_off_open_paper_trades(
+        db, latest_tick_lookup=upstox_stream_manager.latest_tick_map().get,
+        reason="manual_stop_all_paper",
+    )
+    closed = [s for s in summaries if "error" not in s and "skipped" not in s]
+    failed = [s for s in summaries if "error" in s]
+    skipped = [s for s in summaries if "skipped" in s]
+    if conditional_result.get('error'):
+        failed.append({'id': 'conditional-orders', 'error': conditional_result['error']})
+    elif conditional_result.get('orders'):
+        skipped.append({'id': 'conditional-orders', 'skipped': 'Conditional cancellation/flatten pending; inspect Quick Trade status'})
+    return serialize_doc({
+        "squared_off": closed, "squared_off_count": len(closed),
+        "failed": failed, "skipped": skipped,
+        "paused_deployment_ids": paused_ids,
+        "conditional_orders": conditional_result,
+    })
+
+
 @api.post("/deployments/stop-all")
 async def stop_all_deployments():
     """Stop ALL trading: square off every open paper position, pause every ACTIVE
@@ -1235,6 +1280,14 @@ async def stop_all_deployments():
     close at the live tick price when the market is open, else at a flagged
     estimate."""
     db = get_db()
+    from app.conditional.service import block_mode as block_conditional_mode
+    # Global Stop ALL covers both modes; paper-only route above never touches live.
+    conditional_results = {}
+    for conditional_mode in ('paper', 'live'):
+        try:
+            conditional_results[conditional_mode] = await block_conditional_mode(conditional_mode)
+        except Exception as exc:
+            conditional_results[conditional_mode] = {'blocked': False, 'error': str(exc)}
     summaries = await square_off_open_paper_trades(
         db,
         latest_tick_lookup=upstox_stream_manager.latest_tick_map().get,
@@ -1280,6 +1333,7 @@ async def stop_all_deployments():
         "paused_deployment_ids": paused_ids,
         "disarmed_live_deployment_ids": disarmed_live_ids,
         "live_exit_reports": live_exit_reports,
+        "conditional_orders": conditional_results,
     })
 
 

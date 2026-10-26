@@ -2548,6 +2548,13 @@ async def _run_kill_switch() -> Dict[str, Any]:
     except Exception as exc:
         log.warning("kill_switch: engine halt failed: %s", exc)
     try:
+        from app.conditional.service import block_mode as block_conditional_mode
+        stop_all['conditional_orders'] = await block_conditional_mode('live')
+    except Exception as exc:
+        # Keep performing the account kill even if conditional storage failed.
+        stop_all['conditional_error'] = str(exc)
+        log.error('kill_switch: conditional live latch failed: %s', exc)
+    try:
         stop_all["disarmed_deployment_ids"] = await _disarm_all_live_deployments(
             get_db(), "kill_switch")
     except Exception as exc:

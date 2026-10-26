@@ -226,6 +226,44 @@ async def _transmit_and_arm(
 # Public API — the ONLY permitted entry transmit path
 # ---------------------------------------------------------------------------
 
+async def submit_conditional_intent(client, intent, *, engine, entry: bool):
+    """Conditional worker's transmit boundary; caller durably claims action first.
+
+    This does not change manual/deployed execution. Exceptions leave the durable
+    conditional action indeterminate for broker reconciliation, never retry.
+    """
+    from app.live.broker_protocol import OrderResult
+    if intent.prctyp not in ('LMT', 'SL-LMT') or intent.qty <= 0:
+        return OrderResult(ok=False, rejreason='invalid conditional intent')
+    if entry:
+        if intent.trantype != 'B' or intent.prctyp != 'LMT' or not _autoplace_armed():
+            return OrderResult(ok=False, rejreason='conditional live entry disabled or unsupported')
+        allowed, why = await engine.can_trade()
+        if not allowed:
+            return OrderResult(ok=False, rejreason=f'entry blocked: {why}')
+        budget = getattr(client, 'order_budget', None)
+        if callable(budget):
+            available, why = budget().entry_allowed()
+            if not available:
+                return OrderResult(ok=False, rejreason=f'entry rate budget: {why}')
+        # A paid-premium BUY cannot depend on a guessed available balance.
+        mv = margin_verdict(await client.limits(), ref_ltp=intent.prc,
+                            lot_size=intent.qty)
+        if not mv.get('ok'):
+            return OrderResult(ok=False, rejreason=mv.get('detail', 'margin unavailable'))
+    elif intent.trantype != 'S':
+        return OrderResult(ok=False, rejreason='conditional exits must sell held longs')
+    try:
+        return await client.place_order(intent)
+    except Exception:
+        if entry:
+            try:
+                await engine.halt(f'conditional_ack_lost:{intent.client_order_id}')
+            except Exception:
+                pass
+        raise
+
+
 async def place_live_test_order(
     contract: Dict[str, Any],
     *,

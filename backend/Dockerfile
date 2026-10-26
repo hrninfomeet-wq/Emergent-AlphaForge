@@ -14,6 +14,14 @@
 #   docker pull python:3.11-slim
 #   docker image inspect python:3.11-slim --format '{{index .RepoDigests 0}}'
 # then paste the new digest here and rebuild.
+FROM python:3.11-slim@sha256:90744cff8f32887f075c47d747a173ff333e9e98801667af93c357fa9f5e28ff AS identity
+ARG ALPHAFORGE_BUILD_REVISION=""
+ARG ALPHAFORGE_BUILD_DIRTY=""
+COPY backend/ /source/backend/
+COPY frontend/ /source/frontend/
+COPY docker-compose.yml start-app.bat .dockerignore /source/
+RUN python /source/backend/app/build_identity.py --root /source --out /build-manifest.json --revision "$ALPHAFORGE_BUILD_REVISION" --dirty "$ALPHAFORGE_BUILD_DIRTY"
+
 FROM python:3.11-slim@sha256:90744cff8f32887f075c47d747a173ff333e9e98801667af93c357fa9f5e28ff
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -27,10 +35,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential gcc curl \
   && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt ./
+COPY backend/requirements.txt ./
 RUN pip install --upgrade pip && pip install -r requirements.txt
 
-COPY . .
+COPY backend/ .
+COPY --from=identity /build-manifest.json /app/build-manifest.json
 
 EXPOSE 8001
 
