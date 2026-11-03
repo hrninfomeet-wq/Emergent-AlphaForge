@@ -151,9 +151,14 @@ def exit_state(spec, fill_price, previous_state=None):
     fill = number(fill_price, 'fill_price')
     exits = spec['exits']
     initial = float(_decimal(fill) - _decimal(_difference(exits['stop'], fill)))
-    if initial <= 0:
+    if initial <= 0 and not spec.get('chart'):
         raise ValueError('stop distance must be below entry premium')
     target = float(_decimal(fill) + _decimal(_difference(exits['target'], fill))) if exits.get('target') else None
+    if spec.get('chart'):
+        initial = spec['chart']['stop_price']
+        target = spec['chart'].get('target_price')
+        if previous_state is None and (initial >= fill or (target is not None and target <= fill)):
+            raise ValueError('Actual fill is outside confirmed stop/target levels')
     state = {'entry': fill, 'stop': initial, 'initial_stop': initial, 'target': target,
              'peak': fill, 'stop_reason': 'stop', 'trail_active': False, 'lock_active': False}
     if previous_state is not None:

@@ -58,6 +58,7 @@ def normalize_spec(value: dict, max_lots: int = 5) -> dict:
         'spot_condition', 'premium_condition', 'valid_minutes', 'valid_until', 'exits',
         'entry_timeout_seconds', 'max_reprices', 'stale_seconds', 'failsafe',
         'max_entry_premium',
+        'chart',
     })
     expiry = value.get('expiry')
     if not isinstance(expiry, str) or not re.fullmatch(r'\d{4}-\d{2}-\d{2}', expiry):
@@ -144,7 +145,7 @@ def normalize_spec(value: dict, max_lots: int = 5) -> dict:
         max_premium = number(max_premium, 'max_entry_premium')
     if mode == 'live' and max_premium is None:
         raise ValueError('live orders require max_entry_premium to bound full premium exposure')
-    return {
+    result = {
         'mode': mode,
         'underlying': choice(value.get('underlying'), 'underlying', ('NIFTY', 'BANKNIFTY', 'SENSEX')),
         'option_type': choice(value.get('option_type', 'CE'), 'option_type', ('CE', 'PE')),
@@ -155,3 +156,7 @@ def normalize_spec(value: dict, max_lots: int = 5) -> dict:
         'stale_seconds': stale, 'failsafe': choice(value.get('failsafe', 'flatten'), 'failsafe', ('flatten', 'alert')),
         'max_entry_premium': max_premium,
     }
+    if value.get('chart') is not None:
+        from .chart import normalize_chart
+        result['chart'] = normalize_chart(value['chart'], mode)
+    return result

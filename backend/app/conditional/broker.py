@@ -22,6 +22,10 @@ def observation(status, *, broker_id=None, filled_qty=0, fill_price=None, reason
                 fill_price=fill_price, reason=reason)
 
 
+def price_type(action):
+    return 'SL-LMT' if action['kind'] == 'stop' or action.get('order_type') == 'STOP_LIMIT' else 'LMT'
+
+
 def validate_action(action: dict) -> dict:
     action = copy.deepcopy(action)
     ident = action.get("id")
@@ -41,10 +45,12 @@ def validate_action(action: dict) -> dict:
     price = positive(action.get("limit_price"), "limit price")
     if Decimal(str(price)) % Decimal(str(tick)) != 0:
         raise ValueError("limit price is not tick aligned")
-    if action["kind"] == "stop":
+    if action.get('order_type') not in (None, 'MARKET', 'LIMIT', 'STOP_LIMIT'):
+        raise ValueError('Unsupported entry order type')
+    if price_type(action) == 'SL-LMT':
         trigger = positive(action.get("trigger_price"), "stop trigger")
-        if Decimal(str(trigger)) % Decimal(str(tick)) != 0 or price > trigger:
-            raise ValueError("sell stop needs tick-aligned trigger and limit <= trigger")
+        if Decimal(str(trigger)) % Decimal(str(tick)) != 0 or (price > trigger if action['side'] == 'S' else price < trigger):
+            raise ValueError('Stop-limit price must be tick aligned and on the executable side of trigger')
     action["quantity"] = qty
     return action
 
@@ -68,13 +74,15 @@ class PaperGateway:
         try:
             price = positive(action.get("reference_price"), "current simulation premium")
         except ValueError:
-            return observation("OPEN", broker_id="paper:" + action["id"])
-        marketable = (action["limit_price"] >= price if action["side"] == "B"
+            return dict(observation("OPEN", broker_id="paper:" + action["id"]), triggered=prior.get('triggered', False))
+        marketable = action.get('order_type') == 'MARKET' or (action["limit_price"] >= price if action["side"] == "B"
                       else action["limit_price"] <= price)
-        if action["kind"] == "stop":
-            marketable = marketable and price <= action["trigger_price"]
+        triggered = prior.get('triggered', False)
+        if price_type(action) == 'SL-LMT':
+            triggered = triggered or (price <= action['trigger_price'] if action['side'] == 'S' else price >= action['trigger_price'])
+            marketable = marketable and triggered
         if not marketable:
-            return observation("OPEN", broker_id="paper:" + action["id"])
+            return dict(observation("OPEN", broker_id="paper:" + action["id"]), triggered=triggered)
         return observation("COMPLETE", broker_id="paper:" + action["id"],
                            filled_qty=action["quantity"], fill_price=price)
 
@@ -95,6 +103,14 @@ class PaperGateway:
         await self.prepare(amended)
         result = self._fill(amended)
         return dict(result, amended=result["status"] in ("OPEN", "COMPLETE"))
+
+    async def amend_entry(self, action):
+        if action['kind'] != 'entry' or not action.get('pending_amendment'):
+            raise ValueError('Pending entry amendment required')
+        if (action.get('observation') or {}).get('status') in ('COMPLETE', 'CANCELED', 'REJECTED'):
+            return dict(action['observation'], amended=False)
+        amended = await self.prepare({**action, **action['pending_amendment']})
+        return dict(self._fill(amended), amended=True)
 
     async def reconcile(self, order):
         return {"ok": True, "reason": None}
@@ -139,6 +155,10 @@ class FlattradeGateway:
             from app.live.executor import _autoplace_armed
             if not _autoplace_armed():
                 return False, "live automatic placement is disabled"
+            from app.live.flattrade_token import DEFAULT_USER_ID, get_status
+            status = await get_status(DEFAULT_USER_ID)
+            if not status.get('connected') or status.get('expired') or status.get('regenerate_after_6am'):
+                return False, 'Flattrade unavailable; log in from the registered static IP'
             allowed, why = await self._engine().can_trade()
             if not allowed:
                 return False, why
@@ -219,13 +239,15 @@ class FlattradeGateway:
     def _intent(action):
         contract = action["contract"]
         return OrderIntent(client_order_id=action["id"], remarks=action["id"],
-                           trantype=action["side"], prctyp="SL-LMT" if action["kind"] == "stop" else "LMT",
+                           trantype=action["side"], prctyp=price_type(action),
                            exch=contract["exchange"], tsym=contract["tsym"], qty=action["quantity"],
                            prc=action["limit_price"], trgprc=action.get("trigger_price"), prd="I", ret="DAY")
 
     async def submit(self, action):
         try:
             validate_action(action)
+            if action.get('order_type') == 'MARKET':
+                return observation('REJECTED', reason='Flattrade API market orders are unavailable')
             if not action["contract"].get("tsym"):
                 raise ValueError("prepare must resolve and persist identity before submit")
             if action["kind"] == "stop" and not self.protection_supported:
@@ -326,21 +348,20 @@ class FlattradeGateway:
         if (row.get("tsym") != c.get("tsym") or row.get("exch") != c.get("exchange")
                 or row.get("trantype") != action["side"] or row.get("prd") != "I"
                 or str(row.get("remarks") or "") != action["id"]
-                or row.get("prctyp") != ("SL-LMT" if action["kind"] == "stop" else "LMT")):
+                or row.get("prctyp") != price_type(action)):
             return observation("UNKNOWN", broker_id=broker_id, reason="broker identity contradicts persisted action")
         amended = False
         try:
             observed_limit = positive(row.get("prc"), "broker limit")
-            observed_trigger = positive(row.get("trgprc"), "broker trigger") if action["kind"] == "stop" else None
+            observed_trigger = positive(row.get("trgprc"), "broker trigger") if price_type(action) == 'SL-LMT' else None
             observed_pair = (observed_limit, observed_trigger)
-            original_pair = (action["limit_price"], action.get("trigger_price") if action["kind"] == "stop" else None)
-            pending = action.get("pending_amendment") if action["kind"] == "stop" else None
+            original_pair = (action["limit_price"], action.get("trigger_price") if price_type(action) == 'SL-LMT' else None)
+            pending = action.get("pending_amendment")
             if pending:
                 pending_limit = positive(pending.get("limit_price"), "pending limit")
-                pending_trigger = positive(pending.get("trigger_price"), "pending trigger")
-                tick = Decimal(str(c["tick_size"]))
-                if (pending_trigger < action["trigger_price"] or pending_limit > pending_trigger
-                        or Decimal(str(pending_limit)) % tick or Decimal(str(pending_trigger)) % tick):
+                pending_trigger = positive(pending.get("trigger_price"), "pending trigger") if price_type(action) == 'SL-LMT' else None
+                validate_action(dict(action, **pending))
+                if action['kind'] == 'stop' and pending_trigger < action['trigger_price']:
                     raise ValueError("invalid persisted amendment")
                 amended = observed_pair == (pending_limit, pending_trigger)
             if observed_pair != original_pair and not amended:
@@ -365,7 +386,7 @@ class FlattradeGateway:
             return observation("UNKNOWN", broker_id=broker_id, reason="cumulative fill moved backwards")
         result = observation(status, broker_id=str(row.get("norenordno")), filled_qty=filled,
                              fill_price=price, reason=row.get("rejreason"))
-        if action["kind"] == "stop":
+        if action["kind"] == "stop" or pending:
             result.update(amended=amended, limit_price=observed_limit, trigger_price=observed_trigger)
         return result
 
@@ -426,6 +447,34 @@ class FlattradeGateway:
         except Exception as exc:
             self._invalidate()
             return dict(observation("UNKNOWN", reason=f"stop amendment unresolved: {exc}"), amended=False)
+
+    async def amend_entry(self, action):
+        from app.live.exit_claims import claim_exit
+        async with claim_exit(action['contract'].get('tsym'), label='conditional-entry-amend') as got:
+            if not got:
+                return dict(observation('UNKNOWN', reason='symbol busy'), amended=False)
+            try:
+                pending = action.get('pending_amendment')
+                if action['kind'] != 'entry' or not pending:
+                    raise ValueError('Persisted entry amendment required')
+                validate_action({**action, **pending})
+                before = self._match(action, await self._book(fresh=True))
+                if before['status'] != 'OPEN' or before.get('filled_qty') or before.get('amended'):
+                    return dict(before, amended=bool(before.get('amended')))
+                allowed, why = await self._engine().can_trade()
+                if not allowed:
+                    return dict(before, amended=False, reason=why)
+                client = await self._client()
+                args = {'prc': pending['limit_price']}
+                if pending.get('trigger_price') is not None:
+                    args['trgprc'] = pending['trigger_price']
+                await client.modify_order(before['broker_id'], **args)
+                self._invalidate()
+                after = self._match(action, await self._book(fresh=True))
+                return dict(after, amended=bool(after.get('amended')))
+            except Exception as exc:
+                self._invalidate()
+                return dict(observation('UNKNOWN', reason=f'entry amendment unresolved: {exc}'), amended=False)
 
     @staticmethod
     def _terminal_evidence(action):

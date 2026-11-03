@@ -236,8 +236,10 @@ async def submit_conditional_intent(client, intent, *, engine, entry: bool):
     if intent.prctyp not in ('LMT', 'SL-LMT') or intent.qty <= 0:
         return OrderResult(ok=False, rejreason='invalid conditional intent')
     if entry:
-        if intent.trantype != 'B' or intent.prctyp != 'LMT' or not _autoplace_armed():
+        if intent.trantype != 'B' or intent.prctyp not in ('LMT', 'SL-LMT') or not _autoplace_armed():
             return OrderResult(ok=False, rejreason='conditional live entry disabled or unsupported')
+        if intent.prctyp == 'SL-LMT' and not (intent.trgprc and 0 < intent.trgprc <= intent.prc):
+            return OrderResult(ok=False, rejreason='BUY stop-limit requires positive trigger <= limit')
         allowed, why = await engine.can_trade()
         if not allowed:
             return OrderResult(ok=False, rejreason=f'entry blocked: {why}')

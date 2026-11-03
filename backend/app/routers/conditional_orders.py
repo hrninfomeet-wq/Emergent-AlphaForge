@@ -71,6 +71,49 @@ async def preview(body: Dict[str, Any]):
     return await response(engine().preview(body))
 
 
+@api.get('/chart/metadata')
+async def chart_metadata(instrument_key: str):
+    e = engine()
+    async def load():
+        try:
+            contract = await e.chart_contract(instrument_key)
+        except ValueError as exc:
+            return {'supported': False, 'reason': str(exc), 'live_available': False}
+        available, reason = await e.live_ready()
+        return {'supported': True, 'contract': contract, 'max_lots': e.max_lots,
+                'live_available': available, 'live_reason': reason,
+                'paper_order_types': ['MARKET', 'LIMIT', 'STOP_LIMIT'],
+                'live_order_types': ['LIMIT', 'STOP_LIMIT'],
+                'protection': 'Broker SL-LMT with software target' if e.gateways['live'].protection_supported else 'Software stop and target',
+                'scope': 'Long index options; SELL closes owned positions. No naked short entries.'}
+    return await response(load())
+
+
+@api.get('/chart/orders')
+async def chart_orders():
+    from app.conditional.chart import chart_row
+    e = engine()
+    async def load():
+        now = e.now()
+        return {'rows': [chart_row(doc, now) for doc in await e.store.list()], 'as_of_ms': now * 1000,
+                'controls': {mode: await e.store.control(mode) for mode in ('paper', 'live')}}
+    return await response(load())
+
+
+@api.post('/chart/preview')
+async def chart_preview(body: Dict[str, Any]):
+    return await response(engine().chart_preview(body))
+
+
+@api.post('/{order_id}/chart-change')
+async def chart_change(order_id: str, body: Dict[str, Any]):
+    from app.conditional.chart import chart_row
+    e = engine()
+    async def update():
+        return {'order': chart_row(await e.chart_change(order_id, body), e.now())}
+    return await response(update())
+
+
 @api.post('/arm')
 async def arm(body: ArmBody):
     async def create():

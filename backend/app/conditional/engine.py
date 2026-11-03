@@ -77,7 +77,8 @@ def observation(action, value):
         status = 'UNKNOWN'
     action['status'] = status
     if value.get('amended') and action.get('pending_amendment'):
-        action.update(action.pop('pending_amendment'))
+        action['confirmed_amendment'] = action.pop('pending_amendment')
+        action.update(action['confirmed_amendment'])
     if value.get('broker_id'):
         action['broker_id'] = str(value['broker_id'])
     action['observation'] = copy.deepcopy(value)
@@ -117,6 +118,127 @@ class ConditionalEngine:
             return await fn()
         return False, 'Live adapter readiness unavailable'
 
+    async def chart_contract(self, key):
+        for underlying in ('NIFTY', 'BANKNIFTY', 'SENSEX'):
+            matches = [c for c in await self.market.contracts(underlying) if c['instrument_key'] == key]
+            if len(matches) == 1:
+                return matches[0]
+            if len(matches) > 1:
+                raise ValueError('Ambiguous contract identity')
+        raise ValueError('Chart trading currently supports long NIFTY/BANKNIFTY/SENSEX options only; indices themselves cannot be ordered')
+
+    async def chart_preview(self, payload):
+        from .chart import chart_spec
+        contract = await self.chart_contract(payload.get('instrument_key'))
+        snap = await self.market.snapshot({'underlying': contract['underlying']}, reference_contract=contract)
+        if not fresh(snap.get('reference'), self.now(), 5):
+            raise ValueError('A fresh selected-option quote is required')
+        return await self.preview(chart_spec(payload, contract, snap['reference']['price']))
+
+    async def chart_change(self, oid, payload):
+        """Queue changes on the existing durable order; only the worker transmits."""
+        from .chart import aligned
+        from .models import mapping
+        p = mapping(payload, 'chart change', {'field', 'price', 'edit_version', 'confirm_live'})
+        doc = await self.store.get(oid)
+        if not doc or not doc['spec'].get('chart') or doc['status'] in TERMINAL or doc['status'] == 'DRAFT':
+            raise ValueError('Active chart-owned order required')
+        if type(p.get('edit_version')) is not int or p['edit_version'] != doc.get('edit_version', 0):
+            raise Conflict('Order was edited; refresh and confirm again')
+        if doc['mode'] == 'live':
+            if p.get('confirm_live') is not True:
+                raise ValueError('Explicit live confirmation required')
+            if p.get('field') != 'cancel':
+                ready, why = await self.live_ready()
+                if not ready:
+                    raise ValueError(why)
+        if doc.get('cancel_requested') or doc.get('exit_reason') or (doc.get('pending_chart_change') and p.get('field') != 'cancel'):
+            raise ValueError('An order change or exit is already pending')
+        field = p.get('field')
+        if field not in ('limit_price', 'trigger_price', 'stop_price', 'target_price', 'cancel'):
+            raise ValueError('Unsupported chart action')
+        if field == 'cancel':
+            doc['cancel_requested'] = True
+        else:
+            if not await self._allowed(doc):
+                raise ValueError('Kill latch or cancellation blocks modification')
+            c = doc.get('contract') or doc['reference']['contract']
+            config = doc['spec']['chart']
+            price = None if field == 'target_price' and p.get('price') is None else aligned(p.get('price'), c['tick_size'], field)
+            if field in ('stop_price', 'target_price'):
+                mark = doc.get('last_premium', doc['reference']['premium'])
+                filled = any(a.get('filled_qty', 0) for a in doc['actions'] if a['kind'] == 'entry')
+                bound = mark if filled else config.get('limit_price') or mark
+                if field == 'stop_price':
+                    old = (doc.get('exit_state') or {}).get('stop', config['stop_price'])
+                    if price < old or price >= bound:
+                        raise ValueError('Stop may only tighten and must remain below the entry price or current position mark')
+                elif price is not None and price <= bound:
+                    raise ValueError('Target must be above the entry price or current position mark')
+                config[field] = price
+            else:
+                if config['order_type'] == 'MARKET' or (field == 'trigger_price' and config['order_type'] != 'STOP_LIMIT'):
+                    raise ValueError('This order has no editable price of that type')
+                if any(a.get('filled_qty', 0) for a in doc['actions'] if a['kind'] == 'entry'):
+                    raise ValueError('Entry already filled; entry price cannot be changed')
+                candidate = {**config, field: price}
+                if candidate.get('trigger_price') is not None and candidate['limit_price'] < candidate['trigger_price']:
+                    raise ValueError('BUY stop-limit requires limit >= trigger')
+                if candidate['limit_price'] <= config['stop_price'] or (config.get('target_price') is not None and candidate['limit_price'] >= config['target_price']):
+                    raise ValueError('Entry must remain between stop and target')
+                doc['pending_chart_change'] = {'field': field, 'price': price}
+        doc['edit_version'] = doc.get('edit_version', 0) + 1
+        event(doc, 'CHART_CHANGE_REQUESTED', self.now(), field=field, price=p.get('price'))
+        await self._save(doc)
+        return doc
+
+    async def _chart_amend(self, doc):
+        pending = doc.get('pending_chart_change')
+        if not pending:
+            return
+        if not await self._allowed(doc):
+            doc.pop('pending_chart_change', None)
+            return await self._save(doc)
+        entries = [a for a in doc['actions'] if a['kind'] == 'entry']
+        config = {**doc['spec']['chart'], pending['field']: pending['price']}
+        desired = {'limit_price': config['limit_price'], 'trigger_price': config['trigger_price']}
+        proven = entries and all(a.get('confirmed_amendment') == desired for a in entries)
+        if any(a.get('filled_qty', 0) for a in entries) and not proven:
+            doc.pop('pending_chart_change', None)
+            event(doc, 'CHART_CHANGE_REFUSED', self.now(), reason='entry_filled_before_amendment')
+            return await self._save(doc)
+        for action in entries:
+            if action.get('confirmed_amendment') == desired:
+                continue
+            if action['status'] in FINAL_ACTION:
+                continue
+            if action['status'] not in ('OPEN', 'TRIGGER_PENDING'):
+                return  # reconcile unknown acknowledgement before changing anything
+            if action.get('amendment_attempted'):
+                return  # Readback only after an ambiguous modify; never retransmit.
+            action['pending_amendment'] = desired
+            await self._save(doc)
+            lease = await self.store.heartbeat()
+            if lease.get('owner') != self.owner or lease.get('until', 0) <= self.now() or not await self._allowed(doc):
+                return
+            action['amendment_attempted'] = True
+            await self._save(doc)
+            result = await self.gateways[doc['mode']].amend_entry(action)
+            observation(action, result)
+            await self._save(doc)
+            if not result.get('amended'):
+                alert(doc, 'Entry modification is unconfirmed; readback continues without retransmission. Cancel remains available.', self.now())
+                await self._save(doc)
+                return
+        doc['spec']['chart'] = config
+        doc['spec']['max_entry_premium'] = config['limit_price']
+        doc.pop('pending_chart_change', None)
+        for action in entries:
+            action.pop('amendment_attempted', None)
+            action.pop('confirmed_amendment', None)
+        event(doc, 'CHART_CHANGE_CONFIRMED', self.now(), **pending)
+        await self._save(doc)
+
     async def preview(self, payload):
         spec = normalize_spec(payload, self.max_lots)
         now = self.now()
@@ -139,10 +261,19 @@ class ConditionalEngine:
         if not arm_condition_ok(spec, snap['spot']['price']):
             raise ValueError('Cross condition is already true; use level mode or change the level')
         premium = snap['reference']['price']
-        exit_state(spec, premium)  # refuse a points stop that is already nonsensical
+        if spec.get('chart'):
+            from .chart import chart_spec
+            config = spec['chart']
+            if config['instrument_key'] != contract['instrument_key']:
+                raise ValueError('Chart order does not match the selected contract')
+            checked = chart_spec({**config, 'mode': spec['mode'], 'lots': spec['lots']}, contract, premium)
+            spec['max_entry_premium'] = checked['max_entry_premium']
+        exit_state(spec, (spec.get('chart') or {}).get('limit_price') or premium)
         due = deadline(spec, now)
         cap = spec.get('max_entry_premium') or premium
         qty = spec['lots'] * contract['lot_size']
+        if spec.get('chart') and qty > contract['freeze_quantity']:
+            raise ValueError('Chart orders must fit one broker order; reduce lots below the freeze limit')
         stop = spec['exits']['stop']
         loss = cap * stop['value'] / 100 if stop['unit'] == 'percent' else stop['value']
         live_available, live_reason = await self.live_ready() if spec['mode'] == 'live' else (False, 'Paper mode')
@@ -162,6 +293,10 @@ class ConditionalEngine:
                'status': 'DRAFT', 'created_at': now, 'updated_at': now, 'preview_until': now + 120,
                'summary': summary, 'reference': reference, 'actions': [], 'events': [], 'alerts': [],
                'generation': control['generation'], 'cancel_requested': False}
+        if spec.get('chart'):
+            summary.update(mode=spec['mode'], side='BUY', symbol=contract.get('tsym') or contract['instrument_key'],
+                           **spec['chart'])
+            doc['edit_version'] = 0
         await self.store.insert(doc)
         return {'preview_id': oid, 'summary': summary, 'reference': reference,
                 'expires_at': doc['preview_until'], 'live_available': live_available}
@@ -195,7 +330,7 @@ class ConditionalEngine:
             raise ValueError('Fresh spot and reference-contract ticks required at arm time')
         if not arm_condition_ok(spec, snap['spot']['price']):
             raise ValueError('Cross condition is already true at arm time')
-        exit_state(spec, snap['reference']['price'])
+        exit_state(spec, (spec.get('chart') or {}).get('limit_price') or snap['reference']['price'])
         doc.update(status='ARMED', armed_at=now, deadline=deadline(spec, now),
                    square_off_at=time_today(spec['exits']['square_off'], now),
                    previous_spot=snap['spot']['price'], previous_spot_ts=snap['spot']['ts'])
@@ -245,12 +380,14 @@ class ConditionalEngine:
             return
         contract, spec = doc['contract'], doc['spec']
         side = 'B' if kind == 'entry' else 'S'
+        if kind == 'entry' and spec.get('chart') and spec['chart']['limit_price'] is not None:
+            limit = spec['chart']['limit_price']
         if limit is None:
             limit = (price_limit(premium, spec['band_pct'], contract['tick_size'], side)
                      if kind == 'entry' else sell_limit(premium, contract['tick_size']))
         if kind == 'entry' and spec.get('max_entry_premium') is not None:
             cap = spec['max_entry_premium']
-            if premium > cap:
+            if premium > cap and not spec.get('chart'):
                 raise ValueError('Execution premium exceeds confirmed maximum entry premium')
             tick = Decimal(str(contract['tick_size']))
             limit = min(limit, float((Decimal(str(cap)) / tick).to_integral_value(rounding=ROUND_FLOOR) * tick))
@@ -259,6 +396,11 @@ class ConditionalEngine:
                   'kind': kind, 'side': side, 'quantity': qty, 'contract': copy.deepcopy(contract),
                   'limit_price': limit, 'reference_price': premium, 'trigger_price': trigger,
                   'submitted_at': self.now(), 'filled_qty': 0, 'fill_price': None, 'status': 'SUBMITTING'}
+        if kind == 'entry' and spec.get('chart'):
+            c = spec['chart']
+            action.update(order_type=c['order_type'], trigger_price=c['trigger_price'])
+            if c['limit_price'] is not None:
+                action['limit_price'] = c['limit_price']
         gateway = self.gateways[doc['mode']]
         prepared = await gateway.prepare(action)
         if prepared:
@@ -380,6 +522,8 @@ class ConditionalEngine:
         control = await self.store.control(doc['mode'])
         killed = control['blocked'] or control['generation'] != doc['generation'] or doc.get('cancel_requested')
         if doc['status'] == 'ARMED':
+            if doc.get('pending_chart_change'):
+                await self._chart_amend(doc)
             if self.recovery_only:
                 return await self._terminal(doc, 'CANCELED', 'backend_heartbeat_lost')
             if killed:
@@ -417,7 +561,7 @@ class ConditionalEngine:
             doc.update(status='TRIGGERED', contract=contract, triggered_at=now,
                        trigger_spot=spot, resolved_strike=contract['strike'],
                        desired_quantity=spec['lots'] * contract['lot_size'],
-                       entry_until=min(doc['deadline'], now + spec['entry_timeout_seconds']))
+                       entry_until=doc['deadline'] if spec.get('chart') else min(doc['deadline'], now + spec['entry_timeout_seconds']))
             event(doc, 'TRIGGERED', now, spot=spot, strike=contract['strike'], contract=contract['instrument_key'])
             await self._save(doc)
             await self.market.ensure_subscription([contract])
@@ -445,6 +589,8 @@ class ConditionalEngine:
             doc['last_premium'], doc['last_tick_at'] = premium, tick['ts']
         # Broker reads are required even during feed loss and after restarts.
         await self._observe(doc, premium)
+        if doc.get('pending_chart_change'):
+            await self._chart_amend(doc)
         if self.recovery_only:
             await self._cancel_actions(doc, {'entry'})
         bought, sold, vwap = self._totals(doc)
@@ -531,7 +677,7 @@ class ConditionalEngine:
         working_entries = [a for a in entries if a['status'] not in FINAL_ACTION]
         if working_entries:
             for action in working_entries:
-                if now - action['submitted_at'] >= spec['entry_timeout_seconds'] or now >= doc['deadline']:
+                if (not spec.get('chart') and now - action['submitted_at'] >= spec['entry_timeout_seconds']) or now >= doc['deadline']:
                     await self._cancel_actions(doc, {'entry'})
                     break
             return

@@ -76,9 +76,13 @@ blotter agrees. Unsupported market/native protection types are explicit in UI.
 
 ## Blockers / uncertainties
 
-- Existing docs say conditional Quick Trade's paper execution is incomplete;
-  must verify and fix within the shared path before downstream UI.
-- API capabilities and native vs software SL/target require current verification.
+- Historical Quick Trade paper warning is superseded by isolated engine tests.
+  Actual broker/live acceptance remains unverified and is operator-only.
+- Chart entry inherits the existing long NIFTY/BANKNIFTY/SENSEX option scope.
+  Other instruments remain chartable, with an explicit unavailable trading state.
+- Flattrade live API supports limit / stop-limit, not MARKET. Paper MARKET is a
+  simulation. Stop/target remain software unless existing verified broker-stop
+  configuration permits a native stop. No new broker stream or order engine.
 - No real-money acceptance may be claimed. Market-hours checks may require user
   follow-up; use explicit synthetic fixtures for deterministic acceptance now.
 
@@ -91,5 +95,16 @@ item and after substantial sub-steps; update learning_log.md each execution.
 
 ## Verification and commits
 
-New upgrade tests/commits: pending. Prior chart tests/rollout are historical and
-do not certify the new trading feature. No source implementation started yet.
+2026-11-03 checkpoint: phase 1 source exists, not deployed. Shared conditional
+engine supports chart preview/arm, paper market/limit/stop-limit and amendments;
+frontend ticket, confirmations, Instant opt-in, lines and blotter are integrated.
+Root fixed ambiguous modify retries, late fill acknowledgement, cancel admission,
+stop-limit trigger persistence and pending-entry stop bounds. These require the
+additional regression pass, frontend build and isolated browser sequence before
+phase 1 is complete. Focused current run: 38 pytest checks passed (conditional
+adapters/lifecycle + chart lifecycle). No live broker action or service restart.
+
+Active delegated bounded work: phase1_regressions owns only lifecycle/adapter
+tests; phase1_browser_fixture owns only the synthetic acceptance server. Root
+owns UI integration, independent review and final acceptance. Preserve all prior
+unrelated dirty files. Initial checkpoint commit: 2c3314c.
