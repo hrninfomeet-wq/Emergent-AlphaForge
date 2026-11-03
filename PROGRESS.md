@@ -28,7 +28,7 @@ indicator instances, drawings and daily points/% header.
 - Read project state and dirty-worktree inventory. PROGRESS.md did not exist.
 - Defined ordered gates below; started phase 1 capability/code-path checks.
 
-## In progress — 1. Chart trading + blotter
+## Done in source and isolated paper acceptance — 1. Chart trading + blotter
 
 Critical part (cost of a wrong version: moves money): execution admission,
 mode isolation, order ownership and modification/cancellation reuse. Root owns it.
@@ -54,6 +54,9 @@ dragged SL changes the same stored order; cancellation removes its active line;
 blotter agrees. Unsupported market/native protection types are explicit in UI.
 
 ## Next — strictly sequential
+
+Current item: **2, multi-chart layouts**. Phase 1 acceptance passed on the isolated
+8002 server in Chrome; production 3000/8001 has not been restarted or changed.
 
 2. Multi-chart layouts (wrong version: costs redone work). 1/2/3/4/6 chart variants,
    independent symbol/timeframe, optional crosshair/symbol sync, remembered layout.
@@ -100,11 +103,24 @@ engine supports chart preview/arm, paper market/limit/stop-limit and amendments;
 frontend ticket, confirmations, Instant opt-in, lines and blotter are integrated.
 Root fixed ambiguous modify retries, late fill acknowledgement, cancel admission,
 stop-limit trigger persistence and pending-entry stop bounds. These require the
-additional regression pass, frontend build and isolated browser sequence before
-phase 1 is complete. Focused current run: 38 pytest checks passed (conditional
-adapters/lifecycle + chart lifecycle). No live broker action or service restart.
+additional regression pass, frontend build and isolated browser sequence, now
+completed: 41 focused pytest checks, 23 React checks and production build pass.
+Chrome synthetic acceptance: 65 units filled at 200, fresh mark 201 -> P&L 65;
+drag 198 stop to 199 produced confirmation, server remained 198 before approval,
+then same order edit_version advanced to 1 with stop 199 in chart and blotter.
+A separate resting limit 199 was canceled from its line; API CANCELED/active=false,
+zero active line handles and empty active blotter confirmed. No real broker
+action or production service restart. Backend sub-step commit: 9894d7d.
 
-Active delegated bounded work: phase1_regressions owns only lifecycle/adapter
-tests; phase1_browser_fixture owns only the synthetic acceptance server. Root
-owns UI integration, independent review and final acceptance. Preserve all prior
-unrelated dirty files. Initial checkpoint commit: 2c3314c.
+Completed delegated work: phase1_regressions lifecycle/adapter and UI tests;
+phase1_browser_fixture synthetic acceptance server. Root reviewed and corrected
+the test clock: advance between cycles, never make synthetic quotes newer than
+the engine timestamp. Root corrected close confirmation to SELL/estimated exit
+limit and restored chart scrolling when a dragged line disappears during a fill.
+Preserve unrelated dirty files. Initial checkpoint commit: 2c3314c.
+
+Resume fixture: `.venv/Scripts/python tests/manual/chart_terminal_fixture.py
+--build C:/Users/haroo/AppData/Local/Temp/alphaforge-terminal-build` on 8002.
+Frontend fixture build uses only per-command REACT_APP_BACKEND_URL and BUILD_PATH.
+Fixture is memory-only, synthetic quotes, forbidden live gateway. Normal app
+rollout and market-hours acceptance remain separate.

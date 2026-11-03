@@ -371,6 +371,8 @@ api.include_router(premium_momentum_routes.api)
 api.include_router(scalping.api)
 from app.routers import conditional_orders
 api.include_router(conditional_orders.api)
+from app.routers import charts
+api.include_router(charts.api)
 
 app.include_router(api)
 

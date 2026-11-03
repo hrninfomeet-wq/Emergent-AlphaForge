@@ -1813,3 +1813,12 @@ never been run on a weekday.
   [Moneycontrol policy liveblog](https://www.moneycontrol.com/news/business/markets/stock-market-live-updates-nifty50-share-price-sensex-share-price-crude-fii-gift-nifty-rupee-latest-updates-07-10-2026-alpha-liveblog-14046173.html),
   [Yahoo historical candles](https://query1.finance.yahoo.com/v8/finance/chart/%5EBSESN?interval=5m&range=1mo&includePrePost=true),
   [NSE CAS](https://www.nseindia.com/static/products-services/closing-auction-session).
+
+
+## 2026-11-03 — Chart trading phase 1
+
+Core lesson: a drag is a proposal, not broker acceptance. Keep amendments on the existing durable order, confirm before sending, and reconcile ambiguous results without retransmission.
+
+Confirmed approaches: shared ConditionalEngine/PaperGateway; strict instrument/mode identity; mocked live adapter checks; Chrome on isolated synthetic port 8002. Focused checks: 41 Python and 23 React tests; production build; paper fill/P&L, confirmed stop drag, limit cancellation and blotter agreement. Backend sub-step commit 9894d7d; root PROGRESS.md is the upgrade checkpoint.
+
+Dead ends: a continuously advancing fake clock can make snapshot timestamps slightly later than the cycle timestamp, falsely triggering stale-feed handling. Advance virtual time between cycles. Use bytes when applying a selected git diff hunk on Windows; text-mode stdin changes line endings. Do not copy BUY entry fields into a SELL close confirmation. No real broker actions or production restart.

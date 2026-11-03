@@ -1,0 +1,5 @@
+.chart-order-handles{position:absolute;inset:0;overflow:hidden;pointer-events:none;z-index:5}
+.chart-order-handle{position:absolute;left:0;right:70px;height:0;border-top:1px dashed #68a9ff;display:flex;align-items:center;justify-content:flex-end;gap:2px;color:#acd0ff}
+.chart-order-handle.stop_price{border-color:#fb7185;color:#ffc1cb}.chart-order-handle.target_price{border-color:#35c69a;color:#8befd1}.chart-order-handle.entry_price{border-color:#a5b4fc;color:#d5dbff}
+.chart-order-price,.chart-order-remove{pointer-events:auto;background:#142235;border:1px solid currentColor;border-radius:4px;font-size:10px;line-height:18px;padding:0 6px;color:inherit;touch-action:none;cursor:ns-resize;transform:translateY(-1px)}
+.chart-order-remove{cursor:pointer}.chart-order-price:disabled{cursor:default;opacity:.7}.chart-order-handle.live .chart-order-price{font-weight:700}

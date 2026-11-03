@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { lazy, Suspense, useEffect } from "react";
 import "@/App.css";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Toaster } from "sonner";
@@ -17,6 +17,7 @@ import PremiumMomentum from "@/pages/PremiumMomentum";
 import SavedPresets from "@/pages/SavedPresets";
 import LiveSignals from "@/pages/LiveSignals";
 import LiveTrading from "@/pages/LiveTrading";
+const ChartTerminal = lazy(() => import("@/pages/ChartTerminal"));
 
 function App() {
   return (
@@ -41,6 +42,7 @@ function AppShell() {
         <Layout>
           <Routes>
             <Route path="/" element={<Dashboard />} />
+            <Route path="/charts" element={<Suspense fallback={<div className="text-sm text-dim">Loading charts…</div>}><ChartTerminal /></Suspense>} />
             <Route path="/backtest" element={<BacktestLab />} />
             <Route path="/strategies" element={<StrategyLibrary />} />
             <Route path="/warehouse" element={<DataWarehouse />} />

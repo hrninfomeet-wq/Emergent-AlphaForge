@@ -18,6 +18,7 @@ const NAV_GROUPS = [
     label: "Overview",
     items: [
       { to: "/", label: "Dashboard", icon: Home, testid: "nav-dashboard" },
+      { to: "/charts", label: "Charts", icon: LineChart, testid: "nav-charts" },
     ],
   },
   {

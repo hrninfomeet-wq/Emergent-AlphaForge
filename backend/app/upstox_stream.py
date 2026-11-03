@@ -96,7 +96,7 @@ def _to_int(value: Any) -> Optional[int]:
         return None
 
 
-def build_subscription_message(guid: str, instrument_keys: Iterable[str], mode: str = DEFAULT_STREAM_MODE) -> bytes:
+def build_subscription_message(guid: str, instrument_keys: Iterable[str], mode: str = DEFAULT_STREAM_MODE, *, method: str = "sub") -> bytes:
     """Build the binary JSON subscription message required by Upstox V3."""
     clean_keys = [str(key) for key in instrument_keys if str(key or "").strip()]
     if not clean_keys:
@@ -104,9 +104,11 @@ def build_subscription_message(guid: str, instrument_keys: Iterable[str], mode: 
     mode = str(mode or DEFAULT_STREAM_MODE).lower()
     if mode not in ALLOWED_STREAM_MODES:
         raise ValueError(f"Unsupported Upstox stream mode: {mode}")
+    if method not in {"sub", "unsub"}:
+        raise ValueError("Unsupported subscription method")
     payload = {
         "guid": guid,
-        "method": "sub",
+        "method": method,
         "data": {
             "mode": mode,
             "instrumentKeys": clean_keys,
@@ -605,10 +607,16 @@ class UpstoxMarketStreamManager:
         self._stop_event: Optional[asyncio.Event] = None
         self._latest_ticks: Dict[str, Dict[str, Any]] = {}
         self._required_keys: set[str] = set()
+        self._baseline_keys: set[str] = set()
+        # Temporary viewers do not become execution subscriptions. A lease is
+        # per viewer, so closing one of two charts cannot unsubscribe the other.
+        self._chart_leases: Dict[str, str] = {}
+        self._chart_pending_removals: set[str] = set()
         self._active_websocket = None
         self._subscription_lock = asyncio.Lock()
         # Per-subscriber asyncio.Queue for fan-out pub/sub (used by SSE/WebSocket consumers).
         self._tick_subscribers: "set[asyncio.Queue]" = set()
+        self._subscriber_keys: Dict[asyncio.Queue, frozenset] = {}
         self._session: Dict[str, Any] = {
             "running": False,
             "session_id": None,
@@ -639,10 +647,11 @@ class UpstoxMarketStreamManager:
         mode = str(mode or DEFAULT_STREAM_MODE).lower()
         if mode not in ALLOWED_STREAM_MODES:
             raise ValueError(f"Unsupported Upstox stream mode: {mode}")
+        self._baseline_keys = set(instrument_keys)
         self._session.update({
             "session_id": session_id,
             "mode": mode,
-            "instrument_keys": list(dict.fromkeys([*instrument_keys, *sorted(self._required_keys)])),
+            "instrument_keys": list(dict.fromkeys([*instrument_keys, *sorted(self._required_keys | set(self._chart_leases.values()))])),
             "persist": bool(persist),
             "updated_at": _now_iso(),
             "last_error": None,
@@ -661,6 +670,10 @@ class UpstoxMarketStreamManager:
         status["last_tick_age_s"] = _age_seconds(self._session.get("last_tick_at"))
         status["instrument_count"] = len(status.get("instrument_keys") or [])
         status["latest_tick_count"] = len(self._latest_ticks)
+        status["chart_viewers"] = len(self._chart_leases)
+        status["execution_instrument_keys"] = sorted(
+            (self._baseline_keys | self._required_keys)
+            & set(self._session["instrument_keys"]) - self._chart_pending_removals)
         return status
 
     def latest_ticks(self, limit: int = 50) -> List[Dict[str, Any]]:
@@ -684,7 +697,8 @@ class UpstoxMarketStreamManager:
         async with self._subscription_lock:
             self._required_keys.update(clean)
             existing = set(self._session.get("instrument_keys") or [])
-            added = sorted(clean - existing)
+            uncertain = clean & self._chart_pending_removals
+            added = sorted((clean - existing) | uncertain)
             if not added:
                 return
             # Preserve intent for reconnect even if the current send fails.
@@ -694,35 +708,109 @@ class UpstoxMarketStreamManager:
                     await self._active_websocket.send(build_subscription_message(
                         guid=str(uuid.uuid4()), instrument_keys=added,
                         mode=self._session["mode"]))
+                    self._chart_pending_removals.difference_update(added)
                 except Exception:
                     # Retry on the next ensure call; required keys still survive
                     # reconnect even if no consumer gets another call through.
                     self._session["instrument_keys"] = sorted(existing)
                     raise
 
+    def _owned_keys(self) -> set[str]:
+        return self._baseline_keys | self._required_keys | set(self._chart_leases.values())
+
+    def _persistent_ticks(self, ticks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Browsing a new symbol must not expand the stored market-data tape."""
+        owned = self._baseline_keys | self._required_keys
+        return [tick for tick in ticks if tick.get("instrument_key") in owned]
+
+    async def _flush_chart_removals(self) -> None:
+        """Called under the subscription lock; failed sends remain budgeted."""
+        removed = self._chart_pending_removals - self._owned_keys()
+        if not removed:
+            return
+        if self._active_websocket is not None:
+            await self._active_websocket.send(build_subscription_message(
+                str(uuid.uuid4()), sorted(removed), self._session["mode"], method="unsub"))
+        self._session["instrument_keys"] = sorted(set(self._session["instrument_keys"]) - removed)
+        self._chart_pending_removals.difference_update(removed)
+
+    async def acquire_chart_instrument(self, instrument_key: str) -> str:
+        """Lease one validated chart symbol without restarting the shared feed.
+
+        The conservative mixed-mode ceiling leaves existing owners untouched.
+        At most 16 viewers are allowed, including duplicate-symbol viewers.
+        """
+        key = str(instrument_key or "").strip()
+        if not key or len(key) > 200:
+            raise ValueError("Invalid chart instrument")
+        async with self._subscription_lock:
+            if len(self._chart_leases) >= 16:
+                raise ValueError("Close an unused chart: 16 chart viewers are already open")
+            await self._flush_chart_removals()
+            existing = set(self._session["instrument_keys"])
+            ceiling = 50 if self._session["mode"] == "full_d30" else 1500
+            if key not in existing and len(existing) >= ceiling:
+                raise ValueError("The shared feed subscription budget is full")
+            lease = str(uuid.uuid4())
+            self._chart_leases[lease] = key
+            self._session["instrument_keys"] = sorted(existing | {key})
+            try:
+                if (key not in existing or key in self._chart_pending_removals) and self._active_websocket is not None:
+                    await self._active_websocket.send(build_subscription_message(
+                        str(uuid.uuid4()), [key], self._session["mode"]))
+                    self._chart_pending_removals.discard(key)
+            except BaseException:
+                self._chart_leases.pop(lease, None)
+                # Delivery is uncertain after a transport failure. Keep this key
+                # budgeted until an unsubscribe succeeds or the socket reconnects.
+                self._chart_pending_removals.add(key)
+                raise
+            return lease
+
+    async def release_chart_instrument(self, lease: str) -> None:
+        async with self._subscription_lock:
+            key = self._chart_leases.pop(lease, None)
+            if key and key not in self._owned_keys():
+                self._chart_pending_removals.add(key)
+                self._latest_ticks.pop(key, None)
+            try:
+                await self._flush_chart_removals()
+            except Exception:
+                # No execution feed restart just because a browser disappeared.
+                # Retried on the next lease; reconnect drops the retired keys.
+                log.warning("Chart unsubscribe deferred until transport recovers")
+
     # --- pub/sub for SSE/WebSocket consumers ---------------------------------
 
-    def subscribe(self, *, max_queue: int = 256) -> "asyncio.Queue":
+    def subscribe(self, *, max_queue: int = 256, instrument_keys: Optional[Iterable[str]] = None) -> "asyncio.Queue":
         """Register a tick subscriber. Returns an asyncio.Queue receiving normalized ticks.
 
         The queue has a bounded size; if the consumer is too slow, oldest ticks are dropped
         so the producer never blocks. Always pair with unsubscribe() in a try/finally.
         """
         queue: "asyncio.Queue" = asyncio.Queue(maxsize=max_queue)
+        queue.dropped_count = 0
         self._tick_subscribers.add(queue)
+        if instrument_keys is not None:
+            self._subscriber_keys[queue] = frozenset(instrument_keys)
         return queue
 
     def unsubscribe(self, queue: "asyncio.Queue") -> None:
         self._tick_subscribers.discard(queue)
+        self._subscriber_keys.pop(queue, None)
 
     def _broadcast(self, ticks: List[Dict[str, Any]]) -> None:
         if not self._tick_subscribers or not ticks:
             return
         for queue in list(self._tick_subscribers):
             for tick in ticks:
+                keys = self._subscriber_keys.get(queue)
+                if keys is not None and tick.get("instrument_key") not in keys:
+                    continue
                 try:
                     queue.put_nowait(tick)
                 except asyncio.QueueFull:
+                    queue.dropped_count += 1
                     # Drop oldest, keep newest. Slow consumer should not stall the producer.
                     try:
                         queue.get_nowait()
@@ -732,6 +820,7 @@ class UpstoxMarketStreamManager:
                 except Exception:
                     # A failed consumer should never crash the broadcaster.
                     self._tick_subscribers.discard(queue)
+                    self._subscriber_keys.pop(queue, None)
                     break
 
     async def start(
@@ -806,8 +895,8 @@ class UpstoxMarketStreamManager:
                     self._session["updated_at"] = _now_iso()
                     async with self._subscription_lock:
                         self._active_websocket = websocket
-                        self._session["instrument_keys"] = sorted(
-                            set(self._session["instrument_keys"]) | self._required_keys)
+                        self._session["instrument_keys"] = sorted(self._owned_keys())
+                        self._chart_pending_removals.clear()
                         await websocket.send(build_subscription_message(
                             guid=str(uuid.uuid4()),
                             instrument_keys=self._session["instrument_keys"],
@@ -819,6 +908,8 @@ class UpstoxMarketStreamManager:
                             continue
                         decoded = decode_market_data_feed(frame)
                         ticks = normalize_feed_response(decoded)
+                        owned = self._owned_keys()
+                        ticks = [tick for tick in ticks if tick.get("instrument_key") in owned]
                         if not ticks:
                             continue
                         # OUR local receive clock. `ts` (last-traded) and
@@ -836,7 +927,7 @@ class UpstoxMarketStreamManager:
                         self._session["updated_at"] = self._session["last_tick_at"]
                         self._broadcast(ticks)
                         if self._session.get("persist"):
-                            await persist_ticks(self._db_factory(), ticks, str(self._session["session_id"]))
+                            await persist_ticks(self._db_factory(), self._persistent_ticks(ticks), str(self._session["session_id"]))
             except asyncio.CancelledError:
                 self._active_websocket = None
                 raise

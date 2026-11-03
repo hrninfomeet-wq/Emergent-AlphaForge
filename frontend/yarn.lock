@@ -6862,6 +6862,11 @@ levn@^0.4.1:
     prelude-ls "^1.2.1"
     type-check "~0.4.0"
 
+lightweight-charts-drawing@0.6.2:
+  version "0.6.2"
+  resolved "https://registry.yarnpkg.com/lightweight-charts-drawing/-/lightweight-charts-drawing-0.6.2.tgz#e5a1bfee6f4f57fd869a642a9f1e2e560a0ce91e"
+  integrity sha512-KyT0vzrN52z2PvPYmpqUfYhVE80KyxtNRvlT5yb70/swQhVB/mTP8qSJiKxp/1V07Eohkl1waxHpFqOpmBTC1A==
+
 lightweight-charts@^5.2.0:
   version "5.2.0"
   resolved "https://registry.yarnpkg.com/lightweight-charts/-/lightweight-charts-5.2.0.tgz#ef3f681794e9dad0ac131913259439ad596bcf92"
