@@ -1,8 +1,10 @@
-"""Isolated synthetic chart fixture. Never connects to MongoDB or a broker.
+"""Isolated synthetic chart fixture. Never connects to a broker.
 
 Build with REACT_APP_BACKEND_URL=http://localhost:8002 into a separate build
 folder, then run: python tests/manual/chart_terminal_fixture.py --build <folder>
 Open http://localhost:8002/charts. Orders exist only in this process's memory.
+Watchlists use memory unless --watchlist-db explicitly selects the allowlisted
+isolated Mongo database; production database configuration is never imported.
 """
 import argparse
 import asyncio
@@ -15,7 +17,7 @@ import types
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path[:0] = [str(ROOT / 'backend'), str(ROOT / 'tests')]
+sys.path[:0] = [str(ROOT / 'backend'), str(ROOT / 'tests'), str(Path(__file__).resolve().parent)]
 
 # The production router imports app.db and app.conditional.service. Install only
 # the interfaces it uses before importing it, preventing production wiring imports.
@@ -28,6 +30,9 @@ def serialize_doc(value):
         return [serialize_doc(v) for v in value]
     return value
 db_stub.serialize_doc = serialize_doc
+def forbidden_production_db():
+    raise RuntimeError('Production database wiring is forbidden in the fixture')
+db_stub.get_db = forbidden_production_db
 sys.modules['app.db'] = db_stub
 sys.modules['app.conditional.service'] = service
 # PaperGateway imports only this validator from production market wiring. Keep
@@ -57,6 +62,9 @@ from app.conditional.engine import ConditionalEngine
 from app.conditional.chart import chart_row
 from app.routers.conditional_orders import api as conditional_router
 from app.chart_stream import parse_chart_channels
+from app.chart_watchlist import WatchlistStore
+from app.routers import chart_watchlist as watchlist_router
+from chart_watchlist_fixture import FIXTURE_DATABASE, open_collection, SyntheticQuoteManager
 
 NOTICE = 'SYNTHETIC PAPER TEST — isolated fixture; no broker or database.'
 OPTION = {'instrument_key': 'NSE_FO|999', 'symbol': 'SYNTHETIC PAPER TEST NIFTY 25000 CE',
@@ -93,7 +101,7 @@ service.status = fixture_status
 
 app = FastAPI(title=NOTICE)
 app.add_middleware(CORSMiddleware, allow_origins=['http://localhost:8002', 'http://127.0.0.1:8002'],
-                   allow_methods=['GET', 'POST', 'OPTIONS'], allow_headers=['*'])
+                   allow_methods=['GET', 'POST', 'PUT', 'OPTIONS'], allow_headers=['*'])
 
 # Router's as_of_ms uses the simulated market clock. Translate only this public
 # timestamp to wall time so the unchanged UI can evaluate snapshot freshness.
@@ -107,6 +115,8 @@ app.include_router(conditional_router, prefix='/api')
 
 @app.on_event('startup')
 async def start_worker():
+    # Fail startup clearly if explicitly selected isolated Mongo is unavailable.
+    await app.state.watchlist_store.get()
     async def work():
         while True:
             clock.advance(.5)
@@ -121,6 +131,8 @@ async def stop_worker():
         await app.state.worker
     except asyncio.CancelledError:
         pass
+    if app.state.watchlist_client is not None:
+        app.state.watchlist_client.close()
 
 class Premium(BaseModel):
     premium: float = Field(gt=0, le=1000000, allow_inf_nan=False)
@@ -150,6 +162,29 @@ def fixture_price(key):
     if key == OPTION['instrument_key']:
         return market.premium
     return market.spot * {'NSE_INDEX|Nifty 50': 1, 'NSE_INDEX|Nifty Bank': 2, 'BSE_INDEX|SENSEX': 3}.get(key, 1)
+
+
+async def resolve_watchlist_instrument(key):
+    return dict(get_instrument(key))
+
+
+def configure_watchlist(database=None):
+    global NOTICE
+    collection, client = open_collection(database)
+    app.state.watchlist_client = client
+    app.state.watchlist_store = WatchlistStore(collection, resolve_watchlist_instrument)
+    app.state.quote_manager = SyntheticQuoteManager(INSTRUMENTS, fixture_price)
+    watchlist_router.get_watchlist_store = lambda: app.state.watchlist_store
+    watchlist_router.get_quote_manager = lambda: app.state.quote_manager
+    NOTICE = ('SYNTHETIC PAPER TEST — no broker; isolated test storage.' if database else
+              'SYNTHETIC PAPER TEST — isolated fixture; no broker or database.')
+    app.title = NOTICE
+    for instrument in INSTRUMENTS:
+        instrument['name'] = NOTICE
+
+
+configure_watchlist()
+app.include_router(watchlist_router.api, prefix='/api/charts')
 
 def bar(key, frame, stamp, n=0):
     price = fixture_price(key)
@@ -226,7 +261,10 @@ def configure_static(directory):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=NOTICE)
     parser.add_argument('--build', default=os.environ.get('CHART_FIXTURE_BUILD', str(ROOT / 'frontend' / 'build')))
+    parser.add_argument('--watchlist-db', choices=[FIXTURE_DATABASE], default=None,
+                        help='Persist watchlists only in the isolated allowlisted localhost Mongo database')
     args = parser.parse_args()
+    configure_watchlist(args.watchlist_db)
     configure_static(args.build)
     import uvicorn
     print(NOTICE, flush=True)

@@ -611,6 +611,7 @@ class UpstoxMarketStreamManager:
         # Temporary viewers do not become execution subscriptions. A lease is
         # per viewer, so closing one of two charts cannot unsubscribe the other.
         self._chart_leases: Dict[str, str] = {}
+        self._quote_leases: Dict[str, set[str]] = {}
         self._chart_pending_removals: set[str] = set()
         self._active_websocket = None
         self._subscription_lock = asyncio.Lock()
@@ -651,7 +652,7 @@ class UpstoxMarketStreamManager:
         self._session.update({
             "session_id": session_id,
             "mode": mode,
-            "instrument_keys": list(dict.fromkeys([*instrument_keys, *sorted(self._required_keys | set(self._chart_leases.values()))])),
+            "instrument_keys": list(dict.fromkeys([*instrument_keys, *sorted(self._required_keys | set(self._chart_leases.values()) | set().union(*self._quote_leases.values()))])),
             "persist": bool(persist),
             "updated_at": _now_iso(),
             "last_error": None,
@@ -716,7 +717,7 @@ class UpstoxMarketStreamManager:
                     raise
 
     def _owned_keys(self) -> set[str]:
-        return self._baseline_keys | self._required_keys | set(self._chart_leases.values())
+        return self._baseline_keys | self._required_keys | set(self._chart_leases.values()) | set().union(*self._quote_leases.values())
 
     def _persistent_ticks(self, ticks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Browsing a new symbol must not expand the stored market-data tape."""
@@ -779,6 +780,46 @@ class UpstoxMarketStreamManager:
                 # No execution feed restart just because a browser disappeared.
                 # Retried on the next lease; reconnect drops the retired keys.
                 log.warning("Chart unsubscribe deferred until transport recovers")
+
+    async def acquire_quote_batch(self, instrument_keys: Iterable[str]) -> str:
+        """Lease a bounded set on the existing feed, without persistent tape ownership."""
+        keys = set(instrument_keys)
+        if len(keys) > 200 or any(not isinstance(k, str) or not k.strip() or k != k.strip() or len(k) > 200 for k in keys):
+            raise ValueError("Invalid quote batch")
+        async with self._subscription_lock:
+            if len(self._quote_leases) >= 16:
+                raise ValueError("Too many watchlist viewers")
+            await self._flush_chart_removals()
+            existing = set(self._session["instrument_keys"])
+            ceiling = 50 if self._session["mode"] == "full_d30" else 1500
+            if len(existing | keys) > ceiling:
+                raise ValueError("The shared feed subscription budget is full")
+            lease = str(uuid.uuid4())
+            self._quote_leases[lease] = keys
+            self._session["instrument_keys"] = sorted(existing | keys)
+            added = (keys - existing) | (keys & self._chart_pending_removals)
+            try:
+                if added and self._active_websocket is not None:
+                    await self._active_websocket.send(build_subscription_message(
+                        str(uuid.uuid4()), sorted(added), self._session["mode"]))
+                    self._chart_pending_removals.difference_update(added)
+            except BaseException:
+                self._quote_leases.pop(lease, None)
+                self._chart_pending_removals.update(added - self._owned_keys())
+                raise
+            return lease
+
+    async def release_quote_batch(self, lease: str) -> None:
+        async with self._subscription_lock:
+            keys = self._quote_leases.pop(lease, set())
+            removed = keys - self._owned_keys()
+            self._chart_pending_removals.update(removed)
+            for key in removed:
+                self._latest_ticks.pop(key, None)
+            try:
+                await self._flush_chart_removals()
+            except Exception:
+                log.warning("Watchlist unsubscribe deferred until transport recovers")
 
     # --- pub/sub for SSE/WebSocket consumers ---------------------------------
 

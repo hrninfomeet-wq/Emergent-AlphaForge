@@ -172,3 +172,22 @@ Item 3 plan (cost: redone work):
 Delegation: backend agent owns service/router/tests; UI agent owns component/API/
 unit tests. Root owns integration, fixture, review, persistence and commits.
 Do not start option-chain work before this gate. No broker writes.
+
+Item 3 checkpoint: commit 0548405 contains completed layouts. Backend/UI/fixture
+agents are implementing isolated pieces; root integrated the future left panel
+and scoped watchlist router. Backend uses one batch quote lease on existing
+Upstox manager (preserves execution/chart ownership and tape limits), revisioned
+Mongo preferences; UI defaults blank aliases. Root review caught alias contract
+mismatch, quote-map O(n²) copying and overly frequent revision reads; agent is
+correcting these before acceptance. Fixture uses only a dedicated test database,
+never production alphaforge, for actual restart persistence. No production restart.
+
+Item 3 backend acceptance: root reran 41 selected Python tests (watchlist/store,
+shared manager leases, multistream and chart routes), all passed. Review fixed
+initially unavailable symbols remaining stuck; periodic re-resolution covers both
+mixed and all-unavailable lists, releases lease before reconnect. UI integration
+17 selected tests passed; UI action/boundary checks and Chrome restart gate remain.
+Isolated fixture supports explicit --watchlist-db
+alphaforge_chart_terminal_fixture_20261104; default remains memory. Production
+DB name is rejected, and app.runtime is never imported. Fresh Mongo client/store
+read matched the seeded empty document. User database was not touched.
