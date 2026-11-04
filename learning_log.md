@@ -1850,3 +1850,11 @@ Dead ends: blank-label frontend/backend mismatch; copying all tick maps per row;
 relying on transport reconnect while a subset remains unavailable; starting the
 fixture before CRA finishes recreating index.html. Keep source checkpoints when
 an agent hits its limit, then recover files instead of restarting implementation.
+
+### 2026-11-04 — Integrate the tested commit, not the dirty workspace
+
+Confirmed approach: detached-worktree verification of eda1107 passed 41 backend
+and 20 frontend checks plus a CI build before local main was fast-forwarded.
+Lesson: verification in the working checkout alone can hide missing committed
+dependencies. Preserve unrelated edits and move main only after testing the exact
+commit. Avoid blanket staging or deploying unfinished option-chain source.

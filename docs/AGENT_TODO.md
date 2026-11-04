@@ -766,4 +766,3 @@ promotion-grade result.
 - [ ] Item 4 next: option chain. Items 5–6 follow sequentially.
 - Read [root progress](../PROGRESS.md). Production start-app.bat and live-session
   acceptance remain pending. No real orders or broker-session actions.
-

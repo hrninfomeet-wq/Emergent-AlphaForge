@@ -206,3 +206,27 @@ reuse read-only source with truthful absent values, then build chain panel with
 expiry/ATM/CE-PE data and chart or ticket handoff. Pass mocked NIFTY/SENSEX nearest
 expiry plus live-update reconciliation, then read-only real API if session allows.
 Do not start item 5 until item 4 checks pass. No real orders, no second order path.
+
+Item 4 checkpoint: stage3 UI commit eda1107. Official option-chain research saved
+in docs/chart-terminal/option-chain-research.md; root independently checked REST
+field docs. Exchange timestamp absent, IVunit andpreviousOIbaseline undocumented:
+showreceivedtime andrawvendorIV; do not mergeWSIVwithRESTIV. Backendagent builds
+validated cachedchain +bounded existingquote leases; UIagent buildsexpiry/ATM/
+CE-PEdialog; root integratesactivechart handoff and will ownfixture/realreadchecks.
+No order placement from chain. No production restart. Work not yet verified.
+
+### Local main integration checkpoint — 2026-11-04
+
+User requested integration after implementation and testing. Verified exact commit
+eda1107 in detached clean worktree at %TEMP%/alphaforge-main-eda1107: 41 selected
+Python tests, 20 selected React tests, and CI production build passed. Build only
+reports existing bundle size/caniuse warnings. Advanced local main from 24e78a1
+to eda1107 after checking ancestry and that main is not checked out elsewhere.
+origin/main remains ff9cbe3; no push or production rollout. Dirty feature workspace
+and unrelated changes preserved. This integrates completed items 1–3 only.
+
+Item 4 source recovered; backend and UI review/test agents are finishing their
+isolated files. Root owns real read-only data checks, fixture acceptance and final
+integration. Items 5–6 are not started. Next gate: option-chain identity/freshness,
+mock tests, read-only NIFTY/SENSEX coverage and isolated browser handoff. Do not
+mark live market updates accepted outside a live market observation.
